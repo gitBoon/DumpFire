@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.91
+version: 1.92
 status: As-Built
 date: 2026-10-21
 tags:
@@ -1259,6 +1259,17 @@ new, `DELETE /comments/:commentId` (card 2283); these operations, answers and fi
   deleted with its board)`). Each logged and sent nothing for the milestone. A card deleted
   with its own board still sends nothing: the board's webhooks go with it. **A webhook with an
   empty `events` list receives these from this release.** See [Webhooks](#webhooks).
+- **`GET /audit-log` takes a cursor, `before`** (card 2387, item 104): the `createdAt` and `id`
+  of the last entry you hold, joined by a comma (`before=2026-10-21T09:00:00.000Z,1234`,
+  URL-encoded), and answers the entries older than it, newest first. Paged by `offset`, each
+  entry written after the first page moved every later page down by one, so the next page
+  began with an entry already given; with `before` none is given twice. With `before`,
+  `pagination.total` counts the entries the filters find older than it and `hasMore` says
+  whether any follow the page; `offset` still applies, counted from the cursor. A `before`
+  that is not a timestamp and an id (a date alone included) is `400`
+  `before must be an entry's createdAt and id, as 2026-10-21T09:00:00Z,1234`. `offset` works
+  as it did, and an answer without `before` is unchanged. See
+  [GET /api/v1/audit-log](#get-apiv1audit-log-admin).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -2181,6 +2192,18 @@ API:
   `src/lib/server/webhooks.ts`, from `holdOf` and `roleOnBoard` with the share left out) and
   never stored. Anyone else is answered as before, with neither key. The Share window asks
   before a removal above 0 and shows the held count. No `/api/v1` operation changes.
+- **`GET /api/boards/{id}/share` also gives the board's owner and an administrator
+  `privateStopsWebhooks`** (card 2385): on a public board, how many of its webhooks that are
+  sent now would be held once it is private, those whose setter opens it only because it is
+  public; 0 on a private board. `webhookShareNotes` asks `roleOnBoard` with the board handed
+  in as private; never stored, and anyone else is answered no such key. The Share window asks
+  before a switch to private above 0, and reads the list again after either switch. No
+  `/api/v1` operation changes.
+- **`GET /api/audit` takes `before`, as `GET /audit-log` does** (card 2387): the last entry
+  held, `<createdAt>,<id>` in the stored form this route answers
+  (`before=2026-10-21 09:00:00,1234`) or ISO 8601, refused in the same words. The Audit
+  page's **Load more** sends it, and no `offset`, so an entry written while the page is read
+  no longer repeats a row.
 
 ### Changes on 2026-10-13
 
@@ -2500,7 +2523,7 @@ Full design: [Burndown Charts](burndown-charts.md).
 ### `GET /api/v1/audit-log` (admin)
 
 Params: `boardId`, `userId`, `cardId`, `action`, `source` (`ui` | `api`), `from`,
-`to`, `limit` (default **100**, max **500**), `offset`.
+`to`, `limit` (default **100**, max **500**), `offset`, `before`.
 
 `boardId`, `userId` and `cardId` are ids, read as an id in the path is: one that is not a
 whole number of 1 or more is `400` `Invalid board ID` (`Invalid user ID`,
@@ -2532,6 +2555,30 @@ Entries come newest first, and by id within a second, newest first, so paging wi
 
 `pagination` carries `total` and `hasMore` — check it, because a full default
 page of 100 used to be indistinguishable from a complete result.
+
+**Page with `before`** (card 2387, item 104): the `createdAt` and `id` of the last entry you
+hold, joined by a comma, `before=2026-10-21T09:00:00.000Z,1234` (URL-encoded). The page is
+the entries older than it, so an entry written while you page is never given twice; by
+`offset`, each one written after the first page moved every later page down by one, and the
+next page began with an entry already given. The cursor is one more filter: with it `total`
+counts the entries the filters find older than it, `hasMore` says whether any follow this
+page, and `offset`, if sent, counts from it. The time is read as `from` is, but a date alone
+names no entry; anything else is `400`
+`before must be an entry's createdAt and id, as 2026-10-21T09:00:00Z,1234`. The query is a
+keyset on (`createdAt` DESC, `id` DESC), written as the row value
+`(created_at, id) < (?, ?)`, which SQLite answers from `idx_activity_log_created_at` (and
+the board's and the person's indexes), each of which ends in the id; no index was added.
+
+```mermaid
+sequenceDiagram
+    participant C as Caller
+    participant V as GET /api/v1/audit-log
+    C->>V: ?limit=100
+    V-->>C: entries 1–100, hasMore true
+    Note over V: new entries are written
+    C->>V: ?limit=100&before=<entry 100's createdAt>,<its id>
+    V-->>C: the 100 entries older than entry 100, none repeated
+```
 
 The web application's `GET /api/audit` reads the log through the same code (card 2294), and
 answers as this does, but for its actions, which it gives as stored (`api:card_moved`), an

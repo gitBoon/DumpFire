@@ -29,7 +29,9 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	const seesAddresses = role === 'owner' || role === 'admin';
 	// The same callers are told of the board's webhooks, as `pausedBecause` is
 	// told to them (card 2329): how many each share's removal would hold, and
-	// how many are held now. Anyone else is answered no key for either.
+	// how many are held now. Anyone else is answered no key for either. So
+	// is `privateStopsWebhooks`, how many making a public board private would
+	// hold (card 2385), which the Share window asks about before the switch.
 	const notes = seesAddresses ? webhookShareNotes(board) : null;
 	const members = db.select({
 		userId: boardMembers.userId,
@@ -59,7 +61,12 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	.all()
 	.map((team) => (notes ? { ...team, stopsWebhooks: notes.byTeam.get(team.teamId) ?? 0 } : team));
 
-	return json({ members, teams: teamAccess, isPublic: board.isPublic, ...(notes ? { heldWebhooks: notes.held } : {}) });
+	return json({
+		members,
+		teams: teamAccess,
+		isPublic: board.isPublic,
+		...(notes ? { heldWebhooks: notes.held, privateStopsWebhooks: notes.privateStops } : {})
+	});
 };
 
 /** Who a board is shared with: one person, or every member of a team. */

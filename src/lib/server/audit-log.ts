@@ -23,18 +23,23 @@
  *
  * What stays each route's own is how a stored time is answered: v1 answers
  * ISO 8601 through `v1-json`, the page the stored form (`v1-json.ts`).
+ *
+ * Both page by a cursor as well as by `offset` (card 2387): `before`, the
+ * last entry held. Paged by `offset`, an entry written between two pages
+ * pushed every older one down a place, and the next page began with one
+ * already shown.
  */
 import { error } from '@sveltejs/kit';
 import { and, desc, eq, gte, like, lte, notLike, sql } from 'drizzle-orm';
 import { db, sqlite } from './db';
 import { activityLog } from './db/schema';
 import { actionCondition, canonicalAction, readSource } from './logActivity';
-import { readLimit, readOffset, readQueryDate, readQueryId, refuseReversedRange } from './request-body';
+import { pathId, readLimit, readOffset, readQueryDate, readQueryId, refuseReversedRange } from './request-body';
 import type { Stamp } from '$lib/timestamps';
 
 /** Default page size. Stated here, in the docs, and in every response. */
 export const AUDIT_DEFAULT_LIMIT = 100;
-/** Hard ceiling on a page. A caller wanting more pages through with `offset`. */
+/** Hard ceiling on a page. A caller wanting more pages through with `before` (or `offset`). */
 export const AUDIT_MAX_LIMIT = 500;
 
 /** The filters and the page of one request, as `readAuditParams` read them. */
@@ -48,7 +53,31 @@ export type AuditLogParams = {
 	to?: Stamp;
 	limit: number;
 	offset: number;
+	/** The last entry the caller holds (card 2387): the page is the entries older than it. */
+	before?: AuditCursor;
 };
+
+/** An entry's place in the log's order: its time, in the stored form, and its id. */
+export type AuditCursor = { createdAt: Stamp; id: number };
+
+/** What a `before` that is not a cursor is answered, in v1's style. */
+export const AUDIT_BEFORE_SAYS = "before must be an entry's createdAt and id, as 2026-10-21T09:00:00Z,1234";
+
+/**
+ * `before`: the `createdAt` and `id` of the last entry the caller holds,
+ * joined by a comma, as the route answered them, `2026-10-21T09:00:00.000Z,1234`
+ * on v1 and `2026-10-21 09:00:00,1234` on the page's route. The time is read
+ * as `from` is, but a date alone names no entry and is refused with the rest.
+ * Not sent, or empty, is no cursor.
+ */
+export function readBefore(value: string | null): AuditCursor | undefined {
+	if (value === null || value === '') return undefined;
+	const comma = value.lastIndexOf(',');
+	const time = comma < 0 ? '' : value.slice(0, comma);
+	if (!/\d[T ]\d/.test(time)) throw error(400, AUDIT_BEFORE_SAYS);
+	const createdAt = readQueryDate(time, 'before', 'lower', AUDIT_BEFORE_SAYS)!;
+	return { createdAt, id: pathId(value.slice(comma + 1), 'entry', AUDIT_BEFORE_SAYS) };
+}
 
 /**
  * The query string of either route, read, or a 400 that names what is wrong.
@@ -65,6 +94,9 @@ export type AuditLogParams = {
  *   ?limit=N         — a whole number held between 1 and 500, default 100:
  *                      -1 is 1, and not every row; text is the default
  *   ?offset=N        — rounded down, and 0 or more
+ *   ?before=T,N      — the `createdAt` and `id` of the last entry held, or
+ *                      `400 before must be an entry's createdAt and id, …`
+ *                      (`readBefore`, card 2387)
  *
  * The three ids are read as an id in the path is read: `2.5` and `abc` are
  * `400 Invalid <thing> ID`, where they matched nothing, or a row they did not
@@ -89,12 +121,13 @@ export function readAuditParams(search: URLSearchParams): AuditLogParams {
 	refuseReversedRange(from, to);
 	const limit = readLimit(search.get('limit'), { max: AUDIT_MAX_LIMIT, fallback: AUDIT_DEFAULT_LIMIT });
 	const offset = readOffset(search.get('offset'));
+	const before = readBefore(search.get('before'));
 
 	if (source && source !== 'ui' && source !== 'api') {
 		throw error(400, 'source must be "ui" or "api"');
 	}
 
-	return { boardId, userId, cardId, action, source: (source || null) as 'ui' | 'api' | null, from, to, limit, offset };
+	return { boardId, userId, cardId, action, source: (source || null) as 'ui' | 'api' | null, from, to, limit, offset, before };
 }
 
 /**
@@ -106,7 +139,7 @@ export function readAuditParams(search: URLSearchParams): AuditLogParams {
  * and what an `api:` in front of the action filter means (see the top).
  */
 export function queryAuditLog(params: AuditLogParams, { canonical }: { canonical: boolean }) {
-	const { boardId, userId, cardId, action, source, from, to, limit, offset } = params;
+	const { boardId, userId, cardId, action, source, from, to, limit, offset, before } = params;
 
 	const conditions = [];
 	if (boardId !== undefined) conditions.push(eq(activityLog.boardId, boardId));
@@ -139,6 +172,13 @@ export function queryAuditLog(params: AuditLogParams, { canonical }: { canonical
 	if (source === 'ui') conditions.push(notLike(activityLog.action, 'api:%'));
 	if (from) conditions.push(gte(activityLog.createdAt, from));
 	if (to) conditions.push(lte(activityLog.createdAt, to));
+	// The entries older than the cursor, in the order the page is read in
+	// (card 2387). Written as a row value, SQLite answers it from the index
+	// the order reads (`idx_activity_log_created_at`, and the board's and the
+	// person's), each of which ends in the id; written as `<` OR (`=` AND `<`)
+	// it scanned the whole index. It is one more filter, so `total` and `hasMore`
+	// count from the cursor: what this page and the pages after it can give.
+	if (before) conditions.push(sql`(${activityLog.createdAt}, ${activityLog.id}) < (${before.createdAt}, ${before.id})`);
 
 	const where = conditions.length > 0 ? and(...conditions) : undefined;
 

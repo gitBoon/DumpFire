@@ -470,4 +470,72 @@ describe('the card window’s dependency search says when it fails, and its sear
 		await settle();
 		expect(rows(target)).toBe(1);
 	});
+
+	// Card 2386: the picker's 250 ms timer was cleared only by the next keystroke, so a
+	// search typed just before the window closed was still sent, as card 2328 found on the plan page.
+	describe('a search still waiting is not sent once the window closes or its card changes (card 2386)', () => {
+		it('the window closed within 250 ms of typing sends no search', async () => {
+			answering(async () => answer(200, { blockedBy: [], blocks: [] }));
+			const target = await opened();
+			type(pick(target), 'Docs');
+			unmount(drawn!.component);
+			drawn!.target.remove();
+			drawn = null;
+			await searched();
+
+			expect(searches()).toEqual([]);
+		});
+
+		it('the card changed under the window within 250 ms sends no search, and is not left "Searching…"', async () => {
+			answering(async () => answer(200, { blockedBy: [], blocks: [] }));
+			const { props, target } = draw(new WindowEdits());
+			await settle();
+			target.querySelector<HTMLButtonElement>('.advanced-toggle')!.click();
+			flushSync();
+			type(pick(target), 'Docs');
+			expect(target.textContent).toContain('Searching…');
+
+			props.card = { ...props.card, id: 8 } as CardType;
+			flushSync();
+			await searched();
+			expect(searches()).toEqual([]);
+			expect(target.textContent).not.toContain('Searching…');
+		});
+
+		// The review of card 2386: the cleanup is keyed on the card's id, not the card. Each read
+		// of the board hands the window its card afresh, as a new object with the same id.
+		it('the same card handed in afresh while typing does not stop the search', async () => {
+			answering(async () => answer(200, { blockedBy: [], blocks: [] }), async () => answer(200, [found(9, 'Docs')]));
+			const { props, target } = draw(new WindowEdits());
+			await settle();
+			target.querySelector<HTMLButtonElement>('.advanced-toggle')!.click();
+			flushSync();
+			type(pick(target), 'Docs');
+
+			props.card = { ...props.card, title: 'Plan, read again' } as CardType;
+			flushSync();
+			await searched();
+			expect(searches()).toEqual(['/api/cards/search?q=Docs&exclude=7']);
+			expect(results(target)).toEqual(['Docs']);
+		});
+
+		// The review of card 2386: what the box held, and what it found, were searched leaving out
+		// the card before (`exclude=7`), so they are not left in the picker for the next card.
+		it('the card changed with the picker open empties the box and the results found for the card before', async () => {
+			answering(async () => answer(200, { blockedBy: [], blocks: [] }), async () => answer(200, [found(9, 'Docs')]));
+			const { props, target } = draw(new WindowEdits());
+			await settle();
+			target.querySelector<HTMLButtonElement>('.advanced-toggle')!.click();
+			flushSync();
+			type(pick(target), 'Docs');
+			await searched();
+			expect(results(target)).toEqual(['Docs']);
+
+			props.card = { ...props.card, id: 8 } as CardType;
+			flushSync();
+			await settle();
+			expect(target.querySelector<HTMLInputElement>('.dep-picker-input')!.value).toBe('');
+			expect(results(target)).toEqual([]);
+		});
+	});
 });

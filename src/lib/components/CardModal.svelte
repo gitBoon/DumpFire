@@ -783,6 +783,25 @@
 		}, 250);
 	}
 
+	// A search still waiting when the window closes, or when its card changes
+	// under it, is not sent, and one already out is not shown (card 2386), as
+	// the plan page's picker clears its own (card 2328). Keyed on the card's id,
+	// so the cleanup runs for either. What the box held and what it found were
+	// searched leaving out the card before (`exclude`), so they go too (the
+	// review of card 2386); the picker stays open, empty, for the new card.
+	$effect(() => {
+		void windowCardId;
+		return () => {
+			if (pickerTimer) clearTimeout(pickerTimer);
+			pickerTimer = null;
+			pickerSeq++;
+			pickerSearching = false;
+			pickerQuery = '';
+			pickerResults = [];
+			pickerError = '';
+		};
+	});
+
 	/**
 	 * Read the card's comments. The window's own reads (as it opens, and the
 	 * tab opened on none) say "Loading comments..." while they wait; a live

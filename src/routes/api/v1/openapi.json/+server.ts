@@ -292,6 +292,10 @@ const spec = {
 			'Each sent nothing for the milestone, and the column delete, the clear and the purge no card.deleted either. A card deleted with its own board (the board deleted, or a sub-board under a deleted card) still sends nothing: ' +
 			'the board\'s log and webhooks are deleted with it. **A webhook whose events list is empty receives these from this release.** ' +
 			'For a card deleted for good, card.deleted and milestone.card_removed are separate deliveries and may arrive in either order: treat a milestone.card_removed for a card unknown to the receiver, or already deleted, as harmless. ' +
+			'(104) GET /api/v1/audit-log takes an optional before, the createdAt and id of the last entry the caller holds joined by a comma (2026-10-21T09:00:00.000Z,1234), ' +
+			'and answers the entries older than it, newest first: an entry written between two pages is not given twice, where paging by offset gave the next page one already given for each entry written since. ' +
+			'With before, total counts the entries the filters find older than it and hasMore says whether any follow the page; offset still applies, from the cursor. ' +
+			'A before that is not a timestamp and an id is 400 "before must be an entry\'s createdAt and id, as 2026-10-21T09:00:00Z,1234". Without it every answer is as it was. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -5432,7 +5436,8 @@ const spec = {
 				description:
 					'Returns activity log entries from every board, newest first, and by id within a second, a page at a time. Administrators only. ' +
 					'The filters all apply together. A page holds 100 entries unless `limit` says otherwise, and 500 at most: ' +
-					'read `pagination.hasMore`, and ask for the next page with `offset`, before taking a page for the whole answer.',
+					'read `pagination.hasMore`, and ask for the next page with `before` (or `offset`), before taking a page for the whole answer. ' +
+					'`before` names the last entry you hold, so entries written while you page are not given twice (item 104).',
 				operationId: 'getAuditLog',
 				parameters: [
 					{
@@ -5493,7 +5498,17 @@ const spec = {
 						name: 'offset',
 						in: 'query',
 						schema: { type: 'integer', default: 0, minimum: 0 },
-						description: 'Entries to skip, for the pages after the first: rounded down, and less than 0 is read as 0. A negative offset was echoed until 2026-10-14.'
+						description: 'Entries to skip, for the pages after the first: rounded down, and less than 0 is read as 0. A negative offset was echoed until 2026-10-14. ' +
+							'Each entry written after the first page moves every later page down by one, so a page asked by offset can begin with an entry already given: page with `before` instead. With `before`, counted from the cursor.'
+					},
+					{
+						name: 'before',
+						in: 'query',
+						schema: { type: 'string', example: '2026-10-21T09:00:00.000Z,1234' },
+						description:
+							'The `createdAt` and `id` of the last entry you hold, joined by a comma: the page is the entries older than it, newest first, so entries written while you page are not given twice. ' +
+							'The time is read as `from` is, but a date alone names no entry. With it, `total` counts the entries the filters find older than it and `hasMore` says whether any follow this page. ' +
+							'Anything else is 400 `before must be an entry\'s createdAt and id, as 2026-10-21T09:00:00Z,1234`. Since 2026-10-14 (item 104).'
 					}
 				],
 				responses: {
@@ -5511,8 +5526,8 @@ const spec = {
 												limit: { type: 'integer', description: 'The page size that was applied' },
 												offset: { type: 'integer' },
 												count: { type: 'integer', description: 'Entries in this page' },
-												total: { type: 'integer', description: 'Entries that match the filters, in all' },
-												hasMore: { type: 'boolean', description: 'true when entries that match lie beyond this page' },
+												total: { type: 'integer', description: 'Entries that match the filters, in all; with `before`, those older than it' },
+												hasMore: { type: 'boolean', description: 'true when entries that match lie beyond this page (with `before`, beyond it and this page)' },
 												defaultLimit: { type: 'integer', description: 'The page size when no limit is sent: 100' },
 												maxLimit: { type: 'integer', description: 'The largest page size: 500' }
 											},
@@ -5525,7 +5540,7 @@ const spec = {
 						}
 					},
 					'400': {
-						description: 'source is neither ui nor api, boardId, userId or cardId is not a whole number of 1 or more (`Invalid board ID`), from or to is not a date or a timestamp (`from is not a date`), or from is after to ("`from` is after `to`", item 74)',
+						description: 'source is neither ui nor api, boardId, userId or cardId is not a whole number of 1 or more (`Invalid board ID`), from or to is not a date or a timestamp (`from is not a date`), from is after to ("`from` is after `to`", item 74), or before is not an entry\'s createdAt and id (item 104)',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'source must be "ui" or "api"' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },

@@ -181,3 +181,116 @@ describe('the two audit routes, one reader (card 2294)', () => {
 		}
 	});
 });
+
+// Card 2387: both routes paged by `offset` alone, newest first, so each entry written
+// between two pages pushed every older one down a place and the next page began with
+// one already given. `before`, the last entry held, pages by (createdAt, id) instead.
+describe('the two audit routes page by a cursor, the last entry held (card 2387)', () => {
+	type Row = { id: number; createdAt: string };
+	const ids = (rows: Row[]) => rows.map((row) => row.id);
+	const cursor = (row: Row) => encodeURIComponent(`${row.createdAt},${row.id}`);
+
+	it.each(ROUTES)('%s: an entry written between two pages is not given twice with before, where offset gave one again', async (route) => {
+		const w = world();
+		const read = async (query: string) => {
+			const res = await api('GET', `${route}?limit=2${query}`, { user: w.admin });
+			expect(res.status, JSON.stringify(res.body)).toBe(200);
+			return res.body as { data: Row[]; pagination: Record<string, unknown> };
+		};
+
+		const first = await read('');
+		expect(ids(first.data)).toEqual([w.rows[4].id, w.rows[3].id]);
+		// Someone works on Alpha's card meanwhile.
+		db.insert(activityLog).values({ boardId: w.A.board.id, cardId: w.a.id, userId: w.owner.id, action: 'card_moved', source: 'ui', createdAt: '2026-10-06 09:00:00' }).run();
+
+		const byOffset = await read('&offset=2');
+		expect(ids(byOffset.data)).toEqual([w.rows[3].id, w.rows[2].id]);
+
+		const second = await read(`&before=${cursor(first.data[1])}`);
+		expect(ids(second.data)).toEqual([w.rows[2].id, w.rows[1].id]);
+		// The cursor is one more filter: total is what lies older than it, and hasMore whether any follows this page.
+		expect(second.pagination).toMatchObject({ offset: 0, count: 2, total: 3, hasMore: true });
+
+		const last = await read(`&before=${cursor(second.data[1])}`);
+		expect(ids(last.data)).toEqual([w.rows[0].id]);
+		expect(last.pagination).toMatchObject({ count: 1, total: 1, hasMore: false });
+		// An offset still applies, counted from the cursor.
+		expect(ids((await read(`&before=${cursor(first.data[1])}&offset=1`)).data)).toEqual([w.rows[1].id, w.rows[0].id]);
+	});
+
+	it('a page that ends inside one second goes on from the entry after it by id, on both routes, with the filters', async () => {
+		const w = world();
+		const same = [1, 2, 3, 4].map(() =>
+			db.insert(activityLog).values({ boardId: w.B.board.id, cardId: w.b.id, userId: w.owner.id, action: 'card_moved', source: 'ui', createdAt: '2026-10-07 12:00:00' }).returning().get()
+		);
+
+		const { internal, v1 } = await both(`?boardId=${w.B.board.id}&limit=2`, w.admin);
+		expect(ids(internal.data)).toEqual([same[3].id, same[2].id]);
+		const next = await both(`?boardId=${w.B.board.id}&limit=2&before=${cursor(internal.data[1])}`, w.admin);
+		// The page's route answers the stored form, v1 ISO 8601: each takes its own back.
+		const nextV1 = await both(`?boardId=${w.B.board.id}&limit=2&before=${cursor(v1.data[1])}`, w.admin);
+		for (const page of [next.internal, next.v1, nextV1.internal, nextV1.v1]) {
+			expect(ids(page.data)).toEqual([same[1].id, same[0].id]);
+			expect(page.pagination).toMatchObject({ total: 3, hasMore: true });
+		}
+	});
+
+	it.each([
+		['abc'],
+		['2026-10-21'],
+		['2026-10-21,5'],
+		['2026-10-21T09:00:00Z'],
+		['2026-10-21T09:00:00Z,0'],
+		['2026-10-21T09:00:00Z,abc'],
+		['2026-10-21T09:00:00Z,2.5'],
+		['2026-13-01 09:00:00,5'],
+		[',5']
+	])('refuse before=%s in the same words on both', async (value) => {
+		const w = world();
+		for (const route of ROUTES) {
+			const res = await api('GET', `${route}?before=${encodeURIComponent(value)}`, { user: w.admin });
+			expect([route, res.status, res.body]).toEqual([route, 400, { message: "before must be an entry's createdAt and id, as 2026-10-21T09:00:00Z,1234" }]);
+		}
+		// Sent empty, it is no cursor.
+		const { internal } = await both('?before=', w.admin);
+		expect(internal.pagination.total).toBe(5);
+	});
+
+	it('is answered from the log’s time index by the row value, alone, with a board and with a person, never by a scan', async () => {
+		const admin = makeUser({ username: 'auditor', role: 'admin' });
+		/** The statements the reader prepares for a page with a cursor, each as SQLite's planner would answer it. */
+		const plans = async (query: string) => {
+			const prepared: string[] = [];
+			const prepare = sqlite.prepare.bind(sqlite);
+			const spy = vi.spyOn(sqlite, 'prepare').mockImplementation(((source: string) => {
+				prepared.push(source);
+				return prepare(source);
+			}) as typeof sqlite.prepare);
+			try {
+				const res = await api('GET', `/api/v1/audit-log?${query}`, { user: admin });
+				expect(res.status).toBe(200);
+			} finally {
+				spy.mockRestore();
+			}
+			return prepared
+				.filter((source) => /from "activity_log"/i.test(source))
+				.map((source) => {
+					const params = (source.match(/\?/g) ?? []).map(() => 1);
+					const plan = sqlite.prepare(`EXPLAIN QUERY PLAN ${source}`).all(...params) as { detail: string }[];
+					return plan.map((step) => step.detail).join(' | ');
+				});
+		};
+		const before = encodeURIComponent('2026-10-21T09:00:00Z,1234');
+
+		const plain = await plans(`before=${before}`);
+		const board = await plans(`boardId=3&before=${before}`);
+		const person = await plans(`userId=${admin.id}&before=${before}`);
+		// The page, and its COUNT.
+		expect(plain).toHaveLength(2);
+		expect(plain[0]).toMatch(/idx_activity_log_created_at \(\(created_at,rowid\)<\(\?,\?\)\)/);
+		expect(board[0]).toMatch(/idx_activity_log_board_created \(board_id=\? AND \(created_at,rowid\)<\(\?,\?\)\)/);
+		// One person's: the person's own index, as the plan and the documents say (the review).
+		expect(person[0]).toMatch(/idx_activity_log_user_id_created_at \(user_id=\? AND \(created_at,rowid\)<\(\?,\?\)\)/);
+		for (const plan of [...plain, ...board, ...person]) expect(plan).not.toMatch(/\bSCAN\b/);
+	});
+});
