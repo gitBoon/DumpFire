@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { keepTab, takeFocus } from '$lib/dialog-focus';
+
 	let {
 		title = 'Are you sure?',
 		message = '',
@@ -21,7 +23,6 @@
 
 	let dialog: HTMLDivElement;
 	let cancelButton: HTMLButtonElement;
-	let confirmButton: HTMLButtonElement;
 
 	// Cancel takes the focus as the dialog opens, so Enter straight after it
 	// cancels rather than pressing the page's button behind it again. As it
@@ -29,37 +30,16 @@
 	// if that is still in the page and the focus is then on nothing: a card
 	// window the confirm opened (Cannot Complete's Open Card) focuses its
 	// title in a microtask, and keeps it. An `$effect`, not `onMount`, so any
-	// runtime runs it (card 2353).
-	$effect(() => {
-		const opener = document.activeElement;
-		cancelButton.focus();
-		return () => {
-			setTimeout(() => {
-				if (opener instanceof HTMLElement && opener !== document.body && opener.isConnected && document.activeElement === document.body) {
-					opener.focus();
-				}
-			}, 0);
-		};
-	});
+	// runtime runs it (card 2353). The rules are `$lib/dialog-focus`'s, which
+	// the admin page's own dialogs share (card 2362).
+	$effect(() => takeFocus(cancelButton));
 
 	function handleKeydown(e: KeyboardEvent) {
 		if (e.key === 'Escape') onCancel();
 		// Tab and Shift+Tab stay on the two buttons; from outside the dialog
 		// (the page behind, after a click on the overlay) Tab comes back to
 		// Cancel. Tab from Cancel to the confirm button is the browser's own.
-		if (e.key === 'Tab') {
-			const at = document.activeElement;
-			if (!dialog.contains(at)) {
-				e.preventDefault();
-				cancelButton.focus();
-			} else if (!e.shiftKey && at === confirmButton) {
-				e.preventDefault();
-				cancelButton.focus();
-			} else if (e.shiftKey && at === cancelButton) {
-				e.preventDefault();
-				confirmButton.focus();
-			}
-		}
+		keepTab(e, dialog, cancelButton);
 	}
 </script>
 
@@ -90,7 +70,6 @@
 			<button
 				class={confirmDanger ? 'btn-confirm-danger' : 'btn-primary'}
 				onclick={onConfirm}
-				bind:this={confirmButton}
 			>
 				{confirmText}
 			</button>

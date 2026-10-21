@@ -25,8 +25,8 @@
 		milestone: PageData['summary']['milestone'];
 		/** The page's: true while a change to the goal is being saved. */
 		busy: boolean;
-		/** The page's one PATCH path for every change to the goal. */
-		mutate: (body: Record<string, unknown>) => Promise<void>;
+		/** The page's one PATCH path for every change to the goal: true once it is saved. */
+		mutate: (body: Record<string, unknown>) => Promise<boolean>;
 		/** The page's: whether the card picker is open. */
 		picking: boolean;
 	} = $props();
@@ -101,9 +101,9 @@
 		if (pickTimer) clearTimeout(pickTimer);
 	});
 
+	/** A card refused or not answered leaves the search and its results as they were, to try again (card 2351). */
 	async function attachCard(cardId: number) {
-		await mutate({ cardId, attach: true });
-		clearPick();
+		if (await mutate({ cardId, attach: true })) clearPick();
 	}
 </script>
 

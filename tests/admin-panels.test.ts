@@ -23,6 +23,11 @@
  * panels (the mail panel reached through `bind:this`, the invite link and
  * the reset notice bound through it) and what it draws for each. Named
  * admin-backup-panels.test.ts until it covered every panel.
+ *
+ * Card 2362: the page's confirm and the Archived page's are the app's
+ * `ConfirmModal`, and the Import Database dialog and the Connect box hold
+ * the focus through `$lib/dialog-focus`; each is mounted here and its focus,
+ * Tab and Escape driven.
  */
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -37,6 +42,8 @@ import SmtpPanel from '$lib/components/admin/SmtpPanel.svelte';
 import DangerZonePanel from '$lib/components/admin/DangerZonePanel.svelte';
 
 import AdminPage from '../src/routes/admin/+page.svelte';
+import BackupRestorePanel from '$lib/components/admin/BackupRestorePanel.svelte';
+import ArchivedPage from '../src/routes/archived/+page.svelte';
 
 // The page's data is read again after a write; here it is only counted. The
 // page's Toast listens for navigations, which there are none of here.
@@ -330,6 +337,108 @@ describe('the Scheduled Backups panel, mounted', () => {
 		expect(window.open).toHaveBeenCalledWith('https://accounts.google.com/o/oauth2/v2/auth?state=s1', '_blank', 'width=600,height=700');
 		expect([...target.querySelectorAll('h2')].map((heading) => heading.textContent)).toContain('🔗 Connect Google Drive');
 		expect(target.querySelector<HTMLInputElement>('input[placeholder="Paste the whole address, starting http://localhost/?state=…"]')!.disabled).toBe(false);
+	});
+
+	// Card 2362: the box took no focus and answered no Escape.
+	it('gives the Connect box’s Cancel the focus, and closes the box on Escape (card 2362)', async () => {
+		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn() });
+		await settle();
+		const opener = buttonNamed(target, '🔗 Connect');
+		opener.focus();
+		opener.click();
+		await settle();
+		const box = [...target.querySelectorAll<HTMLElement>('.confirm-modal')].find((each) => each.querySelector('h2')?.textContent === '🔗 Connect Google Drive')!;
+		expect(document.activeElement).toBe(buttonNamed(box, 'Cancel'));
+
+		escape();
+		expect(target.textContent).not.toContain('Connect Google Drive');
+		await settle();
+		expect(document.activeElement).toBe(opener);
+	});
+});
+
+/** A Tab (or Shift+Tab) pressed where the focus is, bubbling as a real one does; gives back whether its default was taken. */
+function tab(shiftKey = false): boolean {
+	const key = new KeyboardEvent('keydown', { key: 'Tab', shiftKey, bubbles: true, cancelable: true });
+	(document.activeElement ?? document.body).dispatchEvent(key);
+	flushSync();
+	return key.defaultPrevented;
+}
+
+/** Escape pressed, as the window hears it. */
+function escape() {
+	window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+	flushSync();
+}
+
+// Card 2362: the import's warning and choices were a dialog of the panel's own, with no focus and no Escape.
+describe('the Import Database dialog, mounted (card 2362)', () => {
+	it('gives Cancel the focus, keeps Tab on its own stops, closes on Escape opening no file picker, and gives the focus back to Import', async () => {
+		const target = draw(BackupRestorePanel, { importOutsideDefault: 'keep' });
+		const opener = target.querySelector<HTMLButtonElement>('.btn-backup.import')!;
+		const picker = vi.spyOn(target.querySelector<HTMLInputElement>('.hidden-input')!, 'click');
+		opener.focus();
+		opener.click();
+		flushSync();
+
+		const dialog = document.querySelector<HTMLElement>('.confirm-modal')!;
+		const cancel = buttonNamed(dialog, 'Cancel');
+		const confirmButton = buttonNamed(dialog, 'Confirm');
+		const chosen = dialog.querySelector<HTMLInputElement>('input[type="radio"]:checked')!;
+		expect(chosen.value).toBe('keep');
+		expect(document.activeElement).toBe(cancel);
+		// From its last stop round to its first, the chosen way to restore, and back.
+		confirmButton.focus();
+		expect(tab()).toBe(true);
+		expect(document.activeElement).toBe(chosen);
+		expect(tab(true)).toBe(true);
+		expect(document.activeElement).toBe(confirmButton);
+		// From the page behind, back to Cancel; Tab from Cancel to Confirm is the browser's own.
+		opener.focus();
+		expect(tab()).toBe(true);
+		expect(document.activeElement).toBe(cancel);
+		expect(tab()).toBe(false);
+
+		escape();
+		expect(document.querySelector('.confirm-modal')).toBeNull();
+		await settle();
+		expect(document.activeElement).toBe(opener);
+		expect(picker).not.toHaveBeenCalled();
+	});
+});
+
+// Card 2362: the Archived page's confirm was its own, with no focus and no Escape.
+describe('the Archived page’s confirm, mounted (card 2362)', () => {
+	const archivedData = {
+		archivedCards: [
+			{ id: 9, title: 'Old idea', description: '', priority: 'low', archivedAt: '2026-10-20 09:00:00', createdAt: '2026-10-01 09:00:00', boardName: 'Website', boardEmoji: '📋', boardId: 3 }
+		],
+		isAdmin: true
+	};
+
+	it('asks with the app’s confirm dialog: Cancel has the focus, Escape closes it deleting nothing and gives the focus back; Delete Forever deletes', async () => {
+		answer = (what) => (what === 'DELETE /api/cards/9?permanent=true' ? Response.json({ success: true }) : undefined);
+		const target = draw(ArchivedPage, { data: archivedData });
+		const opener = target.querySelector<HTMLButtonElement>('button[title="Delete permanently"]')!;
+		opener.focus();
+		opener.click();
+		flushSync();
+
+		const dialog = document.querySelector<HTMLElement>('.confirm-modal')!;
+		expect(dialog.querySelector('h3')?.textContent).toBe('Delete Permanently');
+		expect(document.activeElement).toBe(buttonNamed(dialog, 'Cancel'));
+		escape();
+		expect(document.querySelector('.confirm-modal')).toBeNull();
+		await settle();
+		expect(document.activeElement).toBe(opener);
+		expect(asked('DELETE /api/cards/9?permanent=true')).toHaveLength(0);
+
+		opener.click();
+		flushSync();
+		buttonNamed(document.querySelector<HTMLElement>('.confirm-modal')!, 'Delete Forever').click();
+		await settle();
+		expect(asked('DELETE /api/cards/9?permanent=true')).toHaveLength(1);
+		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
 	});
 });
 
@@ -716,6 +825,29 @@ describe('the admin page, mounted with its panels', () => {
 		buttonNamed(target, 'Close').click();
 		flushSync();
 		expect(target.querySelector('[role="alertdialog"]')).toBeNull();
+	});
+
+	// Card 2362: the page's confirm was its own, with no focus and no Escape.
+	it('asks with the app’s confirm dialog: Cancel has the focus, the warning is tied to it, and Escape closes it running nothing and gives the focus back (card 2362)', async () => {
+		const target = draw(AdminPage, { data: asSuperadmin });
+		await settle();
+		const opener = buttonNamed(target, 'Vacuum');
+		opener.focus();
+		opener.click();
+		flushSync();
+
+		const dialog = document.querySelector<HTMLElement>('.confirm-modal')!;
+		expect(dialog.querySelector('h3')?.textContent).toBe('Vacuum Database');
+		expect(document.activeElement).toBe(buttonNamed(dialog, 'Cancel'));
+		const described = document.getElementById(document.querySelector('[role="dialog"][aria-label="Vacuum Database"]')!.getAttribute('aria-describedby')!);
+		expect(described!.textContent).toBe('This rebuilds the database file to reclaim unused space. No data is changed, and ids are not reset.');
+		expect(buttonNamed(dialog, 'Confirm')).toBeDefined();
+
+		escape();
+		expect(document.querySelector('.confirm-modal')).toBeNull();
+		await settle();
+		expect(document.activeElement).toBe(opener);
+		expect(sent.filter((request) => request.what.includes('vacuum'))).toEqual([]);
 	});
 
 	it('shows an administrator who is not the superadmin no mail panel and no Reset Everything, and reads no mail settings', async () => {

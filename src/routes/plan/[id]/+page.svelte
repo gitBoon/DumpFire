@@ -66,8 +66,10 @@
 	 * since the change may have been made (card 2314: it said nothing). Each
 	 * is said above the blocks and in a toast too, which stays on screen
 	 * wherever the page is scrolled to: the ✕ that sent it may be far below.
+	 * Gives back whether the change was saved, so a block clears what was
+	 * typed only then (card 2351: it was cleared whatever came back).
 	 */
-	async function mutate(body: Record<string, unknown>) {
+	async function mutate(body: Record<string, unknown>): Promise<boolean> {
 		busy = true;
 		actionError = '';
 		const started = toasts.navigation();
@@ -85,13 +87,14 @@
 				});
 			} catch {
 				failed('No answer from the server. It is not known whether that change was saved.');
-				return;
+				return false;
 			}
 			if (!res.ok) {
 				failed(await failureMessage(res, 'That change could not be saved'));
-				return;
+				return false;
 			}
 			await invalidateAll();
+			return true;
 		} finally {
 			busy = false;
 		}
@@ -127,7 +130,13 @@
 	 * fetches the one card's context on demand instead. A refusal is said in
 	 * the server's words, and no answer as no answer (card 2314: it said
 	 * nothing, and every refusal "Could not open that card").
+	 *
+	 * Only the card opened last is opened: a read overtaken by a later one
+	 * opens nothing and says nothing, whatever it answers (card 2350: two
+	 * quick opens showed whichever answered last, the first if it was slower).
 	 */
+	let openSeq = 0;
+
 	async function openCard(ref: { kind?: string; id: number; parentCardId?: number; withheld?: boolean }) {
 		// Work on a board the viewer cannot open has nothing to open: its card
 		// would be refused them.
@@ -136,16 +145,18 @@
 		const cardId = ref.kind === 'subtask' ? ref.parentCardId : ref.id;
 		if (!cardId) return;
 
+		const seq = ++openSeq;
 		const started = toasts.navigation();
 		let res: Response;
 		try {
 			res = await fetch(`/api/cards/${cardId}/context`);
 		} catch {
-			toasts.add('No answer from the server. The card could not be opened.', 'error', started);
+			if (seq === openSeq) toasts.add('No answer from the server. The card could not be opened.', 'error', started);
 			return;
 		}
 		if (!res.ok) {
-			toasts.add(await failureMessage(res, 'That card could not be opened.'), 'error', started);
+			const words = await failureMessage(res, 'That card could not be opened.');
+			if (seq === openSeq) toasts.add(words, 'error', started);
 			return;
 		}
 		// An answer that is not the card's context (a proxy's page) was an answer, not none.
@@ -153,9 +164,10 @@
 		try {
 			ctx = await res.json();
 		} catch {
-			toasts.add("The server's answer could not be read. The card could not be opened.", 'error', started);
+			if (seq === openSeq) toasts.add("The server's answer could not be read. The card could not be opened.", 'error', started);
 			return;
 		}
+		if (seq !== openSeq) return;
 		modalCard = ctx.card;
 		modalContext = {
 			boardId: ctx.boardId,

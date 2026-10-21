@@ -13,6 +13,7 @@
 	import { answerBody, failureMessage } from '$lib/api';
 	import { sent, showToast } from '$lib/admin/send';
 	import { toasts } from '$lib/stores/toast';
+	import { holdFocus } from '$lib/dialog-focus';
 
 	/** The Scheduled Backups panel's: its settings read again, once a destination is connected. */
 	let { loadBackupConfig }: { loadBackupConfig: () => Promise<boolean> } = $props();
@@ -166,11 +167,12 @@
 </script>
 
 <!-- Google Drive OAuth code entry -->
+<!-- Cancel takes the focus, Tab stays in it and Escape is Cancel (card 2362). -->
 {#if gdriveConnecting}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<div class="modal-overlay" role="dialog" aria-modal="true">
+	<div class="modal-overlay" role="dialog" aria-modal="true" aria-label="Connect Google Drive">
 		<!-- svelte-ignore a11y_click_events_have_key_events -->
-		<div class="modal-content confirm-modal" onclick={(e) => e.stopPropagation()} role="document" style="max-width: 520px">
+		<div class="modal-content confirm-modal" onclick={(e) => e.stopPropagation()} role="document" style="max-width: 520px" use:holdFocus={{ first: '.modal-actions .btn-ghost', onEscape: closeGDriveConnect }}>
 			<h2>🔗 Connect Google Drive</h2>
 			<p style="margin-bottom: var(--space-md)">
 				{#if !gdriveAuthUrl}

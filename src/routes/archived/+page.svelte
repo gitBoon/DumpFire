@@ -10,6 +10,7 @@
 	import { theme } from '$lib/stores/theme';
 	import ThemePicker from '$lib/components/ThemePicker.svelte';
 	import Toast from '$lib/components/Toast.svelte';
+	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import { toasts } from '$lib/stores/toast';
 	import { PURGE_WARNING, cardDeleteWarning, deleteFailure, failureMessage } from '$lib/api';
 	import { parseStamp } from '$lib/timestamps';
@@ -219,20 +220,15 @@
 
 <Toast />
 
-<!-- Confirm Modal -->
+<!-- Confirm Modal: the app's, which takes the focus and answers Escape (card 2362: it was the page's own, with neither) -->
 {#if confirmState.show}
-	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<div class="modal-overlay" role="dialog" aria-modal="true" onclick={() => confirmState.show = false}>
-		<!-- svelte-ignore a11y_click_events_have_key_events -->
-		<div class="confirm-modal" onclick={(e) => e.stopPropagation()} role="document">
-			<h2>{confirmState.title}</h2>
-			<p>{confirmState.message}</p>
-			<div class="modal-actions">
-				<button class="btn-ghost" onclick={() => confirmState.show = false}>Cancel</button>
-				<button class="btn-danger" onclick={confirmState.onConfirm}>{confirmState.confirmText}</button>
-			</div>
-		</div>
-	</div>
+	<ConfirmModal
+		title={confirmState.title}
+		message={confirmState.message}
+		confirmText={confirmState.confirmText}
+		onConfirm={confirmState.onConfirm}
+		onCancel={() => (confirmState.show = false)}
+	/>
 {/if}
 
 <style>
@@ -451,36 +447,6 @@
 
 	.restore-btn { color: var(--accent-emerald) !important; }
 	.delete-btn { color: var(--accent-rose) !important; }
-
-	/* Confirm Modal */
-	.modal-overlay {
-		position: fixed;
-		top: 0; left: 0; right: 0; bottom: 0;
-		background: rgba(0, 0, 0, 0.5);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		z-index: 9999;
-		backdrop-filter: blur(4px);
-	}
-
-	.confirm-modal {
-		max-width: 420px;
-		padding: var(--space-xl);
-		border-radius: var(--radius-lg);
-		background: var(--bg-card);
-		border: 1px solid var(--glass-border);
-		box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
-	}
-
-	.confirm-modal h2 { font-size: 1.1rem; margin: 0 0 var(--space-sm); color: var(--text-primary); }
-	.confirm-modal p { font-size: 0.85rem; color: var(--text-secondary); margin: 0 0 var(--space-xl); line-height: 1.5; }
-
-	.modal-actions {
-		display: flex;
-		justify-content: flex-end;
-		gap: var(--space-md);
-	}
 
 	/* Fade in animation */
 	.animate-fade-in {

@@ -9,6 +9,7 @@
 	import type { PageData } from './$types';
 	import ThemePicker from '$lib/components/ThemePicker.svelte';
 	import Toast from '$lib/components/Toast.svelte';
+	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	// The superadmin's panels (card 2281, slice C1a; the mail panel slice C1b), each drawn in the markup's isSuperadmin blocks alone.
 	import AppUrlPanel from '$lib/components/admin/AppUrlPanel.svelte';
 	import BackupRestorePanel from '$lib/components/admin/BackupRestorePanel.svelte';
@@ -126,20 +127,15 @@
 	</main>
 </div>
 
-<!-- Confirm dialog -->
+<!-- Confirm dialog: the app's, which takes the focus and answers Escape (card 2362: it was the page's own, with neither) -->
 {#if confirmAction.show}
-	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<div class="modal-overlay" role="dialog" aria-modal="true">
-		<!-- svelte-ignore a11y_click_events_have_key_events -->
-		<div class="modal-content confirm-modal" onclick={(e) => e.stopPropagation()} role="document">
-			<h2>{confirmAction.title}</h2>
-			<p>{confirmAction.message}</p>
-			<div class="modal-actions">
-				<button class="btn-ghost" onclick={() => (confirmAction.show = false)}>Cancel</button>
-				<button class="btn-danger-solid" onclick={async () => { confirmAction.show = false; await confirmAction.action(); }}>Confirm</button>
-			</div>
-		</div>
-	</div>
+	<ConfirmModal
+		title={confirmAction.title}
+		message={confirmAction.message}
+		confirmText="Confirm"
+		onConfirm={async () => { confirmAction.show = false; await confirmAction.action(); }}
+		onCancel={() => (confirmAction.show = false)}
+	/>
 {/if}
 
 <!-- What a reset has to say: that it failed, or what it could not move. No way out of it but its one button. -->
@@ -237,14 +233,15 @@
 	/* Backup & Restore's warning, and the reset dialog's */
 	.admin-page :global(.warning-text) { color: var(--accent-amber); font-weight: 600; }
 
-	.btn-danger-solid, .admin-page :global(.btn-danger-solid) {
+	/* The panels' (the page's own confirm is the app's dialog since card 2362) */
+	.admin-page :global(.btn-danger-solid) {
 		padding: var(--space-sm) var(--space-lg); border-radius: var(--radius-sm);
 		background: var(--accent-rose); color: white; font-weight: 600;
 		font-size: 0.82rem; border: none; white-space: nowrap; cursor: pointer;
 		font-family: var(--font-family);
 		transition: all 0.2s ease;
 	}
-	.btn-danger-solid:hover, .admin-page :global(.btn-danger-solid:hover) { background: #e11d48; transform: scale(1.02); }
+	.admin-page :global(.btn-danger-solid:hover) { background: #e11d48; transform: scale(1.02); }
 
 	.confirm-modal, .admin-page :global(.confirm-modal) { max-width: 420px; }
 	.confirm-modal h2, .admin-page :global(.confirm-modal h2) { font-size: 1.1rem; margin-bottom: var(--space-sm); }

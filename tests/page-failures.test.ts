@@ -3150,8 +3150,11 @@ describe('the toast, src/lib/stores/toast.ts and src/lib/components/Toast.svelte
 		]) {
 			for (const below of zIndexes(dialog)) expect(toast, dialog).toBeGreaterThan(below);
 		}
-		// The archived page's own confirmation is one of them, at 9999.
-		expect(zIndexes('src/routes/archived/+page.svelte')).toContain(9999);
+		// The archived page's confirmation is the app's, ConfirmModal above (card 2362: it was its own, at 9999).
+		const archived = readFileSync(join(ROOT, 'src/routes/archived/+page.svelte'), 'utf8');
+		expect(archived).toContain('<ConfirmModal');
+		expect(archived).not.toContain('modal-overlay');
+		for (const below of zIndexes('src/routes/archived/+page.svelte')) expect(toast, 'src/routes/archived/+page.svelte').toBeGreaterThan(below);
 	});
 
 	it.each(['src/routes/admin/+page.svelte', 'src/routes/teams/+page.svelte', 'src/routes/reports/+page.svelte', 'src/routes/all/+page.svelte', 'src/routes/todo/+page.svelte'])(

@@ -8,7 +8,8 @@
   and it reads the backup settings itself as it opens. The add form and every
   edit form share one set of fields, kept here, as they were on the page, so
   only one of them is open at a time: opening one closes the other (card
-  2305). Remove asks first through the page's own confirm dialog.
+  2305). Remove asks first through the page's confirm, the app's
+  ConfirmModal (card 2362).
 -->
 <script lang="ts">
 	import { answerBody } from '$lib/api';

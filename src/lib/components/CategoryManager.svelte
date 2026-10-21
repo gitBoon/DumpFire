@@ -2,6 +2,8 @@
 	import { invalidateAll } from '$app/navigation';
 	import { COLUMN_COLORS } from '$lib/utils/constants';
 	import { drawnColour } from '$lib/colours';
+	import { deleteFailure, failureMessage } from '$lib/api';
+	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 
 	let { categories, onClose }: { categories: { id: number; name: string; color: string }[]; onClose: () => void } = $props();
 
@@ -11,21 +13,55 @@
 	let editName = $state('');
 	let editColor = $state('');
 	let loading = $state(false);
+	/**
+	 * Why the last change was not made: a refusal in the server's words, or
+	 * no answer, said under the window's header until the next change starts
+	 * (card 2358: each said nothing, and no answer left every button dead).
+	 * What was typed stays where it was typed.
+	 */
+	let error = $state('');
+
+	/**
+	 * Sends one change, and gives back whether it was made, having said why
+	 * not. `noAnswer` and `refused` finish "The category …".
+	 */
+	async function send(request: Promise<Response>, refused: string, noAnswer: string): Promise<boolean> {
+		let res: Response;
+		try {
+			res = await request;
+		} catch {
+			error = `No answer from the server. The category ${noAnswer}.`;
+			return false;
+		}
+		if (!res.ok) {
+			error = await failureMessage(res, `The category ${refused}.`);
+			return false;
+		}
+		return true;
+	}
 
 	async function createCategory() {
 		if (!newName.trim() || loading) return;
 		loading = true;
-		const res = await fetch('/api/board-categories', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ name: newName.trim(), color: newColor })
-		});
-		if (res.ok) {
-			newName = '';
-			newColor = '#6366f1';
-			await invalidateAll();
+		error = '';
+		try {
+			const made = await send(
+				fetch('/api/board-categories', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ name: newName.trim(), color: newColor })
+				}),
+				'was not created',
+				'may not have been created'
+			);
+			if (made) {
+				newName = '';
+				newColor = '#6366f1';
+				await invalidateAll();
+			}
+		} finally {
+			loading = false;
 		}
-		loading = false;
 	}
 
 	function startEdit(cat: { id: number; name: string; color: string }) {
@@ -37,26 +73,56 @@
 	async function saveEdit() {
 		if (!editingId || !editName.trim() || loading) return;
 		loading = true;
-		const res = await fetch(`/api/board-categories/${editingId}`, {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ name: editName.trim(), color: editColor })
-		});
-		if (res.ok) {
-			editingId = null;
-			await invalidateAll();
+		error = '';
+		const id = editingId;
+		try {
+			const saved = await send(
+				fetch(`/api/board-categories/${id}`, {
+					method: 'PUT',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ name: editName.trim(), color: editColor })
+				}),
+				'was not saved',
+				'may not have been saved'
+			);
+			if (saved) {
+				editingId = null;
+				await invalidateAll();
+			}
+		} finally {
+			loading = false;
 		}
-		loading = false;
 	}
 
-	async function deleteCategory(id: number) {
-		if (loading || !confirm('Are you sure you want to delete this category? Boards using it will become uncategorised.')) return;
-		loading = true;
-		const res = await fetch(`/api/board-categories/${id}`, { method: 'DELETE' });
-		if (res.ok) {
-			await invalidateAll();
+	/**
+	 * The category whose delete was pressed, while the app's confirm dialog
+	 * asks; it asked with the browser's confirm() (card 2358). Its button is
+	 * off while another change is out, so the dialog's Delete is never dead;
+	 * should one still be pressed then, the dialog closes and says why.
+	 */
+	let deleting = $state<{ id: number; name: string } | null>(null);
+
+	async function deleteCategory() {
+		if (!deleting) return;
+		if (loading) {
+			deleting = null;
+			error = 'Another change is on its way. Delete the category again once it is answered.';
+			return;
 		}
-		loading = false;
+		const { id } = deleting;
+		deleting = null;
+		loading = true;
+		error = '';
+		try {
+			const failure = await deleteFailure(() => fetch(`/api/board-categories/${id}`, { method: 'DELETE' }), 'category');
+			if (failure) {
+				error = failure;
+				return;
+			}
+			await invalidateAll();
+		} finally {
+			loading = false;
+		}
 	}
 </script>
 
@@ -67,6 +133,10 @@
 			<h2>Manage Categories</h2>
 			<button class="close-btn" onclick={onClose}>×</button>
 		</header>
+
+		{#if error}
+			<div class="mgr-error" role="alert">{error}</div>
+		{/if}
 
 		<div class="cat-list">
 			{#if categories.length === 0}
@@ -93,7 +163,7 @@
 							<span class="cat-name">{cat.name}</span>
 							<div class="row-actions">
 								<button class="action-btn" title="Edit category" onclick={() => startEdit(cat)}>✎</button>
-								<button class="action-btn danger" title="Delete category" onclick={() => deleteCategory(cat.id)}>
+								<button class="action-btn danger" title="Delete category" disabled={loading} onclick={() => (deleting = { id: cat.id, name: cat.name })}>
 									<svg width="12" height="12" viewBox="0 0 14 14" fill="none">
 										<path d="M2 4h10M5 4V2.5A.5.5 0 015.5 2h3a.5.5 0 01.5.5V4m1.5 0l-.5 8a1 1 0 01-1 1h-5a1 1 0 01-1-1l-.5-8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
 									</svg>
@@ -124,6 +194,17 @@
 	</div>
 </div>
 
+<!-- After the window's overlay, so it is drawn above it. -->
+{#if deleting}
+	<ConfirmModal
+		title="Delete Category"
+		message={`"${deleting.name}" will be deleted. Boards using it will become uncategorised.`}
+		confirmText="Delete"
+		onConfirm={deleteCategory}
+		onCancel={() => (deleting = null)}
+	/>
+{/if}
+
 <style>
 	.cat-mgr {
 		max-width: 480px; padding: 0; display: flex; flex-direction: column; overflow: hidden;
@@ -136,6 +217,14 @@
 	.mgr-header h2 { font-size: 1.1rem; margin: 0; }
 	.close-btn { background: none; border: none; font-size: 1.5rem; color: var(--text-tertiary); cursor: pointer; padding: 0 4px; line-height: 1; }
 	.close-btn:hover { color: var(--text-primary); }
+
+	/* A change refused or not answered, in the app's error style. */
+	.mgr-error {
+		margin: var(--space-md) var(--space-xl) 0; padding: 8px 12px;
+		font-size: 0.8rem; line-height: 1.4; border-radius: var(--radius-sm);
+		background: rgba(244, 63, 94, 0.1); color: var(--accent-rose);
+		border: 1px solid rgba(244, 63, 94, 0.25);
+	}
 
 	.cat-list {
 		padding: var(--space-md) var(--space-xl); max-height: 50vh; overflow-y: auto;
