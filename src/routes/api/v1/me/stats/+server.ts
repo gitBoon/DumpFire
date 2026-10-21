@@ -68,7 +68,8 @@ export const GET: RequestHandler = async ({ locals }) => {
 	// there. `null` is an administrator, who opens every board. A caller who
 	// opens none is answered 0 and null without the two queries: SQLite would
 	// take the empty `IN ()` this builds, so the early return only saves the
-	// queries and keeps the empty list out of them.
+	// queries and keeps the empty list out of them. Read once and handed to
+	// the recent activity below, which read it again (card 2394).
 	const boardIds = getAccessibleBoardIds(locals.user);
 	const opensNone = boardIds !== null && boardIds.length === 0;
 	const onBoardsTheyOpen = boardIds === null
@@ -124,7 +125,7 @@ export const GET: RequestHandler = async ({ locals }) => {
 	// Recent activity, on the boards the caller can open (card 2126): every
 	// entry of theirs was listed, so a board they were taken off went on
 	// showing here, card titles included.
-	const recentActivity = recentActivityFor(locals.user, 20).map(({ id, action, detail, boardId, createdAt }) => ({
+	const recentActivity = recentActivityFor(locals.user, 20, boardIds).map(({ id, action, detail, boardId, createdAt }) => ({
 		id,
 		action,
 		detail,

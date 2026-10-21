@@ -36,7 +36,8 @@ import {
 	milestones
 } from './db/schema';
 import { eq, and, or, isNull, inArray, notInArray, asc, like, ne } from 'drizzle-orm';
-import { getAccessibleBoardIds, type Actor } from './board-access';
+import type { Actor } from './board-access';
+import { resolveAccessible } from './list-access';
 import { isCompleteColumnTitle } from './card-completion';
 import { notifyCardUnblocked } from './notifications';
 import { WITHHELD_BOARD_NAME, WITHHELD_CARD_TITLE, WITHHELD_SUBTASK_TITLE } from './withheld';
@@ -335,10 +336,12 @@ function loadPlanNodes(keys: Iterable<NodeKey>): Map<NodeKey, WorkNode> {
 /**
  * The boards `viewer` can open, as a test: every board for an administrator.
  * Asked once for a whole answer, rather than per node, which on the board page
- * and All Tasks would be a query for every blocker.
+ * and All Tasks would be a query for every blocker. `accessible`: the
+ * viewer's boards, when the caller has read them already in the same request
+ * (card 2394, `resolveAccessible` in list-access.ts).
  */
-export function boardsOpenTo(viewer: Actor): (boardId: number) => boolean {
-	const ids = getAccessibleBoardIds(viewer);
+export function boardsOpenTo(viewer: Actor, accessible?: number[] | null): (boardId: number) => boolean {
+	const ids = resolveAccessible(viewer, accessible);
 	if (ids === null) return () => true;
 	const open = new Set(ids);
 	return (boardId) => open.has(boardId);
@@ -491,7 +494,7 @@ export function getCardDependencies(cardId: number, viewer: Actor): WorkDependen
  * A card can be blocked by a subtask, so blockers come back as full nodes with
  * their `kind`.
  */
-export function getBlockedStateForCards(cardIds: number[], viewer: Actor): Record<number, PlanNode[]> {
+export function getBlockedStateForCards(cardIds: number[], viewer: Actor, accessible?: number[] | null): Record<number, PlanNode[]> {
 	if (cardIds.length === 0) return {};
 
 	const { blockedBy } = loadDependencyGraph();
@@ -505,7 +508,7 @@ export function getBlockedStateForCards(cardIds: number[], viewer: Actor): Recor
 	if (blockerKeys.size === 0) return {};
 
 	const blockerNodes = loadPlanNodes(blockerKeys);
-	const opens = boardsOpenTo(viewer);
+	const opens = boardsOpenTo(viewer, accessible);
 
 	const out: Record<number, PlanNode[]> = {};
 	for (const cardId of cardIds) {
@@ -519,7 +522,7 @@ export function getBlockedStateForCards(cardIds: number[], viewer: Actor): Recor
 }
 
 /** Open blockers for every live card on one board, as `viewer` is given them. */
-export function getBoardBlockedState(boardId: number, viewer: Actor): Record<number, PlanNode[]> {
+export function getBoardBlockedState(boardId: number, viewer: Actor, accessible?: number[] | null): Record<number, PlanNode[]> {
 	const boardColumns = db
 		.select({ id: columns.id })
 		.from(columns)
@@ -535,7 +538,7 @@ export function getBoardBlockedState(boardId: number, viewer: Actor): Record<num
 		.all()
 		.map((c) => c.id);
 
-	return getBlockedStateForCards(boardCardIds, viewer);
+	return getBlockedStateForCards(boardCardIds, viewer, accessible);
 }
 
 // ─── Batch validation ────────────────────────────────────────────────────────

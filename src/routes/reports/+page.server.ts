@@ -14,6 +14,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 	// open, and does not walk through one they cannot, so a board shared with
 	// them under one they were not given would be in no report they could
 	// choose. An administrator opens every parent: top-level boards only.
+	// Read once and handed to the groupings below, which read it again
+	// (card 2394).
 	const accessibleIds = getAccessibleBoardIds(user);
 	let userBoards: (typeof boards.$inferSelect)[];
 	if (accessibleIds === null) {
@@ -43,7 +45,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 
 	// The groupings the caller is listed: those holding a board they can open,
 	// and the empty ones (card 2128). A report of any other is refused.
-	const allCategories = boardCategoriesFor(user);
+	const allCategories = boardCategoriesFor(user, accessibleIds);
 
 	// Get user's schedules
 	const userSchedules = db.select().from(reportSchedules)

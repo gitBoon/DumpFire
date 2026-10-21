@@ -134,8 +134,18 @@ export function roleOnBoard(
  * For admins: all boards (returns null to indicate "no filter needed").
  */
 export function getAccessibleBoardIds(user: Actor): number[] | null {
+	return getAccessibleBoardsAndTeams(user).boardIds;
+}
+
+/**
+ * `getAccessibleBoardIds`, with the teams the caller is in that it read on
+ * the way (card 2394): the dashboard counts the requests to them, and read
+ * them a second time. `teamIds` is null for an administrator, for whom
+ * neither is read.
+ */
+export function getAccessibleBoardsAndTeams(user: Actor): { boardIds: number[] | null; teamIds: number[] | null } {
 	if (user.role === 'admin' || user.role === 'superadmin') {
-		return null; // No filter — sees everything
+		return { boardIds: null, teamIds: null }; // No filter — sees everything
 	}
 
 	const ids = new Set<number>();
@@ -159,9 +169,9 @@ export function getAccessibleBoardIds(user: Actor): number[] | null {
 		.from(teamMembers)
 		.where(eq(teamMembers.userId, user.id))
 		.all();
+	const teamIds = userTeams.map(t => t.teamId);
 
-	if (userTeams.length > 0) {
-		const teamIds = userTeams.map(t => t.teamId);
+	if (teamIds.length > 0) {
 		const teamBoards = db.select({ boardId: boardTeams.boardId })
 			.from(boardTeams)
 			.where(inArray(boardTeams.teamId, teamIds))
@@ -176,7 +186,7 @@ export function getAccessibleBoardIds(user: Actor): number[] | null {
 		.all();
 	publicBoards.forEach(b => ids.add(b.id));
 
-	return Array.from(ids);
+	return { boardIds: Array.from(ids), teamIds };
 }
 
 /**

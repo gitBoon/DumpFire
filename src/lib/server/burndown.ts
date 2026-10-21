@@ -29,8 +29,8 @@
  */
 
 import { sqlite } from './db';
-import { canViewBoard, getAccessibleBoardIds } from './board-access';
-import { boardCategoryRule } from './list-access';
+import { canViewBoard } from './board-access';
+import { boardCategoryRule, resolveAccessible } from './list-access';
 import { isCompleteColumnTitle } from './card-completion';
 import { requireMilestone, MilestoneError } from './milestones';
 import type { SessionUser } from './auth';
@@ -397,12 +397,18 @@ interface ResolvedScope {
 	notes: string[];
 }
 
-function resolveScope(user: SessionUser, q: BurndownQuery): ResolvedScope {
+function resolveScope(user: SessionUser, q: BurndownQuery, accessible?: number[] | null): ResolvedScope {
 	const notes: string[] = [];
 	let boardIds: number[] | null = null;
 	let openBoardIds: number[] | null = null;
 	let boardCategory: ResolvedScope['boardCategory'] = null;
 	let milestone: ResolvedScope['milestone'] = null;
+
+	// The boards the caller can open, read the first time a branch below asks
+	// and kept (card 2394): a grouping's rule and its boards asked twice. A
+	// chart of named boards asks for none, and reads none.
+	let opened: { ids: number[] | null } | null = null;
+	const openToCaller = (): number[] | null => (opened ??= { ids: resolveAccessible(user, accessible) }).ids;
 
 	if (q.boardIds.length) {
 		const found = new Set(
@@ -423,7 +429,7 @@ function resolveScope(user: SessionUser, q: BurndownQuery): ResolvedScope {
 		// One that holds boards, none of them the caller's, is another team's:
 		// it was charted empty, with its name and colour (card 2128). Refused as
 		// reports and report schedules refuse it, and as reading it is.
-		if (!boardCategoryRule(user)(cat.id)) {
+		if (!boardCategoryRule(user, openToCaller())(cat.id)) {
 			throw new BurndownError(403, `No access to board category ${q.boardCategoryId}`);
 		}
 		boardCategory = cat;
@@ -431,10 +437,10 @@ function resolveScope(user: SessionUser, q: BurndownQuery): ResolvedScope {
 		const inCategory = (
 			sqlite.prepare('SELECT id FROM boards WHERE category_id = ?').all(cat.id) as { id: number }[]
 		).map((b) => b.id);
-		const accessible = getAccessibleBoardIds(user);
+		const open = openToCaller();
 		// A group of boards is charted as far as this user can see it — never
 		// widened to boards they have no access to.
-		boardIds = accessible === null ? inCategory : inCategory.filter((id) => accessible.includes(id));
+		boardIds = open === null ? inCategory : inCategory.filter((id) => open.includes(id));
 		if (boardIds.length < inCategory.length) {
 			const hidden = inCategory.length - boardIds.length;
 			notes.push(
@@ -442,7 +448,7 @@ function resolveScope(user: SessionUser, q: BurndownQuery): ResolvedScope {
 			);
 		}
 	} else if (q.milestoneId === null) {
-		boardIds = getAccessibleBoardIds(user);
+		boardIds = openToCaller();
 	}
 
 	if (q.milestoneId !== null) {
@@ -468,7 +474,7 @@ function resolveScope(user: SessionUser, q: BurndownQuery): ResolvedScope {
 		// viewer was never given: it was charted, and its board named
 		// (card 2129's review). Left out, and said so, as for a board category.
 		if (boardIds === null) {
-			openBoardIds = getAccessibleBoardIds(user);
+			openBoardIds = openToCaller();
 			if (openBoardIds !== null) {
 				const elsewhere = (
 					sqlite
@@ -535,9 +541,12 @@ function resolveRange(q: BurndownQuery, milestone: ResolvedScope['milestone'], n
  *
  * Throws BurndownError with an HTTP status for anything the caller should be
  * told about: an unknown board, a board or milestone this user cannot see.
+ * `accessible`: the user's boards, when the caller has read them already in
+ * the same request, as the burndown page has (card 2394, `resolveAccessible`
+ * in list-access.ts).
  */
-export function getBurndown(user: SessionUser, q: BurndownQuery): BurndownResult {
-	const scope = resolveScope(user, q);
+export function getBurndown(user: SessionUser, q: BurndownQuery, accessible?: number[] | null): BurndownResult {
+	const scope = resolveScope(user, q, accessible);
 	const notes = scope.notes;
 	const { from, to, days } = resolveRange(q, scope.milestone, notes);
 
