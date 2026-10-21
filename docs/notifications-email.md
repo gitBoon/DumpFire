@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.34
+version: 1.35
 status: As-Built
 date: 2026-10-21
 tags:
@@ -1634,7 +1634,7 @@ stateDiagram-v2
 | `card.deleted` | `card_deleted`: a card deleted for good |
 | `comment.added` | `comment_added` |
 | `milestone.card_added` | `milestone_card_added`: a card put in a goal, by any route or page (card 2343, since 2026-10-21) |
-| `milestone.card_removed` | `milestone_card_removed`: a card taken out of a goal, by any route or page (card 2343, since 2026-10-21) |
+| `milestone.card_removed` | `milestone_card_removed`: a card taken out of a goal, by any route or page (card 2343, since 2026-10-21), and a card that leaves a goal because of another change: moved to another board, its goal deleted, deleted itself, or released when its goal's board was deleted (card 2381, since 2026-10-21) |
 
 **A webhook whose `events` list is empty is sent every event, so one made before 2026-10-21
 receives the two `milestone.*` events from that deploy on** (card 2343): list the events wanted
@@ -1665,17 +1665,35 @@ webhook (card 2325) is held for it as for any event. `data.detail` is the entry'
 `Added "Plan" to milestone "Launch"` or `Removed "Plan" from milestone "Launch"`, a goal that
 spans boards named `milestone #<id>` (card 2257). A card moved from one goal to another is one
 `milestone.card_added` whose `detail` ends ` (from milestone "Pilot")`, and no
-`milestone.card_removed` for the goal it left. Three ways a card leaves a goal send neither: the
-goal deleted (one `milestone_deleted` a board, no entry a card); the card moved to another
-board out of its board's goal (the move's `card.moved`, `card_moved_away`, says so in its
-`detail`); and the card deleted for good (`card.deleted`). Nor do cards deleted with a board, a
-column, an administrator's clear of a board's cards or a purge of archived cards, which send no `card.deleted` either, or
-cards on sub-boards deleted with their parent card, which get no `card.deleted` of their own.
+`milestone.card_removed` for the goal it left.
+
+**A card that leaves a goal because of another change** (card 2381) writes a card taken out's
+entry on its board through `logCardLeftGoal` (`src/lib/server/milestones.ts`), in the same
+transaction as the change, so it sends `milestone.card_removed` once the change commits, with
+why in brackets in `data.detail`. Each of these sent nothing for the goal before:
+
+| What happened | Where it is written | `data.detail` ends | `data.cardId` |
+|---|---|---|---|
+| Moved to another board out of its goal (`card-moves.ts`; an older goal of neither board named `milestone #<id>`) | The board it left, after `card_moved_away`, beside its `card.moved` | `(moved to another board)` | The card |
+| Its goal deleted (`deleteMilestoneFor`, one a released card, archived ones included) | Each card's board, after the boards' `milestone_deleted` | `(milestone deleted)` | The card |
+| Deleted for good: alone (beside its `card.deleted`), with its column, by an administrator's clear of a board's cards, or by a purge of archived cards (`deletes.ts`, `recordLeftGoals`) | Its board, after the delete's own entry | `(card deleted)` | The deleted card's id (`webhookCardId`); the entry's `cardId` is null |
+| Left in place on another board and released from a goal of a deleted board, or of a sub-board deleted with its parent card | Its own board | `(milestone deleted with its board)` | The card |
+
+**A card deleted with its own board** (the board deleted, a sub-board under a deleted card, a
+board in a loop) writes and sends nothing: the board's log and its webhooks are deleted in the
+same transaction, so the entry would go with them and there is no webhook to send it to; a
+goal's webhooks are its cards' boards'. **A webhook with an empty `events` list receives these
+from 2026-10-21**: a clear of a board of 400 goal cards sends it 400 deliveries. For a card
+deleted for good, `card.deleted` and `milestone.card_removed` are separate deliveries and may
+arrive in either order: a receiver should treat a `milestone.card_removed` for a card it does
+not know, or has already deleted, as harmless.
 
 ```mermaid
 flowchart LR
     W["picker / plan page<br/>PATCH /api/milestones/{id}"] --> L
     V["v1 single, bulk,<br/>milestoneId on PUT /cards"] --> L
+    O["moved board, goal deleted,<br/>card deleted, released (2381)"] --> F["logCardLeftGoal:<br/>if the card's board stays"]
+    F -->|"afterCommit"| D
     L["logCardInOrOut:<br/>entry on the card's board"] -->|"afterCommit"| D["dispatchWebhook(card's board)"]
     D --> E{"events empty, or<br/>names the event?"}
     E -->|"yes"| H{"setter can open<br/>the board? (2325)"}
@@ -1734,12 +1752,13 @@ What is not sent:
 - **Archiving a card sends nothing.** It writes `card_archived`, which has no event. Nor does restoring one: `card_restored` has none, and a restore through `PUT /api/v1/cards/{cardId}` with no other field sends no `card.updated` either, since it writes `api:card_restored` and no `api:card_updated` (card 2108).
 - **A card update that changes nothing sends nothing** (card 2183). `PUT /api/cards/{id}` and `PUT /api/v1/cards/{cardId}` compare what is sent with what the card holds, and write no entry, so send no `card.updated`, when every field is as stored; one that changes some fields sends one `card.updated` whose `detail` names those alone. The card window sends a card's whole state back with every save, so every Save on an unchanged card sent a `card.updated` until 2026-10-15.
 - **A change of a card's position within its column sends nothing, on every route** (card 2288). A drag (`PUT /api/cards/reorder`) and `PUT /api/v1/cards/{cardId}/move` to the card's own column never sent anything for it. The web application's card update, `PUT /api/cards/{id}` with a `position` and no change of column, wrote `card_updated` "Updated fields: position" and so sent `card.updated`, until 2026-10-14 (the 1.2.0 release); it now goes through the drag's path, writes the position alone and records nothing. Sent with other fields, it still sends one `card.updated`, whose `detail` no longer names `position`. No page sends a position on that route, so only a hand-made request saw it.
-- **A card put in a milestone or taken out sends no `card.updated`, on every route** (card 2289). `PUT /api/v1/cards/{cardId}` with a `milestoneId` wrote `api:card_updated` "Updated fields: milestoneId" and so sent `card.updated`, until 2026-10-14 (the 1.2.0 release); it now writes `api:milestone_card_added` or `api:milestone_card_removed`, as the milestone routes (single and bulk) and the web application's picker and plan page do. Until 2026-10-21 neither had an event, so nothing was sent; each now sends `milestone.card_added` or `milestone.card_removed` (card 2343). So when `milestoneId` is the only change, or comes with only a restore (`archivedAt: null`, whose `api:card_restored` has no event), that `milestone.*` event alone is sent. Sent with other fields, it also sends one `card.updated`, whose `detail` no longer names `milestoneId`. A milestone changed, closed, reopened or deleted sends nothing.
+- **A card put in a milestone or taken out sends no `card.updated`, on every route** (card 2289). `PUT /api/v1/cards/{cardId}` with a `milestoneId` wrote `api:card_updated` "Updated fields: milestoneId" and so sent `card.updated`, until 2026-10-14 (the 1.2.0 release); it now writes `api:milestone_card_added` or `api:milestone_card_removed`, as the milestone routes (single and bulk) and the web application's picker and plan page do. Until 2026-10-21 neither had an event, so nothing was sent; each now sends `milestone.card_added` or `milestone.card_removed` (card 2343). So when `milestoneId` is the only change, or comes with only a restore (`archivedAt: null`, whose `api:card_restored` has no event), that `milestone.*` event alone is sent. Sent with other fields, it also sends one `card.updated`, whose `detail` no longer names `milestoneId`. A milestone changed, closed, reopened or deleted sends nothing of its own (a delete's released cards each send `milestone.card_removed`, card 2381).
 - **A move out of an On Hold column sends the move's events alone** (card 2208). The move clears the card's on-hold note itself; the board page's drag out of On Hold sent a second request to clear it, which delivered a `card.updated` beside the `card.moved`, until 2026-10-15.
 - **A move into a Complete column sends no `card.moved`.** It sends `card.completed` instead, its entry being a completion (a move into another board's Complete column also sends each board its `card.moved`); a receiver that wants every column change asks for both events. A reopening is sent as `card.moved` (card 2278).
 - **No delivery names another board.** A move to another board is sent to each board as that board's own entry, which names no board (card 2181), and with the board's own `boardId`; the other board's name, and its id, are in neither. A webhook whose board a card left is not told where it went beyond the column in the route, and the joined board's webhooks are not told where it came from beyond its column.
 - **A `card.deleted` carries the id of the card that went**, although the activity entry it comes from is stored with no card id, the card being gone.
-- **Deleting a column sends nothing**, for the column or for any card in it. Neither does purging archived cards, clearing a board's cards or deleting a board. A board's webhooks are deleted with the board. Open pages are told of each by a live update: see [Event Types](#event-types).
+- **Deleting a column sends no event for the column, and no `card.deleted` for its cards.** Neither does purging archived cards, clearing a board's cards or deleting a board. A board's webhooks are deleted with the board. Since 2026-10-21 a card among them that was in a goal sends `milestone.card_removed`, `… (card deleted)`, while its board stays, and a card elsewhere released from a deleted board's goal sends one to its own board (card 2381, above). Open pages are told of each by a live update: see [Event Types](#event-types).
+- **A goal deleted sends no event of its own**; each card it releases sends `milestone.card_removed`, `… (milestone deleted)` (card 2381).
 
 ## Key Implementation Files
 
@@ -1758,6 +1777,7 @@ What is not sent:
 | `src/lib/server/webhook-address.ts` | Where a webhook may send (card 2161): `insideReason()`, `addressRefusal()`, `allowInside()` and `parseAllowInside()` for `WEBHOOK_ALLOW_INSIDE`, `guardedLookup()`, `readWebhookUrl()` |
 | `src/lib/server/startup-checks.ts` | Among its thirteen start-up lines, the ignored entries of `WEBHOOK_ALLOW_INSIDE`, the boards over the webhook cap, and the webhooks that are on and refused as written |
 | `src/lib/server/logActivity.ts` | Writes the activity entry and queues the webhook for it: `ACTION_TO_EVENT`, which entry sends which event (the two `milestone.*` since card 2343). `WebhookEvent` and `WEBHOOK_EVENTS`, the events a webhook may ask for, are in `webhooks.ts` |
+| `src/lib/server/milestones.ts`, `src/lib/server/deletes.ts` | `logCardInOrOut()`, a card put in a goal or taken out (card 2343); `logCardLeftGoal()`, a card that leaves one because of another change, called by the move, the goal delete and `recordLeftGoals()` in the deletes (card 2381) |
 | `src/lib/server/db/transaction.ts` | `afterCommit()`: holds every notification until the write it reports is committed |
 | `src/lib/server/mentions.ts` | Extract @mentions from comment text: `parseMentions()` through `findMentions`, against every account's username, then `notifyMention()` for each account found |
 | `src/lib/mentions.ts` | `findMentions(text, usernames)`: where a mention starts and whose name it is (card 2207), shared by the server and the card window's chips |

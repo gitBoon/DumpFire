@@ -2982,8 +2982,10 @@ describe('the accounts, administration, teams, reports and requests that card 21
 			['DELETE', '/api/users/abc', 'admin', 'Invalid user ID'],
 			['PUT', '/api/users/0/password', 'admin', 'Invalid user ID'],
 			['POST', '/api/users/1e3/invite', 'admin', 'Invalid user ID'],
-			['GET', '/api/audit?boardId=2.5', 'admin', 'Invalid boardId'],
-			['GET', '/api/audit?userId=5abc', 'admin', 'Invalid userId']
+			// In v1's words since card 2294 (`Invalid boardId`, `Invalid userId`): one reader for both audit routes.
+			['GET', '/api/audit?boardId=2.5', 'admin', 'Invalid board ID'],
+			['GET', '/api/audit?userId=5abc', 'admin', 'Invalid user ID'],
+			['GET', '/api/audit?cardId=0', 'admin', 'Invalid card ID']
 		];
 		for (const [method, path, who, message] of PATHS) {
 			const body = method === 'GET' || method === 'DELETE' ? undefined : {};

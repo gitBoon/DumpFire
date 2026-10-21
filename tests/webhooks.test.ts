@@ -2603,3 +2603,137 @@ describe('a card put in a goal or taken out (card 2343)', () => {
 		expect(WEBHOOK_EVENTS).toContain('milestone.card_removed');
 	});
 });
+
+describe('a card that leaves a goal because of another change (card 2381)', () => {
+	let sent: Effects;
+	beforeEach(() => {
+		sent = effects();
+	});
+	afterEach(() => sent.restore());
+
+	/**
+	 * The owner's boards A and B, and an administrator. On A, the cards Plan
+	 * and Ship in the goal Launch of A. A's webhook `a` and B's `b` ask for
+	 * every event.
+	 */
+	function leaveScene() {
+		const owner = makeUser({ username: 'owner' });
+		const admin = makeUser({ username: 'admin', role: 'admin' });
+		const A = makeBoard({ owner, name: 'Alpha' });
+		const B = makeBoard({ owner, name: 'Bravo' });
+		const plan = makeCard(A.cols['To Do'], { title: 'Plan' });
+		const ship = makeCard(A.cols['To Do'], { title: 'Ship' });
+		const goal = makeMilestone({ board: A.board, name: 'Launch', createdBy: owner, cards: [plan, ship] });
+		makeWebhook(A.board, { url: 'https://hooks.example.test/a' });
+		makeWebhook(B.board, { url: 'https://hooks.example.test/b' });
+		return { owner, admin, A, B, plan, ship, goal };
+	}
+	type Scene = ReturnType<typeof leaveScene>;
+
+	/** Each goal delivery as [webhook, event, the body's boardId, data], once the request is answered 200. */
+	async function heard(res: Promise<ApiResult>) {
+		const answer = await res;
+		await sent.settle();
+		expect(answer.status, JSON.stringify(answer.body)).toBe(200);
+		expect(sent.duringTransaction).toEqual([]);
+		return sent.webhooks
+			.filter((d) => d.event.startsWith('milestone.'))
+			.map((d) => [d.url.split('/').pop(), d.event, d.body.boardId, d.body.data]);
+	}
+
+	const removed = (s: Scene, card: { id: number; title: string }, source: string, why: string, user = 'owner') => [
+		'a',
+		'milestone.card_removed',
+		s.A.board.id,
+		{ cardId: card.id, action: 'milestone_card_removed', source, detail: `Removed "${card.title}" from milestone "Launch" (${why})`, user }
+	];
+
+	type Path = [string, (s: Scene) => Promise<ApiResult>, (s: Scene) => unknown[]];
+	const paths: Path[] = [
+		[
+			'a card moved to another board, out of its board’s goal (v1 move): on the board it left',
+			(s) => api('PUT', `/api/v1/cards/${s.plan.id}/move`, { user: s.owner, body: { columnId: s.B.cols['To Do'].id } }),
+			(s) => [removed(s, s.plan, 'api', 'moved to another board')]
+		],
+		[
+			'the goal deleted (v1): each card it released',
+			(s) => api('DELETE', `/api/v1/milestones/${s.goal.id}`, { user: s.owner }),
+			(s) => [removed(s, s.plan, 'api', 'milestone deleted'), removed(s, s.ship, 'api', 'milestone deleted')]
+		],
+		[
+			'the goal deleted (the plan page): each card it released',
+			(s) => api('DELETE', `/api/milestones/${s.goal.id}`, { user: s.owner }),
+			(s) => [removed(s, s.plan, 'ui', 'milestone deleted'), removed(s, s.ship, 'ui', 'milestone deleted')]
+		],
+		[
+			'a card in it deleted for good, beside its card.deleted',
+			(s) => api('DELETE', `/api/v1/cards/${s.plan.id}?permanent=true`, { user: s.owner }),
+			(s) => [removed(s, s.plan, 'api', 'card deleted')]
+		],
+		[
+			'the column its cards are in deleted',
+			(s) => api('DELETE', `/api/v1/columns/${s.A.cols['To Do'].id}`, { user: s.owner }),
+			(s) => [removed(s, s.plan, 'api', 'card deleted'), removed(s, s.ship, 'api', 'card deleted')]
+		],
+		[
+			"an administrator's clear of the board's cards",
+			(s) => api('POST', `/api/admin/boards/${s.A.board.id}/clear-cards`, { user: s.admin }),
+			(s) => [removed(s, s.plan, 'ui', 'card deleted', 'admin'), removed(s, s.ship, 'ui', 'card deleted', 'admin')]
+		],
+		[
+			'a purge of archived cards, the archived one alone',
+			(s) => {
+				sqlite.prepare('UPDATE cards SET archived_at = ? WHERE id = ?').run('2026-10-01 09:00:00', s.plan.id);
+				return api('POST', '/api/admin/purge-archived', { user: s.admin });
+			},
+			(s) => [removed(s, s.plan, 'ui', 'card deleted', 'admin')]
+		]
+	];
+
+	it.each(paths)('%s: milestone.card_removed, one a card, to the card’s board, the card’s id in data', async (_path, send, expected) => {
+		const s = leaveScene();
+		expect(await heard(send(s))).toEqual(expected(s));
+	});
+
+	it("a board deleted: a card elsewhere released from the board's goal is sent to its own board, the goal named by number; the board's own cards send nothing, its webhooks gone with it", async () => {
+		const s = leaveScene();
+		const elsewhere = makeCard(s.B.cols['To Do'], { title: 'Elsewhere', milestoneId: s.goal.id });
+
+		const delivered = await heard(api('DELETE', `/api/v1/boards/${s.A.board.id}`, { user: s.owner }));
+
+		expect(delivered).toEqual([
+			[
+				'b',
+				'milestone.card_removed',
+				s.B.board.id,
+				{
+					cardId: elsewhere.id,
+					action: 'milestone_card_removed',
+					source: 'api',
+					detail: `Removed "Elsewhere" from milestone #${s.goal.id} (milestone deleted with its board)`,
+					user: 'owner'
+				}
+			]
+		]);
+	});
+
+	it('a card deleted with its sub-board sends nothing: the sub-board, its log and its webhooks go in the same delete', async () => {
+		const s = leaveScene();
+		const sub = makeBoard({ owner: s.owner, name: 'Under Plan', parentCardId: s.plan.id });
+		const deep = makeCard(sub.cols['To Do'], { title: 'Deep' });
+		makeMilestone({ name: 'Across', createdBy: s.owner, cards: [deep] });
+		makeWebhook(sub.board, { url: 'https://hooks.example.test/sub' });
+
+		const delivered = await heard(api('DELETE', `/api/v1/cards/${s.plan.id}?permanent=true`, { user: s.owner }));
+
+		expect(delivered).toEqual([removed(s, s.plan, 'api', 'card deleted')]);
+		expect(sent.webhooks.map((d) => d.url.split('/').pop())).not.toContain('sub');
+	});
+
+	it('a move to another board that leaves no goal sends no goal event', async () => {
+		const s = leaveScene();
+		const loose = makeCard(s.A.cols['To Do'], { title: 'Loose' });
+
+		expect(await heard(api('PUT', `/api/v1/cards/${loose.id}/move`, { user: s.owner, body: { columnId: s.B.cols['To Do'].id } }))).toEqual([]);
+	});
+});

@@ -968,10 +968,10 @@ describe('the audit log refuses a reversed range, and keeps entries of one secon
 	);
 
 	it('the four routes that read a range refuse a reversed one through refuseReversedRange, and none in words of its own (card 2262)', () => {
+		// The two audit routes read their range in the reader they share (card 2294).
 		for (const file of [
-			'src/routes/api/audit/+server.ts',
+			'src/lib/server/audit-log.ts',
 			'src/routes/api/logs/+server.ts',
-			'src/routes/api/v1/audit-log/+server.ts',
 			'src/routes/api/v1/reports/activity/+server.ts'
 		]) {
 			const source = readFileSync(join(process.cwd(), file), 'utf-8');
@@ -1010,9 +1010,13 @@ describe('the audit log refuses a reversed range, and keeps entries of one secon
 	);
 
 	it('both audit routes order by the time and then the id, newest first', () => {
+		// Through the one reader they share (card 2294), and neither reads the log itself.
+		const source = readFileSync(join(process.cwd(), 'src/lib/server/audit-log.ts'), 'utf-8');
+		expect(source).toContain('.orderBy(desc(activityLog.createdAt), desc(activityLog.id))');
 		for (const file of ['src/routes/api/v1/audit-log/+server.ts', 'src/routes/api/audit/+server.ts']) {
-			const source = readFileSync(join(process.cwd(), file), 'utf-8');
-			expect(source, file).toContain('.orderBy(desc(activityLog.createdAt), desc(activityLog.id))');
+			const route = readFileSync(join(process.cwd(), file), 'utf-8');
+			expect(route, file).toContain('queryAuditLog(readAuditParams(url.searchParams), {');
+			expect(route, file).not.toContain('activityLog');
 		}
 	});
 });

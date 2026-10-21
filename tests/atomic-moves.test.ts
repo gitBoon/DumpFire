@@ -1499,13 +1499,31 @@ describe('a move to another board takes the card out of a milestone of another b
 				expect(movedAway(w.A.board.id, w.card.id)).toEqual([
 					'"MOVEDSECRET2155" moved to another board (To Do → In Progress) and out of milestone "Goal M"'
 				]);
+				// And the goal's own entry, on the board it left (card 2381).
+				expect(
+					db
+						.select({ boardId: activityLog.boardId, cardId: activityLog.cardId, action: activityLog.action, detail: activityLog.detail })
+						.from(activityLog)
+						.all()
+						.filter((e) => e.action.endsWith('milestone_card_removed'))
+				).toEqual([
+					{
+						boardId: w.A.board.id,
+						cardId: w.card.id,
+						action: 'api:milestone_card_removed',
+						detail: 'Removed "MOVEDSECRET2155" from milestone "Goal M" (moved to another board)'
+					}
+				]);
 				await readerSeesOnly(w);
 			}
 		});
 
-		// The milestone goes in the same write of the card: nothing more is written.
+		// The milestone goes in the same write of the card; the goal's own entry
+		// on the board it left (card 2381) is the one write more, between the
+		// move's two, and fails the move with it.
 		expect(run.writes.map((sql) => sql.split(/[ (]/).slice(0, 3).join(' '))).toEqual([
 			'update "cards" set',
+			'insert into "activity_log"',
 			'insert into "activity_log"',
 			'insert into "activity_log"'
 		]);

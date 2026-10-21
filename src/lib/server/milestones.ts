@@ -140,6 +140,41 @@ export function logCardInOrOut(
 	});
 }
 
+/** Why a card left a goal by a change to something else (card 2381), as its entry says in brackets. */
+export type LeftGoalBecause = 'moved to another board' | 'milestone deleted' | 'card deleted' | 'milestone deleted with its board';
+
+/**
+ * The entry for a card that left a goal because of a change to something
+ * else (card 2381): moved to another board out of its board's goal, its goal
+ * deleted, deleted itself (with a column, a clear, a purge or alone), or left
+ * in place when its goal's board was deleted. A card taken out's action and
+ * words, with why in brackets: `Removed "Plan" from milestone "Launch" (card
+ * deleted)`, on `card.boardId`, the goal named by `goalAsNamedOn`, so it sends
+ * `milestone.card_removed` to that board's webhooks once the change commits.
+ *
+ * A deleted card (`gone`) is stored with no card id, as `card_deleted` is: the
+ * row it would name is gone. The webhook still names it. The caller writes
+ * this only on a board that is still there: an entry on a board deleted in the
+ * same change would be deleted with it, as would the board's webhooks.
+ */
+export function logCardLeftGoal(
+	actor: { id: number; username: string; emoji?: string | null },
+	source: ActivitySource,
+	card: { boardId: number; cardId: number; title: string; gone?: boolean },
+	goal: Pick<MilestoneRow, 'id' | 'name' | 'boardId'>,
+	because: LeftGoalBecause
+): void {
+	logActivity({
+		boardId: card.boardId,
+		cardId: card.gone ? null : card.cardId,
+		webhookCardId: card.gone ? card.cardId : undefined,
+		action: ACTIONS.milestoneCardRemoved,
+		detail: `Removed "${card.title}" from ${goalAsNamedOn(goal, card.boardId)} (${because})`,
+		source,
+		...actorOf(actor)
+	});
+}
+
 /** Load a milestone, or throw the right HTTP status. */
 export function requireMilestone(user: SessionUser, milestoneId: number, forEdit = false): MilestoneRow {
 	const m = db.select().from(milestones).where(eq(milestones.id, milestoneId)).get();
@@ -404,22 +439,32 @@ function fieldsToUpdate(user: SessionUser, milestone: MilestoneRow, patch: Updat
  *
  * The answer also holds, for the entries (card 2289), the milestone as it
  * was, its boards (`goalBoards`, read before its cards are released), and
- * how many cards of each board were released, archived ones included.
+ * how many cards of each board were released, archived ones included; and
+ * the cards released, by id, with their titles and boards, each of which gets
+ * an entry of its own (card 2381).
  */
 export function deleteMilestone(
 	user: SessionUser,
 	milestoneId: number
-): { released: number; milestone: MilestoneRow; boards: number[]; releasedOn: Map<number, number> } {
+): {
+	released: number;
+	milestone: MilestoneRow;
+	boards: number[];
+	releasedOn: Map<number, number>;
+	releasedCards: { cardId: number; title: string; boardId: number }[];
+} {
 	return inTransaction(() => {
 		const milestone = requireMilestone(user, milestoneId, true);
 		const boards = goalBoards(milestone);
 		const releasedOn = new Map<number, number>();
-		for (const { boardId } of db
-			.select({ boardId: columns.boardId })
+		const releasedCards = db
+			.select({ cardId: cards.id, title: cards.title, boardId: columns.boardId })
 			.from(cards)
 			.innerJoin(columns, eq(cards.columnId, columns.id))
 			.where(eq(cards.milestoneId, milestoneId))
-			.all()) {
+			.orderBy(cards.id)
+			.all();
+		for (const { boardId } of releasedCards) {
 			releasedOn.set(boardId, (releasedOn.get(boardId) ?? 0) + 1);
 		}
 
@@ -431,7 +476,7 @@ export function deleteMilestone(
 			.all().length;
 
 		db.delete(milestones).where(eq(milestones.id, milestoneId)).run();
-		return { released, milestone, boards, releasedOn };
+		return { released, milestone, boards, releasedOn, releasedCards };
 	});
 }
 

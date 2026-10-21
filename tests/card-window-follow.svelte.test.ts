@@ -199,3 +199,79 @@ describe('the card window follows its card where nothing was typed (card 2280, s
 		expect(onSave.mock.calls[0][0]).toMatchObject({ title: 'Plan', description: 'Old notes', priority: 'low' });
 	});
 });
+
+// Card 2382: the window's read of the card's links was try/finally with an
+// unguarded parse. No answer, or an answer that is not JSON, rejected out of
+// it unhandled (which fails a case here), and every failure said nothing.
+describe('the card window’s read of the card’s links says when it fails, and keeps the links shown (card 2382)', () => {
+	const blocker = { kind: 'card', cardId: 9, dependencyId: 1, title: 'Docs', boardId: 1, boardName: 'Website', columnName: 'To Do', resolved: false, withheld: false };
+	const answer = (status: number, body: unknown) => ({ ok: status < 400, status, json: async () => body }) as Response;
+	const notJson = () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError('Unexpected token <'); } }) as unknown as Response;
+
+	/** The window's own reads answered by `links` for the links, empty lists for the rest. */
+	function answering(links: (init?: RequestInit) => Promise<Response>) {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async (url: string, init?: RequestInit) =>
+				url === '/api/cards/7/dependencies' ? links(init) : answer(200, url.includes('/tokens') ? null : [])
+			)
+		);
+	}
+
+	/** Lets every answer in flight arrive, and draws. */
+	async function settle() {
+		for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+		flushSync();
+	}
+
+	/** Draws the window and opens More options, where the links are. */
+	async function opened() {
+		const { target } = draw(new WindowEdits());
+		await settle();
+		target.querySelector<HTMLButtonElement>('.advanced-toggle')!.click();
+		flushSync();
+		return target;
+	}
+	const said = (target: HTMLElement) => target.querySelector('.dep-error')?.textContent?.trim();
+
+	it.each([
+		['no answer', () => Promise.reject(new TypeError('Failed to fetch')), 'No answer from the server. The dependencies could not be loaded.'],
+		['an answer that is not JSON', async () => notJson(), "The server's answer could not be read. The dependencies could not be loaded."],
+		['an answer that is not the two lists', async () => answer(200, { error: 'proxy' }), "The server's answer could not be read. The dependencies could not be loaded."],
+		['a refusal, in its words', async () => answer(403, { message: 'No access to this card' }), 'No access to this card'],
+		['a refusal with no words', async () => answer(500, {}), 'The dependencies could not be loaded.']
+	])('as the window opens, %s: says so, and is no longer loading', async (_what, links, words) => {
+		answering(links);
+		const target = await opened();
+
+		expect(said(target)).toBe(words);
+		expect(target.textContent).not.toContain('Loading…');
+	});
+
+	it('a refused removal whose read again gets no answer keeps the row shown, and says both', async () => {
+		let reads = 0;
+		answering(async (init) => {
+			if (init?.method === 'DELETE') return answer(404, { message: 'Dependency not found' });
+			reads++;
+			if (reads > 1) throw new TypeError('Failed to fetch');
+			return answer(200, { blockedBy: [blocker], blocks: [] });
+		});
+		const target = await opened();
+		expect(target.querySelectorAll('.dep-row')).toHaveLength(1);
+
+		target.querySelector<HTMLButtonElement>('.dep-remove')!.click();
+		await settle();
+
+		expect(reads).toBe(2);
+		expect(target.querySelectorAll('.dep-row')).toHaveLength(1);
+		expect(said(target)).toBe('Dependency not found No answer from the server. The dependencies could not be loaded.');
+	});
+
+	it('a read that works shows the links and says nothing', async () => {
+		answering(async () => answer(200, { blockedBy: [blocker], blocks: [] }));
+		const target = await opened();
+
+		expect(target.querySelectorAll('.dep-row')).toHaveLength(1);
+		expect(said(target)).toBeUndefined();
+	});
+});

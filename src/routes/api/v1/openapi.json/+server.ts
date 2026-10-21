@@ -140,7 +140,7 @@ const spec = {
 			'and in the answer to the create; not given to anyone else, as url is not; the latest attempt only, kept in memory, and a not-reached result recorded no sooner than the timeout after the delivery got its connection, so its timing tells nothing. ' +
 			'(60) PUT /api/v1/cards/{cardId}/move to another board takes the card out of its milestone when the milestone belongs to a board other than the one the card arrives on, in the same write as the move, and answers milestoneId null and leftMilestone, the id and name of the milestone it left (null for any other move, and for a third board\'s), ' +
 			'where the card kept the milestone and its title was listed to every reader of the board it left; a milestone across boards (boardId null) keeps the card, and so does one of the board it arrives on; ' +
-			'the api:card_moved_away entry on the board it left ends ` and out of milestone "<name>"`, or ` and out of a milestone of another board` for a third board\'s, and no other entry or webhook delivery is added. ' +
+			'the api:card_moved_away entry on the board it left ends ` and out of milestone "<name>"`, or ` and out of a milestone of another board` for a third board\'s, and no other entry or webhook delivery is added (until item 103: an api:milestone_card_removed entry and its milestone.card_removed). ' +
 			'(61) PUT /api/v1/cards/{cardId}/move into a Complete column answers 409 "A sub-board you cannot open still has incomplete cards that must be completed first. Ask this board\'s owner.", with no name and no count, when the only unfinished sub-boards of the card are ones the key\'s user cannot open, ' +
 			'where the sub-board was named with its count of open cards; an unfinished sub-board they can open is named as before. ' +
 			'(62) the "Unblocked" comment written on a card that was waiting on work of another board, read by GET /api/v1/cards/{cardId}/comments, names that work by its number only: ' +
@@ -280,11 +280,18 @@ const spec = {
 			'(POST and DELETE /api/v1/milestones/{milestoneId}/cards, the bulk pair, one delivery for each card, and milestoneId on PUT /api/v1/cards/{cardId}), sent to the webhooks of the card\'s board ' +
 			'once the change is committed, with the body every event has: data.cardId, data.action (milestone_card_added or milestone_card_removed), data.source, data.user, and data.detail, ' +
 			'the entry\'s words (`Added "Plan" to milestone "Launch"`, a milestone across boards named milestone #<id>). A card moved from one milestone to another sends one milestone.card_added naming the one it left, ' +
-			'and no milestone.card_removed; a milestone deleted, and a card moved to another board out of its board\'s milestone, send neither. ' +
-			'Nor do cards deleted with a board, a column, an administrator\'s clear of a board\'s cards or a purge of archived cards, which send no card.deleted either, or cards on sub-boards deleted with their parent card, which get no card.deleted of their own. ' +
+			'and no milestone.card_removed. A card that leaves a milestone because of another change sends milestone.card_removed too (item 103). ' +
 			'A change to the milestone itself still sends nothing. ' +
 			'**A webhook whose events list is empty is sent every event, so one made before this release starts receiving both**: list the events wanted to receive neither. ' +
 			'Both can be named in events when a webhook is created or changed. ' +
+			'(103) a card that leaves a milestone because of another change logs api:milestone_card_removed (milestone_card_removed from the web application) on its board, and that board\'s webhooks are sent milestone.card_removed once the change is committed, ' +
+			'one delivery for each card, with data.detail the words of a card taken out and why in brackets: PUT /api/v1/cards/{cardId}/move to another board out of its milestone (`Removed "Plan" from milestone "Launch" (moved to another board)`, on the board it left, with its id; an older milestone of neither board named milestone #<id>); ' +
+			'DELETE /api/v1/milestones/{milestoneId}, for each card it releases (`… (milestone deleted)`); a card in a milestone deleted for good by DELETE /api/v1/cards/{cardId}?permanent=true, beside its card.deleted, or with its column by DELETE /api/v1/columns/{columnId}, ' +
+			'or by the web application\'s clear of a board\'s cards or purge of archived cards (`… (card deleted)`, data.cardId the deleted card\'s id, the entry stored with a null cardId); ' +
+			'and a card on another board released from a milestone of a board deleted by DELETE /api/v1/boards/{boardId}, or of a sub-board deleted with its parent card (`… (milestone deleted with its board)`, the milestone named milestone #<id>). ' +
+			'Each sent nothing for the milestone, and the column delete, the clear and the purge no card.deleted either. A card deleted with its own board (the board deleted, or a sub-board under a deleted card) still sends nothing: ' +
+			'the board\'s log and webhooks are deleted with it. **A webhook whose events list is empty receives these from this release.** ' +
+			'For a card deleted for good, card.deleted and milestone.card_removed are separate deliveries and may arrive in either order: treat a milestone.card_removed for a card unknown to the receiver, or already deleted, as harmless. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -2645,7 +2652,8 @@ const spec = {
 					'every dependency link that has a deleted card or subtask at either end; and the report schedules that name the board. ' +
 					'Kept: cards on other boards that were in one of its milestones, which are then in no milestone, and any that carried one of its categories, which then has none. ' +
 					'Until 2026-10-14 its categories were kept, as categories of no board, which every key is given. Attachment files are kept on the server for 30 days.\n\n' +
-					'No activity entry is written, because the board\'s log is deleted with it, and no webhook is sent. ' +
+					'No activity entry is written on the board, because the board\'s log is deleted with it, and no webhook of the board is sent: its webhooks go with it. ' +
+					'A card on another board released from one of its milestones logs `api:milestone_card_removed` on its own board, and that board\'s webhooks are sent `milestone.card_removed` (item 103). ' +
 					'The delete is one transaction: all of it happens or none of it.',
 				operationId: 'deleteBoard',
 				parameters: [{ $ref: '#/components/parameters/boardId' }],
@@ -2864,7 +2872,12 @@ const spec = {
 					'that has a deleted card or subtask at either end. Move the cards to another column first if they are to be kept. ' +
 					'Attachment files are kept on the server for 30 days.\n\n' +
 					'One `column_deleted` entry is written to the board\'s activity log and appears in the audit log, naming the column and how many cards went with it. ' +
-					'No `card.deleted` webhook is sent for the cards. The delete is one transaction: all of it happens or none of it.',
+					'No `card.deleted` webhook is sent for the cards. A card of the column that was in a milestone logs `api:milestone_card_removed` on the column\'s board, ' +
+					'and that board\'s webhooks are sent `milestone.card_removed`, `… (card deleted)` (item 103). ' +
+					'A card in a milestone on a sub-board deleted with the column\'s cards sends nothing: its board is gone, and its webhooks with it. ' +
+					'A card on another board released from a milestone of such a sub-board logs `api:milestone_card_removed` on its own board, and that board\'s webhooks are sent `milestone.card_removed`, ' +
+					'`… (milestone deleted with its board)`. ' +
+					'The delete is one transaction: all of it happens or none of it.',
 				operationId: 'deleteColumn',
 				parameters: [{ $ref: '#/components/parameters/columnId' }],
 				responses: {
@@ -3209,7 +3222,7 @@ const spec = {
 					'**Permanent delete** removes the card with its subtasks, comments, assignees and attachments, every sub-board under it at every depth ' +
 					'with everything on it, and every dependency link that has a deleted card or subtask at either end. Attachment files are kept on the server for 30 days. ' +
 					'One `card_deleted` activity entry is written, with a null card id because the card is gone, and one `card.deleted` webhook is sent ' +
-					'whose `data.cardId` is the id of the deleted card.',
+					'whose `data.cardId` is the id of the deleted card. A card in a milestone also logs `api:milestone_card_removed` and sends `milestone.card_removed` (item 103).',
 				operationId: 'deleteCard',
 				parameters: [
 					{ $ref: '#/components/parameters/cardId' },
@@ -3261,7 +3274,8 @@ const spec = {
 					'Moving a card out of an On Hold column (any column titled On Hold, Hold, Blocked, Parked or Waiting) to one that is not clears its onHoldNote. ' +
 					'An archived card on a sub-board is not counted: a sub-board holds the card back while it has a card that is not archived and not in a Complete column. Until 2026-10-14 an archived card held it back. ' +
 					'The 409 for sub-boards names an unfinished one the key\'s user can open; when the only unfinished ones are sub-boards they cannot open it reads "A sub-board you cannot open still has incomplete cards that must be completed first. Ask this board\'s owner.", with no name and no count. ' +
-					'A move to another board takes the card out of its milestone when the milestone belongs to a board other than the one the card arrives on, and the answer has milestoneId null and names the milestone it left as leftMilestone, which is null for any other move; a milestone across boards keeps the card. Until 2026-10-14 the card kept the milestone.',
+					'A move to another board takes the card out of its milestone when the milestone belongs to a board other than the one the card arrives on, and the answer has milestoneId null and names the milestone it left as leftMilestone, which is null for any other move; a milestone across boards keeps the card. Until 2026-10-14 the card kept the milestone. ' +
+					'Leaving it logs `api:milestone_card_removed` on the board it left, and that board\'s webhooks are sent `milestone.card_removed` (item 103).',
 				operationId: 'moveCard',
 				parameters: [{ $ref: '#/components/parameters/cardId' }],
 				requestBody: {
@@ -5789,7 +5803,8 @@ const spec = {
 					'Permanently deletes the milestone and keeps the work. Every card in it, archived cards included, is left with no milestone, and none is deleted or changed in any other way. ' +
 					'The answer says how many cards were released. The milestone goes and its cards are released together, or neither happens.\n\n' +
 					'It logs `api:milestone_deleted`, with no card, on the milestone\'s board, or for one across boards on each board holding its cards, saying how many of that board\'s cards were released, ' +
-					'and every board of a card released is sent a live update. No webhook is sent. Until 2026-10-14 nothing was logged.',
+					'and every board of a card released is sent a live update. Then each card released logs `api:milestone_card_removed` on its own board, with its id, ' +
+					'and that board\'s webhooks are sent `milestone.card_removed` (item 103); no other webhook is sent. Until 2026-10-14 nothing was logged.',
 				operationId: 'deleteMilestone',
 				parameters: [{ $ref: '#/components/parameters/milestoneId' }],
 				responses: {

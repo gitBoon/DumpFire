@@ -305,7 +305,8 @@ describe('PUT /api/cards/:id: the card window and a move (card 2183)', () => {
 
 		expect(res.status).toBe(200);
 		expect(cardRow(card.id)).toMatchObject({ columnId: B.cols['To Do'].id, categoryId: null });
-		expect(entries().map((e) => e.action)).toEqual(['card_moved_away', 'card_moved_in']);
+		// The full card is in a milestone of A, which it leaves, recorded on A (card 2381).
+		expect(entries().map((e) => e.action)).toEqual(['card_moved_away', 'milestone_card_removed', 'card_moved_in']);
 
 		// Another card, sent a category of B with the move: written and named.
 		const other = makeCard(A.cols['To Do'], { title: 'Other', categoryId: category(A, 'Of A').id });
