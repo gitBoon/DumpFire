@@ -14,7 +14,11 @@ import type { PageServerLoad } from './$types';
 export const load: PageServerLoad = async ({ locals }) => {
 	const user = locals.user!;
 
-	// Get board IDs this user can access (null = admin, sees all)
+	// Get board IDs this user can access (null = admin, sees all). Read once
+	// and handed to the sub-boards, the groupings and recent activity below,
+	// each of which read it again for itself: four reads each time, five for a
+	// caller in a team (card 2393). The load awaits nothing, so no other
+	// request runs between those reads and this one: it is the same answer.
 	const accessibleIds = getAccessibleBoardIds(user);
 
 	let allBoards: Board[];
@@ -35,7 +39,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 	// count, the All Tasks walk, its cost and the spend by person (card 2130). A
 	// sub-board inherits nothing from its parent board, and a member of the
 	// parent was shown the name, progress and cost of one they were never given.
-	const allSubBoards = subBoardsFor(user);
+	const allSubBoards = subBoardsFor(user, undefined, accessibleIds);
 
 	// Map: cardId -> sub-board
 	const subBoardsByCard = new Map<number, typeof allSubBoards>();
@@ -51,7 +55,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 
 	// The groupings the caller is listed, to group boards and to file one under:
 	// those holding a board they can open, and the empty ones (card 2128).
-	const allCategories = boardCategoriesFor(user);
+	const allCategories = boardCategoriesFor(user, accessibleIds);
 
 	// Every board this page reads: the top-level boards shown and the
 	// sub-boards the caller can open. The tiles, the All Tasks walk and the
@@ -333,7 +337,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 
 	// Recent activity: the last 10 entries of this user's, on boards they can
 	// open (card 2126). A board they were taken off went on showing here.
-	const recentActivity = recentActivityFor(user, 10);
+	const recentActivity = recentActivityFor(user, 10, accessibleIds);
 
 	// Pending inbox requests
 	const userTeamRows = db.select({ teamId: teamMembers.teamId })

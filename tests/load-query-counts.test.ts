@@ -21,22 +21,29 @@
  * Each load has a ceiling as well: the admin page's handful, and the
  * dashboard's for each caller in the pinned scene (`MOST_READS`), lowered by
  * one for the owner and the outsider when the dashboard stopped reading its
- * caller's cards' columns twice.
+ * caller's cards' columns twice, and by 12 for every caller but the
+ * administrator (15 for the mate) when it stopped reading the boards its
+ * caller can open four times (card 2393).
  *
  * What each load answers is pinned as the old load answered it: the cases
  * below were run on the old code before the change and passed there, but for
  * the one leaderboard figure card 2391 changed on purpose (see `PINNED`). The
  * key order is pinned too (`JSON.stringify`), since the page is handed the
- * object as it is.
+ * object as it is. The groupings and the caller's recent activity were added
+ * to the scene and to all five pins on purpose in card 2393's review, so that
+ * the access list the load hands to the helpers answering them is checked as
+ * well; and a list handed to those helpers is shown taken as "every board"
+ * only from an administrator.
  *
  * The plan is `docs/planning/cards-2297-2298-2389.md`; card 2391's is
- * `docs/planning/card-2391.md`.
+ * `docs/planning/card-2391.md` and card 2393's `docs/planning/card-2393.md`.
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db } from '$lib/server/db';
 import { defaultOutside } from '$lib/server/db/restore';
-import { boards, cards, categories, taskRequests, teamMembers, tokenUsage, users, type Card } from '$lib/server/db/schema';
+import { activityLog, boardCategories, boards, cards, categories, taskRequests, teamMembers, tokenUsage, users, type Card } from '$lib/server/db/schema';
+import { boardCategoriesFor, boardCategoryRule, recentActivityFor, subBoardsFor } from '$lib/server/list-access';
 import type { SessionUser } from '$lib/server/auth';
 import { pageLoad } from './helpers/actions';
 import { readBudget } from './helpers/reads';
@@ -299,6 +306,31 @@ describe('the dashboard’s load (card 2298)', () => {
 			{ cardId: deeper.cards[0].id, tokens: 1000, model: 'claude-opus-4-1', reportedByUserId: callers.owner.id, createdAt: '2026-01-05 00:00:00' }
 		]).run();
 
+		// Groupings holding A, B and the sub-board under the card to do, and one
+		// holding nothing; and an entry of each caller's in the activity log on
+		// each of A, B, P and that sub-board, newest last. Each caller is listed
+		// the groupings and entries of the boards they can open (card 2393's
+		// review): handed the wrong boards, either list would show it.
+		const groupings = db
+			.insert(boardCategories)
+			.values([{ name: 'Holds A' }, { name: 'Holds B' }, { name: 'Holds under to do' }, { name: 'Holds nothing' }])
+			.returning()
+			.all();
+		[A, B, underTodo].forEach((made, i) => {
+			db.update(boards).set({ categoryId: groupings[i].id }).where(eq(boards.id, made.board.id)).run();
+		});
+		for (const caller of Object.values(callers)) {
+			db.insert(activityLog).values(
+				[underTodo, A, B, P].map((made, i) => ({
+					boardId: made.board.id,
+					userId: caller.id,
+					action: 'card_moved',
+					detail: `on ${made.board.name}`,
+					createdAt: `2026-01-0${i + 5} 00:00:00`
+				}))
+			).run();
+		}
+
 		// Every moment fixed, so nothing below depends on when it runs.
 		[A, B, P, underDone, deeper, underTodo].forEach((made, i) => {
 			db.update(boards).set({ createdAt: `2026-01-0${i + 1} 00:00:00`, updatedAt: `2026-01-0${i + 1} 00:00:00` }).where(eq(boards.id, made.board.id)).run();
@@ -320,6 +352,8 @@ describe('the dashboard’s load (card 2298)', () => {
 				...b.subBoards.map((s: any) => `${s.name} under ${s.parentCardTitle}: ${s.done}/${s.total} done, tokens ${s.tokenTotal}`)
 			]),
 			allTasksTotals: data.allTasksTotals,
+			allCategories: data.allCategories.map((g: any) => g.name),
+			recentActivity: data.analytics.recentActivity.map((e: any) => e.detail),
 			pendingRequests: data.analytics.pendingRequests,
 			teamLeaderboard: data.analytics.teamLeaderboard.map((u: any) => `${u.emoji} ${u.username}: ${u.completed} done, ${u.active} active`),
 			totalSubBoards: data.analytics.totalSubBoards,
@@ -376,8 +410,17 @@ describe('the dashboard’s load (card 2298)', () => {
  * and once for which are on hold, and are read once now (card 2392). They
  * were 37 and 36. The member, the mate and the
  * administrator are assigned no card, so neither read was made for them.
+ *
+ * Each caller but the administrator is 12 fewer again, and the mate 15
+ * (card 2393): the boards the caller can open (`getAccessibleBoardIds`) were
+ * read four times a load, by the load and again by `subBoardsFor`,
+ * `boardCategoriesFor` and `recentActivityFor`, four reads each time (the
+ * boards they made, their member rows, their teams, the public boards) and a
+ * fifth for the mate's team's boards. The load reads them once now and hands
+ * them on. They were 36, 34, 37 and 35; the administrator, for whom nothing is
+ * read, stays at 17.
  */
-const MOST_READS: Record<string, number> = { owner: 36, member: 34, mate: 37, admin: 17, outsider: 35 };
+const MOST_READS: Record<string, number> = { owner: 24, member: 22, mate: 22, admin: 17, outsider: 23 };
 
 /** The keys of the answer, of each board in it and of its analytics, in order, the same for every caller. */
 const KEYED = {
@@ -398,6 +441,15 @@ const KEYED = {
  * that the leaderboard counts open cards only (card 2391), so the owner, the
  * member, the mate and the administrator are each shown `ann: 1 done, 0
  * active`, in the same place.
+ *
+ * `allCategories` and `recentActivity` were added to the scene and to the pins
+ * in card 2393's review, since the load hands its list of the caller's boards
+ * to the helpers that answer both, and nothing pinned would have caught the
+ * wrong list handed there. Each caller is listed the groupings holding a board
+ * they can open and the empty one, and their own entries on the boards they
+ * can open, newest first. They were pinned with the load's three helpers left
+ * to read access for themselves, as before card 2393 (a temporary edit), and
+ * passed there; the scene's additions change no other figure pinned.
  */
 const PINNED: Record<string, unknown> = {
 	owner: {
@@ -412,6 +464,8 @@ const PINNED: Record<string, unknown> = {
 			]
 		],
 		allTasksTotals: { cards: 11, completedCards: 4, subtasks: 4, tasks: 15, tokenTotal: 1500, costUsd: 0.0315, unpricedTokens: 0 },
+		allCategories: ['Holds A', 'Holds B', 'Holds nothing', 'Holds under to do'],
+		recentActivity: ['on P', 'on B', 'on A', 'on Under to do'],
 		pendingRequests: 1,
 		teamLeaderboard: ['👤 bob: 1 done, 1 active', '👤 ann: 1 done, 0 active', '👤 owner: 0 done, 1 active', '👤 outsider: 0 done, 1 active'],
 		totalSubBoards: 3,
@@ -426,6 +480,8 @@ const PINNED: Record<string, unknown> = {
 			['A: 3 cards, 1 done, last 2026-01-09 00:00:00, tokens 500', 'Under to do under A to do: 1/1 done, tokens null']
 		],
 		allTasksTotals: { cards: 5, completedCards: 2, subtasks: 3, tasks: 8, tokenTotal: 500, costUsd: 0.010499999999999999, unpricedTokens: 0 },
+		allCategories: ['Holds A', 'Holds nothing', 'Holds under to do'],
+		recentActivity: ['on P', 'on A', 'on Under to do'],
 		pendingRequests: 0,
 		teamLeaderboard: ['👤 ann: 1 done, 0 active', '👤 bob: 0 done, 1 active', '👤 owner: 0 done, 1 active', '👤 outsider: 0 done, 1 active'],
 		totalSubBoards: 1,
@@ -437,6 +493,8 @@ const PINNED: Record<string, unknown> = {
 		...KEYED,
 		boards: [['P: 1 cards, 0 done, last 2026-01-03 00:00:00, tokens null'], ['A: 3 cards, 1 done, last 2026-01-09 00:00:00, tokens 500']],
 		allTasksTotals: { cards: 4, completedCards: 1, subtasks: 3, tasks: 7, tokenTotal: 500, costUsd: 0.010499999999999999, unpricedTokens: 0 },
+		allCategories: ['Holds A', 'Holds nothing'],
+		recentActivity: ['on P', 'on A'],
 		pendingRequests: 1,
 		teamLeaderboard: ['👤 ann: 1 done, 0 active', '👤 bob: 0 done, 1 active', '👤 owner: 0 done, 1 active', '👤 outsider: 0 done, 1 active'],
 		totalSubBoards: 0,
@@ -456,6 +514,8 @@ const PINNED: Record<string, unknown> = {
 			]
 		],
 		allTasksTotals: { cards: 11, completedCards: 4, subtasks: 4, tasks: 15, tokenTotal: 1500, costUsd: 0.0315, unpricedTokens: 0 },
+		allCategories: ['Holds A', 'Holds B', 'Holds nothing', 'Holds under to do'],
+		recentActivity: ['on P', 'on B', 'on A', 'on Under to do'],
 		pendingRequests: 3,
 		teamLeaderboard: ['👤 bob: 1 done, 1 active', '👤 ann: 1 done, 0 active', '👤 owner: 0 done, 1 active', '👤 outsider: 0 done, 1 active'],
 		totalSubBoards: 3,
@@ -467,6 +527,8 @@ const PINNED: Record<string, unknown> = {
 		...KEYED,
 		boards: [['P: 1 cards, 0 done, last 2026-01-03 00:00:00, tokens null']],
 		allTasksTotals: { cards: 1, completedCards: 0, subtasks: 0, tasks: 1, tokenTotal: null, costUsd: null, unpricedTokens: 0 },
+		allCategories: ['Holds nothing'],
+		recentActivity: ['on P'],
 		pendingRequests: 0,
 		teamLeaderboard: ['👤 outsider: 0 done, 1 active'],
 		totalSubBoards: 0,
@@ -475,3 +537,67 @@ const PINNED: Record<string, unknown> = {
 		spendAll: []
 	}
 };
+
+// ─── Card 2393's review: a list of boards handed to the helpers ───────────
+
+/**
+ * `accessible`, handed to `recentActivityFor`, `boardCategoryRule`,
+ * `boardCategoriesFor` and `subBoardsFor` (card 2393). `null` is an
+ * administrator's answer, "every board", and each helper took it as that from
+ * anyone: a caller who passed it by mistake listed an outsider another's
+ * secret sub-board, grouping and activity. It is taken as every board only from
+ * an administrator now, with nothing read; from anyone else each helper reads
+ * the caller's boards for itself, as when it is left out.
+ */
+describe('a null list of boards, handed to the list helpers (card 2393’s review)', () => {
+	/** A secret board of the owner's, with a sub-board, filed under a grouping, and the outsider's own board. */
+	function scene() {
+		const owner = makeUser();
+		const outsider = makeUser();
+		const admin = makeUser({ role: 'admin' });
+		const secret = makeBoard({ owner, name: 'Secret' });
+		const card = makeCard(secret.cols['To Do']);
+		const under = makeSubBoard(card, { owner, name: 'Secret under' });
+		const own = makeBoard({ owner: outsider, name: 'Own' });
+		const grouping = db.insert(boardCategories).values({ name: 'Secret grouping' }).returning().get();
+		db.update(boards).set({ categoryId: grouping.id }).where(eq(boards.id, secret.board.id)).run();
+		// The outsider's entries, one on a board they were taken off; the administrator's, on the secret board.
+		db.insert(activityLog).values([
+			{ boardId: secret.board.id, userId: outsider.id, action: 'card_moved', detail: 'on Secret' },
+			{ boardId: own.board.id, userId: outsider.id, action: 'card_moved', detail: 'on Own' },
+			{ boardId: secret.board.id, userId: admin.id, action: 'card_moved', detail: 'on Secret' }
+		]).run();
+		return { outsider, admin, card, under, grouping };
+	}
+
+	it('answers a caller who is not an administrator for their own boards alone, from all four helpers', () => {
+		const { outsider, card, grouping } = scene();
+
+		expect(recentActivityFor(outsider, 10, null).map((e) => e.detail)).toEqual(['on Own']);
+		expect(boardCategoryRule(outsider, null)(grouping.id)).toBe(false);
+		expect(boardCategoriesFor(outsider, null)).toEqual([]);
+		expect(subBoardsFor(outsider, undefined, null)).toEqual([]);
+		expect(subBoardsFor(outsider, [card.id], null)).toEqual([]);
+		// The same as each answers with the list left out.
+		expect(recentActivityFor(outsider, 10, null)).toEqual(recentActivityFor(outsider, 10));
+		expect(boardCategoriesFor(outsider, null)).toEqual(boardCategoriesFor(outsider));
+		expect(subBoardsFor(outsider, undefined, null)).toEqual(subBoardsFor(outsider));
+	});
+
+	it('takes it as every board from an administrator, reading nothing to tell them apart', () => {
+		const { admin, card, under, grouping } = scene();
+
+		const budget = readBudget(100);
+		let rule;
+		try {
+			rule = boardCategoryRule(admin, null);
+		} finally {
+			budget.restore();
+		}
+		expect(budget.count).toBe(0);
+		expect(rule(grouping.id)).toBe(true);
+		expect(recentActivityFor(admin, 10, null).map((e) => e.detail)).toEqual(['on Secret']);
+		expect(boardCategoriesFor(admin, null).map((g) => g.name)).toEqual(['Secret grouping']);
+		expect(subBoardsFor(admin, [card.id], null).map((b) => b.id)).toEqual([under.board.id]);
+	});
+});
