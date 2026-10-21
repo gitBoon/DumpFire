@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.84
+version: 1.85
 status: As-Built
 date: 2026-10-21
 tags:
@@ -1201,6 +1201,24 @@ new, `DELETE /comments/:commentId` (card 2283); these operations, answers and fi
   Attachments are not part of this API, so neither is ever written with `api:`. **No webhook
   is sent for either**: there is no `attachment.*` event, and a receiver could not fetch the
   file (item 97).
+- **`PUT /columns/:columnId`, `/labels/:labelId`, `/categories/:categoryId` and
+  `/board-categories/:categoryId` write only the fields whose value changes** (card 2359),
+  as `PUT /boards/:boardId` does since card 2345. A body whose every field is as the row
+  holds it (a name or title that trims to the stored one included) is answered `200` with the
+  row as it is: nothing is written, and the board's open pages are not told to re-read, where
+  every field sent was written and the board of a column, a label or a category told. `{}` is
+  still `400` `No valid fields to update`, and a request that would be refused is still
+  refused first (a column holding a card renamed into or out of Complete is still `409`). The
+  web application's `PUT /api/columns/{id}`, `PATCH /api/labels`, `PUT /api/categories/{id}`
+  and `PUT /api/board-categories/{id}` write and tell the same way, though each keeps its own
+  answer to an empty body (`PATCH /api/labels` answers `{}` with `400`
+  `Send name or color to change`) (item 98). See
+  [`PUT /api/v1/columns/:columnId`](#put-apiv1columnscolumnid).
+- **A comment copied from a request's discussion keeps its message's time** (card 2340).
+  Accepting a request in the web application copies its discussion onto the new card as
+  comments; each copy now has the time its message was sent as its `createdAt` and
+  `updatedAt`, as `GET /cards/:cardId/comments` and the reports read it, where every copy had
+  the time of the accept. Comments copied before keep their times (item 99).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -2584,6 +2602,10 @@ it finished without anyone finishing it. Move each finished card to a Complete c
 the rest out of this one first, or choose another name.` So a Complete or Done column that
 holds any card can be renamed only to Complete or Done. Until 2026-10-14 the title was
 saved, and every card in the column became finished, or open, by its new title alone.
+
+Only the fields whose value changes are written, and the board's open pages told (card
+2359). A column sent back as it is answers `200` with the column, writing nothing; so do a
+label, a category and a board category sent back to their own `PUT` (item 98).
 
 #### `DELETE /api/v1/columns/:columnId`
 

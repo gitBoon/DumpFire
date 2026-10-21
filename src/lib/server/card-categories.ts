@@ -27,6 +27,7 @@ import { db } from './db';
 import { categories, type Category } from './db/schema';
 import type { SessionUser } from './auth';
 import { emit } from './events';
+import { changedFields } from './card-changes';
 import { readColour, readId, readText, type RequestBody } from './request-body';
 import { requireBoard, requireCategoryCreate, requireCategoryEdit, requireUser } from './route-guards';
 import { inWrite, type ServiceOptions } from './write-as';
@@ -79,8 +80,9 @@ export function createCardCategory(caller: SessionUser | null, at: { boardId?: n
  * /api/v1/categories/:categoryId`). Edit access to the board it belongs to,
  * read from its row; one of no board is an administrator's
  * (`requireCategoryEdit`). It used to be open to everyone, so any API key
- * could rename a shared one. A body that names neither field is a 400. The
- * answer is the row.
+ * could rename a shared one. A body that names neither field is a 400. Only
+ * the fields whose value changes are written, and the board told; a save that
+ * changes nothing writes and tells nothing (card 2359). The answer is the row.
  */
 export function updateCardCategory(caller: SessionUser | null, at: { categoryId: number }, body: RequestBody, opts: ServiceOptions): Category {
 	inWrite();
@@ -101,7 +103,12 @@ export function updateCardCategory(caller: SessionUser | null, at: { categoryId:
 
 	if (Object.keys(updates).length === 0) throw error(400, 'No valid fields to update');
 
-	const row = db.update(categories).set(updates).where(eq(categories.id, at.categoryId)).returning().get();
+	// Card 2183's rule (card 2359), after every refusal: a name and colour as
+	// the category holds them write and tell nothing, and the category is
+	// answered as it is; otherwise only what changes is written.
+	const changed = changedFields(category, updates);
+	if (Object.keys(changed).length === 0) return category;
+	const row = db.update(categories).set(changed).where(eq(categories.id, at.categoryId)).returning().get();
 	if (category.boardId) emit(category.boardId, 'update', { type: 'category' });
 	return row;
 }

@@ -22,6 +22,7 @@ import { eq } from 'drizzle-orm';
 import { db } from './db';
 import { boardCategories, boards, type BoardCategory } from './db/schema';
 import type { SessionUser } from './auth';
+import { changedFields } from './card-changes';
 import { readColour, readText, type RequestBody } from './request-body';
 import { requireBoardCategoryEdit, requireUser } from './route-guards';
 import { inWrite, type ServiceOptions } from './write-as';
@@ -68,7 +69,8 @@ export function createBoardGrouping(caller: SessionUser | null, at: Record<strin
  * every board filed under it is shown, so the caller must be able to edit
  * each of them (`requireBoardCategoryEdit`); the boards filed under it are
  * read in the transaction that renames it. A body that names neither field is
- * a 400. The answer is the row.
+ * a 400. Only the fields whose value changes are written; a save that changes
+ * nothing writes nothing (card 2359). The answer is the row.
  */
 export function updateBoardGrouping(caller: SessionUser | null, at: { categoryId: number }, body: RequestBody, opts: ServiceOptions): BoardCategory {
 	inWrite();
@@ -88,7 +90,12 @@ export function updateBoardGrouping(caller: SessionUser | null, at: { categoryId
 
 	if (Object.keys(updates).length === 0) throw error(400, 'No valid fields to update');
 
-	return db.update(boardCategories).set(updates).where(eq(boardCategories.id, at.categoryId)).returning().get();
+	// Card 2183's rule (card 2359), after every refusal: a name and colour as
+	// the grouping holds them write nothing, and the grouping is answered as it
+	// is; otherwise only what changes is written.
+	const changed = changedFields(grouping, updates);
+	if (Object.keys(changed).length === 0) return grouping;
+	return db.update(boardCategories).set(changed).where(eq(boardCategories.id, at.categoryId)).returning().get();
 }
 
 /**

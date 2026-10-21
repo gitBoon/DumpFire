@@ -164,6 +164,10 @@ export const PATCH: RequestHandler = async ({ params, request, locals, url }) =>
 
 			// Copy discussion messages as card comments, in the order they were
 			// sent: by id within one second (cards 2301 and 2302's plan, ruling 10).
+			// Each copy keeps its message's own time (card 2340), as written and
+			// as last changed, so the card window shows no "(edited)" on it: every
+			// copy was stamped with the time of the accept, so a discussion of a
+			// week read as written in one second, after it was over.
 			const msgs = db.select().from(requestMessages)
 				.where(eq(requestMessages.requestId, id))
 				.orderBy(asc(requestMessages.createdAt), asc(requestMessages.id))
@@ -173,7 +177,9 @@ export const PATCH: RequestHandler = async ({ params, request, locals, url }) =>
 				db.insert(cardComments).values({
 					cardId: newCard.id,
 					userId: user.id,
-					content: `**${who} (from request discussion):**\n${m.message}`
+					content: `**${who} (from request discussion):**\n${m.message}`,
+					createdAt: m.createdAt,
+					updatedAt: m.createdAt
 				}).run();
 			}
 

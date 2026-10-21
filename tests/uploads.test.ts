@@ -316,6 +316,37 @@ describe('deleting an attachment', () => {
 		expect(fileIn(card.id, file.filename)).toBe(true);
 	});
 
+	// Card 2361: the attachment was found by its own id and the card in the
+	// path was never read, so a file was deleted under the address of any card.
+	// Now one not on the card named is answered as one that is not there, before
+	// any question of access, as a comment is (card 2117's `requireOwnComment`).
+	it('is 404 under the address of a card it is not on, with the row and the file left and nothing told (card 2361)', async () => {
+		const other = makeCard(A.cols['To Do'], { title: 'Has none' });
+		const file = makeAttachment(card);
+		const B = makeBoard({ name: 'B' });
+		const theirs = makeAttachment(makeCard(B.cols['To Do'], { title: 'Not theirs' }));
+		const outsider = makeUser({ username: 'outsider' });
+		makeWebhook(A.board);
+		const before = snapshotDb();
+
+		const said = await told(async () => {
+			// The owner, who can edit both cards, names the other one.
+			const res = await api('DELETE', `/api/cards/${other.id}/attachments/${file.id}`, { user: owner });
+			expect([res.status, res.body]).toEqual([404, { message: 'Attachment not found' }]);
+			// A file on a board the owner cannot open, under a card they can: 404, not 403.
+			expect((await api('DELETE', `/api/cards/${card.id}/attachments/${theirs.id}`, { user: owner })).status).toBe(404);
+			// Under its own card, the refusal is the access one, as before.
+			expect((await api('DELETE', `/api/cards/${card.id}/attachments/${file.id}`, { user: outsider })).status).toBe(403);
+			// A card id that is no id is refused as one.
+			const bad = await api('DELETE', `/api/cards/abc/attachments/${file.id}`, { user: owner });
+			expect([bad.status, bad.body]).toEqual([400, { message: 'Invalid card ID' }]);
+		});
+
+		expect(said).toEqual({ entries: [], events: [], webhooks: [] });
+		expectUnchanged(before);
+		expect(fileIn(card.id, file.filename)).toBe(true);
+	});
+
 	it('records the delete in the board’s log, by whoever deleted it, and tells the board once it is committed; no webhook (card 2337)', async () => {
 		const editor = makeUser({ username: 'editor' });
 		const theirs = makeAttachment(card, { name: 'old plan.pdf', uploadedBy: owner });
@@ -815,5 +846,25 @@ describe('serving an attachment', () => {
 		const gone = await api('GET', `/api/cards/${card.id}/attachments/${missing.id}`, { user: owner });
 		expect(gone.status).toBe(404);
 		expect(gone.body.message).toBe('File not found on disk');
+	});
+
+	// Card 2361: served under the address of any card, as the delete was.
+	it('is 404 under the address of a card it is not on, before any question of access (card 2361)', async () => {
+		const file = makeAttachment(card, { name: 'notes.txt' });
+		const other = makeCard(A.cols['To Do'], { title: 'Has none' });
+		const B = makeBoard({ name: 'B' });
+		const theirs = makeAttachment(makeCard(B.cols['To Do'], { title: 'Not theirs' }));
+		const outsider = makeUser({ username: 'outsider' });
+
+		const res = await api('GET', `/api/cards/${other.id}/attachments/${file.id}`, { user: owner });
+		expect([res.status, res.body]).toEqual([404, { message: 'Attachment not found' }]);
+		// A file on a board the caller cannot open, under a card they can: 404, not 403.
+		expect((await api('GET', `/api/cards/${card.id}/attachments/${theirs.id}`, { user: owner })).status).toBe(404);
+		// Under its own card: 403 to an outsider, and the file to the owner, as before.
+		expect((await api('GET', `/api/cards/${card.id}/attachments/${file.id}`, { user: outsider })).status).toBe(403);
+		const own = await api('GET', `/api/cards/${card.id}/attachments/${file.id}`, { user: owner });
+		expect([own.status, own.body]).toEqual([200, 'The contents of notes.txt']);
+		const bad = await api('GET', `/api/cards/abc/attachments/${file.id}`, { user: owner });
+		expect([bad.status, bad.body]).toEqual([400, { message: 'Invalid card ID' }]);
 	});
 });

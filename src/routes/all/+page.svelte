@@ -8,7 +8,7 @@
 	 */
 	import type { PageData } from './$types';
 	import { onMount, onDestroy } from 'svelte';
-	import { invalidateAll } from '$app/navigation';
+	import { goto, invalidateAll } from '$app/navigation';
 	import { browser } from '$app/environment';
 	import CardModal from '$lib/components/CardModal.svelte';
 	import { PageCardWindow } from '$lib/board/page-card-window.svelte';
@@ -322,14 +322,27 @@
 
 	let loadingMore = $state(false);
 
+	/**
+	 * Fifty more completed cards (card 2300). The limit is in the address, and
+	 * the load reads it there, so the address is written with goto and
+	 * replaceState: a navigation in place of this history entry, which runs the
+	 * load at the new address and keeps SvelteKit's state in the entry, as the
+	 * To Do page writes its filters. It was written with the browser's
+	 * `history.replaceState({}, …)`, which threw that state away, and the page
+	 * re-read with `invalidateAll`, which SvelteKit runs at the address it
+	 * holds, never moved by the browser's call: the load got the old limit,
+	 * and the list stayed as it was.
+	 */
 	async function loadMoreCompleted() {
 		loadingMore = true;
 		const newLimit = (data.completedLimit || 50) + 50;
 		const url = new URL(window.location.href);
 		url.searchParams.set('completedLimit', String(newLimit));
-		window.history.replaceState({}, '', url.toString());
-		await invalidateAll();
-		loadingMore = false;
+		try {
+			await goto(url, { replaceState: true, keepFocus: true, noScroll: true });
+		} finally {
+			loadingMore = false;
+		}
 	}
 
 	function closeSortDropdowns() {

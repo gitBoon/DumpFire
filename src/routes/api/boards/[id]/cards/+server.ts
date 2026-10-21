@@ -4,6 +4,7 @@ import { columns, cards } from '$lib/server/db/schema';
 import { eq, inArray, isNull, and, asc } from 'drizzle-orm';
 import { pathId } from '$lib/server/request-body';
 import { requireBoard } from '$lib/server/route-guards';
+import { CARD_ORDER } from '$lib/server/card-order';
 import type { RequestHandler } from './$types';
 
 /**
@@ -33,8 +34,9 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		? db.select({ id: cards.id, title: cards.title, columnId: cards.columnId, position: cards.position })
 			.from(cards)
 			.where(and(inArray(cards.columnId, colIds), isNull(cards.archivedAt)))
-			// Ties by id (card 2295), as the API's listing breaks them.
-			.orderBy(asc(cards.position), asc(cards.id))
+			// Ties by id (card 2295), as the API's listing breaks them: the one
+			// order of every card list (card 2347).
+			.orderBy(...CARD_ORDER)
 			.all()
 		: [];
 

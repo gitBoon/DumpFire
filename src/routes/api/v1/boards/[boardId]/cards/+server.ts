@@ -3,6 +3,7 @@ import { db } from '$lib/server/db';
 import { cards, columns, subtasks } from '$lib/server/db/schema';
 import { eq, asc, and, isNull, sql } from 'drizzle-orm';
 import { createCard } from '$lib/server/cards';
+import { CARD_ORDER } from '$lib/server/card-order';
 import { linkBaseUrl } from '$lib/server/email';
 import { pathId, readBody, readQueryId } from '$lib/server/request-body';
 import { requireBoard, requireUser } from '$lib/server/route-guards';
@@ -42,7 +43,7 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
 		.from(cards)
 		.innerJoin(columns, eq(cards.columnId, columns.id))
 		.where(listed)
-		.orderBy(asc(columns.position), asc(columns.id), asc(cards.position), asc(cards.id))
+		.orderBy(asc(columns.position), asc(columns.id), ...CARD_ORDER)
 		.all();
 
 	// Subtask counts, in one grouped query rather than one call per card.

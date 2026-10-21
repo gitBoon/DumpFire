@@ -6,6 +6,7 @@ import { getBoardRole } from '$lib/server/board-access';
 import { pathId } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { SUBTASK_ORDER } from '$lib/server/subtask-order';
+import { CARD_ORDER } from '$lib/server/card-order';
 import type { RequestHandler } from './$types';
 
 /** Escape a value for CSV: wrap in quotes if it contains commas, quotes, or newlines. */
@@ -48,10 +49,10 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		});
 	}
 
-	// Get all active cards
+	// Get all active cards, by position, ties by id (card 2347)
 	const allCards = db.select().from(cards)
 		.where(and(inArray(cards.columnId, colIds), isNull(cards.archivedAt)))
-		.orderBy(asc(cards.position))
+		.orderBy(...CARD_ORDER)
 		.all();
 
 	const cardIds = allCards.map(c => c.id);

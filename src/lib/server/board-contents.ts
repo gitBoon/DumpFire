@@ -27,6 +27,7 @@ import { linkableBoards, MAX_SUB_BOARD_DEPTH } from './sub-boards';
 import { cardCategoriesFor, hiddenOpenCountsFor, subBoardsFor } from './list-access';
 import { subBoardProgress } from './card-completion';
 import { SUBTASK_ORDER } from './subtask-order';
+import { CARD_ORDER } from './card-order';
 import type { SessionUser } from './auth';
 
 /** One board above this one, as the page's breadcrumbs show it. */
@@ -131,7 +132,8 @@ export function readBoardContents(user: SessionUser, boardId: number) {
 					.select()
 					.from(cards)
 					.where(and(inArray(cards.columnId, columnIds), isNull(cards.archivedAt)))
-					.orderBy(asc(cards.position))
+					// Ties by id (card 2347).
+					.orderBy(...CARD_ORDER)
 					.all()
 			: [];
 
