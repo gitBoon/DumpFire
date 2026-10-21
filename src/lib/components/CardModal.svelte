@@ -446,9 +446,6 @@
 		});
 	}
 
-	/** The window's own overlay, to tell a confirmation of its own from one of the page's. */
-	let overlay = $state<HTMLDivElement | null>(null);
-
 	function handleKeydown(e: KeyboardEvent) {
 		if (showSubtaskModal) return; // Let subtask modal handle its own escape
 		// Ctrl+Enter (Cmd+Enter) saves, as the footer says (card 2280, slice B5c).
@@ -456,11 +453,15 @@
 		// stop it before it gets here.
 		const saveKey = e.key === 'Enter' && (e.ctrlKey || e.metaKey);
 		if (e.key !== 'Escape' && !saveKey) return;
-		// A confirmation the page opened over this window, such as All Tasks' or
-		// the board page's "Archive Card", answers Escape itself, as Cancel. It
-		// used to close this window as well, and with it what was typed in it.
+		// A confirmation open anywhere answers Escape itself, as Cancel, and
+		// Ctrl+Enter is not this window's while it is up: one the page opened
+		// over this window, such as All Tasks' or the board page's "Archive
+		// Card", used to have the window closed under it as well, and with it
+		// what was typed in it. One of the window's own, a comment's Delete
+		// (card 2338), is the same: the window used to stand aside only for
+		// one outside its overlay, and closed or saved on this one.
 		const confirming = document.querySelector('.confirm-modal');
-		if (confirming && !overlay?.contains(confirming)) return;
+		if (confirming) return;
 		if (saveKey) {
 			// Not while a template dialog is open: its own Enter is its answer.
 			if (showTemplatePicker || showSaveTemplate) return;
@@ -736,7 +737,7 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
-<div class="modal-overlay" role="dialog" aria-modal="true" aria-label="Card editor" bind:this={overlay} onfocusin={(e) => (focusedField = boxField(e.target))} onfocusout={() => (focusedField = null)}>
+<div class="modal-overlay" role="dialog" aria-modal="true" aria-label="Card editor" onfocusin={(e) => (focusedField = boxField(e.target))} onfocusout={() => (focusedField = null)}>
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div class="modal-content card-modal-content" onclick={(e) => { e.stopPropagation(); closeAllDropdowns(); }} role="document">
 		{#if isCoverValue(coverUrl)}

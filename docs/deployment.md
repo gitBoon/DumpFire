@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.71
+version: 1.72
 status: As-Built
 date: 2026-10-21
 tags:
@@ -3838,7 +3838,11 @@ The boards cleared stay cleared; the older image reads `null` as unfiled, as it 
 
 **Card 2353.** No migration, no setting, no route; one shared component, `ConfirmModal.svelte`, the confirm dialog of the plan page's Remove From Goal, the dashboard's Delete Board, All Tasks' and To Do's Archive Card, the board page's confirms (Archive Card, Delete Column, Link Board, Delete Sub-board, Delete Permanently, and **Cannot Complete**) and the Teams page's Delete Team. It moved no keyboard focus: the focus stayed on the button that opened it, behind the overlay, Tab walked the page behind, and nothing gave the focus back when it closed. Now **Cancel** takes the focus as the dialog opens; Tab and Shift+Tab go between its two buttons and no further, and Tab from anywhere outside it (after a click on the overlay, say) comes back to Cancel; and as it closes the focus goes back to the button that opened it, one turn of the browser's event loop later, if that button is still on the page and nothing else has taken the focus. A card window the dialog opens (Cannot Complete's **Open Card**) keeps the focus its title takes, and an opener the action removed (a deleted board's or team's button, an archived card's window) is passed over. The dialog's message is tied to it (`aria-describedby`), so a screen reader that lands on Cancel reads what is being confirmed. The admin page's, the Archived page's and three admin panels' own confirms are not this component and are unchanged. The plan is `docs/planning/cards-2337-2338-2341-2342-2353-card-window.md`.
 
+**Card 2338.** No migration, no setting, no route; the card window's Comments tab and its key handling. A comment's **Delete** sent the delete on one click, and a deleted comment cannot be got back. Now it opens the confirm dialog above, drawn inside the card window: "Delete Comment", "This comment will be deleted for everyone on the card. This cannot be undone.", and **Delete**; for an administrator deleting someone else's comment, "<author>'s comment will be deleted for everyone on the card, and the Activity Log will record that you deleted it. This cannot be undone." Cancel or Escape closes it and sends nothing. The card window left Escape and Ctrl+Enter to a confirm only when it was outside the window, so Escape on this one would have closed the whole window; it now stands aside for any confirm open. A comment someone else deletes while the dialog is open is answered "Comment not found" in the window's message box, as a stale delete is today.
+
 **Owner to know (2353).** **Enter pressed straight after a confirm opens now cancels it**, where it pressed the page's button behind the dialog again. Confirming by keyboard is now Tab, then Enter.
+
+**Owner to know (2338).** **Deleting a comment now takes a second click**, on the dialog's Delete.
 
 #### After the deploy
 
@@ -3849,12 +3853,14 @@ On production, as **O**, your administrator account. Nothing here touches a real
 | 333 | 2353 | On **Teams**, create a team "TEST 2353 - delete me" and press its delete button. Press Tab, Tab, then Shift+Tab; then Escape. Then delete the team for real | The dialog opens with a focus ring on **Cancel**; Tab goes to **Delete**, Tab again back to **Cancel**, Shift+Tab to **Delete**; Escape closes it and the focus ring is back on the team's delete button | The focus stays behind the dialog, Tab reaches the page behind, or nothing has the focus after Escape |
 | 334 | 2353 | On the scratch board, give TEST card an open subtask and drag it into the Complete column; in **Cannot Complete** press **Open Card** | The card window opens with the cursor in its title | The focus lands on the board behind the window |
 | 335 | 2353 | Open TEST card, press **Archive** in its window, then **Cancel** in the dialog | Back in the window with the focus on Archive | The window closed, or the focus lost |
+| 336 | 2338 | Post a comment on TEST card; press its **Delete**. Look at the dialog, press **Cancel**; Delete again and press Escape; Delete again and press **Delete** | A dialog "Delete Comment" covering the whole screen (not clipped to the card window), focus on Cancel; Cancel and Escape each close it with the comment and the window still there; Delete removes the comment | One click deletes; Escape closes the window; the dialog is cut off by the window |
+| 337 | 2338 | Signed in as **T** (a scratch ordinary account of yours, added to the scratch board as an editor, signed in from a private window), post a comment on TEST card; as O, open the card and press Delete on T's comment; **Cancel** | The message names T and the Activity Log | O's own wording, or no dialog |
 
-**Afterwards.** Delete the scratch board "TEST 2337 - delete me" on the dashboard, and check that no team "TEST 2353 - delete me" is left on Teams.
+**Afterwards.** Delete the scratch board "TEST 2337 - delete me" on the dashboard (T's comment goes with it), and check that no team "TEST 2353 - delete me" is left on Teams. Delete T if it was made for these checks.
 
 #### Going back to the previous image
 
-Nothing is done to the database. The older image's confirm dialog leaves the focus on the button behind it again, lets Tab walk the page behind, gives nothing back when it closes, and does not tie its message to it.
+Nothing is done to the database. The older image's confirm dialog leaves the focus on the button behind it again, lets Tab walk the page behind, gives nothing back when it closes, and does not tie its message to it. Its card window deletes a comment on one click again.
 
 ## Changing the Schema
 

@@ -196,6 +196,35 @@ describe('Ctrl+Enter in the card window (card 2280, slice B5c)', () => {
 		expect(onSave).not.toHaveBeenCalled();
 	});
 
+	// Card 2338: a comment's Delete asks in a confirm drawn inside the window. The window
+	// stood aside only for one outside it, so Escape there closed the whole window and
+	// Ctrl+Enter saved it.
+	it('leaves Escape and Ctrl+Enter to a comment’s delete confirm inside it: Escape closes the confirm alone, Ctrl+Enter does not save, and nothing is deleted', async () => {
+		const target = await draw();
+		click(buttonNamed(target, '.tab', 'Comments'));
+		await settle();
+		type(target.querySelector('textarea.comment-input'), 'Hello');
+		press(target.querySelector('textarea.comment-input')!, 'Enter', { ctrlKey: true });
+		await settle();
+
+		click(buttonNamed(target, '.comment-action-btn', 'Delete'));
+		const confirmation = () => target.querySelector('.confirm-modal');
+		expect(confirmation()).not.toBeNull();
+		press(document.activeElement ?? document.body, 'Escape');
+		expect(confirmation()).toBeNull();
+		expect(onClose).not.toHaveBeenCalled();
+
+		click(buttonNamed(target, '.comment-action-btn', 'Delete'));
+		expect(confirmation()).not.toBeNull();
+		press(document.activeElement ?? document.body, 'Enter', { ctrlKey: true });
+		await settle();
+		expect(onSave).not.toHaveBeenCalled();
+		expect(onClose).not.toHaveBeenCalled();
+		expect(confirmation()).not.toBeNull();
+		expect(sent.filter((r) => r.startsWith('DELETE'))).toEqual([]);
+		expect(target.querySelector('.comment-content')?.textContent).toContain('Hello');
+	});
+
 	it('in the Save as Template dialog saves the template, and not the window', async () => {
 		const target = await draw();
 		click(target.querySelector('.template-btn'));

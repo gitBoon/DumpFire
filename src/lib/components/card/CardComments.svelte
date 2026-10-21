@@ -9,7 +9,8 @@
   shows their count) and again when the tab is opened on none. Posting,
   editing and deleting one are sent from here, each answer read: a refusal
   is said in the window's message box (`windowError`, bound), and what was
-  written stays in its box.
+  written stays in its box. A delete asks first, in the app's confirm dialog
+  drawn here (card 2338).
 -->
 <script module lang="ts">
 	export type CommentItem = {
@@ -23,6 +24,7 @@
 	import { parseStamp } from '$lib/timestamps';
 	import { deleteFailure, failureMessage } from '$lib/api';
 	import { page } from '$app/stores';
+	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import type { CardType } from '$lib/types';
 
 	let {
@@ -122,6 +124,27 @@
 		}
 		comments = comments.filter(c => c.id !== commentId);
 		onWritten?.();
+	}
+
+	/**
+	 * The comment whose Delete was pressed, while its confirm is open: a
+	 * delete cannot be undone, and it went at once on one click (card 2338).
+	 * The confirm is drawn here, inside the window, which leaves Escape and
+	 * Ctrl+Enter to it (CardModal's `handleKeydown`).
+	 */
+	let deleting = $state<CommentItem | null>(null);
+
+	/** What the confirm says: whose comment, when it is not the deleter's own, and that the log records it. */
+	function deleteMessage(comment: CommentItem): string {
+		if (currentUser?.id === comment.userId) return 'This comment will be deleted for everyone on the card. This cannot be undone.';
+		return `${comment.username}'s comment will be deleted for everyone on the card, and the Activity Log will record that you deleted it. This cannot be undone.`;
+	}
+
+	function confirmDelete() {
+		if (!deleting) return;
+		const commentId = deleting.id;
+		deleting = null;
+		deleteComment(commentId);
 	}
 
 	/**
@@ -247,7 +270,7 @@
 									{#if currentUser.id === comment.userId}
 										<button class="comment-action-btn" onclick={() => startEdit(comment)}>Edit</button>
 									{/if}
-									<button class="comment-action-btn danger" onclick={() => deleteComment(comment.id)}>Delete</button>
+									<button class="comment-action-btn danger" onclick={() => (deleting = comment)}>Delete</button>
 								</div>
 							{/if}
 						{/if}
@@ -255,6 +278,16 @@
 				</div>
 			{/each}
 		</div>
+	{/if}
+
+	{#if deleting}
+		<ConfirmModal
+			title="Delete Comment"
+			message={deleteMessage(deleting)}
+			confirmText="Delete"
+			onConfirm={confirmDelete}
+			onCancel={() => (deleting = null)}
+		/>
 	{/if}
 </div>
 {/if}
