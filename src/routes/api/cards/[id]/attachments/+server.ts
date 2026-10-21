@@ -5,6 +5,7 @@ import { eq } from 'drizzle-orm';
 import { writeFile, mkdir, unlink, rmdir } from 'fs/promises';
 import { randomUUID } from 'crypto';
 import { requireCard, requireUser } from '$lib/server/route-guards';
+import { attachFile } from '$lib/server/card-attachments';
 import { attachmentPath, cardDir } from '$lib/server/uploads';
 import { pathId } from '$lib/server/request-body';
 import { writeAs } from '$lib/server/write-as';
@@ -69,24 +70,19 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 			await writeFile(filePath, buffer);
 		}
 
-		const attachment = writeAs(locals, (caller) => {
-			// The card may have gone, or the caller's access to it, since the
-			// check above: the body was awaited in between. So may their
-			// session: it is asked again, and who its account is now (card
-			// 2253). A refusal removes the file, as the catch below does for
-			// any.
-			const user = requireUser(caller);
-			requireCard(user, cardId, 'edit');
-
-			return db.insert(cardAttachments).values({
-				cardId,
-				filename,
-				originalName: file.name,
-				mimeType: file.type || 'application/octet-stream',
-				sizeBytes: file.size,
-				uploadedBy: user.id
-			}).returning().get();
-		});
+		// The card may have gone, or the caller's access to it, since the check
+		// above: the body was awaited in between. So may their session: it is
+		// asked again, and who its account is now (card 2253). The row, its
+		// entry and the live event are the service's (card 2337). A refusal
+		// removes the file, as the catch below does for any.
+		const attachment = writeAs(locals, (caller) =>
+			attachFile(
+				caller,
+				{ cardId },
+				{ filename, originalName: file.name, mimeType: file.type || 'application/octet-stream', sizeBytes: file.size },
+				{ source: 'ui' }
+			)
+		);
 
 		return json(attachment);
 	} catch (err) {

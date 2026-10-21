@@ -4,6 +4,7 @@ import { cardAttachments } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { readFile } from 'fs/promises';
 import { requireCard, requireUser } from '$lib/server/route-guards';
+import { deleteAttachment } from '$lib/server/card-attachments';
 import { trashAfterCommit } from '$lib/server/deletes';
 import { attachmentHeaders, attachmentPath } from '$lib/server/uploads';
 import { pathId } from '$lib/server/request-body';
@@ -52,21 +53,14 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 
 	const attachmentId = pathId(params.attachmentId, 'attachment');
 
-	// The row in a transaction, with the check that the caller may remove it.
-	// The file is moved to the trash once that is committed, and not before:
-	// it used to be removed first, so a failed delete left a row whose file
-	// had gone. The transaction asks first whether the session is still open,
-	// and who its account is now (card 2253).
+	// The row in a transaction, with the check that the caller may remove it,
+	// its entry and the live event: the service's (card 2337). The file is
+	// moved to the trash once that is committed, and not before: it used to be
+	// removed first, so a failed delete left a row whose file had gone. The
+	// transaction asks first whether the session is still open, and who its
+	// account is now (card 2253).
 	writeAs(locals, (caller) => {
-		const user = requireUser(caller);
-		const attachment = db.select().from(cardAttachments)
-			.where(eq(cardAttachments.id, attachmentId))
-			.get();
-		if (!attachment) throw error(404, 'Attachment not found');
-
-		requireCard(user, attachment.cardId, 'edit');
-
-		db.delete(cardAttachments).where(eq(cardAttachments.id, attachmentId)).run();
+		const attachment = deleteAttachment(caller, { attachmentId }, null, { source: 'ui' });
 		trashAfterCommit([{ cardId: attachment.cardId, filename: attachment.filename }]);
 	});
 

@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.73
+version: 1.74
 status: As-Built
 date: 2026-10-21
 tags:
@@ -3844,7 +3844,15 @@ The boards cleared stay cleared; the older image reads `null` as unfiled, as it 
 
 **Owner to know (2353).** **Enter pressed straight after a confirm opens now cancels it**, where it pressed the page's button behind the dialog again. Confirming by keyboard is now Tab, then Enter.
 
+**Card 2337.** No migration, no setting, no route or field; the card window's Files tab, its two routes and three pages' live wiring. Attaching a file to a card, or deleting one, wrote the row and nothing else: no entry in the board's log, and no live update, so another person's card window kept a deleted file, or missed a new one, until it was opened again. Now an upload logs `attachment_added`, `Attached "<file name>" to "<card>"`, and a delete logs `attachment_deleted`, `Deleted the file "<file name>" from "<card>"`, each by whoever did it (labels "Attached file" and "Deleted file"), and each sends the board `{type: 'attachment', cardId}` once committed. A card window on the board page, All Tasks or All To Do that has read its files (its Files tab opened once) reads them again quietly when told, or after a reconnect or a return to the tab. The two writes are now a service, `src/lib/server/card-attachments.ts`, called inside each route's transaction; the files on disk are handled as before. The activity report counts both entries as work on the card. See [Notifications](notifications-email.md) and [Admin Operations Guide](admin-guide.md).
+
 **Owner to know (2338).** **Deleting a comment now takes a second click**, on the dialog's Delete.
+
+**Owner to know (2337).**
+
+- **A second person's Files tab now shows a new file, or loses a deleted one, within about a second**, and its count follows.
+- **A file's name now stays in the board's Activity Log and the administrator's Audit Log after the file is deleted**: both entries quote it (without any invisible formatting characters, which are left out of the entry so a name cannot reorder its line). Delete a file uploaded by mistake promptly, knowing its name remains in the log.
+- **No webhook is sent for either entry.** An empty `events` list on a webhook means every event, so a new `attachment.*` event would start reaching existing receivers unannounced; and a receiver could not fetch the file, since attachments are not in the API. `GET /api/v1/audit-log` can now return the two action names (item 97 of the OpenAPI note).
 
 #### After the deploy
 
@@ -3859,12 +3867,15 @@ On production, as **O**, your administrator account. Nothing here touches a real
 | 337 | 2338 | Signed in as **T** (a scratch ordinary account of yours, added to the scratch board as an editor, signed in from a private window), post a comment on TEST card; as O, open the card and press Delete on T's comment; **Cancel** | The message names T and the Activity Log | O's own wording, or no dialog |
 | 338 | 2342 | As O, in the browser's network panel choose **Slow 3G**. On TEST card type a comment, press **Post Comment** twice quickly, then type "more" while it is out. Set **No throttling** | The box empties at the first press and the button greys out; one comment posted; "more" still in the box afterwards | Two comments, or "more" gone |
 | 339 | 2342 | Set **Offline**; empty the box, type "offline test" and press Post Comment; set **Online** | "No answer from the server…" in the window and "offline test" back in the box | The text gone |
+| 340 | 2337 | O in one browser, T in the private window, both with TEST card open on the **Files** tab with one file already attached by O. As O attach a second file; then delete it. Open the board's **Activity Log** | T's tab shows the new file within about two seconds and its count rises; then loses it and the count falls. The log has "Attached "<name>" to "TEST card"" and "Deleted the file "<name>" from "TEST card"", both by O | T's tab unchanged until reopened, or no entries |
+| 341 | 2337 | With O's key, `GET /api/v1/audit-log?action=attachment_*&boardId=<scratch board>` | The two entries, `source` `ui`, `rawAction` without `api:`; no webhook was sent for either (if the board has a scratch webhook, its receiver saw none) | No entries, or a webhook for either |
+| 342 | all | `GET /api/v1/openapi.json` | `info.version` `1.2.0`; the 2026-10-14 note holds item 97 after 96, and the Attachments paragraph names the two actions | Item missing or version changed |
 
-**Afterwards.** Delete the scratch board "TEST 2337 - delete me" on the dashboard (T's comment goes with it), and check that no team "TEST 2353 - delete me" is left on Teams. Delete T if it was made for these checks.
+**Afterwards.** After check 341, delete the scratch board "TEST 2337 - delete me" on the dashboard (T's comment and the file attached before check 340, its starting state, go with it; the second file was deleted during the check), and check that no team "TEST 2353 - delete me" is left on Teams. Delete T if it was made for these checks.
 
 #### Going back to the previous image
 
-Nothing is done to the database. The older image's confirm dialog leaves the focus on the button behind it again, lets Tab walk the page behind, gives nothing back when it closes, and does not tie its message to it. Its card window deletes a comment on one click again, can post a comment twice, and loses what is typed while a post is out.
+Nothing is done to the database. The older image's confirm dialog leaves the focus on the button behind it again, lets Tab walk the page behind, gives nothing back when it closes, and does not tie its message to it. Its card window deletes a comment on one click again, can post a comment twice, and loses what is typed while a post is out. It records no attachment entries and sends no attachment event, and leaves those written in place, readable, the label falling back to the raw action name; a second person's Files tab no longer follows.
 
 ## Changing the Schema
 

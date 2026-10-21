@@ -56,6 +56,7 @@
 		notice = '',
 		edits,
 		commentsTold = 0,
+		attachmentsTold = 0,
 	}: {
 		card: CardType | null;
 		categories: CategoryType[];
@@ -87,6 +88,14 @@
 		 * stream. A change re-reads the comments, quietly.
 		 */
 		commentsTold?: number;
+		/**
+		 * The same for the card's files (card 2337): raised as
+		 * `attachmentsChanged` in `$lib/board/sse` says, by the same three
+		 * pages. A change re-reads the files, quietly, once the window has
+		 * sent a read of them; until then its Files tab reads them when it is
+		 * opened.
+		 */
+		attachmentsTold?: number;
 	} = $props();
 
 	// svelte-ignore state_referenced_locally — intentional: initialize form fields from prop snapshot
@@ -724,14 +733,68 @@
 	let attachments = $state<AttachmentItem[]>([]);
 	let loadingAttachments = $state(false);
 
-	async function loadAttachments() {
+	/**
+	 * Read the card's files, as `loadComments` reads its comments (card 2337):
+	 * the tab's own read says "Loading attachments..." while it waits, a live
+	 * re-read (`quiet`) never does; each read has a number and an answer is
+	 * taken only if its read is newer than the floor, which a file uploaded or
+	 * deleted here raises (`attachmentWritten`). A live change re-reads only
+	 * once a read has been sent (`attachmentsReads` above 0), since the tab
+	 * reads them when it is opened on none anyway; one told while that first
+	 * read is out re-reads too, and the numbers keep the newer answer (the
+	 * card 2337 review).
+	 */
+	let attachmentsReads = 0;
+	let attachmentsFloor = 0;
+	async function loadAttachments(quiet = false) {
 		if (!card) return;
-		loadingAttachments = true;
+		const read = ++attachmentsReads;
+		if (!quiet) loadingAttachments = true;
+		let taken = false;
 		try {
 			const res = await fetch(`/api/cards/${card.id}/attachments`);
-			if (res.ok) attachments = await res.json();
-		} finally { loadingAttachments = false; }
+			if (!res.ok) return;
+			const list: AttachmentItem[] = await res.json();
+			if (read > attachmentsFloor) {
+				attachmentsFloor = read;
+				attachments = list;
+				taken = true;
+			}
+		} catch {
+			// No answer: the files shown stay as they are.
+		} finally {
+			if (taken || !quiet) loadingAttachments = false;
+		}
 	}
+
+	/** A file uploaded or deleted in this window: no read sent before it is taken. */
+	function attachmentWritten() {
+		attachmentsFloor = attachmentsReads;
+	}
+
+	/**
+	 * The page's count of being told of the card's files (`attachmentsTold`),
+	 * as this window last acted on it, with its own 250 ms bunching, as for
+	 * comments; a change re-reads only once a read of the files has been sent.
+	 */
+	// svelte-ignore state_referenced_locally
+	let attachmentsToldSeen = attachmentsTold;
+	let attachmentsReRead: ReturnType<typeof setTimeout> | null = null;
+	$effect(() => {
+		const told = attachmentsTold;
+		untrack(() => {
+			if (told === attachmentsToldSeen) return;
+			attachmentsToldSeen = told;
+			if (!card?.id || attachmentsReads === 0 || attachmentsReRead) return;
+			attachmentsReRead = setTimeout(() => {
+				attachmentsReRead = null;
+				loadAttachments(true);
+			}, 250);
+		});
+	});
+	$effect(() => () => {
+		if (attachmentsReRead) clearTimeout(attachmentsReRead);
+	});
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
@@ -886,7 +949,7 @@
 		<!-- The Comments and Files tabs: each shows itself on its tab of a saved card. -->
 		<CardComments {card} {activeTab} {boardUsers} bind:comments {loadingComments} bind:windowError onWritten={commentWritten} />
 
-		<CardAttachments {card} {activeTab} bind:attachments {loadingAttachments} {loadAttachments} bind:windowError />
+		<CardAttachments {card} {activeTab} bind:attachments {loadingAttachments} {loadAttachments} bind:windowError onWritten={attachmentWritten} />
 
 		</div> <!-- end main-panel -->
 

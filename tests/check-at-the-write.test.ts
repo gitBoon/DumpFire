@@ -2184,7 +2184,9 @@ const SERVICES = [
 	'src/lib/server/board-groupings.ts',
 	'src/lib/server/columns.ts',
 	'src/lib/server/card-categories.ts',
-	'src/lib/server/labels.ts'
+	'src/lib/server/labels.ts',
+	// Card 2337: the card window's files, the web application's alone.
+	'src/lib/server/card-attachments.ts'
 ];
 
 /**
@@ -2197,7 +2199,13 @@ const OUTSIDE_WRITE: Record<string, string> = {
 	linkBaseUrl:
 		"The address the mail a write sends links to: the configured App URL or the server's origin, read before the " +
 		'transaction, as it decides nothing about the caller or the row.',
-	json: "v1's answer (`$lib/server/v1-json`), made from what the callback returned, once the write is committed."
+	json: "v1's answer (`$lib/server/v1-json`), made from what the callback returned, once the write is committed.",
+	attachmentPath:
+		"A path in the card's folder (`$lib/server/uploads`): no row, read before and after the transaction for the file " +
+		'itself, which an upload writes before its row and removes again if the row is not written (card 2337).',
+	cardDir:
+		"The card's folder (`$lib/server/uploads`): no row, made before the transaction for the file and removed after a " +
+		'failed one if the upload made it (card 2337).'
 };
 
 /** The source file a `$lib/server/...` import names, or null for any other import. */
@@ -2856,7 +2864,9 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 			'src/lib/server/board-groupings.ts': { reads: [], writes: ['createBoardGrouping', 'updateBoardGrouping', 'deleteBoardGrouping'] },
 			'src/lib/server/columns.ts': { reads: [], writes: ['createColumn', 'updateColumn', 'deleteColumnFor', 'reorderColumns'] },
 			'src/lib/server/card-categories.ts': { reads: [], writes: ['createCardCategory', 'updateCardCategory', 'deleteCardCategory'] },
-			'src/lib/server/labels.ts': { reads: ['labelsOfBoard'], writes: ['createLabel', 'updateLabel', 'deleteLabel'] }
+			'src/lib/server/labels.ts': { reads: ['labelsOfBoard'], writes: ['createLabel', 'updateLabel', 'deleteLabel'] },
+			// Card 2337.
+			'src/lib/server/card-attachments.ts': { reads: [], writes: ['attachFile', 'deleteAttachment'] }
 		});
 	});
 

@@ -57,6 +57,10 @@ export const ACTIONS = {
 	commentAdded: 'comment_added',
 	commentEdited: 'comment_edited',
 	commentDeleted: 'comment_deleted',
+	// A file attached to a card and one deleted, by the web application alone:
+	// `/api/v1` serves no attachments (card 2337). Neither sends a webhook.
+	attachmentAdded: 'attachment_added',
+	attachmentDeleted: 'attachment_deleted',
 	assigneeAdded: 'assignee_added',
 	assigneeRemoved: 'assignee_removed',
 	dependencyAdded: 'dependency_added',

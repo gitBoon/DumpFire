@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.54
+version: 1.55
 status: As-Built
 date: 2026-10-21
 tags:
@@ -852,6 +852,7 @@ The board's activity panel and the All Tasks activity panel name each action in 
 | `cards_purged`, `cards_cleared`, `column_deleted` | Purged archived cards, Cleared cards, Deleted column |
 | `subtask_created`, `subtask_updated`, `subtask_completed`, `subtask_deleted`, and `subtask_toggled`, written by older versions | Created subtask, Updated subtask, Completed subtask, Deleted subtask, Updated subtask. `subtask_updated` is written for an untick, `Reopened <subtask> (on <card>)`, and for a change of title, description, priority, colour or due date, `Updated <subtask> (on <card>): title, dueDate`, naming only the fields changed; one request that ticks or unticks and edits writes two entries. A change of position alone, and a save that changes nothing, write none (card 2299: neither an untick nor an edit was recorded) |
 | `comment_added`, `comment_edited`, `comment_deleted` | Added comment, Edited comment, Deleted comment (card 2283: a delete was not recorded) |
+| `attachment_added`, `attachment_deleted` | Attached file, Deleted file (card 2337: neither was recorded). Written by the web application's Files tab alone, never with `api:`: `Attached "my notes.pdf" to "Plan"` and `Deleted the file "my notes.pdf" from "Plan"`, the file named as its uploader named it (less any invisible Unicode formatting characters, which could reorder the line), by whoever attached or deleted it (any editor of the board may delete any file on it; the file stays in the trash 30 days). Counted as work on the card by the activity report, as a comment is. No webhook |
 | `assignee_added`, `assignee_removed` | Assigned user, Unassigned user |
 | `dependency_added`, `dependency_removed`, `dependencies_bulk_added` | Added dependency, Removed dependency, Added dependencies. A batch through `POST /api/v1/dependencies/bulk` writes one `dependency_added` per link it creates, on the board of the card that waits, naming that card (card 2291); `dependencies_bulk_added`, one entry with no card for the whole batch, was written by older versions only, and keeps its label for those rows |
 | `board_created`, `board_updated`, `milestone_created` | Created board, Updated board, Created milestone |

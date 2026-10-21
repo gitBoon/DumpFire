@@ -91,7 +91,7 @@ import * as apiModule from '$lib/api';
 import * as boardActions from '$lib/board/board-actions';
 import type { BoardContentsData } from '$lib/board/contents-answer';
 import { BULK_HOLD_MS, refreshSchedule } from '$lib/board/refresh-schedule';
-import { commentsChanged, connectSSE } from '$lib/board/sse';
+import { attachmentsChanged, commentsChanged, connectSSE } from '$lib/board/sse';
 import { SOURCES, TRIGGERS } from 'svelte-dnd-action';
 import { keepStreamOpen, reconnectDelay, streamVerdict, type StreamEnvironment } from '$lib/live-stream';
 import { NOTIFICATION_PREFS } from '$lib/notification-prefs';
@@ -432,7 +432,8 @@ describe('a card’s attachments, src/lib/components/card/CardAttachments.svelte
 		expect(source).toMatch(/\{#if uploadErrors\.length > 0\}[\s\S]*?role="alert"[\s\S]*?\{#each uploadErrors as failure\}/);
 		// The window draws the tab whatever tab is shown, so an upload under way, and what it was told, outlast a switch of tab.
 		const window = readFileSync(join(ROOT, 'src/lib/components/CardModal.svelte'), 'utf8');
-		expect(window).toContain('<CardAttachments {card} {activeTab} bind:attachments {loadingAttachments} {loadAttachments} bind:windowError />');
+		// Told of each file shown, which raises the window's floor (card 2337).
+		expect(window).toContain('<CardAttachments {card} {activeTab} bind:attachments {loadingAttachments} {loadAttachments} bind:windowError onWritten={attachmentWritten} />');
 		expect(blocksAround(window, window.indexOf('<CardAttachments'))).toEqual([]);
 		expect(source).toContain("{#if card && activeTab === 'attachments'}");
 		expect(source).not.toMatch(/\bonMount\b|\$effect/);
@@ -6476,27 +6477,36 @@ describe('the board page draws from its board state and reads the board alone (c
 		const called: string[] = [];
 		const state = { refresh: () => called.push('refresh'), accessChanged: () => called.push('accessChanged') };
 		// The card window is open on card 5. Its comments changed, or the page
-		// was away (null), raises the window's `commentsTold` (card 2282).
-		const { route, commentsTold } = new Function(
+		// was away (null), raises the window's `commentsTold` (card 2282); its
+		// files changed, or the same gaps, its `attachmentsTold` (card 2337).
+		const { route, commentsTold, attachmentsTold } = new Function(
 			'boardState',
 			'cardWindow',
 			'commentsChanged',
-			`let commentsTold = 0; const route = ${ts.transpile(onUpdate.initializer.getText(), { target: ts.ScriptTarget.ES2022 })}; return { route, commentsTold: () => commentsTold };`
-		)(state, { cardId: 5 }, commentsChanged);
+			'attachmentsChanged',
+			`let commentsTold = 0; let attachmentsTold = 0; const route = ${ts.transpile(onUpdate.initializer.getText(), { target: ts.ScriptTarget.ES2022 })}; return { route, commentsTold: () => commentsTold, attachmentsTold: () => attachmentsTold };`
+		)(state, { cardId: 5 }, commentsChanged, attachmentsChanged);
+		const counts = () => [commentsTold(), attachmentsTold()];
 		route({ type: 'access' });
 		route({ type: 'card', id: 5 });
-		expect(commentsTold()).toBe(0);
+		expect(counts()).toEqual([0, 0]);
 		route({ type: 'comment', cardId: 6 });
-		expect(commentsTold()).toBe(0);
+		expect(counts()).toEqual([0, 0]);
 		route({ type: 'comment', cardId: 5 });
-		expect(commentsTold()).toBe(1);
+		expect(counts()).toEqual([1, 0]);
+		route({ type: 'attachment', cardId: 6 });
+		expect(counts()).toEqual([1, 0]);
+		route({ type: 'attachment', cardId: 5 });
+		expect(counts()).toEqual([1, 1]);
 		route(null);
-		expect(commentsTold()).toBe(2);
+		expect(counts()).toEqual([2, 2]);
 		route(undefined);
-		expect(commentsTold()).toBe(3);
-		expect(called).toEqual(['accessChanged', 'refresh', 'refresh', 'refresh', 'refresh', 'refresh']);
-		// And the window is handed the count, inside its own tag.
-		expect(readFileSync(join(ROOT, 'src/routes/board/[id]/+page.svelte'), 'utf8')).toMatch(/<CardModal\b(?:(?!\/>)[\s\S])*\{commentsTold\}(?:(?!\/>)[\s\S])*\/>/);
+		expect(counts()).toEqual([3, 3]);
+		expect(called).toEqual(['accessChanged', 'refresh', 'refresh', 'refresh', 'refresh', 'refresh', 'refresh', 'refresh']);
+		// And the window is handed the counts, inside its own tag.
+		const page = readFileSync(join(ROOT, 'src/routes/board/[id]/+page.svelte'), 'utf8');
+		expect(page).toMatch(/<CardModal\b(?:(?!\/>)[\s\S])*\{commentsTold\}(?:(?!\/>)[\s\S])*\/>/);
+		expect(page).toMatch(/<CardModal\b(?:(?!\/>)[\s\S])*\{attachmentsTold\}(?:(?!\/>)[\s\S])*\/>/);
 	});
 
 	it('holds the reads from a drag’s first move, before the columns change, until the move’s answer, let go in a finally', () => {

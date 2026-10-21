@@ -50,6 +50,18 @@ export function commentsChanged(event: BoardEvent | null | undefined, cardId: nu
 	return event.type === 'comment' && cardId != null && event.cardId === cardId;
 }
 
+/**
+ * Whether a card window open on `cardId` should read its files again (card
+ * 2337), as `commentsChanged` asks of its comments: for a file attached or
+ * deleted on that card (`{"type":"attachment","cardId":…}`), and for `null`
+ * or no event, a gap in which one may have been missed. Any other update, or
+ * a file on another card, is not about the window's files.
+ */
+export function attachmentsChanged(event: BoardEvent | null | undefined, cardId: number | null | undefined): boolean {
+	if (event == null) return true;
+	return event.type === 'attachment' && cardId != null && event.cardId === cardId;
+}
+
 export interface SSECallbacks {
 	/**
 	 * Called when the board may have changed: with what an 'update' event

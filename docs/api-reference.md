@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.83
+version: 1.84
 status: As-Built
 date: 2026-10-21
 tags:
@@ -1193,6 +1193,14 @@ new, `DELETE /comments/:commentId` (card 2283); these operations, answers and fi
   be, is withheld as in `cards`, with `archivedAt` `null`. `cards` is unchanged, and the web
   application's `GET /api/milestones/{id}` answers neither, as before (item 96). See
   [`PATCH /api/v1/milestones/:milestoneId`](#patch-apiv1milestonesmilestoneid).
+- **`GET /audit-log` and the activity reads can return `attachment_added` and
+  `attachment_deleted`** (card 2337). A file attached to a card in the web application logs
+  `attachment_added`, `Attached "<file name>" to "<card>"`, and one deleted logs
+  `attachment_deleted`, `Deleted the file "<file name>" from "<card>"`, the file named as its
+  uploader named it, by whoever did it, with `source` `ui`; neither was recorded.
+  Attachments are not part of this API, so neither is ever written with `api:`. **No webhook
+  is sent for either**: there is no `attachment.*` event, and a receiver could not fetch the
+  file (item 97).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:

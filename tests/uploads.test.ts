@@ -21,7 +21,7 @@ import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
-import { cardAttachments, cards, type Card, type CardAttachment } from '$lib/server/db/schema';
+import { activityLog, boardMembers, cardAttachments, cards, type Card, type CardAttachment } from '$lib/server/db/schema';
 import type { SessionUser } from '$lib/server/auth';
 import { initLogMaintenance } from '$lib/server/logger';
 import {
@@ -37,12 +37,14 @@ import {
 } from '$lib/server/uploads';
 import { api } from './helpers/api';
 import { eachWriteInTurn } from './helpers/each-write';
+import { effects } from './helpers/effects';
 import { failingWrite } from './helpers/failing-write';
 import {
 	makeAttachment,
 	makeBoard,
 	makeCard,
 	makeUser,
+	makeWebhook,
 	resetDb,
 	testUploadsDir,
 	type BoardFixture
@@ -91,6 +93,40 @@ const at = (...parts: (string | number)[]) => join(testUploadsDir(), ...parts.ma
 const fileIn = (...parts: (string | number)[]) => existsSync(at(...parts));
 const rows = () => db.select().from(cardAttachments).all();
 const ref = (file: CardAttachment) => ({ cardId: file.cardId, filename: file.filename });
+/** The board's log, as an entry is written (card 2337). */
+const entries = () =>
+	db
+		.select({
+			boardId: activityLog.boardId,
+			cardId: activityLog.cardId,
+			userId: activityLog.userId,
+			action: activityLog.action,
+			detail: activityLog.detail,
+			source: activityLog.source
+		})
+		.from(activityLog)
+		.all();
+
+/**
+ * Runs `request` with what it tells recorded and sent nowhere (card 2337): the
+ * entries it wrote, the live events it sent, and the webhooks it would have
+ * delivered. A case makes a webhook for every event on the board first.
+ */
+async function told(request: () => Promise<unknown>) {
+	const sent = effects();
+	try {
+		await request();
+		await sent.settle();
+		expect(sent.duringTransaction).toEqual([]);
+		return {
+			entries: entries(),
+			events: sent.events.map((e) => ({ boardId: e.boardId, event: e.event, data: e.data })),
+			webhooks: sent.webhooks.map((e) => e.event)
+		};
+	} finally {
+		sent.restore();
+	}
+}
 
 /** Send a file to a card as the browser does. */
 function upload(to: Card, file: File, user: SessionUser = owner) {
@@ -243,7 +279,8 @@ describe('deleting an attachment', () => {
 			}
 		});
 
-		expect(run.writes).toHaveLength(1);
+		// The row's delete and its entry (card 2337): either failing leaves the file where it was.
+		expect(run.writes).toHaveLength(2);
 	});
 
 	it('removes the card\'s folder with its last file, and passes over a file that is not there', async () => {
@@ -265,13 +302,37 @@ describe('deleting an attachment', () => {
 	it('is refused to a caller who cannot edit the card, with the file left where it is', async () => {
 		const file = makeAttachment(card);
 		const outsider = makeUser({ username: 'outsider' });
+		makeWebhook(A.board);
 		const before = snapshotDb();
 
-		expect((await api('DELETE', `/api/cards/${card.id}/attachments/${file.id}`, { user: outsider })).status).toBe(403);
-		expect((await api('DELETE', `/api/cards/${card.id}/attachments/99999`, { user: owner })).status).toBe(404);
+		// And records and tells nothing (card 2337).
+		const said = await told(async () => {
+			expect((await api('DELETE', `/api/cards/${card.id}/attachments/${file.id}`, { user: outsider })).status).toBe(403);
+			expect((await api('DELETE', `/api/cards/${card.id}/attachments/99999`, { user: owner })).status).toBe(404);
+		});
 
+		expect(said).toEqual({ entries: [], events: [], webhooks: [] });
 		expectUnchanged(before);
 		expect(fileIn(card.id, file.filename)).toBe(true);
+	});
+
+	it('records the delete in the board’s log, by whoever deleted it, and tells the board once it is committed; no webhook (card 2337)', async () => {
+		const editor = makeUser({ username: 'editor' });
+		const theirs = makeAttachment(card, { name: 'old plan.pdf', uploadedBy: owner });
+		db.insert(boardMembers).values({ boardId: A.board.id, userId: editor.id, role: 'editor' }).run();
+		makeWebhook(A.board);
+
+		const said = await told(async () => {
+			expect((await api('DELETE', `/api/cards/${card.id}/attachments/${theirs.id}`, { user: editor })).status).toBe(200);
+		});
+
+		expect(said).toEqual({
+			entries: [{ boardId: A.board.id, cardId: card.id, userId: editor.id, action: 'attachment_deleted', detail: 'Deleted the file "old plan.pdf" from "Has files"', source: 'ui' }],
+			events: [{ boardId: A.board.id, event: 'update', data: { type: 'attachment', cardId: card.id } }],
+			webhooks: []
+		});
+		expect(rows()).toEqual([]);
+		expect(fileIn('.trash', card.id, theirs.filename)).toBe(true);
 	});
 });
 
@@ -516,6 +577,52 @@ describe('uploading an attachment', () => {
 		expect(res.body.filename).toMatch(/^[0-9a-f-]{36}-my_page\.html$/);
 		expect(rows()).toHaveLength(1);
 		expect(readFileSync(at(card.id, res.body.filename), 'utf8')).toBe('<p>hello</p>');
+	});
+
+	it('records the upload in the board’s log, by the uploader, and tells the board once it is committed; no webhook (card 2337)', async () => {
+		makeWebhook(A.board);
+		let status = 0;
+		const said = await told(async () => {
+			status = (await upload(card, page())).status;
+		});
+
+		expect(status).toBe(200);
+		expect(said).toEqual({
+			entries: [{ boardId: A.board.id, cardId: card.id, userId: owner.id, action: 'attachment_added', detail: 'Attached "my page.html" to "Has files"', source: 'ui' }],
+			events: [{ boardId: A.board.id, event: 'update', data: { type: 'attachment', cardId: card.id } }],
+			webhooks: []
+		});
+	});
+
+	// The card 2337 review: a name's format characters (a right-to-left override,
+	// a zero-width space) could reorder or hide part of the entry's line.
+	it('quotes the file name in the upload’s and the delete’s entries without its Unicode format characters (card 2337)', async () => {
+		const name = 'invoice‮fdp.exe​';
+		const res = await upload(card, new File(['x'], name, { type: 'application/octet-stream' }));
+		expect(res.status).toBe(200);
+		expect(res.body.originalName).toBe(name);
+		expect((await api('DELETE', `/api/cards/${card.id}/attachments/${res.body.id}`, { user: owner })).status).toBe(200);
+
+		expect(entries().map((entry) => entry.detail)).toEqual(['Attached "invoicefdp.exe" to "Has files"', 'Deleted the file "invoicefdp.exe" from "Has files"']);
+	});
+
+	it('writes no row, no file, no entry and tells nothing when the entry cannot be written (card 2337)', async () => {
+		const sent = effects();
+		const writes = failingWrite();
+		try {
+			writes.failNth(2);
+			await expect(upload(card, page())).rejects.toThrow(/made to fail/);
+			expect(writes.fired).toBe(true);
+			await sent.settle();
+			expect(sent.events).toEqual([]);
+		} finally {
+			writes.restore();
+			sent.restore();
+		}
+
+		expect(rows()).toEqual([]);
+		expect(entries()).toEqual([]);
+		expect(fileIn(card.id)).toBe(false);
 	});
 
 	it('removes the file again if the row cannot be written, and the folder if it made it', async () => {

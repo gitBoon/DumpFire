@@ -22,7 +22,7 @@
 	import { boardPlaces as placesOf, chosenBoardId, inBoardFilter } from '$lib/board-tree';
 	import { cardArchiveWarning } from '$lib/api';
 	import { keepStreamOpen } from '$lib/live-stream';
-	import { commentsChanged } from '$lib/board/sse';
+	import { attachmentsChanged, commentsChanged } from '$lib/board/sse';
 	import { refreshSchedule } from '$lib/board/refresh-schedule';
 	import { playCreateSound, playNotifySound } from '$lib/utils/sounds';
 	import { drawnColour } from '$lib/colours';
@@ -46,6 +46,8 @@
 	let closeStream: (() => void) | null = null;
 	/** How often the stream has said the open card's comments may have changed: the card window's `commentsTold` (card 2282). */
 	let commentsTold = $state(0);
+	/** The same for the open card's files: the card window's `attachmentsTold` (card 2337). */
+	let attachmentsTold = $state(0);
 
 	/** The live notices and the fireworks, which the stream's events are handed to. */
 	let liveToasts = $state<ReturnType<typeof LiveToasts>>();
@@ -81,6 +83,8 @@
 				}
 				// The open card's comments changed: its window reads them again (card 2282).
 				if (d && commentsChanged(d, cardWindow.cardId)) commentsTold++;
+				// And its files (card 2337).
+				if (d && attachmentsChanged(d, cardWindow.cardId)) attachmentsTold++;
 			} catch { /* fallback — still refresh */ }
 			// Each event's notice is its own; the re-read is the burst's.
 			liveRefresh.schedule();
@@ -115,10 +119,12 @@
 	/**
 	 * After a gap (a reconnect, a return to the tab) in which events may have
 	 * been missed: the page is read again, and the open card window reads its
-	 * comments again, one of them perhaps being about its card (card 2282).
+	 * comments again, one of them perhaps being about its card (card 2282),
+	 * and its files, once it has read them (card 2337).
 	 */
 	function caughtUp() {
 		commentsTold++;
+		attachmentsTold++;
 		invalidateAll();
 	}
 
@@ -489,6 +495,7 @@
 		onClose={() => cardWindow.close()}
 		edits={cardWindow.edits}
 		{commentsTold}
+		{attachmentsTold}
 	/>
 	{/key}
 {/if}

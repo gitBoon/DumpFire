@@ -2687,6 +2687,10 @@ describe('what a route answers, against the schema the document gives for it', (
 		const refusal = goal.patch.responses['400'].description as string;
 		expect(refusal).toContain('archivedCards');
 		expect(refusal).not.toContain('archived=true');
+		// Card 2337: a file attached or deleted in the web application is recorded, and sends no webhook.
+		expect(changes).toContain('(97) GET /api/v1/audit-log and the activity reads can return `attachment_added` and `attachment_deleted`');
+		expect(changes.indexOf('(97)')).toBeGreaterThan(changes.indexOf('(96)'));
+		expect(spec.info.description).toContain('`attachment_added` and `attachment_deleted`, written by the web application when a file is attached to or deleted from a card');
 	});
 
 	// ─── What is said in words, and can be tried ─────────────────────────────
