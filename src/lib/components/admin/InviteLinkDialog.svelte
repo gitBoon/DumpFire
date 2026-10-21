@@ -9,12 +9,14 @@
   reach it, and it has its own copy of the ones it uses.
 -->
 <script lang="ts">
+	import { holdFocus } from '$lib/dialog-focus';
+
 	let {
 		inviteLink = $bindable(),
 		isSuperadmin
 	}: {
-		/** The page's: set by the users panel, cleared here with Done. */
-		inviteLink: { url: string; username: string; message: string } | null;
+		/** The page's: set by the users panel, cleared here with Done. `returnTo` is the control the focus goes back to after Done. */
+		inviteLink: { url: string; username: string; message: string; returnTo?: HTMLElement } | null;
 		isSuperadmin: boolean;
 	} = $props();
 
@@ -24,6 +26,17 @@
 	function closeInviteLink() {
 		inviteLink = null;
 		inviteLinkCopy = 'idle';
+	}
+
+	/**
+	 * Where the focus goes back to after Done, kept as the dialog opens: the
+	 * link is gone by the time it closes. What had the focus as it opened is
+	 * no use (card 2365's review): the pressed Create or 📧 is off by then, or
+	 * gone, and the focus on nothing.
+	 */
+	function backTo(link: { returnTo?: HTMLElement }) {
+		const control = link.returnTo;
+		return () => control;
 	}
 
 	async function copyInviteLink() {
@@ -37,18 +50,18 @@
 	}
 </script>
 
-<!-- The link of an invite whose mail was not sent (card 2196, decision 9): shown once, to the administrator who issued it, and gone on Done. No way out of it but Done. -->
+<!-- The link of an invite whose mail was not sent (card 2196, decision 9): shown once, to the administrator who issued it, and gone on Done. No way out of it but Done, so no Escape: the link would be lost.
+     It holds the keyboard as the page's other dialogs do (card 2365: Tab walked the page behind it): Copy has the focus as it opens, Tab stays in it, and the focus goes back as it closes to the control the users panel names (+ Add User, or the row's 📧). -->
 {#if inviteLink}
 	<div class="modal-overlay" role="alertdialog" aria-modal="true" aria-label="The invite mail was not sent" aria-describedby="invite-link-said invite-link-warning">
-		<div class="modal-content confirm-modal" role="document" style="max-width: 560px">
+		<div class="modal-content confirm-modal" role="document" style="max-width: 560px" use:holdFocus={{ first: '.invite-link-row button', returnTo: backTo(inviteLink) }}>
 			<h2>📧 The invite mail was not sent</h2>
 			<p id="invite-link-said" style="margin-bottom: var(--space-sm)">{inviteLink.message}</p>
 			<p id="invite-link-warning" style="margin-bottom: var(--space-sm)">Give this link to {inviteLink.username} yourself, by a way only they read. Whoever opens it can set the password of {inviteLink.username}'s account and is then signed in as them. It works once, for seven days, and stops working if another invite is sent to this account. Do not open it yourself.</p>
 			<div class="invite-link-row">
 				<code>{inviteLink.url}</code>
-				<!-- Focused as the dialog opens: what the reader is there to do, and away from the page behind it -->
-				<!-- svelte-ignore a11y_autofocus -->
-				<button class="btn-ghost btn-sm" onclick={copyInviteLink} autofocus>{inviteLinkCopy === 'copied' ? '✅ Copied!' : inviteLinkCopy === 'failed' ? 'Select it and copy it yourself' : '📋 Copy'}</button>
+				<!-- Focused as the dialog opens (holdFocus, above): what the reader is there to do, and away from the page behind it -->
+				<button class="btn-ghost btn-sm" onclick={copyInviteLink}>{inviteLinkCopy === 'copied' ? '✅ Copied!' : inviteLinkCopy === 'failed' ? 'Select it and copy it yourself' : '📋 Copy'}</button>
 			</div>
 			<p>It is not shown again. If it is lost, send a new invite with 📧. {#if isSuperadmin}Why it failed is under Email / SMTP below.{:else}The superadmin can see why under Email / SMTP.{/if}</p>
 			<div class="modal-actions">

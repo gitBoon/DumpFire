@@ -700,6 +700,41 @@ describe('All Tasks, its components joined up through the page (card 2281, slice
 		expect(complete.querySelector('.column-count')!.textContent!.trim()).toBe('1 of 501');
 	});
 
+	// Card 2370: the count was every completed card less those shown, so the loaded cards a search or filter hid counted as still to come.
+	it('says how many are still to come under Show More with no search or filter on, and no number with one on (card 2370)', () => {
+		const done = [
+			card(31, 'Shipped', { bucket: 'Complete', columnId: 22, columnTitle: 'Complete', boardId: 4, boardName: 'Mobile' }),
+			card(32, 'Launched', { bucket: 'Complete', columnId: 22, columnTitle: 'Complete', boardId: 4, boardName: 'Mobile' })
+		];
+		const target = draw({ buckets: [{ title: 'To Do', cards: [] }, { title: 'Complete', cards: done }], hasMoreCompleted: true, totalCompletedCount: 120, completedLimit: 50 });
+		const showMore = () => target.querySelector<HTMLButtonElement>('#load-more-completed')!.textContent!.replace(/\s+/g, ' ').trim();
+		expect(showMore()).toBe('Show More (118 remaining)');
+
+		const search = target.querySelector<HTMLInputElement>('.search-input')!;
+		search.value = 'ship';
+		search.dispatchEvent(new Event('input', { bubbles: true }));
+		flushSync();
+		expect(cardTitles(target)).toEqual(['#31 Shipped']);
+		expect(showMore()).toBe('Show More');
+		search.value = '';
+		search.dispatchEvent(new Event('input', { bubbles: true }));
+		flushSync();
+		expect(showMore()).toBe('Show More (118 remaining)');
+
+		const filter = target.querySelector<HTMLSelectElement>('.board-filter')!;
+		filter.value = '3';
+		filter.dispatchEvent(new Event('change', { bubbles: true }));
+		flushSync();
+		expect(showMore()).toBe('Show More');
+		filter.value = 'all';
+		filter.dispatchEvent(new Event('change', { bubbles: true }));
+		flushSync();
+
+		buttonNamed(target, 'Hide blocked').click();
+		flushSync();
+		expect(showMore()).toBe('Show More');
+	});
+
 	it('with every completed card shown, neither Load more nor the line (card 2366)', () => {
 		const target = draw({ hasMoreCompleted: false, totalCompletedCount: 0, completedLimit: 50 });
 
@@ -747,6 +782,71 @@ describe('the Activity Log’s pulse timers, the panel mounted alone (card 2356)
 
 		leave();
 		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	// Card 2364: each read wrote its own answer whatever read was latest, and the first to answer ended the loading.
+	describe('only the latest read is used (card 2364)', () => {
+		/** Each read held until the case lets it go, in the order sent. */
+		function holdReads() {
+			const reads: { release: (response: Response | Error) => void }[] = [];
+			vi.stubGlobal(
+				'fetch',
+				vi.fn(
+					() =>
+						new Promise<Response>((resolve, reject) =>
+							reads.push({ release: (response) => (response instanceof Error ? reject(response) : resolve(response)) })
+						)
+				)
+			);
+			return reads;
+		}
+		const rows = (target: HTMLElement) => [...target.querySelectorAll('.activity-panel .activity-item')].length;
+		const loading = (target: HTMLElement) => target.querySelector('.activity-loading') !== null;
+
+		it('keeps the newer list when an older read answers after it, and says Loading until the latest answers', async () => {
+			const { panel, target } = await drawPanel();
+			const reads = holdReads();
+			const older = panel.fetchActivity();
+			const newer = panel.fetchActivity();
+			flushSync();
+
+			reads[0].release(json([]));
+			await older;
+			flushSync();
+			expect(loading(target)).toBe(true);
+
+			reads[1].release(json([later, ...activity]));
+			await newer;
+			flushSync();
+			expect(loading(target)).toBe(false);
+			expect(rows(target)).toBe(2);
+
+			// And the other way round: the older read answering last changes nothing.
+			const third = panel.fetchActivity();
+			const fourth = panel.fetchActivity();
+			reads[3].release(json([later, ...activity]));
+			await fourth;
+			reads[2].release(json([]));
+			await third;
+			flushSync();
+			expect(loading(target)).toBe(false);
+			expect(rows(target)).toBe(2);
+		});
+
+		it('says nothing of an older read that fails after a newer one is answered', async () => {
+			const { panel, target } = await drawPanel();
+			const reads = holdReads();
+			const older = panel.fetchActivity();
+			const newer = panel.fetchActivity();
+			reads[1].release(json([later, ...activity]));
+			await newer;
+			reads[0].release(new TypeError('Failed to fetch'));
+			await older;
+			flushSync();
+
+			expect(target.querySelector('.activity-panel [role="alert"]')).toBeNull();
+			expect(rows(target)).toBe(2);
+		});
 	});
 
 	it('starts no pulse timer for a read answered after the panel has gone', async () => {

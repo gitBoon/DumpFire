@@ -2490,6 +2490,8 @@ const WRITES: Record<string, Write[]> = {
 		{ name: 'createTeam', reads: 'failureMessage', done: ['showCreateTeam = false', "showToast('Team created')"] },
 		{ name: 'deleteTeam', reads: 'deleteFailure', done: ["showToast('Team deleted')"] },
 		{ name: 'addTeamMember', reads: 'failureMessage', done: ['addMemberUserId = null', "showToast('Member added')"] },
+		// Card 2355: a member's role changed in place, the picker put back for a refusal from the data as it is then (the card 2355 review).
+		{ name: 'changeRole', reads: 'failureMessage', putsBack: ['picker.value = storedRole(teamId, member.userId) ?? picker.value'], done: ['await invalidateAll()'] },
 		{ name: 'removeTeamMember', reads: 'deleteFailure', done: ["showToast('Member removed')"] }
 	],
 	// The admin page's backup half, in components of its own (card 2281, slice C1a).
@@ -2552,6 +2554,7 @@ const WRITES: Record<string, Write[]> = {
 		{ name: 'createTeam', reads: 'sent', done: ['showCreateTeam = false', "showToast('Team created')"] },
 		{ name: 'deleteTeam', reads: 'sent', done: ["showToast('Team deleted')"] },
 		{ name: 'addTeamMember', reads: 'sent', done: ['addMemberUserId = null', "showToast('Member added')"] },
+		{ name: 'changeRole', reads: 'sent', putsBack: ['picker.value = storedRole(teamId, member.userId) ?? picker.value'], done: ['await invalidateAll()'] },
 		{ name: 'removeTeamMember', reads: 'sent', done: ["showToast('Member removed')"] }
 	],
 	'src/lib/components/admin/SmtpPanel.svelte': [
@@ -4641,7 +4644,7 @@ describe('the admin page’s user rows, src/lib/components/admin/UsersPanel.svel
 	it('shows the role select, the invite and the delete only where the rule lets the caller use them, and never on their own row', () => {
 		for (const control of [
 			'onchange={(e) => changeUserRole(u.id, e.currentTarget)}',
-			'onclick={() => resendInvite(u.id)}',
+			'onclick={(e) => resendInvite(u.id, e.currentTarget)}',
 			'() => deleteUser(u.id))}'
 		]) {
 			const blocks = around(control);
@@ -4939,7 +4942,7 @@ describe('the admin page’s invite whose mail was not sent, src/lib/components/
 		// No markup sets it: only the users panel's two functions, and Done.
 		expect(allMarkup).not.toMatch(/inviteLink\s*=[^=]/);
 		// The page holds it, and hands it to the panel that sets it and the dialog that shows it.
-		expect(pageSource).toContain('let inviteLink = $state<{ url: string; username: string; message: string } | null>(null);');
+		expect(pageSource).toContain('let inviteLink = $state<{ url: string; username: string; message: string; returnTo?: HTMLElement } | null>(null);');
 		expect(pageSource.split('\n').filter((line) => line.includes('<UsersPanel ') && line.includes(' bind:inviteLink '))).toHaveLength(1);
 		expect(pageSource).toContain('<InviteLinkDialog bind:inviteLink {isSuperadmin} />');
 	});
@@ -4980,7 +4983,7 @@ describe('the admin page’s invite whose mail was not sent, src/lib/components/
 		expect(functionNamed(tree, 'createUser').getText()).toContain("if (!newPassword) inviteInFlight = 'new';");
 
 		expect(markup).toContain(
-			'<button class="btn-ghost btn-sm" onclick={() => resendInvite(u.id)} disabled={inviteInFlight !== null || inviteLink !== null} title="Resend invite email">{inviteInFlight === u.id ? \'…\' : \'📧\'}</button>'
+			'<button class="btn-ghost btn-sm" onclick={(e) => resendInvite(u.id, e.currentTarget)} disabled={inviteInFlight !== null || inviteLink !== null} title="Resend invite email">{inviteInFlight === u.id ? \'…\' : \'📧\'}</button>'
 		);
 		expect(markup).toContain('onclick={createUser} disabled={creatingUser || inviteInFlight !== null || inviteLink !== null || !newUsername || !newEmail}>');
 	});
@@ -5000,7 +5003,10 @@ describe('the admin page’s invite whose mail was not sent, src/lib/components/
 		expect(dialog).toMatch(/role="alertdialog"[^>]*aria-describedby="invite-link-said invite-link-warning"/);
 		expect(dialog).toContain('<p id="invite-link-said"');
 		expect(dialog).toContain('<p id="invite-link-warning"');
-		expect(dialog).toMatch(/<!-- svelte-ignore a11y_autofocus -->\s*<button class="btn-ghost btn-sm" onclick=\{copyInviteLink\} autofocus>/);
+		// Through the dialog's hold on the focus since card 2365, which keeps Tab in it too and, since its review, gives the focus back to
+		// the control the users panel names (mounted in tests/admin-panels.test.ts).
+		expect(dialog).toContain("use:holdFocus={{ first: '.invite-link-row button', returnTo: backTo(inviteLink) }}");
+		expect(dialog).toContain('<button class="btn-ghost btn-sm" onclick={copyInviteLink}>');
 	});
 
 	it('says "Invite sent!" only for an answer that says mailSent: true, and an answer that says neither is not taken as sent (review fixes, item 4)', () => {

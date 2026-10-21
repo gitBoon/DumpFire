@@ -54,27 +54,40 @@
 	 * answer, and an answer that is not the list (a proxy's page) as one that
 	 * could not be read, in the panel in place of "No activity yet"; a list
 	 * read before stays under it (card 2317: each was dropped without a word).
+	 *
+	 * Only the latest read is used, and only it ends the loading: one
+	 * overtaken by a later read stops at its next step and writes nothing, its
+	 * failure said nowhere, as the plan page's reads do (card 2364: an older
+	 * read answering last put its list back over the newer one, and the first
+	 * to answer ended "Loading activity..." while the other was out).
 	 */
+	let activitySeq = 0;
+
 	export async function fetchActivity(initial = false) {
+		const seq = ++activitySeq;
 		activityLoading = true;
 		try {
 			let res: Response;
 			try {
 				res = await fetch('/api/activity');
 			} catch {
-				activityError = 'No answer from the server. The activity could not be loaded.';				return;
+				if (seq === activitySeq) activityError = 'No answer from the server. The activity could not be loaded.';
+				return;
 			}
+			if (seq !== activitySeq) return;
 			if (!res.ok) {
-				activityError = await failureMessage(res, 'The activity could not be loaded.');
+				const words = await failureMessage(res, 'The activity could not be loaded.');
+				if (seq === activitySeq) activityError = words;
 				return;
 			}
 			let items: any[];
 			try {
 				items = await res.json();
 			} catch {
-				activityError = "The server's answer could not be read. The activity could not be loaded.";
+				if (seq === activitySeq) activityError = "The server's answer could not be read. The activity could not be loaded.";
 				return;
 			}
+			if (seq !== activitySeq) return;
 			activityError = '';
 			if (initial || !seeded) {
 				// First load answered — seed known IDs, nothing is "new"
@@ -102,7 +115,7 @@
 			}
 			activityItems = items;
 		} finally {
-			activityLoading = false;
+			if (seq === activitySeq) activityLoading = false;
 		}
 	}
 

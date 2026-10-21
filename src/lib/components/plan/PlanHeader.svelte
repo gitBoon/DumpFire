@@ -78,14 +78,45 @@
 		return (daysUntilDue(milestone.targetDate) ?? 0) < 0;
 	});
 
-	/** A rename refused or not answered keeps the box open with what was typed, to try again or Escape (card 2351). */
-	async function saveName() {
+	/**
+	 * Whether this box's rename is out, and the name it last sent: Enter and
+	 * then a click away sent the rename twice, and the blur after a refusal
+	 * sent the refused name again (card 2363). Both are cleared as the box opens.
+	 */
+	let savingName = false;
+	let lastSentName: string | null = null;
+
+	function startRename() {
+		nameDraft = milestone.name;
+		lastSentName = null;
+		editingName = true;
+	}
+
+	/**
+	 * A rename refused or not answered keeps the box open with what was typed,
+	 * to try again or Escape (card 2351). None is sent while one is out, and a
+	 * blur sends nothing for the name just sent; Enter sends it again. Nor
+	 * once the box is closed: a browser that blurs the box as it is taken
+	 * away, after Escape, would otherwise send what Escape threw away. A name
+	 * typed while one is out is kept: once the one sent is saved, the box
+	 * stays open with what is there now, for Enter to send (card 2363's
+	 * review: the box closed and it was lost). It is not sent by itself.
+	 */
+	async function saveName(fromBlur = false) {
+		if (savingName || !editingName) return;
 		const name = nameDraft.trim();
 		if (!name || name === milestone.name) {
 			editingName = false;
 			return;
 		}
-		if (await mutate({ name })) editingName = false;
+		if (fromBlur && name === lastSentName) return;
+		savingName = true;
+		lastSentName = name;
+		try {
+			if ((await mutate({ name })) && nameDraft.trim() === name) editingName = false;
+		} finally {
+			savingName = false;
+		}
 	}
 
 	async function toggleStatus() {
@@ -110,13 +141,13 @@
 			<input
 				class="name-input"
 				bind:value={nameDraft}
-				onblur={saveName}
+				onblur={() => saveName(true)}
 				onkeydown={(e) => { if (e.key === 'Enter') saveName(); if (e.key === 'Escape') editingName = false; }}
 				autofocus
 			/>
 		{:else}
 			<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-			<h1 ondblclick={() => { nameDraft = milestone.name; editingName = true; }} title="Double-click to rename">
+			<h1 ondblclick={startRename} title="Double-click to rename">
 				{milestone.name}
 			</h1>
 		{/if}

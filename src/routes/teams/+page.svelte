@@ -13,7 +13,7 @@
 	import ThemePicker from '$lib/components/ThemePicker.svelte';
 	import Toast from '$lib/components/Toast.svelte';
 	import { toasts } from '$lib/stores/toast';
-	import { deleteFailure, failureMessage } from '$lib/api';
+	import { answerBody, deleteFailure, failureMessage } from '$lib/api';
 
 	let { data }: { data: PageData } = $props();
 
@@ -98,6 +98,12 @@
 	// Add member state
 	let addMemberTeamId = $state<number | null>(null);
 	let addMemberUserId = $state<number | null>(null);
+	/**
+	 * The role the person is added with, chosen beside Add, as on the admin
+	 * page's team panel (card 2355: this page added everyone as a member).
+	 * Member each time a person is chosen, and after each add.
+	 */
+	let addMemberRole = $state<'member' | 'owner'>('member');
 
 	async function addTeamMember(teamId: number) {
 		if (!addMemberUserId) return;
@@ -107,7 +113,7 @@
 			res = await fetch(`/api/teams/${teamId}/members/${addMemberUserId}`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ userId: addMemberUserId, role: 'member' })
+				body: JSON.stringify({ userId: addMemberUserId, role: addMemberRole })
 			});
 		} catch {
 			showToast('No answer from the server. The member may not have been added.', 'error', started);
@@ -119,8 +125,84 @@
 		}
 		addMemberTeamId = null;
 		addMemberUserId = null;
+		addMemberRole = 'member';
 		await invalidateAll();
 		showToast('Member added');
+	}
+
+	/**
+	 * The members whose role change is out, as `team:user`, each with the
+	 * role it sent. Two changes out at once each keep their own (the card 2355
+	 * review: one slot, cleared by the first answer). A picker whose change is
+	 * out is marked busy rather than turned off: turning off the control that
+	 * has the focus drops the keyboard's focus to the page.
+	 */
+	let changingRole = $state(new Map<string, string>());
+
+	function markChanging(key: string, role: string | null) {
+		const next = new Map(changingRole);
+		if (role === null) next.delete(key);
+		else next.set(key, role);
+		changingRole = next;
+	}
+
+	/** The role the page's data gives this member now: the data can have been read again since a change was sent. */
+	function storedRole(teamId: number, userId: number): string | undefined {
+		return data.teams.find((t) => t.id === teamId)?.members.find((m) => m.userId === userId)?.role;
+	}
+
+	const ROLE_NAMES: Record<string, string> = { member: 'Member', owner: 'Owner' };
+
+	/**
+	 * Changes the role of someone already in the team, in place (card 2355: no
+	 * page could; it took a remove and an add). The members route sets the
+	 * role of a member it already has, for an administrator or the team's
+	 * owner. Refused or not answered, the picker shows the role the page's
+	 * data gives them, read then (the card 2355 review: the role held from
+	 * when it was sent could land on another row). A member removed meanwhile
+	 * is added again by the route, and that is said rather than "Role
+	 * changed". While one is out, another choice on the same picker is not
+	 * sent, and it shows the role sent.
+	 */
+	async function changeRole(teamId: number, member: { userId: number; username: string }, picker: HTMLSelectElement) {
+		const key = `${teamId}:${member.userId}`;
+		const out = changingRole.get(key);
+		if (out !== undefined) {
+			picker.value = out;
+			return;
+		}
+		const role = picker.value;
+		if (role === storedRole(teamId, member.userId)) return;
+		const started = toasts.navigation();
+		markChanging(key, role);
+		try {
+			let res: Response;
+			try {
+				res = await fetch(`/api/teams/${teamId}/members/${member.userId}`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ userId: member.userId, role })
+				});
+			} catch {
+				picker.value = storedRole(teamId, member.userId) ?? picker.value;
+				showToast('No answer from the server. The role may not have been changed.', 'error', started);
+				return;
+			}
+			if (!res.ok) {
+				picker.value = storedRole(teamId, member.userId) ?? picker.value;
+				showToast(await failureMessage(res, 'Failed to change the role'), 'error', started);
+				return;
+			}
+			const result = await answerBody(res);
+			await invalidateAll();
+			showToast(
+				result?.action === 'added'
+					? `${member.username} was no longer in the team and has been added again as ${ROLE_NAMES[role] ?? role}`
+					: 'Role changed'
+			);
+		} finally {
+			markChanging(key, null);
+		}
 	}
 
 	async function removeTeamMember(teamId: number, userId: number) {
@@ -210,15 +292,30 @@
 						</div>
 
 						<div class="team-members-list">
-							{#each team.members as member}
+							{#each team.members as member (member.userId)}
 								<div class="team-member-item">
 									<span class="member-avatar">{member.emoji}</span>
 									<span class="member-name">{member.username}</span>
-									<span class="member-role-badge role-{member.role}">{member.role}</span>
 									{#if isTeamOwner(team) && member.userId !== data.currentUser?.id}
+										<!-- The role, changed in place where the member can be removed (card 2355). A role stored before roles were checked is shown as itself. Busy, not off, while its change is out: off, it would drop the focus. -->
+										<select
+											class="member-role-pick"
+											value={member.role}
+											aria-busy={changingRole.has(`${team.id}:${member.userId}`) ? 'true' : undefined}
+											onchange={(e) => changeRole(team.id, member, e.currentTarget)}
+											aria-label="{member.username}'s role in this team"
+										>
+											{#if member.role !== 'member' && member.role !== 'owner'}
+												<option value={member.role}>{member.role}</option>
+											{/if}
+											<option value="member">Member</option>
+											<option value="owner">Owner</option>
+										</select>
 										<button class="member-remove-btn" onclick={() => removeTeamMember(team.id, member.userId)} title="Remove from team">
 											<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 2l8 8M10 2L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
 										</button>
+									{:else}
+										<span class="member-role-badge role-{member.role}">{member.role}</span>
 									{/if}
 								</div>
 							{:else}
@@ -231,6 +328,7 @@
 								<select
 									class="form-input"
 									onchange={(e) => {
+										addMemberRole = 'member';
 										addMemberTeamId = team.id;
 										addMemberUserId = Number((e.target as HTMLSelectElement).value);
 									}}
@@ -241,6 +339,10 @@
 									{/each}
 								</select>
 								{#if addMemberTeamId === team.id && addMemberUserId}
+									<select class="form-input role-pick" bind:value={addMemberRole} title="Their role in this team">
+										<option value="member">Member</option>
+										<option value="owner">Owner</option>
+									</select>
 									<button class="btn-primary btn-sm" onclick={() => addTeamMember(team.id)}>Add</button>
 								{/if}
 							</div>
@@ -371,6 +473,13 @@
 	}
 	.role-owner { background: rgba(245, 158, 11, 0.15); color: var(--accent-amber); }
 	.role-member { background: rgba(100, 116, 139, 0.15); color: var(--text-secondary); }
+	/* A member's role, changed in place (card 2355): as small as the badge it stands for. */
+	.member-role-pick {
+		font-size: 0.72rem; font-weight: 600; font-family: var(--font-family);
+		padding: 2px var(--space-xs); border-radius: var(--radius-sm);
+		border: 1px solid var(--glass-border); background: var(--bg-elevated); color: var(--text-primary);
+	}
+	.member-role-pick:focus { border-color: var(--accent-indigo); outline: none; }
 
 	.member-remove-btn {
 		width: 24px; height: 24px;
@@ -393,6 +502,8 @@
 		border-top: 1px solid var(--glass-border);
 	}
 	.add-member-section select { flex: 1; }
+	/* The role beside the person (card 2355, as the admin page's since card 2309): as wide as its words. */
+	.add-member-section select.role-pick { flex: none; min-width: 0; width: auto; }
 
 	/* Empty state */
 	.empty-state {
