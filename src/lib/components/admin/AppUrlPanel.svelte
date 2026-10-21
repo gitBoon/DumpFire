@@ -3,8 +3,9 @@
   every link in a mail begins with (card 2281, slice C1a: moved from
   src/routes/admin/+page.svelte).
 
-  The superadmin's alone: the page draws it inside its isSuperadmin block,
-  and it reads the App URL itself as it opens.
+  Every administrator's since card 2395, with the mail settings it is saved
+  with: the page draws it for each of them, and it reads the App URL itself
+  as it opens.
 -->
 <script lang="ts">
 	import { sent, showToast } from '$lib/admin/send';
@@ -15,8 +16,8 @@
 	let appUrlSaving = $state(false);
 
 	$effect(() => {
-		// The App URL is the superadmin's, and an administrator is refused it:
-		// this panel is drawn for the superadmin alone, so it is asked for here.
+		// The App URL is every administrator's (card 2395): this panel is drawn
+		// on the admin page alone, so it is asked for here.
 		loadAppUrl();
 	});
 

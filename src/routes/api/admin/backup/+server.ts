@@ -1,9 +1,12 @@
 /**
  * /api/admin/backup — Backup config, history, and manual trigger.
  *
- * The superadmin's alone, every method, and so are the two routes beneath
- * it. Whoever may add a destination may add one of their own and have the
- * whole database sent to it.
+ * Every administrator's, every method, and so are the two routes beneath it
+ * (card 2395, at the owner's request: the superadmin's alone before). Whoever
+ * may add a destination may add one of their own and have the whole database
+ * sent to it, every password hash and email address included. Who saved the
+ * settings is not kept with them: they stay in force when that account is
+ * demoted or deleted, as they always did for the superadmin's.
  *
  * No secret leaves in an answer, and none is used anywhere but where it was
  * saved (cards 2187 and 2190). The GET masks every secret field, the Google
@@ -48,7 +51,7 @@ import {
 	readText,
 	readTime
 } from '$lib/server/request-body';
-import { requireSuperadmin } from '$lib/server/route-guards';
+import { requireAdmin } from '$lib/server/route-guards';
 import { stillCallerNow, writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
@@ -117,7 +120,7 @@ function leavesFewerCopies(before: BackupConfig, after: BackupConfig, changes: B
 
 /** GET — Return backup config and recent history. */
 export const GET: RequestHandler = async ({ locals }) => {
-	requireSuperadmin(locals.user);
+	requireAdmin(locals.user);
 
 	const config = getBackupConfig();
 	const history = getBackupHistory(30);
@@ -170,15 +173,16 @@ export const GET: RequestHandler = async ({ locals }) => {
  * record. A save that changes nothing, is refused or fails writes none.
  */
 export const PUT: RequestHandler = async ({ request, locals }) => {
-	requireSuperadmin(locals.user);
+	requireAdmin(locals.user);
 	const body = await readBody(request);
 
 	// One transaction: the settings are read and written in it, so what is
 	// kept is what is there when the change is written. It asks first whether
-	// the session is still open and whether its account is still the
-	// superadmin (card 2253), and the lines are filed under that account.
+	// the session is still open and whether its account is still an
+	// administrator (cards 2253 and 2395), and the lines are filed under that
+	// account.
 	writeAs(locals, (caller) => {
-		const user = requireSuperadmin(caller);
+		const user = requireAdmin(caller);
 		const existing = getBackupConfig();
 		const config: BackupConfig = { ...existing };
 
@@ -247,7 +251,7 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
 
 /** POST — Trigger an immediate manual backup. */
 export const POST: RequestHandler = async ({ request, locals }) => {
-	requireSuperadmin(locals.user);
+	requireAdmin(locals.user);
 
 	// A body that is missing, is not JSON or is not an object is a 400, and one
 	// over the limit a 413 (`guardBody`): a failed read used to be swallowed,
@@ -256,8 +260,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	const body = await readBody(request);
 	// Asked again once the body is in, with nothing awaited before the backup
 	// starts (card 2253): a session that has ended, or an account that is no
-	// longer the superadmin, sends the database nowhere.
-	requireSuperadmin(stillCallerNow(locals));
+	// longer an administrator, sends the database nowhere.
+	requireAdmin(stillCallerNow(locals));
 	const targetDestination = readText(body, 'destination', {});
 
 	const results = await runBackup(targetDestination);

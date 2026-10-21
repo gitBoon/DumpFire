@@ -10,12 +10,13 @@
 	import ThemePicker from '$lib/components/ThemePicker.svelte';
 	import Toast from '$lib/components/Toast.svelte';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
-	// The superadmin's panels (card 2281, slice C1a; the mail panel slice C1b), each drawn in the markup's isSuperadmin blocks alone.
-	import AppUrlPanel from '$lib/components/admin/AppUrlPanel.svelte';
+	// The superadmin's panel (card 2281, slice C1a): the export and the import, drawn in the markup's isSuperadmin block alone.
 	import BackupRestorePanel from '$lib/components/admin/BackupRestorePanel.svelte';
+	// Every administrator's panels (card 2281, slice C1b), drawn outside that block; the App URL, the
+	// scheduled backups and the mail settings among them since card 2395.
+	import AppUrlPanel from '$lib/components/admin/AppUrlPanel.svelte';
 	import ScheduledBackupsPanel from '$lib/components/admin/ScheduledBackupsPanel.svelte';
 	import SmtpPanel from '$lib/components/admin/SmtpPanel.svelte';
-	// Every administrator's panels (card 2281, slice C1b), drawn outside that block.
 	import AdminOverview from '$lib/components/admin/AdminOverview.svelte';
 	import BoardManagementPanel from '$lib/components/admin/BoardManagementPanel.svelte';
 	import UsersPanel from '$lib/components/admin/UsersPanel.svelte';
@@ -30,9 +31,9 @@
 
 	/**
 	 * Who the superadmin is, for the line an administrator is shown in place
-	 * of what is the superadmin's alone: the export, the import and the reset,
-	 * the scheduled backups, and the mail and App URL settings. Null if no
-	 * account is one, which the server says in its log when it starts.
+	 * of what is the superadmin's alone: the export, the import and the reset.
+	 * Null if no account is one, which the server says in its log when it
+	 * starts.
 	 */
 	let superadminName = $derived(data.users.find((u) => u.role === 'superadmin')?.username ?? null);
 
@@ -94,24 +95,28 @@
 	<main class="admin-content">
 		<AdminOverview {data} />
 
-		<!-- The superadmin's alone: the App URL, export and import, and the scheduled backups.
+		<!-- Every administrator's since card 2395: the App URL. -->
+		<AppUrlPanel />
+
+		<!-- The superadmin's alone: export and import (and Reset Everything, in the danger zone).
 		     An administrator is refused each of them by its route, and is shown one line in their place. -->
 		{#if isSuperadmin}
-		<AppUrlPanel />
 		<BackupRestorePanel importOutsideDefault={data.importOutsideDefault} />
-		<ScheduledBackupsPanel {confirm} />
 		{:else}
 		<section class="admin-card glass fade-in-up" style="animation-delay: 40ms">
 			<h2>🔒 The superadmin's</h2>
 			<p class="section-desc" style="margin-bottom: 0">
 				{#if superadminName}
-					Exporting, importing and resetting the database, the scheduled backups and their destinations, and the mail and App URL settings belong to the superadmin, <strong>{superadminName}</strong>, and are on this page for that account only.
+					Exporting, importing and resetting the database belong to the superadmin, <strong>{superadminName}</strong>, and are on this page for that account only.
 				{:else}
-					Exporting, importing and resetting the database, the scheduled backups and their destinations, and the mail and App URL settings belong to the superadmin, and no account is the superadmin. Whoever runs the server can make one: see "If nobody can sign in as the superadmin" in the deployment guide.
+					Exporting, importing and resetting the database belong to the superadmin, and no account is the superadmin. Whoever runs the server can make one: see "If nobody can sign in as the superadmin" in the deployment guide.
 				{/if}
 			</p>
 		</section>
 		{/if}
+
+		<!-- Every administrator's since card 2395: the scheduled backups and their destinations. -->
+		<ScheduledBackupsPanel {confirm} />
 
 		<BoardManagementPanel {data} {confirm} />
 
@@ -119,10 +124,8 @@
 
 		<TeamsPanel {data} {confirm} />
 
-		<!-- SMTP Configuration: the superadmin's alone, as above -->
-		{#if isSuperadmin}
+		<!-- SMTP Configuration: every administrator's since card 2395 -->
 		<SmtpPanel bind:this={smtpPanel} currentUser={data.currentUser} />
-		{/if}
 
 		<DangerZonePanel {isSuperadmin} {confirm} bind:resetNotice />
 	</main>
@@ -169,7 +172,7 @@
 {/if}
 
 <!-- The link of an invite whose mail was not sent: its dialog, set by the users panel, drawn here after the page's own dialogs as it always was. -->
-<InviteLinkDialog bind:inviteLink {isSuperadmin} />
+<InviteLinkDialog bind:inviteLink />
 
 <!-- Toast -->
 <Toast />
@@ -206,7 +209,8 @@
 	}
 
 	/*
-	 * A rule written `.admin-page :global(...)` styles the superadmin's panels
+	 * A rule written `.admin-page :global(...)` styles the panels, every
+	 * administrator's since card 2395 and the superadmin's export and import,
 	 * as well as the page (card 2281, slice C1a): each panel is a component of
 	 * its own, out of reach of the page's scoped rules. One that also has a
 	 * plain selector styles the page's own dialogs, which are after

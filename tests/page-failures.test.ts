@@ -765,27 +765,35 @@ function blocksAround(source: string, index: number): { condition: string; inEls
 // the rest the same way: every section of the page is a component now.
 const ADMIN_PAGE = 'src/routes/admin/+page.svelte';
 
-/** The admin page's components that are the superadmin's alone (card 2281, slices C1a and C1b). */
-const SUPERADMIN_COMPONENTS = [
-	'AppUrlPanel',
-	'BackupHistory',
-	'BackupRestorePanel',
-	'DestinationForm',
-	'GDriveConnectModal',
-	'ScheduledBackupsPanel',
-	'SmtpPanel'
-].map((name) => `src/lib/components/admin/${name}.svelte`);
+/**
+ * The admin page's components that are the superadmin's alone (card 2281,
+ * slices C1a and C1b): the export and the import. The App URL, the scheduled
+ * backups and the mail panel were too, until card 2395.
+ */
+const SUPERADMIN_COMPONENTS = ['BackupRestorePanel'].map((name) => `src/lib/components/admin/${name}.svelte`);
 
-/** And those every administrator is shown (card 2281, slice C1b). */
+/** And those every administrator is shown (card 2281, slice C1b; the App URL, scheduled backups and mail panels since card 2395). */
 const ADMINISTRATOR_COMPONENTS = [
 	'AdminOverview',
+	'AppUrlPanel',
 	'BoardManagementPanel',
 	'DangerZonePanel',
 	'InviteLinkDialog',
 	'ResetPasswordDialog',
+	'ScheduledBackupsPanel',
+	'SmtpPanel',
 	'TeamsPanel',
 	'UsersPanel'
 ].map((name) => `src/lib/components/admin/${name}.svelte`);
+
+/**
+ * The parts of the scheduled backups panel, each drawn there in a block of
+ * the panel's own (a form open, a history to show, a Connect started), and in
+ * no `{#if isSuperadmin}` (card 2395).
+ */
+const SCHEDULED_BACKUP_PARTS = ['BackupHistory', 'DestinationForm', 'GDriveConnectModal'].map(
+	(name) => `src/lib/components/admin/${name}.svelte`
+);
 
 /** The components the admin page is split into. */
 function adminComponents(): string[] {
@@ -908,14 +916,10 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 	};
 
 	it.each([
-		'<h2>🌐 Application Settings</h2>',
 		'<h2>💾 Backup & Restore</h2>',
-		'<h2>☁️ Scheduled Backups</h2>',
-		'<h2>📧 Email / SMTP</h2>',
 		'<strong>Reset Everything</strong>',
 		'onclick={exportDatabase}',
 		'onclick={openImportDialog}',
-		'onclick={runManualBackup}',
 		'onchange={handleFileSelected}'
 	])('shows %s to the superadmin and to nobody else', (text) => {
 		expect(forSuperadminOnly(text)).toBe(true);
@@ -928,7 +932,12 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 		'<h2>🏢 Team Management</h2>',
 		'<strong>Purge Archived Cards</strong>',
 		'<strong>Vacuum Database</strong>',
-		'<strong>Reset All XP</strong>'
+		'<strong>Reset All XP</strong>',
+		// Card 2395: the superadmin's alone until then.
+		'<h2>🌐 Application Settings</h2>',
+		'<h2>☁️ Scheduled Backups</h2>',
+		'<h2>📧 Email / SMTP</h2>',
+		'onclick={runManualBackup}'
 	])('still shows %s to an administrator', (text) => {
 		expect(forSuperadminOnly(text)).toBe(false);
 	});
@@ -947,8 +956,20 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 		expect(drawnForSuperadminOnly(component)).toBe(false);
 	});
 
-	it('has each of its components in one of those two lists, so that a new one is held to one of them', () => {
-		expect([...SUPERADMIN_COMPONENTS, ...ADMINISTRATOR_COMPONENTS].sort()).toEqual([...adminComponents()].sort());
+	// Card 2395: the scheduled backups panel's parts are drawn by it alone, in no isSuperadmin block.
+	it.each(SCHEDULED_BACKUP_PARTS)('draws %s within the scheduled backups panel, for every administrator', (component) => {
+		const name = component.slice(component.lastIndexOf('/') + 1, -'.svelte'.length);
+		const holders = adminSvelteSources().filter(({ source }) => new RegExp(`<${name}[\\s/>]`).test(source));
+		expect(holders.map((holder) => holder.file)).toEqual(['src/lib/components/admin/ScheduledBackupsPanel.svelte']);
+		expect(drawnForSuperadminOnly(component)).toBe(false);
+		const [{ source }] = holders;
+		for (const tag of source.matchAll(new RegExp(`<${name}[\\s/>]`, 'g'))) {
+			expect(blocksAround(source, tag.index!).map((block) => block.condition)).not.toContain('isSuperadmin');
+		}
+	});
+
+	it('has each of its components in one of those three lists, so that a new one is held to one of them', () => {
+		expect([...SUPERADMIN_COMPONENTS, ...ADMINISTRATOR_COMPONENTS, ...SCHEDULED_BACKUP_PARTS].sort()).toEqual([...adminComponents()].sort());
 	});
 
 	it('tells an administrator, in their place, whose they are and who that is', () => {
@@ -958,17 +979,20 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 		const around = blocksAround(source, from + markup.indexOf(line));
 		// In the `{:else}` of the block the superadmin's sections are in.
 		expect(around[0]).toEqual({ condition: 'isSuperadmin', inElse: true });
-		expect(markup).toContain('Exporting, importing and resetting the database, the scheduled backups and their destinations, and the mail and App URL settings belong to the superadmin');
+		// Card 2395: the export, the import and the reset alone; the backup and mail settings are every administrator's.
+		expect(markup).toContain('Exporting, importing and resetting the database belong to the superadmin, <strong>{superadminName}</strong>');
+		expect(markup).not.toContain('the scheduled backups and their destinations, and the mail and App URL settings belong to the superadmin');
 		// The name is the account whose role it is, from the list the page was loaded with.
 		expect(page.getText()).toContain("data.users.find((u) => u.role === 'superadmin')?.username");
 	});
 
-	it('asks the server for none of it when it opens, unless it is the superadmin who opened it', () => {
+	it('asks the server for the backup settings, the App URL and the mail settings once each as it opens, in each panel’s effect (card 2395: for every administrator)', () => {
 		// What is asked for as the page opens is asked in an `$effect`: the
 		// backup settings and the App URL in their panels' own (card 2281, slice
 		// C1a), the mail settings in the mail panel's (slice C1b; on the page
 		// its effect began by leaving for anybody else), each a panel the page
-		// draws for the superadmin alone.
+		// drew for the superadmin alone and draws for every administrator since
+		// card 2395.
 		const LOADS: [file: string, load: string][] = [
 			[SCHEDULED, 'loadBackupConfig'],
 			['src/lib/components/admin/AppUrlPanel.svelte', 'loadAppUrl'],
@@ -987,11 +1011,11 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 			const loading = effectsOf(tree).filter((effect) => callsOf(effect, load).length > 0);
 			expect(loading, load).toHaveLength(1);
 			expect(bodyOf(loading[0]).statements.map((statement) => statement.getText())).toEqual([`${load}();`]);
-			expect(drawnForSuperadminOnly(held), held).toBe(true);
+			expect(drawnForEveryAdministrator(held), held).toBe(true);
 			// And none of the three is called as the script runs, outside a function.
 			const atTheTop = tree.statements.filter((statement) => ts.isExpressionStatement(statement) && !effectsOf(tree).includes(statement));
 			expect(atTheTop.flatMap((statement) => callsOf(statement, load)), load).toEqual([]);
-			// Each fetches a route that is the superadmin's.
+			// Each fetches a route that is every administrator's.
 			expect(functionNamed(tree, load).getText()).toMatch(/fetch\('\/api\/admin\/(smtp|backup)'\)/);
 		}
 	});
@@ -4991,7 +5015,8 @@ describe('the admin page’s invite whose mail was not sent, src/lib/components/
 		// The page holds it, and hands it to the panel that sets it and the dialog that shows it.
 		expect(pageSource).toContain('let inviteLink = $state<{ url: string; username: string; message: string; returnTo?: HTMLElement } | null>(null);');
 		expect(pageSource.split('\n').filter((line) => line.includes('<UsersPanel ') && line.includes(' bind:inviteLink '))).toHaveLength(1);
-		expect(pageSource).toContain('<InviteLinkDialog bind:inviteLink {isSuperadmin} />');
+		// Card 2395: it no longer needs to know whether the reader is the superadmin.
+		expect(pageSource).toContain('<InviteLinkDialog bind:inviteLink />');
 	});
 
 	it('copies the link with the clipboard, as the Account page copies a new key', () => {
@@ -5006,11 +5031,12 @@ describe('the admin page’s invite whose mail was not sent, src/lib/components/
 				"{inviteLink.username}'s account and is then signed in as them. It works once, for seven days, and stops working if " +
 				'another invite is sent to this account. Do not open it yourself.',
 			'It is not shown again. If it is lost, send a new invite with 📧.',
-			'Why it failed is under Email / SMTP below.',
-			'The superadmin can see why under Email / SMTP.'
+			'Why it failed is under Email / SMTP below.'
 		]) {
 			expect(dialog, words).toContain(words);
 		}
+		// Card 2395: the mail panel is every administrator's, so every reader is pointed to it.
+		expect(dialog).not.toContain('The superadmin can see why under Email / SMTP.');
 		expect(functionNamed(tree, 'createUser').getText()).toContain(
 			'`User ${made} was made, but the invite mail could not be sent: ${result.mailProblem}.`'
 		);
@@ -5038,7 +5064,8 @@ describe('the admin page’s invite whose mail was not sent, src/lib/components/
 	it('reads the mail panel again once an invite is answered, so the panel the dialog points to shows the failure (review fixes, item 1)', () => {
 		for (const name of ['resendInvite', 'createUser']) {
 			const tried = functionNamed(tree, name).body!.statements.find((statement): statement is ts.TryStatement => ts.isTryStatement(statement));
-			expect(tried!.finallyBlock?.statements.map((statement) => statement.getText()), name).toContain('if (isSuperadmin) loadMailStatus();');
+			// For every administrator since card 2395, who has the mail panel.
+			expect(tried!.finallyBlock?.statements.map((statement) => statement.getText()), name).toContain('loadMailStatus();');
 		}
 		// The panel's loadMailStatus is the mail panel's own (card 2281, slice C1b), reached through the page.
 		expect(pageSource).toContain('loadMailStatus={() => smtpPanel?.loadMailStatus()}');
@@ -5078,7 +5105,7 @@ describe('the admin page’s invite whose mail was not sent, src/lib/components/
 		expect(callsOf(functionNamed(smtpTree, 'testSmtp'), 'loadMailStatus')).toHaveLength(1);
 	});
 
-	it('shows decision 11’s block in the mail panel, under Send Test, to the superadmin alone', () => {
+	it('shows decision 11’s block in the mail panel, under Send Test, to every administrator (card 2395: the superadmin alone before)', () => {
 		const smtpMarkup = smtpSource.slice(smtpSource.indexOf('</script>'));
 		const panel = smtpMarkup.slice(smtpMarkup.indexOf('<h2>📧 Email / SMTP</h2>'));
 		const block = panel.slice(panel.indexOf('{#if mailStatus}'));
@@ -5093,9 +5120,9 @@ describe('the admin page’s invite whose mail was not sent, src/lib/components/
 		]) {
 			expect(block, words).toContain(words);
 		}
-		// In the mail panel, which the page draws for the superadmin alone.
+		// In the mail panel, which the page draws for every administrator.
 		expect(smtpSource.split('{#if mailStatus}')).toHaveLength(2);
-		expect(drawnForSuperadminOnly(SMTP)).toBe(true);
+		expect(drawnForEveryAdministrator(SMTP)).toBe(true);
 	});
 });
 

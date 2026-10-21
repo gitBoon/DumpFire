@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.63
+version: 1.64
 status: As-Built
 date: 2026-10-21
 tags:
@@ -357,9 +357,13 @@ sequenceDiagram
   | `POST /api/reports` | it reads only, after a body | the first `generate*Report` |
   | `POST /api/reports/email` | mail leaves the process | the first `generate*Report`, and, **asked a second time** after the PDF is made, the sends. The second check decides again what the mail relies on: scope `all` asks `isAdmin` (`403 Only admins can generate all-boards reports`), scope `board` `canViewBoard`, and scope `category` that every board of the grouping in the PDF is still one the sender can open (`403 Failed to generate report or no access`). A refusal sends nothing; the day's allowance it took stays taken |
   | `POST /api/admin/backup` | the backup leaves the process | `runBackup` |
-  | `POST /api/admin/backup/test` | a stored secret leaves the process | `createDestination`; the Test's ERROR lines are filed under the superadmin the check answers |
-  | `POST /api/admin/backup/gdrive/auth` | the code goes to Google | `getToken`. The Connect's save after Google answers is a `writeAs`: refused there (the session ended or the superadmin lowered while Google answered) it is `401` or `403`, with the folder it made removed and nothing saved, not `200 { success: false }`. A Connect refused at its first check takes no state |
-  | `POST /api/admin/smtp` | the test mail leaves the process | `sendTestEmail`, to the address given or the superadmin's own as it is now |
+  | `POST /api/admin/backup/test` | a stored secret leaves the process | `createDestination`; the Test's ERROR lines are filed under the administrator the check answers |
+  | `POST /api/admin/backup/gdrive/auth` | the code goes to Google | `getToken`. The Connect's save after Google answers is a `writeAs`: refused there (the session ended, or the account was made an ordinary user, while Google answered) it is `401` or `403`, with the folder it made removed and nothing saved, not `200 { success: false }`. A Connect refused at its first check takes no state |
+  | `POST /api/admin/smtp` | the test mail leaves the process | `sendTestEmail`, to the address given or the caller's own as it is now |
+
+  The four backup and mail routes ask for an administrator (`requireAdmin`) at each of these
+  checks since card 2395; they asked for the superadmin before, so a superadmin made an
+  administrator meanwhile was refused, where now an administrator made a user is.
 
 - **A `writeAs` that only names the caller.** Where the caller is needed before an await no
   transaction can hold, a `writeAs` whose callback writes nothing asks who is calling, and the
@@ -1757,16 +1761,101 @@ too, change your password on the Account page."
 
 ### The Superadmin's Operations
 
-Some routes act on the whole installation, and each of them is the user list by another
-way. All of them ask one guard, `requireSuperadmin()` in `src/lib/server/route-guards.ts`:
+Three routes act on the whole installation, and each of them is the user list by another
+way. They ask one guard, `requireSuperadmin()` in `src/lib/server/route-guards.ts`:
 `401` for a caller who is not signed in, and `403` with one message, "This belongs to the
-superadmin...", for everybody else who is not the superadmin, an administrator included.
+superadmin. Exporting, importing and resetting the database can be used by the superadmin
+account only", for everybody else who is not the superadmin, an administrator included.
+The backup and mail settings were the superadmin's too until card 2395, and the message
+named them; they are every administrator's now (the next section).
 
 | Route | What an administrator could do with it |
 |-------|----------------------------------------|
 | `GET /api/admin/export` | Download every password hash and email and every webhook's address. It held every session id and unused invite token too, and until card 2169 the mail password, every backup destination's credentials and every webhook's signing secret. It carries a seal made with a key no backup holds, so that only this server fills its secrets back into it, unchanged |
 | `POST /api/admin/import` | Replace every account with accounts of their own |
 | `POST /api/admin/reset` | Clear every account, and be the superadmin of the installation they then set up |
+
+```mermaid
+flowchart TD
+    Req["A request to the export, the import or the reset"] --> Signed{"Signed in?"}
+    Signed -->|"no"| R401["401 Not authenticated\n(the gate has answered a script 401,\nor sent a browser to /login, before this)"]
+    Signed -->|"yes"| Role{"role is superadmin?"}
+    Role -->|"no: a user, or an administrator"| R403["403 This belongs to the superadmin...\nNothing is read and nothing is written"]
+    Role -->|"yes"| Does["The route does what it does"]
+```
+
+### The Mail and Backup Settings: Every Administrator's (Card 2395)
+
+Since card 2395 (2026-10-21), at the owner's request ("Normal admins should be able to do
+email and backup settings not just superadmins"), the four routes below ask `requireAdmin()`
+in place of `requireSuperadmin()`: an administrator or the superadmin is let through, and
+anybody else is answered `403 Forbidden`, as every other administrator route answers. A
+request with no session that reaches one of these handlers is `403` too, where it was `401`;
+the gate answers such a request `401` before any handler, so nobody on the wire sees it. Each
+check is where it was, at the administrator level: before the body as a quick refusal,
+inside the `writeAs` that saves, and on `stillCallerNow` before a backup, a Test, a code to
+Google or a test mail leaves the process (card 2253). An administrator made a user while one
+is on its way is refused there, with nothing saved and nothing sent. The secrets are masked
+exactly as before for every reader, and nothing in them asks who the reader is.
+
+| Who | The mail settings, the App URL, Send Test | The backup settings, Run Now, Test, Connect | Export, import, Reset Everything |
+|-----|------|------|------|
+| An ordinary user | ❌ `403 Forbidden` | ❌ `403 Forbidden` | ❌ `403 This belongs to the superadmin…` |
+| An administrator | ✅ (❌ before card 2395) | ✅ (❌ before card 2395) | ❌ `403 This belongs to the superadmin…` |
+| The superadmin | ✅ | ✅ | ✅ |
+
+**Owner to know.** These were the superadmin's because each is the user list by another way,
+and that is still so:
+
+- **An administrator who sets a backup destination can receive a full copy of the
+  database**: every account's password hash and email address, every board, card and
+  comment, and every webhook's address. The copy is cleared of sessions, unused invites, the
+  mail password, destination credentials and webhook secrets (card 2169), not of the hashes.
+  They can add a destination of their own and press Run Now, or wait for the schedule.
+- **An administrator who sets the mail server sees every mail the app sends**, invite links
+  and password-reset links included, the superadmin's among them: whoever reads such a link
+  sets that account's password. The App URL is saved by the same route and decides where
+  every link in a mail points.
+- So an administrator can make themselves any account, the superadmin included, which the
+  rule "only the superadmin manages an administrator" (above) otherwise prevents.
+- **The stored secrets stay where they were saved.** An administrator cannot read the stored
+  mail password or a destination's stored secret, and cannot send one elsewhere: a save or a
+  Test that points a masked secret at another host, port, user, bucket, folder or path is
+  refused (cards 2187, 2190, 2250). They can type new ones of their own. Two exceptions: an
+  administrator may confirm a host key for an SFTP destination that has a stored password but
+  no confirmed key yet (a key added where none is stored does not differ, `differences` in
+  `backup-secrets.ts`), and the stored password then goes to whichever server shows that key;
+  and Connect on an existing Google Drive OAuth destination binds it to the connecting
+  person's Google account, using the stored client id and secret (one line under `BACKUP`, a
+  `WARN` where it replaces a connection the destination had; card 2273).
+- **An administrator can leave nothing to restore from.** Lowering Keep Last (its least is 1)
+  and pressing Run Now deletes every older copy at every destination once the new one is up
+  (`cleanupRetention` in `backup.ts`); removing the destinations or switching the schedule off
+  stops the copies. So damage an administrator does can be left with no backup to restore
+  from. Each such save is a `WARN` line under `BACKUP` naming who (card 2270): it is logged,
+  not prevented.
+- **An administrator can probe the inside of the network.** The SMTP host, an SFTP host and an
+  S3 endpoint may be any address, inside the network included (loopback, the Docker host, the
+  internal ranges, `169.254.169.254`), and the answers of Send Test and Test tell whether a
+  port answered: a simple internal port scan. Webhooks refuse addresses inside the network
+  (card 2161, below); these settings do not, since real setups use a NAS or a mail relay on
+  the LAN.
+
+**A setter who is demoted (the card 2395 ruling).** The settings record nobody as having set
+them: they are rows of `settings` (`smtp_*`, `app_url`, `backup_config`), and nothing in
+`backup.ts`, `email.ts`, the scheduler or the start-up checks reads who saved them. So
+settings an administrator saved stay in force when that administrator is demoted or deleted,
+as a superadmin's always did when the role was changed from the host, the only way it can
+be; the demotion stops that account reading or changing them from the next request, and at
+the write of one under way. Nothing is held as a webhook is held while its setter cannot open
+its board (card 2325, which records `webhooks.set_by`): that would need the setter stored.
+After demoting an administrator, look at Scheduled Backups and Email / SMTP. Each backup
+settings change, Connect and Test is in the system log under the account that made it (cards
+2267, 2270, 2273); a mail settings change is not, except the "Allow mail without a checked,
+encrypted connection" box (card 2189), whose `WARN` names who.
+
+| Route | What whoever holds it can do with it |
+|-------|----------------------------------------|
 | `GET`, `PUT`, `POST /api/admin/backup` | Add a destination of their own and have the whole database sent to it. The `GET` masks every secret field of every destination (card 2187; it answered a Google Drive refresh token as stored), and a `PUT` keeps a masked secret only for the one stored destination that is the same in type, name and every setting that is not secret (card 2190; it was taken by the destination's place in the list), and, for SFTP, whose confirmed host key it keeps or adds where none was stored (card 2250; below): a key added is saved, and shown on the destination. Each SFTP host key a `PUT` adds, changes, clears or removes with its destination is one `WARN` line under `BACKUP`, filed under the saving account, written only once the save is committed (card 2267); as a `WARN`, it is not written with `LOG_LEVEL` at `ERROR` (the default is `INFO`). Every `PUT` that changes anything is also one line under `BACKUP`, before those, filed under the saving account and written only once committed (card 2270): `Backup settings changed: …`, naming the settings changed with their values (`notifyEmail` by name alone), each destination added or removed by name and type, and each changed one by the names of its fields, never a value, so a destination of one's own added, or the copies stopped, is on record under the account. It is a `WARN` where the save leaves fewer copies or sends them elsewhere: a destination removed, a destination kept but pointed at another account or place (a field of `SAME_IN`'s rule changed), less time covered by the copies kept (the retention times the schedule's interval: the schedule switched off or made more frequent), or the retention lowered; an `INFO` otherwise (not kept at `LOG_LEVEL=WARN`). A `"` or `\` in a destination's name is escaped in it and in card 2267's lines, so a name cannot make the line read as something else; a save that changes nothing writes none |
 | `POST /api/admin/backup/test` | Have a stored destination's password sent to a host of their choosing, which until card 2190 a test whose secrets were masked did: it connected with the stored ones whatever host it named. Now a masked secret is used only for an unchanged destination, by the `PUT`'s rule, and any other is refused `400` before anything connects; for SFTP its host key must be the stored one exactly, none for none, since a Test that could add one would send the stored password to the key it named (the card 2250 review's M1). An SFTP Test with no host key confirmed sends no secret at all and answers the key presented (`hostKey`); one with a key refuses any other before a credential is sent, answering both keys (card 2250; below) |
 | `GET`, `POST /api/admin/backup/gdrive/auth` | Connect a Google Drive of their own as a destination. Connect asks Google for `drive.file`, DumpFire's own files, where it asked for the whole of Drive (card 2188). The `POST` takes a code only with the state the same session's `GET` put in the consent address, once and within ten minutes, and exchanges it with that Connect's PKCE verifier (card 2251; below). A Connect saved is one line under `BACKUP`, filed under the connecting account and written only once the write is committed (card 2273): `Google Drive destination "…" connected: scope narrow (drive.file); a folder made` (or `scope wide`, `scope none named (read as wide)`; `its folder reached`), never the token, code, state, verifier or folder id; an `INFO` for a destination's first connection and a `WARN`, `… connected again, replacing the connection it had: …`, where the destination held a refresh token, since the new one may be another Google account's. A Connect refused or not saved writes none |
@@ -1774,14 +1863,18 @@ superadmin...", for everybody else who is not the superadmin, an administrator i
 
 ```mermaid
 flowchart TD
-    Req["A request to one of these routes"] --> Signed{"Signed in?"}
-    Signed -->|"no"| R401["401 Not authenticated\n(the gate has answered a script 401,\nor sent a browser to /login, before this)"]
-    Signed -->|"yes"| Role{"role is superadmin?"}
-    Role -->|"no: a user, or an administrator"| R403["403 This belongs to the superadmin...\nNothing is read and nothing is written"]
-    Role -->|"yes"| Does["The route does what it does"]
+    Req["A request to the mail or backup routes"] --> Gate{"Signed in?\n(the gate)"}
+    Gate -->|"no"| R401["401 Not authenticated"]
+    Gate -->|"yes"| Quick{"requireAdmin:\nadministrator or superadmin?"}
+    Quick -->|"no"| R403["403 Forbidden\nNothing is read and nothing is written"]
+    Quick -->|"yes"| Body["The body is read"]
+    Body --> Again{"Asked again, as the account is now\n(writeAs or stillCallerNow)"}
+    Again -->|"session ended"| A401["401 Not authenticated"]
+    Again -->|"made a user meanwhile"| A403["403 Forbidden\nnothing saved, nothing sent"]
+    Again -->|"still an administrator"| Does["Saved, or sent: the backup,\nthe Test, the code, the test mail"]
 ```
 
-What stays with any administrator: `POST /api/admin/vacuum`, `purge-archived`, `reset-xp`,
+What else is any administrator's: `POST /api/admin/vacuum`, `purge-archived`, `reset-xp`,
 `boards/[id]/clear-cards` and `clear-categories`, `GET /api/logs`, `/api/audit`, and the
 user and team routes.
 
@@ -1792,8 +1885,11 @@ user and team routes.
   before anything is written. The server writes a `CRITICAL` line at every start while
   there are users and no superadmin. And the role can be given from the host: see
   [If Nobody Can Sign In as the Superadmin](deployment.md#if-nobody-can-sign-in-as-the-superadmin).
-- **The admin page shows an administrator none of it**, and asks the server for none of it
-  when it opens. In its place is one section that names the superadmin.
+- **The admin page shows an administrator neither the export, the import nor Reset
+  Everything**, and asks the server for none of them. In place of Backup & Restore is one
+  section that names the superadmin. It shows every administrator the App URL, Scheduled
+  Backups and Email / SMTP since card 2395 (it showed them to the superadmin alone), and
+  each reads its settings as it opens.
 - **A Google Drive Connect is finished only by the session that started it** (card 2251).
   The `POST` exchanged any code it was sent, with the destination's name as the OAuth
   `state` and no check of it, so a superadmin led to paste a code or address from somebody
@@ -1818,7 +1914,7 @@ user and team routes.
 
   ```mermaid
   sequenceDiagram
-      participant S as Superadmin's session
+      participant S as An administrator's session
       participant D as DumpFire
       participant X as Somebody else
       participant G as Google
@@ -1834,13 +1930,13 @@ user and team routes.
   Connect for each destination name it names, and fills slots under the shared cap of 20,
   pushing out other sessions' pending Connects. That is denial of service only: the other
   site never sees a state or the consent address, so it cannot finish a Connect; the
-  superadmin presses Connect again.
-- **Not prevented here: a superadmin who connects someone else's Drive on purpose**
-  (card 2251). A superadmin who gets someone else to approve their consent address and
-  paste back the result connects that person's Drive. The server cannot see which Google
-  account approved (`drive.file` returns no identity), so it cannot refuse it. It is
-  limited: `drive.file` reaches only the files DumpFire makes, and any superadmin can
-  already edit every destination. It is on record: every Connect saved writes a line under
+  administrator presses Connect again.
+- **Not prevented here: an administrator who connects someone else's Drive on purpose**
+  (card 2251; the superadmin alone could Connect until card 2395). An administrator who gets
+  someone else to approve their consent address and paste back the result connects that
+  person's Drive. The server cannot see which Google account approved (`drive.file`
+  returns no identity), so it cannot refuse it. It is limited: `drive.file` reaches only the
+  files DumpFire makes, and any administrator can already edit every destination. It is on record: every Connect saved writes a line under
   `BACKUP` filed under the account that connected (card 2273), a `WARN` where it replaced the
   connection the destination had, so a destination re-pointed at another account this way
   shows when and by whom, though not which account.
@@ -2234,7 +2330,7 @@ An invite, a request's confirmation and reply links, the requester's progress ma
 the "View Task" link in a notification all begin with the server's own address. One
 function gives it, `linkBaseUrl()` in `src/lib/server/email.ts`, and every caller asks it:
 
-1. the App URL setting, which is the superadmin's to set;
+1. the App URL setting, which any administrator sets (the superadmin alone until card 2395);
 2. the `APP_URL` environment variable;
 3. `ORIGIN`, the address the server was started with, read as the node adapter reads it.
 
@@ -2514,6 +2610,20 @@ until October 2026.
 | Make the board public or private, by any route | ✅ | ❌ | ❌ | ✅ |
 | Delete board | ✅ | ❌ | ❌ | ✅ |
 | Put the board under a card, or take it out from under one | ✅ | ❌ | ❌ | ✅ |
+
+What is on no board is decided by role alone. "Admin" here is `admin` only; the superadmin
+has every ✅ an administrator has:
+
+| Action on the whole installation | User | Admin | Superadmin |
+|--------|------|-------|------------|
+| Manage an ordinary user's account; teams; clear a board; purge, vacuum, reset XP; the system log and the audit trail | ❌ | ✅ | ✅ |
+| Manage an administrator's account, or make one | ❌ | ❌ | ✅ |
+| The mail settings, the App URL, Send Test and what mail has done (since card 2395) | ❌ | ✅ | ✅ |
+| The backup settings, Run Now, a destination's Test and Google Drive's Connect (since card 2395) | ❌ | ✅ | ✅ |
+| Export, import, Reset Everything | ❌ | ❌ | ✅ |
+
+The two rows marked since card 2395 were the superadmin's alone; what that hands every
+administrator is in [The Mail and Backup Settings: Every Administrator's](#the-mail-and-backup-settings-every-administrators-card-2395).
 
 ### Where the Decision Is Made
 

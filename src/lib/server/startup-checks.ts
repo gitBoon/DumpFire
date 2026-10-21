@@ -68,8 +68,9 @@ const log = createLogger('STARTUP');
  * One CRITICAL line when there are user accounts and none of them is the
  * superadmin. Returns whether it was said.
  *
- * The export, the import, the reset, the backup destinations and the mail
- * settings are the superadmin's alone, `superadmin` is written by set-up and
+ * The export, the import and the reset are the superadmin's alone (the
+ * backup and mail settings are every administrator's since card 2395),
+ * `superadmin` is written by set-up and
  * by nothing else, and set-up is closed while there is any user. So such an
  * installation has nobody who can do any of them, and no page on which to put
  * that right: the way back is from the host, and the line says where it is
@@ -86,7 +87,7 @@ export function reportNoSuperadmin(): boolean {
 
 	log.critical(
 		`There are ${found.users} user account(s) and none of them is the superadmin. Nobody can export, import ` +
-			'or reset the database, or change the backup and mail settings. Make one account the superadmin from the ' +
+			'or reset the database. Make one account the superadmin from the ' +
 			'host: the command is in docs/deployment.md, under "If nobody can sign in as the superadmin".'
 	);
 	return true;

@@ -12,12 +12,10 @@
 	import { holdFocus } from '$lib/dialog-focus';
 
 	let {
-		inviteLink = $bindable(),
-		isSuperadmin
+		inviteLink = $bindable()
 	}: {
 		/** The page's: set by the users panel, cleared here with Done. `returnTo` is the control the focus goes back to after Done. */
 		inviteLink: { url: string; username: string; message: string; returnTo?: HTMLElement } | null;
-		isSuperadmin: boolean;
 	} = $props();
 
 	/** What 📋 Copy did: said on the button, so the link is never put in a toast. */
@@ -63,7 +61,8 @@
 				<!-- Focused as the dialog opens (holdFocus, above): what the reader is there to do, and away from the page behind it -->
 				<button class="btn-ghost btn-sm" onclick={copyInviteLink}>{inviteLinkCopy === 'copied' ? '✅ Copied!' : inviteLinkCopy === 'failed' ? 'Select it and copy it yourself' : '📋 Copy'}</button>
 			</div>
-			<p>It is not shown again. If it is lost, send a new invite with 📧. {#if isSuperadmin}Why it failed is under Email / SMTP below.{:else}The superadmin can see why under Email / SMTP.{/if}</p>
+			<!-- The mail panel is every administrator's since card 2395, so it is below for whoever sees this. -->
+			<p>It is not shown again. If it is lost, send a new invite with 📧. Why it failed is under Email / SMTP below.</p>
 			<div class="modal-actions">
 				<button class="btn-primary" onclick={closeInviteLink}>Done</button>
 			</div>

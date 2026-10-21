@@ -33,7 +33,7 @@
 		isSuperadmin: boolean;
 		/** The page's confirm dialog, which asks before an account is deleted. */
 		confirm: (title: string, message: string, action: () => Promise<void>) => void;
-		/** The mail panel's own read of what mail has done, which the page draws for the superadmin. */
+		/** The mail panel's own read of what mail has done, which the page draws for every administrator (card 2395). */
 		loadMailStatus: () => void;
 		/**
 		 * The page's: the link of an invite whose mail was not sent, which its
@@ -124,8 +124,9 @@
 		} finally {
 			creatingUser = false;
 			inviteInFlight = null;
-			// The panel the dialog points to, read again so it shows this mail.
-			if (isSuperadmin) loadMailStatus();
+			// The panel the dialog points to, read again so it shows this mail:
+			// every administrator's since card 2395.
+			loadMailStatus();
 		}
 	}
 
@@ -277,7 +278,7 @@
 	 * sent, the dialog with the link to pass on, or, where the server could no
 	 * longer show it, the server's words in a toast that stays. "Invite sent"
 	 * only for an answer that says `mailSent: true`. Either way the mail panel
-	 * is read again, for the superadmin, so it shows this mail.
+	 * is read again, so it shows this mail.
 	 */
 	async function resendInvite(userId: number, control?: HTMLElement) {
 		if (inviteInFlight !== null || inviteLink !== null) return;
@@ -305,8 +306,9 @@
 			showToast('The invite was made, but the answer did not say whether its mail was sent.', 'error', started);
 		} finally {
 			inviteInFlight = null;
-			// The panel the dialog points to, read again so it shows this mail.
-			if (isSuperadmin) loadMailStatus();
+			// The panel the dialog points to, read again so it shows this mail:
+			// every administrator's since card 2395.
+			loadMailStatus();
 		}
 	}
 </script>

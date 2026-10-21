@@ -4,8 +4,9 @@
   add and edit forms, the history, and Google Drive's Connect (card 2281,
   slice C1a: moved from src/routes/admin/+page.svelte).
 
-  The superadmin's alone: the page draws it inside its isSuperadmin block,
-  and it reads the backup settings itself as it opens. The add form and every
+  Every administrator's since card 2395 (the superadmin's alone before): the
+  page draws it for each of them, and it reads the backup settings itself as
+  it opens. The add form and every
   edit form share one set of fields, kept here, as they were on the page, so
   only one of them is open at a time: opening one closes the other (card
   2305). Remove asks first through the page's confirm, the app's
@@ -115,9 +116,8 @@
 	let gdriveConnect = $state<ReturnType<typeof GDriveConnectModal>>();
 
 	$effect(() => {
-		// The backup settings are the superadmin's, and an administrator is
-		// refused them: this panel is drawn for the superadmin alone, so they are
-		// asked for here.
+		// The backup settings are every administrator's (card 2395): this panel
+		// is drawn on the admin page alone, so they are asked for here.
 		loadBackupConfig();
 	});
 

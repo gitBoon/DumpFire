@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.63
+version: 1.64
 status: As-Built
 date: 2026-10-21
 tags:
@@ -38,10 +38,10 @@ flowchart LR
     Admin --> Teams["Team Management"]
     Admin --> Boards["Board Management"]
     Admin --> Danger["Danger Zone:\npurge, vacuum, XP"]
-    Admin -->|"superadmin only"| Settings["Application Settings\n(the App URL)"]
+    Admin --> Settings["Application Settings\n(the App URL)"]
+    Admin --> Backups["Scheduled Backups"]
+    Admin --> SMTP["Email / SMTP"]
     Admin -->|"superadmin only"| Restore["Backup & Restore:\nexport and import"]
-    Admin -->|"superadmin only"| Backups["Scheduled Backups"]
-    Admin -->|"superadmin only"| SMTP["Email / SMTP"]
     Admin -->|"superadmin only"| Reset["Reset Everything"]
 ```
 
@@ -64,7 +64,7 @@ stateDiagram-v2
 
 ## Who May Do What
 
-The superadmin is the account made when DumpFire was set up, and there is one. An administrator does everything on the page that is about people, boards and housekeeping. What acts on the whole installation is the superadmin's:
+The superadmin is the account made when DumpFire was set up, and there is one. An administrator does everything on the page that is about people, boards, housekeeping, mail and the scheduled backups. The export, the import and the reset are the superadmin's:
 
 | On the admin page | An administrator | The superadmin |
 |-------------------|------------------|----------------|
@@ -74,15 +74,24 @@ The superadmin is the account made when DumpFire was set up, and there is one. A
 | Team Management | ✅ | ✅ |
 | Danger Zone: Purge Archived Cards, Vacuum Database, Reset All XP | ✅ | ✅ |
 | The system log and the audit trail (`/audit`) | ✅ | ✅ |
-| **Application Settings**: the App URL | ❌ | ✅ |
+| **Application Settings**: the App URL | ✅ (since card 2395) | ✅ |
+| **Scheduled Backups**: the schedule, the destinations, "Test", "Run Now" and Google Drive's "Connect" | ✅ (since card 2395) | ✅ |
+| **Email / SMTP**: the mail settings, the test mail and what mail has done | ✅ (since card 2395) | ✅ |
 | **Backup & Restore**: Export Backup and Import Backup | ❌ | ✅ |
-| **Scheduled Backups**: the schedule, the destinations, "Test" and "Run Now" | ❌ | ✅ |
-| **Email / SMTP**: the mail settings and the test mail | ❌ | ✅ |
 | Danger Zone: **Reset Everything** | ❌ | ✅ |
 
-Each of the five is the user list by another way, which is why an administrator, who cannot manage another administrator's account, cannot use them either. An export holds every password hash. An import replaces every account with the backup's. Whoever sets up after a reset is the superadmin. A backup destination is sent the whole database. And the mail settings and the App URL decide which server an invite is handed to and where its link points, and an invite sets a password.
+The last two are the user list by another way, which is why an administrator, who cannot manage another administrator's account, cannot use them. An export holds every password hash. An import replaces every account with the backup's. Whoever sets up after a reset is the superadmin.
 
-An administrator does not see those five on the page. In their place is one section, "The superadmin's", which says what they are and names the superadmin. The routes behind them refuse everybody else with `403` and "This belongs to the superadmin", so a request made by hand fares no better.
+**The mail and backup settings are every administrator's since card 2395 (2026-10-21), at the owner's request; they were the superadmin's alone.** That gives every administrator a way round the rule that only the superadmin manages an administrator, and you should know what it is:
+
+- **An administrator who sets a backup destination can receive a full copy of the database**: every account's password hash and email address, every board, card and comment. They can add a destination of their own and press Run Now.
+- **An administrator who sets the mail server sees every mail DumpFire sends**, invite links and password-reset links included, the superadmin's among them; whoever reads such a link can set that account's password. The App URL, saved with the mail settings, decides where every link in a mail points.
+- **The stored secrets stay where they were saved.** The mail password and every destination's password, key and token are masked on the page for everybody, and a save or a Test that points a masked one at another host, bucket, folder or path is refused: it has to be typed again. Two exceptions: an administrator may confirm the host key of an SFTP destination that has a stored password but no confirmed key yet, and the stored password then goes to whichever server shows that key; and **Connect** on a Google Drive destination already set up with a client ID and secret ties it to the Google account of whoever connects, using the stored ID and secret (a `WARN` line under `BACKUP` in the system log where it replaces a connection the destination had).
+- **An administrator can leave you nothing to restore from.** Lowering **Keep Last** (its least is 1) and pressing **Run Now** deletes every older copy at every destination; removing the destinations or switching the schedule off stops the copies. So damage an administrator does can be left with no backup to restore from. Each such change is a `WARN` line under `BACKUP` in the system log naming who: it is logged, not prevented.
+- **An administrator can probe the inside of your network.** The SMTP host, an SFTP host and an S3 endpoint may be any address, addresses inside the network included (the server itself, the Docker host, internal ranges, `169.254.169.254`), and what **Send Test** and **Test** answer tells whether a port answered: a simple internal port scan. Webhooks refuse addresses inside the network; these settings do not, because real setups use a NAS or a mail relay on the local network.
+- **The settings outlive whoever saved them.** A destination or mail server an administrator set stays in force when that administrator is demoted or deleted, as the superadmin's always did. After demoting an administrator, look at Scheduled Backups and Email / SMTP. Each change to the backup settings is a line in the system log under the account that made it; a change to the mail settings is not, except allowing mail without a checked, encrypted connection.
+
+An administrator does not see the export, the import or Reset Everything on the page. In place of Backup & Restore is one section, "The superadmin's", which says what they are and names the superadmin. The routes behind them refuse everybody else with `403` and "This belongs to the superadmin", so a request made by hand fares no better. A demotion takes effect at once: an administrator made a user while a save, a Run Now, a Test, a Connect or a Send Test is on its way is refused at the moment it would be saved or sent, with nothing saved and nothing sent.
 
 If nobody can sign in as the superadmin, no page puts it right: see [If Nobody Can Sign In as the Superadmin](deployment.md#if-nobody-can-sign-in-as-the-superadmin).
 
@@ -132,11 +141,11 @@ flowchart TD
 >
 > `https://kanban.example.com/invite/…` **📋 Copy**
 >
-> It is not shown again. If it is lost, send a new invite with 📧.
+> It is not shown again. If it is lost, send a new invite with 📧. Why it failed is under Email / SMTP below.
 
-For 📧 the first line is the server's message: "The invite was made, but its mail to ana@example.com could not be sent: … Give ana the link yourself. Any earlier invite to this account no longer works." The reason is one of seven, never the mail server's own words, which can name the mail host: mail is not set up on this server; the mail password has not been entered on this server, and the superadmin enters it under 📧 Email / SMTP; the mail server's certificate could not be checked, or it does not offer STARTTLS; the mail server could not be reached; the mail server refused the sign-in; the mail server did not accept the message; the mail could not be sent. The superadmin reads the mail server's words under **📧 Email / SMTP**, and every administrator in the system log. For the superadmin, the panel is read again as the invite is answered, so it already shows this mail.
+For 📧 the first line is the server's message: "The invite was made, but its mail to ana@example.com could not be sent: … Give ana the link yourself. Any earlier invite to this account no longer works." The reason is one of seven, never the mail server's own words, which can name the mail host: mail is not set up on this server; the mail password has not been entered on this server, and an administrator enters it under 📧 Email / SMTP; the mail server's certificate could not be checked, or it does not offer STARTTLS; the mail server could not be reached; the mail server refused the sign-in; the mail server did not accept the message; the mail could not be sent. Every administrator reads the mail server's words under **📧 Email / SMTP** and in the system log (the panel was the superadmin's alone until card 2395, and the dialog told an administrator "The superadmin can see why under Email / SMTP."). The panel is read again as the invite is answered, so it already shows this mail.
 
-**When no invite can be mailed at all.** With no mail host, or with a mail user name saved and no password (what an Import Backup leaves until the password is typed again: a backup does not hold it), 📧 and Create User with no password are refused before anything is made, and any earlier invite to the account still works: `The invite was not made: the mail password has not been entered on this server; the superadmin enters it under 📧 Email / SMTP. Any earlier invite to this account still works.` Create User says `Password must be at least 8 characters (…)` with the same reason; give a password, or have the superadmin type the mail password and try again. While a link's dialog is open, every 📧 and Create User stay greyed until **Done**, and 📋 Copy has the focus.
+**When no invite can be mailed at all.** With no mail host, or with a mail user name saved and no password (what an Import Backup leaves until the password is typed again: a backup does not hold it), 📧 and Create User with no password are refused before anything is made, and any earlier invite to the account still works: `The invite was not made: the mail password has not been entered on this server; an administrator enters it under 📧 Email / SMTP. Any earlier invite to this account still works.` Create User says `Password must be at least 8 characters (…)` with the same reason; give a password, or type the mail password under Email / SMTP and try again. While a link's dialog is open, every 📧 and Create User stay greyed until **Done**, and 📋 Copy has the focus.
 
 - **The link is a password.** Whoever opens it sets the account's password and is signed in as that user. Send it by a way only they read (not a shared channel), and do not open it yourself: opening it shows the form, and setting a password with it ends every session and key of the account. It is shown once, only to you, and is cleared when you press **Done**; it is in no toast, no address and no history. 📋 Copy puts it on the clipboard, which Windows' clipboard history keeps, and syncs to your other devices when that is on.
 - **One invite at a time.** While an invite is out, every 📧 and Create User are greyed for the second or two it takes, and the pressed 📧 reads "…": a second press used to send a second invite, which ends the first one's link.
@@ -215,7 +224,7 @@ flowchart TD
 
 Your own password is never reset from this page without the one you have. On your own row the 🔑 dialog asks for your current password, as the password form on the **Account** page does. It keeps your API keys and the webhooks you set up, and says so: "Your API keys and the webhooks you set up keep working. To end the keys and switch off those webhooks too, change your password on the Account page." To end them with the change, change your password on the Account page and tick the box there. Your own row has no 📧, and the route refuses one: an invite link sets a password and asks for none, so nobody sends one to themselves. Your own email is not changed through user management either, because an invite goes to it: it is changed on the Account page, which asks for your password. So no user-management route sets your own password, or moves the address a new one would be sent to, without asking for the password you have. The superadmin's row shows 🔒 to everyone else, and 🔑 to the superadmin, which is the same own-password dialog.
 
-The same rule holds for the rest of the Admin page. **Restoring a backup** replaces every account with the backup's, passwords and roles included, and **Reset Everything** clears every account, so both are the superadmin's alone, with the export, the backup destinations and the mail settings: see [Who May Do What](#who-may-do-what). Any administrator could once run either, and so could make themselves anybody.
+The same rule holds for the rest of the Admin page. **Restoring a backup** replaces every account with the backup's, passwords and roles included, and **Reset Everything** clears every account, so both are the superadmin's alone, with the export (the backup destinations and the mail settings are every administrator's since card 2395): see [Who May Do What](#who-may-do-what). Any administrator could once run either, and so could make themselves anybody.
 
 ### Deleting a User
 
@@ -308,13 +317,13 @@ longer be listed on a card.
 
 ## SMTP Configuration
 
-Email is required for notifications, invites, and report delivery. The mail settings are the superadmin's: an administrator does not see them, and is refused them. See [Who May Do What](#who-may-do-what).
+Email is required for notifications, invites, and report delivery. The mail settings are every administrator's since card 2395 (the superadmin's alone before): whoever sets the mail server sees every mail DumpFire sends, invite and password-reset links included. See [Who May Do What](#who-may-do-what).
 
-Every link in a mail begins with the **App URL**, which is set under **Application Settings** on the same page and is the superadmin's too. With none set, links begin with the address the server was started with (`ORIGIN`). Nothing a request says is used, so a link cannot be pointed at another host by whoever sends the request. If the links in your mail begin with `http://localhost:3000`, set the App URL: see [Where a Mailed Link's Address Comes From](deployment.md#where-a-mailed-links-address-comes-from).
+Every link in a mail begins with the **App URL**, which is set under **Application Settings** on the same page and is every administrator's too. With none set, links begin with the address the server was started with (`ORIGIN`). Nothing a request says is used, so a link cannot be pointed at another host by whoever sends the request. If the links in your mail begin with `http://localhost:3000`, set the App URL: see [Where a Mailed Link's Address Comes From](deployment.md#where-a-mailed-links-address-comes-from).
 
 ### Setup Steps
 
-1. Go to **Admin → 📧 Email / SMTP**, as the superadmin
+1. Go to **Admin → 📧 Email / SMTP**, as an administrator or the superadmin
 2. Fill in your SMTP details:
 
 | Field | Example | Notes |
@@ -342,7 +351,7 @@ Every link in a mail begins with the **App URL**, which is set under **Applicati
 >
 > ⚠️ Last failure, 14/10/2026, 11:02:11: "Assigned: Deploy v2.1": the mail server refused the sign-in. The mail error was: Invalid login: 535-5.7.8 Username and Password not accepted. Mail has been sent since then, last at 14/10/2026, 10:58:40. Every failure is also in the system log, on the Audit page, with its recipient.
 
-or "✅ No mail has failed since then.", and "No mail has been sent since then." when nothing has gone since the failure. Every mail counts, whatever sent it: notifications, invites, request mail, the backup failure mail, reports and Send Test. "Sent" means the mail server accepted it; a bounce afterwards goes to the From Address. The panel reads it when it opens and again after Save and Send Test. It is kept in memory, not in the database, so a restart starts it again; the system log keeps every failure for 30 days. After "The mail error was:" comes the error's own message: the mail server's reply when it answered (`Invalid login: 535-5.7.8 …`), or this server's own words when it never got one (`Connection timeout`, `Greeting never received`, `connect ECONNREFUSED 203.0.113.5:587`, `getaddrinfo ENOTFOUND smtp.example.com`). The words are masked where they could quote a mail's link (an invite's or a request's token, encoded or not, becomes `[token]`), and can name the recipient. The subject is the mail's own, and a request mail's subject holds the request's title, which a member of the public typed on the request form: read it as their text, not this server's. All of it is the superadmin's alone, as the panel is, and the answer that carries it is never stored on the way (`Cache-Control: no-store`).
+or "✅ No mail has failed since then.", and "No mail has been sent since then." when nothing has gone since the failure. Every mail counts, whatever sent it: notifications, invites, request mail, the backup failure mail, reports and Send Test. "Sent" means the mail server accepted it; a bounce afterwards goes to the From Address. The panel reads it when it opens and again after Save and Send Test. It is kept in memory, not in the database, so a restart starts it again; the system log keeps every failure for 30 days. After "The mail error was:" comes the error's own message: the mail server's reply when it answered (`Invalid login: 535-5.7.8 …`), or this server's own words when it never got one (`Connection timeout`, `Greeting never received`, `connect ECONNREFUSED 203.0.113.5:587`, `getaddrinfo ENOTFOUND smtp.example.com`). The words are masked where they could quote a mail's link (an invite's or a request's token, encoded or not, becomes `[token]`), and can name the recipient. The subject is the mail's own, and a request mail's subject holds the request's title, which a member of the public typed on the request form: read it as their text, not this server's. All of it is every administrator's, as the panel is (the superadmin's alone until card 2395), and the answer that carries it is never stored on the way (`Cache-Control: no-store`).
 
 A save that holds a field the server cannot use is refused with the field named, under the buttons, and nothing is saved: `port must be from 1 to 65535`, `fromAddress must be an email address`. The Host and the Username are at most 2,048 characters and the From Name at most 200. A Port left empty is refused, `port must be a whole number`, as is a save of none of the fields (`No valid fields to update`). Only these fields, the way out (`allowInsecure`, true or false) and the App URL are kept; a `secure` sent by a page from before this change is ignored. The App URL is an `http://` or `https://` address, or empty for none; one written without its scheme, `kanban.example.com`, is saved with `http://` in front, as it was always read, and one that is still no address after that is refused. A value saved before these rules, sent back unchanged, is kept (card 2117).
 
@@ -375,7 +384,7 @@ A save that holds a field the server cannot use is refused with the field named,
 
 ## Backup Management
 
-Everything in this section is the superadmin's: the export, the import, the schedule and the destinations. See [Who May Do What](#who-may-do-what).
+The export and the import are the superadmin's. The schedule, the destinations, Test, Run Now and Google Drive's Connect are every administrator's since card 2395 (the superadmin's alone before): whoever sets a destination can be sent the whole database. See [Who May Do What](#who-may-do-what).
 
 ### What a Backup Holds
 
@@ -404,7 +413,7 @@ A backup made before this version does hold the sessions of whoever was signed i
 
 ### Configuring Backups
 
-1. Go to **Admin → Scheduled Backups**, as the superadmin
+1. Go to **Admin → Scheduled Backups**, as an administrator or the superadmin
 2. Choose a schedule: Hourly, Every 6h, 12h, Daily, or Weekly
 3. For daily/weekly: set the time and day
 4. Add destinations (SFTP / S3 / Google Drive / OneDrive)
@@ -545,7 +554,7 @@ On a server that still runs, restore this way, not by hand: it keeps this server
   **A restore brings back on what a reset switched off.** A backup made before a password reset holds the account's webhooks and report schedules as they were then: restored as it is, each webhook comes back switched on where the backup had it on, with its secret filled where its id, board, address and setter here match, and each schedule comes back enabled. That is what a restore does with every row, and the restored keys of the account work again too. After restoring a backup older than a reset, **reset that account's password again**: that ends the keys the restore brought back, switches off its webhooks again (each still names the account as its setter) and pauses its schedules. To switch off only some webhooks instead, use `PUT /api/v1/webhooks/{id}` and `{"active": false}`; the first reset's ids are in its `AUTH` line in `docker logs dumpfire`, not in the system log, which the restore replaced with the backup's.
 
   A value the backup has is never replaced, so a backup made before this change restores as it always did. Restored on the server it came from, nothing is to enter, unless a destination's name, folder, bucket or path, or the mail port or "Allow mail without a checked, encrypted connection", has been changed since the backup. The result adds up to two lines, only when there is something to say: "Kept from this server, because a backup does not hold them: …" and "To enter again, because a backup does not hold them: …", which names the mail password (Admin, 📧 Email / SMTP), each destination with what it needs (Admin, Scheduled Backups) and each webhook with its board. A restore brings in "Allow mail without a checked, encrypted connection" with the backup's other mail settings, with no password asked and no `WARN` line; where the backup's differs from this server's, the mail password is not kept and the line names the box: "the mail password (Admin, 📧 Email / SMTP, where the backup brought in "Allow mail without a checked, encrypted connection" ticked and this server had it unticked)", or "unticked and this server had it ticked". Look at the box before typing the password. For a backup whose seal did not check out, or whose file failed a check, the second line ends "None was kept from this server, because this backup was not made by this server, or was changed since."; for one with no seal this server can check (made before seals, or restored on a server that has never made a backup), it ends "None was kept from this server, because this backup carries no seal this server can check." A webhook named there stays switched off until the board's owner or an administrator sets its secret and switches it on with `PUT /api/v1/webhooks/{id}` and `{ "secret": "…", "active": true }`. The second line is also written to the system log at `WARN`, and from then on every start of the server writes one `[WARN] [STARTUP]` line while anything on it is still to enter.
-- **A backup with users and no superadmin among them is refused**, before anything is changed: "This backup has user accounts and none of them is the superadmin." Restoring it would leave nobody able to export, import, reset or change the mail settings. A backup with no users at all is accepted: DumpFire then asks to be set up, and whoever does it is the superadmin. A backup that has a superadmin whose row cannot be copied is refused the same way, after the copy and before it is committed: the restore is rolled back and nothing is changed.
+- **A backup with users and no superadmin among them is refused**, before anything is changed: "This backup has user accounts and none of them is the superadmin." Restoring it would leave nobody able to export, import or reset the database. A backup with no users at all is accepted: DumpFire then asks to be set up, and whoever does it is the superadmin. A backup that has a superadmin whose row cannot be copied is refused the same way, after the copy and before it is committed: the restore is rolled back and nothing is changed.
 - **A backup that is too large says so.** See [When an Import Is Not Accepted](#when-an-import-is-not-accepted).
 - **It takes a `.db` backup only.** The file picker offers `.db`, `.sqlite` and `.sqlite3` files, and the page refuses any other file itself, sending nothing. The JSON export DumpFire wrote in its first week, from 1 to 7 April 2026, is no longer imported: its import left twelve tables of the data it replaced in place, so that a live API key could then answer as an imported account. If such a file is ever wanted, import it into an empty installation of an image built before 14 October 2026 and export a `.db` from there.
 

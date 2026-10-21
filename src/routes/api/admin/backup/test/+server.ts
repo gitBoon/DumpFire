@@ -1,7 +1,7 @@
 /**
  * /api/admin/backup/test — Test a destination connection.
  *
- * The superadmin's alone: see `/api/admin/backup`. A test of a destination
+ * Every administrator's: see `/api/admin/backup`. A test of a destination
  * whose secrets are masked connects with the stored ones only when it is the
  * stored destination they were saved with, the same in type, name and every
  * field that is not secret (card 2190, `keepMaskedSecrets`); otherwise it is
@@ -23,7 +23,7 @@ import { HostKeySignatureFailed, createDestination, readDestination, type SftpTe
 import { getBackupConfig } from '$lib/server/backup';
 import { keepMaskedSecrets } from '$lib/server/backup-secrets';
 import { readBody } from '$lib/server/request-body';
-import { requireSuperadmin } from '$lib/server/route-guards';
+import { requireAdmin } from '$lib/server/route-guards';
 import { stillCallerNow } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 import { createLogger } from '$lib/server/logger';
@@ -35,7 +35,7 @@ const fingerprintPart = (key: string) => key.slice(key.lastIndexOf(' ') + 1);
 
 /** POST — Test a specific destination connection. */
 export const POST: RequestHandler = async ({ request, locals }) => {
-	requireSuperadmin(locals.user);
+	requireAdmin(locals.user);
 
 	// The destination, read as PUT /api/admin/backup reads one (card 2117,
 	// R10): its fields by its type, and a secret sent masked kept as the save
@@ -43,11 +43,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	const body = await readBody(request);
 	// Asked again once the body is in, with nothing awaited before the
 	// destination is made and a stored secret can leave with it (card 2253):
-	// a session that has ended, or an account that is no longer the
-	// superadmin, connects to nothing. The Test writes nothing. Its lines are
-	// filed under the superadmin who asked, as the Connect's and the backup
-	// settings' are.
-	const byCaller = { userId: requireSuperadmin(stillCallerNow(locals)).id };
+	// a session that has ended, or an account that is no longer an
+	// administrator, connects to nothing. The Test writes nothing. Its lines
+	// are filed under the administrator who asked, as the Connect's and the
+	// backup settings' are.
+	const byCaller = { userId: requireAdmin(stillCallerNow(locals)).id };
 	const existing = getBackupConfig();
 	const sent = readDestination(
 		body,

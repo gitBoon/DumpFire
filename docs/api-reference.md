@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.93
+version: 1.94
 status: As-Built
 date: 2026-10-21
 tags:
@@ -2225,6 +2225,23 @@ API:
   the part as it shows it (`"bob" could not be assigned: User does not have access to this
   board`). `POST /api/v1/boards/:boardId/cards` is unchanged and ignores
   the four lists (its twins' options differ part by part); no `/api/v1` operation changes.
+- **The mail and backup settings are every administrator's** (card 2395), where they were the
+  superadmin's alone: `GET`, `PUT` and `POST /api/admin/smtp` (the mail settings, the App URL
+  and the test mail), `GET`, `PUT` and `POST /api/admin/backup`, `POST
+  /api/admin/backup/test`, and `GET` and `POST /api/admin/backup/gdrive/auth`. An
+  administrator is answered as the superadmin is; anybody else is `403` `Forbidden`, where it
+  was `403` `This belongs to the superadmin. …`, and a request with no session that reaches
+  the handler is `403` where it was `401` (the gate answers it `401` first). An administrator
+  made an ordinary user while a request is on its way is refused at its save or before it
+  sends, as the superadmin made an administrator was. `GET /api/admin/export`, `POST
+  /api/admin/import` and `POST /api/admin/reset` are still the superadmin's, and their `403`
+  now reads `This belongs to the superadmin. Exporting, importing and resetting the database
+  can be used by the superadmin account only`. Three messages that said the superadmin sets
+  the mail up say an administrator does: `POST /api/reports/email`'s `503` (`… An
+  administrator sets it up on the admin page.`), the refusal of an invite or a link when no
+  address is configured (`An administrator sets it as the App URL …`), and the mail-password
+  problem (`… an administrator enters it under 📧 Email / SMTP`). No `/api/v1` operation
+  changes.
 
 ### Changes on 2026-10-13
 

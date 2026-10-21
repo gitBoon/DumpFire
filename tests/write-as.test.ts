@@ -90,6 +90,7 @@ import {
 	webhooks
 } from '$lib/server/db/schema';
 import { SUPERADMIN_ONLY } from '$lib/server/route-guards';
+import { SECRET_MASK } from '$lib/server/backup-secrets';
 import { hashSync } from 'bcryptjs';
 import { stillAuthenticated, SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { inTransaction } from '$lib/server/db/transaction';
@@ -1413,7 +1414,8 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 	const NOTHING_OUT = { mails: 0, uploads: 0, made: 0, exchanged: 0 };
 
 	/**
-	 * One request of each superadmin route that carries a body, what it answers
+	 * One request of each backup and mail route that carries a body (the
+	 * superadmin's until card 2395, every administrator's since), what it answers
 	 * when nothing ends meanwhile, and what it then sends out. A backup run
 	 * makes its destination twice: to upload, and to keep to the retention.
 	 */
@@ -1544,12 +1546,14 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 			[wasAdmin, 'POST', '/api/admin/purge-archived', undefined, 'Forbidden'],
 			[wasAdmin, 'POST', '/api/admin/reset-xp', undefined, 'Forbidden'],
 			[wasAdmin, 'POST', '/api/admin/vacuum', undefined, 'Forbidden'],
-			[wasChief, 'PUT', '/api/admin/backup', { retention: 5 }, SUPERADMIN_ONLY],
-			[wasChief, 'POST', '/api/admin/backup', { destination: 'Bucket' }, SUPERADMIN_ONLY],
-			[wasChief, 'POST', '/api/admin/backup/test', BUCKET, SUPERADMIN_ONLY],
-			[wasChief, 'POST', '/api/admin/backup/gdrive/auth', { code: 'the-code', state, destName: 'G' }, SUPERADMIN_ONLY],
-			[wasChief, 'PUT', '/api/admin/smtp', { fromName: 'Late' }, SUPERADMIN_ONLY],
-			[wasChief, 'POST', '/api/admin/smtp', { to: 'late@example.test' }, SUPERADMIN_ONLY],
+			// Every administrator's since card 2395, so asked at the administrator level: the superadmin made an
+			// administrator is let through them (tested below), and an administrator made a user is not.
+			[wasAdmin, 'PUT', '/api/admin/backup', { retention: 5 }, 'Forbidden'],
+			[wasAdmin, 'POST', '/api/admin/backup', { destination: 'Bucket' }, 'Forbidden'],
+			[wasAdmin, 'POST', '/api/admin/backup/test', BUCKET, 'Forbidden'],
+			[wasAdmin, 'POST', '/api/admin/backup/gdrive/auth', { code: 'the-code', state, destName: 'G' }, 'Forbidden'],
+			[wasAdmin, 'PUT', '/api/admin/smtp', { fromName: 'Late' }, 'Forbidden'],
+			[wasAdmin, 'POST', '/api/admin/smtp', { to: 'late@example.test' }, 'Forbidden'],
 			[wasChief, 'POST', '/api/admin/reset', undefined, SUPERADMIN_ONLY]
 		];
 		for (const [who, method, path, body, message] of refusals) {
@@ -1572,7 +1576,8 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 	describe('a Google Drive Connect refused at its write, after Google has answered and a folder was made', () => {
 		it.each([
 			['the session ends', (s: Scene) => void db.delete(sessions).where(eq(sessions.id, s.sessions.chief)).run(), 401, 'Not authenticated'],
-			['the superadmin is made an administrator', (s: Scene) => void db.update(users).set({ role: 'admin' }).where(eq(users.id, s.chief.id)).run(), 403, SUPERADMIN_ONLY]
+			// An administrator's since card 2395: refused when the account is no longer one.
+			['the superadmin is made an ordinary user', (s: Scene) => void db.update(users).set({ role: 'user' }).where(eq(users.id, s.chief.id)).run(), 403, 'Forbidden']
 		])('removes the folder it made and saves nothing when %s while Google answers', async (_case, meanwhile, status, message) => {
 			const s = scene();
 			const state = await begin(s);
@@ -1644,6 +1649,185 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 			// Everybody signed out, the caller included: a check after the restore would refuse.
 			expect(db.select().from(sessions).all()).toEqual([]);
 			expect(readdirSync(dir)).toEqual(['.pre-restore-safety.json']);
+		});
+	});
+
+	// Card 2395: the mail and backup settings, Run Now, the Test and the Connect
+	// are every administrator's, asked at the same places, at the administrator
+	// level. The export, the import and the reset stay the superadmin's.
+	describe('the mail and backup settings, opened to every administrator (card 2395)', () => {
+		/** Connect's first half, asked by `who` in their own session. */
+		const beginAs = async (s: Scene, who: Who) => {
+			const res = await api('GET', '/api/admin/backup/gdrive/auth?dest=G', asWho(s, who));
+			expect(res.status, JSON.stringify(res.body)).toBe(200);
+			return new URL(res.body.authUrl).searchParams.get('state');
+		};
+		/** A request of HELD as the administrator sends it: the Connect's state is one their own session began. */
+		const adminBody = async (c: (typeof HELD)[number], s: Scene) =>
+			c.path === '/api/admin/backup/gdrive/auth' ? { code: 'the-code', state: await beginAs(s, 'admin'), destName: 'G' } : c.body(s);
+		/** The superadmin's three: what an administrator is still refused. */
+		const SUPERADMIN_ROUTES: { method: 'GET' | 'POST'; path: string; body?: unknown }[] = [
+			{ method: 'GET', path: '/api/admin/export' },
+			// Not a backup, so the superadmin's is refused for that before it is read, and nothing is replaced.
+			{ method: 'POST', path: '/api/admin/import', body: { notABackup: true } },
+			{ method: 'POST', path: '/api/admin/reset' }
+		];
+
+		for (const c of HELD) {
+			it(`lets an administrator through, sent with its body held: ${c.shape}`, { timeout: 30_000 }, async () => {
+				const s = scene();
+				const body = await adminBody(c, s);
+				const sent = effects();
+				onTestFinished(() => sent.restore());
+
+				const res = await sendAround(c.method, c.path, { session: s.sessions.admin }, body, () => {});
+				await sent.settle();
+
+				expect(res.status, JSON.stringify(res.body)).toBe(200);
+				expect(sentOut(sent)).toEqual({ ...NOTHING_OUT, ...c.out });
+			});
+
+			it(`refuses 403, writes nothing and sends nothing out, when the administrator is made a user while the body arrives: ${c.shape}`, { timeout: 30_000 }, async () => {
+				const s = scene();
+				const body = await adminBody(c, s);
+				const sent = effects();
+				onTestFinished(() => sent.restore());
+				let before: DbSnapshot | undefined;
+				let linesBefore: unknown[] = [];
+				// Begun by the administrator, so the Connect's GET counts as nothing sent out.
+				const exchangedBefore = getToken.mock.calls.length;
+
+				const res = await sendAround(c.method, c.path, { session: s.sessions.admin }, body, () => {
+					db.update(users).set({ role: 'user' }).where(eq(users.id, s.admin.id)).run();
+					before = snapshotDb();
+					linesBefore = lines();
+				});
+				await sent.settle();
+
+				expect(res).toEqual({ status: 403, body: { message: 'Forbidden' } });
+				expect(before).toBeDefined();
+				expectUnchanged(before!);
+				expect(lines()).toEqual(linesBefore);
+				expect(sentOut(sent)).toEqual({ ...NOTHING_OUT, exchanged: exchangedBefore });
+			});
+		}
+
+		it('answers an administrator each read, and refuses an ordinary account every method of the four routes, writing nothing and sending nothing out', async () => {
+			const s = scene();
+			for (const path of ['/api/admin/smtp', '/api/admin/backup', '/api/admin/backup/gdrive/auth?dest=G']) {
+				const res = await api('GET', path, asWho(s, 'admin'));
+				expect({ path, status: res.status }).toEqual({ path, status: 200 });
+			}
+
+			const plain = makeUser({ username: 'plain' });
+			const asPlain = { user: plain, credential: { kind: 'session' as const, token: makeSession(plain) } };
+			const before = snapshotDb();
+			const linesBefore = lines();
+			const sent = effects();
+			onTestFinished(() => sent.restore());
+			const requests: ['GET' | 'POST' | 'PUT', string, unknown][] = [
+				['GET', '/api/admin/smtp', undefined],
+				['PUT', '/api/admin/smtp', { fromName: 'Plain' }],
+				['POST', '/api/admin/smtp', { to: 'plain@example.test' }],
+				['GET', '/api/admin/backup', undefined],
+				['PUT', '/api/admin/backup', { retention: 5 }],
+				['POST', '/api/admin/backup', { destination: 'Bucket' }],
+				['POST', '/api/admin/backup/test', BUCKET],
+				['GET', '/api/admin/backup/gdrive/auth?dest=G', undefined],
+				['POST', '/api/admin/backup/gdrive/auth', { code: 'the-code', state: 'any', destName: 'G' }]
+			];
+			for (const [method, path, body] of requests) {
+				const res = await api(method, path, { ...asPlain, ...(body === undefined ? {} : { body }) });
+				expect({ method, path, status: res.status, body: res.body }).toEqual({ method, path, status: 403, body: { message: 'Forbidden' } });
+			}
+			await sent.settle();
+
+			expectUnchanged(before);
+			expect(lines()).toEqual(linesBefore);
+			expect(sentOut(sent)).toEqual(NOTHING_OUT);
+		});
+
+		it('still refuses an administrator the export, the import and Reset Everything, and lets the superadmin through each', async () => {
+			const s = scene();
+			const before = snapshotDb();
+
+			for (const { method, path, body } of SUPERADMIN_ROUTES) {
+				const res = await api(method, path, { ...asWho(s, 'admin'), ...(body === undefined ? {} : { body }) });
+				expect({ path, status: res.status, body: res.body }).toEqual({ path, status: 403, body: { message: SUPERADMIN_ONLY } });
+			}
+			expectUnchanged(before);
+
+			const exported = await api('GET', '/api/admin/export', asWho(s, 'chief'));
+			expect(exported.status).toBe(200);
+			// Let past who may import, and refused for what it was sent: not a backup.
+			const imported = await api('POST', '/api/admin/import', { ...asWho(s, 'chief'), body: { notABackup: true } });
+			expect(imported.status).toBe(400);
+			const reset = await api('POST', '/api/admin/reset', asWho(s, 'chief'));
+			expect(reset.status, JSON.stringify(reset.body)).toBe(200);
+		});
+
+		it('lets the superadmin made an administrator through the mail and backup settings, and refuses them the export, the import and Reset Everything', async () => {
+			const s = scene();
+			db.update(users).set({ role: 'admin' }).where(eq(users.id, s.chief.id)).run();
+			const asLowered = { user: { ...s.chief, role: 'admin' }, credential: { kind: 'session' as const, token: s.sessions.chief } };
+
+			const before = snapshotDb();
+			for (const { method, path, body } of SUPERADMIN_ROUTES) {
+				const res = await api(method, path, { ...asLowered, ...(body === undefined ? {} : { body }) });
+				expect({ path, status: res.status, body: res.body }).toEqual({ path, status: 403, body: { message: SUPERADMIN_ONLY } });
+			}
+			expectUnchanged(before);
+
+			expect((await api('PUT', '/api/admin/backup', { ...asLowered, body: { retention: 5 } })).status).toBe(200);
+			expect((await api('PUT', '/api/admin/smtp', { ...asLowered, body: { fromName: 'Lowered' } })).status).toBe(200);
+			expect((await api('GET', '/api/admin/smtp', asLowered)).body.fromName).toBe('Lowered');
+		});
+
+		it('masks every secret for an administrator as for the superadmin, and refuses an administrator a masked secret pointed elsewhere', async () => {
+			const s = scene();
+			db.insert(settings).values([{ key: 'smtp_user', value: 'mailer' }, { key: 'smtp_pass', value: 'mail-secret-2395' }]).run();
+
+			for (const who of ['admin', 'chief'] as const) {
+				const mail = await api('GET', '/api/admin/smtp', asWho(s, who));
+				expect({ who, status: mail.status, pass: mail.body.pass }).toEqual({ who, status: 200, pass: SECRET_MASK });
+				expect(JSON.stringify(mail.body)).not.toContain('mail-secret-2395');
+				const backup = await api('GET', '/api/admin/backup', asWho(s, who));
+				expect(backup.status).toBe(200);
+				expect(backup.body.destinations.map((d: Record<string, string>) => d.secretAccessKey ?? d.clientSecret)).toEqual([SECRET_MASK, SECRET_MASK]);
+				expect(JSON.stringify(backup.body)).not.toMatch(/bucket-secret-2253|g-client-secret-2253/);
+			}
+
+			const before = snapshotDb();
+			const sent = effects();
+			onTestFinished(() => sent.restore());
+			const pointedElsewhere: ['PUT' | 'POST', string, unknown][] = [
+				['PUT', '/api/admin/smtp', { host: 'smtp.elsewhere.example.test', pass: SECRET_MASK }],
+				['PUT', '/api/admin/backup', { destinations: [{ ...BUCKET, bucket: 'somewhere-else', secretAccessKey: SECRET_MASK }, { ...DRIVE, clientSecret: SECRET_MASK }] }],
+				['POST', '/api/admin/backup/test', { ...BUCKET, bucket: 'somewhere-else', secretAccessKey: SECRET_MASK }]
+			];
+			for (const [method, path, body] of pointedElsewhere) {
+				const res = await api(method, path, { ...asWho(s, 'admin'), body });
+				expect({ path, status: res.status }).toEqual({ path, status: 400 });
+			}
+			await sent.settle();
+			expectUnchanged(before);
+			expect(sentOut(sent)).toEqual(NOTHING_OUT);
+		});
+
+		it('removes the folder it made and saves nothing when the administrator is made a user while Google answers', async () => {
+			const s = scene();
+			const state = await beginAs(s, 'admin');
+			exchange(() => void db.update(users).set({ role: 'user' }).where(eq(users.id, s.admin.id)).run());
+			const linesBefore = lines();
+
+			const res = await api('POST', '/api/admin/backup/gdrive/auth', { ...asWho(s, 'admin'), body: { code: 'the-code', state, destName: 'G' } });
+
+			expect({ status: res.status, body: res.body }).toEqual({ status: 403, body: { message: 'Forbidden' } });
+			expect(getToken).toHaveBeenCalledTimes(1);
+			expect(files.create).toHaveBeenCalledTimes(1);
+			expect(files.delete).toHaveBeenCalledTimes(1);
+			expect(storedDrive()).toEqual(DRIVE);
+			expect(lines()).toEqual(linesBefore);
 		});
 	});
 });

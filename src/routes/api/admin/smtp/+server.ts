@@ -13,17 +13,19 @@ import {
 	type SmtpConfig
 } from '$lib/server/email';
 import { readBody, readBoolean, readEmail, readNumber, readText, readUrl } from '$lib/server/request-body';
-import { requireSuperadmin } from '$lib/server/route-guards';
+import { requireAdmin } from '$lib/server/route-guards';
 import { stillCallerNow, writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 import { createLogger } from '$lib/server/logger';
 
 const log = createLogger('SMTP');
 
-// The superadmin's alone, every method. The mail settings decide which server
-// an invite is handed to, and the App URL decides where its link points: an
-// administrator who could set either could read an invite meant for somebody
-// else, and an invite sets a password.
+// Every administrator's, every method (card 2395, at the owner's request: the
+// superadmin's alone before). The mail settings decide which server an invite
+// is handed to, and the App URL decides where its link points: whoever sets
+// either can read an invite or a password reset meant for somebody else, the
+// superadmin's included, and either sets a password. The stored password is
+// still never answered, and is kept only for the server it was saved for.
 
 /**
  * GET — Return current SMTP config (password masked). `allowInsecure` is the
@@ -33,12 +35,12 @@ const log = createLogger('SMTP');
  * server started, as `mailStatus()` in email.ts keeps it. How many mails were
  * sent and how many failed, when the last was sent, and the last failure:
  * when, its subject, the problem in words and the mail server's own words,
- * masked. The superadmin's alone, as the rest of this answer is: the mail
+ * masked. An administrator's, as the rest of this answer is: the mail
  * server's words can name the mail host and its user name. Both answers are
  * `no-store`, so nothing on the way keeps them (the review-fix pass's item 7).
  */
 export const GET: RequestHandler = async ({ locals }) => {
-	requireSuperadmin(locals.user);
+	requireAdmin(locals.user);
 
 	const config = getSmtpConfig();
 	if (!config) {
@@ -91,16 +93,17 @@ export const GET: RequestHandler = async ({ locals }) => {
  * settings answer one: `{}` was answered 200 and saved nothing.
  */
 export const PUT: RequestHandler = async ({ request, locals }) => {
-	requireSuperadmin(locals.user);
+	requireAdmin(locals.user);
 	const body = await readBody(request);
 
 	// One transaction: the mail settings and the App URL are saved together or
 	// not at all. The password kept for a masked one, and what it is kept
 	// against, are read in the same one. It asks first whether the session is
-	// still open and whether its account is still the superadmin (card 2253).
+	// still open and whether its account is still an administrator (cards 2253
+	// and 2395).
 	const { wayOutChangedTo, setBy } = writeAs(locals, (caller) => {
 		// Named for the line below; `user` here is the mail server's.
-		const { username: setBy } = requireSuperadmin(caller);
+		const { username: setBy } = requireAdmin(caller);
 		const existing = getSmtpConfig();
 		const here = readMailHere();
 		const config: Partial<SmtpConfig> = {};
@@ -163,15 +166,15 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
  * the `500` stays.
  */
 export const POST: RequestHandler = async ({ request, locals }) => {
-	requireSuperadmin(locals.user);
+	requireAdmin(locals.user);
 
 	// An address, or none for the caller's own.
 	const to = readEmail(await readBody(request), 'to', { allowEmpty: true });
 	// Asked again once the body is in, with nothing awaited between this and
 	// the mail, which leaves the process (card 2253): a session that has ended,
-	// or an account that is no longer the superadmin, sends nothing. The
+	// or an account that is no longer an administrator, sends nothing. The
 	// caller's own address is theirs as it is now.
-	const sender = requireSuperadmin(stillCallerNow(locals));
+	const sender = requireAdmin(stillCallerNow(locals));
 	const recipient = to || sender.email;
 
 	try {

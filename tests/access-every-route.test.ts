@@ -508,9 +508,10 @@ type Req = string | { path: string; body?: unknown; headers?: Record<string, str
  *   admin      to be an administrator
  *   superadmin to be the superadmin: an administrator is refused. What acts on
  *              the whole installation, by which an administrator could make
- *              themselves anybody: the export, the import, the reset, the
+ *              themselves anybody: the export, the import and the reset. The
  *              backup schedule and its destinations, and the mail and App URL
- *              settings
+ *              settings, were the superadmin's too, and are `admin` since card
+ *              2395, at the owner's request
  *   own        to be the one the thing belongs to: who made it, or whom it is
  *              addressed to
  *   link       to hold the secret link a task request was made with
@@ -798,24 +799,26 @@ const TABLE: Record<string, Case | Case[]> = {
 	'GET /api/audit': admin(() => '/api/audit'),
 
 	// ── Administration ────────────────────────────────────────────────────
-	// The superadmin's alone: everything that acts on the whole installation.
-	// Clearing a board, purging, vacuuming, XP, the log and the audit trail stay
-	// with administrators.
-	'GET /api/admin/backup': superadmin(() => '/api/admin/backup'),
-	'PUT /api/admin/backup': superadmin(() => json('/api/admin/backup', { schedule: 'disabled', destinations: [] })),
+	// The superadmin's alone: the export, the import and the reset. Clearing a
+	// board, purging, vacuuming, XP, the log and the audit trail are every
+	// administrator's, and so, since card 2395 at the owner's request, are the
+	// backup settings with Run Now, the Test and the Connect, and the mail and
+	// App URL settings with Send Test: those nine changed from `superadmin`.
+	'GET /api/admin/backup': admin(() => '/api/admin/backup'),
+	'PUT /api/admin/backup': admin(() => json('/api/admin/backup', { schedule: 'disabled', destinations: [] })),
 	// With no destination configured it answers that there is none and copies nothing.
-	'POST /api/admin/backup': superadmin(() => json('/api/admin/backup', {}), {
+	'POST /api/admin/backup': admin(() => json('/api/admin/backup', {}), {
 		writesNothing: 'with no destination there is no copy to make, and no row to write of one'
 	}),
-	'GET /api/admin/backup/gdrive/auth': superadmin(() => '/api/admin/backup/gdrive/auth', {
+	'GET /api/admin/backup/gdrive/auth': admin(() => '/api/admin/backup/gdrive/auth', {
 		answers: 400,
 		because: NO_DESTINATION
 	}),
-	'POST /api/admin/backup/gdrive/auth': superadmin(() => json('/api/admin/backup/gdrive/auth', {}), {
+	'POST /api/admin/backup/gdrive/auth': admin(() => json('/api/admin/backup/gdrive/auth', {}), {
 		answers: 400,
 		because: NO_DESTINATION
 	}),
-	'POST /api/admin/backup/test': superadmin(() => json('/api/admin/backup/test', {}), {
+	'POST /api/admin/backup/test': admin(() => json('/api/admin/backup/test', {}), {
 		answers: 400,
 		because: NO_DESTINATION
 	}),
@@ -839,11 +842,11 @@ const TABLE: Record<string, Case | Case[]> = {
 		setup: () => void db.insert(userXp).values({ name: 'owner', xp: 120 }).run()
 	}),
 	'POST /api/admin/reset': superadmin(() => '/api/admin/reset'),
-	'GET /api/admin/smtp': superadmin(() => '/api/admin/smtp'),
-	'PUT /api/admin/smtp': superadmin(() =>
+	'GET /api/admin/smtp': admin(() => '/api/admin/smtp'),
+	'PUT /api/admin/smtp': admin(() =>
 		json('/api/admin/smtp', { host: 'smtp.example.test', port: 587, fromAddress: 'dumpfire@example.test' })
 	),
-	'POST /api/admin/smtp': superadmin(() => json('/api/admin/smtp', { to: 'someone@example.test' }), {
+	'POST /api/admin/smtp': admin(() => json('/api/admin/smtp', { to: 'someone@example.test' }), {
 		setup: makeSmtp,
 		writesNothing: 'the test mail leaves the process, and writes no row'
 	}),
