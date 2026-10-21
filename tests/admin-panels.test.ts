@@ -1549,15 +1549,43 @@ describe('the admin page, mounted with its panels', () => {
 		expect(sent.filter((request) => request.what.includes('vacuum'))).toEqual([]);
 	});
 
-	it('shows an administrator who is not the superadmin no mail panel and no Reset Everything, and reads no mail settings', async () => {
+	// Card 2395: the mail settings, the App URL and the scheduled backups are every administrator's; the
+	// export, the import and Reset Everything stay the superadmin's.
+	it('shows an administrator who is not the superadmin the mail, App URL and Scheduled Backups panels, reading each, and no Backup & Restore and no Reset Everything (card 2395)', async () => {
 		const target = draw(AdminPage, { data: asAdministrator });
 		await settle();
 
-		expect(headings(target)).not.toContain('📧 Email / SMTP');
+		expect(headings(target)).toContain('📧 Email / SMTP');
+		expect(headings(target)).toContain('🌐 Application Settings');
+		expect(headings(target)).toContain('☁️ Scheduled Backups');
+		expect(headings(target)).not.toContain('💾 Backup & Restore');
+		expect(target.textContent).not.toContain('Export Backup');
 		expect(target.textContent).not.toContain('Reset Everything');
 		expect(headings(target)).toContain("🔒 The superadmin's");
+		expect(target.textContent).toContain('Exporting, importing and resetting the database belong to the superadmin, chief, and are on this page for that account only.');
 		expect(headings(target)).toContain('👥 User Management');
-		expect(mailReads()).toBe(0);
-		expect(asked('GET /api/admin/backup')).toHaveLength(0);
+		// The App URL panel's read and the mail panel's; the backup panel's.
+		expect(mailReads()).toBe(2);
+		expect(asked('GET /api/admin/backup')).toHaveLength(1);
+		expect(asked('GET /api/admin/export')).toHaveLength(0);
+	});
+
+	it('reads the mail panel again once 📧 is answered for an administrator too, and its dialog points them to Email / SMTP (card 2395)', async () => {
+		answer = (what) =>
+			what === 'POST /api/users/2/invite'
+				? Response.json({ mailSent: false, message: 'The invite mail could not be sent.', inviteUrl: 'http://localhost/invite/t2' })
+				: undefined;
+		const target = draw(AdminPage, { data: asAdministrator });
+		await settle();
+		expect(mailReads()).toBe(2);
+
+		inviteButton(target).click();
+		await settle();
+
+		expect(asked('POST /api/users/2/invite')).toHaveLength(1);
+		expect(mailReads()).toBe(3);
+		const dialog = document.querySelector<HTMLElement>('[role="alertdialog"][aria-label="The invite mail was not sent"]')!;
+		expect(dialog.textContent).toContain('Why it failed is under Email / SMTP below.');
+		expect(dialog.textContent).not.toContain('The superadmin can see why');
 	});
 });

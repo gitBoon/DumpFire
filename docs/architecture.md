@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.46
+version: 1.47
 status: As-Built
 date: 2026-10-21
 tags:
@@ -645,7 +645,7 @@ flowchart LR
 | Role | Boards | Admin | Users |
 |------|--------|-------|-------|
 | `superadmin` | All boards | Full access | Manage all |
-| `admin` | All boards | Full access | Manage all |
+| `admin` | All boards | All but export, import and Reset Everything (the mail and backup settings since card 2395) | Manage ordinary users |
 | `user` | Only shared boards | No access | Self only |
 
 ### Board Access Levels
@@ -1079,26 +1079,26 @@ flowchart LR
 
 ### The admin page
 
-The page keeps its props, `isSuperadmin` and `superadminName`, the `{#if isSuperadmin}` / `{:else}` frames **with every superadmin panel inside them** (the `{:else}` draws the "🔒 The superadmin's" notice), the confirm dialog, the reset notice and the invite dialog in their places after `.admin-page`, and the CSS several panels share. `src/lib/admin/send.ts` holds `sent(send, fallback)` (the answer on success; on a refusal the server's words in a toast and `null`; no answer, `NO_ANSWER`), `NO_ANSWER` and `showToast`; `src/lib/admin/format.ts` holds `formatBytes`, `formatDuration`, `formatRelativeTime`, `destTypeLabels` and the `DestType` and `BackupHistoryEntry` types.
+The page keeps its props, `isSuperadmin` and `superadminName`, the `{#if isSuperadmin}` / `{:else}` frame **with the superadmin's panel inside it** (the `{:else}` draws the "🔒 The superadmin's" notice, which names the export, the import and the reset; the App URL, Scheduled Backups and Email / SMTP panels came out of the frame with card 2395 and are drawn for every administrator), the confirm dialog, the reset notice and the invite dialog in their places after `.admin-page`, and the CSS several panels share. `src/lib/admin/send.ts` holds `sent(send, fallback)` (the answer on success; on a refusal the server's words in a toast and `null`; no answer, `NO_ANSWER`), `NO_ANSWER` and `showToast`; `src/lib/admin/format.ts` holds `formatBytes`, `formatDuration`, `formatRelativeTime`, `destTypeLabels` and the `DestType` and `BackupHistoryEntry` types.
 
 | Component (`src/lib/components/admin/`) | Drawn for | What it holds |
 |---|---|---|
 | `AdminOverview.svelte` | every administrator | Database Overview: the counts of boards, columns, cards, categories, users and teams, and the database's size |
-| `AppUrlPanel.svelte` | the superadmin | The App URL; reads its own setting when drawn (its local `data`, which hid the page's, is `settings`) |
+| `AppUrlPanel.svelte` | every administrator (the superadmin until card 2395) | The App URL; reads its own setting when drawn (its local `data`, which hid the page's, is `settings`) |
 | `BackupRestorePanel.svelte` | the superadmin | Export, the import, its dialog and its report; `importOutsideDefault` |
-| `ScheduledBackupsPanel.svelte` | the superadmin | The schedule, the destinations and their Test and Confirm, Run Now; reads its own settings when drawn; draws the two forms, the history and the Drive box |
-| `DestinationForm.svelte` | the superadmin | The add and edit forms kept verbatim behind `mode`, their fields bound from the panel so Edit and Add behave as before |
-| `GDriveConnectModal.svelte` | the superadmin | The Google Drive connect box, opened by the panel through `bind:this` |
-| `BackupHistory.svelte` | the superadmin | The backup history, `showAllHistory` bound to the panel so "Show all" survives Run Now |
+| `ScheduledBackupsPanel.svelte` | every administrator (the superadmin until card 2395) | The schedule, the destinations and their Test and Confirm, Run Now; reads its own settings when drawn; draws the two forms, the history and the Drive box |
+| `DestinationForm.svelte` | every administrator, within the scheduled backups panel | The add and edit forms kept verbatim behind `mode`, their fields bound from the panel so Edit and Add behave as before |
+| `GDriveConnectModal.svelte` | every administrator, within the scheduled backups panel | The Google Drive connect box, opened by the panel through `bind:this` |
+| `BackupHistory.svelte` | every administrator, within the scheduled backups panel | The backup history, `showAllHistory` bound to the panel so "Show all" survives Run Now |
 | `BoardManagementPanel.svelte` | every administrator | Clear a board's cards or categories, or delete it, each through the page's `confirm` |
 | `UsersPanel.svelte` | every administrator | The accounts: create, invite, role, delete, resend; sets the page's `inviteLink` and asks the mail panel to read again after an invite (`loadMailStatus`); draws `ResetPasswordDialog` |
 | `ResetPasswordDialog.svelte` | every administrator | The password reset, opened by 🔑 through `bind:this` |
-| `InviteLinkDialog.svelte` | every administrator | An invite link whose mail was not sent, bound to the page's `inviteLink`; carries its own copies of the modal rules, being drawn after `.admin-page` |
+| `InviteLinkDialog.svelte` | every administrator | An invite link whose mail was not sent, bound to the page's `inviteLink` (its `isSuperadmin` prop went with card 2395: it points every reader to Email / SMTP); carries its own copies of the modal rules, being drawn after `.admin-page` |
 | `TeamsPanel.svelte` | every administrator | Teams and their members |
-| `SmtpPanel.svelte` | the superadmin | The mail settings and Send Test; reads its own settings when drawn; exports `loadMailStatus`, which the page hands the users panel as a callback; takes `currentUser` |
+| `SmtpPanel.svelte` | every administrator (the superadmin until card 2395) | The mail settings and Send Test; reads its own settings when drawn; exports `loadMailStatus`, which the page hands the users panel as a callback; takes `currentUser` |
 | `DangerZonePanel.svelte` | every administrator; Reset Everything inside its own `{#if isSuperadmin}` | Purge Archived Cards, Vacuum, Reset All XP and Reset Everything, each through the page's `confirm`; sets the page's `resetNotice` |
 
-`tests/page-failures.test.ts` lists each component as superadmin-only or shown to every administrator, and follows each of its tags up to the page: a superadmin component's tags must all be inside the page's `{#if isSuperadmin}` and not in its `{:else}`, and an administrator's inside no `{#if}` at all.
+`tests/page-failures.test.ts` lists each component as superadmin-only, shown to every administrator, or a part of the scheduled backups panel (card 2395), and follows each of its tags up to the page: a superadmin component's tags must all be inside the page's `{#if isSuperadmin}` and not in its `{:else}`, an administrator's inside no `{#if}` at all, and a part's inside the panel alone and in no `{#if isSuperadmin}`.
 
 **The load** (`src/routes/admin/+page.server.ts`) is seven reads whatever the installation holds (card 2297): every board; each board's columns, cards (archived ones too) and categories, counted for every board at once with one `GROUP BY board_id` each; every user, with three sub-selects counting their keys, webhooks and schedules in the same statement; every team; and every team's members in one query, ordered by team and user, so each team lists its members in the order of their ids, as its own read did. It was three reads a board and one a team. Every write on the page calls `invalidateAll()`, which runs it again (and the root layout's load, which reads nothing); it is not narrowed to keys, since the page has one load and a key would run the same load.
 

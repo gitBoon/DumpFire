@@ -489,14 +489,15 @@ describe('the mail panel’s record (M8 to M12)', () => {
 		expect(not.headers.get('cache-control')).toBe('no-store');
 	});
 
-	it("is the superadmin's alone (M12)", async () => {
-		expect((await panel(admin)).status).toBe(403);
+	// It was the superadmin's alone (M12); every administrator's since card 2395, with the rest of the mail settings.
+	it('is every administrator’s, and nobody else’s (card 2395)', async () => {
+		expect((await panel(admin)).status).toBe(200);
 		expect((await panel(invitee)).status).toBe(403);
 	});
 });
 
 describe('a mail user with no password, as a restore leaves the settings (review fixes, item 2)', () => {
-	const NO_PASSWORD = 'the mail password has not been entered on this server; the superadmin enters it under 📧 Email / SMTP';
+	const NO_PASSWORD = 'the mail password has not been entered on this server; an administrator enters it under 📧 Email / SMTP';
 
 	beforeEach(() => {
 		db.insert(settings).values({ key: 'smtp_user', value: 'mailer' }).run();

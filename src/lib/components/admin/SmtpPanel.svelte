@@ -3,8 +3,9 @@
   and Send Test, and what mail has done since the server started (card 2281,
   slice C1b: moved from src/routes/admin/+page.svelte).
 
-  The superadmin's alone: the page draws it inside its isSuperadmin block,
-  and it reads the mail settings itself as it opens. `loadMailStatus` is
+  Every administrator's since card 2395 (the superadmin's alone before): the
+  page draws it for each of them, and it reads the mail settings itself as it
+  opens. `loadMailStatus` is
   exported: the page reaches it with `bind:this` for the users panel, which
   has it read again once an invite is answered.
 -->
@@ -65,8 +66,8 @@
 	});
 
 	$effect(() => {
-		// The superadmin's too, and not asked for by anybody else: this panel is
-		// drawn for the superadmin alone, so it is asked for here.
+		// Every administrator's, and not asked for by anybody else: this panel is
+		// drawn on the admin page alone, so it is asked for here.
 		loadSmtpConfig();
 	});
 

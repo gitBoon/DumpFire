@@ -1135,8 +1135,10 @@ export function hostKeyChanges(before: readonly unknown[], after: readonly unkno
 
 /**
  * What a save of the backup settings changes (card 2270), for its one line in
- * the system log. Never a value of a destination's field: the settings are
- * the superadmin's, the log every administrator's (decision 4).
+ * the system log. Never a value of a destination's field: the settings were
+ * the superadmin's and the log every administrator's (decision 4), and a log
+ * line is kept where a value saved over is not. The settings are every
+ * administrator's since card 2395, their secrets still masked.
  */
 export interface BackupSettingsChanges {
 	/** Each setting beside the destinations that changed, with its values; `notifyEmail` without them. */

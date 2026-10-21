@@ -1,9 +1,9 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.26
+version: 1.27
 status: As-Built
-date: 2026-10-19
+date: 2026-10-21
 tags:
   - backup
   - reports
@@ -93,6 +93,22 @@ that channel.
 | `weekly` | Time-based | Once per week on configured day and time |
 
 ### Backup Configuration
+
+**Who may use it.** The backup settings, Run Now, a destination's Test and Google Drive's
+Connect are every administrator's (`/api/admin/backup`, `/backup/test` and
+`/backup/gdrive/auth` ask `requireAdmin`), since card 2395 (2026-10-21), at the owner's
+request; they were the superadmin's alone. The export and the import stay the superadmin's.
+Whoever sets a destination can be sent the whole database, every password hash and email
+address included: an administrator can add a destination of their own and press Run Now. The
+stored secrets are masked for every reader and are never sent to a destination they were not
+saved with (cards 2187, 2190), with two exceptions: the first host key confirmed for an SFTP
+destination with a stored password keeps the password, which then goes to whichever server
+shows that key (card 2250); and Connect on an existing Google Drive OAuth destination binds it
+to the connecting person's Google account with the stored client id and secret (a `WARN` line
+where it replaces a connection, card 2273). Nobody is recorded as having saved the settings, so they stay in
+force when the account that saved them is demoted or deleted; each change is a line in the
+system log under that account (card 2270). See
+[The Mail and Backup Settings: Every Administrator's](authentication-security.md#the-mail-and-backup-settings-every-administrators-card-2395).
 
 Stored as JSON in the `settings` table under key `backup_config`:
 
@@ -372,7 +388,7 @@ sequenceDiagram
   the Folder ID empty the copies go to a new folder. The meta is
   `{"destination":"G","scope":"narrow","folder":"made","replaced":false}`. The read again
   and the write are one `writeAs`, which first asks again whether the session is still open
-  and still the superadmin's (card 2253; see
+  and still an administrator's (card 2253, at the administrator level since card 2395; see
   [Asked Again at the Write](authentication-security.md#asked-again-at-the-write-card-2253)):
   refused there, the Connect answers `401` or `403` with the folder it made removed. The line is
   queued with `afterCommit`, so a Connect refused, changed meanwhile or whose write fails
@@ -410,7 +426,7 @@ person's Google account (with the Folder ID empty, every later backup went to a 
   `error=access_denied`): it says why instead (the admin guide, Configuring Backups).
 - **The page's side of the `GET`** (cards 2265 and 2266). `connectGDriveOAuth()` shows a
   refusal in the server's own words, read by `failureMessage()` ("Client ID and Secret
-  required", "Google Drive destination not found", the superadmin guard's `403`), and "Failed to
+  required", "Google Drive destination not found", the administrator guard's `403`), and "Failed to
   generate auth URL" only where the answer says nothing (a proxy's page); it used to say that for
   every refusal. The answer is read by `answerBody()`, and an `authUrl` that is not a non-empty
   string, or not an address on `https://accounts.google.com` (`isGoogleConsent()`, the card 2266
@@ -443,7 +459,7 @@ flowchart TD
     Start["A connect to an SFTP destination:<br/>Test, upload, list or delete"] --> Has{"A host key<br/>confirmed?"}
     Has -->|"no, and this is a Test"| Probe["firstLook(): host, port, username, readyTimeout<br/>and a verifier that records the key and answers false;<br/>no password, private key or passphrase"]
     Probe --> Shown["{ success: false, message, hostKey }:<br/>ssh-ed25519 SHA256:…, nothing sent"]
-    Shown --> Confirm["The superadmin checks it on the server<br/>and presses ✅ Confirm this key"]
+    Shown --> Confirm["An administrator checks it on the server<br/>and presses ✅ Confirm this key"]
     Confirm --> Save["PUT /api/admin/backup with hostKey set<br/>(a masked password is kept: a key added<br/>where none was narrows where it may go),<br/>then the Test again"]
     Has -->|"no, and this is a backup run"| Refuse1["Not tried (hostKeyMissing): Backup History,<br/>one ERROR line and the failure mail"]
     Has -->|"no, and this is an upload, list or delete<br/>reached any other way"| Refuse0["getConnectConfig() throws HostKeyNotConfirmed:<br/>no connection is opened"]
@@ -484,7 +500,7 @@ sequenceDiagram
     participant T as writeAs (one transaction)
     participant L as Logger (system_logs)
     P->>R: destinations (NAS with hostKey)
-    R->>T: the session still open and the superadmin's? (card 2253)
+    R->>T: the session still open and an administrator's? (cards 2253 and 2395)
     R->>T: read existing, readDestination, keepMaskedSecrets
     T->>T: hostKeyChanges(existing, saved)
     T->>T: afterCommit(log.warn … { userId })

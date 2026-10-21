@@ -343,8 +343,9 @@ export function restorableTables(live: Database.Database): string[] {
  * Whether `backup` has user accounts and none of them is the superadmin.
  *
  * Restoring such a backup would leave an installation that nobody could
- * export, import into or reset, or change the mail settings of: those are the
- * superadmin's alone, `superadmin` is written by set-up and by nothing else,
+ * export, import into or reset: those are the superadmin's alone (the backup
+ * and mail settings are every administrator's since card 2395), `superadmin`
+ * is written by set-up and by nothing else,
  * and set-up is closed while there is any user. So the import asks here
  * first, and refuses before anything is written.
  *
@@ -394,7 +395,7 @@ export function superadminsOf(database: Database.Database): string[] {
 /** What the import answers for a backup that `backupLacksSuperadmin`. */
 export const NO_SUPERADMIN_IN_BACKUP =
 	'This backup has user accounts and none of them is the superadmin. Restoring it would leave nobody able to ' +
-	'export, import or reset the database, or to change the backup and mail settings, so it is refused. ' +
+	'export, import or reset the database, so it is refused. ' +
 	'Nothing was changed.';
 
 /**

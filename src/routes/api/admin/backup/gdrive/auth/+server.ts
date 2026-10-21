@@ -23,7 +23,9 @@
  * and once; the code goes to Google with the verifier. See
  * `$lib/server/gdrive-connect`.
  *
- * The superadmin's alone: see `/api/admin/backup`.
+ * Every administrator's: see `/api/admin/backup`. A Connect is bound to the
+ * account and session that began it, so one administrator cannot finish
+ * another's.
  */
 
 import { error, isHttpError, json } from '@sveltejs/kit';
@@ -34,7 +36,7 @@ import { makeDumpfireFolder, reachFolder } from '$lib/server/backup-destinations
 import { quotedName } from '$lib/server/backup-secrets';
 import { afterCommit } from '$lib/server/db/transaction';
 import { startConnect, takeConnect } from '$lib/server/gdrive-connect';
-import { requireSuperadmin } from '$lib/server/route-guards';
+import { requireAdmin } from '$lib/server/route-guards';
 import { readBody, readText } from '$lib/server/request-body';
 import { stillCallerNow, writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
@@ -107,7 +109,7 @@ function connectLine(saved: ConnectSaved): string {
  * the way: the state is this session's alone.
  */
 export const GET: RequestHandler = async ({ locals, url }) => {
-	const caller = requireSuperadmin(locals.user);
+	const caller = requireAdmin(locals.user);
 
 	const destName = url.searchParams.get('dest');
 	if (!destName) throw error(400, 'Missing dest parameter');
@@ -162,15 +164,15 @@ export const GET: RequestHandler = async ({ locals, url }) => {
  * which the server cannot see. A Connect refused, or not saved, writes none.
  */
 export const POST: RequestHandler = async ({ request, locals }) => {
-	requireSuperadmin(locals.user);
+	requireAdmin(locals.user);
 
 	// Each text: `code` that was not was handed to Google as it was sent.
 	const body = await readBody(request);
 	// Asked again once the body is in, with nothing awaited before the code
 	// goes to Google (card 2253): a session that has ended, or an account that
-	// is no longer the superadmin, takes no state and sends no code. The write
-	// after Google's answers asks again.
-	const caller = requireSuperadmin(stillCallerNow(locals));
+	// is no longer an administrator, takes no state and sends no code. The
+	// write after Google's answers asks again.
+	const caller = requireAdmin(stillCallerNow(locals));
 	const MISSING = 'Missing code or destName';
 	const code = readText(body, 'code', { required: true, min: 1, says: { missing: MISSING, empty: MISSING } });
 	const destName = readText(body, 'destName', { required: true, min: 1, says: { missing: MISSING, empty: MISSING } });
@@ -244,14 +246,14 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		// logger writes a row logged inside a transaction whichever way it ends,
 		// and a write that fails would leave a line for a Connect never saved
 		// (card 2273, decision 4, as cards 2267 and 2270 have it). It asks first
-		// whether the session is still open and whether its account is still the
-		// superadmin (card 2253): refused, nothing is saved, and the catch below
-		// removes the folder made and answers the refusal.
+		// whether the session is still open and whether its account is still an
+		// administrator (cards 2253 and 2395): refused, nothing is saved, and the
+		// catch below removes the folder made and answers the refusal.
 		const refreshToken = tokens.refresh_token;
 		const grantedScope = typeof tokens.scope === 'string' && tokens.scope.trim() !== '' ? tokens.scope : null;
 		const madeNow = made;
 		const written = writeAs(locals, (callerNow) => {
-			requireSuperadmin(callerNow);
+			requireAdmin(callerNow);
 			const current = getBackupConfig();
 			const index = current.destinations.findIndex(d => d.name === destName && d.type === 'gdrive');
 			const now = index === -1 ? null : (current.destinations[index] as any);
@@ -289,7 +291,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		// saved is deleted again, so a failed Connect leaves nothing behind.
 		await removeMade();
 		// The write refused (card 2253): the session ended, or the account is no
-		// longer the superadmin, while Google answered. That refusal is the
+		// longer an administrator, while Google answered. That refusal is the
 		// answer, as it is anywhere else, and not a failed Connect.
 		if (isHttpError(err)) throw err;
 		log.error(`Google Drive Connect failed for destination ${quotedName(destName)}: ${err.message}`, undefined, byCaller);

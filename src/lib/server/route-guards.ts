@@ -450,22 +450,26 @@ export function requireBoardCategoryEdit(
 
 /** What everybody but the superadmin is told by a route that is the superadmin's. */
 export const SUPERADMIN_ONLY =
-	'This belongs to the superadmin. Exporting, importing and resetting the database, the backup schedule and ' +
-	'its destinations, and the mail and App URL settings can be used by the superadmin account only';
+	'This belongs to the superadmin. Exporting, importing and resetting the database can be used by the ' +
+	'superadmin account only';
 
 /**
  * The caller, if they are the superadmin. Like `requireManagedAccount`, it
  * looks at no board.
  *
- * It is asked by every route that acts on the whole installation: the export,
- * the import and the reset, everything under `/api/admin/backup`, and the mail
- * and App URL settings. Each of those is the user list by another way. An
- * export holds every password hash, an import replaces every account, a reset
- * leaves the installation to whoever sets it up next, a backup destination is
- * sent the whole database, and the mail settings and the App URL decide where
- * an invite goes and what its link points at. An administrator could do all
- * of it, and so could get round the rule above, that only the superadmin
- * manages an administrator.
+ * It is asked by the export, the import and the reset. An export holds every
+ * password hash, an import replaces every account, and a reset leaves the
+ * installation to whoever sets it up next.
+ *
+ * The backup settings and the mail and App URL settings were the superadmin's
+ * too, and are every administrator's since card 2395, by `requireAdmin`, at
+ * the owner's request: an administrator who sets a backup destination can be
+ * sent the whole database, password hashes included, and one who sets the
+ * mail server reads every mail, invites and password resets included. So an
+ * administrator can get round the rule above, that only the superadmin
+ * manages an administrator, by those settings. The owner knows it
+ * (docs/authentication-security.md, "The Mail and Backup Settings: Every
+ * Administrator's").
  *
  * An administrator is told why, in the one message, and so is everybody else
  * who is signed in.

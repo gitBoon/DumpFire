@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.37
+version: 1.38
 status: As-Built
 date: 2026-10-21
 tags:
@@ -104,7 +104,14 @@ sequenceDiagram
 
 ### SMTP Configuration
 
-SMTP settings are stored in the `settings` table and configured via the Admin panel.
+SMTP settings are stored in the `settings` table and configured via the Admin panel, by any
+administrator or the superadmin (`GET`, `PUT` and `POST /api/admin/smtp` ask `requireAdmin`;
+they were the superadmin's alone until card 2395, 2026-10-21, at the owner's request).
+Whoever sets the mail server sees every mail the app sends, invite links and password-reset
+links included, the superadmin's among them, and the App URL, saved by the same route,
+decides where every link in a mail points. Nobody records who saved them: they stay in force
+when that account is demoted or deleted (docs/authentication-security.md, "The Mail and
+Backup Settings: Every Administrator's").
 
 | Setting Key | Type | Default | Description |
 |------------|------|---------|-------------|
@@ -244,7 +251,7 @@ included, is one `ERROR` line under `EMAIL` written by `deliverMail` (`Failed to
 the certificate or STARTTLS, `deliverMail` also writes one `WARN` line under `EMAIL`, `Mail is
 not being sent: <the error, masked>. <the sentence above>`, at most once in ten minutes in a
 process, so the Audit page says why invites and notifications stopped. Send Test does not
-write it: its answer already says the same to the superadmin who pressed it.
+write it: its answer already says the same to the administrator who pressed it.
 
 ### When a Mail Fails
 
@@ -270,7 +277,7 @@ the send: a mail that fails resolves, and its one line is `deliverMail`'s.
 | `problem` | Words (in an answer and on the panel) | From |
 |---|---|---|
 | `not-configured` | mail is not set up on this server | No mail host when the mail was sent. Not counted as a failure, not logged |
-| `no-password` | the mail password has not been entered on this server; the superadmin enters it under 📧 Email / SMTP | `EAUTH` with `command` `'API'`: nodemailer's own "Missing credentials for …", for a mail user name saved with no password (what a restore leaves, card 2169). Nothing was asked of the mail server |
+| `no-password` | the mail password has not been entered on this server; an administrator enters it under 📧 Email / SMTP (it said "the superadmin" until card 2395) | `EAUTH` with `command` `'API'`: nodemailer's own "Missing credentials for …", for a mail user name saved with no password (what a restore leaves, card 2169). Nothing was asked of the mail server |
 | `secure-connection` | the mail server's certificate could not be checked, or it does not offer STARTTLS | `ETLS`, `EREQUIRETLS`, or nodemailer's or Node's own words matching `certificate`, `altnames`, `self-signed` or `STARTTLS` (an altnames mismatch comes back `ESOCKET`; nodemailer 10's "EHLO failed but HELO does not support required STARTTLS" comes back `ECONNECTION`). The mail server's reply is not read for the words: a refusal saying "certificate" is the server's answer, `refused` or `failed` |
 | `unreachable` | the mail server could not be reached | `ECONNECTION`, `EDNS`, `ETIMEDOUT`, `ESOCKET` otherwise |
 | `sign-in` | the mail server refused the sign-in | `EAUTH` otherwise |
@@ -300,9 +307,9 @@ the link only for a mail that was tried.
 | Not sent, link not shown | `{ success: true, mailSent: false, mailProblem, message: "The invite was made, but its mail could not be sent, and its link cannot be shown to you now. Send a new invite with 📧 once mail works." }` | the user, `invited: true`, `mailSent: false`, `mailProblem` |
 
 A user made with a password is answered `invited: false` and no `mailSent`. `mailProblem` is the
-problem's words, never the mail server's, which can name the mail host and its user name (the
-superadmin's settings; any administrator may send an invite). Every outcome but `sent: true` is
-a mail not sent, `not-configured` included: the superadmin cleared the mail host between the
+problem's words, never the mail server's, which can name the mail host and its user name (read
+on the mail panel and in the system log, both every administrator's since card 2395). Every outcome but `sent: true` is
+a mail not sent, `not-configured` included: an administrator cleared the mail host between the
 commit and the send, and the invite exists all the same. An answer that carries `inviteUrl` has
 `Cache-Control: no-store`.
 
@@ -354,8 +361,8 @@ ENOTFOUND smtp.example.com` (the code, `ETIMEDOUT`, `ECONNECTION`, `ESOCKET` or 
 `ERROR` line). The panel puts it after "The mail error was:". Every mail counts, whatever sent it: notifications, invites, the request
 mails, the backup failure mail, reports scheduled and sent by hand, and Send Test. A mail not
 sent for want of a host is not counted. `GET /api/admin/smtp` answers it as `mailStatus`,
-configured or not, to the superadmin alone, with `Cache-Control: no-store` on both answers. The
-admin page reads it when the panel opens, after Save and Send Test, and, for the superadmin, as
+configured or not, to any administrator (the superadmin alone until card 2395), with `Cache-Control: no-store` on both answers. The
+admin page reads it when the panel opens, after Save and Send Test, and as
 each invite is answered, so the panel the invite's dialog points to shows that mail:
 
 ```json
@@ -740,7 +747,7 @@ flowchart TD
 
 | Answer | `message` | `results` |
 |--------|-----------|-----------|
-| `503` | `Mail is not set up on this server, so the report was not sent. The superadmin sets it up on the admin page.` | None |
+| `503` | `Mail is not set up on this server, so the report was not sent. An administrator sets it up on the admin page.` (it said "The superadmin" until card 2395) | None |
 | `200`, all sent | `Report sent to <n> recipient(s)` | `{ email, success: true }` for each |
 | `200`, some sent | `Report sent to <s> of <n> recipients. Not sent to <addresses>. The mail server did not accept it. An administrator can see the reason in the system log.` | Each recipient, a failure with `success: false` and the `message` `The mail server did not accept it. An administrator can see the reason in the system log.` |
 | `502`, none sent | `The report was not sent. The mail server did not accept it. An administrator can see the reason in the system log.` | As above, every one a failure |

@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.87
+version: 1.88
 status: As-Built
 date: 2026-10-21
 tags:
@@ -218,7 +218,7 @@ On the Docker host itself there is usually no Node to run the suite with outside
 
 An invite, a request's confirmation and reply links, and the "View Task" link in a notification all begin with the server's own address. That address is configuration, and never anything a request says:
 
-1. the **App URL** on the admin page, under Application Settings (the superadmin's);
+1. the **App URL** on the admin page, under Application Settings (any administrator's since card 2395; the superadmin's before);
 2. failing that, the `APP_URL` variable;
 3. failing that, `ORIGIN`.
 
@@ -628,7 +628,7 @@ What stops a start, and what is only reported:
 | A timestamp column holds a value in no form the conversion can read | `[ERROR] [DB] Timestamp column(s) hold values in no form this build can read, and they were left as they are: <table.column n (such as "…")>. …`, at every start until it is dealt with | Yes, with those values as they are. Correct each to `YYYY-MM-DD HH:MM:SS` in UTC, or clear it where the column allows NULL |
 | The conversion failed | `[ERROR] [DB] Timestamps could not be brought to the stored form (YYYY-MM-DD HH:MM:SS, UTC), and none was changed: <why>. Start-up continues on the values as they are, and the next start tries again.` | Yes; nothing was converted. Until a start converts them, a report schedule whose next run is held in ISO 8601 runs up to a day late, because that comparison with now is made as text; a session's, an API key's or an invite's expiry is read as the moment it names, so each ends on time |
 | The database differs from the model anywhere | `[ERROR] [DB]`, at every start | Yes; nothing is changed |
-| There are user accounts and none of them is the superadmin | `[CRITICAL] [STARTUP]`, at every start until one is | Yes. Nobody can export, import, reset or change the backup and mail settings until one is made from the host |
+| There are user accounts and none of them is the superadmin | `[CRITICAL] [STARTUP]`, at every start until one is | Yes. Nobody can export, import or reset the database until one is made from the host (the backup and mail settings are every administrator's since card 2395) |
 | `ORIGIN` is `http://localhost:3000` and no App URL is set | `[WARN] [STARTUP]`, at every start | Yes; links in mail begin with `http://localhost:3000` |
 | A board hangs beneath one of its own cards | `[WARN] [STARTUP]`, at every start until it is repaired, and `[WARN] [IMPORT]` at once after an import that brings one | Yes. The board is on no dashboard and its card cannot be completed; opening it is safe. See [A board beneath one of its own cards](admin-guide.md#a-board-beneath-one-of-its-own-cards) |
 | There was no database file, or an empty one, and this start made a new one | `[WARN] [STARTUP]`, at that start | Yes, on an empty database, with set-up open. On an installation that had data, stop the container before anyone opens the site: see [Moving the Database onto the Volume](#moving-the-database-onto-the-volume) |
@@ -677,18 +677,16 @@ What acts on the whole installation is the superadmin's alone. An administrator 
 | Export Backup | The file holds every user's password hash and email and every webhook's address. Since card 2169 it holds no mail password, destination credential or webhook secret, and carries a seal made with a key this server keeps, so that only this server fills its secrets back into it, and only unchanged; files exported before then hold the secrets and no seal |
 | Import Backup | It replaces every account with the backup's |
 | Reset Everything | Whoever sets up afterwards is the superadmin |
-| Scheduled Backups: the schedule, the destinations, "Test" and "Run Now" | A destination is sent the whole database, and a test connects with a stored password to whatever host it is given |
-| Email / SMTP and the App URL | They decide which server an invite is handed to, and where its link points |
 
-Everything else on the admin page is any administrator's: users and teams, clearing a board, purging archived cards, vacuuming, resetting XP, the system log and the audit trail. See [Admin Guide](admin-guide.md#who-may-do-what).
+Everything else on the admin page is any administrator's: users and teams, clearing a board, purging archived cards, vacuuming, resetting XP, the system log and the audit trail, and, since card 2395 at the owner's request, Scheduled Backups (the schedule, the destinations, "Test", "Run Now" and "Connect") and Email / SMTP with the App URL, which were the superadmin's. An administrator who sets a backup destination can be sent the whole database, password hashes included, and one who sets the mail server reads every mail DumpFire sends, invite and password-reset links included, the superadmin's among them; the settings stay in force when that administrator is demoted. See [Administrators Can Use the Email and Backup Settings](#administrators-can-use-the-email-and-backup-settings) and [Admin Guide](admin-guide.md#who-may-do-what).
 
 ```mermaid
 flowchart TD
     Setup["/setup, open while there are no users"] -->|"creates"| Super["The superadmin (one account)"]
     Super -->|"creates and promotes"| Admin["Administrators"]
     Admin -->|"create"| Users["Users"]
-    Super --> Whole["Export, import, reset,\nbackup destinations, mail and App URL"]
-    Admin --> Rest["Users, teams, boards,\npurge, vacuum, XP, logs"]
+    Super --> Whole["Export, import, reset"]
+    Admin --> Rest["Users, teams, boards,\npurge, vacuum, XP, logs,\nbackup settings, mail and App URL"]
     Super --> Rest
     Host["The host: docker exec"] -.->|"the only other way\nto make a superadmin"| Super
 ```
@@ -725,7 +723,7 @@ To check it:
 docker exec <container> node -e "const db = require('better-sqlite3')(process.env.DB_PATH || 'dumpfire.db', { readonly: true, fileMustExist: true }); db.prepare('SELECT username, role FROM users ORDER BY id').all().forEach((u) => console.log(u.username + ': ' + u.role)); db.close();"
 ```
 
-At least one line should end `superadmin`. Then sign in as that user: the admin page has Application Settings, Backup & Restore, Scheduled Backups and Email / SMTP on it again, and the `[CRITICAL] [STARTUP]` line is not written at the next start.
+At least one line should end `superadmin`. Then sign in as that user: the admin page has Backup & Restore and Reset Everything on it again (Application Settings, Scheduled Backups and Email / SMTP are every administrator's since card 2395), and the `[CRITICAL] [STARTUP]` line is not written at the next start.
 
 If the old superadmin's account is still there, there are now two, and neither can manage the other's account. Make the old one an administrator with the same command, with `'admin'` in place of `'superadmin'` in the `UPDATE`, or delete it as the new superadmin once its role is changed.
 
@@ -4302,6 +4300,50 @@ An archived card in a Complete column, and a person whose every card is archived
 
 Nothing is done to the database. The older image's Team Leaderboard counts archived cards again, as done or active by their column, and lists people whose every assigned card is archived.
 
+### Administrators Can Use the Email and Backup Settings
+
+**Card 2395.** No migration, no setting, no index, no route added, and nothing in `/api/v1` changes (the OpenAPI document is unchanged). The plan is `docs/planning/card-2395.md`.
+
+- **2395.** The mail settings (📧 Email / SMTP, with Send Test), the App URL (🌐 Application Settings, saved by the same route) and the scheduled backups (☁️ Scheduled Backups: the schedule, the destinations, 🧪 Test, ▶ Run Now and Google Drive's 🔗 Connect) were the superadmin's alone. Every administrator can now see and use them, on the admin page and by their routes. Export Backup, Import Backup and Reset Everything stay the superadmin's, and the 🔒 section an administrator sees names only those three. An administrator made a user is refused at once, a save or a send already on its way included.
+
+**Owner to know.** This was the superadmin's because each of these settings is the user list by another way, and it still is:
+
+- **An administrator who sets a backup destination can receive a full copy of the database**: every account's password hash and email address, every board, card and comment. They can add a destination of their own and press Run Now.
+- **An administrator who sets the mail server sees every mail DumpFire sends**, invite links and password-reset links included, the superadmin's among them; whoever reads such a link can set that account's password. The App URL decides where every link in a mail points.
+- So any administrator can make themselves any account, the superadmin included.
+- **The stored secrets stay where they were saved.** The mail password and each destination's secrets are masked for everybody, and cannot be pointed at another server without being typed again, with two exceptions: an administrator may confirm the host key of an SFTP destination that has a stored password but no confirmed key yet, and the password then goes to whichever server shows that key; and **🔗 Connect** on a Google Drive destination already set up with a client ID and secret ties it to the Google account of whoever connects, using the stored ID and secret (a `WARN` line under `BACKUP` where it replaces a connection the destination had).
+- **An administrator can leave nothing to restore from.** Lowering **Keep Last** (its least is 1) and pressing **▶ Run Now** deletes every older copy at every destination; removing the destinations or switching the schedule off stops the copies. So damage an administrator does can be left with no backup to restore from. Each such change is a `WARN` line under `BACKUP` with the chip of who made it: logged, not prevented.
+- **An administrator can probe the inside of the network.** The SMTP host, an SFTP host and an S3 endpoint may be any address, inside the network included (loopback, the Docker host, internal ranges, `169.254.169.254`), and what **🧪 Send Test** and **🧪 Test** answer tells whether a port answered: a simple internal port scan. Webhooks refuse addresses inside the network (card 2161); these settings do not, since real setups use a NAS or a mail relay on the LAN.
+- **The settings outlive whoever saved them.** A destination or mail server an administrator set stays in force when that administrator is demoted or deleted. After demoting an administrator, look at Scheduled Backups and Email / SMTP. Each backup settings change is a line under `BACKUP` on the Audit page with the chip of who made it; a mail settings change writes no line, except the "Allow mail without a checked, encrypted connection" box.
+
+#### Before the deploy
+
+On production, on the older image, as **S**, the superadmin, signed in. Nothing here writes anything, but for one line: a destination Test that fails, or refuses an SFTP host key, writes one `ERROR` line under `BACKUP` in the system log. Note:
+
+- In **Admin**, under 📧 Email / SMTP, the SMTP Host, Port, Username, From Email and From Name, and whether "Allow mail without a checked, encrypted connection" is ticked; under 🌐 Application Settings, the Application URL.
+- Under ☁️ Scheduled Backups, the schedule, its time, the number in **Keep Last**, and each destination's name; then press **🧪 Test** on one destination and note what it shows (a toast such as `Connection successful`, or the host key box under it). Pick one whose Test leaves nothing behind on the destination you would mind.
+
+#### After the deploy
+
+On production. **Scratch things**: as S, in **Admin → 👥 User Management**, press **+ Add User**; Username `test2395`, an Email of yours that no account has (a plus address works), a Password of at least 8 characters you note, the role **Admin**; **Create**. Then sign in as `test2395` in a private window: that window is **A**. Checks 434 to 438 read and Test, and change nothing but the one setting 437 changes and puts back.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 434 | 2395 | In A, open **Admin** | The headings `🌐 Application Settings`, `☁️ Scheduled Backups` and `📧 Email / SMTP` are on the page, each showing the values S noted before the deploy; `🔒 The superadmin's` reads `Exporting, importing and resetting the database belong to the superadmin, <S's username>, and are on this page for that account only.`; there is no `💾 Backup & Restore` and, under `⚠️ Danger Zone`, no `Reset Everything` | One of the three panels missing, a value differing from the note, or Backup & Restore or Reset Everything shown. The older image shows A none of the three panels |
+| 435 | 2395 | In A, open `/api/admin/smtp` in the address bar; then `/api/admin/backup` | The first answer holds the host, port, user, from address and name noted, `"appUrl"` as noted, and `"pass":"••••••••"` (or `"pass":""` where no mail password is stored); in the second, every destination's password, SFTP private key, secret key, client secret and refresh token that is stored reads `"••••••••"`, and a service account's `serviceAccountJson` shows its `private_key` as `••••••••` inside it | Any password, key, secret or token in readable form; or either answer a 403 error page saying `Forbidden` (opened in the browser, `/api/admin/*` answers a refusal with SvelteKit's error page, not JSON) |
+| 436 | 2395 | In A, under 📧 Email / SMTP, leave the test recipient empty and press **🧪 Send Test** | The panel says `Test email sent to <A's email>`, and the mail arrives at that address | `Forbidden`, or no mail with nothing else said |
+| 437 | 2395 | In A, under ☁️ Scheduled Backups, press **🧪 Test** on the destination tested before the deploy; then raise or lower **Keep Last** by one (raise it, or lower it where it is 100, its most) and press Tab; then put it back to the number noted and press Tab | The Test shows what it showed S before the deploy. Each change shows the toast `Backup settings saved`; the Audit page's System Logs, filtered to `BACKUP`, show `[INFO] [BACKUP] Backup settings changed: retention from <n> to <n+1>` and then `[WARN] [BACKUP] Backup settings changed: retention from <n+1> to <n>` (lowered from 100: `[WARN] … retention from 100 to 99`, then `[INFO] … retention from 99 to 100`), each with `test2395`'s chip | `Forbidden`, a line filed under anyone else, or Keep Last not back at the number noted |
+| 438 | 2395 | In A, open `/api/admin/export` in the address bar | A 403 error page saying `This belongs to the superadmin. Exporting, importing and resetting the database can be used by the superadmin account only`, and nothing downloads | A file downloads |
+| 439 | 2395 | As S, in User Management, set `test2395`'s role to **User** and press **Change**; then in A, reload **Admin**; then open `/api/admin/smtp` in the address bar | A is taken to the dashboard; the second answer is a 403 error page saying `Forbidden` | The admin page opens, or the mail settings are answered |
+
+An administrator made a user while a save, Run Now, Test, Connect or Send Test is on its way cannot be timed by hand; the suite covers it (`tests/write-as.test.ts`, `tests/access-every-route.test.ts`), as it does a masked secret pointed at another server and Google Drive's Connect.
+
+**Afterwards.** As S, delete `test2395` (🗑️ on its row, **Confirm**). In 📧 Email / SMTP and ☁️ Scheduled Backups, check the values are the ones noted before the deploy; nothing in these checks changes them but Keep Last, which 437 puts back.
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image refuses an administrator the mail, App URL and backup settings again (`403` `This belongs to the superadmin. …`) and shows them the 🔒 section in their place. Whatever an administrator saved stays saved, and is used as it is.
+
 ## Changing the Schema
 
 The structure of the database is changed in one way only:
@@ -4538,7 +4580,7 @@ Backups made before this version do hold the sessions of whoever was signed in w
 
 **A Connect is finished only by the session that started it** (card 2251): the consent address carries a random `state` and a PKCE challenge, and the whole address Google's page leads to must be pasted back from the same session, within ten minutes, once. See [A Google Drive Connect Finished Only by the Session That Started It](#a-google-drive-connect-finished-only-by-the-session-that-started-it).
 
-Backup destinations, the schedule and "Run Now" are the superadmin's: see [The Superadmin](#the-superadmin). See [Restoring from Backup](admin-guide.md#restoring-from-backup) for the two ways to put one back.
+Backup destinations, the schedule and "Run Now" are every administrator's since card 2395 (the superadmin's before), and whoever sets a destination can be sent the whole database: see [The Superadmin](#the-superadmin). See [Restoring from Backup](admin-guide.md#restoring-from-backup) for the two ways to put one back.
 
 A backup file holds no attachment file. The uploads folder is backed up separately, by you: see [Attachment Files](#attachment-files).
 

@@ -206,7 +206,7 @@ export function linkBaseUrl(url?: URL, isDev: boolean = dev): string | null {
 /** What a request is refused with when the link it would mail cannot be made. */
 export const NO_LINK_ADDRESS =
 	'This server has no address configured to make the link from, so nothing was sent and nothing was saved. ' +
-	'The superadmin sets it as the App URL on the admin page, under Application Settings; or the server is ' +
+	'An administrator sets it as the App URL on the admin page, under Application Settings; or the server is ' +
 	'started with ORIGIN set to its public address';
 
 // ─── Transporter ─────────────────────────────────────────────────────────────
@@ -316,7 +316,7 @@ let lastTlsWarning = -Infinity;
  *
  * Called by `deliverMail` after its `ERROR` line, with the same masked
  * `detail` (card 2196, R-M1), and not for Send Test, whose answer already
- * says the same to the superadmin who pressed it. So one failure is one
+ * says the same to the administrator who pressed it. So one failure is one
  * `ERROR`, and this line is said beside it only as the reminder it is: the
  * first such failure in ten minutes.
  */
@@ -348,12 +348,12 @@ export type MailProblem =
 /**
  * Each problem in the words an answer and the mail panel use. Never the mail
  * server's own words, which can name the mail host and its user name: those
- * are the superadmin's settings, and an invite may be sent by any
- * administrator (decision 10).
+ * are read on the mail panel and in the system log (decision 10; the panel is
+ * every administrator's since card 2395), not in an answer.
  */
 export const MAIL_PROBLEM_WORDS: Record<MailProblem, string> = {
 	'not-configured': 'mail is not set up on this server',
-	'no-password': 'the mail password has not been entered on this server; the superadmin enters it under 📧 Email / SMTP',
+	'no-password': 'the mail password has not been entered on this server; an administrator enters it under 📧 Email / SMTP',
 	'secure-connection': "the mail server's certificate could not be checked, or it does not offer STARTTLS",
 	unreachable: 'the mail server could not be reached',
 	'sign-in': 'the mail server refused the sign-in',

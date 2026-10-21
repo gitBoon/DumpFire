@@ -4,6 +4,8 @@
   2281, slice C1a: moved from src/routes/admin/+page.svelte).
 
   The superadmin's alone: the page draws it inside its isSuperadmin block.
+  The scheduled backups are every administrator's since card 2395; the export
+  and the import stay the superadmin's.
   The import dialog is drawn after the panel's section, not in it, so that
   it is fixed to the window and not to a card that moves on hover. After an
   import that changed the database the page is loaded again from nothing

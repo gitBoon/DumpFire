@@ -129,7 +129,7 @@ describe('POST /api/reports/email', () => {
 
 		expect(res.status).toBe(503);
 		expect(res.body).toEqual({
-			message: 'Mail is not set up on this server, so the report was not sent. The superadmin sets it up on the admin page.'
+			message: 'Mail is not set up on this server, so the report was not sent. An administrator sets it up on the admin page.'
 		});
 		expect(built).not.toHaveBeenCalled();
 		await mail.settle();

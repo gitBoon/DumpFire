@@ -752,13 +752,16 @@ describe('PUT /api/admin/smtp', () => {
 		});
 	});
 
-	it('refuses everybody but the superadmin, an administrator included', async () => {
+	it('refuses everybody but an administrator or the superadmin (card 2395)', async () => {
 		const s = withMail();
 
 		// Whoever sets the mail server and the App URL decides where an invite
-		// goes and what its link points at.
+		// goes and what its link points at: the superadmin's alone until card
+		// 2395, every administrator's since. Nobody signed in is refused 403 by
+		// the handler, as every administrator route answers; the gate answers
+		// them 401 first.
 		await expectRefused(() => api('PUT', '/api/admin/smtp', { user: s.owner, body: NEW }), 403);
-		await expectRefused(() => api('PUT', '/api/admin/smtp', { user: s.admin, body: NEW }), 403);
-		await expectRefused(() => api('PUT', '/api/admin/smtp', { body: NEW }), 401);
+		await expectRefused(() => api('PUT', '/api/admin/smtp', { body: NEW }), 403);
+		expect((await api('PUT', '/api/admin/smtp', { user: s.admin, body: NEW })).status).toBe(200);
 	});
 });

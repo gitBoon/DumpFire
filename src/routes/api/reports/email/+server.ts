@@ -126,7 +126,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	// Each send would return false and nothing would leave: said before the
 	// PDF is built, as the invite and the public request say it (card 2136).
 	if (!isSmtpConfigured()) {
-		throw error(503, 'Mail is not set up on this server, so the report was not sent. The superadmin sets it up on the admin page.');
+		throw error(503, 'Mail is not set up on this server, so the report was not sent. An administrator sets it up on the admin page.');
 	}
 
 	// The day's allowance: a call refused above spent nothing, and nothing is

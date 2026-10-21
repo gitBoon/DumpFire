@@ -3,7 +3,7 @@
  * finishes it (card 2251).
  *
  * Connect is two requests with a person between them. The `GET` builds
- * Google's consent address; the superadmin approves in Google's window and
+ * Google's consent address; the administrator approves in Google's window and
  * pastes back the address Google's page leads to, which holds a code; the
  * `POST` exchanges the code for a refresh token. The `POST` used to take any
  * code at all, so a code from somebody else's consent, pasted by a superadmin
