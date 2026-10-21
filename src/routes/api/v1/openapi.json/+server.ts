@@ -262,6 +262,9 @@ const spec = {
 			'a board read now answers categoryId null for it. Boards already holding the id of a category that no longer exists were cleared once, at the deploy. ' +
 			'(95) PUT /api/v1/boards/{boardId} writes, logs and tells only the fields whose value changes: a body whose every field is as the board holds it answers the board as it is, ' +
 			'with no api:board_updated and updatedAt unchanged, and an entry names only the fields that changed, where every field sent was written and named; {} is still 400. ' +
+			'(96) GET /api/v1/milestones/{milestoneId} lists the milestone\'s archived cards in `archivedCards`, by card id, withheld as `cards` are, each with `archivedAt` (null when withheld); ' +
+			'`cards` still leaves them out. They are the cards that stop PATCH …/{milestoneId} giving the milestone to another board when no live card does, and the refusal names none of them, ' +
+			'where finding them meant asking each board for GET /api/v1/boards/{boardId}/cards?archived=true. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -1450,7 +1453,7 @@ const spec = {
 			},
 			MilestoneDetail: {
 				type: 'object',
-				description: 'A milestone as the single read gives it. Every property of Milestone, described there, and `cards`.',
+				description: 'A milestone as the single read gives it. Every property of Milestone, described there, `cards` and `archivedCards`.',
 				properties: {
 					id: { type: 'integer' },
 					boardId: { type: ['integer', 'null'] },
@@ -1464,7 +1467,7 @@ const spec = {
 					cards: {
 						type: 'array',
 						description:
-							'The cards in the milestone. Archived cards are left out. A card on a board the key\'s user cannot open, which a card moved off the milestone\'s board can be, ' +
+							'The cards in the milestone. Archived cards are left out: they are listed in `archivedCards`. A card on a board the key\'s user cannot open, which a card moved off the milestone\'s board can be, ' +
 							'is listed withheld, as a plan node is: its id, `withheld` true, "A card on a board you cannot open" for its title, an empty column title, and null for its priority, column and board.',
 						items: {
 							type: 'object',
@@ -1479,9 +1482,31 @@ const spec = {
 							},
 							required: ['id', 'title', 'priority', 'columnId', 'columnTitle', 'boardId', 'withheld']
 						}
+					},
+					archivedCards: {
+						type: 'array',
+						description:
+							'The archived cards in the milestone, by card id (since 2026-10-14). Archiving a card keeps its milestone, and giving the milestone to another board counts them: ' +
+							'these are the cards to take out with DELETE /api/v1/milestones/{milestoneId}/cards when that is refused and no card in `cards` is on another board. ' +
+							'Each is a `cards` item with `archivedAt`. A card on a board the key\'s user cannot open, which a card moved off the milestone\'s board can be, ' +
+							'is listed withheld, as in `cards`, and its `archivedAt` is null.',
+						items: {
+							type: 'object',
+							properties: {
+								id: { type: 'integer' },
+								title: { type: 'string', description: 'For a withheld card, "A card on a board you cannot open".' },
+								priority: { type: ['string', 'null'], enum: ['low', 'medium', 'high', 'critical', null], description: 'null when withheld.' },
+								columnId: { type: ['integer', 'null'], description: 'null when withheld.' },
+								columnTitle: { type: 'string', description: 'Empty when withheld.' },
+								boardId: { type: ['integer', 'null'], description: 'null when withheld.' },
+								withheld: { type: 'boolean', description: 'True when the card is on a board the key\'s user cannot open.' },
+								archivedAt: { type: ['string', 'null'], format: 'date-time', description: 'When the card was archived. null when withheld.' }
+							},
+							required: ['id', 'title', 'priority', 'columnId', 'columnTitle', 'boardId', 'withheld', 'archivedAt']
+						}
 					}
 				},
-				required: ['id', 'boardId', 'name', 'description', 'targetDate', 'status', 'createdBy', 'createdAt', 'updatedAt', 'cards']
+				required: ['id', 'boardId', 'name', 'description', 'targetDate', 'status', 'createdBy', 'createdAt', 'updatedAt', 'cards', 'archivedCards']
 			},
 			CardMilestoneChange: {
 				type: 'object',
@@ -5600,7 +5625,8 @@ const spec = {
 				tags: ['Milestones'],
 				summary: 'Get a milestone',
 				description:
-					'Returns one milestone with the cards in it, archived cards left out. A card on a board the key\'s user cannot open is listed withheld, with `withheld` true. ' +
+					'Returns one milestone with the cards in it, archived cards left out of `cards` and listed in `archivedCards`, each with when it was archived. ' +
+					'A card on a board the key\'s user cannot open is listed withheld, with `withheld` true. ' +
 					'For the order the work must be done in, what can be started and what is waiting, ask for its summary.',
 				operationId: 'getMilestone',
 				parameters: [{ $ref: '#/components/parameters/milestoneId' }],
@@ -5620,7 +5646,10 @@ const spec = {
 									createdBy: 2,
 									createdAt: '2026-10-01T08:15:00.000Z',
 									updatedAt: '2026-10-01T08:15:00.000Z',
-									cards: [{ id: 1686, title: 'Rotate the signing keys', priority: 'high', columnId: 3, columnTitle: 'In Progress', boardId: 1, withheld: false }]
+									cards: [{ id: 1686, title: 'Rotate the signing keys', priority: 'high', columnId: 3, columnTitle: 'In Progress', boardId: 1, withheld: false }],
+									archivedCards: [
+										{ id: 1559, title: 'Spike: key storage', priority: 'low', columnId: 9, columnTitle: 'Complete', boardId: 4, withheld: false, archivedAt: '2026-10-09T16:02:44.000Z' }
+									]
 								}
 							}
 						}
@@ -5701,7 +5730,7 @@ const spec = {
 							'a targetDate that is not a day written YYYY-MM-DD, status is neither open nor closed, milestoneId is not a whole number of 1 or more, ' +
 							'or the body is missing, is not valid JSON or is not an object. Or boardId names a board and a card in the milestone is on another board: ' +
 							'"Some cards in this milestone are not on that board (archived cards count too). Take those cards out of it first, or make the milestone cross-board instead; only its creator or an administrator can change a cross-board milestone afterwards." ' +
-							'Archived cards count, and GET /api/v1/boards/{boardId}/cards?archived=true lists them with their milestoneId. Nothing was written.',
+							'Archived cards count, and GET /api/v1/milestones/{milestoneId} lists them in `archivedCards`. Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No valid fields to update' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },

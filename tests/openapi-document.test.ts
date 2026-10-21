@@ -1137,7 +1137,10 @@ const MIRRORS: Record<string, Mirror> = {
 	},
 	MilestoneDetail: {
 		table: milestones,
-		adds: { cards: 'GET /milestones/{milestoneId} answers the milestone with the cards in it' }
+		adds: {
+			cards: 'GET /milestones/{milestoneId} answers the milestone with the cards in it',
+			archivedCards: 'and, apart, its archived cards, which stop it being given to another board (card 2346)'
+		}
 	},
 	TokenEntry: {
 		table: tokenUsage,
@@ -2671,6 +2674,19 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(changes).toContain('(95) PUT /api/v1/boards/{boardId} writes, logs and tells only the fields whose value changes');
 		expect(changes.indexOf('(95)')).toBeGreaterThan(changes.indexOf('(94)'));
 		expect(spec.paths['/api/v1/boards/{boardId}'].put.description).toContain('Only the fields whose value changes are written, logged and told');
+		// Card 2346: a goal's read lists its archived cards, apart from `cards`.
+		expect(changes).toContain('(96) GET /api/v1/milestones/{milestoneId} lists the milestone\'s archived cards in `archivedCards`');
+		expect(changes.indexOf('(96)')).toBeGreaterThan(changes.indexOf('(95)'));
+		const detail = spec.components.schemas.MilestoneDetail;
+		expect(detail.required).toContain('archivedCards');
+		expect(detail.properties.archivedCards.description).toContain("a card moved off the milestone's board");
+		expect(detail.properties.archivedCards.items.required).toContain('archivedAt');
+		expect(detail.properties.cards.description).toContain('archivedCards');
+		const goal = spec.paths['/api/v1/milestones/{milestoneId}'];
+		expect(goal.get.description).toContain('archivedCards');
+		const refusal = goal.patch.responses['400'].description as string;
+		expect(refusal).toContain('archivedCards');
+		expect(refusal).not.toContain('archived=true');
 	});
 
 	// ─── What is said in words, and can be tried ─────────────────────────────

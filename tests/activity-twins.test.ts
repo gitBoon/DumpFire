@@ -1867,11 +1867,12 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 		const cost = await pair(`/api/cards/${s.first.id}/tokens`, `/api/v1/cards/${s.first.id}/tokens`);
 		expect(cost.internal).toMatchObject({ cardId: s.first.id, recorded: true, total: 5000 });
 		expect(cost.v1).toEqual(cost.internal);
-		// One milestone: v1 adds its cards.
+		// One milestone: v1 adds its cards, and apart its archived cards (card 2346), here none.
 		const goal = await pair(`/api/milestones/${launch()}`, `/api/v1/milestones/${launch()}`);
 		expect(goal.internal.name).toBe('Launch');
-		const { cards: held, ...row } = goal.v1;
+		const { cards: held, archivedCards, ...row } = goal.v1;
 		expect(row).toEqual(goal.internal);
+		expect(archivedCards).toEqual([]);
 		expect(held).toEqual([{ id: s.first.id, title: 'First', priority: 'medium', columnId: s.A.cols['To Do'].id, columnTitle: 'To Do', boardId: s.A.board.id, withheld: false }]);
 		// Its plan, the same in both.
 		const plan = await pair(`/api/milestones/${launch()}/summary`, `/api/v1/milestones/${launch()}/summary`);

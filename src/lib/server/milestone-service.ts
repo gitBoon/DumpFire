@@ -39,7 +39,7 @@
  */
 
 import { error } from '@sveltejs/kit';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, asc, eq, isNotNull, isNull } from 'drizzle-orm';
 import { db } from './db';
 import { cards, columns } from './db/schema';
 import type { SessionUser } from './auth';
@@ -152,6 +152,14 @@ function recordGoalChange(user: SessionUser, { milestone, was, changed }: Milest
  * another board only when all its cards are there, and the backfill after
  * every restore takes out any an older backup brings back (card 2179). This
  * stays as the guard for a row made any other way.
+ *
+ * `cards` leaves archived cards out; `archivedCards` lists them, by card id,
+ * each as a `cards` item with its `archivedAt` (card 2346). Giving the goal to
+ * another board counts them too, and its refusal names no card, so this is
+ * where they are found. They are withheld by the same rule, with `archivedAt`
+ * null. Whoever reads a goal across boards opens every board its cards are
+ * on, archived ones included (`canViewMilestone`), so a withheld one comes
+ * only from a stray row in a board's goal.
  */
 export function readMilestone(user: SessionUser, at: { milestoneId: number }, opts: { withCards?: boolean }) {
 	try {
@@ -171,14 +179,35 @@ export function readMilestone(user: SessionUser, at: { milestoneId: number }, op
 			.innerJoin(columns, eq(cards.columnId, columns.id))
 			.where(and(eq(cards.milestoneId, at.milestoneId), isNull(cards.archivedAt)))
 			.all();
+		// The archived members, apart (card 2346): they still stop the goal
+		// being given to another board, and the refusal names none of them, so
+		// this is where a caller finds which to take out. Read with the same
+		// inner join on columns as that refusal asks, by card id.
+		const archivedMembers = db
+			.select({
+				id: cards.id,
+				title: cards.title,
+				priority: cards.priority,
+				columnId: cards.columnId,
+				columnTitle: columns.title,
+				boardId: columns.boardId,
+				archivedAt: cards.archivedAt
+			})
+			.from(cards)
+			.innerJoin(columns, eq(cards.columnId, columns.id))
+			.where(and(eq(cards.milestoneId, at.milestoneId), isNotNull(cards.archivedAt)))
+			.orderBy(asc(cards.id))
+			.all();
 		const opens = boardsOpenTo(user);
-		const shown = memberCards.map((card) =>
-			opens(card.boardId)
-				? { ...card, withheld: false }
-				: { id: card.id, title: WITHHELD_CARD_TITLE, priority: null, columnId: null, columnTitle: '', boardId: null, withheld: true }
+		const withheld = (id: number) => ({ id, title: WITHHELD_CARD_TITLE, priority: null, columnId: null, columnTitle: '', boardId: null, withheld: true });
+		const shown = memberCards.map((card) => (opens(card.boardId) ? { ...card, withheld: false } : withheld(card.id)));
+		// When a card on a board the caller cannot open was archived is that
+		// board's to know, so a withheld one has no archivedAt.
+		const archivedShown = archivedMembers.map(({ archivedAt, ...card }) =>
+			opens(card.boardId) ? { ...card, withheld: false, archivedAt } : { ...withheld(card.id), archivedAt: null }
 		);
 
-		return { ...milestone, cards: shown };
+		return { ...milestone, cards: shown, archivedCards: archivedShown };
 	} catch (e) {
 		refused(e);
 	}
