@@ -137,6 +137,14 @@
 	 */
 	let openSeq = 0;
 
+	/**
+	 * Whether the window open now has written something the plan draws (card
+	 * 2324): set by its `onWrote` (a subtask ticked, added, edited or deleted,
+	 * a dependency, the milestone) and by a save that wrote, and cleared as a
+	 * window opens. Not state: nothing draws it.
+	 */
+	let wrote = false;
+
 	async function openCard(ref: { kind?: string; id: number; parentCardId?: number; withheld?: boolean }) {
 		// Work on a board the viewer cannot open has nothing to open: its card
 		// would be refused them.
@@ -176,19 +184,22 @@
 			boardUsers: ctx.boardUsers,
 			milestones: ctx.milestones
 		};
+		wrote = false;
 		cardWindow.openCard(ctx.card, ctx.boardId);
 	}
 
 	/**
-	 * Closing the window re-reads the plan, saved or not: the window writes a
-	 * subtask ticked, added or removed at once, before any Save, and the table
-	 * shows every subtask (card 2221).
+	 * Closing the window re-reads the plan only when the window wrote
+	 * something it draws (`wrote`, card 2324): it re-read on every close, a
+	 * whole plan for a window only looked at. The window writes a subtask
+	 * ticked, added or removed at once, before any Save, and the table shows
+	 * every subtask (card 2221), so those still re-read it.
 	 */
 	async function closeCard() {
 		cardWindow.close();
 		modalCard = null;
 		modalContext = null;
-		await invalidateAll();
+		if (wrote) await invalidateAll();
 	}
 
 	/**
@@ -196,7 +207,9 @@
 	 * two screens cannot drift on what a save does: only the fields changed in
 	 * the window are sent. A refusal, or no answer, is said and keeps the
 	 * window open with what was typed; it used to say "Card updated" whatever
-	 * came back. A save with nothing changed sends nothing and says nothing.
+	 * came back. A save with nothing changed sends nothing and says nothing,
+	 * and closes the window without reading the plan again (card 2324): a
+	 * save tells something only when it wrote.
 	 */
 	async function saveCardFromPlan(cardData: CardWindowSave) {
 		const started = toasts.navigation();
@@ -212,6 +225,7 @@
 		// opened (on another card, or on the same card again: each open has
 		// its own `edits`), leaves that window open: the plan alone is read again.
 		const stillOpen = cardWindow.cardId === null || cardWindow.edits === saving;
+		if (stillOpen && written.told.length > 0) wrote = true;
 		const reloaded = stillOpen ? closeCard() : invalidateAll();
 		for (const { message, failed } of written.told) {
 			if (failed) toasts.add(message, 'error', started);
@@ -266,6 +280,7 @@
 		milestones={modalContext.milestones}
 		onSave={saveCardFromPlan}
 		onClose={closeCard}
+		onWrote={() => (wrote = true)}
 		edits={cardWindow.edits}
 	/>
 	{/key}

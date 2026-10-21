@@ -549,13 +549,19 @@ describe('the page, as source', () => {
 		expect(source).toContain('applyOpen(afterExpandAll(openNow, visibleRows, filtering))');
 	});
 
-	it('re-reads the plan when the card window closes, saved or not', () => {
+	it('re-reads the plan when the card window closes only after the window wrote something the plan draws (card 2324)', () => {
 		// The card window is the page's own.
 		const closeCard = all(page.script, (n) => ts.isFunctionDeclaration(n) && n.name?.text === 'closeCard');
 		expect(closeCard).toHaveLength(1);
-		expect(all(closeCard[0], (n) => ts.isCallExpression(n) && n.expression.getText() === 'invalidateAll')).toHaveLength(1);
-		// And the window's onClose is closeCard.
+		const reads = all(closeCard[0], (n) => ts.isCallExpression(n) && n.expression.getText() === 'invalidateAll');
+		expect(reads).toHaveLength(1);
+		// Under `if (wrote)`: it re-read on every close (card 2221's rule, narrowed by card 2324).
+		let held: ts.Node = reads[0];
+		while (!ts.isIfStatement(held) && held !== closeCard[0]) held = held.parent;
+		expect(ts.isIfStatement(held) && held.expression.getText()).toBe('wrote');
+		// And the window's onClose is closeCard; its onWrote sets the flag.
 		expect(page.source).toMatch(/onClose=\{closeCard\}/);
+		expect(page.source).toContain('onWrote={() => (wrote = true)}');
 	});
 
 	it('leaves no name in the page or its blocks that nothing reads (card 2323: the split left two)', () => {

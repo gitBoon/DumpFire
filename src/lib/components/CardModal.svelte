@@ -57,6 +57,7 @@
 		edits,
 		commentsTold = 0,
 		attachmentsTold = 0,
+		onWrote,
 	}: {
 		card: CardType | null;
 		categories: CategoryType[];
@@ -96,6 +97,17 @@
 		 * opened.
 		 */
 		attachmentsTold?: number;
+		/**
+		 * Called once a write the window sends before any Save is answered as
+		 * done, where it changes what a plan page draws (card 2324): a subtask
+		 * ticked, added, edited or deleted, a dependency added or removed, the
+		 * milestone set or cleared. The plan page gives it, and re-reads its
+		 * goal as the window closes only after one, or after a save that
+		 * wrote. An assignee, the cover, labels, a comment or a file are not
+		 * drawn on a plan and do not call it; a page that came to draw one
+		 * would add it. The board page, All Tasks and All To Do give none.
+		 */
+		onWrote?: () => void;
 	} = $props();
 
 	// svelte-ignore state_referenced_locally — intentional: initialize form fields from prop snapshot
@@ -509,6 +521,7 @@
 		showSubtaskModal = true;
 	}
 
+	// A saved card's subtask, written by the subtask window before these are called.
 	function handleSubtaskSaved(saved: SubtaskType) {
 		if (editingSubtask) {
 			cardSubtasks = cardSubtasks.map((st) => st.id === saved.id ? saved : st);
@@ -517,6 +530,7 @@
 		}
 		showSubtaskModal = false;
 		editingSubtask = null;
+		onWrote?.();
 	}
 
 	function handleSubtaskDeleted() {
@@ -525,6 +539,7 @@
 		}
 		showSubtaskModal = false;
 		editingSubtask = null;
+		onWrote?.();
 	}
 
 	// The card's id alone: the window's subtasks and its cost are read again
@@ -942,6 +957,7 @@
 			{openNewPendingSubtask}
 			{openEditPendingSubtask}
 			{removePendingSubtask}
+			{onWrote}
 		/>
 
 		{/if} <!-- end details tab / new card -->
@@ -1000,6 +1016,7 @@
 					bind:milestoneSaving
 					{loadDependencies}
 					{onPickerInput}
+					{onWrote}
 				/>
 
 				<!-- Sub-board -->

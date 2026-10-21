@@ -394,6 +394,195 @@ describe('the plan page opens its card window from each block (card 2281, slice 
 	});
 });
 
+// Card 2324: closing the window re-read the whole plan every time, for a window only looked at too.
+describe('the plan page reads its goal again as the card window closes only after a change the plan draws (card 2324)', () => {
+	const closeWindow = () => click($('.card-modal-content .modal-header .close-btn'));
+	const rereads = () => navigation.invalidateAll.mock.calls.length;
+	const openPlan = async () => {
+		click($('.work-table .title-link'));
+		await settle();
+		expect(titleBox()?.value).toBe('Plan');
+	};
+
+	it('reads nothing again when the window is closed with nothing done', async () => {
+		await draw();
+		await openPlan();
+		closeWindow();
+		await settle();
+		expect(titleBox()).toBeNull();
+		expect(rereads()).toBe(0);
+	});
+
+	it('reads it once after a save that changed something', async () => {
+		await draw();
+		await openPlan();
+		type(titleBox()!, 'Plan it');
+		click($('.btn-create'));
+		await settle();
+		expect(sent.filter((s) => s.what === 'PUT /api/cards/7').map((s) => s.body)).toEqual([{ title: 'Plan it', boardId: 3 }]);
+		expect(titleBox()).toBeNull();
+		expect(rereads()).toBe(1);
+	});
+
+	it('reads nothing again after a save that changed nothing, which closes the window', async () => {
+		await draw();
+		await openPlan();
+		click($('.btn-create'));
+		await settle();
+		expect(sent.some((s) => s.what === 'PUT /api/cards/7')).toBe(false);
+		expect(titleBox()).toBeNull();
+		expect(rereads()).toBe(0);
+	});
+
+	it('reads it once after a subtask is ticked, and not for the next window, opened and closed with nothing done', async () => {
+		const draft = { id: 71, cardId: 7, title: 'Draft', description: '', priority: 'low', colorTag: null, dueDate: null, completed: false, position: 0 };
+		answerContext = (id) => json({ card: { ...cardRow(id, TITLES[id]), subtasks: [draft] }, boardId: 3, categories: [], labels: [], boardUsers: [], milestones: [] });
+		await draw();
+		await openPlan();
+		click($('.subtask-checkbox'));
+		await settle();
+		expect(sent.filter((s) => s.what === 'PUT /api/subtasks/71').map((s) => s.body)).toEqual([{ completed: true, boardId: 3 }]);
+		expect(rereads()).toBe(0);
+		closeWindow();
+		await settle();
+		expect(rereads()).toBe(1);
+
+		await openPlan();
+		closeWindow();
+		await settle();
+		expect(rereads()).toBe(1);
+	});
+
+	it('reads it once after a dependency is removed in More options', async () => {
+		const blocker = { kind: 'card', cardId: 9, dependencyId: 1, title: 'Docs', boardId: 3, boardName: 'Website', columnName: 'To Do', resolved: false, withheld: false };
+		const stand = globalThis.fetch;
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async (url: string, init?: RequestInit) => {
+				if (url === '/api/cards/7/dependencies' && !init?.method) {
+					sent.push({ what: `GET ${url}`, body: undefined });
+					return json({ blockedBy: [blocker], blocks: [] });
+				}
+				return stand(url, init);
+			})
+		);
+		await draw();
+		await openPlan();
+		click($('.advanced-toggle'));
+		click($('.dep-remove'));
+		await settle();
+		expect(sent.filter((s) => s.what === 'DELETE /api/cards/7/dependencies').map((s) => s.body)).toEqual([{ dependsOnCardId: 9 }]);
+		closeWindow();
+		await settle();
+		expect(rereads()).toBe(1);
+	});
+
+	// The other window writes the plan draws (card 2324's review): each tells the page through its own `onWrote?.()`.
+	const draft = { id: 71, cardId: 7, title: 'Draft', description: '', priority: 'low', colorTag: null, dueDate: null, completed: false, position: 0 };
+	/** Plan with the subtask Draft, its subtask window's writes answered with the subtask as stored. */
+	const withDraft = () => {
+		answerContext = (id) => json({ card: { ...cardRow(id, TITLES[id]), subtasks: [draft] }, boardId: 3, categories: [], labels: [], boardUsers: [], milestones: [] });
+		const stand = globalThis.fetch;
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async (url: string, init?: RequestInit) => {
+				const answer = await stand(url, init);
+				if (url === '/api/subtasks' && init?.method === 'POST') return json({ ...draft, id: 72, title: 'Review', position: 1 });
+				if (url === '/api/subtasks/71' && init?.method === 'PUT') return json({ ...draft, title: 'Draft it' });
+				return answer;
+			})
+		);
+	};
+	const subtaskWrites = () => sent.filter((s) => s.what.includes('/api/subtasks')).map((s) => [s.what, s.body]);
+
+	it('reads it once after a subtask is added in the subtask window', async () => {
+		withDraft();
+		await draw();
+		await openPlan();
+		click($('.add-st-btn'));
+		type($<HTMLInputElement>('#st-title')!, 'Review');
+		click($('.subtask-modal .btn-primary'));
+		await settle();
+		expect(subtaskWrites()).toEqual([['POST /api/subtasks', { cardId: 7, title: 'Review', description: '', priority: 'medium', dueDate: null, completed: false, boardId: 3 }]]);
+		expect($('.subtask-modal')).toBeNull();
+		expect(rereads()).toBe(0);
+		closeWindow();
+		await settle();
+		expect(rereads()).toBe(1);
+	});
+
+	it('reads it once after a subtask is edited in the subtask window', async () => {
+		withDraft();
+		await draw();
+		await openPlan();
+		click($('.subtask-info'));
+		type($<HTMLInputElement>('#st-title')!, 'Draft it');
+		click($('.subtask-modal .btn-primary'));
+		await settle();
+		expect(subtaskWrites()).toEqual([['PUT /api/subtasks/71', { title: 'Draft it', description: '', priority: 'low', dueDate: null, completed: false, boardId: 3 }]]);
+		expect($('.subtask-modal')).toBeNull();
+		expect(rereads()).toBe(0);
+		closeWindow();
+		await settle();
+		expect(rereads()).toBe(1);
+	});
+
+	it('reads it once after a subtask is deleted in the subtask window', async () => {
+		withDraft();
+		await draw();
+		await openPlan();
+		click($('.subtask-info'));
+		click($('.subtask-modal .btn-danger'));
+		await settle();
+		expect(subtaskWrites()).toEqual([['DELETE /api/subtasks/71', { boardId: 3 }]]);
+		expect($('.subtask-modal')).toBeNull();
+		expect(rereads()).toBe(0);
+		closeWindow();
+		await settle();
+		expect(rereads()).toBe(1);
+	});
+
+	it('reads it once after a dependency is added through the picker in More options', async () => {
+		// The picker waits 250 ms before it searches.
+		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		await draw();
+		await openPlan();
+		click($('.advanced-toggle'));
+		click($('.dep-add-btn'));
+		type($<HTMLInputElement>('.dep-picker-input')!, 'notes');
+		await vi.advanceTimersByTimeAsync(300);
+		await settle();
+		click($('.dep-result'));
+		await settle();
+		expect(sent.filter((s) => s.what === 'POST /api/cards/7/dependencies').map((s) => s.body)).toEqual([{ dependsOnCardId: 21 }]);
+		expect(rereads()).toBe(0);
+		closeWindow();
+		await settle();
+		expect(rereads()).toBe(1);
+	});
+
+	it.each([
+		['moved to another goal', '5', 'PATCH /api/milestones/5', { cardId: 7, attach: true }],
+		['taken out of its goal', '', 'PATCH /api/milestones/4', { cardId: 7, attach: false }]
+	])('reads it once after the card is %s in More options', async (_, choice, what, body) => {
+		const goals = [{ id: 4, name: 'Launch', boardId: 3 }, { id: 5, name: 'Later', boardId: 3 }];
+		answerContext = (id) => json({ card: cardRow(id, TITLES[id]), boardId: 3, categories: [], labels: [], boardUsers: [], milestones: goals });
+		await draw();
+		await openPlan();
+		click($('.advanced-toggle'));
+		const select = $<HTMLSelectElement>('.milestone-select')!;
+		expect(select.value).toBe('4');
+		select.value = choice;
+		select.dispatchEvent(new Event('change', { bubbles: true }));
+		await settle();
+		expect(sent.filter((s) => s.what.startsWith('PATCH /api/milestones/')).map((s) => [s.what, s.body])).toEqual([[what, body]]);
+		expect(rereads()).toBe(0);
+		closeWindow();
+		await settle();
+		expect(rereads()).toBe(1);
+	});
+});
+
 describe('the plan page’s card picker (card 2281, slice C3a-3)', () => {
 	// The picker waits 250 ms before it searches: on fake timers, so a search a case leaves waiting goes with it (card 2328).
 	beforeEach(() => {

@@ -1,7 +1,7 @@
 ---
 title: "Critical-Path Planning"
 category: Architecture
-version: 1.20
+version: 1.21
 status: As-Built
 date: 2026-10-21
 tags:
@@ -635,9 +635,13 @@ one of them is drawn open (card 2221).
   in the summary (card 2129), so it has no entry, no button and no subtask rows. The summary is
   unchanged, so the API, its compact form and both PDFs are too. Each subtask is sent as
   `id, title, priority, completed`: its card is the key of the list it is under.
-- **Kept current.** Closing the card window re-runs the load, saved or not: the window writes a
-  subtask ticked, added or removed at once, before any Save, and says nothing of it to the
-  page. The burndown is fetched again only when what it charts changes, `burndownKey`: the
+- **Kept current.** Closing the card window re-runs the load only after a write the plan draws
+  (card 2324). The window writes a subtask ticked, added, edited or deleted, a dependency added
+  or removed, and the milestone set or cleared at once, before any Save, and tells the page of
+  each through its `onWrote` once it is answered as done; a Save tells the page when its
+  answer's `told` is not empty (nothing changed answers `told: []`). Either sets the page's
+  `wrote`, cleared as a window opens, and `closeCard` re-reads only when it is set. A window
+  only looked at, or saved with nothing changed, reads nothing. The burndown is fetched again only when what it charts changes, `burndownKey`: the
   milestone, its target date, and each member card with its board and whether it is done. A
   window closed with nothing changed, a subtask ticked or a card moved between open columns
   leaves it, and the chart is not dimmed for a fetch that would draw the same thing.

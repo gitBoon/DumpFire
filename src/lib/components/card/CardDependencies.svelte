@@ -32,7 +32,8 @@
 		milestoneId = $bindable(),
 		milestoneSaving = $bindable(),
 		loadDependencies,
-		onPickerInput
+		onPickerInput,
+		onWrote
 	}: {
 		card: CardType | null;
 		boardId: number;
@@ -52,6 +53,8 @@
 		loadDependencies: () => Promise<void>;
 		/** The window's: searches for what the picker has typed, debounced. */
 		onPickerInput: () => void;
+		/** The window's `onWrote`, called once a link or the milestone is saved (card 2324). */
+		onWrote?: () => void;
 	} = $props();
 
 	/** What a change that got no answer says: it may or may not have been made. */
@@ -80,6 +83,7 @@
 			pickerMode = null;
 			pickerQuery = '';
 			pickerResults = [];
+			onWrote?.();
 		} else {
 			// A rejected cycle names the loop it found, which is the whole value of
 			// the check — surface the server's message rather than a generic error.
@@ -107,6 +111,7 @@
 			const data = await res.json();
 			blockedBy = data.blockedBy;
 			blocks = data.blocks;
+			onWrote?.();
 		} else {
 			// A link somebody else already removed is answered 404. Say so, where
 			// this used to do nothing and leave the row looking removable.
@@ -139,6 +144,7 @@
 			});
 			if (res.ok) {
 				milestoneId = next;
+				onWrote?.();
 			} else {
 				putBack();
 				depError = await failureMessage(res, 'Could not change the milestone');

@@ -62,6 +62,7 @@
  */
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import ts from 'typescript';
 import { compile } from 'svelte/compiler';
 import { get } from 'svelte/store';
@@ -3335,7 +3336,7 @@ describe.each(WINDOW_PAGES)('the card window on $file goes through the controlle
 				'cardWindow',
 				'toasts',
 				'invalidateAll',
-				`let modalCard = {}, modalContext = {};\n${runnable(page, names)}\nreturn ${save};`
+				`let modalCard = {}, modalContext = {}, wrote = false;\n${runnable(page, names)}\nreturn ${save};`
 			)({ save: async () => result, close }, { navigation: () => 'started', add: (...args: unknown[]) => said.push(args) }, reread);
 			await fn({ title: 'Plan' });
 			return { said, rereads: reread.mock.calls.length, closed: close.mock.calls.length };
@@ -3343,8 +3344,8 @@ describe.each(WINDOW_PAGES)('the card window on $file goes through the controlle
 
 		expect(await run({ ok: false, failure: 'Viewers cannot change cards' })).toEqual({ said: [['Viewers cannot change cards', 'error', 'started']], rereads: 0, closed: 0 });
 		expect(await run({ ok: true, told: [{ message: 'Card updated', failed: false }] })).toMatchObject({ said: [['Card updated']], rereads: 1 });
-		// Nothing changed: nothing said. The plan page reads the plan again as its window closes, saved or not, as before (card 2221).
-		expect(await run({ ok: true, told: [] })).toMatchObject({ said: [], rereads: file.includes('/plan/') ? 1 : 0 });
+		// Nothing changed: nothing said, and nothing read again, the plan page included (card 2324: it re-read as its window closed, saved or not).
+		expect(await run({ ok: true, told: [] })).toMatchObject({ said: [], rereads: 0 });
 	});
 
 	it('archives through the controller once confirmed, saying the same as the board page before and after, from one text; or offers no Archive, as before', () => {
@@ -7455,8 +7456,9 @@ describe('the board page’s card window goes through its controller (card 2280,
 // Cards 2308, 2313 and 2316: what the split of the admin page, the dashboard
 // and All Tasks (card 2281) carried over unused. A theme subscription on each
 // page nobody read, functions nobody called, rules matching nothing (the
-// unused-selector warning is switched off in svelte.config.js, so the build
-// never said), stale comments and whitespace.
+// unused-selector warning was switched off in svelte.config.js, so the build
+// never said; card 2357 switched it on, and the case after this block holds
+// every component to it), stale comments and whitespace.
 describe('nothing left unused on the admin page, the dashboard and All Tasks (cards 2308, 2313 and 2316)', () => {
 	const PAGES: [page: string, parts: string][] = [
 		['src/routes/admin/+page.svelte', 'src/lib/components/admin'],
@@ -7553,13 +7555,8 @@ describe('nothing left unused on the admin page, the dashboard and All Tasks (ca
 		expect(unread).toEqual([]);
 	});
 
-	it('has no rule that matches nothing, as the compiler judges it, nor the two of card 2316 and card 2313 it cannot judge', () => {
-		const unused = files.flatMap((file) =>
-			compile(read(file), { filename: file, generate: false })
-				.warnings.filter((warning) => warning.code === 'css_unused_selector')
-				.map((warning) => `${file}: ${warning.message.split('\n')[0]}`)
-		);
-		expect(unused).toEqual([]);
+	it('has none of the rules the compiler cannot judge: the two of card 2316 and card 2313', () => {
+		// What the compiler judges, every component's, is the next block's (card 2357).
 		// A class written with a value in it (`class="priority-{card.priority}"`, `class={…}`) stops the
 		// compiler flagging any class rule of that file: it cannot know what the value will be. Six of
 		// these files have one, and their class rules are judged by nothing here but these lines:
@@ -7593,5 +7590,33 @@ describe('nothing left unused on the admin page, the dashboard and All Tasks (ca
 				.flatMap((line, i) => (/[ \t]$/.test(line) ? [`${file}:${i + 1}`] : []))
 		);
 		expect(trailing).toEqual([]);
+	});
+});
+
+// Card 2357: svelte.config.js switched the unused-selector warning off for the
+// whole app, so a rule that matched nothing was never reported. It is on now,
+// and `npm run check` reports one; this holds the suite to it as well.
+describe('no rule in any component matches nothing, as the compiler judges it (card 2357)', () => {
+	it('leaves the warning on, and no .svelte file under src gives it', async () => {
+		const config = (await import(/* @vite-ignore */ pathToFileURL(join(ROOT, 'svelte.config.js')).href)).default;
+		const filter = config.compilerOptions.warningFilter as (warning: { code: string }) => boolean;
+		expect(filter({ code: 'css_unused_selector' })).toBe(true);
+
+		const components: string[] = [];
+		const walk = (dir: string) => {
+			for (const entry of readdirSync(join(ROOT, dir), { withFileTypes: true })) {
+				const path = `${dir}/${entry.name}`;
+				if (entry.isDirectory()) walk(path);
+				else if (entry.name.endsWith('.svelte')) components.push(path);
+			}
+		};
+		walk('src');
+		expect(components.length).toBeGreaterThan(100);
+		const unused = components.flatMap((file) =>
+			compile(readFileSync(join(ROOT, file), 'utf8'), { filename: file, generate: false })
+				.warnings.filter((warning) => warning.code === 'css_unused_selector')
+				.map((warning) => `${file}:${warning.start?.line}: ${warning.message.split('\n')[0]}`)
+		);
+		expect(unused).toEqual([]);
 	});
 });

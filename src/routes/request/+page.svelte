@@ -257,7 +257,6 @@
 	.form-group { display: flex; flex-direction: column; gap: var(--space-xs); }
 	.form-group label { font-size: 0.82rem; font-weight: 600; color: var(--text-secondary); }
 	.required { color: var(--accent-rose); }
-	.optional { font-weight: 400; color: var(--text-tertiary); font-size: 0.75rem; }
 
 	.form-input, .form-select, .form-textarea {
 		width: 100%; padding: 10px 14px;
