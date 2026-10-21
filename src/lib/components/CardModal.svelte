@@ -106,9 +106,28 @@
 		 * wrote. An assignee, the cover, labels, a comment or a file are not
 		 * drawn on a plan and do not call it; a page that came to draw one
 		 * would add it. The board page, All Tasks and All To Do give none.
+		 *
+		 * Also called for a write that may have changed what the plan draws
+		 * though it was not answered as done (card 2379): one that got no
+		 * answer, and one refused, for any reason, which can mean it was
+		 * already done elsewhere (a link or a subtask someone else removed, a
+		 * card already out of its goal). A spare re-read costs one load.
+		 * `from` is the `edits` this window was opened with, so the page can
+		 * tell a write answered after its window closed, or after another
+		 * opened, from one of the window open now.
 		 */
-		onWrote?: () => void;
+		onWrote?: (from: WindowEdits | undefined) => void;
 	} = $props();
+
+	// svelte-ignore state_referenced_locally — intentional: the window as it was opened, kept for `onWrote` (card 2379)
+	// Read once: a write answered after this window has gone would read the
+	// prop through the page, and be handed the next window's.
+	const openedAs = edits;
+
+	/** Tell the page this window wrote something its plan may draw (card 2324), naming the window (card 2379). */
+	function wroteHere() {
+		onWrote?.(openedAs);
+	}
 
 	// svelte-ignore state_referenced_locally — intentional: initialize form fields from prop snapshot
 	// A board's name is at most 200 characters and a card's title 500: the
@@ -530,7 +549,7 @@
 		}
 		showSubtaskModal = false;
 		editingSubtask = null;
-		onWrote?.();
+		wroteHere();
 	}
 
 	function handleSubtaskDeleted() {
@@ -539,7 +558,7 @@
 		}
 		showSubtaskModal = false;
 		editingSubtask = null;
-		onWrote?.();
+		wroteHere();
 	}
 
 	// The card's id alone: the window's subtasks and its cost are read again
@@ -957,7 +976,7 @@
 			{openNewPendingSubtask}
 			{openEditPendingSubtask}
 			{removePendingSubtask}
-			{onWrote}
+			onWrote={wroteHere}
 		/>
 
 		{/if} <!-- end details tab / new card -->
@@ -1016,7 +1035,7 @@
 					bind:milestoneSaving
 					{loadDependencies}
 					{onPickerInput}
-					{onWrote}
+					onWrote={wroteHere}
 				/>
 
 				<!-- Sub-board -->
@@ -1109,6 +1128,7 @@
 		{boardId}
 		onSave={handleSubtaskSaved}
 		onDelete={editingSubtask ? handleSubtaskDeleted : undefined}
+		onNotDone={wroteHere}
 		onClose={() => { showSubtaskModal = false; editingSubtask = null; }}
 	/>
 {:else if showSubtaskModal && !card}

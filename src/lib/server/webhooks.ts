@@ -129,23 +129,34 @@ function pausedBecause(hook: Webhook): string | null {
 	return hold === null ? null : PAUSED_BECAUSE[hold];
 }
 
-/** Supported webhook event types. */
+/**
+ * Supported webhook event types. The two `milestone.*` are a card put in a
+ * goal and one taken out (card 2343), sent to the card's board.
+ */
 export type WebhookEvent =
 	| 'card.created'
 	| 'card.updated'
 	| 'card.moved'
 	| 'card.completed'
 	| 'card.deleted'
-	| 'comment.added';
+	| 'comment.added'
+	| 'milestone.card_added'
+	| 'milestone.card_removed';
 
-/** Every event a webhook can ask for, as the two routes that save one read `events`. */
+/**
+ * Every event a webhook can ask for, as the two routes that save one read
+ * `events`. A new one goes at the end. A webhook with an empty list is sent
+ * every event, so a new event reaches those unasked: announce it.
+ */
 export const WEBHOOK_EVENTS: readonly WebhookEvent[] = [
 	'card.created',
 	'card.updated',
 	'card.moved',
 	'card.completed',
 	'card.deleted',
-	'comment.added'
+	'comment.added',
+	'milestone.card_added',
+	'milestone.card_removed'
 ];
 
 /**

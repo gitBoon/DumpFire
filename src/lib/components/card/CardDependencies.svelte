@@ -53,7 +53,13 @@
 		loadDependencies: () => Promise<void>;
 		/** The window's: searches for what the picker has typed, debounced. */
 		onPickerInput: () => void;
-		/** The window's `onWrote`, called once a link or the milestone is saved (card 2324). */
+		/**
+		 * The window's `onWrote`, called once a link or the milestone is saved
+		 * (card 2324), and where the plan may be out of date though it was not
+		 * (card 2379): a change that got no answer, which may have been made,
+		 * and any refusal, which can mean it was already done elsewhere (a
+		 * link someone else removed, a card already out of its goal).
+		 */
 		onWrote?: () => void;
 	} = $props();
 
@@ -74,20 +80,39 @@
 			});
 		} catch {
 			depError = NO_ANSWER;
+			onWrote?.();
 			return;
 		}
 		if (res.ok) {
-			const data = await res.json();
-			blockedBy = data.blockedBy;
-			blocks = data.blocks;
+			// The link is saved whatever the answer's body says: one that is not
+			// the two lists still tells the plan, and the lists are read again.
+			const data = await readLists(res);
 			pickerMode = null;
 			pickerQuery = '';
 			pickerResults = [];
 			onWrote?.();
+			if (data) {
+				blockedBy = data.blockedBy;
+				blocks = data.blocks;
+			} else {
+				await loadDependencies();
+			}
 		} else {
 			// A rejected cycle names the loop it found, which is the whole value of
 			// the check — surface the server's message rather than a generic error.
 			depError = await failureMessage(res, 'Could not add that dependency');
+			// Any refusal reads the plan again as the window closes (card 2379's review).
+			onWrote?.();
+		}
+	}
+
+	/** A success's two lists, or null when its body is not them (a proxy's page, which is not JSON). */
+	async function readLists(res: Response): Promise<{ blockedBy: DependencyRefType[]; blocks: DependencyRefType[] } | null> {
+		try {
+			const data = await res.json();
+			return Array.isArray(data?.blockedBy) && Array.isArray(data?.blocks) ? data : null;
+		} catch {
+			return null;
 		}
 	}
 
@@ -105,17 +130,26 @@
 			});
 		} catch {
 			depError = NO_ANSWER;
+			onWrote?.();
 			return;
 		}
 		if (res.ok) {
-			const data = await res.json();
-			blockedBy = data.blockedBy;
-			blocks = data.blocks;
+			// Removed whatever the answer's body says, as for an added link.
+			const data = await readLists(res);
 			onWrote?.();
+			if (data) {
+				blockedBy = data.blockedBy;
+				blocks = data.blocks;
+			} else {
+				await loadDependencies();
+			}
 		} else {
 			// A link somebody else already removed is answered 404. Say so, where
 			// this used to do nothing and leave the row looking removable.
 			depError = await failureMessage(res, 'Could not remove that dependency');
+			// The plan behind the window may still draw it: any refusal reads
+			// the plan again as the window closes (card 2379 and its review).
+			onWrote?.();
 			// And read the links again, as when the card was opened: the row
 			// that was refused is the one that is out of date, and left in the
 			// list it still looks removable beside a message saying it is gone.
@@ -148,10 +182,14 @@
 			} else {
 				putBack();
 				depError = await failureMessage(res, 'Could not change the milestone');
+				// A card already out of the goal is answered 404: any refusal
+				// reads the plan again as the window closes (card 2379's review).
+				onWrote?.();
 			}
 		} catch {
 			putBack();
 			depError = NO_ANSWER;
+			onWrote?.();
 		} finally {
 			milestoneSaving = false;
 		}

@@ -583,6 +583,354 @@ describe('the plan page reads its goal again as the card window closes only afte
 	});
 });
 
+// Card 2379: a window write refused because it was already done, one with no answer, and one answered
+// after its window closed changed what the plan draws, or may have, and the plan was not read again.
+describe('the plan page reads its goal again after a window write refused as already done, unanswered, or answered late (card 2379)', () => {
+	const closeWindow = () => click($('.card-modal-content .modal-header .close-btn'));
+	const rereads = () => navigation.invalidateAll.mock.calls.length;
+	const openPlan = async () => {
+		click($('.work-table .title-link'));
+		await settle();
+		expect(titleBox()?.value).toBe('Plan');
+	};
+	const draft = { id: 71, cardId: 7, title: 'Draft', description: '', priority: 'low', colorTag: null, dueDate: null, completed: false, position: 0 };
+	const blocker = { kind: 'card', cardId: 9, dependencyId: 1, title: 'Docs', boardId: 3, boardName: 'Website', columnName: 'To Do', resolved: false, withheld: false };
+	const goals = [{ id: 4, name: 'Launch', boardId: 3 }, { id: 5, name: 'Later', boardId: 3 }];
+	/** No answer: what `fetch` does when the server cannot be reached. */
+	const unreachable = () => Promise.reject(new TypeError('Failed to fetch'));
+	// jsdom lays nothing out: the window's message box is brought into view.
+	beforeEach(() => {
+		Element.prototype.scrollIntoView = () => {};
+	});
+	afterEach(() => {
+		delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+	});
+
+	/**
+	 * Plan opened with the subtask Draft, Docs blocking it and the goals
+	 * Launch and Later, and `own` answering what it likes (undefined for the
+	 * stand-ins). Each request is still recorded in `sent`.
+	 */
+	const answering = (own: (url: string, method: string) => Response | Promise<Response> | undefined) => {
+		answerContext = (id) => json({ card: { ...cardRow(id, TITLES[id]), subtasks: [draft] }, boardId: 3, categories: [], labels: [], boardUsers: [], milestones: goals });
+		const stand = globalThis.fetch;
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async (url: string, init?: RequestInit) => {
+				const method = init?.method ?? 'GET';
+				if (url === '/api/cards/7/dependencies' && method === 'GET') {
+					sent.push({ what: `GET ${url}`, body: undefined });
+					return json({ blockedBy: [blocker], blocks: [] });
+				}
+				const answer = own(url, method);
+				if (answer) {
+					sent.push({ what: `${method} ${url}`, body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined });
+					return answer;
+				}
+				return stand(url, init);
+			})
+		);
+	};
+
+	// Card 2379's review: any refusal tells the page, not only the removal's 404 (a 403 read nothing before).
+	it.each([
+		[404, 'That dependency does not exist'],
+		[403, 'No edit access to this board']
+	])('a dependency removal refused %i (%s) reads the plan once as the window closes', async (status, message) => {
+		answering((url, method) => (url === '/api/cards/7/dependencies' && method === 'DELETE' ? json({ message }, status) : undefined));
+		await draw();
+		await openPlan();
+		click($('.advanced-toggle'));
+		click($('.dep-remove'));
+		await settle();
+		expect(sent.filter((s) => s.what === 'DELETE /api/cards/7/dependencies')).toHaveLength(1);
+		expect(document.body.textContent).toContain(message);
+		expect(rereads()).toBe(0);
+		closeWindow();
+		await settle();
+		expect(rereads()).toBe(1);
+	});
+
+	// Card 2379's review: a refusal that means "already done elsewhere" on the other window writes.
+	it('a tick refused 404, the subtask deleted by someone else, reads the plan once as the window closes', async () => {
+		answering((url, method) => (url === '/api/subtasks/71' && method === 'PUT' ? json({ message: 'Subtask not found' }, 404) : undefined));
+		await draw();
+		await openPlan();
+		click($('.subtask-checkbox'));
+		await settle();
+		expect(sent.filter((s) => s.what === 'PUT /api/subtasks/71')).toHaveLength(1);
+		expect(document.body.textContent).toContain('Subtask not found');
+		expect(rereads()).toBe(0);
+		closeWindow();
+		await settle();
+		expect(rereads()).toBe(1);
+	});
+
+	it('a subtask edited in the subtask window and refused 404, deleted by someone else, reads the plan once as the window closes', async () => {
+		answering((url, method) => (url === '/api/subtasks/71' && method === 'PUT' ? json({ message: 'Subtask not found' }, 404) : undefined));
+		await draw();
+		await openPlan();
+		click($('.subtask-info'));
+		type($<HTMLInputElement>('#st-title')!, 'Draft it');
+		click($('.subtask-modal .btn-primary'));
+		await settle();
+		expect(sent.filter((s) => s.what === 'PUT /api/subtasks/71')).toHaveLength(1);
+		expect(textOf($('.subtask-modal'))).toContain('Subtask not found');
+		click([...document.querySelectorAll('.subtask-modal button')].find((b) => b.textContent?.trim() === 'Cancel')!);
+		expect(rereads()).toBe(0);
+		closeWindow();
+		await settle();
+		expect(rereads()).toBe(1);
+	});
+
+	it('a subtask added in the subtask window and refused reads the plan once as the window closes', async () => {
+		answering((url, method) => (url === '/api/subtasks' && method === 'POST' ? json({ message: 'Card not found' }, 404) : undefined));
+		await draw();
+		await openPlan();
+		click($('.add-st-btn'));
+		type($<HTMLInputElement>('#st-title')!, 'Review');
+		click($('.subtask-modal .btn-primary'));
+		await settle();
+		expect(sent.filter((s) => s.what === 'POST /api/subtasks')).toHaveLength(1);
+		expect(textOf($('.subtask-modal'))).toContain('Card not found');
+		click([...document.querySelectorAll('.subtask-modal button')].find((b) => b.textContent?.trim() === 'Cancel')!);
+		expect(rereads()).toBe(0);
+		closeWindow();
+		await settle();
+		expect(rereads()).toBe(1);
+	});
+
+	it('a dependency added through the picker and refused reads the plan once as the window closes', async () => {
+		// The picker waits 250 ms before it searches.
+		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		answering((url, method) => (url === '/api/cards/7/dependencies' && method === 'POST' ? json({ message: 'That would make a loop: #7 → #21 → #7' }, 409) : undefined));
+		await draw();
+		await openPlan();
+		click($('.advanced-toggle'));
+		click($('.dep-add-btn'));
+		type($<HTMLInputElement>('.dep-picker-input')!, 'notes');
+		await vi.advanceTimersByTimeAsync(300);
+		await settle();
+		click($('.dep-result'));
+		await settle();
+		expect(sent.filter((s) => s.what === 'POST /api/cards/7/dependencies')).toHaveLength(1);
+		expect(document.body.textContent).toContain('That would make a loop');
+		expect(rereads()).toBe(0);
+		closeWindow();
+		await settle();
+		expect(rereads()).toBe(1);
+	});
+
+	it('the card taken out of its goal by the Milestone picker and refused 404, already out, reads the plan once as the window closes', async () => {
+		answering((url, method) => (url === '/api/milestones/4' && method === 'PATCH' ? json({ message: 'Card is not in this milestone' }, 404) : undefined));
+		await draw();
+		await openPlan();
+		click($('.advanced-toggle'));
+		const select = $<HTMLSelectElement>('.milestone-select')!;
+		select.value = '';
+		select.dispatchEvent(new Event('change', { bubbles: true }));
+		await settle();
+		expect(sent.filter((s) => s.what === 'PATCH /api/milestones/4').map((s) => s.body)).toEqual([{ cardId: 7, attach: false }]);
+		expect(document.body.textContent).toContain('Card is not in this milestone');
+		expect(select.value).toBe('4');
+		expect(rereads()).toBe(0);
+		closeWindow();
+		await settle();
+		expect(rereads()).toBe(1);
+	});
+
+	it('a tick that got no answer reads the plan once as the window closes: it may have been saved', async () => {
+		answering((url) => (url === '/api/subtasks/71' ? unreachable() : undefined));
+		await draw();
+		await openPlan();
+		click($('.subtask-checkbox'));
+		await settle();
+		expect(sent.filter((s) => s.what === 'PUT /api/subtasks/71')).toHaveLength(1);
+		expect(document.body.textContent).toContain('No answer from the server. It is not known whether that was saved.');
+		expect(rereads()).toBe(0);
+		closeWindow();
+		await settle();
+		expect(rereads()).toBe(1);
+	});
+
+	it('a subtask added in the subtask window that got no answer reads the plan once as the window closes', async () => {
+		answering((url, method) => (url === '/api/subtasks' && method === 'POST' ? unreachable() : undefined));
+		await draw();
+		await openPlan();
+		click($('.add-st-btn'));
+		type($<HTMLInputElement>('#st-title')!, 'Review');
+		click($('.subtask-modal .btn-primary'));
+		await settle();
+		expect(sent.filter((s) => s.what === 'POST /api/subtasks')).toHaveLength(1);
+		expect(textOf($('.subtask-modal'))).toContain('No answer from the server. The subtask may not have been saved.');
+		click([...document.querySelectorAll('.subtask-modal button')].find((b) => b.textContent?.trim() === 'Cancel')!);
+		expect($('.subtask-modal')).toBeNull();
+		expect(rereads()).toBe(0);
+		closeWindow();
+		await settle();
+		expect(rereads()).toBe(1);
+	});
+
+	// A refused delete read nothing until card 2379's review: a 404 is a subtask someone else deleted.
+	it('a subtask deleted in the subtask window and refused 404, deleted by someone else, or that got no answer, reads the plan once as the window closes', async () => {
+		let reach = false;
+		answering((url, method) =>
+			url === '/api/subtasks/71' && method === 'DELETE' ? (reach ? unreachable() : json({ message: 'Subtask not found' }, 404)) : undefined
+		);
+		await draw();
+		await openPlan();
+		click($('.subtask-info'));
+		click($('.subtask-modal .btn-danger'));
+		await settle();
+		expect(textOf($('.subtask-modal'))).toContain('Subtask not found');
+		click([...document.querySelectorAll('.subtask-modal button')].find((b) => b.textContent?.trim() === 'Cancel')!);
+		expect(rereads()).toBe(0);
+		closeWindow();
+		await settle();
+		expect(rereads()).toBe(1);
+
+		reach = true;
+		await openPlan();
+		click($('.subtask-info'));
+		click($('.subtask-modal .btn-danger'));
+		await settle();
+		expect(sent.filter((s) => s.what === 'DELETE /api/subtasks/71')).toHaveLength(2);
+		expect(textOf($('.subtask-modal'))).toContain('No answer from the server. The subtask may not have been deleted.');
+		click([...document.querySelectorAll('.subtask-modal button')].find((b) => b.textContent?.trim() === 'Cancel')!);
+		closeWindow();
+		await settle();
+		expect(rereads()).toBe(2);
+	});
+
+	it('a dependency removed, and the card moved to another goal, with no answer, each read the plan once as the window closes', async () => {
+		answering((url, method) => (url === '/api/cards/7/dependencies' && method === 'DELETE') || (url === '/api/milestones/5' && method === 'PATCH') ? unreachable() : undefined);
+		await draw();
+		await openPlan();
+		click($('.advanced-toggle'));
+		click($('.dep-remove'));
+		await settle();
+		expect(sent.filter((s) => s.what === 'DELETE /api/cards/7/dependencies')).toHaveLength(1);
+		closeWindow();
+		await settle();
+		expect(rereads()).toBe(1);
+
+		await openPlan();
+		click($('.advanced-toggle'));
+		const select = $<HTMLSelectElement>('.milestone-select')!;
+		select.value = '5';
+		select.dispatchEvent(new Event('change', { bubbles: true }));
+		await settle();
+		expect(sent.filter((s) => s.what === 'PATCH /api/milestones/5')).toHaveLength(1);
+		// Put back to the goal it is in, as for a refusal.
+		expect(select.value).toBe('4');
+		closeWindow();
+		await settle();
+		expect(rereads()).toBe(2);
+	});
+
+	it('a dependency added through the picker with no answer reads the plan once as the window closes', async () => {
+		// The picker waits 250 ms before it searches.
+		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		answering((url, method) => (url === '/api/cards/7/dependencies' && method === 'POST' ? unreachable() : undefined));
+		await draw();
+		await openPlan();
+		click($('.advanced-toggle'));
+		click($('.dep-add-btn'));
+		type($<HTMLInputElement>('.dep-picker-input')!, 'notes');
+		await vi.advanceTimersByTimeAsync(300);
+		await settle();
+		click($('.dep-result'));
+		await settle();
+		expect(sent.filter((s) => s.what === 'POST /api/cards/7/dependencies')).toHaveLength(1);
+		expect(rereads()).toBe(0);
+		closeWindow();
+		await settle();
+		expect(rereads()).toBe(1);
+	});
+
+	// Card 2379's review: the success's body was read unguarded, so one that is not JSON threw and told nothing, though the link was saved.
+	it('a dependency added, and one removed, answered as done with a body that is not JSON, each read the plan once as the window closes, and the window reads its links again', async () => {
+		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		const proxyPage = () => new Response('<html>proxy</html>', { status: 200 });
+		answering((url, method) => (url === '/api/cards/7/dependencies' && (method === 'POST' || method === 'DELETE') ? proxyPage() : undefined));
+		const linksRead = () => sent.filter((s) => s.what === 'GET /api/cards/7/dependencies').length;
+		await draw();
+		await openPlan();
+		click($('.advanced-toggle'));
+		await settle();
+		const opened = linksRead();
+		click($('.dep-add-btn'));
+		type($<HTMLInputElement>('.dep-picker-input')!, 'notes');
+		await vi.advanceTimersByTimeAsync(300);
+		await settle();
+		click($('.dep-result'));
+		await settle();
+		expect(sent.filter((s) => s.what === 'POST /api/cards/7/dependencies')).toHaveLength(1);
+		expect($('.dep-picker-input')).toBeNull();
+		expect(linksRead()).toBe(opened + 1);
+		closeWindow();
+		await settle();
+		expect(rereads()).toBe(1);
+
+		await openPlan();
+		click($('.advanced-toggle'));
+		await settle();
+		const reopened = linksRead();
+		click($('.dep-remove'));
+		await settle();
+		expect(sent.filter((s) => s.what === 'DELETE /api/cards/7/dependencies')).toHaveLength(1);
+		expect(linksRead()).toBe(reopened + 1);
+		closeWindow();
+		await settle();
+		expect(rereads()).toBe(2);
+	});
+
+	/** The tick's answer, held until the case lets it go. */
+	const heldTick = () => {
+		let release!: () => void;
+		const answered = new Promise<Response>((resolve) => (release = () => resolve(json({ ...draft, completed: true }))));
+		answering((url, method) => (url === '/api/subtasks/71' && method === 'PUT' ? answered : undefined));
+		return () => release();
+	};
+
+	it('a tick answered after its window closed reads the plan as it is answered: the close had nothing to read for', async () => {
+		const release = heldTick();
+		await draw();
+		await openPlan();
+		click($('.subtask-checkbox'));
+		await settle();
+		closeWindow();
+		await settle();
+		expect(titleBox()).toBeNull();
+		expect(rereads()).toBe(0);
+
+		release();
+		await settle();
+		expect(rereads()).toBe(1);
+	});
+
+	it('a tick answered after its window closed and another opened reads the plan as it is answered, and is not counted to the window open now', async () => {
+		const release = heldTick();
+		await draw();
+		await openPlan();
+		click($('.subtask-checkbox'));
+		await settle();
+		closeWindow();
+		await settle();
+		await openPlan();
+
+		release();
+		await settle();
+		expect(titleBox()?.value).toBe('Plan');
+		expect(rereads()).toBe(1);
+
+		// The window open now wrote nothing.
+		closeWindow();
+		await settle();
+		expect(rereads()).toBe(1);
+	});
+});
+
 describe('the plan page’s card picker (card 2281, slice C3a-3)', () => {
 	// The picker waits 250 ms before it searches: on fake timers, so a search a case leaves waiting goes with it (card 2328).
 	beforeEach(() => {

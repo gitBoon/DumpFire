@@ -63,7 +63,7 @@
 		openNewPendingSubtask: () => void;
 		openEditPendingSubtask: (ps: PendingSubtask) => void;
 		removePendingSubtask: (id: number) => void;
-		/** The window's `onWrote`, called once a tick is saved (card 2324). */
+		/** The window's `onWrote`, called once a tick is saved (card 2324), got no answer and may have been, or was refused (card 2379). */
 		onWrote?: () => void;
 	} = $props();
 
@@ -81,10 +81,16 @@
 			});
 		} catch {
 			windowError = NO_ANSWER;
+			// It may have been saved: a plan page reads its goal again (card 2379).
+			onWrote?.();
 			return;
 		}
 		if (!res.ok) {
 			windowError = await failureMessage(res, 'The subtask was not changed.');
+			// A refusal can mean it was already changed elsewhere (a subtask
+			// someone else deleted is answered 404): the plan is read again
+			// as the window closes, which costs one load (card 2379's review).
+			onWrote?.();
 			return;
 		}
 		subtask.completed = !subtask.completed;

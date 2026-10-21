@@ -1389,7 +1389,7 @@ describe('the handlers card 2115 moved onto the readers', () => {
 
 	type Method = 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 	type Case = [route: string, path: (w: World) => string, body: (w: World) => unknown, message: string];
-	const EVENTS = 'card.created, card.updated, card.moved, card.completed, card.deleted, comment.added';
+	const EVENTS = 'card.created, card.updated, card.moved, card.completed, card.deleted, comment.added, milestone.card_added, milestone.card_removed';
 	const long = (n: number) => 'x'.repeat(n);
 	// Card 2162: a colour is read with readColour, where card 2115 read it as text of 1 to 32.
 	const COLOUR_RULE = 'color must be a colour written #rrggbb';

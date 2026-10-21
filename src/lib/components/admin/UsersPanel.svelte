@@ -247,6 +247,22 @@
 		}
 	}
 
+	/**
+	 * The teams the account is the only owner of, from the page's data, by
+	 * name and then id, as the delete's refusal names them (card 2377): an
+	 * owner row of theirs and no other owner in the team. For the
+	 * confirmation, which says the delete will be refused (card 2380).
+	 */
+	function soleOwnerOf(userId: number): string[] {
+		return data.teams
+			.filter((team) => {
+				const owners = team.members.filter((m) => m.role === 'owner');
+				return owners.length > 0 && owners.every((m) => m.userId === userId);
+			})
+			.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : a.id - b.id))
+			.map((team) => team.name);
+	}
+
 	async function deleteUser(userId: number) {
 		if (!(await sent(() => fetch(`/api/users/${userId}`, { method: 'DELETE' }), 'Failed to delete user'))) return;
 		// A role chosen for the account and not saved goes with it (the card 2376 review).
@@ -365,7 +381,7 @@
 						<button class="btn-ghost btn-sm" onclick={() => resetDialog?.openResetDialog(u.id)} title="Reset password">🔑</button>
 						{#if u.id !== data.currentUser.id}
 							<button class="btn-ghost btn-sm" onclick={(e) => resendInvite(u.id, e.currentTarget)} disabled={inviteInFlight !== null || inviteLink !== null} title="Resend invite email">{inviteInFlight === u.id ? '…' : '📧'}</button>
-							<button class="btn-ghost btn-sm danger" onclick={() => confirm('Delete User', userDeleteWarning(u.username), () => deleteUser(u.id))} title="Delete user">🗑️</button>
+							<button class="btn-ghost btn-sm danger" onclick={() => confirm('Delete User', userDeleteWarning(u.username, soleOwnerOf(u.id)), () => deleteUser(u.id))} title="Delete user">🗑️</button>
 						{/if}
 					{:else}
 						<span class="superadmin-lock" title={u.role === 'superadmin' ? "The superadmin's account is theirs alone" : "Only the superadmin can change an administrator's account"}>🔒</span>

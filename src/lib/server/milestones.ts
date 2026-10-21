@@ -116,7 +116,9 @@ export type CardInOrOutRecord = { source: ActivitySource; title?: string };
  * decision 6): on the card's board, with its id, `Added "<card>" to milestone
  * "<goal>"` or `Removed "<card>" from …`. A card put in that left another goal
  * says which, `(from milestone …)`, named by the same rule, and no entry is
- * written for the goal it left. The bulk routes write theirs here too.
+ * written for the goal it left. The bulk routes write theirs here too. The
+ * entry sends `milestone.card_added` or `milestone.card_removed` to the card's
+ * board's webhooks once the write commits (card 2343).
  */
 export function logCardInOrOut(
 	user: SessionUser,

@@ -229,9 +229,18 @@ export function clearCardsWarning(boardName: string): string {
  * A webhook they set is switched off before they go, and then names nobody
  * (card 2168). No screen shows webhooks, so switching one on again is by the
  * API, which the board's owner or an administrator may do.
+ *
+ * `soleOwnerOf` names the teams the account is the only owner of, in name
+ * order (card 2380): the delete is refused for them (card 2377), and the
+ * confirmation says so before it is pressed, in the refusal's own terms. The
+ * delete is still sent: the page's data may be older than a change made since.
  */
-export function userDeleteWarning(username: string): string {
-	return `Delete user "${username}"? Their comments, API keys and report schedules are deleted, and so are their team and board memberships and their card assignments. Webhooks they set up are switched off; the board's owner or an administrator can switch one on again through the API. Files they uploaded and the milestones, templates and dependencies they created are kept. Boards they created are kept, and each board's other members and teams keep their access. A board with no other owner then has no owner, and only an administrator can change who it is shared with, put it under a card or delete it. Templates they created, and milestones of theirs that belong to no board, can then be managed by administrators only. Requests addressed to them are kept, and only an administrator can then accept, reject or reply to them. Their XP stays on the leaderboard.`;
+export function userDeleteWarning(username: string, soleOwnerOf: string[] = []): string {
+	const refused =
+		soleOwnerOf.length === 0
+			? ''
+			: ` They are the only owner of: ${soleOwnerOf.join(', ')}, so the delete will be refused: make someone else an owner or delete ${soleOwnerOf.length === 1 ? 'that team' : 'those teams'} first.`;
+	return `Delete user "${username}"?${refused} Their comments, API keys and report schedules are deleted, and so are their team and board memberships and their card assignments. Webhooks they set up are switched off; the board's owner or an administrator can switch one on again through the API. Files they uploaded and the milestones, templates and dependencies they created are kept. Boards they created are kept, and each board's other members and teams keep their access. A board with no other owner then has no owner, and only an administrator can change who it is shared with, put it under a card or delete it. Templates they created, and milestones of theirs that belong to no board, can then be managed by administrators only. Requests addressed to them are kept, and only an administrator can then accept, reject or reply to them. Their XP stays on the leaderboard.`;
 }
 
 /** What a reset clears and what it keeps (`api/admin/reset`). */

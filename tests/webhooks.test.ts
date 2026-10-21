@@ -34,6 +34,11 @@
  * a receiver of `card.moved` missed them. Each now sends `card.moved` to its
  * own board with that board's own entry, which names no other board (card
  * 2181); a move into Complete sends `card.completed` instead of `card.moved`.
+ *
+ * Card 2343: a card put in a goal or taken out sends `milestone.card_added` or
+ * `milestone.card_removed` to its own board, by every route, with the entry's
+ * words and every event's five fields; held as any event is (card 2325), and
+ * asked for by name like any other.
  */
 import dns from 'node:dns';
 import http from 'node:http';
@@ -45,12 +50,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sqlite } from '$lib/server/db';
 import type { SessionUser } from '$lib/server/auth';
 import { ACTIONS, logActivity } from '$lib/server/logActivity';
-import { deliver, deliveryResultFor, dispatchWebhook, forgetDeliveries, WARNINGS_REMEMBERED } from '$lib/server/webhooks';
+import { deliver, deliveryResultFor, dispatchWebhook, forgetDeliveries, WARNINGS_REMEMBERED, WEBHOOK_EVENTS } from '$lib/server/webhooks';
 import { addressRefusal, insideReason, parseAllowInside, readWebhookUrl } from '$lib/server/webhook-address';
 import { reportWebhookAllowInside, reportWebhooksOverCap, reportWebhooksRefused } from '$lib/server/startup-checks';
 import { api, type ApiResult } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
-import { addBoardMember, makeBoard, makeCard, makeTeam, makeUser, makeWebhook, resetDb, shareBoardWithTeam } from './helpers/fixtures';
+import { addBoardMember, makeBoard, makeCard, makeMilestone, makeTeam, makeUser, makeWebhook, resetDb, shareBoardWithTeam } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 
 beforeEach(resetDb);
@@ -1912,13 +1917,14 @@ describe('which action sends which event, and what each move sends (card 2278)',
 			board_created: null,
 			board_updated: null,
 			milestone_created: null,
-			// No goal event (card 2289, decision 9): a new event would reach every webhook that asks for all. A `milestone.*` event is card 2343.
+			// No event for the goal itself (card 2289, decision 9; card 2343, ruling 1): its entries name no card, and a new event would reach every webhook that asks for all.
 			milestone_updated: null,
 			milestone_closed: null,
 			milestone_reopened: null,
 			milestone_deleted: null,
-			milestone_card_added: null,
-			milestone_card_removed: null
+			// A card put in a goal or taken out (card 2343).
+			milestone_card_added: 'milestone.card_added',
+			milestone_card_removed: 'milestone.card_removed'
 		});
 	});
 
@@ -2419,5 +2425,181 @@ describe('a webhook whose setter can no longer open the board (card 2325)', () =
 			expect(answer).toMatchObject({ active: true, pausedBecause: LOST });
 			expect(answer.lastDelivery).toMatchObject({ outcome: 'not-sent', reason: LOST_REASON });
 		}
+	});
+});
+
+// ─── Card 2343 ───────────────────────────────────────────────────────────
+
+describe('a card put in a goal or taken out (card 2343)', () => {
+	let sent: Effects;
+	beforeEach(() => {
+		sent = effects();
+	});
+	afterEach(() => sent.restore());
+
+	/**
+	 * The owner's boards A and B. On A, the cards Plan and Ship, and the goal
+	 * Launch of A, holding them when `inGoal`. A's webhook `a` asks for every
+	 * event and `a-updates` for `card.updated` alone; B's `b` for every event.
+	 */
+	function goalScene(inGoal: boolean) {
+		const owner = makeUser({ username: 'owner' });
+		const A = makeBoard({ owner, name: 'Alpha' });
+		const B = makeBoard({ owner, name: 'Bravo' });
+		const plan = makeCard(A.cols['To Do'], { title: 'Plan' });
+		const ship = makeCard(A.cols['To Do'], { title: 'Ship' });
+		const goal = makeMilestone({ board: A.board, name: 'Launch', createdBy: owner, cards: inGoal ? [plan, ship] : [] });
+		makeWebhook(A.board, { url: 'https://hooks.example.test/a' });
+		makeWebhook(A.board, { url: 'https://hooks.example.test/a-updates', events: ['card.updated'] });
+		makeWebhook(B.board, { url: 'https://hooks.example.test/b' });
+		return { owner, A, B, plan, ship, goal };
+	}
+	type Scene = ReturnType<typeof goalScene>;
+
+	/** Each delivery as [webhook, event, the body's boardId, data], once the request is answered 200. */
+	async function heard(res: Promise<ApiResult>) {
+		const answer = await res;
+		await sent.settle();
+		expect(answer.status).toBe(200);
+		expect(sent.duringTransaction).toEqual([]);
+		return sent.webhooks.map((d) => {
+			expect(d.body.event).toBe(d.event);
+			return [d.url.split('/').pop(), d.event, d.body.boardId, d.body.data];
+		});
+	}
+
+	const added = (s: Scene, card: { id: number; title: string }, source: string) => [
+		'a',
+		'milestone.card_added',
+		s.A.board.id,
+		{ cardId: card.id, action: 'milestone_card_added', source, detail: `Added "${card.title}" to milestone "Launch"`, user: 'owner' }
+	];
+	const removed = (s: Scene, card: { id: number; title: string }, source: string) => [
+		'a',
+		'milestone.card_removed',
+		s.A.board.id,
+		{ cardId: card.id, action: 'milestone_card_removed', source, detail: `Removed "${card.title}" from milestone "Launch"`, user: 'owner' }
+	];
+
+	type Route = [string, boolean, (s: Scene) => Promise<ApiResult>, (s: Scene) => unknown[]];
+	const routes: Route[] = [
+		[
+			'PATCH /api/milestones/:id with cardId (the picker, the plan page)',
+			false,
+			(s) => api('PATCH', `/api/milestones/${s.goal.id}`, { user: s.owner, body: { cardId: s.plan.id } }),
+			(s) => [added(s, s.plan, 'ui')]
+		],
+		[
+			'PATCH /api/milestones/:id with attach: false',
+			true,
+			(s) => api('PATCH', `/api/milestones/${s.goal.id}`, { user: s.owner, body: { cardId: s.plan.id, attach: false } }),
+			(s) => [removed(s, s.plan, 'ui')]
+		],
+		[
+			'POST /api/v1/milestones/:id/cards',
+			false,
+			(s) => api('POST', `/api/v1/milestones/${s.goal.id}/cards`, { user: s.owner, body: { cardId: s.plan.id } }),
+			(s) => [added(s, s.plan, 'api')]
+		],
+		[
+			'DELETE /api/v1/milestones/:id/cards',
+			true,
+			(s) => api('DELETE', `/api/v1/milestones/${s.goal.id}/cards`, { user: s.owner, body: { cardId: s.plan.id } }),
+			(s) => [removed(s, s.plan, 'api')]
+		],
+		[
+			'PUT /api/v1/cards/:id with milestoneId',
+			false,
+			(s) => api('PUT', `/api/v1/cards/${s.plan.id}`, { user: s.owner, body: { milestoneId: s.goal.id } }),
+			(s) => [added(s, s.plan, 'api')]
+		],
+		[
+			'PUT /api/v1/cards/:id with milestoneId null',
+			true,
+			(s) => api('PUT', `/api/v1/cards/${s.plan.id}`, { user: s.owner, body: { milestoneId: null } }),
+			(s) => [removed(s, s.plan, 'api')]
+		],
+		[
+			'POST /api/v1/milestones/:id/cards/bulk',
+			false,
+			(s) => api('POST', `/api/v1/milestones/${s.goal.id}/cards/bulk`, { user: s.owner, body: { cardIds: [s.plan.id, s.ship.id] } }),
+			(s) => [added(s, s.plan, 'api'), added(s, s.ship, 'api')]
+		],
+		[
+			'DELETE /api/v1/milestones/:id/cards/bulk',
+			true,
+			(s) => api('DELETE', `/api/v1/milestones/${s.goal.id}/cards/bulk`, { user: s.owner, body: { cardIds: [s.plan.id, s.ship.id] } }),
+			(s) => [removed(s, s.plan, 'api'), removed(s, s.ship, 'api')]
+		]
+	];
+
+	it.each(routes)("%s: one delivery a card, to the card's board, shaped as every event is, and none to a webhook that did not ask", async (_route, inGoal, send, expected) => {
+		const s = goalScene(inGoal);
+		expect(await heard(send(s))).toEqual(expected(s));
+	});
+
+	it("names a goal across boards by its number, as the board's own entry does (card 2257)", async () => {
+		const s = goalScene(false);
+		const across = makeMilestone({ name: 'ACROSS-SECRET', createdBy: s.owner });
+
+		const delivered = await heard(api('POST', `/api/v1/milestones/${across.id}/cards`, { user: s.owner, body: { cardId: s.plan.id } }));
+
+		expect(delivered).toEqual([['a', 'milestone.card_added', s.A.board.id, expect.objectContaining({ detail: `Added "Plan" to milestone #${across.id}` })]]);
+		expect(JSON.stringify(sent.webhooks)).not.toContain('ACROSS-SECRET');
+	});
+
+	it('sends a card moved from one goal to another as one milestone.card_added naming the goal it left, and no milestone.card_removed', async () => {
+		const s = goalScene(false);
+		makeMilestone({ board: s.A.board, name: 'Pilot', createdBy: s.owner, cards: [s.plan] });
+
+		const delivered = await heard(api('POST', `/api/v1/milestones/${s.goal.id}/cards`, { user: s.owner, body: { cardId: s.plan.id } }));
+
+		expect(delivered.map(([hook, event, , data]) => [hook, event, (data as { detail: string }).detail])).toEqual([
+			['a', 'milestone.card_added', 'Added "Plan" to milestone "Launch" (from milestone "Pilot")']
+		]);
+	});
+
+	it('holds the event for a webhook whose setter can no longer open the board, as any event (card 2325)', async () => {
+		const s = goalScene(false);
+		const outsider = makeUser({ username: 'outsider' });
+		const held = makeWebhook(s.A.board, { url: 'https://hooks.example.test/held', setBy: outsider });
+
+		const delivered = await heard(api('POST', `/api/v1/milestones/${s.goal.id}/cards`, { user: s.owner, body: { cardId: s.plan.id } }));
+
+		expect(delivered.map(([hook]) => hook)).toEqual(['a']);
+		expect(deliveryResultFor(held)).toMatchObject({
+			event: 'milestone.card_added',
+			outcome: 'not-sent',
+			reason: 'Not sent: the account that set it up can no longer open this board'
+		});
+	});
+
+	it('takes milestone.card_added as an event a webhook asks for by name, and sends it that alone', async () => {
+		const s = goalScene(true);
+		const made = await api('POST', `/api/v1/boards/${s.A.board.id}/webhooks`, {
+			user: s.owner,
+			body: { url: 'https://hooks.example.test/joins', events: ['milestone.card_added'] }
+		});
+		expect(made.status).toBe(201);
+		expect(made.body.events).toEqual(['milestone.card_added']);
+
+		const out = await heard(api('DELETE', `/api/v1/milestones/${s.goal.id}/cards`, { user: s.owner, body: { cardId: s.plan.id } }));
+		expect(out.map(([hook, event]) => [hook, event])).toEqual([['a', 'milestone.card_removed']]);
+		sent.clear();
+		const back = await heard(api('POST', `/api/v1/milestones/${s.goal.id}/cards`, { user: s.owner, body: { cardId: s.plan.id } }));
+		expect(back.map(([hook, event]) => [hook, event])).toEqual([
+			['a', 'milestone.card_added'],
+			['joins', 'milestone.card_added']
+		]);
+	});
+
+	it('lists in the OpenAPI document, for a webhook made and one changed, the events the two routes accept', async () => {
+		const spec = (await api('GET', '/api/v1/openapi.json')).body;
+		const eventsOf = (path: string, method: string) => spec.paths[path][method].requestBody.content['application/json'].schema.properties.events.items.enum;
+
+		expect(eventsOf('/api/v1/boards/{boardId}/webhooks', 'post')).toEqual([...WEBHOOK_EVENTS]);
+		expect(eventsOf('/api/v1/webhooks/{webhookId}', 'put')).toEqual([...WEBHOOK_EVENTS]);
+		expect(WEBHOOK_EVENTS).toContain('milestone.card_added');
+		expect(WEBHOOK_EVENTS).toContain('milestone.card_removed');
 	});
 });

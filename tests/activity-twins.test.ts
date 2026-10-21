@@ -615,11 +615,12 @@ const SERVICE_TWINS: ServiceTwin[] = [
 		internal: (s) => api('PATCH', `/api/milestones/${launch()}`, { user: s.owner, body: { cardId: s.first.id } }),
 		v1: (s) => api('PUT', `/api/v1/cards/${s.first.id}`, { user: s.owner, body: { milestoneId: launch() } }),
 		status: { internal: 200, v1: 200 },
-		sources: { internal: ['milestone_card_added ui'], v1: ['api:milestone_card_added api'] },
+		sources: { internal: ['milestone_card_added ui', 'milestone.card_added ui'], v1: ['api:milestone_card_added api', 'milestone.card_added api'] },
 		// The same card put in the same milestone (the rows are compared whole).
 		// v1 named `milestoneId` in `card_updated` and fired `card.updated`; the
 		// internal route recorded nothing (found nearby F8). Card 2289, decision
-		// 9: one action for one act on every route, and no webhook from either.
+		// 9: one action for one act on every route, and no webhook from either;
+		// card 2343: the goal's own event, `milestone.card_added`, from both.
 		entries: (() => {
 			const entry = {
 				boardId: 1,
@@ -633,7 +634,14 @@ const SERVICE_TWINS: ServiceTwin[] = [
 			};
 			return { internal: [entry], v1: [entry] };
 		})(),
-		told: { internal: [CARD_UPDATE], v1: [CARD_UPDATE] }
+		told: (() => {
+			const webhook = {
+				webhook: 'milestone.card_added',
+				boardId: 1,
+				data: { cardId: 1, action: 'milestone_card_added', source: undefined, detail: 'Added "First" to milestone "Launch"', user: 'owner' }
+			};
+			return { internal: [webhook, CARD_UPDATE], v1: [webhook, CARD_UPDATE] };
+		})()
 	},
 	{
 		row: 5,
@@ -939,7 +947,9 @@ const SERVICE_TWINS: ServiceTwin[] = [
 	// own action, on the goal's board (a card's on the card's board, with its
 	// id), the goal named as the board's readers knew it before the change; a
 	// goal changed or deleted tells its board `{ type: 'milestone' }`. No
-	// webhook: the board has one that takes every event.
+	// webhook for a change to the goal: the board has one that takes every
+	// event. A card put in or taken out sends `milestone.card_added` or
+	// `milestone.card_removed` from both trees (card 2343).
 	{
 		row: 22,
 		what: 'renaming and closing a milestone',
@@ -1000,7 +1010,7 @@ const SERVICE_TWINS: ServiceTwin[] = [
 		internal: (s) => api('PATCH', `/api/milestones/${launch()}`, { user: s.owner, body: { cardId: s.first.id } }),
 		v1: (s) => api('POST', `/api/v1/milestones/${launch()}/cards`, { user: s.owner, body: { cardId: s.first.id } }),
 		status: { internal: 200, v1: 200 },
-		sources: { internal: ['milestone_card_added ui'], v1: ['api:milestone_card_added api'] },
+		sources: { internal: ['milestone_card_added ui', 'milestone.card_added ui'], v1: ['api:milestone_card_added api', 'milestone.card_added api'] },
 		entries: (() => {
 			const entry = {
 				boardId: 1,
@@ -1022,7 +1032,7 @@ const SERVICE_TWINS: ServiceTwin[] = [
 		internal: (s) => api('PATCH', `/api/milestones/${launch()}`, { user: s.owner, body: { cardId: s.first.id, attach: false } }),
 		v1: (s) => api('DELETE', `/api/v1/milestones/${launch()}/cards`, { user: s.owner, body: { cardId: s.first.id } }),
 		status: { internal: 200, v1: 200 },
-		sources: { internal: ['milestone_card_removed ui'], v1: ['api:milestone_card_removed api'] },
+		sources: { internal: ['milestone_card_removed ui', 'milestone.card_removed ui'], v1: ['api:milestone_card_removed api', 'milestone.card_removed api'] },
 		entries: (() => {
 			const entry = {
 				boardId: 1,
@@ -1051,7 +1061,7 @@ const SERVICE_TWINS: ServiceTwin[] = [
 		internal: (s) => api('PATCH', `/api/milestones/${launch()}`, { user: s.owner, body: { cardId: s.first.id, attach: false } }),
 		v1: (s) => api('DELETE', `/api/v1/milestones/${launch()}/cards/bulk`, { user: s.owner, body: { cardIds: [s.first.id] } }),
 		status: { internal: 200, v1: 200 },
-		sources: { internal: ['milestone_card_removed ui'], v1: ['api:milestone_card_removed api'] }
+		sources: { internal: ['milestone_card_removed ui', 'milestone.card_removed ui'], v1: ['api:milestone_card_removed api', 'milestone.card_removed api'] }
 	},
 	// Slice A4: boards, dashboard groupings, columns, card categories and
 	// labels. No grouping, column change, category or label write records an
@@ -3783,7 +3793,8 @@ describe('the details', () => {
 		expect(entries()).toMatchObject([
 			{ boardId: s.A.board.id, cardId: s.first.id, action: 'milestone_card_added', detail: `Added "First" to milestone "Launch" (from milestone #${pilot.id})` }
 		]);
-		expect(told).toEqual([`event update {"type":"card"} on board ${s.A.board.id}`]);
+		// One `milestone.card_added` to the board's webhook, and no `milestone.card_removed` (card 2343).
+		expect(told).toEqual(['webhook milestone.card_added', `event update {"type":"card"} on board ${s.A.board.id}`]);
 	});
 
 	it('a milestone across boards deleted writes an entry on each board holding its cards, with that board\'s count, and tells each', async () => {

@@ -1,7 +1,7 @@
 ---
 title: "Critical-Path Planning"
 category: Architecture
-version: 1.21
+version: 1.22
 status: As-Built
 date: 2026-10-21
 tags:
@@ -641,7 +641,14 @@ one of them is drawn open (card 2221).
   each through its `onWrote` once it is answered as done; a Save tells the page when its
   answer's `told` is not empty (nothing changed answers `told: []`). Either sets the page's
   `wrote`, cleared as a window opens, and `closeCard` re-reads only when it is set. A window
-  only looked at, or saved with nothing changed, reads nothing. The burndown is fetched again only when what it charts changes, `burndownKey`: the
+  only looked at, or saved with nothing changed, reads nothing. A window write that got no
+  answer (it may have been saved), and one refused for any reason, tell the page too (card
+  2379 and its review): a refusal can mean it was already done elsewhere (a link or a subtask
+  someone else removed is answered `404`, as is the Milestone picker taking out a card already
+  out of its goal), and a spare re-read costs one load; a write answered after its window closed, or after
+  another window opened, re-runs the load at once, since `closeCard` has already run, and is
+  not counted to the window open now (the window names itself by the `edits` it was opened
+  with). The burndown is fetched again only when what it charts changes, `burndownKey`: the
   milestone, its target date, and each member card with its board and whether it is done. A
   window closed with nothing changed, a subtask ticked or a card moved between open columns
   leaves it, and the chart is not dimmed for a fetch that would draw the same thing.
