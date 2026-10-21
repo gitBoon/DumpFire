@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.59
+version: 1.60
 status: As-Built
 date: 2026-10-21
 tags:
@@ -244,7 +244,9 @@ The delete is all or nothing. If it fails, the user and everything of theirs is 
 
 You cannot delete your own account or the superadmin. Only the superadmin can delete an administrator.
 
-**An account that is the only owner of a team is not deleted** (card 2377, 2026-10-21). The delete takes the account out of every team, so each team it alone owned was left with no owner, run by administrators alone; a team keeps at least one owner ([Team Owners and Members](#team-owners-and-members)). The delete is refused, nothing is changed, and the toast names the teams, in name order: "This account is the only owner of: Alpha, Beta. Make someone else an owner or delete those teams first." ("… delete that team first" for one). Make another member of each an owner (**Admin → Team Management**, their row's picker, **Change**), or delete the team, then delete the account. A team the account owns with someone else, or is only a member of, does not stop the delete. The confirmation does not say so beforehand; the refusal comes after **Confirm**.
+**An account that is the only owner of a team is not deleted** (card 2377, 2026-10-21). The delete takes the account out of every team, so each team it alone owned was left with no owner, run by administrators alone; a team keeps at least one owner ([Team Owners and Members](#team-owners-and-members)). The delete is refused, nothing is changed, and the toast names the teams, in name order: "This account is the only owner of: Alpha, Beta. Make someone else an owner or delete those teams first." ("… delete that team first" for one). Make another member of each an owner (**Admin → Team Management**, their row's picker, **Change**), or delete the team, then delete the account. A team the account owns with someone else, or is only a member of, does not stop the delete.
+
+**The confirmation says so beforehand** (card 2380, 2026-10-21). For an account that is the only owner of one or more teams, as the admin page last read its teams, the confirmation's second sentence names them, in name order: "They are the only owner of: Alpha, Beta, so the delete will be refused: make someone else an owner or delete those teams first." ("… delete that team first." for one). Press **Cancel** and change the teams first. **Confirm** still sends the delete, and the server decides: if someone was made an owner since the page was loaded (in another tab, or by another administrator), the delete goes through; otherwise the toast above says it was refused. For an account that alone owns no team the confirmation is as before.
 
 ---
 

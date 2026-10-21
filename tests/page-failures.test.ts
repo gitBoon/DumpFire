@@ -264,9 +264,14 @@ describe('the card’s dependency list, src/lib/components/card/CardDependencies
 	});
 
 	it('is read again by loadDependencies after a removal that was refused', () => {
-		// In the branch for a failure, and nowhere else: a removal that worked
-		// is answered with the two lists as they now are.
-		expect(branches(section, 'removeDependency', 'loadDependencies')).toEqual(['failed']);
+		// In the branch for a failure; and in the success's only when its body
+		// cannot be read as the two lists (card 2379's review), the one place a
+		// removal that worked is not answered with the lists as they now are.
+		expect(branches(section, 'removeDependency', 'loadDependencies')).toEqual(['ok', 'failed']);
+		const onSuccess = callsOf(functionNamed(section, 'removeDependency'), 'loadDependencies')[0];
+		const unread = ts.findAncestor(onSuccess, ts.isIfStatement)!;
+		expect(unread.expression.getText()).toBe('data');
+		expect(ts.findAncestor(onSuccess, (node) => node === unread.elseStatement)).toBeDefined();
 		// The window's own reader, handed to the section.
 		const window = readFileSync(join(ROOT, 'src/lib/components/CardModal.svelte'), 'utf8');
 		expect(window.slice(window.indexOf('<CardDependencies'), window.indexOf('/>', window.indexOf('<CardDependencies')))).toContain('{loadDependencies}');
@@ -274,7 +279,7 @@ describe('the card’s dependency list, src/lib/components/card/CardDependencies
 		const refused = functionNamed(section, 'removeDependency').getText();
 		const said = "depError = await failureMessage(res, 'Could not remove that dependency')";
 		expect(refused.indexOf(said)).toBeGreaterThan(-1);
-		expect(refused.indexOf(said)).toBeLessThan(refused.indexOf('loadDependencies()'));
+		expect(refused.indexOf(said)).toBeLessThan(refused.lastIndexOf('loadDependencies()'));
 	});
 
 	// Card 2138. A row is a card or a subtask, and its `cardId` is its own id: a
@@ -2597,7 +2602,9 @@ const WRITES: Record<string, Write[]> = {
 	],
 	'src/lib/components/card/CardDependencies.svelte': [
 		{ name: 'addDependency', reads: 'failureMessage', done: ['pickerMode = null'] },
-		{ name: 'removeDependency', reads: 'failureMessage', putsBack: ['await loadDependencies()'], done: ['blocks = data.blocks'] },
+		// Its refusal reads the links again, held in the dependency list's own case above: so
+		// does a success whose body is not the lists (card 2379's review), so it is no putsBack.
+		{ name: 'removeDependency', reads: 'failureMessage', done: ['blocks = data.blocks'] },
 		{ name: 'saveMilestone', reads: 'failureMessage', putsBack: ['putBack()'], done: ['milestoneId = next'] }
 	],
 	'src/lib/components/card/CardComments.svelte': [

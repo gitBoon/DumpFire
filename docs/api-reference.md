@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.88
+version: 1.89
 status: As-Built
 date: 2026-10-21
 tags:
@@ -664,7 +664,8 @@ new, `DELETE /comments/:commentId` (card 2283); these operations, answers and fi
   card 2289 a milestone changed, closed, reopened or deleted, and a card put in one or taken
   out, are recorded alike by both trees too (`milestone_updated`, `milestone_closed`,
   `milestone_reopened`, `milestone_deleted`, `milestone_card_added`,
-  `milestone_card_removed`).
+  `milestone_card_removed`); since card 2343 the last two send the webhook events
+  `milestone.card_added` and `milestone.card_removed`.
 - **`POST /boards` with a `parentCardId` tells the board that card is on** (card 2143):
   the pages open on it are sent a live update, `{ "type": "board", "action": "created" }`,
   so the sub-board shows on its card without a reload, as the web application's own create
@@ -1129,7 +1130,8 @@ new, `DELETE /comments/:commentId` (card 2283); these operations, answers and fi
   longer sent when `milestoneId` is the only change**. A card moved between milestones logs
   one `api:milestone_card_added` naming the one it left, and no `api:milestone_card_removed`.
   A change that changes nothing writes, logs and tells nothing, after every refusal. No
-  webhook is sent for any goal entry (a `milestone.*` event is card 2343), and the two card
+  webhook is sent for a change to the goal itself; a card put in or taken out sends
+  `milestone.card_added` or `milestone.card_removed` (card 2343, item 102), and the two card
   entries are not work in `GET /reports/activity`. The plan-created mail is still the bulk
   attach's alone (item 90). See
   [`PATCH /api/v1/milestones/:milestoneId`](#patch-apiv1milestonesmilestoneid).
@@ -1234,6 +1236,17 @@ new, `DELETE /comments/:commentId` (card 2283); these operations, answers and fi
   `position`, or a reorder that sent one twice) came in no set order, and `POST /boards`
   answered its columns in no stated order. The board page, All Tasks, the inbox, the CSV
   exports and the reports order them the same way.
+- **Two webhook events are new: `milestone.card_added` and `milestone.card_removed`** (card
+  2343, item 102). A card put in a milestone or taken out, by `POST` or
+  `DELETE /milestones/:milestoneId/cards`, the bulk pair (one delivery for each card),
+  `milestoneId` on `PUT /cards/:cardId` or the web application's milestone picker and plan
+  page, is sent to the webhooks of the card's board once committed, with the body every event
+  has: `data.action` `milestone_card_added` or `milestone_card_removed`, `data.detail` the
+  entry's words. A card moved between milestones is one `milestone.card_added` naming the one
+  it left. **A webhook with an empty `events` list is sent every event, so one made before this
+  release starts receiving both**: give it the list of events wanted to receive neither. Both
+  can be named in `events`. A change to the milestone itself still sends nothing. See
+  [Webhooks](#webhooks).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -3022,9 +3035,10 @@ A request whose every field is as stored writes, logs and tells nothing and is a
 `200` with the milestone as it is, after every refusal above. A card put in or taken out
 (`POST`/`DELETE /milestones/:milestoneId/cards`, the bulk pair, `milestoneId` on
 `PUT /cards/:cardId`) logs `api:milestone_card_added` or `api:milestone_card_removed` on the
-card's board with its id; a card put into the milestone it is in changes nothing. No goal
-entry sends a webhook, and goal membership sends no `card.updated` on any route: read
-`GET /milestones/:milestoneId` or the audit log.
+card's board with its id; a card put into the milestone it is in changes nothing. A change to
+the goal sends no webhook; a card put in or taken out sends `milestone.card_added` or
+`milestone.card_removed` to its board's webhooks (card 2343), and goal membership sends no
+`card.updated` on any route.
 
 ```mermaid
 flowchart TD
@@ -3034,7 +3048,8 @@ flowchart TD
     B --> E2["on a board it joins:<br/>named as it is"]
     E1 & E2 --> X["milestone #id where it is<br/>across boards in that state"]
     G -->|"a card in or out"| C["milestone_card_added / _removed<br/>on the card's board, with its id"]
-    X & C --> L["live update; no webhook"]
+    X --> L["live update; no webhook"]
+    C --> LC["live update; milestone.card_added /<br/>milestone.card_removed to the card's board"]
 ```
 
 ### Milestones: Many Cards at Once
@@ -3075,7 +3090,9 @@ Both are all or nothing:
   is a problem in the `409`, `No edit access to milestone #<id>, which holds card #<n>`.
 - Each card attached or detached logs `api:milestone_card_added` or
   `api:milestone_card_removed` on its board, with its id, in the same transaction; a card
-  skipped logs nothing (card 2289). No webhook is sent.
+  skipped logs nothing (card 2289). Each card attached or detached sends one
+  `milestone.card_added` or `milestone.card_removed` to its board's webhooks once the batch
+  commits (card 2343); a batch that is refused or fails sends none.
 - The attach alone sends the plan-created mail, when the milestone held no card before and at
   least one was attached. A card put in one at a time, by any route or page, sends none.
   Archived cards count when it decides the milestone held a card, so a milestone emptied of
@@ -3660,9 +3677,21 @@ learns that one has gone only by reading
 ### Webhooks
 
 A webhook sends each event of its board that it asks for (`card.created`, `card.updated`,
-`card.moved`, `card.completed`, `card.deleted`, `comment.added`) to its `url` as a `POST`,
-after the change is committed, signed with its `secret`. What is sent:
+`card.moved`, `card.completed`, `card.deleted`, `comment.added`, `milestone.card_added`,
+`milestone.card_removed`) to its `url` as a `POST`, after the change is committed, signed with
+its `secret`. An empty `events` list, or none, is every event. What is sent:
 [Notifications & Email](notifications-email.md#webhooks).
+
+`milestone.card_added` and `milestone.card_removed` (card 2343, since 2026-10-21) are a card
+put in a milestone or taken out, by every route and page that does it (the single and bulk
+milestone operations, one delivery for each card, `milestoneId` on `PUT /cards/:cardId`, and
+the web application's picker and plan page), sent to the webhooks of the card's board with the
+entry's words in `data.detail`. A card moved between milestones is one `milestone.card_added`
+naming the one it left; a milestone deleted, a card moved to another board out of its board's
+milestone, and a change to a milestone itself send neither. Nor do cards deleted with a board,
+a column, an administrator's clear of a board's cards or a purge of archived cards, which send no `card.deleted` either,
+or cards on sub-boards deleted with their parent card, which get no `card.deleted` of their
+own. **A webhook with an empty `events` list receives both from 2026-10-21.**
 
 `card.moved` is every column change but a completion: a move within the board (`data.action`
 `card_moved`), a card moved out of a Complete column (`card_reopened`), and a move to another

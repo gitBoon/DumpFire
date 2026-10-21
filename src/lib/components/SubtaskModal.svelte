@@ -9,6 +9,7 @@
 		boardId,
 		onSave,
 		onDelete,
+		onNotDone,
 		onClose
 	}: {
 		subtask: SubtaskType | null;
@@ -16,6 +17,14 @@
 		boardId: number;
 		onSave: (data: SubtaskType) => void;
 		onDelete?: () => void;
+		/**
+		 * A save or a delete that was not answered as done (card 2379): one
+		 * that got no answer, and so may have been made, and one refused,
+		 * which can mean it was already done elsewhere (a subtask someone
+		 * else deleted is answered 404). The card window tells a plan page to
+		 * read its goal again. The window still says what it said.
+		 */
+		onNotDone?: () => void;
 		onClose: () => void;
 	} = $props();
 
@@ -74,6 +83,7 @@
 					onSave(updated);
 				} else {
 					error = await failureMessage(res, 'The subtask was not saved.');
+					onNotDone?.();
 				}
 			} else {
 				// Create new
@@ -87,10 +97,12 @@
 					onSave(created);
 				} else {
 					error = await failureMessage(res, 'The subtask was not added.');
+					onNotDone?.();
 				}
 			}
 		} catch {
 			error = 'No answer from the server. The subtask may not have been saved.';
+			onNotDone?.();
 		} finally {
 			saving = false;
 		}
@@ -116,8 +128,11 @@
 			'subtask'
 		);
 		if (failure) {
-			// The subtask stays on the card, and the window stays open.
+			// The subtask stays on the card, and the window stays open. With no
+			// answer it may have gone, and a refusal can mean someone else
+			// deleted it: either way a plan page reads its goal again (card 2379).
 			error = failure;
+			onNotDone?.();
 			return;
 		}
 		onDelete();

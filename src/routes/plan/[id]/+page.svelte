@@ -35,7 +35,7 @@
 	import { toasts } from '$lib/stores/toast';
 	import { failureMessage } from '$lib/api';
 	import { PageCardWindow } from '$lib/board/page-card-window.svelte';
-	import type { CardWindowSave } from '$lib/board/card-window.svelte';
+	import type { CardWindowSave, WindowEdits } from '$lib/board/card-window.svelte';
 	import type { CardType } from '$lib/types';
 	import { key, type Node } from '$lib/plan-graph';
 	// The plan's blocks (card 2281, slice C3a-3), each drawn where its markup was.
@@ -144,6 +144,21 @@
 	 * window opens. Not state: nothing draws it.
 	 */
 	let wrote = false;
+
+	/**
+	 * The window's `onWrote` (cards 2324 and 2379): a write it sent that the
+	 * plan may draw, answered as done, refused (for any reason: a refusal can
+	 * mean it was already done elsewhere), or unanswered. `from` is the
+	 * `edits` of the window that sent it. While
+	 * that window is the one open, the plan is read as it closes. Once it has
+	 * closed (closing gives the controller new `edits`), or another has
+	 * opened, `closeCard` has already run: the plan is read now, as a late
+	 * save's is, and nothing is counted to the window open now.
+	 */
+	function windowWrote(from: WindowEdits | undefined) {
+		if (from !== undefined && from === cardWindow.edits) wrote = true;
+		else void invalidateAll();
+	}
 
 	async function openCard(ref: { kind?: string; id: number; parentCardId?: number; withheld?: boolean }) {
 		// Work on a board the viewer cannot open has nothing to open: its card
@@ -280,7 +295,7 @@
 		milestones={modalContext.milestones}
 		onSave={saveCardFromPlan}
 		onClose={closeCard}
-		onWrote={() => (wrote = true)}
+		onWrote={windowWrote}
 		edits={cardWindow.edits}
 	/>
 	{/key}

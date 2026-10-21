@@ -35,7 +35,9 @@
  * released card is on. A card put in or taken out is recorded by
  * `setCardMilestone` and `takeCardOutOfMilestone`, and its board told only
  * when something was written. A change that changes nothing writes, records
- * and tells nothing. No goal entry sends a webhook.
+ * and tells nothing. A card put in or taken out sends `milestone.card_added`
+ * or `milestone.card_removed` to its board's webhooks (card 2343); no change
+ * to the goal itself sends a webhook.
  */
 
 import { error } from '@sveltejs/kit';

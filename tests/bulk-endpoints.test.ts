@@ -221,8 +221,10 @@ describe('POST /api/v1/milestones/:milestoneId/cards/bulk', () => {
 		// written some.
 		expect(shape(run.writes)).toEqual(Array(3).fill(['update cards set', 'insert into activity_log']).flat());
 		// The goal was empty, so this is when the plan came to be. The mail is
-		// worked out and sent once the cards are committed.
+		// worked out and sent once the cards are committed. Each card put in
+		// sends its `milestone.card_added` to the board's webhook (card 2343).
 		expect(run.effects.map(name)).toEqual([
+			...Array(3).fill('webhook milestone.card_added'),
 			'event update (card) on board 1',
 			'email to admin@example.test: Plan created: Goal'
 		]);
@@ -244,7 +246,7 @@ describe('POST /api/v1/milestones/:milestoneId/cards/bulk', () => {
 			expect(entries().map((e) => [e.cardId, e.action, e.detail])).toEqual([
 				[s.a[1].id, 'api:milestone_card_added', 'Added "A2" to milestone "Goal"']
 			]);
-			expect(sent.all.map(name)).toEqual(['event update (card) on board 1']);
+			expect(sent.all.map(name)).toEqual(['webhook milestone.card_added', 'event update (card) on board 1']);
 		} finally {
 			sent.restore();
 		}
@@ -411,7 +413,8 @@ describe('DELETE /api/v1/milestones/:milestoneId/cards/bulk', () => {
 		});
 
 		expect(shape(run.writes)).toEqual(Array(3).fill(['update cards set', 'insert into activity_log']).flat());
-		expect(run.effects.map(name)).toEqual(['event update (card) on board 1']);
+		// Each card taken out sends its `milestone.card_removed` to the board's webhook (card 2343).
+		expect(run.effects.map(name)).toEqual([...Array(3).fill('webhook milestone.card_removed'), 'event update (card) on board 1']);
 	});
 
 	it('rejects the whole batch for one card the caller may not edit', async () => {
@@ -468,23 +471,30 @@ describe('DELETE /api/v1/milestones/:milestoneId/cards/bulk', () => {
 		});
 
 		expect(shape(run.writes)).toEqual(['update cards set', 'insert into activity_log', 'update cards set', 'insert into activity_log']);
-		expect(run.effects.map(name)).toEqual(['event update (card) on board 1']);
+		expect(run.effects.map(name)).toEqual(['webhook milestone.card_removed', 'webhook milestone.card_removed', 'event update (card) on board 1']);
 	});
 
 	it('skips and counts an archived card that is not in the goal, leaving its own goal as it is (card 2290)', async () => {
 		const s = withGoal();
 		const elsewhere = makeMilestone({ board: s.A.board, name: 'Elsewhere', cards: [s.a[3]] });
 		archive(s.a[3]);
+		// The board's webhook takes every event: the card taken out sends its own (card 2343), the one skipped none.
+		const sent = effects();
+		try {
+			const res = await api('DELETE', `/api/v1/milestones/${s.goal.id}/cards/bulk`, {
+				user: s.owner,
+				body: { cardIds: [s.a[0].id, s.a[3].id] }
+			});
+			await sent.settle();
 
-		const res = await api('DELETE', `/api/v1/milestones/${s.goal.id}/cards/bulk`, {
-			user: s.owner,
-			body: { cardIds: [s.a[0].id, s.a[3].id] }
-		});
-
-		expect(res.status).toBe(200);
-		expect(res.body).toMatchObject({ detached: 1, skippedNotInMilestone: 1 });
-		expect([milestoneOf(s.a[0]), milestoneOf(s.a[3])]).toEqual([null, elsewhere.id]);
-		expect(entries().map((e) => e.cardId)).toEqual([s.a[0].id]);
+			expect(res.status).toBe(200);
+			expect(res.body).toMatchObject({ detached: 1, skippedNotInMilestone: 1 });
+			expect([milestoneOf(s.a[0]), milestoneOf(s.a[3])]).toEqual([null, elsewhere.id]);
+			expect(entries().map((e) => e.cardId)).toEqual([s.a[0].id]);
+			expect(sent.webhooks.map((w) => [w.event, w.body.data.cardId])).toEqual([['milestone.card_removed', s.a[0].id]]);
+		} finally {
+			sent.restore();
+		}
 	});
 
 	it('lists a card that does not exist as not found, and an archived one the caller may not edit as one they may not edit (card 2290)', async () => {

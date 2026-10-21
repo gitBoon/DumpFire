@@ -559,9 +559,14 @@ describe('the page, as source', () => {
 		let held: ts.Node = reads[0];
 		while (!ts.isIfStatement(held) && held !== closeCard[0]) held = held.parent;
 		expect(ts.isIfStatement(held) && held.expression.getText()).toBe('wrote');
-		// And the window's onClose is closeCard; its onWrote sets the flag.
+		// And the window's onClose is closeCard; its onWrote is windowWrote, which sets the flag
+		// for the window open now and re-reads at once for one that has gone (card 2379).
 		expect(page.source).toMatch(/onClose=\{closeCard\}/);
-		expect(page.source).toContain('onWrote={() => (wrote = true)}');
+		expect(page.source).toContain('onWrote={windowWrote}');
+		const windowWrote = all(page.script, (n) => ts.isFunctionDeclaration(n) && n.name?.text === 'windowWrote');
+		expect(windowWrote).toHaveLength(1);
+		expect(windowWrote[0].getText()).toContain('from === cardWindow.edits) wrote = true;');
+		expect(windowWrote[0].getText()).toContain('else void invalidateAll();');
 	});
 
 	it('leaves no name in the page or its blocks that nothing reads (card 2323: the split left two)', () => {

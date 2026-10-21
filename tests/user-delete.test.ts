@@ -411,6 +411,17 @@ describe('the confirmation an administrator is shown before a user is deleted', 
 			"Webhooks they set up are switched off; the board's owner or an administrator can switch one on again through the API."
 		);
 	});
+
+	// Card 2380: the delete of an account that alone owns a team is refused (card 2377), and the confirmation says so first.
+	it('names the teams the account alone owns, in the refusal’s terms, after the question; and says nothing of teams for none (card 2380)', () => {
+		expect(userDeleteWarning('leaver', ['Alpha', 'Beta'])).toMatch(
+			/^Delete user "leaver"\? They are the only owner of: Alpha, Beta, so the delete will be refused: make someone else an owner or delete those teams first\. Their comments, /
+		);
+		expect(userDeleteWarning('leaver', ['Solo'])).toContain('They are the only owner of: Solo, so the delete will be refused: make someone else an owner or delete that team first.');
+		expect(userDeleteWarning('leaver', [])).toBe(userDeleteWarning('leaver'));
+		expect(userDeleteWarning('leaver')).toMatch(/^Delete user "leaver"\? Their comments, /);
+		expect(userDeleteWarning('leaver')).not.toContain('only owner');
+	});
 });
 
 describe('DELETE /api/users/:id, refused', () => {

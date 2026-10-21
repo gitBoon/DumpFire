@@ -217,7 +217,8 @@ describe('PUT /api/v1/cards/:cardId', () => {
 		// failure at any of them used to leave the card in its new milestone with
 		// its other changes lost, or changed with nothing to say who changed it.
 		expect(shape(run.writes)).toEqual(['update cards set', 'insert into activity_log', 'update cards set', 'insert into activity_log']);
-		expect(run.effects.map(name)).toEqual(['event update (card) on board 1', 'webhook card.updated']);
+		// The goal's entry sends its own event first (card 2343).
+		expect(run.effects.map(name)).toEqual(['webhook milestone.card_added', 'event update (card) on board 1', 'webhook card.updated']);
 	});
 
 	it('answers 400 for a title that is too long and leaves the milestone as it was', async () => {

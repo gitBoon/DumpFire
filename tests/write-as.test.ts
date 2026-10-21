@@ -2088,28 +2088,33 @@ describe('the cards side of /api/v1 asks at the write (slice 2253-7)', () => {
 			method: 'POST',
 			path: (s) => `/api/v1/milestones/${s.milestone.id}/cards`,
 			body: (s) => ({ cardId: s.b.id }),
-			allowed: 200
+			allowed: 200,
+			// A card put in a goal or taken out sends its own event (card 2343).
+			fires: ['milestone.card_added']
 		},
 		{
 			shape: 'a card taken out of the milestone (DELETE /api/v1/milestones/:milestoneId/cards)',
 			method: 'DELETE',
 			path: (s) => `/api/v1/milestones/${s.milestone.id}/cards`,
 			body: (s) => ({ cardId: s.a.id }),
-			allowed: 200
+			allowed: 200,
+			fires: ['milestone.card_removed']
 		},
 		{
 			shape: 'two cards put in the milestone in a batch (POST /api/v1/milestones/:milestoneId/cards/bulk)',
 			method: 'POST',
 			path: (s) => `/api/v1/milestones/${s.milestone.id}/cards/bulk`,
 			body: (s) => ({ cardIds: [s.b.id, s.c.id] }),
-			allowed: 200
+			allowed: 200,
+			fires: ['milestone.card_added', 'milestone.card_added']
 		},
 		{
 			shape: 'two cards taken out of the milestone in a batch (DELETE /api/v1/milestones/:milestoneId/cards/bulk)',
 			method: 'DELETE',
 			path: (s) => `/api/v1/milestones/${s.milestone.id}/cards/bulk`,
 			body: (s) => ({ cardIds: [s.a.id, s.d.id] }),
-			allowed: 200
+			allowed: 200,
+			fires: ['milestone.card_removed', 'milestone.card_removed']
 		},
 		{
 			shape: 'a subtask ticked, its notices and mail queued on the commit (PUT /api/v1/subtasks/:subtaskId)',

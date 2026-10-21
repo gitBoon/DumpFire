@@ -535,6 +535,40 @@ describe('the users panel, mounted', () => {
 		expect(asked('DELETE /api/users/2')).toHaveLength(1);
 	});
 
+	// Card 2380: the delete is refused for an account that alone owns a team (card 2377); the confirmation says so first.
+	it('names in the confirmation the teams the account alone owns, from the page’s data, in name order, and still sends the delete on Confirm', async () => {
+		const member = (userId: number, role: string) => ({ userId, role, username: userId === 1 ? 'chief' : 'bob', emoji: '🙂' });
+		const teams = [
+			{ id: 11, name: 'Zeta', emoji: '🏢', members: [member(2, 'owner')] },
+			{ id: 12, name: 'Shared', emoji: '🏢', members: [member(2, 'owner'), member(1, 'owner')] },
+			{ id: 13, name: 'Alpha', emoji: '🏢', members: [member(2, 'owner'), member(1, 'member')] },
+			{ id: 14, name: 'Helped', emoji: '🏢', members: [member(2, 'member'), member(1, 'owner')] },
+			{ id: 15, name: 'Ownerless', emoji: '🏢', members: [member(2, 'member')] }
+		];
+		const confirm = vi.fn();
+		const target = draw(UsersPanel, { data: { ...pageData, teams }, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
+
+		target.querySelector<HTMLButtonElement>('button[title="Delete user"]')!.click();
+		expect(confirm).toHaveBeenCalledTimes(1);
+		const [title, message] = confirm.mock.calls[0];
+		expect(title).toBe('Delete User');
+		expect(message).toMatch(
+			/^Delete user "bob"\? They are the only owner of: Alpha, Zeta, so the delete will be refused: make someone else an owner or delete those teams first\. Their comments, /
+		);
+		await confirm.mock.calls[0][2]();
+		await settle();
+		expect(asked('DELETE /api/users/2')).toHaveLength(1);
+	});
+
+	it('says nothing of teams in the confirmation for an account that alone owns none (card 2380)', () => {
+		const confirm = vi.fn();
+		const target = draw(UsersPanel, { data: pageData, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
+
+		target.querySelector<HTMLButtonElement>('button[title="Delete user"]')!.click();
+		expect(confirm.mock.calls[0][1]).toMatch(/^Delete user "bob"\? Their comments, /);
+		expect(confirm.mock.calls[0][1]).not.toContain('only owner');
+	});
+
 	it('opens the password dialog with 🔑, through the dialog the panel holds, and the dialog sends the reset', async () => {
 		answer = (what) =>
 			what === 'PUT /api/users/2/password' ? Response.json({ sessionsEnded: 1, apiKeysEnded: 1, webhooksSwitchedOff: 0, reportSchedulesPaused: 0 }) : undefined;

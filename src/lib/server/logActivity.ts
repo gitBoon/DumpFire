@@ -69,9 +69,10 @@ export const ACTIONS = {
 	boardUpdated: 'board_updated',
 	milestoneCreated: 'milestone_created',
 	// A goal changed, closed, reopened or deleted, and a card put in one or
-	// taken out (card 2289). None sends a webhook: a goal has no event, and a
-	// new one would reach every webhook that asks for all (card 2343 is the
-	// `milestone.*` event).
+	// taken out (card 2289). A card put in or taken out sends
+	// `milestone.card_added` or `milestone.card_removed` to the card's board
+	// (card 2343); a change to the goal itself sends none: its entries name no
+	// card, and a new event reaches every webhook that asks for all.
 	milestoneUpdated: 'milestone_updated',
 	milestoneClosed: 'milestone_closed',
 	milestoneReopened: 'milestone_reopened',
@@ -167,9 +168,14 @@ export function readSource(row: { action: string; source?: string | null }): Act
  * readers read. A move into Complete sends `card.completed` instead of
  * `card.moved`, as its entry is a completion instead of a move.
  *
- * No goal entry is here (card 2289, decision 9), and a card put in a goal or
- * taken out through `PUT /api/v1/cards/{cardId}` writes the goal's entry, not
- * `card_updated`: goal membership sends no `card.updated` on any route.
+ * A card put in a goal or taken out sends `milestone.card_added` or
+ * `milestone.card_removed` (card 2343), from its entry on the card's board,
+ * whichever route did it: `logCardInOrOut` writes them all. A card moved from
+ * one goal to another is one `milestone.card_added` naming the goal it left.
+ * Through `PUT /api/v1/cards/{cardId}` it writes the goal's entry, not
+ * `card_updated`: goal membership sends no `card.updated` on any route. No
+ * other goal entry is here (card 2289, decision 9; card 2343's ruling 1): a
+ * goal changed, closed, reopened, deleted or made names no card.
  */
 const ACTION_TO_EVENT: Record<string, WebhookEvent> = {
 	card_created: 'card.created',
@@ -180,7 +186,9 @@ const ACTION_TO_EVENT: Record<string, WebhookEvent> = {
 	card_completed: 'card.completed',
 	card_deleted: 'card.deleted',
 	card_updated: 'card.updated',
-	comment_added: 'comment.added'
+	comment_added: 'comment.added',
+	milestone_card_added: 'milestone.card_added',
+	milestone_card_removed: 'milestone.card_removed'
 };
 
 export function logActivity(entry: ActivityEntry): void {
