@@ -51,12 +51,26 @@ export function getBoardRole(user: Actor, boardId: number): BoardRole | 'admin' 
 }
 
 /**
+ * A share read as if it were removed (card 2329): `userId`'s own member row,
+ * or the share with team `teamId`. What the Share window asks before a
+ * removal: would this account still open the board without it?
+ */
+export type ShareLeftOut = { userId: number } | { teamId: number };
+
+/**
  * The same answer as `getBoardRole`, for a board whose row the caller has
  * already read: it does not read the row again. The board page's breadcrumb
  * walk reads each board above it, and asked `canViewBoard` of each, which read
  * it a second time (card 2172's note, folded in by card 2280).
+ *
+ * `without` reads the board as if that share were removed, every other way in
+ * as it is (card 2329); left out, the answer is the role as it stands.
  */
-export function roleOnBoard(user: Actor, board: Pick<Board, 'id' | 'createdBy' | 'isPublic'>): BoardRole | 'admin' | null {
+export function roleOnBoard(
+	user: Actor,
+	board: Pick<Board, 'id' | 'createdBy' | 'isPublic'>,
+	without?: ShareLeftOut
+): BoardRole | 'admin' | null {
 	if (user.role === 'admin' || user.role === 'superadmin') {
 		return 'admin';
 	}
@@ -68,7 +82,8 @@ export function roleOnBoard(user: Actor, board: Pick<Board, 'id' | 'createdBy' |
 	}
 
 	// Check direct board membership
-	const directMember = db.select()
+	const memberLeftOut = without !== undefined && 'userId' in without && without.userId === user.id;
+	const directMember = memberLeftOut ? undefined : db.select()
 		.from(boardMembers)
 		.where(and(eq(boardMembers.boardId, boardId), eq(boardMembers.userId, user.id)))
 		.get();
@@ -86,8 +101,9 @@ export function roleOnBoard(user: Actor, board: Pick<Board, 'id' | 'createdBy' |
 		.where(eq(teamMembers.userId, user.id))
 		.all();
 
-	if (userTeams.length > 0) {
-		const teamIds = userTeams.map(t => t.teamId);
+	const teamLeftOut = without !== undefined && 'teamId' in without ? without.teamId : null;
+	const teamIds = userTeams.map(t => t.teamId).filter(id => id !== teamLeftOut);
+	if (teamIds.length > 0) {
 		const teamAccess = db.select()
 			.from(boardTeams)
 			.where(and(

@@ -29,10 +29,12 @@
 		pickerQuery = $bindable(),
 		pickerResults = $bindable(),
 		pickerSearching,
+		pickerError = '',
 		milestoneId = $bindable(),
 		milestoneSaving = $bindable(),
 		loadDependencies,
 		onPickerInput,
+		onListsWritten,
 		onWrote
 	}: {
 		card: CardType | null;
@@ -47,12 +49,20 @@
 		pickerQuery: string;
 		pickerResults: { id: number; title: string; boardId: number; boardName: string; boardEmoji: string; columnName: string; priority: string }[];
 		pickerSearching: boolean;
+		/** The window's: why the latest search found nothing to show, said in place of "No cards match" (card 2384). */
+		pickerError?: string;
 		milestoneId: number | null;
 		milestoneSaving: boolean;
 		/** The window's: reads the card's links again. */
 		loadDependencies: () => Promise<void>;
 		/** The window's: searches for what the picker has typed, debounced. */
 		onPickerInput: () => void;
+		/**
+		 * The window's, called when a link added or removed has set the lists
+		 * from its answer, so that a read of them sent before is not taken
+		 * over it (card 2384).
+		 */
+		onListsWritten?: () => void;
 		/**
 		 * The window's `onWrote`, called once a link or the milestone is saved
 		 * (card 2324), and where the plan may be out of date though it was not
@@ -92,6 +102,7 @@
 			pickerResults = [];
 			onWrote?.();
 			if (data) {
+				onListsWritten?.();
 				blockedBy = data.blockedBy;
 				blocks = data.blocks;
 			} else {
@@ -138,6 +149,7 @@
 			const data = await readLists(res);
 			onWrote?.();
 			if (data) {
+				onListsWritten?.();
 				blockedBy = data.blockedBy;
 				blocks = data.blocks;
 			} else {
@@ -223,8 +235,11 @@
 		/>
 		<button class="dep-picker-cancel" title="Cancel" onclick={() => { pickerMode = null; pickerQuery = ''; pickerResults = []; }}>✕</button>
 	</div>
-	{#if pickerSearching}
+	<!-- A search that failed is said in place of "No cards match" (card 2384). A box emptied by closing is never "Searching…". -->
+	{#if pickerSearching && pickerQuery.trim()}
 		<p class="dep-empty">Searching…</p>
+	{:else if pickerQuery.trim() && pickerError}
+		<p class="dep-search-error" role="alert">{pickerError}</p>
 	{:else if pickerQuery.trim() && pickerResults.length === 0}
 		<p class="dep-empty">No cards match “{pickerQuery.trim()}”.</p>
 	{:else if pickerResults.length > 0}
@@ -482,4 +497,7 @@
 		background: rgba(244, 63, 94, 0.1); color: var(--accent-rose);
 		border: 1px solid rgba(244, 63, 94, 0.25); border-radius: var(--radius-sm);
 	}
+
+	/* A search that failed, under the picker's box, in the rose of the section's other messages (card 2384). */
+	.dep-search-error { margin: 0 0 6px; font-size: 0.75rem; line-height: 1.4; color: var(--accent-rose); }
 </style>
