@@ -444,23 +444,10 @@ export async function deleteCategoryApi(categoryId: number): Promise<Response> {
 }
 
 // ─── Subtasks ────────────────────────────────────────────────────────────────
-
-/**
- * Creates a new subtask on a card.
- */
-export async function createSubtask(data: {
-	cardId: number;
-	title: string;
-	description: string;
-	/** Left out, a subtask's priority is medium, and its due date none. */
-	priority?: string;
-	colorTag: string;
-	dueDate?: string | null;
-	completed: boolean;
-	boardId: number;
-}): Promise<Response> {
-	return jsonRequest('/api/subtasks', 'POST', data);
-}
+//
+// None here: a new card's subtasks and a duplicate's go in the card's one
+// `createCard` (cards 2296 and 2389), and `SubtaskModal.svelte` sends a
+// saved card's itself.
 
 // ─── Labels ──────────────────────────────────────────────────────────────────
 //

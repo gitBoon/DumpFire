@@ -160,7 +160,7 @@ export async function deleteCard(cardId: number, boardId: number): Promise<Respo
 export type DuplicateResult = {
 	/** The title of the card that was copied, once the copy is made, and null when it was not. */
 	title: string | null;
-	/** What to tell the reader when the copy, or one of its subtasks, was not made: the server's words where it gave them. */
+	/** What to tell the reader when the copy was not made: the server's words where it gave them, a subtask refused named by its title. */
 	failure: string | null;
 	/**
 	 * The title of the column the copy was made in, when it is not the
@@ -195,9 +195,12 @@ export function columnForCopy(col: ColumnType, columns: ColumnType[]): ColumnTyp
  *
  * The copy is a new card made from the stored values of the old one, and the
  * server checks it as it checks any new card, so it can be refused. It used
- * to be said to be "Duplicated" whatever the answer was. Each subtask is then
- * copied in turn, and the first that is refused stops the rest: the copy is
- * kept, and the failure says how many of its subtasks it has.
+ * to be said to be "Duplicated" whatever the answer was. Its subtasks go in the
+ * same request (card 2389), and the server makes the copy with all of them or
+ * makes nothing: a subtask refused refuses the copy, and is named. Each was
+ * sent on its own after the copy, and the first refused left a copy with the
+ * ones before it. (The server takes at most 100 in one request, so a card with
+ * more is not copied, in the server's words after the card's title.)
  *
  * A value stored before the server's rules, which the copy would have refused,
  * is not copied, and the server's default is taken: a colour tag that is not
@@ -221,6 +224,14 @@ export async function duplicateCard(
 		...(to.id === col.id ? {} : { into: to.title })
 	});
 	const maxPos = to.cards.length;
+	// The copy's subtasks, each as the original's, open, with only the values the server takes.
+	const subtasks = (card.subtasks ?? []).map((st) => ({
+		title: st.title,
+		description: st.description || '',
+		priority: priorityToCopy(st.priority),
+		colorTag: colourToCopy(st.colorTag),
+		dueDate: dueDateToCopy(st.dueDate)
+	}));
 	let res: Response;
 	try {
 		res = await api.createCard({
@@ -233,46 +244,25 @@ export async function duplicateCard(
 			priority: priorityToCopy(card.priority),
 			colorTag: colourToCopy(card.colorTag),
 			categoryId: categoryToCopy(card.categoryId, boardId, categories),
-			dueDate: dueDateToCopy(card.dueDate)
+			dueDate: dueDateToCopy(card.dueDate),
+			// Only when there are any, so a copy of a card without is asked for as it was.
+			...(subtasks.length > 0 ? { subtasks } : {})
 		});
 	} catch {
 		return { title: null, failure: 'No answer from the server. The card may not have been duplicated.' };
 	}
 	if (!res.ok) {
-		return { title: null, failure: await api.failureMessage(res, 'The card was not duplicated.') };
-	}
-
-	const subtasks = card.subtasks ?? [];
-	if (subtasks.length === 0) return made(null);
-	const copyId = (await api.answerBody(res))?.id;
-	if (typeof copyId !== 'number') {
-		return made(`"${card.title}" was duplicated without its subtasks: the answer did not say which card is the copy.`);
-	}
-	let copied = 0;
-	for (const st of subtasks) {
-		let sent: Response | null;
-		try {
-			sent = await api.createSubtask({
-				cardId: copyId,
-				title: st.title,
-				description: st.description || '',
-				priority: priorityToCopy(st.priority),
-				colorTag: colourToCopy(st.colorTag),
-				dueDate: dueDateToCopy(st.dueDate),
-				completed: false,
-				boardId
-			});
-		} catch {
-			sent = null;
-		}
-		if (!sent?.ok) {
-			const why = sent ? await api.failureMessage(sent, 'It was refused.') : 'No answer from the server.';
-			const after = subtasks.length - copied - 1;
-			return made(
-				`"${card.title}" was duplicated with ${copied} of its ${subtasks.length} subtasks. Subtask "${st.title}" was not copied${after > 0 ? `, nor the ${after} after it` : ''}. ${why}`
-			);
-		}
-		copied++;
+		const fallback = 'The card was not duplicated.';
+		const failure = await api.failureMessage(res, fallback);
+		if (failure === fallback) return { title: null, failure };
+		// A subtask refused is named by its title, which the reader knows it by, not by its place in the list.
+		const part = /^subtasks\[(\d+)\]: ([\s\S]*)$/.exec(failure);
+		const refused = part ? card.subtasks?.[Number(part[1])] : undefined;
+		// The server's words alone ("subtasks must have at most 100 entries") would not say that nothing was made.
+		return {
+			title: null,
+			failure: `"${card.title}" was not duplicated: ${part && refused ? `subtask "${refused.title}" could not be copied: ${part[2]}` : failure}`
+		};
 	}
 	return made(null);
 }

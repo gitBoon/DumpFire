@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.85
+version: 1.86
 status: As-Built
 date: 2026-10-21
 tags:
@@ -4234,6 +4234,43 @@ The window keeping everything typed when a part is refused is not arranged by ha
 #### Going back to the previous image
 
 Nothing is done to the database. The older image's `POST /api/cards` ignores the four lists, and its New Task window sends each part in a request of its own after the card again, so a refusal part way leaves the card without that part, as before. Its card window sends a dependency search typed just before the picker was closed.
+
+### The Admin Page and Dashboard Loads Read a Fixed Number of Queries, and Duplicate Copies a Card With Its Subtasks in One Request
+
+**Cards 2297, 2298 and 2389.** No migration, no setting, no index, no route added, and no API change (the OpenAPI document is unchanged). The plan is `docs/planning/cards-2297-2298-2389.md`.
+
+- **2297.** The admin page's load read three queries for every board and one for every team, and every change made on the page reads it again. It now reads seven queries whatever the installation holds. What the page shows is the same.
+- **2298.** The dashboard's load read two queries for every top-level board, two for every level of sub-boards, two for every assignee row of the Team Leaderboard, and the whole subtasks, requests, assignees and users tables. It now reads the same number of queries however many boards, levels and assignees there are, and reads only the boards the person can open. What it shows is the same. It is still read again a quarter of a second after a burst of changes on any board.
+- **2389.** Duplicate made the copy and then sent its subtasks one at a time, so a subtask refused part way left a copy with some of them. The copy's subtasks now go in the copy's one request, and the copy is made with all of them or not at all.
+
+**Owner to know.** A Duplicate whose subtask is refused, or of a card with more than 100 subtasks, now makes no copy at all; the toast says why (`"<card>" was not duplicated: subtask "<title>" could not be copied: …`, or `"<card>" was not duplicated: subtasks must have at most 100 entries`; any other refusal is the server's words after the same `"<card>" was not duplicated: `). It made a copy with part of its subtasks, or with all of them.
+
+#### Before the deploy
+
+On production, on the older image, as **O**, your administrator account, signed in. Nothing here writes anything. Note, as near to the deploy as you can:
+
+- In **Admin**, under 📊 Database Overview, the figures over **Boards**, **Columns**, **Cards**, **Categories**, **Users** and **Teams** (not **DB Size**, which moves on its own); under 📋 Board Management, the line `ID: <id> · <n> cols · <n> cards · <n> cats` of any three boards; under 🏢 Team Management, the members of any one team with more than one, in the order shown.
+- On the dashboard, the All Tasks row's `<n> cards · <n> tasks`, and its tokens and cost; the `<n> inbox pending` line; and the Team Leaderboard's names, in order, with each one's `✓` and `⚡` figures.
+
+#### After the deploy
+
+On production, as **O**, signed in, with the browser's developer tools open (Network). Checks 426 to 428 read what the page shows and write nothing: a figure that has moved because someone made, moved or deleted something in between is not a fault (the **Audit** page lists what was written since the note). **Scratch things**, for 429 and 430: on the dashboard a board "TEST 2389 - delete me"; on it, press **Add Task** on To Do, type `TEST 2389 card - delete me` in "What needs to be done?", **Create task**; open the card, under Subtasks add `TEST 2389 one` and then `TEST 2389 two` (**Add**, the title, **Add Subtask** for each), tick the box of `TEST 2389 one`, and close the card window.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 426 | 2297 | Open **Admin**; read 📊 Database Overview | The figures over **Boards**, **Columns**, **Cards**, **Categories**, **Users** and **Teams** are the ones noted before the deploy | A figure differs and nothing was written in between |
+| 427 | 2297 | On the same page, under 📋 Board Management, find the three boards noted; under 🏢 Team Management, the team noted | Each board's `ID: <id> · <n> cols · <n> cards · <n> cats` line is the one noted; the team's members are the ones noted, in the same order | A line or a member differs, or the order of the members has changed, with nothing written in between |
+| 428 | 2298 | Open the dashboard | The All Tasks row's `<n> cards · <n> tasks`, its tokens and its cost, the `<n> inbox pending` line, and the Team Leaderboard's names in order with their `✓` and `⚡` figures, are the ones noted before the deploy | Any differs with nothing written in between |
+| 429 | 2389 | On the board TEST 2389 - delete me, clear the network panel; right-click the card TEST 2389 card - delete me and choose **📋 Duplicate** | In the network panel, one `POST` to `/api/cards`, answered `201`, whose request payload holds `subtasks` with the titles `TEST 2389 one` and `TEST 2389 two`, in that order; no `POST` to `/api/subtasks`; the toast `Duplicated "TEST 2389 card - delete me"` | A `POST` to `/api/subtasks`, or the payload without `subtasks` |
+| 430 | 2389 | Open the card TEST 2389 card - delete me (Copy) | Under Subtasks, `TEST 2389 one` and then `TEST 2389 two`, neither ticked | Either is missing, or one is ticked |
+
+A Duplicate refused part way cannot be arranged by hand on production: every subtask stored is one the server takes. The suite covers it (`tests/card-window.test.ts`, `tests/page-failures.test.ts`), and the loads' counts and answers (`tests/load-query-counts.test.ts`).
+
+**Afterwards.** On the dashboard delete the board "TEST 2389 - delete me"; its cards and their subtasks go with it.
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image's admin page and dashboard read as many queries as before, and show the same figures. Its Duplicate sends each subtask in a request of its own after the copy again, so a subtask refused part way leaves a copy with the ones before it.
 
 ## Changing the Schema
 

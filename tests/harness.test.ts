@@ -103,6 +103,7 @@ const TEST_FILES = [
 	'internal-refusals.test.ts',
 	'kanban-column-header.svelte.test.ts',
 	'live-streams.test.ts',
+	'load-query-counts.test.ts',
 	'logger.test.ts',
 	'mail-escaping.test.ts',
 	'mail-failures.test.ts',

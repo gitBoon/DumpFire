@@ -44,7 +44,7 @@ import ts from 'typescript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db } from '$lib/server/db';
-import { activityLog, cardLabels, cards, labels, type Card } from '$lib/server/db/schema';
+import { activityLog, cardLabels, cards, labels, subtasks, type Card } from '$lib/server/db/schema';
 import type { SessionUser } from '$lib/server/auth';
 import * as cardActions from '$lib/board/card-actions';
 import { BoardState } from '$lib/board/board-state.svelte';
@@ -53,7 +53,7 @@ import type { BoardContentsData } from '$lib/board/contents-answer';
 import { templateLabelIds } from '$lib/templates';
 import type { CardType, ColumnType } from '$lib/types';
 import { api } from './helpers/api';
-import { makeBoard, makeCard, makeLabel, makeUser, resetDb, type BoardFixture } from './helpers/fixtures';
+import { makeBoard, makeCard, makeLabel, makeSubtask, makeUser, resetDb, type BoardFixture } from './helpers/fixtures';
 
 const MODAL = 'src/lib/components/CardModal.svelte';
 
@@ -189,6 +189,55 @@ describe('saving in the card window keeps the colour tag (card 2147)', () => {
 		expect(sent[0].body).toMatchObject({ colorTag: '#ef4444' });
 		const copy = db.select().from(cards).where(eq(cards.title, 'Tagged (Copy)')).get()!;
 		expect(copy.colorTag).toBe('#ef4444');
+	});
+
+	it('duplicates a card with its subtasks in one request, each open, in order (card 2389)', async () => {
+		const card = makeCard(A.cols['To Do'], { title: 'Stepped' });
+		makeSubtask(card, { title: 'First', completed: true, priority: 'high' });
+		makeSubtask(card, { title: 'Second', dueDate: '2026-11-01' });
+		const sent = replay();
+
+		const page = onThePage(A).map((col) => ({
+			...col,
+			cards: col.cards.map((c) => ({ ...c, subtasks: db.select().from(subtasks).where(eq(subtasks.cardId, c.id)).all() }))
+		})) as unknown as ColumnType[];
+		const shown = page.flatMap((col) => col.cards).find((c) => c.id === card.id)!;
+		expect(await cardActions.duplicateCard(shown, page, A.board.id, [])).toEqual({ title: 'Stepped', failure: null });
+
+		expect(sent.map((request) => `${request.method} ${request.url}`)).toEqual(['POST /api/cards']);
+		const copy = db.select().from(cards).where(eq(cards.title, 'Stepped (Copy)')).get()!;
+		const copied = db.select().from(subtasks).where(eq(subtasks.cardId, copy.id)).all();
+		expect(copied.map((st) => [st.title, st.completed, st.priority, st.dueDate])).toEqual([
+			['First', false, 'high', null],
+			['Second', false, 'medium', '2026-11-01']
+		]);
+		expect(db.select().from(activityLog).where(eq(activityLog.cardId, copy.id)).all().map((e) => e.action)).toEqual([
+			'card_created',
+			'subtask_created',
+			'subtask_created'
+		]);
+	});
+
+	it('makes no copy at all when the server refuses one of its subtasks (card 2389)', async () => {
+		const card = makeCard(A.cols['To Do'], { title: 'Half' });
+		const sent = replay();
+		// A subtask whose title is spaces alone, which the server refuses.
+		const shown = {
+			...card,
+			subtasks: [
+				{ title: 'Fine', description: '', priority: 'medium', colorTag: '', dueDate: null },
+				{ title: '   ', description: '', priority: 'medium', colorTag: '', dueDate: null }
+			]
+		} as unknown as CardType;
+		const before = { cards: db.select().from(cards).all().length, subtasks: db.select().from(subtasks).all().length };
+
+		expect(await cardActions.duplicateCard(shown, [{ ...onThePage(A)[0], cards: [shown] }] as unknown as ColumnType[], A.board.id, [])).toEqual({
+			title: null,
+			failure: '"Half" was not duplicated: subtask "   " could not be copied: title is required'
+		});
+
+		expect(sent).toHaveLength(1);
+		expect({ cards: db.select().from(cards).all().length, subtasks: db.select().from(subtasks).all().length }).toEqual(before);
 	});
 });
 

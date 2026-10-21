@@ -3503,9 +3503,13 @@ describe('duplicating a card, src/lib/board/card-actions.ts and the board page',
 
 		expect(await cardActions.duplicateCard(card, columns, 9, [])).toEqual({
 			title: null,
-			failure: 'priority must be one of low, medium, high or critical'
+			failure: '"Ship it" was not duplicated: priority must be one of low, medium, high or critical'
 		});
 		expect(sent).toEqual(['POST /api/cards']);
+
+		// An answer with no words of its own, a proxy's error page, is the fallback alone, which says it already.
+		stage([new Response('<html>Bad gateway</html>', { status: 502 })]);
+		expect(await cardActions.duplicateCard(card, columns, 9, [])).toEqual({ title: null, failure: 'The card was not duplicated.' });
 
 		stage(['no answer']);
 		expect(await cardActions.duplicateCard(card, columns, 9, [])).toEqual({
@@ -3514,21 +3518,49 @@ describe('duplicating a card, src/lib/board/card-actions.ts and the board page',
 		});
 	});
 
-	it('stops at the first subtask refused, keeps the copy and says how far it got', async () => {
-		const sent = stage([answer(201, { id: 50 }), answer(201, { id: 1 }), answer(400, { message: 'Title is required' }), answer(201, { id: 3 })]);
-
-		expect(await cardActions.duplicateCard(card, columns, 9, [])).toEqual({
-			title: 'Ship it',
-			failure: '"Ship it" was duplicated with 1 of its 3 subtasks. Subtask "Two" was not copied, nor the 1 after it. Title is required'
+	it('sends the subtasks in the copy’s one request (card 2389)', async () => {
+		const bodies: Record<string, unknown>[] = [];
+		const sent = stage([answer(201, { id: 50 })]);
+		const staged = fetch;
+		vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
+			bodies.push(JSON.parse(String(init.body)));
+			return staged(url, init);
 		});
-		expect(sent).toEqual(['POST /api/cards', 'POST /api/subtasks', 'POST /api/subtasks']);
-	});
-
-	it('is the title alone when the copy and every subtask were made', async () => {
-		const sent = stage([answer(201, { id: 50 }), answer(201, {}), answer(201, {}), answer(201, {})]);
 
 		expect(await cardActions.duplicateCard(card, columns, 9, [])).toEqual({ title: 'Ship it', failure: null });
-		expect(sent).toHaveLength(4);
+		expect(sent).toEqual(['POST /api/cards']);
+		// Each as the original's, with only the values the server takes: no priority it would refuse, no colour that is none.
+		expect(bodies[0].subtasks).toEqual(['One', 'Two', 'Three'].map((title) => ({ title, description: '', priority: 'low', colorTag: '' })));
+	});
+
+	it('makes no copy when a subtask is refused, and names the subtask by its title (card 2389)', async () => {
+		const sent = stage([answer(400, { message: 'subtasks[1]: title is required' })]);
+
+		expect(await cardActions.duplicateCard(card, columns, 9, [])).toEqual({
+			title: null,
+			failure: '"Ship it" was not duplicated: subtask "Two" could not be copied: title is required'
+		});
+		expect(sent).toEqual(['POST /api/cards']);
+
+		// Words that name no subtask are given as they came, after the card they kept from being duplicated.
+		stage([answer(400, { message: 'subtasks must have at most 100 entries' })]);
+		expect(await cardActions.duplicateCard(card, columns, 9, [])).toEqual({
+			title: null,
+			failure: '"Ship it" was not duplicated: subtasks must have at most 100 entries'
+		});
+	});
+
+	it('sends no subtasks for a card without any, as before', async () => {
+		const bodies: Record<string, unknown>[] = [];
+		vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
+			bodies.push(JSON.parse(String(init.body)));
+			return answer(201, { id: 50 });
+		});
+		const bare = { ...card, subtasks: [] } as unknown as CardType;
+
+		expect(await cardActions.duplicateCard(bare, [{ id: 3, cards: [bare] }] as unknown as ColumnType[], 9, [])).toEqual({ title: 'Ship it', failure: null });
+		expect(bodies).toHaveLength(1);
+		expect(bodies[0]).not.toHaveProperty('subtasks');
 	});
 
 	it('is said by the board page in the server’s words, and "Duplicated" only when nothing failed', () => {

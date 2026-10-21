@@ -1,6 +1,6 @@
 import { db } from '$lib/server/db';
 import { boards, columns, cards, cardAssignees, taskRequests, teamMembers, users, boardFavourites, subtasks, type Board } from '$lib/server/db/schema';
-import { desc, eq, inArray, isNull, and, gte, sql } from 'drizzle-orm';
+import { count, desc, eq, inArray, isNull, and, or, sql } from 'drizzle-orm';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
 import { boardCategoriesFor, recentActivityFor, subBoardsFor } from '$lib/server/list-access';
 import { subBoardProgress } from '$lib/server/card-completion';
@@ -53,26 +53,67 @@ export const load: PageServerLoad = async ({ locals }) => {
 	// those holding a board they can open, and the empty ones (card 2128).
 	const allCategories = boardCategoriesFor(user);
 
+	// Every board this page reads: the top-level boards shown and the
+	// sub-boards the caller can open. The tiles, the All Tasks walk and the
+	// leaderboard read nothing outside them (card 2298).
+	const shownBoardIds = [...allBoards.map(b => b.id), ...allSubBoards.map(sb => sb.id)];
+
 	// What each board has cost. A board absent from this map has nothing
 	// recorded, which surfaces as null and renders as "—" — deliberately not 0,
 	// because every board predating the token ledger is in that state and we
 	// cannot know what its work cost.
-	// Every board id, not just the accessible top-level ones — sub-boards are
-	// boards too and are discovered later, inside the enrichment loop.
-	const boardTokenTotals = getBoardTokenTotals(db.select({ id: boards.id }).from(boards).all().map(b => b.id));
+	// Sub-boards are boards too: the tiles and the walk below read those the
+	// caller can open, and no other. Every board in the installation was
+	// asked for (card 2298).
+	const boardTokenTotals = getBoardTokenTotals(shownBoardIds);
 	const tokensFor = (id: number) => boardTokenTotals.get(id)?.total ?? null;
 	const costFor = (id: number) => boardTokenTotals.get(id)?.costUsd ?? null;
 
+	// Those boards' columns, and their cards, archived ones too, each read once
+	// for all of them (card 2298). They were two queries a top-level board and
+	// two a level of sub-boards in the walk. A board's columns are in the order
+	// of their ids and a column's cards in the order of theirs, as each board's
+	// own reads gave them, so a board's sub-boards are listed as they were.
+	const shownColumns = shownBoardIds.length > 0
+		? db.select({ id: columns.id, boardId: columns.boardId, title: columns.title })
+			.from(columns)
+			.where(inArray(columns.boardId, shownBoardIds))
+			.orderBy(columns.id)
+			.all()
+		: [];
+	const columnsByBoard = new Map<number, typeof shownColumns>();
+	for (const col of shownColumns) {
+		const list = columnsByBoard.get(col.boardId) ?? [];
+		list.push(col);
+		columnsByBoard.set(col.boardId, list);
+	}
+	const shownCards = shownBoardIds.length > 0
+		? db.select({ id: cards.id, columnId: cards.columnId, title: cards.title, archivedAt: cards.archivedAt, updatedAt: cards.updatedAt })
+			.from(cards)
+			.innerJoin(columns, eq(cards.columnId, columns.id))
+			.where(inArray(columns.boardId, shownBoardIds))
+			.orderBy(cards.columnId, cards.id)
+			.all()
+		: [];
+	const cardsByColumn = new Map<number, typeof shownCards>();
+	for (const card of shownCards) {
+		const list = cardsByColumn.get(card.columnId) ?? [];
+		list.push(card);
+		cardsByColumn.set(card.columnId, list);
+	}
+	/** The cards of `cols`, column by column. */
+	const cardsOf = (cols: { id: number }[]) => cols.flatMap(col => cardsByColumn.get(col.id) ?? []);
+
 	// Enrich each board with card stats and sub-board info
 	const enriched = allBoards.map(board => {
-		const boardCols = db.select().from(columns).where(eq(columns.boardId, board.id)).all();
+		const boardCols = columnsByBoard.get(board.id) ?? [];
 		const colIds = boardCols.map(c => c.id);
-	if (colIds.length === 0) {
+		if (colIds.length === 0) {
 			const cat = board.categoryId ? allCategories.find(c => c.id === board.categoryId) : null;
 			return { ...board, totalCards: 0, completedCards: 0, tokenTotal: tokensFor(board.id), costUsd: costFor(board.id), lastActivity: board.updatedAt, subBoards: [] as any[], categoryName: cat?.name || null, categoryColor: cat?.color || null };
 		}
 
-		const boardCards = db.select().from(cards).where(and(inArray(cards.columnId, colIds), isNull(cards.archivedAt))).all();
+		const boardCards = cardsOf(boardCols).filter(c => !c.archivedAt);
 		const completeColIds = completeColumnIds(boardCols);
 		const completedCards = boardCards.filter(c => completeColIds.has(c.columnId)).length;
 
@@ -141,6 +182,9 @@ export const load: PageServerLoad = async ({ locals }) => {
 	// card of a board they cannot open, which /all counts, since /all lists
 	// every board they can open. The report walks as this does, stopping at a
 	// sub-board its reader cannot open (card 2150).
+	//
+	// Every board it reaches is one of `shownBoardIds`, so it walks the columns
+	// and cards read above and reads nothing as it goes (card 2298).
 	const isDoneTitle = isCompleteColumnTitle;
 	const walkedBoardIds = new Set<number>(allBoards.map(b => b.id));
 	const countedCardIds = new Set<number>();
@@ -148,16 +192,10 @@ export const load: PageServerLoad = async ({ locals }) => {
 	let allTasksCompleted = 0;
 	let frontier = allBoards.map(b => b.id);
 	while (frontier.length > 0) {
-		const frontierCols = db.select({ id: columns.id, title: columns.title })
-			.from(columns)
-			.where(inArray(columns.boardId, frontier))
-			.all();
+		const frontierCols = frontier.flatMap(id => columnsByBoard.get(id) ?? []);
 		if (frontierCols.length === 0) break;
 		const frontierDoneCols = new Set(frontierCols.filter(c => isDoneTitle(c.title)).map(c => c.id));
-		const frontierCards = db.select({ id: cards.id, columnId: cards.columnId, archivedAt: cards.archivedAt })
-			.from(cards)
-			.where(inArray(cards.columnId, frontierCols.map(c => c.id)))
-			.all();
+		const frontierCards = cardsOf(frontierCols);
 		const next: number[] = [];
 		for (const c of frontierCards) {
 			if (!c.archivedAt) {
@@ -174,8 +212,16 @@ export const load: PageServerLoad = async ({ locals }) => {
 		}
 		frontier = next;
 	}
-	const allTasksSubtasks = db.select({ cardId: subtasks.cardId }).from(subtasks).all()
-		.filter(s => countedCardIds.has(s.cardId)).length;
+	// The subtasks of the cards counted: those of the open cards on the boards
+	// walked, counted where they are, where the whole table was read (card 2298).
+	const allTasksSubtasks = countedCardIds.size === 0
+		? 0
+		: db.select({ count: count() })
+			.from(subtasks)
+			.innerJoin(cards, eq(subtasks.cardId, cards.id))
+			.innerJoin(columns, eq(cards.columnId, columns.id))
+			.where(and(inArray(columns.boardId, [...walkedBoardIds]), isNull(cards.archivedAt)))
+			.get()!.count;
 	// Token cost over exactly the boards this walk covered, so the All Tasks row
 	// quotes the same scope as its card and task counts. Null — not zero — when
 	// nothing has been recorded anywhere yet.
@@ -296,16 +342,24 @@ export const load: PageServerLoad = async ({ locals }) => {
 		.all();
 	const userTeamIds = userTeamRows.map(r => r.teamId);
 
+	// The pending ones the caller is to answer: every one for an administrator,
+	// else those to them or to a team of theirs. Counted where they are: the
+	// whole table was read and filtered here (card 2298).
 	let pendingRequests = 0;
 	try {
-		const allRequests = db.select().from(taskRequests).all();
-		pendingRequests = allRequests.filter(r => {
-			if (r.status !== 'pending') return false;
-			if (user.role === 'admin' || user.role === 'superadmin') return true;
-			if (r.targetType === 'user' && r.targetId === user.id) return true;
-			if (r.targetType === 'team' && userTeamIds.includes(r.targetId)) return true;
-			return false;
-		}).length;
+		const everyOne = user.role === 'admin' || user.role === 'superadmin';
+		pendingRequests = db.select({ count: count() })
+			.from(taskRequests)
+			.where(and(
+				eq(taskRequests.status, 'pending'),
+				everyOne
+					? undefined
+					: or(
+						and(eq(taskRequests.targetType, 'user'), eq(taskRequests.targetId, user.id)),
+						userTeamIds.length > 0 ? and(eq(taskRequests.targetType, 'team'), inArray(taskRequests.targetId, userTeamIds)) : undefined
+					)
+			))
+			.get()!.count;
 	} catch { /* table may not exist yet */ }
 
 	// ─── Weekly Activity Sparkline (last 7 days) ────────────────────────────
@@ -315,8 +369,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 		d.setDate(d.getDate() - i);
 		const dayStr = d.toISOString().split('T')[0];
 		const dayLabel = d.toLocaleDateString('en-GB', { weekday: 'short' });
-		const count = myCompletedCards.filter(c => c.completedAt && c.completedAt.startsWith(dayStr)).length;
-		weeklyActivity.push({ day: dayLabel, count });
+		const done = myCompletedCards.filter(c => c.completedAt && c.completedAt.startsWith(dayStr)).length;
+		weeklyActivity.push({ day: dayLabel, count: done });
 	}
 
 	// The sub-boards the caller can open (card 2130): every one in the
@@ -368,33 +422,35 @@ export const load: PageServerLoad = async ({ locals }) => {
 	}
 
 	// ─── Team Leaderboard (top assignees on YOUR boards) ────────────────
-	// Only count cards on boards the user has access to
+	// Only count cards on boards the user has access to: the top-level boards
+	// shown, every card on them, archived ones too. Each assignee row comes
+	// with its card's column's title, in one query (card 2298): the whole table
+	// was read and filtered here, and each row's card and column read after,
+	// two queries a row. In the order the rows were made, as the table was
+	// read, since that order breaks a tie on the board.
 	const myBoardIds = allBoards.map(b => b.id);
-	const accessibleColIds = myBoardIds.length > 0
-		? db.select({ id: columns.id }).from(columns).where(inArray(columns.boardId, myBoardIds)).all().map(c => c.id)
+	const scopedAssigneeRows = myBoardIds.length > 0
+		? db.select({ userId: cardAssignees.userId, columnTitle: columns.title })
+			.from(cardAssignees)
+			.innerJoin(cards, eq(cardAssignees.cardId, cards.id))
+			.innerJoin(columns, eq(cards.columnId, columns.id))
+			.where(inArray(columns.boardId, myBoardIds))
+			.orderBy(sql`${cardAssignees}.rowid`)
+			.all()
 		: [];
-	const accessibleCardIds = accessibleColIds.length > 0
-		? new Set(db.select({ id: cards.id }).from(cards).where(inArray(cards.columnId, accessibleColIds)).all().map(c => c.id))
-		: new Set<number>();
-
-	const scopedAssigneeRows = db.select({
-		userId: cardAssignees.userId,
-		cardId: cardAssignees.cardId
-	}).from(cardAssignees).all().filter(r => accessibleCardIds.has(r.cardId));
 
 	const leaderMap = new Map<number, { completed: number; active: number }>();
 	for (const row of scopedAssigneeRows) {
 		if (!leaderMap.has(row.userId)) leaderMap.set(row.userId, { completed: 0, active: 0 });
-		const card = db.select({ columnId: cards.columnId }).from(cards).where(eq(cards.id, row.cardId)).get();
-		if (card) {
-			const col = db.select({ title: columns.title }).from(columns).where(eq(columns.id, card.columnId)).get();
-			const isDone = col && isCompleteColumnTitle(col.title);
-			if (isDone) leaderMap.get(row.userId)!.completed++;
-			else leaderMap.get(row.userId)!.active++;
-		}
+		if (isCompleteColumnTitle(row.columnTitle)) leaderMap.get(row.userId)!.completed++;
+		else leaderMap.get(row.userId)!.active++;
 	}
 
-	const allUsersList = db.select({ id: users.id, username: users.username, emoji: users.emoji }).from(users).all();
+	// The names of the people on the board alone: every user was read.
+	const leaderIds = [...leaderMap.keys()];
+	const allUsersList = leaderIds.length > 0
+		? db.select({ id: users.id, username: users.username, emoji: users.emoji }).from(users).where(inArray(users.id, leaderIds)).all()
+		: [];
 	const userLookup = new Map(allUsersList.map(u => [u.id, u]));
 
 	const teamLeaderboard = Array.from(leaderMap.entries())
@@ -413,11 +469,11 @@ export const load: PageServerLoad = async ({ locals }) => {
 		const end = new Date();
 		end.setDate(end.getDate() - w * 7);
 		const label = w === 0 ? 'This Week' : w === 1 ? 'Last Week' : `${w + 1}w ago`;
-		const count = myCompletedCards.filter(c => {
+		const done = myCompletedCards.filter(c => {
 			if (!c.completedAt) return false;
 			return c.completedAt >= stamp(start) && c.completedAt < stamp(end);
 		}).length;
-		weeklyTrend.push({ label, count });
+		weeklyTrend.push({ label, count: done });
 	}
 
 	// ─── On Hold count ──────────────────────────────────────────────────
