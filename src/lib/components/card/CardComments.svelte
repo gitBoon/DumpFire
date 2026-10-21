@@ -9,7 +9,9 @@
   shows their count) and again when the tab is opened on none. Posting,
   editing and deleting one are sent from here, each answer read: a refusal
   is said in the window's message box (`windowError`, bound), and what was
-  written stays in its box. A delete asks first, in the app's confirm dialog
+  written stays in its box (a post's text, taken as it goes, is put back).
+  A post goes once, and what is typed while it is out is kept (card 2342).
+  A delete asks first, in the app's confirm dialog
   drawn here (card 2338).
 -->
 <script module lang="ts">
@@ -87,30 +89,54 @@
 		editingCommentText = comment.content;
 	}
 
+	/** A post is out: Post Comment is off and Ctrl+Enter sends nothing, so one post goes once (card 2342). */
+	let posting = $state(false);
+
+	/**
+	 * A post refused or unanswered puts its text back, in front of anything
+	 * typed while it was out with a blank line between, or alone into an
+	 * empty box: nothing typed is lost (card 2342, decision 9).
+	 */
+	function putBack(text: string) {
+		newComment = newComment.trim() ? `${text}\n\n${newComment}` : text;
+	}
+
+	/**
+	 * The text is taken and the box emptied as the post goes, so what is typed
+	 * while it is out is kept: the answer used to empty the box, and that with
+	 * it (card 2342).
+	 */
 	async function postComment() {
-		if (!card || !newComment.trim()) return;
-		windowError = '';
-		let res: Response;
-		try {
-			res = await fetch(`/api/cards/${card.id}/comments`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ content: newComment.trim() })
-			});
-		} catch {
-			windowError = NO_ANSWER;
-			return;
-		}
-		if (!res.ok) {
-			// What was written stays in the box.
-			windowError = await failureMessage(res, 'The comment was not posted.');
-			return;
-		}
-		const created = await res.json();
-		// A live re-read may have brought it first (card 2282): shown once.
-		comments = [created, ...comments.filter(c => c.id !== created.id)];
-		onWritten?.();
+		if (!card || posting || !newComment.trim()) return;
+		const text = newComment.trim();
 		newComment = '';
+		posting = true;
+		windowError = '';
+		try {
+			let res: Response;
+			try {
+				res = await fetch(`/api/cards/${card.id}/comments`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ content: text })
+				});
+			} catch {
+				windowError = NO_ANSWER;
+				putBack(text);
+				return;
+			}
+			if (!res.ok) {
+				windowError = await failureMessage(res, 'The comment was not posted.');
+				putBack(text);
+				return;
+			}
+			const created = await res.json();
+			// A live re-read may have brought it first (card 2282): shown once.
+			comments = [created, ...comments.filter(c => c.id !== created.id)];
+			onWritten?.();
+		} finally {
+			posting = false;
+		}
 	}
 
 	async function deleteComment(commentId: number) {
@@ -234,7 +260,7 @@
 		<textarea class="comment-input" placeholder="Write a comment... (supports **markdown**)" bind:value={newComment} rows="3" onkeydown={(e) => sendKey(e, postComment)}></textarea>
 		<div class="comment-input-actions">
 			<span class="comment-hint">Ctrl+Enter to send</span>
-			<button class="btn-primary small" onclick={postComment} disabled={!newComment.trim()}>Post Comment</button>
+			<button class="btn-primary small" onclick={postComment} disabled={posting || !newComment.trim()}>Post Comment</button>
 		</div>
 	</div>
 

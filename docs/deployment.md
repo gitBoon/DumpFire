@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.72
+version: 1.73
 status: As-Built
 date: 2026-10-21
 tags:
@@ -3840,6 +3840,8 @@ The boards cleared stay cleared; the older image reads `null` as unfiled, as it 
 
 **Card 2338.** No migration, no setting, no route; the card window's Comments tab and its key handling. A comment's **Delete** sent the delete on one click, and a deleted comment cannot be got back. Now it opens the confirm dialog above, drawn inside the card window: "Delete Comment", "This comment will be deleted for everyone on the card. This cannot be undone.", and **Delete**; for an administrator deleting someone else's comment, "<author>'s comment will be deleted for everyone on the card, and the Activity Log will record that you deleted it. This cannot be undone." Cancel or Escape closes it and sends nothing. The card window left Escape and Ctrl+Enter to a confirm only when it was outside the window, so Escape on this one would have closed the whole window; it now stands aside for any confirm open. A comment someone else deletes while the dialog is open is answered "Comment not found" in the window's message box, as a stale delete is today.
 
+**Card 2342.** No migration, no setting, no route; the card window's Comments tab. A post read the box as it went and emptied it when the answer came, so anything typed while it was out was lost; and nothing marked a post as out, so a second click on **Post Comment**, or a second Ctrl+Enter, posted the comment twice. Now the box is emptied as the post goes, and Post Comment is greyed out and Ctrl+Enter sends nothing until it is answered. A post refused or not answered says so as before and puts its text back in the box, in front of anything typed since with a blank line between.
+
 **Owner to know (2353).** **Enter pressed straight after a confirm opens now cancels it**, where it pressed the page's button behind the dialog again. Confirming by keyboard is now Tab, then Enter.
 
 **Owner to know (2338).** **Deleting a comment now takes a second click**, on the dialog's Delete.
@@ -3855,12 +3857,14 @@ On production, as **O**, your administrator account. Nothing here touches a real
 | 335 | 2353 | Open TEST card, press **Archive** in its window, then **Cancel** in the dialog | Back in the window with the focus on Archive | The window closed, or the focus lost |
 | 336 | 2338 | Post a comment on TEST card; press its **Delete**. Look at the dialog, press **Cancel**; Delete again and press Escape; Delete again and press **Delete** | A dialog "Delete Comment" covering the whole screen (not clipped to the card window), focus on Cancel; Cancel and Escape each close it with the comment and the window still there; Delete removes the comment | One click deletes; Escape closes the window; the dialog is cut off by the window |
 | 337 | 2338 | Signed in as **T** (a scratch ordinary account of yours, added to the scratch board as an editor, signed in from a private window), post a comment on TEST card; as O, open the card and press Delete on T's comment; **Cancel** | The message names T and the Activity Log | O's own wording, or no dialog |
+| 338 | 2342 | As O, in the browser's network panel choose **Slow 3G**. On TEST card type a comment, press **Post Comment** twice quickly, then type "more" while it is out. Set **No throttling** | The box empties at the first press and the button greys out; one comment posted; "more" still in the box afterwards | Two comments, or "more" gone |
+| 339 | 2342 | Set **Offline**; empty the box, type "offline test" and press Post Comment; set **Online** | "No answer from the server…" in the window and "offline test" back in the box | The text gone |
 
 **Afterwards.** Delete the scratch board "TEST 2337 - delete me" on the dashboard (T's comment goes with it), and check that no team "TEST 2353 - delete me" is left on Teams. Delete T if it was made for these checks.
 
 #### Going back to the previous image
 
-Nothing is done to the database. The older image's confirm dialog leaves the focus on the button behind it again, lets Tab walk the page behind, gives nothing back when it closes, and does not tie its message to it. Its card window deletes a comment on one click again.
+Nothing is done to the database. The older image's confirm dialog leaves the focus on the button behind it again, lets Tab walk the page behind, gives nothing back when it closes, and does not tie its message to it. Its card window deletes a comment on one click again, can post a comment twice, and loses what is typed while a post is out.
 
 ## Changing the Schema
 
