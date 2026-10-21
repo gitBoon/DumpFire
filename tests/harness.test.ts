@@ -76,6 +76,7 @@ const TEST_FILES = [
 	'burndown.test.ts',
 	'card-completion.test.ts',
 	'card-covers-and-labels.test.ts',
+	'card-create-contents.test.ts',
 	'card-order.test.ts',
 	'card-updates.test.ts',
 	'card-window.test.ts',

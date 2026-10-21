@@ -268,6 +268,16 @@ export async function createCard(data: {
 	colorTag?: string;
 	categoryId?: number | null;
 	dueDate?: string | null;
+	/**
+	 * What a New Task window gathered, written with the card or the whole
+	 * request refused (card 2296): each subtask as `POST /api/subtasks` takes
+	 * one, label and user ids, and each sub-board as `POST /api/boards` takes
+	 * one, under the new card.
+	 */
+	subtasks?: { title: string; description?: string; priority?: string; colorTag?: string; dueDate?: string | null }[];
+	labelIds?: number[];
+	assigneeIds?: number[];
+	subBoards?: { name: string }[];
 }): Promise<Response> {
 	return jsonRequest('/api/cards', 'POST', data);
 }

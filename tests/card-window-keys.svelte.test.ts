@@ -20,7 +20,11 @@
  *     window here is the whole `CardModal` and its `<svelte:window>` listener.
  *   - Escape in the dependency picker's search box closes the picker alone.
  *     The key went on to the window's handler, which closed the whole window
- *     and what was typed in it (found nearby by the B4 review).
+ *     and what was typed in it (found nearby by the B4 review). Since card
+ *     2388 closing the picker drops a search typed just before.
+ *   - The New Task window, saved through the board page's controller, makes
+ *     its card with its subtasks and sub-boards in one request, and a refusal
+ *     keeps everything typed (card 2296).
  *
  * `$app/stores` is the page's, which only a running SvelteKit app has: the
  * comment list asks it who is signed in, so it is given here.
@@ -30,6 +34,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import type * as Svelte from 'svelte';
+import { CardWindow, type CardWindowSave } from '$lib/board/card-window.svelte';
 import type { CardType } from '$lib/types';
 
 vi.mock('$app/stores', () => {
@@ -366,10 +371,57 @@ describe('Escape in the card window’s dependency picker (card 2280, slice B5c;
 		press(target.querySelector('.modal-body')!, 'Escape');
 		expect(onClose).toHaveBeenCalledTimes(1);
 
-		// The search typed runs 250 ms later (debounced): let it, with `fetch`
-		// still stubbed, or it reaches the real one in a later test.
+		// The search typed would run 250 ms later (debounced). Closing the picker
+		// drops it now (card 2388): it was still sent, and this case said so.
 		await new Promise((resolve) => setTimeout(resolve, 300));
-		expect(sent).toContain('GET /api/cards/search?q=%2312&exclude=7');
+		expect(sent.filter((r) => r.startsWith('GET /api/cards/search'))).toEqual([]);
+	});
+});
+
+// Card 2388. Escape and ✕ in the dependency picker, and the other list's
+// picker opened over it, each emptied the box and left the window's 250 ms
+// timer, so a search typed just before was still sent. Each closes it through
+// the window's `closePicker` now, which drops it. (A link added from the
+// results closes it the same way; no search can be waiting then, since the
+// results are hidden behind "Searching…" while one is.)
+describe('closing the card window’s dependency picker drops a search typed just before (card 2388)', () => {
+	/** Waits out the search's 250 ms, with `fetch` still stubbed, and gives back the searches sent. */
+	async function searchesAfterTheWait() {
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		await settle();
+		return sent.filter((r) => r.startsWith('GET /api/cards/search'));
+	}
+
+	it('sends no search typed just before the picker’s ✕', async () => {
+		const target = await draw();
+		openMoreOptions(target);
+		click(buttonNamed(target, '.dep-add-btn', 'Add a blocker'));
+		type(target.querySelector('.dep-picker-input'), '#12');
+		click(target.querySelector('.dep-picker-cancel'));
+		expect(target.querySelector('.dep-picker')).toBeNull();
+		expect(await searchesAfterTheWait()).toEqual([]);
+		expect(onClose).not.toHaveBeenCalled();
+	});
+
+	it('sends no search typed in one list’s picker just before the other list’s is opened, and the other opens empty', async () => {
+		const target = await draw();
+		openMoreOptions(target);
+		click(buttonNamed(target, '.dep-add-btn', 'Add a blocker'));
+		type(target.querySelector('.dep-picker-input'), '#12');
+		click(buttonNamed(target, '.dep-add-btn', 'Add a card this blocks'));
+		const box = target.querySelector('.dep-picker-input') as HTMLInputElement;
+		expect(box.placeholder).toBe('Search the card that waits on this one…');
+		expect(box.value).toBe('');
+		expect(await searchesAfterTheWait()).toEqual([]);
+		expect(target.querySelector('.dep-empty')?.textContent).not.toBe('Searching…');
+	});
+
+	it('still sends a search the picker is left open on', async () => {
+		const target = await draw();
+		openMoreOptions(target);
+		click(buttonNamed(target, '.dep-add-btn', 'Add a blocker'));
+		type(target.querySelector('.dep-picker-input'), '#12');
+		expect(await searchesAfterTheWait()).toEqual(['GET /api/cards/search?q=%2312&exclude=7']);
 	});
 });
 
@@ -607,5 +659,215 @@ describe('the card window’s unused state (card 2280, slice B5c; the B4 review�
 		expect(source).not.toMatch(/\bshowDueDate\b/);
 		// The due-date chip's dropdown is another thing, and stays.
 		expect(source).toMatch(/\bshowDueDateDrop\b/);
+	});
+});
+
+// Card 2296. The New Task window's card was made by one request and its
+// subtasks, labels, people and sub-boards by one request each after it, so a
+// refusal left half a card. The window, saved through the board page's
+// controller, sends one request now, and a refusal keeps everything typed.
+describe('the New Task window makes its card in one request (card 2296)', () => {
+	it('sends one POST /api/cards with the subtask and the sub-board; refused, the window keeps the title, the subtask and the sub-board; sent again, the card is made', async () => {
+		const posted: Record<string, unknown>[] = [];
+		const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+		const refusal = 'subBoards[0]: Sub-boards can be nested at most 20 levels deep, and a board under this card would be deeper.';
+		let reply = json(409, { message: refusal });
+		vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+			const method = init?.method ?? 'GET';
+			sent.push(`${method} ${url}`);
+			if (method === 'POST' && url === '/api/cards') {
+				posted.push(JSON.parse(String(init?.body)));
+				return reply;
+			}
+			const body = answer(url, method);
+			return { ok: true, status: 200, json: async () => body } as Response;
+		}));
+		// The board page's controller, over a board state that holds what a create reads.
+		const board = { columns: [{ id: 1, cards: [] }], labels: [], boardUsers: [], hold: () => () => {}, refresh: vi.fn(), writeCard: vi.fn() };
+		const cardWindow = new CardWindow(board as never, 1);
+		cardWindow.openNew(1);
+		const results: unknown[] = [];
+		const target = await draw({
+			card: null,
+			onSave: async (data: CardWindowSave) => {
+				const result = await cardWindow.save(data);
+				results.push(result);
+			}
+		});
+
+		type(target.querySelector('#card-title'), 'A new card');
+		click(target.querySelector('.add-st-btn'));
+		type(target.querySelector('#st-title'), 'First step');
+		click(buttonNamed(target, 'button', 'Add Subtask'));
+		openMoreOptions(target);
+		type(target.querySelector('.subboard-name-input'), 'Phase two');
+		click(buttonNamed(target, '.subboard-add-btn', '+ Add'));
+		sent = [];
+
+		click(target.querySelector('.btn-create'));
+		await settle();
+		expect(sent.filter((r) => !r.startsWith('GET'))).toEqual(['POST /api/cards']);
+		expect(posted).toHaveLength(1);
+		expect(posted[0]).toMatchObject({ columnId: 1, title: 'A new card', subtasks: [{ title: 'First step', priority: 'medium' }], subBoards: [{ name: 'Phase two' }] });
+		// The part named by what the window holds for it (the review).
+		expect(results).toEqual([{ ok: false, failure: `Sub-board "Phase two" could not be made: ${refusal.slice('subBoards[0]: '.length)}` }]);
+		// Still open, with everything typed.
+		expect(cardWindow.open).toBe(true);
+		expect(onClose).not.toHaveBeenCalled();
+		expect((target.querySelector('#card-title') as HTMLInputElement).value).toBe('A new card');
+		expect([...target.querySelectorAll('.subtask-title')].map((el) => el.textContent)).toEqual(['First step']);
+		expect(target.querySelector('.subboard-link-name')?.textContent).toBe('Phase two');
+
+		// Sent again, it is made, with the same parts, in one request again.
+		reply = json(201, { id: 50 });
+		click(target.querySelector('.btn-create'));
+		await settle();
+		expect(sent.filter((r) => !r.startsWith('GET'))).toEqual(['POST /api/cards', 'POST /api/cards']);
+		expect(posted[1]).toEqual(posted[0]);
+		expect(results[1]).toEqual({ ok: true, told: [{ message: 'Created "A new card"', failed: false }, { message: 'Sub-board "Phase two" created', failed: false }] });
+		expect(cardWindow.open).toBe(false);
+		expect(board.refresh).toHaveBeenCalledTimes(1);
+	});
+});
+
+// The card 2296 review. Since the card is made with its parts or not at all:
+// a template label deleted while the window was open was still sent, and
+// refused every time, so the card could not be made; a refusal named the part
+// by the server's list and place (`assigneeIds[1]`); and with no answer the
+// card may have been made, so a second Create could make it twice.
+describe('the New Task window after the card 2296 review', () => {
+	const bug = { id: 4, boardId: 1, name: 'Bug', color: '#6366f1' };
+	const urgent = { id: 5, boardId: 1, name: 'Urgent', color: '#ef4444' };
+	const boardUsers = [
+		{ id: 1, username: 'alice', emoji: '👤' },
+		{ id: 2, username: 'bob', emoji: '🦊' }
+	];
+
+	/**
+	 * The New Task window wired to the board page's controller, over a board
+	 * state with Bug and two people. `POST /api/cards` is answered by `reply`;
+	 * every other request as `answer` has it. Gives what each save came to.
+	 */
+	async function newTaskWindow(reply: () => Response) {
+		vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+			const method = init?.method ?? 'GET';
+			sent.push(`${method} ${url}`);
+			if (method === 'POST' && url === '/api/cards') return reply();
+			const body = answer(url, method);
+			return { ok: true, status: 200, json: async () => body } as Response;
+		}));
+		const board = { columns: [{ id: 1, cards: [] }], labels: [bug], boardUsers, hold: () => () => {}, refresh: vi.fn(), writeCard: vi.fn() };
+		const cardWindow = new CardWindow(board as never, 1);
+		cardWindow.openNew(1);
+		const results: unknown[] = [];
+		const target = await draw({
+			card: null,
+			labels: [bug],
+			boardUsers,
+			onSave: async (data: CardWindowSave) => {
+				results.push(await cardWindow.save(data));
+			}
+		});
+		return { target, board, cardWindow, results };
+	}
+
+	const refusing = (status: number, message: string) => () =>
+		new Response(JSON.stringify({ message }), { status, headers: { 'content-type': 'application/json' } });
+
+	/** Types a pending subtask's title and adds it. */
+	function addSubtask(target: HTMLElement, title: string) {
+		click(target.querySelector('.add-st-btn'));
+		type(target.querySelector('#st-title'), title);
+		click(buttonNamed(target, 'button', 'Add Subtask'));
+	}
+
+	it('sends only the template’s labels still on the board: one deleted while the window is open is left out', async () => {
+		vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+			const method = init?.method ?? 'GET';
+			sent.push(`${method} ${url}`);
+			const body = url.startsWith('/api/templates')
+				? [{ id: 1, boardId: 1, name: 'Release', title: 'Ship it', description: '', priority: 'medium', subtasksJson: '[]', labelsJson: '[4, 5]' }]
+				: answer(url, method);
+			return { ok: true, status: 200, json: async () => body } as Response;
+		}));
+		// The board page's props: its labels change as the board hears of a label deleted.
+		const props = $state({ card: null, categories: [], labels: [bug, urgent], boardId: 1, boardUsers: [], onSave, onClose });
+		const target = document.createElement('div');
+		document.body.appendChild(target);
+		drawn = { component: mount(CardModal, { target, props: props as never }), target };
+		flushSync();
+		await settle();
+
+		click(buttonNamed(target, '.template-btn', 'From template'));
+		await settle();
+		click(target.querySelector('.template-item-btn'));
+		expect([...target.querySelectorAll('.template-label')].map((el) => el.textContent)).toEqual(['Bug', 'Urgent']);
+
+		// Urgent is deleted in another tab while the window is open.
+		props.labels = [bug];
+		flushSync();
+		click(target.querySelector('.btn-create'));
+		expect(onSave).toHaveBeenCalledTimes(1);
+		expect(onSave.mock.calls[0][0]).toMatchObject({ title: 'Ship it', pendingLabelIds: [4] });
+	});
+
+	it('names a refused subtask by its title and a refused sub-board by its name, the window still open', async () => {
+		let reply = refusing(400, 'subtasks[1]: title must be at most 500 characters');
+		const { target, cardWindow, results } = await newTaskWindow(() => reply());
+		type(target.querySelector('#card-title'), 'A new card');
+		addSubtask(target, 'First step');
+		addSubtask(target, 'Second step');
+		openMoreOptions(target);
+		type(target.querySelector('.subboard-name-input'), 'Phase two');
+		click(buttonNamed(target, '.subboard-add-btn', '+ Add'));
+
+		click(target.querySelector('.btn-create'));
+		await settle();
+		reply = refusing(409, 'subBoards[0]: Sub-boards can be nested at most 20 levels deep, and a board under this card would be deeper.');
+		click(target.querySelector('.btn-create'));
+		await settle();
+
+		expect(results).toEqual([
+			{ ok: false, failure: 'Subtask "Second step" could not be added: title must be at most 500 characters' },
+			{ ok: false, failure: 'Sub-board "Phase two" could not be made: Sub-boards can be nested at most 20 levels deep, and a board under this card would be deeper.' }
+		]);
+		expect(cardWindow.open).toBe(true);
+		expect((target.querySelector('#card-title') as HTMLInputElement).value).toBe('A new card');
+	});
+
+	it.each([
+		['labelIds[0]: That label belongs to a different board', 'The template\'s label "Bug" could not be put on the card: That label belongs to a different board'],
+		// Counted in the labels as sent, each once: [4, 8], and 8 is no longer the board's.
+		['labelIds[1]: Label not found', 'A label of the template that is no longer on this board could not be put on the card: Label not found'],
+		['assigneeIds[1]: User does not have access to this board', '"bob" could not be assigned: User does not have access to this board'],
+		['assigneeIds[2]: User not found', 'Someone no longer on this board could not be assigned: User not found'],
+		// Words that name no part are given as they came.
+		['Viewers cannot add cards', 'Viewers cannot add cards'],
+		['assigneeIds[0] must be an id', 'assigneeIds[0] must be an id']
+	])('names a label or a person refused by the board’s name for it: %s', async (refusal, said) => {
+		const { cardWindow } = await newTaskWindow(refusing(400, refusal));
+		const saved = { title: 'A new card', description: '', priority: 'medium', categoryId: null, dueDate: null, pendingLabelIds: [4, 4, 8], pendingAssigneeIds: [1, 2, 99] };
+		expect(await cardWindow.save(saved)).toEqual({ ok: false, failure: said });
+		expect(sent.filter((r) => r.startsWith('POST'))).toEqual(['POST /api/cards']);
+	});
+
+	it('with no answer reads the board, so a card that was made shows behind the window, and says to look before creating it again', async () => {
+		const { target, board, cardWindow, results } = await newTaskWindow(() => {
+			throw new TypeError('Failed to fetch');
+		});
+		type(target.querySelector('#card-title'), 'A new card');
+		openMoreOptions(target);
+		type(target.querySelector('.subboard-name-input'), 'Phase two');
+		click(buttonNamed(target, '.subboard-add-btn', '+ Add'));
+
+		click(target.querySelector('.btn-create'));
+		await settle();
+
+		expect(results).toEqual([
+			{ ok: false, failure: 'No answer from the server. The card may not have been created. Check the board before creating it again.' }
+		]);
+		expect(board.refresh).toHaveBeenCalledTimes(1);
+		expect(cardWindow.open).toBe(true);
+		expect((target.querySelector('#card-title') as HTMLInputElement).value).toBe('A new card');
 	});
 });

@@ -33,6 +33,15 @@ import { inWrite, type ServiceOptions } from './write-as';
 export const READS: readonly string[] = [];
 
 /**
+ * What `POST /api/cards/{id}/assignees` hands `assignToCard`, and so does a
+ * new card's assignee (`createCard`, card 2296), each with the request's
+ * `baseUrl` beside it: one constant, so the two cannot drift (the card 2296
+ * review). Written out, as every service's options are, its `says` words
+ * written out (tests/check-at-the-write.test.ts).
+ */
+export const ASSIGN_PAGE_OPTIONS = { source: 'ui', says: 'No edit access' } as const satisfies ServiceOptions;
+
+/**
  * Assign a user to a card. Body: `{ userId }`, an id (card 2117).
  *
  * The user must be able to open the card's board (400 otherwise). Someone

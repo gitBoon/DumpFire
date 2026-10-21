@@ -64,6 +64,14 @@ export type CreateBoardOptions = {
 };
 
 /**
+ * What `POST /api/boards` hands `createBoard`, and so does a new card's
+ * sub-board (`createCard`, card 2296): one constant, so the two cannot drift
+ * (the card 2296 review). Written out, as every service's options are
+ * (tests/check-at-the-write.test.ts).
+ */
+export const CREATE_BOARD_PAGE_OPTIONS = { source: 'ui', allowCategory: true } as const satisfies ServiceOptions & CreateBoardOptions;
+
+/**
  * Make a board, with its four columns and its owner (`POST /api/boards`,
  * `POST /api/v1/boards`).
  *

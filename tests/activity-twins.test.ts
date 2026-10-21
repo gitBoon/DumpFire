@@ -2391,6 +2391,43 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 	it('hands each service exactly the options its handler took before it moved, read from the source (R3)', () => {
 		expect(serviceCalls()).toEqual(SERVICE_OPTIONS);
 	});
+
+	it('hands each part of a new card the options its own page route hands it, by the one constant both name (the card 2296 review)', () => {
+		// The constant each call of these writes in `file` hands, whole or spread, with the names
+		// of any options written beside it; or, for options written out at the call, the options
+		// as written, which would fail below.
+		const PARTS = ['createSubtask', 'toggleCardLabel', 'assignToCard', 'createBoard'];
+		const handed = (file: string) => {
+			const tree = ts.createSourceFile(file, readFileSync(join(ROOT, file), 'utf8'), ts.ScriptTarget.Latest, true);
+			const found: Record<string, string> = {};
+			const visit = (node: ts.Node): void => {
+				if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && PARTS.includes(node.expression.text)) {
+					const options = node.arguments[node.arguments.length - 1];
+					const spread = ts.isObjectLiteralExpression(options) ? options.properties.find(ts.isSpreadAssignment) : undefined;
+					const beside = spread ? (options as ts.ObjectLiteralExpression).properties.filter((p) => p !== spread).map((p) => ` + ${p.name?.getText(tree)}`) : [];
+					found[node.expression.text] = (spread ? spread.expression : options).getText(tree).replace(/\s+/g, ' ') + beside.join('');
+				}
+				ts.forEachChild(node, visit);
+			};
+			visit(tree);
+			return found;
+		};
+		const routes = {
+			...handed('src/routes/api/subtasks/+server.ts'),
+			...handed('src/routes/api/labels/+server.ts'),
+			...handed('src/routes/api/cards/[id]/assignees/+server.ts'),
+			...handed('src/routes/api/boards/+server.ts')
+		};
+
+		expect(handed('src/lib/server/cards.ts')).toEqual(routes);
+		expect(routes).toEqual({
+			createSubtask: 'CREATE_SUBTASK_PAGE_OPTIONS',
+			toggleCardLabel: 'TOGGLE_LABEL_PAGE_OPTIONS',
+			// The request's own address for the mail's link, beside it.
+			assignToCard: 'ASSIGN_PAGE_OPTIONS + baseUrl',
+			createBoard: 'CREATE_BOARD_PAGE_OPTIONS'
+		});
+	});
 });
 
 /** A value written in a call: a literal as itself, anything else as the code it is (`{ code: 'baseUrl' }`). */
@@ -2414,7 +2451,8 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 		{ service: 'restoreCardFor', args: [code('caller'), { boardId: code('pathBoardId') }, code('body'), { source: 'ui' }] }
 	],
 	'src/routes/api/cards/+server.ts POST': [
-		{ service: 'createCard', args: [code('caller'), {}, code('body'), { source: 'ui', baseUrl: code('baseUrl') }] }
+		// Card 2296: the internal route alone writes a new card's subtasks, labels, assignees and sub-boards with it.
+		{ service: 'createCard', args: [code('caller'), {}, code('body'), { source: 'ui', baseUrl: code('baseUrl'), withContents: true }] }
 	],
 	'src/routes/api/cards/[id]/+server.ts PUT': [
 		{ service: 'updateCard', args: [code('caller'), { cardId: code('id') }, code('body'), { source: 'ui', baseUrl: code('baseUrl'), allowMove: true }] }
@@ -2453,8 +2491,12 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 	// differently today: v1's comment entry words and mail-first order, v1's
 	// subtask `position`, entry words and tell-first order, the page's
 	// subtask tick told first, and each tree's live event type for a subtask.
+	// The card 2296 review: the page's subtask, label toggle, assignment and
+	// board create hand their service's `_PAGE_OPTIONS` constant, which a new
+	// card's nested writes hand too; read as the service writes it out. The
+	// assignment's `says` was the route's NO_EDIT, the same words.
 	'src/routes/api/cards/[id]/assignees/+server.ts POST': [
-		{ service: 'assignToCard', args: [code('caller'), { cardId: code('cardId') }, code('body'), { source: 'ui', baseUrl: code('baseUrl'), says: code('NO_EDIT') }] }
+		{ service: 'assignToCard', args: [code('caller'), { cardId: code('cardId') }, code('body'), { source: 'ui', baseUrl: code('baseUrl'), says: 'No edit access' }] }
 	],
 	'src/routes/api/cards/[id]/assignees/+server.ts DELETE': [
 		{ service: 'unassignFromCard', args: [code('caller'), { cardId: code('cardId') }, code('body'), { source: 'ui', says: code('NO_EDIT') }] }
@@ -2741,18 +2783,52 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 	]
 };
 
-/** An argument as `Written` has it. */
+/**
+ * A service's page options a route file imports by `name` (`CREATE_SUBTASK_PAGE_OPTIONS`,
+ * the card 2296 review), as the service writes them out: the object and the module's
+ * tree, or undefined for any other name.
+ */
+function pageOptionsIn(name: string, tree: ts.SourceFile): { object: ts.Expression; tree: ts.SourceFile } | undefined {
+	if (!/_PAGE_OPTIONS$/.test(name)) return undefined;
+	for (const statement of tree.statements) {
+		if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+		const specifier = statement.moduleSpecifier.text;
+		const bindings = statement.importClause?.namedBindings;
+		if (!specifier.startsWith('$lib/server/') || !bindings || !ts.isNamedImports(bindings)) continue;
+		const element = bindings.elements.find((e) => e.name.text === name);
+		if (!element) continue;
+		const file = `src/lib/server/${specifier.slice('$lib/server/'.length)}.ts`;
+		const module = ts.createSourceFile(file, readFileSync(join(ROOT, file), 'utf8'), ts.ScriptTarget.Latest, true);
+		for (const declared of module.statements.filter(ts.isVariableStatement).flatMap((s) => [...s.declarationList.declarations])) {
+			if (!ts.isIdentifier(declared.name) || declared.name.text !== (element.propertyName ?? element.name).text || !declared.initializer) continue;
+			let object: ts.Expression = declared.initializer;
+			while (ts.isAsExpression(object) || ts.isSatisfiesExpression(object) || ts.isParenthesizedExpression(object)) object = object.expression;
+			return { object, tree: module };
+		}
+	}
+	return undefined;
+}
+
+/**
+ * An argument as `Written` has it. A service's page options (the card 2296 review),
+ * handed whole or spread into an object, are read as the service writes them out, so
+ * what a route hands is compared with what it handed before they were shared.
+ */
 function written(node: ts.Expression, tree: ts.SourceFile): Written {
 	if (ts.isStringLiteralLike(node)) return node.text;
 	if (node.kind === ts.SyntaxKind.TrueKeyword) return true;
 	if (node.kind === ts.SyntaxKind.FalseKeyword) return false;
 	if (node.kind === ts.SyntaxKind.NullKeyword) return null;
-	if (ts.isObjectLiteralExpression(node) && node.properties.every((p) => ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p))) {
+	const shared = ts.isIdentifier(node) ? pageOptionsIn(node.text, tree) : undefined;
+	if (shared) return written(shared.object, shared.tree);
+	const spreadShared = (p: ts.ObjectLiteralElementLike) => ts.isSpreadAssignment(p) && ts.isIdentifier(p.expression) && pageOptionsIn(p.expression.text, tree) !== undefined;
+	if (ts.isObjectLiteralExpression(node) && node.properties.every((p) => ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p) || spreadShared(p))) {
 		return Object.fromEntries(
-			node.properties.map((p) => [
-				p.name!.getText(tree),
-				ts.isPropertyAssignment(p) ? written(p.initializer, tree) : code((p as ts.ShorthandPropertyAssignment).name.text)
-			])
+			node.properties.flatMap((p) =>
+				ts.isSpreadAssignment(p)
+					? Object.entries(written(p.expression, tree) as Record<string, Written>)
+					: [[p.name!.getText(tree), ts.isPropertyAssignment(p) ? written(p.initializer, tree) : code((p as ts.ShorthandPropertyAssignment).name.text)]]
+			)
 		);
 	}
 	return code(node.getText(tree).replace(/\s+/g, ' '));

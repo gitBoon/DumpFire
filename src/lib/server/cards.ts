@@ -31,7 +31,9 @@
  *     card for the board's archive); and `moveCards` reads the drop's ids and
  *     caps, which read no row, before it looks for any card;
  *   - writes through the helpers that already exist (`applyCardMove`,
- *     `archiveCard`, `deleteCard`, `restoreCard`, `recordCardCreated`), and
+ *     `archiveCard`, `deleteCard`, `restoreCard`, `recordCardCreated`; and a
+ *     new card's subtasks, labels, assignees and sub-boards through the
+ *     services their own routes call, card 2296), and
  *     records and announces itself: every entry, event, webhook and mail
  *     waits for the commit (`afterCommit`);
  *   - throws kit `error()`, as the guards do, a `CardMoveError` or a
@@ -42,7 +44,7 @@
  * `tests/openapi-document.test.ts` reads each v1 handler through here with
  * the options it passes.
  */
-import { error } from '@sveltejs/kit';
+import { error, isHttpError } from '@sveltejs/kit';
 import { eq } from 'drizzle-orm';
 import { db } from './db';
 import { cards, columns, type Card, type Column } from './db/schema';
@@ -69,7 +71,11 @@ import { restoreCard } from './card-restore';
 import { emit } from './events';
 import { ACTIONS, actorOf, logActivity } from './logActivity';
 import { setCardMilestone, takeCardOutOfMilestone, MilestoneError } from './milestones';
-import { readId, readNumber, readObjects, type RequestBody } from './request-body';
+import { readId, readIds, readNumber, readObjects, type RequestBody } from './request-body';
+import { CREATE_SUBTASK_PAGE_OPTIONS, createSubtask } from './subtasks';
+import { TOGGLE_LABEL_PAGE_OPTIONS, toggleCardLabel } from './card-labels';
+import { ASSIGN_PAGE_OPTIONS, assignToCard } from './card-assignees';
+import { CREATE_BOARD_PAGE_OPTIONS, createBoard } from './boards';
 import { stamp, toStamp } from '$lib/timestamps';
 import { inWrite, type ServiceOptions } from './write-as';
 
@@ -97,6 +103,54 @@ function announceMoves(moves: CardMove[], user: SessionUser, opts: ServiceOption
 }
 
 /**
+ * The most entries each of a new card's four lists may hold (card 2296,
+ * ruling 3): each is a write, an entry and an event, and all of them are one
+ * transaction holding the write lock. A drop's moves have the same cap. The
+ * cap is per list, so one request can still hold 400 parts, some 1,000 rows
+ * and more (a sub-board alone is a board, four columns, an owner and an
+ * entry): far past what a window sends, and far short of the some 25,000
+ * sub-boards a 512 KB body could hold without it (the review).
+ */
+const MAX_NEW_CARD_PARTS = 100;
+
+/** What each tree's card create does differently today (R2). */
+export type CreateCardOptions = {
+	/**
+	 * `subtasks`, `labelIds`, `assigneeIds` and `subBoards` are read and written
+	 * with the card (the internal route, card 2296). v1 does not pass it, and
+	 * ignores them, as any field it does not read.
+	 */
+	withContents?: boolean;
+};
+
+/**
+ * One part of a new card, written by its own service: a refusal refuses the
+ * whole request, with the part's status and words, the entry named first
+ * (`subtasks[1]: title is required`), so the reader knows which part it was.
+ * The part's own error is thrown on, its words prefixed, so its status is the
+ * one its service wrote (and that `tests/error-shape.test.ts` reads there).
+ */
+function asPart<T>(entry: string, write: () => T): T {
+	try {
+		return write();
+	} catch (e) {
+		if (isHttpError(e)) e.body.message = `${entry}: ${e.body.message}`;
+		throw e;
+	}
+}
+
+/**
+ * Each id once, in the order first sent: a label toggled twice would come off
+ * again (card 2296, ruling 4). Each with the place it was first sent at, which
+ * a refusal names: `[bug, bug, 999999]`'s third is `labelIds[2]`, as sent, not
+ * the second of the list without the repeat (the review).
+ */
+function once(ids: number[]): [id: number, sentAt: number][] {
+	const seen = new Set<number>();
+	return ids.map((id, sentAt): [number, number] => [id, sentAt]).filter(([id]) => !seen.has(id) && Boolean(seen.add(id)));
+}
+
+/**
  * Raise a card in a column (`POST /api/cards`, and `POST
  * /api/v1/boards/:boardId/cards` with `at.boardId`).
  *
@@ -113,8 +167,25 @@ function announceMoves(moves: CardMove[], user: SessionUser, opts: ServiceOption
  * otherwise. A card created in a Complete column is completed as it is
  * created, as a card moved into one is (card 2134, `card-create.ts`). The
  * answer is the card as written, with its `completedAt`.
+ *
+ * With `withContents` (the internal route, card 2296) the card is made with
+ * what the New Task window gathered for it, in its transaction: `subtasks`
+ * (objects, as `POST /api/subtasks` takes them), `labelIds`, `assigneeIds`
+ * (ids, each once) and `subBoards` (objects, as `POST /api/boards` takes them,
+ * under this card), each a list of at most 100, its shape read with the
+ * card's fields (400). Each part is then written, in that order, by the
+ * service its own route calls, with that route's options: the same checks,
+ * entries, events and mail, sent after the one commit in the order they were
+ * queued. Any refusal refuses the whole request (`asPart`), and nothing of
+ * it is written or sent; the window sent each part on its own after the
+ * card, so a refusal left half a card.
  */
-export function createCard(caller: SessionUser | null, at: { boardId?: number }, body: RequestBody, opts: ServiceOptions): Card {
+export function createCard(
+	caller: SessionUser | null,
+	at: { boardId?: number },
+	body: RequestBody,
+	opts: ServiceOptions & CreateCardOptions
+): Card {
 	inWrite();
 	const user = requireUser(caller);
 
@@ -131,6 +202,17 @@ export function createCard(caller: SessionUser | null, at: { boardId?: number },
 	}
 
 	const fields = readNewCardFields(body);
+	// The four lists' shapes, read with the fields; each entry's own fields are
+	// its service's to read, as it is written.
+	const list = { max: MAX_NEW_CARD_PARTS };
+	const contents = opts.withContents
+		? {
+				subtasks: readObjects(body, 'subtasks', list) ?? [],
+				labelIds: once(readIds(body, 'labelIds', list) ?? []),
+				assigneeIds: once(readIds(body, 'assigneeIds', list) ?? []),
+				subBoards: readObjects(body, 'subBoards', list) ?? []
+			}
+		: null;
 
 	if (!column) {
 		const named = db.select().from(columns).where(eq(columns.id, columnId)).get();
@@ -161,6 +243,27 @@ export function createCard(caller: SessionUser | null, at: { boardId?: number },
 	// the live update and, for a completion, the celebration, after the commit.
 	const creation = recordCardCreated({ card, column, actor: user, source: opts.source });
 	announceCardCreated(creation, user, opts.baseUrl ?? null);
+
+	// What the window gathered, in the order it sent each part on its own
+	// before (card 2296): each through its own route's service, with the
+	// options that route hands it, the one constant both use (the review: they
+	// were copied here by hand, and nothing tied the copies to the routes).
+	// Asked of `opts` as well, so that a reader of the source sees v1 never
+	// comes here (`tests/openapi-document.test.ts` reads v1's create so).
+	if (opts.withContents && contents) {
+		const cardId = card.id;
+		contents.subtasks.forEach((entry, i) => asPart(`subtasks[${i}]`, () => createSubtask(user, { cardId }, entry, CREATE_SUBTASK_PAGE_OPTIONS)));
+		contents.labelIds.forEach(([labelId, i]) =>
+			asPart(`labelIds[${i}]`, () => toggleCardLabel(user, {}, { cardId, labelId }, TOGGLE_LABEL_PAGE_OPTIONS))
+		);
+		contents.assigneeIds.forEach(([userId, i]) =>
+			asPart(`assigneeIds[${i}]`, () => assignToCard(user, { cardId }, { userId }, { ...ASSIGN_PAGE_OPTIONS, baseUrl: opts.baseUrl }))
+		);
+		// What `POST /api/boards` takes, under this card whatever `parentCardId` was sent.
+		contents.subBoards.forEach((entry, i) =>
+			asPart(`subBoards[${i}]`, () => createBoard(user, {}, { ...entry, parentCardId: cardId }, CREATE_BOARD_PAGE_OPTIONS))
+		);
+	}
 	return creation.card;
 }
 

@@ -68,6 +68,14 @@ export type CreateSubtaskOptions = SubtaskEvent & {
 };
 
 /**
+ * What `POST /api/subtasks` hands `createSubtask`, and so does a new card's
+ * subtask (`createCard`, card 2296): one constant, so the two cannot drift
+ * (the card 2296 review). Written out, as every service's options are
+ * (tests/check-at-the-write.test.ts).
+ */
+export const CREATE_SUBTASK_PAGE_OPTIONS = { source: 'ui', eventType: 'subtask' } as const satisfies ServiceOptions & CreateSubtaskOptions;
+
+/**
  * Add a subtask to a card, after its last one unless v1 is sent a
  * `position` (card 2223): `POST /api/subtasks` with the card in its body,
  * read first as the row the guard is asked of, and `POST

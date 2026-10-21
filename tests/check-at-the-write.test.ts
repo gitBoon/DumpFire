@@ -2143,7 +2143,10 @@ describe("card 2253's rule itself", () => {
  *      read functions; every other function it exports is a write, and the
  *      first statement of each is `inWrite();`; it exports nothing else in
  *      any form, no default, no value that is not a function written there,
- *      nothing from elsewhere. In a route file, a write is called only inside
+ *      nothing from elsewhere, but a page route's options for one of its
+ *      writes, `<NAME>_PAGE_OPTIONS`, an object written out whose values are
+ *      each a text, true or false (the card 2296 review: the route and a new
+ *      card's nested write share it). In a route file, a write is called only inside
  *      a writeAs callback, and a read only in a GET or inside a callback;
  *   3. no module on SERVICES names `inTransaction`, under any name, but in a
  *      write, after its `inWrite()`; a read inserts, updates, deletes or runs
@@ -2155,7 +2158,9 @@ describe("card 2253's rule itself", () => {
  *      typed `SessionUser | null`), but those on NOT_SERVICES with why, and
  *      nothing else; no module re-exports a service, and nothing imports one
  *      with `import()`. A service write's options are an object written out
- *      at the call, and a `says` among them words written out (the review, 4);
+ *      at the call, and a `says` among them words written out (the review, 4),
+ *      or the write's own module's `_PAGE_OPTIONS` constant, whole or spread
+ *      into an object written out (the card 2296 review);
  *   5. the rule itself, against made-up source.
  *
  * At run time `inWrite()` (src/lib/server/write-as.ts) refuses a service
@@ -2246,7 +2251,10 @@ function serverImportsOf(tree: ts.SourceFile): { names: Map<string, { file: stri
 }
 
 /** What a service module exports and what breaks the rule in it: its reads, its writes, and the findings (2 and 3). */
-type ServiceReading = { reads: string[]; writes: string[]; findings: string[] };
+type ServiceReading = { reads: string[]; writes: string[]; pageOptions: string[]; findings: string[] };
+
+/** A page route's options for a service's write, exported by the service (the card 2296 review). */
+const PAGE_OPTIONS = /^[A-Z][A-Z0-9_]*_PAGE_OPTIONS$/;
 
 /**
  * Everything a module exports, in source order, in every form it can
@@ -2605,8 +2613,31 @@ function judgeService(file: string, source: string): ServiceReading {
 	}
 	// Nothing else is exported but READS: no default, no value a test cannot read for a write, nothing from elsewhere.
 	for (const { at } of exported.defaults) findings.push(`${file}:${line(at)} has a default export: a service exports its functions by name (2)`);
-	for (const { name, at } of exported.values) {
-		if (name !== 'READS') findings.push(`${file}:${line(at)} exports ${name}, which is not a function written here: a service exports its functions and READS alone (2)`);
+	// A page route's options (the card 2296 review): an object written out, each value a text, true or false.
+	const pageOptions: string[] = [];
+	for (const { name, value, at } of exported.values) {
+		if (name === 'READS') continue;
+		if (!PAGE_OPTIONS.test(name)) {
+			findings.push(`${file}:${line(at)} exports ${name}, which is not a function written here: a service exports its functions and READS alone (2)`);
+			continue;
+		}
+		let object = value && ts.isExpression(value) ? value : undefined;
+		while (object && (ts.isAsExpression(object) || ts.isSatisfiesExpression(object) || ts.isParenthesizedExpression(object))) object = object.expression;
+		// Exported where it is declared, as a const: nothing can change it after.
+		const writtenOut =
+			ts.isVariableDeclaration(at) &&
+			ts.isVariableDeclarationList(at.parent) &&
+			(at.parent.flags & ts.NodeFlags.Const) !== 0 &&
+			object !== undefined &&
+			ts.isObjectLiteralExpression(object) &&
+			object.properties.every(
+				(p) =>
+					ts.isPropertyAssignment(p) &&
+					(ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) &&
+					(ts.isStringLiteral(p.initializer) || p.initializer.kind === ts.SyntaxKind.TrueKeyword || p.initializer.kind === ts.SyntaxKind.FalseKeyword)
+			);
+		if (writtenOut) pageOptions.push(name);
+		else findings.push(`${file}:${line(at)} exports ${name}, page options that are not an object written out of texts, true and false (2)`);
 	}
 	for (const { specifier, at } of exported.reexports) findings.push(`${file}:${line(at)} re-exports from ${specifier}: a service exports only what it writes here (2)`);
 	for (const name of reads) {
@@ -2665,7 +2696,7 @@ function judgeService(file: string, source: string): ServiceReading {
 		ts.forEachChild(node, visit);
 	};
 	visit(tree);
-	return { reads, writes, findings: [...new Set(findings)] };
+	return { reads, writes, pageOptions, findings: [...new Set(findings)] };
 }
 
 /**
@@ -2673,7 +2704,7 @@ function judgeService(file: string, source: string): ServiceReading {
  * that calls a service, and every call of a service's function anywhere in
  * it. `services` is each service module's file with its reads and writes.
  */
-function judgeServiceCalls(file: string, source: string, services: Map<string, { reads: string[]; writes: string[] }>): string[] {
+function judgeServiceCalls(file: string, source: string, services: Map<string, { reads: string[]; writes: string[]; pageOptions?: string[] }>): string[] {
 	const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
 	const line = (node: ts.Node) => tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1;
 	const findings: string[] = [];
@@ -2685,8 +2716,15 @@ function judgeServiceCalls(file: string, source: string, services: Map<string, {
 		const from = names.get(local);
 		const service = from && services.get(from.file);
 		if (!from || !service) return undefined;
-		return { ...from, read: service.reads.includes(from.name), write: service.writes.includes(from.name) };
+		return {
+			...from,
+			read: service.reads.includes(from.name),
+			write: service.writes.includes(from.name),
+			pageOptions: service.pageOptions?.includes(from.name) ?? false
+		};
 	};
+	/** The uses of a page route's options constant that are the options of a write of its own module (the card 2296 review). */
+	const pageOptionsHanded = new Set<ts.Node>();
 	if (![...names.keys()].some((local) => serviceOf(local))) return findings;
 
 	const handlers = handlersOf(tree);
@@ -2756,10 +2794,23 @@ function judgeServiceCalls(file: string, source: string, services: Map<string, {
 			visit(callback.body);
 		}
 		const options = call.arguments[call.arguments.length - 1];
-		if (!options || !ts.isObjectLiteralExpression(options) || options.properties.some((p) => ts.isSpreadAssignment(p))) {
+		// Or the write's own module's page options, whole or spread into an object
+		// written out (the card 2296 review): written out there, and read there.
+		const ownPageOptions = (node: ts.Expression) => {
+			if (!ts.isIdentifier(node) || declaredNearer(node, node.text)) return false;
+			const constant = serviceOf(node.text);
+			return constant !== undefined && constant.pageOptions && constant.file === serviceOf(name)?.file;
+		};
+		if (options && ownPageOptions(options)) {
+			pageOptionsHanded.add(options);
+			return;
+		}
+		const spreads = options && ts.isObjectLiteralExpression(options) ? options.properties.filter(ts.isSpreadAssignment) : [];
+		if (!options || !ts.isObjectLiteralExpression(options) || spreads.some((spread) => !ownPageOptions(spread.expression))) {
 			findings.push(`${file}:${line(call)} hands ${name} options that are not an object written out at the call (4)`);
 			return;
 		}
+		for (const spread of spreads) pageOptionsHanded.add(spread.expression);
 		for (const property of options.properties) {
 			if (property.name && ts.isComputedPropertyName(property.name)) {
 				findings.push(`${file}:${line(call)} hands ${name} options with a computed key (4)`);
@@ -2781,7 +2832,12 @@ function judgeServiceCalls(file: string, source: string, services: Map<string, {
 	const visitUses = (node: ts.Node): void => {
 		if (ts.isIdentifier(node) && usedAsName(node) && !isDeclaredName(node) && !ts.isImportSpecifier(node.parent) && !ts.isImportClause(node.parent)) {
 			const service = serviceOf(node.text);
-			if (service) {
+			if (service?.pageOptions) {
+				// Its call was judged first: the callee comes before the options in the tree.
+				if (!pageOptionsHanded.has(node)) {
+					findings.push(`${file}:${line(node)} uses ${node.text} of ${service.file} other than as the options of a write of that module (4)`);
+				}
+			} else if (service) {
 				const call = ts.isCallExpression(node.parent) && node.parent.expression === node ? node.parent : undefined;
 				const handler = handlers.find(({ fn }) => fn !== undefined && within(node, fn));
 				if (!call) {
@@ -2867,6 +2923,13 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 			'src/lib/server/labels.ts': { reads: ['labelsOfBoard'], writes: ['createLabel', 'updateLabel', 'deleteLabel'] },
 			// Card 2337.
 			'src/lib/server/card-attachments.ts': { reads: [], writes: ['attachFile', 'deleteAttachment'] }
+		});
+		// The page routes' options a new card's nested writes share with them (the card 2296 review).
+		expect(Object.fromEntries([...services].filter(([, { pageOptions }]) => pageOptions.length > 0).map(([file, { pageOptions }]) => [file, pageOptions]))).toEqual({
+			'src/lib/server/card-assignees.ts': ['ASSIGN_PAGE_OPTIONS'],
+			'src/lib/server/card-labels.ts': ['TOGGLE_LABEL_PAGE_OPTIONS'],
+			'src/lib/server/subtasks.ts': ['CREATE_SUBTASK_PAGE_OPTIONS'],
+			'src/lib/server/boards.ts': ['CREATE_BOARD_PAGE_OPTIONS']
 		});
 	});
 
@@ -3089,6 +3152,23 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 			]);
 		});
 
+		it('lets a service export a page route’s options written out, and finds them made of anything else, not a const, or misnamed (the card 2296 review)', () => {
+			const code = [
+				WRITE_AS + 'export const READS = [] as const;',
+				"export const MAKE_THING_PAGE_OPTIONS = { source: 'ui', allowMore: true, says: 'No' } as const satisfies ServiceOptions;",
+				'export const DROP_THING_PAGE_OPTIONS = { source: SOURCE };',
+				"export let KEEP_THING_PAGE_OPTIONS = { source: 'ui' };",
+				"export const THING_OPTIONS = { source: 'ui' };"
+			].join('\n');
+
+			expect(service(code)).toEqual([
+				'src/lib/server/things.ts:5 exports DROP_THING_PAGE_OPTIONS, page options that are not an object written out of texts, true and false (2)',
+				'src/lib/server/things.ts:6 exports KEEP_THING_PAGE_OPTIONS, page options that are not an object written out of texts, true and false (2)',
+				'src/lib/server/things.ts:7 exports THING_OPTIONS, which is not a function written here: a service exports its functions and READS alone (2)'
+			]);
+			expect(judgeService('src/lib/server/things.ts', code).pageOptions).toEqual(['MAKE_THING_PAGE_OPTIONS']);
+		});
+
 		it('finds inTransaction under another name, and a read that writes (the review, 3)', () => {
 			const code = [
 				"import { inWrite } from './write-as';",
@@ -3134,6 +3214,35 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 				'src/routes/api/example/+server.ts:11 hands makeThing a says that is not a text written out (4)',
 				'src/routes/api/example/+server.ts:12 hands makeThing options that are not an object written out at the call (4)',
 				'src/routes/api/example/+server.ts:13 hands makeThing options that are not an object written out at the call (4)'
+			]);
+		});
+
+		it('lets a write be handed its own module’s page options, whole or spread, and finds them handed to another module’s write, beside a says made of data, or used otherwise (the card 2296 review)', () => {
+			const PAGED = new Map([
+				['src/lib/server/things.ts', { reads: ['listThings'], writes: ['makeThing'], pageOptions: ['MAKE_THING_PAGE_OPTIONS'] }],
+				['src/lib/server/others.ts', { reads: [], writes: ['makeOther'], pageOptions: [] }]
+			]);
+			const code = [
+				"import { readBody } from '$lib/server/request-body';",
+				"import { MAKE_THING_PAGE_OPTIONS, makeThing } from '$lib/server/things';",
+				"import { makeOther } from '$lib/server/others';",
+				"import { writeAs } from '$lib/server/write-as';",
+				'export const PUT = async ({ request, locals, url }) => {',
+				'\tconst body = await readBody(request);',
+				'\twriteAs(locals, (caller) => makeThing(caller, 1, body, MAKE_THING_PAGE_OPTIONS));',
+				'\twriteAs(locals, (caller) => makeThing(caller, 1, body, { ...MAKE_THING_PAGE_OPTIONS, baseUrl: url.origin }));',
+				'\twriteAs(locals, (caller) => makeOther(caller, 1, body, MAKE_THING_PAGE_OPTIONS));',
+				'\twriteAs(locals, (caller) => makeThing(caller, 1, body, { ...MAKE_THING_PAGE_OPTIONS, says: body.why }));',
+				'\tconst kept = MAKE_THING_PAGE_OPTIONS;',
+				'\treturn new Response(String(kept));',
+				'};'
+			].join('\n');
+
+			expect(judgeServiceCalls('src/routes/api/example/+server.ts', code, PAGED)).toEqual([
+				'src/routes/api/example/+server.ts:9 hands makeOther options that are not an object written out at the call (4)',
+				'src/routes/api/example/+server.ts:9 uses MAKE_THING_PAGE_OPTIONS of src/lib/server/things.ts other than as the options of a write of that module (4)',
+				'src/routes/api/example/+server.ts:10 hands makeThing a says that is not a text written out (4)',
+				'src/routes/api/example/+server.ts:11 uses MAKE_THING_PAGE_OPTIONS of src/lib/server/things.ts other than as the options of a write of that module (4)'
 			]);
 		});
 

@@ -63,8 +63,9 @@ export type ServiceOptions = {
 	baseUrl?: string | null;
 	/**
 	 * The tree's own words for a refusal, where it has its own (R2). Written
-	 * out at the call, or a constant of the route file that holds them: never
-	 * made from data (tests/check-at-the-write.test.ts).
+	 * out at the call, or a constant of the route file that holds them, or in
+	 * the service's own `_PAGE_OPTIONS` constant (card 2296): never made from
+	 * data (tests/check-at-the-write.test.ts).
 	 */
 	says?: string;
 };

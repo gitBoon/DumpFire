@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.61
+version: 1.62
 status: As-Built
 date: 2026-10-21
 tags:
@@ -510,9 +510,13 @@ is, so it is held twice:
      `caller`, as it is or through `requireUser(caller)`; the name is never declared again or
      assigned in the callback. Its options are an object written out at the call, with no
      spread and no computed key, and a `says` in them is a text written out or a constant of
-     the route file holding one. A read is called only in a `GET` or inside a callback;
+     the route file holding one; or the write's own module's `<NAME>_PAGE_OPTIONS` constant,
+     whole or spread into such an object, and used for nothing else (card 2296: a page route
+     and a new card's nested write share it). A read is called only in a `GET` or inside a
+     callback;
   2. each module on `SERVICES` exports `READS`, its reads by name; every other export is a
-     write whose first statement is `inWrite();`; and it exports nothing else, in any form;
+     write whose first statement is `inWrite();`; and it exports nothing else, in any form,
+     but a `<NAME>_PAGE_OPTIONS` const written out of texts and booleans;
   3. no service names `inTransaction`, under any name or through a namespace, but in a write
      after its `inWrite()`; a read inserts, updates, deletes, runs, `exec`s or `prepare`s
      nothing, nor does a function of its module that it calls (one level); and no service names `locals`,

@@ -31,6 +31,14 @@ import { inWrite, type ServiceOptions } from './write-as';
 /** The functions here that only read. None: every export but this list is a write, and starts with `inWrite()`. */
 export const READS: readonly string[] = [];
 
+/**
+ * What `PUT /api/labels` hands `toggleCardLabel`, and so does a new card's
+ * label (`createCard`, card 2296): one constant, so the two cannot drift
+ * (the card 2296 review). Written out, as every service's options are
+ * (tests/check-at-the-write.test.ts).
+ */
+export const TOGGLE_LABEL_PAGE_OPTIONS = { source: 'ui' } as const satisfies ServiceOptions;
+
 /** Whether the label is on the card. */
 function isOn(cardId: number, labelId: number): boolean {
 	return !!db

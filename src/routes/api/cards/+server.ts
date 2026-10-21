@@ -28,6 +28,11 @@ import type { RequestHandler } from './$types';
  * The work is `createCard` in `$lib/server/cards`, which the v1 create
  * shares (card 2012). The board is the one the target column is on: a
  * `boardId` in the body is ignored.
+ *
+ * This route alone passes `withContents` (card 2296): the New Task window's
+ * `subtasks`, `labelIds`, `assigneeIds` and `subBoards` are written with the
+ * card, in its transaction, each by the service its own route uses, and any
+ * refusal refuses the whole request. v1 ignores them.
  */
 export const POST: RequestHandler = async ({ request, locals, url }) => {
 	requireUser(locals.user);
@@ -39,6 +44,6 @@ export const POST: RequestHandler = async ({ request, locals, url }) => {
 	// writes used to leave a card that nobody was recorded as having raised.
 	// It asks first whether the session is still open, and who its account is
 	// now (card 2253).
-	const card = writeAs(locals, (caller) => createCard(caller, {}, body, { source: 'ui', baseUrl }));
+	const card = writeAs(locals, (caller) => createCard(caller, {}, body, { source: 'ui', baseUrl, withContents: true }));
 	return json(card, { status: 201 });
 };

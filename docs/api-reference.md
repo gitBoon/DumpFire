@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.92
+version: 1.93
 status: As-Built
 date: 2026-10-21
 tags:
@@ -2204,6 +2204,27 @@ API:
   (`before=2026-10-21 09:00:00,1234`) or ISO 8601, refused in the same words. The Audit
   page's **Load more** sends it, and no `offset`, so an entry written while the page is read
   no longer repeats a row.
+- **`POST /api/cards` makes a card with its subtasks, labels, assignees and sub-boards in one
+  request** (card 2296), for the board's New Task window, which sent each in a request of its
+  own after the card, so a refusal or a lost answer left half a card. Four optional lists:
+  `subtasks`, objects as `POST /api/subtasks` takes them; `labelIds` and `assigneeIds`, ids,
+  each taken once; and `subBoards`, objects as `POST /api/boards` takes them, under the new
+  card whatever `parentCardId` they hold. Each is a list of at most 100 entries, read with the
+  card's fields (`subtasks must have at most 100 entries`, `subBoards[1] must be an object`,
+  `assigneeIds[0] must be an id`). Each part is then written in the card's transaction, in
+  that order, by the service its own route calls (`createSubtask`, `toggleCardLabel`,
+  `assignToCard`, `createBoard`) with that route's options: the same checks, entries, live
+  events and mail (nobody mailed about assigning themselves, card 2286), sent after the one
+  commit in the order they were before. Any refusal refuses the whole request with the part's
+  status and words, its entry named first (`400` `subtasks[1]: title is required`, `404`
+  `labelIds[0]: Label not found`, `400` `assigneeIds[0]: User does not have access to this
+  board`, `409` `subBoards[0]: Sub-boards can be nested at most 20 levels deep, …`); no card
+  is made and nothing is sent. The entry is named by its place in the list as sent, a
+  repeated id counted (in `labelIds: [4, 4, 999999]` the label not found is `labelIds[2]`).
+  The cap is per list, so one request can hold up to 400 parts. The New Task window names
+  the part as it shows it (`"bob" could not be assigned: User does not have access to this
+  board`). `POST /api/v1/boards/:boardId/cards` is unchanged and ignores
+  the four lists (its twins' options differ part by part); no `/api/v1` operation changes.
 
 ### Changes on 2026-10-13
 

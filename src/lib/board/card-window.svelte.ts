@@ -31,8 +31,8 @@
  *     board still shows what this save set, and the server's words given back
  *     for the page to say, with the window left open on what was typed. A
  *     new card is made with its pending subtasks, labels, assignees and
- *     sub-boards, each answer read and each refusal named; the board is then
- *     read once, since a new card with all that is the reader's to draw.
+ *     sub-boards in one request, all or nothing (card 2296); the board is
+ *     then read once, since a new card with all that is the reader's to draw.
  *   - **Archive**, once the page's confirm is pressed: the card is taken off
  *     the board and its window closed only once the server has archived it.
  *
@@ -218,6 +218,44 @@ const SAVE_WORDS: WriteWords = {
 	noAnswer: 'No answer from the server. The card may not have been saved.'
 };
 
+/**
+ * A new card's refusal in words the reader knows (the card 2296 review). The
+ * server names the part it refused by its list and its place in it, counted
+ * from 0 (`assigneeIds[1]: User does not have access to this board`), which
+ * the reader never saw; the part is named here by what the window holds for
+ * it: a subtask's title and a sub-board's name from what was sent, a label's
+ * and a person's name from the board (`"bob" could not be assigned: User does
+ * not have access to this board`). A refusal that names no part is given as
+ * it came.
+ */
+function namePart(failure: string, saved: CardWindowSave, board: CardWindowBoard): string {
+	const part = /^(subtasks|labelIds|assigneeIds|subBoards)\[(\d+)\]: ([\s\S]*)$/.exec(failure);
+	if (!part) return failure;
+	const [, list, at, words] = part;
+	const i = Number(at);
+	if (list === 'subtasks') {
+		let title: unknown;
+		try {
+			title = JSON.parse(saved.pendingSubtasks?.[i] ?? 'null')?.title;
+		} catch {
+			// Not the window's JSON: named by its words alone below.
+		}
+		return typeof title === 'string' ? `Subtask "${title}" could not be added: ${words}` : failure;
+	}
+	if (list === 'labelIds') {
+		// Counted in the list as sent: each label once (`cardActions.saveCard`).
+		const label = board.labels.find((l) => l.id === [...new Set(saved.pendingLabelIds ?? [])][i]);
+		const named = label ? `The template's label "${label.name}"` : 'A label of the template that is no longer on this board';
+		return `${named} could not be put on the card: ${words}`;
+	}
+	if (list === 'assigneeIds') {
+		const member = board.boardUsers.find((user) => user.id === saved.pendingAssigneeIds?.[i]);
+		return `${member ? `"${member.username}"` : 'Someone no longer on this board'} could not be assigned: ${words}`;
+	}
+	const name = saved.pendingSubBoards?.[i];
+	return name === undefined ? failure : `Sub-board "${name}" could not be made: ${words}`;
+}
+
 export class CardWindow {
 	/** Whether the window is shown. */
 	open = $state(false);
@@ -370,64 +408,36 @@ export class CardWindow {
 	}
 
 	/**
-	 * A new card, with what its window gathered before it was made: its
-	 * subtasks and its template's labels (`cardActions.saveCard`), then the
-	 * people chosen and its sub-boards, each answer read and each refusal
-	 * named, the card kept whatever becomes of them. The board's reads are
-	 * held until the last is answered, and the board is read once then.
+	 * A new card, made in one request with what its window gathered before it
+	 * was made: its subtasks, its template's labels, the people chosen and its
+	 * sub-boards (`cardActions.saveCard`, card 2296). The server makes all of
+	 * it or none: a refusal, the part named in its words, keeps the window open
+	 * with everything typed, as a refused card always has, the part named by
+	 * what the window holds for it (`namePart`). Each part used to be sent after
+	 * the card, each refusal named and the card kept without it. The board's
+	 * reads are held until it is answered, and the board is read once then.
+	 *
+	 * With no answer the card may have been made, sub-boards, mail and all, and
+	 * a second Create would make it all again (the review): the board is read,
+	 * so a card that was made shows behind the window, and the words say to
+	 * look before creating it again.
 	 */
 	async #create(saved: CardWindowSave): Promise<SaveResult> {
 		const boardState = this.#board;
 		const release = boardState.hold();
 		try {
 			const result = await cardActions.saveCard(null, this.columnId, this.#boardId, boardState.columns, saved);
+			if (result.noAnswer) {
+				boardState.refresh();
+				return { ok: false, failure: `${result.failure} Check the board before creating it again.` };
+			}
 			// No card was made: the window stays open with what was typed.
-			if (result.failure) return { ok: false, failure: result.failure };
+			if (result.failure) return { ok: false, failure: namePart(result.failure, saved, boardState) };
 			if (this.cardId === null) this.close();
 			if (!result.isNew || !result.cardId) return { ok: true, told: [] };
-			const title = saved.title;
-			const told: Told[] = [{ message: `Created "${title}"`, failed: false }];
-
-			// A label of its template that was not put on it (card 2163). One
-			// deleted while the window was open is no longer among the board's,
-			// and is not named by its number, which says nothing.
-			for (const { labelId, message } of result.labelFailures ?? []) {
-				const label = boardState.labels.find((label) => label.id === labelId);
-				const named = label ? `The template's label "${label.name}"` : 'A label of the template that no longer exists';
-				told.push({ message: `${named} was not put on "${title}". ${message}`, failed: true });
-			}
-
-			// A pending subtask that was not made (slice B2b).
-			for (const { title: subtask, message } of result.subtaskFailures ?? []) {
-				told.push({ message: `Subtask "${subtask}" was not added to "${title}". ${message}`, failed: true });
-			}
-
-			// The people chosen, each in turn (slice B2b).
-			if (saved.pendingAssigneeIds?.length) {
-				for (const { userId, message } of await cardActions.assignPending(result.cardId, saved.pendingAssigneeIds)) {
-					const member = boardState.boardUsers.find((user) => user.id === userId);
-					const named = member ? `"${member.username}"` : 'Someone no longer on this board';
-					told.push({ message: `${named} was not assigned to "${title}". ${message}`, failed: true });
-				}
-			}
-
-			// Its sub-boards. One refused is named in the server's words: on a
-			// board nested as deep as sub-boards may be, every one is (card 2172).
-			for (const name of saved.pendingSubBoards ?? []) {
-				let res: Response;
-				try {
-					res = await fetch('/api/boards', {
-						method: 'POST',
-						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({ name, parentCardId: result.cardId })
-					});
-				} catch {
-					told.push({ message: `No answer from the server. Sub-board "${name}" may not have been made.`, failed: true });
-					continue;
-				}
-				if (res.ok) told.push({ message: `Sub-board "${name}" created`, failed: false });
-				else told.push({ message: `Sub-board "${name}" was not made. ${await api.failureMessage(res, 'The server refused it.')}`, failed: true });
-			}
+			const told: Told[] = [{ message: `Created "${saved.title}"`, failed: false }];
+			// Each sub-board, as before: it is a board of its own, on the dashboard.
+			for (const name of saved.pendingSubBoards ?? []) told.push({ message: `Sub-board "${name}" created`, failed: false });
 
 			// Read once: a new card with its subtasks, labels, assignees and
 			// sub-boards is the reader's to draw, not a bare row's.

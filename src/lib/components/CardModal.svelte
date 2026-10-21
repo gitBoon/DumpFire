@@ -424,8 +424,10 @@
 			pendingSubBoards: !card && pendingSubBoardNames.length > 0
 				? pendingSubBoardNames
 				: undefined,
+			// Only those still the board's: one deleted while the window was open
+			// was refused, and with it the whole card, every time (the card 2296 review).
 			pendingLabelIds: !card && templateLabels.length > 0
-				? templateLabels
+				? templateLabels.filter((id) => labels.some((l) => l.id === id))
 				: undefined
 		});
 		if (out) {
@@ -781,6 +783,24 @@
 			pickerResults = found;
 			pickerError = error;
 		}, 250);
+	}
+
+	/**
+	 * Closes the dependency picker, and drops any search still waiting or out
+	 * (card 2388), as the plan page's `clearPick` does: the picker's Escape and
+	 * ✕, a link added from it, and a picker opened for the other list each
+	 * close it. They emptied the box and left the timer, so a search typed
+	 * within a quarter of a second before was still sent.
+	 */
+	function closePicker() {
+		if (pickerTimer) clearTimeout(pickerTimer);
+		pickerTimer = null;
+		pickerSeq++;
+		pickerSearching = false;
+		pickerMode = null;
+		pickerQuery = '';
+		pickerResults = [];
+		pickerError = '';
 	}
 
 	// A search still waiting when the window closes, or when its card changes
@@ -1147,6 +1167,7 @@
 					bind:milestoneSaving
 					{loadDependencies}
 					{onPickerInput}
+					onClosePicker={closePicker}
 					onListsWritten={dependenciesWritten}
 					onWrote={wroteHere}
 				/>
