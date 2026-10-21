@@ -260,6 +260,8 @@ const spec = {
 			'It listed the columns in the order they were made in, so a column moved or added between two others came in the wrong place. The cards are read in one query, and an answer\'s fields are unchanged. ' +
 			'(94) DELETE /api/v1/board-categories/{categoryId} takes every board filed under the category out of it, in the same request, where each kept the deleted category\'s id as its categoryId: ' +
 			'a board read now answers categoryId null for it. Boards already holding the id of a category that no longer exists were cleared once, at the deploy. ' +
+			'(95) PUT /api/v1/boards/{boardId} writes, logs and tells only the fields whose value changes: a body whose every field is as the board holds it answers the board as it is, ' +
+			'with no api:board_updated and updatedAt unchanged, and an entry names only the fields that changed, where every field sent was written and named; {} is still 400. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -2522,6 +2524,9 @@ const spec = {
 				summary: 'Update a board',
 				description:
 					'Updates the fields sent. Updatable fields: name, emoji, categoryId, isPublic. At least one of them must be sent.\n\n' +
+					'Only the fields whose value changes are written, logged and told: a body whose every field is as the board holds it (a name that trims to the stored one included) ' +
+					'answers 200 with the board as it is, with no api:board_updated and updatedAt unchanged, and api:board_updated names only the fields that changed. ' +
+					'A request that would be refused is still refused first. Until 2026-10-14 every field sent was written and named (item 95).\n\n' +
 					'Edit access to the board is enough for name, emoji and categoryId. `isPublic` decides who can see the board, and is accepted only from the board\'s owner or an administrator: ' +
 					'sent by anyone else, the whole request is answered 403 and none of its fields is saved. An editor leaves it out.\n\n' +
 					'`parentCardId` is not changed here: a board is put under a card, or taken out from under one, on the board page. It is accepted only as the card the board hangs under ' +

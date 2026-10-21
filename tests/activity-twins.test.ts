@@ -3153,6 +3153,116 @@ describe('nothing changed, nothing recorded', () => {
 			sent.restore();
 		}
 	});
+
+	/** As `boardScene`, with board A public and last changed on 1 October. A is filed under Clients (1). */
+	function oldBoard(): Scene {
+		const s = boardScene();
+		db.update(boards).set({ isPublic: true, updatedAt: '2026-10-01 09:00:00' }).where(eq(boards.id, s.A.board.id)).run();
+		return s;
+	}
+
+	/** Board A's fields as stored, sent back: what the emoji picker and a v1 client sending the board back whole send. */
+	const asHeld = { name: 'A', emoji: '📋', categoryId: 1, isPublic: true };
+
+	const BOARD_TREES = [
+		['the internal route', '/api/boards'],
+		['the v1 route', '/api/v1/boards']
+	] as const;
+
+	/** Make one request to board A with its effects recorded, and answer what it wrote and told. */
+	async function boardSaved(user: SessionUser, base: string, body: Record<string, unknown>) {
+		const sent = effects();
+		try {
+			const A = db.select({ id: boards.id }).from(boards).where(eq(boards.name, 'A')).get()!.id;
+			const res = await api('PUT', `${base}/${A}`, { user, body });
+			await sent.settle();
+			return { res, told: sent.all.map(name) };
+		} finally {
+			sent.restore();
+		}
+	}
+
+	// Card 2345: card 2183's rule for a board. A save that sent the values the
+	// board holds wrote the row with a new `updatedAt`, recorded "Updated board"
+	// naming every field sent, and told every open page of the board.
+	it.each(BOARD_TREES)('a board sent its own name, emoji, grouping and isPublic, through %s, writes and tells nothing, and answers the board', async (tree, base) => {
+		const s = oldBoard();
+		const before = snapshotDb();
+
+		const { res, told } = await boardSaved(s.owner, base, asHeld);
+
+		expect(res.status).toBe(200);
+		// The board as stored; v1 writes its times in ISO.
+		expect(res.body).toMatchObject({
+			id: s.A.board.id,
+			...asHeld,
+			updatedAt: tree === 'the v1 route' ? '2026-10-01T09:00:00.000Z' : '2026-10-01 09:00:00'
+		});
+		expectUnchanged(before);
+		expect(told).toEqual([]);
+	});
+
+	it.each(BOARD_TREES)('a board sent its name with outer spaces, through %s, is unchanged', async (_tree, base) => {
+		const s = oldBoard();
+		const before = snapshotDb();
+
+		const { res, told } = await boardSaved(s.owner, base, { ...asHeld, name: '  A ' });
+
+		expect(res.status).toBe(200);
+		expectUnchanged(before);
+		expect(told).toEqual([]);
+	});
+
+	it.each(BOARD_TREES)('a board renamed with its other fields sent as held, through %s, writes and names only the name', async (_tree, base) => {
+		const s = oldBoard();
+		const before = snapshotDb();
+
+		const { res, told } = await boardSaved(s.owner, base, { ...asHeld, name: 'Renamed' });
+
+		expect(res.status).toBe(200);
+		expect(entries().map((e) => e.detail)).toEqual(['Updated board "Renamed" (fields: name)']);
+		const changed = diffSnapshots(before, snapshotDb()).filter((line) => line.startsWith('boards:'));
+		expect(changed).toHaveLength(1);
+		expect(changed[0]).toMatch(/^boards: row 1 changed \(name: "A" became "Renamed"; updated_at: "2026-10-01 09:00:00" became "[^"]+"\)$/);
+		expect(told).toEqual(['event update {"type":"board"} on board 1']);
+	});
+
+	// The page's route answers `{}` as it did (R2 of card 2012's plan), and now
+	// writes nothing either: it moved `updatedAt` alone.
+	it('a board sent nothing, through the internal route, answers 200 and writes and tells nothing', async () => {
+		const s = oldBoard();
+		const before = snapshotDb();
+
+		const { res, told } = await boardSaved(s.owner, '/api/boards', {});
+
+		expect(res.status).toBe(200);
+		expect(res.body).toMatchObject({ id: s.A.board.id, updatedAt: '2026-10-01 09:00:00' });
+		expectUnchanged(before);
+		expect(told).toEqual([]);
+	});
+
+	// Contracts, which held before card 2345: a refusal is still a refusal.
+	it.each(BOARD_TREES)('an editor who sends isPublic as the board holds it, through %s, is still refused 403', async (_tree, base) => {
+		const s = oldBoard();
+		const before = snapshotDb();
+
+		const { res, told } = await boardSaved(s.helper, base, { name: 'A', isPublic: true });
+
+		expect(res.status).toBe(403);
+		expectUnchanged(before);
+		expect(told).toEqual([]);
+	});
+
+	it('a board sent nothing, through the v1 route, is still 400', async () => {
+		const s = oldBoard();
+		const before = snapshotDb();
+
+		const { res, told } = await boardSaved(s.owner, '/api/v1/boards', {});
+
+		expect([res.status, res.body]).toEqual([400, { message: 'No valid fields to update' }]);
+		expectUnchanged(before);
+		expect(told).toEqual([]);
+	});
 });
 
 describe('the details', () => {
@@ -3174,13 +3284,16 @@ describe('the details', () => {
 		['the v1 route', '/api/v1/boards']
 	])('a change to three fields, through %s, names them in the order v1 reads them', async (_tree, base) => {
 		const s = scene();
+		// A grouping with no board yet, which anyone may file a board under.
+		const grouping = db.insert(boardCategories).values({ name: 'Clients', color: '#6366f1' }).returning().get();
 
 		// Sent in another order. The internal route read isPublic before
-		// categoryId, and would have named them so.
+		// categoryId, and would have named them so. Each is a change: board A is
+		// private and unfiled, and since card 2345 a field sent as held is not named.
 		const { res } = await recorded(() =>
 			api('PUT', `${base}/${s.A.board.id}`, {
 				user: s.owner,
-				body: { isPublic: false, categoryId: null, name: 'Renamed' }
+				body: { isPublic: true, categoryId: grouping.id, name: 'Renamed' }
 			})
 		);
 

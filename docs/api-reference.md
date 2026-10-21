@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.81
+version: 1.82
 status: As-Built
 date: 2026-10-21
 tags:
@@ -654,7 +654,8 @@ new, `DELETE /comments/:commentId` (card 2283); these operations, answers and fi
   board, updating one and creating a milestone on a board write the entry their operation
   here writes, in the same words, stored without `api:` and with `source` `ui`:
   `assignee_added`, `assignee_removed`, `comment_edited`, `board_created`,
-  `board_updated` (naming the fields sent, in this API's order) and `milestone_created`.
+  `board_updated` (naming the fields sent, in this API's order; since card 2345 only those
+  that change) and `milestone_created`.
   Accepting a task request with an assignee writes `assignee_added`, by whoever accepted
   it. So `GET /audit-log`, `GET /reports/activity` and `recentActivity` on `GET /me/stats`
   hold them, and the activity report counts a card as touched by, and attributes it to,
@@ -1174,6 +1175,15 @@ new, `DELETE /comments/:commentId` (card 2283); these operations, answers and fi
   already holding the id of a category that no longer exists were cleared once, at the first
   start after the deploy, and are cleared again after every restore. Who may delete one is
   unchanged: the key's user must be able to edit every board filed under it (item 94).
+- **`PUT /boards/:boardId` writes, logs and tells only the fields whose value changes**
+  (card 2345). A body whose every field is as the board holds it is answered `200` with the
+  board as it is, with `updatedAt` not moved, no `api:board_updated` and no live update; it
+  was written again, logged naming every field sent, and the board's open pages told. A
+  body that changes some fields names only those. `{}` is still `400`
+  `No valid fields to update`, and an editor who sends `isPublic`, even the value held, is
+  still `403`. The web application's `PUT /api/boards/{id}` is the same, and its `{}`, still
+  `200`, no longer writes the row (item 95). See
+  [`PUT /api/v1/boards/:boardId`](#put-apiv1boardsboardid).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -2491,6 +2501,13 @@ Update the fields sent, at least one of them. Answers the board.
 
 The board is looked for and the caller checked first (`404`, then `403`), then the fields
 are read. A value the board already holds, sent back unchanged, is accepted as it is.
+
+Only the fields whose value changes are written, logged and told (card 2345). A body whose
+every field is as the board holds it, a name that trims to the stored one included, is
+answered `200` with the board as it is: `updatedAt` is not moved, no `api:board_updated` is
+logged and no live update is sent. A body that changes some fields writes them, moves
+`updatedAt`, and logs `Updated board "<name>" (fields: name)` naming only those. A request
+that would be refused is refused first, as below, whatever it would have changed.
 
 `isPublic` decides who can see the board, as sharing it does, and is the owner's to decide.
 Sent by an editor who is not the owner, the whole request is answered `403` with

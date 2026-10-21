@@ -29,6 +29,7 @@ import type { SessionUser } from './auth';
 import { getAccessibleBoardIds } from './board-access';
 import { deleteBoard } from './deletes';
 import { emit } from './events';
+import { changedFields } from './card-changes';
 import { ACTIONS, actorOf, logActivity } from './logActivity';
 import { readBoolean, readId, readText, type RequestBody } from './request-body';
 import { requireBoard, requireBoardCategory, requireBoardOwner, requireParentCard, requireSubBoardLink, requireUser } from './route-guards';
@@ -154,7 +155,7 @@ export function createBoard(caller: SessionUser | null, at: Record<string, never
 
 /** What each tree's board change does differently today (R2). */
 export type UpdateBoardOptions = {
-	/** A body that sets no field is `400 No valid fields to update` (v1). The page's route answers it as it did: nothing recorded or told. */
+	/** A body that sets no field is `400 No valid fields to update` (v1). The page's route answers it as it did: nothing written, recorded or told. */
 	refuseEmpty?: boolean;
 	/** `parentCardId` is read, and the board moved under that card or back onto the dashboard (the page). */
 	allowParent?: boolean;
@@ -180,8 +181,9 @@ export type UpdateBoardOptions = {
  * everyone; it was 403 to all but an administrator. The fields are read in
  * the order the entry names them (card 2143). A value the board already holds,
  * sent back unchanged, is accepted as it is. v1 takes no parent card: one
- * other than the board's own is refused (`refuseParent`, card 2287). What was sent is recorded, with
- * the fields named, and the board's own pages are told. The answer is the row.
+ * other than the board's own is refused (`refuseParent`, card 2287). What changed is recorded, with
+ * the fields named, and the board's own pages are told; a save that changes
+ * nothing writes, records and tells nothing (card 2345). The answer is the row.
  */
 export function updateBoard(caller: SessionUser | null, at: { boardId: number }, body: RequestBody, opts: ServiceOptions & UpdateBoardOptions): Board {
 	inWrite();
@@ -253,17 +255,22 @@ export function updateBoard(caller: SessionUser | null, at: { boardId: number },
 		moving = moves;
 	}
 
-	const fields = Object.keys(updates);
-	updates.updatedAt = stamp();
-	const row = db.update(boards).set(updates).where(eq(boards.id, boardId)).returning().get();
+	// Card 2183's rule (card 2345): only the fields whose value changes are
+	// written, recorded and told, compared as they will be written with the
+	// board as read in this transaction, after every refusal above. A save that
+	// changes nothing, `{}` from the page included, writes, records and tells
+	// nothing, and answers the board as it is. A sub-board move is already in
+	// `updates` only when it moves.
+	const changed = changedFields(board, updates);
+	const fields = Object.keys(changed);
+	if (fields.length === 0) return board;
+	const row = db.update(boards).set({ ...changed, updatedAt: stamp() }).where(eq(boards.id, boardId)).returning().get();
 
-	// What was sent is recorded and the board's pages are told (card 2143): a
-	// rename or a grouping changed on screen had neither. A body that set no
-	// field changed nothing to record or show. The board moved, and the cards
+	// What changed is recorded and the board's pages are told (card 2143): a
+	// rename or a grouping changed on screen had neither. The board moved, and the cards
 	// it left and joined show it, or stop showing it: those boards' pages are
 	// told as well, each once.
-	const told = new Set<number>();
-	if (fields.length > 0) told.add(boardId);
+	const told = new Set<number>([boardId]);
 	if (opts.allowParent && moving) {
 		if (parent) told.add(parent.boardId);
 		const left = board.parentCardId === null ? null : getCardBoardId(board.parentCardId);
@@ -274,15 +281,13 @@ export function updateBoard(caller: SessionUser | null, at: { boardId: number },
 	};
 
 	if (opts.tellBeforeEntry) tell();
-	if (fields.length > 0) {
-		logActivity({
-			boardId,
-			action: ACTIONS.boardUpdated,
-			detail: `Updated board "${row.name}" (fields: ${fields.join(', ')})`,
-			source: opts.source,
-			...actorOf(user)
-		});
-	}
+	logActivity({
+		boardId,
+		action: ACTIONS.boardUpdated,
+		detail: `Updated board "${row.name}" (fields: ${fields.join(', ')})`,
+		source: opts.source,
+		...actorOf(user)
+	});
 	if (!opts.tellBeforeEntry) tell();
 	return row;
 }

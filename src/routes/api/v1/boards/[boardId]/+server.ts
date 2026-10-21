@@ -33,7 +33,9 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  *
  * Edit access is enough for the first three. `isPublic` is the board's
  * owner's to send, or an administrator's. A body that sets none of them is
- * `400 No valid fields to update`.
+ * `400 No valid fields to update`. Only the fields whose value changes are
+ * written, logged and told: a body whose every field is as the board holds it
+ * answers the board as it is (card 2345).
  *
  * `parentCardId` is taken only as the card the board hangs under, null for
  * none, so a board read with GET can be sent back whole (an editor leaves
