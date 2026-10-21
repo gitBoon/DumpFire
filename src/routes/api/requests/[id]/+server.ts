@@ -193,7 +193,8 @@ export const PATCH: RequestHandler = async ({ params, request, locals, url }) =>
 				// Send assignment email, and record the assignment as assigning
 				// someone in the card window records it (card 2143): after the
 				// card's own entries, by whoever accepted, from the page. No event
-				// of its own: the card's `created` event refreshes the board.
+				// of its own: the card's `created` event refreshes the board. No
+				// mail to whoever accepted it onto themselves (card 2286).
 				const assignee = db.select({ email: users.email, username: users.username })
 					.from(users).where(eq(users.id, assigneeId)).get();
 				if (assignee) {
@@ -204,7 +205,9 @@ export const PATCH: RequestHandler = async ({ params, request, locals, url }) =>
 						detail: `Assigned ${assignee.username} to "${newCard.title}"`,
 						...actorOf(user)
 					});
-					notifyUserAssigned(boardId, newCard.id, existing.title, assignee.email, assignee.username, user.username, baseUrl);
+					if (assigneeId !== user.id) {
+						notifyUserAssigned(boardId, newCard.id, existing.title, assignee.email, assignee.username, user.username, baseUrl);
+					}
 				}
 			}
 

@@ -2700,6 +2700,10 @@ describe('what a route answers, against the schema the document gives for it', (
 		// Card 2340: a comment copied from a request's discussion keeps its message's time.
 		expect(changes).toContain("(99) A comment copied onto a card from a request's discussion");
 		expect(changes.indexOf('(99)')).toBeGreaterThan(changes.indexOf('(98)'));
+		// Card 2286: nobody is mailed about assigning themselves.
+		expect(changes).toContain('(100) POST /api/v1/cards/{cardId}/assignees mails nobody who assigns themselves');
+		expect(changes.indexOf('(100)')).toBeGreaterThan(changes.indexOf('(99)'));
+		expect(spec.paths['/api/v1/cards/{cardId}/assignees'].post.description).toContain('nobody is mailed about assigning themselves');
 	});
 
 	// ─── What is said in words, and can be tried ─────────────────────────────

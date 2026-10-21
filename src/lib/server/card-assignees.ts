@@ -69,9 +69,14 @@ export function assignToCard(
 		.where(and(eq(cardAssignees.cardId, cardId), eq(cardAssignees.userId, userId)))
 		.get();
 
+	// Nobody is mailed about assigning themselves (card 2286), as nobody is
+	// about a move they made themselves: the row, the entry and the update are
+	// as for anyone else.
 	if (!existing) {
 		db.insert(cardAssignees).values({ cardId, userId }).run();
-		notifyUserAssigned(boardId, cardId, card.title, assignee.email, assignee.username, user.username, opts.baseUrl ?? null);
+		if (assignee.id !== user.id) {
+			notifyUserAssigned(boardId, cardId, card.title, assignee.email, assignee.username, user.username, opts.baseUrl ?? null);
+		}
 	}
 
 	emit(boardId, 'update', { type: 'card' });

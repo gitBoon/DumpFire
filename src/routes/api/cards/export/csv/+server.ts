@@ -1,6 +1,6 @@
 import { db } from '$lib/server/db';
 import { boards, columns, cards, categories, labels, cardLabels, cardAssignees, users, subtasks, boardMembers, boardTeams, teamMembers } from '$lib/server/db/schema';
-import { eq, and, isNull, inArray, asc } from 'drizzle-orm';
+import { eq, and, isNull, inArray, asc, getTableColumns } from 'drizzle-orm';
 import { readQueryId } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { SUBTASK_ORDER } from '$lib/server/subtask-order';
@@ -110,10 +110,14 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 		});
 	}
 
-	// Get all active cards, by position, ties by id (card 2347)
-	const allCards = db.select().from(cards)
+	// Get all active cards, board by board in the order the boards were made,
+	// then column by column in each board's order, and within a column by
+	// position, ties by id (cards 2347 and 2368). By the card's position alone
+	// the rows of every column of every board were mixed together.
+	const allCards = db.select(getTableColumns(cards)).from(cards)
+		.innerJoin(columns, eq(cards.columnId, columns.id))
 		.where(and(inArray(cards.columnId, colIds), isNull(cards.archivedAt)))
-		.orderBy(...CARD_ORDER)
+		.orderBy(asc(columns.boardId), asc(columns.position), asc(columns.id), ...CARD_ORDER)
 		.all();
 
 	const cardIds = allCards.map(c => c.id);

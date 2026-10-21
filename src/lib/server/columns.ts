@@ -208,9 +208,10 @@ export function deleteColumnFor(caller: SessionUser | null, at: { columnId: numb
  *
  * Every column gets its new position or none does, and a board is told only
  * once they all have. A write that failed half way used to leave the columns
- * in an order nobody had asked for. The body's `boardId` is ignored: it used
- * to be the only thing checked, and with it left out any signed-in user could
- * reorder any board's columns.
+ * in an order nobody had asked for. A column already at its position is not
+ * written, and a board none of whose columns moves is not told (card 2369).
+ * The body's `boardId` is ignored: it used to be the only thing checked, and
+ * with it left out any signed-in user could reorder any board's columns.
  */
 export function reorderColumns(caller: SessionUser | null, at: Record<string, never>, body: RequestBody, opts: ServiceOptions): void {
 	inWrite();
@@ -221,15 +222,23 @@ export function reorderColumns(caller: SessionUser | null, at: Record<string, ne
 	});
 
 	// Every column is looked up and checked before anything is written.
-	const boardIds = new Set<number>();
 	const ids = updates.map((update, i) => readId(update, 'id', { required: true, says: `updates[${i}].id must be an id` }));
-	for (const id of ids) boardIds.add(requireColumn(user, id, 'edit').boardId);
+	const held = new Map(ids.map((id) => [id, requireColumn(user, id, 'edit').column]));
 
 	// Then each position, once every column is known to be the caller's.
 	const positions = updates.map((update, i) => readNumber(update, 'position', { required: true, says: `updates[${i}].position must be a number` }));
 
-	for (const [i, id] of ids.entries()) {
-		db.update(columns).set({ position: positions[i] }).where(eq(columns.id, id)).run();
+	// Only the columns that move are written, and only their boards told
+	// (card 2369): every column named was written and its board told to
+	// re-read, even when it was dropped where it was. A column named twice
+	// ends at its last position, as when each entry was written in turn.
+	const wanted = new Map(ids.map((id, i) => [id, positions[i]]));
+	const boardIds = new Set<number>();
+	for (const [id, position] of wanted) {
+		const column = held.get(id)!;
+		if (column.position === position) continue;
+		db.update(columns).set({ position }).where(eq(columns.id, id)).run();
+		boardIds.add(column.boardId);
 	}
 	for (const boardId of boardIds) emit(boardId, 'update', { type: 'column' });
 }

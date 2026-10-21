@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.76
+version: 1.77
 status: As-Built
 date: 2026-10-21
 tags:
@@ -3928,7 +3928,7 @@ Nothing is done to the database. The older image can open an overtaken card or s
 - **2359.** Saving a column, a label, a card category or a dashboard grouping with the values it holds (the board page's column menu, the label picker, the category manager, Manage Categories, or the API sending a row back whole) still wrote it and told every open page of the board to re-read. Now it writes and tells nothing; a real change writes only what changed, as boards do since card 2345.
 - **2361.** A file's address names its card, `/api/cards/<card>/attachments/<file>`, but the card was never read: the file was served, or deleted, under the address of any card the caller could reach. A file not on the card named is now `404 Attachment not found`. The card window builds the right address, so nothing changes on screen.
 
-**Owner to know.** **Load more on All Tasks now loads more**: the Complete bucket grows by 50 each press, to 500 at most (the cap was already there; past it the button stays and does nothing, a fault noted in the plan and not fixed). Because each press is now a page navigation, it also clears an error message that is showing, and when a new version has been deployed since the page was opened it reloads the page in full (losing the search, filters and sorts), as To Do's and the burndown's controls already do.
+**Owner to know.** **Load more on All Tasks now loads more**: the Complete bucket grows by 50 each press, to 500 at most (the cap was already there; past it the button stayed and did nothing, which card 2366, in the next section, puts right: the bucket says how many it shows in place of the button). Because each press is now a page navigation, it also clears an error message that is showing, and when a new version has been deployed since the page was opened it reloads the page in full (losing the search, filters and sorts), as To Do's and the burndown's controls already do.
 
 #### After the deploy
 
@@ -3938,7 +3938,7 @@ On production, as **O**, your administrator account, with the browser's develope
 |---|---|---|---|---|
 | 354 | 2300 | Only if All Tasks shows **Load more** under Complete: count the completed cards shown, press it | 50 more (or the rest) appear; the address ends `?completedLimit=100`; reload the page: the address keeps `?completedLimit=100` and the longer list stays | The count unchanged |
 | 355 | 2340 | As check 318, signed in as a second account in a private window, send O a request "TEST 2340 - delete me" from the request form. As O, in the Inbox, open its **Discuss** and send "first note". Wait two minutes, then accept it into TEST 2359's To Do and open the new card's **Comments** | The copied comment ("first note") shows the time it was sent, two minutes or more ago, with no "(edited)" | "just now" on it |
-| 356 | 2347 | With O's key, `POST /api/v1/boards/<TEST 2347 id>/cards` with `{"title":"TEST 2347 B","columnId":<its To Do id>}`, then the same on TEST 2359 with "TEST 2347 A" and its To Do (no position: both at 0). Download the all-boards export, `/api/cards/export/csv` | "TEST 2347 B" (made first) is on a row above "TEST 2347 A" | A above B |
+| 356 | 2347 | With O's key, `POST /api/v1/boards/<TEST 2347 id>/cards` with `{"title":"TEST 2347 B","columnId":<its To Do id>}`, then the same again with "TEST 2347 A" (no position: both at 0). Download the all-boards export, `/api/cards/export/csv` | "TEST 2347 B" (made first) is on a row above "TEST 2347 A". This confirms the order but cannot catch the old fault, since cards tied in one column already came back in the order they were made; check 365 tests the exports' order. (Once card 2368, below, is deployed, both rows also sit among TEST 2347's rows, after every row of TEST 2359.) | A above B |
 | 357 | 2359 | Open TEST 2359 in one tab, its network panel open, and keep that tab in front throughout (bringing a board tab to the front makes it re-read, so switching tabs would show a false read). From a terminal with curl and O's key, read its columns (`GET /api/v1/boards/<id>`); clear the network panel just before each send. Send `PUT /api/v1/columns/<its On Hold id>` with that column's own `title`, `color` and `position`; wait five seconds; send it again with `"color":"#0a0b0c"` | The first answers 200 with the column, and the tab reads nothing; after the second, one `contents` read in the tab and the column's colour changes | A `contents` read after the first |
 | 358 | 2359 | The same, from the terminal with the tab in front, with `PUT /api/v1/labels/<TEST label id>` (its id from `GET /api/v1/boards/<id>/labels`) and `{"name":"TEST label"}` | 200 and no read in the tab | A read |
 | 359 | 2361 | In S1's Files tab, copy the file's link (its id is the last number). In the address bar open `/api/cards/<S2 id>/attachments/<file id>`, then `/api/cards/<S1 id>/attachments/<file id>` | The first: a 404 error page saying "Attachment not found"; the second: the file | The file under S2 |
@@ -3949,6 +3949,37 @@ On production, as **O**, your administrator account, with the browser's develope
 #### Going back to the previous image
 
 Nothing is done to the database. The older image's Load more does nothing again; a request accepted under it stamps its copied comments with the accept (those copied under the new one keep their times); ties across columns come by column again in All Tasks, All To Do and the exports; an unchanged column, label, category or grouping save is written and told again; and a file is served or deleted under any card's address again.
+
+### Small Server Fixes: Self-Assignment Mail, the 500 Cap, Request Thread Order, Export Row Order and Unmoved Columns
+
+**Cards 2286, 2366, 2367, 2368 and 2369.** No migration, no setting, no route added or removed. Existing rows are not changed. The plan is `docs/planning/cards-2286-2366-2367-2368-2369-server.md`.
+
+- **2286.** Assigning yourself to a card (the card window, picking yourself on a new card, accepting a task request onto yourself, or the API assigning its own key's user) mailed you "Assigned: <card>" about what you had just done. It no longer does; the assignment, its Activity Log entry and the board's refresh are as before, and anyone else assigned is still mailed.
+- **2366.** All Tasks' Complete bucket stops at the latest 500 completed cards, but past that **Load more** stayed and loaded nothing. At the cap the button is gone and the bucket says "Showing the latest 500 of N completed cards".
+- **2367.** A task request's discussion (the Inbox's Discuss and the requester's reply page) listed messages sent within one second in no set order. They are listed in the order they were sent, as the copy onto an accepted card already was.
+- **2368.** Both CSV exports (the board export, `/api/boards/<id>/export/csv`, which no page links to, and the all-boards export behind All Tasks' **Export**, with or without its board filter) ordered rows by each card's position across every column, so a board's columns came mixed together, and the all-boards export mixed boards too. Rows now run board by board (in the order the boards were made), column by column in the board's order, then as each column shows its cards.
+- **2369.** Saving the order of a board's columns (a column drag) wrote every column and told every open page of the board to re-read, even when nothing moved. Now only columns whose place changes are written, and a board is told only when one of its columns moved.
+
+**Owner to know.** The all-boards export's rows are now grouped by board, oldest board first, where they were interleaved: a spreadsheet that relied on the old order (unlikely, since it was mixed) reads them in a new order. Check 356 above was reworded for this.
+
+#### After the deploy
+
+On production, as **O**, your administrator account, with the browser's developer tools (network panel and console) and an API key of O's. Nothing here completes a real card or touches a real board. Checks 361 and 362 need mail working and O's "Assigned" email setting on (My Account). **Scratch things:** a board "TEST 2368 - delete me" on the dashboard with no other members and its standard columns; on it, in this order, a card "TEST 2368 Prog" made in To Do and dragged into the empty In Progress column (never into Complete: completing a card gives real points that deleting the board does not take back), then "TEST 2368 Todo" in To Do, then cards S1 and S2 in To Do.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 361 | 2286 | Open S1's card window and assign O (yourself) | O shows on S1; the board's Activity Log shows "Assigned <O's name> to "S1""; no "Assigned: S1" mail reaches O's inbox within five minutes | The mail arrives |
+| 362 | 2286 | With O's key, `POST /api/v1/cards/<S2 id>/assignees` with `{"userId": <O's id>}` (O's id from `GET /api/v1/me`) | `200` `{"success":true,"message":"User assigned"}`; no "Assigned: S2" mail within five minutes | The mail arrives |
+| 363 | 2366 | Only if All Tasks' Complete header shows more than 500 in all ("x of N", N over 500): open `/all?completedLimit=500` | Under Complete, "Showing the latest 500 of N completed cards" and no **Load more**; the header reads "500 of N" (fewer with a search or filter on) | A Load more button |
+| 364 | 2367 | As check 355, from a second account in a private window, send O a request "TEST 2367 - delete me". As O, on the Inbox, in the console: `for (const m of ['one', 'two', 'three']) await fetch('/api/requests/<its id>/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message: m }) })`; then `fetch('/api/requests/<its id>/messages').then((r) => r.json()).then((l) => l.map((x) => x.id + ' ' + x.message))` | The three in the order sent, `one`, `two`, `three`, their ids rising (this confirms the order; the database already returned same-second messages in this order, so the older image passes too) | The three out of order |
+| 365 | 2368 | In the address bar open `/api/boards/<TEST 2368 id>/export/csv` (the board export has no button); then press **Export** in All Tasks' header with no board filter | In the board's file, "TEST 2368 Todo", S1 and S2 (To Do) come before "TEST 2368 Prog" (In Progress), as the board shows them; in the all-boards file, TEST 2368's rows are together, with no row of another board between them | "TEST 2368 Prog" above "TEST 2368 Todo" (each is first in its column, at 0, and Prog was made first) |
+| 366 | 2369 | Open TEST 2368 in one browser window with its network panel open, and the dashboard in a second window beside it, both visible (a board tab brought to the front re-reads, which would show a false read). In the dashboard's console: `const b = await (await fetch('/api/boards/<TEST 2368 id>/contents')).json(); const put = (u) => fetch('/api/columns/reorder', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ updates: u }) }).then((r) => r.status); await put(b.columns.map((c) => ({ id: c.id, position: c.position })))`; wait five seconds; then `await put([{ id: b.columns[0].id, position: b.columns[1].position }, { id: b.columns[1].id, position: b.columns[0].position }])` | The first: `200`, and no `contents` read in the board window; the second: `200`, one `contents` read, and the first two columns swap places on screen | A `contents` read after the first |
+
+**Afterwards.** Delete the board TEST 2368 on the dashboard (its cards go with it). Delete the request "TEST 2367 - delete me" as O, in the console: `fetch('/api/requests/<its id>', { method: 'DELETE' }).then((r) => r.status)` (`200`; administrators only), and the second account if it was made for these checks.
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image mails whoever assigns themselves again, shows Load more past 500 again, lists a thread's messages of one second in no set order again, mixes the exports' rows across columns and boards again, and writes every column of a reorder and refreshes the board again.
 
 ## Changing the Schema
 

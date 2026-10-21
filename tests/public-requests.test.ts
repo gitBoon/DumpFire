@@ -16,6 +16,8 @@
  * is sent through (card 2196), is replaced with a recorder, and "is SMTP
  * configured" is a switch the test sets.
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 
@@ -619,6 +621,28 @@ describe("a requester's thread", () => {
 		expect(request.body).not.toHaveProperty('accessToken');
 		expect(reply.status).toBe(200);
 		expect(thread.body.map((m: { message: string }) => m.message)).toEqual(['Any news?']);
+	});
+
+	// Card 2367: the thread was ordered by the time alone, so messages sent in
+	// one second (a requester and the team at once, or a double send) came in
+	// whatever order SQLite read them. By id within the second now, as the
+	// copy onto an accepted card orders them. SQLite gives id order for a tie
+	// today, so the case is a contract; the source pin holds the tie-break.
+	it('lists messages by when they were sent, and those of one second in the order they were sent (card 2367)', async () => {
+		const { id, token } = await confirmedRequest();
+		const at = (message: string, createdAt: string) =>
+			db.insert(requestMessages).values({ requestId: id, senderType: 'requester', senderName: 'Pat', message, createdAt }).run();
+		at('Later', '2026-10-01 10:00:00');
+		at('One', '2026-10-01 09:00:00');
+		at('Two', '2026-10-01 09:00:00');
+		at('Three', '2026-10-01 09:00:00');
+
+		const thread = await api('GET', `/api/requests/${id}/messages?token=${token}`);
+
+		expect(thread.status).toBe(200);
+		expect(thread.body.map((m: { message: string }) => m.message)).toEqual(['One', 'Two', 'Three', 'Later']);
+		const source = readFileSync(join(process.cwd(), 'src/routes/api/requests/[id]/messages/+server.ts'), 'utf-8');
+		expect(source).toContain('.orderBy(asc(requestMessages.createdAt), asc(requestMessages.id))');
 	});
 
 	it("does not open another request with one request's token", async () => {

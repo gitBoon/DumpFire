@@ -375,6 +375,33 @@ describe('the All Tasks load', () => {
 		expect(data.boards.map((b: any) => b.id)).not.toContain(theirs.board.id);
 		expect(JSON.stringify(data)).not.toContain(OTHERS);
 	});
+
+	// Card 2366: the Complete bucket is capped at 500, and `hasMoreCompleted`
+	// was counted against the capped limit, so past 500 completed cards it
+	// stayed true and Load more asked for 550, was given 500, and stayed. It
+	// is true only below the cap now; the total still says how many there are.
+	it('says there are more completed cards to load only below the 500 cap', async () => {
+		const done = makeUser({ username: 'finisher' });
+		const { cols } = makeBoard({ owner: done, name: 'Done a lot' });
+		for (let i = 0; i < 501; i++) makeCard(cols['Complete'], { title: `Done ${i}`, position: i });
+
+		const at = async (limit: number) => {
+			const res = await pageLoad(`/all?completedLimit=${limit}`, { user: done });
+			if (res.type !== 'data') throw new Error(`All Tasks answered ${JSON.stringify(res)}`);
+			const data = res.data as any;
+			return {
+				shown: data.buckets.find((b: any) => b.title === 'Complete').cards.length,
+				hasMoreCompleted: data.hasMoreCompleted,
+				totalCompletedCount: data.totalCompletedCount,
+				completedLimit: data.completedLimit
+			};
+		};
+
+		expect(await at(450)).toEqual({ shown: 450, hasMoreCompleted: true, totalCompletedCount: 501, completedLimit: 450 });
+		expect(await at(500)).toEqual({ shown: 500, hasMoreCompleted: false, totalCompletedCount: 501, completedLimit: 500 });
+		// What the page asks for at the cap: 550, read as 500.
+		expect(await at(550)).toEqual({ shown: 500, hasMoreCompleted: false, totalCompletedCount: 501, completedLimit: 500 });
+	});
 });
 
 describe('the picker’s search, GET /api/cards/search', () => {

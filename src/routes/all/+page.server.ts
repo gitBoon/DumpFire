@@ -5,10 +5,12 @@ import { columnRole } from '$lib/column-role';
 import type { PageServerLoad } from './$types';
 
 const DEFAULT_COMPLETED_LIMIT = 50;
+/** The most completed cards the page is given, however many it asks for. */
+const MAX_COMPLETED_LIMIT = 500;
 
 export const load: PageServerLoad = async ({ locals, url }) => {
 	const user = locals.user!;
-	const completedLimit = Math.max(1, Math.min(500, Number(url.searchParams.get('completedLimit')) || DEFAULT_COMPLETED_LIMIT));
+	const completedLimit = Math.max(1, Math.min(MAX_COMPLETED_LIMIT, Number(url.searchParams.get('completedLimit')) || DEFAULT_COMPLETED_LIMIT));
 
 	// The boards the caller can open, their columns and every live card on
 	// them, read as All To Do reads them (card 2240).
@@ -91,7 +93,10 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	});
 
 	const cappedCompleted = allCompletedCards.slice(0, completedLimit);
-	const hasMoreCompleted = totalCompletedCount > completedLimit;
+	// More to load only below the cap (card 2366): at it, Load more asked for
+	// 550, was given 500, and stayed. The page says the list stops there
+	// instead, from `totalCompletedCount` over `completedLimit`.
+	const hasMoreCompleted = totalCompletedCount > completedLimit && completedLimit < MAX_COMPLETED_LIMIT;
 
 	const grouped = buckets.map(bucket => ({
 		title: bucket,

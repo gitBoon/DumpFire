@@ -321,6 +321,10 @@
 	}
 
 	let loadingMore = $state(false);
+	// The load gives at most 500 completed cards, and says there are more to
+	// load only below that (card 2366): at the cap, with more completed, the
+	// bucket says how many it shows in place of the button.
+	const completedCapped = $derived(!data.hasMoreCompleted && data.totalCompletedCount > data.completedLimit);
 
 	/**
 	 * Fifty more completed cards (card 2300). The limit is in the address, and
@@ -405,7 +409,7 @@
 							<span class="column-color-dot" style="background: {drawnColour(bucketColors[bucket.title] || '#8b5cf6')}"></span>
 							<h2 class="column-title">{bucket.title}</h2>
 							<span class="column-count">
-								{#if bucket.title === 'Complete' && data.hasMoreCompleted}
+								{#if bucket.title === 'Complete' && (data.hasMoreCompleted || completedCapped)}
 									{filteredCards.length} of {data.totalCompletedCount}
 								{:else}
 									{filteredCards.length}
@@ -463,6 +467,8 @@
 									Show More ({data.totalCompletedCount - filteredCards.length} remaining)
 								{/if}
 							</button>
+						{:else if bucket.title === 'Complete' && completedCapped}
+							<p class="completed-capped" id="completed-capped">Showing the latest {data.completedLimit} of {data.totalCompletedCount} completed cards</p>
 						{/if}
 					</div>
 				</div>
@@ -661,6 +667,15 @@
 
 	@keyframes spin {
 		to { transform: rotate(360deg); }
+	}
+
+	.completed-capped {
+		margin: 0;
+		padding: var(--space-md);
+		text-align: center;
+		color: var(--text-tertiary);
+		font-size: 0.75rem;
+		flex-shrink: 0;
 	}
 
 	.column-empty {
