@@ -83,6 +83,7 @@ const TEST_FILES = [
 	'check-at-the-write.test.ts',
 	'colours.test.ts',
 	'columns.test.ts',
+	'confirm-modal.svelte.test.ts',
 	'content-security-policy.test.ts',
 	'dashboard.test.ts',
 	'database-location.test.ts',
