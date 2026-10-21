@@ -15,17 +15,60 @@
 		onCancel: () => void;
 	} = $props();
 
+	// The message's id, which the dialog names as what describes it: a screen
+	// reader on Cancel then reads what is being confirmed (card 2353).
+	const messageId = $props.id();
+
+	let dialog: HTMLDivElement;
+	let cancelButton: HTMLButtonElement;
+	let confirmButton: HTMLButtonElement;
+
+	// Cancel takes the focus as the dialog opens, so Enter straight after it
+	// cancels rather than pressing the page's button behind it again. As it
+	// closes, the focus goes back to what had it, after one macrotask and only
+	// if that is still in the page and the focus is then on nothing: a card
+	// window the confirm opened (Cannot Complete's Open Card) focuses its
+	// title in a microtask, and keeps it. An `$effect`, not `onMount`, so any
+	// runtime runs it (card 2353).
+	$effect(() => {
+		const opener = document.activeElement;
+		cancelButton.focus();
+		return () => {
+			setTimeout(() => {
+				if (opener instanceof HTMLElement && opener !== document.body && opener.isConnected && document.activeElement === document.body) {
+					opener.focus();
+				}
+			}, 0);
+		};
+	});
+
 	function handleKeydown(e: KeyboardEvent) {
 		if (e.key === 'Escape') onCancel();
+		// Tab and Shift+Tab stay on the two buttons; from outside the dialog
+		// (the page behind, after a click on the overlay) Tab comes back to
+		// Cancel. Tab from Cancel to the confirm button is the browser's own.
+		if (e.key === 'Tab') {
+			const at = document.activeElement;
+			if (!dialog.contains(at)) {
+				e.preventDefault();
+				cancelButton.focus();
+			} else if (!e.shiftKey && at === confirmButton) {
+				e.preventDefault();
+				cancelButton.focus();
+			} else if (e.shiftKey && at === cancelButton) {
+				e.preventDefault();
+				confirmButton.focus();
+			}
+		}
 	}
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
-<div class="modal-overlay" role="dialog" aria-modal="true" aria-label={title}>
+<div class="modal-overlay" role="dialog" aria-modal="true" aria-label={title} aria-describedby={message ? messageId : undefined}>
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<div class="confirm-modal" onclick={(e) => e.stopPropagation()} role="document">
+	<div class="confirm-modal" onclick={(e) => e.stopPropagation()} role="document" bind:this={dialog}>
 		<div class="confirm-icon" class:danger={confirmDanger}>
 			{#if confirmDanger}
 				<svg width="28" height="28" viewBox="0 0 24 24" fill="none">
@@ -40,13 +83,14 @@
 		</div>
 		<h3>{title}</h3>
 		{#if message}
-			<p class="confirm-message">{message}</p>
+			<p class="confirm-message" id={messageId}>{message}</p>
 		{/if}
 		<div class="confirm-actions">
-			<button class="btn-ghost" onclick={onCancel}>Cancel</button>
+			<button class="btn-ghost" onclick={onCancel} bind:this={cancelButton}>Cancel</button>
 			<button
 				class={confirmDanger ? 'btn-confirm-danger' : 'btn-primary'}
 				onclick={onConfirm}
+				bind:this={confirmButton}
 			>
 				{confirmText}
 			</button>
