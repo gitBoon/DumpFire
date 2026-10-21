@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.68
+version: 1.69
 status: As-Built
 date: 2026-10-21
 tags:
@@ -3773,10 +3773,13 @@ Nothing is done to the database. The older image can open the add and the edit f
 
 **Card 2345.** No migration, no setting, no route. A board save that changed nothing (the emoji picker choosing the emoji the board has, the dashboard's context menu choosing the grouping it is in, an API client sending a board back whole) wrote the board again with a new `updated_at`, put a false "Updated board" naming every field sent in the board's log and the activity report, moved the dashboard's last activity and made every open page of the board re-read. Now only the fields whose value changes are written, recorded and told, as for cards, comments, subtasks and goals (card 2183's rule): a save that changes nothing answers the board as it is, and one that changes some names only those. The page's `{}` no longer writes the row; v1's `{}` is still `400`; an editor who sends `isPublic` is still `403`.
 
+**Card 2327.** No migration, no setting, no route or field; the internal `GET /api/cards/search` only, which the card window's dependency picker and the plan page's **+ Add cards** use. It read the first 60 title matches of every board, then dropped those on boards the caller cannot open, and cut the rest to 25: on a server with many private boards, a short or common search found few or none of an ordinary user's own cards. Now the boards the caller can open, "not archived", the card left out and the card's column being there are all asked in the query, before the limit; subtasks the same, in one read where it was three queries each. Results come in id order, as before. Administrators open every board and see no change. See [What a List Gives](authentication-security.md#what-a-list-gives).
+
 **Owner to know.**
 
 - **`DELETE /api/v1/board-categories/{id}` now takes its boards out of the grouping**, where the document said they kept its id (item 94 of the OpenAPI note). The page's confirm already promised it ("Boards using it will become uncategorised").
 - **`PUT /api/v1/boards/{id}` sending values the board holds no longer logs `api:board_updated`** (item 95), and an entry names only the fields that changed. A client that read the audit log for a board update it made will find none when nothing changed.
+- **An ordinary user's pickers find their own matches** that matches on boards they cannot open used to push out, and an answer's length no longer says anything about other boards.
 - **The boards check 321 lists are cleared at the first start**: each loses an id that names nothing. Each is already shown under Uncategorised, so no page changes; the API answers `categoryId: null` for them afterwards. One `WARN` line names them by id.
 
 #### Before the deploy
@@ -3797,6 +3800,12 @@ db.close();
 |---|---|---|---|---|
 | 321 | 2293 | Run the query above immediately before the deploy; write down `dangling` and the board ids | A count, possibly 0, and a table of those boards. Each is already shown under Uncategorised on the dashboard; the deploy clears its dead id and changes nothing on screen | — (a record) |
 
+Card 2327's checks need **T**, a scratch ordinary account of your own (made on the admin page for these checks and deleted after, if you have none), on no board of anyone else's. T signs in from a private window, so that O's session is kept.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 322 | 2327 | Signed in as T, make a board "TEST 2327 - delete me" with three cards titled `zq2327 e1`, `zq2327 e2`, `zq2327 e3`. Open the first, and in its Dependencies picker type `e` | A record only: write down how many of the other two are listed. Fewer than two (the fault) is likely if the server holds more than 60 cards with an `e` in the title on boards T cannot open | — (a record) |
+
 A rehearsal (check 0c) on a copy of production, if one is run, gives the same count as the fourth figure of its `Filled in:` line, `<n> board(s) taken out of a grouping that no longer exists`, and names the first 50 on the line below it, `board <id> (grouping <id>), …`.
 
 #### After the deploy
@@ -3808,12 +3817,16 @@ A rehearsal (check 0c) on a copy of production, if one is run, gives the same co
 | 323 | 2293 | First after the deploy: `docker logs dumpfire 2>&1 \| grep "grouping that no longer exists"` | If check 321 counted N > 0: one `WARN` "Took N board(s) out of a grouping that no longer exists", naming the first 50 by id. If 0: no such line | A count other than check 321's |
 | 324 | 2293 | Run check 321's query again | `dangling` 0 and an empty table | Any row |
 | 325 | 2293 | As O, dashboard **Manage Categories**: add "TEST 2293 - delete me"; make a board "TEST 2293 board - delete me" and file it under the grouping (its context menu). With your key, `GET /api/v1/boards/<id>`; then delete the grouping in Manage Categories (confirm); reload; with your key, `GET /api/v1/boards/<id>` again | Before the delete `categoryId` the grouping's id; after it, the board under Uncategorised and `categoryId` `null`. Delete the board afterwards | `categoryId` still the old id |
+| 326 | 2327 | As T, open `zq2327 e1` on TEST 2327 and in its Dependencies picker type `zq2327` | `zq2327 e2` and `zq2327 e3` both listed (the first is the card itself, left out). Optionally repeat check 322's `e` search and compare with its record | Either missing |
+| 327 | 2327 | As O, plan page **+ Add cards** on any goal, type `TEST` | Results as before (an administrator opens every board) | Fewer than before |
 | 328 | 2345 | As O with your key, `GET /api/v1/boards/<TEST 2345 board>`, then `PUT` the same `name`, `emoji`, `categoryId` and `isPublic` back; open the board's **Activity Log** | `200`; `updatedAt` as in the `GET`; no new "Updated board" entry | A new entry, or `updatedAt` moved |
 | 329 | 2345 | `PUT` `{"name": "TEST 2345 - delete me 2", "emoji": <its own>}`; open the **Activity Log** again. Then delete the board | One entry "Updated board … (fields: name)" | `emoji` named too |
 
+**Afterwards.** Signed in as T, delete TEST 2327; as O, delete T if T was made for these checks.
+
 #### Going back to the previous image
 
-The boards cleared stay cleared; the older image reads `null` as unfiled, as it always has. The older image leaves boards pointing at a deleted grouping again, and a restore on it commits boards filed under a grouping it could not copy. It also writes and records a board save that changes nothing again, naming every field sent.
+The boards cleared stay cleared; the older image reads `null` as unfiled, as it always has. The older image leaves boards pointing at a deleted grouping again, and a restore on it commits boards filed under a grouping it could not copy. It also writes and records a board save that changes nothing again, naming every field sent, and hides the caller's own search matches behind other boards' again.
 
 ## Changing the Schema
 
