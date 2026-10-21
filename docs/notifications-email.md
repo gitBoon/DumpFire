@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.35
+version: 1.36
 status: As-Built
 date: 2026-10-21
 tags:
@@ -1603,7 +1603,7 @@ word for word:
   secret."
 
 Editors and viewers see neither field, as they see no `lastDelivery`: they see `active: true`.
-No page shows webhooks, so a board's owner learns of a held webhook through the API alone.
+No page lists webhooks, and `pausedBecause` is read through the API.
 Taking one over is in [Who May Change a Webhook](#who-may-change-a-webhook). A held webhook
 still counts toward the board's 10, and still counts on the Account and admin pages among the
 webhooks an account set up that are on, since a reset of that account still switches it off.
@@ -1621,6 +1621,53 @@ stateDiagram-v2
     Off --> [*]: deleted
     Held --> [*]: deleted
     Sending --> [*]: deleted
+```
+
+**The Share window (card 2329).** A board's owner who does not read the API learnt of a held
+webhook from nothing. The Share window (Share Board, in a board's **More** menu) now tells the
+owner and an administrator, from the same rule and to the same people as `pausedBecause`:
+
+- **Before a removal.** `GET /api/boards/{id}/share` gives each person and each team
+  `stopsWebhooks`: how many of the board's webhooks that are sent now that share's removal
+  would hold. `webhookShareNotes(board)` in `webhooks.ts` asks `holdOf` of each webhook that is
+  on, and of each that is sent asks `roleOnBoard` again for its setter with the share left out
+  (`without: { userId }` for the setter's own member row, `without: { teamId }` for each team
+  the board is shared with that the setter is in: taking away a team they are not in changes
+  nothing for them). Each setter is worked out once, however many of the webhooks they set. A
+  setter who could still open the board another way (their own share as a member, for a team's
+  removal, another team, the board being public, having made it, an administrator's role) is
+  not counted. ✕ on a share
+  above 0 asks first in the app's confirm, "Removing Sam stops 1 webhook they set up on this
+  board: nothing is sent to it until they can open the board again, or someone takes it over."
+  (for a team, "… set up by its members … until those members can open the board again …"),
+  **Remove** or **Cancel**; ✕ on any other share removes at once.
+- **Held now.** The same answer carries `heldWebhooks`, how many are on and held, whatever held
+  them, webhooks with no setter included. Above 0, the window says so above the list, with
+  where to read why (`GET /api/v1/boards/{id}/webhooks`). The list is read again after each
+  share added, changed or removed, so a removal's count shows at once; the public switch does
+  not read it again (card 2385).
+
+Anyone else is answered neither key. Nothing is stored: both counts are worked out at the read,
+as `pausedBecause` is. A hold caused elsewhere (a team's members changed, a role changed, the
+board made private) is not warned of before; the count says so the next time the window opens.
+
+```mermaid
+sequenceDiagram
+    participant O as Board owner
+    participant W as Share window
+    participant R as GET /api/boards/{id}/share
+    participant N as webhookShareNotes
+    O->>W: Share Board
+    W->>R: read the list
+    R->>N: owner or admin only
+    N->>N: holdOf(each webhook that is on)
+    N->>N: roleOnBoard(setter, board, without share)
+    N-->>R: held, byMember, byTeam
+    R-->>W: members[].stopsWebhooks, teams[].stopsWebhooks, heldWebhooks
+    O->>W: ✕ on a share with stopsWebhooks > 0
+    W-->>O: Remove Access: "Removing … stops N webhooks …"
+    O->>W: Remove
+    W->>R: DELETE, then read the list again
 ```
 
 ### Events and Payload

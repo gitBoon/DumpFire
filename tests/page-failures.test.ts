@@ -5838,7 +5838,8 @@ describe('the Audit Log says why an answer failed, src/routes/audit/+page.svelte
 	}
 
 	const REVERSED = () => answered(400, { message: '`from` is after `to`' });
-	const PAGE = (...ids: number[]) => () => answered(200, { data: ids.map((id) => ({ id })) });
+	// A full page of two says more follows, as the route's `hasMore` would here; Load more reads it (card 2383).
+	const PAGE = (...ids: number[]) => () => answered(200, { data: ids.map((id) => ({ id })), pagination: { hasMore: ids.length === 2 } });
 
 	it('shows no earlier answer under a refused Apply, says the server’s words, and clears them on the next answer that works', async () => {
 		let next: () => Response = PAGE(1, 2);

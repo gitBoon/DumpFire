@@ -645,7 +645,15 @@
 	let pickerQuery = $state('');
 	let pickerResults = $state<{ id: number; title: string; boardId: number; boardName: string; boardEmoji: string; columnName: string; priority: string }[]>([]);
 	let pickerSearching = $state(false);
+	/** Why the latest search found nothing to show: refused, no answer, or an answer not read (card 2384). */
+	let pickerError = $state('');
 	let pickerTimer: ReturnType<typeof setTimeout> | null = null;
+	/**
+	 * Which search is the latest: counted on by every keystroke. A search
+	 * shows what it found only if it is still the latest, as the plan page's
+	 * picker does (card 2384): a slower, older answer never replaces a newer one.
+	 */
+	let pickerSeq = 0;
 
 	// svelte-ignore state_referenced_locally
 	let milestoneId = $state<number | null>(card?.milestoneId ?? null);
@@ -659,11 +667,23 @@
 	 * try/finally with an unguarded parse, so each of those rejected out of
 	 * it, unhandled, and the section said nothing. A message already shown, a
 	 * refused removal's, is kept, and this one follows it.
+	 *
+	 * Each read has a number, as the comments' reads do (card 2384): an answer
+	 * is taken only if its read is newer than the floor, which it then
+	 * becomes, so an earlier read answering after a later one is dropped, its
+	 * failure too. A link added or removed here whose answer set the lists
+	 * raises the floor to the last read sent (`dependenciesWritten`): a read
+	 * sent before it answers with the links as they were. "Loading…" ends
+	 * with the newest read sent.
 	 */
+	let depsRead = 0;
+	let depsFloor = 0;
 	async function loadDependencies() {
 		if (!card) return;
+		const read = ++depsRead;
 		depsLoading = true;
 		const unread = (words: string) => {
+			if (read <= depsFloor) return;
 			depError = depError ? `${depError} ${words}` : words;
 		};
 		try {
@@ -688,35 +708,78 @@
 				unread("The server's answer could not be read. The dependencies could not be loaded.");
 				return;
 			}
+			if (read <= depsFloor) return;
+			depsFloor = read;
 			blockedBy = data.blockedBy as DependencyRefType[];
 			blocks = data.blocks as DependencyRefType[];
 		} finally {
-			depsLoading = false;
+			if (read === depsRead) depsLoading = false;
 		}
+	}
+
+	/**
+	 * A link added or removed in this window, its answer the lists: no read
+	 * sent before it is taken, and the lists it handed back show at once
+	 * rather than behind "Loading…" until a dropped read settles (the review).
+	 */
+	function dependenciesWritten() {
+		depsFloor = depsRead;
+		depsLoading = false;
 	}
 
 	/**
 	 * Search by "#id" or title across every board the user can see. Debounced —
 	 * the search runs on every keystroke otherwise, and a title search scans
 	 * cards across the whole workspace.
+	 *
+	 * A search that fails says so in the picker, in the plan page's picker's
+	 * words (card 2384): it was try/finally with an unguarded parse, so no
+	 * answer, or one that was not JSON, rejected unhandled, and a refusal
+	 * read as "No cards match". Only the latest search's answer is shown, and
+	 * only while the box still holds what was searched: one arriving after
+	 * the picker was closed (which empties the box) is dropped. An emptied box
+	 * drops any search waiting or out, and is no longer "Searching…".
 	 */
 	function onPickerInput() {
 		if (pickerTimer) clearTimeout(pickerTimer);
+		pickerTimer = null;
+		const seq = ++pickerSeq;
 		const q = pickerQuery.trim();
 		if (q.length === 0) {
 			pickerResults = [];
+			pickerError = '';
+			pickerSearching = false;
 			return;
 		}
 		pickerSearching = true;
 		pickerTimer = setTimeout(async () => {
+			pickerTimer = null;
+			let found: typeof pickerResults = [];
+			let error = '';
+			let res: Response | null = null;
 			try {
 				// No card yet, no `exclude`: 0 is no id, and is refused.
 				const exclude = card?.id ? `&exclude=${card.id}` : '';
-				const res = await fetch(`/api/cards/search?q=${encodeURIComponent(q)}${exclude}`);
-				pickerResults = res.ok ? await res.json() : [];
-			} finally {
-				pickerSearching = false;
+				res = await fetch(`/api/cards/search?q=${encodeURIComponent(q)}${exclude}`);
+			} catch {
+				error = 'No answer from the server. The search could not be run.';
 			}
+			if (res && !res.ok) error = await failureMessage(res, 'The search was refused.');
+			else if (res) {
+				// An answer that is not a list of cards (a proxy's page) was an answer, not none.
+				try {
+					const body = await res.json();
+					if (Array.isArray(body)) found = body;
+					else error = "The server's answer could not be read. The search could not be run.";
+				} catch {
+					error = "The server's answer could not be read. The search could not be run.";
+				}
+			}
+			if (seq !== pickerSeq) return;
+			pickerSearching = false;
+			if (pickerQuery.trim() !== q) return;
+			pickerResults = found;
+			pickerError = error;
 		}, 250);
 	}
 
@@ -1060,10 +1123,12 @@
 					bind:pickerQuery
 					bind:pickerResults
 					{pickerSearching}
+					{pickerError}
 					bind:milestoneId
 					bind:milestoneSaving
 					{loadDependencies}
 					{onPickerInput}
+					onListsWritten={dependenciesWritten}
 					onWrote={wroteHere}
 				/>
 

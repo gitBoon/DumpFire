@@ -275,3 +275,199 @@ describe('the card window’s read of the card’s links says when it fails, and
 		expect(said(target)).toBeUndefined();
 	});
 });
+
+// Card 2384: the picker's search was try/finally with an unguarded parse, as the
+// links' read was (card 2382), and neither the search nor the read had an order.
+describe('the card window’s dependency search says when it fails, and its searches and reads keep only the newest (card 2384)', () => {
+	const blocker = { kind: 'card', cardId: 9, dependencyId: 1, title: 'Docs', boardId: 1, boardName: 'Website', columnName: 'To Do', resolved: false, withheld: false };
+	const added = { ...blocker, cardId: 12, dependencyId: 2, title: 'Another card' };
+	const found = (id: number, title: string) => ({ id, title, boardId: 1, boardName: 'Website', boardEmoji: '📋', columnName: 'To Do', priority: 'low' });
+	const answer = (status: number, body: unknown) => ({ ok: status < 400, status, json: async () => body }) as Response;
+	const notJson = () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError('Unexpected token <'); } }) as unknown as Response;
+
+	/** The window's reads: the links by `links`, a search for `q` by `search`, empty lists for the rest. */
+	function answering(
+		links: (init?: RequestInit) => Promise<Response>,
+		search: (q: string) => Promise<Response> = async () => answer(200, [])
+	) {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async (url: string, init?: RequestInit) => {
+				if (url === '/api/cards/7/dependencies') return links(init);
+				if (url.startsWith('/api/cards/search?')) return search(new URLSearchParams(url.split('?')[1]).get('q')!);
+				return answer(200, url.includes('/tokens') ? null : []);
+			})
+		);
+	}
+
+	/** An answer held until the case lets it go. */
+	function held() {
+		let release!: (res: Response) => void;
+		const promise = new Promise<Response>((done) => (release = done));
+		return { promise, release };
+	}
+
+	/** Lets every answer in flight arrive, and draws. */
+	async function settle() {
+		for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+		flushSync();
+	}
+	/** Waits out the picker's 250 ms, so that what was typed is searched, and draws. */
+	async function searched() {
+		await new Promise((resolve) => setTimeout(resolve, 260));
+		await settle();
+	}
+
+	/** Draws the window and opens More options. */
+	async function opened() {
+		const { target } = draw(new WindowEdits());
+		await settle();
+		target.querySelector<HTMLButtonElement>('.advanced-toggle')!.click();
+		flushSync();
+		return target;
+	}
+	/** Opens the picker, for "this card waits on" unless told otherwise. */
+	function pick(target: HTMLElement, label = '+ Add a blocker') {
+		[...target.querySelectorAll<HTMLButtonElement>('.dep-add-btn')].find((b) => b.textContent?.trim() === label)!.click();
+		flushSync();
+		return target.querySelector<HTMLInputElement>('.dep-picker-input')!;
+	}
+	const searchSaid = (target: HTMLElement) => target.querySelector('.dep-search-error')?.textContent?.trim();
+	const results = (target: HTMLElement) => [...target.querySelectorAll('.dep-result .dep-title')].map((t) => t.textContent);
+	const rows = (target: HTMLElement) => [...target.querySelectorAll('.dep-row')].length;
+	const searches = () => vi.mocked(fetch).mock.calls.map(([url]) => String(url)).filter((url) => url.startsWith('/api/cards/search'));
+
+	it.each([
+		['no answer', () => Promise.reject(new TypeError('Failed to fetch')), 'No answer from the server. The search could not be run.'],
+		['an answer that is not JSON', async () => notJson(), "The server's answer could not be read. The search could not be run."],
+		['an answer that is not a list', async () => answer(200, { error: 'proxy' }), "The server's answer could not be read. The search could not be run."],
+		['a refusal, in its words', async () => answer(429, { message: 'Too many requests' }), 'Too many requests'],
+		['a refusal with no words', async () => answer(500, {}), 'The search was refused.']
+	])('a search answered with %s says so in the picker, not "No cards match"', async (_what, search, words) => {
+		answering(async () => answer(200, { blockedBy: [], blocks: [] }), search);
+		const target = await opened();
+		type(pick(target), 'Docs');
+		await searched();
+
+		expect(searchSaid(target)).toBe(words);
+		expect(target.textContent).not.toContain('No cards match');
+		expect(target.textContent).not.toContain('Searching…');
+	});
+
+	it('two searches answered out of order show the later one’s results', async () => {
+		const first = held();
+		const second = held();
+		answering(async () => answer(200, { blockedBy: [], blocks: [] }), (q) => (q === 'Do' ? first.promise : second.promise));
+		const target = await opened();
+		const box = pick(target);
+		type(box, 'Do');
+		await searched();
+		type(box, 'Docs');
+		await searched();
+		expect(searches()).toHaveLength(2);
+
+		second.release(answer(200, [found(12, 'Docs page')]));
+		await settle();
+		first.release(answer(200, [found(13, 'Dogs')]));
+		await settle();
+		expect(results(target)).toEqual(['Docs page']);
+	});
+
+	it('a search answered after the picker was closed and opened again is not shown under its empty box', async () => {
+		const late = held();
+		answering(async () => answer(200, { blockedBy: [], blocks: [] }), () => late.promise);
+		const target = await opened();
+		type(pick(target), 'Docs');
+		await searched();
+		target.querySelector<HTMLButtonElement>('.dep-picker-cancel')!.click();
+		flushSync();
+		pick(target);
+		expect(target.textContent).not.toContain('Searching…');
+
+		late.release(answer(200, [found(12, 'Docs page')]));
+		await settle();
+		expect(results(target)).toEqual([]);
+		expect(target.textContent).not.toContain('Searching…');
+	});
+
+	it('a box emptied before its search is sent sends none, and is no longer "Searching…"', async () => {
+		answering(async () => answer(200, { blockedBy: [], blocks: [] }));
+		const target = await opened();
+		const box = pick(target);
+		type(box, 'Do');
+		type(box, '');
+		await searched();
+
+		expect(searches()).toEqual([]);
+		expect(target.textContent).not.toContain('Searching…');
+	});
+
+	// The cases below use the Blocks list: Blocked by shows "Loading…" while a read is out, and Blocks its rows.
+	it('two reads of the links answered out of order show the newer one’s', async () => {
+		const second = held();
+		const third = held();
+		let reads = 0;
+		answering(async (init) => {
+			if (init?.method === 'DELETE') return answer(404, { message: 'Dependency not found' });
+			reads++;
+			if (reads === 1) return answer(200, { blockedBy: [], blocks: [blocker] });
+			return reads === 2 ? second.promise : third.promise;
+		});
+		const target = await opened();
+		// Each refused removal reads the links again: two reads out at once.
+		target.querySelector<HTMLButtonElement>('.dep-remove')!.click();
+		await settle();
+		target.querySelector<HTMLButtonElement>('.dep-remove')!.click();
+		await settle();
+		expect(reads).toBe(3);
+
+		third.release(answer(200, { blockedBy: [], blocks: [] }));
+		await settle();
+		second.release(answer(200, { blockedBy: [], blocks: [blocker] }));
+		await settle();
+		expect(rows(target)).toBe(0);
+		expect(target.textContent).not.toContain('Loading…');
+	});
+
+	it('the opening read answered after a link was added does not put back the lists from before it', async () => {
+		const opening = held();
+		answering(
+			async (init) => (init?.method === 'POST' ? answer(200, { blockedBy: [], blocks: [added] }) : opening.promise),
+			async () => answer(200, [found(12, 'Another card')])
+		);
+		const target = await opened();
+		type(pick(target, '+ Add a card this blocks'), '#12');
+		await searched();
+		target.querySelector<HTMLButtonElement>('.dep-result')!.click();
+		await settle();
+		expect(rows(target)).toBe(1);
+
+		opening.release(answer(200, { blockedBy: [], blocks: [] }));
+		await settle();
+		expect(rows(target)).toBe(1);
+		expect(target.querySelector('.dep-row')!.textContent).toContain('Another card');
+	});
+
+	// The review of card 2384: the floor was raised, but "Loading…" waited on the dropped read.
+	it('a blocker added while the opening read is out shows at once, not behind "Loading…"', async () => {
+		const opening = held();
+		answering(
+			async (init) => (init?.method === 'POST' ? answer(200, { blockedBy: [added], blocks: [] }) : opening.promise),
+			async () => answer(200, [found(12, 'Another card')])
+		);
+		const target = await opened();
+		expect(target.textContent).toContain('Loading…');
+		type(pick(target), '#12');
+		await searched();
+		target.querySelector<HTMLButtonElement>('.dep-result')!.click();
+		await settle();
+
+		expect(target.textContent).not.toContain('Loading…');
+		expect(rows(target)).toBe(1);
+		expect(target.querySelector('.dep-row')!.textContent).toContain('Another card');
+
+		opening.release(answer(200, { blockedBy: [], blocks: [] }));
+		await settle();
+		expect(rows(target)).toBe(1);
+	});
+});

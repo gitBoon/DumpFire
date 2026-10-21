@@ -7,6 +7,7 @@ import { notifyBoardShared } from '$lib/server/notifications';
 import { linkBaseUrl } from '$lib/server/email';
 import { pathId, readBody, readBoolean, readChoice, readId } from '$lib/server/request-body';
 import { requireBoard, requireBoardOwner, requireUser } from '$lib/server/route-guards';
+import { webhookShareNotes } from '$lib/server/webhooks';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
@@ -26,6 +27,10 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	// who can open the board, every signed-in account for a public one, is
 	// given the list without them.
 	const seesAddresses = role === 'owner' || role === 'admin';
+	// The same callers are told of the board's webhooks, as `pausedBecause` is
+	// told to them (card 2329): how many each share's removal would hold, and
+	// how many are held now. Anyone else is answered no key for either.
+	const notes = seesAddresses ? webhookShareNotes(board) : null;
 	const members = db.select({
 		userId: boardMembers.userId,
 		role: boardMembers.role,
@@ -37,7 +42,9 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	.innerJoin(users, eq(boardMembers.userId, users.id))
 	.where(eq(boardMembers.boardId, boardId))
 	.all()
-	.map(({ email, ...member }) => (seesAddresses ? { ...member, email } : member));
+	.map(({ email, ...member }) =>
+		notes ? { ...member, email, stopsWebhooks: notes.byMember.get(member.userId) ?? 0 } : member
+	);
 
 	// Get team access
 	const teamAccess = db.select({
@@ -49,9 +56,10 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	.from(boardTeams)
 	.innerJoin(teams, eq(boardTeams.teamId, teams.id))
 	.where(eq(boardTeams.boardId, boardId))
-	.all();
+	.all()
+	.map((team) => (notes ? { ...team, stopsWebhooks: notes.byTeam.get(team.teamId) ?? 0 } : team));
 
-	return json({ members, teams: teamAccess, isPublic: board.isPublic });
+	return json({ members, teams: teamAccess, isPublic: board.isPublic, ...(notes ? { heldWebhooks: notes.held } : {}) });
 };
 
 /** Who a board is shared with: one person, or every member of a team. */

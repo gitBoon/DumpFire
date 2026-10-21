@@ -25,11 +25,11 @@ import http from 'node:http';
 import https from 'node:https';
 import { error } from '@sveltejs/kit';
 import { db, sqlite } from './db';
-import { webhooks } from './db/schema';
+import { boardTeams, teamMembers, webhooks, type Board } from './db/schema';
 import { eq, and } from 'drizzle-orm';
 import { createHash, createHmac } from 'crypto';
 import { createLogger } from './logger';
-import { canViewBoard, getBoardRole, type Actor } from './board-access';
+import { canViewBoard, getBoardRole, roleOnBoard, type Actor } from './board-access';
 import { onTheWire } from './v1-json';
 import { addressRefusal, guardedLookup } from './webhook-address';
 
@@ -127,6 +127,67 @@ function pausedBecause(hook: Webhook): string | null {
 	if (!hook.active) return null;
 	const hold = holdOf(hook);
 	return hold === null ? null : PAUSED_BECAUSE[hold];
+}
+
+/** What the Share window says of a board's webhooks (card 2329). */
+export type WebhookShareNotes = {
+	/** Webhooks that are on and held now (`holdOf`): no setter, or one who cannot open the board. */
+	held: number;
+	/** For each member, by user id: the webhooks sent now that their removal would hold. */
+	byMember: Map<number, number>;
+	/** For each team the board is shared with, by team id: the same. */
+	byTeam: Map<number, number>;
+};
+
+/**
+ * What the Share window tells a board's owner of its webhooks (card 2329),
+ * from the hold rule itself: how many are held now, and how many that are
+ * sent now each share's removal would hold. A setter's removal holds their
+ * webhook only if no other way in is left (their own share as a member, for
+ * a team's removal, another team, the board being public, having made it,
+ * an administrator's role), which `roleOnBoard` reads with
+ * the share left out. A board has at most 10 webhooks.
+ *
+ * Each setter is worked out once, however many of the webhooks they set
+ * (the review): their row is read once, and of the teams the board is
+ * shared with only those they are in are asked of, since taking away a team
+ * they are not in leaves their way in as it is (they can open the board, or
+ * the webhook would be held).
+ */
+export function webhookShareNotes(board: Pick<Board, 'id' | 'createdBy' | 'isPublic'>): WebhookShareNotes {
+	const notes: WebhookShareNotes = { held: 0, byMember: new Map(), byTeam: new Map() };
+	const hooks = db.select().from(webhooks).where(and(eq(webhooks.boardId, board.id), eq(webhooks.active, true))).all();
+	if (hooks.length === 0) return notes;
+	const sharedTeams = db.select({ teamId: boardTeams.teamId }).from(boardTeams).where(eq(boardTeams.boardId, board.id)).all();
+	const add = (counts: Map<number, number>, id: number) => counts.set(id, (counts.get(id) ?? 0) + 1);
+	const cache = new Map<string, boolean>();
+	/** For each setter: whether their member row's removal holds their webhooks, and which shared teams' do. */
+	const stopsBy = new Map<number, { member: boolean; teams: number[] }>();
+	for (const hook of hooks) {
+		if (holdOf(hook, cache) !== null) {
+			notes.held++;
+			continue;
+		}
+		// Sent, so it has a setter who can open the board.
+		const setterId = hook.setBy as number;
+		let stops = stopsBy.get(setterId);
+		if (!stops) {
+			const setter = sqlite.prepare('SELECT id, role FROM users WHERE id = ?').get(setterId) as Actor;
+			const theirTeams = new Set(
+				db.select({ teamId: teamMembers.teamId }).from(teamMembers).where(eq(teamMembers.userId, setterId)).all().map((t) => t.teamId)
+			);
+			stops = {
+				member: roleOnBoard(setter, board, { userId: setterId }) === null,
+				teams: sharedTeams
+					.filter(({ teamId }) => theirTeams.has(teamId) && roleOnBoard(setter, board, { teamId }) === null)
+					.map(({ teamId }) => teamId)
+			};
+			stopsBy.set(setterId, stops);
+		}
+		if (stops.member) add(notes.byMember, setterId);
+		for (const teamId of stops.teams) add(notes.byTeam, teamId);
+	}
+	return notes;
 }
 
 /**

@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.82
+version: 1.83
 status: As-Built
 date: 2026-10-21
 tags:
@@ -4141,6 +4141,38 @@ On production, as **O**, your administrator account, signed in, with O's API key
 #### Going back to the previous image
 
 Nothing is done to the database. The older image sends no `milestone.card_removed` for a card that leaves a goal because of a move to another board, a goal deleted or a delete, and writes no entry for it (entries written meanwhile stay, and read as a card taken out). Its `/api/audit` reads board names one by one, ignores `cardId`, refuses a bad id as `Invalid boardId`, and answers no `rawAction`, `total` or `hasMore`. Its card window says nothing when the dependencies cannot be read.
+
+### The Share Window Says Which Webhooks a Removal Stops, the Audit Page's Load More, and the Card Window's Dependency Search
+
+**Cards 2329, 2383 and 2384.** No migration, no setting, no route added, and no `/api/v1` change (the OpenAPI document is unchanged). One internal answer gains keys: `GET /api/boards/{id}/share` gives the board's owner and an administrator `stopsWebhooks` on each person and team and `heldWebhooks` on the answer. The plan is `docs/planning/cards-2329-2383-2384.md`.
+
+- **2329.** A webhook is sent only while the account that set it up can open the board (card 2325), but nothing on screen said when one stopped. The board's **Share Board** window now asks before removing a person or a team whose removal would stop webhooks, saying how many (**Remove** or **Cancel**), and says above its list how many of the board's webhooks send nothing now, whatever stopped them, ones with no recorded setter included. Only the board's owner and administrators see either.
+- **2383.** The Audit page offered **Load more** after a page of exactly 100 entries even when nothing followed. It now offers it only while the answer says more follows.
+- **2384.** The card window's dependency search said nothing when it failed (no network, a proxy's page, a refusal) and showed "No cards match"; it now says so under the box. Only the latest search's answer is shown, and the window's reads of a card's links keep only the newest answer, so an older one arriving late no longer puts back links that were changed.
+
+**Owner to know.** In the Share window, ✕ on someone who set up a webhook that would stop now opens a **Remove Access** confirmation first; ✕ on anyone else removes them at once, as before. A board with held webhooks shows a line about them in the Share window from this deploy, the first time its owner opens it.
+
+#### After the deploy
+
+On production, as **O**, your administrator account, signed in, with O's API key (My Account) and the browser's developer tools open. Nothing here completes a card, removes a real board member, or changes a real board or webhook receiver. **The receiver, `<CATCHER>`**: an HTTPS address you control that shows each request it gets, the one of card 2343's checks will do; never a third-party address chosen for you. **Scratch things:** on the dashboard a board "TEST 2329 - delete me"; note its id (the number in its address, `/board/<id>`), `<S>`. In **Admin → User Management**, **+ Add User**, username "TEST 2329 - delete me", email `test2329@example.invalid`, a password (so no invite is mailed), role User, **Create**. In a private window sign in as that account, open **My Account**, **Generate Key**, and note the key, `<K>`; close the private window. As O, on board TEST 2329, **More**, **Share Board**: in the user list choose TEST 2329 - delete me, the role ✏️ Editor, **Share**; **Close**. With `<K>`: `POST /api/v1/boards/<S>/webhooks` with `{"url": "<CATCHER>/2329"}`, `201`; note its `id`. With O's key: `GET /api/v1/boards/<S>/columns`, note the To Do column's id `<todo>`, and `POST /api/v1/boards/<S>/cards` with `{"columnId": <todo>, "title": "TEST 2329 card - delete me"}`.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 407 | 2329 | On the board TEST 2329 - delete me, **More**, **Share Board** | TEST 2329 - delete me listed under People as Editor; no line saying webhooks on this board send nothing | Such a line is shown (no webhook of this board is held yet) |
+| 408 | 2329 | Press ✕ on TEST 2329 - delete me's row (its title reads "Remove access"); read the dialog; press **Cancel** | A dialog **Remove Access** reading "Removing TEST 2329 - delete me stops 1 webhook they set up on this board: nothing is sent to it until they can open the board again, or someone takes it over.", with **Cancel** and **Remove**; after **Cancel** the dialog closes and the person is still listed | The person is removed at once, with no dialog |
+| 409 | 2329 | Press ✕ on the same row again, then **Remove**. Then, with O's key, `GET /api/v1/boards/<S>/webhooks` | The person is gone from People; above the Private Board switch: "⚠️ 1 webhook on this board sends nothing: the account that set each up can no longer open the board, or nobody is recorded as setting it up. Read the board's webhooks with your API key (GET /api/v1/boards/<S>/webhooks) to see why each is held, and delete it or take it over." The GET's webhook has `"active": true` and `pausedBecause` "The account that set this up can no longer open this board, so nothing is sent. …" | No line, or `pausedBecause` `null` |
+| 410 | 2329 | In the same window, choose TEST 2329 - delete me in the user list, the role 👁️ Viewer, **Share** | The person is listed again as Viewer and the line about webhooks is gone | The line stays |
+| 411 | 2383 | The dashboard's **More** menu, **Audit & Logs**; the **Audit Log** tab; **Board** "TEST 2329 - delete me"; **Apply**; in the network panel, the last request to `/api/audit` | A few rows of that board and no **Load more** button under them; that request's answer has `"pagination"` with `"hasMore": false` | A **Load more** button is shown |
+| 412 | 2384 | On the board TEST 2329 - delete me open "TEST 2329 card - delete me"; **More options**; **+ Add a blocker**; in the network panel's throttling list choose **Offline**; type `TEST` in the box ("Search the card this one waits on…"); wait two seconds | Under the box, "No answer from the server. The search could not be run."; not "No cards match" and not "Searching…" | Nothing is said, "No cards match “TEST”." is shown, or "Searching…" stays |
+| 413 | 2384 | Choose **No throttling**; type a space and `2` after `TEST` in the same box; wait two seconds; then press ✕ beside the box (its title reads "Cancel") and ✕ at the window's top right | The line from 412 is replaced by the cards found, or by "No cards match “TEST 2”."; the picker and the window close | The line from 412 stays, or "Searching…" stays |
+
+Exactly 100 entries on one filter, the case card 2383 is about, is not arranged on production; the suite covers it (`tests/audit-page.test.ts`).
+
+**Afterwards.** With O's key `DELETE /api/v1/webhooks/<the id>`. On the dashboard delete the board "TEST 2329 - delete me". In **Admin → User Management** delete TEST 2329 - delete me (🗑️, **Confirm**); its API key goes with it. Clear or delete the receiver's path `/2329`: it holds card titles.
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image's Share window removes anyone at once and shows no line about held webhooks, and `GET /api/boards/{id}/share` answers no `stopsWebhooks` or `heldWebhooks`. Its Audit page offers **Load more** after a page of exactly 100. Its card window's dependency search says nothing when it fails, and its reads of a card's links can put back older links.
 
 ## Changing the Schema
 

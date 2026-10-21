@@ -50,7 +50,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sqlite } from '$lib/server/db';
 import type { SessionUser } from '$lib/server/auth';
 import { ACTIONS, logActivity } from '$lib/server/logActivity';
-import { deliver, deliveryResultFor, dispatchWebhook, forgetDeliveries, WARNINGS_REMEMBERED, WEBHOOK_EVENTS } from '$lib/server/webhooks';
+import { deliver, deliveryResultFor, dispatchWebhook, forgetDeliveries, WARNINGS_REMEMBERED, WEBHOOK_EVENTS, webhookShareNotes } from '$lib/server/webhooks';
 import { addressRefusal, insideReason, parseAllowInside, readWebhookUrl } from '$lib/server/webhook-address';
 import { reportWebhookAllowInside, reportWebhooksOverCap, reportWebhooksRefused } from '$lib/server/startup-checks';
 import { api, type ApiResult } from './helpers/api';
@@ -2735,5 +2735,169 @@ describe('a card that leaves a goal because of another change (card 2381)', () =
 		const loose = makeCard(s.A.cols['To Do'], { title: 'Loose' });
 
 		expect(await heard(api('PUT', `/api/v1/cards/${loose.id}/move`, { user: s.owner, body: { columnId: s.B.cols['To Do'].id } }))).toEqual([]);
+	});
+});
+
+// ─── Card 2329 ───────────────────────────────────────────────────────────
+
+describe("the share list tells the board's owner which webhooks a removal stops and how many are held (card 2329)", () => {
+	type ShareList = {
+		members: { userId: number; stopsWebhooks?: number }[];
+		teams: { teamId: number; stopsWebhooks?: number }[];
+		heldWebhooks?: number;
+	};
+
+	/** Owner O's board, shared with an editor and a viewer as members; an administrator on nothing. */
+	function scene(opts: { isPublic?: boolean } = {}) {
+		const owner = makeUser({ username: 'owner' });
+		const editor = makeUser({ username: 'editor' });
+		const viewer = makeUser({ username: 'viewer' });
+		const admin = makeUser({ username: 'admin', role: 'admin' });
+		const fixture = makeBoard({ owner, isPublic: opts.isPublic });
+		addBoardMember(fixture.board, editor, 'editor');
+		addBoardMember(fixture.board, viewer, 'viewer');
+		return { owner, editor, viewer, admin, ...fixture };
+	}
+	type Scene = ReturnType<typeof scene>;
+
+	/** The board's share list as the Share window reads it, for `user`. */
+	async function shareList(s: Scene, user: SessionUser): Promise<ShareList> {
+		const res = await api('GET', `/api/boards/${s.board.id}/share`, { user });
+		expect(res.status).toBe(200);
+		return res.body as ShareList;
+	}
+	const memberStops = (list: ShareList, user: SessionUser) => list.members.find((m) => m.userId === user.id)?.stopsWebhooks;
+	const teamStops = (list: ShareList, team: { id: number }) => list.teams.find((t) => t.teamId === team.id)?.stopsWebhooks;
+	const remove = (s: Scene, type: 'user' | 'team', targetId: number) =>
+		api('DELETE', `/api/boards/${s.board.id}/share`, { user: s.owner, body: { type, targetId } });
+
+	it("1. a member who opens the board only as a member: their removal stops the webhooks they set that are on, and nobody else's removal stops any", async () => {
+		const s = scene();
+		makeWebhook(s.board, { setBy: s.editor });
+		makeWebhook(s.board, { setBy: s.editor });
+		makeWebhook(s.board, { setBy: s.editor, active: false });
+		makeWebhook(s.board); // the owner's own
+		makeWebhook(s.board, { setBy: s.admin });
+
+		const list = await shareList(s, s.owner);
+		expect(memberStops(list, s.editor)).toBe(2);
+		expect(memberStops(list, s.viewer)).toBe(0);
+		expect(list.heldWebhooks).toBe(0);
+	});
+
+	it("2. a setter in a team the board is shared with as well as a member stops nothing either way; one in by the team alone, the team's removal stops theirs", async () => {
+		const s = scene();
+		const both = makeTeam([s.editor]);
+		const teamOnly = makeUser({ username: 'teamonly' });
+		const crew = makeTeam([teamOnly]);
+		shareBoardWithTeam(s.board, both, 'viewer');
+		shareBoardWithTeam(s.board, crew, 'editor');
+		makeWebhook(s.board, { setBy: s.editor });
+		makeWebhook(s.board, { setBy: teamOnly });
+
+		const list = await shareList(s, s.owner);
+		expect(memberStops(list, s.editor)).toBe(0);
+		expect(teamStops(list, both)).toBe(0);
+		expect(teamStops(list, crew)).toBe(1);
+	});
+
+	it('3. a member of a public board, and an administrator who is a member, stop nothing: each still opens the board', async () => {
+		const s = scene({ isPublic: true });
+		addBoardMember(s.board, s.admin, 'editor');
+		makeWebhook(s.board, { setBy: s.editor });
+		makeWebhook(s.board, { setBy: s.admin });
+
+		const list = await shareList(s, s.owner);
+		expect(memberStops(list, s.editor)).toBe(0);
+		expect(memberStops(list, s.admin)).toBe(0);
+	});
+
+	it('4. heldWebhooks counts one with no setter and one whose setter lost the board, neither counted as stopped, and none switched off', async () => {
+		const s = scene();
+		const gone = makeUser({ username: 'gone' });
+		makeWebhook(s.board, { setBy: null });
+		makeWebhook(s.board, { setBy: gone });
+		makeWebhook(s.board, { setBy: null, active: false });
+		makeWebhook(s.board, { setBy: gone, active: false });
+
+		const list = await shareList(s, s.owner);
+		expect(list.heldWebhooks).toBe(2);
+		expect(list.members.map((m) => m.stopsWebhooks)).toEqual([0, 0]);
+	});
+
+	it('5. a removal through the route holds what the list said it would stop, for a person and for a team', async () => {
+		const s = scene();
+		const teamOnly = makeUser({ username: 'teamonly' });
+		const crew = makeTeam([teamOnly]);
+		shareBoardWithTeam(s.board, crew, 'editor');
+		makeWebhook(s.board, { setBy: s.editor });
+		makeWebhook(s.board, { setBy: teamOnly });
+
+		const before = await shareList(s, s.owner);
+		expect([memberStops(before, s.editor), teamStops(before, crew), before.heldWebhooks]).toEqual([1, 1, 0]);
+
+		expect((await remove(s, 'user', s.editor.id)).status).toBe(200);
+		expect((await shareList(s, s.owner)).heldWebhooks).toBe(1);
+		expect((await remove(s, 'team', crew.id)).status).toBe(200);
+		expect((await shareList(s, s.owner)).heldWebhooks).toBe(2);
+	});
+
+	it('6. both counts go to the owner and an administrator; an editor and a viewer are answered neither key', async () => {
+		const s = scene();
+		shareBoardWithTeam(s.board, makeTeam([]), 'viewer');
+		makeWebhook(s.board, { setBy: s.editor });
+		makeWebhook(s.board, { setBy: null });
+
+		for (const user of [s.owner, s.admin]) {
+			const list = await shareList(s, user);
+			expect(list.heldWebhooks, user.username).toBe(1);
+			expect(memberStops(list, s.editor), user.username).toBe(1);
+			expect(list.teams[0], user.username).toHaveProperty('stopsWebhooks', 0);
+		}
+		for (const user of [s.editor, s.viewer]) {
+			const list = await shareList(s, user);
+			expect(list, user.username).not.toHaveProperty('heldWebhooks');
+			for (const row of [...list.members, ...list.teams]) expect(row, user.username).not.toHaveProperty('stopsWebhooks');
+		}
+	});
+
+	// The review of card 2329: each webhook read its setter again and asked `roleOnBoard` once
+	// for their row and once for every team the board is shared with, whether or not they were in it.
+	it('7. a setter is worked out once however many webhooks they set, and only the shared teams they are in are asked of', () => {
+		const s = scene();
+		const theirs = makeTeam([s.editor]);
+		shareBoardWithTeam(s.board, theirs, 'viewer');
+		const others = [makeTeam([]), makeTeam([]), makeTeam([])];
+		shareBoardWithTeam(s.board, others[0], 'viewer');
+		makeWebhook(s.board, { setBy: s.editor });
+
+		/** The notes, and how many statements reading them prepared. */
+		const counted = () => {
+			const prepare = vi.spyOn(sqlite, 'prepare');
+			try {
+				return { notes: webhookShareNotes(s.board), reads: prepare.mock.calls.length };
+			} finally {
+				prepare.mockRestore();
+			}
+		};
+		const one = counted();
+		expect(one.notes.byMember.get(s.editor.id)).toBeUndefined();
+		expect(one.notes.byTeam.get(theirs.id)).toBeUndefined();
+
+		makeWebhook(s.board, { setBy: s.editor });
+		const two = counted();
+		expect(two.reads).toBe(one.reads);
+
+		// Two more shared teams the setter is not in: nothing more read for them.
+		shareBoardWithTeam(s.board, others[1], 'viewer');
+		shareBoardWithTeam(s.board, others[2], 'editor');
+		expect(counted().reads).toBe(one.reads);
+
+		// The answers are as before: with the setter's team taken away, their row's removal stops both.
+		sqlite.prepare('DELETE FROM board_teams WHERE board_id = ? AND team_id = ?').run(s.board.id, theirs.id);
+		const after = counted();
+		expect(after.notes.byMember.get(s.editor.id)).toBe(2);
+		expect([...after.notes.byTeam.values()]).toEqual([]);
+		expect(after.notes.held).toBe(0);
 	});
 });

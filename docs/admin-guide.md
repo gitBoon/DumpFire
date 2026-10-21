@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.61
+version: 1.62
 status: As-Built
 date: 2026-10-21
 tags:
@@ -177,7 +177,7 @@ A webhook or a report schedule that a request was still creating or changing whe
 
 **What a reset does not end.** A webhook nobody is recorded as having set up is left on by a reset: one registered before the update that brings migration 0056, and one whose setter's account was deleted. So is one somebody else set up or changed since. **Since card 2325, a webhook with no setter is held from the deploy on all the same**: nothing is sent to it at any event until the board's owner or an administrator takes it over, as below. Before that deploy, Query B in the release notes lists every one that is on, and each is taken over or deleted ([Deployment](deployment.md#webhooks-stop-when-their-setter-cannot-open-the-board-and-the-activity-report-reads-only-boards-you-can-open)); after restoring a backup older than 2026-10-18/19, run Query B again.
 
-**A held webhook** (card 2325). A webhook is sent only while the account that set it up can open the board, asked at each event with that account's role as it is then. One whose setter was taken off the board, taken out of the team it is shared with, lost it when it was made private, or was an administrator made an ordinary user, is held: nothing is sent, `active` stays as it was, and the system log has one `WARN` an hour under `Webhooks`, `Webhook <id> on board <board> not sent: the account that set it up (user <id>) can no longer open the board` (or `… not sent: nobody is recorded as having set it up`), never the address. It sends again by itself if that account is given the board back, as an editor or a viewer. No page shows it: the board's owner or an administrator reads why with their API key, in `pausedBecause` from `GET /api/v1/boards/{id}/webhooks` or `GET /api/v1/webhooks/{id}` (`null` unless the webhook is on and held), word for word:
+**A held webhook** (card 2325). A webhook is sent only while the account that set it up can open the board, asked at each event with that account's role as it is then. One whose setter was taken off the board, taken out of the team it is shared with, lost it when it was made private, or was an administrator made an ordinary user, is held: nothing is sent, `active` stays as it was, and the system log has one `WARN` an hour under `Webhooks`, `Webhook <id> on board <board> not sent: the account that set it up (user <id>) can no longer open the board` (or `… not sent: nobody is recorded as having set it up`), never the address. It sends again by itself if that account is given the board back, as an editor or a viewer. No page lists webhooks, but the board's **Share Board** window counts them for its owner and an administrator (card 2329): ✕ on a person or a team whose removal would hold webhooks asks first ("Removing Sam stops 1 webhook they set up on this board: …", **Remove** or **Cancel**), and above the list it says how many of the board's webhooks send nothing now, whatever held them, ones with no setter included. The board's owner or an administrator reads why with their API key, in `pausedBecause` from `GET /api/v1/boards/{id}/webhooks` or `GET /api/v1/webhooks/{id}` (`null` unless the webhook is on and held), word for word:
 
 - a setter who can no longer open the board: "The account that set this up can no longer open this board, so nothing is sent. The address was chosen by that account: delete the webhook unless you recognise it; to keep it, switch it off and on, which makes you its setter, and set a new secret and update the receiver."
 - no recorded setter: "Nobody is recorded as having set this up. Delete it unless you recognise the address; to keep it, switch it off and on, which makes you its setter, and set a new secret."
@@ -922,6 +922,11 @@ answer; a refused **Load more** keeps the rows already shown. The next Apply tha
 clears the line. Apply pressed again before the first answer comes shows the newest answer
 alone: an earlier one that comes after it, refused or not, is not shown. Until 19 October 2026 a reversed range showed "No audit entries match these
 filters.", or the earlier rows, and every failure was silent.
+
+The log is read 100 entries at a time. **Load more** is offered only while the answer says
+more entries follow (its `hasMore`, card 2383); it was offered whenever the last page came
+back full, so a search with exactly 100 entries (or 200, …) showed a **Load more** that found
+nothing.
 
 ### A board beneath one of its own cards
 

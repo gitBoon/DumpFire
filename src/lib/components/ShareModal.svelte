@@ -9,13 +9,23 @@
 	 * A write that is refused, or gets no answer, is said on one line in the
 	 * window, above its Close button, in the server's words (card 2148): each
 	 * used to look saved whatever the answer was.
+	 *
+	 * A webhook is sent only while the account that set it up can open the
+	 * board (card 2325), and no screen showed one that had stopped (card 2329).
+	 * So ✕ on a person or a team whose removal would stop webhooks asks first,
+	 * saying how many, and the window says how many of the board's webhooks
+	 * send nothing now, whatever stopped them. Both counts come with the list,
+	 * to the board's owner and an administrator only.
 	 */
 	import { deleteFailure, failureMessage } from '$lib/api';
+	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
+	import { tick } from 'svelte';
 
 	// An address and a role come to the board's owner and an administrator only
-	// (card 2128): the lists name everyone else without them.
-	type ShareMember = { userId: number; username: string; email?: string; emoji: string; role: string };
-	type ShareTeam = { teamId: number; teamName: string; teamEmoji: string; role: string };
+	// (card 2128): the lists name everyone else without them. So does
+	// `stopsWebhooks`, how many webhooks sent now the share's removal would stop.
+	type ShareMember = { userId: number; username: string; email?: string; emoji: string; role: string; stopsWebhooks?: number };
+	type ShareTeam = { teamId: number; teamName: string; teamEmoji: string; role: string; stopsWebhooks?: number };
 	type AvailableUser = { id: number; username: string; email?: string; emoji: string; role?: string };
 	type AvailableTeam = { id: number; name: string; emoji: string };
 
@@ -36,6 +46,10 @@
 	let allUsers = $state<AvailableUser[]>([]);
 	let allTeams = $state<AvailableTeam[]>([]);
 	let isPublic = $state(false);
+	/** How many of the board's webhooks are on and send nothing now (card 2329); 0 for anyone not told. */
+	let heldWebhooks = $state(0);
+	/** The share whose removal stops webhooks, while its confirm is open. */
+	let asking = $state<{ type: 'user' | 'team'; targetId: number; name: string; stops: number } | null>(null);
 	let loading = $state(true);
 	/** Why the last load or write failed, shown above the Close button; '' when nothing failed. */
 	let error = $state('');
@@ -52,8 +66,20 @@
 		loadData();
 	});
 
+	/** The window's Close button, where the focus goes when a read after a change takes away the control that had it. */
+	let closeButton: HTMLButtonElement;
+
+	/**
+	 * Read the list, as the window opens and after each share added, changed
+	 * or removed. Only the first read says "Loading..." (`loading` starts
+	 * true); a read after a change refreshes the lists in place. It used to
+	 * swap the whole list for "Loading...", which took away the ✕ the confirm
+	 * hands the focus back to, and the focus fell to the page behind (the
+	 * review of card 2329). A read that takes away the control with the focus
+	 * (the removed row's ✕) moves the focus to Close.
+	 */
 	async function loadData() {
-		loading = true;
+		const refresh = !loading;
 		try {
 			const [shareRes, usersRes, teamsRes] = await Promise.all([
 				fetch(`/api/boards/${boardId}/share`),
@@ -66,6 +92,7 @@
 				members = data.members;
 				teamAccess = data.teams;
 				isPublic = data.isPublic ?? false;
+				heldWebhooks = typeof data.heldWebhooks === 'number' ? data.heldWebhooks : 0;
 			} else {
 				// A board deleted in another tab is 404 here, and the lists would be empty with no word why.
 				error = await failureMessage(shareRes, 'The sharing settings could not be loaded.');
@@ -82,6 +109,10 @@
 			error = 'No answer from the server. The sharing settings could not be loaded.';
 		}
 		loading = false;
+		if (!refresh) return;
+		await tick();
+		const at = document.activeElement;
+		if (!at || at === document.body || !at.isConnected) closeButton?.focus();
 	}
 
 	/** Users not already shared with */
@@ -209,6 +240,41 @@
 		}
 		await loadData();
 	}
+
+	/**
+	 * ✕ on a person or a team: asks first when their removal stops webhooks
+	 * (card 2329), and removes at once otherwise, as it always did.
+	 */
+	function askToRemove(type: 'user' | 'team', targetId: number) {
+		const share =
+			type === 'user'
+				? members.find(m => m.userId === targetId)
+				: teamAccess.find(t => t.teamId === targetId);
+		const stops = share?.stopsWebhooks ?? 0;
+		if (!share || stops === 0) {
+			removeAccess(type, targetId);
+			return;
+		}
+		const name = 'username' in share ? share.username : share.teamName;
+		asking = { type, targetId, name, stops };
+	}
+
+	/** What the confirm says: who, how many, and what brings a stopped webhook back. */
+	function stopsMessage(ask: NonNullable<typeof asking>): string {
+		const one = ask.stops === 1;
+		const hooks = one ? '1 webhook' : `${ask.stops} webhooks`;
+		const it = one ? 'it' : 'them';
+		return ask.type === 'user'
+			? `Removing ${ask.name} stops ${hooks} they set up on this board: nothing is sent to ${it} until they can open the board again, or someone takes ${it} over.`
+			: `Removing ${ask.name} stops ${hooks} set up by its members on this board: nothing is sent to ${it} until those members can open the board again, or someone takes ${it} over.`;
+	}
+
+	function confirmRemove() {
+		if (!asking) return;
+		const { type, targetId } = asking;
+		asking = null;
+		removeAccess(type, targetId);
+	}
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -226,6 +292,14 @@
 				Loading...
 			</div>
 		{:else}
+			<!-- Webhooks that send nothing now, whatever stopped them (card 2329). The count comes to the board's owner and an administrator alone. -->
+			{#if heldWebhooks > 0}
+				<p class="share-held">
+					⚠️ {heldWebhooks === 1 ? '1 webhook on this board sends' : `${heldWebhooks} webhooks on this board send`} nothing: the account that set each up can no longer open the board, or nobody is recorded as setting it up.
+					Read the board's webhooks with your API key (GET /api/v1/boards/{boardId}/webhooks) to see why each is held, and delete it or take it over.
+				</p>
+			{/if}
+
 			<!-- Public visibility toggle -->
 			{#if canManage}
 				<div class="public-toggle-section">
@@ -323,7 +397,7 @@
 											<option value="owner">Owner</option>
 										{/if}
 									</select>
-									<button class="share-remove-btn" onclick={() => removeAccess('user', member.userId)} title="Remove access">
+									<button class="share-remove-btn" onclick={() => askToRemove('user', member.userId)} title="Remove access">
 										<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 2l8 8M10 2L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
 									</button>
 								{:else}
@@ -355,7 +429,7 @@
 										<option value="viewer">Viewer</option>
 										<option value="editor">Editor</option>
 									</select>
-									<button class="share-remove-btn" onclick={() => removeAccess('team', team.teamId)} title="Remove access">
+									<button class="share-remove-btn" onclick={() => askToRemove('team', team.teamId)} title="Remove access">
 										<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 2l8 8M10 2L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
 									</button>
 								{:else}
@@ -384,10 +458,20 @@
 		{/if}
 
 		<div class="share-footer">
-			<button class="btn-ghost" onclick={onClose}>Close</button>
+			<button class="btn-ghost" onclick={onClose} bind:this={closeButton}>Close</button>
 		</div>
 	</div>
 </div>
+
+{#if asking}
+	<ConfirmModal
+		title="Remove Access"
+		message={stopsMessage(asking)}
+		confirmText="Remove"
+		onConfirm={confirmRemove}
+		onCancel={() => (asking = null)}
+	/>
+{/if}
 
 <style>
 	.share-modal {
@@ -407,6 +491,18 @@
 	.share-board-name {
 		font-size: 0.85rem;
 		color: var(--text-secondary);
+	}
+
+	/* Webhooks held now (card 2329): a warning, in the amber the app warns in */
+	.share-held {
+		margin: 0 0 var(--space-xl);
+		padding: var(--space-sm) var(--space-md);
+		font-size: 0.78rem;
+		line-height: 1.45;
+		color: var(--text-secondary);
+		background: rgba(245, 158, 11, 0.08);
+		border: 1px solid rgba(245, 158, 11, 0.3);
+		border-radius: var(--radius-sm);
 	}
 
 	.share-loading {

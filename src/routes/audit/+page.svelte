@@ -186,7 +186,10 @@
 			if (asked !== auditAsked) return;
 			auditError = '';
 			auditRows = reset ? body.data : [...auditRows, ...body.data];
-			auditExhausted = body.data.length < AUDIT_PAGE;
+			// Offered only while the answer says more follows (card 2383): a page
+			// of exactly 100 with nothing after it offered a Load more that read
+			// nothing. An answer with no `pagination` offers none.
+			auditExhausted = body.pagination?.hasMore !== true;
 		} catch {
 			if (asked !== auditAsked) return;
 			auditError = 'No answer from the server. The audit log was not read.';

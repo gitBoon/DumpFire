@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.90
+version: 1.91
 status: As-Built
 date: 2026-10-21
 tags:
@@ -2170,6 +2170,17 @@ API:
   keep `action` as stored (`api:card_moved`), which the page shows, and an `api:` in front of
   its action filter still means done through the API, where `GET /audit-log`, whose actions
   are canonical, reads it as a spelling. Its times stay in the stored form.
+- **`GET /api/boards/{id}/share` tells the board's owner and an administrator about the
+  board's webhooks** (card 2329), for the Share window: each member and each team carries
+  `stopsWebhooks`, how many of the board's webhooks that are sent now that share's removal
+  would hold (its setter could open the board no other way: their own share as a member, for a
+  team's removal, another team, the board being public, having made it, an administrator's
+  role), and the answer carries `heldWebhooks`, how
+  many are on and held now (a setter who can no longer open the board, or none recorded; see
+  `pausedBecause`). Both are worked out at the read (`webhookShareNotes` in
+  `src/lib/server/webhooks.ts`, from `holdOf` and `roleOnBoard` with the share left out) and
+  never stored. Anyone else is answered as before, with neither key. The Share window asks
+  before a removal above 0 and shows the held count. No `/api/v1` operation changes.
 
 ### Changes on 2026-10-13
 
