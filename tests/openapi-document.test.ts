@@ -2667,6 +2667,10 @@ describe('what a route answers, against the schema the document gives for it', (
 		const deleting = spec.paths['/api/v1/board-categories/{categoryId}'].delete.description as string;
 		expect(deleting).toContain('takes every board filed under it out of it');
 		expect(deleting).not.toContain('unchanged');
+		// Card 2345: a board save that changes nothing writes nothing.
+		expect(changes).toContain('(95) PUT /api/v1/boards/{boardId} writes, logs and tells only the fields whose value changes');
+		expect(changes.indexOf('(95)')).toBeGreaterThan(changes.indexOf('(94)'));
+		expect(spec.paths['/api/v1/boards/{boardId}'].put.description).toContain('Only the fields whose value changes are written, logged and told');
 	});
 
 	// ─── What is said in words, and can be tried ─────────────────────────────

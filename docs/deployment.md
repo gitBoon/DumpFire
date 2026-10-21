@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.67
+version: 1.68
 status: As-Built
 date: 2026-10-21
 tags:
@@ -3771,9 +3771,12 @@ Nothing is done to the database. The older image can open the add and the edit f
 
 **Card 2293.** No migration file and no schema change; **it changes production rows at the first start of the new image**. Deleting a dashboard grouping (Manage Categories, or `DELETE /api/v1/board-categories/{id}`) deleted the grouping and nothing else. `boards.category_id` has no foreign key, so every board filed under it kept the deleted grouping's id: every page showed it as uncategorised, but both API trees answered the dead id in every board read, and a grouping later given the same id (which a restore onto another server can do) would have had those boards filed under it, hidden from its maker. Now the delete takes every board filed under the grouping out of it, sub-boards included, in the same transaction, leaving their `updated_at` as it is and recording and telling nothing. A start-up backfill clears any board whose grouping is not there, at every start and after every restore; at the first start after the deploy that is the one-off for the boards earlier deletes left behind. A restore treats `boards.category_id` as a foreign key: one that could not copy a grouping some board points at is refused, as for a real foreign key. The plan is `docs/planning/cards-2293-2327-2345-2346-data.md`. See [Data Model](data-model.md#key-schema-notes).
 
+**Card 2345.** No migration, no setting, no route. A board save that changed nothing (the emoji picker choosing the emoji the board has, the dashboard's context menu choosing the grouping it is in, an API client sending a board back whole) wrote the board again with a new `updated_at`, put a false "Updated board" naming every field sent in the board's log and the activity report, moved the dashboard's last activity and made every open page of the board re-read. Now only the fields whose value changes are written, recorded and told, as for cards, comments, subtasks and goals (card 2183's rule): a save that changes nothing answers the board as it is, and one that changes some names only those. The page's `{}` no longer writes the row; v1's `{}` is still `400`; an editor who sends `isPublic` is still `403`.
+
 **Owner to know.**
 
 - **`DELETE /api/v1/board-categories/{id}` now takes its boards out of the grouping**, where the document said they kept its id (item 94 of the OpenAPI note). The page's confirm already promised it ("Boards using it will become uncategorised").
+- **`PUT /api/v1/boards/{id}` sending values the board holds no longer logs `api:board_updated`** (item 95), and an entry names only the fields that changed. A client that read the audit log for a board update it made will find none when nothing changed.
 - **The boards check 321 lists are cleared at the first start**: each loses an id that names nothing. Each is already shown under Uncategorised, so no page changes; the API answers `categoryId: null` for them afterwards. One `WARN` line names them by id.
 
 #### Before the deploy
@@ -3798,17 +3801,19 @@ A rehearsal (check 0c) on a copy of production, if one is run, gives the same co
 
 #### After the deploy
 
-**O** is your own (administrator) account and API key. Nothing here touches a real board's grouping.
+**O** is your own (administrator) account and API key. Nothing here touches a real board's grouping or a real board. Card 2345's checks use a scratch board of O's, "TEST 2345 - delete me", made on the dashboard for them and deleted after check 329.
 
 | # | Card | Do | Expect | A fault if |
 |---|---|---|---|---|
 | 323 | 2293 | First after the deploy: `docker logs dumpfire 2>&1 \| grep "grouping that no longer exists"` | If check 321 counted N > 0: one `WARN` "Took N board(s) out of a grouping that no longer exists", naming the first 50 by id. If 0: no such line | A count other than check 321's |
 | 324 | 2293 | Run check 321's query again | `dangling` 0 and an empty table | Any row |
 | 325 | 2293 | As O, dashboard **Manage Categories**: add "TEST 2293 - delete me"; make a board "TEST 2293 board - delete me" and file it under the grouping (its context menu). With your key, `GET /api/v1/boards/<id>`; then delete the grouping in Manage Categories (confirm); reload; with your key, `GET /api/v1/boards/<id>` again | Before the delete `categoryId` the grouping's id; after it, the board under Uncategorised and `categoryId` `null`. Delete the board afterwards | `categoryId` still the old id |
+| 328 | 2345 | As O with your key, `GET /api/v1/boards/<TEST 2345 board>`, then `PUT` the same `name`, `emoji`, `categoryId` and `isPublic` back; open the board's **Activity Log** | `200`; `updatedAt` as in the `GET`; no new "Updated board" entry | A new entry, or `updatedAt` moved |
+| 329 | 2345 | `PUT` `{"name": "TEST 2345 - delete me 2", "emoji": <its own>}`; open the **Activity Log** again. Then delete the board | One entry "Updated board … (fields: name)" | `emoji` named too |
 
 #### Going back to the previous image
 
-The boards cleared stay cleared; the older image reads `null` as unfiled, as it always has. The older image leaves boards pointing at a deleted grouping again, and a restore on it commits boards filed under a grouping it could not copy.
+The boards cleared stay cleared; the older image reads `null` as unfiled, as it always has. The older image leaves boards pointing at a deleted grouping again, and a restore on it commits boards filed under a grouping it could not copy. It also writes and records a board save that changes nothing again, naming every field sent.
 
 ## Changing the Schema
 
