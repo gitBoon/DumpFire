@@ -274,16 +274,16 @@ export const load: PageServerLoad = async ({ locals }) => {
 			.map(row => row.card);
 	}
 
-	// Determine which of my cards are in "done" columns
+	// The columns my cards are in, read once for which are done and which on
+	// hold (On Hold count, below): the same query was made for each.
 	const allColumnIds = [...new Set(myCards.map(c => c.columnId))];
-	let doneColumnIds = new Set<number>();
-	if (allColumnIds.length > 0) {
-		const cols = db.select({ id: columns.id, title: columns.title })
+	const myColumns = allColumnIds.length > 0
+		? db.select({ id: columns.id, title: columns.title })
 			.from(columns)
 			.where(inArray(columns.id, allColumnIds))
-			.all();
-		doneColumnIds = completeColumnIds(cols);
-	}
+			.all()
+		: [];
+	const doneColumnIds = completeColumnIds(myColumns);
 
 	const myCompletedCards = myCards.filter(c => doneColumnIds.has(c.columnId));
 	const myActiveCards = myCards.filter(c => !doneColumnIds.has(c.columnId));
@@ -480,14 +480,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 	}
 
 	// ─── On Hold count ──────────────────────────────────────────────────
-	const onHoldColumnIds = new Set<number>();
-	if (allColumnIds.length > 0) {
-		const cols = db.select({ id: columns.id, title: columns.title })
-			.from(columns)
-			.where(inArray(columns.id, allColumnIds))
-			.all();
-		for (const id of holdColumnIds(cols)) onHoldColumnIds.add(id);
-	}
+	// From the columns read for the done ones, above.
+	const onHoldColumnIds = holdColumnIds(myColumns);
 	const onHoldCount = myCards.filter(c => onHoldColumnIds.has(c.columnId)).length;
 
 	const analytics = {
