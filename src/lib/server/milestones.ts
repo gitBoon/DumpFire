@@ -22,7 +22,7 @@ import { resolveAccessible } from './list-access';
 import { isCompleteColumnTitle } from './card-completion';
 import { changedFields } from './card-changes';
 import { ACTIONS, actorOf, logActivity, type ActivitySource } from './logActivity';
-import { boardsOpenTo, getMilestoneBoardIds } from './planning';
+import { boardsOpenTo, getMilestoneBoardIds, getMilestonesBoardIds } from './planning';
 import type { SessionUser } from './auth';
 import { stamp } from '$lib/timestamps';
 
@@ -61,7 +61,9 @@ function isAdmin(user: Pick<SessionUser, 'role'>): boolean {
  * access to every board its cards live on — the summary carries card titles
  * from all of them, so partial access must not be enough. Asked of a signed-in
  * caller, and of each recipient of the plan-created mail (card 2152), so it
- * takes only who they are and their role.
+ * takes only who they are and their role. The two goal lists ask the same
+ * rule of many goals at once (`milestonesOpenAmong`, card 2399): a change to
+ * one is a change to the other.
  */
 export function canViewMilestone(user: Actor, milestone: MilestoneRow): boolean {
 	if (isAdmin(user)) return true;
@@ -70,6 +72,31 @@ export function canViewMilestone(user: Actor, milestone: MilestoneRow): boolean 
 	const touched = getMilestoneBoardIds(milestone.id);
 	if (touched.length === 0) return milestone.createdBy === user.id;
 	return touched.every((b) => canViewBoard(user, b));
+}
+
+/**
+ * Of `rows`, the milestones `user` may open: `canViewMilestone`'s rule, asked
+ * of `open`, the caller's boards as `resolveAccessible` answers them, and not
+ * of each board in turn (card 2399). The two goal lists asked it of every goal,
+ * up to four reads for a goal of one board and more for a goal across boards;
+ * this reads the boards of every goal across boards at once, and nothing else.
+ *
+ * `canViewBoard` on a board is that board being in `open`: both are the boards
+ * the caller made, their member rows, their teams' shares and the public
+ * boards, and a member row or a share goes with its board (`ON DELETE
+ * CASCADE`). `open` is null only for an administrator, who opens every goal;
+ * a null for anyone else opens no board.
+ */
+function milestonesOpenAmong(user: Actor, rows: MilestoneRow[], open: number[] | null): MilestoneRow[] {
+	if (isAdmin(user)) return rows;
+	const opens = new Set(open ?? []);
+	const touched = getMilestonesBoardIds(rows.filter((m) => m.boardId === null).map((m) => m.id));
+	return rows.filter((m) => {
+		if (m.boardId !== null) return opens.has(m.boardId);
+		const boards = touched.get(m.id) ?? [];
+		if (boards.length === 0) return m.createdBy === user.id;
+		return boards.every((b) => opens.has(b));
+	});
 }
 
 /**
@@ -236,14 +263,16 @@ export function listMilestones(
 		return touchingIds !== null && touchingIds.has(m.id);
 	};
 
-	const filtered = all
-		.filter(matchesBoard)
-		.filter((m) => (status ? m.status === status : true))
-		.filter((m) => canViewMilestone(user, m));
+	const asked = all.filter(matchesBoard).filter((m) => (status ? m.status === status : true));
+	if (asked.length === 0) return [];
+	// The caller's boards read once, for which goals they may open and which
+	// boards of each they are told (card 2399).
+	const open = resolveAccessible(user, accessible);
+	const filtered = milestonesOpenAmong(user, asked, open);
 	if (filtered.length === 0) return [];
 
 	const ids = filtered.map((m) => m.id);
-	const opens = boardsOpenTo(user, accessible);
+	const opens = boardsOpenTo(user, open);
 	const memberRows = db
 		.select({ milestoneId: cards.milestoneId, columnTitle: columns.title, boardId: columns.boardId })
 		.from(cards)
@@ -601,13 +630,13 @@ export function takeCardOutOfMilestone(
  */
 export function milestonesForBoard(user: SessionUser, boardId: number, accessible?: number[] | null): MilestoneRow[] {
 	const open = resolveAccessible(user, accessible);
-	return db
+	const asked = db
 		.select()
 		.from(milestones)
 		.all()
-		.filter((m) => m.boardId === null || m.boardId === boardId)
-		.filter((m) => open === null || m.boardId === null || open.includes(m.boardId))
-		.filter((m) => canViewMilestone(user, m))
+		.filter((m) => m.boardId === null || m.boardId === boardId);
+	// Each goal checked against the boards just read (card 2399).
+	return milestonesOpenAmong(user, asked, open)
 		.sort((a, b) => (a.status === b.status ? a.name.localeCompare(b.name) : a.status === 'open' ? -1 : 1));
 }
 

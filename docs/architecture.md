@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.48
+version: 1.49
 status: As-Built
 date: 2026-10-21
 tags:
@@ -1158,6 +1158,27 @@ flowchart LR
 ```
 
 `tests/load-access-reads.test.ts` asks each of them as five kinds of caller and pins the answer's hash, the number of access reads and a ceiling on all reads.
+
+**The same reads for one board or goal as for many (card 2399).** The inbox (`src/routes/inbox/+page.server.ts`) reads the columns of every board it offers in one query, each board's in `COLUMN_ORDER`, where it read each board's with a query of its own. `milestonesForBoard` and `listMilestones` (`src/lib/server/milestones.ts`) check each goal against the caller's boards they already hold (`milestonesOpenAmong`), where they asked `canViewMilestone` of each goal in turn: up to four reads for a goal of one board (`canViewBoard`), and for a goal across boards one read of its boards and up to four for each. The rule is `canViewMilestone`'s, unchanged: a goal of one board opens with that board, a goal across boards with every board its cards are on (archived ones included), and one with no card for whoever made it; an administrator opens every goal. `canViewBoard` on a board is that board being among the caller's boards, since both are the boards the caller made, their member rows, their teams' shares and the public boards, and a member row or share goes with its board (`ON DELETE CASCADE`). The boards of every goal across boards are read at once (`getMilestonesBoardIds`, `src/lib/server/planning.ts`). `listMilestones` now reads the caller's boards before it checks the goals, so a list of goals none of which the caller can open reads them once where it read each goal's board; the plan page hands it the boards it read already. All Tasks and All To Do (`readCrossBoardCards`) read only the caller's boards (`inArray`, in the order of their ids, as the whole table gave them), every board for an administrator, where they read the whole `boards` table and kept the caller's in memory. Every answer is unchanged, byte for byte; `tests/load-access-reads.test.ts` pins the inbox, the plan page and the three goal routes with the rest, holds the inbox and the goal lists to the same reads for one board and goal as for twelve, and holds the goal lists to `canViewMilestone`'s answer for every caller.
+
+| Page or endpoint | Reads, before → after (board member in the pinned scene) |
+|---|---|
+| The inbox | 9 → 7 (an administrator 7 → 3) |
+| The plan page | 23 → 9 (2 reads of the caller's boards → 1) |
+| `GET /api/milestones`, `GET /api/v1/milestones` | 18 → 8 |
+| `GET /api/milestones?forBoard=` | 13 → 6 |
+| The board page, `GET /api/boards/[id]/contents` (board A) | 48 → 41 |
+| The burndown page, every board | 27 → 17 |
+
+```mermaid
+flowchart LR
+    Goals["the goals asked for"] --> Admin{"an administrator?"}
+    Admin -- yes --> All["every goal"]
+    Admin -- no --> Kind{"the goal's board"}
+    Kind -- "one board" --> In["that board among<br/>the caller's boards"]
+    Kind -- "none: across boards" --> Touch["its cards' boards,<br/>one read for every<br/>such goal"]
+    Touch --> Every["every one among<br/>the caller's boards,<br/>or no card and<br/>the caller made it"]
+```
 
 ### All Tasks
 

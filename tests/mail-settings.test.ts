@@ -313,7 +313,7 @@ describe('the way out on the SMTP route (test 17)', () => {
 		expect((await api('GET', '/api/admin/smtp', { user: chief })).body.allowInsecure).toBe(true);
 	});
 
-	it('is saved with the password typed, with one WARN line naming who set it each time it changes, and a "secure" sent is not saved', async () => {
+	it('is saved with the password typed, with its own WARN line naming who set it each time it changes, and a "secure" sent is not saved', async () => {
 		const level = process.env.LOG_LEVEL;
 		process.env.LOG_LEVEL = 'WARN';
 		const quiet = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -334,8 +334,11 @@ describe('the way out on the SMTP route (test 17)', () => {
 			else process.env.LOG_LEVEL = level;
 		}
 
+		// Each change follows card 2396's line, a WARN since its review.
 		expect(sqlite.prepare("SELECT level, message FROM system_logs WHERE context = 'SMTP' ORDER BY id").all()).toEqual([
+			{ level: 'WARN', message: 'Mail settings changed: allowInsecure from false to true (set by "chief")' },
 			{ level: 'WARN', message: 'Mail is now sent without a checked, encrypted connection (set by chief)' },
+			{ level: 'WARN', message: 'Mail settings changed: allowInsecure from true to false (set by "chief")' },
 			{ level: 'WARN', message: 'Mail is now sent with a checked, encrypted connection (set by chief)' }
 		]);
 	});
@@ -345,6 +348,136 @@ describe('the way out on the SMTP route (test 17)', () => {
 
 		expect(res.status).toBe(400);
 		expect(res.body.message).toBe('allowInsecure must be true or false');
+	});
+});
+
+/**
+ * Card 2396. Since card 2395 every administrator can point mail at a server of
+ * their own, which sees every mail sent, and a save recorded nothing but a
+ * change of the way out. Every save that changes a mail setting or the App URL
+ * is now one line under SMTP, once committed, filed under the account that
+ * saved it and naming it, each setting with its values but the user name and
+ * the password. The review made every such line a WARN, so that a change of
+ * the sender or the password is kept where LOG_LEVEL is WARN, and named the
+ * user name alone, as some providers take the API token for both.
+ */
+describe('the line a save of the mail settings writes (card 2396)', () => {
+	let level: string | undefined;
+	let quiet: { mockRestore(): void }[];
+	beforeEach(() => {
+		// The tests keep ERROR and above; these lines are WARN, kept at WARN.
+		level = process.env.LOG_LEVEL;
+		process.env.LOG_LEVEL = 'WARN';
+		quiet = [vi.spyOn(console, 'log').mockImplementation(() => {}), vi.spyOn(console, 'warn').mockImplementation(() => {})];
+	});
+	afterEach(() => {
+		for (const spy of quiet) spy.mockRestore();
+		if (level === undefined) delete process.env.LOG_LEVEL;
+		else process.env.LOG_LEVEL = level;
+	});
+
+	/** The lines saves of the mail settings wrote, oldest first. */
+	const mailLines = () =>
+		(
+			sqlite
+				.prepare("SELECT level, context, message, meta, user_id FROM system_logs WHERE message LIKE 'Mail settings changed:%' ORDER BY id")
+				.all() as { level: string; context: string; message: string; meta: string | null; user_id: number | null }[]
+		).map((row) => ({ ...row, meta: row.meta === null ? null : JSON.parse(row.meta) }));
+	/** Every line under SMTP, as stored. */
+	const smtpRows = () => JSON.stringify(sqlite.prepare("SELECT * FROM system_logs WHERE context = 'SMTP'").all());
+
+	it.each([
+		['host', { host: 'smtp.other.test', pass: PASSWORD }, 'WARN', 'host from "smtp.example.test" to "smtp.other.test"', { field: 'host', from: 'smtp.example.test', to: 'smtp.other.test' }],
+		['port', { port: 465, pass: PASSWORD }, 'WARN', 'port from 587 to 465', { field: 'port', from: 587, to: 465 }],
+		['allowInsecure', { allowInsecure: true, pass: PASSWORD }, 'WARN', 'allowInsecure from false to true', { field: 'allowInsecure', from: false, to: true }],
+		['user', { user: 'other-mailer', pass: PASSWORD }, 'WARN', 'user changed', { field: 'user' }],
+		['pass', { pass: 'a-new-password-2396' }, 'WARN', 'password changed', { field: 'pass' }],
+		['fromAddress', { fromAddress: 'new@example.test' }, 'WARN', 'fromAddress from "board@example.test" to "new@example.test"', { field: 'fromAddress', from: 'board@example.test', to: 'new@example.test' }],
+		['fromName', { fromName: 'The "New" Board' }, 'WARN', 'fromName from "The Board" to "The \\"New\\" Board"', { field: 'fromName', from: 'The Board', to: 'The "New" Board' }],
+		['appUrl', { appUrl: 'https://kanban.example.test' }, 'WARN', 'appUrl from "" to "https://kanban.example.test"', { field: 'appUrl', from: '', to: 'https://kanban.example.test' }]
+	] as const)('logs %s changed, naming the administrator who saved it', async (_field, change, lineLevel, words, meta) => {
+		const deputy = makeUser({ username: 'deputy', role: 'admin' });
+		const res = await api('PUT', '/api/admin/smtp', { user: deputy, body: { ...PANEL, ...change } });
+
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		expect(mailLines()).toEqual([
+			{ level: lineLevel, context: 'SMTP', message: `Mail settings changed: ${words} (set by "deputy")`, meta: { changes: [meta] }, user_id: deputy.id }
+		]);
+	});
+
+	it('never writes the mail user name, the one saved or the one it replaced', async () => {
+		// Some providers take the API token as both the user name and the password.
+		const res = await save({ ...PANEL, user: 'token-as-user-2396', pass: 'token-as-user-2396' });
+
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		const [line] = mailLines();
+		expect(line.message).toBe('Mail settings changed: user changed; password changed (set by "chief")');
+		expect(line.meta).toEqual({ changes: [{ field: 'user' }, { field: 'pass' }] });
+		for (const name of ['token-as-user-2396', STORED.smtp_user]) {
+			expect(line.message).not.toContain(name);
+			expect(JSON.stringify(line.meta)).not.toContain(name);
+			expect(smtpRows()).not.toContain(name);
+		}
+	});
+
+	it('quotes the name of the administrator who saved it, as it quotes the values', async () => {
+		const odd = makeUser({ username: 'odd"one\\2396', role: 'admin' });
+		const res = await api('PUT', '/api/admin/smtp', { user: odd, body: { ...PANEL, fromName: 'Board' } });
+
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		expect(mailLines().map((line) => line.message)).toEqual(['Mail settings changed: fromName from "The Board" to "Board" (set by "odd\\"one\\\\2396")']);
+	});
+
+	it('names every setting one save changed, in one line, in the order of the panel', async () => {
+		const res = await save({ ...PANEL, host: 'smtp.other.test', port: 2525, pass: 'typed-again-2396', fromName: 'Board', appUrl: 'kanban.example.test' });
+
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		expect(mailLines().map((line) => [line.level, line.message, line.user_id])).toEqual([
+			[
+				'WARN',
+				'Mail settings changed: host from "smtp.example.test" to "smtp.other.test"; port from 587 to 2525; password changed; ' +
+					'fromName from "The Board" to "Board"; appUrl from "" to "http://kanban.example.test" (set by "chief")',
+				chief.id
+			]
+		]);
+	});
+
+	it('never writes the password, the one saved or the one it replaced, an emptied one included', async () => {
+		expect((await save({ ...PANEL, host: 'smtp.other.test', pass: 'brand-new-secret-2396' })).status).toBe(200);
+		expect((await save({ ...PANEL, host: 'smtp.other.test', pass: '' })).status).toBe(200);
+
+		expect(mailLines().map((line) => line.message)).toEqual([
+			'Mail settings changed: host from "smtp.example.test" to "smtp.other.test"; password changed (set by "chief")',
+			'Mail settings changed: password changed (set by "chief")'
+		]);
+		expect(smtpRows()).not.toContain('brand-new-secret-2396');
+		expect(smtpRows()).not.toContain(PASSWORD);
+	});
+
+	it('writes nothing for a save that changes nothing a mail reads', async () => {
+		// The panel sent back as the GET filled it, the password masked; typed as
+		// stored; the port as text; the App URL emptied where none is set.
+		for (const body of [PANEL, { ...PANEL, pass: PASSWORD }, { ...PANEL, port: '587' }, { appUrl: '' }]) {
+			const res = await save(body);
+			expect(res.status, JSON.stringify(res.body)).toBe(200);
+		}
+
+		expect(mailLines()).toEqual([]);
+		expect(smtpRows()).toBe('[]');
+	});
+
+	it('writes nothing for a save that is refused', async () => {
+		const outsider = makeUser({ username: 'outsider' });
+		const refused = [
+			await save({ ...PANEL, host: 'smtp.evil.example' }), // the stored password, to another host
+			await save({ ...PANEL, port: 'abc' }),
+			await save({}),
+			await api('PUT', '/api/admin/smtp', { user: outsider, body: { ...PANEL, fromName: 'Not saved' } })
+		];
+
+		expect(refused.map((res) => res.status)).toEqual([400, 400, 400, 403]);
+		expect(stored()).toEqual(STORED);
+		expect(mailLines()).toEqual([]);
 	});
 });
 
