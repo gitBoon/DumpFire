@@ -25,6 +25,28 @@ import {
 import { getAccessibleBoardIds, isAdmin, type Actor } from './board-access';
 import { subBoardProgress } from './card-completion';
 
+/*
+ * `accessible`, on `recentActivityFor`, `boardCategoryRule`,
+ * `boardCategoriesFor` and `subBoardsFor`: the caller's
+ * `getAccessibleBoardIds(user)`, when whoever calls has read it already in
+ * the same request (card 2393). Left out, each reads it for itself, as every
+ * caller but the dashboard does. The dashboard read it four times a load, four
+ * reads each (five for a caller in a team), and reads it once now. It must be
+ * that function's answer for the same user, read in the same request: passed
+ * anything else, a list would answer for someone else's boards.
+ *
+ * `null` is that function's answer for an administrator, "every board", and
+ * is taken as one only from an administrator (card 2393's review): from anyone
+ * else, each helper reads the caller's boards for itself, as if it had been
+ * left out, so a `null` passed by mistake answers what a left-out argument
+ * would, never every board. The role is on the caller, so telling them apart
+ * reads nothing, and an administrator's `null` is used as it is.
+ */
+function resolveAccessible(user: Actor, accessible: number[] | null | undefined): number[] | null {
+	if (accessible === undefined || (accessible === null && !isAdmin(user))) return getAccessibleBoardIds(user);
+	return accessible;
+}
+
 /**
  * The caller's own entries in the activity log, newest first, on the boards
  * they can open (card 2126). `GET /api/v1/me/stats` lists 20 and the dashboard
@@ -49,8 +71,8 @@ import { subBoardProgress } from './card-completion';
  * took `idx_activity_log_user_id` and sorted every entry of the caller's. (0054
  * replaced that index with `idx_activity_log_user_id_created_at`.)
  */
-export function recentActivityFor(user: Actor, limit: number): ActivityLog[] {
-	const boardIds = getAccessibleBoardIds(user);
+export function recentActivityFor(user: Actor, limit: number, accessible?: number[] | null): ActivityLog[] {
+	const boardIds = resolveAccessible(user, accessible);
 	if (boardIds !== null && boardIds.length === 0) return [];
 
 	return db
@@ -152,8 +174,8 @@ export function listTeamsFor(user: Actor): (Team & { members?: ListedTeamMember[
  * one: a grouping a caller could file a board under would be one more name
  * they can make listed to themselves.
  */
-export function boardCategoryRule(user: Actor): (groupingId: number) => boolean {
-	const open = getAccessibleBoardIds(user);
+export function boardCategoryRule(user: Actor, accessible?: number[] | null): (groupingId: number) => boolean {
+	const open = resolveAccessible(user, accessible);
 	if (open === null) return () => true;
 
 	const opens = new Set(open);
@@ -171,8 +193,8 @@ export function boardCategoryRule(user: Actor): (groupingId: number) => boolean 
 }
 
 /** The groupings `boardCategoryRule` lists to the caller, by name, as both list routes answer them. */
-export function boardCategoriesFor(user: Actor): BoardCategory[] {
-	const listed = boardCategoryRule(user);
+export function boardCategoriesFor(user: Actor, accessible?: number[] | null): BoardCategory[] {
+	const listed = boardCategoryRule(user, accessible);
 	return db
 		.select()
 		.from(boardCategories)
@@ -234,9 +256,9 @@ export function cardCategoriesFor(user: Actor, shown: { categoryId: number | nul
  * given. One they cannot open is left out, as the graph leaves it out (cards
  * 2101 to 2131).
  */
-export function subBoardsFor(user: Actor, parentCardIds?: number[]): Board[] {
+export function subBoardsFor(user: Actor, parentCardIds?: number[], accessible?: number[] | null): Board[] {
 	if (parentCardIds !== undefined && parentCardIds.length === 0) return [];
-	const open = getAccessibleBoardIds(user);
+	const open = resolveAccessible(user, accessible);
 	if (open !== null && open.length === 0) return [];
 
 	return db

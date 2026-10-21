@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.62
+version: 1.63
 status: As-Built
 date: 2026-10-21
 tags:
@@ -2757,7 +2757,11 @@ categories, which are listed whole with no limit, are filtered in code once the 
 read, by one rule each that a list, a read of one and a write all ask. The board a caller can open is the one list
 `getAccessibleBoardIds()` gives: every board for an administrator, and otherwise the boards
 they made, are a member of, have through a team, or are public. A sub-board is a board of
-its own and inherits nothing from the board its card is on.
+its own and inherits nothing from the board its card is on. A load that has read that list
+already may hand it to `recentActivityFor()`, `boardCategoryRule()`, `boardCategoriesFor()`
+and `subBoardsFor()` (the dashboard does, card 2393), and a `null` handed to them is taken as
+"every board" only from an administrator: from anyone else each reads the caller's boards
+for itself (card 2393's review).
 
 ```mermaid
 flowchart LR
