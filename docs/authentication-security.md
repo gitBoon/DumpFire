@@ -1,9 +1,9 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.57
+version: 1.58
 status: As-Built
-date: 2026-10-20
+date: 2026-10-21
 tags:
   - authentication
   - security
@@ -2744,7 +2744,7 @@ and no guard of one board covers it: until 2026-10-14 several lists, and the pag
 draw the same things, gave every signed-in caller rows of boards they had never been given
 (cards 2126, 2128, 2129 and 2130). Each list now asks one function, most of them in
 `src/lib/server/list-access.ts`, which takes the caller and gives only what they may be
-told. Recent activity and sub-boards are filtered in the query, before any limit: a filter
+told. Recent activity, sub-boards and the card search are filtered in the query, before any limit: a filter
 applied after a limit hands back fewer rows than were asked for. Groupings and card
 categories, which are listed whole with no limit, are filtered in code once the rows are
 read, by one rule each that a list, a read of one and a write all ask. The board a caller can open is the one list
@@ -2791,6 +2791,7 @@ flowchart LR
 | A webhook's address | Left out, with its secret, but to the board's owner, an administrator and the request that made the webhook | Both webhook reads, the answer to an update | 2133, decision 14 |
 | A board's events, by webhook | Sent only while the account that set the webhook up can open the board, asked at each event with its role as it is then; none for a webhook with no recorded setter, from the deploy on. A held webhook is not sent to, keeps `active`, and says why in `pausedBecause`, given where its address is given. Before, a former editor, or an administrator made an ordinary user, went on receiving every event of the board | Every delivery (`deliver`); `pausedBecause` in both webhook reads, the answer to an update and the create | 2325 |
 | The activity report | Only the boards the caller can open are read, before the query. A board named in `boardIds` they cannot open is refused, `403` "No access to board N", and one that does not exist `404` "Board N not found", administrators included, as the burndown answers. `meta.boardsExcludedForAccess` is always `0`: it counted the boards with activity the caller could not open, and with a window down to the second it told them when such a board was worked on. A milestone's counts in the report are of its cards on boards the caller can open, as its burndown's are: a card moved onto a board they cannot open told them, by moving `from`, the second it was completed | `GET /api/v1/reports/activity` | 2326 |
+| Card search (the pickers) | Cards and subtasks on boards the caller can open, filtered in the query with "not archived", the card left out (`exclude`) and the card's column being there, before its limit of 60, then the first 25 (40 with subtasks) by id. It read the first 60 matches of every board and dropped the hidden ones afterwards, so matches on other people's boards pushed the caller's own out, and an answer shorter than the cap told them that hidden matches existed. A caller who opens no board is answered `[]` with no query; `#<id>` of a hidden card is `[]`, as a missing one is | `GET /api/cards/search` (the dependency picker, the plan page's **+ Add cards**) | 2327 |
 
 An administrator opens every board and is given every row of each, as before.
 

@@ -389,6 +389,132 @@ describe('the picker’s search, GET /api/cards/search', () => {
 		expect(byTitle.body.map((c: any) => c.id)).toEqual([L.cards[0].id]);
 		expect(byNumber.body.map((c: any) => [c.id, c.boardId])).toEqual([[L.cards[0].id, L.board.id]]);
 	});
+
+	// Card 2327: the search read the first 60 matches of every board, then
+	// dropped those on boards the caller cannot open, so matches on other
+	// people's boards pushed the caller's own out of the answer.
+	describe('reads only the boards the caller can open, before its limit (card 2327)', () => {
+		const search = async (user: SessionUser, query: string) => {
+			const res = await api('GET', `/api/cards/search?${query}`, { user });
+			expect(res.status).toBe(200);
+			return res.body as { id: number; kind: string; boardId: number }[];
+		};
+		/** `count` cards titled with `word` on `board`'s first column, made now. */
+		const matching = (board: BoardFixture, count: number, word = 'zq2327') =>
+			Array.from({ length: count }, (_, i) => makeCard(board.cols['To Do'], { title: `${word} ${i}` }));
+
+		it('finds the caller’s own matches though 60 on a board they cannot open were made first', async () => {
+			const stranger = makeUser({ username: 'stranger' });
+			const me = makeUser({ username: 'me' });
+			matching(makeBoard({ owner: stranger, name: 'Theirs' }), 60);
+			const mine = makeBoard({ owner: me, name: 'Mine' });
+			const own = matching(mine, 5);
+
+			const found = await search(me, 'q=zq2327');
+
+			expect(found.map((r) => r.id)).toEqual(own.map((c) => c.id));
+			expect(found.every((r) => r.boardId === mine.board.id)).toBe(true);
+		});
+
+		it('answers the cap of 25 though 40 hidden matches were made first', async () => {
+			const stranger = makeUser({ username: 'stranger' });
+			const me = makeUser({ username: 'me' });
+			matching(makeBoard({ owner: stranger, name: 'Theirs' }), 40);
+			const own = matching(makeBoard({ owner: me, name: 'Mine' }), 60);
+
+			const found = await search(me, 'q=zq2327');
+
+			expect(found.map((r) => r.id)).toEqual(own.slice(0, 25).map((c) => c.id));
+		});
+
+		it('with kinds=card,subtask, finds the caller’s subtask though 60 matching subtasks on a hidden board were made first', async () => {
+			const stranger = makeUser({ username: 'stranger' });
+			const me = makeUser({ username: 'me' });
+			const holder = makeCard(makeBoard({ owner: stranger, name: 'Theirs' }).cols['To Do'], { title: 'Holder' });
+			for (let i = 0; i < 60; i++) makeSubtask(holder, { title: `zq2327 sub ${i}` });
+			const ownCard = makeCard(makeBoard({ owner: me, name: 'Mine' }).cols['To Do'], { title: 'Mine too' });
+			const ownSub = makeSubtask(ownCard, { title: 'zq2327 sub mine' });
+
+			const found = await search(me, 'q=zq2327%20sub&kinds=card,subtask');
+
+			expect(found.map((r) => [r.kind, r.id])).toEqual([['subtask', ownSub.id]]);
+		});
+
+		// Contracts, which held before card 2327.
+		it('finds a public board’s card for a caller who is not a member, and a private board’s for an administrator', async () => {
+			const stranger = makeUser({ username: 'stranger' });
+			const me = makeUser({ username: 'me' });
+			const admin = makeUser({ username: 'admin', role: 'admin' });
+			const [onPublic] = matching(makeBoard({ owner: stranger, name: 'Public', isPublic: true }), 1, 'zq2327 public');
+			const [onPrivate] = matching(makeBoard({ owner: stranger, name: 'Private' }), 1, 'zq2327 private');
+
+			expect((await search(me, 'q=zq2327')).map((r) => r.id)).toEqual([onPublic.id]);
+			expect((await search(admin, 'q=zq2327')).map((r) => r.id)).toEqual([onPublic.id, onPrivate.id]);
+		});
+
+		it('answers a caller who can open no board with nothing', async () => {
+			const stranger = makeUser({ username: 'stranger' });
+			const nobody = makeUser({ username: 'nobody' });
+			const [theirs] = matching(makeBoard({ owner: stranger, name: 'Theirs' }), 3);
+
+			expect(await search(nobody, 'q=zq2327')).toEqual([]);
+			expect(await search(nobody, `q=%23${theirs.id}&kinds=card,subtask`)).toEqual([]);
+		});
+
+		it('answers #<id> of a card on a board the caller cannot open, and of an archived card, with nothing', async () => {
+			const stranger = makeUser({ username: 'stranger' });
+			const me = makeUser({ username: 'me' });
+			const [theirs] = matching(makeBoard({ owner: stranger, name: 'Theirs' }), 1);
+			const [archived] = matching(makeBoard({ owner: me, name: 'Mine' }), 1);
+			db.update(cardsTable).set({ archivedAt: '2026-10-01 09:00:00' }).where(eq(cardsTable.id, archived.id)).run();
+
+			expect(await search(me, `q=%23${theirs.id}`)).toEqual([]);
+			expect(await search(me, `q=%23${archived.id}`)).toEqual([]);
+		});
+
+		// Ruling 1 of the plan review: joined through `columns`, the read would
+		// come back grouped by board for anyone but an administrator. Board P has
+		// the lower id and holds the later cards.
+		it('answers the lowest ids, in id order, as it answers an administrator', async () => {
+			const me = makeUser({ username: 'me' });
+			const admin = makeUser({ username: 'admin', role: 'admin' });
+			const P = makeBoard({ owner: me, name: 'P' });
+			const Q = makeBoard({ owner: me, name: 'Q' });
+			const made = Array.from({ length: 30 }, (_, i) => makeCard((i % 2 === 0 ? Q : P).cols['To Do'], { title: `zq2327 ${i}` }));
+			const lowest = made.map((c) => c.id).sort((a, b) => a - b).slice(0, 25);
+
+			const mine = (await search(me, 'q=zq2327')).map((r) => r.id);
+
+			expect(mine).toEqual(lowest);
+			expect((await search(admin, 'q=zq2327')).map((r) => r.id)).toEqual(mine);
+		});
+
+		it('answers subtasks in id order too, across two boards', async () => {
+			const me = makeUser({ username: 'me' });
+			const P = makeBoard({ owner: me, name: 'P' });
+			const Q = makeBoard({ owner: me, name: 'Q' });
+			const onP = makeCard(P.cols['To Do'], { title: 'Holder P' });
+			const onQ = makeCard(Q.cols['To Do'], { title: 'Holder Q' });
+			const made = Array.from({ length: 6 }, (_, i) => makeSubtask(i % 2 === 0 ? onQ : onP, { title: `zq2327 sub ${i}` }));
+
+			const found = await search(me, 'q=zq2327%20sub&kinds=card,subtask');
+
+			expect(found.map((r) => r.id)).toEqual(made.map((st) => st.id));
+		});
+
+		it('with kinds=subtask alone, still answers the matching cards as well as the subtasks', async () => {
+			const me = makeUser({ username: 'me' });
+			const [card] = matching(makeBoard({ owner: me, name: 'Mine' }), 1);
+			const sub = makeSubtask(card, { title: 'zq2327 sub' });
+
+			const found = await search(me, 'q=zq2327&kinds=subtask');
+
+			expect(found.map((r) => [r.kind, r.id])).toEqual([
+				['card', card.id],
+				['subtask', sub.id]
+			]);
+		});
+	});
 });
 
 // ─── The page ───────────────────────────────────────────────────────────────
