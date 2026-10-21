@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.66
+version: 1.67
 status: As-Built
-date: 2026-10-20
+date: 2026-10-21
 tags:
   - docker
   - deployment
@@ -566,7 +566,7 @@ flowchart TD
     Files -->|"all applied"| Newer{"Does the database record a migration\nthis image has no file for?"}
     Newer -->|"Yes"| Skip["Log ERROR, and reshape nothing"]
     Newer -->|"No"| Recon["Reconcile six tables: rebuild any\nthat is not in the model's shape"]
-    Recon -->|"rebuilt, or left as it was\nand logged at ERROR"| Fill["Repeat the three backfills"]
+    Recon -->|"rebuilt, or left as it was\nand logged at ERROR"| Fill["Repeat the four backfills"]
     Skip --> Fill
     Fill --> Newer2{"Reconciliation skipped\nabove?"}
     Newer2 -->|"No"| Stamps["Bring every timestamp to the stored form,\nYYYY-MM-DD HH:MM:SS in UTC, in one transaction.\nA failure is rolled back and logged at ERROR"]
@@ -598,7 +598,7 @@ One more refusal comes after the migrations, before the server listens. If the d
 2. **Migration files.** Every `.sql` file in `/app/drizzle` whose name is not yet recorded in the `__drizzle_migrations` table is applied, in file-name order. Each file runs in its own transaction, together with the row that records it, so a file is either applied in full and recorded or not applied at all.
 3. **The first failure stops the server.** The failing file is rolled back, no later file is attempted, and the process exits with code 1 before it listens. Files this start had already applied stay applied and recorded.
 4. **Reconciliation.** Six tables (`boards`, `columns`, `categories`, `settings`, `user_xp`, `invite_tokens`) reached older databases in two different shapes. Any of them that is not in the shape the model declares is rebuilt in it, with every row carried across. A table that cannot be rebuilt safely is left exactly as it was and reported; that does not stop the server. The whole step is skipped when the database records a migration this image has no file for, because that database may be newer than the image, and an older image must not reshape it.
-5. **Backfills.** Three repairs that migrations made once are made again, in one transaction: the two values that `0050` and `0051` filled in (`cards.first_completed_at` and `task_requests.access_token`) for any row that lacks them, and `0057`'s statement, which takes a card out of a milestone that belongs to a board other than the card's (card 2179). The first two are logged in one `WARN` line when they fill anything, the third in a line of its own: `Took <n> card(s) out of a milestone that belongs to another board: card <id> left milestone <id>, …`, naming the first 50 cards by id with the milestone each left (`; and <n> more` after them), since nothing else then records which goal held them. At a start the third finds cards only after a database file taken before 0057 was swapped in by hand, or a return from an older image (after Import Backup the restore runs it and reports it itself); a count at any other start means some write still makes such a card (see [The Update That Brings the Third Round of Read Leaks](#the-update-that-brings-the-third-round-of-read-leaks)). A failure of any of them stops the start, with the stage `backfilling cards.first_completed_at, task_requests.access_token and cards.milestone_id`.
+5. **Backfills.** Three repairs that migrations made once are made again, in one transaction: the two values that `0050` and `0051` filled in (`cards.first_completed_at` and `task_requests.access_token`) for any row that lacks them, and `0057`'s statement, which takes a card out of a milestone that belongs to a board other than the card's (card 2179). A fourth, in the same transaction, takes out of its grouping any board filed under a dashboard grouping that no longer exists (card 2293), logged in a line of its own, `Took <n> board(s) out of a grouping that no longer exists: board <id> (grouping <id>), …`, the first 50 by id; it has no migration file, so its first run, at the first start after its deploy, is the one-off (see [Deleted Groupings, the Card Search, Unchanged Board Saves and a Goal's Archived Cards](#deleted-groupings-the-card-search-unchanged-board-saves-and-a-goals-archived-cards)). The first two are logged in one `WARN` line when they fill anything, the third in a line of its own: `Took <n> card(s) out of a milestone that belongs to another board: card <id> left milestone <id>, …`, naming the first 50 cards by id with the milestone each left (`; and <n> more` after them), since nothing else then records which goal held them. At a start the third finds cards only after a database file taken before 0057 was swapped in by hand, or a return from an older image (after Import Backup the restore runs it and reports it itself); a count at any other start means some write still makes such a card (see [The Update That Brings the Third Round of Read Leaks](#the-update-that-brings-the-third-round-of-read-leaks)). A failure of any of them stops the start, with the stage `backfilling cards.first_completed_at, task_requests.access_token, cards.milestone_id and boards.category_id`.
 6. **Timestamps.** Every timestamp column (every TEXT column whose name ends in `_at`, and `system_logs.timestamp`) is brought to the one stored form, `YYYY-MM-DD HH:MM:SS` in UTC (card 2095). A value in ISO 8601, in the stored form with a fraction, or a bare date is rewritten to the same moment, to the second; a value in no form it can read is left as it is and reported at `ERROR`, at every start until it is dealt with. It runs in a transaction of its own: a failure is rolled back, logged at `ERROR`, and tried again at the next start, and the server starts. Like step 4, it is skipped when the database records a migration this image has no file for, and the `ERROR` line of step 4 says so. A start that converts anything says so in one `WARN` line, which is expected once after the update that brings card 2095 and after an Import Backup of an older backup, and at no other time.
 7. **Schema check.** The whole database is compared with the model. Every difference is logged in one `ERROR` line. Nothing is changed and the server starts.
 
@@ -3766,6 +3766,49 @@ On production, as the superadmin, with the browser's developer tools. Nothing he
 #### Going back to the previous image
 
 Nothing is done to the database. The older image can open the add and the edit form of a backup destination together again, sharing their fields; names "Connect Google Account" in the Drive hint; can clear the mail panel's green line early; adds every team member as Member from the admin page (owners added since stay owners); says "No archived cards" or "No activity yet" for a read that failed; and toasts new requests by the count again.
+
+### Deleted Groupings, the Card Search, Unchanged Board Saves and a Goal's Archived Cards
+
+**Card 2293.** No migration file and no schema change; **it changes production rows at the first start of the new image**. Deleting a dashboard grouping (Manage Categories, or `DELETE /api/v1/board-categories/{id}`) deleted the grouping and nothing else. `boards.category_id` has no foreign key, so every board filed under it kept the deleted grouping's id: every page showed it as uncategorised, but both API trees answered the dead id in every board read, and a grouping later given the same id (which a restore onto another server can do) would have had those boards filed under it, hidden from its maker. Now the delete takes every board filed under the grouping out of it, sub-boards included, in the same transaction, leaving their `updated_at` as it is and recording and telling nothing. A start-up backfill clears any board whose grouping is not there, at every start and after every restore; at the first start after the deploy that is the one-off for the boards earlier deletes left behind. A restore treats `boards.category_id` as a foreign key: one that could not copy a grouping some board points at is refused, as for a real foreign key. The plan is `docs/planning/cards-2293-2327-2345-2346-data.md`. See [Data Model](data-model.md#key-schema-notes).
+
+**Owner to know.**
+
+- **`DELETE /api/v1/board-categories/{id}` now takes its boards out of the grouping**, where the document said they kept its id (item 94 of the OpenAPI note). The page's confirm already promised it ("Boards using it will become uncategorised").
+- **The boards check 321 lists are cleared at the first start**: each loses an id that names nothing. Each is already shown under Uncategorised, so no page changes; the API answers `categoryId: null` for them afterwards. One `WARN` line names them by id.
+
+#### Before the deploy
+
+**Check 321: boards filed under a grouping that no longer exists** (card 2293), read-only, on the host:
+
+```bash
+docker exec dumpfire node -e "
+const db = require('better-sqlite3')(process.env.DB_PATH || 'dumpfire.db', { readonly: true, fileMustExist: true });
+const where = 'b.category_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM board_categories g WHERE g.id = b.category_id)';
+console.log(db.prepare('SELECT COUNT(*) AS dangling FROM boards b WHERE ' + where).get());
+console.table(db.prepare('SELECT b.id, b.name, b.category_id, b.parent_card_id FROM boards b WHERE ' + where + ' ORDER BY b.id').all());
+db.close();
+"
+```
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 321 | 2293 | Run the query above immediately before the deploy; write down `dangling` and the board ids | A count, possibly 0, and a table of those boards. Each is already shown under Uncategorised on the dashboard; the deploy clears its dead id and changes nothing on screen | — (a record) |
+
+A rehearsal (check 0c) on a copy of production, if one is run, gives the same count as the fourth figure of its `Filled in:` line, `<n> board(s) taken out of a grouping that no longer exists`, and names the first 50 on the line below it, `board <id> (grouping <id>), …`.
+
+#### After the deploy
+
+**O** is your own (administrator) account and API key. Nothing here touches a real board's grouping.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 323 | 2293 | First after the deploy: `docker logs dumpfire 2>&1 \| grep "grouping that no longer exists"` | If check 321 counted N > 0: one `WARN` "Took N board(s) out of a grouping that no longer exists", naming the first 50 by id. If 0: no such line | A count other than check 321's |
+| 324 | 2293 | Run check 321's query again | `dangling` 0 and an empty table | Any row |
+| 325 | 2293 | As O, dashboard **Manage Categories**: add "TEST 2293 - delete me"; make a board "TEST 2293 board - delete me" and file it under the grouping (its context menu). With your key, `GET /api/v1/boards/<id>`; then delete the grouping in Manage Categories (confirm); reload; with your key, `GET /api/v1/boards/<id>` again | Before the delete `categoryId` the grouping's id; after it, the board under Uncategorised and `categoryId` `null`. Delete the board afterwards | `categoryId` still the old id |
+
+#### Going back to the previous image
+
+The boards cleared stay cleared; the older image reads `null` as unfiled, as it always has. The older image leaves boards pointing at a deleted grouping again, and a restore on it commits boards filed under a grouping it could not copy.
 
 ## Changing the Schema
 

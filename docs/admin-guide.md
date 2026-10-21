@@ -1,9 +1,9 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.53
+version: 1.54
 status: As-Built
-date: 2026-10-20
+date: 2026-10-21
 tags:
   - admin
   - operations
@@ -550,9 +550,10 @@ Whichever is chosen:
 - It keeps the running database's own record of applied migrations. That record describes the structure of the running database, which a restore does not change.
 - It fills in what an older backup lacks: a first-completion date for cards that were complete, and the contents of `work_dependencies` when the backup was taken before that table existed. Every task request is given a new access token in any case (see above).
 - It takes out of its milestone every card that sits in a milestone of another board (card 2179), which a backup taken before migration 0057 can hold: a milestone of a board holds only that board's cards, or the board's readers would read the other cards' titles in it. The card itself is untouched, and a goal across boards keeps its cards. The restore's "Filled in" line on the Logs page then ends `<n> card(s) taken out of a milestone of another board (card 12 left milestone 3, …)`, naming the first 50 cards by id with the milestone each left, and `; and <n> more` after them; with none, the line reads as it did. Once a card is out nothing records which goal held it, so if you want every card and goal by name, run check 0o's query 3 of the [deployment guide](deployment.md#before-the-deploy-checks-0o-to-0q) against the backup file, read-only, before importing it. The same repair runs at every start, where it finds nothing unless an older image was used meanwhile.
+- It takes out of its grouping every board filed under a dashboard grouping that no longer exists (card 2293), which a backup taken before that card can hold: deleting a grouping used to leave its boards holding its id. Each such board was already shown as uncategorised. The restore's "Filled in" line then ends `<n> board(s) taken out of a grouping that no longer exists (board 2 (grouping 9), …)`, naming the first 50 boards by id with the grouping id each named, and `; and <n> more` after them; with none, the line reads as it did. The same repair runs at every start, where it finds nothing unless an older image was used meanwhile.
 - A value the backup leaves empty, in a column where the running database requires one, is given that column's default. A column's WIP limit that was never set becomes 0, which means no limit. The server log says how many rows that was.
 - A row that cannot be copied is left out, and the restore is still committed, unless it leaves user accounts and no superadmin among them. The message on screen says how many problems there were and lists them, the first hundred where there are more. The list also carries anything else worth knowing, such as a card in the backup whose column is not in the backup either; that card is copied as it is.
-- It will not leave rows pointing, through a foreign key, at a row it left out. If a row that could not be copied is one that other rows refer to in that way, the whole restore is refused and nothing has been changed. References that have no foreign key are not covered by that check: a card's milestone, a board's category, the two ends of a dependency, a task request's target and a report schedule's scope.
+- It will not leave rows pointing, through a foreign key, at a row it left out. If a row that could not be copied is one that other rows refer to in that way, the whole restore is refused and nothing has been changed. References that have no foreign key are not covered by that check: a card's milestone, the two ends of a dependency, a task request's target and a report schedule's scope. A board's grouping is (card 2293): a restore that left out a grouping row the backup held, while a board points at that grouping, is refused in the same way, so that the repair above never takes a board out of a grouping the restore failed to copy.
 - The copy runs in one transaction. If it fails, nothing has been changed.
 - No session, no unused invite, no request link and no form key is brought in, from a backup of any age. Everybody signs in again, and every request has a new link.
 - It puts attachment files back from the trash. A backup holds the database and not the files. When a card is deleted its files are kept in a trash for 30 days, so after an import of a backup taken before the delete, each restored attachment whose file is in the trash has it moved back. The result adds a line, for example "3 attachment files put back from the trash.", when there were any. A file that could not be put back is in the list of problems.

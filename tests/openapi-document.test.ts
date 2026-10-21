@@ -2657,6 +2657,18 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(res.body.tags.map((t: Json) => t.name)).toContain(itself.tags[0]);
 	});
 
+	it("announces this milestone's later changes in the 2026-10-14 note, without a new version (cards 2293, 2345, 2346)", () => {
+		const note = spec.info.description as string;
+		const changes = note.slice(note.indexOf('**Changed on 2026-10-14'), note.indexOf('**Changed on 2026-10-13'));
+		expect(spec.info.version).toBe('1.2.0');
+		// Card 2293: a deleted category takes its boards out of it.
+		expect(changes).toContain('(94) DELETE /api/v1/board-categories/{categoryId} takes every board filed under the category out of it');
+		expect(changes.indexOf('(94)')).toBeGreaterThan(changes.indexOf('(93)'));
+		const deleting = spec.paths['/api/v1/board-categories/{categoryId}'].delete.description as string;
+		expect(deleting).toContain('takes every board filed under it out of it');
+		expect(deleting).not.toContain('unchanged');
+	});
+
 	// ─── What is said in words, and can be tried ─────────────────────────────
 
 	it('GET /reports/activity: commentLimit=0 gives each card an empty `comments` list, and a negative one is a 400, as the document says', async () => {

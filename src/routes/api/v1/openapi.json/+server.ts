@@ -258,6 +258,8 @@ const spec = {
 			'which counts archived members when it decides a milestone was empty, is then sent by the next bulk attach to it. ' +
 			'(93) GET /api/v1/boards/{boardId}/cards lists the board\'s cards by column, in order of column position, ties by column id, and within a column in order of card position, ties by card id. ' +
 			'It listed the columns in the order they were made in, so a column moved or added between two others came in the wrong place. The cards are read in one query, and an answer\'s fields are unchanged. ' +
+			'(94) DELETE /api/v1/board-categories/{categoryId} takes every board filed under the category out of it, in the same request, where each kept the deleted category\'s id as its categoryId: ' +
+			'a board read now answers categoryId null for it. Boards already holding the id of a category that no longer exists were cleared once, at the deploy. ' +
 			'The rate limit of a key is counted once ' +
 			'the key is checked, against the key itself, so a wrong key that begins as a real one spends none of its allowance, and a key over ' +
 			'its limit is not marked as used. /api/v1 with nothing after it is answered 401 in JSON where it was a 303. Every answer carries ' +
@@ -5038,7 +5040,8 @@ const spec = {
 				tags: ['Board Categories'],
 				summary: 'Delete a board category',
 				description:
-					'Permanently deletes the board category. Boards using this category will have their categoryId unchanged (you may want to clear them first). ' +
+					'Permanently deletes the board category, and takes every board filed under it out of it in the same request: each board\'s categoryId becomes null. ' +
+					'Those boards\' updatedAt is left as it is, and nothing is logged. ' +
 					'The key\'s user must be able to edit every board filed under it.',
 				operationId: 'deleteBoardCategory',
 				parameters: [{ $ref: '#/components/parameters/categoryId' }],

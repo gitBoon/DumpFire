@@ -1,9 +1,9 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.80
+version: 1.81
 status: As-Built
-date: 2026-10-20
+date: 2026-10-21
 tags:
   - api
   - rest
@@ -1165,6 +1165,15 @@ new, `DELETE /comments/:commentId` (card 2283); these operations, answers and fi
   column moved or added between two others came in the wrong place. The cards are read in one
   query, and an answer's fields are unchanged (item 93). See
   [`GET /api/v1/boards/:boardId/cards`](#get-apiv1boardsboardidcards).
+- **`DELETE /board-categories/:categoryId` takes its boards out of the category** (card
+  2293). Every board filed under it, sub-boards included, has `categoryId` `null` once the
+  category is deleted, in the same request, where each kept the deleted category's id: every
+  board read answered that id, and a category later given the same id would have had those
+  boards filed under it. Their `updatedAt` is left as it is and nothing is logged. The web
+  application's `DELETE /api/board-categories/{id}` (Manage Categories) is the same. Boards
+  already holding the id of a category that no longer exists were cleared once, at the first
+  start after the deploy, and are cleared again after every restore. Who may delete one is
+  unchanged: the key's user must be able to edit every board filed under it (item 94).
 
 Three more on the same day touch no route of the API, and so not the OpenAPI document, but
 reach the keys every caller uses:
@@ -2477,7 +2486,7 @@ Update the fields sent, at least one of them. Answers the board.
 |-------|------|-----------------|-------------|
 | `name` | string | Anyone with edit access to the board | Board name, trimmed, 1 to 200 characters |
 | `emoji` | string | Anyone with edit access to the board | Board icon, 1 to 32 characters |
-| `categoryId` | number or null | Anyone with edit access to the board | The dashboard grouping the board is filed under, or `null` for none. One that does not exist is `404` `Board category not found` |
+| `categoryId` | number or null | Anyone with edit access to the board | The dashboard grouping the board is filed under, or `null` for none. One that does not exist is `404` `Board category not found`. Deleting the grouping sets it to `null` (card 2293) |
 | `isPublic` | boolean | The board's owner, or an administrator | Whether everyone who is signed in can view the board |
 
 The board is looked for and the caller checked first (`404`, then `403`), then the fields

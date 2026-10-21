@@ -4087,6 +4087,20 @@ describe('what the lists give (card 2128)', () => {
 			expect((await api('PUT', `/api/v1/boards/${theirs.id}`, { user: w.admin, body: { categoryId: w.groupingOfA.id } })).status).toBe(200);
 			expect(filedUnder()).toBe(w.groupingOfA.id);
 		});
+
+		it('answers a board whose grouping was deleted as filed under none, in both trees (card 2293)', async () => {
+			// The board's reads used to answer the deleted grouping's id, and a
+			// grouping given that id again would have had the board filed under it.
+			const before = await api('GET', `/api/v1/boards/${w.alone.id}`, { user: w.owner });
+			expect([before.status, before.body.categoryId]).toEqual([200, w.groupingOfA.id]);
+
+			expect((await api('DELETE', `/api/v1/board-categories/${w.groupingOfA.id}`, { user: w.owner })).status).toBe(200);
+
+			const after = await api('GET', `/api/v1/boards/${w.alone.id}`, { user: w.owner });
+			expect([after.status, after.body.categoryId]).toEqual([200, null]);
+			const listed = (await answered('/api/boards', 'owner')).find((board) => board.id === w.alone.id);
+			expect(listed).toMatchObject({ categoryId: null });
+		});
 	});
 
 	describe('card categories', () => {

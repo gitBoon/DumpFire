@@ -238,10 +238,17 @@ export type Backfill = {
 	 * card is out, nothing records which goal held it (review of card 2179).
 	 */
 	released: ReleasedCard[];
+	/** Boards taken out of a dashboard grouping that no longer exists (card 2293). */
+	unfiledBoards: number;
+	/** The first 50 of them, by board id, with the id of the grouping each named. */
+	unfiled: UnfiledBoard[];
 };
 
 /** A card the backfill took out of a milestone of another board, and that milestone. */
 export type ReleasedCard = { cardId: number; milestoneId: number };
+
+/** A board the backfill took out of a grouping that was not there, and the id it named. */
+export type UnfiledBoard = { boardId: number; groupingId: number };
 
 export type MigrationReport = {
 	/** Files applied and recorded by this run, in order. */
@@ -2373,6 +2380,58 @@ export function releasedCardsList(backfill: Pick<Backfill, 'releasedFromMileston
 }
 
 /**
+ * Every board filed under a dashboard grouping that no longer exists, taken
+ * out of it (card 2293). `boards.category_id` has no foreign key, and until
+ * card 2293 deleting a grouping left its boards holding its id: every page
+ * showed them as uncategorised, the API answered the dead id, and a grouping
+ * given that id again (a restore onto another server can do that) would have
+ * had them filed under it. A board under a grouping that is there, and a board
+ * under none, are left alone, and so is `updated_at`: nobody edited the boards.
+ */
+export const BOARDS_LEAVE_DELETED_GROUPINGS = [
+	'UPDATE `boards` SET `category_id` = NULL',
+	'WHERE `category_id` IS NOT NULL',
+	'  AND NOT EXISTS (SELECT 1 FROM `board_categories` WHERE `id` = `boards`.`category_id`);'
+].join('\n');
+
+/** How many of the boards it takes out the backfill names. */
+const UNFILED_NAMED = 50;
+
+/** The statement's own `WHERE`: its text from the first `WHERE`, the outer one, to the `;`. */
+const UNDER_A_DELETED_GROUPING = BOARDS_LEAVE_DELETED_GROUPINGS.slice(BOARDS_LEAVE_DELETED_GROUPINGS.indexOf('WHERE'), -1);
+
+/**
+ * The boards the statement above takes out, read just before it runs, by its
+ * own `WHERE`, so the two cannot drift: the first 50 by id, with the grouping
+ * id each named.
+ */
+export const BOARDS_LEAVING_DELETED_GROUPINGS =
+	'SELECT `id` AS boardId, `category_id` AS groupingId FROM `boards`\n' +
+	UNDER_A_DELETED_GROUPING +
+	`\nORDER BY \`id\` LIMIT ${UNFILED_NAMED}`;
+
+/**
+ * Every board the statement would take out, by id, with the grouping id each
+ * names, by the same `WHERE`: what a restore asks before it commits, treating
+ * `boards.category_id` as a foreign key that `PRAGMA foreign_key_check` cannot
+ * see (`strandedBy` in restore.ts).
+ */
+export const BOARDS_UNDER_DELETED_GROUPINGS =
+	'SELECT `id`, `category_id` AS groupingId FROM `boards`\n' + UNDER_A_DELETED_GROUPING + '\nORDER BY `id`';
+
+/**
+ * The boards the backfill took out, as the start's WARN line and the
+ * restore's "Filled in" name them: `board 3 (grouping 7), board 4 (grouping
+ * 7)`, and `; and 2 more` past the first 50. By id, as `releasedCardsList`
+ * names cards: a board's name is for its readers.
+ */
+export function unfiledBoardsList(backfill: Pick<Backfill, 'unfiledBoards' | 'unfiled'>): string {
+	const named = backfill.unfiled.map((u) => `board ${u.boardId} (grouping ${u.groupingId})`).join(', ');
+	const more = backfill.unfiledBoards - backfill.unfiled.length;
+	return more > 0 ? `${named}; and ${more} more` : named;
+}
+
+/**
  * Fill in the two values that 0050 and 0051 filled in once, and take out of
  * their milestones the cards 0057 took out once.
  *
@@ -2391,6 +2450,14 @@ export function releasedCardsList(backfill: Pick<Backfill, 'releasedFromMileston
  * repeated here. A count at a start that follows no restore and no return from
  * an older image means some write still makes such rows.
  *
+ * And boards filed under a dashboard grouping that no longer exists are taken
+ * out of it (card 2293). Production holds such boards from before deleting a
+ * grouping cleared them, so the first start of the image that clears them is
+ * the one-off; a restore brings a backup's back. A restore that left grouping
+ * rows out while boards point at them is refused before it gets here
+ * (`strandedBy` in restore.ts), so this never unfiles a board because a
+ * restore failed to copy its grouping.
+ *
  * A table or column that is not there is skipped. After the migration loop
  * all of them always exist; they are missing only when the runner is driven
  * against some other set of files, as the tests do, and then there is nothing
@@ -2398,7 +2465,14 @@ export function releasedCardsList(backfill: Pick<Backfill, 'releasedFromMileston
  */
 export function runBackfills(database: Database.Database = sqlite): Backfill {
 	const fill = database.transaction(() => {
-		const result: Backfill = { firstCompletedAt: 0, accessTokens: 0, releasedFromMilestones: 0, released: [] };
+		const result: Backfill = {
+			firstCompletedAt: 0,
+			accessTokens: 0,
+			releasedFromMilestones: 0,
+			released: [],
+			unfiledBoards: 0,
+			unfiled: []
+		};
 
 		if (hasColumn(database, 'cards', 'first_completed_at') && hasColumn(database, 'cards', 'completed_at')) {
 			// A card that is complete has been completed at least once.
@@ -2424,6 +2498,12 @@ export function runBackfills(database: Database.Database = sqlite): Backfill {
 			// Which cards first: once they are out, nothing records the goal each was in.
 			result.released = database.prepare(CARDS_LEAVING_OTHER_BOARDS_MILESTONES).all() as ReleasedCard[];
 			result.releasedFromMilestones = database.prepare(CARDS_LEAVE_OTHER_BOARDS_MILESTONES).run().changes;
+		}
+
+		if (hasColumn(database, 'boards', 'category_id') && tableExists(database, 'board_categories')) {
+			// Which boards first, with the id each named: once cleared, nothing records it.
+			result.unfiled = database.prepare(BOARDS_LEAVING_DELETED_GROUPINGS).all() as UnfiledBoard[];
+			result.unfiledBoards = database.prepare(BOARDS_LEAVE_DELETED_GROUPINGS).run().changes;
 		}
 
 		return result;
@@ -2751,12 +2831,19 @@ export function runMigrations(options: MigrationOptions = {}): MigrationReport {
 		);
 	}
 
-	let backfilled: Backfill = { firstCompletedAt: 0, accessTokens: 0, releasedFromMilestones: 0, released: [] };
+	let backfilled: Backfill = {
+		firstCompletedAt: 0,
+		accessTokens: 0,
+		releasedFromMilestones: 0,
+		released: [],
+		unfiledBoards: 0,
+		unfiled: []
+	};
 	try {
 		backfilled = runBackfills(database);
 	} catch (err) {
 		halt({
-			stage: 'backfilling cards.first_completed_at, task_requests.access_token and cards.milestone_id',
+			stage: 'backfilling cards.first_completed_at, task_requests.access_token, cards.milestone_id and boards.category_id',
 			reason: messageOf(err),
 			cause: err
 		});
@@ -2773,6 +2860,14 @@ export function runMigrations(options: MigrationOptions = {}): MigrationReport {
 		log.warn(
 			`Took ${backfilled.releasedFromMilestones} card(s) out of a milestone that belongs to another board: ` +
 				releasedCardsList(backfilled)
+		);
+	}
+	// The first start of the image with card 2293 clears what production holds,
+	// and a restore can bring more. At any other start it finds none, and a
+	// count means some write still leaves a board under a deleted grouping.
+	if (backfilled.unfiledBoards > 0) {
+		log.warn(
+			`Took ${backfilled.unfiledBoards} board(s) out of a grouping that no longer exists: ` + unfiledBoardsList(backfilled)
 		);
 	}
 

@@ -13,13 +13,14 @@
  * Each write has the one shape of a service (`ServiceOptions` in
  * `write-as.ts`): `inWrite()` first, then the caller (401), the guard (404,
  * then 403), then every field read from the body (400), and the write. No
- * grouping write records an entry or tells anyone. Refusals are kit
- * `error()`s.
+ * grouping write records an entry or tells anyone. Deleting one takes every
+ * board filed under it out of it, in the same transaction (card 2293).
+ * Refusals are kit `error()`s.
  */
 import { error } from '@sveltejs/kit';
 import { eq } from 'drizzle-orm';
 import { db } from './db';
-import { boardCategories, type BoardCategory } from './db/schema';
+import { boardCategories, boards, type BoardCategory } from './db/schema';
 import type { SessionUser } from './auth';
 import { readColour, readText, type RequestBody } from './request-body';
 import { requireBoardCategoryEdit, requireUser } from './route-guards';
@@ -95,10 +96,20 @@ export function updateBoardGrouping(caller: SessionUser | null, at: { categoryId
  * /api/v1/board-categories/:categoryId`): read, the caller checked and
  * deleted in one transaction. The check and the delete were two steps with no
  * transaction around them. There is no body.
+ *
+ * Every board filed under it, sub-boards included, is taken out of it first,
+ * as the page's confirm promises ("Boards using it will become
+ * uncategorised"). `boards.category_id` has no foreign key, so nothing else
+ * clears it: the boards kept the id, every board read answered it, and a
+ * grouping given that id again would have had them filed under it (card
+ * 2293). The guard has already asked for edit access to each of them. Their
+ * `updated_at` is left as it is and nothing is recorded or told: nobody
+ * edited them, and every page showed them as uncategorised already.
  */
 export function deleteBoardGrouping(caller: SessionUser | null, at: { categoryId: number }, body: null, opts: ServiceOptions): void {
 	inWrite();
 	requireBoardCategoryEdit(caller, at.categoryId);
 
+	db.update(boards).set({ categoryId: null }).where(eq(boards.categoryId, at.categoryId)).run();
 	db.delete(boardCategories).where(eq(boardCategories.id, at.categoryId)).run();
 }
