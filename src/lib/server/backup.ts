@@ -7,7 +7,7 @@
 
 import { db, sqlite, getDbPath } from './db';
 import { settings, backupLog } from './db/schema';
-import { eq, desc } from 'drizzle-orm';
+import { eq, desc, inArray } from 'drizzle-orm';
 import { createDestination, type DestinationConfig } from './backup-destinations';
 import { escapeHtml } from '$lib/escape-html';
 import { parseStamp } from '$lib/timestamps';
@@ -278,13 +278,41 @@ export function generateBackupData(): Buffer<ArrayBuffer> {
 // ─── Backup History ──────────────────────────────────────────────────────────
 
 /**
- * The newest `limit` rows of `backup_log`, newest first. A read, and nothing
- * more: it deleted every row past the newest 10 each time it was called, so
- * `GET /api/admin/backup` wrote (card 2412). The history is trimmed where a
- * row is added instead, in `logBackup`.
+ * How many runs Backup History keeps (card 2413). A run is the rows that share
+ * a file name: `runBackup` names its copy once, from the run's start, and
+ * writes one row a destination with that name. The history kept the newest 10
+ * rows, so four destinations left under three runs; by runs, every row of each
+ * is kept, at most 30 a destination. By age was not taken: 30 days of an
+ * hourly schedule is 720 rows a destination.
  */
-export function getBackupHistory(limit = 10) {
-	return db.select().from(backupLog).orderBy(desc(backupLog.createdAt)).limit(limit).all();
+export const BACKUP_HISTORY_RUNS = 30;
+
+/** The file names of the newest `?` runs, newest first: a run by its newest row. */
+const NEWEST_RUNS = `
+	SELECT filename FROM backup_log GROUP BY filename
+	ORDER BY MAX(created_at) DESC, MAX(id) DESC LIMIT ?
+`;
+
+/**
+ * A successful scheduled row: not a ▶ Run Now's, whose file is `…-manual.db`
+ * (`MANUAL_COPY`, card 2405). GLOB is case-sensitive, as that pattern is.
+ */
+const SCHEDULED_SUCCESS = `status = 'success' AND filename NOT GLOB '*-manual.db'`;
+
+/**
+ * Every row of the newest `runs` runs of `backup_log`, newest first: what
+ * `GET /api/admin/backup` answers as the history, by the rule `logBackup`
+ * keeps it to (card 2413; it asked for 30 rows of a table kept at 10). A
+ * read, and nothing more: it deleted every row past the newest 10 each time
+ * it was called, so the GET wrote (card 2412).
+ */
+export function getBackupHistory(runs = BACKUP_HISTORY_RUNS) {
+	const names = sqlite.prepare(NEWEST_RUNS).pluck().all(runs) as string[];
+	if (names.length === 0) return [];
+	return db.select().from(backupLog)
+		.where(inArray(backupLog.filename, names))
+		.orderBy(desc(backupLog.createdAt), desc(backupLog.id))
+		.all();
 }
 
 function logBackup(entry: {
@@ -306,13 +334,16 @@ function logBackup(entry: {
 		durationMs: entry.durationMs
 	}).run();
 
-	// Prune old history — keep only the last 10 entries. The one place the
-	// history is trimmed: a read of it writes nothing (card 2412).
+	// Prune old history — keep the rows of the newest BACKUP_HISTORY_RUNS runs
+	// (card 2413), and the newest successful scheduled row whatever its age, so
+	// that lastScheduledBackupAt() finds it however many Run Now presses or
+	// failures came after it. The one place the history is trimmed: a read of
+	// it writes nothing (card 2412).
 	sqlite.prepare(`
-		DELETE FROM backup_log WHERE id NOT IN (
-			SELECT id FROM backup_log ORDER BY created_at DESC LIMIT 10
-		)
-	`).run();
+		DELETE FROM backup_log
+		WHERE filename NOT IN (${NEWEST_RUNS})
+		AND id IS NOT (SELECT id FROM backup_log WHERE ${SCHEDULED_SUCCESS} ORDER BY created_at DESC, id DESC LIMIT 1)
+	`).run(BACKUP_HISTORY_RUNS);
 }
 
 // ─── Retention Cleanup ───────────────────────────────────────────────────────
@@ -417,7 +448,9 @@ export async function runBackup(targetDestinationName?: string, how: 'scheduled'
 	 * A destination that failed: its `backup_log` row, its result, the ERROR
 	 * line, and the failure mail if one is configured. The error is whatever
 	 * the destination's server answered, so it and the destination's name and
-	 * type are escaped where they are put in the mail (card 2149).
+	 * type are escaped where they are put in the mail (card 2149). The mail
+	 * says which kind of run failed: it said "scheduled" for a Run Now too
+	 * (card 2413).
 	 */
 	const failed = async (destConfig: DestinationConfig, errMsg: string, durationMs: number, sizeBytes: number) => {
 		logBackup({
@@ -445,9 +478,9 @@ export async function runBackup(targetDestinationName?: string, how: 'scheduled'
 					config.notifyEmail,
 					'⚠️ DumpFire Backup Failed',
 					`<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px;">
-						<h2 style="color: #f43f5e;">Scheduled Backup Failed</h2>
+						<h2 style="color: #f43f5e;">${manual ? 'Run Now Backup Failed' : 'Scheduled Backup Failed'}</h2>
 						<p style="color: #64748b; line-height: 1.6;">
-							A scheduled backup to <strong>${escapeHtml(String(destConfig.name))}</strong> (${escapeHtml(String(destConfig.type))}) failed.
+							${manual ? 'A backup made by ▶ Run Now to' : 'A scheduled backup to'} <strong>${escapeHtml(String(destConfig.name))}</strong> (${escapeHtml(String(destConfig.type))}) failed.
 						</p>
 						<div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 16px; margin: 16px 0;">
 							<strong style="color: #991b1b;">Error:</strong>
@@ -536,19 +569,22 @@ let lastCheckedDate = ''; // Track which date+hour we last checked to avoid doub
  * did (only the scheduler sets `lastBackupTime`). `backup_log` has no column
  * for the kind of run: a Run Now's row is told by its file's name, `…-manual.db`
  * (`MANUAL_COPY`, card 2405), as retention tells its copies. A Run Now made
- * before card 2405 has no `-manual` and is counted, as before. The history
- * keeps its newest 10 rows, so with no scheduled row among them this is 0 and
- * the first check runs one at once: sooner, never later.
+ * before card 2405 has no `-manual` and is counted, as before.
+ *
+ * It does not depend on how much history is kept (card 2413): `logBackup`'s
+ * trim keeps this row whatever came after it, where ten newer rows of Run Now
+ * presses or failures used to push it out and make this 0. One query,
+ * the newest such row alone. The daily and weekly schedules ask it too, for
+ * a run already made in their minute (card 2414, `isBackupDue`).
  */
 export function lastScheduledBackupAt(): number {
-	const latest = db.select().from(backupLog)
-		.where(eq(backupLog.status, 'success'))
-		.orderBy(desc(backupLog.createdAt))
-		.all()
-		.find((row) => !MANUAL_COPY.test(row.filename));
+	const createdAt = sqlite
+		.prepare(`SELECT created_at FROM backup_log WHERE ${SCHEDULED_SUCCESS} ORDER BY created_at DESC, id DESC LIMIT 1`)
+		.pluck()
+		.get() as string | undefined;
 	// Read as UTC, which is what it is: `new Date()` read the stored
 	// form as the server's local time (card 2095, A10).
-	return latest ? parseStamp(latest.createdAt)?.getTime() ?? 0 : 0;
+	return createdAt ? parseStamp(createdAt)?.getTime() ?? 0 : 0;
 }
 
 /**
@@ -593,6 +629,37 @@ function isBackupDue(config: BackupConfig, now: Date): boolean {
 		if (now.getDay() !== targetDay) return false;
 	}
 
+	// A scheduled run that has already finished in this minute, by this
+	// process before a restart or by another on the same database (card
+	// 2414): its rows are written after its upload, so none is stamped before
+	// the minute began. `lastCheckedDate` is in memory only. A plain restart
+	// checks first a minute after it starts, in a later minute; a clock put
+	// back across the restart, or a second instance started before the
+	// minute, checks in it. Only a finished run is seen: one still uploading
+	// has no row yet, so another instance checking meanwhile makes a second
+	// copy all the same.
+	//
+	// Bounded above (the card 2414 review): a row stamped by a clock that ran
+	// fast and was then corrected would otherwise stop every daily or weekly
+	// backup until the real time passed it. Only a row within the hour from
+	// the minute's start counts, and a stamp later than now is said.
+	const minuteStart = new Date(now).setSeconds(0, 0);
+	const last = lastScheduledBackupAt();
+	if (last > now.getTime()) {
+		log.warn(
+			`The last scheduled backup is recorded at ${new Date(last).toISOString()}, later than the server's clock (${now.toISOString()}): ` +
+				'the clock may have run fast and been put back. Check the server\'s time.'
+		);
+	}
+	if (last >= minuteStart && last < minuteStart + 60 * 60 * 1000) {
+		lastCheckedDate = dateKey;
+		log.warn(
+			`Scheduled ${schedule} backup at ${config.scheduleTime || '02:00'} not made: a scheduled backup recorded at ${new Date(last).toISOString()} ` +
+				'was already made in this minute (after a restart, or by another instance on this database).'
+		);
+		return false;
+	}
+
 	// daily: correct hour+minute, any day → fire
 	// weekly: correct day + hour+minute → fire
 	lastCheckedDate = dateKey;
@@ -603,6 +670,10 @@ export function initBackupScheduler(): void {
 	if (schedulerTimer) {
 		clearInterval(schedulerTimer);
 	}
+	// A start remembers nothing from before it, as a new process does (card
+	// 2414). Called once a process; a test calls it again for a restart.
+	lastBackupTime = 0;
+	lastCheckedDate = '';
 
 	// Check every 60 seconds if a backup is due
 	schedulerTimer = setInterval(async () => {

@@ -30,6 +30,12 @@
  * it to the newest 10, and an interval schedule counts after a start from the
  * last scheduled run, so a Run Now just before a restart does not hold the
  * next one back.
+ *
+ * The history is kept by runs (card 2413): every row of the newest 30 runs,
+ * which the GET answers, and the last scheduled run's row whatever came after
+ * it. A daily or weekly backup is not made twice in its minute across a
+ * restart (card 2414): the clock is faked, and a restart is the scheduler
+ * started again.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { initBackupScheduler, lastScheduledBackupAt, runBackup, saveBackupConfig } from '$lib/server/backup';
@@ -432,28 +438,31 @@ describe('Keep Last counts Run Now copies apart from scheduled ones (card 2405)'
 	});
 });
 
+/** The SFTP stand-in as a destination of the history and scheduler tests (cards 2412 to 2414). */
+const OFFSITE: DestinationConfig = {
+	type: 'sftp',
+	name: 'Offsite',
+	host: 'sftp.example.test',
+	port: 22,
+	username: 'backup',
+	remotePath: '/backups',
+	hostKey: 'ssh-ed25519 SHA256:s16t1ixxsjxOgoaXCXACvAIOEG1K5biSlM7GekmavrY'
+};
+const MINUTE = 60_000;
+
+/** A time in the form `backup_log` stores it (UTC). */
+const stamp = (at: Date) => at.toISOString().replace('T', ' ').slice(0, 19);
+/** A `backup_log` row as `runBackup` writes one, stamped `at`. */
+const logged = (filename: string, at: Date, status: 'success' | 'failed' = 'success', destination = 'Offsite') =>
+	sqlite
+		.prepare(
+			"INSERT INTO backup_log (destination_type, destination_name, filename, size_bytes, status, duration_ms, created_at) VALUES ('sftp', ?, ?, 1024, ?, 5, ?)"
+		)
+		.run(destination, filename, status, stamp(at));
+const historyRows = () => sqlite.prepare('SELECT filename FROM backup_log ORDER BY created_at DESC').pluck().all() as string[];
+
 describe('Backup History is read without writing, and Run Now does not hold back the schedule after a start (card 2412)', { timeout: 30_000 }, () => {
-	const OFFSITE: DestinationConfig = {
-		type: 'sftp',
-		name: 'Offsite',
-		host: 'sftp.example.test',
-		port: 22,
-		username: 'backup',
-		remotePath: '/backups',
-		hostKey: 'ssh-ed25519 SHA256:s16t1ixxsjxOgoaXCXACvAIOEG1K5biSlM7GekmavrY'
-	};
-	const MINUTE = 60_000;
-
-	/** A `backup_log` row as `runBackup` writes one, stamped `at` in the stored form (UTC). */
-	const logged = (filename: string, at: Date, status: 'success' | 'failed' = 'success') =>
-		sqlite
-			.prepare(
-				"INSERT INTO backup_log (destination_type, destination_name, filename, size_bytes, status, duration_ms, created_at) VALUES ('sftp', 'Offsite', ?, 1024, ?, 5, ?)"
-			)
-			.run(filename, status, at.toISOString().replace('T', ' ').slice(0, 19));
-	const historyRows = () => sqlite.prepare('SELECT filename FROM backup_log ORDER BY created_at DESC').pluck().all() as string[];
-
-	it('GET /api/admin/backup writes nothing, however many rows the history holds; a run trims it to the newest 10', async () => {
+	it('GET /api/admin/backup writes nothing, however many rows the history holds; a run under 30 runs trims nothing', async () => {
 		const days = Array.from({ length: 12 }, (_, i) => `dumpfire-backup-2026-04-${String(i + 1).padStart(2, '0')}T00-00-00.db`);
 		days.forEach((name, i) => logged(name, new Date(Date.UTC(2026, 3, i + 1))));
 		const admin = makeUser({ role: 'admin' });
@@ -466,12 +475,13 @@ describe('Backup History is read without writing, and Run Now does not hold back
 		expect(res.body.history.map((row: { filename: string }) => row.filename)).toEqual([...days].reverse());
 		expectUnchanged(before);
 
-		// Trimmed where a row is added, as before.
+		// Trimmed where a row is added, to the newest 30 runs (card 2413): 13
+		// runs are all kept. The trim itself is card 2413's describe below.
 		await backUp(OFFSITE);
 		const rows = historyRows();
-		expect(rows).toHaveLength(10);
+		expect(rows).toHaveLength(13);
 		expect(rows[0]).toBe(sftp.names.find((name) => !days.includes(name)));
-		expect(rows.slice(1)).toEqual([...days].reverse().slice(0, 9));
+		expect(rows.slice(1)).toEqual([...days].reverse());
 	});
 
 	it('takes the last scheduled run from the history, leaving out Run Now’s and failed rows, or 0 with none', () => {
@@ -499,5 +509,179 @@ describe('Backup History is read without writing, and Run Now does not hold back
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+});
+
+describe('Backup History keeps the newest 30 runs, and the last scheduled run whatever came after it (card 2413)', { timeout: 30_000 }, () => {
+	/** A copy's name for a run started `at`, as `runBackup` names it. */
+	const nameAt = (at: Date, manual = false) =>
+		`dumpfire-backup-${at.toISOString().replace(/[:.]/g, '-').slice(0, 19)}${manual ? '-manual' : ''}.db`;
+	/** `count` scheduled runs from 2026-04-01, an hour apart, each with a row for Offsite and one for Second; their names, oldest first. */
+	const runsOfTwo = (count: number) =>
+		Array.from({ length: count }, (_, i) => {
+			const at = new Date(Date.UTC(2026, 3, 1) + i * 3_600_000);
+			logged(nameAt(at), at);
+			logged(nameAt(at), new Date(at.getTime() + 5_000), 'success', 'Second');
+			return nameAt(at);
+		});
+	const historyAnswered = async () => {
+		const admin = makeUser({ role: 'admin' });
+		const res = await api('GET', '/api/admin/backup', { user: admin, credential: { kind: 'session', token: makeSession(admin) } });
+		expect(res.status).toBe(200);
+		return res.body.history.map((row: { filename: string }) => row.filename) as string[];
+	};
+
+	it('a run keeps every row of the newest 30 runs, both destinations’ rows of each, and removes older runs whole', async () => {
+		const old = runsOfTwo(31);
+
+		await backUp(OFFSITE);
+
+		// The run's own row, and both rows of each of the 29 newest before it: the two oldest runs went.
+		const rows = historyRows();
+		expect(rows).toHaveLength(1 + 29 * 2);
+		expect(rows[0]).toBe(sftp.names[0]);
+		expect(new Set(rows.slice(1))).toEqual(new Set(old.slice(2)));
+	});
+
+	it('GET /api/admin/backup answers every row of the newest 30 runs', async () => {
+		const old = runsOfTwo(31);
+
+		const names = await historyAnswered();
+
+		expect(names).toHaveLength(60);
+		expect(names.slice(0, 2)).toEqual([old[30], old[30]]);
+		expect(new Set(names)).toEqual(new Set(old.slice(1)));
+	});
+
+	it('keeps the last scheduled run for lastScheduledBackupAt() however many Run Now runs follow it; the GET leaves it out past 30 runs', async () => {
+		const scheduled = nameAt(new Date('2026-10-01T02:00:00Z'));
+		logged(scheduled, new Date('2026-10-01T02:00:00Z'));
+		const failed = nameAt(new Date('2026-10-02T02:00:00Z'));
+		logged(failed, new Date('2026-10-02T02:00:00Z'), 'failed');
+		for (let i = 0; i < 35; i++) {
+			const at = new Date(Date.UTC(2026, 9, 3) + i * 3_600_000);
+			logged(nameAt(at, true), at);
+		}
+		saveBackupConfig({ schedule: 'disabled', scheduleTime: '02:00', scheduleDay: 0, retention: 7, destinations: [OFFSITE], notifyOnFailure: false, notifyEmail: '' });
+
+		expect(await runBackup(undefined, 'manual')).toEqual([expect.objectContaining({ status: 'success' })]);
+
+		// This Run Now and the 29 newest before it, and the scheduled run; the failed one went.
+		const rows = historyRows();
+		expect(rows).toHaveLength(31);
+		expect(rows.at(-1)).toBe(scheduled);
+		expect(rows).not.toContain(failed);
+		expect(lastScheduledBackupAt()).toBe(Date.parse('2026-10-01T02:00:00Z'));
+
+		const names = await historyAnswered();
+		expect(names).toHaveLength(30);
+		expect(names).not.toContain(scheduled);
+	});
+});
+
+describe('A daily or weekly backup is not made twice in its minute across a restart (card 2414)', { timeout: 30_000 }, () => {
+	/** A time on 2026-04-14, a Tuesday, or `day`, in the server's own time zone: the schedule's time is local. */
+	const at = (h: number, m: number, s: number, day = 14) => new Date(2026, 3, day, h, m, s);
+	const schedule = (kind: 'daily' | 'weekly') =>
+		saveBackupConfig({ schedule: kind, scheduleTime: '02:00', scheduleDay: 2, retention: 7, destinations: [OFFSITE], notifyOnFailure: false, notifyEmail: '' });
+	const fakeClock = (now: Date) => vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'], now });
+	/**
+	 * Wait for the newest run's row, and stamp it at the faked time: SQLite
+	 * stamps a row with its own clock, which the faked one does not reach.
+	 */
+	const rowMadeNow = async (rows: number) => {
+		await vi.waitFor(() => expect(historyRows()).toHaveLength(rows));
+		sqlite.prepare('UPDATE backup_log SET created_at = ? WHERE id = (SELECT MAX(id) FROM backup_log)').run(stamp(new Date()));
+	};
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it('is not run again after a plain restart in the minute, whose first check is a minute later (as before card 2414)', async () => {
+		fakeClock(at(1, 59, 30));
+		schedule('daily');
+		initBackupScheduler();
+		await vi.advanceTimersByTimeAsync(MINUTE); // 02:00:30: the run
+		await rowMadeNow(1);
+
+		// The restart, at 02:00:40: its first check is at 02:01:40.
+		await vi.advanceTimersByTimeAsync(10_000);
+		initBackupScheduler();
+		await vi.advanceTimersByTimeAsync(MINUTE);
+
+		expect(sftp.names).toHaveLength(1);
+	});
+
+	it.each(['daily', 'weekly'] as const)('is not run again when the clock is put back across a restart into its minute: %s', async (kind) => {
+		fakeClock(at(1, 59, 30));
+		schedule(kind);
+		initBackupScheduler();
+		await vi.advanceTimersByTimeAsync(MINUTE); // 02:00:30: the run
+		await rowMadeNow(1);
+		const made = [...sftp.names];
+		expect(made).toHaveLength(1);
+
+		// The restart, at 02:00:40, its clock then put back to 01:59:55 (a host's
+		// corrected at boot): its first check is at 02:00:55, in the minute again.
+		await vi.advanceTimersByTimeAsync(10_000);
+		vi.setSystemTime(at(1, 59, 55));
+		initBackupScheduler();
+		await vi.advanceTimersByTimeAsync(MINUTE);
+
+		expect(sftp.names).toEqual(made);
+		expect(historyRows()).toHaveLength(1);
+		// Said, once (the review).
+		expect(backupLines().filter((l) => l.message.startsWith(`Scheduled ${kind} backup at 02:00 not made`))).toEqual([
+			expect.objectContaining({ level: 'WARN', message: expect.stringContaining('was already made in this minute') })
+		]);
+	});
+
+	it('is run on each of the next days though a scheduled run is stamped days ahead by a clock that ran fast, and says so (the review)', async () => {
+		fakeClock(at(1, 59, 30));
+		schedule('daily');
+		// Stamped six days ahead, at the schedule's own minute.
+		logged('dumpfire-backup-stamped-ahead.db', at(2, 0, 30, 20));
+
+		for (const day of [14, 15, 16]) {
+			vi.setSystemTime(at(1, 59, 30, day));
+			initBackupScheduler();
+			await vi.advanceTimersByTimeAsync(MINUTE);
+			await rowMadeNow(day - 12);
+		}
+
+		expect(sftp.names).toHaveLength(3);
+		const ahead = backupLines().filter((l) => l.message.startsWith('The last scheduled backup is recorded at'));
+		expect(ahead).toHaveLength(3);
+		expect(ahead[0]).toEqual({ level: 'WARN', message: expect.stringContaining("later than the server's clock") });
+		expect(backupLines().some((l) => l.message.includes('not made'))).toBe(false);
+	});
+
+	it('is run in its minute after a Run Now made in that minute', async () => {
+		fakeClock(at(1, 59, 50));
+		schedule('daily');
+		initBackupScheduler();
+		await vi.advanceTimersByTimeAsync(15_000); // 02:00:05: the Run Now
+		await runBackup(undefined, 'manual');
+		await rowMadeNow(1);
+
+		await vi.advanceTimersByTimeAsync(45_000); // 02:00:50: the first check
+
+		await vi.waitFor(() => expect(sftp.names.filter((n) => !n.endsWith('-manual.db'))).toHaveLength(1));
+	});
+
+	it('is run the next day, after a restart', async () => {
+		fakeClock(at(1, 59, 30));
+		schedule('daily');
+		initBackupScheduler();
+		await vi.advanceTimersByTimeAsync(MINUTE);
+		await rowMadeNow(1);
+
+		vi.setSystemTime(at(1, 59, 30, 15));
+		initBackupScheduler();
+		await vi.advanceTimersByTimeAsync(MINUTE);
+
+		await rowMadeNow(2);
+		expect(sftp.names).toHaveLength(2);
 	});
 });

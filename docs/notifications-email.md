@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.41
+version: 1.42
 status: As-Built
 date: 2026-10-22
 tags:
@@ -597,6 +597,14 @@ down. The failure shows on the panel and in the log.
 | Request Rejected | Requester | — | `Request declined: {title}` |
 | Conversation Message | Requester/Admin | `email_requests` | `Message on request: {title}` |
 | Request Complete | Requester | `email_request_progress` | `Your request is complete: {title}` |
+| Backup Failed | The backup settings' failure email address(es), one mail for each destination that failed | — (the backup settings' failure alerts, `notifyOnFailure`) | `⚠️ DumpFire Backup Failed` |
+
+**The backup failure mail says which kind of run failed** (card 2413, 2026-10-22). Sent by
+`runBackup()` in `src/lib/server/backup.ts`: headed **Scheduled Backup Failed**, "A scheduled
+backup to *name* (*type*) failed.", for a scheduled run, and **Run Now Backup Failed**, "A backup
+made by ▶ Run Now to *name* (*type*) failed.", for a Run Now (`runBackup(…, 'manual')`, POST
+`/api/admin/backup`). It said "scheduled" for both. The subject is the same for both, and the
+name, type and error are escaped as before ([Text in Mail Is Text](#text-in-mail-is-text)).
 
 **A new card sends no mail of its own.** Whoever is put on a new card is mailed
 "Assigned": accepting a task request with an assignee (`PATCH /api/requests/{id}`,
