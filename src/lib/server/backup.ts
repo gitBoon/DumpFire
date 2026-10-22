@@ -335,15 +335,18 @@ function logBackup(entry: {
 	}).run();
 
 	// Prune old history — keep the rows of the newest BACKUP_HISTORY_RUNS runs
-	// (card 2413), and the newest successful scheduled row whatever its age, so
-	// that lastScheduledBackupAt() finds it however many Run Now presses or
-	// failures came after it. The one place the history is trimmed: a read of
-	// it writes nothing (card 2412).
+	// (card 2413), and the newest successful scheduled row stamped no later
+	// than now whatever its age, so that lastScheduledBackupAt() finds it
+	// however many Run Now presses or failures came after it. It kept the
+	// newest of all, so where that one was stamped ahead (a clock that ran
+	// fast) the one read was kept only while in the newest 30 runs (card
+	// 2416); one stamped ahead is now kept as any other row is. The one place
+	// the history is trimmed: a read of it writes nothing (card 2412).
 	sqlite.prepare(`
 		DELETE FROM backup_log
 		WHERE filename NOT IN (${NEWEST_RUNS})
-		AND id IS NOT (SELECT id FROM backup_log WHERE ${SCHEDULED_SUCCESS} ORDER BY created_at DESC, id DESC LIMIT 1)
-	`).run(BACKUP_HISTORY_RUNS);
+		AND id IS NOT (SELECT id FROM backup_log WHERE ${SCHEDULED_SUCCESS} AND created_at <= ? ORDER BY created_at DESC, id DESC LIMIT 1)
+	`).run(BACKUP_HISTORY_RUNS, logStamp(Date.now()));
 }
 
 // ─── Retention Cleanup ───────────────────────────────────────────────────────
@@ -469,18 +472,24 @@ export async function runBackup(targetDestinationName?: string, how: 'scheduled'
 
 	/**
 	 * A destination that failed: its `backup_log` row, its result and the
-	 * ERROR line, and it is kept for the run's failure mail.
+	 * ERROR line, and it is kept for the run's failure mail. A row that cannot
+	 * be written (the volume too full for the copy may be too full for it) is
+	 * said, and the run still answers and sends its mail (card 2416).
 	 */
 	const failed = (destConfig: DestinationConfig, errMsg: string, durationMs: number, sizeBytes: number) => {
-		logBackup({
-			destinationType: destConfig.type,
-			destinationName: destConfig.name,
-			filename,
-			sizeBytes,
-			status: 'failed',
-			error: errMsg,
-			durationMs
-		});
+		try {
+			logBackup({
+				destinationType: destConfig.type,
+				destinationName: destConfig.name,
+				filename,
+				sizeBytes,
+				status: 'failed',
+				error: errMsg,
+				durationMs
+			});
+		} catch (err) {
+			log.error(`Backup History row for ${destConfig.name} could not be written`, err);
+		}
 
 		outcome.set(destConfig, {
 			destination: destConfig.name,
@@ -549,8 +558,24 @@ export async function runBackup(targetDestinationName?: string, how: 'scheduled'
 	};
 	if (ready.length === 0) return finish();
 
-	// Generate backup data (SQLite snapshot)
-	const buffer = generateBackupData();
+	// Generate backup data (SQLite snapshot). A copy that cannot be made (the
+	// volume beside the database full, a disk error) fails each destination
+	// that was to be tried, with its row and the reason, and the run's one
+	// failure mail says it (card 2416). It threw out of the run: no row, no
+	// mail, and a 500 for ▶ Run Now. The scheduler tries it again as a run
+	// that failed at every destination, these not being failures before
+	// anything was sent.
+	const copyStart = Date.now();
+	let buffer: Buffer<ArrayBuffer>;
+	try {
+		buffer = generateBackupData();
+	} catch (err: any) {
+		log.error('The copy of the database could not be made', err);
+		const reason = `The copy of the database could not be made: ${err?.message || 'Unknown error'}`;
+		const durationMs = Date.now() - copyStart;
+		for (const destConfig of ready) failed(destConfig, reason, durationMs, 0);
+		return finish();
+	}
 
 	for (const destConfig of ready) {
 		const start = Date.now();
@@ -658,9 +683,9 @@ const logStamp = (ms: number) => new Date(ms).toISOString().replace('T', ' ').sl
  * It does not depend on how much history is kept (card 2413): `logBackup`'s
  * trim keeps this row whatever came after it, where ten newer rows of Run Now
  * presses or failures used to push it out and make this 0. One query,
- * the newest such row alone; the row the trim keeps is the newest of all, so
- * where that one is stamped ahead, the one read here is kept only while it is
- * in the newest 30 runs.
+ * the newest such row alone; the row the trim keeps is this one, the newest
+ * stamped no later than the trim (card 2416): it kept the newest of all, so
+ * where that one was stamped ahead, this one went after 30 runs.
  */
 export function lastScheduledBackupAt(now = Date.now()): number {
 	const createdAt = sqlite
@@ -913,7 +938,8 @@ export function initBackupScheduler(): void {
 				try {
 					results = await runBackup();
 				} finally {
-					// A run that threw (the copy could not be made) made no copy anywhere.
+					// A run that threw made no copy anywhere. A copy that could not be
+					// made no longer throws: each destination fails (card 2416).
 					afterScheduledRun(run, results, unfixable, retry);
 				}
 			}

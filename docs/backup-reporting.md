@@ -1,7 +1,7 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.32
+version: 1.33
 status: As-Built
 date: 2026-10-22
 tags:
@@ -185,8 +185,11 @@ time to an hour later than the server's clock (`scheduledRunSince()`). So:
 
 **A run that failed at every destination is tried again 15 minutes later, at most three
 times** (card 2415). For every schedule (`BACKUP_RETRY_DELAY`, `BACKUP_RETRIES`). It waited for the
-schedule's next run, an hour to a week, while a restart tried again at once. A run that threw before
-any upload (the copy could not be made) counts as failed everywhere. The three tries are spent
+schedule's next run, an hour to a week, while a restart tried again at once. A run whose copy of
+the database could not be made fails each destination it was to try (card 2416, [A Copy That
+Cannot Be Made](#a-copy-that-cannot-be-made)), so it counts as failed everywhere, and not as
+failed before anything was sent; a run that threw for any other reason counts as failed
+everywhere too. The three tries are spent
 until a run the scheduler makes succeeds at a destination: a destination down for days sends four
 failure mails in its first 45 minutes and then one a scheduled run. A run that succeeded at any
 destination is not tried again. The schedule switched off, or its last destination removed, drops
@@ -218,8 +221,10 @@ ran fast, then corrected) held every hourly, 6-hourly or 12-hourly run off until
 passed it and one interval more, with nothing said. The first check after a start now writes the
 `The last scheduled backup is recorded at …, later than the server's clock` `WARN` where there is
 such a row. A clock put back past the last run across a restart can then make one copy early. The
-trim keeps the newest scheduled row of all, so where that one is stamped ahead, the one read is
-kept while it is in the newest 30 runs.
+trim keeps the newest scheduled row stamped no later than now, the one read here (card 2416): it
+kept the newest of all, so where that one was stamped ahead, the one read went once 30 runs had
+come after it, and an interval schedule restarted then counted from an older row, or none, and
+ran at once.
 
 **Copies are named to the millisecond** (card 2415): `dumpfire-backup-<UTC date and
 time>-<milliseconds>.db`, `…-manual.db` for a Run Now. Two Run Now presses in one second shared
@@ -254,8 +259,10 @@ row past the newest 10 on each call, so opening the admin page wrote to the data
 the rows that share a file name: `runBackup()` names its copy once, from the run's start (with
 `-manual` for a Run Now), and writes one row a destination with it. Runs are ordered by their
 newest row. The trim deletes every row outside the newest `BACKUP_HISTORY_RUNS` (30) runs except
-the newest successful scheduled row, which `lastScheduledBackupAt()` reads; so the table holds
-at most 30 rows a destination and that one. `getBackupHistory()` answers every row of the newest
+the newest successful scheduled row stamped no later than now (card 2416: the newest of all
+before it), which `lastScheduledBackupAt()` reads; so the table holds at most 30 rows a
+destination and that one. A row stamped ahead by a clock that ran fast is kept as any other row
+is, while it is in the newest 30 runs. `getBackupHistory()` answers every row of the newest
 30 runs, newest first, which is what the GET asked for (`getBackupHistory(30)` of a table kept
 at 10 rows). The history kept the newest 10 rows, one a destination a run: four destinations
 left under three runs. By age was not taken: 30 days of an hourly schedule is 720 rows a
@@ -263,7 +270,7 @@ destination, and nothing after a month switched off.
 
 | | Before card 2413 | Now |
 |---|---|---|
-| Kept by `logBackup()` | the newest 10 rows | every row of the newest 30 runs, and the newest successful scheduled row |
+| Kept by `logBackup()` | the newest 10 rows | every row of the newest 30 runs, and the newest successful scheduled row stamped no later than now (card 2416) |
 | Answered by the GET | the newest 30 rows (at most 10 there) | every row of the newest 30 runs |
 | `lastScheduledBackupAt()` | 0 once ten newer rows had pushed the last scheduled row out | the last scheduled run, whatever came after it |
 
@@ -886,6 +893,49 @@ to this destination. In Admin, Scheduled Backups, press Test on it and confirm t
 shows." (see [The SFTP Host Key](#the-sftp-host-key)). The results are given in the
 destinations' order.
 
+### A Copy That Cannot Be Made
+
+When `generateBackupData()` throws (card 2416, 2026-10-22): `VACUUM INTO` failing because the
+volume beside the database is full or a disk error, or the clearing of the copy failing,
+`runBackup()` calls `failed()` for each destination the pre-flight above let through, with the
+error `The copy of the database could not be made: <the error's message>`, size 0 and the time
+the copy took to fail, and returns through `finish()`. So:
+
+- **Backup History** has a failed row for each of those destinations, under the run's one file
+  name (one run, card 2413); a destination that failed the pre-flight keeps its own row and error.
+  Not one row for the run: every row names a destination, and the panel shows each by it.
+- **The answer**: ▶ Run Now (`POST /api/admin/backup`) answers `200` with each destination's
+  result in the destinations' order, where it was a `500`; the panel's toast says how many failed
+  and Backup History shows why.
+- **The mail**: the run's one failure mail, with that error in each destination's error box.
+- **The log**: one `[ERROR] [BACKUP] The copy of the database could not be made` with the error
+  itself, then `Backup failed: <destination> → The copy of the database could not be made: …` for
+  each destination.
+- **The scheduler** counts it as a run that failed at every destination, tried again 15 minutes
+  later (card 2415); those destinations were tried, so it is not a failure before anything was
+  sent.
+
+Nothing is uploaded and no retention runs. It threw out of `runBackup()` before card 2416: no row,
+no mail, a `500` for Run Now and only the scheduler's `Scheduler error` line. A row that cannot be
+written (the volume too full for the copy may be too full for a row) is one `[ERROR] [BACKUP]
+Backup History row for <destination> could not be written` line, and the run still answers and
+mails; this holds for every failed row.
+
+```mermaid
+sequenceDiagram
+    participant R as runBackup()
+    participant G as generateBackupData()
+    participant L as backup_log
+    participant M as failure mail
+    R->>G: make the copy
+    G-->>R: throws (database or disk is full)
+    loop each destination the pre-flight let through
+        R->>L: failed row: "The copy of the database could not be made: …"
+    end
+    R->>M: one mail, every failed destination
+    R-->>R: results (Run Now: 200), scheduler: try again in 15 min
+```
+
 ### Failure Notifications
 
 If `notifyOnFailure` is enabled and SMTP is configured, a styled HTML email is sent to the configured address with the error details, a destination not tried for want of its credentials included. The destination's name and type and the error text, which is whatever the destination's server answered, are escaped where they are put into the mail, so markup in them is shown as text and never drawn (see [Text in Mail Is Text](notifications-email.md#text-in-mail-is-text)).
@@ -893,6 +943,8 @@ If `notifyOnFailure` is enabled and SMTP is configured, a styled HTML email is s
 The mail says which kind of run failed (card 2413, 2026-10-22): **Scheduled Backup Failed**, "A scheduled backup to *name* (*type*) failed." for a scheduled run, and **Run Now Backup Failed**, "A backup made by ▶ Run Now to *name* (*type*) failed." for a Run Now. It said "scheduled" for both. The subject, `⚠️ DumpFire Backup Failed`, is the same for both.
 
 **One failure mail a run** (card 2415, 2026-10-22). `runBackup()` keeps each failed destination and its error, and after its last destination sends one mail with the paragraph above and the error box for each, in the destinations' order (`mailFailures`); a run with one failed destination reads as before. It sent one mail for each destination that failed, so four failing sent four for one run. A run none of whose destinations could be tried (credentials or host key missing) sends its one mail too. A scheduled run that failed at every destination is tried again up to three times (above), each with its own mail.
+
+**A copy that cannot be made sends the mail too** (card 2416, 2026-10-22): each destination that was to be tried is in it with `The copy of the database could not be made: …` in its error box ([A Copy That Cannot Be Made](#a-copy-that-cannot-be-made)). It sent none.
 
 ---
 

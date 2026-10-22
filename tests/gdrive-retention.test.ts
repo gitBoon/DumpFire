@@ -43,6 +43,11 @@
  * Europe/London), a run that failed at every destination is tried again 15
  * minutes later at most three times, a stamp ahead holds no hourly run back,
  * and copies are named to the millisecond.
+ *
+ * A copy of the database that cannot be made (card 2416) fails each
+ * destination that was to be tried, with a row and the reason, answers Run
+ * Now with it, and is tried again as any run that failed everywhere; the
+ * trim keeps the last scheduled run stamped before now, not one stamped ahead.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { initBackupScheduler, lastScheduledBackupAt, runBackup, saveBackupConfig } from '$lib/server/backup';
@@ -988,5 +993,103 @@ describe('Scheduled backups are not missed or doubled around downtime, clock cha
 		expect(failedRuns()).toEqual([copyAt(at(4, 16, 10, 1))]);
 		expect(scheduledCopies()).toEqual([copyAt(at(4, 16, 11, 1))]);
 		expect(warned('Scheduled backup failed at every destination: tried again at')).toEqual([]);
+	});
+});
+
+describe('A copy of the database that cannot be made is recorded, answered and tried again, and the trim keeps the last scheduled run before now (card 2416)', { timeout: 60_000 }, () => {
+	const FULL = 'The copy of the database could not be made: database or disk is full';
+	/**
+	 * `generateBackupData()` failing as on a full volume: its `VACUUM INTO`
+	 * throws, every other statement runs. The function is called inside its
+	 * own module, so a spy on the export would not reach it.
+	 */
+	const copyFails = () => {
+		const exec = sqlite.exec.bind(sqlite);
+		return vi.spyOn(sqlite, 'exec').mockImplementation(((source: string) => {
+			if (source.startsWith('VACUUM INTO')) throw new Error('database or disk is full');
+			return exec(source);
+		}) as typeof sqlite.exec);
+	};
+	type Row = { destination: string; filename: string; status: string; error: string | null; size: number };
+	const rows = () =>
+		sqlite.prepare('SELECT destination_name AS destination, filename, status, error, size_bytes AS size FROM backup_log ORDER BY id').all() as Row[];
+	/** A copy's name for a run started `at`, as `runBackup` names it. */
+	const copyAt = (when: Date, manual = false) =>
+		`dumpfire-backup-${when.toISOString().replace(/[:.]/g, '-').slice(0, 23)}${manual ? '-manual' : ''}.db`;
+	const warned = (start: string) => backupLines().filter((l) => l.level === 'WARN' && l.message.startsWith(start));
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it('Run Now: each destination that was to be tried fails with the reason and a row, one ERROR, and the answer says so', async () => {
+		const unconfirmed = { ...OFFSITE, name: 'Unconfirmed', hostKey: '' };
+		const second = { ...OFFSITE, name: 'Second' };
+		saveBackupConfig({ schedule: 'disabled', scheduleTime: '02:00', scheduleDay: 0, retention: 7, destinations: [OFFSITE, unconfirmed, second], notifyOnFailure: false, notifyEmail: '' });
+		copyFails();
+		const admin = makeUser({ role: 'admin' });
+
+		const res = await api('POST', '/api/admin/backup', { user: admin, credential: { kind: 'session', token: makeSession(admin) }, body: {} });
+
+		// It was a 500, with nothing in Backup History.
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		const hostKey = expect.stringMatching(/^SFTP host key not confirmed: /);
+		expect(res.body.results.map((r: { destination: string; status: string; message: string }) => [r.destination, r.status, r.message])).toEqual([
+			['Offsite', 'failed', FULL],
+			['Unconfirmed', 'failed', hostKey],
+			['Second', 'failed', FULL]
+		]);
+		expect(sftp.names).toEqual([]);
+		const written = rows();
+		expect(written.map((r) => [r.destination, r.status, r.error, r.size])).toEqual([
+			['Unconfirmed', 'failed', hostKey, 0],
+			['Offsite', 'failed', FULL, 0],
+			['Second', 'failed', FULL, 0]
+		]);
+		// One run in Backup History: the rows share the run's name.
+		expect(new Set(written.map((r) => r.filename)).size).toBe(1);
+		expect(written[0].filename).toMatch(/^dumpfire-backup-.*-manual\.db$/);
+		expect(backupLines().filter((l) => l.level === 'ERROR' && l.message.startsWith('The copy of the database could not be made'))).toHaveLength(1);
+	});
+
+	it('scheduled: a run whose copy cannot be made is a failed row, and is tried again 15 minutes later as a run that failed at every destination', async () => {
+		vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'], now: new Date('2026-04-17T10:00:00Z') });
+		saveBackupConfig({ schedule: 'hourly', scheduleTime: '02:00', scheduleDay: 0, retention: 50, destinations: [OFFSITE], notifyOnFailure: false, notifyEmail: '' });
+		logged(copyAt(new Date('2026-04-17T08:00:00Z')), new Date('2026-04-17T08:00:00Z'));
+		const copy = copyFails();
+
+		initBackupScheduler();
+		await vi.advanceTimersByTimeAsync(MINUTE); // 10:01: the copy fails
+		await vi.waitFor(() => expect(rows()).toHaveLength(2));
+		copy.mockRestore();
+		await vi.advanceTimersByTimeAsync(15 * MINUTE); // 10:16: tried again
+
+		await vi.waitFor(() => expect(sftp.names).toEqual([copyAt(new Date('2026-04-17T10:16:00Z'))]));
+		expect(rows().filter((r) => r.status === 'failed').map((r) => [r.filename, r.error])).toEqual([[copyAt(new Date('2026-04-17T10:01:00Z')), FULL]]);
+		expect(warned('Scheduled backup failed at every destination: tried again at')).toHaveLength(1);
+		expect(warned('Scheduled backup failed at every destination before anything was sent')).toEqual([]);
+	});
+
+	it('the trim keeps the last scheduled run stamped before now, though a later one is stamped ahead, however many Run Now runs follow', async () => {
+		const DAY = 86_400_000;
+		const now = Date.now();
+		const real = new Date(Math.floor((now - 50 * DAY) / 1000) * 1000);
+		logged(copyAt(real), real);
+		// Stamped six days ahead by a clock that ran fast.
+		logged('dumpfire-backup-stamped-ahead.db', new Date(now + 6 * DAY));
+		for (let i = 0; i < 35; i++) {
+			const at = new Date(now - 40 * DAY + i * 3_600_000);
+			logged(copyAt(at, true), at);
+		}
+		saveBackupConfig({ schedule: 'disabled', scheduleTime: '02:00', scheduleDay: 0, retention: 7, destinations: [OFFSITE], notifyOnFailure: false, notifyEmail: '' });
+
+		expect(await runBackup(undefined, 'manual')).toEqual([expect.objectContaining({ status: 'success' })]);
+
+		// The newest 30 runs (the row ahead, this Run Now and 28 before it), and the last scheduled run before now.
+		const kept = historyRows();
+		expect(kept).toHaveLength(31);
+		expect(kept).toContain('dumpfire-backup-stamped-ahead.db');
+		expect(kept.at(-1)).toBe(copyAt(real));
+		expect(lastScheduledBackupAt()).toBe(real.getTime());
 	});
 });
