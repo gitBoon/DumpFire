@@ -492,7 +492,8 @@ const MAIL_SETTINGS = [
  * API (`PUT /api/v1/webhooks/{id}`), since no screen shows webhooks. Where there
  * is none the setting is removed: the backup destinations, and the mail
  * settings. The backup schedule is set to disabled. `app_url` and every other
- * setting are left alone, and so is every other table.
+ * setting are left alone, and so is every other table but `setting_setters`,
+ * whose rows for the mail and the destinations go with them (card 2406).
  *
  * A `backup_config` that is not a JSON object is removed rather than
  * rewritten. A missing one is read as no destinations and no schedule, which
@@ -554,6 +555,15 @@ export function switchOffOutside(database: Database.Database): OutsideSwitchedOf
 	done.mailSettings = database
 		.prepare(`DELETE FROM settings WHERE key IN (${MAIL_SETTINGS.map(() => '?').join(', ')})`)
 		.run(...MAIL_SETTINGS).changes;
+
+	// Who set the mail and each destination goes with them (card 2406): left,
+	// a row would make the mail or a destination set up again at the same
+	// place its account's again (setting-setters.ts), and that account's
+	// demotion would take it away. The App URL's rows stay, as the App URL
+	// does. Not counted: nothing reaches outside through them.
+	if (hasColumns('setting_setters', 'setting')) {
+		database.prepare("DELETE FROM setting_setters WHERE setting = 'mail' OR substr(setting, 1, 19) = 'backup_destination:'").run();
+	}
 
 	return done;
 }

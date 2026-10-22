@@ -19,12 +19,19 @@
  *
  * The other destinations are unchanged: an SFTP destination is replaced by a
  * stub without `listForRetention`, and is counted from `list()` as before.
+ *
+ * And Run Now (card 2405), on the SFTP stub: a manual run names its copy
+ * `…-manual.db`, and Keep Last counts those apart from the scheduled copies,
+ * a Run Now removing only older Run Now copies and a scheduled run only older
+ * scheduled ones, so pressing it Keep Last times no longer pushes the older
+ * copies out, and the Run Now copies stay at most Keep Last.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runBackup, saveBackupConfig } from '$lib/server/backup';
 import type { DestinationConfig } from '$lib/server/backup-destinations';
 import { sqlite } from '$lib/server/db';
-import { resetDb } from './helpers/fixtures';
+import { api } from './helpers/api';
+import { makeSession, makeUser, resetDb } from './helpers/fixtures';
 
 /** A file in the folder, and what the account may do to it. */
 type DriveFile = { id: string; name: string; canDelete: boolean; canTrash: boolean };
@@ -321,5 +328,100 @@ describe('a destination without listForRetention', () => {
 		expect(sftp.names).toHaveLength(7);
 		expect(backupLines().filter((l) => l.level === 'WARN' && l.message.startsWith('Retention:'))).toEqual([]);
 		expect(files.list).not.toHaveBeenCalled();
+	});
+});
+
+describe('Keep Last counts Run Now copies apart from scheduled ones (card 2405)', { timeout: 30_000 }, () => {
+	const OFFSITE: DestinationConfig = {
+		type: 'sftp',
+		name: 'Offsite',
+		host: 'sftp.example.test',
+		port: 22,
+		username: 'backup',
+		remotePath: '/backups',
+		hostKey: 'ssh-ed25519 SHA256:s16t1ixxsjxOgoaXCXACvAIOEG1K5biSlM7GekmavrY'
+	};
+	/** Seven scheduled copies, one a day from 2026-04-01: as many as Keep Last 7 keeps. */
+	const OLDER = Array.from({ length: 7 }, (_, i) => `dumpfire-backup-2026-04-0${i + 1}T00-00-00.db`);
+
+	/** ▶ Run Now as the panel sends it, by an administrator, a second after the last, so that each copy has a name of its own. */
+	async function runNow(): Promise<void> {
+		vi.setSystemTime(Date.now() + 1000);
+		const admin = makeUser({ role: 'admin' });
+		const res = await api('POST', '/api/admin/backup', { user: admin, credential: { kind: 'session', token: makeSession(admin) }, body: {} });
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		expect(res.body.results).toEqual([expect.objectContaining({ status: 'success' })]);
+	}
+
+	beforeEach(() => {
+		// The clock alone, so that copies made a second apart are named apart; put back after each.
+		vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-10-22T10:00:00Z') });
+		sftp.names = [...OLDER];
+		saveBackupConfig({ schedule: 'daily', scheduleTime: '02:00', scheduleDay: 0, retention: 7, destinations: [OFFSITE], notifyOnFailure: false, notifyEmail: '' });
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it('removes no scheduled copy on Run Now, names its copy …-manual.db, and says so in the log', async () => {
+		await runNow();
+
+		expect(sftp.deleted).toEqual([]);
+		expect(sftp.names.slice(0, 7)).toEqual(OLDER);
+		expect(sftp.names).toHaveLength(8);
+		expect(sftp.names[7]).toBe('dumpfire-backup-2026-10-22T10-00-01-manual.db');
+		const succeeded = sqlite
+			.prepare("SELECT message FROM system_logs WHERE context = 'BACKUP' AND message LIKE 'Backup succeeded%'")
+			.pluck()
+			.all() as string[];
+		expect(succeeded).toHaveLength(1);
+		expect(succeeded[0]).toContain(`→ ${sftp.names[7]} (`);
+		expect(succeeded[0]).toMatch(
+			/\. Made by Run Now: Keep Last counts Run Now copies apart from scheduled ones, so only an older Run Now copy can be removed$/
+		);
+		expect(backupLines().filter((l) => l.message.startsWith('Retention cleanup'))).toEqual([]);
+	});
+
+	it('pressed Keep Last times and then followed by a scheduled run, still keeps the older copies a scheduled run keeps', async () => {
+		for (let i = 0; i < 7; i++) await runNow();
+		expect(sftp.deleted).toEqual([]);
+
+		// The scheduled run: eight scheduled copies with its own, seven kept. The
+		// seven Run Now copies are not counted, so they push nothing out.
+		await runBackup();
+
+		expect(sftp.deleted).toEqual([OLDER[0]]);
+		expect(sftp.names.filter((n) => OLDER.includes(n))).toEqual(OLDER.slice(1));
+		expect(sftp.names.filter((n) => n.endsWith('-manual.db'))).toHaveLength(7);
+		expect(sftp.names.filter((n) => !n.endsWith('-manual.db') && !OLDER.includes(n))).toHaveLength(1);
+	});
+
+	it('pressed eight times with Keep Last 7, keeps the newest seven Run Now copies and every scheduled copy', async () => {
+		for (let i = 0; i < 8; i++) await runNow();
+
+		const manual = Array.from({ length: 8 }, (_, i) => `dumpfire-backup-2026-10-22T10-00-0${i + 1}-manual.db`);
+		// The eighth press removed the first press's copy, and nothing else.
+		expect(sftp.deleted).toEqual([manual[0]]);
+		expect(sftp.names.filter((n) => n.endsWith('-manual.db'))).toEqual(manual.slice(1));
+		expect(sftp.names.filter((n) => !n.endsWith('-manual.db'))).toEqual(OLDER);
+		expect(backupLines().filter((l) => l.message.startsWith('Retention cleanup'))).toEqual([
+			{ level: 'WARN', message: `Retention cleanup: deleted ${manual[0]} from Offsite` }
+		]);
+	});
+
+	it('never removes a Run Now copy on a scheduled run, however many scheduled copies it removes', async () => {
+		await runNow();
+		const manualCopy = sftp.names[7];
+		// Seven scheduled copies made after it, each named a day apart on from the older ones.
+		for (let i = 0; i < 7; i++) sftp.names.push(`dumpfire-backup-2099-01-0${i + 1}T00-00-00.db`);
+
+		await runBackup();
+
+		// The run's own and the seven of 2099 are eight scheduled copies newer than all of
+		// OLDER: Keep Last 7 keeps the newest seven of them and removes every older one, the
+		// Run Now copy excepted.
+		expect(sftp.names).toContain(manualCopy);
+		expect(sftp.deleted).not.toContain(manualCopy);
+		expect(sftp.names.filter((n) => !n.endsWith('-manual.db'))).toHaveLength(7);
 	});
 });

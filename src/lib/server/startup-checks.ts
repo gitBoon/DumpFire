@@ -42,8 +42,11 @@
  * listens: `refuseUserlessBesideAnother`, when the database in use has no
  * users while another database is beside it.
  *
- * And one thing that is changed at start, beside them: `maskLiveLog`, which
- * masks the secrets an older gate wrote into the system log.
+ * And two things that are changed at start, beside them: `maskLiveLog`, which
+ * masks the secrets an older gate wrote into the system log, and
+ * `removeSettingsOfNonAdministrators`, which removes the mail settings, App
+ * URL and backup destinations set by someone who is no longer an
+ * administrator (card 2406).
  */
 import { readFileSync } from 'node:fs';
 import { posix } from 'node:path';
@@ -61,6 +64,7 @@ import { boardsInLoops } from './sub-boards';
 import { secretsToEnter, secretsToEnterSentence, unconfirmedHostKeys } from './backup-secrets';
 import { parseAllowInside } from './webhook-address';
 import { activeWebhooksRefused, boardsOverWebhookCap, MAX_WEBHOOKS_PER_BOARD } from './webhooks';
+import { removeSettingsOfFormerAdministrators } from './setting-setters';
 
 const log = createLogger('STARTUP');
 
@@ -414,6 +418,40 @@ export function maskLiveLog(): number | null {
 			log.warn(
 				`The system log could not be masked of the invite and request-link tokens, and the names typed at failed sign-ins, it may hold: ` +
 					`${(err as Error)?.message ?? err}. GET /api/logs may still show them.`
+			);
+		} catch {
+			// Nothing more to be done about it.
+		}
+		return null;
+	}
+}
+
+/**
+ * Remove what each setter who is no longer an administrator set: their mail
+ * settings, App URL and backup destinations, by card 2397's rule (card 2406,
+ * `removeSettingsOfFormerAdministrators` in setting-setters.ts). Returns how
+ * many such setters were found, or null when it could not be done. Called
+ * once, from hooks.server.ts, after the migrations and before the schedulers
+ * start, so that no scheduled backup is sent to such a destination first.
+ *
+ * A role written to `user` from the host runs no application code, and nor
+ * does a delete made there with foreign keys off: each left that person's
+ * settings in force. Each removal is a WARN line under SMTP or BACKUP, as a
+ * demotion on the admin page is. An account deleted from the host with
+ * foreign keys on takes its setter rows with it, and its settings cannot be
+ * told from ones nobody is recorded for: they stay.
+ *
+ * It never throws: what cannot be removed is no reason not to start. It is
+ * said at WARN, and the server starts.
+ */
+export function removeSettingsOfNonAdministrators(): number | null {
+	try {
+		return removeSettingsOfFormerAdministrators().length;
+	} catch (err) {
+		try {
+			log.warn(
+				`The settings of setters who are no longer administrators could not be checked: ${(err as Error)?.message ?? err}. ` +
+					'Mail and backups may still go where such a person set them.'
 			);
 		} catch {
 			// Nothing more to be done about it.

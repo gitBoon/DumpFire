@@ -532,9 +532,14 @@ describe('the activity report does not count a dependency, or a milestone, added
 	 * blocker would have put a card nobody worked on into the report, as the
 	 * work of whoever linked it. Neither the window nor the person counts them.
 	 */
-	const today = new Date().toISOString().slice(0, 10);
+	// The window is read when the report is asked, from the day before to the
+	// day after (card 2409): the entries are stamped by SQLite's clock, which
+	// no fake timer reaches, and a "today" read when the file was collected
+	// left them outside it when a run crossed midnight in between. The cards,
+	// made in 2020, are outside it either way.
+	const day = (offset: number) => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
 	const reported = (s: Scene, userId: number | null = null) =>
-		buildActivityReport({ actor: s.admin, userId, from: today, to: today }).boards.flatMap((board) => board.cards.map((card) => card.id));
+		buildActivityReport({ actor: s.admin, userId, from: day(-1), to: day(1) }).boards.flatMap((board) => board.cards.map((card) => card.id));
 
 	it('in the window, or for the person who linked them, in either spelling', async () => {
 		const s = scene();

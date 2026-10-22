@@ -9,6 +9,8 @@
  * that account made a user, or deleted, takes its destinations away. Lowering
  * Keep Last, removing a destination and switching the schedule off are the
  * superadmin's alone (card 2398): each leaves fewer copies to restore from.
+ * Keep Last counts Run Now (POST) copies apart from scheduled ones (card
+ * 2405), so pressing it repeatedly pushes out only older Run Now copies.
  *
  * No secret leaves in an answer, and none is used anywhere but where it was
  * saved (cards 2187 and 2190). The GET masks every secret field, the Google
@@ -317,7 +319,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	requireAdmin(stillCallerNow(locals));
 	const targetDestination = readText(body, 'destination', {});
 
-	const results = await runBackup(targetDestination);
+	// A manual run removes only older Run Now copies, never a scheduled one
+	// (card 2405): pressed Keep Last times it pushed every older copy out.
+	const results = await runBackup(targetDestination, 'manual');
 
 	return json({ results });
 };

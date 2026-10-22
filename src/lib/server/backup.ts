@@ -316,7 +316,28 @@ function logBackup(entry: {
 
 // ─── Retention Cleanup ───────────────────────────────────────────────────────
 
-async function cleanupRetention(config: DestinationConfig, retention: number): Promise<void> {
+/**
+ * How a copy made by ▶ Run Now is named: the scheduled copy's name with
+ * `-manual` before `.db`, so that it still sorts by its time. Keep Last
+ * counts such copies apart from the scheduled ones (card 2405).
+ */
+export const MANUAL_COPY = /-manual\.db$/;
+
+/**
+ * Remove the oldest copies of one kind at a destination beyond `retention`:
+ * the scheduled copies after a scheduled run, the Run Now copies (`…-manual.db`)
+ * after a Run Now, each list kept on its own (card 2405).
+ *
+ * Keep Last counted every copy, so an administrator who pressed Run Now Keep
+ * Last times pushed every older copy out, which card 2398 had made lowering
+ * Keep Last the superadmin's to stop. Not pruning on Run Now alone was not
+ * enough: the next scheduled run would then have kept the newest copies, Run
+ * Now's, and removed the rest. With two lists, a Run Now can push out only
+ * older Run Now copies and a scheduled run only older scheduled ones, and a
+ * destination holds at most twice Keep Last (the code review: Run Now copies
+ * kept until removed by hand grew without limit).
+ */
+async function cleanupRetention(config: DestinationConfig, retention: number, kind: 'scheduled' | 'manual'): Promise<void> {
 	if (retention <= 0) return;
 	try {
 		const dest = createDestination(config);
@@ -335,6 +356,7 @@ async function cleanupRetention(config: DestinationConfig, retention: number): P
 		} else {
 			files = await dest.list();
 		}
+		files = files.filter((filename) => MANUAL_COPY.test(filename) === (kind === 'manual'));
 		if (files.length > retention) {
 			// Files are sorted oldest-first; delete the oldest
 			const toDelete = files.slice(0, files.length - retention);
@@ -357,8 +379,14 @@ async function cleanupRetention(config: DestinationConfig, retention: number): P
 /**
  * Run a backup to all configured destinations (or a specific one).
  * Returns results for each destination.
+ *
+ * `how` is `scheduled` for the scheduler's runs, which remove the oldest
+ * scheduled copies beyond Keep Last, and `manual` for ▶ Run Now (POST
+ * /api/admin/backup), whose copy is named `…-manual.db` and which removes
+ * only the oldest Run Now copies beyond Keep Last, never a scheduled one
+ * (card 2405, `cleanupRetention`).
  */
-export async function runBackup(targetDestinationName?: string): Promise<Array<{
+export async function runBackup(targetDestinationName?: string, how: 'scheduled' | 'manual' = 'scheduled'): Promise<Array<{
 	destination: string;
 	status: 'success' | 'failed';
 	message: string;
@@ -377,7 +405,8 @@ export async function runBackup(targetDestinationName?: string): Promise<Array<{
 		return [{ destination: targetDestinationName || 'none', status: 'failed', message: 'Destination not found', durationMs: 0 }];
 	}
 
-	const filename = `dumpfire-backup-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.db`;
+	const manual = how === 'manual';
+	const filename = `dumpfire-backup-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}${manual ? '-manual' : ''}.db`;
 
 	type Result = { destination: string; status: 'success' | 'failed'; message: string; durationMs: number };
 	/** Each destination's result, given in the order the destinations are. */
@@ -469,8 +498,8 @@ export async function runBackup(targetDestinationName?: string): Promise<Array<{
 				durationMs
 			});
 
-			// Run retention cleanup
-			await cleanupRetention(destConfig, config.retention);
+			// Run retention cleanup over this run's own kind of copy (card 2405).
+			await cleanupRetention(destConfig, config.retention, how);
 
 			outcome.set(destConfig, {
 				destination: destConfig.name,
@@ -479,7 +508,10 @@ export async function runBackup(targetDestinationName?: string): Promise<Array<{
 				durationMs
 			});
 
-			log.warn(`Backup succeeded: ${destConfig.name} → ${filename} (${durationMs}ms, ${(buffer.length / 1024).toFixed(1)} KB)`);
+			log.warn(
+				`Backup succeeded: ${destConfig.name} → ${filename} (${durationMs}ms, ${(buffer.length / 1024).toFixed(1)} KB)` +
+					(manual ? '. Made by Run Now: Keep Last counts Run Now copies apart from scheduled ones, so only an older Run Now copy can be removed' : '')
+			);
 		} catch (err: any) {
 			await failed(destConfig, err.message || 'Unknown error', Date.now() - start, buffer.length);
 		}

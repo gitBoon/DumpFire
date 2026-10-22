@@ -406,6 +406,25 @@ describe('the Scheduled Backups panel for an administrator and for the superadmi
 	beforeEach(dismissAll);
 	afterEach(dismissAll);
 
+	// Card 2405's review: Keep Last keeps two lists, and the panel says so by it and with each Run Now.
+	it('says by Keep Last, to an administrator and to the superadmin, and with a Run Now that succeeds, that the two kinds of copy are counted separately (card 2405)', async () => {
+		const KEEP = 'Keep Last counts scheduled copies and Run Now copies separately: a Run Now removes only older Run Now copies.';
+		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn(), isSuperadmin: false });
+		await settle();
+		expect(target.querySelector('.sched-keep-note')!.textContent).toBe(KEEP);
+
+		buttonNamed(target, '▶ Run Now').click();
+		await settle();
+		expect(asked('POST /api/admin/backup')).toHaveLength(1);
+		expect(toastsShown()).toEqual([`Backup completed to 1 destination. ${KEEP}`]);
+
+		unmount(drawn!.component);
+		drawn!.target.remove();
+		const chief = draw(ScheduledBackupsPanel, { confirm: vi.fn(), isSuperadmin: true });
+		await settle();
+		expect(chief.querySelector('.sched-keep-note')!.textContent).toBe(KEEP);
+	});
+
 	it('shows an administrator 🗑️ aria-disabled, not disabled, saying the rule when pressed, with no confirm and nothing sent', async () => {
 		const confirm = vi.fn();
 		const target = draw(ScheduledBackupsPanel, { confirm, isSuperadmin: false });

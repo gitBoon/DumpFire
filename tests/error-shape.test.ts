@@ -58,7 +58,7 @@ const ALLOWED: Record<string, string> = {
 		"json, the v1 API's own: SvelteKit's json given its caller's body and options, with each stored " +
 		'timestamp in ISO 8601 (card 2095, plan R1). Each call of it is read where it is made, as a call of ' +
 		"SvelteKit's json is: the import of it is read as one below.",
-	'src/hooks.server.ts:387':
+	'src/hooks.server.ts:394':
 		'the 400 "Malformed URI" for an address that cannot be decoded, in plain text: what SvelteKit itself ' +
 		'answered before it called the gate, up to 2.60, and which the gate now answers in its place, word for ' +
 		'word, since SvelteKit 2.61 hands it such an address (card 2227). It is no route, under /api/ or not. ' +

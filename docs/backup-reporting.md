@@ -1,7 +1,7 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.28
+version: 1.29
 status: As-Built
 date: 2026-10-22
 tags:
@@ -44,7 +44,7 @@ flowchart TD
     GDrive --> LogResult
     OneDrive --> LogResult
 
-    LogResult --> Retention["Retention cleanup\nDelete oldest files"]
+    LogResult --> Retention["Retention cleanup\nDelete oldest files of this run's kind\n(scheduled, or Run Now)"]
     LogResult -->|"Failed"| NotifyEmail["Send failure email\nif configured"]
 ```
 
@@ -118,6 +118,8 @@ the superadmin, asked of the account as it is at the write (`superadminOnly()` i
 written and no line is logged. Raising the retention, changing between schedules that run, and
 adding or editing destinations stay every administrator's. See
 [Fewer Copies Are the Superadmin's](authentication-security.md#fewer-copies-are-the-superadmins-card-2398).
+Keep Last counts Run Now copies and scheduled copies separately, so a Run Now removes only
+older Run Now copies (card 2405): see [Retention Cleanup](#retention-cleanup).
 
 **Each destination's setter** (card 2397, 2026-10-22). Who added each destination, pointed it
 at each place or account it has been, or connected its Google Drive, is a
@@ -136,7 +138,10 @@ are taken out of `backup_config`, with their stored secrets, in the same transac
 `WARN` under `BACKUP` says so once committed: `Backup destination "NAS" (sftp) removed: saved
 by "ann", who was made a user by "chief". Its stored secrets went with it; the copies already
 there are kept.` (meta `{ "setter", "reason", "destinations": [{ "name", "type" }] }`). Nothing
-is deleted at the destination. A destination saved before 0059 has no row and stays. The
+is deleted at the destination. Every start does the same for a setter made a user from the host,
+or whose account is gone, before the scheduler starts (card 2406: see
+[Settings Go With Their Setter](authentication-security.md#settings-go-with-their-setter-card-2397)).
+A destination saved before 0059 has no row and stays. The
 schedule, the retention and the failure mail have no setter. See
 [Settings Go With Their Setter](authentication-security.md#settings-go-with-their-setter-card-2397).
 
@@ -643,8 +648,39 @@ flowchart LR
 
 After each successful upload, the system:
 1. Lists all backup files at the destination
-2. Sorts oldest-first
-3. Deletes files exceeding the configured retention count
+2. Keeps only this run's kind of copy: the scheduled copies after a scheduled run, the copies
+   made by **▶ Run Now** (named `…-manual.db`) after a Run Now
+3. Sorts them oldest-first
+4. Deletes those exceeding the configured retention count
+
+**Keep Last counts Run Now copies and scheduled copies separately** (card 2405, 2026-10-22,
+and its code review). Keep Last counted every copy, so an administrator who pressed Run Now
+Keep Last times pushed every older copy out, which card 2398 had made lowering Keep Last the
+superadmin's to prevent. A manual run (`POST /api/admin/backup`, `runBackup(name,
+'manual')`) now names its copy `dumpfire-backup-<UTC date and time>-manual.db`, which still
+sorts by its time, and `cleanupRetention(config, retention, kind)` keeps the two lists apart:
+a Run Now removes only the oldest `…-manual.db` copies beyond Keep Last, and a scheduled run
+(`runBackup()`, the default `'scheduled'`) only the oldest copies that are not `…-manual.db`
+(`MANUAL_COPY` in `src/lib/server/backup.ts`). So a Run Now can push out only older Run Now
+copies, and a destination holds at most twice Keep Last. The Run Now's `Backup succeeded` line
+ends `. Made by Run Now: Keep Last counts Run Now copies apart from scheduled ones, so only an
+older Run Now copy can be removed`; the panel says the same under Keep Last and in the Run
+Now toast. Not pruning on Run Now at all would not have been enough: the next scheduled run
+would have kept the newest copies, Run Now's, and removed the rest; and Run Now copies kept
+until removed by hand would have grown without limit (the code review). Copies made by Run
+Now before this change carry no `-manual` and are counted as scheduled ones. A schedule made
+more frequent still keeps Keep Last copies over a shorter time: changing between schedules
+that run is every administrator's (card 2398's ruling).
+
+```mermaid
+flowchart LR
+    Run{"which run?"} -->|"▶ Run Now"| M["upload …-manual.db"]
+    Run -->|"scheduled"| S["upload …db"]
+    M --> LM["list: …-manual.db only"]
+    S --> LS["list: all but …-manual.db"]
+    LM --> K["keep the newest Keep Last<br/>of that list, remove the older"]
+    LS --> K
+```
 
 On Google Drive the listing reads every page of the folder (up to 100 pages of 1,000 files; past that it stops with an error rather than follow a page token for ever) and each file's `capabilities.canDelete` and `canTrash` (card 2238), through the destination's optional `listForRetention()`. A file the account may delete is deleted by the id it was listed under; one it may only trash is moved to the trash, and logged `Retention cleanup: moved to the trash <name>` rather than `deleted` (its `delete()` answers `'trashed'`); one it may do neither to is set aside, not counted towards the retention number and not tried, and each run that finds any writes one `WARN` line saying how many and naming the oldest. The other destinations have no `listForRetention()` and are counted from `list()` as before. See [Configuring Backups](admin-guide.md#configuring-backups) for what to do about files set aside.
 

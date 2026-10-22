@@ -17,12 +17,20 @@
  * it, removes what it set in the same transaction, with a WARN line under
  * SMTP or BACKUP and `settingsRemoved` in the answer. A setting nobody is
  * recorded for, as one saved before the migration, stays.
+ *
+ * Card 2406. A role written to `user` from the host runs none of that, so
+ * every start removes what a setter who is no longer an administrator set
+ * (`removeSettingsOfNonAdministrators`), and what a setter whose account is
+ * gone set, where a delete with foreign keys off left the rows.
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
 import { settingSetters, settings, users } from '$lib/server/db/schema';
 import { settingsHeldBy } from '$lib/server/setting-setters';
+import { removeSettingsOfNonAdministrators } from '$lib/server/startup-checks';
 import { load as loadAdminPage } from '../src/routes/admin/+page.server';
 import type { SessionUser } from '$lib/server/auth';
 import { api } from './helpers/api';
@@ -773,6 +781,131 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 
 		expect(setters()).toEqual(kept);
 		expect(names()).toEqual(['Old', "Ann's", "Bob's"]);
+	});
+
+	// Card 2406: a role written to user, or an account deleted, from the host runs no application code.
+	describe('at start-up, what a setter who is no longer an administrator set (card 2406)', () => {
+		afterEach(() => sqlite.exec('DROP TRIGGER IF EXISTS refuse_2406'));
+
+		const START_UP = '(found at start-up: the role was changed outside the admin page)';
+		const STARTUP_LINES = () =>
+			sqlite.prepare("SELECT level, message FROM system_logs WHERE context = 'STARTUP' ORDER BY id").all() as { level: string; message: string }[];
+
+		it('removes what an administrator made a user from the host set, logged at WARN under nobody, and finds nothing the second time', async () => {
+			await annsSettings();
+			const linesBefore = lines().length;
+			sqlite.prepare("UPDATE users SET role = 'user' WHERE id = ?").run(ann.id);
+
+			expect(removeSettingsOfNonAdministrators()).toBe(1);
+
+			expect(SMTP_ROWS()).toEqual([]);
+			expect(setting('app_url')).toBeNull();
+			expect(names()).toEqual(['Old', "Bob's"]);
+			expect(setting('backup_config')).not.toContain('secret-ann-bucket');
+			expect(setters()).toEqual([{ setting: "backup_destination:Bob's", userId: bob.id }]);
+			expect(rows()).toEqual([{ setting: "backup_destination:Bob's", userId: bob.id }]);
+			expect(lines().slice(linesBefore)).toEqual([
+				{
+					level: 'WARN',
+					context: 'SMTP',
+					message:
+						`The mail settings and the App URL removed: saved by "ann", who is no longer an administrator ${START_UP}. ` +
+						'No mail is sent until an administrator sets the mail up again. ' +
+						"Links in mail use APP_URL, or the server's own address, until an App URL is saved again.",
+					meta: JSON.stringify({ setter: ann.id, reason: 'not-an-administrator', mail: true, appUrl: true }),
+					userId: null
+				},
+				{
+					level: 'WARN',
+					context: 'BACKUP',
+					message: `Backup destination "Ann's" (s3) removed: saved by "ann", who is no longer an administrator ${START_UP}. Its stored secrets went with it; the copies already there are kept.`,
+					meta: JSON.stringify({ setter: ann.id, reason: 'not-an-administrator', destinations: [{ name: "Ann's", type: 's3' }] }),
+					userId: null
+				}
+			]);
+
+			// The next start finds nobody.
+			const before = snapshotDb();
+			expect(removeSettingsOfNonAdministrators()).toBe(0);
+			expectUnchanged(before);
+		});
+
+		it('leaves what administrators set, the superadmin made an administrator from the host included', async () => {
+			await annsSettings();
+			// From the host the superadmin is made `admin`, which is still an administrator.
+			sqlite.prepare("UPDATE users SET role = 'admin' WHERE id = ?").run(chief.id);
+			const before = snapshotDb();
+
+			expect(removeSettingsOfNonAdministrators()).toBe(0);
+
+			expectUnchanged(before);
+		});
+
+		it('treats a row whose account is gone, deleted from the host with foreign keys off, the same', async () => {
+			await annsSettings();
+			const linesBefore = lines().length;
+			sqlite.pragma('foreign_keys = OFF');
+			try {
+				sqlite.prepare('DELETE FROM users WHERE id = ?').run(ann.id);
+			} finally {
+				sqlite.pragma('foreign_keys = ON');
+			}
+			expect(rows()).toContainEqual({ setting: 'mail', userId: ann.id });
+
+			expect(removeSettingsOfNonAdministrators()).toBe(1);
+
+			expect(SMTP_ROWS()).toEqual([]);
+			expect(setting('app_url')).toBeNull();
+			expect(names()).toEqual(['Old', "Bob's"]);
+			expect(rows()).toEqual([{ setting: "backup_destination:Bob's", userId: bob.id }]);
+			const gone = '(found at start-up: it was deleted outside the admin page)';
+			expect(lines().slice(linesBefore).map((l) => [l.context, l.message.split('. ')[0], l.userId])).toEqual([
+				['SMTP', `The mail settings and the App URL removed: saved by account ${ann.id}, whose account no longer exists ${gone}`, null],
+				['BACKUP', `Backup destination "Ann's" (s3) removed: saved by account ${ann.id}, whose account no longer exists ${gone}`, null]
+			]);
+		});
+
+		it('cannot find an account deleted from the host with foreign keys on: the cascade takes its rows, and its settings stay, unattributed', async () => {
+			await annsSettings();
+			sqlite.prepare('DELETE FROM users WHERE id = ?').run(ann.id);
+			expect(rows()).toEqual([{ setting: "backup_destination:Bob's", userId: bob.id }]);
+			const before = snapshotDb();
+
+			expect(removeSettingsOfNonAdministrators()).toBe(0);
+
+			expectUnchanged(before);
+			expect(SMTP_ROWS()).not.toEqual([]);
+			expect(names()).toEqual(['Old', "Ann's", "Bob's"]);
+		});
+
+		it('removes all of it or none, and does not throw, when a removal fails: one WARN line under STARTUP', async () => {
+			await annsSettings();
+			sqlite.prepare("UPDATE users SET role = 'user' WHERE id = ?").run(ann.id);
+			sqlite.exec("CREATE TEMP TRIGGER refuse_2406 BEFORE DELETE ON setting_setters BEGIN SELECT RAISE(ABORT, 'refused for the test'); END");
+			const before = snapshotDb();
+			const linesBefore = lines().length;
+
+			expect(removeSettingsOfNonAdministrators()).toBeNull();
+
+			expectUnchanged(before);
+			expect(lines().slice(linesBefore)).toEqual([]);
+			expect(STARTUP_LINES()).toEqual([
+				{
+					level: 'WARN',
+					message:
+						'The settings of setters who are no longer administrators could not be checked: refused for the test. ' +
+						'Mail and backups may still go where such a person set them.'
+				}
+			]);
+		});
+
+		it('is called by hooks.server.ts after the migrations and before the schedulers start', () => {
+			const hooks = readFileSync(join(process.cwd(), 'src/hooks.server.ts'), 'utf8');
+			const at = (call: string) => hooks.indexOf(`\n${call}`);
+			expect(at('removeSettingsOfNonAdministrators();')).toBeGreaterThan(at('runMigrations();'));
+			expect(at('removeSettingsOfNonAdministrators();')).toBeLessThan(at('startSchedulers();'));
+			expect(at('runMigrations();')).toBeGreaterThan(-1);
+		});
 	});
 
 	describe('all together or not at all', () => {

@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.91
+version: 1.92
 status: As-Built
 date: 2026-10-22
 tags:
@@ -4491,6 +4491,69 @@ An administrator made a user while a save is on its way, the superadmin made an 
 - **Administrators can lower Keep Last, remove destinations and switch the schedule off again** under the older image.
 - **Coming forward again**, the rows recorded before are still there: a setting moved under the older image is at a place nobody is recorded for, and nobody's until it is next moved, while one moved back to a recorded place is that account's again, so after going back and forth, check `setting_setters` (449) before relying on a demotion to remove anything.
 
+### Run Now Copies Counted Apart From Scheduled Ones; a Setter Made a User From the Host Loses Their Settings at the Next Start
+
+**Cards 2405, 2406 and 2409.** No migration, no setting, no index, no route added, and nothing in `/api/v1` changes (the OpenAPI document is unchanged). The plan is `docs/planning/cards-2405-2406-2409.md`.
+
+- **2405.** Each **▶ Run Now** added a copy and Keep Last kept the newest, so an administrator who pressed it Keep Last times pushed every older copy out, the way round card 2398's rule. Now a Run Now names its copy `dumpfire-backup-<UTC date and time>-manual.db`, and Keep Last counts those apart from the scheduled copies: a Run Now removes only the oldest `…-manual.db` copies beyond Keep Last, a scheduled run only the oldest scheduled ones, so a destination holds at most twice Keep Last. Its `Backup succeeded` line ends `. Made by Run Now: Keep Last counts Run Now copies apart from scheduled ones, so only an older Run Now copy can be removed`, and the panel says the same under Keep Last and in the Run Now toast.
+- **2406.** A role written to `user`, or an account deleted with foreign keys off, from the host ran no application code, so that person's mail settings, App URL and destinations stayed in force. Now every start, after the migrations and before the schedulers, removes them by card 2397's rule, with the same `WARN` lines under `SMTP` and `BACKUP`, ending `(found at start-up: the role was changed outside the admin page)` or `(found at start-up: it was deleted outside the admin page)`, filed under nobody. A working copy (Import Backup with the outside switched off) now also clears the setter rows of the mail settings and destinations it removes.
+- **2409.** Three tests could fail when a run crossed midnight; they no longer read the date twice. Nothing changes in the application.
+
+**Owner to know.**
+
+- **A destination can hold up to twice Keep Last copies**: Keep Last scheduled copies and Keep Last Run Now copies. A Run Now copy made before this deploy has no `-manual` and is counted with the scheduled ones, as before.
+- **A schedule made more frequent** still keeps Keep Last copies over a shorter time: changing between schedules that run stays every administrator's (card 2398's ruling).
+- **A role lowered to `user` from the host takes effect for the settings at the next start**: restart the container after such a change. An account deleted from the host with the documented `node -e` (better-sqlite3 keeps foreign keys on) takes its setter rows with it, and its settings stay in force, unattributed: delete accounts on the admin page.
+
+```mermaid
+flowchart LR
+    RN["▶ Run Now"] --> M["…-manual.db uploaded;<br/>Keep Last over Run Now copies only"]
+    Sch["scheduled run"] --> K["Keep Last over scheduled copies only"]
+    Start["each start: migrations"] --> Rm["setters no longer administrators:<br/>their settings removed, WARN"]
+    Rm --> Go["schedulers start"]
+```
+
+#### Before the deploy
+
+On production, on the older image, as **O**, your administrator account, signed in. Nothing here writes anything. First:
+
+- **On the host, run check 461's read-only command (below the table)**: the first start removes, without asking, the mail settings, App URL and destinations of every setter it finds that is no longer an administrator. Note any row whose `role` is `user`, or whose `role` is `null` with a `user_id`: what that account set will go at the first start. If any is listed and its settings should stay, make the account an administrator again on the admin page first, or take an **Export Backup** to have them on record. `no such table: setting_setters` means the older image has no migration 0059 yet: the table starts empty, and the first start removes nothing.
+
+Then note:
+
+- In **Admin**, under ☁️ Scheduled Backups, the number in **Keep Last**, the destinations, and when the schedule next runs.
+- Where you can list one destination's files (the SFTP folder, the bucket, the Drive folder), the `dumpfire-backup-*` files there. Checks 458 and 459 compare against it; skip them where no destination can be listed.
+
+#### What changes at the first start
+
+- Nothing from `DB`. On an installation where every setter is still an administrator, no `found at start-up` line: the start-up removal finds nobody, and says nothing.
+
+#### After the deploy
+
+On production, as **O**, signed in. Open the **Audit** page in a second tab on its **Live Console**, Context **All**, and leave it open. 457 makes one real backup to every destination, as any Run Now does; nothing else here writes anything.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 457 | 2405 | In **Admin**, under ☁️ Scheduled Backups, read the line under Keep Last; press **▶ Run Now** | Under Keep Last: `Keep Last counts scheduled copies and Run Now copies separately: a Run Now removes only older Run Now copies.` The toast `Backup completed to <n> destination(s). Keep Last counts …` with the same sentence. On the Live Console, one `[WARN] [BACKUP] Backup succeeded: <destination> → dumpfire-backup-<date>T<time>-manual.db (…). Made by Run Now: Keep Last counts Run Now copies apart from scheduled ones, so only an older Run Now copy can be removed` row a destination, which names the `-manual.db` file (Backup History shows the destination, size and status, not the file's name), and no `Retention cleanup` row: no Run Now copy was there yet to remove | A `Retention cleanup` row after the press; the file named without `-manual` |
+| 458 | 2405 | List the destination noted before the deploy | Every file noted is still there, except a file a `Retention cleanup` row names (a scheduled run in between), and one `…-manual.db` more | A file noted is gone that no `Retention cleanup` row names |
+| 459 | 2405 | After the next scheduled run, look at the Live Console and list the destination again | The scheduled run's `Backup succeeded` row has no `Made by Run Now`. Any `Retention cleanup: deleted …` (or `moved to the trash …`) rows name only files without `-manual`; the `-manual.db` file of 457 is still at the destination | A `Retention cleanup` row naming a `-manual.db` file; the file of 457 gone |
+| 460 | 2406 | On the **Audit** page's system log, read the rows written since the deploy's start under `SMTP`, `BACKUP` and `STARTUP` (or search `docker logs <container>` for `found at start-up` and for `could not be checked`) | No `found at start-up` row, unless an administrator was made a user from the host before this deploy: then their `found at start-up` lines, and their settings are gone from the admin page | `The settings of setters who are no longer administrators could not be checked` |
+| 461 | 2406 | On the host, run the read-only command below the table | Every row's `role` is `admin` or `superadmin`, or its `user_id` is `null` (a place recorded as nobody's) | A row whose `role` is `user`, or `null` with a `user_id` (its account gone) |
+
+The command of 461, read-only, as the one of 449:
+
+```bash
+docker exec <container> node -e "const db = require('better-sqlite3')(process.env.DB_PATH || 'dumpfire.db', { readonly: true, fileMustExist: true }); console.log(JSON.stringify(db.prepare('SELECT s.setting, s.user_id, u.role FROM setting_setters s LEFT JOIN users u ON u.id = s.user_id ORDER BY s.setting').all())); db.close();"
+```
+
+An administrator made a user from the host, an account deleted there with foreign keys off or on, a start-up removal that fails part of the way, and a working copy's setter rows are not arranged on production: each would need the host to change a real account, or a restore. The suite covers them (`tests/setting-setters.test.ts`, `tests/import-working-copy.test.ts`), and Run Now pressed more than Keep Last times, and followed by a scheduled run (`tests/gdrive-retention.test.ts`). Card 2409 changes tests only.
+
+**Afterwards.** The `-manual.db` copy of 457 stays at each destination until Keep Last more Run Now presses push it out; remove it there by hand if it is not wanted.
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image prunes on Run Now again, and **counts the `-manual.db` copies as ordinary ones**: they match `dumpfire-backup-*.db`, so its first run, scheduled or Run Now, keeps the newest Keep Last copies of all of them and removes the rest, the scheduled copies the `-manual.db` ones outnumber included. Before going back, remove the `-manual.db` copies you do not need at each destination, or raise Keep Last above their number. It removes nothing at start-up: a setter made a user from the host keeps their settings until demoted again on the admin page. **Settings the first start removed stay removed**: going back brings none of them back; set them up again on the admin page, or take them from the backup noted before the deploy.
+
 ## Changing the Schema
 
 The structure of the database is changed in one way only:
@@ -4697,9 +4760,9 @@ flowchart LR
 
 The scheduler checks once a minute whether a backup is due. Each backup:
 1. Writes a complete copy of the database to a temporary file beside it with `VACUUM INTO`, which includes changes still in the write-ahead log. It then opens the copy with no journal, deletes every session, every unused invite, the key remembered browsers are signed with and the key the request form signs with from it, sets every request's link to `NULL`, masks every invite's token, any request link's token and the name typed at an old failed sign-in in its system log, deletes the mail password and the key backups are sealed with, empties every destination's secret fields and every webhook's secret, switching each such webhook off (card 2169), seals it (an HMAC of every row, written into it as `backup_seal`), and writes it out again with a second `VACUUM INTO` to a second temporary file, so that nothing of what was deleted is left in the file. It reads that second file and deletes both. The running database is not touched: nobody is signed out by a backup, and its own log is as it was; the first backup writes the seal's key into it (`backup_seal_key`), and none after. Every step of this is synchronous, so **the server answers no request from the start of the first `VACUUM INTO` until the second file has been read**: both copies, the masking, the deletes and the read, and not only the first copy. "Export Backup" stops it the same way. See "How long the server stops answering", below. Both temporary files are beside the database, on the volume, so it needs room for two copies while a backup is made, and none for a journal.
-2. Uploads the copy as it is, not compressed, to each configured destination as `dumpfire-backup-<UTC date and time>.db`
+2. Uploads the copy as it is, not compressed, to each configured destination as `dumpfire-backup-<UTC date and time>.db` (`…-manual.db` for a **▶ Run Now**, card 2405)
 3. Records the result for each destination in the `backup_log` table, which keeps the last 10 entries
-4. After a successful upload, deletes the oldest backups at that destination beyond the retention count (a retention of 0 keeps them all). On Google Drive only the files the connected account may delete or trash are counted, and one it may not is left with one `WARN` line a run: see [Configuring Backups](admin-guide.md#configuring-backups)
+4. After a successful upload, deletes the oldest backups of the run's own kind at that destination beyond the retention count (a retention of 0 keeps them all): the scheduled copies after a scheduled run, the `…-manual.db` copies after a Run Now, each counted on its own (card 2405). On Google Drive only the files the connected account may delete or trash are counted, and one it may not is left with one `WARN` line a run: see [Configuring Backups](admin-guide.md#configuring-backups)
 
 A failed upload is not retried. It is logged at `ERROR`, recorded in `backup_log` with the error, and emailed to the alert address if failure alerts are switched on and SMTP is configured. The destination is tried again at the next scheduled backup.
 
