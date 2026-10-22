@@ -10,6 +10,11 @@
  * superadmin, asked of the account as it is at the write. Everything else an
  * administrator did is still theirs.
  *
+ * Card 2408. The failure mail, how the superadmin hears the copies have
+ * stopped, could be switched off or sent elsewhere by any administrator. Now
+ * the same refusal covers switching it off and any change to who receives it;
+ * switching it on is still every administrator's.
+ *
  * Card 2397. Nothing recorded who saved the mail settings, the App URL or a
  * destination, so a demoted or deleted administrator's server went on
  * receiving every mail and backup. Now `setting_setters` (migration 0059)
@@ -64,8 +69,9 @@ const BOBS = s3("Bob's", 'bob-bucket');
 
 const CONFIG = { schedule: 'daily', scheduleTime: '02:00', scheduleDay: 0, retention: 7, notifyOnFailure: false, notifyEmail: '' };
 
-/** The words of card 2398's refusal before what the save would do. */
-const RULE = 'Lowering Keep Last, removing a destination or switching the schedule off needs the superadmin.';
+/** The words of the refusal of cards 2398 and 2408 before what the save would do. */
+const RULE =
+	'Lowering Keep Last, removing a destination, switching the schedule or the failure mail off, or changing who receives the failure mail needs the superadmin.';
 const RENAMED = '(a destination renamed, or saved as another type, is the old one removed)';
 
 type Who = { user: SessionUser; credential: { kind: 'session'; token: string } };
@@ -211,6 +217,132 @@ describe('lowering Keep Last, removing a destination and switching the schedule 
 		let before: DbSnapshot | undefined;
 
 		const res = await sendAround('PUT', '/api/admin/backup', { session: token }, { retention: 2 }, () => {
+			db.update(users).set({ role: 'user' }).where(eq(users.id, ann.id)).run();
+			before = snapshotDb();
+		});
+
+		expect(res).toEqual({ status: 403, body: { message: 'Forbidden' } });
+		expectUnchanged(before!);
+	});
+});
+
+// ─── Card 2408 ───────────────────────────────────────────────────────────────
+
+describe('switching the failure mail off and changing who receives it are the superadmin’s (card 2408)', { timeout: 30_000 }, () => {
+	const RECIPIENTS = 'chief@example.com, backups@example.com';
+	/** The failure mail as stored: on, to two addresses. */
+	const mailOn = (notifyOnFailure = true) =>
+		db.update(settings)
+			.set({ value: JSON.stringify({ ...CONFIG, notifyOnFailure, notifyEmail: RECIPIENTS, destinations: [OLD] }) })
+			.where(eq(settings.key, 'backup_config'))
+			.run();
+	beforeEach(() => mailOn());
+
+	const CHANGE = 'change who receives the failure mail';
+	/** Each save an administrator is refused, with the words that say what it would do. */
+	const REFUSED: { name: string; body: unknown; would: string }[] = [
+		{ name: 'the failure mail switched off', body: { notifyOnFailure: false }, would: 'switch the failure mail off' },
+		{ name: 'a recipient replaced', body: { notifyEmail: 'ann@example.com, backups@example.com' }, would: CHANGE },
+		// The code review: look-alikes that a full Unicode lower-casing folds onto the stored address.
+		{ name: 'a recipient replaced by a look-alike with U+212A KELVIN SIGN for k', body: { notifyEmail: 'chief@example.com, bacKups@example.com' }, would: CHANGE },
+		{ name: 'a recipient replaced by a look-alike with U+0130 for I', body: { notifyEmail: 'chİef@example.com, backups@example.com' }, would: CHANGE },
+		{ name: 'a recipient added beside the others', body: { notifyEmail: `${RECIPIENTS}, ann@example.com` }, would: CHANGE },
+		{ name: 'a recipient removed', body: { notifyEmail: 'chief@example.com' }, would: CHANGE },
+		{ name: 'the recipients cleared', body: { notifyEmail: '' }, would: CHANGE },
+		{
+			name: 'the mail switched off and its recipients cleared, as the panel sends them',
+			body: { ...CONFIG, notifyOnFailure: false, notifyEmail: '' },
+			would: `switch the failure mail off, and ${CHANGE}`
+		},
+		{
+			name: 'Keep Last lowered and the failure mail switched off at once',
+			body: { retention: 1, notifyOnFailure: false },
+			would: 'lower Keep Last from 7 to 1, and switch the failure mail off'
+		}
+	];
+
+	it.each(REFUSED)('refuses an administrator $name, 403 in plain words, with nothing written and no line', async ({ body, would }) => {
+		const who = as(ann);
+		const before = snapshotDb();
+		const linesBefore = lines();
+
+		const res = await api('PUT', '/api/admin/backup', { ...who, body });
+
+		expect({ status: res.status, body: res.body }).toEqual({ status: 403, body: { message: `${RULE} This save would ${would}.` } });
+		expectUnchanged(before);
+		expect(lines()).toEqual(linesBefore);
+	});
+
+	it.each(REFUSED)('lets the superadmin make the same save: $name', async ({ body }) => {
+		const res = await api('PUT', '/api/admin/backup', { ...as(chief), body });
+
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+	});
+
+	it('refuses an administrator new recipients while the failure mail is off, so they cannot be set first and the mail switched on after', async () => {
+		mailOn(false);
+		const who = as(ann);
+		const before = snapshotDb();
+
+		const res = await api('PUT', '/api/admin/backup', { ...who, body: { notifyEmail: 'ann@example.com' } });
+
+		expect({ status: res.status, body: res.body }).toEqual({ status: 403, body: { message: `${RULE} This save would ${CHANGE}.` } });
+		expectUnchanged(before);
+	});
+
+	it('lets an administrator switch the failure mail on, send the recipients back as they are or written another way, and save the rest beside them', async () => {
+		mailOn(false);
+		const who = as(ann);
+
+		// Switched on, the recipients sent back as the GET gave them: as the panel's checkbox sends it.
+		const on = await api('PUT', '/api/admin/backup', { ...who, body: { ...CONFIG, notifyOnFailure: true, notifyEmail: RECIPIENTS, destinations: await shown(who) } });
+		expect(on.status, JSON.stringify(on.body)).toBe(200);
+		expect(stored()).toMatchObject({ notifyOnFailure: true, notifyEmail: RECIPIENTS });
+
+		// The same two addresses, in another order and case, separated by a semicolon: the same recipients.
+		const reworded = await api('PUT', '/api/admin/backup', { ...who, body: { notifyEmail: 'BACKUPS@example.com; chief@example.com' } });
+		expect(reworded.status, JSON.stringify(reworded.body)).toBe(200);
+
+		const rest = await api('PUT', '/api/admin/backup', { ...who, body: { retention: 9, notifyOnFailure: true, notifyEmail: 'BACKUPS@example.com, chief@example.com' } });
+		expect(rest.status, JSON.stringify(rest.body)).toBe(200);
+		expect(stored()).toMatchObject({ retention: 9, notifyOnFailure: true, notifyEmail: 'BACKUPS@example.com, chief@example.com' });
+	});
+
+	// The code review: the panel now leaves the failure mail out of a save that did not change it.
+	it('keeps the superadmin’s recipients through an administrator’s later save that leaves the failure mail out, as the panel sends it', async () => {
+		expect((await api('PUT', '/api/admin/backup', { ...as(chief), body: { notifyEmail: 'boss@example.com' } })).status).toBe(200);
+		const who = as(ann);
+		const { notifyOnFailure: _on, notifyEmail: _to, ...rest } = CONFIG;
+
+		const res = await api('PUT', '/api/admin/backup', { ...who, body: { ...rest, retention: 9, destinations: await shown(who) } });
+
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		expect(stored()).toMatchObject({ retention: 9, notifyOnFailure: true, notifyEmail: 'boss@example.com' });
+	});
+
+	it('refuses the superadmin made an administrator while the body arrives, at the write, with nothing written', async () => {
+		let before: DbSnapshot | undefined;
+
+		const res = await sendAround('PUT', '/api/admin/backup', { session: makeSession(chief) }, { notifyEmail: 'elsewhere@example.com' }, () => {
+			db.update(users).set({ role: 'admin' }).where(eq(users.id, chief.id)).run();
+			before = snapshotDb();
+		});
+
+		expect(res).toEqual({ status: 403, body: { message: `${RULE} This save would ${CHANGE}.` } });
+		expectUnchanged(before!);
+	});
+
+	it('lets the superadmin through when nothing changes meanwhile, sent the same way (the control)', async () => {
+		const res = await sendAround('PUT', '/api/admin/backup', { session: makeSession(chief) }, { notifyOnFailure: false, notifyEmail: 'elsewhere@example.com' }, () => {});
+
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		expect(stored()).toMatchObject({ notifyOnFailure: false, notifyEmail: 'elsewhere@example.com' });
+	});
+
+	it('refuses an administrator made a user while the body arrives as a user is refused: Forbidden, before the rule', async () => {
+		let before: DbSnapshot | undefined;
+
+		const res = await sendAround('PUT', '/api/admin/backup', { session: makeSession(ann) }, { notifyOnFailure: false }, () => {
 			db.update(users).set({ role: 'user' }).where(eq(users.id, ann.id)).run();
 			before = snapshotDb();
 		});

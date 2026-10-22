@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.95
+version: 1.96
 status: As-Built
 date: 2026-10-22
 tags:
@@ -4714,6 +4714,53 @@ A destination failing (the tries again and the one mail), two Run Now presses in
 #### Going back to the previous image
 
 Nothing is done to the database. The older image runs a daily or weekly backup only in its minute again (no making up), waits an interval (up to a week) after a run that failed everywhere, sends one failure mail a failed destination, names copies to the second, and counts from a scheduled row stamped ahead. Copies named to the millisecond stay where they are and sort among the older names by their time; retention counts and removes them as before.
+
+### The Backup Failure Mail Is the Superadmin's to Switch Off or Send Elsewhere
+
+**Card 2408.** No migration, no setting, no index, no route added, and nothing in `/api/v1` changes (the OpenAPI document is unchanged). The plan is `docs/planning/card-2408.md`.
+
+- **Any administrator could switch the backup failure mail off, or send it to an address of their own**, so that backups made to fail were heard of by nobody else. Now an administrator's save that unticks **Email on failure** where it is ticked, or changes its addresses in any way (an address added beside the others, one removed or replaced, all cleared, or a change made while it is unticked), is refused like card 2398's: `Lowering Keep Last, removing a destination, switching the schedule or the failure mail off, or changing who receives the failure mail needs the superadmin. This save would …`, and nothing is saved. The same addresses in another order, in capitals or separated by semicolons are no change. Ticking it on stays every administrator's.
+- **On ☁️ Scheduled Backups** an administrator sees the line under the schedule in those words, **Email on failure** dimmed while it is ticked (unticked, it ticks itself again with the rule in a toast), and its address box dimmed and read-only. The superadmin's panel is as before.
+
+**Owner to know.**
+
+- **The failure mail's switch and its addresses are now yours alone.** A backup an administrator makes fail (a destination edited with a wrong secret) sends the failure mail to the addresses you chose, so you hear of it.
+- **Two quiet ways remain, logged and not prevented.** An administrator can point a destination, in place, at a store of their own (another host, bucket, folder or account, its secret typed again): every run succeeds, so no failure mail goes, and from then on the copies go to their store and not yours; the save is a `WARN` row under `BACKUP` naming them. And the mail settings under 📧 Email / SMTP are every administrator's (card 2395): pointed at a server that does not deliver, or cleared, they silence every mail, the failure mail included; the save is a `WARN` row under `SMTP` naming them (card 2396).
+- **An administrator who ticks Email on failure on where it has no address** sends nothing until you add one: the address box is yours.
+
+```mermaid
+flowchart LR
+    Save["An administrator's save"] --> Q{"Email on failure unticked,<br/>or its addresses changed?"}
+    Q -->|"yes"| R["403, nothing saved, no row"]
+    Q -->|"no (ticked on, or the same addresses)"| S["saved as before"]
+```
+
+#### Before the deploy
+
+On production, on the older image, as **S**, the superadmin, signed in. Nothing here writes anything. In **Admin**, under ☁️ Scheduled Backups, note whether **Email on failure** is ticked and, where it is, the address box exactly as shown.
+
+#### What changes at the first start
+
+- Nothing. No row from `DB`; the failure mail goes where it went.
+
+#### After the deploy
+
+On production. **A scratch administrator only**: as S, in **Admin → 👥 User Management**, press **+ Add User**; Username `test2408`, an Email of yours that no account has (a plus address works), a Password of at least 8 characters you note, the role **Admin**; **Create**. Sign in as `test2408` in a private window: that window is **A**. Open the **Audit** page as S in a second tab on its **Live Console**, Context **All**. Checks 469 and 470 are refused and write nothing; 471 writes and is undone in the same check.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 469 | 2408 | In A, open **Admin**, look under ☁️ Scheduled Backups. Where **Email on failure** is ticked (as noted), click in the address box and type a letter; then untick the box | Under the schedule: `🔒 Lowering Keep Last, removing a destination, switching the schedule or the failure mail off, or changing who receives the failure mail needs the superadmin.` Where ticked: the box dimmed, its tooltip `Switching the failure mail off needs the superadmin`; the address box dimmed, its tooltip `Changing who receives the failure mail needs the superadmin`; the letter is not typed and a toast says the sentence above. Unticked, the box ticks itself again and a toast says the sentence above; no new `BACKUP` row on the Live Console | The box stays unticked, `Backup settings saved`, or a `BACKUP` row. The older image shows none of it |
+| 470 | 2408 | Where **Email on failure** is ticked only (skip otherwise). In A, open the browser's console on the Admin page and run `fetch('/api/admin/backup', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ notifyEmail: 'test2408@example.invalid' }) }).then((r) => r.json().then((b) => console.log(r.status, b.message)))`; then reload S's Admin | `403 Lowering Keep Last, … needs the superadmin. This save would change who receives the failure mail.`; no `BACKUP` row; S's address box is as noted | `200`, or S's address box reads `test2408@example.invalid`: as S, put the address noted back at once and press Tab |
+| 471 | 2408 | Where **Email on failure** is unticked only (skip otherwise). In A, tick it. Then as S, reload Admin and untick it | A: `Backup settings saved`, an `INFO` row `[BACKUP] Backup settings changed: notifyOnFailure from false to true` with `test2408`'s chip (shown where `LOG_LEVEL` is `INFO`), and the box now dimmed. S: `Backup settings saved`, the box unticked, an `INFO` row `… notifyOnFailure from true to false` with S's chip (shown where `LOG_LEVEL` is `INFO`) | A refused; or S refused |
+| 472 | 2408 | As S, reload Admin and look under ☁️ Scheduled Backups | No `🔒` line under the schedule; **Email on failure** and, where ticked, the address box are not dimmed, have no tooltip, and the address box takes typing (type nothing, or put it back as noted before leaving it) | A mark on S's panel |
+
+A superadmin made an administrator while a save is on its way, and a failure mail actually sent, are not arranged on production: the first needs the host, the second a failing destination. The suite covers them (`tests/setting-setters.test.ts`, `tests/admin-panels.test.ts`).
+
+**Afterwards.** As S, delete `test2408` (🗑️ on its row, **Confirm**: it set nothing, so nothing goes with it). Check ☁️ Scheduled Backups against the note: **Email on failure** and its address as they were.
+
+#### Going back to the previous image
+
+Nothing is done to the database. Under the older image any administrator can switch the failure mail off and change its addresses again.
 
 ## Changing the Schema
 

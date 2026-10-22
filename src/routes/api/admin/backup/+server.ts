@@ -9,8 +9,10 @@
  * that account made a user, or deleted, takes its destinations away. Lowering
  * Keep Last, removing a destination and switching the schedule off are the
  * superadmin's alone (card 2398): each leaves fewer copies to restore from.
- * Keep Last counts Run Now (POST) copies apart from scheduled ones (card
- * 2405), so pressing it repeatedly pushes out only older Run Now copies.
+ * So are switching the failure mail off and changing who receives it (card
+ * 2408): it is how the superadmin hears that the copies have stopped. Keep
+ * Last counts Run Now (POST) copies apart from scheduled ones (card 2405), so
+ * pressing it repeatedly pushes out only older Run Now copies.
  *
  * No secret leaves in an answer, and none is used anywhere but where it was
  * saved (cards 2187 and 2190). The GET masks every secret field, the Google
@@ -123,8 +125,26 @@ function leavesFewerCopies(before: BackupConfig, after: BackupConfig, changes: B
 	);
 }
 
-/** What an administrator who is not the superadmin is told of a save card 2398 keeps for the superadmin. */
-const SUPERADMIN_FOR_FEWER_COPIES = 'Lowering Keep Last, removing a destination or switching the schedule off needs the superadmin.';
+/** What an administrator who is not the superadmin is told of a save cards 2398 and 2408 keep for the superadmin. */
+const SUPERADMIN_FOR_FEWER_COPIES =
+	'Lowering Keep Last, removing a destination, switching the schedule or the failure mail off, or changing who receives the failure mail needs the superadmin.';
+
+/**
+ * The failure mail's recipients as one text to compare (card 2408): each
+ * address once, its ASCII capitals lower-cased, in order. The same addresses written in another
+ * order, case or separation are the same recipients; any other difference,
+ * an address added, removed or replaced, or all of them cleared, is a change.
+ */
+function recipientsOf(notifyEmail: unknown): string {
+	const addresses = String(notifyEmail ?? '')
+		.split(/[,;\r\n]/)
+		// ASCII letters alone (the code review): a full lower-casing folds
+		// look-alikes such as U+212A KELVIN SIGN onto `k`, and another address
+		// would read as the same one.
+		.map((each) => each.trim().replace(/[A-Z]/g, (c) => c.toLowerCase()))
+		.filter((each) => each !== '');
+	return [...new Set(addresses)].sort().join(',');
+}
 
 /**
  * Why a save is the superadmin's alone (card 2398, as the owner ruled it),
@@ -134,7 +154,11 @@ const SUPERADMIN_FOR_FEWER_COPIES = 'Lowering Keep Last, removing a destination 
  * and type, so one renamed or saved as another type is the old one removed;
  * or the schedule switched off. Raising Keep Last, changing between schedules
  * that run, and adding or editing a destination stay every administrator's.
- * The words name what this save would do.
+ * Card 2408 (the owner's ruling) adds the failure mail, which is how the
+ * superadmin hears that the copies have stopped: switching it off, and any
+ * change to who receives it (`recipientsOf`), an address added beside the
+ * others included. Switching it on stays every administrator's: it only adds
+ * oversight. The words name what this save would do.
  */
 function superadminOnly(before: BackupConfig, after: BackupConfig, changes: BackupSettingsChanges | null): string | null {
 	const would: string[] = [];
@@ -147,6 +171,8 @@ function superadminOnly(before: BackupConfig, after: BackupConfig, changes: Back
 		);
 	}
 	if (after.schedule === 'disabled' && before.schedule !== 'disabled') would.push('switch the schedule off');
+	if (before.notifyOnFailure && !after.notifyOnFailure) would.push('switch the failure mail off');
+	if (recipientsOf(after.notifyEmail) !== recipientsOf(before.notifyEmail)) would.push('change who receives the failure mail');
 	if (would.length === 0) return null;
 	return `${SUPERADMIN_FOR_FEWER_COPIES} This save would ${would.join(', and ')}.`;
 }
@@ -201,8 +227,9 @@ export const GET: RequestHandler = async ({ locals }) => {
  *
  * A save that lowers the retention, removes a destination (renamed, or saved
  * as another type, included) or switches the schedule off is `403` for anyone
- * but the superadmin (card 2398), asked at the write, in words that name what
- * it would do; nothing is written or logged.
+ * but the superadmin (card 2398), and so is one that switches the failure
+ * mail off or changes its recipients in any way (card 2408), asked at the
+ * write, in words that name what it would do; nothing is written or logged.
  *
  * A save that changes anything is one line under BACKUP, filed under the
  * account that saved it, naming what changed (card 2270): a WARN where it
@@ -265,7 +292,8 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
 		const sent = [schedule, scheduleTime, scheduleDay, retention, notifyOnFailure, notifyEmail, destinations];
 		if (sent.every((value) => value === undefined)) throw error(400, 'No valid fields to update');
 
-		// Fewer copies to restore from is the superadmin's (card 2398), asked of
+		// Fewer copies to restore from, and the failure mail switched off or sent
+		// elsewhere, are the superadmin's (cards 2398 and 2408), asked of
 		// the account as it is now, before anything is written or queued: a
 		// superadmin made an administrator while the body arrived is refused as
 		// an administrator is.

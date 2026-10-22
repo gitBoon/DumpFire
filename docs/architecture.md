@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.52
+version: 1.53
 status: As-Built
 date: 2026-10-22
 tags:
@@ -645,7 +645,7 @@ flowchart LR
 | Role | Boards | Admin | Users |
 |------|--------|-------|-------|
 | `superadmin` | All boards | Full access | Manage all |
-| `admin` | All boards | All but export, import and Reset Everything (the mail and backup settings since card 2395), and lowering Keep Last, removing a backup destination or switching the schedule off (card 2398) | Manage ordinary users |
+| `admin` | All boards | All but export, import and Reset Everything (the mail and backup settings since card 2395), and lowering Keep Last, removing a backup destination or switching the schedule off (card 2398), or switching the backup failure mail off or changing who receives it (card 2408) | Manage ordinary users |
 | `user` | Only shared boards | No access | Self only |
 
 ### Board Access Levels
