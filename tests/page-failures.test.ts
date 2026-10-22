@@ -1144,6 +1144,31 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 		);
 	});
 
+	it('shows what was removed after the restore, a line after what is to enter again (card 2411, the code review)', () => {
+		const js = ts.transpileModule(functionNamed(restore, 'accountOf').getText(), {
+			compilerOptions: { target: ts.ScriptTarget.ES2022 }
+		}).outputText;
+		const accountOf = new Function('count', `${js}\nreturn accountOf;`)((n: number) => String(n)) as (
+			result: Record<string, unknown>
+		) => Record<string, unknown>;
+		const REMOVED =
+			'Removed after the restore, because whoever set them is not an administrator in the restored data, or has no account in it: ' +
+			'the mail settings, so no mail is sent, invites and password resets included, until an administrator sets the mail up again.';
+
+		expect(accountOf({ restored: {}, settingsRemoved: REMOVED }).settingsRemoved).toBe(REMOVED);
+		expect(accountOf({ restored: {} }).settingsRemoved).toBeUndefined();
+
+		const report = restoreMarkup.slice(restoreMarkup.indexOf('{#if importReport}')).replace(/\r\n/g, '\n');
+		const lines = ['{#if importReport.secretsToEnter}\n', '{#if importReport.settingsRemoved}\n', '{#if importReport.superadmin}'].map(
+			(line) => report.indexOf(line)
+		);
+		expect(lines.every((at) => at > -1)).toBe(true);
+		expect([...lines].sort((a, b) => a - b)).toEqual(lines);
+		expect(report).toMatch(
+			/\{#if importReport\.settingsRemoved\}\s*<p class="import-report-detail">\{importReport\.settingsRemoved\}<\/p>/
+		);
+	});
+
 	it('shows how many request links an import replaced, a line beside the files put back (card 2158, the review’s O1)', () => {
 		const js = ts.transpileModule(functionNamed(restore, 'accountOf').getText(), {
 			compilerOptions: { target: ts.ScriptTarget.ES2022 }

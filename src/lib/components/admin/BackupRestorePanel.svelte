@@ -47,6 +47,8 @@
 		secretsKept?: string;
 		/** The secrets a backup does not hold that are to be entered again, and where (card 2169). */
 		secretsToEnter?: string;
+		/** The settings removed after the restore, as their setter is not an administrator in it (card 2411). */
+		settingsRemoved?: string;
 		/** Attachment files the import had back from the uploads trash, when there were any. */
 		putBack?: string;
 		/** Request links the import replaced, when there were any (card 2158). */
@@ -74,6 +76,7 @@
 		workingCopy?: string;
 		secretsKept?: string;
 		secretsToEnter?: string;
+		settingsRemoved?: string;
 		attachmentsPutBack?: number;
 		requestLinksReplaced?: number;
 		superadmins?: string[];
@@ -114,6 +117,9 @@
 			// there is nothing to say, as for a backup made before that card.
 			secretsKept: result.secretsKept,
 			secretsToEnter: result.secretsToEnter,
+			// What went after the restore, mail settings above all, whose going
+			// stops invites and password resets (card 2411).
+			settingsRemoved: result.settingsRemoved,
 			// The import signed everybody out, and the backup's accounts are the
 			// ones there are now: this is the one to sign in as to undo it.
 			superadmin: !Array.isArray(result.superadmins)
@@ -377,6 +383,9 @@
 			{/if}
 			{#if importReport.secretsToEnter}
 				<p class="import-report-detail">{importReport.secretsToEnter}</p>
+			{/if}
+			{#if importReport.settingsRemoved}
+				<p class="import-report-detail">{importReport.settingsRemoved}</p>
 			{/if}
 			{#if importReport.superadmin}
 				<p class="import-report-detail">{importReport.superadmin}</p>

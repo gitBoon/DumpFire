@@ -25,13 +25,19 @@
  * a Run Now removing only older Run Now copies and a scheduled run only older
  * scheduled ones, so pressing it Keep Last times no longer pushes the older
  * copies out, and the Run Now copies stay at most Keep Last.
+ *
+ * And the history (card 2412): reading it writes nothing, a run still trims
+ * it to the newest 10, and an interval schedule counts after a start from the
+ * last scheduled run, so a Run Now just before a restart does not hold the
+ * next one back.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { runBackup, saveBackupConfig } from '$lib/server/backup';
+import { initBackupScheduler, lastScheduledBackupAt, runBackup, saveBackupConfig } from '$lib/server/backup';
 import type { DestinationConfig } from '$lib/server/backup-destinations';
 import { sqlite } from '$lib/server/db';
 import { api } from './helpers/api';
 import { makeSession, makeUser, resetDb } from './helpers/fixtures';
+import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 
 /** A file in the folder, and what the account may do to it. */
 type DriveFile = { id: string; name: string; canDelete: boolean; canTrash: boolean };
@@ -423,5 +429,75 @@ describe('Keep Last counts Run Now copies apart from scheduled ones (card 2405)'
 		expect(sftp.names).toContain(manualCopy);
 		expect(sftp.deleted).not.toContain(manualCopy);
 		expect(sftp.names.filter((n) => !n.endsWith('-manual.db'))).toHaveLength(7);
+	});
+});
+
+describe('Backup History is read without writing, and Run Now does not hold back the schedule after a start (card 2412)', { timeout: 30_000 }, () => {
+	const OFFSITE: DestinationConfig = {
+		type: 'sftp',
+		name: 'Offsite',
+		host: 'sftp.example.test',
+		port: 22,
+		username: 'backup',
+		remotePath: '/backups',
+		hostKey: 'ssh-ed25519 SHA256:s16t1ixxsjxOgoaXCXACvAIOEG1K5biSlM7GekmavrY'
+	};
+	const MINUTE = 60_000;
+
+	/** A `backup_log` row as `runBackup` writes one, stamped `at` in the stored form (UTC). */
+	const logged = (filename: string, at: Date, status: 'success' | 'failed' = 'success') =>
+		sqlite
+			.prepare(
+				"INSERT INTO backup_log (destination_type, destination_name, filename, size_bytes, status, duration_ms, created_at) VALUES ('sftp', 'Offsite', ?, 1024, ?, 5, ?)"
+			)
+			.run(filename, status, at.toISOString().replace('T', ' ').slice(0, 19));
+	const historyRows = () => sqlite.prepare('SELECT filename FROM backup_log ORDER BY created_at DESC').pluck().all() as string[];
+
+	it('GET /api/admin/backup writes nothing, however many rows the history holds; a run trims it to the newest 10', async () => {
+		const days = Array.from({ length: 12 }, (_, i) => `dumpfire-backup-2026-04-${String(i + 1).padStart(2, '0')}T00-00-00.db`);
+		days.forEach((name, i) => logged(name, new Date(Date.UTC(2026, 3, i + 1))));
+		const admin = makeUser({ role: 'admin' });
+		const credential = { kind: 'session' as const, token: makeSession(admin) };
+		const before = snapshotDb();
+
+		const res = await api('GET', '/api/admin/backup', { user: admin, credential });
+
+		expect(res.status).toBe(200);
+		expect(res.body.history.map((row: { filename: string }) => row.filename)).toEqual([...days].reverse());
+		expectUnchanged(before);
+
+		// Trimmed where a row is added, as before.
+		await backUp(OFFSITE);
+		const rows = historyRows();
+		expect(rows).toHaveLength(10);
+		expect(rows[0]).toBe(sftp.names.find((name) => !days.includes(name)));
+		expect(rows.slice(1)).toEqual([...days].reverse().slice(0, 9));
+	});
+
+	it('takes the last scheduled run from the history, leaving out Run Now’s and failed rows, or 0 with none', () => {
+		expect(lastScheduledBackupAt()).toBe(0);
+		logged('dumpfire-backup-2026-10-22T08-00-00.db', new Date('2026-10-22T08:00:00Z'));
+		logged('dumpfire-backup-2026-10-22T09-00-00.db', new Date('2026-10-22T09:00:00Z'), 'failed');
+		logged('dumpfire-backup-2026-10-22T09-30-00-manual.db', new Date('2026-10-22T09:30:00Z'));
+
+		expect(lastScheduledBackupAt()).toBe(Date.parse('2026-10-22T08:00:00Z'));
+	});
+
+	it('runs an hourly backup at the first check after a start when the last scheduled run was over an hour ago, a Run Now a minute before the start notwithstanding', async () => {
+		const start = new Date('2026-10-22T10:00:00Z');
+		vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'], now: start });
+		try {
+			saveBackupConfig({ schedule: 'hourly', scheduleTime: '02:00', scheduleDay: 0, retention: 7, destinations: [OFFSITE], notifyOnFailure: false, notifyEmail: '' });
+			logged('dumpfire-backup-2026-10-22T08-59-00.db', new Date(start.getTime() - 61 * MINUTE));
+			logged('dumpfire-backup-2026-10-22T09-59-00-manual.db', new Date(start.getTime() - MINUTE));
+
+			// The start: the scheduler's first check is a minute in, 62 minutes after the last scheduled run.
+			initBackupScheduler();
+			await vi.advanceTimersByTimeAsync(MINUTE);
+
+			await vi.waitFor(() => expect(sftp.names).toEqual(['dumpfire-backup-2026-10-22T10-01-00.db']));
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

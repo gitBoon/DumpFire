@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.92
+version: 1.93
 status: As-Built
 date: 2026-10-22
 tags:
@@ -4553,6 +4553,62 @@ An administrator made a user from the host, an account deleted there with foreig
 #### Going back to the previous image
 
 Nothing is done to the database. The older image prunes on Run Now again, and **counts the `-manual.db` copies as ordinary ones**: they match `dumpfire-backup-*.db`, so its first run, scheduled or Run Now, keeps the newest Keep Last copies of all of them and removes the rest, the scheduled copies the `-manual.db` ones outnumber included. Before going back, remove the `-manual.db` copies you do not need at each destination, or raise Keep Last above their number. It removes nothing at start-up: a setter made a user from the host keeps their settings until demoted again on the admin page. **Settings the first start removed stay removed**: going back brings none of them back; set them up again on the admin page, or take them from the backup noted before the deploy.
+
+### A Restore Removes a Former Administrator's Settings at Once; Backup History Is Read Without Writing; Run Now Does Not Hold the Schedule Back After a Restart
+
+**Cards 2410, 2411 and 2412.** No migration, no setting, no index, no route added, and nothing in `/api/v1` changes (the OpenAPI document is unchanged). The plan is `docs/planning/cards-2410-2411-2412.md`.
+
+- **2410.** A test of the Google Drive Connect could fail when a run crossed midnight; it no longer reads the date twice. Nothing changes in the application.
+- **2411.** Import Backup now removes, once the restore is committed, the mail settings, App URL and destinations of a setter who is not an administrator in the restored data, or whose account it does not have, as every start does since card 2406, for either choice of how to restore. The `WARN` lines under `SMTP` and `BACKUP` end `(found after a restore)`, and the import's result and its `INFO` line add `Removed after the restore, because whoever set them is not an administrator in the restored data, or has no account in it: …`, naming what went (mail settings gone means no invites or password resets until mail is set again); a mail password or destination removed is not listed as kept or to enter again. One that fails leaves the restore as it is, removes nothing, and is one `[WARN] [IMPORT] The settings of setters who are not administrators in the restored data could not be checked: …` line.
+- **2412.** Opening the admin page no longer deletes Backup History rows: the history is trimmed to its newest 10 when a backup adds a row, as it already was. After a restart, an hourly, 6-hourly or 12-hourly schedule counts from the last successful scheduled backup, a **▶ Run Now** (its copy named `…-manual.db`) left out.
+
+**Owner to know.**
+
+- **A restore can remove settings now**, where a start would have removed them anyway: a backup whose setter rows name an account that is `user` in it, or that it does not have, loses that person's mail settings, App URL and destinations on import, and the import's result says so. To list them before importing, run check 461's query against the backup file: copy the file into the container, and give its path where 461's command has `process.env.DB_PATH || 'dumpfire.db'`. Rows whose `role` is `user`, or `null` with a `user_id`, are the ones the import will remove. Read-only; remove the copy afterwards:
+
+  ```bash
+  docker cp dumpfire-backup-<date>.db <container>:/tmp/check-2411.db
+  docker exec <container> node -e "const db = require('better-sqlite3')('/tmp/check-2411.db', { readonly: true, fileMustExist: true }); console.log(JSON.stringify(db.prepare('SELECT s.setting, s.user_id, u.role FROM setting_setters s LEFT JOIN users u ON u.id = s.user_id ORDER BY s.setting').all())); db.close();"
+  docker exec <container> rm /tmp/check-2411.db
+  ```
+- **After a restart, a schedule with no successful scheduled backup among the newest 10 history rows** (ten Run Now presses since, or failures) runs one at the first check, a minute after the start: sooner, never later. A Run Now made before card 2405 has no `-manual` and still counts as a scheduled run.
+
+```mermaid
+flowchart LR
+    Imp["Import Backup:<br/>restore committed"] --> Rm["setters not administrators in it:<br/>their settings removed, WARN<br/>(found after a restore)"]
+    Get["GET /api/admin/backup"] --> Read["history read, nothing written"]
+    Run["a backup's row added"] --> Trim["history trimmed to 10"]
+    Start["start: first check"] --> Last["last successful row<br/>not …-manual.db"]
+```
+
+#### Before the deploy
+
+Nothing to note beyond what you would for any deploy. Where the schedule is hourly, every 6 hours or every 12 hours, note the time of the last scheduled backup: in **Admin**, ☁️ Scheduled Backups, Backup History, or on the Audit page's Live Console, the last `Backup succeeded` row that does not end `Made by Run Now`. Check 463 compares against it. Do not press Run Now from here until 463 is done.
+
+#### What changes at the first start
+
+- Nothing from `DB`, and no new line.
+
+#### After the deploy
+
+On production, as **O**, signed in, with the Audit page's **Live Console** open in a second tab. Nothing here writes anything.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 462 | 2412 | A guard against a regression only: production never holds more than 10 history rows (each run trims to 10), so the read had nothing to delete there before this deploy either, and this check cannot show the fix. On the host, run the read-only command below the table; open **Admin** and look at ☁️ Scheduled Backups' Backup History; run the command again | The same ids both times, unless a `Backup succeeded` or `Backup failed` row appeared on the Live Console in between (a run adds its rows and trims to 10) | An id gone with no backup run in between |
+| 463 | 2412 | Hourly, every-6-hours or every-12-hours schedules only (skip for daily, weekly or off). Watch the Live Console for the first `Scheduled backup triggered` row after the deploy's start | It comes one interval after the last scheduled backup noted before the deploy, or a minute after the start where that is already past | It comes one interval after a Run Now pressed before the deploy, later than the noted scheduled backup's |
+
+The command of 462, read-only, as the one of 461:
+
+```bash
+docker exec <container> node -e "const db = require('better-sqlite3')(process.env.DB_PATH || 'dumpfire.db', { readonly: true, fileMustExist: true }); console.log(JSON.stringify(db.prepare('SELECT id FROM backup_log ORDER BY id').all().map((r) => r.id))); db.close();"
+```
+
+A restore that finds a setter who is not an administrator, one whose removal fails, and a Run Now just before a restart are not arranged on production: each would need an import over the live data, a host-side change to a real account, or a restart. The suite covers them (`tests/setting-setters.test.ts`, `tests/gdrive-retention.test.ts`). Card 2410 changes a test only.
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image deletes Backup History rows past the newest 10 whenever the admin page is opened (there are none past 10 unless a backup's trim failed), counts a Run Now made just before a restart as the last backup for an interval schedule again, and removes nothing after a restore: a restored setter who is not an administrator keeps their settings until the next start. **Settings a restore removed stay removed**: set them up again on the admin page, or import the backup again under the older image.
 
 ## Changing the Schema
 

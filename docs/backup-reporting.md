@@ -1,7 +1,7 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.29
+version: 1.30
 status: As-Built
 date: 2026-10-22
 tags:
@@ -92,6 +92,24 @@ that channel.
 | `daily` | Time-based | Once per day at configured time |
 | `weekly` | Time-based | Once per week on configured day and time |
 
+**After a start, the interval schedules count from the last scheduled run** (card 2412,
+2026-10-22). The scheduler keeps the time of its last run in memory, and at its first check
+after a start reads it from `backup_log`: the newest successful row that is not a **▶ Run
+Now**'s (`lastScheduledBackupAt()` in `src/lib/server/backup.ts`). It read the newest
+successful row of any kind, so a Run Now pressed just before a restart moved the next hourly,
+6-hourly or 12-hourly run that much later once, which a Run Now without a restart never did.
+`backup_log` has no column for the kind of run, and none was added: a Run Now's row is told by
+its file's name, `…-manual.db` (`MANUAL_COPY`), as retention tells its copies (card 2405). A
+Run Now made before card 2405 has no `-manual` and is still counted. The history keeps its
+newest 10 rows, one a destination a run, so where none of them is a successful scheduled run
+the first check runs one at once: sooner, never later. The daily and weekly schedules run at
+their time and read no history.
+
+**The history is trimmed where a row is added, not where it is read** (card 2412). `logBackup()`
+adds each destination's row and then keeps the newest 10; `getBackupHistory()`, which
+`GET /api/admin/backup` reads for the panel's Backup History, writes nothing. It deleted every
+row past the newest 10 on each call, so opening the admin page wrote to the database.
+
 ### Backup Configuration
 
 **Who may use it.** The backup settings, Run Now, a destination's Test and Google Drive's
@@ -140,7 +158,10 @@ by "ann", who was made a user by "chief". Its stored secrets went with it; the c
 there are kept.` (meta `{ "setter", "reason", "destinations": [{ "name", "type" }] }`). Nothing
 is deleted at the destination. Every start does the same for a setter made a user from the host,
 or whose account is gone, before the scheduler starts (card 2406: see
-[Settings Go With Their Setter](authentication-security.md#settings-go-with-their-setter-card-2397)).
+[Settings Go With Their Setter](authentication-security.md#settings-go-with-their-setter-card-2397)),
+and so does Import Backup once a restore is committed, for a setter who is not an administrator
+in the restored data, with the lines ending `(found after a restore)`, and the import's result
+naming what went and listing none of it as kept or to enter again (card 2411).
 A destination saved before 0059 has no row and stays. The
 schedule, the retention and the failure mail have no setter. See
 [Settings Go With Their Setter](authentication-security.md#settings-go-with-their-setter-card-2397).
