@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.69
+version: 1.70
 status: As-Built
 date: 2026-10-22
 tags:
@@ -522,17 +522,21 @@ Click **▶ Run Now** under **☁️ Scheduled Backups** in the admin panel to t
 
 **Keep Last counts Run Now copies and scheduled copies separately** (card 2405, 2026-10-22). A Run Now's copy is named `dumpfire-backup-<UTC date and time>-manual.db`. After a Run Now, retention removes the oldest `…-manual.db` copies beyond Keep Last and no scheduled copy; after a scheduled run, the oldest scheduled copies beyond Keep Last and no `…-manual.db` copy. So pressing Run Now any number of times leaves every scheduled copy where it was, a destination holds at most twice Keep Last copies, and with Keep Last 7 an eighth press removes the first press's copy. The run's `Backup succeeded` line on the Audit page says `Made by Run Now: Keep Last counts Run Now copies apart from scheduled ones, so only an older Run Now copy can be removed`, and the panel says the same under Keep Last and in the toast after a Run Now. A Run Now copy made before this change has no `-manual` in its name, and is counted and removed with the scheduled ones.
 
+**The failure mail says Run Now** (card 2413). With failure email alerts on, a Run Now that fails at a destination sends a mail headed **Run Now Backup Failed**, "A backup made by ▶ Run Now to *destination* (*type*) failed."; a scheduled run's says **Scheduled Backup Failed**, as before. Until this change a Run Now's said it was scheduled too.
+
 ### Backup History
 
-The last 10 backup attempts are shown with:
+The last 30 backup runs are shown, a row for each destination of each run (card 2413), with:
 - Destination name and type
 - File size
 - Duration
 - Status (success or failed with error message)
 
-Each backup adds one row a destination, and the oldest past 10 are removed then. Opening the page only reads them (card 2412): it removed them each time it was opened.
+The panel shows the newest five rows and **▼ Show all N entries**. Each backup adds one row a destination, and the rows of runs older than the newest 30 are removed then, all of a run's rows together. Until card 2413 the history kept the newest 10 rows, so with four destinations it showed under three runs. Opening the page only reads them (card 2412): it removed them each time it was opened.
 
-**After a restart**, an hourly, 6-hourly or 12-hourly schedule counts from the last successful scheduled backup in this history, not from a **Run Now** (card 2412): a Run Now pressed just before a restart used to move the next scheduled backup later once. A Run Now is told by its copy's name, `…-manual.db`; one made before card 2405 has no `-manual` and still counts. Where the 10 rows hold no successful scheduled backup (many Run Now presses, or failures), the first check after the restart runs one at once.
+**After a restart**, an hourly, 6-hourly or 12-hourly schedule counts from the last successful scheduled backup, not from a **Run Now** (card 2412): a Run Now pressed just before a restart used to move the next scheduled backup later once. A Run Now is told by its copy's name, `…-manual.db`; one made before card 2405 has no `-manual` and still counts. The history keeps the last successful scheduled backup's row however many Run Now presses or failures come after it (card 2413), though Backup History no longer shows it once it is older than the last 30 runs; until then ten such rows pushed it out, and the first check after the restart ran one at once.
+
+**A daily or weekly backup is made once in its minute** (card 2414). Where the server's clock is put back across a restart into the minute of the backup's time, or a second instance of the server checks in that minute, a backup that has already finished in that minute is not made again, and the Audit page has a `[WARN] [BACKUP] Scheduled daily backup at 02:00 not made: …` line saying so. One still uploading when the other instance checks is not seen, and a second copy is made. A **Run Now** pressed in that minute does not stop the scheduled backup. Only a backup recorded within the hour from the start of that minute counts: one stamped later by a clock that ran fast and was then put back does not stop the backups of the days after it, and each daily or weekly check while it is newest writes a `[WARN] [BACKUP] The last scheduled backup is recorded at …, later than the server's clock …` line (the review of card 2414).
 
 A destination whose credentials are not entered is not tried, and its row says "This destination's credentials are not entered: a backup does not hold them, so they are entered again after a restore. Enter them in Admin, Scheduled Backups." (for a Google Drive destination connected with OAuth: "… enter its client secret and connect it again."), with the failure mail any failure sends (card 2169). It is what a destination shows after a backup is restored onto another server, until its credentials are typed in again with **Edit**. An SFTP destination with neither a password nor a key is tried as before, since some servers accept it, once its host key is confirmed. After a restore onto another server, then, such a destination, its key confirmed again, is tried against the real host at every scheduled run, and its failed logins may lock the account out there: enter its credentials, or remove it.
 

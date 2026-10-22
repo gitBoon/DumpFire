@@ -1,7 +1,7 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.30
+version: 1.31
 status: As-Built
 date: 2026-10-22
 tags:
@@ -100,15 +100,68 @@ successful row of any kind, so a Run Now pressed just before a restart moved the
 6-hourly or 12-hourly run that much later once, which a Run Now without a restart never did.
 `backup_log` has no column for the kind of run, and none was added: a Run Now's row is told by
 its file's name, `…-manual.db` (`MANUAL_COPY`), as retention tells its copies (card 2405). A
-Run Now made before card 2405 has no `-manual` and is still counted. The history keeps its
-newest 10 rows, one a destination a run, so where none of them is a successful scheduled run
-the first check runs one at once: sooner, never later. The daily and weekly schedules run at
-their time and read no history.
+Run Now made before card 2405 has no `-manual` and is still counted. The history keeps that row
+whatever came after it (card 2413, below), so the first check after a start always finds the
+last scheduled run; it kept the newest 10 rows, and ten Run Now rows or failures pushed it out,
+so the first check ran one at once. `lastScheduledBackupAt()` is one query for the newest such
+row (`status = 'success' AND filename NOT GLOB '*-manual.db'`, `LIMIT 1`).
+
+**A daily or weekly backup is not made twice in its minute** (card 2414, 2026-10-22). The
+daily and weekly schedules run only in their target minute (local time). The scheduler
+remembers the minute it ran in, in memory; at a check in the target minute it now also asks
+`lastScheduledBackupAt()`, and runs nothing where a successful scheduled run is stamped from the
+start of that minute to an hour after it (a run's rows are written after its upload, so none
+is stamped earlier), with one `[WARN] [BACKUP] Scheduled daily backup at 02:00 not made: a
+scheduled backup recorded at … was already made in this minute …` line. A plain restart could
+not repeat the run: the first check comes a minute after the start, in a later minute. One
+whose first check still falls in the minute could: the clock put back across the restart, or a
+second instance started before the minute on the same database. Only **a run that has already
+finished** in the minute is seen: one still uploading has no row yet, so another instance
+checking meanwhile makes a second copy all the same. A Run Now in the minute does not hold the
+scheduled run back, and a scheduled run that failed at every destination does not count, so a
+restart after it tries again. `initBackupScheduler()` starts with nothing remembered, as a new
+process does.
+
+**Bounded above** (the card 2414 review). With no upper bound, a scheduled row stamped in the
+future (a clock that ran fast, then was corrected) stopped every daily or weekly backup until
+the real time passed it, and the trim keeps that row. A row stamped more than an hour after the
+minute's start does not count, and a newest scheduled stamp later than now writes `[WARN]
+[BACKUP] The last scheduled backup is recorded at …, later than the server's clock (…): the clock
+may have run fast and been put back. Check the server's time.` at each daily or weekly check
+while it is newest.
+
+```mermaid
+flowchart TD
+    Tick["check in the daily/weekly target minute"] --> Mem{"ran in this minute?<br/>(in memory)"}
+    Mem -->|"yes"| Skip["nothing"]
+    Mem -->|"no"| Ahead{"last scheduled stamp<br/>later than now?"}
+    Ahead -->|"yes"| Warn["WARN: clock may have run fast"] --> Db
+    Ahead -->|"no"| Db{"start of this minute ≤ last<br/>< start + 1 hour?"}
+    Db -->|"yes"| Skip2["WARN: not made"] --> Skip
+    Db -->|"no"| Run["runBackup()"]
+```
 
 **The history is trimmed where a row is added, not where it is read** (card 2412). `logBackup()`
-adds each destination's row and then keeps the newest 10; `getBackupHistory()`, which
+adds each destination's row and then trims; `getBackupHistory()`, which
 `GET /api/admin/backup` reads for the panel's Backup History, writes nothing. It deleted every
 row past the newest 10 on each call, so opening the admin page wrote to the database.
+
+**The history is kept by runs: every row of the newest 30** (card 2413, 2026-10-22). A run is
+the rows that share a file name: `runBackup()` names its copy once, from the run's start (with
+`-manual` for a Run Now), and writes one row a destination with it. Runs are ordered by their
+newest row. The trim deletes every row outside the newest `BACKUP_HISTORY_RUNS` (30) runs except
+the newest successful scheduled row, which `lastScheduledBackupAt()` reads; so the table holds
+at most 30 rows a destination and that one. `getBackupHistory()` answers every row of the newest
+30 runs, newest first, which is what the GET asked for (`getBackupHistory(30)` of a table kept
+at 10 rows). The history kept the newest 10 rows, one a destination a run: four destinations
+left under three runs. By age was not taken: 30 days of an hourly schedule is 720 rows a
+destination, and nothing after a month switched off.
+
+| | Before card 2413 | Now |
+|---|---|---|
+| Kept by `logBackup()` | the newest 10 rows | every row of the newest 30 runs, and the newest successful scheduled row |
+| Answered by the GET | the newest 30 rows (at most 10 there) | every row of the newest 30 runs |
+| `lastScheduledBackupAt()` | 0 once ten newer rows had pushed the last scheduled row out | the last scheduled run, whatever came after it |
 
 ### Backup Configuration
 
@@ -732,6 +785,8 @@ destinations' order.
 ### Failure Notifications
 
 If `notifyOnFailure` is enabled and SMTP is configured, a styled HTML email is sent to the configured address with the error details, a destination not tried for want of its credentials included. The destination's name and type and the error text, which is whatever the destination's server answered, are escaped where they are put into the mail, so markup in them is shown as text and never drawn (see [Text in Mail Is Text](notifications-email.md#text-in-mail-is-text)).
+
+The mail says which kind of run failed (card 2413, 2026-10-22): **Scheduled Backup Failed**, "A scheduled backup to *name* (*type*) failed." for a scheduled run, and **Run Now Backup Failed**, "A backup made by ▶ Run Now to *name* (*type*) failed." for a Run Now. It said "scheduled" for both. The subject, `⚠️ DumpFire Backup Failed`, is the same for both, and a run sends one mail for each destination that failed.
 
 ---
 

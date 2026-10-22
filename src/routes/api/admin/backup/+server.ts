@@ -151,12 +151,16 @@ function superadminOnly(before: BackupConfig, after: BackupConfig, changes: Back
 	return `${SUPERADMIN_FOR_FEWER_COPIES} This save would ${would.join(', and ')}.`;
 }
 
-/** GET — Return backup config and recent history. */
+/**
+ * GET — Return backup config and recent history: every row of the newest 30
+ * runs, the rule the history is kept to (card 2413; it asked for 30 rows of a
+ * table kept at 10).
+ */
 export const GET: RequestHandler = async ({ locals }) => {
 	requireAdmin(locals.user);
 
 	const config = getBackupConfig();
-	const history = getBackupHistory(30);
+	const history = getBackupHistory();
 
 	// Every secret field masked, by the one list (card 2187).
 	const maskedDestinations = config.destinations.map(maskDestination);

@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.93
+version: 1.94
 status: As-Built
 date: 2026-10-22
 tags:
@@ -4610,6 +4610,57 @@ A restore that finds a setter who is not an administrator, one whose removal fai
 
 Nothing is done to the database. The older image deletes Backup History rows past the newest 10 whenever the admin page is opened (there are none past 10 unless a backup's trim failed), counts a Run Now made just before a restart as the last backup for an interval schedule again, and removes nothing after a restore: a restored setter who is not an administrator keeps their settings until the next start. **Settings a restore removed stay removed**: set them up again on the admin page, or import the backup again under the older image.
 
+### Backup History Kept by Runs; the Failure Mail Says Run Now; a Daily or Weekly Backup Made Once in Its Minute
+
+**Cards 2413 and 2414.** No migration, no setting, no index, no route added, and nothing in `/api/v1` changes (the OpenAPI document is unchanged). The plan is `docs/planning/cards-2413-2414.md`.
+
+- **2413.** `backup_log` keeps every row of the newest 30 runs (a run is the rows of one copy's name, one a destination), and the last successful scheduled run's row whatever came after it; it kept the newest 10 rows, under three runs with four destinations. Backup History (`GET /api/admin/backup`) shows every row of the newest 30 runs. After a restart an interval schedule always finds the last scheduled run, however many **▶ Run Now** presses or failures came after it. A Run Now's failure mail is headed **Run Now Backup Failed**, "A backup made by ▶ Run Now to …"; a scheduled run's still says **Scheduled Backup Failed**.
+- **2414.** In a daily or weekly backup's minute the scheduler also asks `backup_log` whether a scheduled run has already finished in that minute, and makes none if so, with one `[WARN] [BACKUP] Scheduled daily backup at 02:00 not made: …` line: the clock put back across a restart into that minute, or a second instance checking in it after the first one's run has finished, no longer makes a second copy. A second instance checking while the first is still uploading does: that run has no row yet. A plain restart never could repeat it (its first check is a minute after the start). Only a run recorded within the hour from the minute's start counts, so one stamped ahead by a clock that ran fast and was put back does not stop the next days' backups; while it is the newest, each daily or weekly check writes `[WARN] [BACKUP] The last scheduled backup is recorded at …, later than the server's clock …`.
+
+**Owner to know.**
+
+- **Backup History grows** over the next runs to every row of the last 30 runs (with four destinations, 120 rows); the panel still shows five and **▼ Show all N entries**. Nothing is removed by the deploy itself: the first run after it keeps all that is there, which is under 30 runs.
+- **Nothing to do for 2414.**
+
+```mermaid
+flowchart LR
+    Run["a backup's row added"] --> Trim["keep the newest 30 runs' rows<br/>+ the last scheduled success"]
+    Get["GET /api/admin/backup"] --> Hist["the newest 30 runs' rows"]
+    Fail["a destination fails"] --> Mail["Run Now Backup Failed<br/>or Scheduled Backup Failed"]
+    Tick["daily/weekly minute"] --> Ask{"a scheduled run stamped<br/>in this minute?"}
+    Ask -->|"yes"| None["nothing"]
+    Ask -->|"no"| Back["back up"]
+```
+
+#### Before the deploy
+
+Run check 464's command and note the two numbers: the rows and the runs in `backup_log` (under the older image, at most 10 rows).
+
+#### What changes at the first start
+
+- Nothing from `DB`, and no new line.
+
+#### After the deploy
+
+On production, as **O**, signed in, with the Audit page's **Live Console** open in a second tab. The commands and the panel write nothing. Check 464 needs a backup run: wait for the next scheduled one, which writes nothing a deploy would not have, or press **▶ Run Now**, which **writes a copy** (`…-manual.db`) to every destination and a row to `backup_log` for each, and counts against Keep Last's Run Now copies.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 464 | 2413 | After the first backup run since the deploy (the next scheduled one, or a Run Now pressed for the purpose, which writes a copy: see above; its `Backup succeeded` or `Backup failed` rows appear on the Live Console), run the read-only command below the table. **This tells the new image from the old only where the rows noted before the deploy were 10**, the older image's limit: with fewer, both images keep every row, and the check only guards against rows lost | `rows` is the number noted before the deploy plus one for each destination of that run, and `runs` one more: nothing removed, the history being under 30 runs | `rows` back at 10 or fewer with rows noted before gone |
+| 465 | 2413 | Open **Admin**, ☁️ Scheduled Backups, Backup History, and press **▼ Show all N entries** | N is 464's `rows` (or 464's `rows` less one, where the last scheduled run is older than the newest 30 runs: kept for the scheduler, not shown); the newest run's rows first, one a destination | N stops at 10 while 464's `rows` is over 10 |
+
+The command of 464, read-only, as the one of 462:
+
+```bash
+docker exec <container> node -e "const db = require('better-sqlite3')(process.env.DB_PATH || 'dumpfire.db', { readonly: true, fileMustExist: true }); console.log(JSON.stringify(db.prepare('SELECT COUNT(*) AS rows, COUNT(DISTINCT filename) AS runs FROM backup_log').get())); db.close();"
+```
+
+A Run Now that fails with failure alerts on, more than 30 runs, a daily or weekly backup's minute with the clock put back across a restart, and two instances on one database are not arranged on production: each would need a failing destination and a mail, weeks of runs, or a change to the host's clock or a second container. The suite covers them (`tests/mail-escaping.test.ts`, `tests/gdrive-retention.test.ts`).
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image trims the history to its newest 10 rows at its first backup run, removing the rest, the last scheduled run's row too where it is not among them; its failure mail says "scheduled" for a Run Now again; and a daily or weekly backup's minute is remembered in memory alone again.
+
 ## Changing the Schema
 
 The structure of the database is changed in one way only:
@@ -4817,7 +4868,7 @@ flowchart LR
 The scheduler checks once a minute whether a backup is due. Each backup:
 1. Writes a complete copy of the database to a temporary file beside it with `VACUUM INTO`, which includes changes still in the write-ahead log. It then opens the copy with no journal, deletes every session, every unused invite, the key remembered browsers are signed with and the key the request form signs with from it, sets every request's link to `NULL`, masks every invite's token, any request link's token and the name typed at an old failed sign-in in its system log, deletes the mail password and the key backups are sealed with, empties every destination's secret fields and every webhook's secret, switching each such webhook off (card 2169), seals it (an HMAC of every row, written into it as `backup_seal`), and writes it out again with a second `VACUUM INTO` to a second temporary file, so that nothing of what was deleted is left in the file. It reads that second file and deletes both. The running database is not touched: nobody is signed out by a backup, and its own log is as it was; the first backup writes the seal's key into it (`backup_seal_key`), and none after. Every step of this is synchronous, so **the server answers no request from the start of the first `VACUUM INTO` until the second file has been read**: both copies, the masking, the deletes and the read, and not only the first copy. "Export Backup" stops it the same way. See "How long the server stops answering", below. Both temporary files are beside the database, on the volume, so it needs room for two copies while a backup is made, and none for a journal.
 2. Uploads the copy as it is, not compressed, to each configured destination as `dumpfire-backup-<UTC date and time>.db` (`…-manual.db` for a **▶ Run Now**, card 2405)
-3. Records the result for each destination in the `backup_log` table, which keeps the last 10 entries
+3. Records the result for each destination in the `backup_log` table, which keeps every row of the last 30 runs and the last successful scheduled run's row (card 2413; the last 10 rows before)
 4. After a successful upload, deletes the oldest backups of the run's own kind at that destination beyond the retention count (a retention of 0 keeps them all): the scheduled copies after a scheduled run, the `…-manual.db` copies after a Run Now, each counted on its own (card 2405). On Google Drive only the files the connected account may delete or trash are counted, and one it may not is left with one `WARN` line a run: see [Configuring Backups](admin-guide.md#configuring-backups)
 
 A failed upload is not retried. It is logged at `ERROR`, recorded in `backup_log` with the error, and emailed to the alert address if failure alerts are switched on and SMTP is configured. The destination is tried again at the next scheduled backup.

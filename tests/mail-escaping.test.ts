@@ -17,7 +17,8 @@
  * texts with a function of its own; its fifteen mails are swept too, so that
  * the move to the one function, and any mail added later, is held to the rule.
  * (There were sixteen: the mail for a new card, which nothing sent, went with
- * card 2010.)
+ * card 2010.) The backup failure mail is also held to saying which kind of
+ * run failed, a ▶ Run Now or a scheduled run (card 2413).
  *
  * No mail leaves: `effects()` records each one. No destination is reached:
  * `createDestination` is replaced, for this file, by one whose upload fails.
@@ -177,6 +178,33 @@ describe('the backup failure mail', () => {
 		expect(mail.html).toContain('&lt;b&gt;refused&lt;/b&gt;');
 		expect(mail.html).not.toContain(MARKER);
 		expect(mail.html).not.toContain(UPLOAD_FAILURE);
+	});
+
+	// It said "Scheduled Backup Failed" for a Run Now too (card 2413).
+	it.each([
+		{ how: 'scheduled' as const, heading: 'Scheduled Backup Failed', says: 'A scheduled backup to', not: ['Run Now'] },
+		{ how: 'manual' as const, heading: 'Run Now Backup Failed', says: 'A backup made by ▶ Run Now to', not: ['Scheduled Backup Failed', 'A scheduled backup'] }
+	])('says which kind of run failed: $how', async ({ how, heading, says, not }) => {
+		saveBackupConfig({
+			schedule: 'disabled',
+			scheduleTime: '02:00',
+			scheduleDay: 0,
+			retention: 7,
+			destinations: [
+				{ type: 'nas', name: 'NAS' } as unknown as Parameters<typeof saveBackupConfig>[0]['destinations'][number]
+			],
+			notifyOnFailure: true,
+			notifyEmail: 'chief@example.test'
+		});
+
+		await runBackup(undefined, how);
+
+		const mail = onlyMail();
+		expect(mail.subject).toBe('⚠️ DumpFire Backup Failed');
+		expect(mail.html).toContain(`>${heading}</h2>`);
+		expect(mail.html).toContain(`${says} <strong>NAS</strong> (nas) failed.`);
+		// The panel is still named Scheduled Backups, whichever run it was.
+		for (const words of not) expect(mail.html).not.toContain(words);
 	});
 });
 
