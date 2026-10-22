@@ -52,6 +52,7 @@ import BackupRestorePanel from '$lib/components/admin/BackupRestorePanel.svelte'
 import ArchivedPage from '../src/routes/archived/+page.svelte';
 import TeamsPage from '../src/routes/teams/+page.svelte';
 import { toasts } from '$lib/stores/toast';
+import Toast from '$lib/components/Toast.svelte';
 
 // The page's data is read again after a write; here it is only counted. The
 // page's Toast listens for navigations, which there are none of here.
@@ -569,6 +570,78 @@ describe('the Scheduled Backups panel for an administrator and for the superadmi
 		flushSync();
 		expect(chief.querySelector('.dest-edit-form')).not.toBeNull();
 		expect(chief.querySelector('.dest-name-hint')).toBeNull();
+	});
+});
+
+// Card 2417: the Run Now toast said only how many failed, the reasons in Backup History alone.
+describe('the Run Now toast names each destination that failed and why (card 2417)', () => {
+	const KEEP = 'Keep Last counts scheduled copies and Run Now copies separately: a Run Now removes only older Run Now copies.';
+	const toastsShown = () => {
+		let shown: { message: string; type: string }[] = [];
+		toasts.subscribe((list) => (shown = list as { message: string; type: string }[]))();
+		return shown.map((toast) => [toast.type, toast.message]);
+	};
+	const dismissAll = () => {
+		let shown: { id: number }[] = [];
+		toasts.subscribe((list) => (shown = list))();
+		for (const toast of shown) toasts.dismiss(toast.id);
+	};
+	/** Run Now pressed, the server answering `results`. */
+	async function runNow(results: Record<string, unknown>[]) {
+		answer = (what) => (what === 'POST /api/admin/backup' ? Response.json({ results }) : undefined);
+		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn() });
+		await settle();
+		buttonNamed(target, '▶ Run Now').click();
+		await settle();
+		expect(asked('POST /api/admin/backup')).toHaveLength(1);
+	}
+
+	beforeEach(dismissAll);
+	afterEach(dismissAll);
+
+	it('says each failed destination’s name and reason, as text: markup in a reason is shown, not drawn', async () => {
+		// The page's own toast, to read what is drawn.
+		const shelf = document.createElement('div');
+		document.body.appendChild(shelf);
+		const toast = mount(Toast, { target: shelf });
+		onTestFinished(() => {
+			unmount(toast);
+			shelf.remove();
+		});
+
+		await runNow([
+			{ destination: 'NAS', status: 'failed', message: '<b>refused</b>', durationMs: 5 },
+			{ destination: 'Drive', status: 'success', message: 'Uploaded b.db (2.0 KB)', durationMs: 5 },
+			{ destination: '<i>Tape</i>', status: 'failed', message: 'Connection reset.', durationMs: 5 }
+		]);
+
+		const said = '2 of 3 backup(s) failed: NAS: <b>refused</b>; <i>Tape</i>: Connection reset.';
+		expect(toastsShown()).toEqual([['error', said]]);
+		flushSync();
+		const drawnToast = shelf.querySelector('.toast-msg')!;
+		expect(drawnToast.textContent).toBe(said);
+		expect(drawnToast.querySelector('b, i')).toBeNull();
+	});
+
+	it('puts each reason on one line, cuts a long one, and counts the destinations past the third', async () => {
+		const long = `Permission denied\n\tat ${'x'.repeat(400)}`;
+		await runNow(['A', 'B', 'C', 'D', 'E'].map((destination) => ({ destination, status: 'failed', message: long, durationMs: 5 })));
+
+		const [[type, message]] = toastsShown();
+		expect(type).toBe('error');
+		const cut = `Permission denied at ${'x'.repeat(160 - 'Permission denied at '.length - 1)}…`;
+		expect(message).toBe(`5 of 5 backup(s) failed: A: ${cut}; B: ${cut}; C: ${cut}; and 2 more (see Backup History).`);
+		expect(message).not.toContain('\n');
+	});
+
+	it('says, in a warning that stays, where an upload succeeded but Backup History could not record it', async () => {
+		await runNow([
+			{ destination: 'NAS', status: 'success', message: 'Uploaded b.db (2.0 KB)', durationMs: 5, note: 'Uploaded, but Backup History could not record it: database or disk is full' }
+		]);
+
+		expect(toastsShown()).toEqual([
+			['warning', `Backup completed to 1 destination. NAS: Uploaded, but Backup History could not record it: database or disk is full. ${KEEP}`]
+		]);
 	});
 });
 

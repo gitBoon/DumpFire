@@ -1,7 +1,7 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.33
+version: 1.34
 status: As-Built
 date: 2026-10-22
 tags:
@@ -905,8 +905,8 @@ the copy took to fail, and returns through `finish()`. So:
   name (one run, card 2413); a destination that failed the pre-flight keeps its own row and error.
   Not one row for the run: every row names a destination, and the panel shows each by it.
 - **The answer**: ▶ Run Now (`POST /api/admin/backup`) answers `200` with each destination's
-  result in the destinations' order, where it was a `500`; the panel's toast says how many failed
-  and Backup History shows why.
+  result in the destinations' order, where it was a `500`; the panel's toast names each
+  destination that failed with its reason ([The Run Now Toast](#the-run-now-toast)).
 - **The mail**: the run's one failure mail, with that error in each destination's error box.
 - **The log**: one `[ERROR] [BACKUP] The copy of the database could not be made` with the error
   itself, then `Backup failed: <destination> → The copy of the database could not be made: …` for
@@ -936,6 +936,57 @@ sequenceDiagram
     R-->>R: results (Run Now: 200), scheduler: try again in 15 min
 ```
 
+### An Upload Whose History Row Cannot Be Written
+
+A destination whose upload succeeded is a success, whether or not its `backup_log` row can be
+written (card 2417, 2026-10-22): the copy is at the destination. The row was written inside the
+upload's `try`, so a row that could not be written (a full volume beside the database, a disk
+error) was caught with the upload's errors and handed to `failed()`: the result said the
+destination failed with the database's error, the failure mail said so, retention was not run
+for it, and a scheduled run of that one destination was tried again 15 minutes later, uploading a
+second copy. Now `runBackup()` writes the row in a `try` of its own after the upload, and where it
+throws:
+
+- **The log**: one `[ERROR] [BACKUP] Backup History row for <destination> could not be written,
+  though <file> was uploaded to it` with the error, then the usual `Backup succeeded` `WARN`. No
+  `Backup failed` line.
+- **The result**: `status: 'success'`, the usual `Uploaded <file> (<size> KB)` message, and a
+  `note`: `Uploaded, but Backup History could not record it: <the error's message>`. `note` is
+  on no other result.
+- **Retention** runs for it, as for any success.
+- **The mail and the scheduler** do not count it as a failure: it is in no failure mail, and a
+  scheduled run with a success gives its tries again back (card 2415) and is not tried again.
+
+Backup History has no row for that upload, so the scheduler, which reads `backup_log`, does not
+see it after a restart (see the plan of card 2417, section 4).
+
+```mermaid
+flowchart TD
+    Up["dest.upload()"] -->|"throws"| F["failed(): row, result, ERROR, mail"]
+    Up -->|"succeeds"| Row{"logBackup() success row"}
+    Row -->|"written"| Ret["cleanupRetention()"]
+    Row -->|"throws (card 2417)"| Err["ERROR: row could not be written, though uploaded<br/>note on the result"]
+    Err --> Ret
+    Ret --> Ok["result: success<br/>(no mail, no try again)"]
+```
+
+### The Run Now Toast
+
+What ▶ Run Now's toast says (card 2417, 2026-10-22; `runManualBackup` in
+`src/lib/components/admin/ScheduledBackupsPanel.svelte`):
+
+| The results | The toast |
+|---|---|
+| every one a success, none with a `note` | `Backup completed to N destination(s).` and the Keep Last rule (card 2405), going after 3 s |
+| every one a success, some with a `note` | the same, with `<destination>: <note>` for each before the rule, as a warning that stays until closed |
+| any failed | `F of N backup(s) failed: <destination>: <reason>; <destination>: <reason>.`, any notes after it, as an error that stays until closed |
+
+It said only `F of N backup(s) failed`, the reasons in Backup History alone. A reason is whatever
+the destination's server answered and the toast is 360 px wide, so each name and reason is put on
+one line (white space run together), a name cut to 60 characters and a reason to 160 with `…`, and
+at most three destinations are named, the rest as `and N more (see Backup History)`. The toast
+draws its message as text, so markup in a name or a reason is shown as written, never drawn.
+
 ### Failure Notifications
 
 If `notifyOnFailure` is enabled and SMTP is configured, a styled HTML email is sent to the configured address with the error details, a destination not tried for want of its credentials included. The destination's name and type and the error text, which is whatever the destination's server answered, are escaped where they are put into the mail, so markup in them is shown as text and never drawn (see [Text in Mail Is Text](notifications-email.md#text-in-mail-is-text)).
@@ -945,6 +996,8 @@ The mail says which kind of run failed (card 2413, 2026-10-22): **Scheduled Back
 **One failure mail a run** (card 2415, 2026-10-22). `runBackup()` keeps each failed destination and its error, and after its last destination sends one mail with the paragraph above and the error box for each, in the destinations' order (`mailFailures`); a run with one failed destination reads as before. It sent one mail for each destination that failed, so four failing sent four for one run. A run none of whose destinations could be tried (credentials or host key missing) sends its one mail too. A scheduled run that failed at every destination is tried again up to three times (above), each with its own mail.
 
 **A copy that cannot be made sends the mail too** (card 2416, 2026-10-22): each destination that was to be tried is in it with `The copy of the database could not be made: …` in its error box ([A Copy That Cannot Be Made](#a-copy-that-cannot-be-made)). It sent none.
+
+**An upload whose Backup History row cannot be written is not in the mail** (card 2417, 2026-10-22): the copy is at the destination, so it is a success with a note ([An Upload Whose History Row Cannot Be Written](#an-upload-whose-history-row-cannot-be-written)). It was mailed as a failure with the database's error.
 
 ---
 

@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.72
+version: 1.73
 status: As-Built
 date: 2026-10-22
 tags:
@@ -527,6 +527,10 @@ Click **▶ Run Now** under **☁️ Scheduled Backups** in the admin panel to t
 **One failure mail a run** (card 2415). A run that fails at several destinations sends one mail naming each of them with its error, in the order the destinations are listed; it sent one mail for each.
 
 **A backup whose copy of the database cannot be made** (card 2416) fails at each destination it was to be sent to, with "The copy of the database could not be made: …" and the reason (for example `database or disk is full`, where the disk beside the database has no room for the copy). Backup History shows a failed row for each, the failure mail is sent, a scheduled backup is tried again 15 minutes later like any backup that failed everywhere, and **Run Now** says the backups failed. Until this change such a backup left nothing in Backup History, sent no mail, and Run Now showed a server error. Free the space, or look at the Audit page's `[ERROR] [BACKUP] The copy of the database could not be made` line for the cause.
+
+**Run Now says which destinations failed and why** (card 2417, 2026-10-22). The toast after a **Run Now** that failed anywhere reads, for example, "1 of 2 backup(s) failed: NAS: Connection refused." It said only how many failed, the reasons in Backup History alone. Each reason is put on one line and cut to 160 characters, and at most three destinations are named, the rest counted ("and 2 more (see Backup History)"); the full error is in Backup History and on the Audit page. The toast stays until you close it.
+
+**A backup that was uploaded but could not be recorded in Backup History** (card 2417, 2026-10-22) counts as made: the copy is at the destination. The Audit page has an `[ERROR] [BACKUP] Backup History row for <destination> could not be written, though <file> was uploaded to it` line, Backup History shows nothing for it, no failure mail is sent, Keep Last still removes older copies at that destination, and a scheduled backup is not tried again. After a **Run Now** the toast is a warning that stays: "Backup completed to 1 destination. NAS: Uploaded, but Backup History could not record it: database or disk is full. …". It was reported as failed, mailed, and tried again, which put a second copy at the destination. The usual cause is the disk beside the database being full: free the space.
 
 **Copies are named to the millisecond** (card 2415): `dumpfire-backup-2026-10-22T02-00-30-123.db`, and `…-123-manual.db` for a Run Now. Two Run Now presses in one second made one name, so the second copy replaced the first and Backup History showed one run.
 
