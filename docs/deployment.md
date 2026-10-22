@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.94
+version: 1.95
 status: As-Built
 date: 2026-10-22
 tags:
@@ -4660,6 +4660,60 @@ A Run Now that fails with failure alerts on, more than 30 runs, a daily or weekl
 #### Going back to the previous image
 
 Nothing is done to the database. The older image trims the history to its newest 10 rows at its first backup run, removing the rest, the last scheduled run's row too where it is not among them; its failure mail says "scheduled" for a Run Now again; and a daily or weekly backup's minute is remembered in memory alone again.
+
+### A Missed Daily or Weekly Backup Made Up Once; a Failed Backup Tried Again; One Failure Mail a Run; Copies Named to the Millisecond
+
+**Card 2415.** No migration, no setting, no index, no route added, and nothing in `/api/v1` changes (the OpenAPI document is unchanged). The plan is `docs/planning/card-2415.md`.
+
+- **A daily or weekly schedule is decided by its latest time.** At each check the scheduler finds the latest time the schedule was due (today's 02:00, or yesterday's before 02:00; the weekday's for weekly) and backs up where no successful scheduled backup is recorded since it. A server down or busy through the time makes that backup once at the first check after (a minute after the start), with `[WARN] [BACKUP] Scheduled daily backup at 02:00 was not made at its time, <ISO> (the server was down, or busy past the check): made now.`; it made none until the next day. A server started with such a schedule and no scheduled backup since its latest time makes one then. A schedule, time or day changed while the server runs waits for its next time. Where the server's zone has daylight saving (not the image's UTC), a time in the hour skipped runs an hour on, and one in the hour that comes twice runs once.
+- **A scheduled run that failed at every destination is tried again 15 minutes later, up to three times**, for every schedule (it waited an interval, up to a week). The tries come back after a run that succeeds somewhere. **A restart** makes the backup due once a minute after the start; where that backup had already failed before the restart, that is its one try until a run succeeds (no tries again), so a server restarted again and again sends one failure mail and makes one SFTP login a start. A run where every destination failed before anything was sent (credentials not entered, a host key not confirmed) is not tried again, and a failure of a run older than one that has since succeeded arms none.
+- **One failure mail a run**, naming every destination that failed with its error; it sent one for each.
+- **Copy names to the millisecond**: `dumpfire-backup-YYYY-MM-DDTHH-MM-SS-mmm.db` (`…-mmm-manual.db` for a Run Now), so two Run Now presses in one second no longer share a name.
+- **An hourly, 6-hourly or 12-hourly schedule after a start** leaves out a scheduled row recorded later than the server's clock, and says so with `[WARN] [BACKUP] The last scheduled backup is recorded at …, later than the server's clock …`; such a row held every run off until the real time passed it and one interval more.
+
+**Owner to know.**
+
+- **The first start may make a backup a minute in** (check 466): only where a daily or weekly schedule's latest time has passed with no successful scheduled backup since, a failed one included.
+- **An outage of every destination can send four failure mails in 45 minutes**, then one a scheduled run as before.
+
+```mermaid
+flowchart LR
+    Start["start"] --> T{"daily/weekly: a scheduled success<br/>since the latest time?"}
+    T -->|"no"| Up["made up once, a minute in<br/>(WARN: not made at its time)"]
+    T -->|"yes"| Wait["next time"]
+    Fail["a run fails everywhere"] --> R["tried again at +15 min, ≤ 3"]
+    Mail["destinations failing"] --> One["one mail for the run"]
+```
+
+#### Before the deploy
+
+Run the read-only command below check 466's table and note what it prints: the schedule, its time and day, the last successful scheduled backup (UTC), the newest one recorded at or before now (`last_scheduled_before_now_utc`, the one the scheduler counts), how many scheduled rows are recorded later than now (`ahead`), and the server's UTC time.
+
+#### What changes at the first start
+
+- Nothing from `DB`. For a daily or weekly schedule whose latest time has passed since `last_scheduled_before_now_utc`, a minute after the start: the `was not made at its time` `WARN`, `Scheduled backup triggered`, and the run's `Backup succeeded` or `Backup failed` rows. Where `ahead` is above 0, one `later than the server's clock` `WARN` at the first check (hourly, 6-hourly, 12-hourly) or the first daily or weekly check.
+
+#### After the deploy
+
+On production, as **O**, signed in, with the Audit page's **Live Console** open in a second tab. The command and the panel write nothing; the backups 466 and 467 look for are the schedule's own, or a **▶ Run Now** pressed for the purpose, which **writes a copy** (`…-manual.db`) to every destination and a row each, and counts against Keep Last's Run Now copies.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 466 | 2415 | Daily or weekly schedules only (skip otherwise). From the numbers noted before the deploy, work out the schedule's latest time before the start, in UTC (the container's zone, where `TZ` is not set: see 0058's check), and watch the Live Console for the first minute after the start | Where `last_scheduled_before_now_utc` is before that latest time (or empty): one `Scheduled <daily\|weekly> backup at HH:MM was not made at its time, …: made now.` and one `Scheduled backup triggered` a minute after the start, then nothing more until the next time. Where it is at or after it: no backup at the start | A backup at the start though `last_scheduled_before_now_utc` is at or after the latest time; or none though it is before; or a second one within the hour, unless the first one failed (a try again at +15 min; none where that backup had already failed before the deploy, or failed before anything was sent) |
+| 467 | 2415 | At the next backup run (the schedule's, or a Run Now), read its `Backup succeeded: <destination> → <name>` row on the Live Console | `<name>` is `dumpfire-backup-YYYY-MM-DDTHH-MM-SS-mmm.db`, three digits of milliseconds after the seconds (and `-manual` before `.db` for a Run Now) | The name ends at the seconds (`…T02-00-30.db`): the old image |
+| 468 | 2415 | Where `ahead` noted before the deploy is above 0 only (skip otherwise) | One `The last scheduled backup is recorded at …, later than the server's clock …` `WARN` at the first scheduler check that reads `backup_log` after the start; an hourly, 6-hourly or 12-hourly schedule runs one interval after the newest scheduled backup recorded before now (`last_scheduled_utc` is the row ahead here), not one interval after the row ahead | No such line; or no interval run until the row ahead has passed |
+
+The command, read-only, prints the schedule, the last successful scheduled backup in UTC (not a Run Now's), the newest of them recorded at or before now, the scheduled rows recorded later than now, and the server's UTC time:
+
+```bash
+docker exec <container> node -e "const db = require('better-sqlite3')(process.env.DB_PATH || 'dumpfire.db', { readonly: true, fileMustExist: true }); console.table(db.prepare(process.argv[1]).all()); db.close();" "SELECT (SELECT value ->> 'schedule' FROM settings WHERE key = 'backup_config') AS schedule, (SELECT value ->> 'scheduleTime' FROM settings WHERE key = 'backup_config') AS schedule_time, (SELECT value ->> 'scheduleDay' FROM settings WHERE key = 'backup_config') AS schedule_day, MAX(created_at) AS last_scheduled_utc, MAX(CASE WHEN created_at <= datetime('now') THEN created_at END) AS last_scheduled_before_now_utc, COALESCE(SUM(created_at > datetime('now')), 0) AS ahead, datetime('now') AS now_utc FROM backup_log WHERE status = 'success' AND filename NOT GLOB '*-manual.db'"
+```
+
+A destination failing (the tries again and the one mail), two Run Now presses in one second, and a clock change in a zone with daylight saving are not arranged on production: each would need a failing destination and a mail, a double press timed to the second, or a `TZ` set on the container. The suite covers them (`tests/gdrive-retention.test.ts`, `tests/mail-escaping.test.ts`).
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image runs a daily or weekly backup only in its minute again (no making up), waits an interval (up to a week) after a run that failed everywhere, sends one failure mail a failed destination, names copies to the second, and counts from a scheduled row stamped ahead. Copies named to the millisecond stay where they are and sort among the older names by their time; retention counts and removes them as before.
 
 ## Changing the Schema
 

@@ -36,6 +36,13 @@
  * it. A daily or weekly backup is not made twice in its minute across a
  * restart (card 2414): the clock is faked, and a restart is the scheduler
  * started again.
+ *
+ * Nor missed or doubled around downtime, clock changes, failures and repeated
+ * presses (card 2415): a daily or weekly target time not made is made once
+ * after a start or a missed check, once on each day the clocks change (in
+ * Europe/London), a run that failed at every destination is tried again 15
+ * minutes later at most three times, a stamp ahead holds no hourly run back,
+ * and copies are named to the millisecond.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { initBackupScheduler, lastScheduledBackupAt, runBackup, saveBackupConfig } from '$lib/server/backup';
@@ -56,8 +63,12 @@ const { folder, files, sftp } = vi.hoisted(() => {
 		update: vi.fn(),
 		create: vi.fn()
 	};
-	/** The SFTP stand-in's own folder, and what it was asked to delete. */
-	const sftp = { names: [] as string[], deleted: [] as string[] };
+	/**
+	 * The SFTP stand-in's own folder, what it was asked to delete, whether its
+	 * uploads fail (card 2415), and a promise the next upload waits for, failing
+	 * if it comes true (the card 2415 review).
+	 */
+	const sftp = { names: [] as string[], deleted: [] as string[], failing: false, hold: null as Promise<boolean> | null };
 	return { folder, files, sftp };
 });
 
@@ -84,6 +95,12 @@ vi.mock('$lib/server/backup-destinations', async (importOriginal) => {
 						name: config.name,
 						test: async () => ({ success: true, message: 'ok' }),
 						upload: async (_data: Buffer, filename: string) => {
+							const held = sftp.hold;
+							if (held) {
+								sftp.hold = null;
+								if (await held) throw new Error('Connection reset');
+							}
+							if (sftp.failing) throw new Error('Connection refused');
 							sftp.names.push(filename);
 						},
 						list: async () => [...sftp.names].sort(),
@@ -147,6 +164,8 @@ beforeEach(() => {
 	folder.length = 0;
 	sftp.names = [];
 	sftp.deleted = [];
+	sftp.failing = false;
+	sftp.hold = null;
 	// The tests run at LOG_LEVEL=ERROR; the warning is what is looked for.
 	logLevel = process.env.LOG_LEVEL;
 	process.env.LOG_LEVEL = 'WARN';
@@ -381,7 +400,7 @@ describe('Keep Last counts Run Now copies apart from scheduled ones (card 2405)'
 		expect(sftp.deleted).toEqual([]);
 		expect(sftp.names.slice(0, 7)).toEqual(OLDER);
 		expect(sftp.names).toHaveLength(8);
-		expect(sftp.names[7]).toBe('dumpfire-backup-2026-10-22T10-00-01-manual.db');
+		expect(sftp.names[7]).toBe('dumpfire-backup-2026-10-22T10-00-01-000-manual.db');
 		const succeeded = sqlite
 			.prepare("SELECT message FROM system_logs WHERE context = 'BACKUP' AND message LIKE 'Backup succeeded%'")
 			.pluck()
@@ -411,7 +430,7 @@ describe('Keep Last counts Run Now copies apart from scheduled ones (card 2405)'
 	it('pressed eight times with Keep Last 7, keeps the newest seven Run Now copies and every scheduled copy', async () => {
 		for (let i = 0; i < 8; i++) await runNow();
 
-		const manual = Array.from({ length: 8 }, (_, i) => `dumpfire-backup-2026-10-22T10-00-0${i + 1}-manual.db`);
+		const manual = Array.from({ length: 8 }, (_, i) => `dumpfire-backup-2026-10-22T10-00-0${i + 1}-000-manual.db`);
 		// The eighth press removed the first press's copy, and nothing else.
 		expect(sftp.deleted).toEqual([manual[0]]);
 		expect(sftp.names.filter((n) => n.endsWith('-manual.db'))).toEqual(manual.slice(1));
@@ -505,7 +524,7 @@ describe('Backup History is read without writing, and Run Now does not hold back
 			initBackupScheduler();
 			await vi.advanceTimersByTimeAsync(MINUTE);
 
-			await vi.waitFor(() => expect(sftp.names).toEqual(['dumpfire-backup-2026-10-22T10-01-00.db']));
+			await vi.waitFor(() => expect(sftp.names).toEqual(['dumpfire-backup-2026-10-22T10-01-00-000.db']));
 		} finally {
 			vi.useRealTimers();
 		}
@@ -515,7 +534,7 @@ describe('Backup History is read without writing, and Run Now does not hold back
 describe('Backup History keeps the newest 30 runs, and the last scheduled run whatever came after it (card 2413)', { timeout: 30_000 }, () => {
 	/** A copy's name for a run started `at`, as `runBackup` names it. */
 	const nameAt = (at: Date, manual = false) =>
-		`dumpfire-backup-${at.toISOString().replace(/[:.]/g, '-').slice(0, 19)}${manual ? '-manual' : ''}.db`;
+		`dumpfire-backup-${at.toISOString().replace(/[:.]/g, '-').slice(0, 23)}${manual ? '-manual' : ''}.db`;
 	/** `count` scheduled runs from 2026-04-01, an hour apart, each with a row for Offsite and one for Second; their names, oldest first. */
 	const runsOfTwo = (count: number) =>
 		Array.from({ length: count }, (_, i) => {
@@ -683,5 +702,291 @@ describe('A daily or weekly backup is not made twice in its minute across a rest
 
 		await rowMadeNow(2);
 		expect(sftp.names).toHaveLength(2);
+	});
+});
+
+describe('Scheduled backups are not missed or doubled around downtime, clock changes, failures and repeated presses (card 2415)', { timeout: 60_000 }, () => {
+	/** A time in 2026 on the server's clock, which is Europe/London here. */
+	const at = (month: number, day: number, h: number, m: number, s = 0) => new Date(2026, month - 1, day, h, m, s);
+	const fakeClock = (now: Date) => vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'], now });
+	const configure = (schedule: 'disabled' | 'hourly' | 'daily' | 'weekly', scheduleTime = '02:00') =>
+		saveBackupConfig({ schedule, scheduleTime, scheduleDay: 2, retention: 50, destinations: [OFFSITE], notifyOnFailure: false, notifyEmail: '' });
+	/** A start: the scheduler started again at `now`, remembering nothing. */
+	const startAt = (now: Date) => {
+		vi.setSystemTime(now);
+		initBackupScheduler();
+	};
+	/** `n` of the scheduler's checks, a minute apart, each let finish the run it started. */
+	const checks = async (n = 1) => {
+		for (let i = 0; i < n; i++) {
+			await vi.advanceTimersByTimeAsync(MINUTE);
+			await new Promise((resolve) => setImmediate(resolve));
+		}
+	};
+	/** A copy's name for a run started `at`, as `runBackup` names it. */
+	const copyAt = (when: Date, manual = false) =>
+		`dumpfire-backup-${when.toISOString().replace(/[:.]/g, '-').slice(0, 23)}${manual ? '-manual' : ''}.db`;
+	const scheduledCopies = () => sftp.names.filter((name) => !name.endsWith('-manual.db'));
+	const failedRuns = () => sqlite.prepare("SELECT filename FROM backup_log WHERE status = 'failed' ORDER BY id").pluck().all() as string[];
+	const warned = (start: string) => backupLines().filter((l) => l.level === 'WARN' && l.message.startsWith(start));
+
+	let zone: string | undefined;
+	beforeEach(() => {
+		zone = process.env.TZ;
+		process.env.TZ = 'Europe/London';
+		// SQLite stamps a row with its own clock, which the faked one does not
+		// reach: a row a run writes is stamped again at the faked time. A row
+		// written here with a time of its own is left as it is.
+		sqlite.function('faked_now', () => stamp(new Date()));
+		sqlite.exec(`CREATE TEMP TRIGGER IF NOT EXISTS stamp_by_faked_clock AFTER INSERT ON backup_log
+			WHEN NEW.created_at = datetime('now')
+			BEGIN UPDATE backup_log SET created_at = faked_now() WHERE id = NEW.id; END`);
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+		sqlite.exec('DROP TRIGGER IF EXISTS temp.stamp_by_faked_clock');
+		if (zone === undefined) delete process.env.TZ;
+		else process.env.TZ = zone;
+	});
+
+	it('daily: a start after its time, with no backup made for it, makes it once at the first check', async () => {
+		fakeClock(at(4, 14, 9, 0));
+		configure('daily');
+		logged(copyAt(at(4, 13, 2, 0, 30)), at(4, 13, 2, 0, 30));
+
+		initBackupScheduler();
+		await checks(60);
+		startAt(at(4, 14, 10, 0, 30));
+		await checks(2);
+
+		expect(scheduledCopies()).toEqual([copyAt(at(4, 14, 9, 1))]);
+		expect(warned('Scheduled daily backup at 02:00 was not made at its time')).toHaveLength(1);
+	});
+
+	it('daily: a check missed in a running process (busy past the minute) is made up at the next', async () => {
+		fakeClock(at(4, 14, 1, 59, 30));
+		configure('daily');
+		logged(copyAt(at(4, 13, 2, 0, 30)), at(4, 13, 2, 0, 30));
+		initBackupScheduler();
+
+		vi.setSystemTime(at(4, 14, 2, 5)); // held past 02:00 and its minute
+		await checks(3);
+
+		expect(scheduledCopies()).toEqual([copyAt(at(4, 14, 2, 6))]);
+	});
+
+	it('weekly: a start the day after its day makes it once, and the next week’s is made on its day', async () => {
+		fakeClock(at(4, 15, 10, 0)); // Wednesday; the schedule is Tuesday 02:00
+		configure('weekly');
+		logged(copyAt(at(4, 7, 2, 0, 30)), at(4, 7, 2, 0, 30));
+
+		initBackupScheduler();
+		await checks(2);
+		startAt(at(4, 16, 10, 0)); // Thursday
+		await checks(2);
+		startAt(at(4, 21, 1, 59, 30)); // the next Tuesday
+		await checks(2);
+
+		expect(scheduledCopies()).toEqual([copyAt(at(4, 15, 10, 1)), copyAt(at(4, 21, 2, 0, 30))]);
+	});
+
+	it('a schedule set in a running process after its time does not run until its next time', async () => {
+		fakeClock(at(4, 14, 9, 0));
+		configure('disabled');
+		initBackupScheduler();
+		await checks(1);
+
+		configure('daily');
+		await checks(5);
+		expect(sftp.names).toEqual([]);
+
+		vi.setSystemTime(at(4, 15, 1, 59, 30));
+		await checks(1);
+		expect(scheduledCopies()).toEqual([copyAt(at(4, 15, 2, 0, 30))]);
+	});
+
+	it('the clocks going back: a daily 01:30 is made once on 25 October 2026, a restart in the hour that comes twice notwithstanding', async () => {
+		fakeClock(new Date('2026-10-25T00:29:30Z')); // 01:29:30 BST
+		configure('daily', '01:30');
+		logged(copyAt(at(10, 24, 1, 30, 30)), at(10, 24, 1, 30, 30));
+
+		initBackupScheduler();
+		await checks(1); // 01:30:30 BST: the run
+		expect(scheduledCopies()).toEqual(['dumpfire-backup-2026-10-25T00-30-30-000.db']);
+
+		startAt(new Date('2026-10-25T01:29:30Z')); // 01:29:30 GMT, the hour again
+		await checks(60);
+
+		expect(scheduledCopies()).toEqual(['dumpfire-backup-2026-10-25T00-30-30-000.db']);
+	});
+
+	it('the clocks going forward: a daily 01:30 is made once on 29 March 2026, at 02:30 BST', async () => {
+		fakeClock(new Date('2026-03-29T00:59:30Z')); // 00:59:30 GMT
+		configure('daily', '01:30');
+		logged(copyAt(at(3, 28, 1, 30, 30)), at(3, 28, 1, 30, 30));
+
+		initBackupScheduler();
+		await checks(90); // to 03:29:30 BST
+
+		expect(scheduledCopies()).toEqual(['dumpfire-backup-2026-03-29T01-30-30-000.db']);
+	});
+
+	it('hourly: a run that failed at every destination is tried again 15 minutes later', async () => {
+		fakeClock(at(4, 14, 10, 0));
+		configure('hourly');
+		logged(copyAt(at(4, 14, 8, 0)), at(4, 14, 8, 0));
+		sftp.failing = true;
+
+		initBackupScheduler();
+		await checks(1); // 10:01: fails
+		sftp.failing = false;
+		await checks(15); // 10:16: tried again
+
+		expect(failedRuns()).toEqual([copyAt(at(4, 14, 10, 1))]);
+		expect(scheduledCopies()).toEqual([copyAt(at(4, 14, 10, 16))]);
+		expect(warned('Scheduled backup failed at every destination: tried again at')).toHaveLength(1);
+		expect(warned('Scheduled backup tried again (1 of 3)')).toHaveLength(1);
+	});
+
+	it('hourly: tried again at most three times, then hourly; a run that succeeds gives the three back', async () => {
+		fakeClock(at(4, 14, 10, 0));
+		configure('hourly');
+		logged(copyAt(at(4, 14, 8, 0)), at(4, 14, 8, 0));
+		sftp.failing = true;
+
+		initBackupScheduler();
+		await checks(120); // to 12:00
+		expect(failedRuns()).toEqual([[10, 1], [10, 16], [10, 31], [10, 46], [11, 46]].map(([h, m]) => copyAt(at(4, 14, h, m))));
+		expect(warned('Scheduled backup failed at every destination, and its 3 tries again are spent')).toHaveLength(1);
+
+		sftp.failing = false;
+		await checks(46); // 12:46: succeeds
+		sftp.failing = true;
+		await checks(75); // 13:46 fails, 14:01 tried again
+
+		expect(scheduledCopies()).toEqual([copyAt(at(4, 14, 12, 46))]);
+		expect(failedRuns().slice(5)).toEqual([copyAt(at(4, 14, 13, 46)), copyAt(at(4, 14, 14, 1))]);
+	});
+
+	it('daily: a run that failed at every destination is tried again 15 minutes later, not the next day', async () => {
+		fakeClock(at(4, 14, 1, 59, 30));
+		configure('daily');
+		logged(copyAt(at(4, 13, 2, 0, 30)), at(4, 13, 2, 0, 30));
+		sftp.failing = true;
+
+		initBackupScheduler();
+		await checks(1); // 02:00:30: fails
+		sftp.failing = false;
+		await checks(15); // 02:15:30: tried again
+
+		expect(failedRuns()).toEqual([copyAt(at(4, 14, 2, 0, 30))]);
+		expect(scheduledCopies()).toEqual([copyAt(at(4, 14, 2, 15, 30))]);
+	});
+
+	it('hourly: after a start, a scheduled run stamped six days ahead does not hold the next one back, and is said', async () => {
+		fakeClock(at(4, 14, 10, 0));
+		configure('hourly');
+		logged(copyAt(at(4, 14, 8, 0)), at(4, 14, 8, 0));
+		logged('dumpfire-backup-stamped-ahead.db', at(4, 20, 8, 0));
+
+		initBackupScheduler();
+		await checks(60);
+
+		expect(scheduledCopies()).toEqual([copyAt(at(4, 14, 10, 1))]);
+		expect(warned('The last scheduled backup is recorded at')).toEqual([
+			expect.objectContaining({ message: expect.stringContaining("later than the server's clock") })
+		]);
+	});
+
+	it('two Run Now presses in one second, or in one millisecond, make copies of their own and runs of their own', async () => {
+		fakeClock(new Date('2026-10-23T09:00:00.000Z'));
+		configure('disabled');
+
+		for (const after of [0, 300, 0]) {
+			vi.setSystemTime(Date.now() + after);
+			expect(await runBackup(undefined, 'manual')).toEqual([expect.objectContaining({ status: 'success' })]);
+		}
+
+		const names = ['000', '300', '301'].map((ms) => `dumpfire-backup-2026-10-23T09-00-00-${ms}-manual.db`);
+		expect(sftp.names).toEqual(names);
+		expect(new Set(historyRows())).toEqual(new Set(names));
+	});
+
+	// The code review's.
+	it('the time set to 02:00 at 01:59:40 in a running process runs at 02:00, its first check after the change being past it', async () => {
+		fakeClock(at(4, 14, 1, 58, 30));
+		configure('daily', '03:00');
+		logged(copyAt(at(4, 13, 3, 0, 30)), at(4, 13, 3, 0, 30));
+		initBackupScheduler();
+		await checks(1); // 01:59:30
+
+		await vi.advanceTimersByTimeAsync(10_000);
+		configure('daily', '02:00'); // 01:59:40
+		await checks(1); // the check at 02:00:30
+
+		expect(scheduledCopies()).toEqual([copyAt(at(4, 14, 2, 0, 30))]);
+	});
+
+	it('daily 02:00 switched on at 01:59:40 in a running process runs at 02:00', async () => {
+		// The 15th: a copy named in the same millisecond as the last test's is named a millisecond on.
+		fakeClock(at(4, 15, 1, 58, 30));
+		configure('disabled');
+		initBackupScheduler();
+		await checks(1); // 01:59:30
+
+		await vi.advanceTimersByTimeAsync(10_000);
+		configure('daily'); // 01:59:40
+		await checks(2); // the checks at 02:00:30 and 02:01:30
+
+		expect(scheduledCopies()).toEqual([copyAt(at(4, 15, 2, 0, 30))]);
+	});
+
+	it('three starts two hours apart, the run due having already failed, make one try each and no tries again', async () => {
+		fakeClock(at(4, 14, 9, 0));
+		configure('daily');
+		logged(copyAt(at(4, 13, 2, 0, 30)), at(4, 13, 2, 0, 30));
+		logged(copyAt(at(4, 14, 2, 0, 30)), at(4, 14, 2, 0, 30), 'failed');
+		sftp.failing = true;
+
+		for (const h of [9, 11, 13]) {
+			startAt(at(4, 14, h, 0));
+			await checks(110);
+		}
+
+		expect(failedRuns()).toEqual([[2, 0, 30], [9, 1, 0], [11, 1, 0], [13, 1, 0]].map(([h, m, s]) => copyAt(at(4, 14, h, m, s))));
+		expect(warned('This scheduled backup already failed before this start')).toHaveLength(3);
+		expect(warned('Scheduled backup failed at every destination: tried again at')).toEqual([]);
+	});
+
+	it('a run that failed only before anything was sent (an SFTP host key not confirmed) is not tried again', async () => {
+		fakeClock(at(4, 14, 10, 0));
+		saveBackupConfig({ schedule: 'hourly', scheduleTime: '02:00', scheduleDay: 2, retention: 50, destinations: [{ ...OFFSITE, hostKey: '' }], notifyOnFailure: false, notifyEmail: '' });
+		logged(copyAt(at(4, 14, 8, 0)), at(4, 14, 8, 0));
+
+		initBackupScheduler();
+		await checks(50);
+
+		expect(failedRuns()).toEqual([copyAt(at(4, 14, 10, 1))]);
+		expect(warned('Scheduled backup failed at every destination before anything was sent')).toHaveLength(1);
+		expect(warned('Scheduled backup failed at every destination: tried again at')).toEqual([]);
+	});
+
+	it('a run that fails after a later run has succeeded, the two overlapping, is not tried again', async () => {
+		fakeClock(at(4, 16, 10, 0)); // a day of its own, as above
+		configure('hourly');
+		logged(copyAt(at(4, 16, 8, 0)), at(4, 16, 8, 0));
+		let release!: (fail: boolean) => void;
+		sftp.hold = new Promise<boolean>((resolve) => (release = resolve));
+
+		initBackupScheduler();
+		await checks(61); // 10:01: held; 11:01: succeeds
+		expect(scheduledCopies()).toEqual([copyAt(at(4, 16, 11, 1))]);
+
+		release(true); // 10:01's upload fails now
+		await checks(30);
+
+		expect(failedRuns()).toEqual([copyAt(at(4, 16, 10, 1))]);
+		expect(scheduledCopies()).toEqual([copyAt(at(4, 16, 11, 1))]);
+		expect(warned('Scheduled backup failed at every destination: tried again at')).toEqual([]);
 	});
 });

@@ -408,6 +408,26 @@ async function cleanupRetention(config: DestinationConfig, retention: number, ki
 
 // ─── Run Backup ──────────────────────────────────────────────────────────────
 
+/** When this process last named a copy, in milliseconds (`copyName`). */
+let lastNamedAt = 0;
+
+/**
+ * The name of a run's copy: `dumpfire-backup-` and the run's start in UTC to
+ * the millisecond, with `-manual` before `.db` for a ▶ Run Now (`MANUAL_COPY`),
+ * so that names sort by time (card 2415). It was to the second, so two Run
+ * Now presses in one second shared a name: one run in Backup History, and the
+ * second upload replaced the first copy. A run named in the same millisecond
+ * as the one before it, or a moment before it, is named a millisecond after
+ * it, so that no two runs of this process share a name; a clock put back
+ * further than a second names by the clock.
+ */
+function copyName(manual: boolean): string {
+	let at = Date.now();
+	if (at <= lastNamedAt && at > lastNamedAt - 1000) at = lastNamedAt + 1;
+	lastNamedAt = at;
+	return `dumpfire-backup-${new Date(at).toISOString().replace(/[:.]/g, '-').slice(0, 23)}${manual ? '-manual' : ''}.db`;
+}
+
 /**
  * Run a backup to all configured destinations (or a specific one).
  * Returns results for each destination.
@@ -438,21 +458,20 @@ export async function runBackup(targetDestinationName?: string, how: 'scheduled'
 	}
 
 	const manual = how === 'manual';
-	const filename = `dumpfire-backup-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}${manual ? '-manual' : ''}.db`;
+	const filename = copyName(manual);
 
 	type Result = { destination: string; status: 'success' | 'failed'; message: string; durationMs: number };
 	/** Each destination's result, given in the order the destinations are. */
 	const outcome = new Map<DestinationConfig, Result>();
 
+	/** Each destination that failed, and its error, for the run's one failure mail (`mailFailures`). */
+	const failures: Array<{ destConfig: DestinationConfig; errMsg: string }> = [];
+
 	/**
-	 * A destination that failed: its `backup_log` row, its result, the ERROR
-	 * line, and the failure mail if one is configured. The error is whatever
-	 * the destination's server answered, so it and the destination's name and
-	 * type are escaped where they are put in the mail (card 2149). The mail
-	 * says which kind of run failed: it said "scheduled" for a Run Now too
-	 * (card 2413).
+	 * A destination that failed: its `backup_log` row, its result and the
+	 * ERROR line, and it is kept for the run's failure mail.
 	 */
-	const failed = async (destConfig: DestinationConfig, errMsg: string, durationMs: number, sizeBytes: number) => {
+	const failed = (destConfig: DestinationConfig, errMsg: string, durationMs: number, sizeBytes: number) => {
 		logBackup({
 			destinationType: destConfig.type,
 			destinationName: destConfig.name,
@@ -471,27 +490,40 @@ export async function runBackup(targetDestinationName?: string, how: 'scheduled'
 		});
 
 		log.error(`Backup failed: ${destConfig.name} → ${errMsg}`);
+		failures.push({ destConfig, errMsg });
+	};
 
-		if (config.notifyOnFailure && config.notifyEmail && isSmtpConfigured()) {
-			try {
-				await sendEmail(
-					config.notifyEmail,
-					'⚠️ DumpFire Backup Failed',
-					`<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px;">
-						<h2 style="color: #f43f5e;">${manual ? 'Run Now Backup Failed' : 'Scheduled Backup Failed'}</h2>
+	/**
+	 * The failure mail, if one is configured and a destination failed: one a
+	 * run, with a paragraph and the error for each destination that failed, in
+	 * the destinations' order (card 2415). It was sent once for each, so four
+	 * destinations failing sent four mails for one run. The error is whatever
+	 * the destination's server answered, so it and the destination's name and
+	 * type are escaped where they are put in the mail (card 2149). The mail
+	 * says which kind of run failed: it said "scheduled" for a Run Now too
+	 * (card 2413).
+	 */
+	const mailFailures = async () => {
+		if (failures.length === 0 || !(config.notifyOnFailure && config.notifyEmail && isSmtpConfigured())) return;
+		const each = failures.map(({ destConfig, errMsg }) => `
 						<p style="color: #64748b; line-height: 1.6;">
 							${manual ? 'A backup made by ▶ Run Now to' : 'A scheduled backup to'} <strong>${escapeHtml(String(destConfig.name))}</strong> (${escapeHtml(String(destConfig.type))}) failed.
 						</p>
 						<div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 16px; margin: 16px 0;">
 							<strong style="color: #991b1b;">Error:</strong>
 							<p style="color: #991b1b; margin: 4px 0 0;">${escapeHtml(String(errMsg))}</p>
-						</div>
+						</div>`).join('');
+		try {
+			await sendEmail(
+				config.notifyEmail,
+				'⚠️ DumpFire Backup Failed',
+				`<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 480px; margin: 0 auto; padding: 32px;">
+						<h2 style="color: #f43f5e;">${manual ? 'Run Now Backup Failed' : 'Scheduled Backup Failed'}</h2>${each}
 						<p style="color: #94a3b8; font-size: 12px;">Check your Admin Panel → Scheduled Backups for details.</p>
 					</div>`
-				);
-			} catch {
-				log.error('Failed to send backup failure notification email');
-			}
+			);
+		} catch {
+			log.error('Failed to send backup failure notification email');
 		}
 	};
 
@@ -507,11 +539,15 @@ export async function runBackup(targetDestinationName?: string, how: 'scheduled'
 	for (const destConfig of destinations) {
 		const missing = credentialsMissing(destConfig) ?? hostKeyMissing(destConfig);
 		if (missing === null) ready.push(destConfig);
-		else await failed(destConfig, missing, 0, 0);
+		else failed(destConfig, missing, 0, 0);
 	}
 
-	const inOrder = () => destinations.flatMap((destConfig) => outcome.get(destConfig) ?? []);
-	if (ready.length === 0) return inOrder();
+	/** The run's failure mail, then each destination's result in the destinations' order. */
+	const finish = async () => {
+		await mailFailures();
+		return destinations.flatMap((destConfig) => outcome.get(destConfig) ?? []);
+	};
+	if (ready.length === 0) return finish();
 
 	// Generate backup data (SQLite snapshot)
 	const buffer = generateBackupData();
@@ -547,23 +583,71 @@ export async function runBackup(targetDestinationName?: string, how: 'scheduled'
 					(manual ? '. Made by Run Now: Keep Last counts Run Now copies apart from scheduled ones, so only an older Run Now copy can be removed' : '')
 			);
 		} catch (err: any) {
-			await failed(destConfig, err.message || 'Unknown error', Date.now() - start, buffer.length);
+			failed(destConfig, err.message || 'Unknown error', Date.now() - start, buffer.length);
 		}
 	}
 
-	return inOrder();
+	return finish();
 }
 
 // ─── Scheduler ───────────────────────────────────────────────────────────────
 
-let schedulerTimer: ReturnType<typeof setInterval> | null = null;
-let lastBackupTime = 0;
-let lastCheckedDate = ''; // Track which date+hour we last checked to avoid double-runs
+const HOUR = 60 * 60 * 1000;
 
 /**
- * When the newest successful scheduled backup in `backup_log` was made, in
- * milliseconds, or 0 for none: what an interval schedule counts from after a
- * start (card 2412). A row made by ▶ Run Now is not counted. It was, so a Run
+ * How long after a scheduled run that failed at every destination it is tried
+ * again, and how many times (card 2415). It waited for the schedule's next
+ * run: an hour, 12 hours, a day or a week without a copy after the outage had
+ * cleared, where a restart tried again at once. The tries are spent until a
+ * run the scheduler makes succeeds at a destination, so that a destination
+ * down for days does not send a failure mail every 15 minutes. A restart gives
+ * them back, except where the run due has already failed before it: then the
+ * start makes one try (the review, `scheduledFailureSince`).
+ */
+export const BACKUP_RETRY_DELAY = 15 * 60 * 1000;
+export const BACKUP_RETRIES = 3;
+
+let schedulerTimer: ReturnType<typeof setInterval> | null = null;
+let lastBackupTime = 0;
+/**
+ * The latest target time of a daily or weekly schedule this process has
+ * decided, in milliseconds: run, found already made, or let pass (card 2415).
+ * In place of the local date and minute it ran in, which a restart forgot.
+ */
+let decidedTarget = 0;
+/** What was scheduled at the last check: schedule, time, day, and whether there is a destination (card 2415). */
+let scheduledAtLastCheck = '';
+/** When the last check was, in milliseconds, or 0 for none since the start (the card 2415 review). */
+let lastCheckAt = 0;
+/**
+ * What the run `isBackupDue` last found due is counted from, in milliseconds:
+ * the target time of a daily or weekly schedule, the last scheduled run of an
+ * interval one (the card 2415 review).
+ */
+let dueSince = 0;
+/** When a run that failed at every destination is tried again, in milliseconds, or 0 for none (card 2415). */
+let retryAt = 0;
+/** How many of the `BACKUP_RETRIES` tries are left. */
+let retriesLeft = BACKUP_RETRIES;
+/** Whether no scheduled run has started since the start (the card 2415 review). */
+let firstRunSinceStart = true;
+/** The scheduled runs numbered as they start, and the newest that succeeded at a destination (the card 2415 review). */
+let runsStarted = 0;
+let lastSucceededRun = 0;
+
+/** A time in the form `backup_log` stamps its rows (`datetime('now')`, UTC, to the second). */
+const logStamp = (ms: number) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
+
+/**
+ * When the newest successful scheduled backup in `backup_log` stamped no
+ * later than `now` was made, in milliseconds, or 0 for none: what an interval
+ * schedule counts from after a start (card 2412). A row stamped later than
+ * `now` (a clock that ran fast, then was put back) is left out (card 2415):
+ * counted, it held every hourly, 6-hourly or 12-hourly run off until the real
+ * time passed it and one interval more, with nothing said; the scheduler says
+ * it now (`warnOfStampAhead`).
+ *
+ * A row made by ▶ Run Now is not counted. It was, so a Run
  * Now pressed just before a restart moved the next hourly, 6-hourly or
  * 12-hourly run that much later once, which a Run Now without a restart never
  * did (only the scheduler sets `lastBackupTime`). `backup_log` has no column
@@ -574,26 +658,97 @@ let lastCheckedDate = ''; // Track which date+hour we last checked to avoid doub
  * It does not depend on how much history is kept (card 2413): `logBackup`'s
  * trim keeps this row whatever came after it, where ten newer rows of Run Now
  * presses or failures used to push it out and make this 0. One query,
- * the newest such row alone. The daily and weekly schedules ask it too, for
- * a run already made in their minute (card 2414, `isBackupDue`).
+ * the newest such row alone; the row the trim keeps is the newest of all, so
+ * where that one is stamped ahead, the one read here is kept only while it is
+ * in the newest 30 runs.
  */
-export function lastScheduledBackupAt(): number {
+export function lastScheduledBackupAt(now = Date.now()): number {
 	const createdAt = sqlite
-		.prepare(`SELECT created_at FROM backup_log WHERE ${SCHEDULED_SUCCESS} ORDER BY created_at DESC, id DESC LIMIT 1`)
+		.prepare(`SELECT created_at FROM backup_log WHERE ${SCHEDULED_SUCCESS} AND created_at <= ? ORDER BY created_at DESC, id DESC LIMIT 1`)
 		.pluck()
-		.get() as string | undefined;
+		.get(logStamp(now)) as string | undefined;
 	// Read as UTC, which is what it is: `new Date()` read the stored
 	// form as the server's local time (card 2095, A10).
 	return createdAt ? parseStamp(createdAt)?.getTime() ?? 0 : 0;
 }
 
 /**
+ * Say where the newest successful scheduled row is stamped later than the
+ * server's clock (the card 2414 review): the clock may have run fast and been
+ * put back. Said where the scheduler reads `backup_log`, which is at the first
+ * check after a start, and for a daily or weekly schedule once a target time.
+ */
+function warnOfStampAhead(now: Date): void {
+	const ahead = sqlite
+		.prepare(`SELECT created_at FROM backup_log WHERE ${SCHEDULED_SUCCESS} AND created_at > ? ORDER BY created_at DESC, id DESC LIMIT 1`)
+		.pluck()
+		.get(logStamp(now.getTime())) as string | undefined;
+	if (!ahead) return;
+	log.warn(
+		`The last scheduled backup is recorded at ${parseStamp(ahead)?.toISOString() ?? ahead}, later than the server's clock (${now.toISOString()}): ` +
+			'the clock may have run fast and been put back. Check the server\'s time.'
+	);
+}
+
+/**
+ * The latest time a daily or weekly schedule was due at or before `now`, in
+ * milliseconds (card 2415): the configured time of day, on the configured
+ * weekday for `weekly`, on the server's own clock and zone, today's or the one
+ * before it where today's is still to come. A date made from a day and a time
+ * of day is the wall clock's, so where the clocks change each day still has
+ * one: when they go back, a time in the hour that comes twice is the first of
+ * the two (01:30 BST), and when they go forward, a time in the hour skipped is
+ * read an hour on (01:30 is 02:30 BST). NaN for a time that is not HH:MM.
+ */
+function latestTarget(config: BackupConfig, now: Date): number {
+	const [h, m] = (config.scheduleTime || '02:00').split(':').map(Number);
+	const weekly = config.schedule === 'weekly';
+	const back = weekly ? (now.getDay() - (config.scheduleDay ?? 0) + 7) % 7 : 0;
+	const on = (daysBack: number) => new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysBack, h, m).getTime();
+	const target = on(back);
+	return target <= now.getTime() ? target : on(back + (weekly ? 7 : 1));
+}
+
+/**
+ * When a successful scheduled backup was made for the target time `target`,
+ * in milliseconds, or 0 for none (card 2415): one stamped at or after it and
+ * less than an hour later than the server's clock. Its rows are written after
+ * its upload, so none is stamped before the target. The hour's allowance is
+ * card 2414's: a clock put back across a restart into the target minute,
+ * ahead of the first run's stamp, still finds that run. A row stamped further
+ * ahead (a clock that ran fast, then corrected) does not count, so it holds
+ * no run back (the card 2414 review), however long the trim keeps it.
+ */
+function scheduledRunSince(target: number, now: Date): number {
+	const createdAt = sqlite
+		.prepare(`SELECT created_at FROM backup_log WHERE ${SCHEDULED_SUCCESS} AND created_at >= ? AND created_at < ? ORDER BY created_at DESC, id DESC LIMIT 1`)
+		.pluck()
+		.get(logStamp(target), logStamp(now.getTime() + HOUR)) as string | undefined;
+	return createdAt ? parseStamp(createdAt)?.getTime() ?? 0 : 0;
+}
+
+/**
  * Check if now is the right time to run a scheduled backup.
  * For hourly/every6h/every12h: interval-based (elapsed time since last backup).
- * For daily: fires once per day at the configured time.
- * For weekly: fires once per week on the configured day at the configured time.
+ * For daily and weekly: when no scheduled backup has been made for the latest
+ * target time since it (card 2415, `latestTarget`).
  */
 function isBackupDue(config: BackupConfig, now: Date): boolean {
+	// What is scheduled, against what the last check saw (card 2415). Where it
+	// changed in this process, a daily or weekly target time already passed is
+	// not made up: setting a daily 02:00 schedule at 10:00, moving the time to
+	// an earlier hour, or adding the first destination would otherwise run a
+	// backup within a minute. Only a target time at or before the check before
+	// the change is let pass (the review): one after it may have come after the
+	// save (the time set to the next minute, or daily switched on just before
+	// it), and is run. A start has seen nothing, so it makes up a target time
+	// not made since: it cannot tell downtime from a change made before it.
+	const scheduled = `${config.schedule} ${config.scheduleTime} ${config.scheduleDay} ${config.destinations.length > 0}`;
+	const changed = scheduledAtLastCheck !== '' && scheduledAtLastCheck !== scheduled;
+	const previousCheckAt = lastCheckAt;
+	scheduledAtLastCheck = scheduled;
+	lastCheckAt = now.getTime();
+
 	if (config.schedule === 'disabled' || config.destinations.length === 0) return false;
 
 	const schedule = config.schedule;
@@ -605,65 +760,103 @@ function isBackupDue(config: BackupConfig, now: Date): boolean {
 
 		if (lastBackupTime === 0) {
 			// On first check, look at the most recent successful scheduled
-			// backup, a Run Now's left out (card 2412).
-			lastBackupTime = lastScheduledBackupAt();
+			// backup, a Run Now's left out (card 2412), and one stamped later
+			// than now too, which is said (card 2415).
+			warnOfStampAhead(now);
+			lastBackupTime = lastScheduledBackupAt(now.getTime());
 		}
 
+		dueSince = lastBackupTime;
 		return now.getTime() - lastBackupTime >= interval;
 	}
 
-	// Time-based schedules (daily, weekly)
-	const [targetH, targetM] = (config.scheduleTime || '02:00').split(':').map(Number);
-	const currentH = now.getHours();
-	const currentM = now.getMinutes();
+	// Time-based schedules (daily, weekly), card 2415: due where no scheduled
+	// backup has been made for the latest target time since it. They ran only
+	// in the target minute (local hour and minute), so a server down or busy
+	// through it made no copy that day, and a time in the hour the clocks go
+	// forward never ran that day. One in the hour they go back is the first of
+	// its two times here, so the second finds its row, after a restart too
+	// (`latestTarget`). A target time is decided once in this process
+	// (`decidedTarget`): a run still uploading has no row yet, and the
+	// minute's next check must not start another. Only a finished run is seen
+	// from `backup_log`, so another instance on this database checking while
+	// one uploads makes a second copy all the same (card 2414).
+	const target = latestTarget(config, now);
+	if (!Number.isFinite(target)) return false;
+	if (changed) decidedTarget = latestTarget(config, new Date(previousCheckAt));
+	if (target === decidedTarget) return false;
+	decidedTarget = target;
+	dueSince = target;
 
-	// Only trigger within the target minute (checked every 60s so we won't miss it)
-	if (currentH !== targetH || currentM !== targetM) return false;
-
-	// Prevent double-trigger within the same minute
-	const dateKey = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}-${currentH}-${currentM}`;
-	if (lastCheckedDate === dateKey) return false;
-
-	if (schedule === 'weekly') {
-		const targetDay = config.scheduleDay ?? 0; // 0 = Sunday
-		if (now.getDay() !== targetDay) return false;
-	}
-
-	// A scheduled run that has already finished in this minute, by this
-	// process before a restart or by another on the same database (card
-	// 2414): its rows are written after its upload, so none is stamped before
-	// the minute began. `lastCheckedDate` is in memory only. A plain restart
-	// checks first a minute after it starts, in a later minute; a clock put
-	// back across the restart, or a second instance started before the
-	// minute, checks in it. Only a finished run is seen: one still uploading
-	// has no row yet, so another instance checking meanwhile makes a second
-	// copy all the same.
-	//
-	// Bounded above (the card 2414 review): a row stamped by a clock that ran
-	// fast and was then corrected would otherwise stop every daily or weekly
-	// backup until the real time passed it. Only a row within the hour from
-	// the minute's start counts, and a stamp later than now is said.
-	const minuteStart = new Date(now).setSeconds(0, 0);
-	const last = lastScheduledBackupAt();
-	if (last > now.getTime()) {
-		log.warn(
-			`The last scheduled backup is recorded at ${new Date(last).toISOString()}, later than the server's clock (${now.toISOString()}): ` +
-				'the clock may have run fast and been put back. Check the server\'s time.'
-		);
-	}
-	if (last >= minuteStart && last < minuteStart + 60 * 60 * 1000) {
-		lastCheckedDate = dateKey;
-		log.warn(
-			`Scheduled ${schedule} backup at ${config.scheduleTime || '02:00'} not made: a scheduled backup recorded at ${new Date(last).toISOString()} ` +
-				'was already made in this minute (after a restart, or by another instance on this database).'
-		);
+	const time = config.scheduleTime || '02:00';
+	const inItsMinute = now.getTime() - target < 60_000;
+	warnOfStampAhead(now);
+	const made = scheduledRunSince(target, now);
+	if (made) {
+		// Ordinary after a restart; said where the check is in the target
+		// minute itself, as card 2414 said it (a clock put back across a
+		// restart, or another instance on this database).
+		if (inItsMinute) {
+			log.warn(
+				`Scheduled ${schedule} backup at ${time} not made: a scheduled backup recorded at ${new Date(made).toISOString()} ` +
+					'was already made in this minute (after a restart, or by another instance on this database).'
+			);
+		}
 		return false;
 	}
-
-	// daily: correct hour+minute, any day → fire
-	// weekly: correct day + hour+minute → fire
-	lastCheckedDate = dateKey;
+	if (!inItsMinute) {
+		log.warn(`Scheduled ${schedule} backup at ${time} was not made at its time, ${new Date(target).toISOString()} (the server was down, or busy past the check): made now.`);
+	}
 	return true;
+}
+
+/**
+ * Whether a scheduled run that failed has been recorded since `since` (and no
+ * later than now): with no success after it, the run due now has already been
+ * tried and failed, before this start (the card 2415 review).
+ */
+function scheduledFailureSince(since: number, now: Date): boolean {
+	return !!sqlite
+		.prepare(`SELECT 1 FROM backup_log WHERE status = 'failed' AND filename NOT GLOB '*-manual.db' AND created_at >= ? AND created_at <= ? LIMIT 1`)
+		.get(logStamp(since), logStamp(now.getTime()));
+}
+
+/**
+ * After scheduled run number `run` (card 2415): one that failed at every
+ * destination, or stopped before any upload (`results` null), is tried again
+ * `BACKUP_RETRY_DELAY` later while any of the `BACKUP_RETRIES` tries are left;
+ * one that succeeded at a destination gives them all back.
+ *
+ * Not tried again (the review): a failure of a run older than one that has
+ * since succeeded, the two having overlapped; nor a run where every
+ * destination failed before anything was sent (`unfixable`: credentials not
+ * entered, or an SFTP host key not confirmed), which only an administrator
+ * can put right.
+ */
+function afterScheduledRun(run: number, results: Array<{ destination: string; status: string }> | null, unfixable: Set<string>, retry: boolean): void {
+	if (results?.some((result) => result.status === 'success')) {
+		lastSucceededRun = Math.max(lastSucceededRun, run);
+		retriesLeft = BACKUP_RETRIES;
+		return;
+	}
+	if (run < lastSucceededRun) return;
+	if (results && results.every((result) => unfixable.has(result.destination))) {
+		log.warn(
+			'Scheduled backup failed at every destination before anything was sent (credentials not entered, or an SFTP host key not confirmed): not tried again, as trying cannot put it right. Enter them in Admin, Scheduled Backups.'
+		);
+		return;
+	}
+	if (retriesLeft > 0) {
+		retriesLeft--;
+		retryAt = Date.now() + BACKUP_RETRY_DELAY;
+		log.warn(
+			`Scheduled backup failed at every destination: tried again at ${new Date(retryAt).toISOString()} (${BACKUP_RETRIES - retriesLeft} of ${BACKUP_RETRIES}).`
+		);
+	} else if (retry) {
+		log.warn(
+			`Scheduled backup failed at every destination, and its ${BACKUP_RETRIES} tries again are spent: the next is the schedule's own, and a run that succeeds gives them back.`
+		);
+	}
 }
 
 export function initBackupScheduler(): void {
@@ -673,7 +866,13 @@ export function initBackupScheduler(): void {
 	// A start remembers nothing from before it, as a new process does (card
 	// 2414). Called once a process; a test calls it again for a restart.
 	lastBackupTime = 0;
-	lastCheckedDate = '';
+	decidedTarget = 0;
+	scheduledAtLastCheck = '';
+	lastCheckAt = 0;
+	dueSince = 0;
+	retryAt = 0;
+	retriesLeft = BACKUP_RETRIES;
+	firstRunSinceStart = true;
 
 	// Check every 60 seconds if a backup is due
 	schedulerTimer = setInterval(async () => {
@@ -681,10 +880,42 @@ export function initBackupScheduler(): void {
 			const config = getBackupConfig();
 			const now = new Date();
 
-			if (isBackupDue(config, now)) {
-				log.warn(`Scheduled backup triggered (${config.schedule} at ${config.scheduleTime || 'now'})`);
+			// A try again is dropped where the schedule was switched off or its
+			// last destination removed (card 2415).
+			if (config.schedule === 'disabled' || config.destinations.length === 0) retryAt = 0;
+			const retry = retryAt !== 0 && now.getTime() >= retryAt;
+
+			if (retry || isBackupDue(config, now)) {
+				log.warn(
+					retry
+						? `Scheduled backup tried again (${BACKUP_RETRIES - retriesLeft} of ${BACKUP_RETRIES}) after a run that failed at every destination`
+						: `Scheduled backup triggered (${config.schedule} at ${config.scheduleTime || 'now'})`
+				);
+				retryAt = 0;
 				lastBackupTime = now.getTime();
-				await runBackup();
+				// The first run after a start, where the run due has already been
+				// tried and failed before it (the review): this is its one try
+				// until a run succeeds, so that a server restarted again and again
+				// does not send several failure mails a start, or try a refused
+				// SFTP login several times a start.
+				if (!retry && firstRunSinceStart && scheduledFailureSince(dueSince, now)) {
+					retriesLeft = 0;
+					log.warn(
+						'This scheduled backup already failed before this start: this is its one try until a run succeeds, so that a restart does not try it again and again.'
+					);
+				}
+				firstRunSinceStart = false;
+				const run = ++runsStarted;
+				const unfixable = new Set(
+					config.destinations.filter((d) => (credentialsMissing(d) ?? hostKeyMissing(d)) !== null).map((d) => d.name)
+				);
+				let results: Awaited<ReturnType<typeof runBackup>> | null = null;
+				try {
+					results = await runBackup();
+				} finally {
+					// A run that threw (the copy could not be made) made no copy anywhere.
+					afterScheduledRun(run, results, unfixable, retry);
+				}
 			}
 		} catch (err) {
 			log.error('Scheduler error', err);

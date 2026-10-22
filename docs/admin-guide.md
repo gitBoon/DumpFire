@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.70
+version: 1.71
 status: As-Built
 date: 2026-10-22
 tags:
@@ -524,6 +524,10 @@ Click **▶ Run Now** under **☁️ Scheduled Backups** in the admin panel to t
 
 **The failure mail says Run Now** (card 2413). With failure email alerts on, a Run Now that fails at a destination sends a mail headed **Run Now Backup Failed**, "A backup made by ▶ Run Now to *destination* (*type*) failed."; a scheduled run's says **Scheduled Backup Failed**, as before. Until this change a Run Now's said it was scheduled too.
 
+**One failure mail a run** (card 2415). A run that fails at several destinations sends one mail naming each of them with its error, in the order the destinations are listed; it sent one mail for each.
+
+**Copies are named to the millisecond** (card 2415): `dumpfire-backup-2026-10-22T02-00-30-123.db`, and `…-123-manual.db` for a Run Now. Two Run Now presses in one second made one name, so the second copy replaced the first and Backup History showed one run.
+
 ### Backup History
 
 The last 30 backup runs are shown, a row for each destination of each run (card 2413), with:
@@ -536,7 +540,15 @@ The panel shows the newest five rows and **▼ Show all N entries**. Each backup
 
 **After a restart**, an hourly, 6-hourly or 12-hourly schedule counts from the last successful scheduled backup, not from a **Run Now** (card 2412): a Run Now pressed just before a restart used to move the next scheduled backup later once. A Run Now is told by its copy's name, `…-manual.db`; one made before card 2405 has no `-manual` and still counts. The history keeps the last successful scheduled backup's row however many Run Now presses or failures come after it (card 2413), though Backup History no longer shows it once it is older than the last 30 runs; until then ten such rows pushed it out, and the first check after the restart ran one at once.
 
-**A daily or weekly backup is made once in its minute** (card 2414). Where the server's clock is put back across a restart into the minute of the backup's time, or a second instance of the server checks in that minute, a backup that has already finished in that minute is not made again, and the Audit page has a `[WARN] [BACKUP] Scheduled daily backup at 02:00 not made: …` line saying so. One still uploading when the other instance checks is not seen, and a second copy is made. A **Run Now** pressed in that minute does not stop the scheduled backup. Only a backup recorded within the hour from the start of that minute counts: one stamped later by a clock that ran fast and was then put back does not stop the backups of the days after it, and each daily or weekly check while it is newest writes a `[WARN] [BACKUP] The last scheduled backup is recorded at …, later than the server's clock …` line (the review of card 2414).
+**A daily or weekly backup is made once in its minute** (card 2414; replaced by card 2415 below, which keeps every case here). Where the server's clock is put back across a restart into the minute of the backup's time, or a second instance of the server checks in that minute, a backup that has already finished in that minute is not made again, and the Audit page has a `[WARN] [BACKUP] Scheduled daily backup at 02:00 not made: …` line saying so. One still uploading when the other instance checks is not seen, and a second copy is made. A **Run Now** pressed in that minute does not stop the scheduled backup. Only a backup recorded within the hour from the start of that minute counts: one stamped later by a clock that ran fast and was then put back does not stop the backups of the days after it, and each daily or weekly check while it is newest writes a `[WARN] [BACKUP] The last scheduled backup is recorded at …, later than the server's clock …` line (the review of card 2414).
+
+**A daily or weekly backup missed is made once** (card 2415). Where the server was down, or busy, through the backup's time, the first check after it starts (a minute later) makes that day's or week's backup, and the Audit page has a `[WARN] [BACKUP] Scheduled daily backup at 02:00 was not made at its time, … made now.` line. A server started with a daily or weekly schedule and no scheduled backup since its latest time makes one within a minute. Setting the schedule, its time or its day while the server runs does not: the first backup is at the next time, even where that is a minute away (the time set to 02:00 at 01:59:40 runs at 02:00). The time is the server's own clock and zone (UTC in the container unless `TZ` is set); where it follows UK time, a backup at a time in the hour the clocks go forward is made at the same time an hour on (01:30 is made at 02:30 BST), and one in the hour that comes twice when they go back is made once, at the first.
+
+**A backup that failed at every destination is tried again** (card 2415) 15 minutes later, up to three times, for every schedule; it waited for the next scheduled time, up to a week. Each try has its own failure mail, so an outage can send four in 45 minutes; after the third try, the backups wait for their schedule again until one succeeds. The Audit page says `Scheduled backup failed at every destination: tried again at …` for each. A backup that succeeded at any destination is not tried again. Nor is one where every destination failed before anything was sent (its credentials not entered, or an SFTP host key not confirmed): enter them in **Edit**, as the row says.
+
+**What a restart does to a failing backup.** A restart makes the backup that is due once, a minute after the start. Where that backup had already failed before the restart, that one try is all until a backup succeeds: the server does not try it again 15 minutes later, so a server restarted again and again sends one failure mail a start and makes one SFTP login a start (a refused login tried four times a start could lock the account), and the Audit page says `This scheduled backup already failed before this start: this is its one try until a run succeeds, …`. Where it had not failed before, a failure is tried again three times as above.
+
+**An hourly, 6-hourly or 12-hourly schedule after a restart** leaves out a backup recorded later than the server's clock (card 2415), and writes the same `… later than the server's clock …` line: such a row held every backup off until the real time passed it and one interval more.
 
 A destination whose credentials are not entered is not tried, and its row says "This destination's credentials are not entered: a backup does not hold them, so they are entered again after a restore. Enter them in Admin, Scheduled Backups." (for a Google Drive destination connected with OAuth: "… enter its client secret and connect it again."), with the failure mail any failure sends (card 2169). It is what a destination shows after a backup is restored onto another server, until its credentials are typed in again with **Edit**. An SFTP destination with neither a password nor a key is tried as before, since some servers accept it, once its host key is confirmed. After a restore onto another server, then, such a destination, its key confirmed again, is tried against the real host at every scheduled run, and its failed logins may lock the account out there: enter its credentials, or remove it.
 

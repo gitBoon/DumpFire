@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.42
+version: 1.43
 status: As-Built
 date: 2026-10-22
 tags:
@@ -597,7 +597,7 @@ down. The failure shows on the panel and in the log.
 | Request Rejected | Requester | — | `Request declined: {title}` |
 | Conversation Message | Requester/Admin | `email_requests` | `Message on request: {title}` |
 | Request Complete | Requester | `email_request_progress` | `Your request is complete: {title}` |
-| Backup Failed | The backup settings' failure email address(es), one mail for each destination that failed | — (the backup settings' failure alerts, `notifyOnFailure`) | `⚠️ DumpFire Backup Failed` |
+| Backup Failed | The backup settings' failure email address(es), one mail a run, naming every destination that failed (card 2415) | — (the backup settings' failure alerts, `notifyOnFailure`) | `⚠️ DumpFire Backup Failed` |
 
 **The backup failure mail says which kind of run failed** (card 2413, 2026-10-22). Sent by
 `runBackup()` in `src/lib/server/backup.ts`: headed **Scheduled Backup Failed**, "A scheduled
@@ -605,6 +605,27 @@ backup to *name* (*type*) failed.", for a scheduled run, and **Run Now Backup Fa
 made by ▶ Run Now to *name* (*type*) failed.", for a Run Now (`runBackup(…, 'manual')`, POST
 `/api/admin/backup`). It said "scheduled" for both. The subject is the same for both, and the
 name, type and error are escaped as before ([Text in Mail Is Text](#text-in-mail-is-text)).
+
+**One backup failure mail a run** (card 2415, 2026-10-22). `runBackup()` keeps each destination
+that failed with its error, and once the run's last destination is done sends one mail: the
+heading, then for each failed destination, in the order they are configured, the sentence above
+and its error box. A run with one failed destination reads exactly as before. It sent one mail
+for each destination that failed, from inside the failure itself, so four destinations failing
+sent four mails for one run. A scheduled run that failed at every destination is now tried again
+15 minutes later, up to three times ([Backup & Reporting](backup-reporting.md)); each try is a run
+and sends its own mail.
+
+```mermaid
+sequenceDiagram
+    participant R as runBackup()
+    participant D as destinations
+    participant M as sendEmail
+    R->>D: upload to each, in order
+    D-->>R: failed: NAS (error 1)
+    D-->>R: failed: Offsite (error 2)
+    Note over R: failed() writes the row and ERROR line,<br/>keeps the failure
+    R->>M: one mail: heading, NAS + error 1, Offsite + error 2
+```
 
 **A new card sends no mail of its own.** Whoever is put on a new card is mailed
 "Assigned": accepting a task request with an assignee (`PATCH /api/requests/{id}`,
