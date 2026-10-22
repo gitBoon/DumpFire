@@ -55,6 +55,9 @@
  * account deleted from the host with foreign keys on (better-sqlite3's
  * default) takes its rows with it by the cascade: its settings are then
  * unattributed, as one saved before 0059 is, and nothing can tell them apart.
+ * Import Backup does the same once a restore is committed (card 2411), so
+ * that a backup's setter who is not an administrator in it loses their
+ * settings then, and not at the next start.
  */
 import { createHash } from 'node:crypto';
 import { and, eq, isNotNull, ne } from 'drizzle-orm';
@@ -329,7 +332,8 @@ export function settingsHeldBy(userId?: number): Map<number, SettingsRemoved> {
  * the account was made a user (`demoted`) or is about to be deleted
  * (`deleted`), by `actor`; or, found at start-up with no `actor` (card 2406),
  * it is no longer an administrator (`not-an-administrator`) or no longer
- * exists (`gone`).
+ * exists (`gone`). `found` says where those two were found: at start-up, or
+ * after a restore (card 2411), which the line then says.
  *
  * Each setting is the account's only where it is still at a place the
  * account's rows record (the second code review): one moved since to a place
@@ -354,7 +358,8 @@ export function settingsHeldBy(userId?: number): Map<number, SettingsRemoved> {
 export function removeSettingsSetBy(
 	setter: Named,
 	why: 'demoted' | 'deleted' | 'not-an-administrator' | 'gone',
-	actor: Named | null
+	actor: Named | null,
+	found: 'start-up' | 'restore' = 'start-up'
 ): SettingsRemoved {
 	const rows = db.select().from(settingSetters).where(eq(settingSetters.userId, setter.id)).all();
 	const removed: SettingsRemoved = { mail: false, appUrl: false, destinations: [] };
@@ -389,8 +394,14 @@ export function removeSettingsSetBy(
 	const because = {
 		demoted: `who was made a user by ${by}`,
 		deleted: `whose account was deleted by ${by}`,
-		'not-an-administrator': 'who is no longer an administrator (found at start-up: the role was changed outside the admin page)',
-		gone: 'whose account no longer exists (found at start-up: it was deleted outside the admin page)'
+		'not-an-administrator':
+			found === 'restore'
+				? 'who is not an administrator in the restored data (found after a restore)'
+				: 'who is no longer an administrator (found at start-up: the role was changed outside the admin page)',
+		gone:
+			found === 'restore'
+				? 'whose account is not in the restored data (found after a restore)'
+				: 'whose account no longer exists (found at start-up: it was deleted outside the admin page)'
 	}[why];
 	const whose = `saved by ${why === 'gone' ? `account ${setter.id}` : quoted(setter.username)}, ${because}`;
 	const filedUnder = { userId: actor?.id ?? null };
@@ -432,8 +443,15 @@ export function removeSettingsSetBy(
  * What cannot be found: an account deleted from the host with foreign keys on
  * takes its rows with it (`ON DELETE CASCADE`), so its settings are left in
  * force, unattributed, as one saved before migration 0059 is.
+ *
+ * Import Backup runs it too, `when` `'restore'`, once a restore of the
+ * running database is committed (card 2411): a backup taken while such a
+ * setter waited for a restart, or one whose setter's row could not be copied,
+ * brings their settings back in force, and they stayed until the next start.
  */
-export function removeSettingsOfFormerAdministrators(): { setter: number; removed: SettingsRemoved }[] {
+export function removeSettingsOfFormerAdministrators(
+	when: 'start-up' | 'restore' = 'start-up'
+): { setter: number; removed: SettingsRemoved }[] {
 	return inTransaction(() => {
 		// An administrator is `admin` or `superadmin`, as `isAdmin` (board-access.ts) has it.
 		const found = sqlite
@@ -448,8 +466,8 @@ export function removeSettingsOfFormerAdministrators(): { setter: number; remove
 			setter: id,
 			removed:
 				username === null
-					? removeSettingsSetBy({ id, username: '' }, 'gone', null)
-					: removeSettingsSetBy({ id, username }, 'not-an-administrator', null)
+					? removeSettingsSetBy({ id, username: '' }, 'gone', null, when)
+					: removeSettingsSetBy({ id, username }, 'not-an-administrator', null, when)
 		}));
 	});
 }

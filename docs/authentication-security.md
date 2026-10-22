@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.67
+version: 1.68
 status: As-Built
 date: 2026-10-22
 tags:
@@ -2179,6 +2179,23 @@ and logs nothing.
   `setting_setters` rows too (`mail` and every `backup_destination:`): left, a row would make
   the mail or a destination set up again at the same place that account's again, and that
   account's demotion would take it away. The App URL, kept, keeps its rows.
+- **A restore puts the same right at once** (card 2411, 2026-10-22). A backup taken while a
+  host-side demotion waited for its restart holds setter rows naming a `user`, and restored
+  as it is it brought that person's settings back in force until the next start. Import
+  Backup (`POST /api/admin/import`) now calls `removeSettingsOfFormerAdministrators('restore')`
+  once the restore is committed, for either `outside`, in a transaction of its own: the same
+  rule and lines, ending `(found after a restore)` (`… who is not an administrator in the
+  restored data` or `… whose account is not in the restored data`), filed under nobody. A
+  working copy has already cleared the mail and destination rows, so only an App URL can go.
+  It runs before the answer is made: the answer, its `INFO` line and its `settingsRemoved`
+  say `Removed after the restore, because whoever set them is not an administrator in the
+  restored data, or has no account in it: …` (the mail settings with what their going stops,
+  the App URL, the destinations), and a mail password or destination so removed is taken out
+  of the kept and to-enter lists. It never fails the restore: one that fails removes nothing and is one `WARN` under `IMPORT`,
+  and the next start tries again. It runs in the route, not in `restoreFromBackup()`, which
+  restores whichever connection it is handed, while the removal works on the application's.
+  A restore committed with foreign keys left off answers "restart the server now", and that
+  start runs it.
 
 ```mermaid
 flowchart LR
@@ -2186,6 +2203,8 @@ flowchart LR
     Start --> Check["removeSettingsOfNonAdministrators<br/>(one transaction)"]
     Check --> Gone["their mail settings, App URL,<br/>destinations removed; WARN lines"]
     Check --> Sched["schedulers start"]
+    Import["Import Backup:<br/>restore committed"] --> After["removeSettingsOfFormerAdministrators('restore')<br/>(its own transaction)"]
+    After --> Gone
     Cascade["host: delete with foreign keys on"] -.->|"rows cascade away"| Stay["settings unattributed,<br/>stay in force"]
 ```
 

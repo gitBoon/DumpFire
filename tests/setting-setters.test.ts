@@ -22,11 +22,19 @@
  * every start removes what a setter who is no longer an administrator set
  * (`removeSettingsOfNonAdministrators`), and what a setter whose account is
  * gone set, where a delete with foreign keys off left the rows.
+ *
+ * Card 2411. A restore brought back the settings of a backup's setter who is
+ * not an administrator in it, and they stayed until the next start. Now
+ * Import Backup removes them once the restore is committed, for either choice
+ * of `outside`, and a removal that fails leaves the restore as it was.
  */
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
+import Database from 'better-sqlite3';
+import { generateBackupData } from '$lib/server/backup';
 import { db, sqlite } from '$lib/server/db';
 import { settingSetters, settings, users } from '$lib/server/db/schema';
 import { settingsHeldBy } from '$lib/server/setting-setters';
@@ -905,6 +913,220 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 			expect(at('removeSettingsOfNonAdministrators();')).toBeGreaterThan(at('runMigrations();'));
 			expect(at('removeSettingsOfNonAdministrators();')).toBeLessThan(at('startSchedulers();'));
 			expect(at('runMigrations();')).toBeGreaterThan(-1);
+		});
+	});
+
+	// Card 2411: a restore brought such a setter's settings back in force, and nothing removed them until the next start.
+	describe('after Import Backup, what a setter who is not an administrator in the restored data set (card 2411)', { timeout: 30_000 }, () => {
+		const tempDirs: string[] = [];
+		// The import's own account of a restore is an INFO line: kept here, put back by the file's afterEach.
+		beforeEach(() => {
+			process.env.LOG_LEVEL = 'INFO';
+		});
+		afterEach(() => {
+			sqlite.exec('DROP TRIGGER IF EXISTS refuse_2411');
+			for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+		});
+
+		const RESTORE = '(found after a restore)';
+		/** The SMTP and BACKUP lines a removal after a restore wrote. */
+		const restoreLines = () => lines().filter((l) => l.message.includes(RESTORE));
+		/** The sentence the answer, the log line and `settingsRemoved` carry about what went (the code review). */
+		const REMOVED = (...parts: string[]) =>
+			`Removed after the restore, because whoever set them is not an administrator in the restored data, or has no account in it: ${parts.join('; ')}.`;
+		const MAIL_GONE = 'the mail settings, so no mail is sent, invites and password resets included, until an administrator sets the mail up again';
+		const APP_URL_GONE = "the App URL, so links in mail use APP_URL, or the server's own address, until an App URL is saved again";
+		const ANNS_GONE = 'backup destination(s) "Ann\'s", with their stored secrets';
+		/** The import's INFO line, which ends with what the answer says of the secrets and the removal. */
+		const restoredLine = () =>
+			sqlite
+				.prepare("SELECT message FROM system_logs WHERE context = 'IMPORT' AND level = 'INFO' AND message LIKE 'Database restored%'")
+				.pluck()
+				.get() as string;
+
+		/** `backup`, changed by `change`: a backup nobody may have changed is unsealed, and nothing is kept from this server. */
+		const changed = (backup: Buffer, change: (copy: InstanceType<typeof Database>) => void): Buffer => {
+			const copy = new Database(backup);
+			try {
+				change(copy);
+				return copy.serialize();
+			} finally {
+				copy.close();
+			}
+		};
+
+		/** A backup of this database, made after ann was made a user from the host and before any restart. */
+		async function backupWithAnnAUser(): Promise<Buffer> {
+			await annsSettings();
+			sqlite.prepare("UPDATE users SET role = 'user' WHERE id = ?").run(ann.id);
+			return generateBackupData();
+		}
+
+		/** Import `backup` as the superadmin would, `outside` as chosen, under a temporary working directory. */
+		async function importing(backup: Buffer, outside: 'keep' | 'off') {
+			const dir = mkdtempSync(join(tmpdir(), 'dumpfire-import-'));
+			tempDirs.push(dir);
+			const cwd = vi.spyOn(process, 'cwd').mockReturnValue(dir);
+			try {
+				const res = await api('POST', `/api/admin/import?outside=${outside}`, {
+					user: chief,
+					headers: { 'content-type': 'application/octet-stream' },
+					body: backup
+				});
+				expect(res.status, JSON.stringify(res.body)).toBe(200);
+				expect(res.body.success).toBe(true);
+				return res;
+			} finally {
+				cwd.mockRestore();
+			}
+		}
+
+		it('removes them once a restore of everything as it is is committed, logged at WARN under nobody, and the answer says so', async () => {
+			const backup = await backupWithAnnAUser();
+
+			const res = await importing(backup, 'keep');
+
+			// Sealed: this server's secrets kept, but none for what went, and the answer and the log line name what went.
+			const removed = REMOVED(MAIL_GONE, APP_URL_GONE, ANNS_GONE);
+			expect(res.body.settingsRemoved).toBe(removed);
+			expect(res.body.message).toContain(removed);
+			expect(restoredLine()).toContain(removed);
+			expect(res.body.secretsKept).toBe('Kept from this server, because a backup does not hold them: the credentials of backup destination(s) "Old", "Bob\'s".');
+			expect(res.body.secretsToEnter).toBeUndefined();
+			expect(res.body.message).not.toContain('the mail password');
+			expect(restoredLine()).not.toContain('the mail password');
+			expect(SMTP_ROWS()).toEqual([]);
+			expect(setting('app_url')).toBeNull();
+			expect(names()).toEqual(['Old', "Bob's"]);
+			expect(setting('backup_config')).not.toContain('ann-bucket');
+			expect(rows()).toEqual([{ setting: "backup_destination:Bob's", userId: bob.id }]);
+			expect(restoreLines()).toEqual([
+				{
+					level: 'WARN',
+					context: 'SMTP',
+					message:
+						`The mail settings and the App URL removed: saved by "ann", who is not an administrator in the restored data ${RESTORE}. ` +
+						'No mail is sent until an administrator sets the mail up again. ' +
+						"Links in mail use APP_URL, or the server's own address, until an App URL is saved again.",
+					meta: JSON.stringify({ setter: ann.id, reason: 'not-an-administrator', mail: true, appUrl: true }),
+					userId: null
+				},
+				{
+					level: 'WARN',
+					context: 'BACKUP',
+					message: `Backup destination "Ann's" (s3) removed: saved by "ann", who is not an administrator in the restored data ${RESTORE}. Its stored secrets went with it; the copies already there are kept.`,
+					meta: JSON.stringify({ setter: ann.id, reason: 'not-an-administrator', destinations: [{ name: "Ann's", type: 's3' }] }),
+					userId: null
+				}
+			]);
+		});
+
+		it('removes the App URL a working copy keeps, the mail settings and destinations having gone with the switch-off', async () => {
+			const backup = await backupWithAnnAUser();
+
+			const res = await importing(backup, 'off');
+
+			expect(res.body.settingsRemoved).toBe(REMOVED(APP_URL_GONE));
+			expect(res.body.message).toContain(`${res.body.workingCopy}`);
+			expect(res.body.message).toContain(REMOVED(APP_URL_GONE));
+			expect(restoredLine()).toContain(REMOVED(APP_URL_GONE));
+			expect(res.body.secretsKept).toBeUndefined();
+			expect(res.body.secretsToEnter).toBeUndefined();
+			expect(SMTP_ROWS()).toEqual([]);
+			expect(names()).toEqual([]);
+			expect(setting('app_url')).toBeNull();
+			expect(rows()).toEqual([]);
+			expect(restoreLines().map((l) => [l.context, l.message])).toEqual([
+				[
+					'SMTP',
+					`The App URL removed: saved by "ann", who is not an administrator in the restored data ${RESTORE}. ` +
+						"Links in mail use APP_URL, or the server's own address, until an App URL is saved again."
+				]
+			]);
+		});
+
+		it('from a backup that is not sealed, lists none of what went as to enter again, and says what went, as it is or as a working copy', async () => {
+			const backup = changed(await backupWithAnnAUser(), (copy) => {
+				copy.prepare("UPDATE users SET email = 'ann-changed@example.test' WHERE id = ?").run(ann.id);
+			});
+
+			const kept = await importing(backup, 'keep');
+
+			const removed = REMOVED(MAIL_GONE, APP_URL_GONE, ANNS_GONE);
+			expect(kept.body.settingsRemoved).toBe(removed);
+			expect(kept.body.message).toContain(removed);
+			expect(restoredLine()).toContain(removed);
+			expect(kept.body.secretsKept).toBeUndefined();
+			expect(kept.body.secretsToEnter).toBe(
+				'To enter again, because a backup does not hold them: backup destination(s) "Old" (S3: its secret access key), ' +
+					'"Bob\'s" (S3: its secret access key) (Admin, Scheduled Backups). None was kept from this server, because this ' +
+					'backup was not made by this server, or was changed since.'
+			);
+			// Its WARN line too.
+			expect(
+				sqlite.prepare("SELECT message FROM system_logs WHERE context = 'IMPORT' AND level = 'WARN' AND message LIKE 'To enter again%'").pluck().all()
+			).toEqual([kept.body.secretsToEnter]);
+			expect(names()).toEqual(['Old', "Bob's"]);
+
+			// As a working copy, from the same backup: only its App URL to go, and nothing listed to enter.
+			const copy = await importing(backup, 'off');
+
+			expect(copy.body.settingsRemoved).toBe(REMOVED(APP_URL_GONE));
+			expect(copy.body.message).toContain(REMOVED(APP_URL_GONE));
+			expect(copy.body.secretsToEnter).toBeUndefined();
+			expect(setting('app_url')).toBeNull();
+		});
+
+		it('names a setter whose account the restored data does not have as such, the backup holding their rows and not their account', async () => {
+			await annsSettings();
+			// A delete made with foreign keys off, before the backup: ann's setter rows stay, naming nobody there is.
+			const backup = changed(generateBackupData(), (copy) => {
+				copy.pragma('foreign_keys = OFF');
+				copy.prepare('DELETE FROM users WHERE id = ?').run(ann.id);
+			});
+
+			const res = await importing(backup, 'keep');
+
+			expect(res.body.settingsRemoved).toBe(REMOVED(MAIL_GONE, APP_URL_GONE, ANNS_GONE));
+			expect(names()).toEqual(['Old', "Bob's"]);
+			expect(rows()).toEqual([{ setting: "backup_destination:Bob's", userId: bob.id }]);
+			const gone = `saved by account ${ann.id}, whose account is not in the restored data ${RESTORE}`;
+			expect(restoreLines().map((l) => [l.context, l.message.split('. ')[0], l.userId])).toEqual([
+				['SMTP', `The mail settings and the App URL removed: ${gone}`, null],
+				['BACKUP', `Backup destination "Ann's" (s3) removed: ${gone}`, null]
+			]);
+			expect(restoreLines().map((l) => JSON.parse(l.meta!).reason)).toEqual(['gone', 'gone']);
+		});
+
+		it('leaves the restore committed and answered as one, and removes nothing, when the removal fails: one WARN line under IMPORT', async () => {
+			const backup = await backupWithAnnAUser();
+			// The removal's last write, ann's destination taken out of backup_config: the restore writes it with the destination in.
+			sqlite.exec(
+				"CREATE TEMP TRIGGER refuse_2411 BEFORE UPDATE ON settings WHEN NEW.key = 'backup_config' AND NEW.value NOT LIKE '%ann-bucket%' " +
+					"BEGIN SELECT RAISE(ABORT, 'refused for the test'); END"
+			);
+
+			const res = await importing(backup, 'keep');
+
+			// Nothing went, so the answer says nothing went, and keeps what the restore kept.
+			expect(res.body.settingsRemoved).toBeUndefined();
+			expect(res.body.message).not.toContain('Removed after the restore');
+			expect(res.body.secretsKept).toContain('the mail password');
+			expect(SMTP_ROWS()).not.toEqual([]);
+			expect(setting('app_url')).toBe('https://ann.example');
+			expect(names()).toEqual(['Old', "Ann's", "Bob's"]);
+			expect(rows()).toContainEqual({ setting: 'mail', userId: ann.id });
+			expect(restoreLines()).toEqual([]);
+			expect(
+				sqlite.prepare("SELECT level, message FROM system_logs WHERE context = 'IMPORT' AND message LIKE 'The settings of setters%'").all()
+			).toEqual([
+				{
+					level: 'WARN',
+					message:
+						'The settings of setters who are not administrators in the restored data could not be checked: refused for the test. ' +
+						'The next start checks again; until then mail and backups may still go where such a person set them.'
+				}
+			]);
 		});
 	});
 

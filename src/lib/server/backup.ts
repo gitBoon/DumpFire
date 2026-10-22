@@ -277,13 +277,13 @@ export function generateBackupData(): Buffer<ArrayBuffer> {
 
 // ─── Backup History ──────────────────────────────────────────────────────────
 
+/**
+ * The newest `limit` rows of `backup_log`, newest first. A read, and nothing
+ * more: it deleted every row past the newest 10 each time it was called, so
+ * `GET /api/admin/backup` wrote (card 2412). The history is trimmed where a
+ * row is added instead, in `logBackup`.
+ */
 export function getBackupHistory(limit = 10) {
-	// Prune stale entries on every read
-	sqlite.prepare(`
-		DELETE FROM backup_log WHERE id NOT IN (
-			SELECT id FROM backup_log ORDER BY created_at DESC LIMIT 10
-		)
-	`).run();
 	return db.select().from(backupLog).orderBy(desc(backupLog.createdAt)).limit(limit).all();
 }
 
@@ -306,7 +306,8 @@ function logBackup(entry: {
 		durationMs: entry.durationMs
 	}).run();
 
-	// Prune old history — keep only the last 10 entries
+	// Prune old history — keep only the last 10 entries. The one place the
+	// history is trimmed: a read of it writes nothing (card 2412).
 	sqlite.prepare(`
 		DELETE FROM backup_log WHERE id NOT IN (
 			SELECT id FROM backup_log ORDER BY created_at DESC LIMIT 10
@@ -527,6 +528,30 @@ let lastBackupTime = 0;
 let lastCheckedDate = ''; // Track which date+hour we last checked to avoid double-runs
 
 /**
+ * When the newest successful scheduled backup in `backup_log` was made, in
+ * milliseconds, or 0 for none: what an interval schedule counts from after a
+ * start (card 2412). A row made by ▶ Run Now is not counted. It was, so a Run
+ * Now pressed just before a restart moved the next hourly, 6-hourly or
+ * 12-hourly run that much later once, which a Run Now without a restart never
+ * did (only the scheduler sets `lastBackupTime`). `backup_log` has no column
+ * for the kind of run: a Run Now's row is told by its file's name, `…-manual.db`
+ * (`MANUAL_COPY`, card 2405), as retention tells its copies. A Run Now made
+ * before card 2405 has no `-manual` and is counted, as before. The history
+ * keeps its newest 10 rows, so with no scheduled row among them this is 0 and
+ * the first check runs one at once: sooner, never later.
+ */
+export function lastScheduledBackupAt(): number {
+	const latest = db.select().from(backupLog)
+		.where(eq(backupLog.status, 'success'))
+		.orderBy(desc(backupLog.createdAt))
+		.all()
+		.find((row) => !MANUAL_COPY.test(row.filename));
+	// Read as UTC, which is what it is: `new Date()` read the stored
+	// form as the server's local time (card 2095, A10).
+	return latest ? parseStamp(latest.createdAt)?.getTime() ?? 0 : 0;
+}
+
+/**
  * Check if now is the right time to run a scheduled backup.
  * For hourly/every6h/every12h: interval-based (elapsed time since last backup).
  * For daily: fires once per day at the configured time.
@@ -543,17 +568,9 @@ function isBackupDue(config: BackupConfig, now: Date): boolean {
 		if (!interval) return false;
 
 		if (lastBackupTime === 0) {
-			// On first check, look at the most recent successful backup
-			const latest = db.select().from(backupLog)
-				.where(eq(backupLog.status, 'success'))
-				.orderBy(desc(backupLog.createdAt))
-				.limit(1)
-				.all();
-			if (latest.length > 0) {
-				// Read as UTC, which is what it is: `new Date()` read the stored
-				// form as the server's local time (card 2095, A10).
-				lastBackupTime = parseStamp(latest[0].createdAt)?.getTime() ?? 0;
-			}
+			// On first check, look at the most recent successful scheduled
+			// backup, a Run Now's left out (card 2412).
+			lastBackupTime = lastScheduledBackupAt();
 		}
 
 		return now.getTime() - lastBackupTime >= interval;

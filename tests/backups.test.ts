@@ -3665,7 +3665,6 @@ describe('Google Drive asks only for the files DumpFire makes (card 2188)', () =
 	const store = (...destinations: unknown[]) =>
 		sqlite.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('backup_config', configWith(destinations));
 	const storedG = () => JSON.parse(settingsOf(sqlite)['backup_config']).destinations[0];
-	const today = () => new Date().toISOString().slice(0, 10);
 
 	/** Google's code exchange, stood in for: it answers `tokens`, after `meanwhile` has run. */
 	const exchange = (tokens: Record<string, unknown>, meanwhile?: () => Promise<unknown>) =>
@@ -3732,14 +3731,23 @@ describe('Google Drive asks only for the files DumpFire makes (card 2188)', () =
 		store(G);
 		exchange({ refresh_token: 'rt-new', scope: DRIVE_FILE_SCOPE });
 
-		const res = await connect();
+		// The clock pinned a tenth of a second before midnight, on purpose (card
+		// 2410): the date in the folder's name was read again after the Connect,
+		// so a run that crossed midnight in between expected the next day's.
+		vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-10-22T23:59:59.900Z') });
+		let res: Awaited<ReturnType<typeof connect>>;
+		try {
+			res = await connect();
+		} finally {
+			vi.useRealTimers();
+		}
 
 		expect(res.body).toEqual({
 			success: true,
-			message: `Google Drive connected. DumpFire made the folder "DumpFire backups (made ${today()})" in this account's My Drive, and backs up there.`
+			message: 'Google Drive connected. DumpFire made the folder "DumpFire backups (made 2026-10-22)" in this account\'s My Drive, and backs up there.'
 		});
 		expect(files.create).toHaveBeenCalledTimes(1);
-		expect(files.create.mock.calls[0][0]).toMatchObject({ requestBody: { name: `DumpFire backups (made ${today()})`, mimeType: FOLDER_TYPE } });
+		expect(files.create.mock.calls[0][0]).toMatchObject({ requestBody: { name: 'DumpFire backups (made 2026-10-22)', mimeType: FOLDER_TYPE } });
 		expect(files.get).not.toHaveBeenCalled();
 		expect(storedG()).toEqual({ ...G, refreshToken: 'rt-new', grantedScope: DRIVE_FILE_SCOPE, folderId: 'made-folder-1' });
 	});

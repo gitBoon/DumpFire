@@ -43,6 +43,15 @@
  * A backup taken before card 2141 can bring back a board beneath one of its
  * own cards. Once the restore is committed, the line the server writes about
  * such a board at every start is written at once (`reportBoardLoops`).
+ *
+ * The same for the start-up removal of card 2406 (card 2411): the restored
+ * mail settings, App URL and destinations of a setter who is not an
+ * administrator in the restored data are removed once the restore is
+ * committed, in their own transaction, with their WARN lines, for either
+ * choice of `outside` (`removeSettingsOfFormerAdministrators`). That is done
+ * before the answer is made (the code review): the answer, the log line and
+ * `settingsRemoved` say what went, and nothing that went is listed as kept or
+ * to enter again.
  */
 
 import { isHttpError, json } from '@sveltejs/kit';
@@ -73,8 +82,15 @@ import { resetFormSecretCache } from '$lib/server/request-tokens';
 import { KNOWN_BROWSER_SECRET_KEY, resetKnownBrowserSecretCache } from '$lib/server/known-browsers';
 import { requireSuperadmin } from '$lib/server/route-guards';
 import { reportBoardLoops } from '$lib/server/startup-checks';
+import { anyRemoved, removeSettingsOfFormerAdministrators, type SettingsRemoved } from '$lib/server/setting-setters';
 import { stillCallerNow } from '$lib/server/write-as';
-import { failedCheckSentence, secretsKeptSentence, secretsToEnterSentence } from '$lib/server/backup-secrets';
+import {
+	failedCheckSentence,
+	quotedName,
+	secretsKeptSentence,
+	secretsToEnterSentence,
+	type SecretsAccount
+} from '$lib/server/backup-secrets';
 
 const log = createLogger('IMPORT');
 
@@ -124,6 +140,49 @@ function superadminSentence(names: readonly string[]): string {
 	if (names.length === 0) return 'There are no user accounts now: set-up is open, and whoever completes it is the superadmin.';
 	if (names.length === 1) return `The superadmin is now ${names[0]}.`;
 	return `The superadmins are now ${names.join(', ')}.`;
+}
+
+/**
+ * What the removal after a restore took (card 2411), as the one sentence the
+ * answer, the log line and `settingsRemoved` carry: the mail settings, with
+ * what their going stops; the App URL, with what links then use (a working
+ * copy keeps it, so it is all a working copy can lose); the destinations.
+ */
+function settingsRemovedSentence(removed: SettingsRemoved): string {
+	const parts = [
+		removed.mail
+			? 'the mail settings, so no mail is sent, invites and password resets included, until an administrator sets the mail up again'
+			: null,
+		removed.appUrl ? "the App URL, so links in mail use APP_URL, or the server's own address, until an App URL is saved again" : null,
+		removed.destinations.length > 0
+			? `backup destination(s) ${removed.destinations.map((name) => quotedName(name)).join(', ')}, with their stored secrets`
+			: null
+	].filter((part) => part !== null);
+	return (
+		'Removed after the restore, because whoever set them is not an administrator in the restored data, or has no ' +
+		`account in it: ${parts.join('; ')}.`
+	);
+}
+
+/**
+ * The restore's account of the secrets, less what the removal after it took
+ * (card 2411): a mail password or a destination's credentials kept, or to
+ * enter again, for settings that are gone is neither.
+ */
+function withoutRemoved(secrets: SecretsAccount, removed: SettingsRemoved): SecretsAccount {
+	const gone = new Set(removed.destinations);
+	return {
+		kept: {
+			...secrets.kept,
+			mailPassword: secrets.kept.mailPassword && !removed.mail,
+			destinations: secrets.kept.destinations.filter((name) => !gone.has(name))
+		},
+		toEnter: {
+			...secrets.toEnter,
+			mailPassword: secrets.toEnter.mailPassword && !removed.mail,
+			destinations: secrets.toEnter.destinations.filter((d) => !gone.has(d.name))
+		}
+	};
 }
 
 /** `text`, closed with a full stop if it has none, and then `sentence`. */
@@ -243,6 +302,33 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 			// holds (card 2194): every browser is forgotten.
 			resetFormSecretCache();
 			resetKnownBrowserSecretCache();
+			// The restored settings of a setter who is not an administrator in
+			// the restored data are removed now, as every start removes them
+			// (card 2411): whichever way it was restored, as a working copy
+			// keeps the App URL and its setter rows. In a transaction of its
+			// own, after the restore's: one that fails changes nothing, and is
+			// no reason to answer a committed restore with a failure. Done
+			// before anything below is said (the code review), so that the
+			// answer and the log line name what went, and name nothing that
+			// went as kept or to enter again (`withoutRemoved`).
+			let removed: SettingsRemoved = { mail: false, appUrl: false, destinations: [] };
+			try {
+				for (const setter of removeSettingsOfFormerAdministrators('restore')) {
+					removed = {
+						mail: removed.mail || setter.removed.mail,
+						appUrl: removed.appUrl || setter.removed.appUrl,
+						destinations: [...new Set([...removed.destinations, ...setter.removed.destinations])]
+					};
+				}
+			} catch (err) {
+				log.warn(
+					`The settings of setters who are not administrators in the restored data could not be checked: ` +
+						`${(err as Error)?.message ?? err}. The next start checks again; until then mail and backups may still ` +
+						'go where such a person set them.'
+				);
+			}
+			const secrets = withoutRemoved(result.secrets, removed);
+			const settingsRemoved = anyRemoved(removed) ? settingsRemovedSentence(removed) : null;
 			// The restore is committed and its transaction is over. Rows it
 			// brought back may name files that a delete since the backup moved
 			// to the trash: those are put back. What could not be is reported
@@ -260,8 +346,9 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 				.map(([table, count]) => `${table}: ${count}`)
 				.join(', ');
 
-			// Nothing is logged until here, with the restore's transaction over:
-			// the logger writes to system_logs on this same connection.
+			// Nothing is logged until the restore's transaction is over, the
+			// removal's lines above included: the logger writes to system_logs
+			// on this same connection.
 			//
 			// What was restored and what was filled in, whether or not there is
 			// a problem to report as well: the restore is committed either way.
@@ -296,10 +383,11 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 			// hold (card 2169): those kept from this server, and those to enter
 			// again, so that a backup made before it reads as it did.
 			const linksReplaced = result.requestLinksReplaced > 0 ? requestLinksSentence(result.requestLinksReplaced) : null;
-			const secretsKept = secretsKeptSentence(result.secrets.kept);
-			const secretsToEnter = secretsToEnterSentence(result.secrets.toEnter, false, result.unsealed);
+			// What the removal above took is said after them (card 2411).
+			const secretsKept = secretsKeptSentence(secrets.kept);
+			const secretsToEnter = secretsToEnterSentence(secrets.toEnter, false, result.unsealed);
 			const ending = (text: string) =>
-				[linksReplaced, putBack, secretsKept, secretsToEnter, workingCopy].reduce<string>(
+				[linksReplaced, putBack, secretsKept, secretsToEnter, settingsRemoved, workingCopy].reduce<string>(
 					(said, sentence) => (sentence ? endingWith(said, sentence) : said),
 					text
 				);
@@ -320,6 +408,7 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 				workingCopy: workingCopy ?? undefined,
 				secretsKept: secretsKept ?? undefined,
 				secretsToEnter: secretsToEnter ?? undefined,
+				settingsRemoved: settingsRemoved ?? undefined,
 				superadmins
 			};
 			log.info(
