@@ -6,8 +6,9 @@
  *     expect(text).toContain('SHOWN-CARD');
  *     expect(text).not.toContain('HIDDEN-CARD');
  *
- * It reads `pdfkit`'s own output and nothing more: every stream inflated with
- * `zlib` (a stream that is not compressed is read as it is), and in each, the
+ * It reads `pdfkit`'s own output and nothing more: every stream, as long as
+ * its dictionary's `/Length` says, inflated with `zlib` (a stream that is not
+ * compressed is read as it is), and in each, the
  * text `pdfkit` shows, which it always writes as hex strings, with `Tj` or, when
  * a line is kerned, as an array with `TJ`. Each hex string is decoded as the
  * standard fonts' codes, which are Latin-1 for every ASCII character. One
@@ -17,6 +18,14 @@
  * own and an object stream are not read, and `pdfkit` writes none of them for
  * a report. The document's information (its title and subject) is not in a
  * stream: a test that must find a name nowhere reads the bytes as Latin-1 too.
+ *
+ * A compressed stream that will not inflate throws (card 2404). It used to be
+ * read as it stood, which holds no text, so a misread PDF passed every "not in
+ * it" and failed every "in it". It also used to find the end of a stream's
+ * data by taking a line end off before "endstream", and a compressed stream
+ * ends in its checksum, which ends in the byte of a carriage return one time in
+ * 256: that byte went, and with it the stream, on whichever day the dates
+ * printed on a report made it so.
  */
 import { inflateSync } from 'node:zlib';
 
@@ -46,17 +55,31 @@ export function pdfText(bytes: Uint8Array | ArrayBuffer): string {
 		if (raw[start] === '\n') start++;
 		const end = raw.indexOf('endstream', start);
 		if (end === -1) break;
-		from = end + 'endstream'.length;
 
-		// The line end before "endstream" is not part of the data.
-		let stop = end;
-		if (raw[stop - 1] === '\n') stop--;
-		if (raw[stop - 1] === '\r') stop--;
+		// The stream's own dictionary, from its object's "obj": `pdfkit` always
+		// writes `/Length` as a number there, and it is the data's exact length.
+		const dictionary = raw.slice(raw.lastIndexOf(' obj', keyword), keyword);
+		const length = /\/Length (\d+)/.exec(dictionary);
+		let stop: number;
+		if (length) {
+			stop = start + Number(length[1]);
+		} else {
+			// No length to go by: the line end before "endstream" is not data.
+			stop = end;
+			if (raw[stop - 1] === '\n') stop--;
+			if (raw[stop - 1] === '\r') stop--;
+		}
+		from = Math.max(stop, raw.indexOf('endstream', stop)) + 'endstream'.length;
+
 		const data = pdf.subarray(start, stop);
 		let content: string;
-		try {
-			content = inflateSync(data).toString('latin1');
-		} catch {
+		if (dictionary.includes('/FlateDecode')) {
+			try {
+				content = inflateSync(data).toString('latin1');
+			} catch (failure) {
+				throw new Error(`pdfText: a compressed stream at byte ${start} did not inflate: ${String(failure)}`);
+			}
+		} else {
 			content = data.toString('latin1');
 		}
 

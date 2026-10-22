@@ -31,10 +31,11 @@
  * someone who can open everything, so a "not in it" is not a PDF that could
  * not be read.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { deflateSync } from 'node:zlib';
 import { eq } from 'drizzle-orm';
 import { db } from '$lib/server/db';
-import { boardCategories, boards, reportSchedules, users } from '$lib/server/db/schema';
+import { boardCategories, boards, cards, reportSchedules, users } from '$lib/server/db/schema';
 import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { generateBoardReport, generateCategoryReport, runDueReportSchedules } from '$lib/server/reports';
 import { pageLoad } from './helpers/actions';
@@ -281,6 +282,79 @@ describe("a schedule's report is its owner's, as their account stands at the run
 		expect(shownIn(pdf, ['BOARD-A', 'A-CARD-1'])).toEqual(['BOARD-A', 'A-CARD-1']);
 		expect(namesIn(pdf, [...HIDDEN_NAMES, 'SHOWN-CARD'])).toEqual([]);
 	});
+});
+
+/**
+ * The PDF reader these tests use, and the day they are run (card 2404).
+ *
+ * The scheduled report of grouping G read as no text at all on 2026-10-22, on
+ * the code that passed on the 21st. The report was right; `pdfText` was not.
+ * It found where a stream's data ends by taking a line end off before
+ * "endstream", and a compressed stream ends in its checksum, so one stream in
+ * 256 ends in the byte of a carriage return. That byte was dropped, the stream
+ * would not inflate, and it was read as it stood, with no text in it. What the
+ * page holds, and so its checksum, changes with the dates printed on it, so
+ * the test passed or failed by the day. `pdfText` now reads the length its
+ * dictionary gives, and throws on a compressed stream it cannot inflate: a PDF
+ * it misreads is a failure, never a "not in it".
+ */
+describe('the PDF reader these tests use', () => {
+	/** One object as `pdfkit` writes it, holding `data` as its stream. */
+	const pdfOf = (data: Buffer) => Buffer.concat([
+		Buffer.from(`%PDF-1.3\n5 0 obj\n<<\n/Length ${data.length}\n/Filter /FlateDecode\n>>\nstream\n`, 'latin1'),
+		data,
+		Buffer.from('\nendstream\nendobj\n', 'latin1')
+	]);
+
+	it('reads a compressed stream whose last byte is a carriage return', () => {
+		// Searched for, not written down: what zlib writes is zlib's business.
+		let found: { name: string; data: Buffer } | null = null;
+		for (let i = 0; !found && i < 100_000; i++) {
+			const name = `NEEDLE-${i}`;
+			const data = deflateSync(`BT\n<${Buffer.from(name, 'latin1').toString('hex')}> Tj\nET\n`);
+			if (data[data.length - 1] === 0x0d) found = { name, data };
+		}
+		expect(found).not.toBeNull();
+		expect(pdfText(pdfOf(found!.data))).toBe(found!.name);
+	});
+
+	it('throws on a compressed stream it cannot inflate, where it read no text', () => {
+		expect(() => pdfText(pdfOf(Buffer.from('not deflated', 'latin1')))).toThrow(/inflate/);
+	});
+});
+
+describe('a scheduled report, read on any day', () => {
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	// A week of days around the day it failed, the ends of a month and of a
+	// year, and the days London's clocks go back and forward. What a page
+	// holds changes with the day, so each is a different PDF.
+	const DAYS = [
+		'2026-10-19', '2026-10-20', '2026-10-21', '2026-10-22', '2026-10-23', '2026-10-24', '2026-10-25',
+		'2026-10-31', '2026-11-01', '2026-12-31', '2027-01-01', '2027-03-28'
+	];
+	for (const day of DAYS) {
+		for (const { of, scope } of SCOPES) {
+			it(`run on ${day}, of ${of}: holds the sub-board its reader can open, and nothing of one they cannot`, { timeout: 30_000 }, async () => {
+				// The run at 09:00 that day, and the cards made an hour before it
+				// (the database stamps them by its own clock, which is not pinned).
+				const runAt = new Date(`${day}T09:00:00Z`);
+				vi.useFakeTimers({ toFake: ['Date'] });
+				vi.setSystemTime(runAt);
+				db.update(cards).set({ createdAt: `${day} 08:00:00` }).run();
+
+				const pdf = await scheduled(w.viewer, scope());
+
+				// The day pinned is the day the report was made on.
+				const generated = runAt.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+				expect(pdfText(pdf)).toContain(`Generated ${generated}`);
+				expect(shownIn(pdf, ['BOARD-A', 'A-CARD-1', 'SHOWN', 'SHOWN-CARD'])).toEqual(['BOARD-A', 'A-CARD-1', 'SHOWN', 'SHOWN-CARD']);
+				expect(namesIn(pdf, HIDDEN_NAMES)).toEqual([]);
+			});
+		}
+	}
 });
 
 describe('the Reports page', () => {
