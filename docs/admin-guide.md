@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.71
+version: 1.72
 status: As-Built
 date: 2026-10-22
 tags:
@@ -526,6 +526,8 @@ Click **▶ Run Now** under **☁️ Scheduled Backups** in the admin panel to t
 
 **One failure mail a run** (card 2415). A run that fails at several destinations sends one mail naming each of them with its error, in the order the destinations are listed; it sent one mail for each.
 
+**A backup whose copy of the database cannot be made** (card 2416) fails at each destination it was to be sent to, with "The copy of the database could not be made: …" and the reason (for example `database or disk is full`, where the disk beside the database has no room for the copy). Backup History shows a failed row for each, the failure mail is sent, a scheduled backup is tried again 15 minutes later like any backup that failed everywhere, and **Run Now** says the backups failed. Until this change such a backup left nothing in Backup History, sent no mail, and Run Now showed a server error. Free the space, or look at the Audit page's `[ERROR] [BACKUP] The copy of the database could not be made` line for the cause.
+
 **Copies are named to the millisecond** (card 2415): `dumpfire-backup-2026-10-22T02-00-30-123.db`, and `…-123-manual.db` for a Run Now. Two Run Now presses in one second made one name, so the second copy replaced the first and Backup History showed one run.
 
 ### Backup History
@@ -538,7 +540,7 @@ The last 30 backup runs are shown, a row for each destination of each run (card 
 
 The panel shows the newest five rows and **▼ Show all N entries**. Each backup adds one row a destination, and the rows of runs older than the newest 30 are removed then, all of a run's rows together. Until card 2413 the history kept the newest 10 rows, so with four destinations it showed under three runs. Opening the page only reads them (card 2412): it removed them each time it was opened.
 
-**After a restart**, an hourly, 6-hourly or 12-hourly schedule counts from the last successful scheduled backup, not from a **Run Now** (card 2412): a Run Now pressed just before a restart used to move the next scheduled backup later once. A Run Now is told by its copy's name, `…-manual.db`; one made before card 2405 has no `-manual` and still counts. The history keeps the last successful scheduled backup's row however many Run Now presses or failures come after it (card 2413), though Backup History no longer shows it once it is older than the last 30 runs; until then ten such rows pushed it out, and the first check after the restart ran one at once.
+**After a restart**, an hourly, 6-hourly or 12-hourly schedule counts from the last successful scheduled backup, not from a **Run Now** (card 2412): a Run Now pressed just before a restart used to move the next scheduled backup later once. A Run Now is told by its copy's name, `…-manual.db`; one made before card 2405 has no `-manual` and still counts. The history keeps the last successful scheduled backup's row however many Run Now presses or failures come after it (card 2413), though Backup History no longer shows it once it is older than the last 30 runs; until then ten such rows pushed it out, and the first check after the restart ran one at once. The row kept is the last one recorded no later than the server's clock (card 2416): where a clock that ran fast had recorded a later one, that one was kept instead, and after 30 runs the real one went.
 
 **A daily or weekly backup is made once in its minute** (card 2414; replaced by card 2415 below, which keeps every case here). Where the server's clock is put back across a restart into the minute of the backup's time, or a second instance of the server checks in that minute, a backup that has already finished in that minute is not made again, and the Audit page has a `[WARN] [BACKUP] Scheduled daily backup at 02:00 not made: …` line saying so. One still uploading when the other instance checks is not seen, and a second copy is made. A **Run Now** pressed in that minute does not stop the scheduled backup. Only a backup recorded within the hour from the start of that minute counts: one stamped later by a clock that ran fast and was then put back does not stop the backups of the days after it, and each daily or weekly check while it is newest writes a `[WARN] [BACKUP] The last scheduled backup is recorded at …, later than the server's clock …` line (the review of card 2414).
 

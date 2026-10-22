@@ -18,8 +18,9 @@
  * the move to the one function, and any mail added later, is held to the rule.
  * (There were sixteen: the mail for a new card, which nothing sent, went with
  * card 2010.) The backup failure mail is also held to saying which kind of
- * run failed, a ▶ Run Now or a scheduled run (card 2413), and to being one
- * mail a run, every destination that failed in it (card 2415).
+ * run failed, a ▶ Run Now or a scheduled run (card 2413), to being one
+ * mail a run, every destination that failed in it (card 2415), and to being
+ * sent where the copy of the database cannot be made (card 2416).
  *
  * No mail leaves: `effects()` records each one. No destination is reached:
  * `createDestination` is replaced, for this file, by one whose upload fails.
@@ -27,8 +28,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import type { SessionUser } from '$lib/server/auth';
-import { db } from '$lib/server/db';
-import { boardCategories, boards, reportSchedules, settings, taskRequests, type Board, type Card } from '$lib/server/db/schema';
+import { db, sqlite } from '$lib/server/db';
+import { backupLog, boardCategories, boards, reportSchedules, settings, taskRequests, type Board, type Card } from '$lib/server/db/schema';
 import { runBackup, saveBackupConfig } from '$lib/server/backup';
 import * as notifications from '$lib/server/notifications';
 import { initReportScheduler } from '$lib/server/reports';
@@ -234,6 +235,66 @@ describe('the backup failure mail', () => {
 		expect(tape).toBeGreaterThan(nas);
 		expect(mail.html.match(/&lt;b&gt;refused&lt;\/b&gt;/g)).toHaveLength(2);
 		expect(mail.html).not.toContain(MARKER);
+	});
+
+	// A copy that could not be made threw out of the run: no row and no mail (card 2416).
+	describe('when the copy of the database cannot be made', () => {
+		const FULL = 'The copy of the database could not be made: database or disk is full';
+		const destination = (name: string, type: string) =>
+			({ type, name }) as unknown as Parameters<typeof saveBackupConfig>[0]['destinations'][number];
+		let spies: Array<{ mockRestore(): void }> = [];
+		/** `generateBackupData()` failing as on a full volume: its `VACUUM INTO` throws, every other statement runs. */
+		const copyFails = () => {
+			const exec = sqlite.exec.bind(sqlite);
+			spies.push(
+				vi.spyOn(sqlite, 'exec').mockImplementation(((source: string) => {
+					if (source.startsWith('VACUUM INTO')) throw new Error('database or disk is full');
+					return exec(source);
+				}) as typeof sqlite.exec)
+			);
+		};
+		const configure = (destinations: ReturnType<typeof destination>[]) =>
+			saveBackupConfig({ schedule: 'disabled', scheduleTime: '02:00', scheduleDay: 0, retention: 7, destinations, notifyOnFailure: true, notifyEmail: 'chief@example.test' });
+
+		afterEach(() => {
+			for (const spy of spies) spy.mockRestore();
+			spies = [];
+		});
+
+		it('is one mail a run, each destination that was to be tried in it with the reason', async () => {
+			configure([destination('NAS', 'nas'), destination('Tape', 'tape')]);
+			copyFails();
+
+			const results = await runBackup();
+
+			expect(results.map((r) => [r.destination, r.status, r.message])).toEqual([
+				['NAS', 'failed', FULL],
+				['Tape', 'failed', FULL]
+			]);
+			const mail = onlyMail();
+			expect(mail.html.match(/>Scheduled Backup Failed<\/h2>/g)).toHaveLength(1);
+			expect(mail.html).toContain('A scheduled backup to <strong>NAS</strong> (nas) failed.');
+			expect(mail.html).toContain('A scheduled backup to <strong>Tape</strong> (tape) failed.');
+			expect(mail.html.split(FULL)).toHaveLength(3);
+		});
+
+		it('is still sent, and the run still answers, where its rows cannot be written either', async () => {
+			configure([destination('NAS', 'nas')]);
+			copyFails();
+			const prepare = sqlite.prepare.bind(sqlite);
+			spies.push(
+				vi.spyOn(sqlite, 'prepare').mockImplementation(((source: string) => {
+					if (/^insert into "backup_log"/i.test(source)) throw new Error('database or disk is full');
+					return prepare(source);
+				}) as typeof sqlite.prepare)
+			);
+
+			const results = await runBackup();
+
+			expect(results).toEqual([expect.objectContaining({ destination: 'NAS', status: 'failed', message: FULL })]);
+			expect(onlyMail().html).toContain(FULL);
+			expect(db.select().from(backupLog).all()).toEqual([]);
+		});
 	});
 });
 

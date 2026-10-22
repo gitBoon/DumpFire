@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.43
+version: 1.44
 status: As-Built
 date: 2026-10-22
 tags:
@@ -597,7 +597,7 @@ down. The failure shows on the panel and in the log.
 | Request Rejected | Requester | — | `Request declined: {title}` |
 | Conversation Message | Requester/Admin | `email_requests` | `Message on request: {title}` |
 | Request Complete | Requester | `email_request_progress` | `Your request is complete: {title}` |
-| Backup Failed | The backup settings' failure email address(es), one mail a run, naming every destination that failed (card 2415) | — (the backup settings' failure alerts, `notifyOnFailure`) | `⚠️ DumpFire Backup Failed` |
+| Backup Failed | The backup settings' failure email address(es), one mail a run, naming every destination that failed (card 2415), a copy of the database that could not be made included (card 2416) | — (the backup settings' failure alerts, `notifyOnFailure`) | `⚠️ DumpFire Backup Failed` |
 
 **The backup failure mail says which kind of run failed** (card 2413, 2026-10-22). Sent by
 `runBackup()` in `src/lib/server/backup.ts`: headed **Scheduled Backup Failed**, "A scheduled
@@ -626,6 +626,16 @@ sequenceDiagram
     Note over R: failed() writes the row and ERROR line,<br/>keeps the failure
     R->>M: one mail: heading, NAS + error 1, Offsite + error 2
 ```
+
+**The backup failure mail is sent where the copy cannot be made** (card 2416, 2026-10-22).
+`runBackup()` makes one copy of the database before any upload (`generateBackupData()`); where
+that throws (the volume beside the database full, a disk error), each destination it was to be
+sent to fails with `The copy of the database could not be made: <reason>`, and the run's one mail
+names each of them with that error, escaped as every error is. It threw out of the run, so no
+mail was sent, nor any row written. A failed row that cannot be written (the disk full for that
+too) does not stop the mail: `failed()` writes its row inside a `try` and says
+`Backup History row for <destination> could not be written` where it cannot. See
+[Backup & Reporting](backup-reporting.md#a-copy-that-cannot-be-made).
 
 **A new card sends no mail of its own.** Whoever is put on a new card is mailed
 "Assigned": accepting a task request with an assignee (`PATCH /api/requests/{id}`,
