@@ -48,13 +48,17 @@
  * destination that was to be tried, with a row and the reason, answers Run
  * Now with it, and is tried again as any run that failed everywhere; the
  * trim keeps the last scheduled run stamped before now, not one stamped ahead.
+ *
+ * An upload whose Backup History row cannot be written (card 2417) is a
+ * success with a note: retention runs, no failure mail, no try again.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { initBackupScheduler, lastScheduledBackupAt, runBackup, saveBackupConfig } from '$lib/server/backup';
 import type { DestinationConfig } from '$lib/server/backup-destinations';
 import { sqlite } from '$lib/server/db';
 import { api } from './helpers/api';
-import { makeSession, makeUser, resetDb } from './helpers/fixtures';
+import { effects, type Effects } from './helpers/effects';
+import { makeSession, makeSmtp, makeUser, resetDb } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 
 /** A file in the folder, and what the account may do to it. */
@@ -1091,5 +1095,64 @@ describe('A copy of the database that cannot be made is recorded, answered and t
 		expect(kept).toContain('dumpfire-backup-stamped-ahead.db');
 		expect(kept.at(-1)).toBe(copyAt(real));
 		expect(lastScheduledBackupAt()).toBe(real.getTime());
+	});
+});
+
+describe('An upload whose Backup History row cannot be written is a success, with a note (card 2417)', { timeout: 60_000 }, () => {
+	const NOTE = /^Uploaded, but Backup History could not record it: .*database or disk is full/;
+	/** `backup_log`'s insert failing as on a full volume; every other statement runs. */
+	const rowsCannotBeWritten = () => {
+		const prepare = sqlite.prepare.bind(sqlite);
+		return vi.spyOn(sqlite, 'prepare').mockImplementation(((source: string) => {
+			if (/^insert into "backup_log"/i.test(source)) throw new Error('database or disk is full');
+			return prepare(source);
+		}) as typeof sqlite.prepare);
+	};
+	const backupRows = () => sqlite.prepare('SELECT COUNT(*) FROM backup_log').pluck().get() as number;
+	const errors = (start: string) => backupLines().filter((l) => l.level === 'ERROR' && l.message.startsWith(start));
+	let sent: Effects;
+
+	beforeEach(() => {
+		makeSmtp();
+		sent = effects();
+	});
+	afterEach(() => {
+		sent.restore();
+		vi.useRealTimers();
+	});
+
+	it('Run Now: answers success with the note, runs retention, sends no failure mail and logs one ERROR', async () => {
+		saveBackupConfig({ schedule: 'disabled', scheduleTime: '02:00', scheduleDay: 0, retention: 2, destinations: [OFFSITE], notifyOnFailure: true, notifyEmail: 'chief@example.test' });
+		sftp.names = ['dumpfire-backup-2026-04-01T00-00-00-000-manual.db', 'dumpfire-backup-2026-04-02T00-00-00-000-manual.db', 'dumpfire-backup-2026-04-03T00-00-00-000-manual.db'];
+		rowsCannotBeWritten();
+
+		const results = await runBackup(undefined, 'manual');
+
+		// It was answered as failed with the database's error, mailed, and kept out of retention.
+		expect(results).toEqual([
+			expect.objectContaining({ destination: 'Offsite', status: 'success', message: expect.stringMatching(/^Uploaded dumpfire-backup-.*-manual\.db /), note: expect.stringMatching(NOTE) })
+		]);
+		expect(sftp.deleted).toEqual(['dumpfire-backup-2026-04-01T00-00-00-000-manual.db', 'dumpfire-backup-2026-04-02T00-00-00-000-manual.db']);
+		expect(sent.emails).toEqual([]);
+		expect(backupRows()).toBe(0);
+		expect(errors('Backup History row for Offsite could not be written, though')).toHaveLength(1);
+		expect(errors('Backup failed')).toEqual([]);
+	});
+
+	it('scheduled: is a run that succeeded, so it is not tried again 15 minutes later', async () => {
+		vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'], now: new Date('2026-04-17T10:00:00Z') });
+		saveBackupConfig({ schedule: 'hourly', scheduleTime: '02:00', scheduleDay: 0, retention: 50, destinations: [OFFSITE], notifyOnFailure: true, notifyEmail: 'chief@example.test' });
+		logged('dumpfire-backup-2026-04-17T08-00-00-000.db', new Date('2026-04-17T08:00:00Z'));
+		rowsCannotBeWritten();
+
+		initBackupScheduler();
+		await vi.advanceTimersByTimeAsync(MINUTE); // 10:01: uploaded, its row not written
+		await vi.waitFor(() => expect(sftp.names).toHaveLength(1));
+		await vi.advanceTimersByTimeAsync(20 * MINUTE); // past 10:16, when a failed run is tried again
+
+		expect(sftp.names).toHaveLength(1);
+		expect(backupLines().filter((l) => l.level === 'WARN' && l.message.startsWith('Scheduled backup failed at every destination'))).toEqual([]);
+		expect(sent.emails).toEqual([]);
+		expect(errors('Backup History row for Offsite could not be written, though')).toHaveLength(1);
 	});
 });

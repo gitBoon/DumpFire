@@ -440,12 +440,16 @@ function copyName(manual: boolean): string {
  * /api/admin/backup), whose copy is named `…-manual.db` and which removes
  * only the oldest Run Now copies beyond Keep Last, never a scheduled one
  * (card 2405, `cleanupRetention`).
+ *
+ * A destination's result is a success once its upload succeeds, and carries
+ * a `note` where its Backup History row could not be written (card 2417).
  */
 export async function runBackup(targetDestinationName?: string, how: 'scheduled' | 'manual' = 'scheduled'): Promise<Array<{
 	destination: string;
 	status: 'success' | 'failed';
 	message: string;
 	durationMs: number;
+	note?: string;
 }>> {
 	const config = getBackupConfig();
 	if (config.destinations.length === 0) {
@@ -463,7 +467,8 @@ export async function runBackup(targetDestinationName?: string, how: 'scheduled'
 	const manual = how === 'manual';
 	const filename = copyName(manual);
 
-	type Result = { destination: string; status: 'success' | 'failed'; message: string; durationMs: number };
+	/** `note`: an upload that succeeded but whose Backup History row could not be written (card 2417). */
+	type Result = { destination: string; status: 'success' | 'failed'; message: string; durationMs: number; note?: string };
 	/** Each destination's result, given in the order the destinations are. */
 	const outcome = new Map<DestinationConfig, Result>();
 
@@ -579,11 +584,24 @@ export async function runBackup(targetDestinationName?: string, how: 'scheduled'
 
 	for (const destConfig of ready) {
 		const start = Date.now();
+		let durationMs: number;
 		try {
 			const dest = createDestination(destConfig);
 			await dest.upload(buffer, filename);
-			const durationMs = Date.now() - start;
+			durationMs = Date.now() - start;
+		} catch (err: any) {
+			failed(destConfig, err.message || 'Unknown error', Date.now() - start, buffer.length);
+			continue;
+		}
 
+		// The copy is at the destination from here, so it is a success whether
+		// or not its row can be written (card 2417). A row that could not be
+		// written was caught with the upload's errors: the destination was
+		// answered and mailed as failed with the database's error, retention was
+		// not run for it, and a scheduled run of one destination was tried again.
+		// Now it is one ERROR line and a note on the result; retention runs.
+		let note: string | undefined;
+		try {
 			logBackup({
 				destinationType: destConfig.type,
 				destinationName: destConfig.name,
@@ -592,24 +610,26 @@ export async function runBackup(targetDestinationName?: string, how: 'scheduled'
 				status: 'success',
 				durationMs
 			});
-
-			// Run retention cleanup over this run's own kind of copy (card 2405).
-			await cleanupRetention(destConfig, config.retention, how);
-
-			outcome.set(destConfig, {
-				destination: destConfig.name,
-				status: 'success',
-				message: `Uploaded ${filename} (${(buffer.length / 1024).toFixed(1)} KB)`,
-				durationMs
-			});
-
-			log.warn(
-				`Backup succeeded: ${destConfig.name} → ${filename} (${durationMs}ms, ${(buffer.length / 1024).toFixed(1)} KB)` +
-					(manual ? '. Made by Run Now: Keep Last counts Run Now copies apart from scheduled ones, so only an older Run Now copy can be removed' : '')
-			);
 		} catch (err: any) {
-			failed(destConfig, err.message || 'Unknown error', Date.now() - start, buffer.length);
+			log.error(`Backup History row for ${destConfig.name} could not be written, though ${filename} was uploaded to it`, err);
+			note = `Uploaded, but Backup History could not record it: ${err?.message || 'Unknown error'}`;
 		}
+
+		// Run retention cleanup over this run's own kind of copy (card 2405).
+		await cleanupRetention(destConfig, config.retention, how);
+
+		outcome.set(destConfig, {
+			destination: destConfig.name,
+			status: 'success',
+			message: `Uploaded ${filename} (${(buffer.length / 1024).toFixed(1)} KB)`,
+			durationMs,
+			...(note === undefined ? {} : { note })
+		});
+
+		log.warn(
+			`Backup succeeded: ${destConfig.name} → ${filename} (${durationMs}ms, ${(buffer.length / 1024).toFixed(1)} KB)` +
+				(manual ? '. Made by Run Now: Keep Last counts Run Now copies apart from scheduled ones, so only an older Run Now copy can be removed' : '')
+		);
 	}
 
 	return finish();

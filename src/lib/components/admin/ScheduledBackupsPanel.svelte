@@ -465,6 +465,36 @@
 		await testDestination(backupDestinations.find(d => d.name === name) ?? updated[idx]);
 	}
 
+	/**
+	 * How much the Run Now toast says of each destination (card 2417). It said
+	 * only how many failed, the reasons in Backup History alone. A reason is
+	 * whatever the destination's server answered, and the toast is 360 px wide,
+	 * so each name and reason is put on one line and cut to these lengths, and
+	 * at most `TOAST_DESTINATIONS` are named, the rest counted. It is shown as
+	 * text, never as HTML (`Toast.svelte`).
+	 */
+	const TOAST_NAME_MAX = 60;
+	const TOAST_REASON_MAX = 160;
+	const TOAST_DESTINATIONS = 3;
+
+	/** `text` on one line, cut to `max` characters with an ellipsis. */
+	function clipped(text: unknown, max: number): string {
+		const line = String(text ?? '').replace(/\s+/g, ' ').trim();
+		return line.length > max ? `${line.slice(0, max - 1).trimEnd()}…` : line;
+	}
+
+	/** Each result's destination and what is said of it, `Name: reason; Name: reason`, past the first few counted. */
+	function eachSaid(results: any[], said: (result: any) => unknown): string {
+		const named = results
+			.slice(0, TOAST_DESTINATIONS)
+			.map((r) => `${clipped(r?.destination, TOAST_NAME_MAX) || 'A destination'}: ${clipped(said(r), TOAST_REASON_MAX) || 'no reason given'}`);
+		const more = results.length - named.length;
+		return named.join('; ') + (more > 0 ? `; and ${more} more (see Backup History)` : '');
+	}
+
+	/** `text` ending as a sentence does. */
+	const sentence = (text: string) => (/[.!?…]$/.test(text) ? text : `${text}.`);
+
 	async function runManualBackup() {
 		backupRunning = true;
 		const started = toasts.navigation();
@@ -484,10 +514,15 @@
 			const result = await answerBody(res);
 			const results = Array.isArray(result?.results) ? result.results : [];
 			const failed = results.filter((r: any) => r.status === 'failed');
+			// An upload that succeeded but that Backup History could not record (card 2417).
+			const noted = results.filter((r: any) => r.status === 'success' && typeof r.note === 'string' && r.note);
+			const notes = noted.length > 0 ? ` ${sentence(eachSaid(noted, (r) => r.note))}` : '';
 			if (failed.length === 0) {
-				showToast(`Backup completed to ${results.length} destination${results.length !== 1 ? 's' : ''}. ${KEEP_LAST_RULE}`);
+				const done = `Backup completed to ${results.length} destination${results.length !== 1 ? 's' : ''}.${notes} ${KEEP_LAST_RULE}`;
+				if (noted.length === 0) showToast(done);
+				else showToast(done, 'warning', started);
 			} else {
-				showToast(`${failed.length} of ${results.length} backup(s) failed`, 'error', started);
+				showToast(`${failed.length} of ${results.length} backup(s) failed: ${sentence(eachSaid(failed, (r) => r.message))}${notes}`, 'error', started);
 			}
 			await loadBackupConfig();
 		} finally {
