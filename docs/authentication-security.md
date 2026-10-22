@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.66
+version: 1.67
 status: As-Built
 date: 2026-10-22
 tags:
@@ -1832,14 +1832,17 @@ and that is still so:
   person's Google account, using the stored client id and secret (one line under `BACKUP`, a
   `WARN` where it replaces a connection the destination had; card 2273).
 - **An administrator could leave nothing to restore from; since card 2398 (2026-10-22) the
-  history wipe is guarded.** Lowering Keep Last (its least is 1) and pressing Run Now deletes
-  every older copy at every destination once the new one is up (`cleanupRetention` in
-  `backup.ts`); removing the destinations or switching the schedule off stops the copies. Each
-  such save was a `WARN` line under `BACKUP` naming who (card 2270), logged and not prevented.
-  Now `PUT /api/admin/backup` refuses all three to anyone but the superadmin: see
-  [Fewer Copies Are the Superadmin's](#fewer-copies-are-the-superadmins-card-2398). One way
-  round is left: Run Now pressed Keep Last times pushes every older copy out (nearby fault in
-  `docs/planning/cards-2397-2398.md`).
+  history wipe is guarded.** Lowering Keep Last (its least is 1) deleted, at the next run,
+  every older copy at every destination once the new one was up (`cleanupRetention` in
+  `backup.ts`; since card 2405 a scheduled run removes only scheduled copies beyond Keep Last,
+  never a `…-manual.db` one, and a Run Now only older Run Now copies); removing the
+  destinations or switching the schedule off stops the copies. Each such save was a `WARN`
+  line under `BACKUP` naming who (card 2270), logged and not prevented. Now `PUT
+  /api/admin/backup` refuses all three to anyone but the superadmin: see
+  [Fewer Copies Are the Superadmin's](#fewer-copies-are-the-superadmins-card-2398). The way
+  round that was left, Run Now pressed Keep Last times, is closed by card 2405: Keep Last
+  counts Run Now copies and scheduled copies separately, so a Run Now can push out only older
+  Run Now copies.
 - **An administrator can probe the inside of the network.** The SMTP host, an SFTP host and an
   S3 endpoint may be any address, inside the network included (loopback, the Docker host, the
   internal ranges, `169.254.169.254`), and the answers of Send Test and Test tell whether a
@@ -2052,10 +2055,14 @@ saying the rule when chosen and sending nothing, Keep Last with the stored numbe
 Removing destinations when their setter is demoted or deleted (card 2397, below) is not a save
 and is not refused.
 
-**Owner to know.** Run Now pressed Keep Last times still pushes every older copy out, as each
-run adds a copy and the retention keeps a number of copies, not an age; a schedule made more
-frequent does the same over time. Each Run Now is in the backup history and each schedule
-change a line under `BACKUP`.
+**Owner to know.** Run Now pressed Keep Last times pushed every older copy out, as each run
+added a copy and the retention keeps a number of copies, not an age. Since card 2405
+(2026-10-22) a Run Now's copy is named `…-manual.db`, and Keep Last counts those apart from the
+scheduled copies: a Run Now removes only older Run Now copies and a scheduled run only older
+scheduled ones, so a destination holds at most twice Keep Last: see
+[Retention Cleanup](backup-reporting.md#retention-cleanup). A schedule made more frequent still
+keeps Keep Last copies over a shorter time. Each Run Now is in the backup history and each
+schedule change a line under `BACKUP`.
 
 ```mermaid
 flowchart TD
@@ -2148,9 +2155,39 @@ and logs nothing.
   and records the place it left as nobody's, so moving it back makes it nobody's again (unless
   the superadmin moves it, or a secret is typed with the move). A restore of a backup from before 0059 leaves
   every setting it brings unattributed; a backup from after it brings its setter rows.
-- **The host is outside the code.** A role written to `user`, or an account deleted, with
-  `node -e` from the host leaves the settings in force; for a delete the key
-  (`ON DELETE CASCADE`) then takes the setter rows, and the settings are unattributed.
+- **The host is outside the code; the next start puts a role change right** (card 2406,
+  2026-10-22). A role written to `user`, or an account deleted, with `node -e` from the host
+  runs none of this. So every start, after the migrations and before the schedulers,
+  removes what each setter who is no longer an administrator set, by the same rule
+  (`removeSettingsOfNonAdministrators()` in `startup-checks.ts`, which calls
+  `removeSettingsOfFormerAdministrators()` in `setting-setters.ts`: one transaction, every
+  setter row whose account is now `user`, or whose account is gone). Each removal is the same
+  `WARN` under `SMTP` or `BACKUP`, filed under nobody: `… saved by "ann", who is no longer an
+  administrator (found at start-up: the role was changed outside the admin page).`, or, for
+  a row whose account is gone, `… saved by account 7, whose account no longer exists (found at
+  start-up: it was deleted outside the admin page).`, with `reason` `not-an-administrator` or
+  `gone` in the meta. It never stops the server: one that fails rolls back all of it and says
+  so in one `WARN` under `STARTUP`. **What cannot be caught**: an account deleted from the host
+  with foreign keys on, which better-sqlite3 (the documented `node -e`) has by default, takes
+  its setter rows with it (`ON DELETE CASCADE`), and its settings are then at places nobody is
+  recorded for, indistinguishable from settings saved before 0059: they stay. A row whose
+  account is gone is left only by a delete with foreign keys off (the `sqlite3` shell's
+  default). Until the restart, a host-side change leaves the settings working, and a
+  superadmin made `admin` from the host keeps theirs (still an administrator).
+- **A working copy clears its setter rows.** A restore with `outside: 'off'` removes the
+  destinations and the mail settings (`switchOffOutside`), and since card 2406 their
+  `setting_setters` rows too (`mail` and every `backup_destination:`): left, a row would make
+  the mail or a destination set up again at the same place that account's again, and that
+  account's demotion would take it away. The App URL, kept, keeps its rows.
+
+```mermaid
+flowchart LR
+    Host["host: role written to user,<br/>or delete with foreign keys off"] --> Start["next start:<br/>migrations"]
+    Start --> Check["removeSettingsOfNonAdministrators<br/>(one transaction)"]
+    Check --> Gone["their mail settings, App URL,<br/>destinations removed; WARN lines"]
+    Check --> Sched["schedulers start"]
+    Cascade["host: delete with foreign keys on"] -.->|"rows cascade away"| Stay["settings unattributed,<br/>stay in force"]
+```
 
 ```mermaid
 sequenceDiagram
@@ -2165,8 +2202,10 @@ sequenceDiagram
     R-->>S: 200, settingsRemoved { mail, appUrl, destinations }
 ```
 
-Covered by `tests/setting-setters.test.ts`, `tests/migrations.test.ts` (0059 and a restore of a
-backup from before it) and `tests/admin-panels.test.ts`.
+Covered by `tests/setting-setters.test.ts` (the start-up removal of card 2406 included),
+`tests/migrations.test.ts` (0059 and a restore of a backup from before it),
+`tests/import-working-copy.test.ts` (a working copy's setter rows) and
+`tests/admin-panels.test.ts`.
 
 ### What a Backup Holds, and What a Restore Brings In
 
@@ -2266,7 +2305,9 @@ session's expiry moves on every time it is used.
   they hold the mail password, every destination's credentials and every webhook's signing
   secret (card 2169). Nothing can reach a copy at a destination or a downloaded export, so
   nothing is done to them: they go as each destination's retention removes them, the oldest
-  first at each successful run. If one of them may have been read by somebody who should not
+  first. Those copies carry no `-manual`, so since card 2405 they are in the scheduled list,
+  and go only as scheduled runs remove its oldest beyond Keep Last; Run Now copies, kept as a
+  list of their own, never push them out. If one of them may have been read by somebody who should not
   have, change the mail password and each destination's credentials at their services and
   enter them again, and set new webhook secrets with their receivers. They carry no seal
   either (below): Import Backup of one fills nothing from this server, which changes nothing,

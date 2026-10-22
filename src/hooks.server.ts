@@ -16,7 +16,7 @@ import { bodyLimit, heldToLimit, refuseBody, type Caller } from '$lib/server/bod
 import { addressKey, addressOf, UNKNOWN_ADDRESS } from '$lib/server/client-address';
 import { isNavigation, notSignedIn, secured, sendTo, whereSent } from '$lib/server/gate-answers';
 import { pathToLog } from '$lib/server/secret-paths';
-import { maskLiveLog, refuseUserlessBesideAnother, reportInstallation } from '$lib/server/startup-checks';
+import { maskLiveLog, refuseUserlessBesideAnother, removeSettingsOfNonAdministrators, reportInstallation } from '$lib/server/startup-checks';
 
 const log = createLogger('HTTP');
 
@@ -50,6 +50,13 @@ initLogMaintenance();
 // start changes nothing, and it cannot throw. See
 // $lib/server/startup-checks.ts.
 maskLiveLog();
+
+// Remove the mail settings, App URL and backup destinations set by someone who
+// is no longer an administrator (card 2406): a role written to `user` from the
+// host runs no application code. Before the schedulers, so that no backup is
+// sent to such a destination first. It cannot throw. See
+// $lib/server/startup-checks.ts.
+removeSettingsOfNonAdministrators();
 
 // Start the backup, report and snapshot schedulers, or leave all three off.
 //

@@ -47,12 +47,20 @@
  * a password or secret typed, takes the place it moves to over whoever was
  * recorded there, so an administrator who visits a place first cannot keep
  * it; and that each account keeps one row per setting, its latest place.
+ *
+ * A role written to `user` from the host runs none of this, so every start
+ * also removes what a setter who is no longer an administrator set
+ * (`removeSettingsOfFormerAdministrators`, card 2406), and so for a row whose
+ * account is gone, which a delete made with foreign keys off leaves. An
+ * account deleted from the host with foreign keys on (better-sqlite3's
+ * default) takes its rows with it by the cascade: its settings are then
+ * unattributed, as one saved before 0059 is, and nothing can tell them apart.
  */
 import { createHash } from 'node:crypto';
 import { and, eq, isNotNull, ne } from 'drizzle-orm';
 import { db, sqlite } from './db';
 import { settingSetters } from './db/schema';
-import { afterCommit } from './db/transaction';
+import { afterCommit, inTransaction } from './db/transaction';
 import { destinationPlace, quotedName as quoted, typedSecret, type BackupSettingsChanges } from './backup-secrets';
 import { appUrlAsRead, mailSettingsAsRead } from './email';
 import { createLogger } from './logger';
@@ -319,7 +327,9 @@ export function settingsHeldBy(userId?: number): Map<number, SettingsRemoved> {
 /**
  * Remove what `setter` set (card 2397), inside the caller's transaction:
  * the account was made a user (`demoted`) or is about to be deleted
- * (`deleted`), by `actor`.
+ * (`deleted`), by `actor`; or, found at start-up with no `actor` (card 2406),
+ * it is no longer an administrator (`not-an-administrator`) or no longer
+ * exists (`gone`).
  *
  * Each setting is the account's only where it is still at a place the
  * account's rows record (the second code review): one moved since to a place
@@ -337,11 +347,15 @@ export function settingsHeldBy(userId?: number): Map<number, SettingsRemoved> {
  *
  * Once committed, one WARN under SMTP for the mail and the App URL and one
  * under BACKUP for the destinations, naming what went, whose it was and why,
- * filed under `actor`. Allowed whoever `actor` is: card 2398's rule, that only
- * the superadmin removes a destination, is about a save of the settings, and
- * this follows the account's own change.
+ * filed under `actor` (under nobody at start-up). Allowed whoever `actor` is:
+ * card 2398's rule, that only the superadmin removes a destination, is about
+ * a save of the settings, and this follows the account's own change.
  */
-export function removeSettingsSetBy(setter: Named, why: 'demoted' | 'deleted', actor: Named): SettingsRemoved {
+export function removeSettingsSetBy(
+	setter: Named,
+	why: 'demoted' | 'deleted' | 'not-an-administrator' | 'gone',
+	actor: Named | null
+): SettingsRemoved {
 	const rows = db.select().from(settingSetters).where(eq(settingSetters.userId, setter.id)).all();
 	const removed: SettingsRemoved = { mail: false, appUrl: false, destinations: [] };
 	if (rows.length === 0) return removed;
@@ -371,8 +385,15 @@ export function removeSettingsSetBy(setter: Named, why: 'demoted' | 'deleted', a
 
 	db.delete(settingSetters).where(eq(settingSetters.userId, setter.id)).run();
 
-	const because = why === 'demoted' ? `who was made a user by ${quoted(actor.username)}` : `whose account was deleted by ${quoted(actor.username)}`;
-	const whose = `saved by ${quoted(setter.username)}, ${because}`;
+	const by = actor === null ? 'someone' : quoted(actor.username);
+	const because = {
+		demoted: `who was made a user by ${by}`,
+		deleted: `whose account was deleted by ${by}`,
+		'not-an-administrator': 'who is no longer an administrator (found at start-up: the role was changed outside the admin page)',
+		gone: 'whose account no longer exists (found at start-up: it was deleted outside the admin page)'
+	}[why];
+	const whose = `saved by ${why === 'gone' ? `account ${setter.id}` : quoted(setter.username)}, ${because}`;
+	const filedUnder = { userId: actor?.id ?? null };
 	if (removed.mail || removed.appUrl) {
 		const what = [removed.mail ? 'mail settings' : null, removed.appUrl ? 'App URL' : null].filter((part) => part !== null).join(' and the ');
 		const after = [
@@ -380,7 +401,7 @@ export function removeSettingsSetBy(setter: Named, why: 'demoted' | 'deleted', a
 			removed.appUrl ? " Links in mail use APP_URL, or the server's own address, until an App URL is saved again." : ''
 		].join('');
 		const meta = { setter: setter.id, reason: why, mail: removed.mail, appUrl: removed.appUrl };
-		afterCommit(() => smtpLog.warn(`The ${what} removed: ${whose}.${after}`, meta, { userId: actor.id }));
+		afterCommit(() => smtpLog.warn(`The ${what} removed: ${whose}.${after}`, meta, filedUnder));
 	}
 	if (gone.length > 0) {
 		const list = gone.map((d) => `${quoted(d.name)} (${d.type})`).join(', ');
@@ -390,9 +411,45 @@ export function removeSettingsSetBy(setter: Named, why: 'demoted' | 'deleted', a
 				`Backup destination${gone.length === 1 ? '' : 's'} ${list} removed: ${whose}. ` +
 					`${gone.length === 1 ? 'Its' : 'Their'} stored secrets went with ${gone.length === 1 ? 'it' : 'them'}; the copies already there are kept.`,
 				meta,
-				{ userId: actor.id }
+				filedUnder
 			)
 		);
 	}
 	return removed;
+}
+
+/**
+ * Remove, at start-up, what each setter who is no longer an administrator set
+ * (card 2406), by `removeSettingsSetBy`'s rule, in one transaction: a role
+ * written to `user` from the host (docs/deployment.md, "If Nobody Can Sign In
+ * as the Superadmin") runs no application code, so that person's mail
+ * settings, App URL and destinations stayed in force. A row whose account is
+ * gone, which only a delete made with foreign keys off leaves, is treated the
+ * same. Each removal is one WARN line under SMTP or BACKUP, filed under
+ * nobody. Returns, for each such setter, what was removed (nothing, where the
+ * settings had moved since and only their rows went).
+ *
+ * What cannot be found: an account deleted from the host with foreign keys on
+ * takes its rows with it (`ON DELETE CASCADE`), so its settings are left in
+ * force, unattributed, as one saved before migration 0059 is.
+ */
+export function removeSettingsOfFormerAdministrators(): { setter: number; removed: SettingsRemoved }[] {
+	return inTransaction(() => {
+		// An administrator is `admin` or `superadmin`, as `isAdmin` (board-access.ts) has it.
+		const found = sqlite
+			.prepare(
+				`SELECT DISTINCT s.user_id AS id, u.username AS username
+				 FROM setting_setters s LEFT JOIN users u ON u.id = s.user_id
+				 WHERE s.user_id IS NOT NULL AND (u.id IS NULL OR u.role NOT IN ('admin', 'superadmin'))
+				 ORDER BY s.user_id`
+			)
+			.all() as { id: number; username: string | null }[];
+		return found.map(({ id, username }) => ({
+			setter: id,
+			removed:
+				username === null
+					? removeSettingsSetBy({ id, username: '' }, 'gone', null)
+					: removeSettingsSetBy({ id, username }, 'not-an-administrator', null)
+		}));
+	});
 }

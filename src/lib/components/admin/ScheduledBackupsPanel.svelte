@@ -43,6 +43,8 @@
 
 	/** What an administrator is told of what is the superadmin's (card 2398), the server's own words. */
 	const SUPERADMIN_RULE = 'Lowering Keep Last, removing a destination or switching the schedule off needs the superadmin.';
+	/** How Keep Last counts (card 2405): said under it, and with every Run Now that succeeds. */
+	const KEEP_LAST_RULE = 'Keep Last counts scheduled copies and Run Now copies separately: a Run Now removes only older Run Now copies.';
 
 	// ─── Scheduled Backups ────────────────────────────────────────────────
 
@@ -483,7 +485,7 @@
 			const results = Array.isArray(result?.results) ? result.results : [];
 			const failed = results.filter((r: any) => r.status === 'failed');
 			if (failed.length === 0) {
-				showToast(`Backup completed to ${results.length} destination${results.length !== 1 ? 's' : ''}`);
+				showToast(`Backup completed to ${results.length} destination${results.length !== 1 ? 's' : ''}. ${KEEP_LAST_RULE}`);
 			} else {
 				showToast(`${failed.length} of ${results.length} backup(s) failed`, 'error', started);
 			}
@@ -558,6 +560,8 @@
 			{#if !isSuperadmin}
 				<p class="sched-note">🔒 {SUPERADMIN_RULE}</p>
 			{/if}
+			<!-- Card 2405: two lists, so that Run Now cannot push the scheduled copies out. -->
+			<p class="sched-keep-note">{KEEP_LAST_RULE}</p>
 
 			<div class="sched-row">
 				<label style="display: flex; align-items: center; gap: var(--space-xs); font-size: 0.78rem; color: var(--text-secondary); cursor: pointer">
@@ -693,7 +697,7 @@
 	.sched-label {
 		font-size: 0.78rem; font-weight: 600; color: var(--text-secondary); white-space: nowrap;
 	}
-	.sched-note {
+	.sched-note, .sched-keep-note {
 		margin: 0; font-size: 0.72rem; color: var(--text-tertiary);
 	}
 	.dest-actions button[aria-disabled='true'] { opacity: 0.4; cursor: default; }

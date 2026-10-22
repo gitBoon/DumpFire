@@ -58,9 +58,16 @@ let drawn: { component: ReturnType<typeof mount>; target: HTMLElement } | null =
 /** The requests waiting in the inbox, as `/api/requests` answers them. */
 let requests: { id: number; title: string; requesterName: string; priority: string; status: string }[] = [];
 
-/** The viewer's today, as a stored due date: what Active Tasks calls "Today". */
+/**
+ * The viewer's today, as a stored due date: what Active Tasks calls "Today".
+ * Read when it is asked (card 2409): read once as the file loaded, a run that
+ * crossed midnight before the page drew gave yesterday's date.
+ */
 const now = new Date();
-const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+function today(): string {
+	const at = new Date();
+	return `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, '0')}-${String(at.getDate()).padStart(2, '0')}`;
+}
 
 const board = (id: number, name: string, extra: Record<string, unknown> = {}) => ({
 	id,
@@ -144,7 +151,7 @@ beforeEach(() => {
 						boardId: 1,
 						boardName: 'Website',
 						boardEmoji: '📋',
-						cards: [{ id: 41, title: 'Fix the footer', priority: 'high', dueDate: today, columnName: 'To Do', createdAt: '2026-10-19 09:00:00' }]
+						cards: [{ id: 41, title: 'Fix the footer', priority: 'high', dueDate: today(), columnName: 'To Do', createdAt: '2026-10-19 09:00:00' }]
 					}
 				]);
 			if (url === '/api/boards/1/cards' && method === 'GET')
@@ -442,6 +449,9 @@ describe('the dashboard, mounted with its parts', () => {
 	});
 
 	it('opens Active Tasks from the sidebar’s tile, which reads its list and words its due dates on the page’s clock', async () => {
+		// Pinned a tenth of a second before midnight, on purpose (card 2409): the
+		// clock does not move while the page draws. `afterEach` puts it back.
+		vi.useFakeTimers({ toFake: ['Date'], now: new Date(2026, 9, 20, 23, 59, 59, 900) });
 		const target = draw();
 		await settle();
 		expect(headings(target)).not.toContain('Active Tasks');

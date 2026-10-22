@@ -19,7 +19,7 @@
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { db } from '$lib/server/db';
 import { boards, columns } from '$lib/server/db/schema';
@@ -253,9 +253,18 @@ describe('the board’s CSV export names its file safely when the board has no c
 	it('answers 200 with the header row, named as a full board’s file is', async () => {
 		const owner = makeUser();
 		const { board } = makeBoard({ owner, name: 'Q3 "launch" 🚀', columns: [] });
-		const res = await api('GET', `/api/boards/${board.id}/export/csv`, { user: owner });
+		// The clock pinned a tenth of a second before midnight, on purpose (card
+		// 2409): the date in the name was read again after the request, so a run
+		// that crossed midnight in between expected the next day's.
+		vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-10-22T23:59:59.900Z') });
+		let res: Awaited<ReturnType<typeof api>>;
+		try {
+			res = await api('GET', `/api/boards/${board.id}/export/csv`, { user: owner });
+		} finally {
+			vi.useRealTimers();
+		}
 		expect(res.status).toBe(200);
 		expect(String(res.body)).toBe('Title,Description,Priority,Column,Assignees,Due Date,Created,Completed,Labels,Category,Subtasks\n');
-		expect(res.headers.get('content-disposition')).toBe(`attachment; filename="Q3__launch____-${new Date().toISOString().slice(0, 10)}.csv"`);
+		expect(res.headers.get('content-disposition')).toBe('attachment; filename="Q3__launch____-2026-10-22.csv"');
 	});
 });

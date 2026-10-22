@@ -590,6 +590,24 @@ describe('switchOffOutside', () => {
 		expect(contentsOf(database)).toEqual(before);
 	});
 
+	// Card 2406: the rows would make the mail, or a destination set up again at the same place, their account's again.
+	it('removes the setter rows of the mail settings and the destinations it removes, and keeps the App URL’s', () => {
+		const database = armedBackup();
+		const setter = database.prepare('INSERT INTO setting_setters (setting, place, user_id) VALUES (?, ?, ?)');
+		setter.run('mail', 'place-of-the-mail', 1);
+		setter.run('mail', 'place-left', null);
+		setter.run('backup_destination:Bucket', 'place-of-the-bucket', 1);
+		setter.run('backup_destination:Offsite', 'place-of-offsite', 2);
+		setter.run('app_url', 'place-of-the-app-url', 1);
+		const before = everythingElseIn(database);
+
+		expect(switchOffOutside(database)).toEqual(SWITCHED_OFF);
+
+		expect(rowsOf(database, 'setting_setters', 'setting')).toEqual([{ setting: 'app_url', place: 'place-of-the-app-url', user_id: 1 }]);
+		// Nothing else but the setter rows changed outside the three tables.
+		expect(everythingElseIn(database)).toEqual({ ...before, setting_setters: [JSON.stringify({ place: 'place-of-the-app-url', setting: 'app_url', user_id: 1 })] });
+	});
+
 	it('finds nothing to do the second time', () => {
 		const database = armedBackup();
 		switchOffOutside(database);
