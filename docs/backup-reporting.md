@@ -1,7 +1,7 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.31
+version: 1.32
 status: As-Built
 date: 2026-10-22
 tags:
@@ -89,8 +89,13 @@ that channel.
 | `hourly` | Interval | Every 60 minutes since last backup |
 | `every6h` | Interval | Every 6 hours since last backup |
 | `every12h` | Interval | Every 12 hours since last backup |
-| `daily` | Time-based | Once per day at configured time |
-| `weekly` | Time-based | Once per week on configured day and time |
+| `daily` | Time-based | Once per day at configured time; made up once if missed (card 2415) |
+| `weekly` | Time-based | Once per week on configured day and time; made up once if missed (card 2415) |
+
+The time of day is read on the server's own clock and zone: the `TZ` variable, otherwise the
+host's. The image sets no `TZ`, so in a container it is UTC (see
+[Deployment](deployment.md)); daylight saving matters only where a zone such as
+`Europe/London` is set.
 
 **After a start, the interval schedules count from the last scheduled run** (card 2412,
 2026-10-22). The scheduler keeps the time of its last run in memory, and at its first check
@@ -139,6 +144,105 @@ flowchart TD
     Ahead -->|"no"| Db{"start of this minute ≤ last<br/>< start + 1 hour?"}
     Db -->|"yes"| Skip2["WARN: not made"] --> Skip
     Db -->|"no"| Run["runBackup()"]
+```
+
+The two paragraphs above and their diagram are as card 2414 built it; card 2415, below,
+replaces the target minute with the latest target time and keeps every case they describe.
+
+**A daily or weekly backup is decided by its latest target time** (card 2415, 2026-10-22). At
+each check `latestTarget()` finds the latest moment at or before now that is the configured time
+of day (on the configured weekday, for `weekly`): today's, or the one before where today's is
+still to come. The schedule is due where no successful scheduled backup is stamped from that
+time to an hour later than the server's clock (`scheduledRunSince()`). So:
+
+- **Missed while down, or while the server was busy past the check, is made up once**: the
+  first check after the start (or the next check) makes it, with `[WARN] [BACKUP] Scheduled daily
+  backup at 02:00 was not made at its time, <ISO> (the server was down, or busy past the check):
+  made now.` A start with a daily or weekly schedule and no scheduled backup since its latest time
+  makes one within a minute. It ran only in the target minute, and a day was lost.
+- **The days the clocks change still have one run each.** A date made from a day and a time of
+  day is the wall clock's: when the clocks go back, a time in the hour that comes twice is the first
+  of the two (01:30 BST), and the second finds its row, after a restart too; when they go forward,
+  a time in the hour skipped is read an hour on (01:30 is 02:30 BST). That time never ran on that
+  day. (Card 2414's plan said a restart in the hour that comes twice ran it twice; it did not: the
+  minute's start, `setSeconds(0, 0)`, also resolves to the first of the two, so its row was seen.)
+- **A target time is decided once in a process** (`decidedTarget`, in place of the local
+  minute it ran in): `backup_log` is asked once a target time and at the first check after a start,
+  and a run still uploading, which has no row yet, is not started again at the next check.
+- **A change in a running process does not make up a time already passed**: where the schedule,
+  its time, its day or whether there is any destination changed since the last check, the latest
+  target time **as of that last check** (`latestTarget(config, previous check)`) is taken as
+  decided. Setting a daily 02:00 schedule at 10:00 runs it first at 02:00 the next day; setting
+  the time to 02:00 at 01:59:40, or switching daily 02:00 on then, runs it at 02:00, though the
+  first check after the save comes after 02:00 (the code review: deciding the latest target as of
+  the check after the change let that one pass). After a restart nothing is remembered, so it
+  would be made at once.
+- **The hour's allowance is card 2414's**: a clock put back across a restart into the target
+  minute, before the first run's stamp, still finds that run; a row stamped further ahead (a clock
+  that ran fast) counts for nothing, so it holds nothing back. The `not made: … was already made in
+  this minute` `WARN` is written only where the check is in the target minute itself: finding the
+  time made is ordinary after a restart.
+
+**A run that failed at every destination is tried again 15 minutes later, at most three
+times** (card 2415). For every schedule (`BACKUP_RETRY_DELAY`, `BACKUP_RETRIES`). It waited for the
+schedule's next run, an hour to a week, while a restart tried again at once. A run that threw before
+any upload (the copy could not be made) counts as failed everywhere. The three tries are spent
+until a run the scheduler makes succeeds at a destination: a destination down for days sends four
+failure mails in its first 45 minutes and then one a scheduled run. A run that succeeded at any
+destination is not tried again. The schedule switched off, or its last destination removed, drops
+a try pending. The code review added three limits:
+
+- **A restart.** A start gives the three tries back, except where the run due has already been
+  tried and failed before it (`scheduledFailureSince()`: a failed scheduled row since the daily or
+  weekly target time, or since an interval schedule's last successful run). Then the start's first
+  run is its one try until a run succeeds, with `[WARN] [BACKUP] This scheduled backup already
+  failed before this start: this is its one try until a run succeeds, …`. So a server restarted
+  again and again makes one try a start, not four: one failure mail a start, and one refused SFTP
+  login a start, not four that could lock the account.
+- **Nothing sent.** A run where every destination failed before anything was sent (credentials not
+  entered, `credentialsMissing()`; an SFTP host key not confirmed, `hostKeyMissing()`) is not tried
+  again: only an administrator can put that right. `[WARN] [BACKUP] Scheduled backup failed at every
+  destination before anything was sent (…): not tried again, …`. Where any destination failed after
+  being tried, the run is tried again as above.
+- **Runs that overlap.** Each scheduled run is numbered as it starts; a failure of a run older than
+  one that has since succeeded (a slow upload still going when the next run started and finished)
+  arms no try again. Lines: `Scheduled backup failed at every destination: tried again at
+<ISO> (1 of 3).`, `Scheduled backup tried again (1 of 3) after a run that failed at every
+destination`, and, once the third fails, `… and its 3 tries again are spent: the next is the
+schedule's own, and a run that succeeds gives them back.`
+
+**An interval schedule leaves out a stamp later than now** (card 2415).
+`lastScheduledBackupAt(now)` reads the newest successful scheduled row stamped no later than
+`now`. It read the newest whatever its stamp, so after a start a row stamped ahead (a clock that
+ran fast, then corrected) held every hourly, 6-hourly or 12-hourly run off until the real time
+passed it and one interval more, with nothing said. The first check after a start now writes the
+`The last scheduled backup is recorded at …, later than the server's clock` `WARN` where there is
+such a row. A clock put back past the last run across a restart can then make one copy early. The
+trim keeps the newest scheduled row of all, so where that one is stamped ahead, the one read is
+kept while it is in the newest 30 runs.
+
+**Copies are named to the millisecond** (card 2415): `dumpfire-backup-<UTC date and
+time>-<milliseconds>.db`, `…-manual.db` for a Run Now. Two Run Now presses in one second shared
+a name: one run in Backup History, and the second upload replaced the first copy where the
+destination allowed it. A run named in the same millisecond as the one before it, in one process,
+is named a millisecond on. Names still sort by time, and retention's rule (`MANUAL_COPY`) and the
+destinations' `dumpfire-backup-*.db` filters are unchanged.
+
+```mermaid
+flowchart TD
+    Tick["check, every 60 s"] --> R{"a try again due?"}
+    R -->|"yes"| Run["runBackup()"]
+    R -->|"no"| K{"schedule"}
+    K -->|"hourly / 6h / 12h"| I{"now − last scheduled run<br/>stamped ≤ now ≥ interval?"}
+    I -->|"yes"| Run
+    K -->|"daily / weekly"| T["T = latestTarget()"]
+    T --> D{"T decided in this process?<br/>(or the schedule changed)"}
+    D -->|"no"| M{"scheduled success stamped<br/>T ≤ at < now + 1 h?"}
+    M -->|"no"| Run
+    M -->|"yes"| Skip["nothing"]
+    Run --> F{"failed at every destination?"}
+    F -->|"yes, tries left"| Again["try again in 15 min (≤ 3)"]
+    F -->|"no"| Back["the three tries given back"]
 ```
 
 **The history is trimmed where a row is added, not where it is read** (card 2412). `logBackup()`
@@ -731,7 +835,7 @@ After each successful upload, the system:
 and its code review). Keep Last counted every copy, so an administrator who pressed Run Now
 Keep Last times pushed every older copy out, which card 2398 had made lowering Keep Last the
 superadmin's to prevent. A manual run (`POST /api/admin/backup`, `runBackup(name,
-'manual')`) now names its copy `dumpfire-backup-<UTC date and time>-manual.db`, which still
+'manual')`) now names its copy `dumpfire-backup-<UTC date and time>-manual.db` (the time to the millisecond since card 2415), which still
 sorts by its time, and `cleanupRetention(config, retention, kind)` keeps the two lists apart:
 a Run Now removes only the oldest `…-manual.db` copies beyond Keep Last, and a scheduled run
 (`runBackup()`, the default `'scheduled'`) only the oldest copies that are not `…-manual.db`
@@ -786,7 +890,9 @@ destinations' order.
 
 If `notifyOnFailure` is enabled and SMTP is configured, a styled HTML email is sent to the configured address with the error details, a destination not tried for want of its credentials included. The destination's name and type and the error text, which is whatever the destination's server answered, are escaped where they are put into the mail, so markup in them is shown as text and never drawn (see [Text in Mail Is Text](notifications-email.md#text-in-mail-is-text)).
 
-The mail says which kind of run failed (card 2413, 2026-10-22): **Scheduled Backup Failed**, "A scheduled backup to *name* (*type*) failed." for a scheduled run, and **Run Now Backup Failed**, "A backup made by ▶ Run Now to *name* (*type*) failed." for a Run Now. It said "scheduled" for both. The subject, `⚠️ DumpFire Backup Failed`, is the same for both, and a run sends one mail for each destination that failed.
+The mail says which kind of run failed (card 2413, 2026-10-22): **Scheduled Backup Failed**, "A scheduled backup to *name* (*type*) failed." for a scheduled run, and **Run Now Backup Failed**, "A backup made by ▶ Run Now to *name* (*type*) failed." for a Run Now. It said "scheduled" for both. The subject, `⚠️ DumpFire Backup Failed`, is the same for both.
+
+**One failure mail a run** (card 2415, 2026-10-22). `runBackup()` keeps each failed destination and its error, and after its last destination sends one mail with the paragraph above and the error box for each, in the destinations' order (`mailFailures`); a run with one failed destination reads as before. It sent one mail for each destination that failed, so four failing sent four for one run. A run none of whose destinations could be tried (credentials or host key missing) sends its one mail too. A scheduled run that failed at every destination is tried again up to three times (above), each with its own mail.
 
 ---
 

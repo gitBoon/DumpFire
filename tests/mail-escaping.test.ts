@@ -18,7 +18,8 @@
  * the move to the one function, and any mail added later, is held to the rule.
  * (There were sixteen: the mail for a new card, which nothing sent, went with
  * card 2010.) The backup failure mail is also held to saying which kind of
- * run failed, a ▶ Run Now or a scheduled run (card 2413).
+ * run failed, a ▶ Run Now or a scheduled run (card 2413), and to being one
+ * mail a run, every destination that failed in it (card 2415).
  *
  * No mail leaves: `effects()` records each one. No destination is reached:
  * `createDestination` is replaced, for this file, by one whose upload fails.
@@ -205,6 +206,34 @@ describe('the backup failure mail', () => {
 		expect(mail.html).toContain(`${says} <strong>NAS</strong> (nas) failed.`);
 		// The panel is still named Scheduled Backups, whichever run it was.
 		for (const words of not) expect(mail.html).not.toContain(words);
+	});
+
+	// It sent one mail for each destination that failed (card 2415).
+	it('is one mail a run, naming every destination that failed, each with its error, in order', async () => {
+		const destination = (name: string, type: string) =>
+			({ type, name }) as unknown as Parameters<typeof saveBackupConfig>[0]['destinations'][number];
+		saveBackupConfig({
+			schedule: 'disabled',
+			scheduleTime: '02:00',
+			scheduleDay: 0,
+			retention: 7,
+			destinations: [destination('NAS', 'nas'), destination(MARKER, 'tape')],
+			notifyOnFailure: true,
+			notifyEmail: 'chief@example.test'
+		});
+
+		const results = await runBackup();
+
+		expect(results.map((r) => r.status)).toEqual(['failed', 'failed']);
+		const mail = onlyMail();
+		expect(mail.subject).toBe('⚠️ DumpFire Backup Failed');
+		expect(mail.html.match(/>Scheduled Backup Failed<\/h2>/g)).toHaveLength(1);
+		const nas = mail.html.indexOf('A scheduled backup to <strong>NAS</strong> (nas) failed.');
+		const tape = mail.html.indexOf(`A scheduled backup to <strong>${MARKER_ESCAPED}</strong> (tape) failed.`);
+		expect(nas).toBeGreaterThan(-1);
+		expect(tape).toBeGreaterThan(nas);
+		expect(mail.html.match(/&lt;b&gt;refused&lt;\/b&gt;/g)).toHaveLength(2);
+		expect(mail.html).not.toContain(MARKER);
 	});
 });
 
