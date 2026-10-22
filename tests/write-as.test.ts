@@ -1420,7 +1420,8 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 	 * makes its destination twice: to upload, and to keep to the retention.
 	 */
 	const HELD: { shape: string; method: 'POST' | 'PUT'; path: string; body: (s: Scene) => unknown; out: Partial<typeof NOTHING_OUT> }[] = [
-		{ shape: 'the backup settings saved, their lines after the commit (PUT /api/admin/backup)', method: 'PUT', path: '/api/admin/backup', body: () => ({ retention: 5 }), out: {} },
+		// Keep Last raised from 7: lowering it is the superadmin's alone since card 2398.
+		{ shape: 'the backup settings saved, their lines after the commit (PUT /api/admin/backup)', method: 'PUT', path: '/api/admin/backup', body: () => ({ retention: 9 }), out: {} },
 		{ shape: 'a backup run, which leaves the process (POST /api/admin/backup)', method: 'POST', path: '/api/admin/backup', body: () => ({ destination: 'Bucket' }), out: { uploads: 1, made: 2 } },
 		{ shape: "a destination tested, its secret leaving with it (POST /api/admin/backup/test)", method: 'POST', path: '/api/admin/backup/test', body: () => BUCKET, out: { made: 1 } },
 		{
@@ -1592,6 +1593,8 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 			expect(files.delete).toHaveBeenCalledTimes(1);
 			expect(files.delete.mock.calls[0][0]).toMatchObject({ fileId: FOLDER });
 			expect(storedDrive()).toEqual(DRIVE);
+			// Nor is anybody recorded as its setter (card 2397).
+			expect(sqlite.prepare('SELECT * FROM setting_setters').all()).toEqual([]);
 			// No line that it connected, nor that the Connect failed: it was refused.
 			expect(lines()).toEqual(linesBefore);
 		});
@@ -1606,6 +1609,8 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 			expect(res.body.success).toBe(true);
 			expect(files.delete).not.toHaveBeenCalled();
 			expect(storedDrive()).toEqual({ ...DRIVE, refreshToken: 'rt-2253', grantedScope: DRIVE_FILE_SCOPE, folderId: FOLDER });
+			// Bound to the connecting account's Google account, the destination is now theirs (card 2397).
+			expect(sqlite.prepare('SELECT setting, user_id AS userId FROM setting_setters').all()).toEqual([{ setting: 'backup_destination:G', userId: s.chief.id }]);
 		});
 	});
 
@@ -1778,7 +1783,8 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 			}
 			expectUnchanged(before);
 
-			expect((await api('PUT', '/api/admin/backup', { ...asLowered, body: { retention: 5 } })).status).toBe(200);
+			// Raised: lowering it is the superadmin's alone (card 2398), and they are an administrator now.
+			expect((await api('PUT', '/api/admin/backup', { ...asLowered, body: { retention: 9 } })).status).toBe(200);
 			expect((await api('PUT', '/api/admin/smtp', { ...asLowered, body: { fromName: 'Lowered' } })).status).toBe(200);
 			expect((await api('GET', '/api/admin/smtp', asLowered)).body.fromName).toBe('Lowered');
 		});

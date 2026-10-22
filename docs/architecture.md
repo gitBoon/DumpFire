@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.51
+version: 1.52
 status: As-Built
-date: 2026-10-21
+date: 2026-10-22
 tags:
   - architecture
   - sveltekit
@@ -645,7 +645,7 @@ flowchart LR
 | Role | Boards | Admin | Users |
 |------|--------|-------|-------|
 | `superadmin` | All boards | Full access | Manage all |
-| `admin` | All boards | All but export, import and Reset Everything (the mail and backup settings since card 2395) | Manage ordinary users |
+| `admin` | All boards | All but export, import and Reset Everything (the mail and backup settings since card 2395), and lowering Keep Last, removing a backup destination or switching the schedule off (card 2398) | Manage ordinary users |
 | `user` | Only shared boards | No access | Self only |
 
 ### Board Access Levels
@@ -1086,12 +1086,12 @@ The page keeps its props, `isSuperadmin` and `superadminName`, the `{#if isSuper
 | `AdminOverview.svelte` | every administrator | Database Overview: the counts of boards, columns, cards, categories, users and teams, and the database's size |
 | `AppUrlPanel.svelte` | every administrator (the superadmin until card 2395) | The App URL; reads its own setting when drawn (its local `data`, which hid the page's, is `settings`), says under the field where it comes from (`appUrlFrom`: saved, `APP_URL` or none; `appUrlEnvSet` says whether clearing a saved one goes back to `APP_URL` or to `ORIGIN`) and reads it again after a save (card 2401); Save waits for the read, and a failed read is said under the field (its review) |
 | `BackupRestorePanel.svelte` | the superadmin | Export, the import, its dialog and its report; `importOutsideDefault` |
-| `ScheduledBackupsPanel.svelte` | every administrator (the superadmin until card 2395) | The schedule, the destinations and their Test and Confirm, Run Now; reads its own settings when drawn; draws the two forms, the history and the Drive box |
+| `ScheduledBackupsPanel.svelte` | every administrator (the superadmin until card 2395) | The schedule, the destinations and their Test and Confirm, Run Now; reads its own settings when drawn; draws the two forms, the history and the Drive box. Takes `isSuperadmin` from the page (card 2398): for an administrator, 🗑️ and the schedule's Disabled are `aria-disabled` and say the rule, and a lower Keep Last is put back, nothing sent; the edit form says under the name that renaming needs the superadmin. A refused save reads the settings again quietly, so the controls show what the server holds (card 2398's review) |
 | `DestinationForm.svelte` | every administrator, within the scheduled backups panel | The add and edit forms kept verbatim behind `mode`, their fields bound from the panel so Edit and Add behave as before |
 | `GDriveConnectModal.svelte` | every administrator, within the scheduled backups panel | The Google Drive connect box, opened by the panel through `bind:this` |
 | `BackupHistory.svelte` | every administrator, within the scheduled backups panel | The backup history, `showAllHistory` bound to the panel so "Show all" survives Run Now |
 | `BoardManagementPanel.svelte` | every administrator | Clear a board's cards or categories, or delete it, each through the page's `confirm` |
-| `UsersPanel.svelte` | every administrator | The accounts: create, invite, role, delete, resend; sets the page's `inviteLink` and asks the mail panel to read again after an invite (`loadMailStatus`); draws `ResetPasswordDialog` |
+| `UsersPanel.svelte` | every administrator | The accounts: create, invite, role, delete, resend; sets the page's `inviteLink` and asks the mail panel to read again after an invite (`loadMailStatus`); draws `ResetPasswordDialog`. Before a delete, and before a role change to User, names what the account's `settingsSet` (from the page's load) says would go, the role change asking first in the page's confirm only where something would (card 2397's review). Where a role change or a delete answers `settingsRemoved` (card 2397), says what went in a ⚠️ warning toast that stays and hands it to the page's `settingsRemoved`, which moves `mailRead` on for the mail settings or the App URL (the App URL and mail panels' `{#key}` blocks) and `destinationsRead` for destinations (Scheduled Backups'), so a panel whose settings did not change keeps what is open in it |
 | `ResetPasswordDialog.svelte` | every administrator | The password reset, opened by 🔑 through `bind:this` |
 | `InviteLinkDialog.svelte` | every administrator | An invite link whose mail was not sent, bound to the page's `inviteLink` (its `isSuperadmin` prop went with card 2395: it points every reader to Email / SMTP); carries its own copies of the modal rules, being drawn after `.admin-page` |
 | `TeamsPanel.svelte` | every administrator | Teams and their members |
@@ -1455,6 +1455,22 @@ A line that should be stored only if the write was committed, such as "board 12 
 - the attachment files, which are moved to the trash once the delete has committed.
 
 Archiving is not deleting: `archiveCard()` stamps the card and writes the activity entry and touches nothing else. A card that is already archived it leaves as it is, with no new stamp, no entry and no live update, so a retried archive keeps the first archive time (card 2285). `deleteUser()` is in the same module. What each delete removes and leaves is set out in [Data Model](data-model.md#what-a-delete-removes).
+
+### Settings that go with their setter
+
+Since card 2397 (2026-10-22), migration `0059_add_setting_setters.sql` adds one table, `setting_setters` (`setting` and `place` text, the key `PRIMARY KEY(setting, place)`, `user_id` integer, nullable for a place recorded as nobody's, `REFERENCES users(id) ON DELETE CASCADE`, `idx_setting_setters_user_id`), and `src/lib/server/setting-setters.ts` reads and writes it. For each setting that sends mail or backups somewhere it names who put it at each place it has been, the place a SHA-256 digest of what decides where it sends: `mail` (every `smtp_*` row of `settings`, as one; its place the host, port, user and `allowInsecure`), `app_url` (an address), and `backup_destination:<name>` (its place `destinationPlace()` in `backup-secrets.ts`, card 2270's `elsewhere` rule). A setting's setter is the account recorded for the place it is at now, so a setting changed and changed back is its first setter's again (the second code review), unless the superadmin moves it or a secret is typed with the move, which takes the place over, and a setting saved before 0059 leaves its place recorded as nobody's; each account keeps one row per setting (the third); a sender's name or address, a secret typed again for the same place, an App URL cleared or an SFTP host key confirmed moves nothing (the first). `settingsHeldBy()` reads what a removal would take, from each account for the admin page's load, or from one for `GET /api/users/:id`, which the users panel reads just before it asks to make an account a user or delete it. The three settings routes record the setter inside their `writeAs` (`recordMailSetters`, `recordDestinationSetters`, `recordDestinationSetter` after a Google Drive Connect), and the two paths that stop an account being an administrator, the role change of `PUT /api/users/:id` and `deleteUser()`, call `removeSettingsSetBy` in their own transaction, so the role change or the delete and every removal commit together or not at all; the `WARN` lines under `SMTP` and `BACKUP` are queued with `afterCommit`. A table rather than a column, because the destinations are one JSON row and `settings` is one of the six reconciled tables. Settings from before the migration are at a place with no row, have no setter and stay in force. In the same group (card 2398), `PUT /api/admin/backup` refuses to anyone but the superadmin a save that lowers Keep Last, removes a destination or switches the schedule off, asked of the caller inside its `writeAs`. See [Settings Go With Their Setter](authentication-security.md#settings-go-with-their-setter-card-2397) and [Data Model](data-model.md).
+
+```mermaid
+flowchart LR
+    Smtp["PUT /api/admin/smtp"] -->|"recordMailSetters"| T[("setting_setters")]
+    Backup["PUT /api/admin/backup"] -->|"recordDestinationSetters"| T
+    Connect["Google Drive Connect"] -->|"recordDestinationSetter"| T
+    Role["PUT /api/users/:id<br/>role to user"] -->|"removeSettingsSetBy"| R["smtp_* rows, app_url,<br/>their destinations"]
+    Del["deleteUser()"] -->|"removeSettingsSetBy"| R
+    T -.->|"names whose, by place"| R
+    Held["admin page load,<br/>GET /api/users/:id"] -->|"settingsHeldBy"| T
+    Users[("users")] -->|"ON DELETE CASCADE"| T
+```
 
 Each function in the module opens its own `inTransaction` and checks no access. A route calls it inside the transaction in which it read the row and checked the caller, which makes the delete a savepoint of the route's transaction.
 

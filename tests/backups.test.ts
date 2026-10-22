@@ -2744,10 +2744,10 @@ describe('the backup settings’ secrets: masked in every answer, kept only for 
 		`Backup destination "${name}": a connected Google Drive destination keeps its connection only while its name, sign-in method, ` +
 		`folder ID and client ID are as they were when it was connected, and ${because}. ` +
 		(narrow
-			? 'To change them, remove the destination, add it again, and connect it. To keep using a folder DumpFire made, give its ' +
+			? "To change them, remove the destination (removing a destination is the superadmin's), add it again, and connect it. To keep using a folder DumpFire made, give its " +
 				'Folder ID again (shown on the destination as Folder:); Connect checks it can reach it.'
 			: "To change them, first remove DumpFire's access in the Google account (Google Account, Security, Your connections to " +
-				'third-party apps and services), then remove this destination, add it again with the Folder ID left empty, and connect it.');
+				"third-party apps and services), then remove this destination (removing a destination is the superadmin's), add it again with the Folder ID left empty, and connect it.");
 
 	beforeEach(() => {
 		store(STORED);
@@ -2952,7 +2952,8 @@ describe('the backup settings’ secrets: masked in every answer, kept only for 
 		const before = snapshotDb();
 		const words =
 			'Backup destination "NAS": more than one saved destination matches it, so its saved secret cannot be told apart. ' +
-			'Remove the destinations named "NAS" (the page\'s Remove removes every one of that name) and add it once with its secret typed.';
+			'Remove the destinations named "NAS" (the page\'s Remove removes every one of that name, and removing a destination is the ' +
+			"superadmin's) and add it once with its secret typed.";
 
 		const one = (await shown())[0];
 		const saved = await put([one]);
@@ -2992,7 +2993,8 @@ describe('the backup settings’ secrets: masked in every answer, kept only for 
 		const resent = await put(await shown());
 		expect(resent.status).toBe(400);
 		expect(resent.body.message).toBe(
-			'Two backup destinations are named "NAS". Remove the destinations named "NAS" (the page\'s Remove removes every one of that name) and add it once with its secret typed.'
+			'Two backup destinations are named "NAS". Remove the destinations named "NAS" (the page\'s Remove removes every one of that ' +
+				"name, and removing a destination is the superadmin's) and add it once with its secret typed."
 		);
 		expectUnchanged(stillTwo);
 	});
@@ -3651,9 +3653,10 @@ describe('Google Drive asks only for the files DumpFire makes (card 2188)', () =
 		'could be written there. Nothing was changed: the destination keeps the connection it had. ' +
 		(wide
 			? "To use a folder DumpFire makes itself, first remove DumpFire's access in the Google account (Google Account, Security, " +
-				'Your connections to third-party apps and services), then remove this destination, add it again with the Folder ID left ' +
-				'empty, and connect it.'
-			: 'To use a folder DumpFire makes itself, remove this destination, add it again with the Folder ID left empty, and connect it.');
+				'Your connections to third-party apps and services), then have the superadmin remove this destination, add it again with ' +
+				'the Folder ID left empty, and connect it.'
+			: 'To use a folder DumpFire makes itself, have the superadmin remove this destination, then add it again with the Folder ID ' +
+				'left empty, and connect it.');
 	const CHANGED_MEANWHILE = 'The destination was changed or removed while it was being connected, so the connection was not saved. Connect it again.';
 
 	/** Drive, stood in for: what `files.get`, `files.create`, `files.delete` and `files.list` were asked, and answer. */
@@ -4292,8 +4295,8 @@ describe('the Scheduled Backups panel on the admin page (cards 2188 and 2190, sl
 	/** R2's line under a connection that reaches all of Drive. */
 	const NARROW_IT =
 		"Connected with access to all of this Google account's Drive. To narrow it: first remove DumpFire's access in the " +
-		'Google account (Google Account, Security, Your connections to third-party apps and services), then remove this ' +
-		'destination, add it again with the Folder ID left empty, and connect it. See the admin guide, Configuring Backups.';
+		'Google account (Google Account, Security, Your connections to third-party apps and services), then have the superadmin ' +
+		'remove this destination, add it again with the Folder ID left empty, and connect it. See the admin guide, Configuring Backups.';
 	/** The OAuth hint in both forms (slice 4 as R5 has it), the folder's name from the server's own function. */
 	const OAUTH_HINT =
 		'DumpFire asks Google only for the files it makes. Leave the Folder ID empty: when you connect, DumpFire makes a ' +
@@ -4303,7 +4306,7 @@ describe('the Scheduled Backups panel on the admin page (cards 2188 and 2190, sl
 	/** Decision 3's line in the inline edit form. */
 	const KEPT_ONLY =
 		"A saved password, key or secret is kept only while the destination's name and settings stay as they were saved: " +
-		'type it again when you change them. A connected Google Drive destination is removed, added again and connected.';
+		'type it again when you change them. A connected Google Drive destination is removed by the superadmin, added again and connected.';
 
 	it('reads a connection’s recorded scope and the folder’s name with the server’s own functions, and imports nothing of the server’s', () => {
 		// The scope in the panel's rows, the folder's name in the forms.
@@ -4382,9 +4385,11 @@ describe('the Scheduled Backups panel on the admin page (cards 2188 and 2190, sl
 	});
 
 	it('shows a refused save or Connect in the server’s own words (decisions 3, 8 and 9)', () => {
-		// The save through `sent`, which the page and its panels share (card 2281, slice C1a).
+		// The Test through `sent`, which the page and its panels share (card 2281, slice C1a); the save
+		// reads the server's words itself, to add that the settings were read again (the card 2398 review).
 		expect(read('src/lib/admin/send.ts')).toContain('showToast(await failureMessage(res, fallback), \'error\', started);');
-		expect(scriptOf(panel)).toContain("import { sent, showToast } from '$lib/admin/send';");
+		expect(scriptOf(panel)).toContain("import { NO_ANSWER, sent, showToast } from '$lib/admin/send';");
+		expect(scriptOf(panel)).toContain("refused = await failureMessage(res, 'Failed to save backup settings');");
 		expect(scriptOf(connectBox)).toContain("showToast(said || 'Failed to connect', 'error', started);");
 	});
 });

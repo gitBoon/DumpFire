@@ -123,6 +123,8 @@ beforeEach(() => {
 			if (url === '/api/admin/backup' && method === 'POST') return Response.json({ results: [{ status: 'success' }] });
 			if (url.startsWith('/api/admin/backup/gdrive/auth')) return Response.json({ authUrl: 'https://accounts.google.com/o/oauth2/v2/auth?state=s1' });
 			if (url === '/api/admin/smtp') return Response.json({ appUrl: 'https://kanban.example.com', appUrlFrom: 'setting', appUrlEnvSet: false });
+			// What an account holds, read before a role change or a delete is asked (card 2397's second review): nothing, unless a case says.
+			if (/^\/api\/users\/\d+$/.test(url) && method === 'GET') return Response.json({ id: Number(url.split('/').at(-1)), settingsSet: null });
 			return Response.json({ message: 'Not found' }, { status: 404 });
 		})
 	);
@@ -152,6 +154,12 @@ async function settle() {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		flushSync();
 	}
+}
+
+/** Long enough for the toast's region to be filled again after it is emptied (`SAY_AFTER_MS` in Toast.svelte, 100 ms). */
+async function sayingTime() {
+	await new Promise((resolve) => setTimeout(resolve, 150));
+	flushSync();
 }
 
 const buttonNamed = (within: ParentNode, text: string) =>
@@ -366,6 +374,182 @@ describe('the Scheduled Backups panel, mounted', () => {
 		expect(target.textContent).not.toContain('Connect Google Drive');
 		await settle();
 		expect(document.activeElement).toBe(opener);
+	});
+});
+
+// Card 2398: lowering Keep Last, removing a destination and switching the
+// schedule off are the superadmin's; the server refuses them to anyone else.
+describe('the Scheduled Backups panel for an administrator and for the superadmin (card 2398)', () => {
+	const RULE = 'Lowering Keep Last, removing a destination or switching the schedule off needs the superadmin.';
+	const toastsShown = () => {
+		let shown: { message: string }[] = [];
+		toasts.subscribe((list) => (shown = list as { message: string }[]))();
+		return shown.map((toast) => toast.message);
+	};
+	/** A change as the browser makes it: the value set, then `change`, which `bind:value` and `onchange` both hear. */
+	const changeTo = (box: HTMLInputElement | HTMLSelectElement, value: string) => {
+		box.value = value;
+		if (box instanceof HTMLInputElement) box.dispatchEvent(new Event('input', { bubbles: true }));
+		box.dispatchEvent(new Event('change', { bubbles: true }));
+		flushSync();
+	};
+	const keepLast = (target: HTMLElement) => target.querySelector<HTMLInputElement>('input[type="number"]')!;
+	const schedule = (target: HTMLElement) => target.querySelector<HTMLSelectElement>('.sched-row select')!;
+	const remove = (target: HTMLElement) => target.querySelector<HTMLButtonElement>('.dest-card button.danger')!;
+	/** Every toast gone: an earlier case's may still be up. */
+	const dismissAll = () => {
+		let shown: { id: number }[] = [];
+		toasts.subscribe((list) => (shown = list))();
+		for (const toast of shown) toasts.dismiss(toast.id);
+	};
+
+	beforeEach(dismissAll);
+	afterEach(dismissAll);
+
+	it('shows an administrator 🗑️ aria-disabled, not disabled, saying the rule when pressed, with no confirm and nothing sent', async () => {
+		const confirm = vi.fn();
+		const target = draw(ScheduledBackupsPanel, { confirm, isSuperadmin: false });
+		await settle();
+
+		const button = remove(target);
+		expect(button.getAttribute('aria-disabled')).toBe('true');
+		expect(button.disabled).toBe(false);
+		expect(button.title).toBe('Removing a destination needs the superadmin');
+		expect(target.querySelector('.sched-note')!.textContent).toBe(`🔒 ${RULE}`);
+
+		button.click();
+		await settle();
+		expect(confirm).not.toHaveBeenCalled();
+		expect(asked('PUT /api/admin/backup')).toEqual([]);
+		expect(toastsShown()).toEqual([RULE]);
+	});
+
+	it('puts an administrator’s lower Keep Last back, sending nothing, and sends a higher one', async () => {
+		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn(), isSuperadmin: false });
+		await settle();
+		expect(keepLast(target).min).toBe('7');
+
+		changeTo(keepLast(target), '3');
+		await settle();
+		expect(keepLast(target).value).toBe('7');
+		expect(asked('PUT /api/admin/backup')).toEqual([]);
+		expect(toastsShown()).toEqual([RULE]);
+
+		changeTo(keepLast(target), '9');
+		await settle();
+		expect(asked('PUT /api/admin/backup').map((request) => (request.body as { retention: number }).retention)).toEqual([9]);
+		// Saved: 9 is now the least.
+		expect(keepLast(target).min).toBe('9');
+	});
+
+	it('marks Disabled for an administrator, puts the schedule back when it is chosen, sending nothing, and sends another schedule', async () => {
+		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn(), isSuperadmin: false });
+		await settle();
+		const off = schedule(target).querySelector<HTMLOptionElement>('option[value="disabled"]')!;
+		expect(off.textContent).toBe('Disabled (superadmin only)');
+		expect(off.getAttribute('aria-disabled')).toBe('true');
+
+		changeTo(schedule(target), 'disabled');
+		await settle();
+		expect(schedule(target).value).toBe('daily');
+		expect(asked('PUT /api/admin/backup')).toEqual([]);
+		expect(toastsShown()).toEqual([RULE]);
+
+		changeTo(schedule(target), 'weekly');
+		await settle();
+		expect(asked('PUT /api/admin/backup').map((request) => (request.body as { schedule: string }).schedule)).toEqual(['weekly']);
+	});
+
+	it('leaves the superadmin’s panel as it was: 🗑️ asks the confirm, Keep Last lowered and Disabled are sent, and no rule is shown', async () => {
+		const confirm = vi.fn();
+		const target = draw(ScheduledBackupsPanel, { confirm, isSuperadmin: true });
+		await settle();
+
+		expect(target.querySelector('.sched-note')).toBeNull();
+		expect(remove(target).hasAttribute('aria-disabled')).toBe(false);
+		expect(remove(target).hasAttribute('title')).toBe(false);
+		expect(keepLast(target).min).toBe('1');
+		const off = schedule(target).querySelector<HTMLOptionElement>('option[value="disabled"]')!;
+		expect(off.textContent).toBe('Disabled');
+		expect(off.hasAttribute('aria-disabled')).toBe(false);
+
+		remove(target).click();
+		expect(confirm).toHaveBeenCalledTimes(1);
+		changeTo(keepLast(target), '3');
+		await settle();
+		changeTo(schedule(target), 'disabled');
+		await settle();
+		expect(asked('PUT /api/admin/backup').map((request) => {
+			const body = request.body as { retention: number; schedule: string };
+			return [body.retention, body.schedule];
+		})).toEqual([
+			[3, 'daily'],
+			[3, 'disabled']
+		]);
+		expect(toastsShown()).not.toContain(RULE);
+	});
+
+	// The card 2398 review: a refused save left the controls showing what was refused.
+	it('reads the settings again quietly after a refused save, so Keep Last and the list show what the server holds, and says so', async () => {
+		answer = (what) => (what === 'PUT /api/admin/backup' ? Response.json({ message: 'Forbidden' }, { status: 403 }) : undefined);
+		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn(), isSuperadmin: false });
+		await settle();
+
+		changeTo(keepLast(target), '9');
+		await settle();
+
+		expect(asked('PUT /api/admin/backup')).toHaveLength(1);
+		expect(sent.map((request) => request.what)).toEqual(['GET /api/admin/backup', 'PUT /api/admin/backup', 'GET /api/admin/backup']);
+		expect(keepLast(target).value).toBe('7');
+		expect(keepLast(target).min).toBe('7');
+		expect(toastsShown()).toEqual(['Forbidden. The settings shown are the ones the server holds.']);
+
+		// A destination added and refused: off the list again, the list as the server holds it.
+		dismissAll();
+		buttonNamed(target, '+ Add Destination').click();
+		flushSync();
+		type(target.querySelector<HTMLInputElement>('input[placeholder="Destination name (e.g. Production NAS)"]')!, 'Office');
+		buttonNamed(target, 'Add Destination').click();
+		await settle();
+		expect([...target.querySelectorAll('.dest-name')].map((name) => name.textContent)).toEqual(['NAS', 'Drive']);
+		expect(asked('GET /api/admin/backup')).toHaveLength(3);
+		// Still in the form as typed.
+		expect(target.querySelector<HTMLInputElement>('input[placeholder="Destination name (e.g. Production NAS)"]')!.value).toBe('Office');
+	});
+
+	it('says so where the settings cannot be read back after a refused save', async () => {
+		let reads = 0;
+		answer = (what) => {
+			if (what === 'PUT /api/admin/backup') return Response.json({ message: 'Forbidden' }, { status: 403 });
+			if (what === 'GET /api/admin/backup' && ++reads > 1) return Response.json({ message: 'Server error' }, { status: 500 });
+			return undefined;
+		};
+		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn(), isSuperadmin: true });
+		await settle();
+
+		changeTo(keepLast(target), '9');
+		await settle();
+
+		expect(toastsShown()).toEqual(['Forbidden. The page could not read the settings back: reload it before changing them again.']);
+	});
+
+	// The card 2398 review: a rename is the old destination removed, said under the name before it is tried.
+	it('says under the edit form’s name, to an administrator alone, that renaming needs the superadmin', async () => {
+		const hint = 'Renaming needs the superadmin: a destination renamed is the old one removed.';
+		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn(), isSuperadmin: false });
+		await settle();
+		buttonNamed(target.querySelector('.dest-card')!, '✏️ Edit').click();
+		flushSync();
+		expect(target.querySelector('.dest-edit-form .dest-name-hint')!.textContent!.trim()).toBe(hint);
+		unmount(drawn!.component);
+		drawn!.target.remove();
+
+		const chief = draw(ScheduledBackupsPanel, { confirm: vi.fn(), isSuperadmin: true });
+		await settle();
+		buttonNamed(chief.querySelector('.dest-card')!, '✏️ Edit').click();
+		flushSync();
+		expect(chief.querySelector('.dest-edit-form')).not.toBeNull();
+		expect(chief.querySelector('.dest-name-hint')).toBeNull();
 	});
 });
 
@@ -623,6 +807,7 @@ describe('the users panel, mounted', () => {
 		const target = draw(UsersPanel, { data: pageData, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
 
 		target.querySelector<HTMLButtonElement>('button[title="Delete user"]')!.click();
+		await settle();
 		expect(confirm).toHaveBeenCalledTimes(1);
 		expect(confirm.mock.calls[0][0]).toBe('Delete User');
 		await confirm.mock.calls[0][2]();
@@ -645,6 +830,7 @@ describe('the users panel, mounted', () => {
 		const target = draw(UsersPanel, { data: { ...pageData, teams }, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
 
 		target.querySelector<HTMLButtonElement>('button[title="Delete user"]')!.click();
+		await settle();
 		expect(confirm).toHaveBeenCalledTimes(1);
 		const [title, message] = confirm.mock.calls[0];
 		expect(title).toBe('Delete User');
@@ -656,11 +842,12 @@ describe('the users panel, mounted', () => {
 		expect(asked('DELETE /api/users/2')).toHaveLength(1);
 	});
 
-	it('says nothing of teams in the confirmation for an account that alone owns none (card 2380)', () => {
+	it('says nothing of teams in the confirmation for an account that alone owns none (card 2380)', async () => {
 		const confirm = vi.fn();
 		const target = draw(UsersPanel, { data: pageData, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
 
 		target.querySelector<HTMLButtonElement>('button[title="Delete user"]')!.click();
+		await settle();
 		expect(confirm.mock.calls[0][1]).toMatch(/^Delete user "bob"\? Their comments, /);
 		expect(confirm.mock.calls[0][1]).not.toContain('only owner');
 	});
@@ -686,6 +873,211 @@ describe('the users panel, mounted', () => {
 
 		expect(asked('PUT /api/users/2/password').map((request) => request.body)).toEqual([{ password: 'a-new-password' }]);
 		expect(target.textContent).not.toContain('Enter a new password for bob.');
+	});
+});
+
+// Card 2397: an administrator made a user, or deleted, takes with them the mail
+// settings, the App URL and the destinations they last set; the answer says so.
+describe('the users panel says what a role change or a delete removed (card 2397)', () => {
+	const toastsShown = () => {
+		let shown: { message: string; type: string }[] = [];
+		toasts.subscribe((list) => (shown = list as { message: string; type: string }[]))();
+		return shown.map((toast) => [toast.type, toast.message]);
+	};
+	const REMOVED = { mail: true, appUrl: true, destinations: ["Bob's", 'NAS'] };
+	/** The settings in words, as the confirmation and the warning both say them (the card 2397 review). */
+	const NAMED =
+		'the mail settings, so no mail is sent, invites and password resets included, until an administrator sets them again in Email / SMTP; ' +
+		"the App URL, so the links in mail point to the server's APP_URL, or else its ORIGIN; the backup destinations \"Bob's\", \"NAS\"";
+	const WORDS = `What bob had set was removed: ${NAMED}.`;
+	/** Bob as an administrator the page's data says set `REMOVED`, for the confirmations. */
+	const bobHolding = { ...bob, role: 'admin', settingsSet: REMOVED };
+	const holdingData = { ...pageData, users: [pageData.users[0], bobHolding] };
+	/** Bob's picker set to `role`, as the browser changes it. */
+	const choose = (target: HTMLElement, role: string) => {
+		const picker = target.querySelector<HTMLSelectElement>('select[aria-label="bob\'s role"]')!;
+		picker.value = role;
+		picker.dispatchEvent(new Event('change', { bubbles: true }));
+		flushSync();
+	};
+	const changeButton = (target: HTMLElement) => target.querySelector<HTMLButtonElement>('button[aria-label="Change bob\'s role"]')!;
+	/** Every toast gone: an earlier case's may still be up. */
+	const dismissAll = () => {
+		let shown: { id: number }[] = [];
+		toasts.subscribe((list) => (shown = list))();
+		for (const toast of shown) toasts.dismiss(toast.id);
+	};
+
+	beforeEach(dismissAll);
+	afterEach(dismissAll);
+
+	it('says what went with bob’s role in a warning that stays, and tells the page what went', async () => {
+		answer = (what) => (what === 'PUT /api/users/2' ? Response.json({ id: 2, role: 'user', invitesEnded: 0, settingsRemoved: REMOVED }) : undefined);
+		const settingsRemoved = vi.fn();
+		const target = draw(UsersPanel, { data: pageData, isSuperadmin: true, confirm: vi.fn(), loadMailStatus: vi.fn(), settingsRemoved, inviteLink: null });
+		choose(target, 'admin');
+
+		changeButton(target).click();
+		await settle();
+
+		expect(toastsShown()).toEqual([['warning', `Role updated. ${WORDS}`]]);
+		expect(settingsRemoved.mock.calls).toEqual([[REMOVED]]);
+	});
+
+	it('says what went with bob’s account, and tells the page what went', async () => {
+		const went = { mail: false, appUrl: false, destinations: ["Bob's"] };
+		answer = (what) => (what === 'DELETE /api/users/2' ? Response.json({ success: true, settingsRemoved: went }) : undefined);
+		const confirm = vi.fn();
+		const settingsRemoved = vi.fn();
+		const target = draw(UsersPanel, { data: pageData, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), settingsRemoved, inviteLink: null });
+
+		target.querySelector<HTMLButtonElement>('button[title="Delete user"]')!.click();
+		await settle();
+		await confirm.mock.calls[0][2]();
+		await settle();
+
+		expect(toastsShown()).toEqual([['warning', 'User deleted. What bob had set was removed: the backup destination "Bob\'s".']]);
+		expect(settingsRemoved.mock.calls).toEqual([[went]]);
+	});
+
+	/** Bob's holdings as the server answers them just before a question (the second review), and the PUT's and DELETE's answers. */
+	const holding = (what: string) =>
+		what === 'GET /api/users/2'
+			? Response.json({ id: 2, settingsSet: REMOVED })
+			: what === 'PUT /api/users/2'
+				? Response.json({ id: 2, role: 'user', invitesEnded: 0, settingsRemoved: REMOVED })
+				: undefined;
+
+	// The card 2397 review: the role picker sent at once, and the delete's confirmation named nothing of the settings.
+	// Its second review: what bob holds is read just before asking, whatever the page's data says.
+	it('asks first, naming what would go, before bob is made a user, and sends the change only on Confirm', async () => {
+		answer = holding;
+		const confirm = vi.fn();
+		const target = draw(UsersPanel, { data: holdingData, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
+		choose(target, 'user');
+
+		changeButton(target).click();
+		await settle();
+
+		expect(asked('GET /api/users/2')).toHaveLength(1);
+		expect(asked('PUT /api/users/2')).toEqual([]);
+		expect(confirm).toHaveBeenCalledTimes(1);
+		expect(confirm.mock.calls[0].slice(0, 2)).toEqual(['Change Role', `Make bob a user? This removes what they set: ${NAMED}.`]);
+		await confirm.mock.calls[0][2]();
+		await settle();
+		expect(asked('PUT /api/users/2').map((request) => request.body)).toEqual([{ role: 'user' }]);
+	});
+
+	it('sends a role change at once where nothing would go: bob made an administrator, or made a user holding nothing (the controls)', async () => {
+		answer = (what) => (what === 'PUT /api/users/2' ? Response.json({ id: 2, role: 'admin', invitesEnded: 0 }) : undefined);
+		const confirm = vi.fn();
+		const target = draw(UsersPanel, { data: pageData, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
+		choose(target, 'admin');
+		changeButton(target).click();
+		await settle();
+		expect(confirm).not.toHaveBeenCalled();
+		expect(asked('PUT /api/users/2')).toHaveLength(1);
+		// Made an administrator: nothing goes, so nothing is read first.
+		expect(asked('GET /api/users/2')).toEqual([]);
+		unmount(drawn!.component);
+		drawn!.target.remove();
+
+		const plain = { ...pageData, users: [pageData.users[0], { ...bob, role: 'admin', settingsSet: null }] };
+		const again = draw(UsersPanel, { data: plain, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
+		choose(again, 'user');
+		changeButton(again).click();
+		await settle();
+		expect(confirm).not.toHaveBeenCalled();
+		expect(asked('PUT /api/users/2')).toHaveLength(2);
+		expect(asked('GET /api/users/2')).toHaveLength(1);
+	});
+
+	it('names in the delete’s confirmation what would go with bob’s account', async () => {
+		answer = holding;
+		const confirm = vi.fn();
+		const target = draw(UsersPanel, { data: holdingData, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
+
+		target.querySelector<HTMLButtonElement>('button[title="Delete user"]')!.click();
+		await settle();
+
+		expect(confirm.mock.calls[0][1]).toMatch(/^Delete user "bob"\? Their comments, /);
+		expect(confirm.mock.calls[0][1]).toMatch(new RegExp(` Their XP stays on the leaderboard\\. What they set goes too: ${NAMED.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.$`));
+	});
+
+	// The card 2397 second review: the page's data is as old as the page. Another administrator took a
+	// setting over, or gave one back, since it was read; the question follows the server.
+	it('asks before bob is made a user, or deleted, where the server says he holds settings the page’s data does not name', async () => {
+		answer = holding;
+		const confirm = vi.fn();
+		const stale = { ...pageData, users: [pageData.users[0], { ...bob, role: 'admin', settingsSet: null }] };
+		const target = draw(UsersPanel, { data: stale, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
+		choose(target, 'user');
+
+		changeButton(target).click();
+		await settle();
+		target.querySelector<HTMLButtonElement>('button[title="Delete user"]')!.click();
+		await settle();
+
+		expect(asked('PUT /api/users/2')).toEqual([]);
+		expect(confirm.mock.calls.map((call) => call[0])).toEqual(['Change Role', 'Delete User']);
+		expect(confirm.mock.calls[0][1]).toBe(`Make bob a user? This removes what they set: ${NAMED}.`);
+		expect(confirm.mock.calls[1][1]).toMatch(/ What they set goes too: the mail settings, /);
+	});
+
+	it('sends the role change at once, and names nothing in the delete’s confirmation, where the server says he no longer holds what the page’s data names', async () => {
+		const confirm = vi.fn();
+		const target = draw(UsersPanel, { data: holdingData, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
+		target.querySelector<HTMLButtonElement>('button[title="Delete user"]')!.click();
+		await settle();
+		expect(confirm.mock.calls[0][1]).not.toContain('What they set');
+		choose(target, 'user');
+
+		changeButton(target).click();
+		await settle();
+
+		expect(confirm).toHaveBeenCalledTimes(1);
+		expect(asked('PUT /api/users/2').map((request) => request.body)).toEqual([{ role: 'user' }]);
+	});
+
+	it.each([
+		{ how: 'refused', fails: () => Response.json({ message: 'Server error' }, { status: 500 }) },
+		{ how: 'not answered', fails: () => Promise.reject(new TypeError('Failed to fetch')) }
+	])('asks all the same, in general words, where the read of what bob holds is $how', async ({ fails }) => {
+		answer = (what) => (what === 'GET /api/users/2' ? (fails() as Response | Promise<Response>) : undefined);
+		const confirm = vi.fn();
+		const plain = { ...pageData, users: [pageData.users[0], { ...bob, role: 'admin', settingsSet: null }] };
+		const target = draw(UsersPanel, { data: plain, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
+		choose(target, 'user');
+		const UNREAD =
+			'What they set of the mail settings, the App URL and the backup destinations could not be read just now: whatever of it is still theirs goes too.';
+
+		changeButton(target).click();
+		await settle();
+		target.querySelector<HTMLButtonElement>('button[title="Delete user"]')!.click();
+		await settle();
+
+		expect(asked('PUT /api/users/2')).toEqual([]);
+		expect(confirm.mock.calls[0].slice(0, 2)).toEqual(['Change Role', `Make bob a user? ${UNREAD}`]);
+		expect(confirm.mock.calls[1][1]).toMatch(/^Delete user "bob"\? Their comments, /);
+		expect(confirm.mock.calls[1][1].endsWith(` ${UNREAD}`)).toBe(true);
+		await confirm.mock.calls[0][2]();
+		await settle();
+		expect(asked('PUT /api/users/2').map((request) => request.body)).toEqual([{ role: 'user' }]);
+	});
+
+	it('says only that it was done, and asks nothing of the page, where the answer names nothing removed', async () => {
+		answer = (what) => (what === 'DELETE /api/users/2' ? Response.json({ success: true }) : undefined);
+		const confirm = vi.fn();
+		const settingsRemoved = vi.fn();
+		const target = draw(UsersPanel, { data: pageData, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), settingsRemoved, inviteLink: null });
+
+		target.querySelector<HTMLButtonElement>('button[title="Delete user"]')!.click();
+		await settle();
+		await confirm.mock.calls[0][2]();
+		await settle();
+
+		expect(toastsShown()).toEqual([['success', 'User deleted']]);
+		expect(settingsRemoved).not.toHaveBeenCalled();
 	});
 });
 
@@ -1275,6 +1667,7 @@ describe('an account’s role on the users panel, saved with Change (card 2376)'
 		choose(rolePicker(target)!, 'admin');
 		const confirm = props.confirm as unknown as ReturnType<typeof vi.fn>;
 		target.querySelector<HTMLButtonElement>('button[title="Delete user"]')!.click();
+		await settle();
 		await confirm.mock.calls[0][2]();
 		await settle();
 		expect(asked('DELETE /api/users/2')).toHaveLength(1);
@@ -1683,5 +2076,70 @@ describe('the admin page, mounted with its panels', () => {
 		const dialog = document.querySelector<HTMLElement>('[role="alertdialog"][aria-label="The invite mail was not sent"]')!;
 		expect(dialog.textContent).toContain('Why it failed is under Email / SMTP below.');
 		expect(dialog.textContent).not.toContain('The superadmin can see why');
+	});
+
+	// Card 2398: the page tells the backup panel who is reading it.
+	it('shows an administrator the superadmin’s rule in Scheduled Backups, with 🗑️ aria-disabled, and the superadmin neither (card 2398)', async () => {
+		const target = draw(AdminPage, { data: asAdministrator });
+		await settle();
+		expect(target.querySelector('.sched-note')!.textContent).toContain('needs the superadmin');
+		expect(target.querySelector('.dest-card button.danger')!.getAttribute('aria-disabled')).toBe('true');
+		unmount(drawn!.component);
+		drawn!.target.remove();
+
+		const chief = draw(AdminPage, { data: asSuperadmin });
+		await settle();
+		expect(chief.querySelector('.sched-note')).toBeNull();
+		expect(chief.querySelector('.dest-card button.danger')!.hasAttribute('aria-disabled')).toBe(false);
+	});
+
+	// Card 2397: settings removed with an account are read again by the panels that show them, and
+	// (its review) only by those: a panel whose settings did not change keeps what is open in it.
+	it.each([
+		{ went: 'the mail settings', removed: { mail: true, appUrl: false, destinations: [] }, mail: 4, backup: 1 },
+		{ went: 'the App URL', removed: { mail: false, appUrl: true, destinations: [] }, mail: 4, backup: 1 },
+		{ went: 'a destination', removed: { mail: false, appUrl: false, destinations: ['NAS'] }, mail: 2, backup: 2 },
+		{ went: 'all three', removed: { mail: true, appUrl: true, destinations: ['NAS'] }, mail: 4, backup: 2 }
+	])('draws again only the panels that show what a delete removed: $went (card 2397)', async ({ removed, mail, backup }) => {
+		answer = (what) => (what === 'DELETE /api/users/2' ? Response.json({ success: true, settingsRemoved: removed }) : undefined);
+		const target = draw(AdminPage, { data: asSuperadmin });
+		await settle();
+		expect(mailReads()).toBe(2);
+		expect(asked('GET /api/admin/backup')).toHaveLength(1);
+
+		target.querySelector<HTMLButtonElement>('button[title="Delete user"]')!.click();
+		await settle();
+		buttonNamed(document.body, 'Confirm').click();
+		await settle();
+
+		expect(asked('DELETE /api/users/2')).toHaveLength(1);
+		expect(mailReads()).toBe(mail);
+		expect(asked('GET /api/admin/backup')).toHaveLength(backup);
+		// Said as a warning, politely, and kept until closed (the review): through the toast's region that
+		// is always on the page, not as an alert, and not by the toast itself as well (the second review).
+		const warning = document.querySelector<HTMLElement>('.toast-warning')!;
+		expect(warning.hasAttribute('role')).toBe(false);
+		expect(warning.querySelector('.toast-icon')!.textContent!.trim()).toBe('⚠️');
+		const said = document.querySelector<HTMLElement>('.toast-said')!;
+		expect(said.getAttribute('role')).toBe('status');
+		const words = warning.querySelector('.toast-msg')!.textContent!;
+		await sayingTime();
+		expect(said.textContent).toBe(words);
+		// A warning that goes by itself, as the board's WIP-limit one does, is still an alert (the second review),
+		// and the region is not said again for it.
+		toasts.add('Over the WIP limit', 'warning');
+		flushSync();
+		const passing = [...document.querySelectorAll<HTMLElement>('.toast-warning')].find((t) => t.textContent!.includes('Over the WIP limit'))!;
+		expect(passing.getAttribute('role')).toBe('alert');
+		expect(said.textContent).toBe(words);
+		// The same staying warning again: the region empties, then says it again (the third review).
+		toasts.add(words, 'warning', undefined, true);
+		flushSync();
+		expect(said.textContent).toBe('');
+		await sayingTime();
+		expect(said.textContent).toBe(words);
+		let shown: { id: number }[] = [];
+		toasts.subscribe((list) => (shown = list))();
+		for (const toast of shown) toasts.dismiss(toast.id);
 	});
 });

@@ -376,6 +376,16 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 	].join('\n'),
 	"CREATE INDEX `idx_sessions_user_id` ON `sessions` (`user_id`);",
 	[
+		"CREATE TABLE `setting_setters` (",
+		"\t`setting` text NOT NULL,",
+		"\t`place` text NOT NULL,",
+		"\t`user_id` integer,",
+		"\tPRIMARY KEY(`setting`, `place`),",
+		"\tFOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade",
+		");"
+	].join('\n'),
+	"CREATE INDEX `idx_setting_setters_user_id` ON `setting_setters` (`user_id`);",
+	[
 		"CREATE TABLE `settings` (",
 		"\t`key` text PRIMARY KEY NOT NULL,",
 		"\t`value` text NOT NULL",

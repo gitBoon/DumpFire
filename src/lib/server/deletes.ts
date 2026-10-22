@@ -52,6 +52,7 @@ import { ACTIONS, logActivity, type ActivitySource } from './logActivity';
 import { createLogger } from './logger';
 import { logCardLeftGoal } from './milestones';
 import { moveToTrash, type UploadFile } from './uploads';
+import { removeSettingsSetBy, type SettingsRemoved } from './setting-setters';
 import { stamp } from '$lib/timestamps';
 
 const log = createLogger('DELETE');
@@ -820,6 +821,8 @@ export type UserRemoved = {
 	comments: number;
 	/** Webhooks they set that were on, switched off before they went (card 2168). */
 	webhooksSwitchedOff: number;
+	/** The mail settings, App URL and backup destinations they last changed, removed before they went (card 2397). */
+	settingsRemoved: SettingsRemoved;
 };
 
 /**
@@ -841,8 +844,14 @@ export type UserRemoved = {
  * intruder set sending with nobody named for a reset to reach. The board's
  * owner or an administrator can switch one on again through the API.
  *
+ * The mail settings, the App URL and the backup destinations they last
+ * changed are removed, before the account goes (card 2397,
+ * `removeSettingsSetBy`): a server of theirs would otherwise go on receiving
+ * every mail or backup. Each removal is a WARN line under SMTP or BACKUP once
+ * committed, and the answer names what went.
+ *
  * Nothing else is written here (card 2007's rule, amended by the statements of
- * cards 2171 and 2168). What the keys cascade goes with the user:
+ * cards 2171, 2168 and 2397). What the keys cascade goes with the user:
  * their sessions, API keys, report schedules, comments, memberships and
  * assignments. Their XP is kept: `user_xp` is keyed by name and has no key
  * to a user.
@@ -861,7 +870,7 @@ export function deleteUser(userId: number, actor: DeleteActor): UserRemoved | nu
 					(SELECT COUNT(*) FROM card_comments WHERE user_id = users.id) AS comments
 				FROM users WHERE id = ?`
 			)
-			.get(userId) as Omit<UserRemoved, 'referencesCleared' | 'webhooksSwitchedOff'> | undefined;
+			.get(userId) as Omit<UserRemoved, 'referencesCleared' | 'webhooksSwitchedOff' | 'settingsRemoved'> | undefined;
 		if (!user) return null;
 
 		let referencesCleared = 0;
@@ -883,6 +892,9 @@ export function deleteUser(userId: number, actor: DeleteActor): UserRemoved | nu
 			.map((row) => row.id)
 			.sort((a, b) => a - b);
 		const webhooksSwitchedOff = webhookIds.length;
+		// What they set that sends mail or backups somewhere, while the setter
+		// rows still name them; the key would take only those rows (card 2397).
+		const settingsRemoved = removeSettingsSetBy({ id: userId, username: user.username }, 'deleted', actor);
 		sqlite.prepare('DELETE FROM users WHERE id = ?').run(userId);
 
 		afterCommit(() =>
@@ -895,6 +907,6 @@ export function deleteUser(userId: number, actor: DeleteActor): UserRemoved | nu
 				{ userId: actor.id }
 			)
 		);
-		return { ...user, referencesCleared, webhooksSwitchedOff };
+		return { ...user, referencesCleared, webhooksSwitchedOff, settingsRemoved };
 	});
 }

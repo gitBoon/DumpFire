@@ -8,12 +8,14 @@ import { failureMessage } from '$lib/api';
 import { toasts } from '$lib/stores/toast';
 
 /**
- * The shared toast: a failure stays until it is closed, anything else goes
- * after 3 s. `started` is `toasts.navigation()` as the request began, so
- * that a failure arriving after the page was left is not shown.
+ * The shared toast: a failure stays until it is closed, and so does a
+ * warning (⚠️), for something done that took more with it (card 2397's
+ * review); a success goes after 3 s. `started` is `toasts.navigation()` as
+ * the request began, so that a failure or a warning arriving after the page
+ * was left is not shown.
  */
-export function showToast(msg: string, type: 'success' | 'error' = 'success', started?: number) {
-	toasts.add(msg, type, started);
+export function showToast(msg: string, type: 'success' | 'error' | 'warning' = 'success', started?: number) {
+	toasts.add(msg, type, started, type === 'warning');
 }
 
 /** What a request that got no answer says: it is not known to have failed. */

@@ -11,10 +11,17 @@
   only one of them is open at a time: opening one closes the other (card
   2305). Remove asks first through the page's confirm, the app's
   ConfirmModal (card 2362).
+
+  Lowering Keep Last, removing a destination and switching the schedule off
+  are the superadmin's alone (card 2398): the server refuses them to anyone
+  else. For an administrator who is not the superadmin, 🗑️ and the schedule's
+  Disabled are aria-disabled (not disabled, which would drop the focus) and
+  say why when pressed, Keep Last takes a higher number and puts a lower one
+  back, and one line under the schedule says the rule. Nothing of it is sent.
 -->
 <script lang="ts">
-	import { answerBody } from '$lib/api';
-	import { sent, showToast } from '$lib/admin/send';
+	import { answerBody, failureMessage } from '$lib/api';
+	import { NO_ANSWER, sent, showToast } from '$lib/admin/send';
 	import { destTypeLabels, type BackupHistoryEntry, type DestType } from '$lib/admin/format';
 	import { toasts } from '$lib/stores/toast';
 	import { driveScopeIsNarrow } from '$lib/drive-scope';
@@ -22,8 +29,20 @@
 	import DestinationForm from './DestinationForm.svelte';
 	import GDriveConnectModal from './GDriveConnectModal.svelte';
 
-	/** The page's confirm dialog, which asks before a destination is removed. */
-	let { confirm }: { confirm: (title: string, message: string, action: () => Promise<void>) => void } = $props();
+	/**
+	 * The page's confirm dialog, which asks before a destination is removed;
+	 * and whether the reader is the superadmin, who alone lowers Keep Last,
+	 * removes a destination or switches the schedule off (card 2398). Not
+	 * given, the reader is taken to be an administrator: the server decides
+	 * either way.
+	 */
+	let {
+		confirm,
+		isSuperadmin = false
+	}: { confirm: (title: string, message: string, action: () => Promise<void>) => void; isSuperadmin?: boolean } = $props();
+
+	/** What an administrator is told of what is the superadmin's (card 2398), the server's own words. */
+	const SUPERADMIN_RULE = 'Lowering Keep Last, removing a destination or switching the schedule off needs the superadmin.';
 
 	// ─── Scheduled Backups ────────────────────────────────────────────────
 
@@ -40,6 +59,13 @@
 	let backupNotifyOnFailure = $state(false);
 	let backupNotifyEmail = $state('');
 	let backupDestinations = $state<DestinationUI[]>([]);
+	/**
+	 * Keep Last and the schedule as the server holds them, as last read or
+	 * saved: an administrator's lower Keep Last, or Disabled, is put back to
+	 * these (card 2398).
+	 */
+	let storedRetention = $state(7);
+	let storedSchedule = $state('disabled');
 	let backupHistory = $state<BackupHistoryEntry[]>([]);
 	let showAllHistory = $state(false);
 	let backupLoading = $state(true);
@@ -199,6 +225,8 @@
 				backupNotifyEmail = d.notifyEmail || '';
 				backupDestinations = d.destinations || [];
 				backupHistory = d.history || [];
+				storedRetention = backupRetention;
+				storedSchedule = backupSchedule;
 				read = true;
 			}
 		} catch {}
@@ -209,39 +237,84 @@
 	/** A destination saved whose settings could not be read back: the list may still hold a secret as typed (M3). */
 	const SETTINGS_UNREAD = 'Saved, but the page could not read the settings back: reload the page before editing again.';
 
+	/** What a refused save adds to the server's reason, by whether the settings could be read back. */
+	const SHOWN_AS_HELD = 'The settings shown are the ones the server holds.';
+	const NOT_READ_BACK = 'The page could not read the settings back: reload it before changing them again.';
+
 	/**
 	 * Save the backup settings and destinations as the page shows them. True
-	 * when the server saved them; when it did not, the toast gives its reason,
-	 * and a destination added, changed or removed just before is put back.
+	 * when the server saved them. When it did not, or did not answer, the
+	 * destinations are put back to `putBack` (the list before a destination
+	 * was added, changed or removed) and the settings are read again quietly,
+	 * so that Keep Last, the schedule and the rest show what the server holds
+	 * rather than what was refused (the card 2398 review); the toast gives the
+	 * server's reason and says so.
 	 */
-	async function saveBackupConfig(): Promise<boolean> {
+	async function saveBackupConfig(putBack?: DestinationUI[]): Promise<boolean> {
 		backupSaving = true;
 		try {
-			const res = await sent(
-				() =>
-					fetch('/api/admin/backup', {
-						method: 'PUT',
-						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({
-							schedule: backupSchedule,
-							scheduleTime: backupScheduleTime,
-							scheduleDay: backupScheduleDay,
-							// A box cleared is no number, and is not sent: the retention
-							// stored is kept. `null` is refused (card 2117).
-							retention: backupRetention ?? undefined,
-							notifyOnFailure: backupNotifyOnFailure,
-							notifyEmail: backupNotifyEmail,
-							destinations: backupDestinations
-						})
-					}),
-				'Failed to save backup settings'
-			);
-			if (!res) return false;
-			showToast('Backup settings saved');
-			return true;
+			const started = toasts.navigation();
+			let refused: string;
+			try {
+				const res = await fetch('/api/admin/backup', {
+					method: 'PUT',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						schedule: backupSchedule,
+						scheduleTime: backupScheduleTime,
+						scheduleDay: backupScheduleDay,
+						// A box cleared is no number, and is not sent: the retention
+						// stored is kept. `null` is refused (card 2117).
+						retention: backupRetention ?? undefined,
+						notifyOnFailure: backupNotifyOnFailure,
+						notifyEmail: backupNotifyEmail,
+						destinations: backupDestinations
+					})
+				});
+				if (!res.ok) {
+					refused = await failureMessage(res, 'Failed to save backup settings');
+				} else {
+					showToast('Backup settings saved');
+					storedRetention = backupRetention ?? storedRetention;
+					storedSchedule = backupSchedule;
+					return true;
+				}
+			} catch {
+				refused = NO_ANSWER;
+			}
+			// Put back, then read as the server holds them: the read replaces the list too.
+			if (putBack) backupDestinations = putBack;
+			const read = await loadBackupConfig(true);
+			showToast(`${refused}${/[.!?]$/.test(refused) ? '' : '.'} ${read ? SHOWN_AS_HELD : NOT_READ_BACK}`, 'error', started);
+			return false;
 		} finally {
 			backupSaving = false;
 		}
+	}
+
+	/** Say the superadmin's rule (card 2398), in a toast that stays until closed. */
+	function sayRule() {
+		showToast(SUPERADMIN_RULE, 'error');
+	}
+
+	/** Keep Last changed: a lower number from an administrator is put back and not sent (card 2398). */
+	function changeRetention() {
+		if (!isSuperadmin && typeof backupRetention === 'number' && backupRetention < storedRetention) {
+			backupRetention = storedRetention;
+			sayRule();
+			return;
+		}
+		saveBackupConfig();
+	}
+
+	/** The schedule changed: Disabled from an administrator, where it ran, is put back and not sent (card 2398). */
+	function changeSchedule() {
+		if (!isSuperadmin && backupSchedule === 'disabled' && storedSchedule !== 'disabled') {
+			backupSchedule = storedSchedule;
+			sayRule();
+			return;
+		}
+		saveBackupConfig();
 	}
 
 	async function addDestination() {
@@ -251,11 +324,8 @@
 		const was = backupDestinations;
 		const added = buildDestConfig();
 		backupDestinations = [...backupDestinations, added];
-		if (!(await saveBackupConfig())) {
-			// Not saved: off the list again, and still in the form as typed.
-			backupDestinations = was;
-			return;
-		}
+		// Not saved: off the list again (put back to `was`), and still in the form as typed.
+		if (!(await saveBackupConfig(was))) return;
 		// A box left by a destination of this name removed before is not this one's.
 		forgetHostKeyCheck(added.name);
 		// Emptied and closed only if the add form is still the one open: the
@@ -281,10 +351,7 @@
 		const updated = [...backupDestinations];
 		updated[idx] = buildDestConfig();
 		backupDestinations = updated;
-		if (!(await saveBackupConfig())) {
-			backupDestinations = was;
-			return;
-		}
+		if (!(await saveBackupConfig(was))) return;
 		// What its last Test said of its host key may no longer hold, under its
 		// old name or its new one.
 		forgetHostKeyCheck(editing);
@@ -301,10 +368,7 @@
 	async function removeDestination(name: string) {
 		const was = backupDestinations;
 		backupDestinations = backupDestinations.filter(d => d.name !== name);
-		if (!(await saveBackupConfig())) {
-			backupDestinations = was;
-			return;
-		}
+		if (!(await saveBackupConfig(was))) return;
 		forgetHostKeyCheck(name);
 	}
 
@@ -391,10 +455,7 @@
 		const updated = [...backupDestinations];
 		updated[idx] = { ...updated[idx], hostKey: key };
 		backupDestinations = updated;
-		if (!(await saveBackupConfig())) {
-			backupDestinations = was;
-			return;
-		}
+		if (!(await saveBackupConfig(was))) return;
 		// Tested as the server now holds it, read again: its secret masked and its
 		// key as stored, which is all a Test keeps a masked secret for (M1, M3).
 		// Where it could not be read back, it is tested as it was sent.
@@ -456,8 +517,13 @@
 		<div class="sched-config">
 			<div class="sched-row">
 				<label class="sched-label">Schedule</label>
-				<select bind:value={backupSchedule} class="form-input" style="flex: none; width: 160px" onchange={() => saveBackupConfig()}>
-					<option value="disabled">Disabled</option>
+				<select bind:value={backupSchedule} class="form-input" style="flex: none; width: 160px" onchange={changeSchedule}>
+					<!-- Switching the schedule off is the superadmin's (card 2398): for an administrator, marked and put back when chosen. -->
+					{#if !isSuperadmin && storedSchedule !== 'disabled'}
+						<option value="disabled" aria-disabled="true">Disabled (superadmin only)</option>
+					{:else}
+						<option value="disabled">Disabled</option>
+					{/if}
 					<option value="hourly">Every Hour</option>
 					<option value="every6h">Every 6 Hours</option>
 					<option value="every12h">Every 12 Hours</option>
@@ -484,9 +550,14 @@
 				{/if}
 
 				<label class="sched-label" style="margin-left: var(--space-lg)">Keep Last</label>
-				<input type="number" min="1" max="100" bind:value={backupRetention} class="form-input" style="flex: none; width: 60px" onchange={() => saveBackupConfig()} />
+				<!-- An administrator may raise it, and not lower it (card 2398): the least is the number stored. -->
+				<input type="number" min={isSuperadmin ? 1 : storedRetention} max="100" bind:value={backupRetention} class="form-input" style="flex: none; width: 60px" onchange={changeRetention} />
 				<span style="font-size: 0.75rem; color: var(--text-tertiary)">backups</span>
 			</div>
+
+			{#if !isSuperadmin}
+				<p class="sched-note">🔒 {SUPERADMIN_RULE}</p>
+			{/if}
 
 			<div class="sched-row">
 				<label style="display: flex; align-items: center; gap: var(--space-xs); font-size: 0.78rem; color: var(--text-secondary); cursor: pointer">
@@ -530,8 +601,8 @@
 						</button>
 						<!-- Off while a save is on its way, as + Add Destination is (the card 2305 review). -->
 						<button class="btn-ghost btn-xs" disabled={backupSaving} onclick={() => startEditDestination(dest)}>✏️ Edit</button>
-						<!-- Off while the destinations are being saved: a second removal sent before the first was answered was put back wrongly when the first was refused. -->
-						<button class="btn-ghost btn-xs danger" disabled={backupSaving} onclick={() => confirm('Remove Destination', `Remove "${dest.name}" from backup destinations?`, async () => removeDestination(dest.name))}>🗑️</button>
+						<!-- Off while the destinations are being saved: a second removal sent before the first was answered was put back wrongly when the first was refused. The superadmin's alone (card 2398): aria-disabled for an administrator, saying why when pressed. -->
+						<button class="btn-ghost btn-xs danger" disabled={backupSaving} aria-disabled={isSuperadmin ? undefined : 'true'} title={isSuperadmin ? undefined : 'Removing a destination needs the superadmin'} onclick={() => (isSuperadmin ? confirm('Remove Destination', `Remove "${dest.name}" from backup destinations?`, async () => removeDestination(dest.name)) : sayRule())}>🗑️</button>
 					</div>
 				</div>
 				<div class="dest-card-detail">
@@ -547,7 +618,7 @@
 				</div>
 				{#if dest.type === 'gdrive' && dest.authMethod === 'oauth' && dest.refreshToken && !driveScopeIsNarrow(dest.grantedScope)}
 					<p style="font-size: 0.68rem; color: var(--text-tertiary); margin: var(--space-xs) 0 0">
-						Connected with access to all of this Google account's Drive. To narrow it: first remove DumpFire's access in the Google account (Google Account, Security, Your connections to third-party apps and services), then remove this destination, add it again with the Folder ID left empty, and connect it. See the admin guide, Configuring Backups.
+						Connected with access to all of this Google account's Drive. To narrow it: first remove DumpFire's access in the Google account (Google Account, Security, Your connections to third-party apps and services), then have the superadmin remove this destination, add it again with the Folder ID left empty, and connect it. See the admin guide, Configuring Backups.
 					</p>
 				{/if}
 				<!-- What the last Test said of an SFTP server's host key (card 2250): the server's words, then Confirm for a key not confirmed yet, both keys for one that did not match, and no Confirm where the confirmed type is no longer offered (there is no key to confirm). -->
@@ -579,6 +650,7 @@
 						bind:destRegion bind:destBucket bind:destAccessKey bind:destSecretKey bind:destPrefix bind:destEndpoint
 						bind:destServiceAccountJson bind:destFolderId bind:destGdriveAuthMethod bind:destGdriveClientId bind:destGdriveClientSecret {destGdriveRefreshToken}
 						bind:destTenantId bind:destClientId bind:destClientSecret bind:destFolderPath bind:newDestType
+						{isSuperadmin}
 						onSave={updateDestination}
 						onCancel={() => { editingDest = null; resetDestForm(); }}
 					/>
@@ -621,6 +693,10 @@
 	.sched-label {
 		font-size: 0.78rem; font-weight: 600; color: var(--text-secondary); white-space: nowrap;
 	}
+	.sched-note {
+		margin: 0; font-size: 0.72rem; color: var(--text-tertiary);
+	}
+	.dest-actions button[aria-disabled='true'] { opacity: 0.4; cursor: default; }
 
 	.dest-card {
 		background: var(--bg-base); border: 1px solid var(--glass-border);

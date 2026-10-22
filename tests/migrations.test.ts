@@ -383,6 +383,9 @@ const FILE_0057 = '0057_cards_leave_other_boards_milestones.sql';
 /** The file of card 2159: the time zone a report schedule's time is read in. */
 const FILE_0058 = '0058_add_report_schedule_time_zone.sql';
 
+/** The file of card 2397: who last changed the mail settings, the App URL and each backup destination. */
+const FILE_0059 = '0059_add_setting_setters.sql';
+
 /**
  * The indexes the model declares that a database from before 0053 lacks:
  * 0053's 39, with 0054's index on user_id and created_at in place of 0053's on
@@ -5177,7 +5180,7 @@ describe('the database the runner leaves, against the model', () => {
 		database.exec("INSERT INTO sqlite_sequence (name, seq) VALUES ('categories', 3)");
 		// Where it starts. Every difference card 2006 set out to close, the 39
 		// indexes of 0053 (card 2106), the column of 0056 (card 2168), the
-		// column of 0058 (card 2159), and no other.
+		// column of 0058 (card 2159), the table of 0059 (card 2397), and no other.
 		expect(withoutTheIndexesOf0053(differencesFromModel(structureOf(database), structureOf(modelDatabase())))).toEqual([
 			'cards.first_completed_at: the column is in the model but not in the database',
 			'categories.board_id: is NOT NULL; the model has it nullable',
@@ -5186,6 +5189,7 @@ describe('the database the runner leaves, against the model', () => {
 			'columns.wip_limit: is nullable; the model has it NOT NULL',
 			'invite_tokens.token: is nullable; the model has it NOT NULL',
 			'report_schedules.time_zone: the column is in the model but not in the database',
+			'setting_setters: the table is in the model but not in the database',
 			'settings.key: is nullable; the model has it NOT NULL',
 			'task_requests.access_token: the column is in the model but not in the database',
 			'task_requests: index in the model but not in the database: unique index task_requests_access_token_idx on (access_token)',
@@ -5207,13 +5211,14 @@ describe('the database the runner leaves, against the model', () => {
 			FILE_0055,
 			FILE_0056,
 			FILE_0057,
-			FILE_0058
+			FILE_0058,
+			FILE_0059
 		]);
 		expect(report.tolerated).toEqual([]);
 		expect(report.rebuilt.map((r) => r.table)).toEqual(['columns', 'categories', 'settings', 'user_xp', 'invite_tokens']);
 		expect(report.missingFromDisk).toEqual([]);
 		expect(report.schemaDifferences).toEqual([]);
-		expect(recordedIn(database)).toHaveLength(64);
+		expect(recordedIn(database)).toHaveLength(65);
 		expect(sequenceIn(database, 'categories')).toBe(3);
 		expect(foreignKeysOn(database)).toBe(true);
 		expect(differencesIn(database)).toEqual(NONE);
@@ -5235,8 +5240,8 @@ describe('the database the runner leaves, against the model', () => {
 		const database = preCardDatabase();
 		seed(database);
 		// Where it starts: `boards` with neither of its foreign keys right,
-		// none of the 39 indexes of 0053 (card 2106), and no column of 0056
-		// (card 2168) or 0058 (card 2159).
+		// none of the 39 indexes of 0053 (card 2106), no column of 0056
+		// (card 2168) or 0058 (card 2159), and no table of 0059 (card 2397).
 		expect(withoutTheIndexesOf0053(differencesFromModel(structureOf(database), structureOf(modelDatabase())))).toEqual([
 			'boards: foreign key not in the model: (created_by) references users(id), on update NO ACTION, on delete NO ACTION',
 			'boards: foreign key in the model but not in the database: (created_by) references users(id), on update NO ACTION, on delete SET NULL',
@@ -5245,6 +5250,7 @@ describe('the database the runner leaves, against the model', () => {
 			'categories: foreign key not in the model: (board_id) references boards(id), on update NO ACTION, on delete CASCADE',
 			'categories: foreign key in the model but not in the database: (board_id) references boards(id), on update NO ACTION, on delete SET NULL',
 			'report_schedules.time_zone: the column is in the model but not in the database',
+			'setting_setters: the table is in the model but not in the database',
 			'time_entries: the table is not in the model',
 			'webhooks.set_by: the column is in the model but not in the database',
 			'webhooks: foreign key in the model but not in the database: (set_by) references users(id), on update NO ACTION, on delete SET NULL',
@@ -5263,7 +5269,7 @@ describe('the database the runner leaves, against the model', () => {
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual(['0052_drop_time_entries.sql', '0053_index_foreign_keys_end_sessions.sql', FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058]);
+		expect(report.applied).toEqual(['0052_drop_time_entries.sql', '0053_index_foreign_keys_end_sessions.sql', FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059]);
 		expect(report.rebuilt).toEqual([
 			{ table: 'boards', rows: 3, defaulted: [], differences: differed.boards },
 			{ table: 'categories', rows: 3, defaulted: [], differences: differed.categories }
@@ -5384,7 +5390,7 @@ describe('0053, which ends every session once (card 2106)', () => {
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0053, FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058]);
+		expect(report.applied).toEqual([FILE_0053, FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059]);
 		expect(report.schemaDifferences).toEqual([]);
 		const after = contentsOf(database);
 		expect(after.sessions).toEqual([]);
@@ -5696,7 +5702,7 @@ describe('0054, which indexes a person’s entries by time and ends every unused
 	});
 
 	it('is the file after 0053: the composite index in place of the one on user_id, then the delete of unused invites', () => {
-		expect(realFiles.filter((f) => f > FILE_0053)).toEqual([FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058]);
+		expect(realFiles.filter((f) => f > FILE_0053)).toEqual([FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059]);
 		const sql = sqlStatements(readFileSync(join(REAL_MIGRATIONS, FILE_0054), 'utf-8')).map((s) => s.text);
 		expect(sql).toEqual([
 			'DROP INDEX IF EXISTS `idx_activity_log_user_id`;',
@@ -5837,7 +5843,7 @@ describe('0054, which indexes a person’s entries by time and ends every unused
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058]);
+		expect(report.applied).toEqual([FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect((database.prepare('SELECT token FROM invite_tokens').all() as { token: string }[]).map((r) => r.token)).toEqual([
 			'used-long-ago'
@@ -5915,7 +5921,7 @@ describe('0055, which gives every task request a new link once (card 2158)', () 
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0055, FILE_0056, FILE_0057, FILE_0058]);
+		expect(report.applied).toEqual([FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059]);
 		expect(report.schemaDifferences).toEqual([]);
 		const links = linksIn(database);
 		expect(links).toHaveLength(3);
@@ -5948,7 +5954,7 @@ describe('0055, which gives every task request a new link once (card 2158)', () 
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0055, FILE_0056, FILE_0057, FILE_0058]);
+		expect(report.applied).toEqual([FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059]);
 		expect(linksIn(database)).toEqual([]);
 	});
 
@@ -6008,7 +6014,7 @@ describe("0056, which adds who last set a webhook's address or secret (card 2168
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0056, FILE_0057, FILE_0058]);
+		expect(report.applied).toEqual([FILE_0056, FILE_0057, FILE_0058, FILE_0059]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect(database.prepare('SELECT id, url, secret, active, set_by FROM webhooks').all()).toEqual([
 			{ id: 1, url: 'https://hooks.example.test/x', secret: 's3cret', active: 1, set_by: null }
@@ -6143,7 +6149,7 @@ ORDER BY m.id, c.id;`;
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0057, FILE_0058]);
+		expect(report.applied).toEqual([FILE_0057, FILE_0058, FILE_0059]);
 		expect(report.schemaDifferences).toEqual([]);
 		const cardsAfter = cardsIn(database);
 		const changed = cardsAfter.filter((row, i) => JSON.stringify(row) !== JSON.stringify(cardsBefore[i])).map((row) => row.id);
@@ -6182,7 +6188,7 @@ ORDER BY m.id, c.id;`;
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0057, FILE_0058]);
+		expect(report.applied).toEqual([FILE_0057, FILE_0058, FILE_0059]);
 		expect(cardsIn(database)).toEqual([]);
 	});
 
@@ -6233,7 +6239,7 @@ describe("0058, which adds the time zone a report schedule's time is read in (ca
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0058]);
+		expect(report.applied).toEqual([FILE_0058, FILE_0059]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect(database.prepare('SELECT * FROM report_schedules').get()).toEqual({ ...scheduleBefore, time_zone: 'UTC' });
 		const after = contentsOf(database);
@@ -6254,5 +6260,138 @@ describe("0058, which adds the time zone a report schedule's time is read in (ca
 
 	it('declares nothing to the rehearsal: it keeps every row and changes no value a row held', () => {
 		expect(ONE_OFFS.filter((oneOff) => oneOff.file === FILE_0058)).toEqual([]);
+	});
+});
+
+// ─── 0059: who last changed the mail settings, the App URL and each destination ──
+
+describe('0059, which adds who last changed the mail settings, the App URL and each backup destination (card 2397)', () => {
+	/** The settings a server had before 0059: the mail set up, an App URL, and one destination. */
+	const SETTINGS_BEFORE = `
+		INSERT INTO settings (key, value) VALUES
+			('smtp_host', 'smtp.example.test'),
+			('smtp_from_address', 'board@example.test'),
+			('app_url', 'https://board.example.test'),
+			('backup_config', '{"schedule":"daily","scheduleTime":"02:00","scheduleDay":0,"retention":7,"destinations":[{"type":"s3","name":"Bucket","region":"eu-west-2","bucket":"b","accessKeyId":"AKIA","secretAccessKey":"s","prefix":"dumpfire/"}],"notifyOnFailure":false,"notifyEmail":""}');
+	`;
+
+	/** A database with every migration before 0059 applied, a superadmin and an administrator, and the settings above. */
+	function beforeIt(): Database.Database {
+		const database = memoryDb();
+		const before = Object.fromEntries(
+			realFiles.filter((f) => f < FILE_0059).map((f) => [f, readFileSync(join(REAL_MIGRATIONS, f), 'utf-8')])
+		);
+		applyFilesOnly(database, migrationsDir(before));
+		database.exec(`
+			INSERT INTO users (id, username, email, password_hash, role) VALUES
+				(1, 'chief', 'chief@example.test', 'x', 'superadmin'),
+				(2, 'ann', 'ann@example.test', 'x', 'admin');
+			${SETTINGS_BEFORE}
+		`);
+		return database;
+	}
+
+	it('is the table with its foreign key, then its index, after a header comment', () => {
+		const sql = readFileSync(join(REAL_MIGRATIONS, FILE_0059), 'utf-8');
+		expect(sqlStatements(sql).map((s) => s.text.replace(/\r\n/g, '\n'))).toEqual([
+			'CREATE TABLE `setting_setters` (\n' +
+				'\t`setting` text NOT NULL,\n' +
+				'\t`place` text NOT NULL,\n' +
+				'\t`user_id` integer,\n' +
+				'\tPRIMARY KEY(`setting`, `place`),\n' +
+				'\tFOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade\n' +
+				');',
+			'CREATE INDEX IF NOT EXISTS `idx_setting_setters_user_id` ON `setting_setters` (`user_id`);'
+		]);
+		for (const said of ['Changes no row', 'Runs once.']) expect(sql, said).toContain(said);
+	});
+
+	it('leaves every setting unattributed and changes no row; a setter row goes when its account is deleted; nothing at the next start', () => {
+		const database = beforeIt();
+		const before = contentsOf(database);
+		const state = stateOf(database);
+
+		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+
+		expect(report.applied).toEqual([FILE_0059]);
+		expect(report.schemaDifferences).toEqual([]);
+		expect(database.prepare('SELECT * FROM setting_setters').all()).toEqual([]);
+		const after = contentsOf(database);
+		for (const table of Object.keys(before)) {
+			// The migration record, and its id counter, gain the file.
+			if (['__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
+			expect(after[table], table).toEqual(before[table]);
+		}
+		expect(indexesOf(database)).toContain('idx_setting_setters_user_id');
+		expect(database.prepare('PRAGMA foreign_key_list(setting_setters)').all()).toContainEqual(
+			expect.objectContaining({ table: 'users', from: 'user_id', to: 'id', on_delete: 'CASCADE' })
+		);
+		// The rehearsal: every row kept, nothing to note.
+		const found: Findings = { problems: [], notes: [] };
+		compare(state, stateOf(database), report.applied, found);
+		expect(found).toEqual({ problems: [], notes: [] });
+
+		expect(foreignKeysOn(database)).toBe(true);
+		// Two accounts recorded for two places of one setting: the key is the setting and the place.
+		// And a place recorded as nobody's (the third review): `user_id` NULL, which no delete takes.
+		database.exec(
+			"INSERT INTO setting_setters (setting, place, user_id) VALUES ('mail', 'p0', NULL), ('mail', 'p1', 2), ('mail', 'p2', 1), ('backup_destination:Bucket', 'p1', 1)"
+		);
+		expect(() => database.exec("INSERT INTO setting_setters (setting, place, user_id) VALUES ('mail', 'p1', 1)")).toThrow(/UNIQUE constraint failed/);
+		database.prepare('DELETE FROM users WHERE id = 2').run();
+		expect(database.prepare('SELECT setting, place, user_id FROM setting_setters ORDER BY setting, place').all()).toEqual([
+			{ setting: 'backup_destination:Bucket', place: 'p1', user_id: 1 },
+			{ setting: 'mail', place: 'p0', user_id: null },
+			{ setting: 'mail', place: 'p2', user_id: 1 }
+		]);
+
+		const again = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+		expect(again.applied).toEqual([]);
+	});
+
+	it('declares nothing to the rehearsal: it changes no row', () => {
+		expect(ONE_OFFS.filter((oneOff) => oneOff.file === FILE_0059)).toEqual([]);
+	});
+
+	it('restores a backup made before 0059: every setting it holds comes back, unattributed, and this server’s setter rows are cleared', () => {
+		const live = memoryDb();
+		runMigrations({ database: live, migrationsDir: REAL_MIGRATIONS });
+		live.exec(`
+			INSERT INTO users (id, username, email, password_hash, role) VALUES (1, 'chief', 'chief@example.test', 'x', 'superadmin'), (9, 'gone', 'gone@example.test', 'x', 'admin');
+			INSERT INTO settings (key, value) VALUES ('smtp_host', 'smtp.live.example.test');
+			INSERT INTO setting_setters (setting, place, user_id) VALUES ('mail', 'p', 9), ('app_url', 'p', 9);
+		`);
+		const backup = beforeIt();
+		expect(backup.prepare("SELECT name FROM sqlite_master WHERE name = 'setting_setters'").get()).toBeUndefined();
+
+		const result = restoreFromBackup(live, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(live.prepare("SELECT key, value FROM settings WHERE key IN ('smtp_host', 'smtp_from_address', 'app_url') ORDER BY key").all()).toEqual([
+			{ key: 'app_url', value: 'https://board.example.test' },
+			{ key: 'smtp_from_address', value: 'board@example.test' },
+			{ key: 'smtp_host', value: 'smtp.example.test' }
+		]);
+		expect(JSON.parse((live.prepare("SELECT value FROM settings WHERE key = 'backup_config'").get() as { value: string }).value).destinations.map((d: { name: string }) => d.name)).toEqual(['Bucket']);
+		expect(live.prepare('SELECT * FROM setting_setters').all()).toEqual([]);
+		expect(live.pragma('foreign_key_check')).toEqual([]);
+	});
+
+	it('restores a backup made after 0059 with its setter rows, beside the accounts they name', () => {
+		const live = memoryDb();
+		runMigrations({ database: live, migrationsDir: REAL_MIGRATIONS });
+		live.exec("INSERT INTO users (id, username, email, password_hash, role) VALUES (1, 'chief', 'chief@example.test', 'x', 'superadmin')");
+		const backup = beforeIt();
+		runMigrations({ database: backup, migrationsDir: REAL_MIGRATIONS });
+		backup.exec("INSERT INTO setting_setters (setting, place, user_id) VALUES ('mail', 'p', 2), ('backup_destination:Bucket', 'p', 2)");
+
+		const result = restoreFromBackup(live, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(live.prepare('SELECT setting, place, user_id FROM setting_setters ORDER BY setting').all()).toEqual([
+			{ setting: 'backup_destination:Bucket', place: 'p', user_id: 2 },
+			{ setting: 'mail', place: 'p', user_id: 2 }
+		]);
+		expect(live.prepare('SELECT username FROM users WHERE id = 2').get()).toEqual({ username: 'ann' });
 	});
 });

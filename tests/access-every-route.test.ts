@@ -1424,6 +1424,8 @@ const TABLE: Record<string, Case | Case[]> = {
 	'POST /api/users': admin(() =>
 		json('/api/users', { username: 'newcomer', email: 'newcomer@example.test', password: 'a long password' })
 	),
+	// What a role change to user or a delete would remove now (card 2397's second review).
+	'GET /api/users/[id]': admin((w) => `/api/users/${w.viewer.id}`),
 	'PUT /api/users/[id]': admin((w) => json(`/api/users/${w.viewer.id}`, { emoji: '🦊' })),
 	'DELETE /api/users/[id]': admin((w) => `/api/users/${w.viewer.id}`),
 	'POST /api/users/[id]/invite': admin((w) => `/api/users/${w.viewer.id}/invite`, { setup: makeSmtp }),

@@ -4,9 +4,11 @@
  * Every administrator's, every method, and so are the two routes beneath it
  * (card 2395, at the owner's request: the superadmin's alone before). Whoever
  * may add a destination may add one of their own and have the whole database
- * sent to it, every password hash and email address included. Who saved the
- * settings is not kept with them: they stay in force when that account is
- * demoted or deleted, as they always did for the superadmin's.
+ * sent to it, every password hash and email address included. Who added each
+ * destination, or pointed it where it is, is recorded (card 2397, setting-setters.ts):
+ * that account made a user, or deleted, takes its destinations away. Lowering
+ * Keep Last, removing a destination and switching the schedule off are the
+ * superadmin's alone (card 2398): each leaves fewer copies to restore from.
  *
  * No secret leaves in an answer, and none is used anywhere but where it was
  * saved (cards 2187 and 2190). The GET masks every secret field, the Google
@@ -52,6 +54,7 @@ import {
 	readTime
 } from '$lib/server/request-body';
 import { requireAdmin } from '$lib/server/route-guards';
+import { recordDestinationSetters } from '$lib/server/setting-setters';
 import { stillCallerNow, writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
@@ -118,6 +121,34 @@ function leavesFewerCopies(before: BackupConfig, after: BackupConfig, changes: B
 	);
 }
 
+/** What an administrator who is not the superadmin is told of a save card 2398 keeps for the superadmin. */
+const SUPERADMIN_FOR_FEWER_COPIES = 'Lowering Keep Last, removing a destination or switching the schedule off needs the superadmin.';
+
+/**
+ * Why a save is the superadmin's alone (card 2398, as the owner ruled it),
+ * or null where any administrator may make it: Keep Last lowered, which the
+ * next run, a Run Now included, keeps to at every destination by deleting
+ * the older copies; a destination removed, by card 2270's matching of name
+ * and type, so one renamed or saved as another type is the old one removed;
+ * or the schedule switched off. Raising Keep Last, changing between schedules
+ * that run, and adding or editing a destination stay every administrator's.
+ * The words name what this save would do.
+ */
+function superadminOnly(before: BackupConfig, after: BackupConfig, changes: BackupSettingsChanges | null): string | null {
+	const would: string[] = [];
+	if (Number(after.retention) < Number(before.retention)) would.push(`lower Keep Last from ${before.retention} to ${after.retention}`);
+	const removed = changes?.removed ?? [];
+	if (removed.length > 0) {
+		const names = removed.map((d) => quoted(d.name)).join(', ');
+		would.push(
+			`remove the destination${removed.length === 1 ? '' : 's'} ${names} (a destination renamed, or saved as another type, is the old one removed)`
+		);
+	}
+	if (after.schedule === 'disabled' && before.schedule !== 'disabled') would.push('switch the schedule off');
+	if (would.length === 0) return null;
+	return `${SUPERADMIN_FOR_FEWER_COPIES} This save would ${would.join(', and ')}.`;
+}
+
 /** GET — Return backup config and recent history. */
 export const GET: RequestHandler = async ({ locals }) => {
 	requireAdmin(locals.user);
@@ -161,6 +192,11 @@ export const GET: RequestHandler = async ({ locals }) => {
  *                      secret sent masked is kept by keepMaskedSecrets, or
  *                      the save is a 400 naming the destination, what to
  *                      type again and what changed; nothing is written
+ *
+ * A save that lowers the retention, removes a destination (renamed, or saved
+ * as another type, included) or switches the schedule off is `403` for anyone
+ * but the superadmin (card 2398), asked at the write, in words that name what
+ * it would do; nothing is written or logged.
  *
  * A save that changes anything is one line under BACKUP, filed under the
  * account that saved it, naming what changed (card 2270): a WARN where it
@@ -223,11 +259,18 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
 		const sent = [schedule, scheduleTime, scheduleDay, retention, notifyOnFailure, notifyEmail, destinations];
 		if (sent.every((value) => value === undefined)) throw error(400, 'No valid fields to update');
 
+		// Fewer copies to restore from is the superadmin's (card 2398), asked of
+		// the account as it is now, before anything is written or queued: a
+		// superadmin made an administrator while the body arrived is refused as
+		// an administrator is.
+		const changed = settingsChanges(existing, config);
+		const refusal = user.role === 'superadmin' ? null : superadminOnly(existing, config, changed);
+		if (refusal !== null) throw error(403, refusal);
+
 		// After the commit, not here: the logger writes a row logged inside a
 		// transaction whichever way it ends, and a save that fails would leave
 		// a line for a change it never saved (cards 2267 and 2270). The line for
 		// the whole save is queued first, so it reads before the key lines.
-		const changed = settingsChanges(existing, config);
 		if (changed !== null) {
 			const write = leavesFewerCopies(existing, config, changed) ? log.warn : log.info;
 			afterCommit(() => write(settingsChangeLine(changed), changed, { userId: user.id }));
@@ -244,6 +287,16 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
 		}
 
 		saveBackupConfig(config);
+		// Each destination added, or pointed at a place or account nobody is
+		// recorded for, is now the saver's, one pointed back at a recorded place
+		// that account's again, and each removed is nobody's (card 2397 and its
+		// reviews); a secret typed again for the same place, or a host key
+		// confirmed, changes nobody's. A move by the superadmin, or with a secret
+		// typed into it as sent, takes its place over (the third review).
+		recordDestinationSetters(existing.destinations, config.destinations, destinations ?? [], changed, {
+			id: user.id,
+			superadmin: user.role === 'superadmin'
+		});
 	});
 
 	return json({ success: true });

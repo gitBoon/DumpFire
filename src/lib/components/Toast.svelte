@@ -1,10 +1,30 @@
 <script lang="ts">
-	import { onDestroy } from 'svelte';
+	import { onDestroy, untrack } from 'svelte';
 	import { afterNavigate, onNavigate } from '$app/navigation';
 	import { toasts } from '$lib/stores/toast';
 
-	let items = $state<{ id: number; message: string; type: string }[]>([]);
+	let items = $state<{ id: number; message: string; type: string; stays?: true }[]>([]);
 	toasts.subscribe(v => (items = v));
+
+	// A warning that stays is said politely (card 2397's reviews): it tells of
+	// something done, not of a failure. Through a region that is always on the
+	// page, as one added with its words already in it is not reliably read; a
+	// toast that goes by itself, the board's warnings included, is an alert,
+	// which is read as it is added. Each staying warning added, the same words
+	// again included (it comes back as a new toast), empties the region and
+	// fills it a moment later, as a region whose text does not change is not
+	// read again (the third code review).
+	const SAY_AFTER_MS = 100;
+	let stayingId = $derived(items.filter(t => t.stays).at(-1)?.id ?? null);
+	let saidPolitely = $state('');
+	$effect(() => {
+		const id = stayingId;
+		const message = untrack(() => items.find(t => t.id === id)?.message ?? '');
+		saidPolitely = '';
+		if (message === '') return;
+		const timer = setTimeout(() => (saidPolitely = message), SAY_AFTER_MS);
+		return () => clearTimeout(timer);
+	});
 
 	// A failure stays until it is closed, and never follows the reader to
 	// another page: it is cleared when the page goes, and when the page is
@@ -19,10 +39,12 @@
 	onNavigate(() => toasts.navigated());
 </script>
 
+<p class="toast-said" role="status">{saidPolitely}</p>
 {#if items.length > 0}
 	<div class="toast-container">
 		{#each items as toast (toast.id)}
-			<div class="toast toast-{toast.type}" role="alert">
+			<!-- A warning that stays is said by the region above, so it is not said twice. -->
+			<div class="toast toast-{toast.type}" role={toast.stays ? undefined : 'alert'}>
 				<span class="toast-icon">
 					{#if toast.type === 'success'}✓{:else if toast.type === 'error'}✕{:else if toast.type === 'warning'}⚠️{:else}ℹ{/if}
 				</span>
@@ -68,4 +90,9 @@
 		opacity: 0.5; transition: opacity 0.15s;
 	}
 	.toast-close:hover { opacity: 1; }
+	/* For screen readers alone. */
+	.toast-said {
+		position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+		overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+	}
 </style>

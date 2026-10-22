@@ -19,6 +19,7 @@ import {
 } from '$lib/server/email';
 import { readBody, readBoolean, readEmail, readNumber, readText, readUrl } from '$lib/server/request-body';
 import { requireAdmin } from '$lib/server/route-guards';
+import { mailPlacesNow, recordMailSetters } from '$lib/server/setting-setters';
 import { stillCallerNow, writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 import { createLogger } from '$lib/server/logger';
@@ -31,6 +32,9 @@ const log = createLogger('SMTP');
 // either can read an invite or a password reset meant for somebody else, the
 // superadmin's included, and either sets a password. The stored password is
 // still never answered, and is kept only for the server it was saved for.
+// Who moved the mail settings (host, port, user, way out) to where they are,
+// and who set the App URL to its address, is recorded (card 2397,
+// setting-setters.ts): that account made a user, or deleted, takes them away.
 
 /** The settings a save is logged by (card 2396), in the order its line names them. */
 const MAIL_FIELDS = ['host', 'port', 'allowInsecure', 'user', 'pass', 'fromAddress', 'fromName', 'appUrl'] as const;
@@ -171,8 +175,9 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
 	// and 2395).
 	const { wayOutChangedTo, setBy, setById, changes } = writeAs(locals, (caller) => {
 		// Named for the lines below; `user` here is the mail server's.
-		const { username: setBy, id: setById } = requireAdmin(caller);
+		const { username: setBy, id: setById, role: setByRole } = requireAdmin(caller);
 		const before = mailSettingsAsRead();
+		const placesBefore = mailPlacesNow();
 		const existing = getSmtpConfig();
 		const here = readMailHere();
 		const config: Partial<SmtpConfig> = {};
@@ -218,13 +223,26 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
 		// review).
 		if (appUrl !== undefined && (appUrlAsRead(appUrl) !== before.appUrl || appUrlRowReadsAsNone())) setAppUrl(appUrl);
 
+		// The saver is now who set where mail goes (card 2397, as its reviews
+		// ruled): the host, port, user or way out moved to a place nobody is
+		// recorded for makes them the mail settings' setter, and the App URL set
+		// to such an address its own; moved back to a recorded place, it is that
+		// account's again. A sender's name or address, or a password typed again
+		// alone, takes nothing over, nor does an App URL cleared. Demoting or
+		// deleting that account removes it.
+		// A password typed with the save, or the superadmin's save, takes the
+		// place it moves to over whoever was recorded there (the third review).
+		const changes = mailChanges(before, mailSettingsAsRead());
+		const passTyped = typeof pass === 'string' && pass !== '' && pass !== SECRET_MASK;
+		recordMailSetters(placesBefore, { id: setById, superadmin: setByRole === 'superadmin' }, passTyped);
+
 		// A way out saved other than it was: missing is off.
 		const wasOn = here.smtp_allow_insecure === 'true';
 		return {
 			wayOutChangedTo: allowInsecure !== undefined && allowInsecure !== wasOn ? allowInsecure : null,
 			setBy,
 			setById,
-			changes: mailChanges(before, mailSettingsAsRead())
+			changes
 		};
 	});
 

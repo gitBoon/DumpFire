@@ -128,6 +128,7 @@ const TEST_FILES = [
 	'report-schedules.test.ts',
 	'request-body.test.ts',
 	'schedulers.test.ts',
+	'setting-setters.test.ts',
 	'sftp-host-key.test.ts',
 	'share-window.svelte.test.ts',
 	'sub-board-depth.test.ts',

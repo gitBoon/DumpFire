@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.90
+version: 1.91
 status: As-Built
-date: 2026-10-21
+date: 2026-10-22
 tags:
   - docker
   - deployment
@@ -35,7 +35,7 @@ tags:
   - webhook-allow-list
   - board-page
   - card-window
-description: "Docker deployment, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, and production configuration for DumpFire"
+description: "Docker deployment, the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, and production configuration for DumpFire"
 ---
 
 # DumpFire Deployment Guide
@@ -678,7 +678,7 @@ What acts on the whole installation is the superadmin's alone. An administrator 
 | Import Backup | It replaces every account with the backup's |
 | Reset Everything | Whoever sets up afterwards is the superadmin |
 
-Everything else on the admin page is any administrator's: users and teams, clearing a board, purging archived cards, vacuuming, resetting XP, the system log and the audit trail, and, since card 2395 at the owner's request, Scheduled Backups (the schedule, the destinations, "Test", "Run Now" and "Connect") and Email / SMTP with the App URL, which were the superadmin's. An administrator who sets a backup destination can be sent the whole database, password hashes included, and one who sets the mail server reads every mail DumpFire sends, invite and password-reset links included, the superadmin's among them; the settings stay in force when that administrator is demoted. See [Administrators Can Use the Email and Backup Settings](#administrators-can-use-the-email-and-backup-settings) and [Admin Guide](admin-guide.md#who-may-do-what).
+Everything else on the admin page is any administrator's: users and teams, clearing a board, purging archived cards, vacuuming, resetting XP, the system log and the audit trail, and, since card 2395 at the owner's request, Scheduled Backups (the schedule, the destinations, "Test", "Run Now" and "Connect") and Email / SMTP with the App URL, which were the superadmin's. An administrator who sets a backup destination can be sent the whole database, password hashes included, and one who sets the mail server reads every mail DumpFire sends, invite and password-reset links included, the superadmin's among them. Since cards 2397 and 2398 (migration 0059) what an administrator set goes when they are made a user or deleted, and lowering Keep Last, removing a destination or switching the schedule off is the superadmin's. See [Administrators Can Use the Email and Backup Settings](#administrators-can-use-the-email-and-backup-settings), [Settings Go With Their Setter; Fewer Backups Are the Superadmin's](#settings-go-with-their-setter-fewer-backups-are-the-superadmins) and [Admin Guide](admin-guide.md#who-may-do-what).
 
 ```mermaid
 flowchart TD
@@ -2146,7 +2146,7 @@ db.close();
 "
 ```
 
-A `gdrive` line with `sign-in oauth` and `connected true` is a connection made with the whole of Drive: it keeps working after the deploy, shows `⚠️ Connected · all of Drive`, and is narrowed when you choose (check 46). Production's log of 2026-10-18 shows one, "GoogleDriveTest", backing up at every run. `name used 2 time(s)` is two destinations of one name: Connect takes the first of them, and after the deploy **no save of the backup settings goes through while they are there**, the schedule's included: a list naming two destinations alike is refused, "Two backup destinations are named "<name>"." The way out, which the refusal gives: remove the destinations named "<name>" (the page's Remove removes every one of that name) and add it once with its secret typed. Where the two are the same in every other setting, a save or a test of one with its secret left masked is refused with the same way out. `sign-in service_account` and `folder set false` on a `gdrive` line whose runs fail are each a card of their own. `backup_log` keeps the last ten runs.
+A `gdrive` line with `sign-in oauth` and `connected true` is a connection made with the whole of Drive: it keeps working after the deploy, shows `⚠️ Connected · all of Drive`, and is narrowed when you choose (check 46). Production's log of 2026-10-18 shows one, "GoogleDriveTest", backing up at every run. `name used 2 time(s)` is two destinations of one name: Connect takes the first of them, and after the deploy **no save of the backup settings goes through while they are there**, the schedule's included: a list naming two destinations alike is refused, "Two backup destinations are named "<name>"." The way out, which the refusal gives: remove the destinations named "<name>" (the page's Remove removes every one of that name, and since card 2398 removing a destination is the superadmin's) and add it once with its secret typed. Where the two are the same in every other setting, a save or a test of one with its secret left masked is refused with the same way out. `sign-in service_account` and `folder set false` on a `gdrive` line whose runs fail are each a card of their own. `backup_log` keeps the last ten runs.
 
 **Check 0k: the same check in the new image.** Once the new image is built and before the switch, with the host and port 0i printed in place of `HOST` and `587`, and `wayOut` set to `true` where 0i printed `way out set`. No volume and no database: it opens one connection and signs in to nothing. It runs on production's own network (`--network container:dumpfire`, the running container's), so it reaches the mail server as the new container will; under Docker Compose, put the running container's name in place of `dumpfire` (`docker compose ps` shows it). When an authority's certificate is used, add `-e NODE_EXTRA_CA_CERTS=/ca/mail-ca.pem -v /srv/dumpfire/mail-ca.pem:/ca/mail-ca.pem:ro` before the image name. The image's Node carries its own root certificates, and the `node:22-slim` tag moves, so the new image may trust otherwise than the running one:
 
@@ -4417,6 +4417,79 @@ A person who is not an administrator is where 2400 reads less; an administrator'
 #### Going back to the previous image
 
 Nothing is done to the database. The older image answers no `appUrlFrom`, shows no line under the App URL (the field still shows the App URL in effect), and its **Save** stores whatever the field holds, `APP_URL`'s included: do not press it unchanged on the older image. Its All Tasks, All To Do, activity report and Planning page read as many queries as before, and show the same.
+
+### Settings Go With Their Setter; Fewer Backups Are the Superadmin's
+
+**Cards 2397 and 2398.** **One migration**, `0059_add_setting_setters.sql`: a new table, `setting_setters`, with its index (its key is the setting and a digest of where it sends, its `place`). No setting is added, and nothing in `/api/v1` changes (the OpenAPI document is unchanged; `PUT` and `DELETE /api/users/:id` answer `settingsRemoved` where they removed something). One method is added, an administrator's `GET /api/users/:id`, which the admin page reads just before it asks to make an account a user or delete it. The plan is `docs/planning/cards-2397-2398.md`.
+
+- **2398.** Any administrator could lower **Keep Last** and press **▶ Run Now**, deleting every older copy at every destination, or remove the destinations, or switch the schedule off. Now each of the three is the superadmin's: an administrator's save that does one is refused, `Lowering Keep Last, removing a destination or switching the schedule off needs the superadmin. This save would …`, and nothing is saved. A destination renamed is the old one removed. On ☁️ Scheduled Backups an administrator sees one line saying so under the schedule, 🗑️ dimmed (pressed, it says the rule), **Disabled (superadmin only)** in the schedule (chosen, it puts the schedule back), and Keep Last putting a lower number back. Raising Keep Last, changing between schedules that run, adding and editing destinations, Test, Connect and Run Now stay every administrator's. The superadmin's panel is as before.
+- **2397.** DumpFire now records who last changed where mail goes (the mail host, port, user name or the box that allows mail without a checked, encrypted connection), who last set the App URL to an address, and who last added each backup destination, pointed it at another place or account, or connected its Google Drive. A sender's name or address, a password or secret typed again for the same place, an App URL cleared or an SFTP host key confirmed makes nobody the setter. When the setter is made a user, or deleted, what it set is removed in the same step, with a `WARN` line under `SMTP` or `BACKUP`; the admin page names what would go before the change is confirmed (a role change to User asks first where anything would), says what went in a ⚠️ message that stays, and reads again the panels that showed it.
+
+**The migration.** 0059 creates one table and changes no row. Every setting already saved has nobody recorded as its setter, and **stays in force whoever is demoted** until somebody next changes it. A backup taken before the deploy restores with every setting unattributed in the same way; one taken after brings its setter rows with the accounts they name. Nothing is declared to the rehearsal: it is no one-off.
+
+```mermaid
+flowchart LR
+    Old["Older image:<br/>settings record nobody"] --> Deploy["First start:<br/>0059 applied, table empty"]
+    Deploy --> Legacy["Every saved setting:<br/>unattributed, in force"]
+    Deploy --> Next["Next change of a setting:<br/>its saver recorded"]
+    Next --> Demote["Saver made a user or deleted:<br/>that setting removed, WARN line"]
+    Deploy -.->|"going back"| Back["Older image: ERROR line for 0059,<br/>table left alone, nothing removed"]
+```
+
+**Owner to know.**
+
+- **Demoting or deleting the administrator who pointed the mail where it is stops all mail**: invites (their links are shown in the dialog instead), password-reset invites, notifications, request mail, reports and the backup failure mail, until an administrator sets the mail up again under 📧 Email / SMTP. The App URL they saved goes too, and links then use `APP_URL`, or else `ORIGIN`, the server's own address.
+- **Their destinations go with their stored secrets**, and backups to them stop. The copies already at a destination are not touched.
+- **The last to move a setting is its setter.** Only a change of where mail or backups go moves it: an administrator who corrects the sender's name, or types your password or secret again, does not take your settings over, and their demotion leaves them. A superadmin who moves the mail (another port, say) takes it over, and demoting whoever first set it then removes nothing. To take over the settings saved before this deploy, change one that moves them and change it back.
+- **A backup already running finishes.** A run reads the destinations as it starts, so one under way at the demotion or delete still uploads to a destination removed with it; the next run does not.
+- **The superadmin is under the same rule**, once lowered to user on the admin page (from the host they are made `admin`, which keeps them an administrator).
+- **The host's command line runs none of this.** A role written to `user`, or an account deleted, with `docker exec … node -e` leaves their settings in force.
+- **Run Now can still push the older copies out.** Each press adds a copy and Keep Last keeps the newest, so an administrator who presses it Keep Last times still leaves only new copies; a schedule made more frequent does the same over time. Each Run Now is in the backup history.
+- This replaces card 2395's "The settings outlive whoever saved them" and "An administrator can leave nothing to restore from" (above, left as written for that release).
+
+#### Before the deploy
+
+On production, on the older image, as **S**, the superadmin, signed in. Nothing here writes anything. Note:
+
+- In **Admin**, under ☁️ Scheduled Backups, the schedule, the number in **Keep Last**, and each destination's name; under 📧 Email / SMTP, the SMTP Host and From Email; under 🌐 Application Settings, the Application URL.
+- The times the schedule runs, so that checks 453 to 456 can be done between two runs (the scratch destinations of 453 and 456 are removed again within minutes, and a run between would try them).
+
+**Check 0y: the rehearsal.** `npm run rehearse -- <export.db>` on an Admin Export copy, with the new code, as check 0c runs it (see [Testing](testing.md#rehearsing-the-runner-against-a-copy-of-a-real-database)). Expect `0059_add_setting_setters.sql` among the files applied, `PASSED` and no schema difference; nothing under `Worth knowing` for it, since it is no one-off. It is a fault if it prints `FAILED`, or a difference naming `setting_setters`.
+
+#### What changes at the first start
+
+- **0059 is applied**: `[WARN] [DB] Applied migration: 0059_add_setting_setters.sql`, and nothing else from `DB`. Every setting reads as before; mail and backups go where they went.
+
+#### After the deploy
+
+On production. **Scratch things only**: never demote or delete a real administrator for these checks, and never let `test2397` save the mail settings or the App URL (made a user, it would take them away). As S, in **Admin → 👥 User Management**, press **+ Add User**; Username `test2397`, an Email of yours that no account has (a plus address works), a Password of at least 8 characters you note, the role **Admin**; **Create**. Sign in as `test2397` in a private window: that window is **A**. Open the **Audit** page as S in a second tab on its **Live Console**, Context **All**. A demotion signs nobody out, so A stays signed in through 455.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 449 | 2397 | On the host, run the read-only command below the table | `[]`, or only rows for settings an administrator has changed since the start (a `user_id` of `null` is a place recorded as nobody's, the one a setting saved before the deploy left) | `no such table: setting_setters`; a row for a setting nobody changed since the deploy |
+| 450 | 2398 | In A, open **Admin**, look under ☁️ Scheduled Backups; press 🗑️ on any destination (skip the press where there is none, and do it after 453, on `test2397 scratch`) | Under the schedule: `🔒 Lowering Keep Last, removing a destination or switching the schedule off needs the superadmin.`; 🗑️ dimmed, its tooltip `Removing a destination needs the superadmin`; pressed, a toast with the same sentence, no Remove Destination dialog, and the destination still listed; where the schedule is on, its list reads `Disabled (superadmin only)`. No new `BACKUP` row on the Live Console | The confirm opens, a destination goes, or a `BACKUP` row appears. The older image shows none of it |
+| 451 | 2398 | In A, set **Keep Last** to one less than noted and press Tab (skip where it is 1); then set it to one more than noted and press Tab (skip where it is 100) | The lower number goes back to the one noted with the toast of 450, and no `BACKUP` row. The higher one shows `Backup settings saved`, and an `INFO` row `[BACKUP] Backup settings changed: retention from <n> to <n+1>` with `test2397`'s chip (shown where `LOG_LEVEL` is `INFO`) | The lower number saved |
+| 452 | 2398 | As S, reload S's Admin page (it still shows <n>, read before 451 raised it); set **Keep Last** back to the number noted and press Tab (skip where 451 raised nothing); reload A's Admin | S: `Backup settings saved`, a `WARN` row `… retention from <n+1> to <n>` with S's chip. A: Keep Last reads the number noted | S refused |
+| 453 | 2398, 2397 | In A, **+ Add Destination**: the type **☁️ Amazon S3**, **Destination name (e.g. Production NAS)** `test2397 scratch`, **Bucket name** `test2397-scratch`, **Access Key ID** `test2397`, **Secret Access Key** `test2397-not-a-secret`, **Custom endpoint (MinIO, Backblaze, etc.)** `https://test2397.invalid`; **Add Destination**. Do not press Test or Run Now | `Backup settings saved`; the destination listed; an `INFO` row `… destination "test2397 scratch" added (s3)` with `test2397`'s chip (shown where `LOG_LEVEL` is `INFO`) | Refused |
+| 454 | 2398 | In A, ✏️ Edit `test2397 scratch`: under **Destination name** a line reads `Renaming needs the superadmin: a destination renamed is the old one removed.` Change **Destination name** to `test2397 renamed`, type the **Secret Access Key** `test2397-not-a-secret` again, **Save** | A toast `Lowering Keep Last, removing a destination or switching the schedule off needs the superadmin. This save would remove the destination "test2397 scratch" (a destination renamed, or saved as another type, is the old one removed). The settings shown are the ones the server holds.`; the form stays open; the list still shows `test2397 scratch`, and after **Cancel** so does the row; no `BACKUP` row | The rename saved; no line under the name |
+| 455 | 2397 | As S, reload S's Admin page (it was read before 453 added the destination, and would not know what `test2397` set); in User Management, choose **User** for `test2397` and press **Change**; read the confirmation, then **Confirm** | Before anything is sent, the confirmation: `Make test2397 a user? This removes what they set: the backup destination "test2397 scratch".` Then a ⚠️ message that stays: `Role updated. What test2397 had set was removed: the backup destination "test2397 scratch".`; ☁️ Scheduled Backups, drawn again, no longer lists it; a `WARN` row `[BACKUP] Backup destination "test2397 scratch" (s3) removed: saved by "test2397", who was made a user by "<S's username>". Its stored secrets went with it; the copies already there are kept.` with S's chip; no `SMTP` row; 📧 Email / SMTP and 🌐 Application Settings as noted. Run 449's command again: no row for `test2397 scratch` | The destination still listed; a mail setting or the App URL changed; no row, or the row under another chip |
+| 456 | 2397 | As S, set `test2397` back to **Admin** (**Change**: nothing to confirm, an administrator loses nothing). In A, reload Admin, and add a destination as in 453 named `test2397 delete`. As S, reload Admin, and delete `test2397` (🗑️ on its row, **Confirm**) | The confirmation ends `What they set goes too: the backup destination "test2397 delete".`; then a ⚠️ message that stays: `User deleted. What test2397 had set was removed: the backup destination "test2397 delete".`; the destination gone from ☁️ Scheduled Backups; a `WARN` row `… removed: saved by "test2397", whose account was deleted by "<S's username>". …` with S's chip; mail and App URL as noted | The destination still listed after the delete |
+
+The command of 449, read-only, as the one in [If Nobody Can Sign In as the Superadmin](#if-nobody-can-sign-in-as-the-superadmin):
+
+```bash
+docker exec <container> node -e "const db = require('better-sqlite3')(process.env.DB_PATH || 'dumpfire.db', { readonly: true, fileMustExist: true }); console.log(JSON.stringify(db.prepare('SELECT setting, user_id FROM setting_setters ORDER BY setting').all())); db.close();"
+```
+
+An administrator made a user while a save is on its way, the superadmin made an administrator while a lowering is on its way, a demotion that fails part of the way, and the mail settings and App URL removed with their setter are not arranged on production: each would stop real mail or need the host. The suite covers them (`tests/setting-setters.test.ts`, `tests/migrations.test.ts`, `tests/admin-panels.test.ts`).
+
+**Afterwards.** `test2397` is deleted by 456. Check ☁️ Scheduled Backups against the note (Keep Last, the schedule, the destinations: no `test2397` destination), and 📧 Email / SMTP and 🌐 Application Settings against theirs. Should a scheduled run have fallen between 453 and 456, its history shows a failed entry for the scratch destination, and where **Email on failure** is ticked a backup failure mail was sent for it (`https://test2397.invalid` cannot be reached): nothing to undo, it was removed.
+
+#### Going back to the previous image
+
+- **0059 stays applied.** The older image logs one `[ERROR] [DB]` line for the recorded file it has no file for, and its schema check one for the table its model lacks, and starts. It neither reads nor writes `setting_setters`: settings saved under it record nobody new, and a demotion or delete under it removes nothing.
+- **Administrators can lower Keep Last, remove destinations and switch the schedule off again** under the older image.
+- **Coming forward again**, the rows recorded before are still there: a setting moved under the older image is at a place nobody is recorded for, and nobody's until it is next moved, while one moved back to a recorded place is that account's again, so after going back and forth, check `setting_setters` (449) before relying on a demotion to remove anything.
 
 ## Changing the Schema
 

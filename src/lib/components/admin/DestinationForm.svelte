@@ -43,6 +43,7 @@
 		destClientSecret = $bindable(),
 		destFolderPath = $bindable(),
 		newDestType = $bindable(),
+		isSuperadmin = false,
 		onSave,
 		onCancel
 	}: {
@@ -72,6 +73,12 @@
 		destClientSecret: string;
 		destFolderPath: string;
 		newDestType: DestType;
+		/**
+		 * The panel's: whether the reader is the superadmin, who alone removes a
+		 * destination, a rename included (card 2398). Not given, the reader is
+		 * taken to be an administrator and the edit form says so under the name.
+		 */
+		isSuperadmin?: boolean;
 		/** The panel's `updateDestination` or `addDestination`. */
 		onSave: () => void;
 		/** The panel's: the form closed, and its fields emptied. */
@@ -85,6 +92,10 @@
 		<div class="form-row">
 			<input type="text" placeholder="Destination name" bind:value={destName} class="form-input" />
 		</div>
+		<!-- A rename is the old destination removed, which is the superadmin's (card 2398): said before it is tried. -->
+		{#if !isSuperadmin}
+			<p class="dest-name-hint" style="font-size: 0.68rem; color: var(--text-tertiary); margin: 0">Renaming needs the superadmin: a destination renamed is the old one removed.</p>
+		{/if}
 		{#if newDestType === 'sftp'}
 			<div class="form-row">
 				<input type="text" placeholder="Host" bind:value={destHost} class="form-input" />
@@ -156,7 +167,7 @@
 		{/if}
 		<!-- A refused save leaves this form open as typed, with the server's reason in the toast (card 2190). -->
 		<p style="font-size: 0.68rem; color: var(--text-tertiary); margin: var(--space-xs) 0 0">
-			A saved password, key or secret is kept only while the destination's name and settings stay as they were saved: type it again when you change them. A connected Google Drive destination is removed, added again and connected.
+			A saved password, key or secret is kept only while the destination's name and settings stay as they were saved: type it again when you change them. A connected Google Drive destination is removed by the superadmin, added again and connected.
 		</p>
 		<div class="form-row" style="justify-content: flex-end">
 			<button class="btn-ghost btn-sm" onclick={onCancel}>Cancel</button>
