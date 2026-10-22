@@ -18,6 +18,13 @@
   Disabled are aria-disabled (not disabled, which would drop the focus) and
   say why when pressed, Keep Last takes a higher number and puts a lower one
   back, and one line under the schedule says the rule. Nothing of it is sent.
+  Switching the failure mail off and changing who receives it are the
+  superadmin's too (card 2408): for an administrator, Email on failure is
+  aria-disabled while it is on, and the address box while there is one to
+  show, each putting a change back with the rule (the box, read-only for them,
+  says it to a key or a paste); ticking the box on is still theirs. A save
+  sends the failure mail only where it was changed here, so a panel left open
+  neither undoes nor is refused for the superadmin's change since.
 -->
 <script lang="ts">
 	import { answerBody, failureMessage } from '$lib/api';
@@ -32,7 +39,8 @@
 	/**
 	 * The page's confirm dialog, which asks before a destination is removed;
 	 * and whether the reader is the superadmin, who alone lowers Keep Last,
-	 * removes a destination or switches the schedule off (card 2398). Not
+	 * removes a destination or switches the schedule off (card 2398), and
+	 * switches the failure mail off or changes who receives it (card 2408). Not
 	 * given, the reader is taken to be an administrator: the server decides
 	 * either way.
 	 */
@@ -41,8 +49,9 @@
 		isSuperadmin = false
 	}: { confirm: (title: string, message: string, action: () => Promise<void>) => void; isSuperadmin?: boolean } = $props();
 
-	/** What an administrator is told of what is the superadmin's (card 2398), the server's own words. */
-	const SUPERADMIN_RULE = 'Lowering Keep Last, removing a destination or switching the schedule off needs the superadmin.';
+	/** What an administrator is told of what is the superadmin's (cards 2398 and 2408), the server's own words. */
+	const SUPERADMIN_RULE =
+		'Lowering Keep Last, removing a destination, switching the schedule or the failure mail off, or changing who receives the failure mail needs the superadmin.';
 	/** How Keep Last counts (card 2405): said under it, and with every Run Now that succeeds. */
 	const KEEP_LAST_RULE = 'Keep Last counts scheduled copies and Run Now copies separately: a Run Now removes only older Run Now copies.';
 
@@ -68,6 +77,9 @@
 	 */
 	let storedRetention = $state(7);
 	let storedSchedule = $state('disabled');
+	/** The failure mail as the server holds it: an administrator's change that card 2408 keeps for the superadmin is put back to it. */
+	let storedNotifyOnFailure = $state(false);
+	let storedNotifyEmail = $state('');
 	let backupHistory = $state<BackupHistoryEntry[]>([]);
 	let showAllHistory = $state(false);
 	let backupLoading = $state(true);
@@ -229,6 +241,8 @@
 				backupHistory = d.history || [];
 				storedRetention = backupRetention;
 				storedSchedule = backupSchedule;
+				storedNotifyOnFailure = backupNotifyOnFailure;
+				storedNotifyEmail = backupNotifyEmail;
 				read = true;
 			}
 		} catch {}
@@ -268,8 +282,11 @@
 						// A box cleared is no number, and is not sent: the retention
 						// stored is kept. `null` is refused (card 2117).
 						retention: backupRetention ?? undefined,
-						notifyOnFailure: backupNotifyOnFailure,
-						notifyEmail: backupNotifyEmail,
+						// The failure mail only where it was changed here (card 2408's
+						// review): sent as last read, a panel left open would put back a
+						// change the superadmin made since, or be refused for it.
+						notifyOnFailure: backupNotifyOnFailure === storedNotifyOnFailure ? undefined : backupNotifyOnFailure,
+						notifyEmail: backupNotifyEmail === storedNotifyEmail ? undefined : backupNotifyEmail,
 						destinations: backupDestinations
 					})
 				});
@@ -279,6 +296,8 @@
 					showToast('Backup settings saved');
 					storedRetention = backupRetention ?? storedRetention;
 					storedSchedule = backupSchedule;
+					storedNotifyOnFailure = backupNotifyOnFailure;
+					storedNotifyEmail = backupNotifyEmail;
 					return true;
 				}
 			} catch {
@@ -313,6 +332,43 @@
 	function changeSchedule() {
 		if (!isSuperadmin && backupSchedule === 'disabled' && storedSchedule !== 'disabled') {
 			backupSchedule = storedSchedule;
+			sayRule();
+			return;
+		}
+		saveBackupConfig();
+	}
+
+	/** Email on failure changed: unticked by an administrator, where it was on, it is ticked again and not sent (card 2408). */
+	function changeNotifyOnFailure() {
+		if (!isSuperadmin && !backupNotifyOnFailure && storedNotifyOnFailure) {
+			backupNotifyOnFailure = true;
+			sayRule();
+			return;
+		}
+		saveBackupConfig();
+	}
+
+	/**
+	 * A key that would type or delete, a paste, or an input in the failure
+	 * mail's address box, from an administrator: the box is read-only for
+	 * them, so nothing reaches `changeNotifyEmail`, and this says why (card
+	 * 2408's review). Other keys, Tab and the arrows among them, are left be.
+	 */
+	function refuseAddressEdit(event: Event) {
+		if (isSuperadmin) return;
+		if (event.type === 'keydown') {
+			const key = event as KeyboardEvent;
+			const types = key.key.length === 1 && !key.ctrlKey && !key.metaKey && !key.altKey;
+			if (!types && key.key !== 'Backspace' && key.key !== 'Delete') return;
+		}
+		event.preventDefault();
+		sayRule();
+	}
+
+	/** The failure mail's addresses changed: any change from an administrator is put back and not sent (card 2408). */
+	function changeNotifyEmail() {
+		if (!isSuperadmin && backupNotifyEmail !== storedNotifyEmail) {
+			backupNotifyEmail = storedNotifyEmail;
 			sayRule();
 			return;
 		}
@@ -599,11 +655,12 @@
 			<p class="sched-keep-note">{KEEP_LAST_RULE}</p>
 
 			<div class="sched-row">
+				<!-- Switching the failure mail off and changing who receives it are the superadmin's (card 2408): for an administrator, marked, and a change put back with the rule. Ticking it on is anyone's. -->
 				<label style="display: flex; align-items: center; gap: var(--space-xs); font-size: 0.78rem; color: var(--text-secondary); cursor: pointer">
-					<input type="checkbox" bind:checked={backupNotifyOnFailure} onchange={() => saveBackupConfig()} /> Email on failure
+					<input type="checkbox" bind:checked={backupNotifyOnFailure} aria-disabled={!isSuperadmin && storedNotifyOnFailure ? 'true' : undefined} title={!isSuperadmin && storedNotifyOnFailure ? 'Switching the failure mail off needs the superadmin' : undefined} onchange={changeNotifyOnFailure} /> Email on failure
 				</label>
 				{#if backupNotifyOnFailure}
-					<input type="email" placeholder="Notification email" bind:value={backupNotifyEmail} class="form-input" style="flex: 1; max-width: 250px" onchange={() => saveBackupConfig()} />
+					<input type="email" placeholder="Notification email" bind:value={backupNotifyEmail} class="form-input" style="flex: 1; max-width: 250px" readonly={!isSuperadmin} aria-disabled={isSuperadmin ? undefined : 'true'} title={isSuperadmin ? undefined : 'Changing who receives the failure mail needs the superadmin'} onbeforeinput={refuseAddressEdit} onkeydown={refuseAddressEdit} onpaste={refuseAddressEdit} onchange={changeNotifyEmail} />
 				{/if}
 			</div>
 		</div>
@@ -736,6 +793,7 @@
 		margin: 0; font-size: 0.72rem; color: var(--text-tertiary);
 	}
 	.dest-actions button[aria-disabled='true'] { opacity: 0.4; cursor: default; }
+	.sched-row input[aria-disabled='true'] { opacity: 0.6; cursor: default; }
 
 	.dest-card {
 		background: var(--bg-base); border: 1px solid var(--glass-border);

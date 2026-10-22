@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.68
+version: 1.69
 status: As-Built
 date: 2026-10-22
 tags:
@@ -1843,6 +1843,22 @@ and that is still so:
   round that was left, Run Now pressed Keep Last times, is closed by card 2405: Keep Last
   counts Run Now copies and scheduled copies separately, so a Run Now can push out only older
   Run Now copies.
+- **The failure mail's switch and recipients are the superadmin's since card 2408
+  (2026-10-22).** The failure mail is how the superadmin hears that backups are failing, and
+  any administrator could switch it off (`notifyOnFailure`) or put their own address in place
+  of the superadmin's (`notifyEmail`). Now `PUT /api/admin/backup` refuses both to anyone but
+  the superadmin, by card 2398's check: see
+  [Fewer Copies Are the Superadmin's](#fewer-copies-are-the-superadmins-card-2398). A backup
+  an administrator makes fail (a destination edited with a wrong secret) is not quiet: the
+  failure mail goes to the recipients the superadmin chose. **Copies can still stop reaching
+  the superadmin's store quietly**, two ways, each logged and not prevented:
+  - an administrator points a destination, in place, at a store of their own (another host,
+    bucket, folder or account, the secret typed again, which card 2398 left theirs): every
+    run succeeds, so no failure mail goes, and the copies go to their store from then on. The
+    save is a `WARN` line under `BACKUP` naming them and the fields changed (card 2270);
+  - the mail settings are every administrator's (above): pointing them at a server that does
+    not deliver, or clearing them, silences every mail, the failure mail included. The save is
+    a `WARN` line under `SMTP` naming them (card 2396).
 - **An administrator can probe the inside of the network.** The SMTP host, an SFTP host and an
   S3 endpoint may be any address, inside the network included (loopback, the Docker host, the
   internal ranges, `169.254.169.254`), and the answers of Send Test and Test tell whether a
@@ -2031,27 +2047,47 @@ fewer copies to restore from is the superadmin's alone. `PUT /api/admin/backup` 
 as it does any other, then, inside the `writeAs` that writes and before anything is written or
 queued, asks the account as it is now (card 2253): where the save lowers the retention (Keep
 Last), removes a destination, or switches the schedule off, and that account is not the
-superadmin, it is `403`, nothing is written and no line is logged.
+superadmin, it is `403`, nothing is written and no line is logged. Card 2408 (2026-10-22, the
+owner's ruling) adds the failure mail to the same check: a save that switches
+`notifyOnFailure` from on to off, or changes who `notifyEmail` sends to in any way, is the
+superadmin's too. The recipients are compared as a set (`recipientsOf`: split at commas,
+semicolons and lines, trimmed, the ASCII capitals `A` to `Z` lower-cased and no other letter,
+so that a look-alike such as U+212A KELVIN SIGN for `k` is another address, each once), so
+the same addresses in another
+order, case or separation are no change, and anything else is: an address added beside the
+others, one removed or replaced, all cleared, and a change made while the mail is off (so the
+recipients cannot be set first and the mail switched on after).
 
 | The save | An administrator | The superadmin |
 |----------|------------------|----------------|
 | Keep Last lowered | ❌ `403` | ✅ |
 | A destination removed: by card 2270's matching of name and type, so a rename, or another type under the name, is the old one removed | ❌ `403` | ✅ |
 | The schedule switched off (`disabled` where it ran) | ❌ `403` (the owner's recommendation, taken) | ✅ |
-| Keep Last raised, a schedule that runs changed for another (more frequent included), a destination added or edited in place (another host or bucket included, its secret typed again), the failure mail | ✅ | ✅ |
+| The failure mail switched off (`notifyOnFailure` from `true` to `false`; card 2408) | ❌ `403` | ✅ |
+| Who receives the failure mail changed (`notifyEmail`: an address added, removed or replaced, or all cleared, the mail on or off; card 2408) | ❌ `403` (the owner's recommendation: any change to the recipients, an address added beside the others included) | ✅ |
+| Keep Last raised, a schedule that runs changed for another (more frequent included), a destination added or edited in place (another host or bucket included, its secret typed again), the failure mail switched on, its recipients sent back the same (in any order, case or separation) | ✅ | ✅ |
 | Run Now, Test, Connect | ✅ (unchanged) | ✅ |
 
-The words name what the save would do: `Lowering Keep Last, removing a destination or
-switching the schedule off needs the superadmin. This save would lower Keep Last from 7 to 1,
-and remove the destination "NAS" (a destination renamed, or saved as another type, is the old
-one removed), and switch the schedule off.` (each part only where it applies). The check
+The words name what the save would do: `Lowering Keep Last, removing a destination, switching
+the schedule or the failure mail off, or changing who receives the failure mail needs the
+superadmin. This save would lower Keep Last from 7 to 1, and remove the destination "NAS" (a
+destination renamed, or saved as another type, is the old one removed), and switch the
+schedule off, and switch the failure mail off, and change who receives the failure mail.`
+(each part only where it applies; the addresses are not named, as the `BACKUP` line names
+`notifyEmail` alone). The check
 before the body stays `requireAdmin`, as the body is not known then; a superadmin made an
 administrator from the host while the body arrives is refused as an administrator is, and an
 administrator made a user is refused `Forbidden` by the administrator check first.
 `ScheduledBackupsPanel.svelte` shows an administrator 🗑️ and the schedule's
 `Disabled (superadmin only)` `aria-disabled` (not `disabled`, which would drop the focus), each
 saying the rule when chosen and sending nothing, Keep Last with the stored number as its least
-(a lower one put back), and one line under the schedule; the superadmin's panel is unchanged.
+(a lower one put back), and one line under the schedule; since card 2408 also **Email on
+failure** `aria-disabled` while it is on (unticked, it is ticked again with the rule and
+nothing sent) and its address box `aria-disabled` and read-only (a key that would type or
+delete, or a paste, says the rule; a change put back with the rule); the superadmin's panel
+is unchanged. Every panel sends `notifyOnFailure` and `notifyEmail` only where they differ
+from what it last read or saved (card 2408's review), so a panel left open while the
+superadmin changed the recipients neither puts them back nor is refused for them.
 Removing destinations when their setter is demoted or deleted (card 2397, below) is not a save
 and is not refused.
 
@@ -2072,7 +2108,7 @@ flowchart TD
     W --> A{"requireAdmin(caller)"}
     A -->|"no"| F2["403 Forbidden, nothing written"]
     A -->|"yes"| R["fields read; 400s first"]
-    R --> L{"Keep Last lowered, a destination\nremoved, or the schedule off?"}
+    R --> L{"Keep Last lowered, a destination\nremoved, the schedule off, the failure\nmail off, or its recipients changed?"}
     L -->|"yes, and not the superadmin"| F3["403 'needs the superadmin',\nnothing written, no line"]
     L -->|"no, or the superadmin"| S["saved, the lines queued,\nthe setters recorded (card 2397)"]
 ```

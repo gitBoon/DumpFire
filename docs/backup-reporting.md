@@ -1,7 +1,7 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.34
+version: 1.35
 status: As-Built
 date: 2026-10-22
 tags:
@@ -297,8 +297,15 @@ Record](#a-save-of-the-backup-settings-on-record): a rename, or another type und
 is the old one removed) or sets `schedule` to `disabled` where it ran is `403` for anyone but
 the superadmin, asked of the account as it is at the write (`superadminOnly()` in
 `src/routes/api/admin/backup/+server.ts`), with words that name what it would do; nothing is
-written and no line is logged. Raising the retention, changing between schedules that run, and
-adding or editing destinations stay every administrator's. See
+written and no line is logged. Since card 2408 (2026-10-22) the same check refuses a save that
+sets `notifyOnFailure` from `true` to `false`, or changes who `notifyEmail` sends to in any way
+(compared as a set of addresses, the ASCII capitals lower-cased and no other letter, so a
+look-alike such as U+212A KELVIN SIGN for `k` is another address: another order, ASCII case
+or separation is no change;
+an address added beside the others, one removed or replaced, all cleared, or a change made
+while the mail is off, is), since the failure mail is how the superadmin hears the copies have
+stopped. Raising the retention, changing between schedules that run, adding or editing
+destinations, and switching the failure mail on stay every administrator's. See
 [Fewer Copies Are the Superadmin's](authentication-security.md#fewer-copies-are-the-superadmins-card-2398).
 Keep Last counts Run Now copies and scheduled copies separately, so a Run Now removes only
 older Run Now copies (card 2405): see [Retention Cleanup](#retention-cleanup).
@@ -819,12 +826,12 @@ connection, a `WARN` for one that replaced a connection. A third, since card 239
 demoted or deleted account's destinations out (`removeSettingsSetBy()` in
 `src/lib/server/setting-setters.ts`), with its own `WARN` (above, Backup Configuration).
 
-Before any of this, a save card 2398 keeps for the superadmin is refused `403` inside the same
-transaction, so nothing above is queued for it:
+Before any of this, a save cards 2398 and 2408 keep for the superadmin is refused `403` inside
+the same transaction, so nothing above is queued for it:
 
 ```mermaid
 flowchart LR
-    Read["fields read"] --> G{"retention lowered,<br/>a destination removed,<br/>schedule off?"}
+    Read["fields read"] --> G{"retention lowered,<br/>a destination removed,<br/>schedule off, failure mail off,<br/>or its recipients changed?"}
     G -->|"yes, not the superadmin"| R["403, nothing queued or written"]
     G -->|"no, or the superadmin"| C["settingsChanges, the lines,<br/>saveBackupConfig,<br/>recordDestinationSetters"]
 ```
@@ -988,6 +995,8 @@ at most three destinations are named, the rest as `and N more (see Backup Histor
 draws its message as text, so markup in a name or a reason is shown as written, never drawn.
 
 ### Failure Notifications
+
+Only the superadmin switches the failure mail off or changes who receives it, since card 2408 (2026-10-22); switching it on is every administrator's (see Backup Configuration above).
 
 If `notifyOnFailure` is enabled and SMTP is configured, a styled HTML email is sent to the configured address with the error details, a destination not tried for want of its credentials included. The destination's name and type and the error text, which is whatever the destination's server answered, are escaped where they are put into the mail, so markup in them is shown as text and never drawn (see [Text in Mail Is Text](notifications-email.md#text-in-mail-is-text)).
 

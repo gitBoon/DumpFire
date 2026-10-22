@@ -381,7 +381,8 @@ describe('the Scheduled Backups panel, mounted', () => {
 // Card 2398: lowering Keep Last, removing a destination and switching the
 // schedule off are the superadmin's; the server refuses them to anyone else.
 describe('the Scheduled Backups panel for an administrator and for the superadmin (card 2398)', () => {
-	const RULE = 'Lowering Keep Last, removing a destination or switching the schedule off needs the superadmin.';
+	const RULE =
+		'Lowering Keep Last, removing a destination, switching the schedule or the failure mail off, or changing who receives the failure mail needs the superadmin.';
 	const toastsShown = () => {
 		let shown: { message: string }[] = [];
 		toasts.subscribe((list) => (shown = list as { message: string }[]))();
@@ -507,6 +508,164 @@ describe('the Scheduled Backups panel for an administrator and for the superadmi
 			[3, 'disabled']
 		]);
 		expect(toastsShown()).not.toContain(RULE);
+	});
+
+	// Card 2408: switching the failure mail off and changing who receives it are the superadmin's too.
+	const notifyBox = (target: HTMLElement) => target.querySelector<HTMLInputElement>('.sched-row input[type="checkbox"]')!;
+	const notifyEmail = (target: HTMLElement) => target.querySelector<HTMLInputElement>('input[placeholder="Notification email"]');
+	/** The settings with the failure mail on, to one address. */
+	const mailOn = () => {
+		answer = (what) => (what === 'GET /api/admin/backup' ? Response.json({ ...settings, notifyOnFailure: true, notifyEmail: 'chief@example.com' }) : undefined);
+	};
+
+	it('marks Email on failure and its address for an administrator, ticks it again and puts the address back with the rule, sending nothing (card 2408)', async () => {
+		mailOn();
+		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn(), isSuperadmin: false });
+		await settle();
+		expect(target.querySelector('.sched-note')!.textContent).toBe(`🔒 ${RULE}`);
+		const box = notifyBox(target);
+		expect([box.checked, box.disabled, box.getAttribute('aria-disabled'), box.title]).toEqual([true, false, 'true', 'Switching the failure mail off needs the superadmin']);
+		const address = notifyEmail(target)!;
+		expect([address.value, address.readOnly, address.getAttribute('aria-disabled'), address.title]).toEqual([
+			'chief@example.com',
+			true,
+			'true',
+			'Changing who receives the failure mail needs the superadmin'
+		]);
+
+		box.click();
+		flushSync();
+		await settle();
+		expect(notifyBox(target).checked).toBe(true);
+		expect(asked('PUT /api/admin/backup')).toEqual([]);
+		expect(toastsShown()).toEqual([RULE]);
+
+		dismissAll();
+		changeTo(notifyEmail(target)!, 'chief@example.com, ann@example.com');
+		await settle();
+		expect(notifyEmail(target)!.value).toBe('chief@example.com');
+		expect(asked('PUT /api/admin/backup')).toEqual([]);
+		expect(toastsShown()).toEqual([RULE]);
+	});
+
+	/** What each save sent of the failure mail: a field not sent is left out. */
+	const notifySent = () =>
+		asked('PUT /api/admin/backup').map((request) => {
+			const body = request.body as Record<string, unknown>;
+			return Object.fromEntries(['notifyOnFailure', 'notifyEmail'].filter((field) => field in body).map((field) => [field, body[field]]));
+		});
+
+	it('lets an administrator tick Email on failure on, sending that alone of the failure mail, and marks it once saved (card 2408)', async () => {
+		answer = (what) => (what === 'GET /api/admin/backup' ? Response.json({ ...settings, notifyEmail: 'chief@example.com' }) : undefined);
+		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn(), isSuperadmin: false });
+		await settle();
+		expect(notifyBox(target).hasAttribute('aria-disabled')).toBe(false);
+		expect(notifyEmail(target)).toBeNull();
+
+		notifyBox(target).click();
+		flushSync();
+		await settle();
+
+		expect(notifySent()).toEqual([{ notifyOnFailure: true }]);
+		expect(toastsShown()).not.toContain(RULE);
+		expect(notifyBox(target).getAttribute('aria-disabled')).toBe('true');
+		expect(notifyEmail(target)!.readOnly).toBe(true);
+	});
+
+	it('leaves the superadmin’s Email on failure and its address as they were: unmarked, and each change sent (card 2408)', async () => {
+		mailOn();
+		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn(), isSuperadmin: true });
+		await settle();
+		expect(notifyBox(target).hasAttribute('aria-disabled')).toBe(false);
+		expect(notifyBox(target).hasAttribute('title')).toBe(false);
+		const address = notifyEmail(target)!;
+		expect([address.readOnly, address.hasAttribute('aria-disabled'), address.hasAttribute('title')]).toEqual([false, false, false]);
+
+		changeTo(address, 'ops@example.com');
+		await settle();
+		notifyBox(target).click();
+		flushSync();
+		await settle();
+
+		// Each save sends what it changed of the failure mail.
+		expect(notifySent()).toEqual([{ notifyEmail: 'ops@example.com' }, { notifyOnFailure: false }]);
+		expect(toastsShown()).not.toContain(RULE);
+	});
+
+	// Card 2408's review: the box is read-only for an administrator, so typing or pasting never reached the put-back.
+	it('says the rule when an administrator types, deletes or pastes in the address box, and leaves Tab and the arrows be (card 2408)', async () => {
+		mailOn();
+		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn(), isSuperadmin: false });
+		await settle();
+		const address = notifyEmail(target)!;
+		const key = (name: string, extra: KeyboardEventInit = {}) => {
+			const event = new KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true, ...extra });
+			address.dispatchEvent(event);
+			flushSync();
+			return event.defaultPrevented;
+		};
+
+		expect([key('Tab'), key('ArrowLeft'), key('c', { ctrlKey: true })]).toEqual([false, false, false]);
+		expect(toastsShown()).toEqual([]);
+
+		expect(key('a')).toBe(true);
+		expect(toastsShown()).toEqual([RULE]);
+		dismissAll();
+		expect(key('Backspace')).toBe(true);
+		expect(toastsShown()).toEqual([RULE]);
+		dismissAll();
+		const paste = new Event('paste', { bubbles: true, cancelable: true });
+		address.dispatchEvent(paste);
+		flushSync();
+		expect(paste.defaultPrevented).toBe(true);
+		expect(toastsShown()).toEqual([RULE]);
+		dismissAll();
+		const typed = new InputEvent('beforeinput', { inputType: 'insertText', data: 'x', bubbles: true, cancelable: true });
+		address.dispatchEvent(typed);
+		flushSync();
+		expect(typed.defaultPrevented).toBe(true);
+		expect(toastsShown()).toEqual([RULE]);
+		expect(asked('PUT /api/admin/backup')).toEqual([]);
+		expect(address.value).toBe('chief@example.com');
+	});
+
+	it('leaves the superadmin’s typing and pasting in the address box alone (card 2408)', async () => {
+		mailOn();
+		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn(), isSuperadmin: true });
+		await settle();
+		const address = notifyEmail(target)!;
+		const typed = new KeyboardEvent('keydown', { key: 'a', bubbles: true, cancelable: true });
+		const paste = new Event('paste', { bubbles: true, cancelable: true });
+		address.dispatchEvent(typed);
+		address.dispatchEvent(paste);
+		flushSync();
+
+		expect([typed.defaultPrevented, paste.defaultPrevented]).toEqual([false, false]);
+		expect(toastsShown()).toEqual([]);
+	});
+
+	// Card 2408's review: every save sent the failure mail as last read, so a panel left open was refused for the superadmin's change since.
+	it('sends nothing of the failure mail when an administrator raises Keep Last on a panel read before the superadmin changed the recipients (card 2408)', async () => {
+		mailOn();
+		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn(), isSuperadmin: false });
+		await settle();
+		// Meanwhile the superadmin sends the mail elsewhere: the server holds another address than the panel shows.
+		answer = (what) => {
+			if (what === 'GET /api/admin/backup') return Response.json({ ...settings, notifyOnFailure: true, notifyEmail: 'boss@example.com' });
+			if (what === 'PUT /api/admin/backup') {
+				const body = sent.at(-1)!.body as Record<string, unknown>;
+				// As the server rules (card 2408): a change of recipients from an administrator is refused.
+				if ('notifyEmail' in body && body.notifyEmail !== 'boss@example.com') return Response.json({ message: 'needs the superadmin' }, { status: 403 });
+				return Response.json({ ok: true });
+			}
+			return undefined;
+		};
+
+		changeTo(keepLast(target), '9');
+		await settle();
+
+		expect(notifySent()).toEqual([{}]);
+		expect(toastsShown()).toEqual(['Backup settings saved']);
 	});
 
 	// The card 2398 review: a refused save left the controls showing what was refused.

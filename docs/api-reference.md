@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.95
+version: 1.96
 status: As-Built
 date: 2026-10-22
 tags:
@@ -2245,8 +2245,12 @@ API:
 - **Fewer backups are the superadmin's, and settings go with their setter** (cards 2398 and
   2397, migration 0059). `PUT /api/admin/backup` is `403` for anyone but the superadmin where
   the save lowers `retention`, removes a destination (by name and type, so a rename is the old
-  one removed) or sets `schedule` to `disabled` where it ran: `Lowering Keep Last, removing a
-  destination or switching the schedule off needs the superadmin. This save would …`, naming
+  one removed) or sets `schedule` to `disabled` where it ran, and since card 2408 where it sets
+  `notifyOnFailure` from `true` to `false` or changes who `notifyEmail` sends to (compared as a
+  set of addresses, ASCII capitals alone lower-cased; switching the failure mail on stays
+  every administrator's):
+  `Lowering Keep Last, removing a destination, switching the schedule or the failure mail off,
+  or changing who receives the failure mail needs the superadmin. This save would …`, naming
   what it would do, with nothing written. Who moved the mail settings (`host`, `port`,
   `user`, `allowInsecure`) to where they are, set the App URL to its address, and added each
   destination, pointed it where it is or connected it is recorded, by place, so a setting
