@@ -9,10 +9,35 @@ import { pathId, readBody } from '$lib/server/request-body';
 import { requireAdmin, requireManagedAccount } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
 import { endUnusedInvites } from '$lib/server/invites';
+import { anyRemoved, removeSettingsSetBy, settingsHeldBy } from '$lib/server/setting-setters';
+import { mayManageAccount } from '$lib/account-rule';
 import { createLogger } from '$lib/server/logger';
 import type { RequestHandler } from './$types';
 
 const log = createLogger('AUTH');
+
+/**
+ * GET — What a role change to user or a delete of the account would remove
+ * now (admin only): `{ id, settingsSet }`, `settingsSet` being the mail
+ * settings, the App URL and the backup destinations it holds, `{ mail,
+ * appUrl, destinations }`, or null for none (card 2397's second review). The
+ * users panel reads it just before it asks to make the account a user or
+ * delete it: the admin page's own copy is as old as the page, and another
+ * administrator may have taken a setting over since. By the admin page's
+ * rule of the counts (the rule in $lib/account-rule.ts): null for the
+ * caller's own account and for any the caller may not manage, so it tells an
+ * administrator nothing of the superadmin's or another administrator's.
+ * Nothing else of the account is answered, and the answer is not kept.
+ */
+export const GET: RequestHandler = async ({ params, locals }) => {
+	const caller = requireAdmin(locals.user);
+	const userId = pathId(params.id, 'user');
+	const target = db.select({ id: users.id, role: users.role }).from(users).where(eq(users.id, userId)).get();
+	if (!target) throw error(404, 'User not found');
+	const counted = target.id !== caller.id && mayManageAccount(caller, target);
+	const settingsSet = counted ? (settingsHeldBy(target.id).get(target.id) ?? null) : null;
+	return json({ id: target.id, settingsSet }, { headers: { 'Cache-Control': 'no-store' } });
+};
 
 /**
  * PUT — Update user role/details (admin only).
@@ -29,6 +54,11 @@ const log = createLogger('AUTH');
  * it is saved. The superadmin's request to give up their role was answered
  * 200 and ignored, and an administrator's to make themselves a user was
  * answered 200 and done.
+ *
+ * An administrator made a user loses, in the same transaction, the mail
+ * settings, the App URL and the backup destinations they last changed (card
+ * 2397): the answer then has `settingsRemoved`, `{ mail, appUrl,
+ * destinations }`, and an answer that removed nothing has no such field.
  */
 export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	requireAdmin(locals.user);
@@ -132,6 +162,15 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 			.where(eq(users.id, userId))
 			.returning({ id: users.id, username: users.username, email: users.email, emoji: users.emoji, role: users.role, createdAt: users.createdAt })
 			.get();
+
+		// An administrator made a user loses what they set that sends mail or
+		// backups somewhere, in this transaction (card 2397): the mail settings,
+		// the App URL and the destinations they last changed. The answer names
+		// what went, and only then has the field.
+		if (updates.role === 'user' && target.role !== 'user') {
+			const settingsRemoved = removeSettingsSetBy(target, 'demoted', actor);
+			if (anyRemoved(settingsRemoved)) return { ...row, invitesEnded, settingsRemoved };
+		}
 		return { ...row, invitesEnded };
 	});
 
@@ -162,6 +201,11 @@ function soleOwnerOf(userId: number): string[] {
  * teams (card 2377): the delete takes its team rows with it, which left each
  * such team with no owner, the one way round card 2373's rule. Asked after
  * the checks of who may delete it, so nobody who may not learns its teams.
+ *
+ * The mail settings, App URL and backup destinations the account last changed
+ * go with it (card 2397, in `deleteUser`): the answer then has
+ * `settingsRemoved`, as the role change's has, and is `{ success: true }`
+ * where nothing went.
  */
 export const DELETE: RequestHandler = async ({ params, locals }) => {
 	requireAdmin(locals.user);
@@ -171,7 +215,7 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 	// One transaction: the user is read, checked and deleted together, so the
 	// role that was checked is the role of the row that goes. It asks first
 	// whether the session is still open, and who its account is now (card 2253).
-	writeAs(locals, (caller) => {
+	const removed = writeAs(locals, (caller) => {
 		const actor = requireAdmin(caller);
 
 		// Can't delete yourself
@@ -196,8 +240,11 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 
 		// What named the user with no key to clear it is cleared first; the
 		// delete used to fail on it. See $lib/server/deletes.ts.
-		deleteUser(userId, actor);
+		return deleteUser(userId, actor);
 	});
 
-	return json({ success: true });
+	// The mail settings, App URL and destinations the account last changed
+	// went with it (card 2397): named only where something did.
+	const settingsRemoved = removed?.settingsRemoved;
+	return json(settingsRemoved && anyRemoved(settingsRemoved) ? { success: true, settingsRemoved } : { success: true });
 };

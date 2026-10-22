@@ -1240,6 +1240,27 @@ export function settingsChanges(before: object, after: object): BackupSettingsCh
 }
 
 /**
+ * Where a destination's copies go, for card 2397's setter rows (its second
+ * code review): its type and each field `differences` compares for it but its
+ * name, each as it is used (`inUse`), and for a Google Drive service account
+ * the account its JSON names (`client_email` and `private_key_id`, the key
+ * itself excepted). Two entries with the same place are what `elsewhere`
+ * calls the same account and place: a secret typed again, an SFTP host key
+ * and a field no list names do not move a destination. Empty for an entry
+ * that is not an object.
+ */
+export function destinationPlace(destination: unknown): unknown[] {
+	if (!isEntry(destination)) return [];
+	const fields = sameInFields(destination).filter((field) => field !== 'name');
+	const place: unknown[] = [asStored(destination.type), ...fields.map((field) => inUse(destination, field))];
+	if (destination.type === 'gdrive' && !isOauth(destination)) {
+		const account = serviceAccount(destination.serviceAccountJson);
+		place.push(account === null ? null : [asStored(account.client_email), asStored(account.private_key_id)]);
+	}
+	return place;
+}
+
+/**
  * `restored` with the secrets of `here` in it: a service account's JSON is
  * taken whole. A Google Drive refresh token brings the scope this server
  * recorded for it, and none where it recorded none (card 2188, decision 7):
@@ -1582,6 +1603,20 @@ export function maskDestination<T>(destination: T): T {
 	return masked as T;
 }
 
+/**
+ * Whether `destination`, as sent, has a secret typed into it: any type's
+ * secret field holding text that is not the mask, or a service account's JSON
+ * with no mask in it. Card 2397's third review: a move made with a secret
+ * typed is the mover's, whoever was recorded for the place it moves to.
+ */
+export function typedSecret(destination: unknown): boolean {
+	if (!isEntry(destination)) return false;
+	const typed = (value: unknown) => typeof value === 'string' && value !== '' && value !== SECRET_MASK;
+	if (ANY_SECRET_FIELD.some((field) => typed(destination[field]))) return true;
+	const json = destination.serviceAccountJson;
+	return typeof json === 'string' && json !== '' && !json.includes(SECRET_MASK);
+}
+
 /** The fields of `destination` that are sent masked: any type's secret field holding the mask, and a service account's JSON holding it anywhere. */
 function maskedFields(destination: Entry): string[] {
 	const masked = ANY_SECRET_FIELD.filter((field) => destination[field] === SECRET_MASK);
@@ -1592,10 +1627,11 @@ function maskedFields(destination: Entry): string[] {
 /**
  * The way out of two saved destinations of one name (the review-fix pass's
  * O1), in the words the deployment guide's check 0j quotes: the page's Remove
- * removes every destination of the name it is pressed on.
+ * removes every destination of the name it is pressed on, and only the
+ * superadmin removes a destination (card 2398).
  */
 const removeAndAddOnce = (name: string) =>
-	`Remove the destinations named "${name}" (the page's Remove removes every one of that name) and add it once with its secret typed`;
+	`Remove the destinations named "${name}" (the page's Remove removes every one of that name, and removing a destination is the superadmin's) and add it once with its secret typed`;
 
 /** Where a connected Google Drive destination reaches all of Drive, the step that comes first (R2). */
 const DRIVE_ACCESS_FIRST =
@@ -1625,14 +1661,19 @@ export function twiceNamed(destinations: readonly unknown[], stored: readonly un
 	return null;
 }
 
-/** The refusal's remedy for a connected Google Drive destination, by the scope it was connected with (R2, R5). */
+/**
+ * The refusal's remedy for a connected Google Drive destination, by the scope
+ * it was connected with (R2, R5). Removing the destination is the
+ * superadmin's (card 2398), so the words say so.
+ */
 const DRIVE_REMEDY = {
 	narrow:
-		'To change them, remove the destination, add it again, and connect it. To keep using a folder DumpFire made, give its Folder ' +
-		'ID again (shown on the destination as Folder:); Connect checks it can reach it.',
+		"To change them, remove the destination (removing a destination is the superadmin's), add it again, and connect it. To keep " +
+		'using a folder DumpFire made, give its Folder ID again (shown on the destination as Folder:); Connect checks it can reach it.',
 	wide:
 		"To change them, first remove DumpFire's access in the Google account (Google Account, Security, Your connections to " +
-		'third-party apps and services), then remove this destination, add it again with the Folder ID left empty, and connect it.'
+		"third-party apps and services), then remove this destination (removing a destination is the superadmin's), add it again " +
+		'with the Folder ID left empty, and connect it.'
 };
 
 /**

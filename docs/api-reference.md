@@ -1,9 +1,9 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.94
+version: 1.95
 status: As-Built
-date: 2026-10-21
+date: 2026-10-22
 tags:
   - api
   - rest
@@ -2242,6 +2242,24 @@ API:
   address is configured (`An administrator sets it as the App URL …`), and the mail-password
   problem (`… an administrator enters it under 📧 Email / SMTP`). No `/api/v1` operation
   changes.
+- **Fewer backups are the superadmin's, and settings go with their setter** (cards 2398 and
+  2397, migration 0059). `PUT /api/admin/backup` is `403` for anyone but the superadmin where
+  the save lowers `retention`, removes a destination (by name and type, so a rename is the old
+  one removed) or sets `schedule` to `disabled` where it ran: `Lowering Keep Last, removing a
+  destination or switching the schedule off needs the superadmin. This save would …`, naming
+  what it would do, with nothing written. Who moved the mail settings (`host`, `port`,
+  `user`, `allowInsecure`) to where they are, set the App URL to its address, and added each
+  destination, pointed it where it is or connected it is recorded, by place, so a setting
+  changed and changed back is its first setter's again (a sender's name or address, a secret
+  typed again for the same place, an App URL cleared or a host key confirmed records nobody);
+  demoting that account to user with `PUT /api/users/{id}`, or deleting it with `DELETE
+  /api/users/{id}`, removes what is still where it set it in the same transaction, and the
+  answer then has `settingsRemoved: { mail, appUrl, destinations }` (`DELETE` answers
+  `{ success: true, settingsRemoved }`); an answer that removed nothing has no such field and
+  is as before. A new `GET /api/users/{id}`, an administrator's, answers `{ id, settingsSet }`:
+  what such a change or delete would remove now, in the same shape, or `null` for nothing, for
+  the caller's own account and for any the caller may not manage; `404` for no such account.
+  The admin page reads it just before it asks. No `/api/v1` operation changes.
 
 ### Changes on 2026-10-13
 

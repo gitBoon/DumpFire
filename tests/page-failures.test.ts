@@ -81,7 +81,7 @@ import {
 	uploadNotRead
 } from '$lib/api';
 import { mayManageAccount } from '$lib/account-rule';
-import { NO_ANSWER as ADMIN_NO_ANSWER, sent } from '$lib/admin/send';
+import { NO_ANSWER as ADMIN_NO_ANSWER, sent, showToast } from '$lib/admin/send';
 import * as bulkActions from '$lib/board/bulk-actions';
 import * as cardActions from '$lib/board/card-actions';
 import * as dndHandlers from '$lib/board/dnd-handlers';
@@ -2532,30 +2532,31 @@ const WRITES: Record<string, Write[]> = {
 	'src/lib/components/admin/BackupRestorePanel.svelte': [],
 	'src/lib/components/admin/GDriveConnectModal.svelte': [{ name: 'exchangeGDriveCode', reads: 'sent', done: ['await loadBackupConfig()'] }],
 	'src/lib/components/admin/ScheduledBackupsPanel.svelte': [
-		{ name: 'saveBackupConfig', reads: 'sent', done: ["showToast('Backup settings saved')"] },
+		// The card 2398 review: a refused save puts the list back to the one each
+		// caller hands it (`was`) and reads the settings again quietly, so the
+		// controls show what the server holds; held, mounted, in
+		// tests/admin-panels.test.ts.
+		{ name: 'saveBackupConfig', reads: 'failureMessage', done: ["showToast('Backup settings saved')"] },
 		// The card 2250 review's M3 and S3: once saved, the list is read again
 		// from the server, so that it holds the masked secrets and not one typed,
 		// and the destination's host key box is forgotten.
 		{
 			name: 'addDestination',
 			via: 'saveBackupConfig',
-			putsBack: ['backupDestinations = was'],
 			done: ['resetDestForm()', 'showAddDestination = false', 'forgetHostKeyCheck(added.name)']
 		},
 		{
 			name: 'updateDestination',
 			via: 'saveBackupConfig',
-			putsBack: ['backupDestinations = was'],
 			// By the name the form edited when the save went (the card 2305 review).
 			done: ['editingDest = null', 'resetDestForm()', 'forgetHostKeyCheck(editing)']
 		},
-		{ name: 'removeDestination', via: 'saveBackupConfig', putsBack: ['backupDestinations = was'], done: ['forgetHostKeyCheck(name)'] },
+		{ name: 'removeDestination', via: 'saveBackupConfig', done: ['forgetHostKeyCheck(name)'] },
 		{ name: 'testDestination', reads: 'sent' },
 		// Card 2250: Confirm saves the host key a Test showed, and only once it is saved tests again.
 		{
 			name: 'confirmHostKey',
 			via: 'saveBackupConfig',
-			putsBack: ['backupDestinations = was'],
 			done: ['await testDestination(backupDestinations.find(d => d.name === name) ?? updated[idx])']
 		},
 		{ name: 'runManualBackup', reads: 'sent', done: ['await loadBackupConfig()'] }
@@ -3046,6 +3047,26 @@ describe('the toast, src/lib/stores/toast.ts and src/lib/components/Toast.svelte
 		expect(shown()).toEqual(['success: Saved', 'error: Two', 'error: Three', 'info: Card archived', 'error: One']);
 	});
 
+	// Card 2397's review: the settings that went with an account's role were said as a failure.
+	it('keeps a warning given to stay, as showToast gives every warning, until it is closed or its page is left, once however often it comes', () => {
+		vi.useFakeTimers();
+		toasts.add('Over the WIP limit', 'warning');
+		showToast('Role updated. What ann had set was removed: the App URL.', 'warning');
+		showToast('Role updated. What ann had set was removed: the App URL.', 'warning');
+		toasts.add('Saved');
+
+		vi.advanceTimersByTime(TOAST_MS);
+		// The board's warnings still go; the one given to stay waits, shown once.
+		expect(shown()).toEqual(['warning: Role updated. What ann had set was removed: the App URL.']);
+		vi.advanceTimersByTime(10 * 60_000);
+		expect(get(toasts).map((toast) => toast.stays)).toEqual([true]);
+
+		// Its page left: gone with the failures.
+		toasts.add('Card not found', 'error');
+		toasts.clearErrors();
+		expect(shown()).toEqual([]);
+	});
+
 	it('drops a failure whose request was started before a navigation, and shows one started after it', () => {
 		const before = toasts.navigation();
 		toasts.add('Card not found', 'error', before);
@@ -3238,7 +3259,10 @@ describe('the toast, src/lib/stores/toast.ts and src/lib/components/Toast.svelte
 	it('keeps the admin page’s showToast, as one line that adds to the store, in src/lib/admin/send.ts, and no other in the page or its panels', () => {
 		const send = ts.createSourceFile('send.ts', readFileSync(join(ROOT, 'src/lib/admin/send.ts'), 'utf8'), ts.ScriptTarget.Latest, true);
 
-		expect(functionNamed(send, 'showToast').body!.statements.map((statement) => statement.getText())).toEqual(['toasts.add(msg, type, started);']);
+		// A warning given through it stays until closed (card 2397's review).
+		expect(functionNamed(send, 'showToast').body!.statements.map((statement) => statement.getText())).toEqual([
+			"toasts.add(msg, type, started, type === 'warning');"
+		]);
 		for (const { file, source } of adminSources().filter((admin) => admin.file !== 'src/lib/admin/send.ts')) {
 			const tree = file.endsWith('.svelte') ? scriptOf(file, source) : ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
 			expect(tree.statements.some((statement) => ts.isFunctionDeclaration(statement) && statement.name?.text === 'showToast'), file).toBe(false);
@@ -4715,9 +4739,11 @@ describe('the admin page’s user rows, src/lib/components/admin/UsersPanel.svel
 	it('shows the role select, the invite and the delete only where the rule lets the caller use them, and never on their own row', () => {
 		for (const control of [
 			'onchange={(e) => chooseUserRole(u.id, e.currentTarget)}',
-			'onclick={() => changeUserRole(u.id, u.username)}',
+			// Asks first where the account's settings would go with its role (card 2397's review).
+			'onclick={() => askChangeUserRole(u.id, u.username)}',
 			'onclick={(e) => resendInvite(u.id, e.currentTarget)}',
-			'() => deleteUser(u.id))}'
+			// Reads what the account holds, then asks (card 2397's second review).
+			'onclick={() => askDeleteUser(u.id, u.username)}'
 		]) {
 			const blocks = around(control);
 			expect(blocks.some((block) => block.condition === RULE && !block.inElse), control).toBe(true);
@@ -5605,7 +5631,8 @@ describe('the SFTP host key on the admin page, src/lib/components/admin/Schedule
 		// The Test is of the destination as the server now holds it, read again
 		// after the save (the review's M3): its secret masked, its key as stored.
 		const reload = text.indexOf('await loadBackupConfig(true)');
-		expect(reload).toBeGreaterThan(text.indexOf('saveBackupConfig()'));
+		expect(reload).toBeGreaterThan(text.indexOf('saveBackupConfig(was)'));
+		expect(text.indexOf('saveBackupConfig(was)')).toBeGreaterThan(-1);
 		expect(text.indexOf('await testDestination(backupDestinations.find(d => d.name === name) ?? updated[idx])')).toBeGreaterThan(reload);
 	});
 

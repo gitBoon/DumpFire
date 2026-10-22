@@ -1,9 +1,9 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.40
+version: 1.41
 status: As-Built
-date: 2026-10-21
+date: 2026-10-22
 tags:
   - notifications
   - email
@@ -109,9 +109,11 @@ administrator or the superadmin (`GET`, `PUT` and `POST /api/admin/smtp` ask `re
 they were the superadmin's alone until card 2395, 2026-10-21, at the owner's request).
 Whoever sets the mail server sees every mail the app sends, invite links and password-reset
 links included, the superadmin's among them, and the App URL, saved by the same route,
-decides where every link in a mail points. The settings do not record who saved them: they
-stay in force when that account is demoted or deleted (docs/authentication-security.md, "The
-Mail and Backup Settings: Every Administrator's"). The system log does, since card 2396: see
+decides where every link in a mail points. Since card 2397 (2026-10-22) who pointed mail where
+it goes, and apart from them who set the App URL to its address, is recorded, by place, in
+`setting_setters` (migration 0059), and that account made a user, or deleted, takes them away:
+see [When the Mail's Setter Is Demoted](#when-the-mails-setter-is-demoted). The system log
+names each change too, since card 2396: see
 [Who Changed the Mail Settings](#who-changed-the-mail-settings).
 
 | Setting Key | Type | Default | Description |
@@ -213,6 +215,55 @@ flowchart TD
 - **When it is written.** After `writeAs` returns, so after the commit: a save refused (the
   password needed again, a field of the wrong type, `{}`, a caller no longer an administrator)
   or one that fails writes none. Backup saves write no audit entry, and nor does this.
+
+### When the Mail's Setter Is Demoted
+
+Since card 2397 (2026-10-22, the owner's ruling). Since card 2395 any administrator can point
+mail at a server of their own, and before this card that server went on receiving every mail
+after its administrator was demoted or deleted. Now the same `PUT /api/admin/smtp` that logs a
+change records its saver, inside its `writeAs` (`recordMailSetters` in
+`src/lib/server/setting-setters.ts`): a save that moves the host, port, user or
+`allowInsecure`, as a mail reads them, to a place nobody is recorded for writes a `mail` row in
+`setting_setters` naming the saver for that place, and one that sets the App URL to an address
+nobody is recorded for an `app_url` row, so that saving the App URL alone does not take the
+mail server over. The setter is the account recorded for where the mail is now: moved back to
+where somebody put it before, it is theirs again (the second code review: an administrator who
+changed a passwordless relay's port and changed it back, or the App URL, had taken the
+superadmin's over). The sender's name or address, a password typed again alone, and an App URL
+cleared make nobody the setter (the first review: an administrator who corrected one field of
+the superadmin's mail became its setter, and their demotion then removed it), and a save that
+changes nothing records nothing.
+
+When that account is made a user (`PUT /api/users/:id`) or deleted (`deleteUser`), in the same
+transaction, every `smtp_*` row of `settings` goes where the mail is still at a place it is
+recorded for, so
+`isSmtpConfigured()` is false and **no mail is sent** (notifications, invites, password-reset
+invites, request mail, reports, the backup failure mail) until an administrator sets the mail
+up again; an invite then shows its link in the dialog of [When a Mail Fails](#when-a-mail-fails).
+The `app_url` row goes where it is still an address the account is recorded for, so links use `APP_URL`, or `ORIGIN`
+([Where the App URL Comes From](#where-the-app-url-comes-from)). Once committed, one `WARN`
+under `SMTP`, filed under the account that made the change:
+
+```
+The mail settings and the App URL removed: saved by "ann", who was made a user by "chief". No mail is sent until an administrator sets the mail up again. Links in mail use APP_URL, or the server's own address, until an App URL is saved again.
+```
+
+(`The mail settings removed: …` or `The App URL removed: …` where only one went; `whose
+account was deleted by "chief"` for a delete), its meta `{ "setter", "reason": "demoted" |
+"deleted", "mail", "appUrl" }`. An `app_url` row that reads as none (an App URL cleared since
+its setter saved it) is at no recorded place: it stays, as whoever cleared it left it, and is
+not reported or logged (the second review; the first removed it unsaid). A mail already handed to the mail server is sent. Mail
+settings saved before migration 0059 have no row, name nobody, and stay. See
+[Settings Go With Their Setter](authentication-security.md#settings-go-with-their-setter-card-2397).
+
+```mermaid
+flowchart LR
+    Save["PUT /api/admin/smtp<br/>changes host (ann)"] --> Row[("setting_setters<br/>mail → ann")]
+    Demote["ann made a user<br/>or deleted"] --> Remove["smtp_* rows deleted<br/>(same transaction)"]
+    Row --> Remove
+    Remove --> Off["isSmtpConfigured() false:<br/>no mail sent"]
+    Remove --> Line["WARN [SMTP]<br/>after the commit"]
+```
 
 ### Where the App URL Comes From
 

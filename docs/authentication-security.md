@@ -1,9 +1,9 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.65
+version: 1.66
 status: As-Built
-date: 2026-10-21
+date: 2026-10-22
 tags:
   - authentication
   - security
@@ -1831,12 +1831,15 @@ and that is still so:
   and Connect on an existing Google Drive OAuth destination binds it to the connecting
   person's Google account, using the stored client id and secret (one line under `BACKUP`, a
   `WARN` where it replaces a connection the destination had; card 2273).
-- **An administrator can leave nothing to restore from.** Lowering Keep Last (its least is 1)
-  and pressing Run Now deletes every older copy at every destination once the new one is up
-  (`cleanupRetention` in `backup.ts`); removing the destinations or switching the schedule off
-  stops the copies. So damage an administrator does can be left with no backup to restore
-  from. Each such save is a `WARN` line under `BACKUP` naming who (card 2270): it is logged,
-  not prevented.
+- **An administrator could leave nothing to restore from; since card 2398 (2026-10-22) the
+  history wipe is guarded.** Lowering Keep Last (its least is 1) and pressing Run Now deletes
+  every older copy at every destination once the new one is up (`cleanupRetention` in
+  `backup.ts`); removing the destinations or switching the schedule off stops the copies. Each
+  such save was a `WARN` line under `BACKUP` naming who (card 2270), logged and not prevented.
+  Now `PUT /api/admin/backup` refuses all three to anyone but the superadmin: see
+  [Fewer Copies Are the Superadmin's](#fewer-copies-are-the-superadmins-card-2398). One way
+  round is left: Run Now pressed Keep Last times pushes every older copy out (nearby fault in
+  `docs/planning/cards-2397-2398.md`).
 - **An administrator can probe the inside of the network.** The SMTP host, an SFTP host and an
   S3 endpoint may be any address, inside the network included (loopback, the Docker host, the
   internal ranges, `169.254.169.254`), and the answers of Send Test and Test tell whether a
@@ -1844,15 +1847,15 @@ and that is still so:
   (card 2161, below); these settings do not, since real setups use a NAS or a mail relay on
   the LAN.
 
-**A setter who is demoted (the card 2395 ruling).** The settings record nobody as having set
-them: they are rows of `settings` (`smtp_*`, `app_url`, `backup_config`), and nothing in
-`backup.ts`, `email.ts`, the scheduler or the start-up checks reads who saved them. So
-settings an administrator saved stay in force when that administrator is demoted or deleted,
-as a superadmin's always did when the role was changed from the host, the only way it can
-be; the demotion stops that account reading or changing them from the next request, and at
-the write of one under way. Nothing is held as a webhook is held while its setter cannot open
-its board (card 2325, which records `webhooks.set_by`): that would need the setter stored.
-After demoting an administrator, look at Scheduled Backups and Email / SMTP. Each backup
+**A setter who is demoted (the card 2395 ruling, replaced by card 2397 on 2026-10-22).** Card
+2395 ruled that the settings record nobody as having set them, so that settings an
+administrator saved stayed in force when that administrator was demoted or deleted. That is
+no longer so: `setting_setters` (migration 0059) records who moved the mail settings, set the
+App URL, and added or moved each destination to where it is now (a setting changed and changed
+back is its first setter's again), and demoting that account to user, or deleting it, removes
+what it set in the same transaction. See
+[Settings Go With Their Setter](#settings-go-with-their-setter-card-2397). Settings saved
+before 0059 record nobody and still stay in force. Each backup
 settings change, Connect and Test is in the system log under the account that made it (cards
 2267, 2270, 2273), and so, since card 2396, is each mail settings or App URL change, as well
 as the `WARN` of the "Allow mail without a checked, encrypted connection" box (card 2189).
@@ -2017,6 +2020,153 @@ user and team routes.
 
 Covered by the `superadmin` kind in `tests/access-every-route.test.ts`, which has an entry
 for every one of these routes, and by `tests/backups.test.ts`.
+
+### Fewer Copies Are the Superadmin's (Card 2398)
+
+Since card 2398 (2026-10-22, the owner's ruling), a save of the backup settings that leaves
+fewer copies to restore from is the superadmin's alone. `PUT /api/admin/backup` reads the save
+as it does any other, then, inside the `writeAs` that writes and before anything is written or
+queued, asks the account as it is now (card 2253): where the save lowers the retention (Keep
+Last), removes a destination, or switches the schedule off, and that account is not the
+superadmin, it is `403`, nothing is written and no line is logged.
+
+| The save | An administrator | The superadmin |
+|----------|------------------|----------------|
+| Keep Last lowered | ❌ `403` | ✅ |
+| A destination removed: by card 2270's matching of name and type, so a rename, or another type under the name, is the old one removed | ❌ `403` | ✅ |
+| The schedule switched off (`disabled` where it ran) | ❌ `403` (the owner's recommendation, taken) | ✅ |
+| Keep Last raised, a schedule that runs changed for another (more frequent included), a destination added or edited in place (another host or bucket included, its secret typed again), the failure mail | ✅ | ✅ |
+| Run Now, Test, Connect | ✅ (unchanged) | ✅ |
+
+The words name what the save would do: `Lowering Keep Last, removing a destination or
+switching the schedule off needs the superadmin. This save would lower Keep Last from 7 to 1,
+and remove the destination "NAS" (a destination renamed, or saved as another type, is the old
+one removed), and switch the schedule off.` (each part only where it applies). The check
+before the body stays `requireAdmin`, as the body is not known then; a superadmin made an
+administrator from the host while the body arrives is refused as an administrator is, and an
+administrator made a user is refused `Forbidden` by the administrator check first.
+`ScheduledBackupsPanel.svelte` shows an administrator 🗑️ and the schedule's
+`Disabled (superadmin only)` `aria-disabled` (not `disabled`, which would drop the focus), each
+saying the rule when chosen and sending nothing, Keep Last with the stored number as its least
+(a lower one put back), and one line under the schedule; the superadmin's panel is unchanged.
+Removing destinations when their setter is demoted or deleted (card 2397, below) is not a save
+and is not refused.
+
+**Owner to know.** Run Now pressed Keep Last times still pushes every older copy out, as each
+run adds a copy and the retention keeps a number of copies, not an age; a schedule made more
+frequent does the same over time. Each Run Now is in the backup history and each schedule
+change a line under `BACKUP`.
+
+```mermaid
+flowchart TD
+    Put["PUT /api/admin/backup"] --> Q{"requireAdmin\n(before the body)"}
+    Q -->|"no"| F1["403 Forbidden"]
+    Q -->|"yes"| W["writeAs: the account as it is now"]
+    W --> A{"requireAdmin(caller)"}
+    A -->|"no"| F2["403 Forbidden, nothing written"]
+    A -->|"yes"| R["fields read; 400s first"]
+    R --> L{"Keep Last lowered, a destination\nremoved, or the schedule off?"}
+    L -->|"yes, and not the superadmin"| F3["403 'needs the superadmin',\nnothing written, no line"]
+    L -->|"no, or the superadmin"| S["saved, the lines queued,\nthe setters recorded (card 2397)"]
+```
+
+Covered by `tests/setting-setters.test.ts` and `tests/admin-panels.test.ts`.
+
+### Settings Go With Their Setter (Card 2397)
+
+Since card 2397 (2026-10-22, the owner's ruling), the settings that send mail or backups
+somewhere are removed when the account that set them where they are stops being an
+administrator. `setting_setters` (migration 0059; see [Data Model](data-model.md)) holds, for
+each setting, a row for each place it has been put, naming the account that put it there, or
+nobody (`user_id` NULL). Its key is the setting and the place; the place is a SHA-256 digest of what decides
+where the setting sends, so no host, user name or key ID is copied into the table:
+
+| Setting | What it names | Its place | Written by |
+|---------|---------------|-----------|------------|
+| `mail` | every `smtp_*` row of `settings`, as one (the password goes with its host) | the host, port, user and `allowInsecure`, as a mail reads them | a `PUT /api/admin/smtp` that moves them to a place nobody is recorded for |
+| `app_url` | the App URL | the App URL row, as a link reads it; recorded only for an address | a `PUT /api/admin/smtp` that sets it to an address nobody is recorded for |
+| `backup_destination:<name>` | the destination of that name in `backup_config` | its type and every field `SAME_IN` compares but the name, as each is used, and a service account's `client_email` and `private_key_id` (`destinationPlace()`: card 2270's `elsewhere` rule) | a `PUT /api/admin/backup` that adds it, or moves it to a place nobody is recorded for (a removed one loses every row), and a Google Drive Connect saved, which makes the connecting account the setter at its place whoever was |
+
+A setting's setter is **the account recorded for the place it is at now**. A save that moves it
+to a place nobody is recorded for makes the saver its setter there, as card 2168 has the last to
+change a webhook; one that moves it back to a recorded place leaves it that account's (the
+second code review, 2026-10-22: an administrator who changed a passwordless relay's port and
+changed it back, a keyless S3 destination's prefix, or the App URL, became the setter of the
+superadmin's own settings with no secret to type, and their demotion removed them). Only a
+move counts (the first review): the sender's name or address, a password or secret typed again
+for the same server or place, an App URL cleared, and an SFTP host key confirmed record
+nobody, and a save that changes nothing records nothing. A superadmin who moves the mail to a
+new place (another port, say) takes it over. The third code review (2026-10-22) added three
+rules. **A move by the superadmin, or one made with a password or secret typed** (the mail
+password typed, or a destination's secret typed rather than sent back masked, `typedSecret()`),
+**is the saver's whoever was recorded for the place it moves to**: otherwise an administrator
+who visited a place first (port 465 with a garbage password, then back) kept it, and the
+superadmin's later move there with the real password stayed theirs, to be removed on their
+demotion. A move with no secret typed keeps the change-and-back protection. **Each account
+keeps one row per setting**, its latest place (`claim()` drops its others), so the table grows
+with the accounts and not with every save. **The place a setting saved before 0059 leaves when
+first moved is recorded as nobody's** (`user_id` NULL), so changed and changed back it is
+nobody's again; a row naming nobody is never held, by the removal or by `settingsHeldBy()`. Demoting an account to user (`PUT
+/api/users/:id`; only the superadmin lowers an administrator) or deleting it (`deleteUser`)
+calls `removeSettingsSetBy` in the same transaction, which takes each setting still at a place
+the account's rows record: every `smtp_*` row for the mail (no mail is sent, invites and
+password resets included, until an administrator sets it up again), the `app_url` row (links
+use `APP_URL`, or else `ORIGIN`; an App URL cleared since is at no recorded place and stays),
+each such destination, out of `backup_config` with its stored secrets; then every row of each
+setting removed, whoever's, and every row of the account. A setting moved since to somebody
+else's place, or to one nobody is recorded for, stays. Just before either is sent, the users
+panel reads what the account holds now from `GET /api/users/:id` (`settingsHeldBy(id)`, read
+as the removal reads it; by the admin page's rule of the counts, null for the caller's own
+account and any the caller may not manage), so a setting another administrator took over, or
+gave back, after the page loaded is asked about as it is (the second review); the delete's
+confirmation adds it, and a role change to User for such an account asks first in the page's
+confirm dialog. Where that read fails, both ask all the same, saying that whatever of those
+settings is still theirs goes too. Once committed, one `WARN` under
+`SMTP` (`The mail settings and the App URL removed: saved by "ann", who was made a user by
+"chief". …`) and one under `BACKUP` (`Backup destination "NAS" (sftp) removed: saved by "ann",
+… Its stored secrets went with it; the copies already there are kept.`), filed under the
+account that made the change. The answer carries `settingsRemoved: { mail, appUrl,
+destinations }` only where something went, and the admin page says so in a warning toast that
+stays until closed (⚠️; said politely through the toast's `role="status"` region, which is
+always on the page, while a warning that goes by itself, such as the board's WIP-limit one, is
+still an alert) and draws again only the panels that show what went:
+the App URL and mail panels for the mail settings or the App URL, Scheduled Backups for a
+destination. A failure anywhere rolls back the role change or the delete with every removal,
+and logs nothing.
+
+- **A backup already running is not stopped.** A run reads the destinations, with their
+  secrets, as it starts (`runBackup`): one under way when the account is demoted or deleted
+  finishes its uploads to the destinations it read, the removed one included, and records them
+  in the history. The next run, scheduled or **▶ Run Now**, no longer has it. A mail already
+  handed to the mail server is likewise sent.
+
+- **The superadmin**: the same rule. Their role is changed only from the host, to `admin`,
+  which keeps an administrator's rights, so nothing is removed then; lowered to user
+  afterwards on the admin page, what they set goes.
+- **Settings from before 0059** are at a place nobody is recorded for, and stay in force,
+  unattributed, whoever is demoted; the first save that moves one makes its saver the setter
+  and records the place it left as nobody's, so moving it back makes it nobody's again (unless
+  the superadmin moves it, or a secret is typed with the move). A restore of a backup from before 0059 leaves
+  every setting it brings unattributed; a backup from after it brings its setter rows.
+- **The host is outside the code.** A role written to `user`, or an account deleted, with
+  `node -e` from the host leaves the settings in force; for a delete the key
+  (`ON DELETE CASCADE`) then takes the setter rows, and the settings are unattributed.
+
+```mermaid
+sequenceDiagram
+    participant S as Superadmin
+    participant R as PUT /api/users/:id
+    participant T as One transaction
+    participant L as System log
+    S->>R: role: user (for ann)
+    R->>T: users.role = 'user'
+    T->>T: removeSettingsSetBy(ann): each setting still at a place<br/>ann's rows record, then those settings' rows and ann's
+    T-->>L: after the commit: WARN [SMTP], WARN [BACKUP]
+    R-->>S: 200, settingsRemoved { mail, appUrl, destinations }
+```
+
+Covered by `tests/setting-setters.test.ts`, `tests/migrations.test.ts` (0059 and a restore of a
+backup from before it) and `tests/admin-panels.test.ts`.
 
 ### What a Backup Holds, and What a Restore Brings In
 

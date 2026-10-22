@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.34
+version: 1.35
 status: As-Built
-date: 2026-10-21
+date: 2026-10-22
 tags:
   - database
   - schema
@@ -350,6 +350,13 @@ erDiagram
         text value
     }
 
+    setting_setters {
+        text setting PK
+        text place PK
+        int user_id FK "NULL: nobody's"
+    }
+
+    users ||--o{ setting_setters : "put it there"
     users ||--o{ sessions : "has"
     users ||--o{ api_keys : "owns"
     users ||--o{ team_members : "belongs to"
@@ -426,6 +433,7 @@ erDiagram
 | `categories` | `cards.categoryId` | SET NULL |
 | `users` | `boards.createdBy` | SET NULL |
 | `users` | `webhooks.set_by` (migration 0056, card 2168) | SET NULL. `deleteUser()` switches the user's webhooks off first, while they still name the user |
+| `users` | `setting_setters.user_id` (migration 0059, card 2397) | CASCADE. `deleteUser()` removes first the mail settings, App URL and destinations still at a place the rows record (`removeSettingsSetBy`), and a demotion to user does the same; the key then takes only the rows |
 | `users` | `cards.createdBy`, `activity_log.userId`, `task_requests.requesterUserId`, `task_requests.resolvedBy`, `token_usage.reportedByUserId` | SET NULL |
 
 What the rows marked "in code" mean for each kind of delete is set out under
@@ -642,16 +650,20 @@ account had when the request was made, perhaps long changed since. Then every we
 user set that is on is switched off (`UPDATE webhooks SET active = 0 WHERE set_by = ? AND
 active = 1`, card 2168), while it still names them: deleting an account is the strongest way
 of taking it back, and once the key has set `set_by` to NULL a webhook an intruder set would
-go on sending with nobody named for a reset to reach. Those two are the only writes besides
-the five that card 2007's rule ("nothing else is written") allows.
+go on sending with nobody named for a reset to reach. Then the mail settings, the App URL and
+the backup destinations still where the user set them are removed (`removeSettingsSetBy`, card 2397),
+while `setting_setters` still names them: the key would take only those rows, and the settings
+would stay in force with nobody named. Those three are the only writes besides the five that
+card 2007's rule ("nothing else is written") allows.
 
 ```mermaid
 flowchart LR
     User["DELETE a user"] --> Clear["Set to NULL where they name the user:<br/>card_attachments.uploaded_by<br/>card_templates.created_by<br/>milestones.created_by<br/>work_dependencies.created_by_user_id<br/>card_dependencies.created_by_user_id"]
     Clear --> Address["UPDATE task_requests<br/>SET requester_email = the user's email now<br/>WHERE requester_user_id = the user"]
     Address --> Hooks["UPDATE webhooks SET active = 0<br/>WHERE set_by = the user AND active = 1"]
-    Hooks --> Del["DELETE FROM users"]
-    Del --> Cascade["Deleted by cascade:<br/>sessions, api_keys, report_schedules,<br/>card_comments, card_assignees,<br/>team_members, board_members,<br/>board_favourites, invite_tokens"]
+    Hooks --> Settings["removeSettingsSetBy: smtp_* rows,<br/>app_url, their destinations<br/>(card 2397)"]
+    Settings --> Del["DELETE FROM users"]
+    Del --> Cascade["Deleted by cascade:<br/>sessions, api_keys, report_schedules,<br/>card_comments, card_assignees,<br/>team_members, board_members,<br/>board_favourites, invite_tokens,<br/>setting_setters"]
     Del --> Null["Set to NULL by the key:<br/>boards.created_by, cards.created_by,<br/>activity_log.user_id,<br/>task_requests.requester_user_id and resolved_by,<br/>token_usage.reported_by_user_id,<br/>webhooks.set_by"]
     Del --> Stay["Not touched:<br/>user_xp (keyed by name),<br/>task_requests addressed to the user,<br/>activity_log.user_name"]
 ```
@@ -667,6 +679,7 @@ flowchart LR
 | Task requests addressed to them | Kept, with the same target. Only an administrator can then accept, reject or reply |
 | Task requests they made | Kept, with `requester_user_id` NULL and `requester_email` the account's email at the delete, where mail about them goes from then on (card 2171) |
 | Webhooks they set (their address or secret last set, or last switched on, by the user) | Kept, switched off, with `set_by` NULL (card 2168). The board's owner or an administrator switches one on again through the API |
+| The mail settings, App URL and backup destinations still where they set them (card 2397) | Removed, with a `WARN` under `SMTP` or `BACKUP`; settings somebody else moved since, or moved back to where somebody else put them, or saved before 0059, stay |
 | Their XP | Kept. `user_xp` is keyed by username and has no key to `users` |
 
 One `INFO` line in `system_logs`, written after the commit, says who deleted whom, how
@@ -1150,7 +1163,8 @@ of about zero.
   ```
 - **Indexes are named `idx_<table>_<column>`**, and an index on two columns
   `idx_<table>_<first>_<second>`. Migration 0053 added 39, one for every foreign key column
-  that led no index (card 2106); 0056 created `idx_webhooks_set_by` with its column.
+  that led no index (card 2106); 0056 created `idx_webhooks_set_by` with its column, and 0059
+  `idx_setting_setters_user_id` with its table (card 2397).
   `tests/migrations.test.ts` fails on a foreign key column
   that leads no index, in the model, on a new database and on the production fixture taken
   through the runner, and names it.
@@ -1221,6 +1235,42 @@ of about zero.
   nothing is written but an hourly log line. A sealed restore fills a webhook's secret only from the webhook here with the same id,
   board, address and setter (`fillSecretGaps()`), reading `set_by` as NULL on a database
   without the column. 0056 changes no row, so it declares nothing to the rehearsal.
+- **`setting_setters` is who put each setting that sends mail or backups somewhere at each
+  place it has been** (card 2397, migration `0059_add_setting_setters.sql`): `setting` text,
+  `place` text, both `NOT NULL`, the key `PRIMARY KEY(setting, place)`, and `user_id` integer,
+  nullable, `REFERENCES users(id) ON DELETE CASCADE`, with `idx_setting_setters_user_id`.
+  `user_id` NULL is a place recorded as nobody's: the place a setting with no row (saved before
+  0059) leaves when it is first moved, so that moved back it is nobody's again; such a row is
+  never held, and no delete of an account takes it (the third code review). Each account has
+  at most one row per setting, its latest place. Three
+  kinds of `setting`: `mail` (every `smtp_*` row of `settings`, as one), `app_url`, and
+  `backup_destination:<name>` (a destination of `backup_config`, by name). `place` is a SHA-256
+  digest, in hex, of the JSON of what decides where the setting sends, so no host, user name
+  or key ID is copied here: for `mail` the host, port, user and `allowInsecure` as a mail reads
+  them; for `app_url` the App URL row as a link reads it; for a destination
+  `destinationPlace()`, its type and every field `SAME_IN` compares but its name, each as it is
+  used (`inUse`), and a service account's `client_email` and `private_key_id` (card 2270's
+  `elsewhere` rule). A setting's setter is the account of the row for its setting and its place
+  now; a setting at a place with no row is nobody's (the second code review, 2026-10-22, so a
+  setting changed and changed back is its first setter's again). `PUT /api/admin/smtp` writes a
+  `mail` row for a save that moves the mail to a place with no row, and an `app_url` row for one
+  that sets the App URL to such an address; `PUT /api/admin/backup` a destination's for one it
+  adds or moves to such a place (it deletes every row of one it removes); a move by the
+  superadmin, or with the mail password or a destination's secret typed, takes over a row
+  already at its place; a Google Drive Connect
+  saved writes, or takes over, its destination's row at its place. A sender's name or address,
+  a secret typed again for the same place, an App URL cleared or a host key confirmed writes
+  none (the review of 2026-10-22; `src/lib/server/setting-setters.ts`). Demoting an account to
+  user, or `deleteUser()`, removes each setting still at a place its rows record, then every row
+  of each setting removed and every row of the account, in the same transaction
+  (`removeSettingsSetBy`); `settingsHeldBy()` reads the same for the admin page and `GET
+  /api/users/:id`. A table of
+  its own rather than a column: the destinations are one JSON row, and `settings` is a
+  reconciled table, rebuilt whenever it differs from the model. 0059 changes no row: every
+  setting already stored has no row, names nobody and stays in force, so it declares nothing to
+  the rehearsal. A backup from before 0059 restores with the table empty; one from after it
+  brings its rows, with the accounts they name. A backup copy keeps the table (it holds no
+  secret).
 - **No secret is in a backup's copy** (card 2169): no `smtp_pass` row, every secret field of
   `backup_config`'s destinations `''`, and every `webhooks.secret` `''` with the webhook's
   `active` 0. The `webhook_secrets_left_out` row of `settings` lists, as a JSON array of

@@ -104,8 +104,10 @@ describe('the admin page’s load (card 2297)', () => {
 		const large = (await loadCounted('/admin', installation(50))).reads;
 
 		expect(large).toBe(small);
-		// A fixed handful: the boards, three counts, the users, the teams and their members.
-		expect(small).toBeLessThanOrEqual(7);
+		// A fixed handful: the boards, three counts, the users, the teams and their members, and
+		// who set which setting (card 2397's review: one read of every setter row, and where there
+		// are any, one each of the mail settings, the App URL and the destinations, for all accounts).
+		expect(small).toBeLessThanOrEqual(8);
 	});
 
 	it('answers what it did: each board’s three counts, and each team’s members in the order of their ids', async () => {
@@ -151,7 +153,9 @@ describe('the admin page’s load (card 2297)', () => {
 				// The caller's own counts are not given; an ordinary user's are.
 				apiKeys: user.id === admin.id ? null : 0,
 				webhooks: user.id === admin.id ? null : 0,
-				reportSchedules: user.id === admin.id ? null : 0
+				reportSchedules: user.id === admin.id ? null : 0,
+				// Nobody set a mail setting, the App URL or a destination (card 2397's review).
+				settingsSet: null
 			})),
 			teams: [
 				{

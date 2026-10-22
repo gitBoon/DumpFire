@@ -72,6 +72,23 @@
 
 	/** The mail panel, whose read of what mail has done the users panel asks for after an invite. */
 	let smtpPanel = $state<ReturnType<typeof SmtpPanel>>();
+
+	/**
+	 * Moved on when a role change or a delete removed settings the account had
+	 * set (card 2397), each for what went alone (its review): `mailRead` for
+	 * the mail settings or the App URL, which draws the App URL and mail panels
+	 * again, `destinationsRead` for backup destinations, which draws Scheduled
+	 * Backups again. Each panel drawn again reads its settings as it opens; one
+	 * whose settings did not change keeps what is open in it.
+	 */
+	let mailRead = $state(0);
+	let destinationsRead = $state(0);
+
+	/** What the users panel says a role change or a delete removed: the panels that show it are drawn again. */
+	function settingsRemoved(removed: { mail: boolean; appUrl: boolean; destinations: string[] }) {
+		if (removed.mail || removed.appUrl) mailRead++;
+		if (removed.destinations.length > 0) destinationsRead++;
+	}
 </script>
 
 <svelte:head>
@@ -95,8 +112,10 @@
 	<main class="admin-content">
 		<AdminOverview {data} />
 
-		<!-- Every administrator's since card 2395: the App URL. -->
+		<!-- Every administrator's since card 2395: the App URL. Drawn again once the mail settings or the App URL an account had set are removed with it (card 2397). -->
+		{#key mailRead}
 		<AppUrlPanel />
+		{/key}
 
 		<!-- The superadmin's alone: export and import (and Reset Everything, in the danger zone).
 		     An administrator is refused each of them by its route, and is shown one line in their place. -->
@@ -115,17 +134,23 @@
 		</section>
 		{/if}
 
-		<!-- Every administrator's since card 2395: the scheduled backups and their destinations. -->
-		<ScheduledBackupsPanel {confirm} />
+		<!-- Every administrator's since card 2395: the scheduled backups and their destinations. Lowering Keep Last,
+		     removing a destination and switching the schedule off are the superadmin's (card 2398). Drawn again once
+		     destinations an account had set are removed with it (card 2397). -->
+		{#key destinationsRead}
+		<ScheduledBackupsPanel {confirm} {isSuperadmin} />
+		{/key}
 
 		<BoardManagementPanel {data} {confirm} />
 
-		<UsersPanel {data} {isSuperadmin} {confirm} loadMailStatus={() => smtpPanel?.loadMailStatus()} bind:inviteLink />
+		<UsersPanel {data} {isSuperadmin} {confirm} loadMailStatus={() => smtpPanel?.loadMailStatus()} {settingsRemoved} bind:inviteLink />
 
 		<TeamsPanel {data} {confirm} />
 
-		<!-- SMTP Configuration: every administrator's since card 2395 -->
+		<!-- SMTP Configuration: every administrator's since card 2395. Drawn again with the App URL panel (card 2397). -->
+		{#key mailRead}
 		<SmtpPanel bind:this={smtpPanel} currentUser={data.currentUser} />
+		{/key}
 
 		<DangerZonePanel {isSuperadmin} {confirm} bind:resetNotice />
 	</main>

@@ -4,9 +4,15 @@ export type Toast = {
 	id: number;
 	message: string;
 	type: 'success' | 'info' | 'error' | 'warning';
+	/**
+	 * A warning that stays until it is closed, as a failure does (card 2397's
+	 * review): something done that took more with it, such as the settings an
+	 * account had set going with its role. Set only for a warning.
+	 */
+	stays?: true;
 };
 
-/** How long a toast that is not a failure stays: success, info and warning. */
+/** How long a toast that is not a failure stays: success, info and a warning that does not stay. */
 export const TOAST_MS = 3000;
 
 /** How many failures are shown at once. One more puts the oldest away. */
@@ -24,7 +30,9 @@ let navigations = 0;
  * that says something was not done is one to read, and it used to go in three
  * seconds like the rest. `Toast.svelte` clears the failures when its page goes
  * and when the page is navigated (`clearErrors`), so that none follows the
- * reader to the next page. The rest still go by themselves after `TOAST_MS`.
+ * reader to the next page. The rest still go by themselves after `TOAST_MS`,
+ * but a warning added to stay (`stays`), which is kept and cleared as a
+ * failure is, and shown once however often it comes.
  *
  * Because a failure waits to be closed, the same one is shown once however
  * often it comes, and no more than `MOST_FAILURES` are shown. And a failure
@@ -42,10 +50,16 @@ function createToastStore() {
 		 * this is about was started; a toast whose page has been left since is
 		 * dropped. A failure the same as one shown takes its place, as the
 		 * newest, and a failure over `MOST_FAILURES` puts the oldest away.
+		 * `stays`, for a warning: it waits to be closed, and the same one shown
+		 * takes its place.
 		 */
-		add(message: string, type: Toast['type'] = 'success', started?: number) {
+		add(message: string, type: Toast['type'] = 'success', started?: number, stays = false) {
 			if (started !== undefined && started !== navigations) return;
 			const id = nextId++;
+			if (stays && type === 'warning') {
+				update(toasts => [...toasts.filter(t => !(t.stays && t.message === message)), { id, message, type, stays: true }]);
+				return;
+			}
 			if (type === 'error') {
 				update(toasts => {
 					const shown = [...toasts.filter(t => !(t.type === 'error' && t.message === message)), { id, message, type }];
@@ -71,9 +85,9 @@ function createToastStore() {
 		dismiss(id: number) {
 			update(toasts => toasts.filter(t => t.id !== id));
 		},
-		/** Every failure shown, gone: the page it was about has been left. */
+		/** Every failure shown, and every warning that stays, gone: the page it was about has been left. */
 		clearErrors() {
-			update(toasts => toasts.filter(t => t.type !== 'error'));
+			update(toasts => toasts.filter(t => t.type !== 'error' && !t.stays));
 		}
 	};
 }

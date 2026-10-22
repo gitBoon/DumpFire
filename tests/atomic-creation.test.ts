@@ -725,6 +725,12 @@ describe('PUT /api/admin/smtp', () => {
 		// One write for each setting: a row changed where there was one, a row
 		// added where there was none. A failure part of the way used to leave the
 		// new host saved with the old password, and mail that could not be sent.
+		// Then who set the App URL (card 2397), in the same transaction: a
+		// failure there saves none of it. The mail settings' setter is not
+		// written: the host, port, user and way out are as they were, and the
+		// sender's name and address move nothing (its review). The App URL's: the
+		// address it leaves, saved before anyone was recorded, as nobody's; the
+		// saver's other App URL rows dropped; the saver's row (the third review).
 		expect(shape(run.writes)).toEqual([
 			'update settings set',
 			'update settings set',
@@ -733,7 +739,10 @@ describe('PUT /api/admin/smtp', () => {
 			'update settings set',
 			'update settings set',
 			'insert into settings',
-			'update settings set'
+			'update settings set',
+			'insert into setting_setters',
+			'delete from setting_setters',
+			'insert into setting_setters'
 		]);
 		expect(run.effects).toEqual([]);
 	});

@@ -1,9 +1,9 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.27
+version: 1.28
 status: As-Built
-date: 2026-10-21
+date: 2026-10-22
 tags:
   - backup
   - reports
@@ -105,10 +105,40 @@ saved with (cards 2187, 2190), with two exceptions: the first host key confirmed
 destination with a stored password keeps the password, which then goes to whichever server
 shows that key (card 2250); and Connect on an existing Google Drive OAuth destination binds it
 to the connecting person's Google account with the stored client id and secret (a `WARN` line
-where it replaces a connection, card 2273). Nobody is recorded as having saved the settings, so they stay in
-force when the account that saved them is demoted or deleted; each change is a line in the
-system log under that account (card 2270). See
+where it replaces a connection, card 2273). Each change is a line in the system log under
+that account (card 2270). See
 [The Mail and Backup Settings: Every Administrator's](authentication-security.md#the-mail-and-backup-settings-every-administrators-card-2395).
+
+**Fewer copies are the superadmin's** (card 2398, 2026-10-22). A `PUT` that lowers `retention`,
+removes a destination (by the matching of [A Save of the Backup Settings, on
+Record](#a-save-of-the-backup-settings-on-record): a rename, or another type under the name,
+is the old one removed) or sets `schedule` to `disabled` where it ran is `403` for anyone but
+the superadmin, asked of the account as it is at the write (`superadminOnly()` in
+`src/routes/api/admin/backup/+server.ts`), with words that name what it would do; nothing is
+written and no line is logged. Raising the retention, changing between schedules that run, and
+adding or editing destinations stay every administrator's. See
+[Fewer Copies Are the Superadmin's](authentication-security.md#fewer-copies-are-the-superadmins-card-2398).
+
+**Each destination's setter** (card 2397, 2026-10-22). Who added each destination, pointed it
+at each place or account it has been, or connected its Google Drive, is a
+`backup_destination:<name>` row of `setting_setters` (migration 0059) for that place
+(`destinationPlace()`: its type and the fields of card 2270's `elsewhere` rule, as a digest):
+written in the save's transaction for one added, or moved to a place nobody is recorded for
+(`recordDestinationSetters()`; a destination removed loses every row, so a rename is the
+saver's under its new name), and by a Connect saved (`recordDestinationSetter()`, which makes
+the connecting account the setter at its place). Its setter is the account recorded for where
+it is now, so one moved and moved back, a keyless S3 destination's prefix say, is its first
+setter's again (the second code review). A secret typed again for the same place, or an SFTP
+host key confirmed, changes nobody's (the first review: an administrator who did either became
+the setter of the superadmin's destination, and their demotion removed it). A run already under way when the setter is
+demoted or deleted finishes with the destinations it read as it started. When that account is made a user or deleted, its destinations
+are taken out of `backup_config`, with their stored secrets, in the same transaction, and one
+`WARN` under `BACKUP` says so once committed: `Backup destination "NAS" (sftp) removed: saved
+by "ann", who was made a user by "chief". Its stored secrets went with it; the copies already
+there are kept.` (meta `{ "setter", "reason", "destinations": [{ "name", "type" }] }`). Nothing
+is deleted at the destination. A destination saved before 0059 has no row and stays. The
+schedule, the retention and the failure mail have no setter. See
+[Settings Go With Their Setter](authentication-security.md#settings-go-with-their-setter-card-2397).
 
 Stored as JSON in the `settings` table under key `backup_config`:
 
@@ -143,8 +173,8 @@ by its place in the list. A mask is now resolved by `keepMaskedSecrets()`, below
 (`trimHost()`, the review-fix pass's S1). A list that names two destinations alike is refused
 `400` before anything else is asked of it (`twiceNamed()`, S4): "Two backup destinations are
 named "NAS"." and, where two of that name were saved before, "Remove the destinations named
-"NAS" (the page's Remove removes every one of that name) and add it once with its secret
-typed.", or otherwise "Each destination needs a name of its own: give one of them another
+"NAS" (the page's Remove removes every one of that name, and removing a destination is the
+superadmin's) and add it once with its secret typed.", or otherwise "Each destination needs a name of its own: give one of them another
 name." A destination is found by its name to connect, test and back up to.
 
 **The secret fields, as the admin page is told them and as a save keeps them** (cards 2187
@@ -595,7 +625,19 @@ flowchart TD
 The other writer of `backup_config`, a Google Drive Connect saved, writes its own line under
 `BACKUP`, filed under the account, once committed (card 2273; see
 [Destination Types](#destination-types) above): an `INFO` for a first
-connection, a `WARN` for one that replaced a connection.
+connection, a `WARN` for one that replaced a connection. A third, since card 2397, takes a
+demoted or deleted account's destinations out (`removeSettingsSetBy()` in
+`src/lib/server/setting-setters.ts`), with its own `WARN` (above, Backup Configuration).
+
+Before any of this, a save card 2398 keeps for the superadmin is refused `403` inside the same
+transaction, so nothing above is queued for it:
+
+```mermaid
+flowchart LR
+    Read["fields read"] --> G{"retention lowered,<br/>a destination removed,<br/>schedule off?"}
+    G -->|"yes, not the superadmin"| R["403, nothing queued or written"]
+    G -->|"no, or the superadmin"| C["settingsChanges, the lines,<br/>saveBackupConfig,<br/>recordDestinationSetters"]
+```
 
 ### Retention Cleanup
 

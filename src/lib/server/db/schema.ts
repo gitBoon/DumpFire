@@ -434,6 +434,28 @@ export const settings = sqliteTable('settings', {
 	value: text('value').notNull()
 });
 
+// ─── Setting Setters ─────────────────────────────────────────────────────────
+// Who put the settings that send mail or backups somewhere at each place they
+// have been (card 2397, migration 0059): `mail` (every smtp_* row of
+// `settings`, as one), `app_url`, and `backup_destination:<name>` (each
+// destination of `backup_config`, found by name as everything else finds it).
+// `place` is a digest of where the setting sends; its setter is the account
+// recorded for the place it is at now, so one changed and changed back is
+// its first setter's again (the second code review). Demoting that account to
+// user, or deleting it, removes what it set, in the same transaction
+// (src/lib/server/setting-setters.ts). No row for its place is a setting
+// saved before 0059, or whose setter nobody recorded: it stays in force,
+// unattributed. CASCADE, as deleteUser removes the settings themselves first.
+export const settingSetters = sqliteTable('setting_setters', {
+	setting: text('setting').notNull(),
+	place: text('place').notNull(),
+	// NULL: a place recorded as nobody's, the one a setting saved before 0059 left when first moved (the third review).
+	userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' })
+}, (table) => [
+	primaryKey({ columns: [table.setting, table.place] }),
+	index('idx_setting_setters_user_id').on(table.userId)
+]);
+
 // ─── Card Assignees ──────────────────────────────────────────────────────────
 
 export const cardAssignees = sqliteTable('card_assignees', {

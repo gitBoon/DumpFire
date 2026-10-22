@@ -8,7 +8,10 @@
   link of an invite whose mail was not sent is the page's (`inviteLink`,
   bound here): its dialog is drawn by the page where it was, after the
   page's own dialogs. Delete asks first through the page's confirm dialog,
-  and after an invite the mail panel is read again through the page.
+  and so does a role change to User for an account whose settings would go
+  with it (card 2397's review), each naming those settings as the server
+  says it holds them just then (its second review); after an invite
+  the mail panel is read again through the page.
 -->
 <script lang="ts">
 	import type { PageData } from '../../../routes/admin/$types';
@@ -21,11 +24,15 @@
 	import { toasts } from '$lib/stores/toast';
 	import ResetPasswordDialog from './ResetPasswordDialog.svelte';
 
+	/** The settings an account had set that a role change or a delete removes, or would (card 2397): `SettingsRemoved` on the server. */
+	type SettingsGone = { mail: boolean; appUrl: boolean; destinations: string[] };
+
 	let {
 		data,
 		isSuperadmin,
 		confirm,
 		loadMailStatus,
+		settingsRemoved = () => {},
 		inviteLink = $bindable()
 	}: {
 		/** What the admin page's load gave it, passed on as it is. */
@@ -35,6 +42,13 @@
 		confirm: (title: string, message: string, action: () => Promise<void>) => void;
 		/** The mail panel's own read of what mail has done, which the page draws for every administrator (card 2395). */
 		loadMailStatus: () => void;
+		/**
+		 * The page's: told what a role change or a delete removed of the mail
+		 * settings, the App URL and the backup destinations the account had set
+		 * (card 2397), so that the panels that show what went read it again, and
+		 * no other (its review).
+		 */
+		settingsRemoved?: (removed: SettingsGone) => void;
 		/**
 		 * The page's: the link of an invite whose mail was not sent, which its
 		 * dialog shows, and the control the focus goes back to after Done (card
@@ -201,8 +215,110 @@
 	}
 
 	/**
+	 * Settings an account had set, as an answer's `settingsRemoved` or the
+	 * page's `settingsSet` gives them (card 2397), or null where they name
+	 * none: the mail settings, the App URL and the backup destinations.
+	 */
+	function settingsNamed(given: unknown): SettingsGone | null {
+		if (given === null || typeof given !== 'object') return null;
+		const r = given as { mail?: unknown; appUrl?: unknown; destinations?: unknown };
+		const named: SettingsGone = {
+			mail: r.mail === true,
+			appUrl: r.appUrl === true,
+			destinations: Array.isArray(r.destinations) ? r.destinations.filter((d): d is string => typeof d === 'string') : []
+		};
+		return named.mail || named.appUrl || named.destinations.length > 0 ? named : null;
+	}
+
+	/**
+	 * Those settings in words (card 2397's review): what going does to
+	 * invites, password resets and the links in mail, and each destination by
+	 * name. Said before a change is sent and after it is done.
+	 */
+	function settingsWords(named: SettingsGone): string {
+		const { destinations } = named;
+		return [
+			...(named.mail
+				? ['the mail settings, so no mail is sent, invites and password resets included, until an administrator sets them again in Email / SMTP']
+				: []),
+			...(named.appUrl ? ["the App URL, so the links in mail point to the server's APP_URL, or else its ORIGIN"] : []),
+			...(destinations.length > 0
+				? [`the backup destination${destinations.length === 1 ? '' : 's'} ${destinations.map((d) => `"${d}"`).join(', ')}`]
+				: [])
+		].join('; ');
+	}
+
+	/** What an answer says was removed with the account's role or the account, in words, or null where it says nothing was. */
+	function settingsRemovedWords(username: string, removed: SettingsGone | null): string | null {
+		return removed === null ? null : `What ${username} had set was removed: ${settingsWords(removed)}.`;
+	}
+
+	/**
+	 * What a role change to user or a delete of the account would remove now,
+	 * read from the server just before the panel asks (card 2397's second
+	 * review): the page's data is as old as the page, and another
+	 * administrator may have taken a setting over since, or given one back.
+	 * Null for nothing; 'unread' where the read failed, which is asked about
+	 * all the same, in general words.
+	 */
+	async function settingsHeldNow(userId: number): Promise<SettingsGone | null | 'unread'> {
+		try {
+			const res = await fetch(`/api/users/${userId}`);
+			if (!res.ok) return 'unread';
+			const body = await answerBody(res);
+			return body !== null && 'settingsSet' in body ? settingsNamed(body.settingsSet) : 'unread';
+		} catch {
+			return 'unread';
+		}
+	}
+
+	/** What a confirmation says of the settings where the read failed: the change or delete may still remove some. */
+	const SETTINGS_UNREAD =
+		'What they set of the mail settings, the App URL and the backup destinations could not be read just now: whatever of it is still theirs goes too.';
+
+	/** The accounts whose settings are being read before a question (the second review): a second press meanwhile does nothing. */
+	let askingAbout = $state(new Set<number>());
+
+	function markAsking(userId: number, asking: boolean) {
+		const next = new Set(askingAbout);
+		if (asking) next.add(userId);
+		else next.delete(userId);
+		askingAbout = next;
+	}
+
+	/**
+	 * Change pressed: where the role chosen is User, what the account holds
+	 * is read first (card 2397's second review), and where it holds settings
+	 * that would go with its role, or the read failed, the page's confirm asks
+	 * first, naming them, and Confirm sends the change; otherwise it is sent
+	 * at once, as before.
+	 */
+	async function askChangeUserRole(userId: number, username: string) {
+		if (askingAbout.has(userId) || changingRole.has(userId)) return;
+		if (chosenRole.get(userId) !== 'user') {
+			changeUserRole(userId, username);
+			return;
+		}
+		markAsking(userId, true);
+		let held: SettingsGone | null | 'unread';
+		try {
+			held = await settingsHeldNow(userId);
+		} finally {
+			markAsking(userId, false);
+		}
+		if (held === null) {
+			changeUserRole(userId, username);
+			return;
+		}
+		const said = held === 'unread' ? SETTINGS_UNREAD : `This removes what they set: ${settingsWords(held)}.`;
+		confirm('Change Role', `Make ${username} a user? ${said}`, () => changeUserRole(userId, username));
+	}
+
+	/**
 	 * Change: saves the role chosen in the row's picker. Refused or not
-	 * answered, the picker shows the role the account has again.
+	 * answered, the picker shows the role the account has again. Where the
+	 * change removed settings the account had set (card 2397), a warning that
+	 * stays says what, and the page reads the panels that show it again.
 	 */
 	async function changeUserRole(userId: number, username: string) {
 		const newRole = chosenRole.get(userId);
@@ -232,13 +348,19 @@
 				// was sent to the account as it was. The answer says how many.
 				const result = await answerBody(res);
 				const invitesEnded = result?.invitesEnded;
+				const gone = settingsNamed(result?.settingsRemoved);
 				await invalidateAll();
 				setChosen(userId, null);
-				showToast(
+				const said =
 					typeof invitesEnded === 'number' && invitesEnded > 0
 						? 'Role updated. The invite sent to this account earlier no longer works: send a new one with 📧.'
-						: 'Role updated'
-				);
+						: 'Role updated';
+				if (gone === null) {
+					showToast(said);
+				} else {
+					showToast(`${said}${said.endsWith('.') ? '' : '.'} ${settingsRemovedWords(username, gone)}`, 'warning', started);
+					settingsRemoved(gone);
+				}
 			} else {
 				putBack();
 				showToast(await failureMessage(res, 'Failed to update role'), 'error', started);
@@ -265,11 +387,41 @@
 	}
 
 	async function deleteUser(userId: number) {
-		if (!(await sent(() => fetch(`/api/users/${userId}`, { method: 'DELETE' }), 'Failed to delete user'))) return;
+		const started = toasts.navigation();
+		const username = data.users.find((u) => u.id === userId)?.username ?? 'the account';
+		const res = await sent(() => fetch(`/api/users/${userId}`, { method: 'DELETE' }), 'Failed to delete user');
+		if (!res) return;
+		// What it had set, removed with it (card 2397): said in a warning that stays.
+		const gone = settingsNamed((await answerBody(res))?.settingsRemoved);
 		// A role chosen for the account and not saved goes with it (the card 2376 review).
 		setChosen(userId, null);
 		await invalidateAll();
-		showToast('User deleted');
+		if (gone === null) {
+			showToast('User deleted');
+		} else {
+			showToast(`User deleted. ${settingsRemovedWords(username, gone)}`, 'warning', started);
+			settingsRemoved(gone);
+		}
+	}
+
+	/** The delete's confirmation: the warning of every delete, then what of the settings the account set would go with it (card 2397's review), as read just now. */
+	function deleteWarning(userId: number, username: string, held: SettingsGone | null | 'unread'): string {
+		const warning = userDeleteWarning(username, soleOwnerOf(userId));
+		if (held === 'unread') return `${warning} ${SETTINGS_UNREAD}`;
+		return held === null ? warning : `${warning} What they set goes too: ${settingsWords(held)}.`;
+	}
+
+	/** 🗑️ pressed: what the account holds is read first (the second review), then the page's confirm asks, and Confirm deletes. */
+	async function askDeleteUser(userId: number, username: string) {
+		if (askingAbout.has(userId)) return;
+		markAsking(userId, true);
+		let held: SettingsGone | null | 'unread';
+		try {
+			held = await settingsHeldNow(userId);
+		} finally {
+			markAsking(userId, false);
+		}
+		confirm('Delete User', deleteWarning(userId, username, held), () => deleteUser(userId));
 	}
 
 	/**
@@ -375,7 +527,7 @@
 								<button
 									class="btn-ghost btn-sm role-change"
 									aria-disabled={chosenRole.has(u.id) && !changingRole.has(u.id) ? undefined : 'true'}
-									onclick={() => changeUserRole(u.id, u.username)}
+									onclick={() => askChangeUserRole(u.id, u.username)}
 									aria-label="Change {u.username}'s role"
 								>Change</button>
 							{/if}
@@ -383,7 +535,7 @@
 						<button class="btn-ghost btn-sm" onclick={() => resetDialog?.openResetDialog(u.id)} title="Reset password">🔑</button>
 						{#if u.id !== data.currentUser.id}
 							<button class="btn-ghost btn-sm" onclick={(e) => resendInvite(u.id, e.currentTarget)} disabled={inviteInFlight !== null || inviteLink !== null} title="Resend invite email">{inviteInFlight === u.id ? '…' : '📧'}</button>
-							<button class="btn-ghost btn-sm danger" onclick={() => confirm('Delete User', userDeleteWarning(u.username, soleOwnerOf(u.id)), () => deleteUser(u.id))} title="Delete user">🗑️</button>
+							<button class="btn-ghost btn-sm danger" onclick={() => askDeleteUser(u.id, u.username)} title="Delete user">🗑️</button>
 						{/if}
 					{:else}
 						<span class="superadmin-lock" title={u.role === 'superadmin' ? "The superadmin's account is theirs alone" : "Only the superadmin can change an administrator's account"}>🔒</span>

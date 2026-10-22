@@ -127,6 +127,8 @@ function everything(): Everything {
 	shareBoardWithTeam(A.board, team, 'viewer');
 	makeWebhook(A.board);
 	makeSmtp();
+	// Who set the mail (card 2397, migration 0059): cleared with the rest.
+	sqlite.prepare("INSERT INTO setting_setters (setting, place, user_id) VALUES ('mail', 'p', ?)").run(admin.id);
 
 	const category = db.insert(categories).values({ boardId: A.board.id, name: 'Bug' }).returning().get();
 	db.insert(boardCategories).values({ name: 'Projects' }).run();

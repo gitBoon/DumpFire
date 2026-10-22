@@ -5,6 +5,7 @@ import { mayManageAccount } from '$lib/account-rule';
 import { db } from '$lib/server/db';
 import { getDbPath } from '$lib/server/db';
 import { defaultOutside } from '$lib/server/db/restore';
+import { settingsHeldBy } from '$lib/server/setting-setters';
 import { boards, columns, cards, categories, users, teams, teamMembers } from '$lib/server/db/schema';
 import { count, eq, sql } from 'drizzle-orm';
 import { statSync } from 'node:fs';
@@ -58,7 +59,13 @@ export const load: PageServerLoad = async ({ locals }) => {
 	// reset there to warn of, and nobody else's keys, webhooks or schedules
 	// are the caller's to count.
 	// The rule is the one the route asks, from $lib/account-rule.ts.
+	//
+	// `settingsSet`, by the same rule: the mail settings, the App URL and the
+	// backup destinations a role change to user or a delete of the account
+	// would remove (card 2397's review), or null where it would remove none.
+	// The users panel names them in its confirmation before anything is sent.
 	const caller = locals.user;
+	const held = settingsHeldBy();
 	const mayReset = (target: { id: number; role: string }) => target.id !== caller.id && mayManageAccount(caller, target);
 	const allUsers = db.select({
 		id: users.id,
@@ -77,7 +84,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 				...user,
 				apiKeys: counted ? user.apiKeys : null,
 				webhooks: counted ? user.webhooks : null,
-				reportSchedules: counted ? user.reportSchedules : null
+				reportSchedules: counted ? user.reportSchedules : null,
+				settingsSet: counted ? (held.get(user.id) ?? null) : null
 			};
 		});
 

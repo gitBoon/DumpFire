@@ -38,6 +38,7 @@ import { afterCommit } from '$lib/server/db/transaction';
 import { startConnect, takeConnect } from '$lib/server/gdrive-connect';
 import { requireAdmin } from '$lib/server/route-guards';
 import { readBody, readText } from '$lib/server/request-body';
+import { recordDestinationSetter } from '$lib/server/setting-setters';
 import { stillCallerNow, writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 import { createLogger } from '$lib/server/logger';
@@ -56,8 +57,13 @@ const REDIRECT_URI = 'http://localhost';
 /** Why a Connect is refused when the folder the destination names cannot be reached (decision 8). */
 const CANNOT_REACH = 'Google gave DumpFire access only to the files it makes, and it cannot reach the folder this destination names, so no backup could be written there.';
 
-/** The remedy, for a connection that reaches only DumpFire's files, or none yet. */
-const REMEDY_NARROW = 'To use a folder DumpFire makes itself, remove this destination, add it again with the Folder ID left empty, and connect it.';
+/**
+ * The remedy, for a connection that reaches only DumpFire's files, or none
+ * yet. Removing a destination is the superadmin's (card 2398), so the words
+ * say who does it (its review).
+ */
+const REMEDY_NARROW =
+	'To use a folder DumpFire makes itself, have the superadmin remove this destination, then add it again with the Folder ID left empty, and connect it.';
 
 /**
  * The remedy for a connection made before card 2188, or of a scope that is
@@ -67,7 +73,8 @@ const REMEDY_NARROW = 'To use a folder DumpFire makes itself, remove this destin
  */
 const REMEDY_WIDE =
 	"To use a folder DumpFire makes itself, first remove DumpFire's access in the Google account (Google Account, Security, Your " +
-	'connections to third-party apps and services), then remove this destination, add it again with the Folder ID left empty, and connect it.';
+	'connections to third-party apps and services), then have the superadmin remove this destination, add it again with the Folder ID left ' +
+	'empty, and connect it.';
 
 /** Why a Connect is refused when the destination was saved meanwhile (decision 9). */
 const CHANGED_MEANWHILE = 'The destination was changed or removed while it was being connected, so the connection was not saved. Connect it again.';
@@ -253,7 +260,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		const grantedScope = typeof tokens.scope === 'string' && tokens.scope.trim() !== '' ? tokens.scope : null;
 		const madeNow = made;
 		const written = writeAs(locals, (callerNow) => {
-			requireAdmin(callerNow);
+			const connector = requireAdmin(callerNow);
 			const current = getBackupConfig();
 			const index = current.destinations.findIndex(d => d.name === destName && d.type === 'gdrive');
 			const now = index === -1 ? null : (current.destinations[index] as any);
@@ -271,6 +278,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			};
 			afterCommit(() => (saved.replaced ? backupLog.warn : backupLog.info)(connectLine(saved), saved, byCaller));
 			saveBackupConfig(current);
+			// Bound to the connecting account's Google account, so it is now theirs
+			// (card 2397): made a user, or deleted, they take it away.
+			recordDestinationSetter(connected, connector.id);
 			return true;
 		});
 		if (!written) {
