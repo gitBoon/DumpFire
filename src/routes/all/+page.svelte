@@ -4,6 +4,8 @@
 	 *
 	 * Groups cards into swim-lane "buckets" (To Do, On Hold, In Progress, Complete)
 	 * and provides search and board-level filtering. Supports editing and moving cards.
+	 * Every board's options are one Options bucket, drawn first and marked "not
+	 * committed", in none of the header's figures (milestone 22).
 	 * Live-updates via global SSE and shows celebrations on task completion.
 	 */
 	import type { PageData } from './$types';
@@ -183,6 +185,20 @@
 	}
 
 	const bucketColors: Record<string, string> = { 'To Do': '#6366f1', 'On Hold': '#ef4444', 'In Progress': '#f59e0b', 'Complete': '#10b981' };
+
+	/**
+	 * The Options bucket: every board's options, the load's first bucket,
+	 * marked `upstream` (milestone 22). An ordinary column called Options has
+	 * a bucket of its own with the same title, which is not this one.
+	 */
+	function isOptionsBucket(bucket: { title: string }): boolean {
+		return 'upstream' in bucket && bucket.upstream === true;
+	}
+
+	/** What a bucket's sort and its sort menu are kept under: its title, but the Options bucket's own. */
+	function bucketKey(bucket: { title: string }): string {
+		return isOptionsBucket(bucket) ? 'options:upstream' : bucket.title;
+	}
 
 	function matchesFilters(card: any): boolean {
 		// Folded in here rather than at the render site so a column's count, which
@@ -418,12 +434,17 @@
 	<div class="kanban-scroll">
 		<div class="kanban-track">
 			{#each buckets as bucket}
-				{@const filteredCards = getSortedCards(bucket.cards.filter(matchesFilters), bucket.title)}
-				<div class="column">
+				{@const sortKey = bucketKey(bucket)}
+				{@const filteredCards = getSortedCards(bucket.cards.filter(matchesFilters), sortKey)}
+				<div class="column" class:column-options={isOptionsBucket(bucket)}>
 					<div class="column-header">
 						<div class="column-title-row">
 							<span class="column-color-dot" style="background: {drawnColour(bucketColors[bucket.title] || '#8b5cf6')}"></span>
 							<h2 class="column-title">{bucket.title}</h2>
+							<!-- Every board's options, first (milestone 22): ideas not yet committed to, in none of the header's figures. -->
+							{#if isOptionsBucket(bucket)}
+								<span class="options-tag" title="Cards in an Options column or on an ideas board: ideas not yet committed to. They are not counted in the totals above.">not committed</span>
+							{/if}
 							<span class="column-count">
 								{#if bucket.title === 'Complete' && (data.hasMoreCompleted || completedCapped)}
 									{filteredCards.length} of {data.totalCompletedCount}
@@ -432,28 +453,28 @@
 								{/if}
 							</span>
 							<div class="sort-wrapper">
-								{#if bucketSorts[bucket.title] && bucketSorts[bucket.title] !== 'none'}
-									<button class="sort-active-badge" onclick={(e) => { e.stopPropagation(); setBucketSort(bucket.title, 'none'); }} title="Clear sort">
-										{getSortLabel(bucketSorts[bucket.title])} ✕
+								{#if bucketSorts[sortKey] && bucketSorts[sortKey] !== 'none'}
+									<button class="sort-active-badge" onclick={(e) => { e.stopPropagation(); setBucketSort(sortKey, 'none'); }} title="Clear sort">
+										{getSortLabel(bucketSorts[sortKey])} ✕
 									</button>
 								{/if}
 								<!-- svelte-ignore a11y_click_events_have_key_events -->
 								<!-- svelte-ignore a11y_no_static_element_interactions -->
-								<button class="sort-btn" class:sort-btn-active={openSortDropdown === bucket.title} onclick={(e) => { e.stopPropagation(); openSortDropdown = openSortDropdown === bucket.title ? null : bucket.title; }} title="Sort cards">
+								<button class="sort-btn" class:sort-btn-active={openSortDropdown === sortKey} onclick={(e) => { e.stopPropagation(); openSortDropdown = openSortDropdown === sortKey ? null : sortKey; }} title="Sort cards">
 									<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 3h8M3 6h6M4 9h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
 								</button>
-								{#if openSortDropdown === bucket.title}
+								{#if openSortDropdown === sortKey}
 									<!-- svelte-ignore a11y_click_events_have_key_events -->
 									<!-- svelte-ignore a11y_no_static_element_interactions -->
 									<div class="sort-dropdown" onclick={(e) => e.stopPropagation()}>
 										<div class="sort-dropdown-label">Sort by</div>
-										<button class="sort-dropdown-item" class:sort-active={bucketSorts[bucket.title] === 'date-asc'} onclick={() => setBucketSort(bucket.title, 'date-asc')}>↑ Oldest first</button>
-										<button class="sort-dropdown-item" class:sort-active={bucketSorts[bucket.title] === 'date-desc'} onclick={() => setBucketSort(bucket.title, 'date-desc')}>↓ Newest first</button>
-										<button class="sort-dropdown-item" class:sort-active={bucketSorts[bucket.title] === 'priority'} onclick={() => setBucketSort(bucket.title, 'priority')}>⚡ Priority</button>
-										<button class="sort-dropdown-item" class:sort-active={bucketSorts[bucket.title] === 'category'} onclick={() => setBucketSort(bucket.title, 'category')}>🏷 Category</button>
-										<button class="sort-dropdown-item" class:sort-active={bucketSorts[bucket.title] === 'assignee'} onclick={() => setBucketSort(bucket.title, 'assignee')}>👤 Assignee</button>
-										{#if bucketSorts[bucket.title] && bucketSorts[bucket.title] !== 'none'}
-											<button class="sort-dropdown-item" onclick={() => setBucketSort(bucket.title, 'none')}>✕ Clear sort</button>
+										<button class="sort-dropdown-item" class:sort-active={bucketSorts[sortKey] === 'date-asc'} onclick={() => setBucketSort(sortKey, 'date-asc')}>↑ Oldest first</button>
+										<button class="sort-dropdown-item" class:sort-active={bucketSorts[sortKey] === 'date-desc'} onclick={() => setBucketSort(sortKey, 'date-desc')}>↓ Newest first</button>
+										<button class="sort-dropdown-item" class:sort-active={bucketSorts[sortKey] === 'priority'} onclick={() => setBucketSort(sortKey, 'priority')}>⚡ Priority</button>
+										<button class="sort-dropdown-item" class:sort-active={bucketSorts[sortKey] === 'category'} onclick={() => setBucketSort(sortKey, 'category')}>🏷 Category</button>
+										<button class="sort-dropdown-item" class:sort-active={bucketSorts[sortKey] === 'assignee'} onclick={() => setBucketSort(sortKey, 'assignee')}>👤 Assignee</button>
+										{#if bucketSorts[sortKey] && bucketSorts[sortKey] !== 'none'}
+											<button class="sort-dropdown-item" onclick={() => setBucketSort(sortKey, 'none')}>✕ Clear sort</button>
 										{/if}
 									</div>
 								{/if}
@@ -496,8 +517,17 @@
 </div> <!-- /.all-page -->
 <div class="all-panels-area">
 <TasksActivityPanel bind:this={activityPanel} bind:activityOpen />
+<!-- The Stats panel's stand-in columns are the chosen board's: its cards, its kind, and the
+     Options stand-in only where it has an upstream column, or every board's with none chosen (J3).
+     The load sends no board kind until card 2463 (S5), so an ideas board is told by its options:
+     cards in the Options bucket on a board with no Options column. One with no card is told by
+     the flow diagram's answer, in the panel. -->
 {#if showStatsPanel}
-	{@const syntheticColumns = buckets.map((b, i) => ({
+	{@const hasOptionsColumn = data.columns.some((c) => c.boardId === chosenBoard && c.role === 'options')}
+	{@const holdsOptions = buckets.some((b) => isOptionsBucket(b) && b.cards.some((c) => c.boardId === chosenBoard))}
+	{@const chosenKind = chosenBoard && holdsOptions && !hasOptionsColumn ? 'ideas' : 'delivery'}
+	{@const chosenHasUpstream = !chosenBoard || hasOptionsColumn || holdsOptions}
+	{@const syntheticColumns = buckets.filter((b) => !isOptionsBucket(b) || chosenHasUpstream).map((b, i) => ({
 		id: i + 1,
 		boardId: 0,
 		title: b.title,
@@ -505,15 +535,23 @@
 		color: b.title === 'Complete' ? '#10b981' : b.title === 'In Progress' ? '#6366f1' : b.title === 'On Hold' ? '#f59e0b' : '#64748b',
 		showAddCard: false,
 		wipLimit: 0,
-		role: null,
-		cards: b.cards as unknown as CardType[]
+		// The Options bucket holds the options of every board (milestone 22):
+		// the panel counts it apart, in none of its figures.
+		role: isOptionsBucket(b) ? 'options' : null,
+		// The chosen board's cards only, as the metrics, flow diagram and
+		// burndown are that board's (the S4b review's J3); every card with none.
+		cards: b.cards.filter((c) => !chosenBoard || c.boardId === chosenBoard) as unknown as CardType[]
 	} satisfies ColumnType))}
-	<StatsPanel
-		boardColumns={syntheticColumns}
-		boardCategories={data.categories as unknown as CategoryType[]}
-		boardId={chosenBoard}
-		onClose={() => (showStatsPanel = false)}
-	/>
+	<!-- Drawn again for another board, so that its reads are that board's. -->
+	{#key chosenBoard}
+		<StatsPanel
+			boardColumns={syntheticColumns}
+			boardCategories={data.categories as unknown as CategoryType[]}
+			boardId={chosenBoard}
+			boardKind={chosenKind}
+			onClose={() => (showStatsPanel = false)}
+		/>
+	{/key}
 {/if}
 <TasksArchivePanel bind:this={archivePanel} {showConfirm} bind:showArchivePanel />
 </div> <!-- /.all-panels-area -->
@@ -633,6 +671,23 @@
 		background: var(--bg-base);
 		padding: 1px 6px;
 		border-radius: var(--radius-full);
+	}
+
+	/* The Options bucket (milestone 22): upstream of the commitment point, drawn apart. */
+	.column-options {
+		border-style: dashed;
+	}
+
+	.options-tag {
+		font-size: 0.62rem;
+		font-weight: 700;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-tertiary);
+		border: 1px dashed var(--glass-border);
+		padding: 1px 6px;
+		border-radius: var(--radius-full);
+		white-space: nowrap;
 	}
 
 

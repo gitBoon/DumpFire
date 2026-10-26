@@ -8,6 +8,7 @@
 <script lang="ts">
 	import type { PageData } from '../../../routes/plan/[id]/$types';
 	import { formatDueDate } from '$lib/utils/date-utils';
+	import { goalOptionsNote } from '$lib/progress';
 
 	let {
 		summary,
@@ -18,6 +19,9 @@
 		/** The page's: the goal itself. */
 		milestone: PageData['summary']['milestone'];
 	} = $props();
+
+	/** "and 2 options" under the cards complete, or nothing: an option is no committed work (milestone 22). */
+	const optionsNote = $derived(goalOptionsNote(summary.progress.options));
 </script>
 
 <section class="panel">
@@ -39,6 +43,10 @@
 		<div class="stat">
 			<span class="stat-value">{summary.progress.done}/{summary.progress.total}</span>
 			<span class="stat-label">cards complete</span>
+			<!-- The goal's options, in none of its figures (milestone 22). -->
+			{#if optionsNote}
+				<span class="stat-note" title="Cards in an Options column or on an ideas board: not committed to, so in none of the goal's progress">{optionsNote}</span>
+			{/if}
 		</div>
 		<div class="stat">
 			<span class="stat-value">{summary.nextActionable.length}</span>
@@ -108,6 +116,8 @@
 		font-size: 0.68rem; color: var(--text-tertiary);
 		text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600;
 	}
+	/* The goal's options, under its cards complete (milestone 22). */
+	.stat-note { font-size: 0.68rem; color: var(--text-tertiary); font-style: italic; }
 
 	.chip-row { display: flex; flex-wrap: wrap; gap: 5px; }
 	.chip {

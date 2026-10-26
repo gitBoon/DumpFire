@@ -1841,6 +1841,7 @@
 		boardColumns={boardState.columns}
 		boardCategories={boardState.categories}
 		boardId={data.board.id}
+		boardKind={boardState.board.kind}
 		onClose={() => (showStatsPanel = false)}
 	/>
 {/if}

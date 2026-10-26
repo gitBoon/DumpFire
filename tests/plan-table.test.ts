@@ -263,7 +263,8 @@ describe('the counts and Expand all', () => {
 		const before = (data.summary.graph.nodes as { kind: string; external?: boolean; parentCardId?: number }[]).filter(
 			(n) => !n.external && (n.kind === 'card' || n.parentCardId !== undefined)
 		);
-		expect(stateCounts(groups)).toEqual({ all: before.length, ready: 4, blocked: 3, done: 0 });
+		// No option in this goal (milestone 22): its count is 0.
+		expect(stateCounts(groups)).toEqual({ all: before.length, ready: 4, blocked: 3, done: 0, option: 0 });
 		expect(before).toHaveLength(7);
 	});
 

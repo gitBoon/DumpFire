@@ -165,6 +165,15 @@ export interface ReportData {
 		 * of no board.
 		 */
 		upstream: UpstreamFigures | null;
+		/**
+		 * True for a report narrowed to one person when the boards in scope
+		 * have something upstream to leave out: an upstream column (an Options
+		 * column, or an ideas board), or committed work abandoned in the
+		 * period. The PDF then says the upstream line is left out, and why
+		 * (the S4b review's J9); a report about one person on boards with
+		 * neither says nothing. False for every other report.
+		 */
+		upstreamLeftOut: boolean;
 	};
 
 	priorityBreakdown: {
@@ -408,7 +417,7 @@ function generateReportForBoards(
 			generatedAt: new Date().toISOString(),
 			periodStart, periodEnd, scope, scopeName, statusFilter,
 			assigneeName,
-			summary: { totalCards: 0, totalSubtasks: 0, totalTasks: 0, completedInPeriod: 0, createdInPeriod: 0, outstanding: 0, todo: 0, inProgress: 0, overdue: 0, upstream: null },
+			summary: { totalCards: 0, totalSubtasks: 0, totalTasks: 0, completedInPeriod: 0, createdInPeriod: 0, outstanding: 0, todo: 0, inProgress: 0, overdue: 0, upstream: null, upstreamLeftOut: false },
 			priorityBreakdown: { critical: 0, high: 0, medium: 0, low: 0 },
 			assigneeStats: [], outstandingTasks: [],
 			completedTasks: [], boardBreakdown: []
@@ -525,6 +534,8 @@ function generateReportForBoards(
 	const from = toStamp(periodStart, 'lower') ?? periodStart;
 	const to = toStamp(periodEnd, 'upper') ?? periodEnd;
 	const inPeriod = (moment: string) => moment >= from && moment <= to;
+	/** Whether both ends of the period can be read, which the upstream figures need. */
+	const periodReadable = toStamp(periodStart, 'lower') !== null && toStamp(periodEnd, 'upper') !== null;
 
 	const completedInPeriod = completedCards.filter(c => inPeriod(c.completedAt || c.updatedAt));
 
@@ -685,9 +696,13 @@ function generateReportForBoards(
 			// (the S3 review's E4): a bare date as the end is the whole day.
 			// A period that cannot be read, which every route refuses first,
 			// has none rather than a fault.
-			upstream: assigneeUserId === null && toStamp(periodStart, 'lower') !== null && toStamp(periodEnd, 'upper') !== null
+			upstream: assigneeUserId === null && periodReadable
 				? upstreamFigures(boardIds, from, to)
-				: null
+				: null,
+			// A report about one person leaves the upstream line out; it says so
+			// only where there is something to leave out (the S4b review's J9).
+			upstreamLeftOut: assigneeUserId !== null && periodReadable &&
+				([...columnMap.values()].some(c => c.status === 'option') || upstreamFigures(boardIds, from, to).abandoned > 0)
 		},
 		priorityBreakdown,
 		assigneeStats,
@@ -814,7 +829,8 @@ export function generateCardReport(cardId: number): ReportData | null {
 			todo: open && status === 'todo' ? 1 : 0,
 			inProgress: open && status !== 'todo' ? 1 : 0,
 			overdue: 0,
-			upstream: null
+			upstream: null,
+			upstreamLeftOut: false
 		},
 
 		priorityBreakdown: {
@@ -1292,6 +1308,19 @@ export async function generateReportPdf(data: ReportData, detailLevel: 'summary'
 	if (up && up.abandoned) {
 		doc.font('Helvetica').fontSize(6.5).fillColor(C.textLight)
 			.text(`Abandoned (committed work archived before Complete): ${up.abandoned}`, mx, y, { width: pw });
+		y = (doc as any).y + 12;
+	}
+	// A report about one person has neither line (`summary.upstream` is null),
+	// and says why, so that no reader takes the absence for none (the S4a
+	// review's ruling for S4b): only where its boards have something upstream
+	// to leave out (the S4b review's J9). The Reports page's Person hint names
+	// the same four things.
+	if (data.summary.upstreamLeftOut) {
+		doc.font('Helvetica').fontSize(6.5).fillColor(C.textLight)
+			.text(
+				`The upstream line (options, commitments from options, discards and abandoned work) is left out of a report about one person: those figures describe the boards, not one person's work.`,
+				mx, y, { width: pw }
+			);
 		y = (doc as any).y + 12;
 	}
 

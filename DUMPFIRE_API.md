@@ -2421,7 +2421,8 @@ column change.
 Options column or any column of an ideas board, into a committed one, by any route. Within a
 board it is sent **instead of** `card.moved`; a move to another board also sends each board its
 `card.moved`, the departure and the arrival. Its `data.action` is `card_committed`, its
-`data.detail` `"<title>": <from> → <to> (column <id>)`, the id the column it went into, and
+`data.detail` `"<title>": <from> → <to> (column <to id>, from column <from id>)`, the ids the
+column it went into and the column it left (before card 2462, only ` (column <to id>)`), and
 straight into a Complete column it is followed by `card.completed`. A committed card moved back
 into an upstream column sends `card.moved` with `data.action` `card_returned_to_options`;
 within a board that is the move's only delivery from Complete, and a move from another board

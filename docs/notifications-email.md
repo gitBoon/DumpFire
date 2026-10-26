@@ -2018,7 +2018,8 @@ The same event is sent whether the action was made in the web UI or through the 
 page's menu move and bulk move (`PUT /api/cards/reorder`), All Tasks' move (`PUT
 /api/cards/{id}` with a `columnId`) and `PUT /api/v1/cards/{cardId}/move`. Its entry,
 `"<title>": <from> → <to>`, names the column the card went into; a commitment's ends
-` (column <id>)` too, the id of that column. A move from Complete back into
+` (column <to id>, from column <from id>)` too, the ids of the column it went into and the
+column it left (`commitmentSuffix`, card 2462; one written before ends ` (column <to id>)`). A move from Complete back into
 the Options column writes `card_reopened` and then `card_returned_to_options`, and passes
 `webhook: false` to `logActivity` for the first, so the move sends one `card.moved`, from the
 return. A move to another board that also returns the card to options sends the board it joined

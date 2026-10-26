@@ -1,9 +1,9 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.35
+version: 1.36
 status: As-Built
-date: 2026-10-22
+date: 2026-10-26
 tags:
   - backup
   - reports
@@ -1190,7 +1190,7 @@ The dashboard row uses the same board → cards → sub-boards walk as the repor
 flowchart TD
     ReportData["ReportData"]
     ReportData --> Filter["statusFilter\nall / completed / in_progress / todo"]
-    ReportData --> Summary["Summary\ncards, subtasks, tasks\ncompleted, created, outstanding\ntodo, inProgress, overdue"]
+    ReportData --> Summary["Summary\ncards, subtasks, tasks\ncompleted, created, outstanding\ntodo, inProgress, overdue\nupstream (null for one person)"]
     ReportData --> Priority["Priority Breakdown\ncritical, high, medium, low"]
     ReportData --> Assignees["Assignee Stats\nper-user completed + outstanding"]
     ReportData --> Outstanding["Outstanding Tasks\ngrouped by board + category"]
@@ -1206,6 +1206,7 @@ PDFs are rendered server-side using PDFKit with a professional layout:
 
 - **Header** — DumpFire branding, report title, date range, detail level and (when set) the status filter
 - **Executive Summary** — Six stat tiles: Cards, Tasks incl. subtasks, Completed, Created, Outstanding, Overdue, with a caption spelling out what each one counts. Overdue is the open cards due before the reader's today (card 2258): the day in the zone the Reports page sends, or the schedule's zone, and the UTC day when there is none. It was always the UTC day, so east of UTC after midnight a card due the day before was not yet counted
+- **Options and abandoned work** (milestone 22, card 2462) — A card in a board's Options column or on an ideas board is an option, in none of the figures, lists or breakdowns: a column is classified by its stored role first (`classifyColumn`), so the Options column, titled "Ideas", is never taken for To Do. Under the caption, `Upstream: N options now, oldest D days, A over 30 days · C committed from options · R returned to options · X discarded · S sent to other boards · discard rate P%.` when any upstream figure is not zero (`summary.upstream`, from `upstreamFigures`), and `Abandoned (committed work archived before Complete): N` on its own line when that is not zero, which a board with no Options column can show too. A report about one person (`assigneeUserId`) has `summary.upstream` null and neither line, and says instead that the upstream line is left out because those figures describe the boards, not one person's work, only where there is something to leave out: `summary.upstreamLeftOut`, true when a board in scope has an upstream column or abandoned work in the period. A single card's report lists an option in no outstanding work
 - **Dates** — A due date (the Due Date column) is printed as the day stored, in any zone (`formatDueDate`). The period, the generated date and the completion dates are printed in the schedule's zone for a scheduled report and in UTC for one made by hand (card 2258); they were printed in the server's zone, so a Tokyo schedule's PDF read a day before its mail's period
 - **Status banner** — Only when a filter is active: "SHOWING Completed in period only — N cards" etc.
 - **Priority Breakdown** — Visual bar chart of the slice being reported (Outstanding by default, Completed in Period for the completed filter)

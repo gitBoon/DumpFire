@@ -769,6 +769,42 @@ describe('reports ask the stored role (the S1b review’s B6)', () => {
 		expect(text).not.toContain('Upstream');
 	});
 
+	it('says in a report about one person that the upstream line is left out, because the figures describe boards (S4b)', async () => {
+		const { owner, A, options } = flowBoard();
+		makeCard(options, { title: 'Waiting idea', createdAt: '2026-06-02 09:00:00' });
+		const mine = generateBoardReport(A.board.id, '2026-06-01', '2026-06-30', owner, 'all', owner.id)!;
+		const text = pdfText(await generateReportPdf(mine, 'summary'));
+		expect(text).toContain('The upstream line (options, commitments from options, discards and abandoned work) is left out of a report about one person');
+		expect(text).not.toContain('Upstream:');
+
+		// A report about the boards says nothing of it.
+		const boards = pdfText(await generateReportPdf(generateBoardReport(A.board.id, '2026-06-01', '2026-06-30', owner)!, 'summary'));
+		expect(boards).toContain('Upstream: 1 options now');
+		expect(boards).not.toContain('left out of a report about one person');
+	});
+
+	it('says nothing of an upstream line in a report about the boards that have no Options column (S4b)', async () => {
+		const s = ordinaryScene();
+		const ordinary = pdfText(await generateReportPdf(generateBoardReport(s.O.board.id, '2026-06-01', '2026-06-30', s.owner)!, 'summary'));
+		expect(ordinary).not.toContain('left out of a report about one person');
+	});
+
+	it('says it in a report about one person only where the boards have an upstream column or abandoned work in the period (J9)', async () => {
+		const s = ordinaryScene();
+		const mine = () => generateBoardReport(s.O.board.id, '2026-06-01', '2026-06-30', s.owner, 'all', s.owner.id)!;
+		expect(mine().summary.upstreamLeftOut).toBe(false);
+		expect(pdfText(await generateReportPdf(mine(), 'summary'))).not.toContain('left out of a report about one person');
+
+		const abandoned = makeCard(s.O.cols['In Progress'], { title: 'Dropped work', archivedAt: '2026-06-07 09:00:00' });
+		entry(s.O, abandoned, 'card_abandoned', '2026-06-07 09:00:00');
+		expect(mine().summary.upstreamLeftOut).toBe(true);
+		expect(pdfText(await generateReportPdf(mine(), 'summary'))).toContain('The upstream line (options, commitments from options, discards and abandoned work) is left out of a report about one person');
+		// Abandoned before the period: nothing to leave out of it.
+		expect(generateBoardReport(s.O.board.id, '2026-06-10', '2026-06-30', s.owner, 'all', s.owner.id)!.summary.upstreamLeftOut).toBe(false);
+		// A report about the boards never says it.
+		expect(generateBoardReport(s.O.board.id, '2026-06-01', '2026-06-30', s.owner)!.summary.upstreamLeftOut).toBe(false);
+	});
+
 	it('leaves an option out of a single card’s report’s outstanding work and tasks (H7)', () => {
 		const { options } = flowBoard();
 		const option = makeCard(options, { title: 'An idea' });
@@ -981,6 +1017,19 @@ describe('the board’s Stats panel figures (`boardStats`)', () => {
 		const stats = boardStats([{ id: 1, title: 'To Do', color: '#1', role: null, cards: [taken, card('2026-06-20 12:00:00')] }], 'delivery', now);
 		// 1 day and 10 days: 5.5, shown as 6d.
 		expect(stats.avgAge).toBe('6d');
+	});
+});
+
+describe('the board’s contents carry each card’s commitment, which the Stats panel ages from (S4b)', () => {
+	it('gives every card its committedAt: a committed card its commitment, an option none', async () => {
+		const { owner, A, options } = flowBoard();
+		const taken = makeCard(A.cols['To Do'], { title: 'Taken on', createdAt: '2026-03-01 09:00:00', committedAt: '2026-06-29 09:00:00' });
+		const option = makeCard(options, { title: 'An idea' });
+		const res = await api('GET', `/api/boards/${A.board.id}/contents`, { user: owner });
+		expect(res.status).toBe(200);
+		const cardsIn = (res.body.columns as { cards: { id: number; committedAt: string | null }[] }[]).flatMap((c) => c.cards);
+		expect(cardsIn.find((c) => c.id === taken.id)?.committedAt).toBe('2026-06-29 09:00:00');
+		expect(cardsIn.find((c) => c.id === option.id)).toHaveProperty('committedAt', null);
 	});
 });
 

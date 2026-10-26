@@ -709,7 +709,7 @@
 						<span class="form-hint">
 							{genAssignee === 'all'
 								? 'Every assignee on the selected boards.'
-								: 'Only cards assigned to this person — a card they share with someone else still counts for both.'}
+								: 'Only cards assigned to this person — a card they share with someone else still counts for both. The upstream line (options, commitments from options, discards and abandoned work) is left out: those figures describe the boards, not one person’s work.'}
 						</span>
 					</div>
 					<div class="form-group">

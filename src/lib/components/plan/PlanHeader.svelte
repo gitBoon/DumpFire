@@ -14,6 +14,8 @@
 <script lang="ts">
 	import type { PageData } from '../../../routes/plan/[id]/$types';
 	import { daysUntilDue, formatDueDate } from '$lib/utils/date-utils';
+	// The Ready chip's tooltip, which names the goal's options (the S4b review's J7).
+	import { readyToCloseTitle } from '$lib/progress';
 	import { onDestroy, onMount } from 'svelte';
 
 	let {
@@ -156,7 +158,7 @@
 			class:open={milestone.status === 'open' && !readyToClose}
 			class:ready={readyToClose}
 			class:closed={milestone.status !== 'open'}
-			title={readyToClose ? 'Every card in this goal is complete — close it when you are satisfied it is delivered' : ''}
+			title={readyToClose ? readyToCloseTitle(summary.progress.options) : ''}
 		>
 			{#if readyToClose}Ready to close{:else if milestone.status === 'open'}Open{:else}Closed{/if}
 		</span>

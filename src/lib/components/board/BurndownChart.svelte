@@ -5,7 +5,7 @@
   labels stay legible from the 340px stats panel to a full page.
 
   Burndown mode draws remaining work (line + wash) under "work in play": what
-  was open when the window began plus everything added since. The gap between
+  was open when the window began plus everything committed since. The gap between
   the two is what got finished, and a rise in remaining can be read as "work
   was added" rather than "nothing got done". Burn-up mode draws finished-since-
   start rising towards work in play. All-time scope is deliberately not plotted
@@ -534,9 +534,9 @@
       {#if mode === 'burnup'}
         <span class="lg">{@render lgKey('area', 'done')}<InfoTip width={260}>Finished{#snippet tip()}<p>Cards finished since the start of the period, added up day by day.</p>{/snippet}</InfoTip></span>
       {:else}
-        <span class="lg">{@render lgKey('area', 'remaining')}<InfoTip width={260}>Remaining{#snippet tip()}<p>Cards open at the end of each day: not in a Complete column and not archived.</p>{/snippet}</InfoTip></span>
+        <span class="lg">{@render lgKey('area', 'remaining')}<InfoTip width={260}>Remaining{#snippet tip()}<p>Committed cards open at the end of each day: not in a Complete column and not archived. Options are not counted.</p>{/snippet}</InfoTip></span>
       {/if}
-      <span class="lg">{@render lgKey('line', 'inplay')}<InfoTip width={280}>Work in play{#snippet tip()}<p>What was open at the start of the period, plus everything added since, less anything dropped.</p><p>{mode === 'burnup' ? 'When Finished meets it, everything is done.' : 'The gap down to Remaining is what got finished.'}</p>{/snippet}</InfoTip></span>
+      <span class="lg">{@render lgKey('line', 'inplay')}<InfoTip width={280}>Work in play{#snippet tip()}<p>What was open at the start of the period, plus everything committed since, less anything dropped.</p><p>{mode === 'burnup' ? 'When Finished meets it, everything is done.' : 'The gap down to Remaining is what got finished.'}</p>{/snippet}</InfoTip></span>
       {#if idealLine}<span class="lg">{@render lgKey('dash', 'ref')}<InfoTip width={260}>Ideal{#snippet tip()}<p>A straight line from the work open at the start down to zero on the target date: the steady pace that would land exactly on time.</p>{/snippet}</InfoTip></span>{/if}
       {#if projections.length}<span class="lg">{@render lgKey('dot', mode === 'burnup' ? 'done' : 'remaining')}<InfoTip width={260}>Forecast{#snippet tip()}<p>Where the {mode === 'burnup' ? 'lines head' : 'line heads'} if work keeps arriving and being finished at the pace of the last {forecast?.basisDays ?? 28} days.</p>{/snippet}</InfoTip></span>{/if}
     </div>

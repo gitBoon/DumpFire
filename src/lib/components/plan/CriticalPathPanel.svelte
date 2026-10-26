@@ -49,6 +49,8 @@
 							<span class="card-title">{n.title}</span>
 							<span class="card-where">
 								{#if n.external}<span class="ext-tag">outside this goal</span>{/if}
+								<!-- An option on the path: open, so the goal waits on it, but not committed to (milestone 22). -->
+								{#if n.isOption && !n.isComplete}<span class="ext-tag">option</span>{/if}
 								{#if !n.withheld}
 									{#if n.kind === 'subtask'}of #{n.parentCardId} · {/if}{n.boardName} / {n.columnTitle}
 								{/if}

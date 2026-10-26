@@ -1449,7 +1449,8 @@ describe('the pages read every stored value as UTC, through parseStamp (A13 to A
 		expect(sourceOf('src/lib/components/board/ArchivePanel.svelte')).toContain('parseStamp(card.archivedAt)');
 		expect(sourceOf('src/lib/components/board/ActivityPanel.svelte')).toContain('parseStamp(activity.createdAt)');
 		expect(sourceOf('src/lib/components/CardModal.svelte')).toContain('parseStamp(card.createdAt)');
-		expect(sourceOf('src/lib/components/board/StatsPanel.svelte')).toContain('parseStamp(c.createdAt)');
+		// The statistics' average age is `boardStats`'s since milestone 22, from the commitment where there is one.
+		expect(sourceOf('src/lib/board/board-stats.ts')).toContain('parseStamp(c.committedAt ?? c.createdAt)');
 		// The dashboard's sort by activity, in its boards table (card 2281, slice C2).
 		expect(sourceOf('src/lib/components/dashboard/BoardsTable.svelte')).toContain('parseStamp(a.lastActivity)');
 	});
