@@ -20,6 +20,7 @@
 	import { drawnColour } from '$lib/colours';
 	import { parseStamp } from '$lib/timestamps';
 	import { timeAgo } from '$lib/dashboard/format';
+	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
 
 	let {
 		data,
@@ -51,6 +52,8 @@
 
 	let showCompletedSubs = $state(false);
 	let showCompletedBoards = $state(true);
+	/** Either switch off its default (done boards shown, done subs hidden): the Display button's dot. */
+	let displayChanged = $derived(!showCompletedBoards || showCompletedSubs);
 
 	// Sort state
 	type SortColumn = 'name' | 'activity' | 'cards' | 'progress' | 'tokens' | 'cost';
@@ -208,16 +211,31 @@
 			<h2>Your Boards</h2>
 			<span class="section-count">{a.totalBoards} boards · {a.totalSubBoards} sub-boards</span>
 		</div>
+		<!-- The done-board and done-sub switches and Manage Categories, in one
+		     menu (card 2466). Its dot says a switch is off its default. -->
 		<div class="header-actions">
-			<button class="toggle-completed-btn" title="Manage Categories" onclick={() => showCategoryManager = true}>
-				🏷️ Manage Categories
-			</button>
-			<button class="toggle-completed-btn" class:active={showCompletedBoards} onclick={() => showCompletedBoards = !showCompletedBoards}>
-				{showCompletedBoards ? '✅ Showing done boards' : '👁️ Show done boards'}
-			</button>
-			<button class="toggle-completed-btn" class:active={showCompletedSubs} onclick={() => showCompletedSubs = !showCompletedSubs}>
-				{showCompletedSubs ? '✅ Showing done subs' : '👁️ Show done subs'}
-			</button>
+			<HeaderMenu
+				label="Display"
+				triggerClass="toggle-completed-btn display-btn"
+				triggerId="display-menu-btn"
+				triggerTitle={displayChanged ? 'Display: a setting is changed from its default' : 'Display: done boards, done sub-boards and categories'}
+				triggerActive={displayChanged}
+			>
+				{#snippet trigger()}
+					Display
+					{#if displayChanged}<span class="display-dot" aria-label="changed"></span>{/if}
+				{/snippet}
+				<button class="hm-item" role="menuitemcheckbox" tabindex="-1" aria-checked={showCompletedBoards} onclick={() => showCompletedBoards = !showCompletedBoards}>
+					{showCompletedBoards ? '✅ Showing done boards' : '👁️ Show done boards'}
+				</button>
+				<button class="hm-item" role="menuitemcheckbox" tabindex="-1" aria-checked={showCompletedSubs} onclick={() => showCompletedSubs = !showCompletedSubs}>
+					{showCompletedSubs ? '✅ Showing done subs' : '👁️ Show done subs'}
+				</button>
+				<div class="hm-divider" role="separator"></div>
+				<button class="hm-item" role="menuitem" tabindex="-1" title="Manage Categories" onclick={() => showCategoryManager = true}>
+					🏷️ Manage Categories
+				</button>
+			</HeaderMenu>
 		</div>
 	</div>
 
@@ -442,15 +460,21 @@
 
 	.header-actions { display: flex; align-items: center; gap: 8px; }
 
-	.toggle-completed-btn {
+	/* :global, as the Display button is drawn by HeaderMenu with this class (card 2466). */
+	.header-actions :global(.toggle-completed-btn) {
 		padding: 6px 12px; height: 32px;
 		font-size: 0.72rem; font-weight: 600; font-family: var(--font-family);
 		background: var(--bg-surface); border: 1px solid var(--glass-border);
 		border-radius: var(--radius-md); color: var(--text-secondary); cursor: pointer;
 		transition: all var(--duration-fast) var(--ease-out);
 	}
-	.toggle-completed-btn:hover { border-color: var(--accent-indigo); color: var(--text-primary); }
-	.toggle-completed-btn.active { background: rgba(99, 102, 241, 0.1); border-color: rgba(99, 102, 241, 0.3); color: var(--accent-indigo); box-shadow: inset 0 1px 3px rgba(0,0,0,0.05); }
+	.header-actions :global(.toggle-completed-btn:hover) { border-color: var(--accent-indigo); color: var(--text-primary); }
+	.header-actions :global(.toggle-completed-btn.hm-on) { background: rgba(99, 102, 241, 0.1); border-color: rgba(99, 102, 241, 0.3); color: var(--accent-indigo); box-shadow: inset 0 1px 3px rgba(0,0,0,0.05); }
+	/* A setting off its default: a dot, so the change is seen with the menu shut. */
+	.display-dot {
+		display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+		background: var(--accent-indigo);
+	}
 
 
 	.board-row {

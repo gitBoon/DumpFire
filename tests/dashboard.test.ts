@@ -11,13 +11,15 @@
  * with the page and a failed first read still starting the poll (card 2312);
  * and the sidebar's tiles opening
  * Active Tasks (through `bind:this`), Velocity and Spend, and the boards
- * table's Manage Categories. `fetch`, the page's live stream and
+ * table's Manage Categories (in its Display menu since card 2466, whose
+ * menus are tested in `tests/header-menus.svelte.test.ts`). `fetch`, the page's live stream and
  * `invalidateAll` are stand-ins; what each request sent is kept.
  *
  * The source pins of the same code are in `tests/page-failures.test.ts`,
  * `tests/timestamps.test.ts`, `tests/card-completion.test.ts`,
  * `tests/request-body.test.ts` and `tests/todo-page.test.ts`.
  */
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
@@ -202,6 +204,18 @@ async function settle() {
 const buttonNamed = (within: ParentNode, text: string) =>
 	[...within.querySelectorAll('button')].find((button) => button.textContent!.trim() === text) as HTMLButtonElement;
 const asked = (what: string) => sent.filter((request) => request.what === what);
+
+/**
+ * Opens the boards table's Display menu, where Manage Categories has been
+ * since card 2466 (it was a button of its own beside the title), and gives
+ * back its Manage Categories item and the Display button.
+ */
+function manageCategoriesItem(target: HTMLElement) {
+	const display = target.querySelector<HTMLButtonElement>('#display-menu-btn')!;
+	display.click();
+	flushSync();
+	return { item: buttonNamed(target.querySelector('[role="menu"][aria-label="Display"]')!, '🏷️ Manage Categories'), display };
+}
 const headings = (target: HTMLElement) => [...target.querySelectorAll('h2')].map((heading) => heading.textContent!.trim());
 
 /** Types `text` into a box, as `bind:value` hears it. */
@@ -478,7 +492,7 @@ describe('the dashboard, mounted with its parts', () => {
 		flushSync();
 		expect(headings(target)).toContain('Notional spend by person');
 
-		buttonNamed(target, '🏷️ Manage Categories').click();
+		manageCategoriesItem(target).item.click();
 		flushSync();
 		expect(headings(target)).toContain('Manage Categories');
 	});
@@ -585,13 +599,80 @@ describe('the dashboard, mounted with its parts', () => {
 	});
 });
 
+// Card 2466: the owner, "We can show XP on the dashboard otherwise naaah". The XP bars left the board header
+// and are the sidebar's XP leaderboard, read from GET /api/xp and again on each live refresh.
+describe('the XP leaderboard on the dashboard (card 2466)', () => {
+	let xp: { name: string; xp: number; emoji: string }[] = [];
+	beforeEach(() => {
+		xp = [
+			{ name: 'bob', xp: 250, emoji: '🐻' },
+			{ name: 'alice', xp: 1200, emoji: '🦊' }
+		];
+		answer = (what) => (what === 'GET /api/xp' ? Response.json(xp) : undefined);
+	});
+	const rows = (target: HTMLElement) =>
+		[...target.querySelectorAll('#xp-leaderboard-panel .xp-entry')].map((entry) => entry.textContent!.replace(/\s+/g, ' ').trim());
+
+	it('shows each person’s level and XP in the sidebar, highest first, and not in the header', async () => {
+		const target = draw();
+		await settle();
+		expect(asked('GET /api/xp')).toHaveLength(1);
+		const panel = target.querySelector<HTMLElement>('.sidebar-column #xp-leaderboard-panel')!;
+		expect(panel.querySelector('.panel-title')!.textContent).toBe('XP Leaderboard');
+		expect(rows(target)).toEqual(['🦊 alice 1200 XP Lv.3', '🐻 bob 250 XP Lv.1']);
+		expect(panel.querySelector('.xp-entry')!.getAttribute('title')).toBe('alice: 1200 XP (Level 3)');
+		expect(target.querySelector('.dashboard-header .xp-entry')).toBeNull();
+	});
+
+	it('reads it again on a live refresh, which the stream’s xp-update schedules', async () => {
+		const { connectLiveRefresh } = await import('$lib/live-refresh');
+		const live = vi.mocked(connectLiveRefresh);
+		live.mockClear();
+		const target = draw();
+		await settle();
+		xp = [...xp, { name: 'carol', xp: 600, emoji: '🐱' }];
+		live.mock.calls[0][0]();
+		await settle();
+		expect(asked('GET /api/xp')).toHaveLength(2);
+		expect(rows(target).map((row) => row.split(' ')[1])).toEqual(['alice', 'carol', 'bob']);
+		// The source of the schedule: live-refresh re-reads on xp-update as on update.
+		expect(readFileSync(join(process.cwd(), 'src/lib/live-refresh.ts'), 'utf8')).toContain("eventSource.addEventListener('xp-update', () => scheduleRefresh());");
+	});
+
+	it('draws no panel when nobody has XP, or the read fails', async () => {
+		xp = [];
+		let target = draw();
+		await settle();
+		expect(target.querySelector('#xp-leaderboard-panel')).toBeNull();
+		leave();
+		answer = (what) => (what === 'GET /api/xp' ? Response.json({ message: 'nope' }, { status: 500 }) : undefined);
+		target = draw();
+		await settle();
+		expect(target.querySelector('#xp-leaderboard-panel')).toBeNull();
+	});
+
+	it('is read nowhere else: no other page or component asks for /api/xp', () => {
+		const callers: string[] = [];
+		const walk = (dir: string) => {
+			for (const entry of readdirSync(join(process.cwd(), dir), { withFileTypes: true })) {
+				const path = `${dir}/${entry.name}`;
+				if (entry.isDirectory()) walk(path);
+				else if (/\.(svelte|ts)$/.test(entry.name) && /\bloadXp\b|fetchXp\(|['"`]\/api\/xp['"`]/.test(readFileSync(join(process.cwd(), path), 'utf8'))) callers.push(path);
+			}
+		};
+		walk('src/routes');
+		walk('src/lib/components');
+		expect(callers.sort()).toEqual(['src/routes/+page.svelte']);
+	});
+});
+
 // Card 2358: each of the window's writes acted only on an answer that was ok; a refusal said nothing,
 // no answer was an unhandled rejection that left every button dead, and the delete asked with the browser's confirm().
 describe('Manage Categories says a refusal or no answer, and asks before a delete in the app’s dialog (card 2358)', () => {
 	async function openManager() {
 		const target = draw();
 		await settle();
-		buttonNamed(target, '🏷️ Manage Categories').click();
+		manageCategoriesItem(target).item.click();
 		flushSync();
 		return target.querySelector<HTMLElement>('.cat-mgr')!;
 	}
@@ -692,14 +773,19 @@ describe('Manage Categories says a refusal or no answer, and asks before a delet
 			window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
 			flushSync();
 		}
+		/**
+		 * Opens it from the Display menu (card 2466). The item gives the focus to
+		 * the Display button as the menu closes, before the window opens, so the
+		 * window takes it from there and gives it back there: `opener` is it.
+		 */
 		async function openFromItsButton() {
 			const target = draw();
 			await settle();
-			const opener = buttonNamed(target, '🏷️ Manage Categories');
-			opener.focus();
-			opener.click();
+			const { item, display } = manageCategoriesItem(target);
+			item.focus();
+			item.click();
 			flushSync();
-			return { target, opener, manager: target.querySelector<HTMLElement>('.cat-mgr')! };
+			return { target, opener: display, manager: target.querySelector<HTMLElement>('.cat-mgr')! };
 		}
 
 		it('is named, gives its name box the focus, keeps Tab in it, closes on Escape and gives the focus back', async () => {

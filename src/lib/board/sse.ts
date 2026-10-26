@@ -71,8 +71,8 @@ export interface SSECallbacks {
 	onUpdate: (event: BoardEvent | null) => void;
 	/** Called when the server pushes a 'celebrate' event (card completed). */
 	onCelebrate: (data: { cardTitle: string; userName: string; userEmoji: string; xpGained: number }) => void;
-	/** Called when the server pushes an 'xp-update' event. */
-	onXpUpdate: () => void;
+	/** Called when the server pushes an 'xp-update' event. The board page passes none since card 2466: it shows no XP. */
+	onXpUpdate?: () => void;
 }
 
 /**
@@ -109,7 +109,7 @@ export function connectSSE(boardId: number, callbacks: SSECallbacks): () => void
 		});
 
 		eventSource.addEventListener('xp-update', () => {
-			callbacks.onXpUpdate();
+			callbacks.onXpUpdate?.();
 		});
 	}
 

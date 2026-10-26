@@ -266,7 +266,10 @@ describe('the page and the components, as source', () => {
 			'src/lib/components/board/XpLeaderboard.svelte',
 			'src/lib/components/board/ColumnListView.svelte',
 			'src/lib/components/board/CardListRow.svelte',
-			'src/lib/components/board/BoardViewSwitch.svelte'
+			'src/lib/components/board/BoardViewSwitch.svelte',
+			// The header's menus and their theme items (card 2466).
+			'src/lib/components/HeaderMenu.svelte',
+			'src/lib/components/ThemeMenuItems.svelte'
 		]) {
 			expect(read(other), other).not.toContain('localStorage');
 		}

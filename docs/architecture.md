@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.53
+version: 1.54
 status: As-Built
-date: 2026-10-22
+date: 2026-10-26
 tags:
   - architecture
   - sveltekit
@@ -976,9 +976,9 @@ The page (2,002 lines, CRLF) keeps its script whole: every `$state`, every write
 
 | Component | What it draws |
 |---|---|
-| `BoardHeader.svelte` | The header: breadcrumbs or the back button, the emoji, the name and its edit box, the cost pill, the search, the assignee filter, Hide blocked, the view switch, Planning, All To Do, Add Column, the theme picker; snippets `xp` and `more` |
-| `XpLeaderboard.svelte` | The XP bars, from a sorted copy of the page's list (card 2304: it sorted the page's state in place while drawing, which Svelte refuses) |
-| `BoardMoreMenu.svelte` | The More menu and its items, one callback each |
+| `BoardHeader.svelte` | The header: breadcrumbs or the back button, the emoji, the name and its edit box, the cost pill, the search, the view switch, the Filter menu (the assignee filter, a group named Assignee, and Hide blocked as `HeaderMenu` items; its button counting those on, drawn as a field, `hdr-control` without `hdr-action`); snippet `more`. Card 2466 moved Planning, All To Do, Add Column and the theme picker into the More menu and took the XP bars (snippet `xp`) out |
+| `XpLeaderboard.svelte` | The XP bars, from a sorted copy of the page's list (card 2304: it sorted the page's state in place while drawing, which Svelte refuses). Not drawn on the board since card 2466 (the owner: XP on the dashboard only); drawn `stacked`, with each person's XP total, in the dashboard sidebar's XP Leaderboard panel |
+| `BoardMoreMenu.svelte` | The More menu, a `HeaderMenu`, in groups named by their headings: Go to (Planning and All To Do for this board), Panels, Board (Add Column, Burndown, Manage Categories, Bulk Select, Share Board, Delete Sub-board) and Theme (`ThemeMenuItems.svelte`, a list by name), one callback each. Its button's click reaches the page's window handler, which closes the page's other dropdowns and no longer this menu, which closes itself on a click outside |
 | `KanbanColumnHeader.svelte` | A column's head: colour bar, title and rename box, count, sort badge, Add Task, colour picker, column menu with its WIP-limit box. The rename and WIP-limit state stays in the page, one for the whole board |
 | `KanbanCardBody.svelte` | Everything inside a card on the board: cover strip, pin, New badge, selection tick, drag handle, category strip, title with its inline edit and priority dot, description, On Hold note, badges, labels, assignees |
 | `ActivityPanel.svelte`, `ArchivePanel.svelte` | The Activity Log's and Archived Cards' bodies |
@@ -1108,10 +1108,10 @@ The page keeps its props, `connectLiveRefresh(() => invalidateAll())`, `deleteBo
 
 | Component (`src/lib/components/dashboard/`) | What it holds |
 |---|---|
-| `DashboardHeader.svelte` | The header, the More menu with its window click handler, the typewriter; reads `inboxCount`, binds `showCreate` |
+| `DashboardHeader.svelte` | The header: All Tasks, Inbox, Planning and New Board in view, the Views menu (All To Do, Reports, Burndown, Graph; under 640 px, read with `matchMedia` as it mounts and on each change, All Tasks, Inbox and Planning too, their pills hidden by `.header-nav .wide-only` and the inbox count on Views by `.header-nav .narrow-only`; its panel from the button's left edge) and the More menu with the theme list, each a `HeaderMenu` (card 2466); the typewriter; reads `inboxCount`, binds `showCreate` |
 | `RequestToasts.svelte` | The new-request toasts and the inbox poll; binds the page's `inboxCount` |
-| `BoardsTable.svelte` | The boards table: favourites, groupings, the star and its request, sub-boards, the progress bars; binds `showCreate`, `expandedBoards`, `collapsedCategories`, `showCategoryManager`; a row's right-click calls the page's `openBoardContextMenu` |
-| `AnalyticsSidebar.svelte` | The analytics tiles and the due figures on `clock`; binds `showVelocityModal`, `showSpendModal`; its Active Tasks tile calls `openActiveTasksModal` |
+| `BoardsTable.svelte` | The boards table: the Display menu (the done-board and done-sub switches and Manage Categories, a dot on its button while a switch is off its default; card 2466), favourites, groupings, the star and its request, sub-boards, the progress bars; binds `showCreate`, `expandedBoards`, `collapsedCategories`, `showCategoryManager`; a row's right-click calls the page's `openBoardContextMenu` |
+| `AnalyticsSidebar.svelte` | The analytics tiles and the due figures on `clock`; the XP Leaderboard panel (card 2466: `XpLeaderboard` stacked, from the page's `xpEntries`, which the page reads from `GET /api/xp` as it mounts and on each live refresh, `xp-update` included); binds `showVelocityModal`, `showSpendModal`; its Active Tasks tile calls `openActiveTasksModal` |
 | `BoardContextMenu.svelte` | A board's context menu and its writes (file under a grouping or a new one, make a sub-board), and Delete Board through the page's `confirmDeleteBoard`; exports `openBoardContextMenu`; binds `expandedBoards` and `collapsedCategories` |
 | `CreateBoardModal.svelte` | New Board, always mounted; binds `showCreate` |
 | `ActiveTasksModal.svelte` | Active Tasks, its due words on `clock`; exports `openActiveTasksModal`, which reads its list as it opens |

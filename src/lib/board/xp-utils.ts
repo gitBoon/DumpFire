@@ -2,7 +2,8 @@
  * xp-utils.ts — XP levelling system helpers.
  *
  * Pure functions for calculating player levels and progress
- * from raw XP totals. Used by the board header's leaderboard display.
+ * from raw XP totals. Used by the XP leaderboard on the dashboard's
+ * sidebar (the board header drew it until card 2466).
  *
  * Levelling formula: 500 XP per level, starting at level 1.
  */

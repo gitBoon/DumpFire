@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.96
+version: 1.97
 status: As-Built
-date: 2026-10-22
+date: 2026-10-26
 tags:
   - docker
   - deployment
@@ -4761,6 +4761,59 @@ A superadmin made an administrator while a save is on its way, and a failure mai
 #### Going back to the previous image
 
 Nothing is done to the database. Under the older image any administrator can switch the failure mail off and change its addresses again.
+
+### The Dashboard and Board Header Bars Tidied into Menus; XP on the Dashboard, Not the Board
+
+**Card 2466.** No migration, no setting, no route, nothing in `/api/v1`; pages only. The plan is `docs/planning/card-header-tidy.md`, with every control's old place and new home in a table.
+
+- **The dashboard's bar** keeps **All Tasks**, **Inbox** (with its count), **Planning** and **+ New Board** in view. **All To Do**, **Reports**, **Burndown** and **Graph** are under a new **Views** menu; the theme is a "Theme" section at the foot of **More**. Under 640 px wide All Tasks, Inbox and Planning fold into Views too, and the inbox count rides on the Views button.
+- **Above Your Boards** the three buttons (**Manage Categories**, **Showing done boards**, **Show done subs**) are one **Display** menu, whose button carries a small dot while done boards are hidden or done sub-boards shown.
+- **A board's bar** keeps the way back, the emoji, the name, the cost and the search; on the right **Board | List**, a **Filter** menu (the assignee filter and **Hide blocked**; its button reads "Filter · 1" or "Filter · 2" with filters on) and **More**, which now also holds **Planning**, **All To Do**, **Add Column** and the theme.
+- **The XP bars are gone from the board's header and are on the dashboard** (the owner, 2026-10-26: "We can show XP on the dashboard otherwise naaah"): an **XP Leaderboard** panel in the dashboard's sidebar, after the Team Leaderboard, gives each person's level, XP and progress, highest first. The dashboard reads `GET /api/xp` as it opens and again on each live refresh (a card completed anywhere); the board page no longer reads it. XP is still earned and shown in the completion fireworks.
+- **Every menu works from the keyboard**: Enter, Space or ↓ opens it on its first item (↑ on its last), the arrows move, Escape closes it and puts the focus back on its button, Tab leaves it; a click outside closes it.
+
+**Owner to know.** Nothing is removed: the XP bars moved from every board's header to the dashboard's sidebar, where the XP total is now shown beside each level; nobody's XP changes. The theme picker's preview on hover is not in the menus: a theme is chosen by a click, from a list of the themes by name, which makes **More** 17 rows longer (it scrolls within the window).
+
+```mermaid
+flowchart LR
+    Bar["A header bar"] --> Shown["What is used every minute, in view"]
+    Bar --> Menu["Views / Display / Filter / More"]
+    Menu -->|"click, Enter, Space, ↓"| Open["Open, the focus on its first item"]
+    Open -->|"Escape"| Back["Closed, the focus on its button"]
+    Open -->|"an item"| Act["Closed, then the item's own action"]
+```
+
+#### Before the deploy
+
+Nothing to note.
+
+#### What changes at the first start
+
+- Nothing. No row from `DB`.
+
+#### After the deploy
+
+On production, as **O**, your administrator account, signed in, in a browser where no card window is open. Every check only clicks and reads: the filters, Display switches and theme are this browser's alone and are put back in the same check. Open the dashboard's network panel before check 476.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 473 | 2466 | Open the dashboard and read its header bar | In order: **All Tasks**, **Inbox** (its count where requests wait), **Planning**, **Views**, **More**, **+ New Board**; no theme button and no All To Do, Reports, Burndown or Graph pill; the inbox count on Inbox only, not on Views | A pill moved into Views is still in the bar, All Tasks, Inbox, Planning or New Board is missing, or the count shows twice |
+| 474 | 2466 | Click **Views**; read it; press Escape; click **Views** again and click **Reports**; press Back | Views lists **All To Do**, **Reports**, **Burndown**, **Graph**. Escape closes it with the focus ring on Views. Reports opens `/reports` | An item missing, or Escape leaves it open |
+| 475 | 2466 | Click in the page's empty space, press Tab until **Views** has the focus; press Enter, then ↓ twice, ↑ once, then Tab | Enter opens Views on **All To Do**; ↓↓ reaches **Burndown**, ↑ **Reports**; Tab closes Views and moves the focus to **More** | The focus stays on Views after Enter, the arrows do nothing, or Tab leaves the menu open |
+| 476 | 2466 | Click **More**; read it; click a theme other than yours in its Theme list; open **More** again and click your own theme | **Teams**, **Archived**, **Admin**, **Audit & Logs**, **Request**, **API Docs**, then a Theme list of 17, each icon with its name, yours ticked. The page changes theme, then changes back; no request in the network panel | An item missing, or a request sent |
+| 477 | 2466 | Above Your Boards, click **Display**; click **✅ Showing done boards**; read the button; click it again; then click **🏷️ Manage Categories** and press Escape | One **Display** button where three were. The menu stays open after the switch; boards with every card done leave the list and a dot shows on Display; the second click brings them back and the dot goes. Manage Categories opens its window; Escape closes it and the focus ring is on **Display**. Add nothing | The dot does not follow the switch, or the focus is lost after Escape |
+| 478 | 2466 | Open one of your boards and read its header bar | Left: back (or the path), emoji, name `#id`, the cost where recorded. Centre: the search. Right: **Board \| List**, **Filter** (drawn as a field, like the search), **More**. No XP bars; no Planning, All To Do, Add Column or theme button in the bar | XP bars shown, or a moved control still in the bar |
+| 479 | 2466 | Click **Filter**, click **👤 My Cards**; read the button; open **Filter** again and click **Hide blocked**; read the button; then click **All assignees**, open **Filter** and click **Hide blocked** again | My Cards closes the menu and shows only your cards; the button reads **Filter · 1**. Hide blocked leaves the menu open, hides cards still waiting on another, and the button reads **Filter · 2**. Afterwards the button reads **Filter** and every card is back | A wrong count, a filter that does not apply, or a card missing at the end |
+| 480 | 2466 | Click **More** on the board; read it; click **Add Column**, then **Cancel**; open **More** and click **Planning**; press Back | Go to: **Planning**, **All To Do**; Panels: **Activity Log**, **Statistics**, **Archived Cards**; Board: **Add Column**, **Burndown**, **Manage Categories**, **Bulk Select**, **Share Board** (where you manage it), **Delete Sub-board** (on a sub-board); the Theme list. Add Column opens its window and Cancel closes it. Planning opens `/plan?board=<id>` | An item missing, or Add Column does nothing |
+| 481 | 2466 | In the browser's device toolbar set a width of 375 px; reload the dashboard; click **Views**, then **More**; then open a board and click **Filter**, then **More** | The dashboard's bar is **Views** (with the inbox count where requests wait), **More** and **+ New Board**, and no All Tasks, Inbox or Planning pill; Views starts with **All Tasks**, **Inbox**, **Planning**. Every menu opens whole on the screen, none cut off at either side. Neither page scrolls sideways | A pill still in the bar, a menu cut off, or a sideways scroll |
+
+| 482 | 2466 | Set the device toolbar back to the desktop; on the dashboard, read the sidebar after the Team Leaderboard, with the network panel open, and reload | An **XP Leaderboard** panel: each person with XP, highest first, as `<emoji> <name> <n> XP Lv.<level>` over a progress bar, pointing at a row giving `<name>: <n> XP (Level <level>)`; one `GET /api/xp` answered `200` on the reload. Then open a board: no XP on it, and no request to `/api/xp` | No panel while someone has XP, figures differing from the panel's tooltip, or a request to `/api/xp` from the board |
+
+**Afterwards.** Nothing: no check wrote anything.
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image draws every control in the bars again, the theme picker in each bar, and the XP bars on every board and not on the dashboard.
 
 ## Changing the Schema
 

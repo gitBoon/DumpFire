@@ -1,7 +1,11 @@
 <!--
   DashboardHeader.svelte — The dashboard's header: the brand with its
-  typewriter strapline, the navigation pills with the More menu, the theme
-  picker and New Board (card 2281, slice C2: moved from src/routes/+page.svelte).
+  typewriter strapline, the navigation pills, the Views and More menus and
+  New Board (card 2281, slice C2: moved from src/routes/+page.svelte).
+
+  Card 2466 tidied the bar: All Tasks, Inbox, Planning and New Board stay in
+  view; All To Do, Reports, Burndown and Graph are in Views, and the theme
+  in More. Under 640 px All Tasks, Inbox and Planning fold into Views too.
 
   The inbox count is the page's, which the request toasts keep current and
   this only shows. New Board opens the page's create window (`showCreate`,
@@ -10,7 +14,8 @@
 <script lang="ts">
 	import { page } from '$app/stores';
 	import { onMount, onDestroy } from 'svelte';
-	import ThemePicker from '$lib/components/ThemePicker.svelte';
+	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
+	import ThemeMenuItems from '$lib/components/ThemeMenuItems.svelte';
 
 	let {
 		inboxCount,
@@ -23,6 +28,26 @@
 	} = $props();
 
 	let showMoreMenu = $state(false);
+
+	/**
+	 * Under this width the CSS hides the All Tasks, Inbox and Planning pills,
+	 * and Views lists them instead, and says so in its title: read as the
+	 * header mounts, again whenever the width crosses it, and as Views opens.
+	 * A browser without matchMedia (jsdom) is a wide one.
+	 */
+	const NARROW = '(max-width: 640px)';
+	let narrow = $state(false);
+	function readWidth() {
+		narrow = typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia(NARROW).matches;
+	}
+	const viewsTitle = $derived(narrow ? 'All Tasks, Inbox, Planning, All To Do, Reports, Burndown and Graph' : 'All To Do, Reports, Burndown and Graph');
+	onMount(() => {
+		readWidth();
+		if (typeof window.matchMedia !== 'function') return;
+		const query = window.matchMedia(NARROW);
+		query.addEventListener?.('change', readWidth);
+		return () => query.removeEventListener?.('change', readWidth);
+	});
 
 	let user = $derived($page.data.user);
 	let isAdmin = $derived(user?.role === 'admin' || user?.role === 'superadmin');
@@ -86,7 +111,25 @@
 	});
 </script>
 
-<svelte:window onclick={() => { showMoreMenu = false; }} />
+<!-- Each icon once: a pill and its narrow-screen item in Views draw the same one. -->
+{#snippet iconAll()}
+	<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+{/snippet}
+{#snippet iconInbox()}
+	<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+		<path d="M2 4l6 5 6-5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+		<rect x="1.5" y="3" width="13" height="10" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
+	</svg>
+{/snippet}
+{#snippet iconPlan()}
+	<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+		<circle cx="3.5" cy="8" r="1.8" stroke="currentColor" stroke-width="1.2"/>
+		<circle cx="8" cy="4" r="1.8" stroke="currentColor" stroke-width="1.2"/>
+		<circle cx="12.5" cy="8" r="1.8" stroke="currentColor" stroke-width="1.2"/>
+		<path d="M5.2 7.1L6.4 4.9M9.6 4.9l1.2 2.2" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/>
+		<path d="M5.3 8.9l5.4 2.6" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-dasharray="1.5 1.5"/>
+	</svg>
+{/snippet}
 
 <header class="dashboard-header">
 	<!--
@@ -105,77 +148,91 @@
 		</div>
 	</a>
 	<nav class="header-nav">
-		<a href="/all" class="nav-pill">
-			<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 4h12M2 8h12M2 12h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+		<!-- In view: what is used every minute. Under 640 px these three fold into Views. -->
+		<a href="/all" class="nav-pill wide-only">
+			{@render iconAll()}
 			All Tasks
 		</a>
-		<a href="/todo" class="nav-pill" id="todo-link">
-			<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-				<rect x="2" y="2.5" width="12" height="11" rx="2" stroke="currentColor" stroke-width="1.3"/>
-				<path d="M4.8 6.2l1.2 1.2 2-2.2M9.6 6.4h2M4.8 10.2h6.8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-			</svg>
-			All To Do
-		</a>
-		<a href="/inbox" class="nav-pill">
-			<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-				<path d="M2 4l6 5 6-5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-				<rect x="1.5" y="3" width="13" height="10" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
-			</svg>
+		<a href="/inbox" class="nav-pill wide-only">
+			{@render iconInbox()}
 			Inbox
 			{#if inboxCount > 0}
 				<span class="inbox-count-badge">{inboxCount}</span>
 			{/if}
 		</a>
-		<a href="/reports" class="nav-pill" id="reports-link">
-			<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-				<rect x="2" y="3" width="3" height="10" rx="0.5" stroke="currentColor" stroke-width="1.2"/>
-				<rect x="6.5" y="6" width="3" height="7" rx="0.5" stroke="currentColor" stroke-width="1.2"/>
-				<rect x="11" y="1" width="3" height="12" rx="0.5" stroke="currentColor" stroke-width="1.2"/>
-			</svg>
-			Reports
-		</a>
-		<a href="/plan" class="nav-pill" id="plan-link">
-			<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-				<circle cx="3.5" cy="8" r="1.8" stroke="currentColor" stroke-width="1.2"/>
-				<circle cx="8" cy="4" r="1.8" stroke="currentColor" stroke-width="1.2"/>
-				<circle cx="12.5" cy="8" r="1.8" stroke="currentColor" stroke-width="1.2"/>
-				<path d="M5.2 7.1L6.4 4.9M9.6 4.9l1.2 2.2" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/>
-				<path d="M5.3 8.9l5.4 2.6" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-dasharray="1.5 1.5"/>
-			</svg>
+		<a href="/plan" class="nav-pill wide-only" id="plan-link">
+			{@render iconPlan()}
 			Planning
 		</a>
-		<a href="/burndown" class="nav-pill" id="burndown-link">
-			<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-				<path d="M2 2v12h12" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-				<path d="M4.5 4.5l3 3 2-1.5 3.5 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
-			</svg>
-			Burndown
-		</a>
-		<a href="/graph" class="nav-pill" id="graph-link">
-			<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-				<circle cx="4" cy="4" r="2" stroke="currentColor" stroke-width="1.2"/>
-				<circle cx="12" cy="4" r="2" stroke="currentColor" stroke-width="1.2"/>
-				<circle cx="8" cy="12" r="2" stroke="currentColor" stroke-width="1.2"/>
-				<path d="M5.5 5.5L7 10.5M10.5 5.5L9 10.5M6 4h4" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
-			</svg>
-			Graph
-		</a>
-		<!-- More dropdown -->
-		<div class="nav-more-wrapper">
-			<button class="nav-pill nav-more-btn" onclick={(e) => { e.stopPropagation(); showMoreMenu = !showMoreMenu; }} id="nav-more-btn">
-				<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="4" cy="8" r="1.2" fill="currentColor"/><circle cx="8" cy="8" r="1.2" fill="currentColor"/><circle cx="12" cy="8" r="1.2" fill="currentColor"/></svg>
+		<!-- The other pages, one click deeper (card 2466). -->
+		<HeaderMenu label="Views" triggerClass="nav-pill" triggerId="nav-views-btn" triggerTitle={viewsTitle} align="start" onopen={readWidth}>
+			{#snippet trigger()}
+				<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+					<rect x="2" y="2" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.2"/>
+					<rect x="9" y="2" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.2"/>
+					<rect x="2" y="9" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.2"/>
+					<rect x="9" y="9" width="5" height="5" rx="1" stroke="currentColor" stroke-width="1.2"/>
+				</svg>
+				Views
+				<!-- The inbox count, where the Inbox pill is folded away. -->
+				{#if inboxCount > 0}
+					<span class="inbox-count-badge narrow-only" title="{inboxCount} in the inbox">{inboxCount}</span>
+				{/if}
+			{/snippet}
+			{#if narrow}
+				<a href="/all" class="hm-item" role="menuitem" tabindex="-1">{@render iconAll()} All Tasks</a>
+				<a href="/inbox" class="hm-item" role="menuitem" tabindex="-1">
+					{@render iconInbox()} Inbox
+					{#if inboxCount > 0}<span class="inbox-count-badge">{inboxCount}</span>{/if}
+				</a>
+				<a href="/plan" class="hm-item" role="menuitem" tabindex="-1">{@render iconPlan()} Planning</a>
+				<div class="hm-divider" role="separator"></div>
+			{/if}
+			<a href="/todo" class="hm-item" role="menuitem" tabindex="-1" id="todo-link">
+				<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+					<rect x="2" y="2.5" width="12" height="11" rx="2" stroke="currentColor" stroke-width="1.3"/>
+					<path d="M4.8 6.2l1.2 1.2 2-2.2M9.6 6.4h2M4.8 10.2h6.8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+				</svg>
+				All To Do
+			</a>
+			<a href="/reports" class="hm-item" role="menuitem" tabindex="-1" id="reports-link">
+				<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+					<rect x="2" y="3" width="3" height="10" rx="0.5" stroke="currentColor" stroke-width="1.2"/>
+					<rect x="6.5" y="6" width="3" height="7" rx="0.5" stroke="currentColor" stroke-width="1.2"/>
+					<rect x="11" y="1" width="3" height="12" rx="0.5" stroke="currentColor" stroke-width="1.2"/>
+				</svg>
+				Reports
+			</a>
+			<a href="/burndown" class="hm-item" role="menuitem" tabindex="-1" id="burndown-link">
+				<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+					<path d="M2 2v12h12" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+					<path d="M4.5 4.5l3 3 2-1.5 3.5 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+				</svg>
+				Burndown
+			</a>
+			<a href="/graph" class="hm-item" role="menuitem" tabindex="-1" id="graph-link">
+				<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+					<circle cx="4" cy="4" r="2" stroke="currentColor" stroke-width="1.2"/>
+					<circle cx="12" cy="4" r="2" stroke="currentColor" stroke-width="1.2"/>
+					<circle cx="8" cy="12" r="2" stroke="currentColor" stroke-width="1.2"/>
+					<path d="M5.5 5.5L7 10.5M10.5 5.5L9 10.5M6 4h4" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
+				</svg>
+				Graph
+			</a>
+		</HeaderMenu>
+		<HeaderMenu label="More" bind:open={showMoreMenu} triggerClass="nav-pill nav-more-btn" triggerId="nav-more-btn">
+			{#snippet trigger()}
+				<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="4" cy="8" r="1.2" fill="currentColor"/><circle cx="8" cy="8" r="1.2" fill="currentColor"/><circle cx="12" cy="8" r="1.2" fill="currentColor"/></svg>
 				More
-			</button>
-			{#if showMoreMenu}
-			<div class="nav-more-menu" onclick={(e) => e.stopPropagation()}>
-				<a href="/teams" class="nav-more-item" onclick={() => showMoreMenu = false}>
+			{/snippet}
+				<a href="/teams" class="hm-item" role="menuitem" tabindex="-1">
 					<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
 						<path d="M5.5 8a2.5 2.5 0 100-5 2.5 2.5 0 000 5zM1.5 14v-1a3.5 3.5 0 013.5-3.5h1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
 						<path d="M10.5 8a2.5 2.5 0 100-5 2.5 2.5 0 000 5zM14.5 14v-1a3.5 3.5 0 00-2.5-3.37" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
 					</svg>
 					Teams
 				</a>
-				<a href="/archived" class="nav-more-item" onclick={() => showMoreMenu = false}>
+				<a href="/archived" class="hm-item" role="menuitem" tabindex="-1">
 					<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
 						<path d="M2 4h12v2H2zM3 6v7a1 1 0 001 1h8a1 1 0 001-1V6" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
 						<path d="M6.5 9h3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
@@ -183,14 +240,14 @@
 					Archived
 				</a>
 				{#if isAdmin}
-				<a href="/admin" class="nav-more-item" onclick={() => showMoreMenu = false}>
+				<a href="/admin" class="hm-item" role="menuitem" tabindex="-1">
 					<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
 						<path d="M8 1l1.1 2.2 2.4.35-1.75 1.7.4 2.4L8 6.6l-2.15 1.05.4-2.4-1.75-1.7 2.4-.35L8 1z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
 						<path d="M3.5 9.5v3a1 1 0 001 1h7a1 1 0 001-1v-3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
 					</svg>
 					Admin
 				</a>
-				<a href="/audit" class="nav-more-item" onclick={() => showMoreMenu = false}>
+				<a href="/audit" class="hm-item" role="menuitem" tabindex="-1">
 					<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
 						<circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.2"/>
 						<path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
@@ -199,24 +256,23 @@
 					Audit &amp; Logs
 				</a>
 				{/if}
-				<a href="/request" class="nav-more-item" onclick={() => showMoreMenu = false}>
+				<a href="/request" class="hm-item" role="menuitem" tabindex="-1">
 					<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
 						<path d="M4 2h8a1 1 0 011 1v10a1 1 0 01-1 1H4a1 1 0 01-1-1V3a1 1 0 011-1z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
 						<path d="M6 5h4M6 8h4M6 11h2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
 					</svg>
 					Request
 				</a>
-				<a href="/docs" class="nav-more-item" onclick={() => showMoreMenu = false}>
+				<a href="/docs" class="hm-item" role="menuitem" tabindex="-1">
 					<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
 						<path d="M2.5 2h4l1.5 2H13.5a1 1 0 011 1v8a1 1 0 01-1 1h-11a1 1 0 01-1-1V3a1 1 0 011-1z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
 						<path d="M6 8h4M6 10.5h2.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
 					</svg>
 					API Docs
 				</a>
-			</div>
-			{/if}
-		</div>
-		<ThemePicker />
+				<div class="hm-divider" role="separator"></div>
+				<ThemeMenuItems />
+		</HeaderMenu>
 		<button class="btn-primary create-btn" onclick={() => (showCreate = true)} id="create-board-btn">
 			<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
 				<path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
@@ -236,7 +292,8 @@
 	.header-nav {
 		display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
 	}
-	.nav-pill {
+	/* :global, as the Views and More buttons are drawn by HeaderMenu with this class. */
+	.header-nav :global(.nav-pill) {
 		display: inline-flex; align-items: center; gap: 6px;
 		padding: 6px 14px; border-radius: var(--radius-full);
 		font-size: 0.78rem; font-weight: 600; font-family: var(--font-family);
@@ -245,49 +302,24 @@
 		cursor: pointer; transition: all var(--duration-fast) var(--ease-out);
 		white-space: nowrap; position: relative;
 	}
-	.nav-pill:hover {
+	.header-nav :global(.nav-pill:hover),
+	.header-nav :global(.nav-pill.hm-open) {
 		color: var(--text-primary); border-color: var(--accent-indigo);
 		background: rgba(99, 102, 241, 0.06); transform: translateY(-1px);
 		box-shadow: 0 2px 8px rgba(99, 102, 241, 0.1);
 	}
-	.nav-pill svg { flex-shrink: 0; opacity: 0.7; }
-	.nav-pill:hover svg { opacity: 1; }
-	.nav-more-wrapper { position: relative; }
-	.nav-more-menu {
-		position: absolute;
-		top: calc(100% + 6px);
-		right: 0;
-		min-width: 170px;
-		background: var(--bg-surface);
-		border: 1px solid var(--glass-border);
-		border-radius: var(--radius-md);
-		box-shadow: var(--shadow-lg);
-		padding: 4px;
-		z-index: 100;
-		animation: navMenuSlideDown 0.15s ease-out;
+	.header-nav :global(.nav-pill svg) { flex-shrink: 0; opacity: 0.7; }
+	.header-nav :global(.nav-pill:hover svg) { opacity: 1; }
+	/* The narrow-screen fold (card 2466): the pills give way to Views' items,
+	   and the inbox count rides on the Views button. Same width as NARROW.
+	   Written under .header-nav so each outweighs the rule it overrides
+	   (.header-nav .nav-pill and .inbox-count-badge set display too); the
+	   code review found the bare classes losing to both. */
+	.header-nav .narrow-only { display: none; }
+	@media (max-width: 640px) {
+		.header-nav .wide-only { display: none; }
+		.header-nav .narrow-only { display: inline-flex; }
 	}
-	@keyframes navMenuSlideDown {
-		from { opacity: 0; transform: translateY(-6px); }
-		to { opacity: 1; transform: translateY(0); }
-	}
-	.nav-more-item {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		padding: 8px 12px;
-		border-radius: var(--radius-sm);
-		font-size: 0.78rem;
-		font-weight: 500;
-		color: var(--text-secondary);
-		text-decoration: none;
-		transition: all var(--duration-fast) var(--ease-out);
-	}
-	.nav-more-item:hover {
-		color: var(--text-primary);
-		background: var(--glass-hover);
-	}
-	.nav-more-item svg { flex-shrink: 0; opacity: 0.65; }
-	.nav-more-item:hover svg { opacity: 1; }
 	.create-btn { border-radius: var(--radius-full); padding: 6px 16px; font-size: 0.78rem; }
 	.inbox-count-badge {
 		display: inline-flex; align-items: center; justify-content: center;
