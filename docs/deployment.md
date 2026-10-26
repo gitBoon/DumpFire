@@ -4827,7 +4827,7 @@ Nothing is done to the database. The older image draws every control in the bars
 - **A column holding cards can be converted** by the board's owner or an administrator, after a confirmation that counts its live and archived cards: one step, one activity entry ("Converted column to Options": `"<title>": N cards became options (column <id>)`, the id naming the column for the strip's aging, so that a converted card is an option from the conversion), no mail, no webhook. Going back is only possible once the column is empty. **Add Options Column** is offered to whoever can edit the board, not to a viewer; **Make this the Options column…** and **Stop being the Options column** are in the column menu of the board's owner or an administrator.
 - **Refused, 409**: an Options column on an ideas board, a second one, an Options column called To Do, On Hold or Complete (or renamed so), a WIP limit on it, any column placed at or left of it, the role given or taken away with a plain save while the column holds cards, and deleting it while it holds live options.
 - **In `/api/v1`**: `role` on `POST /api/v1/boards/{boardId}/columns` and `PUT /api/v1/columns/{columnId}`; the new `POST /api/v1/columns/{columnId}/convert`; a 409 on the column create and delete. The OpenAPI version and its change note follow with slice S6 of the milestone.
-- **Not yet** (later slices of the milestone): moving a card out of Options does not yet record a commitment entry, archiving an option is not yet a discard, and the delivery figures do not yet leave options out.
+- **Not yet** (later slices of the milestone): archiving an option is not yet a discard, and the delivery figures do not yet leave options out. Moving a card out of Options records its commitment from slice S2, [Part Two](#upstream-kanban-part-two-the-commitment-on-a-move) below.
 
 **Owner to know.** Boards look the same after the deploy: no Options column until someone adds one, and no figure changes. A new Options column is called "Ideas", and its header reads "Ideas (Options)". An Options column cannot be deleted while it holds options: archive or move them first (archiving one becomes a discard with a later slice).
 
@@ -4873,6 +4873,48 @@ On production, as **O**, your administrator account, signed in. Checks 483 to 49
 #### Going back to the previous image
 
 Nothing is done to the database: the older image keeps the new columns and their values (it runs no migration that drops them, and a restore copies every column both sides have). It does not keep them up to date: it draws an Options column as an ordinary column at the far left, cards it creates record no commitment, and cards it moves out of an Options column are not stamped, so going forward again the start-up repair commits them from their creation (its `Committed N card(s)` line), which lengthens their lead time.
+
+### Upstream Kanban, Part Two: the Commitment on a Move
+
+**Card 2460, milestone 22, slice S2.** No migration. Every route that moves a card (the drag, the board page's menu move and bulk move, All Tasks' move and `PUT /api/v1/cards/{cardId}/move`) goes through `moveCard`, which now records the commitment point:
+
+- **Out of an upstream column into a committed one** (out of the Options column, or off an ideas board), the card is committed: `committed_at` is the moment of the move and `committed_by` the mover. Its activity entry is **Committed card** (`card_committed`, `"<title>": Ideas → To Do (column <id>)`, the id naming the column it went into) in place of Moved card, and its webhook is the new event **`card.committed`**, in place of `card.moved` within a board. Straight into Complete it is Committed card then Completed card.
+- **Back into an upstream column**, the commitment is cleared: **Returned card to Options** (`card_returned_to_options`), sent as `card.moved`. From Complete it is Reopened card then Returned card to Options, and one `card.moved`, from the return.
+- **Refused, 409, nothing written**: an archived card across the commitment point, either way (`Card "<title>" is archived: restore it before moving it out of or back into Options`), and a committed card with a sub-board into an upstream column (`… has a sub-board, so it cannot go into the Options column: a card with sub-boards is committed work. Keep it in a committed column, or archive it if it is no longer wanted.`). A card already upstream with a sub-board may still move within upstream.
+- **Every move on a page says so**: a toast `Committed "<title>"` or `Returned "<title>" to Options` after a drag, an On Hold confirmation, the card menu's **Move to**, a bulk **Move** and All Tasks' **Move** window (the last three in place of "Moved to …"), read from the answer: `PUT /api/cards/reorder` now also lists the ids it committed and returned, and `PUT /api/cards/{id}` adds `committed: [id]` or `returnedToOptions: [id]` for a move that crossed. Each **Move to** list marks the Options column "(Options)".
+- **`card.committed` is a new webhook event.** A webhook whose `events` list is empty receives it from this deploy; one that lists `card.moved` alone does not receive commitments, as it does not receive completions.
+
+**Owner to know.** Moving an idea out of the Options column now commits it, and moving it back makes it an idea again. Receivers of webhooks that mirror columns should add `card.committed`.
+
+**Do not deploy this slice without slice S4** (the S2 review's C9). A board's cycle time (`src/routes/api/boards/[id]/metrics/+server.ts`) starts at a card's first `card_moved` entry, and a commitment no longer writes one: it writes `card_committed`. So a card committed out of the Options column straight into a working column (In Progress, say) has no cycle time at all and is left out of the board's average, and one committed into To Do has its cycle time from its next move, until S4 reads the start of work from `card_committed` too (ruling a). Deployed alone, S2 would change a figure the board shows; deployed with S4, the measures follow the commitment point as the plan intends.
+
+```mermaid
+flowchart LR
+    Opt["Ideas (Options)<br/>committed_at NULL"] -->|"any move route:<br/>Committed card, card.committed"| Todo["To Do<br/>committed_at = now, committed_by = mover"]
+    Todo -->|"moved back:<br/>Returned card to Options, card.moved"| Opt
+    Arch["archived card across,<br/>or a committed card with sub-boards into Options"] -->|"409"| Refused["nothing written"]
+```
+
+#### After the deploy
+
+On production, as **O**, signed in, with an API key of O's for check 501 (`$KEY`). Checks 495 to 502 write, on a board made for them and deleted at the end. Open the board's network panel before check 496.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 495 | 2460 | On the dashboard click **+ New Board**, name it `Commit check`, and open it. **More → Add Options Column** and add it; open the strip and add a card `Idea 1` in Ideas; add a card `Work` in **To Do** | Ideas (Options) at the far left holding `Idea 1`; `Work` in To Do | No Options column, or a card lands elsewhere |
+| 496 | 2460 | Drag `Idea 1` from Ideas to **To Do**; read the request and the answer of `PUT /api/cards/reorder` in the network panel, and note To Do's id: the `columnId` of `Idea 1`'s entry in the request's `updates`; open **More → Activity Log** | The answer is `{"success":true,"committed":[<Idea 1's id>],"returnedToOptions":[]}`; a toast `Committed "Idea 1"`; one new entry, **Committed card**, `"Idea 1": Ideas → To Do (column <To Do's id>)`, and no **Moved card** for it | No toast, a Moved card entry, or the id missing from `committed` |
+| 497 | 2460 | Drag `Work` from To Do into the open Ideas column | The answer's `returnedToOptions` holds Work's id; a toast `Returned "Work" to Options`; one entry, **Returned card to Options**, `"Work": To Do → Ideas` | A Moved card entry, or no toast |
+| 498 | 2460 | Drag `Idea 1` from To Do to **In Progress** | The answer's two lists are empty; no Committed or Returned toast; the entry is **Moved card**, `"Idea 1": To Do → In Progress` | A Committed card entry for this move |
+| 499 | 2460 | Drag `Work` from Ideas straight to **Complete** | The completion's sound and prompt, and a toast `Committed "Work"`; two entries, listed newest first: **Completed card**, `"Work": Ideas → Complete`, then **Committed card**, `"Work": Ideas → Complete (column <id>)` (written in the other order, in the same second; the panel orders by time alone) | One entry only, or Moved card |
+| 500 | 2460 | Drag `Work` from Complete back into Ideas | A toast `Returned "Work" to Options`; two entries, listed newest first: **Returned card to Options**, then **Reopened card**, each `"Work": Complete → Ideas` | One entry only, or Work still shown as complete |
+| 501 | 2460 | Archive `Work` from its card menu. Then `curl -s -X PUT -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" -d '{"columnId": <To Do's id>}' https://<host>/api/v1/cards/<Work's id>/move`, with To Do's id as noted in check 496 | `409` `{"message":"Card \"Work\" is archived: restore it before moving it out of or back into Options"}`; Work stays archived in Ideas, and the Activity Log has no entry after **Archived card** | The move is saved, or the answer is 200 |
+| 502 | 2460 | On the dashboard right-click `Commit check`, click **Delete Board** and confirm | The board is gone | It cannot be deleted |
+
+**Afterwards.** Nothing: check 502 deleted everything the checks made, and the API key is O's own.
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image moves cards out of and into an Options column as plain moves: it writes **Moved card**, sends `card.moved`, and neither stamps nor clears the commitment. Going forward again, the start-up repair commits a card it moved out of Options from the card's creation (`Committed N card(s)`), and clears the commitment of one it moved into Options (`Cleared the commitment on N card(s) in an Options column or on an ideas board`). The older image has no `card.committed`: a webhook that lists it receives nothing for those moves meanwhile.
 
 ## Changing the Schema
 

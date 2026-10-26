@@ -11,8 +11,11 @@
  */
 
 import * as api from '$lib/api';
+import { toasts } from '$lib/stores/toast';
+import type { CardType } from '$lib/types';
 import type { BoardState, WriteResult, WriteWords } from './board-state.svelte';
 import { moveCards, removeCard } from './board-patches';
+import { commitmentToasts } from './dnd-handlers';
 
 /** What the bulk changes need of the board state: its writes. */
 export type BoardWriter = Pick<BoardState, 'write' | 'writeCard'>;
@@ -45,7 +48,8 @@ const answersOnly: BoardWriter = {
  * server's words, or that there was no answer. The move is all or nothing,
  * and one of more than 100 cards to another column is refused whole (card
  * 2209), so a refusal puts every card back. The answer used to be thrown
- * away, so a refusal went unseen.
+ * away, so a refusal went unseen. Cards the move took across the commitment
+ * point are said in toasts, from the answer (milestone 22).
  */
 export async function bulkMove(
 	selectedCardIds: Set<number>,
@@ -61,11 +65,25 @@ export async function bulkMove(
 	for (const cardId of selectedCardIds) {
 		updates.push({ id: cardId, columnId: targetColumnId, position: pos++ });
 	}
-	const written = await boardState.write((columns) => moveCards(columns, updates), () => api.reorderCards(updates, boardId, userName, userEmoji), {
-		refused: 'The cards were not moved.',
-		noAnswer: 'No answer from the server. The cards may not have been moved.'
-	});
-	return written.ok ? null : written.failure;
+	// The cards as the board shows them, for their titles in what is said of
+	// the commitment point. None given no board state: then they are counted.
+	let moving: CardType[] = [];
+	const written = await boardState.write(
+		(columns) => {
+			moving = columns.flatMap((column) => column.cards).filter((card) => selectedCardIds.has(card.id));
+			return moveCards(columns, updates);
+		},
+		() => api.reorderCards(updates, boardId, userName, userEmoji),
+		{
+			refused: 'The cards were not moved.',
+			noAnswer: 'No answer from the server. The cards may not have been moved.'
+		}
+	);
+	if (!written.ok) return written.failure;
+	// Cards taken across the commitment point are said to have been, from the
+	// answer, as the drag says it (milestone 22, the S2 review's C7).
+	for (const message of commitmentToasts(written.answer, moving)) toasts.add(message);
+	return null;
 }
 
 /** Card `cardId`'s archive, sent once `before`, the card before it, is settled. */

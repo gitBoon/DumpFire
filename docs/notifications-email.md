@@ -1,9 +1,9 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.44
+version: 1.45
 status: As-Built
-date: 2026-10-22
+date: 2026-10-26
 tags:
   - notifications
   - email
@@ -1899,8 +1899,9 @@ sequenceDiagram
 |-------|---------------------------------|
 | `card.created` | `card_created`: by every way of creating a card, accepting a task request among them (card 2108) |
 | `card.updated` | `card_updated` |
-| `card.moved` | `card_moved`; `card_reopened`, a card moved out of a Complete column (card 2278); `card_moved_away` and `card_moved_in`, a card moved to another board, each to its own board (card 2278) |
+| `card.moved` | `card_moved`; `card_reopened`, a card moved out of a Complete column (card 2278); `card_moved_away` and `card_moved_in`, a card moved to another board, each to its own board (card 2278); `card_returned_to_options`, a committed card moved back into an upstream column (milestone 22, card 2460) |
 | `card.completed` | `card_completed`: a card moved into a Complete column, **instead of** `card.moved`, or created in one (card 2134) |
+| `card.committed` | `card_committed`: a card moved out of an upstream column (a board's Options column, or any column of an ideas board) into a committed one, **instead of** `card.moved` (milestone 22, card 2460) |
 | `card.deleted` | `card_deleted`: a card deleted for good |
 | `comment.added` | `comment_added` |
 | `milestone.card_added` | `milestone_card_added`: a card put in a goal, by any route or page (card 2343, since 2026-10-21) |
@@ -1908,7 +1909,9 @@ sequenceDiagram
 
 **A webhook whose `events` list is empty is sent every event, so one made before 2026-10-21
 receives the two `milestone.*` events from that deploy on** (card 2343): list the events wanted
-to receive neither.
+to receive neither. **The same holds for `card.committed`** (milestone 22): a webhook with an
+empty list receives it from the deploy that adds it, and one that lists only `card.moved` does
+not, as it does not receive `card.completed`.
 
 No other entry sends one. A comment edited (`comment_edited`) or deleted (`comment_deleted`,
 recorded since card 2283) sends no webhook: an empty `events` list means every event, so a new
@@ -2000,6 +2003,34 @@ The same event is sent whether the action was made in the web UI or through the 
 | … into the other board's Complete column | as above, and the board it joined | as above, then `card.completed`, `card_completed` |
 | … out of Complete into the other board's open column | as above, and the board it joined | as above, then `card.moved`, `card_reopened` |
 | A card moved within its column (its position only), by a drag, the v1 move or the web application's card update | — | nothing (the card update sent `card.updated` until 2026-10-14, the 1.2.0 release, card 2288) |
+| A card moved out of the Options column into a committed column (milestone 22) | its board | `card.committed`, `card_committed`, instead of `card.moved` |
+| … straight into a Complete column | its board | `card.committed`, `card_committed`, then `card.completed`, `card_completed` |
+| A committed card moved back into the Options column | its board | `card.moved`, `card_returned_to_options` |
+| … from a Complete column | its board | `card.moved`, `card_returned_to_options`, and nothing for its `card_reopened` entry (ruling q) |
+| A card moved from an ideas board, or another board's Options column, into a committed column of another board | the board it left; the board it joined | `card.moved`, `card_moved_away`; `card.moved`, `card_moved_in`, then `card.committed`, `card_committed` |
+| A committed card moved onto an ideas board, or into another board's Options column | the board it left; the board it joined | `card.moved`, `card_moved_away`; `card.moved`, `card_moved_in`, then `card.moved`, `card_returned_to_options` |
+| A card moved within upstream (between ideas boards, or from one into a delivery board's Options column), or between committed columns | as for any other move | nothing more: the commitment is left as it was |
+
+**Across the commitment point** (milestone 22, card 2460). `moveCard` in
+`src/lib/server/card-moves.ts` decides, for every route that moves a card: the drag, the board
+page's menu move and bulk move (`PUT /api/cards/reorder`), All Tasks' move (`PUT
+/api/cards/{id}` with a `columnId`) and `PUT /api/v1/cards/{cardId}/move`. Its entry,
+`"<title>": <from> → <to>`, names the column the card went into; a commitment's ends
+` (column <id>)` too, the id of that column. A move from Complete back into
+the Options column writes `card_reopened` and then `card_returned_to_options`, and passes
+`webhook: false` to `logActivity` for the first, so the move sends one `card.moved`, from the
+return. A move to another board that also returns the card to options sends the board it joined
+two `card.moved`, `card_moved_in` then `card_returned_to_options`, as a reopening to another
+board does.
+
+```mermaid
+flowchart TD
+    M["moveCard: a card changes column"] --> K{"Which side of the<br/>commitment point?"}
+    K -->|"archived and crossing, or<br/>sub-boards and committed into upstream"| X["409: nothing written, nothing sent"]
+    K -->|"upstream → committed"| C["card_committed → card.committed<br/>(then card_completed → card.completed into Complete)"]
+    K -->|"committed → upstream"| R["card_returned_to_options → card.moved<br/>(card_reopened before it from Complete, no webhook)"]
+    K -->|"same side"| S["as any other move: card_moved,<br/>or the completion, reopening or board pair"]
+```
 
 A delivery for a move to another board carries that board's own entry: `"<title>" moved to another board (<from> → <to>)` on the board it left, `"<title>" moved from another board (<from> → <to>)` on the board it joined. The one on the board it left ends ` and out of milestone "<name>"` when the move took the card out of one of that board's milestones, or ` and out of a milestone of another board` for a third board's (card 2155). Neither names the other board (card 2181); the two columns are the route, one of them the other board's, as in each board's Activity. So a receiver is sent nothing a reader of its board cannot read there. Until 2026-10-19 a reopening and a move to another board sent nothing, and a receiver of `card.moved` missed them.
 
@@ -2025,6 +2056,7 @@ What is not sent:
 - **A card put in a milestone or taken out sends no `card.updated`, on every route** (card 2289). `PUT /api/v1/cards/{cardId}` with a `milestoneId` wrote `api:card_updated` "Updated fields: milestoneId" and so sent `card.updated`, until 2026-10-14 (the 1.2.0 release); it now writes `api:milestone_card_added` or `api:milestone_card_removed`, as the milestone routes (single and bulk) and the web application's picker and plan page do. Until 2026-10-21 neither had an event, so nothing was sent; each now sends `milestone.card_added` or `milestone.card_removed` (card 2343). So when `milestoneId` is the only change, or comes with only a restore (`archivedAt: null`, whose `api:card_restored` has no event), that `milestone.*` event alone is sent. Sent with other fields, it also sends one `card.updated`, whose `detail` no longer names `milestoneId`. A milestone changed, closed, reopened or deleted sends nothing of its own (a delete's released cards each send `milestone.card_removed`, card 2381).
 - **A move out of an On Hold column sends the move's events alone** (card 2208). The move clears the card's on-hold note itself; the board page's drag out of On Hold sent a second request to clear it, which delivered a `card.updated` beside the `card.moved`, until 2026-10-15.
 - **A move into a Complete column sends no `card.moved`.** It sends `card.completed` instead, its entry being a completion (a move into another board's Complete column also sends each board its `card.moved`); a receiver that wants every column change asks for both events. A reopening is sent as `card.moved` (card 2278).
+- **A move out of the Options column sends no `card.moved` either** (milestone 22). It sends `card.committed`, its entry being a commitment; a receiver that wants every column change asks for `card.moved`, `card.completed` and `card.committed`. A return to options is sent as `card.moved`.
 - **No delivery names another board.** A move to another board is sent to each board as that board's own entry, which names no board (card 2181), and with the board's own `boardId`; the other board's name, and its id, are in neither. A webhook whose board a card left is not told where it went beyond the column in the route, and the joined board's webhooks are not told where it came from beyond its column.
 - **A `card.deleted` carries the id of the card that went**, although the activity entry it comes from is stored with no card id, the card being gone.
 - **Deleting a column sends no event for the column, and no `card.deleted` for its cards.** Neither does purging archived cards, clearing a board's cards or deleting a board. A board's webhooks are deleted with the board. Since 2026-10-21 a card among them that was in a goal sends `milestone.card_removed`, `… (card deleted)`, while its board stays, and a card elsewhere released from a deleted board's goal sends one to its own board (card 2381, above). Open pages are told of each by a live update: see [Event Types](#event-types).

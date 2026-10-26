@@ -3473,7 +3473,8 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Column not found' } } }
 					},
 					'409': {
-						description: 'Card has incomplete subtasks or sub-boards and cannot be moved to Complete, as `Card has 3 incomplete subtasks that must be completed first` (an archived card on a sub-board is not counted), or the target column is on a board beneath the card, one of its own sub-boards at any depth: `Card "<title>" cannot go onto "<board>", which hangs beneath it`, or onto a board where its sub-boards would be more than 20 levels deep: `Card "<title>" cannot go onto "<board>": its sub-boards would then be nested more than 20 levels deep.` Nothing was moved.',
+						description: 'Card has incomplete subtasks or sub-boards and cannot be moved to Complete, as `Card has 3 incomplete subtasks that must be completed first` (an archived card on a sub-board is not counted), or the target column is on a board beneath the card, one of its own sub-boards at any depth: `Card "<title>" cannot go onto "<board>", which hangs beneath it`, or onto a board where its sub-boards would be more than 20 levels deep: `Card "<title>" cannot go onto "<board>": its sub-boards would then be nested more than 20 levels deep.` ' +
+							'Or the move would take an archived card across the commitment point, out of an upstream column (a board\'s Options column, or any column of an ideas board) into a committed one or back: `Card "<title>" is archived: restore it before moving it out of or back into Options`; or a committed card with a sub-board would go into an upstream column: `Card "<title>" has a sub-board, so it cannot go into the Options column: a card with sub-boards is committed work. Keep it in a committed column, or archive it if it is no longer wanted.` (`onto an ideas board` in place of `into the Options column`). A card already upstream with a sub-board may still move within upstream. Nothing was moved.',
 						content: {
 							'application/json': {
 								schema: { $ref: '#/components/schemas/Error' },
@@ -5347,7 +5348,7 @@ const spec = {
 								properties: {
 									url: { type: 'string', format: 'uri', maxLength: 2048, description: 'Webhook delivery URL: an http or https address' },
 									secret: { type: 'string', maxLength: 256, description: 'Shared secret for HMAC verification' },
-									events: { type: 'array', items: { type: 'string', enum: ['card.created', 'card.updated', 'card.moved', 'card.completed', 'card.deleted', 'comment.added', 'milestone.card_added', 'milestone.card_removed'] }, description: 'Event types to subscribe to, each trimmed of spaces at either end. An empty list, or none, is every event, the two milestone events among them (item 102). Goal membership sends no card.updated on any route: it sends milestone.card_added or milestone.card_removed.' }
+									events: { type: 'array', items: { type: 'string', enum: ['card.created', 'card.updated', 'card.moved', 'card.completed', 'card.deleted', 'comment.added', 'milestone.card_added', 'milestone.card_removed', 'card.committed'] }, description: 'Event types to subscribe to, each trimmed of spaces at either end. An empty list, or none, is every event, the two milestone events among them (item 102). Goal membership sends no card.updated on any route: it sends milestone.card_added or milestone.card_removed.' }
 								}
 							},
 							example: { url: 'https://example.com/webhook', secret: 'my-secret', events: ['card.created', 'card.moved'] }
@@ -5436,7 +5437,7 @@ const spec = {
 								properties: {
 									url: { type: 'string', format: 'uri', maxLength: 2048, description: 'An http or https address' },
 									secret: { type: 'string', maxLength: 256 },
-									events: { type: 'array', items: { type: 'string', enum: ['card.created', 'card.updated', 'card.moved', 'card.completed', 'card.deleted', 'comment.added', 'milestone.card_added', 'milestone.card_removed'] }, description: 'Each trimmed of spaces at either end. An empty list is every event, the two milestone events among them (item 102). Goal membership sends no card.updated on any route: it sends milestone.card_added or milestone.card_removed.' },
+									events: { type: 'array', items: { type: 'string', enum: ['card.created', 'card.updated', 'card.moved', 'card.completed', 'card.deleted', 'comment.added', 'milestone.card_added', 'milestone.card_removed', 'card.committed'] }, description: 'Each trimmed of spaces at either end. An empty list is every event, the two milestone events among them (item 102). Goal membership sends no card.updated on any route: it sends milestone.card_added or milestone.card_removed.' },
 									active: { type: 'boolean' }
 								}
 							},

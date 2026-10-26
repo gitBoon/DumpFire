@@ -1495,6 +1495,21 @@ flowchart TD
     Commit --> Event["update (column) to the board"]
 ```
 
+The commitment on a move (slice S2, card 2460) is decided in `moveCard` (`src/lib/server/card-moves.ts`), which every route that moves a card reaches through `applyCardMove`: the drag, the board page's menu move and bulk move (`PUT /api/cards/reorder`, `moveCards`), All Tasks' move (`PUT /api/cards/:id` with a `columnId`, `updateCard` with `allowMove`) and `PUT /api/v1/cards/:cardId/move`. v1's card update takes no move, and nothing else writes a card's `column_id`. Once the column is known to change, both boards' kinds are read in one query (`boardKinds` in `src/lib/server/upstream.ts`) and `isUpstreamColumn` asked of each end: upstream to committed commits the card (`committed_at` now, `committed_by` the mover) and writes `card_committed` in place of `card_moved`; committed to upstream clears both and writes `card_returned_to_options`; a move within one side leaves them. The stamp goes in the move's one `UPDATE` of the card, beside a completion's. Two refusals come after the loop and depth checks and before the completion check, each 409 with nothing written: an archived card across the commitment point (ruling n), and a committed card with a sub-board going back into an upstream column (ruling o; a card already upstream with one may still move within upstream, the S2 review's C1). The card's sub-boards are read once, when the first rule that needs them asks: the loop and depth checks, or this one. The entries are written in the order reopening, commitment or return, completion; the commitment's detail ends ` (column <id>)` (`conversionSuffix`), naming the column it went into by its id for the cycle time; a reopening that comes with a return passes `webhook: false` to `logActivity`, so the move sends one `card.moved` (ruling q). `CardMove` carries `committed` and `returnedToOptions`; the reorder answers the ids of the cards each named, and `PUT /api/cards/:id` adds `committed: [id]` or `returnedToOptions: [id]` for a move that crossed. `commitmentToasts` in `src/lib/board/dnd-handlers.ts` turns either answer into the toast, for every move made on a page: the drag, the On Hold confirmation (`confirmOnHold`), the card menu's Move to, the bulk move (`bulkMove`) and All Tasks' Move window, the last three in place of their "Moved to" where a card crossed. `runBackfills`' `committedFilled` and `upstreamCleared` stay 0 after every route, which `tests/commitment.test.ts` asserts.
+
+```mermaid
+flowchart TD
+    Route["reorder / card update with columnId / v1 move"] --> Apply["applyCardMove → moveCard"]
+    Apply --> Loop["cross-board: loop and depth refusals"]
+    Loop --> Kinds["boardKinds(from, to): isUpstreamColumn each end"]
+    Kinds --> N{"archived and crossing?"}
+    N -->|"yes"| R409["409, nothing written"]
+    N -->|"no"| O{"sub-boards and committed into upstream?"}
+    O -->|"yes"| R409
+    O -->|"no"| Done["completion blocker, then one UPDATE:<br/>committed_at / committed_by set or cleared"]
+    Done --> Entries["card_reopened (no webhook on a return)<br/>card_committed / card_returned_to_options<br/>card_completed, or card_moved"]
+```
+
 ### Sub-boards and the board tree
 
 A board hangs under a card by `boards.parent_card_id`, and the card is on a board, so the boards make a tree: the dashboard lists the top-level boards, and the board page's breadcrumbs walk up from a sub-board. Nothing in the schema stops the tree going round. `src/lib/server/sub-boards.ts` answers the two questions about it that linking an existing board asks (card 2139):

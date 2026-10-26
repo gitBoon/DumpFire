@@ -87,6 +87,8 @@ const TEST_FILES = [
 	'check-at-the-write.test.ts',
 	'colours.test.ts',
 	'columns.test.ts',
+	// Milestone 22, slice S2: a move across the commitment point, by every route.
+	'commitment.test.ts',
 	'confirm-modal.svelte.test.ts',
 	'content-security-policy.test.ts',
 	'dashboard.test.ts',

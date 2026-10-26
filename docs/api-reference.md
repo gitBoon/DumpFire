@@ -1,9 +1,9 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.96
+version: 1.97
 status: As-Built
-date: 2026-10-22
+date: 2026-10-26
 tags:
   - api
   - rest
@@ -3066,6 +3066,22 @@ is needed on both). Goes through the same service as a drag in the web UI:
   nested more than 20 levels deep.` (card 2172). Asked after the loop check. A card with no
   sub-board is never refused, and a move that lifts a tree already too deep, or leaves it
   no deeper, is allowed.
+- across the commitment point (milestone 22, card 2460): out of an upstream column (a board's
+  Options column, or any column of an ideas board) into a committed one, the card's
+  `committedAt` becomes now and `committedBy` the key's user, and `api:card_committed` is
+  logged in place of `api:card_moved`, `"<title>": <from> → <to> (column <id>)`, the id naming
+  the column it went into, which sends `card.committed`; straight into Complete,
+  `api:card_completed` follows it. A committed card moved into an upstream column has both
+  cleared, with `api:card_returned_to_options` (`card.moved`); from Complete,
+  `api:card_reopened` comes first and sends nothing. A move within upstream, or between
+  committed columns on one board or two, leaves both as they were. Refused with 409, nothing
+  moved, after the loop and depth checks: an archived card across the commitment point,
+  either way, `Card "<title>" is archived: restore it before moving it out of or back into
+  Options`; and a committed card with a sub-board into an upstream column, `Card "<title>" has
+  a sub-board, so it cannot go into the Options column: a card with sub-boards is committed
+  work. Keep it in a committed column, or archive it if it is no longer wanted.` (`onto an
+  ideas board` in place of `into the Options column`). A card already upstream with a
+  sub-board may still move within upstream.
 - mail: a move that completes the card mails its assignees who can open the board it is now on,
   `Card moved: <title> → <column>`, each as their own "Card moved" setting says, as every
   move in the web UI does. A move that does not complete the card mails nobody. Whoever
@@ -3840,9 +3856,9 @@ learns that one has gone only by reading
 
 A webhook sends each event of its board that it asks for (`card.created`, `card.updated`,
 `card.moved`, `card.completed`, `card.deleted`, `comment.added`, `milestone.card_added`,
-`milestone.card_removed`) to its `url` as a `POST`, after the change is committed, signed with
-its `secret`. An empty `events` list, or none, is every event. What is sent:
-[Notifications & Email](notifications-email.md#webhooks).
+`milestone.card_removed`, `card.committed`) to its `url` as a `POST`, after the change is
+committed, signed with its `secret`. An empty `events` list, or none, is every event. What is
+sent: [Notifications & Email](notifications-email.md#webhooks).
 
 `milestone.card_added` and `milestone.card_removed` (card 2343, since 2026-10-21) are a card
 put in a milestone or taken out, by every route and page that does it (the single and bulk
@@ -3887,6 +3903,19 @@ board, sent to the board it left (`card_moved_away`) and to the board it joined
 move into a Complete column sends `card.completed` instead; one into another board's Complete
 column sends the joined board both, the arrival and the completion. Ask for both events to hear
 every column change.
+
+`card.committed` (milestone 22, card 2460) is a card moved across the commitment point: out of
+an upstream column, a board's Options column or any column of an ideas board, into a committed
+one, by any route that moves a card. Within a board it is sent **instead of** `card.moved`; a
+move to another board also sends each board its `card.moved`, the departure and the arrival. Its
+`data.action` is `card_committed` and its `data.detail` the entry's words, `"<title>": <from> →
+<to> (column <id>)`, the id naming the column it went into; straight into a Complete column it
+is followed by `card.completed`. A committed card moved back into an upstream column sends
+`card.moved` with `data.action` `card_returned_to_options`; within a board that is the move's
+only delivery from Complete (the `card_reopened` entry written before it sends none), and a move
+from another board sends the joined board two `card.moved`, the arrival and the return. So to hear
+every column change, ask for `card.moved`, `card.completed` and `card.committed`. **A webhook
+with an empty `events` list receives `card.committed` from the deploy that adds it.**
 
 | Route | Does | Needs | Answers |
 |-------|------|-------|---------|

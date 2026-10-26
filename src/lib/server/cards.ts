@@ -321,14 +321,17 @@ export type UpdateCardOptions = {
  * `card_updated` (card 2289): a milestone alone sends no `card.updated`.
  *
  * The answer is the card, and the milestone of the board it left that a
- * move to another board took it out of (card 2155), null otherwise.
+ * move to another board took it out of (card 2155), null otherwise; and
+ * whether the move took it across the commitment point, out of upstream
+ * (`committed`) or back into it (`returnedToOptions`), for All Tasks to say
+ * so (milestone 22, the S2 review's C7).
  */
 export function updateCard(
 	caller: SessionUser | null,
 	at: { cardId: number },
 	body: RequestBody,
 	opts: ServiceOptions & UpdateCardOptions
-): { card: Card; leftMilestone: { id: number; name: string } | null } {
+): { card: Card; leftMilestone: { id: number; name: string } | null; committed: boolean; returnedToOptions: boolean } {
 	inWrite();
 	const user = requireUser(caller);
 	const { cardId } = at;
@@ -494,7 +497,7 @@ export function updateCard(
 	}
 	if (!opts.tellBeforeEntry) tell();
 
-	return { card: row, leftMilestone: leftMilestoneOf(move) };
+	return { card: row, leftMilestone: leftMilestoneOf(move), committed: move?.committed === true, returnedToOptions: move?.returnedToOptions === true };
 }
 
 /**
@@ -555,15 +558,18 @@ export function moveCard(caller: SessionUser | null, at: { cardId: number }, bod
  * Every card in the drop moves or none does: one that cannot be completed,
  * open subtasks say, rolls the whole drop back, so the board never shows half
  * of what was dragged. An empty list moves nothing and is answered as done.
+ *
+ * Answers the moves made, one per entry, for the route to say which cards
+ * crossed the commitment point (milestone 22).
  */
-export function moveCards(caller: SessionUser | null, at: Record<string, never>, body: RequestBody, opts: ServiceOptions): void {
+export function moveCards(caller: SessionUser | null, at: Record<string, never>, body: RequestBody, opts: ServiceOptions): CardMove[] {
 	inWrite();
 	const user = requireUser(caller);
 	const updates = readObjects(body, 'updates', {
 		required: true,
 		says: { missing: 'updates must be an array', type: 'updates must be an array' }
 	});
-	if (updates.length === 0) return;
+	if (updates.length === 0) return [];
 	if (updates.length > MAX_REORDER_ENTRIES) throw error(400, reorderTooLarge(updates.length));
 	const cardIds = updates.map((update, i) => readId(update, 'id', { required: true, says: `updates[${i}].id must be an id` }));
 	const named = new Set<number>();
@@ -617,6 +623,7 @@ export function moveCards(caller: SessionUser | null, at: Record<string, never>,
 		moved({ cardId: drop.cardId, toColumnId: drop.toColumnId, position: positions[i], actor: user, source: opts.source })
 	);
 	announceMoves(moves, user, opts);
+	return moves;
 }
 
 /**

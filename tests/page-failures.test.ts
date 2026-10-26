@@ -2491,7 +2491,8 @@ const WRITES: Record<string, Write[]> = {
 		{ name: 'cyclePriority', reads: 'write' },
 		{ name: 'setPriorityFromMenu', reads: 'write', done: ['toasts.add(`Priority → ${priority}`)'] },
 		// "Moved to X" only once the move was taken (decision 18).
-		{ name: 'moveFromMenu', reads: 'write', done: ['toasts.add(`Moved to ${col.title}`)'] },
+		// Or, for a move across the commitment point, what crossed (milestone 22, the S2 review's C7).
+		{ name: 'moveFromMenu', reads: 'write', done: ['toasts.add(`Moved to ${col.title}`)', 'toasts.add(message)'] },
 		{ name: 'togglePin', reads: 'write', done: ['toasts.add(pinned ? `Pinned "${card.title}"` : `Unpinned "${card.title}"`)'] },
 		// A refusal keeps the prompt, with what was typed.
 		{ name: 'saveCompletionPrompt', reads: 'write' },
@@ -2528,7 +2529,7 @@ const WRITES: Record<string, Write[]> = {
 	],
 	'src/lib/components/tasks/MoveCardModal.svelte': [
 		// The review's O3: a move to another board that took the card out of its milestone says so.
-		{ name: 'doMoveCard', reads: 'failureMessage', done: ['showMoveModal = false', 'playMoveSound()', 'playCompleteSound()', "toasts.add(leftGoal, 'info')"] }
+		{ name: 'doMoveCard', reads: 'failureMessage', done: ['showMoveModal = false', 'playMoveSound()', 'playCompleteSound()', "toasts.add(leftGoal, 'info')", 'toasts.add(message)'] }
 	],
 	'src/lib/components/tasks/TasksArchivePanel.svelte': [
 		{ name: 'restoreArchivedCard', reads: 'deleteFailure', done: ['archivedCards = archivedCards.filter(c => c.id !== cardId)', "toasts.add('Card restored')"] },
@@ -3719,7 +3720,8 @@ describe("a move to another board that takes the card out of its milestone (card
 		// In its Move window (card 2281, slice C3a-2: moved from src/routes/all/+page.svelte).
 		const said = functionNamed(scriptOf('src/lib/components/tasks/MoveCardModal.svelte'), 'doMoveCard').getText().replace(/\s+/g, ' ');
 
-		expect(said).toContain('const leftGoal = leftMilestoneNotice(await answerBody(res));');
+		// The answer read once, for the milestone and the commitment point both (milestone 22).
+		expect(said).toContain('const answer = await answerBody(res); const leftGoal = leftMilestoneNotice(answer);');
 		expect(said).toContain("if (leftGoal) toasts.add(leftGoal, 'info');");
 		expect(said.indexOf('leftMilestoneNotice(')).toBeGreaterThan(said.indexOf('if (!res.ok)'));
 	});
@@ -7414,7 +7416,8 @@ describe('the board page draws from its board state and reads the board alone (c
 		const tree = board();
 		const writes = apiWrites();
 		const HELPER = /^(cardActions|boardActions|bulkOps|dndHandlers)\.(\w+)$/;
-		const SENDS_NOTHING = ['navigationClosesWindow', 'findSubBoardName'];
+		// `commitmentToasts` reads an answer already had and sends nothing (milestone 22).
+		const SENDS_NOTHING = ['navigationClosesWindow', 'findSubBoardName', 'commitmentToasts'];
 		// The card window's controller holds while each of its sends is out (slice B2c; shown in tests/card-window.test.ts).
 		const WINDOW = /^cardWindow\.(save|archive)$/;
 		const sending: string[] = [];

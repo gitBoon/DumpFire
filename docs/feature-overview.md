@@ -411,10 +411,13 @@ From 26 October 2026 (milestone 22), a board can keep ideas apart from the work 
 - **Collapsed to a strip.** It is drawn as a narrow strip showing how many ideas it holds, how old the oldest is, and how many are older than 30 days, so stale ideas are seen. A press opens it; each person's choice is remembered in their own browser. Cards can still be dragged onto the strip.
 - **Making an existing column the Options column.** For the board's owner and administrators, a column's menu offers **Make this the Options column…** where its name does not already mean To Do, On Hold or Complete. A column with cards in it is converted after a question that counts its cards: they all become ideas in one step, recorded as one entry in the activity log, with no mail, and their age as ideas starts then. It can be made an ordinary column again, from the same menu, once it is empty.
 - **Kept safe.** An Options column cannot be deleted while it holds ideas: the board says so at once; archive or move them first. Every card created from now on records when it was committed and by whom, which later updates use for lead time.
+- **Moving an idea out commits it.** Dragging a card out of the Options column into any other column, or moving it there from the card's menu, a bulk Move, All Tasks or the API, commits it: the card records when and by whom, and its activity reads **Committed card** instead of a move. Whichever way it was moved on a page (a drag, putting it on hold, the card menu's **Move to**, a bulk **Move** or All Tasks' **Move** window), a toast says `Committed "<title>"`, in place of "Moved to …". Moving a committed card back into the Options column makes it an idea again, its commitment cleared: the toast says `Returned "<title>" to Options` and the activity **Returned card to Options**. Every **Move to** list marks the Options column "(Options)". An idea can go straight to Complete; an idea that turns out not to be needed is better archived. Moves between committed columns, and between ideas, change nothing about the commitment.
+- **Two moves are refused.** An archived card cannot be moved out of or back into Options: restore it first. A committed card with sub-boards does not go back into the Options column: it is committed work, so keep it in a committed column, or archive it if it is no longer wanted.
 
 ```mermaid
 flowchart LR
-    Ideas["Ideas (Options)<br/>options: may or may not be done"] -->|"commitment point"| ToDo["To Do"] --> Doing["In Progress"] --> Done["Complete"]
+    Ideas["Ideas (Options)<br/>options: may or may not be done"] -->|"commitment point:<br/>Committed card"| ToDo["To Do"] --> Doing["In Progress"] --> Done["Complete"]
+    ToDo -.->|"moved back:<br/>Returned card to Options"| Ideas
 ```
 
 ---

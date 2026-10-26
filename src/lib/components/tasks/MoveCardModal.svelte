@@ -12,8 +12,9 @@
 	import type { PageData } from '../../../routes/all/$types';
 	import { invalidateAll } from '$app/navigation';
 	import { toasts } from '$lib/stores/toast';
-	import { isCompleteColumnTitle } from '$lib/column-role';
+	import { isCompleteColumnTitle, isOptionsColumn } from '$lib/column-role';
 	import { answerBody, failureMessage, leftMilestoneNotice } from '$lib/api';
+	import { commitmentToasts } from '$lib/board/dnd-handlers';
 	import { playMoveSound, playCompleteSound } from '$lib/utils/sounds';
 
 	/** What All Tasks' load gave it, passed on as it is. */
@@ -60,8 +61,12 @@
 
 		// A move to another board takes the card out of a milestone of the board
 		// it left, for good: say so (card 2155, the review's O3).
-		const leftGoal = leftMilestoneNotice(await answerBody(res));
+		const answer = await answerBody(res);
+		const leftGoal = leftMilestoneNotice(answer);
 		if (leftGoal) toasts.add(leftGoal, 'info');
+		// And a move across the commitment point, as the board's drag says it
+		// (milestone 22, the S2 review's C7).
+		for (const message of commitmentToasts(answer, [moveCard])) toasts.add(message);
 
 		// Play appropriate sound
 		if (isCompletingMove) {
@@ -98,7 +103,7 @@
 					<select id="move-col" bind:value={moveColumnId}>
 						<option value={null}>Select column...</option>
 						{#each getBoardColumns(moveBoardId) as col}
-							<option value={col.id}>{col.title}</option>
+							<option value={col.id}>{col.title}{isOptionsColumn(col) ? ' (Options)' : ''}</option>
 						{/each}
 					</select>
 				</div>

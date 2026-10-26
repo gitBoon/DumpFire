@@ -59,8 +59,9 @@ import {
 	type Card,
 	type Column
 } from './db/schema';
-import { columnRole } from '$lib/column-role';
+import { columnRole, isUpstreamColumn } from '$lib/column-role';
 import { stamp } from '$lib/timestamps';
+import { boardKinds, conversionSuffix } from './upstream';
 import { getCompletionBlocker } from './card-completion';
 import { emit } from './events';
 import { ACTIONS, logActivity, type ActivitySource } from './logActivity';
@@ -129,6 +130,14 @@ export interface CardMove {
 	completed: boolean;
 	/** Left a Complete column for a column that is not one. */
 	reopened: boolean;
+	/**
+	 * Crossed the commitment point (milestone 22): left an upstream column, the
+	 * Options column or any column of an ideas board, for a committed one. The
+	 * card's `committedAt` is now and `committedBy` the mover.
+	 */
+	committed: boolean;
+	/** Went back from a committed column into an upstream one: its commitment is cleared. */
+	returnedToOptions: boolean;
 	/** XP awarded to the actor: non-zero only the first time a card is ever completed. */
 	xpAwarded: number;
 	/**
@@ -183,8 +192,19 @@ export interface MoveRequest {
  *
  * Throws `CardMoveError` (404) if the card or the column is missing, (409) if
  * the target column is on one of the card's own sub-boards, at any depth, or
- * would put them deeper than `MAX_SUB_BOARD_DEPTH`, and (409) if the card is
+ * would put them deeper than `MAX_SUB_BOARD_DEPTH`, (409) if an archived card
+ * would cross the commitment point or a committed card with sub-boards would
+ * go back into an upstream column (milestone 22, rulings n and o), and (409) if the card is
  * being completed while subtasks or sub-boards are still open.
+ *
+ * The commitment (milestone 22, card 2460): a card that leaves an upstream
+ * column, the board's Options column or any column of an ideas board, for a
+ * committed one is committed by the move, `committedAt` now and `committedBy`
+ * the mover, and its entry is `card_committed` in place of `card_moved`. A
+ * committed card moved into an upstream column has both cleared, with
+ * `card_returned_to_options`. A move within upstream, or between committed
+ * columns, on one board or across two, leaves the commitment as it is. Every
+ * route that moves a card comes here, so each does the same.
  */
 export function applyCardMove(request: MoveRequest): CardMove {
 	return inTransaction(() => moveCard(request));
@@ -209,11 +229,13 @@ function moveCard(request: MoveRequest): CardMove {
 	// First, for a move to another board: onto a board beneath the card, or
 	// where its sub-boards would be nested too deep, it is refused whatever else
 	// it would do. A move within one board cannot change the tree, so it is not
-	// looked at.
+	// looked at. The card's sub-boards are read once, when a rule first asks:
+	// these two, or the refusal of a card with sub-boards going into upstream.
+	let hanging: { id: number }[] | undefined;
+	const subBoards = () => (hanging ??= db.select({ id: boards.id }).from(boards).where(eq(boards.parentCardId, before.id)).all());
 	if (crossBoard) {
-		const hanging = db.select({ id: boards.id }).from(boards).where(eq(boards.parentCardId, before.id)).all();
-		refuseLoop(before, hanging, toColumn.boardId);
-		refuseTooDeep(before, hanging, fromColumn.boardId, toColumn.boardId);
+		refuseLoop(before, subBoards(), toColumn.boardId);
+		refuseTooDeep(before, subBoards(), fromColumn.boardId, toColumn.boardId);
 	}
 
 	// A change of position within a column is not an edit to the card — nothing
@@ -234,6 +256,8 @@ function moveCard(request: MoveRequest): CardMove {
 			crossBoard: false,
 			completed: false,
 			reopened: false,
+			committed: false,
+			returnedToOptions: false,
 			xpAwarded: 0,
 			leftMilestone: null
 		};
@@ -243,6 +267,35 @@ function moveCard(request: MoveRequest): CardMove {
 	const isComplete = columnRole(toColumn.title) === 'complete';
 	const completed = isComplete && !wasComplete;
 	const reopened = wasComplete && !isComplete;
+
+	// Which side of the commitment point each column is on (milestone 22): the
+	// column's role and its board's kind decide, both boards' kinds in one
+	// read. Never the card's `committedAt`, which records what they decided.
+	const kinds = boardKinds([fromColumn.boardId, toColumn.boardId]);
+	const fromUpstream = isUpstreamColumn(fromColumn, kinds.get(fromColumn.boardId) ?? null);
+	const toUpstream = isUpstreamColumn(toColumn, kinds.get(toColumn.boardId) ?? null);
+	const committing = fromUpstream && !toUpstream;
+	const returning = !fromUpstream && toUpstream;
+
+	// An archived card is not work anyone is choosing or doing: crossing the
+	// commitment point would stamp or clear a commitment on it (ruling n). A
+	// move within one side is left as it was.
+	if (before.archivedAt && (committing || returning)) {
+		throw new CardMoveError(409, `Card "${before.title}" is archived: restore it before moving it out of or back into Options`);
+	}
+
+	// A card with sub-boards is committed work, never an option (ruling o): a
+	// committed card that has one does not go back into upstream, as the
+	// conversion refuses a column holding one. A card already upstream with a
+	// sub-board, made before that was refused, may still move within upstream
+	// (the S2 review's C1), and out of it.
+	if (returning && subBoards().length > 0) {
+		const into = kinds.get(toColumn.boardId) === 'ideas' ? 'onto an ideas board' : 'into the Options column';
+		throw new CardMoveError(
+			409,
+			`Card "${before.title}" has a sub-board, so it cannot go ${into}: a card with sub-boards is committed work. Keep it in a committed column, or archive it if it is no longer wanted.`
+		);
+	}
 
 	if (completed) {
 		const blocker = getCompletionBlocker(cardId, actor);
@@ -269,6 +322,10 @@ function moveCard(request: MoveRequest): CardMove {
 	// A reopened card is not complete. Leaving the date in place kept it in
 	// every completion count and average for as long as it lived.
 	if (reopened) update.completedAt = null;
+	// Crossing the commitment point is recorded on the card, in the same write:
+	// when and by whom it was committed, or, moved back, that it is not.
+	if (committing) Object.assign(update, { committedAt: now, committedBy: actor.id });
+	if (returning) Object.assign(update, { committedAt: null, committedBy: null });
 	// An on-hold note is the reason a card is paused, and a card that leaves
 	// the pause has none (card 2208). Only the board page's drop cleared it,
 	// with a second request; every other route kept it, and the activity
@@ -388,19 +445,23 @@ function moveCard(request: MoveRequest): CardMove {
 	// not as moves, so one query over `card_completed` counts every completion
 	// however it was made. A plain move between boards is already recorded by
 	// the two entries above.
-	if (completed || reopened || !crossBoard) {
-		logActivity({
-			...who,
-			boardId: toColumn.boardId,
-			cardId,
-			action: completed
-				? ACTIONS.cardCompleted
-				: reopened
-					? ACTIONS.cardReopened
-					: ACTIONS.cardMoved,
-			detail: `"${before.title}": ${route}`
-		});
-	}
+	//
+	// So is a commitment, and a return to options (milestone 22): one entry per
+	// fact, on the board the card is on now, naming the column it went into.
+	// The commitment's detail also ends ` (column <id>)`, as a conversion's
+	// does (`conversionSuffix`), so the cycle time reads the column it went
+	// into by its id, not by its title (ruling a; the S2 review's C3). A commitment is not a
+	// `card_moved`, so the first `card_moved` after it is still the start of
+	// work. Options straight to Complete is `card_committed` then
+	// `card_completed`; Complete back to Options is `card_reopened` then
+	// `card_returned_to_options`, and only the return sends a webhook, the one
+	// `card.moved` of that move (ruling q).
+	const onArrival = { ...who, boardId: toColumn.boardId, cardId, detail: `"${before.title}": ${route}` };
+	if (reopened) logActivity({ ...onArrival, action: ACTIONS.cardReopened, webhook: returning ? false : undefined });
+	if (committing) logActivity({ ...onArrival, action: ACTIONS.cardCommitted, detail: `${onArrival.detail}${conversionSuffix(toColumn.id)}` });
+	if (returning) logActivity({ ...onArrival, action: ACTIONS.cardReturnedToOptions });
+	if (completed) logActivity({ ...onArrival, action: ACTIONS.cardCompleted });
+	if (!crossBoard && !completed && !reopened && !committing && !returning) logActivity({ ...onArrival, action: ACTIONS.cardMoved });
 
 	return {
 		card: after,
@@ -412,6 +473,8 @@ function moveCard(request: MoveRequest): CardMove {
 		crossBoard,
 		completed,
 		reopened,
+		committed: committing,
+		returnedToOptions: returning,
 		xpAwarded,
 		leftMilestone
 	};

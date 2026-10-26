@@ -986,15 +986,20 @@ sequenceDiagram
             R->>DB: ROLLBACK, every move of the request undone
         end
         M->>M: completed? reopened? (columnRole of each end)
+        M->>DB: both boards' kinds (boardKinds): committing? returning? (isUpstreamColumn of each end)
+        opt an archived card across the commitment point, or a card with a sub-board into upstream
+            M-->>R: CardMoveError 409
+            R->>DB: ROLLBACK, every move of the request undone
+        end
         opt completing with open subtasks or sub-boards
             M-->>R: CardMoveError 409
             R->>DB: ROLLBACK, every move of the request undone
         end
-        M->>DB: card: column, position, updated_at,<br/>completed_at set or cleared, first_completed_at
+        M->>DB: card: column, position, updated_at,<br/>completed_at set or cleared, first_completed_at,<br/>committed_at / committed_by set or cleared
         M->>DB: cross-board: drop source board's labels, a category owned by another board,<br/>and a milestone of a board other than the target (card 2155), in the same update
         M->>DB: user_xp += priority XP (first completion only)
-        M->>DB: activity_log: one entry, with user id and source<br/>(its webhook is queued)
-        M-->>R: CardMove { completed, reopened, xpAwarded, ... }
+        M->>DB: activity_log: one entry per fact, with user id and source<br/>(each webhook is queued, but a reopening's beside a return)
+        M-->>R: CardMove { completed, reopened, committed, returnedToOptions, xpAwarded, ... }
     end
     R->>U: the moves that completed a card
     U->>DB: card_comments: "Unblocked: ..." on each card now free to start
@@ -1104,6 +1109,46 @@ written before card 2181 still name the other board, and are left as they are. E
 an `api:` prefix, so a query must match both spellings — use `storedActions()`
 from `logActivity.ts`. Board cycle time and `/api/v1/me/stats` compared against
 the bare name and so ignored everything done through the API.
+
+**Across the commitment point** (milestone 22, card 2460, slice S2), `moveCard` asks
+`isUpstreamColumn` of both ends, with both boards' kinds read in one query:
+
+| The move | `committed_at` / `committed_by` | Entries, on the board the card is on now | Webhooks |
+|---|---|---|---|
+| Upstream (the Options column, any column of an ideas board) to a committed column | the moment of the move / the mover | `card_committed`, `"<title>": <from> → <to> (column <id>)`, in place of `card_moved` | `card.committed` |
+| … into a Complete column | as above, equal to `completed_at` | `card_committed`, then `card_completed` | `card.committed`, then `card.completed` |
+| A committed column to an upstream one | both NULL | `card_returned_to_options`, in place of `card_moved` | `card.moved` |
+| … from a Complete column | both NULL, and `completed_at` | `card_reopened`, then `card_returned_to_options` | one `card.moved`, from the return (ruling q: `webhook: false` on the reopening) |
+| Within upstream, or between committed columns | left as they were | as before | as before |
+
+A move to another board writes `card_moved_away` and `card_moved_in` first, as always, then
+the commitment entry on the board it joined. The commitment entry names the column the card
+went into twice: by its title in the route and by its id at the end of its detail,
+`(column <id>)`, the same suffix a conversion's entry ends with (`conversionSuffix` in
+`upstream.ts`), so the cycle time reads the column by its id, not by its title (ruling a; the
+S2 review's C3). It is not a `card_moved`, so the first `card_moved` after it is still the
+start of work. Two moves are refused, 409, with nothing written: an archived card across the
+commitment point, either way (`Card "<title>" is archived: restore it before moving it out of
+or back into Options`, ruling n), and a committed card with a sub-board into an upstream column
+(`Card "<title>" has a sub-board, so it cannot go into the Options column: a card with
+sub-boards is committed work. Keep it in a committed column, or archive it if it is no longer
+wanted.`, or `onto an ideas board`, ruling o). A card already upstream with a sub-board, made
+before S5 refuses one there, may still move within upstream and out of it (the S2 review's
+C1). Both are asked after the loop and depth refusals, which read the card's sub-boards once
+for all three, and before the check for open subtasks.
+
+```mermaid
+stateDiagram-v2
+    Option: Option (committed_at NULL)
+    Committed: Committed (committed_at, committed_by)
+    [*] --> Option: created in an upstream column
+    [*] --> Committed: created elsewhere (at created_at, by the creator)
+    Option --> Committed: moved out of upstream (card_committed, card.committed)
+    Committed --> Option: moved into upstream (card_returned_to_options, card.moved)
+    Option --> Option: moved within upstream (no change)
+    Committed --> Committed: moved between committed columns (no change)
+    Committed --> Option: column converted to Options (one entry for the column)
+```
 
 The browser does not write activity entries. It used to write a second one for
 every create, move, completion and delete, with no user id; `POST /api/activity`
@@ -1373,7 +1418,10 @@ of about zero.
     SET NULL`): when the card crossed the commitment point and who moved it across. NULL while
     the card is an option. A card created outside an upstream column is committed as it is
     created, at its `created_at` and by its creator, on every creation route
-    (`recordCardCreated`, `commitmentOnCreation` in `src/lib/server/upstream.ts`). Converting a
+    (`recordCardCreated`, `commitmentOnCreation` in `src/lib/server/upstream.ts`). A move out of
+    an upstream column into a committed one sets them to the moment of the move and the mover,
+    and a move back into an upstream column clears them, on every move route (`moveCard`, slice
+    S2; see [A move](#a-move)). Converting a
     column to the Options column clears both on every card in it, archived ones included.
     Nothing reads a NULL `committed_at` as upstream: the column and the board decide that.
   - `cards.discarded_at` and `cards.discarded_by` (`ON DELETE SET NULL`): when an option was

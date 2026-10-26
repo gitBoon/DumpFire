@@ -2394,8 +2394,8 @@ milestone or board category you cannot see; `404` for one that does not exist.
 
 A webhook sends each event of its board that it asks for (`card.created`, `card.updated`,
 `card.moved`, `card.completed`, `card.deleted`, `comment.added`, `milestone.card_added`,
-`milestone.card_removed`) to its `url` as a `POST`, after the change is committed, signed with
-its `secret`. An empty `events` list, or none, is every event. What is sent, and how a receiver checks the
+`milestone.card_removed`, `card.committed`) to its `url` as a `POST`, after the change is
+committed, signed with its `secret`. An empty `events` list, or none, is every event. What is sent, and how a receiver checks the
 signature: [Notifications & Email](docs/notifications-email.md#webhooks).
 
 `card.moved` is every column change but a completion: a move within the board (`data.action`
@@ -2405,6 +2405,21 @@ board, sent to the board it left (`card_moved_away`) and to the board it joined
 into a Complete column sends `card.completed` instead; one into another board's Complete column
 sends the joined board both, the arrival and the completion. Ask for both events to hear every
 column change.
+
+`card.committed` (milestone 22, card 2460) is a card moved out of an upstream column, a board's
+Options column or any column of an ideas board, into a committed one, by any route. Within a
+board it is sent **instead of** `card.moved`; a move to another board also sends each board its
+`card.moved`, the departure and the arrival. Its `data.action` is `card_committed`, its
+`data.detail` `"<title>": <from> → <to> (column <id>)`, the id the column it went into, and
+straight into a Complete column it is followed by `card.completed`. A committed card moved back
+into an upstream column sends `card.moved` with `data.action` `card_returned_to_options`;
+within a board that is the move's only delivery from Complete, and a move from another board
+sends the joined board two `card.moved`, the arrival and the return. To hear every column
+change, ask for `card.moved`, `card.completed` and `card.committed`. A webhook with an empty
+`events` list receives `card.committed` from the deploy that adds it. `PUT
+/cards/:cardId/move` refuses, `409`, an archived card across the commitment point (`Card
+"<title>" is archived: restore it before moving it out of or back into Options`) and a
+committed card with a sub-board into an upstream column.
 
 **A card put in a milestone or taken out** sends `milestone.card_added` or
 `milestone.card_removed` (card 2343, since 2026-10-21), by every route and page that does it:
