@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.77
+version: 1.78
 status: As-Built
 date: 2026-10-26
 tags:
@@ -23,8 +23,9 @@ tags:
   - sub-boards
   - webhooks
   - options-column
+  - ideas-board
   - milestone-22
-description: "Administration guide covering who may do what on the admin page, the board's Options column and its conversion, user management and what a password reset ends, switches off and pauses, SMTP setup, team configuration, what a backup holds and what a restore does, archive management, what each delete removes and who it tells, Reset and Vacuum, attachments, each user's mail switches, what the activity log records and the words its panels use, the Audit page's filters, a board beneath one of its own cards and how to put it right, and system settings"
+description: "Administration guide covering who may do what on the admin page, the board's Options column and its conversion, ideas boards and when to use options, user management and what a password reset ends, switches off and pauses, SMTP setup, team configuration, what a backup holds and what a restore does, archive management, what each delete removes and who it tells, Reset and Vacuum, attachments, each user's mail switches, what the activity log records and the words its panels use, the Audit page's filters, a board beneath one of its own cards and how to put it right, and system settings"
 ---
 
 # Admin Operations Guide
@@ -758,6 +759,16 @@ flowchart TD
 - **Converting a delivery board.** The board's owner or an administrator uses **More → Make this an ideas board…** on a board that is not a sub-board. The board counts its cards, live and archived, and asks: every card becomes an idea, its commitment cleared, in one step recorded as one entry (**Converted board to an ideas board**), with no mail or webhook; the empty To Do, On Hold and Complete columns are removed; an Options column becomes an ordinary column. A board with no cards at all has its columns replaced with the ideas board's three. Before asking, the board says why it cannot when a live card has a sub-board (an archived one, or one on a board you cannot open, is refused by the server after the question, in its own words) (`Card "T" has a sub-board, and a card with sub-boards is never an option: move it to another board, or move or delete its sub-board, first.`), when a To Do or On Hold column holds cards (`"To Do" holds 3 cards, and an ideas board has no To Do column: rename it first.`), or when a Complete column holds cards (`… move them to a delivery board, or delete them, first.`). If a card was added after the question, the server refuses (`The board now holds 5 cards; look again.`) and nothing changes. Through the API it is `POST /api/v1/boards/{boardId}/convert` with `{ "kind": "ideas", "cards": N }`.
 - **Going back.** **More → Make this a delivery board…** works only on an ideas board holding no cards, archived ones included; its columns are replaced with To Do, On Hold, In Progress and Complete, recorded as **Updated board**. While it holds any, the board says so (`This ideas board holds 2 cards. Making it a delivery board would commit them without anyone committing them: move them to a delivery board, or delete them, first.`).
 - **Send to board.** **Send to board…**, in a card's menu and its card window, is offered for an idea to anyone who can edit the board: any card on an ideas board, or in a delivery board's Options column; never for committed work. The Send window lists every delivery board you can edit, and offers **To its Options**, where the board has an Options column (never for a card with a sub-board), and **Commit to its To Do**, into the board's first column called To Do, or its first working column, never On Hold, naming that column when it is not To Do. A choice the board cannot take is shown greyed with why, and never chosen. From a card window with changes not saved, the board asks first (**Send without saving**), as the Send closes the window. The card leaves this board, and the focus goes to the column it left; the toast says `Sent "T" to Ops's Options` or `… To Do`, `Committed "T"` for To Do, and, if it left a goal of this board's, that it did. A refusal is said in the server's words and the window stays open. The idea keeps its age; its labels, category and goal stay behind. This board records **Sent card to another board**; any other move of an idea to another board, the card window's board picker or All Tasks' Move, is recorded the same way.
+
+## When to Use Options
+
+What to tell a team adopting the Options column or an ideas board (milestone 22, ruling w; the feature whole, with its rules and API, is in [Upstream Kanban](upstream-kanban.md)):
+
+- **Park ideas in Options, not in On Hold.** On Hold is committed work that is paused: Statistics, the dashboard, reports and goals count it as committed, open work, aged from its commitment. An idea parked there looks like stale delivery work and makes the lead time longer when it is done. A board that has parked ideas in a column such as Backlog can have that column converted to the Options column (above), which makes its cards options in one recorded step. A column whose name means To Do, On Hold or Complete cannot be the Options column, so ideas parked in On Hold are moved to the Options column, or the column is renamed first.
+- **Discard an idea that is not needed; do not complete it.** Moving an option straight to Complete is allowed, and records a commitment and a completion in the one move, for an idea that was done there and then. It then counts as delivered work in throughput, lead time, the burndown and reports. An idea that turned out not to be needed is archived instead, which records it as discarded and counts it in the discard rate.
+- **Returning work to Options rewrites past burndowns.** The burndown is worked out from each card as it is now, so a committed card moved back into Options leaves the scope of every earlier day too, and a chart already sent to someone will read differently. Return a card only when nobody is committed to it any more; it is counted in **Returned to options**.
+
+The tracking wrapper's commands for all of this (`create-column -Role options`, `convert-column`, `create-board -Kind ideas`, `convert-board`, `send-card`, `upstream`, `cards -Stage`) and the request each builds are in `.agent/workflows/dumpfire-api-reference.md`, *Upstream*; they need the server to run API 1.3.0 or later.
 
 ---
 

@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.44
+version: 1.45
 status: As-Built
 date: 2026-10-26
 tags:
@@ -11,6 +11,8 @@ tags:
   - user-guide
   - non-technical
   - options-column
+  - ideas-board
+  - upstream
 description: "Non-technical overview of all DumpFire features for stakeholders, managers, and end users"
 ---
 
@@ -449,6 +451,14 @@ flowchart LR
     R -->|"Send to board → Commit to its To Do"| T
     N -.->|"archived: Discarded card"| X(("Discarded"))
 ```
+
+### Using Options Well
+
+Three habits keep the figures honest (the whole feature, with its rules, is in [Upstream Kanban](upstream-kanban.md)):
+
+- **Park ideas in Options, not in On Hold.** On Hold is for committed work that is paused, and every figure counts it as committed work, its age included. An idea parked there looks like work going stale, and makes the lead time longer when it is finally done.
+- **Archive an idea that is not needed; do not complete it.** Moving an idea straight to Complete is allowed, for one that was done there and then, but it then counts as finished work in throughput, lead time and the burndown. An idea that turned out not to be needed is archived, which records it as discarded and counts it in the discard rate.
+- **Moving work back into Options changes past burndowns.** The burndown is worked out from each card as it is now, so a card returned to Options leaves the scope of every earlier day as well, and a chart already shared will read differently. Return a card to Options only when nobody is committed to it any more.
 
 ---
 

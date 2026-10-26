@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.37
+version: 1.38
 status: As-Built
 date: 2026-10-26
 tags:
@@ -1313,6 +1313,15 @@ upstream: the column and the board decide it. What each measure reads:
 For every card made before milestone 22, `committed_at = created_at` (0060's one-off), so each
 figure is what it was; the one change on such a board is that a cycle time can no longer be
 negative (the S4a review's H5).
+
+What the stored fields mean for how the feature is used (ruling w; the feature whole is in
+[Upstream Kanban](upstream-kanban.md)): a card parked in an On Hold column is committed
+(`committed_at` set, its column not upstream), so every measure counts it and its age runs from
+its commitment; ideas belong in the Options column. An option moved straight to Complete gets
+`committed_at` equal to `completed_at` and counts as delivered; an idea not needed is archived,
+which sets `discarded_at` instead. And because the burndown reads each card's `committed_at` and
+column as they are now, with no history of either, a card returned to options (`committed_at`
+cleared) leaves the scope of every past day, not only from the return.
 
 ```mermaid
 erDiagram

@@ -1,7 +1,7 @@
 ---
 title: "Management Activity Reporting"
 category: Reporting
-version: 1.10
+version: 1.11
 status: As-Built
 date: 2026-10-26
 tags:
@@ -11,6 +11,7 @@ tags:
   - management
   - api
   - completedAt
+  - upstream
 description: "How a 30-day management activity report is produced from a single API call, the five card fields that make it possible, and why completion is counted from completedAt rather than the audit log"
 ---
 
@@ -189,6 +190,16 @@ flowchart LR
     Up -->|"no"| Buckets["completed, closed, on hold,<br/>created, progressed"]
     Log[("activity log<br/>in the window")] --> Fig["upstream<br/>(null for one person)"]
 ```
+
+**Reading the figures, and keeping them honest** (ruling w; the feature whole is in [Upstream
+Kanban](upstream-kanban.md)). An idea parked in an On Hold column rather than in Options is
+committed work as far as every figure is concerned: it sits in the on hold bucket, ages as
+delivery work and lengthens lead time when it is done, so ideas belong in Options. An option
+moved straight to Complete is committed and completed in one move, and reports as completed work
+(with its `closeReason`, as any completion); an idea closed as not needed should be archived
+instead, so it counts as `discarded` and in the discard rate, not as delivery. A card moved back
+into Options leaves the burndown's past scope too, because the burndown is worked out from each
+card as it is now; the activity report's `returnedToOptions` counts those returns in the window.
 
 ## The five reporting fields
 
