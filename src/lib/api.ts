@@ -157,6 +157,17 @@ export function columnDeleteWarning(title: string): string {
 	return `Delete "${title}" and every card in it? The cards are deleted for good, not archived, each with its subtasks, comments and dependency links and with every sub-board under it. ${TRASH_SENTENCE}`;
 }
 
+/**
+ * What converting a column to the Options column does to its cards
+ * (milestone 22, ruling i): the question names how many live and archived
+ * cards become options, which is the count the server is sent.
+ */
+export function optionsConversionWarning(title: string, live: number, archived: number): string {
+	const count = (n: number, what: string) => `${n} ${what} card${n === 1 ? '' : 's'}`;
+	const held = archived === 0 ? count(live, 'live') : live === 0 ? count(archived, 'archived') : `${count(live, 'live')} and ${count(archived, 'archived')}`;
+	return `Make "${title}" the board's Options column? It moves to the far left with no WIP limit, and the ${held} in it become options: ideas not yet committed to, until each is moved out again. This is recorded as one entry in the activity log. It can be turned back into an ordinary column only once it is empty.`;
+}
+
 /** What goes with a board or a sub-board, and what stays. */
 export function boardDeleteWarning(name: string): string {
 	return `Permanently delete "${name}"? Everything on it goes: its columns and cards, every sub-board under it, and any report schedules for it. Cards on other boards that were in one of its milestones stay, in no milestone. Its card categories stay, with no board. ${TRASH_SENTENCE}`;
@@ -326,10 +337,23 @@ export async function reorderCards(updates: { id: number; columnId: number; posi
 export async function createColumn(data: {
 	boardId: number;
 	title: string;
-	position: number;
+	/** Left out for the Options column, which the server places at the far left. */
+	position?: number;
 	color: string;
+	/** 'options' for the board's Options column (milestone 22). */
+	role?: 'options' | null;
 }): Promise<Response> {
 	return jsonRequest('/api/columns', 'POST', data);
+}
+
+/**
+ * Makes a column the board's Options column with the cards it holds
+ * (milestone 22, ruling i). `cards` is how many, live and archived, the
+ * page's question named: the server refuses a column that holds another
+ * number now.
+ */
+export async function convertColumn(colId: number, cards: number): Promise<Response> {
+	return jsonRequest(`/api/columns/${colId}/convert`, 'POST', { role: 'options', cards });
 }
 
 /**

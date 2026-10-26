@@ -18,6 +18,8 @@
 import { db } from './db';
 import { boards, columns, cards, subtasks, cardLabels, labels, boardMembers, boardTeams, users, cardAssignees, teamMembers, taskRequests, type Board } from './db/schema';
 import { eq, inArray, isNull, and } from 'drizzle-orm';
+import { isOptionsColumn } from '$lib/column-role';
+import { optionsSince } from './upstream';
 import { error } from '@sveltejs/kit';
 import { getAccessibleBoardIds, roleOnBoard, type Actor } from './board-access';
 import { getBoardBlockedState, WITHHELD_BOARD_NAME } from './planning';
@@ -219,6 +221,17 @@ export function readBoardContents(user: SessionUser, boardId: number) {
 		: [];
 	const requestOriginMap = new Map(requestOrigins.map(r => [r.resolvedCardId, r]));
 
+	// When each card in the Options column became an option, for the strip's
+	// aging (milestone 22, ruling g and the S1b review's B2): the latest of its
+	// creation, its latest return to options and the column's latest
+	// conversion (`optionsSince`). Two reads, and only for a board whose
+	// Options column holds a card; every other board reads nothing more.
+	const optionsColumn = boardColumns.find(isOptionsColumn);
+	const optionsColumnIds = new Set(optionsColumn ? [optionsColumn.id] : []);
+	const returnedAt = optionsColumn
+		? optionsSince(optionsColumn, allCards.filter((card) => card.columnId === optionsColumn.id))
+		: new Map<number, string>();
+
 	// Group cards by column with their subtasks, labels, sub-board info, and assignees
 	const columnsWithCards = boardColumns.map((col) => ({
 		...col,
@@ -230,6 +243,7 @@ export function readBoardContents(user: SessionUser, boardId: number) {
 				labelIds: allCardLabels.filter((cl) => cl.cardId === card.id).map((cl) => cl.labelId),
 				subBoards: subBoardMap.get(card.id) || [],
 				hiddenOpenCount: hiddenOpen.get(card.id) ?? 0,
+				...(optionsColumnIds.has(card.columnId) ? { optionSince: returnedAt.get(card.id) ?? card.createdAt } : {}),
 				assignees: allAssignees
 					.filter(a => a.cardId === card.id)
 					.map(a => ({ id: a.userId, username: a.username, emoji: a.emoji || '👤' })),

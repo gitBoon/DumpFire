@@ -100,7 +100,7 @@ const V1_JSON = '$lib/server/v1-json';
  * has lost some, fails. Adding operations to the document means changing it,
  * knowingly.
  */
-const OPERATIONS = 81;
+const OPERATIONS = 82;
 
 // ─── The document ────────────────────────────────────────────────────────────
 
@@ -2783,6 +2783,8 @@ describe('what a route answers, against the schema the document gives for it', (
 		const column = await ok('POST', `/api/v1/boards/${board.id}/columns`, { title: 'Review' });
 		await ok('GET', `/api/v1/columns/${column.id}`);
 		await ok('PUT', `/api/v1/columns/${column.id}`, { wipLimit: 3 });
+		// Milestone 22: the empty column made the board's Options column, and then deleted.
+		await ok('POST', `/api/v1/columns/${column.id}/convert`, { role: 'options', cards: 0 });
 		await ok('DELETE', `/api/v1/columns/${column.id}`);
 
 		expect(await ok('GET', `/api/v1/cards/${first.id}/assignees`)).toHaveLength(1);

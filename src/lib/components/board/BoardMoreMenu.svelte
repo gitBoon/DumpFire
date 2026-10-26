@@ -4,7 +4,8 @@
 
   Where to go from the board (Planning and All To Do, scoped to it), the
   panels (Activity Log, Statistics, Archived Cards), what is done to the
-  board as a whole (Add Column, Burndown, Manage Categories, Bulk Select,
+  board as a whole (Add Column, Add Options Column on a delivery board that
+  has none (milestone 22), Burndown, Manage Categories, Bulk Select,
   Share Board for someone who manages it, and Delete Sub-board when the board
   is one), and the theme. Card 2466 moved Planning, All To Do, Add Column and
   the theme here from the bar, and made the menu a HeaderMenu: keyboard
@@ -26,7 +27,9 @@
 		canManage,
 		isSubBoard,
 		boardId,
+		canAddOptions = false,
 		onAddColumn,
+		onAddOptionsColumn = () => {},
 		onToggleActivity,
 		onToggleStats,
 		onToggleArchive,
@@ -44,7 +47,10 @@
 		/** The board is a sub-board: Delete Sub-board is offered. */
 		isSubBoard: boolean;
 		boardId: number;
+		/** A delivery board with no Options column: Add Options Column is offered (milestone 22). */
+		canAddOptions?: boolean;
 		onAddColumn: () => void;
+		onAddOptionsColumn?: () => void;
 		onToggleActivity: () => void;
 		onToggleStats: () => void;
 		onToggleArchive: () => void;
@@ -134,6 +140,13 @@
 		</span>
 		Add Column
 	</button>
+	<!-- A delivery board with no Options column can add one (milestone 22):
+	     the Add Column window, opened as an Options column called Ideas. -->
+	{#if canAddOptions}
+		<button class="hm-item" role="menuitem" tabindex="-1" onclick={() => onAddOptionsColumn()} title="Add an Options column at the far left, for ideas not yet committed">
+			<span class="hm-icon">💡</span> Add Options Column
+		</button>
+	{/if}
 	<a class="hm-item" role="menuitem" tabindex="-1" href="/burndown?boardIds={boardId}">
 		<span class="hm-icon">📉</span> Burndown
 	</a>

@@ -2785,7 +2785,14 @@ const spec = {
 								properties: {
 									title: { type: 'string', maxLength: 200 },
 									color: { type: 'string', pattern: '^#[0-9a-fA-F]{6}$', description: 'A colour written #rrggbb, trimmed (default: #6366f1). Anything else is 400 color must be a colour written #rrggbb.' },
-									position: { type: 'number', description: 'Order on the board, lowest first. Default: after the last column.' }
+									position: { type: 'number', description: 'Order on the board, lowest first. Default: after the last column. On a board with an Options column, a position at or left of it is 409.' },
+									role: {
+										type: ['string', 'null'],
+										enum: ['options', null],
+										description:
+											'"options" makes the board\'s Options column, upstream of the commitment point, whose cards are options and not committed work; null or left out, an ordinary column. ' +
+											'An Options column is placed left of every other column whatever position is sent, and has no WIP limit. Anything else is 400 role must be "options" or null, not <what was sent>.'
+									}
 								}
 							},
 							example: { title: 'Review', color: '#f59e0b', position: 3 }
@@ -2808,6 +2815,17 @@ const spec = {
 					'404': {
 						description: 'There is no such board. Every caller is told so; until 2026-10-14 everyone but an administrator was answered 403, and an administrator 500.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board not found' } } }
+					},
+					'409': {
+						description:
+							'The column cannot be made as sent, and nothing was written: an Options column on an ideas board, a second Options column on a board that has one, ' +
+							'an Options column whose title makes a column To Do, On Hold or Complete, or a position at or left of the board\'s Options column, which stays the leftmost.',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/Error' },
+								example: { message: 'This board already has an Options column, "Ideas".' }
+							}
+						}
 					},
 					'413': { $ref: '#/components/responses/PayloadTooLarge' },
 					'429': { $ref: '#/components/responses/RateLimited' },
@@ -2869,7 +2887,15 @@ const spec = {
 										description:
 											'Work-in-progress limit: a whole number, 0 meaning no limit. null is accepted and stored as 0, which is how a limit is cleared; so is a negative number, or a value that is not a number. A fraction loses its fractional part. The column returned always has an integer here.'
 									},
-									showAddCard: { type: 'boolean' }
+									showAddCard: { type: 'boolean' },
+									role: {
+										type: ['string', 'null'],
+										enum: ['options', null],
+										description:
+											'"options" makes this empty column the board\'s Options column: it moves left of every other column and its WIP limit goes to 0. null makes an empty Options column an ordinary one again. ' +
+											'Left out, the role is kept. A column that holds cards, archived ones included, is 409: one is made the Options column by POST /api/v1/columns/{columnId}/convert, and the role is taken away only once the column is empty. ' +
+											'Anything else is 400 role must be "options" or null, not <what was sent>.'
+									}
 								}
 							},
 							example: { title: 'In Review', wipLimit: 3 }
@@ -2897,7 +2923,9 @@ const spec = {
 						description:
 							'The title would make the column a Complete column, one called Complete or Done, or stop it being one, while the column holds any card, archived ones included. ' +
 							'A card is finished because of the column it is in, so the rename would mark its cards finished without anyone finishing them, or turn finished work back into open work. ' +
-							'The message says how many cards the column holds and, when any are, how many of them are archived. Nothing was written. An empty column is renamed freely, and so is one whose new title keeps its role, such as Complete to Done.',
+							'The message says how many cards the column holds and, when any are, how many of them are archived. Nothing was written. An empty column is renamed freely, and so is one whose new title keeps its role, such as Complete to Done. ' +
+							'Also 409, with nothing written, for the Options column\'s rules: the role given on an ideas board, or on a board that has an Options column, or given or taken away while the column holds cards; ' +
+							'an Options column called To Do, On Hold or Complete (or a column so called given the role); a WIP limit above 0 on an Options column; and a position that would put a column at or left of the Options column, which stays the leftmost.',
 						content: {
 							'application/json': {
 								schema: { $ref: '#/components/schemas/Error' },
@@ -2950,6 +2978,70 @@ const spec = {
 						description: 'There is no such column',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Column not found' } } }
 					},
+					'409': {
+						description: 'The column is the board\'s Options column and holds cards that are not archived: options are archived or moved, not deleted with their column. Nothing was deleted.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'This Options column holds 2 options: archive or move them first.' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
+				}
+			}
+		},
+
+		'/api/v1/columns/{columnId}/convert': {
+			post: {
+				tags: ['Columns'],
+				summary: 'Make a column the Options column, cards and all',
+				description:
+					'Makes the column the board\'s Options column with the cards it holds: every card in it, archived ones included, becomes an option (its committedAt and committedBy are cleared), ' +
+					'the column moves left of every other column and its WIP limit goes to 0. One `api:column_converted_to_options` entry is written ("N cards became options"); nothing is written or sent for each card, and no webhook. ' +
+					'Only the board\'s owner or an administrator may. `cards` is how many cards, live and archived, the column was seen to hold: a column that holds another number now is 409, so a card moved in since is not made an option unseen. ' +
+					'The way back, taking the role away, is PUT /api/v1/columns/{columnId} with role null, once the column is empty.',
+				operationId: 'convertColumn',
+				parameters: [{ $ref: '#/components/parameters/columnId' }],
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								required: ['role', 'cards'],
+								properties: {
+									role: { type: 'string', enum: ['options'], description: 'What the column becomes. Anything else is 400 role must be "options", not <what was sent>.' },
+									cards: { type: 'integer', minimum: 0, description: 'How many cards, live and archived, the column holds, as the caller last saw it.' }
+								}
+							},
+							example: { role: 'options', cards: 4 }
+						}
+					}
+				},
+				responses: {
+					'200': {
+						description: 'The column, now the board\'s Options column',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Column' } } }
+					},
+					'400': { $ref: '#/components/responses/BadRequest' },
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'The caller cannot open the board, or can and is neither its owner nor an administrator',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/Error' },
+								example: { message: "Only the board's owner or an administrator can convert a column to the Options column" }
+							}
+						}
+					},
+					'404': {
+						description: 'There is no such column',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Column not found' } } }
+					},
+					'409': {
+						description:
+							'Nothing was changed. In this order: the board is an ideas board; the board already has an Options column, this one or another; the column\'s title makes it a To Do, On Hold or Complete column; ' +
+							'a card in it has a sub-board, and a card with sub-boards is never an option; the column holds another number of cards than `cards`.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'The column now holds 5 cards; look again.' } } }
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
 					'429': { $ref: '#/components/responses/RateLimited' },
 					'500': { $ref: '#/components/responses/InternalError' }
 				}

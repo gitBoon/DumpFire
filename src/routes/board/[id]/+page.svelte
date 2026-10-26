@@ -46,7 +46,7 @@
 	import { isCompleteColumn, isOnHoldColumn, matchesSearch } from '$lib/utils/card-utils';
 	// The add-card columns: "To Do" or "Todo", trimmed, any capitals (card 2280, slice B5a).
 	// The still-blocked warning keeps its own test of the title (warnIfStillBlocked).
-	import { isTodoColumnTitle } from '$lib/column-role';
+	import { isOptionsColumn, isTodoColumnTitle } from '$lib/column-role';
 	import { playMoveSound, playCompleteSound } from '$lib/utils/sounds';
 
 	// Board-specific modules
@@ -58,10 +58,10 @@
 	import { attachmentsChanged, commentsChanged, connectSSE } from '$lib/board/sse';
 	import { BoardState, type WriteWords } from '$lib/board/board-state.svelte';
 	import { CARD_GONE, CardWindow, type CardWindowSave } from '$lib/board/card-window.svelte';
-	import { copyColumns, insertColumn, moveCards, patchCard, removeColumn, reorderColumns, undoDrag, withCurrentCards } from '$lib/board/board-patches';
+	import { copyColumns, insertColumn, moveCards, patchCard, placeColumn, removeColumn, reorderColumns, undoDrag, withCurrentCards } from '$lib/board/board-patches';
 	import { BULK_HOLD_MS, type Release } from '$lib/board/refresh-schedule';
 	import type { BoardContentsData } from '$lib/board/contents-answer';
-	import { openingView, readBoardView, resolveListColumn, viewFromUrl, withViewParams, writeBoardView, type BoardViewChoice } from '$lib/board/board-view';
+	import { OPTION_AGING_DAYS, openingView, optionsAging, readBoardView, readOptionsOpen, resolveListColumn, viewFromUrl, withViewParams, writeBoardView, writeOptionsOpen, type BoardViewChoice } from '$lib/board/board-view';
 
 	// Components
 	import CardModal from '$lib/components/CardModal.svelte';
@@ -492,12 +492,21 @@
 	let newColumnTitle = $state('');
 	let newColumnColor = $state('#6366f1');
 	let newColumnPosition = $state('end');
+	/** 'options' for the board's Options column (milestone 22). */
+	let newColumnRole = $state<'options' | null>(null);
+	/** The Add Column window was opened from Add Options Column: "Options column" starts ticked. */
+	let addColumnAsOptions = $state(false);
+
+	function openAddColumn(asOptions: boolean) {
+		addColumnAsOptions = asOptions;
+		showAddColumnModal = true;
+	}
 
 	// The column answered is put on the board, with no read; a refusal keeps
 	// the window open, and says why (slice B2b).
 	async function addColumn() {
 		const started = toasts.navigation();
-		const written = await boardState.write(null, () => boardActions.addColumn(data.board.id, newColumnTitle, newColumnColor, newColumnPosition, boardState.columns), {
+		const written = await boardState.write(null, () => boardActions.addColumn(data.board.id, newColumnTitle, newColumnColor, newColumnPosition, boardState.columns, newColumnRole), {
 			refused: 'The column was not added.',
 			noAnswer: 'No answer from the server. The column may not have been added.'
 		});
@@ -512,6 +521,126 @@
 		showAddColumnModal = false;
 		newColumnTitle = '';
 		newColumnPosition = 'end';
+		newColumnRole = null;
+	}
+
+	// ─── The Options column (milestone 22, card 2459) ────────────────────────
+
+	/** The board's Options column, if it has one; an ideas board has none. */
+	const optionsColumn = $derived(boardState.columns.find(isOptionsColumn) ?? null);
+	/**
+	 * A delivery board with no Options column can add one, by someone who can
+	 * edit it (the S1b review's U11: a viewer is not offered it).
+	 */
+	const canAddOptions = $derived(boardState.board.kind !== 'ideas' && optionsColumn === null && boardState.canEdit);
+
+	/**
+	 * Whether this viewer has the Options column open; collapsed to a strip with
+	 * its count by default. Their own choice, per board, in this browser
+	 * (`dumpfire-options-open:<user>:<board>`). Read as the page is made, so a
+	 * strip left open is drawn open from the first paint where storage can be
+	 * read (the S1b review's U14), and again only when the user or the board
+	 * changes, by id.
+	 */
+	let optionsOpen = $state(initialOptionsOpen());
+	// The ids as values: a refresh of the same board, or a load that hands the
+	// page a new copy of the same user, reads nothing again, so with storage
+	// blocked a strip opened stays open until a reload.
+	const optionsBoardId = $derived(boardState.board.id);
+	const optionsUserId = $derived.by(() => currentUser?.id ?? null);
+	$effect(() => {
+		if (optionsUserId !== null && optionsBoardId) optionsOpen = readOptionsOpen(optionsUserId, optionsBoardId);
+	});
+
+	/** The stored choice for the user the page was loaded for, or collapsed. */
+	function initialOptionsOpen(): boolean {
+		const userId = $page.data.user?.id;
+		return typeof userId === 'number' ? readOptionsOpen(userId, data.board.id) : false;
+	}
+
+	/**
+	 * Open or collapse the strip and remember it. The keyboard's focus follows
+	 * (the S1b review's U8): to the header's collapse button once it opens, to
+	 * the strip once it collapses, as the control pressed is gone.
+	 */
+	async function setOptionsOpen(open: boolean) {
+		optionsOpen = open;
+		if (currentUser) writeOptionsOpen(currentUser.id, data.board.id, open);
+		await nextTick();
+		document.querySelector<HTMLElement>(open ? '.options-column .options-collapse' : '.options-column .options-strip')?.focus();
+	}
+
+	/** The strip's options aging (ruling g), as of the last tick of the page's clock. */
+	const optionsAgingNow = $derived.by(() => {
+		void tick;
+		return optionsColumn ? optionsAging(optionsColumn.cards) : { oldestDays: null, over: 0 };
+	});
+
+	/** What a change of a column's role says when it is refused or unanswered. */
+	const ROLE_WORDS: WriteWords = {
+		refused: 'The Options column was not changed.',
+		noAnswer: 'No answer from the server. The Options column may not have been changed.'
+	};
+
+	/** The column as answered, put on the board in its place (the Options column at the far left). */
+	function takeColumn(columnId: number) {
+		return (columns: ColumnType[], answer: Record<string, unknown> | null) => {
+			if (!answer || typeof answer.position !== 'number') return columns;
+			return placeColumn(columns, columnId, { role: (answer.role as string | null) ?? null, position: answer.position, wipLimit: Number(answer.wipLimit) || 0 });
+		};
+	}
+
+	/**
+	 * "Make this the Options column…" (ruling i). An empty column, archived
+	 * cards included, is given the role at once: no card changes. One holding
+	 * cards is converted, cards and all, once the page has asked, naming how
+	 * many live and archived cards become options; the count asked about goes
+	 * with the request, and the server refuses a column that holds another
+	 * number by then.
+	 */
+	async function makeOptionsColumn(column: ColumnType) {
+		const started = toasts.navigation();
+		let archived = 0;
+		try {
+			const res = await fetch(`/api/boards/${data.board.id}/archive`);
+			if (!res.ok) throw new Error(String(res.status));
+			archived = ((await res.json()) as { columnId: number }[]).filter((c) => c.columnId === column.id).length;
+		} catch {
+			toasts.add(`Could not count the archived cards in "${column.title}". Nothing was changed.`, 'error', started);
+			return;
+		}
+		const live = column.cards.length;
+		if (live + archived === 0) {
+			const written = await boardState.write(null, () => boardActions.updateColumn(column.id, { role: 'options' }, data.board.id), ROLE_WORDS, takeColumn(column.id));
+			if (!written.ok) {
+				toasts.add(written.failure, 'error', started);
+				return;
+			}
+			// Said as the conversion says it (the S1b review's U9).
+			toasts.add(`"${column.title}" is now the Options column`);
+			return;
+		}
+		showConfirm(
+			'Convert to the Options column',
+			api.optionsConversionWarning(column.title, live, archived),
+			'Convert',
+			async () => {
+				const written = await boardState.write(null, () => boardActions.convertColumn(column.id, live + archived), ROLE_WORDS, takeColumn(column.id));
+				if (!written.ok) {
+					toasts.add(written.failure, 'error', started);
+					return;
+				}
+				toasts.add(`"${column.title}" is now the Options column`);
+			},
+			false
+		);
+	}
+
+	/** "Stop being the Options column": an empty one only; the server says so of an archived card. */
+	async function stopOptionsColumn(column: ColumnType) {
+		const started = toasts.navigation();
+		const written = await boardState.write(null, () => boardActions.updateColumn(column.id, { role: null }, data.board.id), ROLE_WORDS, takeColumn(column.id));
+		if (!written.ok) toasts.add(written.failure, 'error', started);
 	}
 
 	// A column's colour, WIP limit and Add Task switch went through a wrapper
@@ -538,6 +667,15 @@
 	}
 
 	function confirmDeleteColumn(colId: number, colTitle: string) {
+		// The Options column holding options is refused (ruling m): said at once,
+		// in the server's words, rather than asked and then refused (the S1b
+		// review's U5). Archived ones the page does not hold go with it.
+		const options = boardState.columns.find((c) => c.id === colId && isOptionsColumn(c));
+		if (options && options.cards.length > 0) {
+			const live = options.cards.length;
+			toasts.add(`This Options column holds ${live === 1 ? '1 option: archive or move it first.' : `${live} options: archive or move them first.`}`, 'error');
+			return;
+		}
 		showConfirm(
 			'Delete Column',
 			api.columnDeleteWarning(colTitle),
@@ -605,11 +743,12 @@
 
 	let confirmState = $state<{
 		show: boolean; title: string; message: string;
-		confirmText: string; onConfirm: () => void;
-	}>({ show: false, title: '', message: '', confirmText: '', onConfirm: () => {} });
+		confirmText: string; onConfirm: () => void; danger: boolean;
+	}>({ show: false, title: '', message: '', confirmText: '', onConfirm: () => {}, danger: true });
 
-	function showConfirm(title: string, message: string, confirmText: string, onConfirm: () => void) {
-		confirmState = { show: true, title, message, confirmText, onConfirm };
+	/** `danger` false for a question whose yes deletes nothing (the Options conversion). */
+	function showConfirm(title: string, message: string, confirmText: string, onConfirm: () => void, danger = true) {
+		confirmState = { show: true, title, message, confirmText, onConfirm, danger };
 	}
 
 	/**
@@ -1260,8 +1399,14 @@
 		const from = takeDragFrom();
 		const started = toasts.navigation();
 		try {
-			const order = (e.detail.items as ColumnType[]).map((c) => c.id);
-			const written = await boardState.write(() => reorderColumns(from, order), () => dndHandlers.handleColumnDndFinalize(e.detail.items, data.board.id), {
+			// The Options column stays the leftmost (milestone 22): a column
+			// dropped left of it lands just after it, and the Options column
+			// dragged elsewhere goes back to the start. The server refuses any
+			// other order.
+			const dropped = e.detail.items as ColumnType[];
+			const kept = [...dropped.filter(isOptionsColumn), ...dropped.filter((c) => !isOptionsColumn(c))];
+			const order = kept.map((c) => c.id);
+			const written = await boardState.write(() => reorderColumns(from, order), () => dndHandlers.handleColumnDndFinalize(kept, data.board.id), {
 				refused: 'The columns were not reordered.',
 				noAnswer: 'No answer from the server. The columns may not have been reordered.'
 			});
@@ -1497,7 +1642,9 @@
 				{canManage}
 				isSubBoard={boardState.breadcrumbs && boardState.breadcrumbs.length > 0}
 				boardId={data.board.id}
-				onAddColumn={() => (showAddColumnModal = true)}
+				onAddColumn={() => openAddColumn(false)}
+				{canAddOptions}
+				onAddOptionsColumn={() => openAddColumn(true)}
 				onToggleActivity={toggleActivityPanel}
 				onToggleStats={toggleStatsPanel}
 				onToggleArchive={toggleArchivePanel}
@@ -1542,13 +1689,39 @@
 			onfinalize={handleColumnDndFinalize}
 		>
 			{#each boardState.columns as column (column.id)}
-				<div class="kanban-column glass" class:wip-warning={column.wipLimit > 0 && column.cards.length >= column.wipLimit} animate:flip={{ duration: FLIP_DURATION_MS }}>
+				{@const collapsed = isOptionsColumn(column) && !optionsOpen}
+				<div class="kanban-column glass" class:wip-warning={!isOptionsColumn(column) && column.wipLimit > 0 && column.cards.length >= column.wipLimit} class:options-column={isOptionsColumn(column)} class:options-collapsed={collapsed} animate:flip={{ duration: FLIP_DURATION_MS }}>
+					{#if collapsed}
+						<!-- The Options column collapsed to a strip (milestone 22): its
+						     title, its count and its aging (ruling g). It opens on a
+						     press, and still takes a card dropped on it. -->
+						<button
+							class="options-strip"
+							onclick={() => setOptionsOpen(true)}
+							title="Open the Options column"
+							aria-label="Open the Options column, {column.title}: {column.cards.length} {column.cards.length === 1 ? 'option' : 'options'}{optionsAgingNow.oldestDays !== null ? `, the oldest ${optionsAgingNow.oldestDays} ${optionsAgingNow.oldestDays === 1 ? 'day' : 'days'} old` : ''}{optionsAgingNow.over > 0 ? `, ${optionsAgingNow.over} older than ${OPTION_AGING_DAYS} days` : ''}"
+						>
+							<span class="options-strip-count">{column.cards.length}</span>
+							{#if optionsAgingNow.over > 0}
+								<span class="options-strip-aging" title="{optionsAgingNow.over} older than {OPTION_AGING_DAYS} days">{optionsAgingNow.over} &gt;{OPTION_AGING_DAYS}d</span>
+							{/if}
+							<span class="options-strip-title">{column.title}<span class="options-suffix">{' (Options)'}</span></span>
+							{#if optionsAgingNow.oldestDays !== null}
+								<span class="options-strip-oldest" title="The oldest option's age">oldest {optionsAgingNow.oldestDays}d</span>
+							{/if}
+						</button>
+					{:else}
 					<!-- The column's head (slice B3: a component). The column being
 					     renamed and the WIP limit being typed are this page's, one at a
 					     time for the whole board, bound; so is the dropdown open. -->
 					<KanbanColumnHeader
 						{column}
 						{canManage}
+						boardKind={boardState.board.kind}
+						hasOptionsColumn={optionsColumn !== null}
+						onMakeOptions={makeOptionsColumn}
+						onStopOptions={stopOptionsColumn}
+						onCollapse={() => setOptionsOpen(false)}
 						editing={editingColumn === column.id}
 						bind:editTitle={editColumnTitle}
 						editingWip={editingWipColumn === column.id}
@@ -1570,6 +1743,7 @@
 						onDelete={confirmDeleteColumn}
 						onCloseDropdowns={closeDropdowns}
 					/>
+					{/if}
 
 
 
@@ -1584,13 +1758,13 @@
 						}}
 						onconsider={(e) => handleCardDndConsider(column.id, e)}
 						onfinalize={(e) => handleCardDndFinalize(column.id, e)}
-						ondblclick={(e: MouseEvent) => { if ((isTodoColumnTitle(column.title) || column.showAddCard) && !(e.target as HTMLElement).closest('.kanban-card')) openNewCardModal(column.id); }}
+						ondblclick={(e: MouseEvent) => { if ((isOptionsColumn(column) || isTodoColumnTitle(column.title) || column.showAddCard) && !(e.target as HTMLElement).closest('.kanban-card')) openNewCardModal(column.id); }}
 					>
 						{#if column.cards.length === 0}
 							<div class="empty-column-prompt">
-								<span class="empty-icon">✨</span>
-								<span class="empty-text">No cards yet</span>
-								{#if isTodoColumnTitle(column.title) || column.showAddCard}
+								<span class="empty-icon">{isOptionsColumn(column) ? '💡' : '✨'}</span>
+								<span class="empty-text">{isOptionsColumn(column) ? 'No ideas yet' : 'No cards yet'}</span>
+								{#if isOptionsColumn(column) || isTodoColumnTitle(column.title) || column.showAddCard}
 									<span class="empty-hint">Double-click to add one</span>
 								{/if}
 							</div>
@@ -1738,6 +1912,7 @@
 		title={confirmState.title}
 		message={confirmState.message}
 		confirmText={confirmState.confirmText}
+		confirmDanger={confirmState.danger}
 		onConfirm={() => { confirmState.show = false; confirmState.onConfirm(); }}
 		onCancel={() => (confirmState.show = false)}
 	/>
@@ -1774,10 +1949,13 @@
 {#if showAddColumnModal}
 	<AddColumnModal
 		columns={boardState.columns}
-		onAdd={({ title, position, color }) => {
+		{canAddOptions}
+		asOptions={addColumnAsOptions}
+		onAdd={({ title, position, color, role }) => {
 			newColumnTitle = title;
 			newColumnPosition = position;
 			newColumnColor = color;
+			newColumnRole = role;
 			addColumn();
 		}}
 		onClose={() => (showAddColumnModal = false)}
@@ -1859,6 +2037,27 @@
 	/* The column's actions (in its head, `KanbanColumnHeader.svelte`) show on its hover. */
 	.kanban-column:hover :global(.column-actions) { opacity: 1; }
 
+	/* The Options column (milestone 22): tinted apart from committed work, and
+	   collapsed to a narrow strip by default (its list's rules are after
+	   `.column-cards`). */
+	.kanban-column.options-column { background: rgba(99, 102, 241, 0.05); }
+	.kanban-column.options-collapsed { flex: 0 0 56px; min-width: 56px; position: relative; }
+	.options-strip {
+		position: relative; z-index: 1; flex: 1; width: 100%; min-height: 0;
+		display: flex; flex-direction: column; align-items: center; gap: var(--space-sm);
+		padding: var(--space-md) 0; background: transparent; border: none; cursor: pointer;
+		color: var(--text-secondary); font-family: var(--font-family); border-radius: var(--radius-lg);
+	}
+	.options-strip:hover, .options-strip:focus-visible { background: var(--glass-hover); color: var(--text-primary); }
+	.options-strip-title { writing-mode: vertical-rl; transform: rotate(180deg); font-size: 0.85rem; font-weight: 600; white-space: nowrap; }
+	.options-suffix { font-weight: 500; color: var(--text-tertiary); }
+	.options-strip-count {
+		font-size: 0.78rem; font-weight: 700; background: var(--bg-base); padding: 2px 8px;
+		border-radius: var(--radius-full); border: 1px solid var(--glass-border); min-width: 22px; text-align: center;
+	}
+	.options-strip-aging, .options-strip-oldest { font-size: 0.6rem; font-weight: 600; color: var(--text-tertiary); text-align: center; line-height: 1.2; }
+	.options-strip-aging { color: #f59e0b; }
+
 	/* A list's scroll ends above the user badge (card 2239), or its last card is under it. */
 	.column-cards {
 		flex: 1; overflow-y: auto; padding: 0 var(--space-md) var(--user-badge-space);
@@ -1868,6 +2067,11 @@
 		scrollbar-color: transparent transparent;
 		transition: scrollbar-color 0.2s ease;
 	}
+	/* The collapsed Options column's list: its cards hidden, the list kept
+	   under the strip, so a card dropped on the strip lands in it (milestone 22). */
+	.kanban-column.options-collapsed .column-cards { position: absolute; inset: 0; padding: 0; overflow: hidden; }
+	.kanban-column.options-collapsed .column-cards :global(.kanban-card),
+	.kanban-column.options-collapsed .column-cards .empty-column-prompt { display: none; }
 	/* Show Firefox scrollbar on column hover */
 	.kanban-column:hover .column-cards {
 		scrollbar-color: var(--text-tertiary) rgba(128, 128, 128, 0.08);
@@ -1999,5 +2203,7 @@
 			flex: 0 0 92vw;
 			max-width: 92vw;
 		}
+		/* The Options strip stays a strip on a phone. */
+		.kanban-column.options-collapsed { flex: 0 0 56px; max-width: 56px; }
 	}
 </style>

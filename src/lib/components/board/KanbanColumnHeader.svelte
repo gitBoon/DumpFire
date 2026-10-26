@@ -14,18 +14,32 @@
   The page keeps the column element itself, the direct child of its keyed
   `{#each}` that `animate:flip` and the columns' drag zone need, and styles
   this header's hover from it (`.kanban-column:hover`).
+
+  The board's Options column (milestone 22, card 2459) shows its title with
+  a "(Options)" after it, which is not part of the title and is not renamed
+  with it; it has no WIP limit, always offers "Add idea", and can be
+  collapsed back to its strip. Someone who manages a delivery board with no
+  Options column can make one of a column whose title is not To Do, On Hold
+  or Complete ("Make this the Options column…": the page asks first when it
+  holds cards), and make it an ordinary column again once it is empty.
 -->
 <script lang="ts">
 	import type { ColumnType, SortOption } from '$lib/types';
 	import { COLUMN_COLORS } from '$lib/utils/constants';
 	import { getSortLabel } from '$lib/utils/card-utils';
 	import { drawnColour } from '$lib/colours';
+	import { holdFocus } from '$lib/dialog-focus';
 	// "To Do" or "Todo", trimmed, any capitals: All Tasks' rule (card 2280, slice B5a).
-	import { isTodoColumnTitle } from '$lib/column-role';
+	import { columnRole, isOptionsColumn, isTodoColumnTitle } from '$lib/column-role';
 
 	let {
 		column,
 		canManage,
+		boardKind = 'delivery',
+		hasOptionsColumn = false,
+		onMakeOptions = () => {},
+		onStopOptions = () => {},
+		onCollapse = () => {},
 		editing,
 		editTitle = $bindable(),
 		editingWip,
@@ -49,6 +63,16 @@
 	}: {
 		column: ColumnType;
 		canManage: boolean;
+		/** The board's kind: an ideas board has no Options column (milestone 22). */
+		boardKind?: string;
+		/** The board has an Options column already, this one or another: no second is offered. */
+		hasOptionsColumn?: boolean;
+		/** "Make this the Options column…": the page asks first when the column holds cards. */
+		onMakeOptions?: (column: ColumnType) => void;
+		/** "Stop being the Options column", offered while it is empty. */
+		onStopOptions?: (column: ColumnType) => void;
+		/** Collapse the Options column back to its strip. */
+		onCollapse?: () => void;
 		/** This column's title is being renamed: the box is shown, on `editTitle`. */
 		editing: boolean;
 		editTitle: string;
@@ -76,6 +100,11 @@
 		onDelete: (columnId: number, title: string) => void;
 		onCloseDropdowns: () => void;
 	} = $props();
+
+	const isOptions = $derived(isOptionsColumn(column));
+	/** "Make this the Options column…" is offered: a delivery board with none, and a title that means nothing else (ruling x). */
+	const canBecomeOptions = $derived(!isOptions && boardKind !== 'ideas' && !hasOptionsColumn && columnRole(column.title) === null);
+	const addsCards = $derived(isOptions || isTodoColumnTitle(column.title) || column.showAddCard);
 </script>
 
 <div class="column-header">
@@ -93,19 +122,24 @@
 		{:else}
 			<!-- svelte-ignore a11y_click_events_have_key_events -->
 			<h3 class="column-title" onclick={() => canManage && onStartRename(column)} role="button" tabindex="0">
-				{column.title}
+				{column.title}{#if isOptions}<span class="options-suffix">{' (Options)'}</span>{/if}
 			</h3>
 		{/if}
-		<span class="column-count" class:wip-over={column.wipLimit > 0 && column.cards.length >= column.wipLimit}>{#if visibleCount !== null}{visibleCount}<span class="of-total">/{column.cards.length}</span>{:else}{column.cards.length}{/if}{#if column.wipLimit > 0}<span class="wip-limit-label">/{column.wipLimit}</span>{/if}</span>
+		<span class="column-count" class:wip-over={!isOptions && column.wipLimit > 0 && column.cards.length >= column.wipLimit}>{#if visibleCount !== null}{visibleCount}<span class="of-total">/{column.cards.length}</span>{:else}{column.cards.length}{/if}{#if !isOptions && column.wipLimit > 0}<span class="wip-limit-label">/{column.wipLimit}</span>{/if}</span>
 		{#if sort && sort !== 'none'}
 			<button class="sort-badge" onclick={() => onSort(column.id, 'none')} title="Clear sort">
 				{getSortLabel(sort)} ✕
 			</button>
 		{/if}
-		{#if isTodoColumnTitle(column.title) || column.showAddCard}
-			<button class="add-card-badge" onclick={() => onAddCard(column.id)} title="Add task">
+		{#if addsCards}
+			<button class="add-card-badge" onclick={() => onAddCard(column.id)} title={isOptions ? 'Add idea' : 'Add task'}>
 				<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-				Add Task
+				{isOptions ? 'Add idea' : 'Add Task'}
+			</button>
+		{/if}
+		{#if isOptions}
+			<button class="btn-ghost column-action-btn options-collapse" title="Collapse the Options column" aria-label="Collapse the Options column" onclick={(e) => { e.stopPropagation(); onCollapse(); }}>
+				<svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M7.5 2.5L4 6l3.5 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
 			</button>
 		{/if}
 		<div class="column-actions">
@@ -129,7 +163,7 @@
 			{/if}
 		</div>
 		<div class="column-menu-wrapper">
-			<button class="btn-ghost column-action-btn" title="Column options" onclick={(e) => { e.stopPropagation(); onToggleDropdown(`menu-${column.id}`); }}>
+			<button class="btn-ghost column-action-btn" title="Column options" aria-label="Column options for {column.title}" aria-haspopup="true" aria-expanded={menuOpen} onclick={(e) => { e.stopPropagation(); onToggleDropdown(`menu-${column.id}`); }}>
 				<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
 					<circle cx="7" cy="3" r="1.2" fill="currentColor"/>
 					<circle cx="7" cy="7" r="1.2" fill="currentColor"/>
@@ -137,9 +171,12 @@
 				</svg>
 			</button>
 			{#if menuOpen}
+				<!-- Keyboard: its first item takes the focus as it opens, Tab stays
+				     inside it, Escape closes it, and the focus goes back to the
+				     button that opened it (holdFocus, milestone 22). -->
 				<!-- svelte-ignore a11y_click_events_have_key_events -->
 				<!-- svelte-ignore a11y_no_static_element_interactions -->
-				<div class="column-menu-dropdown show" onclick={(e) => e.stopPropagation()}>
+				<div class="column-menu-dropdown show" onclick={(e) => e.stopPropagation()} use:holdFocus={{ first: '.column-menu-item', onEscape: onCloseDropdowns }}>
 					<button class="column-menu-item" onclick={() => { onStartRename(column); onCloseDropdowns(); }}>
 						<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M8.5 1.5l2 2L4 10H2v-2l6.5-6.5z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
 						Rename
@@ -168,10 +205,31 @@
 					{/if}
 					{#if canManage}
 					<div class="menu-divider"></div>
+					<!-- The Options role (milestone 22). Made of a column whose title means
+					     nothing else, on a delivery board that has none; taken away once
+					     the column is empty (the server says so of an archived card). -->
+					{#if canBecomeOptions}
+						<button class="column-menu-item" onclick={() => { onCloseDropdowns(); onMakeOptions(column); }}>
+							💡 Make this the Options column…
+						</button>
+					{:else if isOptions}
+						<button
+							class="column-menu-item"
+							disabled={column.cards.length > 0}
+							title={column.cards.length > 0 ? 'Move its options out first' : 'Make this an ordinary column'}
+							onclick={() => { onCloseDropdowns(); onStopOptions(column); }}
+						>
+							Stop being the Options column
+						</button>
+					{/if}
+					{#if !isOptions}
 					<button class="column-menu-item" onclick={() => onToggleAddCard(column)}>
 						{column.showAddCard || isTodoColumnTitle(column.title) ? '✓' : '○'} Show Add Task
 					</button>
-					{#if editingWip}
+					{/if}
+					{#if isOptions}
+						<!-- An Options column has no WIP limit: nothing to set. -->
+					{:else if editingWip}
 						<!-- svelte-ignore a11y_click_events_have_key_events -->
 						<!-- svelte-ignore a11y_no_static_element_interactions -->
 						<div class="wip-limit-edit" onclick={(e) => e.stopPropagation()}>
@@ -240,6 +298,10 @@
 		border: none; transition: all var(--duration-fast) var(--ease-out);
 	}
 	.column-menu-item:hover { background: var(--glass-hover); color: var(--text-primary); }
+	.column-menu-item:disabled { opacity: 0.5; cursor: not-allowed; }
+	.column-menu-item:disabled:hover { background: transparent; color: var(--text-secondary); }
+	/* The Options column's "(Options)": not part of the title, and not renamed with it (ruling k). */
+	.options-suffix { font-weight: 500; color: var(--text-tertiary); font-size: 0.8rem; }
 	.column-menu-item.danger { color: var(--accent-rose); }
 	.column-menu-item.danger:hover { background: rgba(244, 63, 94, 0.1); }
 	.menu-divider { height: 1px; background: var(--glass-border); margin: var(--space-xs) 0; }

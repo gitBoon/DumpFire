@@ -50,6 +50,9 @@ export const ACTIONS = {
 	cardsPurged: 'cards_purged',
 	cardsCleared: 'cards_cleared',
 	columnDeleted: 'column_deleted',
+	// A column made the board's Options column, cards and all (milestone 22,
+	// ruling i): one entry for the conversion, none for each card. No webhook.
+	columnConvertedToOptions: 'column_converted_to_options',
 	subtaskCreated: 'subtask_created',
 	subtaskUpdated: 'subtask_updated',
 	subtaskCompleted: 'subtask_completed',

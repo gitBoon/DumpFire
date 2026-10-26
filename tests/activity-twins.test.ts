@@ -2751,6 +2751,13 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 		{ service: 'deleteColumnFor', args: [code('caller'), { columnId: code('columnId') }, null, { source: 'api' }] }
 	],
 	'src/routes/api/columns/reorder/+server.ts PUT': [{ service: 'reorderColumns', args: [code('caller'), {}, code('body'), { source: 'ui' }] }],
+	// Milestone 22, ruling i: a column made the Options column, cards and all.
+	'src/routes/api/columns/[id]/convert/+server.ts POST': [
+		{ service: 'convertColumnFor', args: [code('caller'), { columnId: code('id') }, code('body'), { source: 'ui' }] }
+	],
+	'src/routes/api/v1/columns/[columnId]/convert/+server.ts POST': [
+		{ service: 'convertColumnFor', args: [code('caller'), { columnId: code('columnId') }, code('body'), { source: 'api' }] }
+	],
 	'src/routes/api/categories/+server.ts POST': [{ service: 'createCardCategory', args: [code('caller'), {}, code('body'), { source: 'ui' }] }],
 	'src/routes/api/v1/boards/[boardId]/categories/+server.ts POST': [
 		{ service: 'createCardCategory', args: [code('caller'), { boardId: code('boardId') }, code('body'), { source: 'api' }] }

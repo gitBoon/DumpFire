@@ -245,7 +245,9 @@ describe('the page and the components, as source', () => {
 		const file = 'src/lib/board/board-view.ts';
 		const script = ts.createSourceFile(file, read(file), ts.ScriptTarget.Latest, true);
 		const uses = all(script, (n) => ts.isIdentifier(n) && n.text === 'localStorage');
-		expect(uses.length).toBe(2);
+		// The view's read and write, and the Options strip's read, write and
+		// forgetting (milestone 22): each inside a try.
+		expect(uses.length).toBe(5);
 		for (const use of uses) {
 			let inTry = false;
 			for (let n: ts.Node = use; n.parent; n = n.parent) {

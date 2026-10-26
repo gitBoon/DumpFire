@@ -15,9 +15,62 @@
  * the board decide it, and `committed_at` records what they decided.
  */
 import { db } from '$lib/server/db';
-import { boards, columns } from '$lib/server/db/schema';
-import { eq, inArray } from 'drizzle-orm';
+import { activityLog, boards, columns } from '$lib/server/db/schema';
+import { and, eq, inArray, like, max } from 'drizzle-orm';
 import { isUpstreamColumn } from '$lib/column-role';
+import { ACTIONS, storedActions } from '$lib/server/logActivity';
+
+/**
+ * How a `column_converted_to_options` entry's detail ends: ` (column <id>)`.
+ * The activity log has no column of its own for a column, so the conversion
+ * names it here, at the end of the detail, after the quoted title, where no
+ * title can put it; `optionsSince` looks for it there (milestone 22, the S1b
+ * review's B2).
+ */
+export function conversionSuffix(columnId: number): string {
+	return ` (column ${columnId})`;
+}
+
+/**
+ * When each of these cards, all in the Options column `column`, became an
+ * option, for the strip's aging (milestone 22, ruling g, amended by the S1b
+ * review's B2): the latest of its creation, its latest
+ * `card_returned_to_options` entry, and the latest conversion of the column,
+ * each in either spelling. A card converted with its column is an option from
+ * the conversion, not from its creation; a card sent here from an ideas board
+ * keeps its age. Two reads, and none for no cards. Stored moments share one
+ * form, so the latest is the greatest text.
+ */
+export function optionsSince(column: { id: number; boardId: number }, cards: readonly { id: number; createdAt: string }[]): Map<number, string> {
+	const since = new Map<number, string>();
+	if (cards.length === 0) return since;
+	const returned = new Map(
+		db
+			.select({ cardId: activityLog.cardId, at: max(activityLog.createdAt) })
+			.from(activityLog)
+			.where(and(inArray(activityLog.cardId, cards.map((c) => c.id)), inArray(activityLog.action, storedActions('card_returned_to_options'))))
+			.groupBy(activityLog.cardId)
+			.all()
+			.map((r) => [r.cardId, r.at])
+	);
+	const converted =
+		db
+			.select({ at: max(activityLog.createdAt) })
+			.from(activityLog)
+			.where(
+				and(
+					eq(activityLog.boardId, column.boardId),
+					inArray(activityLog.action, storedActions(ACTIONS.columnConvertedToOptions)),
+					like(activityLog.detail, `%${conversionSuffix(column.id)}`)
+				)
+			)
+			.get()?.at ?? null;
+	for (const card of cards) {
+		const moments = [card.createdAt, returned.get(card.id), converted].filter((m): m is string => typeof m === 'string');
+		since.set(card.id, moments.reduce((latest, m) => (m > latest ? m : latest)));
+	}
+	return since;
+}
 
 /**
  * The rule as an SQL condition, over a column and its board under the aliases
