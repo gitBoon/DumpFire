@@ -1505,7 +1505,7 @@ const spec = {
 			MilestoneListItem: {
 				type: 'object',
 				description:
-					'A milestone as the list gives it. Every property of Milestone, described there, and four more: `boardName`, `cardCount`, `doneCount` and `boardIds`. Archived cards are not counted.',
+					'A milestone as the list gives it. Every property of Milestone, described there, and five more: `boardName`, `cardCount`, `doneCount`, `optionsCount` and `boardIds`. Archived cards are not counted.',
 				properties: {
 					id: { type: 'integer' },
 					boardId: { type: ['integer', 'null'] },
@@ -1517,8 +1517,12 @@ const spec = {
 					createdAt: { type: 'string', format: 'date-time' },
 					updatedAt: { type: 'string', format: 'date-time' },
 					boardName: { type: ['string', 'null'], description: 'Name of the board the milestone belongs to. null for a milestone that spans boards.' },
-					cardCount: { type: 'integer', description: 'How many cards are in the milestone' },
+					cardCount: {
+						type: 'integer',
+						description: 'How many cards are in the milestone, options left out: a card in a board\'s Options column or on an ideas board is counted in optionsCount'
+					},
 					doneCount: { type: 'integer', description: 'How many of them are in a Complete column' },
+					optionsCount: { type: 'integer', description: 'How many of its cards are options, in a board\'s Options column or on an ideas board, upstream of the commitment point' },
 					boardIds: {
 						type: 'array',
 						items: { type: 'integer' },
@@ -1528,7 +1532,7 @@ const spec = {
 				},
 				required: [
 					'id', 'boardId', 'name', 'description', 'targetDate', 'status', 'createdBy', 'createdAt', 'updatedAt',
-					'boardName', 'cardCount', 'doneCount', 'boardIds'
+					'boardName', 'cardCount', 'doneCount', 'optionsCount', 'boardIds'
 				]
 			},
 			MilestoneDetail: {
@@ -1720,7 +1724,7 @@ const spec = {
 			MilestoneNode: {
 				type: 'object',
 				description:
-					'A card or a subtask in a milestone\'s plan, with its place in the order of work. Every property of PlanNode, described there, and seven more. ' +
+					'A card or a subtask in a milestone\'s plan, with its place in the order of work. Every property of PlanNode, described there, and eight more. ' +
 					'Withheld work keeps its place in the plan: only what PlanNode says is replaced.',
 				properties: {
 					kind: { type: 'string', enum: ['card', 'subtask'] },
@@ -1744,11 +1748,17 @@ const spec = {
 					blocks: { type: 'array', items: { $ref: '#/components/schemas/DependencyEnd' }, description: 'What waits on it, among the nodes of this plan' },
 					openBlockers: { type: 'array', items: { $ref: '#/components/schemas/DependencyEnd' }, description: 'Of what it waits on, what is not finished' },
 					downstreamCount: { type: 'integer', description: 'How much unfinished work waits on it, directly or through other work' },
-					onCriticalPath: { type: 'boolean' }
+					onCriticalPath: { type: 'boolean' },
+					isOption: {
+						type: 'boolean',
+						description:
+							'true for an option, a card in a board\'s Options column or on an ideas board, or a subtask of one. It stays in the graph, where an unfinished option still blocks ' +
+							'what waits on it, but is in no count of progress and never in nextActionable. Told of withheld work too, as isComplete is.'
+					}
 				},
 				required: [
 					'kind', 'id', 'title', 'priority', 'columnId', 'columnTitle', 'boardId', 'boardName', 'isComplete', 'milestoneId',
-					'withheld', 'external', 'layer', 'blockedBy', 'blocks', 'openBlockers', 'downstreamCount', 'onCriticalPath'
+					'withheld', 'external', 'layer', 'blockedBy', 'blocks', 'openBlockers', 'downstreamCount', 'onCriticalPath', 'isOption'
 				]
 			},
 			MilestoneSummary: {
@@ -1760,11 +1770,14 @@ const spec = {
 					milestone: { $ref: '#/components/schemas/Milestone' },
 					progress: {
 						type: 'object',
-						description: 'Counts of the milestone\'s own cards. Subtasks are counted only in `openSubtasks` and `totalSubtasks`.',
+						description:
+							'Counts of the milestone\'s own cards. Subtasks are counted only in `openSubtasks` and `totalSubtasks`. ' +
+							'Its options, cards in a board\'s Options column or on an ideas board, are counted only in `options`: not in total, done, byColumn, the subtask counts or boards.',
 						properties: {
-							total: { type: 'integer', description: 'Cards in the milestone' },
+							total: { type: 'integer', description: 'Cards in the milestone, options left out' },
 							done: { type: 'integer', description: 'Of which in a Complete column' },
 							percent: { type: 'integer', description: 'done as a percentage of total. 100 only when every card is done, and 0 only when none is.' },
+							options: { type: 'integer', description: 'The milestone\'s cards that are options, upstream of the commitment point' },
 							byColumn: {
 								type: 'array',
 								description: 'The cards by the title of the column they are in. Cards on boards the key\'s user cannot open are counted under an empty title.',
@@ -1788,7 +1801,7 @@ const spec = {
 								}
 							}
 						},
-						required: ['total', 'done', 'percent', 'byColumn', 'openSubtasks', 'totalSubtasks', 'boards']
+						required: ['total', 'done', 'percent', 'options', 'byColumn', 'openSubtasks', 'totalSubtasks', 'boards']
 					},
 					graph: {
 						type: 'object',
@@ -2268,9 +2281,35 @@ const spec = {
 							'generatedAt', 'completionBasis', 'attribution', 'closeReasonAssumedCount', 'missingSummaryCount',
 							'completedOutsideWindow', 'boardsExcludedForAccess'
 						]
+					},
+					upstream: {
+						type: ['object', 'null'],
+						description:
+							'What happened upstream of the commitment point on the boards the report covers, over the window, both ends included, and the options they hold now. ' +
+							'An option is a card in a board\'s Options column or on an ideas board: it is in no bucket and no total above. ' +
+							'Each card counts once, under its last act in the window among committed, returned, discarded and sent on; abandoned work is counted on its own. ' +
+							'null for a report on one user, since these describe the boards, whoever\'s work it was.',
+						properties: {
+							options: { type: 'integer', description: 'Options now: live cards in an upstream column of these boards' },
+							committedFromOptions: { type: 'integer', description: 'Cards whose last act in the window was a commitment out of upstream' },
+							returnedToOptions: { type: 'integer', description: 'Cards whose last act in the window was a return into upstream' },
+							discarded: { type: 'integer', description: 'Cards whose last act in the window was a discard, archived or deleted from upstream' },
+							sentOn: { type: 'integer', description: 'Cards whose last act in the window was a Send to a board outside these boards' },
+							abandoned: { type: 'integer', description: 'Cards of committed work archived before Complete in the window' },
+							discardRate: {
+								type: ['number', 'null'],
+								description: 'discarded / (discarded + committedFromOptions + sentOn), from 0 to 1; null when all three are 0'
+							},
+							oldestOptionDays: { type: ['integer', 'null'], description: 'Whole days the oldest option now has waited; null with no options' },
+							agingOptions: { type: 'integer', description: 'Options now that have waited more than 30 days' }
+						},
+						required: [
+							'options', 'committedFromOptions', 'returnedToOptions', 'discarded', 'sentOn', 'abandoned', 'discardRate',
+							'oldestOptionDays', 'agingOptions'
+						]
 					}
 				},
-				required: ['period', 'user', 'totals', 'boards', 'milestones', 'meta']
+				required: ['period', 'user', 'totals', 'boards', 'milestones', 'meta', 'upstream']
 			}
 		},
 		parameters: {

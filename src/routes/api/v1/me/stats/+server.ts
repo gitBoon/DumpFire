@@ -6,6 +6,7 @@ import { eq, and, count, sql, gte, inArray } from 'drizzle-orm';
 import { ACTIONS, storedActions } from '$lib/server/logActivity';
 import { recentActivityFor } from '$lib/server/list-access';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
+import { UPSTREAM } from '$lib/server/upstream';
 import { stamp } from '$lib/timestamps';
 import type { RequestHandler } from './$types';
 
@@ -14,9 +15,9 @@ import type { RequestHandler } from './$types';
  *
  * Returns:
  * - cardsCompleted (total + last 7/30 days)
- * - avgCycleTime (days, based on created→completed, on boards the caller can open)
+ * - avgCycleTime (days, based on committed→completed, on boards the caller can open)
  * - streak (consecutive days with at least one completion)
- * - activeCards (assigned and open, on boards the caller can open)
+ * - activeCards (assigned, open and committed, on boards the caller can open)
  * - recentActivity (last 20 actions, on boards the caller can open)
  */
 /**
@@ -76,14 +77,20 @@ export const GET: RequestHandler = async ({ locals }) => {
 		? sql``
 		: sql`AND col.board_id IN (${sql.join(boardIds.map((id) => sql`${id}`), sql`, `)})`;
 
-	// Average cycle time from completed cards assigned to user
+	// Average cycle time from completed cards assigned to user, from the
+	// commitment to completion (milestone 22, card 2462): for a card made
+	// before the milestone the commitment is its creation, as it was. Both
+	// figures count committed work only: an option, in a board's Options
+	// column or on an ideas board, is neither finished work nor open work.
 	const cycleResult = opensNone ? [] : db.all(sql`
-		SELECT AVG(julianday(c.completed_at) - julianday(c.created_at)) as avg_days
+		SELECT AVG(julianday(c.completed_at) - julianday(COALESCE(c.committed_at, c.created_at))) as avg_days
 		FROM cards c
 		INNER JOIN card_assignees ca ON ca.card_id = c.id
 		INNER JOIN columns col ON col.id = c.column_id
+		INNER JOIN boards b ON b.id = col.board_id
 		WHERE ca.user_id = ${userId}
 			AND c.completed_at IS NOT NULL
+			AND NOT ${sql.raw(UPSTREAM)}
 			${onBoardsTheyOpen}
 	`) as { avg_days: number | null }[];
 	// Null when no card has been completed; an average of 0, cards completed
@@ -139,9 +146,11 @@ export const GET: RequestHandler = async ({ locals }) => {
 		FROM card_assignees ca
 		INNER JOIN cards c ON c.id = ca.card_id
 		INNER JOIN columns col ON col.id = c.column_id
+		INNER JOIN boards b ON b.id = col.board_id
 		WHERE ca.user_id = ${userId}
 			AND c.completed_at IS NULL
 			AND c.archived_at IS NULL
+			AND NOT ${sql.raw(UPSTREAM)}
 			${onBoardsTheyOpen}
 	`) as { cnt: number }[];
 

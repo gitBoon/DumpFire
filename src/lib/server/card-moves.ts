@@ -61,7 +61,7 @@ import {
 } from './db/schema';
 import { columnRole, isUpstreamColumn } from '$lib/column-role';
 import { stamp } from '$lib/timestamps';
-import { boardKinds, conversionSuffix } from './upstream';
+import { boardKinds, commitmentSuffix } from './upstream';
 import { getCompletionBlocker } from './card-completion';
 import { emit } from './events';
 import { ACTIONS, logActivity, type ActivitySource } from './logActivity';
@@ -448,9 +448,10 @@ function moveCard(request: MoveRequest): CardMove {
 	//
 	// So is a commitment, and a return to options (milestone 22): one entry per
 	// fact, on the board the card is on now, naming the column it went into.
-	// The commitment's detail also ends ` (column <id>)`, as a conversion's
-	// does (`conversionSuffix`), so the cycle time reads the column it went
-	// into by its id, not by its title (ruling a; the S2 review's C3). A commitment is not a
+	// The commitment's detail also ends ` (column <to>, from column <from>)`
+	// (`commitmentSuffix`), so the cycle time reads the column it went into by
+	// its id, not by its title (ruling a; the S2 review's C3), and its time in
+	// options the column it left (the S4a review's H3). A commitment is not a
 	// `card_moved`, so the first `card_moved` after it is still the start of
 	// work. Options straight to Complete is `card_committed` then
 	// `card_completed`; Complete back to Options is `card_reopened` then
@@ -458,7 +459,7 @@ function moveCard(request: MoveRequest): CardMove {
 	// `card.moved` of that move (ruling q).
 	const onArrival = { ...who, boardId: toColumn.boardId, cardId, detail: `"${before.title}": ${route}` };
 	if (reopened) logActivity({ ...onArrival, action: ACTIONS.cardReopened, webhook: returning ? false : undefined });
-	if (committing) logActivity({ ...onArrival, action: ACTIONS.cardCommitted, detail: `${onArrival.detail}${conversionSuffix(toColumn.id)}` });
+	if (committing) logActivity({ ...onArrival, action: ACTIONS.cardCommitted, detail: `${onArrival.detail}${commitmentSuffix(toColumn.id, fromColumn.id)}` });
 	if (returning) logActivity({ ...onArrival, action: ACTIONS.cardReturnedToOptions });
 	if (completed) logActivity({ ...onArrival, action: ACTIONS.cardCompleted });
 	if (!crossBoard && !completed && !reopened && !committing && !returning) logActivity({ ...onArrival, action: ACTIONS.cardMoved });

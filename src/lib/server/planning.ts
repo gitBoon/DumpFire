@@ -39,6 +39,7 @@ import { eq, and, or, isNull, inArray, notInArray, asc, like, ne } from 'drizzle
 import type { Actor } from './board-access';
 import { resolveAccessible } from './list-access';
 import { isCompleteColumnTitle } from './card-completion';
+import { isUpstreamColumn } from '$lib/column-role';
 import { notifyCardUnblocked } from './notifications';
 import { WITHHELD_BOARD_NAME, WITHHELD_CARD_TITLE, WITHHELD_SUBTASK_TITLE } from './withheld';
 import { emit } from './events';
@@ -93,6 +94,13 @@ interface WorkNode extends WorkRef {
 	boardId: number;
 	boardName: string;
 	isComplete: boolean;
+	/**
+	 * True for a card, or a subtask of a card, in an Options column or on an
+	 * ideas board: an option, upstream of the commitment point (milestone 22).
+	 * Kept out of `PlanNode`, which every dependency answer gives; a goal's
+	 * summary gives it on its own nodes, as `MilestoneNode.isOption`.
+	 */
+	isOption: boolean;
 	milestoneId: number | null;
 	/** Set on subtasks: the card they belong to. */
 	parentCardId?: number;
@@ -165,14 +173,29 @@ export interface MilestoneNode extends PlanNode {
 	/** Open work reachable downstream — how much finishing this frees up. */
 	downstreamCount: number;
 	onCriticalPath: boolean;
+	/**
+	 * True for an option, in an Options column or on an ideas board
+	 * (milestone 22, card 2462): in the graph, where an open option still
+	 * blocks what waits on it, but in no count of `progress` and never
+	 * startable in `nextActionable`. Told of withheld work too, as whether it
+	 * is finished is.
+	 */
+	isOption: boolean;
 }
 
 export interface MilestoneSummary {
 	milestone: typeof milestones.$inferSelect;
+	/**
+	 * Counts of the goal's committed cards. Its options (milestone 22) are in
+	 * none of them, nor in `byColumn`, the subtask counts or `boards`; they are
+	 * counted in `options`.
+	 */
 	progress: {
 		total: number;
 		done: number;
 		percent: number;
+		/** The goal's cards that are options, in an Options column or on an ideas board. */
+		options: number;
 		byColumn: { columnTitle: string; count: number }[];
 		openSubtasks: number;
 		/** Every subtask of the same cards, ticked or not: what `openSubtasks` is judged against. */
@@ -272,7 +295,7 @@ function loadPlanNodes(keys: Iterable<NodeKey>): Map<NodeKey, WorkNode> {
 
 	const boardIds = [...new Set(cols.map((c) => c.boardId))];
 	const brds = boardIds.length
-		? db.select({ id: boards.id, name: boards.name }).from(boards).where(inArray(boards.id, boardIds)).all()
+		? db.select({ id: boards.id, name: boards.name, kind: boards.kind }).from(boards).where(inArray(boards.id, boardIds)).all()
 		: [];
 	const boardById = new Map(brds.map((b) => [b.id, b]));
 
@@ -286,7 +309,8 @@ function loadPlanNodes(keys: Iterable<NodeKey>): Map<NodeKey, WorkNode> {
 			columnTitle: col?.title ?? 'Unknown',
 			boardId: col?.boardId ?? 0,
 			boardName: board?.name ?? 'Unknown board',
-			cardComplete: col ? isCompleteColumnTitle(col.title) : false
+			cardComplete: col ? isCompleteColumnTitle(col.title) : false,
+			option: col ? isUpstreamColumn(col, board?.kind ?? null) : false
 		};
 	};
 
@@ -304,6 +328,7 @@ function loadPlanNodes(keys: Iterable<NodeKey>): Map<NodeKey, WorkNode> {
 			boardId: p.boardId,
 			boardName: p.boardName,
 			isComplete: p.cardComplete,
+			isOption: p.option,
 			milestoneId: r.milestoneId ?? null
 		});
 	}
@@ -323,6 +348,7 @@ function loadPlanNodes(keys: Iterable<NodeKey>): Map<NodeKey, WorkNode> {
 			boardName: p.boardName,
 			// A subtask is done when it is ticked, not when its card moves.
 			isComplete: !!st.completed,
+			isOption: p.option,
 			milestoneId: parent.milestoneId ?? null,
 			parentCardId: st.cardId
 		});
@@ -357,7 +383,9 @@ export function boardsOpenTo(viewer: Actor, accessible?: number[] | null): (boar
  * the real node, never from this one.
  */
 function withhold(node: WorkNode, opens: (boardId: number) => boolean): PlanNode {
-	if (opens(node.boardId)) return { ...node, withheld: false };
+	// Whether it is an option is not a PlanNode's: the summary adds it to its own nodes.
+	const { isOption: _isOption, ...rest } = node;
+	if (opens(node.boardId)) return { ...rest, withheld: false };
 	return {
 		kind: node.kind,
 		id: node.id,
@@ -993,7 +1021,8 @@ export function getMilestoneSummary(milestoneId: number, viewer: Actor): Milesto
 			blocks: (blocksKeys.get(k) ?? []).map(parseNodeKey),
 			openBlockers: openBlockers.map(parseNodeKey),
 			downstreamCount: reach.get(k)?.size ?? 0,
-			onCriticalPath: criticalSet.has(k)
+			onCriticalPath: criticalSet.has(k),
+			isOption: byKey.get(k)!.isOption
 		};
 	});
 	const nodeByKeyMap = new Map(nodes.map((n) => [refKey(n), n]));
@@ -1001,10 +1030,11 @@ export function getMilestoneSummary(milestoneId: number, viewer: Actor): Milesto
 	// ── Next actionable: in the milestone, not done, nothing open blocking it.
 	//    Sorted by how much it unblocks, because on a one- or two-person team the
 	//    work that frees the most downstream work is worth starting first. By the
-	//    real priority, so that the order is the same whoever asks.
+	//    real priority, so that the order is the same whoever asks. Never an
+	//    option (milestone 22): it is not work anyone has committed to start.
 	const realWeight = (n: WorkRef) => weightOf(byKey.get(refKey(n))!.priority);
 	const nextActionable = nodes
-		.filter((n) => !n.external && !n.isComplete && n.openBlockers.length === 0)
+		.filter((n) => !n.external && !n.isComplete && !n.isOption && n.openBlockers.length === 0)
 		.sort(
 			(a, b) =>
 				b.downstreamCount - a.downstreamCount ||
@@ -1012,8 +1042,10 @@ export function getMilestoneSummary(milestoneId: number, viewer: Actor): Milesto
 				a.id - b.id
 		);
 
+	// Nor an option among what is waiting (the S4a review's H4): it waits on
+	// nothing anyone has committed to. It stays in the graph, and blocks there.
 	const blocked = nodes
-		.filter((n) => !n.external && !n.isComplete && n.openBlockers.length > 0)
+		.filter((n) => !n.external && !n.isComplete && !n.isOption && n.openBlockers.length > 0)
 		.sort((a, b) => a.openBlockers.length - b.openBlockers.length || a.id - b.id)
 		.map((n) => ({
 			card: n,
@@ -1033,8 +1065,10 @@ export function getMilestoneSummary(milestoneId: number, viewer: Actor): Milesto
 	//    carry dependencies — otherwise recording an ordering on a subtask would
 	//    silently change how big the goal looks. From the withheld nodes: a card
 	//    on a board the viewer cannot open is counted under "" in `byColumn`, and
-	//    in one entry of `boards` with no id, whichever board it is on.
-	const memberCardNodes = nodes.filter((n) => !n.external && n.kind === 'card');
+	//    in one entry of `boards` with no id, whichever board it is on. The
+	//    goal's options are counted apart and in nothing else (milestone 22).
+	const memberCards = nodes.filter((n) => !n.external && n.kind === 'card');
+	const memberCardNodes = memberCards.filter((n) => !n.isOption);
 	const byColumnMap = new Map<string, number>();
 	for (const n of memberCardNodes) {
 		byColumnMap.set(n.columnTitle, (byColumnMap.get(n.columnTitle) ?? 0) + 1);
@@ -1072,6 +1106,7 @@ export function getMilestoneSummary(milestoneId: number, viewer: Actor): Milesto
 			total: memberCardNodes.length,
 			done,
 			percent: completionPercent(done, memberCardNodes.length),
+			options: memberCards.length - memberCardNodes.length,
 			byColumn: [...byColumnMap.entries()].map(([columnTitle, count]) => ({ columnTitle, count })),
 			openSubtasks,
 			totalSubtasks,

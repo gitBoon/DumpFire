@@ -20,6 +20,7 @@ import { eq, and, or, isNull, inArray, notInArray, exists, notExists, ne, type S
 import { canViewBoard, canEditBoard, type Actor } from './board-access';
 import { resolveAccessible } from './list-access';
 import { isCompleteColumnTitle } from './card-completion';
+import { isUpstreamColumn } from '$lib/column-role';
 import { changedFields } from './card-changes';
 import { ACTIONS, actorOf, logActivity, type ActivitySource } from './logActivity';
 import { boardsOpenTo, getMilestoneBoardIds, getMilestonesBoardIds } from './planning';
@@ -30,8 +31,11 @@ export type MilestoneRow = typeof milestones.$inferSelect;
 
 export interface MilestoneListEntry extends MilestoneRow {
 	boardName: string | null;
+	/** Its committed cards: an option, in an Options column or on an ideas board, is not counted here (milestone 22). */
 	cardCount: number;
 	doneCount: number;
+	/** Its cards that are options, counted apart from `cardCount` (milestone 22, card 2462). */
+	optionsCount: number;
 	/**
 	 * Boards the milestone's cards actually live on that the caller can open —
 	 * a goal can span several. A card on a board they cannot open is still
@@ -309,19 +313,25 @@ export function listMilestones(
 
 	const ids = filtered.map((m) => m.id);
 	const opens = boardsOpenTo(user, open);
+	// Each member with its column's role and its board's kind: an option is
+	// no work of the goal's yet, and is counted on its own (milestone 22).
 	const memberRows = db
-		.select({ milestoneId: cards.milestoneId, columnTitle: columns.title, boardId: columns.boardId })
+		.select({ milestoneId: cards.milestoneId, columnTitle: columns.title, boardId: columns.boardId, role: columns.role, kind: boards.kind })
 		.from(cards)
 		.innerJoin(columns, eq(cards.columnId, columns.id))
+		.innerJoin(boards, eq(boards.id, columns.boardId))
 		.where(and(inArray(cards.milestoneId, ids), isNull(cards.archivedAt)))
 		.all();
 
-	const counts = new Map<number, { total: number; done: number; boards: Set<number> }>();
+	const counts = new Map<number, { total: number; done: number; options: number; boards: Set<number> }>();
 	for (const r of memberRows) {
 		if (r.milestoneId === null) continue;
-		const entry = counts.get(r.milestoneId) ?? { total: 0, done: 0, boards: new Set<number>() };
-		entry.total++;
-		if (isCompleteColumnTitle(r.columnTitle)) entry.done++;
+		const entry = counts.get(r.milestoneId) ?? { total: 0, done: 0, options: 0, boards: new Set<number>() };
+		if (isUpstreamColumn(r, r.kind)) entry.options++;
+		else {
+			entry.total++;
+			if (isCompleteColumnTitle(r.columnTitle)) entry.done++;
+		}
 		entry.boards.add(r.boardId);
 		counts.set(r.milestoneId, entry);
 	}
@@ -340,12 +350,13 @@ export function listMilestones(
 
 	return filtered
 		.map((m) => {
-			const c = counts.get(m.id) ?? { total: 0, done: 0, boards: new Set<number>() };
+			const c = counts.get(m.id) ?? { total: 0, done: 0, options: 0, boards: new Set<number>() };
 			return {
 				...m,
 				boardName: m.boardId === null ? null : (boardNames.get(m.boardId) ?? null),
 				cardCount: c.total,
 				doneCount: c.done,
+				optionsCount: c.options,
 				boardIds: [...c.boards].filter(opens)
 			};
 		})

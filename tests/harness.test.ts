@@ -145,6 +145,8 @@ const TEST_FILES = [
 	'timestamps.test.ts',
 	'todo-page.test.ts',
 	'transaction.test.ts',
+	// Milestone 22, slice S4a: options are left out of every delivery measure; lead and cycle time from the commitment.
+	'upstream-measures.test.ts',
 	'uploads-sweep.test.ts',
 	'uploads.test.ts',
 	'user-delete.test.ts',

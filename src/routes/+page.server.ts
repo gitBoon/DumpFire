@@ -6,7 +6,8 @@ import { boardCategoriesFor, recentActivityFor, subBoardsFor } from '$lib/server
 import { subBoardProgress } from '$lib/server/card-completion';
 import { completionPercent } from '$lib/progress';
 import { getBoardTokenTotals, getUserSpendByPeriod } from '$lib/server/tokens';
-import { completeColumnIds, holdColumnIds, isCompleteColumnTitle } from '$lib/column-role';
+import { completeColumnIds, holdColumnIds, isCompleteColumnTitle, isUpstreamColumn } from '$lib/column-role';
+import { notUpstream } from '$lib/server/upstream';
 import { parseStamp, stamp } from '$lib/timestamps';
 import { daysFromDay, todayIn } from '$lib/utils/date-utils';
 import type { PageServerLoad } from './$types';
@@ -81,13 +82,20 @@ export const load: PageServerLoad = async ({ locals }) => {
 	// two a level of sub-boards in the walk. A board's columns are in the order
 	// of their ids and a column's cards in the order of theirs, as each board's
 	// own reads gave them, so a board's sub-boards are listed as they were.
+	//
+	// Each column with its board's kind, in the same read, for which are
+	// upstream (milestone 22, card 2462): an option, in a board's Options
+	// column or on an ideas board, is no delivery work, and is in no count on
+	// this page but the board's own `optionsCount`.
 	const shownColumns = shownBoardIds.length > 0
-		? db.select({ id: columns.id, boardId: columns.boardId, title: columns.title, role: columns.role })
+		? db.select({ id: columns.id, boardId: columns.boardId, title: columns.title, role: columns.role, kind: boards.kind })
 			.from(columns)
+			.innerJoin(boards, eq(boards.id, columns.boardId))
 			.where(inArray(columns.boardId, shownBoardIds))
 			.orderBy(columns.id)
 			.all()
 		: [];
+	const upstreamColumns = new Set(shownColumns.filter(col => isUpstreamColumn(col, col.kind)).map(col => col.id));
 	const columnsByBoard = new Map<number, typeof shownColumns>();
 	for (const col of shownColumns) {
 		const list = columnsByBoard.get(col.boardId) ?? [];
@@ -117,12 +125,17 @@ export const load: PageServerLoad = async ({ locals }) => {
 		const colIds = boardCols.map(c => c.id);
 		if (colIds.length === 0) {
 			const cat = board.categoryId ? allCategories.find(c => c.id === board.categoryId) : null;
-			return { ...board, totalCards: 0, completedCards: 0, tokenTotal: tokensFor(board.id), costUsd: costFor(board.id), lastActivity: board.updatedAt, subBoards: [] as any[], categoryName: cat?.name || null, categoryColor: cat?.color || null };
+			return { ...board, totalCards: 0, completedCards: 0, optionsCount: 0, tokenTotal: tokensFor(board.id), costUsd: costFor(board.id), lastActivity: board.updatedAt, subBoards: [] as any[], categoryName: cat?.name || null, categoryColor: cat?.color || null };
 		}
 
 		const boardCards = cardsOf(boardCols).filter(c => !c.archivedAt);
+		// The board's committed work, which its figures count, and its options,
+		// counted on their own: on an ideas board every card is an idea, and
+		// the row shows "N ideas" and no completion bar.
+		const deliveryCards = boardCards.filter(c => !upstreamColumns.has(c.columnId));
+		const optionsCount = boardCards.length - deliveryCards.length;
 		const completeColIds = completeColumnIds(boardCols);
-		const completedCards = boardCards.filter(c => completeColIds.has(c.columnId)).length;
+		const completedCards = deliveryCards.filter(c => completeColIds.has(c.columnId)).length;
 
 		// The latest of the board's and its cards' edits. Every one is in the
 		// stored form (card 2095), so the greater text is the later moment; one
@@ -166,8 +179,9 @@ export const load: PageServerLoad = async ({ locals }) => {
 
 		return {
 			...board,
-			totalCards: boardCards.length,
+			totalCards: deliveryCards.length,
 			completedCards,
+			optionsCount,
 			tokenTotal: tokensFor(board.id),
 			costUsd: costFor(board.id),
 			lastActivity,
@@ -192,6 +206,9 @@ export const load: PageServerLoad = async ({ locals }) => {
 	//
 	// Every board it reaches is one of `shownBoardIds`, so it walks the columns
 	// and cards read above and reads nothing as it goes (card 2298).
+	//
+	// Options are not counted (milestone 22): not their cards, nor their
+	// subtasks. Sub-boards are still followed from every card.
 	const isDoneTitle = isCompleteColumnTitle;
 	const walkedBoardIds = new Set<number>(allBoards.map(b => b.id));
 	const countedCardIds = new Set<number>();
@@ -205,7 +222,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 		const frontierCards = cardsOf(frontierCols);
 		const next: number[] = [];
 		for (const c of frontierCards) {
-			if (!c.archivedAt) {
+			if (!c.archivedAt && !upstreamColumns.has(c.columnId)) {
 				countedCardIds.add(c.id);
 				allTasksCards++;
 				if (frontierDoneCols.has(c.columnId)) allTasksCompleted++;
@@ -227,7 +244,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 			.from(subtasks)
 			.innerJoin(cards, eq(subtasks.cardId, cards.id))
 			.innerJoin(columns, eq(cards.columnId, columns.id))
-			.where(and(inArray(columns.boardId, [...walkedBoardIds]), isNull(cards.archivedAt)))
+			.innerJoin(boards, eq(boards.id, columns.boardId))
+			.where(and(inArray(columns.boardId, [...walkedBoardIds]), isNull(cards.archivedAt), notUpstream()))
 			.get()!.count;
 	// Token cost over exactly the boards this walk covered, so the All Tasks row
 	// quotes the same scope as its card and task counts. Null — not zero — when
@@ -263,6 +281,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 	// outlive access to its board: someone taken off a board went on seeing its
 	// cards here, their titles in Upcoming Deadlines. Every figure below comes
 	// from these: assigned, active, the due cards, the trends and on hold.
+	// Committed work only (milestone 22): an option assigned to someone is not
+	// work they have on, nor is it aging.
 	const myAssignments = db.select({ cardId: cardAssignees.cardId })
 		.from(cardAssignees)
 		.where(eq(cardAssignees.userId, user.id))
@@ -275,7 +295,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 		myCards = db.select({ card: cards, boardId: columns.boardId })
 			.from(cards)
 			.innerJoin(columns, eq(cards.columnId, columns.id))
-			.where(and(inArray(cards.id, myCardIds), isNull(cards.archivedAt)))
+			.innerJoin(boards, eq(boards.id, columns.boardId))
+			.where(and(inArray(cards.id, myCardIds), isNull(cards.archivedAt), notUpstream()))
 			.all()
 			.filter(row => opens === null || opens.has(row.boardId))
 			.map(row => row.card);
@@ -381,9 +402,10 @@ export const load: PageServerLoad = async ({ locals }) => {
 	// installation was counted.
 	const totalSubBoards = allSubBoards.length;
 
-	// Board health: top boards sorted by completion % for sidebar overview
+	// Board health: top boards sorted by completion % for sidebar overview.
+	// An ideas board completes nothing, and is left out (milestone 22).
 	const boardHealth = enriched
-		.filter(b => b.totalCards > 0)
+		.filter(b => b.totalCards > 0 && b.kind !== 'ideas')
 		.map(b => ({
 			id: b.id,
 			name: b.name,
@@ -399,6 +421,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 	const categoryDistribution: { name: string; color: string; count: number }[] = [];
 	const catCountMap = new Map<string, { color: string; count: number }>();
 	for (const board of enriched) {
+		if (board.kind === 'ideas') continue;
 		const catKey = board.categoryName || 'Uncategorised';
 		const existing = catCountMap.get(catKey);
 		if (existing) {
@@ -413,10 +436,13 @@ export const load: PageServerLoad = async ({ locals }) => {
 	categoryDistribution.sort((a, b) => b.count - a.count);
 
 	// ─── Aging Tasks (how long active cards have been open) ──────────────
+	// From the commitment (milestone 22, the S4a review's H2): time spent as
+	// an option is not delivery aging. For a card made before the milestone
+	// the commitment is its creation, as it was.
 	const agingBuckets = { fresh: 0, week: 0, fortnight: 0, month: 0, stale: 0 };
 	const nowMs = Date.now();
 	for (const c of myActiveCards) {
-		const created = parseStamp(c.createdAt)?.getTime() ?? NaN;
+		const created = parseStamp(c.committedAt ?? c.createdAt)?.getTime() ?? NaN;
 		const days = Math.floor((nowMs - created) / 86400000);
 		if (days <= 2) agingBuckets.fresh++;
 		else if (days <= 7) agingBuckets.week++;
@@ -434,14 +460,15 @@ export const load: PageServerLoad = async ({ locals }) => {
 	// (card 2298): the whole table was read and filtered here, and each row's
 	// card and column read after, two queries a row. In the order the rows
 	// were made, as the table was read, since that order breaks a tie on the
-	// board.
+	// board. An option is not active work (milestone 22), and is left out.
 	const myBoardIds = allBoards.map(b => b.id);
 	const scopedAssigneeRows = myBoardIds.length > 0
 		? db.select({ userId: cardAssignees.userId, columnTitle: columns.title })
 			.from(cardAssignees)
 			.innerJoin(cards, eq(cardAssignees.cardId, cards.id))
 			.innerJoin(columns, eq(cards.columnId, columns.id))
-			.where(and(inArray(columns.boardId, myBoardIds), isNull(cards.archivedAt)))
+			.innerJoin(boards, eq(boards.id, columns.boardId))
+			.where(and(inArray(columns.boardId, myBoardIds), isNull(cards.archivedAt), notUpstream()))
 			.orderBy(sql`${cardAssignees}.rowid`)
 			.all()
 		: [];

@@ -1140,6 +1140,7 @@ const MIRRORS: Record<string, Mirror> = {
 			boardName: 'GET /milestones names the board each milestone belongs to',
 			cardCount: 'counts its cards',
 			doneCount: 'and those of them that are in a Complete column',
+			optionsCount: 'and, apart, its cards that are options, upstream of the commitment point (milestone 22, card 2462)',
 			boardIds: 'and lists the boards its cards are on, which for a milestone that spans boards is the only place they are named'
 		}
 	},

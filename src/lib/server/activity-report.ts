@@ -34,6 +34,7 @@ import { getAccessibleBoardIds } from './board-access';
 import { milestoneIdsOpenTo } from './milestones';
 import { isCompleteColumnTitle, isHoldColumnTitle } from './card-completion';
 import { ACTIONS, readSource, storedActions } from './logActivity';
+import { UPSTREAM, upstreamFigures, type UpstreamFigures } from './upstream';
 import type { SessionUser } from './auth';
 import { parseStamp, stamp, toStamp } from '$lib/timestamps';
 
@@ -109,6 +110,14 @@ export interface ActivityReport {
 	totals: Record<ActivityBucket, number> & { boards: number; cards: number };
 	boards: ReportBoard[];
 	milestones: ReportMilestone[];
+	/**
+	 * What happened upstream of the commitment point on the boards the report
+	 * covers, over the window, and the options they hold now
+	 * (`upstreamFigures`, milestone 22, card 2462). Options are in no bucket
+	 * and no total above. Null for a report on one person, since these
+	 * describe the boards, whoever's work it was.
+	 */
+	upstream: UpstreamFigures | null;
 	meta: {
 		generatedAt: string;
 		/** What decided the completed bucket. Stated so a reader can check it. */
@@ -191,7 +200,11 @@ interface CardRow {
 	releaseState: string | null;
 	priority: string;
 	columnTitle: string;
-	/** Where this column sits on its board, and where the board's first column sits. */
+	/**
+	 * Where this column sits on its board, and where the board's first column
+	 * sits, the Options column aside (milestone 22): it is the leftmost
+	 * column, but work is raised in the first column after it.
+	 */
 	columnPosition: number;
 	firstColumnPosition: number;
 	boardId: number;
@@ -390,7 +403,7 @@ export function buildActivityReport(opts: ActivityReportOptions): ActivityReport
 			c.on_hold_note      AS onHoldNote,
 			col.title           AS columnTitle,
 			col.position        AS columnPosition,
-			(SELECT MIN(c2.position) FROM columns c2 WHERE c2.board_id = col.board_id) AS firstColumnPosition,
+			(SELECT MIN(c2.position) FROM columns c2 WHERE c2.board_id = col.board_id AND c2.role IS NOT 'options') AS firstColumnPosition,
 			col.board_id        AS boardId,
 			b.name              AS boardName,
 			b.emoji             AS boardEmoji,
@@ -411,6 +424,7 @@ export function buildActivityReport(opts: ActivityReportOptions): ActivityReport
 		LEFT JOIN users      u ON u.id = c.created_by
 		LEFT JOIN milestones m ON m.id = c.milestone_id
 		WHERE c.archived_at IS NULL
+		  AND NOT ${UPSTREAM}
 		  AND ${touched}
 		  ${byUser}
 		  ${boardFilter}
@@ -529,6 +543,10 @@ export function buildActivityReport(opts: ActivityReportOptions): ActivityReport
 		totals,
 		boards: boardList,
 		milestones: milestonesInWindow(cardIds, fromBound, toBound, openMilestones, opens),
+		// The boards covered: those named or open to the reader, and every
+		// board, as null, for an administrator who named none, so that no list
+		// of every board's id is bound (the S4a review's H9).
+		upstream: userId ? null : upstreamFigures(scope, fromBound, toBound),
 		meta: {
 			generatedAt: new Date().toISOString(),
 			completionBasis: 'completedAt',
@@ -580,7 +598,9 @@ function bucketOf(r: CardRow, from: string, to: string): ActivityBucket {
 	//
 	// So: untouched *and* still where it was raised. `columnPosition` is the
 	// board's first column, which is where new cards land; anything further along
-	// has been moved by somebody, whatever the timestamps say.
+	// has been moved by somebody, whatever the timestamps say. The Options
+	// column is not that first column: its cards are options, never in the
+	// report, and work is raised in the column after it (milestone 22).
 	const raisedInWindow = r.createdAt >= from && r.createdAt <= to;
 	const neverMoved = r.columnPosition === r.firstColumnPosition;
 	if (raisedInWindow && r.updatedAt === r.createdAt && neverMoved) return 'created';
@@ -622,11 +642,10 @@ function milestonesInWindow(
 	if (cardIds.length === 0) return [];
 	const ids = inlineIds(cardIds.map((n) => Number(n)));
 	// `IN (NULL)` matches no board, for a reader who can open none.
-	const onOpenBoards =
-		opens === null
-			? ''
-			: `JOIN columns col ON col.id = c.column_id AND col.board_id IN (${opens.length ? inlineIds(opens) : 'NULL'})`;
+	const onOpenBoards = opens === null ? '' : `AND col.board_id IN (${opens.length ? inlineIds(opens) : 'NULL'})`;
 
+	// A goal's options are none of its work (milestone 22, card 2462), as on
+	// the plan page: they are counted in no total here either.
 	const rows = sqlite
 		.prepare(
 			`
@@ -637,9 +656,11 @@ function milestonesInWindow(
 			SUM(CASE WHEN c.completed_at IS NOT NULL AND c.completed_at <= @to   THEN 1 ELSE 0 END) AS completedAtEnd
 		FROM milestones m
 		JOIN cards c ON c.milestone_id = m.id AND c.archived_at IS NULL
-		${onOpenBoards}
+		JOIN columns col ON col.id = c.column_id ${onOpenBoards}
+		JOIN boards b ON b.id = col.board_id
 		WHERE m.id IN (SELECT DISTINCT milestone_id FROM cards
 		                WHERE id IN (${ids}) AND milestone_id IS NOT NULL)
+		  AND NOT ${UPSTREAM}
 		GROUP BY m.id
 		ORDER BY m.id
 	`

@@ -14,11 +14,24 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 
 	// The boards the caller can open, their columns and every live card on
 	// them, read as All To Do reads them (card 2240).
-	const { boards: allBoards, columns: allColumns, cards: crossBoardCards, labels: allLabels, categories: allCategories,
+	const { boards: allBoards, columns: allColumns, upstreamColumnIds, cards: crossBoardCards, labels: allLabels, categories: allCategories,
 		boardCategories: allBoardCategories, users: allUsers, blockedState, milestoneNames } = readCrossBoardCards(user);
 
-	// Normalize column titles into buckets
-	function getBucket(colTitle: string): string {
+	/**
+	 * The key of the bucket of every upstream column, an Options column or any
+	 * column of an ideas board (milestone 22), keyed by the column's role and
+	 * the board's kind, never by a title (the S4a review's H11): no title-cased
+	 * column title starts with a small letter, so an ordinary column called
+	 * Options keeps its own bucket. Its title is `OPTIONS_TITLE`.
+	 */
+	const OPTIONS = 'options:upstream';
+	const OPTIONS_TITLE = 'Options';
+
+	// Normalize column titles into buckets. An upstream column's cards are
+	// options, whatever the column is called: they go in the Options bucket,
+	// placed first, and are not in the header's figures.
+	function getBucket(colTitle: string, columnId: number): string {
+		if (upstreamColumnIds.has(columnId)) return OPTIONS;
 		const t = colTitle.toLowerCase().trim();
 		const role = columnRole(colTitle);
 		if (role === 'complete') return 'Complete';
@@ -29,10 +42,15 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		return t.replace(/\b\w/g, c => c.toUpperCase());
 	}
 
-	// Each card in the bucket of its column. Every card was read through one of
-	// these columns, so each has one.
+	// Each card in the bucket of its column, by the bucket's key; each card
+	// carries the bucket's title. Every card was read through one of these
+	// columns, so each has one.
 	const columnTitles = new Map(allColumns.map(c => [c.id, c.title]));
-	const enrichedCards = crossBoardCards.map(card => ({ ...card, bucket: getBucket(columnTitles.get(card.columnId)!) }));
+	const bucketOf = new Map(crossBoardCards.map(card => [card.id, getBucket(columnTitles.get(card.columnId)!, card.columnId)]));
+	const enrichedCards = crossBoardCards.map(card => {
+		const key = bucketOf.get(card.id)!;
+		return { ...card, bucket: key === OPTIONS ? OPTIONS_TITLE : key };
+	});
 
 	// Track which board has which bucket and calculate average positions
 	const baseBuckets = ['To Do', 'On Hold', 'In Progress', 'Complete'];
@@ -50,7 +68,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		boardCols.sort((a, b) => a.position - b.position || a.id - b.id);
 		
 		boardCols.forEach((col, index) => {
-			const bucketName = getBucket(col.title);
+			const bucketName = getBucket(col.title, col.id);
 			
 			
 			if (!bucketPositions.has(bucketName)) bucketPositions.set(bucketName, []);
@@ -70,6 +88,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	bucketAvg.set('On Hold', 0.25);
 	bucketAvg.set('In Progress', 0.5);
 	bucketAvg.set('Complete', 2);
+	// Options before everything, where there are any: no board without an
+	// upstream column gains the bucket.
+	if (upstreamColumnIds.size > 0) bucketAvg.set(OPTIONS, -2);
 
 	const allBucketsSet = new Set([...baseBuckets, ...Array.from(bucketAvg.keys())]);
 	const buckets = Array.from(allBucketsSet).sort((a, b) => {
@@ -99,12 +120,16 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	// instead, from `totalCompletedCount` over `completedLimit`.
 	const hasMoreCompleted = totalCompletedCount > completedLimit && completedLimit < MAX_COMPLETED_LIMIT;
 
-	const grouped = buckets.map(bucket => ({
-		title: bucket,
-		cards: bucket === 'Complete'
-			? cappedCompleted
-			: enrichedCards.filter(c => c.bucket === bucket)
-	}));
+	// The Options bucket says it is the upstream one, so that a page can tell
+	// it from an ordinary column called Options, whose bucket has its title.
+	const grouped = buckets.map(bucket => bucket === OPTIONS
+		? { title: OPTIONS_TITLE, upstream: true as const, cards: enrichedCards.filter(c => bucketOf.get(c.id) === OPTIONS) }
+		: {
+			title: bucket,
+			cards: bucket === 'Complete'
+				? cappedCompleted
+				: enrichedCards.filter(c => bucketOf.get(c.id) === bucket)
+		});
 
 	// Cost per card across every board in scope, in one query. Cards with nothing
 	// recorded are omitted, so a card face shows no badge rather than a zero.
@@ -135,7 +160,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		labels: allLabels,
 		columns: allColumns,
 		allUsers: allUsers.map(u => ({ id: u.id, username: u.username, emoji: u.emoji || '👤' })),
-		totalCards: enrichedCards.length,
+		// Committed work only (milestone 22): the header's total, complete and
+		// remaining leave the Options bucket out.
+		totalCards: enrichedCards.filter(c => !upstreamColumnIds.has(c.columnId)).length,
 		completedCards: totalCompletedCount,
 		hasMoreCompleted,
 		totalCompletedCount,

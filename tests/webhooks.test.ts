@@ -2070,7 +2070,7 @@ describe('which action sends which event, and what each move sends (card 2278)',
 		const card = makeCard(w.ideas, { title: 'Chosen' });
 
 		expect(await deliveries(w, () => move(w.owner, card.id, w.A.cols['To Do'].id))).toEqual([
-			['a', 'card.committed', 'card_committed', `"Chosen": Ideas → To Do (column ${w.A.cols['To Do'].id})`]
+			['a', 'card.committed', 'card_committed', `"Chosen": Ideas → To Do (column ${w.A.cols['To Do'].id}, from column ${w.ideas.id})`]
 		]);
 	});
 
@@ -2100,7 +2100,7 @@ describe('which action sends which event, and what each move sends (card 2278)',
 		const card = makeCard(w.ideas, { title: 'Done at once' });
 
 		expect(await deliveries(w, () => move(w.owner, card.id, w.A.cols['Complete'].id))).toEqual([
-			['a', 'card.committed', 'card_committed', `"Done at once": Ideas → Complete (column ${w.A.cols['Complete'].id})`],
+			['a', 'card.committed', 'card_committed', `"Done at once": Ideas → Complete (column ${w.A.cols['Complete'].id}, from column ${w.ideas.id})`],
 			['a', 'card.completed', 'card_completed', '"Done at once": Ideas → Complete'],
 			['a-completions', 'card.completed', 'card_completed', '"Done at once": Ideas → Complete']
 		]);
@@ -2113,7 +2113,7 @@ describe('which action sends which event, and what each move sends (card 2278)',
 		expect(await deliveries(w, () => move(w.owner, card.id, w.B.cols['To Do'].id))).toEqual([
 			['a', 'card.moved', 'card_moved_away', '"Chosen" moved to another board (Ideas → To Do)'],
 			['b', 'card.moved', 'card_moved_in', '"Chosen" moved from another board (Ideas → To Do)'],
-			['b', 'card.committed', 'card_committed', `"Chosen": Ideas → To Do (column ${w.B.cols['To Do'].id})`]
+			['b', 'card.committed', 'card_committed', `"Chosen": Ideas → To Do (column ${w.B.cols['To Do'].id}, from column ${w.ideas.id})`]
 		]);
 	});
 

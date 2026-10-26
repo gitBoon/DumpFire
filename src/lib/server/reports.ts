@@ -15,7 +15,8 @@ import {
 } from './db/schema';
 import { eq, inArray, isNull, isNotNull, and, or, lte } from 'drizzle-orm';
 import { getAccessibleBoardIds, canViewBoard } from './board-access';
-import { completeColumnIds, isCompleteColumnTitle } from '$lib/column-role';
+import { REPORT_TODO_TITLES, columnRoleOf, completeColumnIds, isUpstreamColumn } from '$lib/column-role';
+import { upstreamFigures, type UpstreamFigures } from './upstream';
 import { escapeHtml } from '$lib/escape-html';
 import { isSmtpConfigured, sendEmailWithAttachment } from './email';
 import type { SessionUser } from './auth';
@@ -101,7 +102,12 @@ export function parseStatusFilter(raw: unknown): ReportStatusFilter {
 		: 'all';
 }
 
-type CardStatus = 'todo' | 'in_progress' | 'completed';
+/**
+ * Where a card sits, for the report. `option` is a card upstream of the
+ * commitment point, in a board's Options column or on an ideas board
+ * (milestone 22): it is in none of the report's delivery figures.
+ */
+type CardStatus = 'todo' | 'in_progress' | 'completed' | 'option';
 
 interface SubtaskInfo {
 	title: string;
@@ -148,6 +154,17 @@ export interface ReportData {
 		/** Open cards that have left To Do but are not complete (In Progress, On Hold, Review…). */
 		inProgress: number;
 		overdue: number;
+		/**
+		 * What happened upstream of the commitment point on the boards in
+		 * scope over the period, and the options they hold now
+		 * (`upstreamFigures`, milestone 22): options now and their aging,
+		 * committed from options, returned to options, discarded, sent to
+		 * other boards, abandoned and the discard rate. Options are in none of
+		 * the figures above. Null for a report narrowed to one person, since
+		 * these describe the boards, whoever's work it was, and for a report
+		 * of no board.
+		 */
+		upstream: UpstreamFigures | null;
 	};
 
 	priorityBreakdown: {
@@ -196,17 +213,31 @@ export interface ReportData {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-const TODO_COLUMN_TITLES = ['to do', 'todo', 'to-do', 'backlog', 'inbox', 'not started', 'new', 'planned', 'ideas', 'idea', 'later'];
+/**
+ * Titles reports take for To Do beyond `column-role.ts`'s own two ("To Do",
+ * "Todo"), which are asked first, so the two cannot disagree about those.
+ * The rest (`REPORT_TODO_TITLES`, kept in `column-role.ts` beside the queue
+ * titles the cycle time reads) are as reports have always counted them:
+ * taking them out would move ordinary boards' figures, and is card 2474's
+ * question.
+ */
+const TODO_COLUMN_TITLES = REPORT_TODO_TITLES;
 
 /**
- * Classify a column by its title. Anything that is neither a Done nor a To Do
- * column counts as In Progress — On Hold, Review, Testing, Blocked… have all
- * left To Do, so for reporting purposes the work has started.
+ * Classify a column, its stored role first (milestone 22, the S1b review's
+ * B6). A column that is `upstream`, a board's Options column or any column
+ * of an ideas board, holds options, whatever it is called: the new Options
+ * column is titled "Ideas", which the title list below would take for To Do.
+ * Any other column is classified by its title. Anything that is neither a
+ * Done nor a To Do column counts as In Progress — On Hold, Review, Testing,
+ * Blocked… have all left To Do, so for reporting purposes the work has
+ * started.
  */
-function classifyColumnTitle(title: string): CardStatus {
-	const t = title.toLowerCase().trim();
-	if (isCompleteColumnTitle(title)) return 'completed';
-	if (TODO_COLUMN_TITLES.includes(t)) return 'todo';
+function classifyColumn(column: { title: string; role: string | null }, upstream: boolean): CardStatus {
+	if (upstream) return 'option';
+	const role = columnRoleOf(column);
+	if (role === 'complete') return 'completed';
+	if (role === 'todo' || TODO_COLUMN_TITLES.includes(column.title.toLowerCase().trim())) return 'todo';
 	return 'in_progress';
 }
 
@@ -222,26 +253,29 @@ interface ColumnInfo { title: string; boardId: number; status: CardStatus }
 
 function getColumnMap(boardIds: number[]): Map<number, ColumnInfo> {
 	if (boardIds.length === 0) return new Map();
-	const allCols = db.select().from(columns)
+	// With each board's kind, in the same read, for which columns are upstream.
+	const allCols = db.select({ col: columns, kind: boards.kind }).from(columns)
+		.innerJoin(boards, eq(boards.id, columns.boardId))
 		.where(inArray(columns.boardId, boardIds))
 		.all();
 	const map = new Map<number, ColumnInfo>();
 	const byBoard = new Map<number, { id: number; position: number; info: ColumnInfo }[]>();
-	for (const col of allCols) {
-		const info: ColumnInfo = { title: col.title, boardId: col.boardId, status: classifyColumnTitle(col.title) };
+	for (const { col, kind } of allCols) {
+		const info: ColumnInfo = { title: col.title, boardId: col.boardId, status: classifyColumn(col, isUpstreamColumn(col, kind)) };
 		map.set(col.id, info);
 		if (!byBoard.has(col.boardId)) byBoard.set(col.boardId, []);
 		byBoard.get(col.boardId)!.push({ id: col.id, position: col.position, info });
 	}
 	// A board with no recognisable To Do column (e.g. "Backlog" renamed to
 	// "Queue") still has one: its left-most column that isn't Done, of two
-	// at one place the older (card 2372's column order).
+	// at one place the older (card 2372's column order). Never the Options
+	// column, which is the left-most of its board: its cards are options.
 	for (const cols of byBoard.values()) {
 		if (cols.some(c => c.info.status === 'todo')) continue;
 		const first = cols
 			.slice()
 			.sort((a, b) => a.position - b.position || a.id - b.id)
-			.find(c => c.info.status !== 'completed');
+			.find(c => c.info.status !== 'completed' && c.info.status !== 'option');
 		if (first) first.info.status = 'todo';
 	}
 	return map;
@@ -374,7 +408,7 @@ function generateReportForBoards(
 			generatedAt: new Date().toISOString(),
 			periodStart, periodEnd, scope, scopeName, statusFilter,
 			assigneeName,
-			summary: { totalCards: 0, totalSubtasks: 0, totalTasks: 0, completedInPeriod: 0, createdInPeriod: 0, outstanding: 0, todo: 0, inProgress: 0, overdue: 0 },
+			summary: { totalCards: 0, totalSubtasks: 0, totalTasks: 0, completedInPeriod: 0, createdInPeriod: 0, outstanding: 0, todo: 0, inProgress: 0, overdue: 0, upstream: null },
 			priorityBreakdown: { critical: 0, high: 0, medium: 0, low: 0 },
 			assigneeStats: [], outstandingTasks: [],
 			completedTasks: [], boardBreakdown: []
@@ -411,6 +445,10 @@ function generateReportForBoards(
 		);
 		scopedCards = allCards.filter((c) => mine.has(c.id));
 	}
+	// Options are no delivery work (milestone 22, card 2462): they leave every
+	// figure, list and breakdown below, which all derive from `scopedCards`.
+	// What happened upstream is told on its own, in `summary.upstream`.
+	scopedCards = scopedCards.filter((c) => columnMap.get(c.columnId)?.status !== 'option');
 
 	const boardsInfo = db.select().from(boards).where(inArray(boards.id, boardIds)).all();
 	const boardMap = new Map(boardsInfo.map(b => [b.id, b]));
@@ -642,7 +680,14 @@ function generateReportForBoards(
 			outstanding: activeCards.length,
 			todo: todoCards.length,
 			inProgress: inProgressCards.length,
-			overdue: overdueCards.length
+			overdue: overdueCards.length,
+			// The period's ends as the figures above read them, both included
+			// (the S3 review's E4): a bare date as the end is the whole day.
+			// A period that cannot be read, which every route refuses first,
+			// has none rather than a fault.
+			upstream: assigneeUserId === null && toStamp(periodStart, 'lower') !== null && toStamp(periodEnd, 'upper') !== null
+				? upstreamFigures(boardIds, from, to)
+				: null
 		},
 		priorityBreakdown,
 		assigneeStats,
@@ -744,6 +789,10 @@ export function generateCardReport(cardId: number): ReportData | null {
 
 	const now = new Date().toISOString();
 	const createdAt = card.createdAt || now;
+	// An option is not outstanding work, To Do or in progress (milestone 22),
+	// and is not listed among the outstanding tasks (the S4a review's H7).
+	const status = classifyColumn(col, isUpstreamColumn(col, board.kind));
+	const open = !card.completedAt && status !== 'option';
 
 	return {
 		generatedAt: now,
@@ -761,10 +810,11 @@ export function generateCardReport(cardId: number): ReportData | null {
 			totalTasks: 1 + subtaskInfos.length,
 			completedInPeriod: card.completedAt ? 1 : 0,
 			createdInPeriod: 1,
-			outstanding: card.completedAt ? 0 : 1,
-			todo: !card.completedAt && classifyColumnTitle(col.title) === 'todo' ? 1 : 0,
-			inProgress: !card.completedAt && classifyColumnTitle(col.title) !== 'todo' ? 1 : 0,
-			overdue: 0
+			outstanding: open ? 1 : 0,
+			todo: open && status === 'todo' ? 1 : 0,
+			inProgress: open && status !== 'todo' ? 1 : 0,
+			overdue: 0,
+			upstream: null
 		},
 
 		priorityBreakdown: {
@@ -777,10 +827,10 @@ export function generateCardReport(cardId: number): ReportData | null {
 		assigneeStats: assigneeNames.map(name => ({
 			username: name,
 			completedInPeriod: card.completedAt ? 1 : 0,
-			outstanding: card.completedAt ? 0 : 1
+			outstanding: open ? 1 : 0
 		})),
 
-		outstandingTasks: card.completedAt ? [] : [{
+		outstandingTasks: !open ? [] : [{
 			boardName: board.name,
 			parentBoardName: null,
 			categoryName: '',
@@ -1220,6 +1270,30 @@ export async function generateReportPdf(data: ReportData, detailLevel: 'summary'
 			mx, y, { width: pw }
 		);
 	y = (doc as any).y + 12;
+
+	// ─── Upstream (milestone 22) ─────────────────────────────────────────
+	// One line for what happened before the commitment point, when anything
+	// did: options are in none of the figures above. Abandoned work, committed
+	// and archived before Complete, is downstream and has a line of its own,
+	// when there is any, which a board with no Options column can have too
+	// (the S4a review's H8).
+	const up = data.summary.upstream;
+	if (up && (up.options || up.committedFromOptions || up.returnedToOptions || up.discarded || up.sentOn)) {
+		const rate = up.discardRate === null ? '—' : `${Math.round(up.discardRate * 100)}%`;
+		const oldest = up.oldestOptionDays === null ? '' : `, oldest ${up.oldestOptionDays} day${up.oldestOptionDays === 1 ? '' : 's'}, ${up.agingOptions} over 30 days`;
+		doc.font('Helvetica').fontSize(6.5).fillColor(C.textLight)
+			.text(
+				`Upstream: ${up.options} options now${oldest} · ${up.committedFromOptions} committed from options · ` +
+				`${up.returnedToOptions} returned to options · ${up.discarded} discarded · ${up.sentOn} sent to other boards · discard rate ${rate}.`,
+				mx, y, { width: pw }
+			);
+		y = (doc as any).y + 12;
+	}
+	if (up && up.abandoned) {
+		doc.font('Helvetica').fontSize(6.5).fillColor(C.textLight)
+			.text(`Abandoned (committed work archived before Complete): ${up.abandoned}`, mx, y, { width: pw });
+		y = (doc as any).y + 12;
+	}
 
 	// ─── Status Filter Banner ────────────────────────────────────────────
 	if (data.statusFilter !== 'all') {

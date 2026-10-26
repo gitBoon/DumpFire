@@ -32,6 +32,7 @@ import { sqlite } from './db';
 import { canViewBoard } from './board-access';
 import { boardCategoryRule, resolveAccessible } from './list-access';
 import { isCompleteColumnTitle } from './card-completion';
+import { UPSTREAM } from './upstream';
 import { requireMilestone, MilestoneError } from './milestones';
 import type { SessionUser } from './auth';
 import {
@@ -238,6 +239,8 @@ interface CardRow {
 	categoryId: number | null;
 	priority: string;
 	createdAt: string;
+	/** When the card was committed to; its scope starts here (milestone 22). */
+	committedAt: string | null;
 	completedAt: string | null;
 	firstCompletedAt: string | null;
 	updatedAt: string;
@@ -264,8 +267,16 @@ function inList(ids: number[]): string {
 	return ids.map((n) => Number(n)).join(',');
 }
 
+/**
+ * The cards a burndown can chart: every card on the boards or in the goal,
+ * archived ones too, but no option (milestone 22, card 2462). A card in an
+ * Options column or on an ideas board, live or discarded, was never work
+ * anyone committed to, and a card returned to options is out of scope again:
+ * the chart is drawn from each card as it is now, so a return leaves the
+ * scope of the days before it too.
+ */
 function loadCardRows(boardIds: number[] | null, milestoneId: number | null): CardRow[] {
-	const where: string[] = [];
+	const where: string[] = [`NOT ${UPSTREAM}`];
 	if (boardIds !== null) {
 		if (boardIds.length === 0) return [];
 		where.push(`col.board_id IN (${inList(boardIds)})`);
@@ -275,13 +286,14 @@ function loadCardRows(boardIds: number[] | null, milestoneId: number | null): Ca
 	return sqlite
 		.prepare(
 			`SELECT c.id, col.board_id AS boardId, c.category_id AS categoryId, c.priority,
-			        c.created_at AS createdAt, c.completed_at AS completedAt,
+			        c.created_at AS createdAt, c.committed_at AS committedAt, c.completed_at AS completedAt,
 			        c.first_completed_at AS firstCompletedAt,
 			        c.updated_at AS updatedAt, c.archived_at AS archivedAt,
 			        col.title AS columnTitle
 			   FROM cards c
 			   JOIN columns col ON col.id = c.column_id
-			  ${where.length ? `WHERE ${where.join(' AND ')}` : ''}`
+			   JOIN boards b ON b.id = col.board_id
+			  WHERE ${where.join(' AND ')}`
 		)
 		.all() as CardRow[];
 }
@@ -297,7 +309,9 @@ function toScopedCard(r: CardRow): ScopedCard {
 		labelIds: [],
 		assigneeIds: [],
 		lifeline: {
-			start: toDay(r.createdAt),
+			// In scope from the commitment, which for a card made before
+			// milestone 22 is its creation, so no chart moved.
+			start: toDay(r.committedAt ?? r.createdAt),
 			done,
 			removed: !inComplete && r.archivedAt ? toDay(r.archivedAt) : null
 		},

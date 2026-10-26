@@ -76,6 +76,17 @@
  * in any answer moved. No count of reads moved. The scene's commitments are
  * fixed with its moments, each at its card's creation. The plan is
  * `docs/planning/milestone-22-upstream-kanban.md`.
+ *
+ * Card 2462 (milestone 22, slice S4a) left options out of every delivery
+ * figure: the goal lists gained `optionsCount` and the activity report
+ * `upstream`, the board's upstream figures. The 28 hashes that moved (each
+ * marked "re-pinned (2462)") were taken again on the code as it is, once a
+ * run had shown every one of them equal to its old pin with those two keys
+ * taken out of the answer before hashing (a temporary edit of `hashOf`):
+ * nothing else in any answer moved. The activity report reads two more,
+ * `upstreamFigures`'s window and options now. In the review (H9) an
+ * administrator who names no board stopped having every board read and
+ * bound for it: their report is two more too, where it was three.
  */
 import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -436,24 +447,24 @@ const PINS: Record<string, Record<Kind, Pin>> = {
 		outsider: { reads: 7, access: 1, hash: '232261ebf5179d21' } // 7 → 7, 1 → 1
 	},
 	'the plan page': {
-		owner: { reads: 8, access: 1, hash: '8c861387660d3899' }, // 17 → 9, 2 → 1; 9 → 8 (card 2402)
-		member: { reads: 8, access: 1, hash: '26710fd3de8c26ad' }, // 23 → 9, 2 → 1; 9 → 8 (card 2402)
-		mate: { reads: 9, access: 1, hash: '3ad1acafa5cd18fd' }, // 31 → 10, 2 → 1; 10 → 9 (card 2402)
-		admin: { reads: 4, access: 0, hash: '03e31c29391c990a' }, // 4 → 4, 0 → 0
+		owner: { reads: 8, access: 1, hash: '05bfee15ce5fb5de' }, // 17 → 9, 2 → 1; 9 → 8 (card 2402); re-pinned (2462)
+		member: { reads: 8, access: 1, hash: 'b4ebeb804e1ebb3c' }, // 23 → 9, 2 → 1; 9 → 8 (card 2402); re-pinned (2462)
+		mate: { reads: 9, access: 1, hash: '87c28cff8eced813' }, // 31 → 10, 2 → 1; 10 → 9 (card 2402); re-pinned (2462)
+		admin: { reads: 4, access: 0, hash: '43db7418dba2705e' }, // 4 → 4, 0 → 0; re-pinned (2462)
 		outsider: { reads: 6, access: 1, hash: '1b842c919d4d908a' } // 16 → 7, 1 → 1; 7 → 6 (card 2402)
 	},
 	'the plan page, board A': {
-		owner: { reads: 8, access: 1, hash: '3930b267caaf3a89' }, // 17 → 10, 2 → 1; 10 → 8 (card 2402)
-		member: { reads: 8, access: 1, hash: 'e51fc4230f66ad69' }, // 21 → 10, 2 → 1; 10 → 8 (card 2402)
-		mate: { reads: 9, access: 1, hash: '5a759ebc839f3193' }, // 28 → 11, 2 → 1; 11 → 9 (card 2402)
-		admin: { reads: 4, access: 0, hash: '4e97a3e18ffc71b5' }, // 5 → 5, 0 → 0; 5 → 4 (card 2402)
+		owner: { reads: 8, access: 1, hash: 'd9ff662a0c548625' }, // 17 → 10, 2 → 1; 10 → 8 (card 2402); re-pinned (2462)
+		member: { reads: 8, access: 1, hash: 'ef0ecd7a5cbc9e97' }, // 21 → 10, 2 → 1; 10 → 8 (card 2402); re-pinned (2462)
+		mate: { reads: 9, access: 1, hash: 'aeef2fee511b7439' }, // 28 → 11, 2 → 1; 11 → 9 (card 2402); re-pinned (2462)
+		admin: { reads: 4, access: 0, hash: '060cb4dba15d3ac2' }, // 5 → 5, 0 → 0; 5 → 4 (card 2402); re-pinned (2462)
 		outsider: { reads: 6, access: 1, hash: '1b842c919d4d908a' } // 16 → 7, 1 → 1 (A is not theirs: every goal); 7 → 6 (card 2402)
 	},
 	'GET /api/milestones': {
-		owner: { reads: 7, access: 1, hash: '37d49fa5d169122f' }, // 12 → 8, 1 → 1; 8 → 7 (card 2402)
-		member: { reads: 7, access: 1, hash: '8d61a0bf38d8f8b1' }, // 18 → 8, 1 → 1; 8 → 7 (card 2402)
-		mate: { reads: 8, access: 1, hash: '8d61a0bf38d8f8b1' }, // 25 → 9, 1 → 1; 9 → 8 (card 2402)
-		admin: { reads: 3, access: 0, hash: '37d49fa5d169122f' }, // 3 → 3, 0 → 0
+		owner: { reads: 7, access: 1, hash: '8ce8955283668e5d' }, // 12 → 8, 1 → 1; 8 → 7 (card 2402); re-pinned (2462)
+		member: { reads: 7, access: 1, hash: 'f1236805c1695720' }, // 18 → 8, 1 → 1; 8 → 7 (card 2402); re-pinned (2462)
+		mate: { reads: 8, access: 1, hash: 'f1236805c1695720' }, // 25 → 9, 1 → 1; 9 → 8 (card 2402); re-pinned (2462)
+		admin: { reads: 3, access: 0, hash: '8ce8955283668e5d' }, // 3 → 3, 0 → 0; re-pinned (2462)
 		outsider: { reads: 5, access: 1, hash: 'c004716dc0076b81' } // 11 → 6, 0 → 1 (no goal of theirs: read once, not per goal); 6 → 5 (card 2402)
 	},
 	'GET /api/milestones?forBoard=A': {
@@ -464,38 +475,38 @@ const PINS: Record<string, Record<Kind, Pin>> = {
 		outsider: { reads: 5, access: 1, hash: 'c004716dc0076b81' } // 9 → 6, 1 → 1; 6 → 5 (card 2402)
 	},
 	'GET /api/v1/milestones': {
-		owner: { reads: 7, access: 1, hash: '503ceeff82ccf68f' }, // 12 → 8, 1 → 1; 8 → 7 (card 2402)
-		member: { reads: 7, access: 1, hash: '36855e5a13503afc' }, // 18 → 8, 1 → 1; 8 → 7 (card 2402)
-		mate: { reads: 8, access: 1, hash: '36855e5a13503afc' }, // 25 → 9, 1 → 1; 9 → 8 (card 2402)
-		admin: { reads: 3, access: 0, hash: '503ceeff82ccf68f' }, // 3 → 3, 0 → 0
+		owner: { reads: 7, access: 1, hash: 'c3dfea6eb049b9e9' }, // 12 → 8, 1 → 1; 8 → 7 (card 2402); re-pinned (2462)
+		member: { reads: 7, access: 1, hash: '3a9c7e5c82193cb2' }, // 18 → 8, 1 → 1; 8 → 7 (card 2402); re-pinned (2462)
+		mate: { reads: 8, access: 1, hash: '3a9c7e5c82193cb2' }, // 25 → 9, 1 → 1; 9 → 8 (card 2402); re-pinned (2462)
+		admin: { reads: 3, access: 0, hash: 'c3dfea6eb049b9e9' }, // 3 → 3, 0 → 0; re-pinned (2462)
 		outsider: { reads: 5, access: 1, hash: 'c004716dc0076b81' } // 11 → 6, 0 → 1 (no goal of theirs: read once, not per goal); 6 → 5 (card 2402)
 	},
 	// Card 2400's case: every hash taken on the old code (5b002fc), before the
 	// change, and unchanged by it.
 	'GET /api/v1/reports/activity': {
-		owner: { reads: 8, access: 1, hash: 'fdad46fb0456c6ce' }, // 12 → 8, 1 → 1
-		member: { reads: 8, access: 1, hash: 'a219fe69a2ffbe26' }, // 15 → 8, 1 → 1
-		mate: { reads: 9, access: 1, hash: '7b5404422e012058' }, // 21 → 9, 1 → 1
-		admin: { reads: 3, access: 0, hash: 'fdad46fb0456c6ce' }, // 3 → 3, 0 → 0
-		outsider: { reads: 6, access: 1, hash: '9c1e6df8a2b31e3b' } // 6 → 6, 1 → 1 (no goal on P: none asked)
+		owner: { reads: 10, access: 1, hash: '6edad51690ca07e8' }, // 12 → 8, 1 → 1; 8 → 10, re-pinned (2462)
+		member: { reads: 10, access: 1, hash: 'a54b55f7fe4b48ef' }, // 15 → 8, 1 → 1; 8 → 10, re-pinned (2462)
+		mate: { reads: 11, access: 1, hash: '5916a355adc16fa1' }, // 21 → 9, 1 → 1; 9 → 11, re-pinned (2462)
+		admin: { reads: 5, access: 0, hash: '6edad51690ca07e8' }, // 3 → 3, 0 → 0; 3 → 6, re-pinned (2462); 6 → 5 (2462 review, H9)
+		outsider: { reads: 8, access: 1, hash: 'd1b548e578289141' } // 6 → 6, 1 → 1 (no goal on P: none asked); 6 → 8, re-pinned (2462)
 	},
 	// Card 2402's cases: every hash taken on the old code (7d01342), before the
 	// change, and unchanged by it. A refusal reads the caller's boards now,
 	// where it asked `canViewBoard` of each board: one read more for the
 	// outsider, refused at the first board, who is in no team.
 	'GET /api/v1/reports/activity, boards A and B': {
-		owner: { reads: 9, access: 1, hash: '84f5275424a7a2c6' }, // 11 → 9, 1 → 1
+		owner: { reads: 11, access: 1, hash: '3194d17b09af2e80' }, // 11 → 9, 1 → 1; 9 → 11, re-pinned (2462)
 		member: { reads: 5, access: 1, hash: 'ff52aca65a01e538' }, // 6 → 5, 0 → 1 (refused at B)
 		mate: { reads: 6, access: 1, hash: 'ff52aca65a01e538' }, // 9 → 6, 0 → 1 (refused at B)
-		admin: { reads: 4, access: 0, hash: '84f5275424a7a2c6' }, // 4 → 4, 0 → 0
+		admin: { reads: 6, access: 0, hash: '3194d17b09af2e80' }, // 4 → 4, 0 → 0; 4 → 6, re-pinned (2462)
 		outsider: { reads: 5, access: 1, hash: '52302279c87a3572' } // 4 → 5, 0 → 1 (refused at A)
 	},
 	'GET /api/v1/reports/activity, board P': {
-		owner: { reads: 7, access: 1, hash: '9c1e6df8a2b31e3b' }, // 10 → 7, 1 → 1
-		member: { reads: 7, access: 1, hash: '9c1e6df8a2b31e3b' }, // 10 → 7, 1 → 1
-		mate: { reads: 8, access: 1, hash: '9c1e6df8a2b31e3b' }, // 12 → 8, 1 → 1
-		admin: { reads: 3, access: 0, hash: '9c1e6df8a2b31e3b' }, // 3 → 3, 0 → 0
-		outsider: { reads: 7, access: 1, hash: '9c1e6df8a2b31e3b' } // 10 → 7, 1 → 1
+		owner: { reads: 9, access: 1, hash: 'd1b548e578289141' }, // 10 → 7, 1 → 1; 7 → 9, re-pinned (2462)
+		member: { reads: 9, access: 1, hash: 'd1b548e578289141' }, // 10 → 7, 1 → 1; 7 → 9, re-pinned (2462)
+		mate: { reads: 10, access: 1, hash: 'd1b548e578289141' }, // 12 → 8, 1 → 1; 8 → 10, re-pinned (2462)
+		admin: { reads: 5, access: 0, hash: 'd1b548e578289141' }, // 3 → 3, 0 → 0; 3 → 5, re-pinned (2462)
+		outsider: { reads: 9, access: 1, hash: 'd1b548e578289141' } // 10 → 7, 1 → 1; 7 → 9, re-pinned (2462)
 	}
 };
 
