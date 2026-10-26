@@ -57,6 +57,8 @@
 	import * as bulkOps from '$lib/board/bulk-actions';
 	import { attachmentsChanged, commentsChanged, connectSSE } from '$lib/board/sse';
 	import { BoardState, type WriteWords } from '$lib/board/board-state.svelte';
+	// A board's kind and Send to board (milestone 22, card 2463): what is decided and sent, in a module the tests run.
+	import * as ideasBoard from '$lib/board/ideas-board';
 	import { CARD_GONE, CardWindow, type CardWindowSave } from '$lib/board/card-window.svelte';
 	import { copyColumns, insertColumn, moveCards, patchCard, placeColumn, removeColumn, reorderColumns, undoDrag, withCurrentCards } from '$lib/board/board-patches';
 	import { BULK_HOLD_MS, type Release } from '$lib/board/refresh-schedule';
@@ -83,6 +85,7 @@
 	import KanbanCardBody from '$lib/components/board/KanbanCardBody.svelte';
 	import ActivityPanel from '$lib/components/board/ActivityPanel.svelte';
 	import ArchivePanel from '$lib/components/board/ArchivePanel.svelte';
+	import SendToBoardModal from '$lib/components/board/SendToBoardModal.svelte';
 
 	// ─── Props & Core State ──────────────────────────────────────────────────
 
@@ -654,6 +657,194 @@
 		if (!written.ok) toasts.add(written.failure, 'error', started);
 	}
 
+	// ─── The board's kind (milestone 22, card 2463) ──────────────────────────
+
+	/** An ideas board: every column upstream, with no Options strip, each column's aging in its header. */
+	const isIdeasBoard = $derived(boardState.board.kind === 'ideas');
+
+	/** An ideas board's column's options aging (ruling g), as of the last tick of the page's clock: in its header, as the strip shows the Options column's. */
+	function agingOf(column: ColumnType) {
+		void tick;
+		return optionsAging(column.cards);
+	}
+
+	/** What a change of the board's kind says when it is refused or unanswered. */
+	const KIND_WORDS: WriteWords = {
+		refused: "The board's kind was not changed.",
+		noAnswer: "No answer from the server. The board's kind may not have been changed."
+	};
+
+	/** How many archived cards each column of the board holds, for a question that counts them; null when they cannot be read. */
+	async function archivedByColumn(): Promise<Map<number, number> | null> {
+		try {
+			const res = await fetch(`/api/boards/${data.board.id}/archive`);
+			if (!res.ok) return null;
+			const held = new Map<number, number>();
+			for (const card of (await res.json()) as { columnId: number }[]) held.set(card.columnId, (held.get(card.columnId) ?? 0) + 1);
+			return held;
+		} catch {
+			return null;
+		}
+	}
+
+	/** Said when the archived cards could not be counted: nothing is asked or sent. */
+	const UNCOUNTED = (name: string) => `Could not count the archived cards on "${name}". Nothing was changed.`;
+
+	/**
+	 * "Make this an ideas board…" (ruling i), the owner's or an administrator's.
+	 * The page counts the live and archived cards and asks, naming them and the
+	 * empty To Do, On Hold and Complete columns that go; the count asked about
+	 * goes with the request, and the server refuses a board that holds another
+	 * number by then. What the server would refuse anyway, a card with a
+	 * sub-board or a To Do, On Hold or Complete column holding cards, is said at
+	 * once instead of asked (the S1b review's U5). A board with no card at all
+	 * is given the ideas board's columns in place of its own (decision M22-18).
+	 * Its columns change, and the answer is the board alone as the page reads
+	 * it, so the board's contents are read again once it is taken.
+	 */
+	async function makeIdeasBoard() {
+		const started = toasts.navigation();
+		const archived = await archivedByColumn();
+		if (!archived) {
+			toasts.add(UNCOUNTED(boardName), 'error', started);
+			return;
+		}
+		const asked = ideasBoard.ideasConversion(boardName, boardState.columns, archived);
+		if ('refused' in asked) {
+			toasts.add(asked.refused, 'error', started);
+			return;
+		}
+		showConfirm(
+			'Make this an ideas board',
+			asked.question,
+			'Make it an ideas board',
+			async () => {
+				const written = await ideasBoard.convertBoardAndRead(boardState, data.board.id, asked.cards, KIND_WORDS);
+				if (!written.ok) {
+					toasts.add(written.failure, 'error', started);
+					return;
+				}
+				toasts.add(`"${boardName}" is now an ideas board`);
+			},
+			false
+		);
+	}
+
+	/**
+	 * "Make this a delivery board…" on an ideas board: only one holding no
+	 * cards, live or archived, as the server allows (ruling i). One that holds
+	 * any is told why at once; an empty one is asked, naming the columns the
+	 * delivery board's replace (decision M22-18), then switched, and its
+	 * contents read again: the answer is the board row alone.
+	 */
+	async function makeDeliveryBoard() {
+		const started = toasts.navigation();
+		const archived = await archivedByColumn();
+		if (!archived) {
+			toasts.add(UNCOUNTED(boardName), 'error', started);
+			return;
+		}
+		const asked = ideasBoard.deliverySwitch(boardName, boardState.columns, archived);
+		if ('refused' in asked) {
+			toasts.add(asked.refused, 'error', started);
+			return;
+		}
+		showConfirm(
+			'Make this a delivery board',
+			asked.question,
+			'Make it a delivery board',
+			async () => {
+				const written = await ideasBoard.switchBoardKindAndRead(boardState, data.board.id, 'delivery', KIND_WORDS);
+				if (!written.ok) {
+					toasts.add(written.failure, 'error', started);
+					return;
+				}
+				toasts.add(`"${boardName}" is now a delivery board`);
+			},
+			false
+		);
+	}
+
+	// ─── Send to board (milestone 22, card 2463) ─────────────────────────────
+
+	/** The option the Send window is open on, or null. */
+	let sendingCard = $state<CardType | null>(null);
+
+	/**
+	 * The card window is on an option or an idea, saved or new: a card in an
+	 * upstream column, under which the server makes no sub-board, so the
+	 * window offers none to create, link or queue (the S5b review's P1).
+	 */
+	const windowUpstream = $derived.by(() => {
+		const column = boardState.columns.find((c) => c.id === cardWindow.columnId);
+		return column !== undefined && isUpstreamColumn(column, boardState.board.kind);
+	});
+
+	/**
+	 * "Send to board…" from the card window. The window closes once the card
+	 * is sent, so what was typed in it and not saved would be lost: the page
+	 * asks first when a field has been changed (the S5b review's P5).
+	 */
+	function openSendFromWindow() {
+		const card = cardWindow.card;
+		if (!card) return;
+		if ((cardWindow.edits?.touched.size ?? 0) === 0) {
+			sendingCard = card;
+			return;
+		}
+		showConfirm(
+			'Changes not saved',
+			`"${card.title}" has changes in its window that are not saved. Sending it closes the window, and they are lost. Save first, or send it without them.`,
+			'Send without saving',
+			() => {
+				sendingCard = cardWindow.card;
+			},
+			false
+		);
+	}
+
+	/** "Send to board…" is offered for an option, to someone who can edit the board; never for committed work, which is moved. */
+	function sendOffered(card: CardType | null): card is CardType {
+		return card !== null && boardState.canEdit && isOptionOnBoard(card.id);
+	}
+
+	/** What a Send says when it is refused or unanswered; the window stays open on it. */
+	const SEND_WORDS: WriteWords = { refused: 'The card was not sent.', noAnswer: 'No answer from the server. The card may not have been sent.' };
+
+	/**
+	 * The Send window's Send: the option sent to another delivery board's
+	 * Options, or committed to its To Do (`sendOption` in
+	 * `$lib/board/ideas-board`, which takes it off this board once the server
+	 * has sent it, with no read, and closes its window). A refusal is said in
+	 * the server's words and the Send window kept open. Says where it went,
+	 * that it was committed when it went to To Do, and that it left a goal of
+	 * this board's, as a move to another board does.
+	 */
+	async function sendToBoard(card: CardType, target: ideasBoard.SendTarget): Promise<boolean> {
+		const started = toasts.navigation();
+		// Its column, read before the card leaves it: the focus goes there once the windows have gone.
+		const fromColumnId = boardState.columns.find((c) => c.cards.some((x) => x.id === card.id))?.id ?? null;
+		const written = await ideasBoard.sendOption(boardState, cardWindow, card, target, SEND_WORDS);
+		if (!written.ok) {
+			toasts.add(written.failure, 'error', started);
+			return false;
+		}
+		sendingCard = null;
+		for (const message of written.said) toasts.add(message);
+		if (written.leftGoal) toasts.add(written.leftGoal, 'info');
+		// The card, the menu or the window that opened the Send are gone: the
+		// keyboard's focus goes to the column it left (the S5b review's P5).
+		await nextTick();
+		if (fromColumnId !== null) focusColumn(fromColumnId);
+		return true;
+	}
+
+	/** Put the keyboard's focus on a column's title, or on the Options strip when it is collapsed. */
+	function focusColumn(columnId: number) {
+		const column = document.querySelector<HTMLElement>(`.kanban-column[data-column-id="${columnId}"]`);
+		column?.querySelector<HTMLElement>('.column-title, .options-strip')?.focus();
+	}
+
 	// A column's colour, WIP limit and Add Task switch went through a wrapper
 	// here that threw each answer away: each looked saved until the board was
 	// next read. Each is sent through the board state now, shown at once and
@@ -681,10 +872,10 @@
 		// The Options column holding options is refused (ruling m): said at once,
 		// in the server's words, rather than asked and then refused (the S1b
 		// review's U5). Archived ones the page does not hold go with it.
-		const options = boardState.columns.find((c) => c.id === colId && isOptionsColumn(c));
-		if (options && options.cards.length > 0) {
-			const live = options.cards.length;
-			toasts.add(`This Options column still holds ${live === 1 ? '1 option: move it out, or archive it to discard it, first.' : `${live} options: move them out, or archive them to discard them, first.`}`, 'error');
+		// And a column of an ideas board holding ideas, the same (the S5a review's L2).
+		const refused = ideasBoard.columnDeleteRefusal(boardState.columns, colId, boardState.board.kind);
+		if (refused) {
+			toasts.add(refused, 'error');
 			return;
 		}
 		showConfirm(
@@ -1632,6 +1823,7 @@
 		boardId={data.board.id}
 		{boardName}
 		{boardEmoji}
+		boardKind={boardState.board.kind}
 		breadcrumbs={boardState.breadcrumbs}
 		tokenSummary={boardState.boardTokenSummary}
 		editingName={editingBoardName}
@@ -1660,6 +1852,9 @@
 				onAddColumn={() => openAddColumn(false)}
 				{canAddOptions}
 				onAddOptionsColumn={() => openAddColumn(true)}
+				boardKind={boardState.board.kind}
+				onMakeIdeas={makeIdeasBoard}
+				onMakeDelivery={makeDeliveryBoard}
 				onToggleActivity={toggleActivityPanel}
 				onToggleStats={toggleStatsPanel}
 				onToggleArchive={toggleArchivePanel}
@@ -1705,7 +1900,7 @@
 		>
 			{#each boardState.columns as column (column.id)}
 				{@const collapsed = isOptionsColumn(column) && !optionsOpen}
-				<div class="kanban-column glass" class:wip-warning={!isOptionsColumn(column) && column.wipLimit > 0 && column.cards.length >= column.wipLimit} class:options-column={isOptionsColumn(column)} class:options-collapsed={collapsed} animate:flip={{ duration: FLIP_DURATION_MS }}>
+				<div class="kanban-column glass" class:wip-warning={!isOptionsColumn(column) && column.wipLimit > 0 && column.cards.length >= column.wipLimit} class:options-column={isOptionsColumn(column)} class:options-collapsed={collapsed} data-column-id={column.id} animate:flip={{ duration: FLIP_DURATION_MS }}>
 					{#if collapsed}
 						<!-- The Options column collapsed to a strip (milestone 22): its
 						     title, its count and its aging (ruling g). It opens on a
@@ -1737,6 +1932,7 @@
 						onMakeOptions={makeOptionsColumn}
 						onStopOptions={stopOptionsColumn}
 						onCollapse={() => setOptionsOpen(false)}
+						aging={isIdeasBoard ? agingOf(column) : null}
 						editing={editingColumn === column.id}
 						bind:editTitle={editColumnTitle}
 						editingWip={editingWipColumn === column.id}
@@ -1773,13 +1969,13 @@
 						}}
 						onconsider={(e) => handleCardDndConsider(column.id, e)}
 						onfinalize={(e) => handleCardDndFinalize(column.id, e)}
-						ondblclick={(e: MouseEvent) => { if ((isOptionsColumn(column) || isTodoColumnTitle(column.title) || column.showAddCard) && !(e.target as HTMLElement).closest('.kanban-card')) openNewCardModal(column.id); }}
+						ondblclick={(e: MouseEvent) => { if ((isUpstreamColumn(column, boardState.board.kind) || isTodoColumnTitle(column.title) || column.showAddCard) && !(e.target as HTMLElement).closest('.kanban-card')) openNewCardModal(column.id); }}
 					>
 						{#if column.cards.length === 0}
 							<div class="empty-column-prompt">
-								<span class="empty-icon">{isOptionsColumn(column) ? '💡' : '✨'}</span>
-								<span class="empty-text">{isOptionsColumn(column) ? 'No ideas yet' : 'No cards yet'}</span>
-								{#if isOptionsColumn(column) || isTodoColumnTitle(column.title) || column.showAddCard}
+								<span class="empty-icon">{isUpstreamColumn(column, boardState.board.kind) ? '💡' : '✨'}</span>
+								<span class="empty-text">{isUpstreamColumn(column, boardState.board.kind) ? 'No ideas yet' : 'No cards yet'}</span>
+								{#if isUpstreamColumn(column, boardState.board.kind) || isTodoColumnTitle(column.title) || column.showAddCard}
 									<span class="empty-hint">Double-click to add one</span>
 								{/if}
 							</div>
@@ -1890,6 +2086,8 @@
 		onDuplicate={(card) => duplicateCard(card)}
 		onCreateSubBoard={(card) => createSubBoard(card)}
 		onDelete={(cardId) => confirmDeleteCard(cardId)}
+		onSend={sendOffered(contextMenu.card) ? (card) => (sendingCard = card) : undefined}
+		canAddSubBoard={!isOptionOnBoard(contextMenu.card.id)}
 	/>
 {/if}
 
@@ -1912,6 +2110,8 @@
 		onCreateSubBoard={cardWindow.card ? (name) => createSubBoard(cardWindow.card!, name) : undefined}
 		onDeleteSubBoard={cardWindow.card ? (boardId) => deleteSubBoard(boardId) : undefined}
 		onLinkSubBoard={cardWindow.card ? (boardId) => linkSubBoard(cardWindow.cardId!, boardId) : undefined}
+		onSend={sendOffered(cardWindow.card) ? openSendFromWindow : undefined}
+		subBoardsAllowed={!windowUpstream}
 		notice={cardWindow.gone ? CARD_GONE : ''}
 		edits={cardWindow.edits}
 		{commentsTold}
@@ -1920,6 +2120,15 @@
 		milestones={boardState.milestones}
 	/>
 	{/key}
+{/if}
+
+<!-- Send window (milestone 22, card 2463): over the card window when opened from it. -->
+{#if sendingCard}
+	<SendToBoardModal
+		card={{ id: sendingCard.id, title: sendingCard.title, hasSubBoards: ideasBoard.hasSubBoards(sendingCard) }}
+		onSend={(target) => sendToBoard(sendingCard!, target)}
+		onClose={() => (sendingCard = null)}
+	/>
 {/if}
 
 <!-- Confirm Modal -->

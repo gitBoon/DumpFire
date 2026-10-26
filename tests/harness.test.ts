@@ -106,6 +106,8 @@ const TEST_FILES = [
 	'header-menus.svelte.test.ts',
 	// Milestone 22, slice S5a: an ideas board, its kind, its conversion, and Send to board.
 	'ideas-board.test.ts',
+	// Milestone 22, slice S5b: the same on the screens (Create Board, the header, the More menu, the columns, the Send window).
+	'ideas-screens.svelte.test.ts',
 	'import-working-copy.test.ts',
 	'internal-refusals.test.ts',
 	'kanban-column-header.svelte.test.ts',

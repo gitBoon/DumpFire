@@ -104,15 +104,11 @@
    * An ideas board (milestone 22, the S4b review's J2): every card is an idea,
    * so the panel shows how many, the upstream figures and the flow diagram,
    * and none of the delivery tiles, bars, metrics or burndown, which would
-   * all read nothing.
+   * all read nothing. The kind is the one the page hands it: the board page's
+   * and All Tasks' loads both carry it (card 2463), so the panel no longer
+   * takes it from the flow diagram's answer.
    */
-  /**
-   * The board's kind as the flow diagram's answer gives it: All Tasks hands
-   * the panel no kind for an ideas board with no card (its load has none),
-   * and the answer tells it.
-   */
-  let cfdKind = $state<string | null>(null);
-  const isIdeas = $derived(boardKind === 'ideas' || cfdKind === 'ideas');
+  const isIdeas = $derived(boardKind === 'ideas');
 
   /** The board's options line, the discard rate once the metrics have come; null with no option. */
   const optionsText = $derived(optionsLine(stats.optionsCount, metrics?.upstream));
@@ -171,7 +167,6 @@
         cfdColumns = json.columns || [];
         cfdData = json.data || [];
         offersUpstream = json.hasUpstream === true && json.kind !== 'ideas';
-        cfdKind = typeof json.kind === 'string' ? json.kind : null;
         cfdLoaded = true;
       }
     } finally {

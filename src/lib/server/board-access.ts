@@ -190,6 +190,31 @@ export function getAccessibleBoardsAndTeams(user: Actor): { boardIds: number[] |
 }
 
 /**
+ * The ids of every board `user` can edit, in four reads however many boards
+ * there are (milestone 22, card 2463, the S5b review's P2): `null` for an
+ * administrator, who can edit them all. `roleOnBoard`'s rule, decided in
+ * memory: a board the caller created; else their own member row, which
+ * decides whatever a team share says (a direct viewer is a viewer, as
+ * `roleOnBoard` reads it), as `owner` or `editor`; else a team share as
+ * `editor`. A public board gives only a view, so is never in it. Asking
+ * `canEditBoard` of each board in turn read three or four rows a board.
+ */
+export function editableBoardIds(user: Actor): Set<number> | null {
+	if (isAdmin(user)) return null;
+	const ids = new Set(db.select({ id: boards.id }).from(boards).where(eq(boards.createdBy, user.id)).all().map((b) => b.id));
+	const direct = new Map(
+		db.select({ boardId: boardMembers.boardId, role: boardMembers.role }).from(boardMembers).where(eq(boardMembers.userId, user.id)).all().map((m) => [m.boardId, m.role] as const)
+	);
+	for (const [boardId, role] of direct) if (role === 'owner' || role === 'editor') ids.add(boardId);
+	const teamIds = db.select({ teamId: teamMembers.teamId }).from(teamMembers).where(eq(teamMembers.userId, user.id)).all().map((t) => t.teamId);
+	if (teamIds.length > 0) {
+		const shares = db.select({ boardId: boardTeams.boardId, role: boardTeams.role }).from(boardTeams).where(inArray(boardTeams.teamId, teamIds)).all();
+		for (const share of shares) if (share.role === 'editor' && !direct.has(share.boardId)) ids.add(share.boardId);
+	}
+	return ids;
+}
+
+/**
  * Check if user can edit a board (owner, editor, or admin).
  */
 export function canEditBoard(user: Actor, boardId: number): boolean {

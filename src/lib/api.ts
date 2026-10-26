@@ -341,6 +341,21 @@ export async function deleteCard(cardId: number, boardId: number): Promise<Respo
 }
 
 /**
+ * Sends an option to another delivery board (milestone 22, card 2463): to its
+ * Options column, still an option, or to its To Do, which commits it. The
+ * answer is the card as it now is, with `columnTitle`, `boardId`,
+ * `leftMilestone` and `committed`.
+ */
+export async function sendCard(cardId: number, boardId: number, to: 'options' | 'todo'): Promise<Response> {
+	return jsonRequest(`/api/cards/${cardId}/send`, 'POST', { boardId, to });
+}
+
+/** What is said once a card is sent (milestone 22): where it went, `Sent "T" to Ops's Options` or `… To Do`. */
+export function cardSentMessage(title: string, boardName: string, to: 'options' | 'todo'): string {
+	return `Sent "${title}" to ${boardName}'s ${to === 'options' ? 'Options' : 'To Do'}`;
+}
+
+/**
  * Batch-reorders cards across columns.
  * Used after drag-and-drop to persist the new positions.
  */
@@ -453,10 +468,86 @@ export async function createBoard(data: {
 }
 
 /**
- * Updates board properties (name, emoji, parentCardId).
+ * Updates board properties (name, emoji, parentCardId, and `kind` for an
+ * empty board, which the owner or an administrator switches).
  */
 export async function updateBoard(boardId: number, updates: Record<string, unknown>): Promise<Response> {
 	return jsonRequest(`/api/boards/${boardId}`, 'PUT', updates);
+}
+
+/**
+ * Makes a board an ideas board with the cards it holds (milestone 22, card
+ * 2463, ruling i). `cards` is how many, live and archived, the page's question
+ * named: the server refuses a board that holds another number now. An empty
+ * board is given the ideas board's columns in place of its own.
+ */
+export async function convertBoard(boardId: number, cards: number): Promise<Response> {
+	return jsonRequest(`/api/boards/${boardId}/convert`, 'POST', { kind: 'ideas', cards });
+}
+
+/** The ideas board's columns, and the delivery board's, as a new board of each kind is made (`DEFAULT_COLUMNS` in `$lib/server/boards`). */
+export const DEFAULT_COLUMN_TITLES = {
+	ideas: ['New Ideas', 'Shaping', 'Ready for Replenishment'],
+	delivery: ['To Do', 'On Hold', 'In Progress', 'Complete']
+} as const;
+
+/** "A", "A and B", "A, B and C". */
+function listed(items: readonly string[]): string {
+	return items.length <= 1 ? (items[0] ?? '') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}
+
+/**
+ * What making a board an ideas board does, asked before it is done (milestone
+ * 22, card 2463). A board holding cards: they become ideas, `live` and
+ * `archived` of them, which is the count the server is sent, and its empty
+ * To Do, On Hold and Complete columns (`removed`) go. A board holding none:
+ * its columns (`columns`) are replaced with the ideas board's.
+ */
+export function ideasBoardWarning(name: string, live: number, archived: number, columns: readonly string[], removed: readonly string[]): string {
+	if (live + archived === 0) {
+		const now = columns.length === 0 ? 'It holds no cards and no columns, so it is given' : `It holds no cards, so its ${columns.length === 1 ? 'column' : 'columns'} ${listed(columns)} ${columns.length === 1 ? 'is' : 'are'} replaced with`;
+		return `Make "${name}" an ideas board? ${now} ${listed(DEFAULT_COLUMN_TITLES.ideas)}. Its ideas are sent on to delivery boards when they are chosen. It can be made a delivery board again while it holds no cards.`;
+	}
+	const count = (n: number, what: string) => `${n} ${what} card${n === 1 ? '' : 's'}`;
+	const held = archived === 0 ? count(live, 'live') : live === 0 ? count(archived, 'archived') : `${count(live, 'live')} and ${count(archived, 'archived')}`;
+	const gone =
+		removed.length === 0
+			? ''
+			: ` Its empty ${removed.length === 1 ? 'column' : 'columns'} ${listed(removed)} ${removed.length === 1 ? 'is' : 'are'} removed: an ideas board has no To Do, On Hold or Complete column.`;
+	const one = live + archived === 1;
+	return `Make "${name}" an ideas board? The ${held} on it ${one ? 'becomes an idea: an option' : 'become ideas: options'} not yet committed to, sent on to a delivery board when chosen, and the commitment recorded on ${one ? 'it is' : 'them is'} cleared.${gone} This is recorded as one entry in the activity log. It can be made a delivery board again only once it holds no cards.`;
+}
+
+/**
+ * Why a board cannot be made an ideas board while a column whose title makes
+ * it To Do, On Hold or Complete holds cards, live or archived: said by the
+ * page before it asks, in the server's words (`convertBoardFor`, the S5a
+ * review's L1), as the Options column's delete is (the S1b review's U5).
+ */
+export function ideasBoardColumnRefusal(title: string, held: number, role: 'todo' | 'hold' | 'complete'): string {
+	const cards = held === 1 ? '1 card' : `${held} cards`;
+	if (role === 'complete') {
+		const them = held === 1 ? 'it' : 'them';
+		return `"${title}" holds ${cards}, and an ideas board has no Complete column: move ${them} to a delivery board, or delete ${them}, first.`;
+	}
+	return `"${title}" holds ${cards}, and an ideas board has no ${role === 'todo' ? 'To Do' : 'On Hold'} column: rename it first.`;
+}
+
+/** Why a board with a card that has a sub-board cannot be made an ideas board, in the server's words (`convertBoardFor`, the S5a review's L7). */
+export function ideasBoardSubBoardRefusal(title: string): string {
+	return `Card "${title}" has a sub-board, and a card with sub-boards is never an option: move it to another board, or move or delete its sub-board, first.`;
+}
+
+/** Why an ideas board holding cards cannot be made a delivery board, in the server's words (`updateBoard`). */
+export function deliveryBoardRefusal(held: number): string {
+	const them = held === 1 ? 'it' : 'them';
+	return `This ideas board holds ${held === 1 ? '1 card' : `${held} cards`}. Making it a delivery board would commit ${them} without anyone committing ${them}: move ${them} to a delivery board, or delete ${them}, first.`;
+}
+
+/** What making an empty ideas board a delivery board does, asked before it is done (decision M22-18). */
+export function deliveryBoardWarning(name: string, columns: readonly string[]): string {
+	const now = columns.length === 0 ? 'It is given' : `Its ${columns.length === 1 ? 'column' : 'columns'} ${listed(columns)} ${columns.length === 1 ? 'is' : 'are'} replaced with`;
+	return `Make "${name}" a delivery board? ${now} ${listed(DEFAULT_COLUMN_TITLES.delivery)}.`;
 }
 
 /**

@@ -1,11 +1,25 @@
 import { json } from '@sveltejs/kit';
 import { leftMilestoneOf } from '$lib/server/card-moves';
-import { sendCard } from '$lib/server/cards';
+import { sendCard, sendTargetsFor } from '$lib/server/cards';
 import { linkBaseUrl } from '$lib/server/email';
 import { pathId, readBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
+
+/**
+ * GET /api/cards/:id/send — the boards this card can be sent to, for the board
+ * page's Send window (milestone 22, card 2463, slice S5b): every delivery board
+ * the caller can edit but the card's own, by name, each with whether it has an
+ * Options column (`options`) and the column a Send to To Do commits into
+ * (`todo`, or null). Edit access to the card's board. `sendTargetsFor` in
+ * `$lib/server/cards`.
+ */
+export const GET: RequestHandler = async ({ params, locals }) => {
+	requireUser(locals.user);
+	const id = pathId(params.id, 'card');
+	return json({ boards: sendTargetsFor(locals.user, { cardId: id }, {}) });
+};
 
 /**
  * POST /api/cards/:id/send — send an option to another delivery board, to its

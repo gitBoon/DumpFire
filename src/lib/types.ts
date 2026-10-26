@@ -73,7 +73,8 @@ export type CardType = {
 	/**
 	 * When this card became an option, for the Options strip's aging
 	 * (milestone 22, ruling g): its latest return to options, else its
-	 * creation. Given by the board page for a card in the Options column alone.
+	 * creation. Given by the board page for a card in the Options column, and
+	 * for every card of an ideas board, whose columns show it (card 2463).
 	 */
 	optionSince?: string;
 	/**

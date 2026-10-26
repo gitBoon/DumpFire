@@ -2566,6 +2566,8 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 	'src/routes/api/cards/[id]/send/+server.ts POST': [
 		{ service: 'sendCard', args: [code('caller'), { cardId: code('id') }, code('body'), { source: 'ui', baseUrl: code('baseUrl') }] }
 	],
+	// Slice S5b: the boards the page's Send window offers; a read, page only.
+	'src/routes/api/cards/[id]/send/+server.ts GET': [{ service: 'sendTargetsFor', args: [code('locals.user'), { cardId: code('id') }, {}] }],
 	'src/routes/api/v1/cards/[cardId]/send/+server.ts POST': [
 		{ service: 'sendCard', args: [code('caller'), { cardId: code('cardId') }, code('body'), { source: 'api', baseUrl: code('baseUrl') }] }
 	],

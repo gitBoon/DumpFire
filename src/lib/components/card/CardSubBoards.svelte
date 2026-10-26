@@ -27,7 +27,8 @@
 		newSubBoardName = $bindable(),
 		showLinkPicker = $bindable(),
 		pendingSubBoardNames = $bindable(),
-		newPendingSubBoardName = $bindable()
+		newPendingSubBoardName = $bindable(),
+		canAdd = true
 	}: {
 		card: CardType | null;
 		availableBoards: { id: number; name: string; emoji: string }[];
@@ -38,6 +39,13 @@
 		showLinkPicker: boolean;
 		pendingSubBoardNames: string[];
 		newPendingSubBoardName: string;
+		/**
+		 * False for an option or an idea, a card in an upstream column
+		 * (milestone 22, card 2463, the S5b review's P1): the server makes no
+		 * sub-board under one, so none is offered to create, link or queue. A
+		 * sub-board it already has is still listed, opened and deleted.
+		 */
+		canAdd?: boolean;
 	} = $props();
 </script>
 
@@ -62,13 +70,16 @@
 				{/each}
 			</div>
 		{/if}
-		{#if onCreateSubBoard}
+		{#if !canAdd}
+			<p class="subboard-none">An idea has no sub-boards: commit it, or send it to a delivery board, first.</p>
+		{/if}
+		{#if canAdd && onCreateSubBoard}
 			<div class="subboard-create-row">
 				<input type="text" class="subboard-name-input" placeholder="Link to a sub-board..." maxlength="200" bind:value={newSubBoardName} onkeydown={(e) => { if (e.key !== 'Enter') return; if (e.ctrlKey || e.metaKey) e.stopPropagation(); if (newSubBoardName.trim()) onCreateSubBoard!(newSubBoardName.trim()); }} />
 				<button class="btn-ghost subboard-add-btn" onclick={() => { if (newSubBoardName.trim()) onCreateSubBoard!(newSubBoardName.trim()); }} disabled={!newSubBoardName.trim()}>+ Create</button>
 			</div>
 		{/if}
-		{#if onLinkSubBoard && availableBoards.length > 0}
+		{#if canAdd && onLinkSubBoard && availableBoards.length > 0}
 			{#if showLinkPicker}
 				<div class="link-picker">
 					{#each availableBoards as ab}
@@ -93,10 +104,14 @@
 				{/each}
 			</div>
 		{/if}
+		{#if !canAdd}
+			<p class="subboard-none">An idea has no sub-boards: commit it, or send it to a delivery board, first.</p>
+		{:else}
 		<div class="subboard-create-row">
 			<input type="text" class="subboard-name-input" placeholder="Link to a sub-board..." maxlength="200" bind:value={newPendingSubBoardName} onkeydown={(e) => { if (e.key !== 'Enter') return; if (e.ctrlKey || e.metaKey) e.stopPropagation(); if (newPendingSubBoardName.trim()) { pendingSubBoardNames = [...pendingSubBoardNames, newPendingSubBoardName.trim()]; newPendingSubBoardName = ''; } }} />
 			<button class="btn-ghost subboard-add-btn" onclick={() => { if (newPendingSubBoardName.trim()) { pendingSubBoardNames = [...pendingSubBoardNames, newPendingSubBoardName.trim()]; newPendingSubBoardName = ''; } }} disabled={!newPendingSubBoardName.trim()}>+ Add</button>
 		</div>
+		{/if}
 	{/if}
 </div>
 
@@ -157,6 +172,8 @@
 	.subboard-link-info { flex: 1; min-width: 0; }
 	.subboard-link-name { display: block; font-size: 0.82rem; font-weight: 600; }
 	.subboard-link-progress { display: block; font-size: 0.68rem; color: var(--text-secondary); margin-top: 1px; }
+
+	.subboard-none { font-size: 0.75rem; color: var(--text-tertiary); margin: 0 0 var(--space-sm); }
 
 	.subboard-create-row {
 		display: flex; gap: var(--space-sm); margin-bottom: var(--space-sm);

@@ -756,6 +756,53 @@ Returns a single board with its columns. A board that does not exist is `404` `B
 }
 ```
 
+Every board carries `kind` (milestone 22, card 2463): `"delivery"`, as every board was, or
+`"ideas"`, an **ideas board**, every column of which is upstream of the commitment point, so
+its cards are options sent on to delivery boards (see [Send an Option to Another
+Board](#send-an-option-to-another-board)). A new board is made with its kind's own columns
+(New Ideas, Shaping, Ready for Replenishment for an ideas board). An ideas board has no column
+whose title means To Do, On Hold or Complete (`409`), and no sub-board under its cards; a
+sub-board is always a delivery board. Only the board's owner or an administrator changes the
+kind: `PUT /api/v1/boards/:boardId` with `kind` switches an **empty** board, no card live or
+archived, giving it the other kind's columns in place of its own; a board holding cards is
+`409`, and becomes an ideas board by the conversion below. An ideas board holding cards never
+becomes a delivery board.
+
+---
+
+#### Convert a Board to an Ideas Board
+
+```
+POST /api/v1/boards/:boardId/convert
+```
+
+Makes a board an ideas board with the cards it holds (milestone 22, card 2463, ruling i). Only
+the board's owner or an administrator may (`403` otherwise, after `404` for a board that is
+not there).
+
+**Request Body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `kind` | string | ✅ | `"ideas"` |
+| `cards` | number | ✅ | How many cards the board holds, live and archived, as you counted them: a whole number of 0 or more |
+
+Refused, `409` with nothing written, in this order: the board is already an ideas board; a card
+on it, live or archived, has a sub-board (`Card "<title>" has a sub-board, and a card with
+sub-boards is never an option: move it to another board, or move or delete its sub-board,
+first.`, or `Archived card "<title>" …: restore it and move it to another board, …`); the board
+is a sub-board (`A sub-board is a delivery board.`); a To Do or On Hold column holds a card
+(`"<title>" holds N cards, and an ideas board has no To Do column: rename it first.`); a
+Complete column holds one (`… no Complete column: move them to a delivery board, or delete
+them, first.`); `cards` is not the number it holds now (`The board now holds K cards; look
+again.`). Then, in one transaction, every card's `committedAt` and `committedBy` are cleared,
+the empty To Do, On Hold and Complete columns are deleted, an Options column becomes an
+ordinary column, and `kind` becomes `"ideas"`; a board holding no card at all is given the
+ideas board's three columns in place of its own. One `api:board_converted_to_ideas` entry is
+written, `"<name>": N cards became ideas; its columns To Do, Complete were removed (board
+<id>)`; nothing for each card, no webhook and no mail. The answer is the board with its
+`columns`.
+
 ---
 
 ### Cards
@@ -1175,6 +1222,52 @@ target column is looked for and the caller checked on its board. Until 2026-10-1
   "firstCompletedAt": "2026-04-09T10:45:00.000Z"
 }
 ```
+
+An option, a card in a board's Options column or on an ideas board, moved to another board is
+**sent on** (milestone 22, card 2463): the board it leaves logs `api:card_sent` in place of
+`api:card_moved_away`, `"<title>" sent to another board's Options (<from> → <to>)`, `… To Do
+(…)` or `… "<column>" column (…)`, at the same moment as the arrival, exactly as a Send below
+does. Its webhooks are sent `card.moved`.
+
+---
+
+#### Send an Option to Another Board
+
+```
+POST /api/v1/cards/:cardId/send
+```
+
+Sends an option, a card in an upstream column (a board's Options column, or any column of an
+ideas board), on to another delivery board (milestone 22, card 2463, ruling l): to its Options
+column, where it is still an option and keeps its age, or to its To Do, which commits it on
+arrival. Edit access to both boards.
+
+**Request Body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `boardId` | number | ✅ | The delivery board it goes to |
+| `to` | string | ✅ | `"options"` or `"todo"` |
+| `position` | number | | Where in the column; left out, as a move leaves it |
+
+To Do is the board's first column titled To Do, or else its first column that is neither the
+Options column, Complete nor On Hold: a card sent to be worked on is never parked. In this
+order: the card looked for and edit access to its board (`404`, `403`); the fields (`400`);
+the board looked for and edit access to it (`404`, `403`); `400` for a committed card (`A
+committed card is moved, not sent`), an ideas board (`"<board>" is an ideas board: a card is
+sent to a delivery board, and moved onto an ideas board`) or the card's own board (`The card is
+already on "<board>": move it within the board instead`); `409` for an archived card, a board
+with no Options column (`"<board>" has no Options column`) or none to commit into (`"<board>"
+has no column to commit into: add a To Do column`); then every refusal of a move, among them a
+card with a sub-board going into another board's Options column (`409`).
+
+It is a move to another board in every other way: the board's labels, a board's category and a
+milestone of the board it left are shed (`leftMilestone`), and the answer is as the move's,
+the card with `columnTitle` and `boardId`. The board it leaves logs `api:card_sent`
+(`"<title>" sent to another board's Options (<from> → <to>)`, or `… To Do (…)`) in place of
+`api:card_moved_away`, and the board it joins `api:card_moved_in`, then `api:card_committed`
+for To Do, all at one moment; neither names the other board. Webhooks: `card.moved` to each
+board, and `card.committed` to the board it joins for To Do.
 
 ---
 
@@ -2416,6 +2509,14 @@ board, sent to the board it left (`card_moved_away`) and to the board it joined
 into a Complete column sends `card.completed` instead; one into another board's Complete column
 sends the joined board both, the arrival and the completion. Ask for both events to hear every
 column change.
+
+An option sent on to another board (milestone 22, card 2463), by `POST /cards/:cardId/send` or
+by any move of a card in an upstream column to another board, sends the board it left
+`card.moved` with `data.action` `card_sent` in place of `card_moved_away`, its `data.detail`
+`"<title>" sent to another board's Options (<from> → <to>)`, `… To Do (…)` or `… "<column>"
+column (…)`; the board it joined is sent `card.moved` (`card_moved_in`) as for any move, and
+`card.committed` for one that arrives committed. A board made an ideas board by `POST
+/boards/:boardId/convert` sends nothing.
 
 `card.committed` (milestone 22, card 2460) is a card moved out of an upstream column, a board's
 Options column or any column of an ideas board, into a committed one, by any route. Within a

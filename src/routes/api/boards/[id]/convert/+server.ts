@@ -12,10 +12,13 @@ import type { RequestHandler } from './$types';
  * Body: `{ kind: "ideas", cards }`, `cards` being how many cards, live and
  * archived, the page's question named. Only the board's owner or an
  * administrator may. Every card on it becomes an option (its commitment is
- * cleared), its Complete columns, which must be empty, are deleted, and one
- * activity entry says how many cards became ideas. An ideas board already, a
- * card with sub-boards, a sub-board, a card in a Complete column and a count
- * that no longer matches are each 409. The work is `convertBoardFor` in
+ * cleared), its To Do, On Hold and Complete columns, which must be empty, are
+ * deleted (an ideas board has none, the S5a review's L1), a board with no card
+ * at all is given the ideas board's columns in place of its own, and one
+ * activity entry says how many cards became ideas and which columns went. An
+ * ideas board already, a card with sub-boards, a sub-board, a card, live or
+ * archived, in a To Do, On Hold or Complete column, and a count that no longer
+ * matches are each 409. The work is `convertBoardFor` in
  * `$lib/server/boards`, which the v1 route shares. The answer is the board
  * with its columns.
  */

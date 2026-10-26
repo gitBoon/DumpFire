@@ -3,7 +3,8 @@
   from the board page).
 
   On the left the way back (the boards above this one, or the dashboard), the
-  board's emoji and name, each changed in place, and what the board has cost;
+  board's emoji and name, each changed in place, "Ideas board" on an ideas
+  board (milestone 22), and what the board has cost;
   then the search; on the right the Board | List switch, the Filter menu (the
   assignee filter and Hide blocked, its button counting those on) and the
   More menu the page hands it (`more`), which holds Planning, All To Do, Add
@@ -28,6 +29,7 @@
 		boardId,
 		boardName,
 		boardEmoji,
+		boardKind = 'delivery',
 		breadcrumbs,
 		tokenSummary,
 		editingName,
@@ -47,6 +49,8 @@
 		boardId: number;
 		boardName: string;
 		boardEmoji: string;
+		/** The board's kind (milestone 22, card 2463): an ideas board says so beside its name. */
+		boardKind?: string;
 		breadcrumbs: BreadcrumbType[];
 		tokenSummary: BoardContentsData['boardTokenSummary'];
 		/** The name is being changed in place: the box is shown, on `nameDraft`. */
@@ -113,6 +117,10 @@
 				{boardName}
 				<span class="board-id">#{boardId}</span>
 			</h1>
+		{/if}
+		<!-- An ideas board (milestone 22, card 2463): all upstream, its ideas sent on to delivery boards. -->
+		{#if boardKind === 'ideas'}
+			<span class="board-kind-badge" title="An ideas board: every card on it is an idea, not yet committed to, until it is sent on to a delivery board">Ideas board</span>
 		{/if}
 		<!-- What this board has cost. Only shown once something is recorded:
 		     a permanent "—" in the header would be noise on every board
@@ -277,6 +285,12 @@
 		white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 	}
 	.board-name:hover { background: var(--glass-hover); }
+	.board-kind-badge {
+		flex-shrink: 0; padding: 2px 10px; border-radius: var(--radius-full);
+		font-size: 0.72rem; font-weight: 600; white-space: nowrap;
+		background: rgba(99, 102, 241, 0.12); color: var(--accent-indigo);
+		border: 1px solid rgba(99, 102, 241, 0.3);
+	}
 	.board-name-input { font-size: 1.25rem; font-weight: 700; padding: 2px var(--space-sm); background: var(--bg-surface); width: 300px; }
 
 	/* Search bar */

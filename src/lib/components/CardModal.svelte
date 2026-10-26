@@ -51,6 +51,8 @@
 		onCreateSubBoard,
 		onDeleteSubBoard,
 		onLinkSubBoard,
+		onSend,
+		subBoardsAllowed = true,
 		availableBoards = [],
 		milestones = [],
 		notice = '',
@@ -70,6 +72,20 @@
 		onCreateSubBoard?: (name: string) => void;
 		onDeleteSubBoard?: (boardId: number) => void;
 		onLinkSubBoard?: (boardId: number) => void;
+		/**
+		 * "Send to board…" (milestone 22, card 2463): the board page gives it for
+		 * an option, a card in an Options column or on an ideas board, and never
+		 * for committed work, which is moved, not sent. It opens the Send window
+		 * over this one.
+		 */
+		onSend?: () => void;
+		/**
+		 * False for an option or an idea, a card in an upstream column, saved or
+		 * new (the S5b review's P1): the Sub-board section offers nothing to
+		 * create, link or queue, which the server would refuse, and a new card
+		 * would be saved without them. Existing sub-boards still open and delete.
+		 */
+		subBoardsAllowed?: boolean;
 		availableBoards?: { id: number; name: string; emoji: string }[];
 		milestones?: MilestoneType[];
 		/** Said at the top of the window while it holds: the board page's "This card is no longer on this board." (card 2280, the B2c review). */
@@ -502,7 +518,8 @@
 		// what was typed in it. One of the window's own, a comment's Delete
 		// (card 2338), is the same: the window used to stand aside only for
 		// one outside its overlay, and closed or saved on this one.
-		const confirming = document.querySelector('.confirm-modal');
+		// The board page's Send window, opened over this one, answers them too (milestone 22).
+		const confirming = document.querySelector('.confirm-modal, .send-modal');
 		if (confirming) return;
 		if (saveKey) {
 			// Not while a template dialog is open: its own Enter is its answer.
@@ -1183,6 +1200,7 @@
 					bind:showLinkPicker
 					bind:pendingSubBoardNames
 					bind:newPendingSubBoardName
+					canAdd={subBoardsAllowed}
 				/>
 
 				<!-- Labels and a cover are put on a saved card: a new one has no id to put them on yet. -->
@@ -1231,6 +1249,12 @@
 					<button class="template-btn" onclick={() => { showTemplatePicker = true; templateError = ''; loadTemplates(); }} type="button">
 						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
 						From template
+					</button>
+				{/if}
+				{#if card && onSend}
+					<button class="template-btn send-btn" onclick={onSend} type="button" title="Send this idea on to a delivery board: to its Options, or committed to its To Do">
+						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+						Send to board…
 					</button>
 				{/if}
 				{#if onDelete}

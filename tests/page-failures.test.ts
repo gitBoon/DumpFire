@@ -475,8 +475,12 @@ describe('the card window’s own messages and Escape, src/lib/components/CardMo
 		// (tests/card-window-keys.svelte.test.ts runs that one).
 		const handler = functionNamed(modal, 'handleKeydown').getText().replace(/\s+/g, ' ');
 		const leaves = 'if (confirming) return;';
-		expect(handler).toContain("const confirming = document.querySelector('.confirm-modal');");
+		// And the board page's Send window, opened over it (milestone 22, card 2463), which answers Escape itself.
+		expect(handler).toContain("const confirming = document.querySelector('.confirm-modal, .send-modal');");
 		expect(handler).toContain(leaves);
+		const sendWindow = readFileSync(join(ROOT, 'src/lib/components/board/SendToBoardModal.svelte'), 'utf8');
+		expect(sendWindow).toContain('class="modal-content send-modal"');
+		expect(sendWindow).toContain("use:holdFocus={{ first: '#send-board, .send-actions .btn-ghost', onEscape: onClose }}");
 		expect(handler.indexOf(leaves)).toBeLessThan(handler.indexOf('onClose();'));
 		// Escape, and Ctrl+Enter, which saves (card 2280, slice B5c: tests/card-window-keys.svelte.test.ts).
 		expect(handler).toContain("if (e.key !== 'Escape' && !saveKey) return;");
@@ -2514,7 +2518,15 @@ const WRITES: Record<string, Write[]> = {
 		{ name: 'confirmOnHold', via: 'dndHandlers.confirmOnHold', putsBack: ['putBackOnHold()'], done: ['boardState.columns = moveCards(boardState.columns, onHoldState.pendingUpdates).columns'] },
 		// A refused update keeps the window open with what was typed; each subtask, assignee, label or sub-board of a new card refused is named
 		// (the card window's controller, slice B2c: it sends only the fields changed since the window opened, and gives back what to say).
-		{ name: 'saveCard', via: 'cardWindow.save', done: ['toasts.add(message)'] }
+		{ name: 'saveCard', via: 'cardWindow.save', done: ['toasts.add(message)'] },
+		// Milestone 22, card 2463 (slice S5b): the board's kind, read again once it is taken
+		// (its columns change, and the answer is the board alone), and the Send window's Send,
+		// the card taken off the board and the window closed only once it is sent. Each is sent
+		// through the board state by `$lib/board/ideas-board` (the S5b review's P3), whose cases
+		// are run in tests/ideas-screens.svelte.test.ts.
+		{ name: 'makeIdeasBoard', via: 'ideasBoard.convertBoardAndRead', done: ['toasts.add(`"${boardName}" is now an ideas board`)'] },
+		{ name: 'makeDeliveryBoard', via: 'ideasBoard.switchBoardKindAndRead', done: ['toasts.add(`"${boardName}" is now a delivery board`)'] },
+		{ name: 'sendToBoard', via: 'ideasBoard.sendOption', done: ['sendingCard = null', 'toasts.add(message)'] }
 	],
 	'src/routes/archived/+page.svelte': [
 		{ name: 'restoreCard', reads: 'deleteFailure', done: ["toasts.add('Card restored')", 'await invalidateAll()'] },

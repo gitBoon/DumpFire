@@ -5,9 +5,11 @@
   Where to go from the board (Planning and All To Do, scoped to it), the
   panels (Activity Log, Statistics, Archived Cards), what is done to the
   board as a whole (Add Column, Add Options Column on a delivery board that
-  has none (milestone 22), Burndown, Manage Categories, Bulk Select,
-  Share Board for someone who manages it, and Delete Sub-board when the board
-  is one), and the theme. Card 2466 moved Planning, All To Do, Add Column and
+  has none (milestone 22), Burndown on a delivery board, Manage Categories,
+  Bulk Select, Share Board and the board's kind for someone who manages it
+  ("Make this an ideas board…", or "Make this a delivery board…" on an ideas
+  board; card 2463), and Delete Sub-board when the board is one), and the
+  theme. Card 2466 moved Planning, All To Do, Add Column and
   the theme here from the bar, and made the menu a HeaderMenu: keyboard
   operable, and each item closes it, the focus back on More, before the item
   hands its choice to the page, so a window that gives the focus back as it
@@ -28,8 +30,11 @@
 		isSubBoard,
 		boardId,
 		canAddOptions = false,
+		boardKind = 'delivery',
 		onAddColumn,
 		onAddOptionsColumn = () => {},
+		onMakeIdeas = () => {},
+		onMakeDelivery = () => {},
 		onToggleActivity,
 		onToggleStats,
 		onToggleArchive,
@@ -49,8 +54,14 @@
 		boardId: number;
 		/** A delivery board with no Options column: Add Options Column is offered (milestone 22). */
 		canAddOptions?: boolean;
+		/** The board's kind (milestone 22, card 2463): an ideas board has no burndown, and its owner can make it a delivery board again. */
+		boardKind?: string;
 		onAddColumn: () => void;
 		onAddOptionsColumn?: () => void;
+		/** "Make this an ideas board…": the page counts the cards and asks first. */
+		onMakeIdeas?: () => void;
+		/** "Make this a delivery board…": the page says why not while the board holds cards, and asks first when it holds none. */
+		onMakeDelivery?: () => void;
 		onToggleActivity: () => void;
 		onToggleStats: () => void;
 		onToggleArchive: () => void;
@@ -147,9 +158,12 @@
 			<span class="hm-icon">💡</span> Add Options Column
 		</button>
 	{/if}
-	<a class="hm-item" role="menuitem" tabindex="-1" href="/burndown?boardIds={boardId}">
-		<span class="hm-icon">📉</span> Burndown
-	</a>
+	<!-- An ideas board has no burndown: nothing on it is committed work (milestone 22). -->
+	{#if boardKind !== 'ideas'}
+		<a class="hm-item" role="menuitem" tabindex="-1" href="/burndown?boardIds={boardId}">
+			<span class="hm-icon">📉</span> Burndown
+		</a>
+	{/if}
 	<button class="hm-item" role="menuitem" tabindex="-1" onclick={() => onManageCategories()}>
 		<span class="hm-icon">🏷️</span> Manage Categories
 	</button>
@@ -161,6 +175,18 @@
 		<button class="hm-item" role="menuitem" tabindex="-1" onclick={() => onShare()}>
 			<span class="hm-icon">🔗</span> Share Board
 		</button>
+		<!-- The board's kind (milestone 22, card 2463), the owner's or an
+		     administrator's to change, as the server asks. A sub-board is a
+		     delivery board, so is not offered it. -->
+		{#if boardKind === 'ideas'}
+			<button class="hm-item" role="menuitem" tabindex="-1" onclick={() => onMakeDelivery()} title="Only an ideas board holding no cards can be made a delivery board">
+				<span class="hm-icon">🚚</span> Make this a delivery board…
+			</button>
+		{:else if !isSubBoard}
+			<button class="hm-item" role="menuitem" tabindex="-1" onclick={() => onMakeIdeas()} title="Make every card on it an idea, not yet committed to, sent on to delivery boards when chosen">
+				<span class="hm-icon">💡</span> Make this an ideas board…
+			</button>
+		{/if}
 	{/if}
 	{#if isSubBoard}
 		<button class="hm-item more-danger" role="menuitem" tabindex="-1" onclick={() => onDeleteSubBoard()}>

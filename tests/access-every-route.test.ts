@@ -1048,6 +1048,8 @@ const TABLE: Record<string, Case | Case[]> = {
 	],
 	'POST /api/cards/[id]/restore': edit((w) => `/api/cards/${w.A.archived.id}/restore`),
 	// Milestone 22, card 2463: an option on board B, an ideas board, sent to board A's To Do. Edit access to both.
+	// Slice S5b: the boards the Send window offers, those the caller can edit. Edit access to the card's board, as a Send asks.
+	'GET /api/cards/[id]/send': edit((w) => `/api/cards/${w.A.card.id}/send`),
 	'POST /api/cards/[id]/send': across((w) => json(`/api/cards/${w.B.card.id}/send`, { boardId: w.A.board.id, to: 'todo' }), {
 		of: 'an option sent to another board',
 		setup: bIsAnIdeasBoard

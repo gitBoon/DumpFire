@@ -52,6 +52,13 @@
 		showSubBoardForm = false;
 	}
 
+	/**
+	 * An ideas board's cards are ideas, and an idea has no sub-boards (milestone
+	 * 22, card 2463): New Sub-board is not offered on one, where its parent card
+	 * was made and then the sub-board refused (the S5b review's P1).
+	 */
+	const offersSubBoard = $derived(data.boards.find((b) => b.id === boardCtx.boardId)?.kind !== 'ideas');
+
 	function closeBoardContextMenu() {
 		boardCtx.show = false;
 		showCatPicker = false;
@@ -271,9 +278,11 @@
 				<a href="/board/{boardCtx.boardId}" class="ctx-item">
 					<span class="ctx-icon">📝</span> Open Board
 				</a>
-				<button class="ctx-item ctx-new" onclick={openSubBoardForm}>
-					<span class="ctx-icon">🗂️</span> New Sub-board
-				</button>
+				{#if offersSubBoard}
+					<button class="ctx-item ctx-new" onclick={openSubBoardForm}>
+						<span class="ctx-icon">🗂️</span> New Sub-board
+					</button>
+				{/if}
 				<div class="ctx-divider"></div>
 				<button class="ctx-item ctx-danger" onclick={() => { closeBoardContextMenu(); confirmDeleteBoard(boardCtx.boardId, boardCtx.boardName); }}>
 					<span class="ctx-icon">🗑️</span> Delete Board
