@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.36
+version: 1.37
 status: As-Built
 date: 2026-10-26
 tags:
@@ -1163,6 +1163,71 @@ stateDiagram-v2
     Option --> Option: moved within upstream (no change)
     Committed --> Committed: moved between committed columns (no change)
     Committed --> Option: column converted to Options (one entry for the column)
+    Committed --> Option: board converted to an ideas board (one entry for the board)
+    Option --> Option: sent to another board's Options (card_sent, card_moved_in)
+    Option --> Committed: sent to another board's To Do (card_sent, card_moved_in, card_committed)
+```
+
+**Sent on** (milestone 22, card 2463, slices S5a and S5b). Every move of an option, a card in
+an upstream column, to another board writes **`card_sent`** on the board it leaves in place
+of `card_moved_away` (decision M22-19, the S5a review's L5), whatever the route: a Send
+(`POST /api/cards/:id/send`, v1's twin), v1's move, the card window's board change or All
+Tasks' Move (`PUT /api/cards/:id`). The board it joins records `card_moved_in`, as any move,
+and `card_committed` after it when the card arrives in a committed column. Those three,
+`card_sent`, `card_moved_in` and `card_committed`, are stored with the move's one moment
+(`createdAt` given to `logActivity`); the goal's `milestone_card_removed` takes the database's
+clock, as every other entry does. So the `card_sent` pairs with its `card_moved_in` by card and
+moment: `upstreamFigures` drops a Send
+whose target board is in scope (ruling b), and `getCardBoardHistory` reads `card_sent` as a
+departure. Neither names the other board (card 2181). It sends `card.moved`. The detail says
+where it went:
+
+| Where it went | `card_sent` detail |
+|---|---|
+| The other board's Options column (a Send with `to: "options"`, or a move into its Options column) | `"<title>" sent to another board's Options (<from> → <to>)` |
+| Its To Do (a Send with `to: "todo"`, or a move into a column titled To Do) | `"<title>" sent to another board's To Do (<from> → <to>)` |
+| Any other column (a move) | `"<title>" sent to another board's "<column>" column (<from> → <to>)` |
+
+Each ends ` and out of milestone "<name>"` when the move took the card out of a goal of the
+board it left, or ` and out of a milestone of another board` for a goal of a third board, which
+it does not name: `"Idea" sent to another board's Options (Shaping → Ideas) and out of a
+milestone of another board`. The goal's own `milestone_card_removed` entry for it says `(sent
+to another board)`. A Send sheds the board's labels, a board's category and the goal, as every move to
+another board does, keeps the option's age (decision M22-20) and, to To Do, commits the card
+on arrival. A committed card is moved, never sent (400).
+
+**A board's kind** (`boards.kind`) is chosen when the board is made (`'delivery'`, the
+default, or `'ideas'`), each made with its own columns: To Do, On Hold, In Progress,
+Complete; or New Ideas, Shaping, Ready for Replenishment (decision M22-12). A sub-board is
+always a delivery board. It changes three ways, each the board's owner's or an
+administrator's:
+
+| The change | What is written | Entry |
+|---|---|---|
+| An empty board (no card, live or archived) switched with `PUT kind` (ruling j, decision M22-18) | `kind`; its columns deleted, with their CFD snapshots, and the other kind's defaults made | `board_updated`, `Updated board "<name>" (fields: kind): now an ideas board; its columns A, B, C were replaced with New Ideas, Shaping, Ready for Replenishment`, or `… now a delivery board; … replaced with To Do, On Hold, In Progress, Complete`; `it was given the columns …` for a board with none |
+| A board holding cards converted (`POST /api/boards/:id/convert`, `{kind: 'ideas', cards}`, ruling i) | `committed_at` and `committed_by` NULL on every card of the board, archived ones included; its empty To Do, On Hold and Complete columns deleted; the Options role cleared; `kind` | **`board_converted_to_ideas`**, `"<name>": N cards became ideas; its columns To Do, On Hold, Complete were removed (board <id>)` (`its column Complete was removed`; no clause when nothing went; `1 card became an idea`) |
+| A board holding no card at all converted | as the empty switch: its columns replaced with the ideas defaults | `board_converted_to_ideas`, `"<name>": 0 cards became ideas; its columns A, B were replaced with New Ideas, Shaping, Ready for Replenishment (board <id>)` |
+
+The `board_converted_to_ideas` detail always ends ` (board <id>)` (`boardConversionSuffix`),
+after any clause, where no name can put it: an option's age reads the board's latest
+conversion beside its column's, and either counts only for a card that has not arrived on the
+board since (no `card_moved_in` there after it), so a card sent onto a board converted earlier
+keeps its own age (`optionsSince`). The conversion writes nothing for each card, no webhook
+and no mail. An ideas board holding cards does not become a delivery board (409), nor does a
+board holding cards switch with `PUT kind` (409, naming the conversion). An ideas board never
+has a column whose title means To Do, On Hold or Complete (create and rename are 409, the
+S5a review's L1), so a conversion refuses one that holds cards, live or archived, and a column
+of an ideas board holding live ideas is not deleted (L2).
+
+```mermaid
+stateDiagram-v2
+    Delivery: Delivery board
+    Ideas: Ideas board (every column upstream)
+    [*] --> Delivery: made (default), or as a sub-board
+    [*] --> Ideas: made with kind ideas
+    Delivery --> Ideas: PUT kind, empty (columns replaced, board_updated)
+    Delivery --> Ideas: convert, count confirmed (commitments cleared, board_converted_to_ideas)
+    Ideas --> Delivery: PUT kind, empty only (columns replaced, board_updated)
 ```
 
 #### An archive, a delete and a restore
@@ -1253,7 +1318,8 @@ negative (the S4a review's H5).
 erDiagram
     BOARDS ||--o{ COLUMNS : "kind: delivery or ideas"
     COLUMNS ||--o{ CARDS : "role: NULL or options"
-    CARDS ||--o{ ACTIVITY_LOG : "card_committed, card_moved, card_returned_to_options, card_discarded, card_abandoned"
+    CARDS ||--o{ ACTIVITY_LOG : "card_committed, card_moved, card_returned_to_options, card_discarded, card_abandoned, card_sent"
+    BOARDS ||--o{ ACTIVITY_LOG : "board_converted_to_ideas (board id)"
     CARDS {
         text created_at
         text committed_at "lead time and aging run from it"
@@ -1526,7 +1592,9 @@ of about zero.
     upstream of the commitment point. A board has one at most, at its far left, with
     `wip_limit` 0 (see [What a column means](#what-a-column-means)).
   - `boards.kind`, text `NOT NULL DEFAULT 'delivery'`: `'delivery'` or `'ideas'`, a board every
-    column of which is upstream. Any other value counts as delivery everywhere.
+    column of which is upstream. Any other value counts as delivery everywhere. Chosen when the
+    board is made, switched by its owner only while it holds no card, or made `'ideas'` by the
+    conversion (card 2463; see [A move](#a-move), "A board's kind").
   - `cards.committed_at` (a moment) and `cards.committed_by` (`REFERENCES users(id) ON DELETE
     SET NULL`): when the card crossed the commitment point and who moved it across. NULL while
     the card is an option. A card created outside an upstream column is committed as it is

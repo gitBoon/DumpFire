@@ -45,10 +45,11 @@
  * the options it passes.
  */
 import { error, isHttpError } from '@sveltejs/kit';
-import { eq } from 'drizzle-orm';
+import { and, eq, inArray, ne } from 'drizzle-orm';
 import { db } from './db';
 import { boards, cards, columns, type Card, type Column } from './db/schema';
 import type { SessionUser } from './auth';
+import { editableBoardIds } from './board-access';
 import { requireBoard, requireCard, requireColumn, requireUser } from './route-guards';
 import { announceCardCreated, recordCardCreated } from './card-create';
 import { readCardPatch, readNewCardFields, requireCardCategory } from './card-fields';
@@ -82,8 +83,8 @@ import { CREATE_BOARD_PAGE_OPTIONS, createBoard } from './boards';
 import { stamp, toStamp } from '$lib/timestamps';
 import { inWrite, type ServiceOptions } from './write-as';
 
-/** The functions here that only read. None: every export but this list is a write, and starts with `inWrite()`. */
-export const READS: readonly string[] = [];
+/** The functions here that only read: where an option can be sent. Every other export is a write, and starts with `inWrite()`. */
+export const READS: readonly string[] = ['sendTargetsFor'];
 
 /** A move, as `applyCardMove` makes it, with its refusal a kit error. */
 function moved(request: MoveRequest): CardMove {
@@ -640,6 +641,49 @@ export function sendCard(caller: SessionUser | null, at: { cardId: number }, bod
 	const move = moved({ cardId: card.id, toColumnId: column.id, position, actor: user, source: opts.source, sent: to });
 	announceMoves([move], user, opts);
 	return move;
+}
+
+/** A board an option can be sent to, as the Send window lists it: whether it has an Options column, and the column To Do would commit into. */
+export type SendTarget = { id: number; name: string; emoji: string | null; options: boolean; todo: string | null };
+
+/**
+ * Where an option can be sent (`GET /api/cards/:id/send`; milestone 22, card
+ * 2463, slice S5b): the page's Send window lists these. The card is looked for
+ * and the caller asked for edit access to its board (404, then 403), as a
+ * Send asks.
+ *
+ * Every delivery board the caller can edit, but the card's own, by name:
+ * `options` says whether it has an Options column, and `todo` names the
+ * column a Send to To Do would commit into (`sendToTodoColumn`), or is null
+ * where there is none. The Send itself asks every rule again; this only
+ * spares the window offering what would be refused. Edit access is decided
+ * in a fixed number of reads, however many boards there are
+ * (`editableBoardIds`, the S5b review's P2), and the delivery boards are
+ * chosen in SQL.
+ */
+export function sendTargetsFor(user: SessionUser | null | undefined, at: { cardId: number }, opts: Record<string, never>): SendTarget[] {
+	const { boardId: fromBoardId } = requireCard(user, at.cardId, 'edit');
+	const caller = requireUser(user);
+	const editableIds = editableBoardIds(caller);
+	if (editableIds !== null && editableIds.size === 0) return [];
+	const delivery = and(eq(boards.kind, 'delivery'), ne(boards.id, fromBoardId));
+	const editable = db
+		.select({ id: boards.id, name: boards.name, emoji: boards.emoji })
+		.from(boards)
+		.where(editableIds === null ? delivery : and(delivery, inArray(boards.id, [...editableIds])))
+		.all();
+	if (editable.length === 0) return [];	const boardColumns = db
+		.select({ boardId: columns.boardId, title: columns.title, role: columns.role })
+		.from(columns)
+		.where(inArray(columns.boardId, editable.map((b) => b.id)))
+		.orderBy(...COLUMN_ORDER)
+		.all();
+	return editable
+		.map((b) => {
+			const own = boardColumns.filter((c) => c.boardId === b.id);
+			return { id: b.id, name: b.name, emoji: b.emoji, options: own.some(isOptionsColumn), todo: sendToTodoColumn(own)?.title ?? null };
+		})
+		.sort((a, b) => a.name.localeCompare(b.name) || a.id - b.id);
 }
 
 /**

@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.45
+version: 1.46
 status: As-Built
 date: 2026-10-26
 tags:
@@ -1817,7 +1817,7 @@ stateDiagram-v2
     [*] --> Sending: created (the caller is the setter)
     Sending --> Held: the setter loses the board<br/>(or the row has no setter)
     Held --> Sending: the setter can open the board again
-    Held --> Sending: owner or admin switches it off, then on<br/>(they become the setter; new secret)
+    Held --> Sending: owner or admin switches it off, then on<br/>(they become the setter, new secret)
     Sending --> Off: switched off, or the setter's reset
     Held --> Off: switched off
     Held --> Off: the setter's own reset, account delete<br/>or invite used (endAccountAccess, deleteUser)
@@ -1899,7 +1899,7 @@ sequenceDiagram
 |-------|---------------------------------|
 | `card.created` | `card_created`: by every way of creating a card, accepting a task request among them (card 2108) |
 | `card.updated` | `card_updated` |
-| `card.moved` | `card_moved`; `card_reopened`, a card moved out of a Complete column (card 2278); `card_moved_away` and `card_moved_in`, a card moved to another board, each to its own board (card 2278); `card_returned_to_options`, a committed card moved back into an upstream column (milestone 22, card 2460) |
+| `card.moved` | `card_moved`; `card_reopened`, a card moved out of a Complete column (card 2278); `card_moved_away` and `card_moved_in`, a card moved to another board, each to its own board (card 2278); `card_returned_to_options`, a committed card moved back into an upstream column (milestone 22, card 2460); `card_sent`, an option sent on to another board, by Send or any move, to the board it left, in place of `card_moved_away` (card 2463) |
 | `card.completed` | `card_completed`: a card moved into a Complete column, **instead of** `card.moved`, or created in one (card 2134) |
 | `card.committed` | `card_committed`: a card moved out of an upstream column (a board's Options column, or any column of an ideas board) into a committed one, **instead of** `card.moved` (milestone 22, card 2460) |
 | `card.deleted` | `card_deleted`: a card deleted for good |
@@ -2009,9 +2009,22 @@ The same event is sent whether the action was made in the web UI or through the 
 | … straight into a Complete column | its board | `card.committed`, `card_committed`, then `card.completed`, `card_completed` |
 | A committed card moved back into the Options column | its board | `card.moved`, `card_returned_to_options` |
 | … from a Complete column | its board | `card.moved`, `card_returned_to_options`, and nothing for its `card_reopened` entry (ruling q) |
-| A card moved from an ideas board, or another board's Options column, into a committed column of another board | the board it left; the board it joined | `card.moved`, `card_moved_away`; `card.moved`, `card_moved_in`, then `card.committed`, `card_committed` |
+| An option (a card on an ideas board, or in a board's Options column) sent to another board's To Do by **Send to board** (`POST /api/cards/{id}/send`, `POST /api/v1/cards/{cardId}/send`, `to: "todo"`), or moved into any committed column of another board (milestone 22, card 2463) | the board it left; the board it joined | `card.moved`, `card_sent` (in place of `card_moved_away`); `card.moved`, `card_moved_in`, then `card.committed`, `card_committed` |
+| An option sent to another board's Options column (`to: "options"`), or moved into another board's upstream | the board it left; the board it joined | `card.moved`, `card_sent`; `card.moved`, `card_moved_in`; the commitment is left as it was |
 | A committed card moved onto an ideas board, or into another board's Options column | the board it left; the board it joined | `card.moved`, `card_moved_away`; `card.moved`, `card_moved_in`, then `card.moved`, `card_returned_to_options` |
-| A card moved within upstream (between ideas boards, or from one into a delivery board's Options column), or between committed columns | as for any other move | nothing more: the commitment is left as it was |
+| A card moved within upstream on one board, or between committed columns | as for any other move | nothing more: the commitment is left as it was |
+
+**Sent on** (milestone 22, card 2463). An option leaving its board for another, by Send or by
+any move (`moveCard`, the S5a review's L5), writes `card_sent` on the board it left, whose
+`data.detail` says where it went without naming the board: `"<title>" sent to another board's
+Options (<from> → <to>)`, `… To Do (…)` or `… "<column>" column (…)`, with ` and out of
+milestone "<name>"` when it left a goal (whose `milestone.card_removed` then says `(sent to
+another board)`). Every entry of the move is stored at the move's one moment, so the activity
+log pairs `card_sent` with its `card_moved_in`. A webhook's `timestamp` is when it was sent, not
+that moment. Converting a board to an ideas board (`POST
+/api/boards/{id}/convert`, `POST /api/v1/boards/{boardId}/convert`) writes one
+`board_converted_to_ideas` entry and sends **no webhook** and **no mail**, for the board or any
+of its cards, as converting a column to the Options column does not.
 
 **Across the commitment point** (milestone 22, card 2460). `moveCard` in
 `src/lib/server/card-moves.ts` decides, for every route that moves a card: the drag, the board

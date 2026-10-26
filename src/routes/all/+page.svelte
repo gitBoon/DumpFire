@@ -23,7 +23,7 @@
 	import { sortCards, getSortLabel } from '$lib/utils/card-utils';
 	import { boardPlaces as placesOf, chosenBoardId, inBoardFilter } from '$lib/board-tree';
 	import { cardArchivedMessage, cardArchiveWarning } from '$lib/api';
-	import { isOptionsColumn } from '$lib/column-role';
+	import { isUpstreamCard } from '$lib/board/ideas-board';
 	import { keepStreamOpen } from '$lib/live-stream';
 	import { attachmentsChanged, commentsChanged } from '$lib/board/sse';
 	import { refreshSchedule } from '$lib/board/refresh-schedule';
@@ -324,12 +324,10 @@
 		const cardId = cardWindow.cardId;
 		if (cardId === null) return;
 		// An option's archive is a discard, said before and after (milestone 22,
-		// the S3 review's E6): a card in an Options column. The boards this page
-		// reads carry no kind, so a card on an ideas board is not told apart here
-		// until ideas boards can be made (card 2463).
+		// the S3 review's E6): a card in an Options column, or on an ideas board,
+		// whose kind the load gives with each board (card 2463).
 		const title = cardWindow.card?.title;
-		const column = data.columns.find((c) => c.id === cardWindow.card?.columnId);
-		const discards = column !== undefined && isOptionsColumn(column);
+		const discards = isUpstreamCard(cardWindow.card?.columnId, data.columns, data.boards);
 		showConfirm('Archive Card', cardArchiveWarning(title, discards), 'Archive Card', async () => {
 			const started = toasts.navigation();
 			const failure = await cardWindow.archive(cardId);
@@ -519,14 +517,12 @@
 <TasksActivityPanel bind:this={activityPanel} bind:activityOpen />
 <!-- The Stats panel's stand-in columns are the chosen board's: its cards, its kind, and the
      Options stand-in only where it has an upstream column, or every board's with none chosen (J3).
-     The load sends no board kind until card 2463 (S5), so an ideas board is told by its options:
-     cards in the Options bucket on a board with no Options column. One with no card is told by
-     the flow diagram's answer, in the panel. -->
+     Its kind is the one the load gives with each board (card 2463), an ideas board's every column
+     being upstream; with no board chosen, a delivery board's, the Options bucket counted apart. -->
 {#if showStatsPanel}
+	{@const chosenKind = (chosenBoard && data.boards.find((b) => b.id === chosenBoard)?.kind) || 'delivery'}
 	{@const hasOptionsColumn = data.columns.some((c) => c.boardId === chosenBoard && c.role === 'options')}
-	{@const holdsOptions = buckets.some((b) => isOptionsBucket(b) && b.cards.some((c) => c.boardId === chosenBoard))}
-	{@const chosenKind = chosenBoard && holdsOptions && !hasOptionsColumn ? 'ideas' : 'delivery'}
-	{@const chosenHasUpstream = !chosenBoard || hasOptionsColumn || holdsOptions}
+	{@const chosenHasUpstream = !chosenBoard || hasOptionsColumn || chosenKind === 'ideas'}
 	{@const syntheticColumns = buckets.filter((b) => !isOptionsBucket(b) || chosenHasUpstream).map((b, i) => ({
 		id: i + 1,
 		boardId: 0,

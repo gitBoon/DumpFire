@@ -42,10 +42,22 @@ import { readBoardContents } from '$lib/server/board-contents';
 import { getCardBoardHistory } from '$lib/server/activity-report';
 import { timeInOptions, upstreamFigures } from '$lib/server/upstream';
 import { stamp } from '$lib/timestamps';
+import {
+	cardSentMessage,
+	DEFAULT_COLUMN_TITLES,
+	deliveryBoardRefusal,
+	deliveryBoardWarning,
+	ideasBoardColumnRefusal,
+	ideasBoardSubBoardRefusal,
+	ideasBoardWarning
+} from '$lib/api';
+import { activityLabel } from '$lib/utils/activity-labels';
 import { api, type ApiResult } from './helpers/api';
 import { pageLoad } from './helpers/actions';
 import { effects, type Effects } from './helpers/effects';
-import { addBoardMember, makeBoard, makeCard, makeLabel, makeMilestone, makeSmtp, makeUser, makeWebhook, resetDb, type BoardFixture } from './helpers/fixtures';
+import { addBoardMember, makeBoard, makeCard, makeLabel, makeMilestone, makeSmtp, makeTeam, makeUser, makeWebhook, resetDb, shareBoardWithTeam, type BoardFixture } from './helpers/fixtures';
+import { readBudget } from './helpers/reads';
+import { sendTargetsFor } from '$lib/server/cards';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 
 /** When every card here was made, long before any write. */
@@ -933,5 +945,163 @@ describe('boards that are not ideas boards, beside a Send', () => {
 		const made = await api('POST', '/api/boards', { user: owner, body: { name: 'Plain' } });
 		expect(boardAsStored(made.body.id).columns.map((c) => c.title)).toEqual(DELIVERY_DEFAULTS);
 		nothingToRepair();
+	});
+});
+
+// ─── Slice S5b: what the screens read, and the words they say first ──────────
+
+describe('the boards the Send window offers, GET /api/cards/:id/send (slice S5b)', () => {
+	const targets = async (cardId: number, user: SessionUser = editor) => api('GET', `/api/cards/${cardId}/send`, { user });
+
+	it('lists every delivery board the caller can edit but the card’s own, by name, with its Options column and the column To Do commits into', async () => {
+		const plain = deliveryBoard('Archive work', ['Backlog', 'In Progress', 'On Hold', 'Done']);
+		const none = deliveryBoard('Bare', ['Done']);
+		const watched = makeBoard({ owner, name: 'Only watched', columns: ['To Do'] });
+		addBoardMember(watched.board, editor, 'viewer');
+		const ideasToo = makeBoard({ owner, name: 'More ideas', columns: IDEAS });
+		sqlite.prepare("UPDATE boards SET kind = 'ideas' WHERE id = ?").run(ideasToo.board.id);
+		addBoardMember(ideasToo.board, editor, 'editor');
+		const idea = cardIn(I.cols['Shaping'], 'An idea');
+
+		const res = await targets(idea.id);
+
+		expect(res.status).toBe(200);
+		// Never an ideas board, never its own, never one the caller only views; never On Hold for To Do.
+		expect(res.body).toEqual({
+			boards: [
+				{ id: plain.board.id, name: 'Archive work', emoji: plain.board.emoji, options: false, todo: 'Backlog' },
+				{ id: none.board.id, name: 'Bare', emoji: none.board.emoji, options: false, todo: null },
+				{ id: D.board.id, name: 'Delivery', emoji: D.board.emoji, options: true, todo: 'To Do' }
+			]
+		});
+		// An option on a delivery board's Options column is offered the other boards, its own left out.
+		const option = cardIn(D.cols['Ideas'], 'An option');
+		expect((await targets(option.id)).body.boards.map((b: { id: number }) => b.id)).toEqual([plain.board.id, none.board.id]);
+		// Every delivery board for an administrator, who can edit them all.
+		const admin = makeUser({ username: 'admin', role: 'admin' });
+		expect((await targets(idea.id, admin)).body.boards.map((b: { name: string }) => b.name)).toEqual(['Archive work', 'Bare', 'Delivery', 'Only watched']);
+	});
+
+	it('reads edit access as the guard does: a team editor’s board listed, a public one not, a direct viewer’s not whatever a team gives (the S5b review’s P2, P3)', async () => {
+		const teamEdited = makeBoard({ owner, name: 'Team edited', columns: ['To Do'] });
+		const viaTeam = makeTeam([editor], 'Planners');
+		shareBoardWithTeam(teamEdited.board, viaTeam, 'editor');
+		makeBoard({ owner, name: 'Public only', isPublic: true, columns: ['To Do'] });
+		// A direct member row decides before a team share, as `roleOnBoard` reads it.
+		const viewedDirectly = makeBoard({ owner, name: 'Viewed directly', columns: ['To Do'] });
+		addBoardMember(viewedDirectly.board, editor, 'viewer');
+		shareBoardWithTeam(viewedDirectly.board, viaTeam, 'editor');
+		const teamViewed = makeBoard({ owner, name: 'Team viewed', columns: ['To Do'] });
+		shareBoardWithTeam(teamViewed.board, makeTeam([editor], 'Readers'), 'viewer');
+		const idea = cardIn(I.cols['Shaping'], 'An idea');
+
+		expect((await targets(idea.id)).body.boards.map((b: { name: string }) => b.name)).toEqual(['Delivery', 'Team edited']);
+		// An administrator: every delivery board, no ideas board.
+		const admin = makeUser({ username: 'chief', role: 'admin' });
+		expect((await targets(idea.id, admin)).body.boards.map((b: { name: string }) => b.name)).toEqual(['Delivery', 'Public only', 'Team edited', 'Team viewed', 'Viewed directly']);
+	});
+
+	it('reads the database as often with two hundred more boards as with none (P2)', async () => {
+		const idea = cardIn(I.cols['Shaping'], 'An idea');
+		const team = makeTeam([editor], 'Many');
+		const reads = () => {
+			const budget = readBudget(10_000);
+			try {
+				sendTargetsFor(editor, { cardId: idea.id }, {});
+			} finally {
+				budget.restore();
+			}
+			return budget.count;
+		};
+		const few = reads();
+		for (let i = 0; i < 200; i++) {
+			const board = makeBoard({ owner, name: `Board ${i}`, columns: ['To Do'] });
+			if (i % 2 === 0) addBoardMember(board.board, editor, 'editor');
+			else shareBoardWithTeam(board.board, team, 'editor');
+		}
+		expect(sendTargetsFor(editor, { cardId: idea.id }, {})).toHaveLength(201);
+		expect(reads()).toBe(few);
+		expect(few).toBeLessThanOrEqual(12);
+	});
+
+	it('is refused to a caller who cannot edit the card’s board, and writes nothing', async () => {
+		const idea = cardIn(I.cols['Shaping'], 'An idea');
+		const watcher = makeUser({ username: 'watcher' });
+		addBoardMember(I.board, watcher, 'viewer');
+		const before = snapshotDb();
+		expect((await targets(idea.id, watcher)).status).toBe(403);
+		expect((await targets(999999)).status).toBe(404);
+		expectUnchanged(before);
+	});
+});
+
+describe('the board page’s own words, said before it asks (slice S5b)', () => {
+	it('names the columns an ideas board and a delivery board are made with, as the server makes them', async () => {
+		const ideas = await api('POST', '/api/boards', { user: owner, body: { name: 'Fresh', kind: 'ideas' } });
+		const delivery = await api('POST', '/api/boards', { user: owner, body: { name: 'Plain' } });
+		expect(boardAsStored(ideas.body.id).columns.map((c) => c.title)).toEqual([...DEFAULT_COLUMN_TITLES.ideas]);
+		expect(boardAsStored(delivery.body.id).columns.map((c) => c.title)).toEqual([...DEFAULT_COLUMN_TITLES.delivery]);
+	});
+
+	it('refuses a To Do, On Hold or Complete column holding cards, and a card with a sub-board, in the server’s words', async () => {
+		const convert = (board: BoardFixture, cards: number) => api('POST', `/api/boards/${board.board.id}/convert`, { user: owner, body: { kind: 'ideas', cards } });
+		const todo = deliveryBoard('Todo held', ['To Do', 'Complete']);
+		cardIn(todo.cols['To Do'], 'Waiting');
+		expect((await convert(todo, 1)).body.message).toBe(ideasBoardColumnRefusal('To Do', 1, 'todo'));
+		const hold = deliveryBoard('Hold held', ['Backlog', 'Parked']);
+		cardIn(hold.cols['Parked'], 'One');
+		cardIn(hold.cols['Parked'], 'Two');
+		expect((await convert(hold, 2)).body.message).toBe(ideasBoardColumnRefusal('Parked', 2, 'hold'));
+		const done = deliveryBoard('Done held', ['Backlog', 'Done']);
+		cardIn(done.cols['Done'], 'Finished', { completedAt: OLD });
+		expect((await convert(done, 1)).body.message).toBe(ideasBoardColumnRefusal('Done', 1, 'complete'));
+		// And with two: "move them…, or delete them".
+		cardIn(done.cols['Done'], 'Finished too', { completedAt: OLD });
+		const two = (await convert(done, 2)).body.message;
+		expect(two).toBe(ideasBoardColumnRefusal('Done', 2, 'complete'));
+		expect(two).toBe('"Done" holds 2 cards, and an ideas board has no Complete column: move them to a delivery board, or delete them, first.');
+		const parent = deliveryBoard('Parent held', ['Backlog']);
+		const card = cardIn(parent.cols['Backlog'], 'Has one');
+		makeBoard({ owner, parentCardId: card.id });
+		expect((await convert(parent, 1)).body.message).toBe(ideasBoardSubBoardRefusal('Has one'));
+		// An archived one the page does not see (the S5b review's P4): the server's own words, in its archived form.
+		const archivedParent = deliveryBoard('Archived parent', ['Backlog']);
+		const gone = cardIn(archivedParent.cols['Backlog'], 'Put away', { archivedAt: OLD });
+		makeBoard({ owner, parentCardId: gone.id });
+		expect((await convert(archivedParent, 1)).body.message).toBe(
+			'Archived card "Put away" has a sub-board, and a card with sub-boards is never an option: restore it and move it to another board, or move or delete its sub-board, first.'
+		);
+	});
+
+	it('refuses an ideas board holding cards the way back, in the server’s words, singular and plural', async () => {
+		cardIn(I.cols['Shaping'], 'One');
+		const back = () => api('PUT', `/api/boards/${I.board.id}`, { user: owner, body: { kind: 'delivery' } });
+		expect((await back()).body.message).toBe(deliveryBoardRefusal(1));
+		cardIn(I.cols['Shaping'], 'Two');
+		expect((await back()).body.message).toBe(deliveryBoardRefusal(2));
+	});
+
+	it('asks with the counts, the columns that go and the columns that replace them', () => {
+		expect(ideasBoardWarning('Work', 2, 1, ['To Do', 'Backlog', 'Complete'], ['To Do', 'Complete'])).toBe(
+			'Make "Work" an ideas board? The 2 live cards and 1 archived card on it become ideas: options not yet committed to, sent on to a delivery board when chosen, and the commitment recorded on them is cleared. Its empty columns To Do and Complete are removed: an ideas board has no To Do, On Hold or Complete column. This is recorded as one entry in the activity log. It can be made a delivery board again only once it holds no cards.'
+		);
+		expect(ideasBoardWarning('Work', 1, 0, ['Backlog'], [])).toBe(
+			'Make "Work" an ideas board? The 1 live card on it becomes an idea: an option not yet committed to, sent on to a delivery board when chosen, and the commitment recorded on it is cleared. This is recorded as one entry in the activity log. It can be made a delivery board again only once it holds no cards.'
+		);
+		expect(ideasBoardWarning('Empty', 0, 0, ['To Do', 'On Hold', 'In Progress', 'Complete'], [])).toBe(
+			'Make "Empty" an ideas board? It holds no cards, so its columns To Do, On Hold, In Progress and Complete are replaced with New Ideas, Shaping and Ready for Replenishment. Its ideas are sent on to delivery boards when they are chosen. It can be made a delivery board again while it holds no cards.'
+		);
+		expect(deliveryBoardWarning('Ideas', ['New Ideas', 'Shaping', 'Ready for Replenishment'])).toBe(
+			'Make "Ideas" a delivery board? Its columns New Ideas, Shaping and Ready for Replenishment are replaced with To Do, On Hold, In Progress and Complete.'
+		);
+		expect(cardSentMessage('Idea', 'Ops', 'options')).toBe(`Sent "Idea" to Ops's Options`);
+		expect(cardSentMessage('Idea', 'Ops', 'todo')).toBe(`Sent "Idea" to Ops's To Do`);
+	});
+
+	it('labels the two entries in words: card_sent and board_converted_to_ideas, from either tree', () => {
+		expect(activityLabel('card_sent')).toBe('Sent card to another board');
+		expect(activityLabel('api:card_sent')).toBe('Sent card to another board');
+		expect(activityLabel('board_converted_to_ideas')).toBe('Converted board to an ideas board');
+		expect(activityLabel('api:board_converted_to_ideas')).toBe('Converted board to an ideas board');
 	});
 });

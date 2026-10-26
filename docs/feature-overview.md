@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.43
+version: 1.44
 status: As-Built
 date: 2026-10-26
 tags:
@@ -425,6 +425,29 @@ flowchart LR
     ToDo -.->|"moved back:<br/>Returned card to Options"| Ideas
     Ideas -.->|"archived or deleted:<br/>Discarded card"| Gone(("Discarded"))
     Doing -.->|"archived unfinished:<br/>Archived unfinished card"| Dropped(("Abandoned"))
+```
+
+### Ideas Boards
+
+From 26 October 2026 (milestone 22, card 2463), a board can be an **ideas board**: a board of ideas only, none of them committed to yet, whose ideas are sent on to the delivery boards that will do them. Every board made before is a delivery board, and stays one.
+
+- **Making one.** **New Board** on the dashboard asks for the kind: **Delivery board**, as every board has been, with To Do, On Hold, In Progress and Complete; or **Ideas board**, with **New Ideas**, **Shaping** and **Ready for Replenishment**. A sub-board is always a delivery board. The header of an ideas board says **Ideas board** beside its name.
+- **Every card is an idea.** Every column of an ideas board works as an Options column does: it always offers **Add idea**, and shows how old its oldest idea is and how many are older than 30 days. A WIP limit can still be set, on Ready for Replenishment for example, as a replenishment queue. There is no Options strip, no Complete column, no burndown and no delivery figures: its Statistics show how many ideas it holds, the upstream figures and its flow diagram. An ideas board has no column called To Do, On Hold or Complete (or Todo, Blocked, Parked, Done and the like): such a name is refused. A column holding ideas cannot be deleted until they are moved out, or archived, which discards them. No sub-board can be made under an idea, nor under an idea in a delivery board's Options column: the card's menu and card window offer none, and the dashboard offers no New Sub-board on an ideas board.
+- **Send to board.** An idea is sent on with **Send to board…**, in the card's menu and its card window, offered for any idea: on an ideas board, or in a delivery board's Options column; never for committed work, which is moved. It lists the delivery boards you can edit, and sends the idea **To its Options**, still an idea, or **Commit to its To Do**, which commits to it (into the first column called To Do, or the first working column; never On Hold). A board with no Options column offers To Do only, and a card with a sub-board is never sent into another board's Options. Sent from a card window with changes not saved, it asks first. The idea leaves the board, keeps its age as an idea, and a toast says `Sent "<title>" to <board>'s Options` (or To Do), with `Committed "<title>"` for To Do. Its labels, category and goal stay behind, as with any move to another board. The board it left records **Sent card to another board**; so does any other move of an idea to another board, so the discard rate and "Sent to other boards" count every way an idea leaves.
+- **Turning a board into an ideas board.** For the board's owner and administrators, a delivery board that is not a sub-board offers **More → Make this an ideas board…**. It counts the board's cards, live and archived, and asks first: they all become ideas in one step, recorded as one entry in the activity log (**Converted board to an ideas board**), with no mail, and their commitments are cleared; its empty To Do, On Hold and Complete columns go. A board with no cards at all has its columns replaced with the ideas board's. The board says at once, before asking, when it cannot: a live card with a sub-board (an archived one is refused once asked), or a To Do or On Hold column holding cards (rename it first), or a Complete column holding cards (move or delete them first).
+- **Going back.** An ideas board becomes a delivery board again with **More → Make this a delivery board…**, only while it holds no cards, live or archived; its columns are then replaced with To Do, On Hold, In Progress and Complete. While it holds any, the board says so.
+
+```mermaid
+flowchart LR
+    subgraph IB["Ideas board"]
+        N["New Ideas"] --> S["Shaping"] --> R["Ready for Replenishment"]
+    end
+    subgraph DB["Delivery board"]
+        O["Ideas (Options)"] --> T["To Do"] --> P["In Progress"] --> C["Complete"]
+    end
+    R -->|"Send to board → To its Options<br/>(still an idea)"| O
+    R -->|"Send to board → Commit to its To Do"| T
+    N -.->|"archived: Discarded card"| X(("Discarded"))
 ```
 
 ---

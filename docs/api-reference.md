@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.97
+version: 1.98
 status: As-Built
 date: 2026-10-26
 tags:
@@ -2434,6 +2434,7 @@ flowchart TB
         ListBoards["GET /boards"]
         GetBoard["GET /boards/:id"]
         CreateBoard["POST /boards"]
+        ConvertBoard["POST /boards/:id/convert"]
         DeleteBoard["DELETE /boards/:id"]
     end
 
@@ -2453,6 +2454,7 @@ flowchart TB
         UpdateCard["PUT /cards/:id"]
         DeleteCard["DELETE /cards/:id"]
         MoveCard["PUT /cards/:id/move"]
+        SendCard["POST /cards/:id/send"]
         BoardHistory["GET /cards/:id/board-history"]
     end
 
@@ -2726,7 +2728,7 @@ Every operation under `/boards/:boardId` answers in that order.
 
 #### `POST /api/v1/boards`
 
-Create a new board. Default columns (To Do, On Hold, In Progress, Complete) are created automatically.
+Create a new board. Default columns (To Do, On Hold, In Progress, Complete) are created automatically; an ideas board's are New Ideas, Shaping and Ready for Replenishment.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -2734,6 +2736,7 @@ Create a new board. Default columns (To Do, On Hold, In Progress, Complete) are 
 | `emoji` | string | | Board icon, 1 to 32 characters (default: 📋) |
 | `parentCardId` | number or null | | Link as sub-board to a card, by its id. Needs edit access to the board that card is on: `404` if there is no such card, `403` if the caller cannot edit its board. `409` `Sub-boards can be nested at most 20 levels deep, and a board under this card would be deeper.` if that board is already 20 levels below a board that is not a sub-board, or is in or below a loop, and nothing is created (card 2172) |
 | `categoryId` | number or null | | The dashboard grouping to file the new board under, or `null` for none, as the web application's create takes it (card 2287). `404` `Board category not found` for one that does not exist, `403` `No access to this board category` for one that holds boards, none of which the caller can open, and `400` `categoryId must be an id` for a value that is not an id; nothing is created. Until 2026-10-14 it was ignored and the board made unfiled |
+| `kind` | string | | `"delivery"` (the default) or `"ideas"` (milestone 22, card 2463): an ideas board, every column of which is upstream, its cards options sent on to delivery boards. `400` `kind must be "delivery" or "ideas", not "portfolio"` for anything else. `409` `A sub-board is a delivery board.` for `"ideas"` with a `parentCardId`; and with any kind, `409` for a `parentCardId` naming an option (`An idea has no sub-boards; send it to a delivery board first.`, or `An option has no sub-boards; commit it first, by moving it out of the Options column.`) |
 
 A new board has nothing to look for, so its fields are read first, and the parent card and
 the grouping are looked for after. A new board is private: `isPublic` is not read here, and
@@ -2753,6 +2756,7 @@ Update the fields sent, at least one of them. Answers the board.
 | `emoji` | string | Anyone with edit access to the board | Board icon, 1 to 32 characters |
 | `categoryId` | number or null | Anyone with edit access to the board | The dashboard grouping the board is filed under, or `null` for none. One that does not exist is `404` `Board category not found`. Deleting the grouping sets it to `null` (card 2293) |
 | `isPublic` | boolean | The board's owner, or an administrator | Whether everyone who is signed in can view the board |
+| `kind` | string | The board's owner, or an administrator, when it changes | `"delivery"` or `"ideas"` (milestone 22, card 2463), read with the board's own as the default, so a body without it, or with the kind it has, is any editor's. An **empty** board, no card live or archived, is switched, its columns replaced with the other kind's defaults in the same transaction, `api:board_updated` reading `Updated board "<name>" (fields: kind): now an ideas board; its columns To Do, On Hold, In Progress, Complete were replaced with New Ideas, Shaping, Ready for Replenishment` (or the delivery form). `409` for a sub-board made an ideas board (`A sub-board is a delivery board.`); for a board holding cards made an ideas board, naming the conversion (`POST /api/v1/boards/:boardId/convert`); and for an ideas board holding cards made a delivery board (`… move them to a delivery board, or delete them, first.`) |
 
 The board is looked for and the caller checked first (`404`, then `403`), then the fields
 are read. A value the board already holds, sent back unchanged, is accepted as it is.
@@ -2783,6 +2787,36 @@ other is `400` (card 2287), and nothing in the request is saved:
 naming the value sent (`null` on a sub-board) and the board's own (`none` for a board on the
 dashboard), and `parentCardId must be an id` for one that is not an id. The card named is not
 looked for. Until 2026-10-14 another parent card was ignored and the other fields saved.
+
+#### `POST /api/v1/boards/:boardId/convert`
+
+Make a board an ideas board with the cards it holds (milestone 22, card 2463, ruling i). The
+board's owner or an administrator (`404`, then `403`). Body: `kind`, which must be
+`"ideas"` (`400` `kind is required`), and `cards`, how many cards the board holds, live and
+archived, as the caller counted them (a whole number of 0 or more). The page's **Make this an
+ideas board…** sends the same to `POST /api/boards/:id/convert`.
+
+Refused, `409` with nothing written, in this order:
+
+1. `This board is already an ideas board.`
+2. A card on it, live or archived, has a sub-board: `Card "<title>" has a sub-board, and a card
+   with sub-boards is never an option: move it to another board, or move or delete its
+   sub-board, first.` (`Archived card "<title>" … restore it and move it to another board, …`).
+3. The board is a sub-board: `A sub-board is a delivery board.`
+4. A column whose title makes it To Do or On Hold holds a card, live or archived: `"<title>"
+   holds N cards, and an ideas board has no To Do column: rename it first.`; a Complete
+   column: `… no Complete column: move them to a delivery board, or delete them, first.`
+5. `cards` is not the number the board holds now: `The board now holds K cards; look again.`
+
+Then one transaction clears `committedAt` and `committedBy` on every card of the board,
+archived ones included, deletes its empty To Do, On Hold and Complete columns (with their
+CFD snapshots), makes its Options column an ordinary one and sets `kind` to `"ideas"`. A board
+holding no card at all is given New Ideas, Shaping and Ready for Replenishment in place of its
+own columns, as an empty board's `kind` switch is. One `api:board_converted_to_ideas` entry,
+with no card: `"<name>": N cards became ideas; its columns To Do, Complete were removed (board
+<id>)` (no clause when no column went; `… were replaced with New Ideas, Shaping, Ready for
+Replenishment` for an empty board), ending with the board's id, which the options' aging
+reads. No entry, webhook or mail for any card. Answers the board with its `columns`.
 
 #### `DELETE /api/v1/boards/:boardId`
 
@@ -3096,6 +3130,14 @@ is needed on both). Goes through the same service as a drag in the web UI:
   work. Keep it in a committed column, or archive it if it is no longer wanted.` (`onto an
   ideas board` in place of `into the Options column`). A card already upstream with a
   sub-board may still move within upstream.
+- an option to another board (milestone 22, card 2463, the S5a review's L5): a card in an
+  upstream column moved to another board is sent on. The board it leaves logs
+  `api:card_sent` in place of `api:card_moved_away`, `"<title>" sent to another board's
+  Options (<from> → <to>)`, `… To Do (…)` or `… "<column>" column (…)`, with
+  `api:card_sent`, `api:card_moved_in` and `api:card_committed` at the move's one moment (the
+  goal's `api:milestone_card_removed` takes the database's clock), so that it pairs with the
+  `api:card_moved_in` for the upstream figures; it sends `card.moved`. A card with sub-boards does not go into another board's
+  upstream (409, the message above). `POST /cards/:cardId/send` is the way to send one.
 - mail: a move that completes the card mails its assignees who can open the board it is now on,
   `Card moved: <title> → <column>`, each as their own "Card moved" setting says, as every
   move in the web UI does. A move that does not complete the card mails nobody. Whoever
@@ -3110,6 +3152,42 @@ is needed on both). Goes through the same service as a drag in the web UI:
 The card is looked for and the caller checked first, then the two fields are read, then
 the target column is looked for and the caller checked on its board. Until 2026-10-14 a
 `position` that was not a number was ignored, as if it had been left out.
+
+#### `POST /api/v1/cards/:cardId/send`
+
+Send an option on to another delivery board (milestone 22, card 2463, rulings b and l): from
+any upstream column, a board's Options column or any column of an ideas board, to the other
+board's Options column, where it stays an option and keeps its age, or to its To Do, which
+commits it on arrival. Edit access to both boards. The web application's **Send to board…**
+sends the same to `POST /api/cards/:id/send`, and lists the boards it can go to with `GET
+/api/cards/:id/send` (page only: every delivery board the caller can edit but the card's own,
+each with `options`, whether it has an Options column, and `todo`, the column a Send to To Do
+commits into, or null).
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `boardId` | number | ✅ | The delivery board it goes to |
+| `to` | string | ✅ | `"options"` or `"todo"` (`400` `to must be "options" or "todo", not "backlog"`) |
+| `position` | number | | Where in the column it goes |
+
+To Do is the first column titled To Do, or failing that the first column that is neither the
+Options column, Complete nor On Hold: it never lands in On Hold. In this order: `401`; the card
+looked for and edit access to its board (`404`, `403`); the fields (`400`); the board looked
+for and edit access to it (`404`, `403`); `400` `A committed card is moved, not sent`; `400`
+`"<board>" is an ideas board: a card is sent to a delivery board, and moved onto an ideas
+board`; `400` `The card is already on "<board>": move it within the board instead`; `409` for
+an archived card (`Card "<title>" is archived: restore it before moving it out of or back into
+Options`); `409` `"<board>" has no Options column`; `409` `"<board>" has no column to commit
+into: add a To Do column`; then every refusal of a move (a card with sub-boards into another
+board's Options column is `409`).
+
+The move is a move to another board's in every other way: labels, a board's category and a
+milestone of the board it left are shed, and the answer is the card with `columnTitle`,
+`boardId` and `leftMilestone`, as `PUT /cards/:cardId/move` answers. Entries, all at one
+moment: `api:card_sent` on the board it left, `"<title>" sent to another board's Options
+(<from> → <to>)` or `… To Do (…)`, in place of `api:card_moved_away`; `api:card_moved_in` on
+the board it joined, then `api:card_committed` for To Do. Neither names the other board.
+Webhooks: `card.moved` to each board, and `card.committed` to the board it joined for To Do.
 
 ---
 
@@ -3874,6 +3952,13 @@ A webhook sends each event of its board that it asks for (`card.created`, `card.
 the change is committed, signed with its `secret`. An empty `events` list, or none, is every
 event. What is sent: [Notifications & Email](notifications-email.md#webhooks).
 
+An option sent on to another board (milestone 22, card 2463), by `POST /cards/:cardId/send`
+or by any move of a card in an upstream column to another board, sends the board it left
+`card.moved` with `data.action` `card_sent` (in place of `card_moved_away`) and `data.detail`
+`"<title>" sent to another board's Options (<from> → <to>)`, `… To Do (…)` or `… "<column>"
+column (…)`; the board it joined gets `card.moved` (`card_moved_in`), and `card.committed`
+for one that arrives in To Do. A board converted to an ideas board sends nothing.
+
 `milestone.card_added` and `milestone.card_removed` (card 2343, since 2026-10-21) are a card
 put in a milestone or taken out, by every route and page that does it (the single and bulk
 milestone operations, one delivery for each card, `milestoneId` on `PUT /cards/:cardId`, and
@@ -3888,7 +3973,7 @@ taken out's words with why in brackets:
 
 | What happened | `data.detail` ends | Board | `data.cardId` |
 |---|---|---|---|
-| Moved to another board out of its milestone (`PUT /cards/:cardId/move`, or the web application; an older milestone of neither board named `milestone #<id>`) | `(moved to another board)` | The board it left, beside its `card.moved` | The card |
+| Moved to another board out of its milestone (`PUT /cards/:cardId/move`, or the web application; an older milestone of neither board named `milestone #<id>`) | `(moved to another board)`, or `(sent to another board)` for an option sent on (milestone 22, card 2463) | The board it left, beside its `card.moved` | The card |
 | Its milestone deleted | `(milestone deleted)` | Its own | The card |
 | Deleted for good alone (beside its `card.deleted`), with its column, or by an administrator's clear of a board's cards or purge of archived cards | `(card deleted)` | Its own | The deleted card's id; the entry's `cardId` is null |
 | On another board, released from a milestone of a deleted board or of a sub-board deleted with its parent card | `(milestone deleted with its board)`, the milestone named `milestone #<id>` | Its own | The card |

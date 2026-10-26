@@ -315,15 +315,24 @@ describe('the board’s Stats panel (milestone 22)', () => {
 		expect(target.querySelector('.cfd-chart')).not.toBeNull();
 	});
 
-	it('takes an ideas board from the flow diagram’s answer where it is handed no kind (All Tasks, an ideas board with no card)', async () => {
+	// Slice S5b: All Tasks hands the panel the board's kind from its load (card 2463), and the
+	// panel no longer takes it from the flow diagram's answer, which the S4b fix pass inferred.
+	it('takes the board’s kind as it is handed it, not from the flow diagram’s answer', async () => {
 		answer({
 			metrics: metricsOf(NOTHING_UPSTREAM, { completed: 0, committed: 0, leadTime: null, cycleTime: null }),
 			cfd: cfdOf({ kind: 'ideas', hasUpstream: true, upstreamShown: true, columns: [{ id: 1, title: 'New Ideas', color: '#6366f1', upstream: true }] })
 		});
-		const target = await drawPanel(ORDINARY.map((c) => ({ ...c, cards: [] })) as ColumnType[]);
-		expect(text(target.querySelector('.ideas-count'))).toBe('0 ideas');
-		expect(tiles(target)).toEqual([]);
-		expect(target.querySelector('.upstream-toggle')).toBeNull();
+		const empty = ORDINARY.map((c) => ({ ...c, cards: [] })) as ColumnType[];
+		const delivery = await drawPanel(empty);
+		expect(delivery.querySelector('.ideas-count')).toBeNull();
+		expect(tiles(delivery).slice(0, 2)).toEqual([['0', 'Total Cards'], ['0', 'Completed']]);
+		expect(source('src/lib/components/board/StatsPanel.svelte')).not.toContain('cfdKind');
+
+		undraw();
+		const ideas = await drawPanel(empty, 'ideas');
+		expect(text(ideas.querySelector('.ideas-count'))).toBe('0 ideas');
+		expect(tiles(ideas)).toEqual([]);
+		expect(ideas.querySelector('.upstream-toggle')).toBeNull();
 	});
 
 	it('counts All Tasks’ Options stand-in apart, as an options column', async () => {
@@ -408,9 +417,10 @@ describe('the board’s Stats panel (milestone 22)', () => {
 		// The chosen board's cards, kind and Options stand-in only (J3), drawn again for another board.
 		expect(all).toContain('cards: b.cards.filter((c) => !chosenBoard || c.boardId === chosenBoard) as unknown as CardType[]');
 		expect(all).toContain("{@const hasOptionsColumn = data.columns.some((c) => c.boardId === chosenBoard && c.role === 'options')}");
-		expect(all).toContain('{@const holdsOptions = buckets.some((b) => isOptionsBucket(b) && b.cards.some((c) => c.boardId === chosenBoard))}');
-		expect(all).toContain("{@const chosenKind = chosenBoard && holdsOptions && !hasOptionsColumn ? 'ideas' : 'delivery'}");
-		expect(all).toContain('{@const chosenHasUpstream = !chosenBoard || hasOptionsColumn || holdsOptions}');
+		// The chosen board's kind as the load gives it (slice S5b), with no inference from its options.
+		expect(all).toContain("{@const chosenKind = (chosenBoard && data.boards.find((b) => b.id === chosenBoard)?.kind) || 'delivery'}");
+		expect(all).not.toContain('holdsOptions');
+		expect(all).toContain("{@const chosenHasUpstream = !chosenBoard || hasOptionsColumn || chosenKind === 'ideas'}");
 		expect(all).toContain('buckets.filter((b) => !isOptionsBucket(b) || chosenHasUpstream)');
 		expect(all).toMatch(/\{#key chosenBoard\}\s*<StatsPanel[\s\S]*?boardKind=\{chosenKind\}/);
 	});

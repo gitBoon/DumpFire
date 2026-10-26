@@ -25,6 +25,24 @@ export async function saveBoardEmoji(boardId: number, emoji: string): Promise<Re
 	return api.updateBoard(boardId, { emoji });
 }
 
+/**
+ * Makes the board an ideas board, cards and all, once the page has asked
+ * (milestone 22, card 2463, ruling i): `cards` is the count the question
+ * named. Returns the answer: the board as written, with its columns.
+ */
+export async function convertBoard(boardId: number, cards: number): Promise<Response> {
+	return api.convertBoard(boardId, cards);
+}
+
+/**
+ * Switches an empty board's kind (ruling j, decision M22-18): its columns
+ * are replaced with the other kind's. A board holding cards is refused.
+ * Returns the answer: the board row alone, so the page reads its columns again.
+ */
+export async function setBoardKind(boardId: number, kind: 'delivery' | 'ideas'): Promise<Response> {
+	return api.updateBoard(boardId, { kind });
+}
+
 // ─── Columns ─────────────────────────────────────────────────────────────────
 
 /**

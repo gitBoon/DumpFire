@@ -2,7 +2,8 @@
   ContextMenu.svelte — Right-click context menu for Kanban cards.
 
   Provides quick actions: move to column, change priority, pin/unpin,
-  duplicate, create sub-board, navigate to sub-boards, and archive.
+  duplicate, create sub-board, navigate to sub-boards, send an option to
+  another board (milestone 22), and archive.
   Positioned at the mouse cursor location.
 -->
 <script lang="ts">
@@ -23,6 +24,7 @@
    * @prop onDuplicate — Callback to duplicate the card
    * @prop onCreateSubBoard — Callback to create a sub-board for the card
    * @prop onDelete — Callback to archive the card
+   * @prop onSend — "Send to board…" (milestone 22, card 2463): given by the board page for an option only, never for committed work
    */
   let {
     card,
@@ -36,7 +38,9 @@
     onTogglePin,
     onDuplicate,
     onCreateSubBoard,
-    onDelete
+    onDelete,
+    onSend,
+    canAddSubBoard = true
   }: {
     card: CardType;
     columnId: number;
@@ -50,6 +54,9 @@
     onDuplicate: (card: CardType) => void;
     onCreateSubBoard: (card: CardType) => void;
     onDelete: (cardId: number) => void;
+    onSend?: (card: CardType) => void;
+    /** False for an option or an idea, which has no sub-boards (the S5b review's P1): Add Sub-board is not offered; its existing ones still open. */
+    canAddSubBoard?: boolean;
   } = $props();
 </script>
 
@@ -87,7 +94,13 @@
     {card.pinned ? '📌 Unpin' : '📌 Pin to top'}
   </button>
   <button class="ctx-item" onclick={() => onDuplicate(card)}>📋 Duplicate</button>
-  <button class="ctx-item" onclick={() => onCreateSubBoard(card)}>🗂️ Add Sub-board</button>
+  {#if canAddSubBoard}
+    <button class="ctx-item" onclick={() => onCreateSubBoard(card)}>🗂️ Add Sub-board</button>
+  {/if}
+  <!-- An option is sent on to a delivery board; committed work is moved, so is not offered it. -->
+  {#if onSend}
+    <button class="ctx-item" onclick={() => { onClose(); onSend(card); }}>📤 Send to board…</button>
+  {/if}
   <!-- Navigate to existing sub-boards -->
   {#if card.subBoards.length > 0}
     {#each card.subBoards as sb}

@@ -22,6 +22,12 @@
   Options column can make one of a column whose title is not To Do, On Hold
   or Complete ("Make this the Options column…": the page asks first when it
   holds cards), and make it an ordinary column again once it is empty.
+
+  Every column of an ideas board (card 2463) is upstream as the Options
+  column is: it always offers "Add idea", has no Show Add Task switch, and
+  shows its options aging, the oldest idea's age and how many are older than
+  30 days, which the page hands it (`aging`). It keeps its WIP limit: on
+  "Ready for Replenishment" that is a replenishment queue (decision M22-13).
 -->
 <script lang="ts">
 	import type { ColumnType, SortOption } from '$lib/types';
@@ -30,7 +36,8 @@
 	import { drawnColour } from '$lib/colours';
 	import { holdFocus } from '$lib/dialog-focus';
 	// "To Do" or "Todo", trimmed, any capitals: All Tasks' rule (card 2280, slice B5a).
-	import { columnRole, isOptionsColumn, isTodoColumnTitle } from '$lib/column-role';
+	import { columnRole, isOptionsColumn, isTodoColumnTitle, isUpstreamColumn } from '$lib/column-role';
+	import { OPTION_AGING_DAYS } from '$lib/board/board-view';
 
 	let {
 		column,
@@ -40,6 +47,7 @@
 		onMakeOptions = () => {},
 		onStopOptions = () => {},
 		onCollapse = () => {},
+		aging = null,
 		editing,
 		editTitle = $bindable(),
 		editingWip,
@@ -73,6 +81,12 @@
 		onStopOptions?: (column: ColumnType) => void;
 		/** Collapse the Options column back to its strip. */
 		onCollapse?: () => void;
+		/**
+		 * Options aging (ruling g) for a column of an ideas board, which has no
+		 * strip to show it (card 2463): the oldest idea's age in days and how
+		 * many are older than `OPTION_AGING_DAYS`. Null, the default, shows none.
+		 */
+		aging?: { oldestDays: number | null; over: number } | null;
 		/** This column's title is being renamed: the box is shown, on `editTitle`. */
 		editing: boolean;
 		editTitle: string;
@@ -104,7 +118,9 @@
 	const isOptions = $derived(isOptionsColumn(column));
 	/** "Make this the Options column…" is offered: a delivery board with none, and a title that means nothing else (ruling x). */
 	const canBecomeOptions = $derived(!isOptions && boardKind !== 'ideas' && !hasOptionsColumn && columnRole(column.title) === null);
-	const addsCards = $derived(isOptions || isTodoColumnTitle(column.title) || column.showAddCard);
+	/** Its cards are options: the Options column, or any column of an ideas board (card 2463), which always offers "Add idea" as the Options column does. */
+	const upstream = $derived(isUpstreamColumn(column, boardKind));
+	const addsCards = $derived(upstream || isTodoColumnTitle(column.title) || column.showAddCard);
 </script>
 
 <div class="column-header">
@@ -131,10 +147,16 @@
 				{getSortLabel(sort)} ✕
 			</button>
 		{/if}
+		{#if aging && aging.over > 0}
+			<span class="aging-chip aging-over" title="{aging.over} {aging.over === 1 ? 'idea is' : 'ideas are'} older than {OPTION_AGING_DAYS} days">{aging.over} &gt;{OPTION_AGING_DAYS}d</span>
+		{/if}
+		{#if aging && aging.oldestDays !== null}
+			<span class="aging-chip" title="The oldest idea's age">oldest {aging.oldestDays}d</span>
+		{/if}
 		{#if addsCards}
-			<button class="add-card-badge" onclick={() => onAddCard(column.id)} title={isOptions ? 'Add idea' : 'Add task'}>
+			<button class="add-card-badge" onclick={() => onAddCard(column.id)} title={upstream ? 'Add idea' : 'Add task'}>
 				<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-				{isOptions ? 'Add idea' : 'Add Task'}
+				{upstream ? 'Add idea' : 'Add Task'}
 			</button>
 		{/if}
 		{#if isOptions}
@@ -222,7 +244,7 @@
 							Stop being the Options column
 						</button>
 					{/if}
-					{#if !isOptions}
+					{#if !upstream}
 					<button class="column-menu-item" onclick={() => onToggleAddCard(column)}>
 						{column.showAddCard || isTodoColumnTitle(column.title) ? '✓' : '○'} Show Add Task
 					</button>
@@ -334,6 +356,9 @@
 	}
 	.add-card-badge:hover { transform: scale(1.05); background: var(--accent-purple); box-shadow: 0 2px 8px rgba(99, 102, 241, 0.5); }
 	.add-card-badge:active { transform: scale(0.95); }
+	/* An ideas board's column's options aging (card 2463), as the Options strip shows it. */
+	.aging-chip { font-size: 0.6rem; font-weight: 600; color: var(--text-tertiary); white-space: nowrap; flex-shrink: 0; }
+	.aging-chip.aging-over { color: #f59e0b; }
 
 	.color-picker-wrapper { position: relative; }
 	.color-picker-dropdown {

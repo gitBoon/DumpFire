@@ -108,14 +108,15 @@ describe('the board page’s To Do columns (card 2280, slice B5a)', () => {
 	it('asks isTodoColumnTitle for the double-click to add, the empty column’s hint and the Show Add Task switch', () => {
 		expect(page).toMatch(/import \{[^}]*\bisTodoColumnTitle\b[^}]*\} from '\$lib\/column-role';/);
 		expect(page).toContain('const showAddCard = !(column.showAddCard || isTodoColumnTitle(column.title));');
-		// The Options column offers it too, whatever it is called (milestone 22).
-		expect(page).toContain("ondblclick={(e: MouseEvent) => { if ((isOptionsColumn(column) || isTodoColumnTitle(column.title) || column.showAddCard) && !(e.target as HTMLElement).closest('.kanban-card')) openNewCardModal(column.id); }}");
+		// The Options column offers it too, whatever it is called (milestone 22), and every column of an ideas board (card 2463).
+		expect(page).toContain("ondblclick={(e: MouseEvent) => { if ((isUpstreamColumn(column, boardState.board.kind) || isTodoColumnTitle(column.title) || column.showAddCard) && !(e.target as HTMLElement).closest('.kanban-card')) openNewCardModal(column.id); }}");
 		const hint = page.indexOf('<span class="empty-hint">Double-click to add one</span>');
 		expect(hint).toBeGreaterThan(0);
-		expect(page.slice(page.lastIndexOf('{#if', hint), hint)).toMatch(/^\{#if isOptionsColumn\(column\) \|\| isTodoColumnTitle\(column\.title\) \|\| column\.showAddCard\}/);
+		expect(page.slice(page.lastIndexOf('{#if', hint), hint)).toMatch(/^\{#if isUpstreamColumn\(column, boardState\.board\.kind\) \|\| isTodoColumnTitle\(column\.title\) \|\| column\.showAddCard\}/);
 
 		expect(header).toMatch(/import \{[^}]*\bisTodoColumnTitle\b[^}]*\} from '\$lib\/column-role';/);
-		expect(header).toContain('const addsCards = $derived(isOptions || isTodoColumnTitle(column.title) || column.showAddCard);');
+		expect(header).toContain('const upstream = $derived(isUpstreamColumn(column, boardKind));');
+		expect(header).toContain('const addsCards = $derived(upstream || isTodoColumnTitle(column.title) || column.showAddCard);');
 		expect(header).toContain('{#if addsCards}');
 		expect(header).toContain("{column.showAddCard || isTodoColumnTitle(column.title) ? '✓' : '○'} Show Add Task");
 	});
