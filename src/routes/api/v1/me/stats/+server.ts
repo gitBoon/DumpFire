@@ -15,7 +15,8 @@ import type { RequestHandler } from './$types';
  *
  * Returns:
  * - cardsCompleted (total + last 7/30 days)
- * - avgCycleTime (days, based on committed→completed, on boards the caller can open)
+ * - avgCycleTimeDays and avgLeadTimeDays (one figure under two names: days
+ *   from commitment to completion, on boards the caller can open)
  * - streak (consecutive days with at least one completion)
  * - activeCards (assigned, open and committed, on boards the caller can open)
  * - recentActivity (last 20 actions, on boards the caller can open)
@@ -95,6 +96,12 @@ export const GET: RequestHandler = async ({ locals }) => {
 	`) as { avg_days: number | null }[];
 	// Null when no card has been completed; an average of 0, cards completed
 	// the moment they were raised, is 0. It was answered as null.
+	//
+	// From the commitment to completion this is a lead time, "commitment to
+	// done", not a cycle time, which starts with the work. It is answered as
+	// `avgLeadTimeDays` and, at the same value, as `avgCycleTimeDays`, the name
+	// it has always had, kept for the callers that read it (milestone 22, the
+	// S4a review).
 	const avgDays = cycleResult[0]?.avg_days ?? null;
 	const avgCycleTime = avgDays === null ? null : Math.round(avgDays * 10) / 10;
 
@@ -161,6 +168,7 @@ export const GET: RequestHandler = async ({ locals }) => {
 			last30Days: completed30d?.cnt || 0
 		},
 		avgCycleTimeDays: avgCycleTime,
+		avgLeadTimeDays: avgCycleTime,
 		streak,
 		activeCards: assignedCards[0]?.cnt || 0,
 		recentActivity

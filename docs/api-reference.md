@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.98
+version: 1.99
 status: As-Built
 date: 2026-10-26
 tags:
@@ -196,7 +196,7 @@ number or an id is read.
 | `coverUrl` | A colour written `#rrggbb`, or one of the eight preset gradients exactly as [`PUT /api/v1/cards/:cardId`](#put-apiv1cardscardid) lists them, or `null`; `''` is read as `null` | `coverUrl must be a colour written #rrggbb, one of the preset gradients, or null` |
 | A milestone's `status` | `open` or `closed` | `status must be open or closed` |
 | `archivedAt` on `PUT /cards/:cardId` | `null`, which restores the card, and nothing else | `archivedAt may only be null, which restores the card. Archive a card with DELETE /cards/{cardId}` |
-| A webhook's `url`, `secret`, `events` | An `http` or `https` address of at most 2,048 characters, trimmed, not inside the network as written and with no user name or password (see [Webhooks](#webhooks)); text of at most 256; a list of the six event names, each trimmed, where `[]` is every event | `url must be an http or https address`, `Webhook url points inside the network: 127.0.0.1 is a loopback address`, `Webhook url must not carry a user name or password`, `events must be a list` |
+| A webhook's `url`, `secret`, `events` | An `http` or `https` address of at most 2,048 characters, trimmed, not inside the network as written and with no user name or password (see [Webhooks](#webhooks)); text of at most 256; a list of the ten event names, each trimmed, where `[]` is every event | `url must be an http or https address`, `Webhook url points inside the network: 127.0.0.1 is a loopback address`, `Webhook url must not carry a user name or password`, `events must be a list` |
 | The reporting fields (`summary`, `theme`, `customerImpact`, `closeReason`, `releaseState`) | Each in its own vocabulary, as before, or `null` to clear it | `theme must be one of: ...` |
 
 `null` clears a field only where the field can be empty: a due or target date, a category,
@@ -328,6 +328,114 @@ moment as `YYYY-MM-DD HH:MM:SS` in UTC, and the web application's own routes and
 exports answer that form; the API turns it into ISO 8601 as it answers. Until 2026-10-14
 some fields were answered in that form, which names no zone, and the same field could be in
 either.
+
+### Changes on 2026-10-26
+
+The OpenAPI document's version went from `1.2.0` to `1.3.0` with these (milestone 22, cards
+2459 to 2464): **upstream of the commitment point**, the Kanban Method's split between options,
+ideas that may or may not be done, and committed work. A card is an **option** when it is in a
+board's Options column (a column whose `role` is `"options"`) or in any column of an ideas board
+(a board whose `kind` is `"ideas"`); every other card is committed. No board has either until
+someone makes one: every card made before this release is committed, its `committedAt` its
+`createdAt`, and a board with no Options column answers as before but for the fields named here
+and the entry an archive of unfinished work writes (`card_abandoned`, below). Four operations
+and two filters are new; these operations, answers and fields are:
+
+- **Every column carries `role`**, `"options"` for the board's Options column and `null` for
+  any other. `POST /boards/:boardId/columns` and `PUT /columns/:columnId` take `role`
+  (`"options"` or `null`; left out on `PUT`, kept; anything else `400` `role must be "options"
+  or null, not "backlog"`). Given the role, a column goes left of every other and its
+  `wipLimit` to 0. `409`, with nothing written, for the role on a column of an ideas board, a
+  second Options column, the role given or taken away while the column holds cards (archived
+  ones included; giving it, the message names the conversion; taking it away, it says to move
+  the cards out, and to restore and move, or delete, archived ones, first), an Options column
+  whose title makes it To Do, On Hold or Complete, a WIP limit above 0 on one (on a create as on
+  an update), and a position at or left of it, which
+  stays the leftmost. `PUT` counts `role` among its six fields. `DELETE /columns/:columnId` is
+  `409` for an Options column, or a column of an ideas board, holding cards that are not
+  archived.
+- **`POST /columns/:columnId/convert` is new**: the board's owner or an administrator makes a
+  column the Options column with its cards, `{"role": "options", "cards": N}`, N being the live
+  and archived cards seen; every card in it becomes an option, with one
+  `api:column_converted_to_options` entry and no webhook. It answers the column.
+- **Every board carries `kind`**, `"delivery"`, which every board was, or `"ideas"`.
+  `POST /boards` takes `kind`, and makes an ideas board with New Ideas, Shaping and Ready for
+  Replenishment; a sub-board is always a delivery board (`409`), and none is made under an
+  option. `PUT /boards/:boardId` takes `kind`, kept when left out or sent as it is: a change is
+  the owner's or an administrator's (`403`), and of an **empty** board only, whose columns are
+  then replaced with the other kind's; a board holding cards is `409` (giving it the ideas kind,
+  naming the conversion; back to delivery, saying to move the cards to a delivery board, or
+  delete them, first). `PUT` counts `kind` among its five fields. A column of an ideas board whose title makes it To
+  Do, On Hold or Complete is `409` on create and on rename.
+- **`POST /boards/:boardId/convert` is new**: the board's owner or an administrator makes a
+  board an ideas board with its cards, `{"kind": "ideas", "cards": N}`, with one
+  `api:board_converted_to_ideas` entry and no webhook. It answers the board with its columns.
+- **`GET /boards` takes `kind=delivery` or `kind=ideas`**, listing only the boards of that kind
+  the key's user can open; anything else is `400` `kind must be "delivery" or "ideas", not
+  "backlog"`.
+- **Every card answer carries `committedAt` and `committedBy`**, when and by whom the card
+  crossed the commitment point (`null` while it is an option), **and `discardedAt` and
+  `discardedBy`**, set when it is archived as an option and cleared by its restore. No operation
+  takes them in a body.
+- **`GET /boards/:boardId/cards` takes `stage=option` or `stage=committed`**, by the column each
+  card is in, archived cards included with `archived=true`; anything else is `400` `stage must
+  be "option" or "committed", not "backlog"`.
+- **`POST /boards/:boardId/cards` commits a card created outside an upstream column** as it is
+  created: `committedAt` its `createdAt`, `committedBy` the key's user, with no entry beyond
+  `api:card_created`. One created in an Options column or on an ideas board is an option.
+- **`PUT /cards/:cardId/move` records the commitment point**: out of an upstream column into a
+  committed one it sets `committedAt` and `committedBy` and writes `api:card_committed` in place
+  of `api:card_moved`, sending `card.committed`, within one board instead of `card.moved`
+  (across boards each board is still sent its own `card.moved`, `card_sent` to the board it left
+  and `card_moved_in` to the board it joins, and the board it joins `card.committed` after it);
+  back into an upstream
+  column it clears both and writes `api:card_returned_to_options`, sending `card.moved`. `409`
+  for an archived card crossing either way, for a committed card with a sub-board going
+  upstream, and for a card with a sub-board going into another board's upstream. An option moved
+  to another board writes `api:card_sent` on the board it leaves, in place of
+  `api:card_moved_away`.
+- **`POST /cards/:cardId/send` is new**: an option sent to another delivery board's Options
+  column, still an option, or its To Do, which commits it. It answers the moved card.
+- **`DELETE /cards/:cardId` records what it archives**: an option is **discarded**
+  (`discardedAt`, `discardedBy`, `api:card_discarded`, which sends `card.discarded`); committed
+  work not in a Complete column is **abandoned** (`api:card_abandoned`, no webhook); and
+  `api:card_archived` is written only for a card archived from a Complete column. A live option
+  deleted for good writes `api:card_discarded` then `api:card_deleted`, and sends
+  `card.discarded` then `card.deleted`. `archivedAt: null` on `PUT /cards/:cardId` restores a
+  discarded card as an option, clearing the two marks.
+- **The activity vocabulary changes**, for readers of `GET /audit-log`, `GET /reports/activity`
+  and `recentActivity` on `GET /me/stats`. Seven actions are new: `card_committed`,
+  `card_returned_to_options`, `card_discarded`, `card_abandoned`, `card_sent`,
+  `column_converted_to_options` and `board_converted_to_ideas`, each with `api:` when made
+  through the API. Three are written less: **`card_archived` only for work archived from
+  Complete**, unfinished committed work being `card_abandoned` and an option `card_discarded`, so
+  a filter or a count of `card_archived` alone now misses both; `card_moved` not for a move across
+  the commitment point; and `card_moved_away` not for an option leaving its board, which is
+  `card_sent`. Entries written before are unchanged.
+- **Two webhook events are new, `card.committed` and `card.discarded`**, making ten. **A webhook
+  whose `events` list is empty is sent every event, so one made before this release receives
+  both.** One that lists `card.moved` and not `card.committed` no longer hears a move out of an
+  Options column within one board, as one without `card.completed` hears no completion; a move
+  to another board still sends each board its own `card.moved`. `card.moved` also carries
+  `data.action` `card_returned_to_options` and `card_sent`.
+- **Every delivery measure leaves options out.** `GET /burndown` charts committed cards only,
+  each from its `committedAt`, as each card is now (a card returned to options leaves the past
+  scope); `GET /reports/activity` puts no option in a bucket or a total, takes the `created`
+  bucket's first column to be the board's first column that is not an Options column, and answers
+  `upstream` (`null` for a report on one user); `GET /milestones` counts options in
+  `optionsCount` and not in `cardCount` or `doneCount`, and `GET /milestones/:milestoneId/summary`
+  in `progress.options` alone, each node with `isOption`; `GET /me/stats` leaves options out of
+  `activeCards` and of the average.
+- **`GET /boards/:boardId/upstream` is new**, with view access to the board: over the last
+  `days` days (1 to 365, 30 by default), the board's options now and how long they have waited,
+  how many cards were committed from options, returned, discarded, sent on and abandoned, the
+  discard rate, and `committedAll`, **Committed (all)**, which credits a card created committed
+  to the board it is on now and counts a card created and then returned to options as no
+  arrival.
+- **`GET /me/stats` answers `avgLeadTimeDays`**, the average days from commitment to done, and
+  `avgCycleTimeDays` at the same value: it is a lead time, named cycle time for history, kept so
+  that nothing that reads it breaks. For a card made before this release the commitment is its
+  creation, so the figure is as it was.
 
 ### Changes on 2026-10-14
 
@@ -2435,10 +2543,13 @@ flowchart TB
         GetBoard["GET /boards/:id"]
         CreateBoard["POST /boards"]
         ConvertBoard["POST /boards/:id/convert"]
+        Upstream["GET /boards/:id/upstream"]
         DeleteBoard["DELETE /boards/:id"]
     end
 
     subgraph Columns["Columns"]
+        UpdateColumn["PUT /columns/:id"]
+        ConvertColumn["POST /columns/:id/convert"]
         DeleteColumn["DELETE /columns/:id"]
     end
 
@@ -2528,6 +2639,12 @@ cannot open, and `milestones` lists only the milestones they can open (card 2257
 `milestoneId` is given either way. A milestone's counts are of its cards on boards the key's
 user can open, as its burndown counts them (card 2326).
 
+Options are no work in the report (milestone 22, card 2462): a card in a board's Options column
+or on an ideas board is in no bucket and no total, and the `created` bucket's "never moved"
+reads the board's first column that is not an Options column. `upstream` gives the boards'
+upstream figures for the window, as `GET /api/v1/boards/:boardId/upstream` gives one board's
+(without `committedAll`), and is `null` for a report on one user.
+
 Only the boards the key's user can open are read (card 2326). `meta` carries the
 caveats that make a figure quotable — `closeReasonAssumedCount`,
 `completedOutsideWindow`, `missingSummaryCount`, `attribution`. Read it before
@@ -2543,7 +2660,10 @@ Full design rationale: [Management Activity Reporting](management-reporting.md).
 How much work was open on each UTC day, and where it is heading, for any slice
 of the workspace. Rebuilt from each card's created, completed and archived dates
 rather than daily snapshots, so every filter works over any window up to 730
-days.
+days. Committed work only (milestone 22, card 2462): an option, in a board's Options column
+or on an ideas board, is not charted, and a card's scope starts at its `committedAt`, its
+creation for a card made before 2026-10-26. Each card is charted as it is now, so a card
+returned to options leaves the past days' scope too.
 
 | Param | Default | Meaning |
 |---|---|---|
@@ -2597,6 +2717,14 @@ UI and API actions share one vocabulary. `action` comes back canonical (no `api:
 prefix) so one filter matches both sources; `rawAction` keeps the stored
 spelling; `source` says which. A completion is logged as `card_completed`
 whichever route performed it.
+
+Since 2026-10-26 (milestone 22) the vocabulary has seven more actions: `card_committed`,
+`card_returned_to_options`, `card_discarded`, `card_abandoned`, `card_sent`,
+`column_converted_to_options` and `board_converted_to_ideas`. **`card_archived` is written only
+for a card archived from a Complete column**: unfinished committed work archived is
+`card_abandoned`, and an option `card_discarded`, so `action=card_archived` alone misses both. A
+commitment is `card_committed`, not `card_moved`, and an option leaving its board `card_sent`,
+not `card_moved_away`. Entries written before keep their actions.
 
 In the `action` filter only a trailing `*` is a wildcard: `card_*` finds `card_moved`,
 `card_completed` and the rest, and not `cards_purged` or `cards_cleared`. A `%` or a `_`
@@ -2694,6 +2822,7 @@ How the key's user is doing. Takes no parameters.
 {
   "cardsCompleted": { "total": 41, "last7Days": 3, "last30Days": 12 },
   "avgCycleTimeDays": 4.2,
+  "avgLeadTimeDays": 4.2,
   "streak": 2,
   "activeCards": 5,
   "recentActivity": [
@@ -2707,9 +2836,10 @@ How the key's user is doing. Takes no parameters.
 | Field | Meaning |
 |-------|---------|
 | `cardsCompleted` | Completions the activity log records as this user's, made in the web UI or through the API: in all, in the last 7 days and in the last 30 |
-| `avgCycleTimeDays` | Mean days from a card's creation to its completion, to one decimal place, over the completed cards the user is assigned to on boards they can open. `null` when there is none, and `0` when they were completed as they were made |
+| `avgLeadTimeDays` | Average lead time, commitment to done (since 2026-10-26, card 2464): mean days from a card's `committedAt` to its completion, to one decimal place, over the completed cards the user is assigned to on boards they can open. Options are never among them. `null` when there is none, and `0` when they were completed as they were committed. For a card made before 2026-10-26 the commitment is its creation. Complete is the delivery point, so the customer's lead time and the system's are the same here |
+| `avgCycleTimeDays` | Average lead time, commitment to done; named cycle time for history. The same value as `avgLeadTimeDays`, kept so that nothing that reads it breaks. Until 2026-10-26 it was described as from creation to completion, the same figure for every card made before then |
 | `streak` | Consecutive UTC days with at least one completion, counted back from today, or from yesterday if there is none today |
-| `activeCards` | Cards the user is assigned to that are neither completed nor archived, on boards they can open |
+| `activeCards` | Cards the user is assigned to that are neither completed nor archived, on boards they can open. An option, a card in a board's Options column or on an ideas board, is not counted: it is not open work |
 | `recentActivity` | The user's last 20 activity entries on boards they can open, newest first: an entry on a board they have been taken off is left out. `action` is as stored: one made through the API has the prefix `api:` |
 
 ---
@@ -2718,7 +2848,12 @@ How the key's user is doing. Takes no parameters.
 
 #### `GET /api/v1/boards`
 
-List all boards accessible to your API key.
+List all boards accessible to your API key, newest first. Each board carries `kind`,
+`"delivery"` or `"ideas"`.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `kind` | string | `delivery` or `ideas` (since 2026-10-26, card 2464): only the boards of that kind, `delivery` being every board that is not an ideas board. Not sent, or empty, every board. Anything else is `400` `kind must be "delivery" or "ideas", not "backlog"`, quoting what was sent (cut short past 60 characters). It filters the list the key's user is already given, so it never lists a board they cannot open |
 
 #### `GET /api/v1/boards/:boardId`
 
@@ -2818,6 +2953,56 @@ with no card: `"<name>": N cards became ideas; its columns To Do, Complete were 
 Replenishment` for an empty board), ending with the board's id, which the options' aging
 reads. No entry, webhook or mail for any card. Answers the board with its `columns`.
 
+#### `GET /api/v1/boards/:boardId/upstream`
+
+What happened upstream of the commitment point on one board over a window, and the options it
+holds now (milestone 22, card 2464). View access: `400` `Invalid board ID`, then `404` `Board
+not found` to everyone, then `403` `No access to this board`, and only then `days` is read.
+Nothing is written.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `days` | number | How many days the window runs back from now, both ends included: a whole number from 1 to 365. Not sent, or empty, `30`. Anything else, `0`, `366`, `1.5` and `abc` among them, is `400` `days must be a whole number from 1 to 365` |
+
+```json
+{
+  "boardId": 12, "kind": "delivery", "days": 30,
+  "period": { "from": "2026-09-26T09:00:00.000Z", "to": "2026-10-26T09:00:00.000Z" },
+  "options": 6, "committedFromOptions": 3, "returnedToOptions": 1, "discarded": 1,
+  "sentOn": 0, "abandoned": 0, "discardRate": 0.25,
+  "oldestOptionDays": 41, "agingOptions": 2, "committedAll": 9
+}
+```
+
+The figures from `options` to `agingOptions` are `upstreamFigures` in
+`src/lib/server/upstream.ts`, which the board's Stats panel reads through
+`GET /api/boards/:id/metrics` too: options now (live cards upstream, whatever the window) and
+their aging (the oldest option's whole days, and how many are older than 30, each from when the
+card became an option: the latest of its creation, its latest return to options and the latest
+conversion of its column or board that made it one); and, over the window, distinct cards by
+their **last** upstream act among committed from options, returned to options, discarded and
+sent on, with abandoned work counted on its own; `discardRate` is `discarded / (discarded +
+committedFromOptions + sentOn)`, `null` when all three are 0. `committedAll` is `committedAll`
+in the same file, **Committed (all)**: the cards that arrived as committed work in the window,
+each once, a card committed out of upstream (a `card_committed` entry on this board) and a card
+created in the window straight into a committed column (its `committedAt` equal to its
+`createdAt`). It credits a card created committed to **the board it is on now**, wherever it
+was made, and counts **a card created and then returned to options as no arrival**, its
+`committedAt` having been cleared, until it is committed again. A deleted card's entries have
+no card id, and each counts once. An ideas board answers the same figures: every card on it is
+an option, and none arrives committed.
+
+```mermaid
+flowchart LR
+    Q["GET /boards/:boardId/upstream?days=N"] --> G["requireBoard view:<br/>400, 404, then 403"]
+    G --> D["days: 1 to 365, 30 by default, else 400"]
+    D --> W["window: now − N days … now,<br/>both ends included"]
+    W --> U["upstreamFigures([board], from, to)"]
+    W --> C["committedAll([board], from, to)"]
+    U --> A["{ boardId, kind, days, period,<br/>…figures, committedAll }"]
+    C --> A
+```
+
 #### `DELETE /api/v1/boards/:boardId`
 
 Permanently delete a board and everything on it. Requires the board's owner or an
@@ -2861,6 +3046,36 @@ Only the fields whose value changes are written, and the board's open pages told
 2359). A column sent back as it is answers `200` with the column, writing nothing; so do a
 label, a category and a board category sent back to their own `PUT` (item 98).
 
+**`role`** (milestone 22, card 2459), on this operation and on
+`POST /api/v1/boards/:boardId/columns`: every column carries it, `"options"` for the board's
+Options column, upstream of the commitment point, whose cards are options and not committed
+work, and `null` for every other column, whose title still decides whether it is To Do, On Hold
+or Complete. It is the sixth field `PUT` counts; left out it is kept, and anything but
+`"options"` or `null` is `400` `role must be "options" or null, not "backlog"`. Given the role,
+the column goes left of every other and its `wipLimit` to 0. `409`, with nothing written, for:
+the role on a column of an ideas board; a second Options column (`This board already has an
+Options column, "Ideas".`); the role given or taken away while the column holds cards, archived
+ones included (giving it, the message names the conversion below; taking it away, it says to
+move the cards out, and to restore and move, or delete, archived ones, first); an Options column
+whose title makes it To Do, On Hold or Complete, or such a column given the role; a WIP limit
+above 0 on an Options column, on a create as on an update (`An Options column has no WIP
+limit.`); and a position that would put a column at or left of it. On an ideas board a column
+whose title makes it To Do, On Hold or Complete is `409` on create and rename (card 2463). A v1
+column created with no position still goes after the board's last column.
+
+#### `POST /api/v1/columns/:columnId/convert`
+
+Make a column the board's Options column with the cards it holds (milestone 22, card 2459,
+ruling i). The board's owner or an administrator (`404`, then `403`). Body: `role`, which must
+be `"options"`, and `cards`, how many cards the column holds, live and archived, as the caller
+counted them. Every card in it becomes an option, its `committedAt` and `committedBy` cleared;
+the column goes leftmost and its WIP limit to 0. One `api:column_converted_to_options` entry,
+`"<title>": N cards became options (column <id>)`; no entry, webhook or mail for any card.
+`409`, in this order: an ideas board; the board already has an Options column; the column's
+title makes it To Do, On Hold or Complete; a card in it has a sub-board; `cards` is not the
+number it holds now (`The column now holds K cards; look again.`). Answers the column. Taking
+the role away is `PUT` with `role: null`, once the column is empty.
+
 #### `DELETE /api/v1/columns/:columnId`
 
 Permanently delete a column **and every card in it**. Requires edit access to the board.
@@ -2870,6 +3085,11 @@ The cards are deleted for good, not archived, each with its subtasks, comments, 
 links and sub-boards. Move the cards to another column first if they are to be kept. One
 `column_deleted` entry is written to the board's activity log, naming the column and how
 many cards went with it. No `card.deleted` webhook is sent for the cards.
+
+An Options column, or a column of an ideas board, holding cards that are not archived is `409`
+(`This Options column still holds 2 options: move them out, or archive them to discard them,
+first.`), with nothing deleted: options are moved out, or archived to discard them. Archived
+cards in it are deleted with it, as before (milestone 22).
 
 ---
 
@@ -2884,16 +3104,23 @@ position, ties by column id, and within a column in order of card position, ties
 An archived card, with `archived=true`, takes its place by position. The cards are read in
 one query joined to their columns, and the subtask counts for the cards listed alone. Until
 2026-10-14 the columns came in the order they were made in, and each column was read on its
-own.
+own. Every card carries `committedAt` and `committedBy` (`null` for an option) and
+`discardedAt` and `discardedBy` (set on an option archived from upstream), as every card answer
+does (milestone 22).
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `columnId` | number | Filter to specific column. A whole number of 1 or more, or `400` `Invalid column ID`. A column of another board gives `[]`: the board in the path always bounds the list |
 | `archived` | boolean | Include archived cards |
+| `stage` | string | `option` or `committed` (since 2026-10-26, card 2464): only the options, the cards in the board's Options column or every card of an ideas board, or only the others, so an ideas board gives `[]` for `committed`. Decided by the column each card is in, archived cards included with `archived=true`, so a discarded card is an option. A third condition beside the others, in the same one read. Not sent, or empty, every card. Anything else is `400` `stage must be "option" or "committed", not "backlog"`, read after the board is looked for and the caller checked |
+
+The stage is the board's kind, known from the board in the path, and the column's `role`,
+asked with `IS` (`columns.role IS 'options'`, and `NOT (…)` for `committed`): an ordinary
+column's role is `NULL`, and `NOT (NULL = 'options')` would drop every committed card.
 
 ```mermaid
 flowchart LR
-    Q["GET /boards/:boardId/cards<br/>?columnId and ?archived"] --> G["requireBoard: 404, then 403"]
+    Q["GET /boards/:boardId/cards<br/>?columnId, ?archived and ?stage"] --> G["requireBoard: 404, then 403"]
     G --> R["one read: cards JOIN columns<br/>WHERE columns.board_id = :boardId<br/>AND the filters"]
     R --> O["ORDER BY column position, column id,<br/>card position, card id"]
     O --> S["subtask counts, same WHERE,<br/>grouped by card"]
@@ -2929,6 +3156,11 @@ get `card.created` and `card.completed`, and open pages get the celebration. The
 open subtasks and sub-boards is not made: a new card has neither. The answer is the card as
 written, with its `completedAt`. Until 2026-10-14 such a card had no completion date, no XP
 and no `api:card_completed` entry.
+
+A card created outside an upstream column is committed as it is created (milestone 22): its
+`committedAt` is its `createdAt` and its `committedBy` the key's user, with no entry beyond
+`api:card_created`. One created in the board's Options column, or on an ideas board, is an
+option, `committedAt` and `committedBy` `null`.
 
 #### `GET /api/v1/cards/:cardId`
 
@@ -3995,13 +4227,28 @@ flowchart LR
     Q -->|"no: gone with it"| N["nothing written or sent"]
 ```
 
-`card.moved` is every column change but a completion: a move within the board (`data.action`
-`card_moved`), a card moved out of a Complete column (`card_reopened`), and a move to another
-board, sent to the board it left (`card_moved_away`) and to the board it joined
-(`card_moved_in`), each with its own board's entry, which names neither board (card 2278). A
-move into a Complete column sends `card.completed` instead; one into another board's Complete
-column sends the joined board both, the arrival and the completion. Ask for both events to hear
-every column change.
+There are ten events: `card.created`, `card.updated`, `card.moved`, `card.completed`,
+`card.deleted`, `comment.added`, `milestone.card_added`, `milestone.card_removed`,
+`card.committed` and `card.discarded`; a webhook with an empty `events` list is sent every one.
+`card.moved` is every column change but a completion and a commitment, told apart by
+`data.action`:
+
+| `data.action` | The column change | Sent to |
+|---|---|---|
+| `card_moved` | A move within the board | The board |
+| `card_reopened` | Out of a Complete column (card 2278) | The board |
+| `card_moved_away` | To another board, a committed card | The board it left |
+| `card_moved_in` | From another board | The board it joined |
+| `card_returned_to_options` | A committed card moved back into an upstream column (since 2026-10-26); the one delivery of a move from Complete into Options | The board it is on |
+| `card_sent` | An option sent, or moved, to another board, in place of `card_moved_away` (since 2026-10-26) | The board it left |
+
+Each carries its own board's entry, which names neither board. A move into a Complete column
+sends `card.completed` instead; one into another board's Complete column sends the joined board
+both, the arrival and the completion. A move out of an upstream column into a committed one
+within one board sends `card.committed` instead, so a webhook that asks for `card.moved` and
+not `card.committed` does not hear it (milestone 22); across boards each board is sent its own
+`card.moved` (`card_sent` to the board it left, `card_moved_in` to the board it joins), and the
+board it joins `card.committed` after it.
 
 `card.committed` (milestone 22, card 2460) is a card moved across the commitment point: out of
 an upstream column, a board's Options column or any column of an ideas board, into a committed

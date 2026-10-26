@@ -100,7 +100,7 @@ const V1_JSON = '$lib/server/v1-json';
  * has lost some, fails. Adding operations to the document means changing it,
  * knowingly.
  */
-const OPERATIONS = 84;
+const OPERATIONS = 85;
 
 // ─── The document ────────────────────────────────────────────────────────────
 
@@ -2646,14 +2646,14 @@ describe('what a route answers, against the schema the document gives for it', (
 
 	// ─── The document itself ─────────────────────────────────────────────────
 
-	it('GET /openapi.json: answered to a caller with no key, as version 1.2.0, and listing itself', async () => {
+	it('GET /openapi.json: answered to a caller with no key, as version 1.3.0, and listing itself', async () => {
 		const name = 'GET /api/v1/openapi.json';
 
 		// No user: the one route under /api/v1/ that is reached without a key.
 		const res = await api('GET', '/api/v1/openapi.json');
 
 		expect(res.status).toBe(200);
-		expect(res.body.info.version).toBe('1.2.0');
+		expect(res.body.info.version).toBe('1.3.0');
 		const schema = answerSchema(name, 200);
 		expect(keysOf(res.body)).toEqual(propertiesOf(schema));
 		expect(keysOf(res.body.info)).toEqual(propertiesOf(schema.properties.info));
@@ -2669,10 +2669,11 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(res.body.tags.map((t: Json) => t.name)).toContain(itself.tags[0]);
 	});
 
-	it("announces this milestone's later changes in the 2026-10-14 note, without a new version (cards 2293, 2345, 2346)", () => {
+	it("announces that milestone's later changes in the 2026-10-14 note, under version 1.2.0 (cards 2293, 2345, 2346)", () => {
 		const note = spec.info.description as string;
 		const changes = note.slice(note.indexOf('**Changed on 2026-10-14'), note.indexOf('**Changed on 2026-10-13'));
-		expect(spec.info.version).toBe('1.2.0');
+		// They went out as 1.2.0, without a version of their own; milestone 22 is 1.3.0, in a note of its own (below).
+		expect(changes.startsWith('**Changed on 2026-10-14 (version 1.2.0).**')).toBe(true);
 		// Card 2293: a deleted category takes its boards out of it.
 		expect(changes).toContain('(94) DELETE /api/v1/board-categories/{categoryId} takes every board filed under the category out of it');
 		expect(changes.indexOf('(94)')).toBeGreaterThan(changes.indexOf('(93)'));
@@ -2718,6 +2719,89 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(changes.indexOf('(101)')).toBeGreaterThan(changes.indexOf('(100)'));
 		expect(spec.paths['/api/v1/boards/{boardId}/columns'].get.description).toContain('ties by column id');
 		expect(spec.paths['/api/v1/boards/{boardId}'].get.description).toContain('ties by column id');
+	});
+
+	it('announces milestone 22 as version 1.3.0, in a note of its own dated 2026-10-26, and describes each change where it is (card 2464)', () => {
+		const note = spec.info.description as string;
+		expect(spec.info.version).toBe('1.3.0');
+		// Its own note, first of the dated notes, with its own numbered list (the plan's ruling v).
+		const start = note.indexOf('**Changed on 2026-10-26 (version 1.3.0).**');
+		expect(start).toBeGreaterThan(0);
+		expect(start).toBeLessThan(note.indexOf('**Changed on 2026-10-14 (version 1.2.0).**'));
+		const changes = note.slice(start, note.indexOf('**Changed on 2026-10-14'));
+		const numbers = [...changes.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]));
+		expect(numbers).toEqual(Array.from({ length: 17 }, (_, i) => i + 1));
+
+		// Every change to v1 the milestone made, each in its item.
+		const item = (n: number) => changes.slice(changes.indexOf(`(${n}) `), n === 17 ? undefined : changes.indexOf(`(${n + 1}) `));
+		expect(item(2)).toContain('every column carries role');
+		expect(item(3)).toContain('POST /api/v1/columns/{columnId}/convert is new');
+		expect(item(4)).toContain('every board carries kind');
+		expect(item(5)).toContain('POST /api/v1/boards/{boardId}/convert is new');
+		expect(item(6)).toContain('GET /api/v1/boards takes kind=delivery or kind=ideas');
+		expect(item(7)).toContain('committedAt and committedBy');
+		expect(item(7)).toContain('discardedAt and discardedBy');
+		expect(item(8)).toContain('GET /api/v1/boards/{boardId}/cards takes stage=option or stage=committed');
+		expect(item(10)).toContain('api:card_committed in place of api:card_moved');
+		expect(item(10)).toContain('api:card_returned_to_options');
+		expect(item(11)).toContain('POST /api/v1/cards/{cardId}/send is new');
+		expect(item(12)).toContain('api:card_archived is written only for a card archived from a Complete column');
+		// The S3 review's "For S6": the vocabulary, for readers of the activity.
+		expect(item(13)).toContain('the activity vocabulary changes');
+		expect(item(13)).toContain('GET /api/v1/audit-log');
+		for (const action of ['card_committed', 'card_returned_to_options', 'card_discarded', 'card_abandoned', 'card_sent', 'column_converted_to_options', 'board_converted_to_ideas']) {
+			expect(item(13), action).toContain(action);
+		}
+		expect(item(14)).toContain('card.committed');
+		expect(item(14)).toContain('card.discarded');
+		expect(item(14)).toContain('making ten');
+		expect(item(14)).toContain('a webhook whose events list is empty is sent every event, so one made before this release receives both');
+		expect(item(15)).toContain('GET /api/v1/burndown charts committed cards only');
+		// The S4a review's "For S6": Committed (all) and the lead time.
+		expect(item(16)).toContain('GET /api/v1/boards/{boardId}/upstream is new');
+		expect(item(16)).toContain('credits a card created committed to the board it is on now');
+		expect(item(16)).toContain('counts a card created and then returned to options as no arrival');
+		expect(item(17)).toContain('avgLeadTimeDays');
+		expect(item(17)).toContain('named cycle time for history');
+
+		// The descriptions, where a reader of one operation looks. me/stats: a lead time, under both names.
+		const stats = spec.components.schemas.UserStats;
+		expect(stats.properties.avgCycleTimeDays.description).toMatch(/^Average lead time, commitment to done; named cycle time for history\./);
+		expect(stats.properties.avgLeadTimeDays.description).toContain('Average lead time, commitment to done');
+		expect(stats.required).toContain('avgLeadTimeDays');
+		expect(stats.properties.activeCards.description).toContain('options left out');
+		const meStats = spec.paths['/api/v1/me/stats'].get.description as string;
+		expect(meStats).toContain('from commitment to done');
+		// The S4a review's stale descriptions: nothing says "from creation to completion" as what is answered now.
+		expect(meStats).not.toContain('creation to completion');
+		expect(stats.properties.avgCycleTimeDays.description).not.toMatch(/^Mean days from creation/);
+		// The webhook's prose (the S2 review's C5, the S5a review's "For S6").
+		const webhook = spec.components.schemas.Webhook.description as string;
+		expect(webhook).toContain('There are ten events');
+		expect(webhook).toContain('card.moved is every column change but a completion and a commitment');
+		expect(webhook).toContain('card_returned_to_options');
+		expect(webhook).toContain('card_sent');
+		expect(webhook).toContain('card.committed (since 2026-10-26)');
+		expect(webhook).toContain('card.discarded (since 2026-10-26)');
+		expect(webhook).not.toContain('card.moved is every column change but a completion,');
+		// The operations that move, create, archive, chart and list.
+		expect(spec.paths['/api/v1/cards/{cardId}/move'].put.description).toContain('**The commitment point**');
+		expect(spec.paths['/api/v1/boards/{boardId}/cards'].post.description).toContain('committed as it is created');
+		expect(spec.paths['/api/v1/burndown'].get.description).toContain('Committed work only');
+		expect(spec.paths['/api/v1/audit-log'].get.description).toContain('card_archived is written only for a card archived from a Complete column');
+		expect(spec.paths['/api/v1/boards'].post.description).toContain('New Ideas, Shaping and Ready for Replenishment');
+		expect(spec.paths['/api/v1/boards/{boardId}'].put.description).toContain('Updatable fields: name, emoji, categoryId, isPublic, kind.');
+		for (const [path, method] of [['/api/v1/boards/{boardId}/webhooks', 'post'], ['/api/v1/webhooks/{webhookId}', 'put']] as const) {
+			expect(spec.paths[path][method].responses['400'].description, path).toContain('one of the ten');
+		}
+		// The new filters and the new route, each with what it reads.
+		const kind = spec.paths['/api/v1/boards'].get.parameters.find((p: Json) => p.name === 'kind');
+		expect(kind.schema.enum).toEqual(['delivery', 'ideas']);
+		const stage = spec.paths['/api/v1/boards/{boardId}/cards'].get.parameters.find((p: Json) => p.name === 'stage');
+		expect(stage.schema.enum).toEqual(['option', 'committed']);
+		const upstream = spec.paths['/api/v1/boards/{boardId}/upstream'].get;
+		expect(upstream.parameters.map((p: Json) => deref(p).name)).toEqual(['boardId', 'days']);
+		expect(upstream.responses['200'].content['application/json'].schema.properties.committedAll.description).toContain('credited to the board it is on now');
 	});
 
 	// ─── What is said in words, and can be tried ─────────────────────────────
@@ -2859,6 +2943,14 @@ describe('what a route answers, against the schema the document gives for it', (
 		await ok('POST', `/api/v1/cards/${idea.id}/send`, { boardId: board.id, to: 'todo' });
 		const spare = await ok('POST', '/api/v1/boards', { name: 'Spare' });
 		await ok('POST', `/api/v1/boards/${spare.id}/convert`, { kind: 'ideas', cards: 0 });
+		// Card 2464: the upstream figures of the board the idea was committed to, and of an ideas board.
+		const figures = await ok('GET', `/api/v1/boards/${board.id}/upstream?days=7`);
+		const figuresSchema = answerSchema('GET /api/v1/boards/{boardId}/upstream', 200);
+		expect(keysOf(figures)).toEqual(propertiesOf(figuresSchema));
+		expect(keysOf(figures.period)).toEqual(propertiesOf(figuresSchema.properties.period));
+		expect(figures).toMatchObject({ boardId: board.id, kind: 'delivery', days: 7, committedFromOptions: 1 });
+		expect(figures.committedAll).toBeGreaterThanOrEqual(1);
+		expect((await ok('GET', `/api/v1/boards/${ideas.id}/upstream`)).kind).toBe('ideas');
 
 		await ok('DELETE', `/api/v1/cards/${second.id}`);
 		await ok('DELETE', `/api/v1/boards/${board.id}`);

@@ -73,7 +73,7 @@ import { restoreCard } from './card-restore';
 import { emit } from './events';
 import { ACTIONS, actorOf, logActivity } from './logActivity';
 import { setCardMilestone, takeCardOutOfMilestone, MilestoneError } from './milestones';
-import { readChoice, readId, readIds, readNumber, readObjects, type RequestBody } from './request-body';
+import { choiceRefusal, readChoice, readId, readIds, readNumber, readObjects, type RequestBody } from './request-body';
 import { COLUMN_ORDER } from './card-order';
 import { columnRoleOf, isOptionsColumn, isUpstreamColumn } from '$lib/column-role';
 import { CREATE_SUBTASK_PAGE_OPTIONS, createSubtask } from './subtasks';
@@ -550,10 +550,9 @@ export function moveCard(caller: SessionUser | null, at: { cardId: number }, bod
 /** Where a Send takes a card on the other board (milestone 22, card 2463): its Options column, or its To Do. */
 const SEND_TO = ['options', 'todo'] as const;
 
-/** The 400 for a `to` that is not one, quoting what was sent, as the role's is (ruling r). */
+/** The 400 for a `to` that is not one, quoting what was sent, as the role's is (ruling r; `choiceRefusal`, the S6 review's Q4). */
 function sendToRefusal(sent: unknown): string {
-	const shown = JSON.stringify(sent) ?? 'nothing';
-	return `to must be "options" or "todo", not ${shown.length > 60 ? `${shown.slice(0, 57)}...` : shown}`;
+	return choiceRefusal('to', SEND_TO, sent);
 }
 
 /**

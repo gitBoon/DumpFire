@@ -1549,6 +1549,8 @@ const TABLE: Record<string, Case | Case[]> = {
 	'GET /api/v1/boards/[boardId]/columns': view((w) => `/api/v1/boards/${w.A.board.id}/columns`),
 	'POST /api/v1/boards/[boardId]/columns': edit((w) => json(`/api/v1/boards/${w.A.board.id}/columns`, { title: 'A column' })),
 	'GET /api/v1/boards/[boardId]/labels': view((w) => `/api/v1/boards/${w.A.board.id}/labels`),
+	// Milestone 22, card 2464, item 5: the board's upstream figures, to whoever can view it.
+	'GET /api/v1/boards/[boardId]/upstream': view((w) => `/api/v1/boards/${w.A.board.id}/upstream`),
 	'POST /api/v1/boards/[boardId]/labels': edit((w) =>
 		json(`/api/v1/boards/${w.A.board.id}/labels`, { name: 'A label', color: '#6366f1' })
 	),

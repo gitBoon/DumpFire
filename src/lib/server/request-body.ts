@@ -378,6 +378,21 @@ export function readChoice<C extends string, R extends ChoiceRule<C>>(body: Requ
 }
 
 /**
+ * The refusal of a choice that quotes what was sent (milestone 22):
+ * `<name> must be "a" or "b", not "what was sent"`, a choice of `null`
+ * written bare (`role must be "options" or null, not "backlog"`). What was
+ * sent is given as JSON, `nothing` when it is not there, and cut short past 60
+ * characters with `...`, so a long value never fills the answer. One wording
+ * for every such refusal, in the body (`kind`, `role`, `to`) and in a query
+ * (`?kind=`, `?stage=`), handed to `readChoice` as `says` or thrown as it is.
+ */
+export function choiceRefusal(name: string, choices: readonly (string | null)[], sent: unknown): string {
+	const shown = JSON.stringify(sent) ?? 'nothing';
+	const quoted = shown.length > 60 ? `${shown.slice(0, 57)}...` : shown;
+	return `${name} must be ${choices.map((c) => (c === null ? 'null' : `"${c}"`)).join(' or ')}, not ${quoted}`;
+}
+
+/**
  * A calendar date, written `YYYY-MM-DD`, of a day there is. Empty text is
  * null, which is how a page clears a date, and so is refused where null is.
  *

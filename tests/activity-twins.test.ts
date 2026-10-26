@@ -463,6 +463,10 @@ function optionsScene(at: 'Ideas' | 'To Do' | 'Complete'): Scene {
 /** The id of board A's Options column, made by `optionsScene`. */
 const optionsColumnId = () => db.select().from(columns).all().find((c) => c.role === 'options')!.id;
 
+/** The id of the column called Spare, or Backlog, that a twin of card 2464 adds to board A. */
+const spareColumnId = () => db.select().from(columns).all().find((c) => c.title === 'Spare')!.id;
+const backlogColumnId = () => db.select().from(columns).all().find((c) => c.title === 'Backlog')!.id;
+
 /**
  * What a move of the card across the commitment point tells, in each tree: the
  * webhook, then, from the page alone, the assignee's mail, then the board's
@@ -695,6 +699,48 @@ const SERVICE_TWINS: ServiceTwin[] = [
 			v1: ['api:card_reopened api', 'api:card_returned_to_options api', 'card.moved api']
 		},
 		told: movedAcross('card.moved', 'card_returned_to_options', 'Complete', 'Ideas')
+	},
+	// Milestone 22, card 2464 (item 9): the other writes of the milestone, page against v1, each
+	// through the one service both trees call. An option archived is a discard (card 2461).
+	{
+		row: 3,
+		what: 'archiving an option, which discards it',
+		build: () => optionsScene('Ideas'),
+		internal: (s) => api('DELETE', `/api/cards/${s.first.id}`, { user: s.owner }),
+		v1: (s) => api('DELETE', `/api/v1/cards/${s.first.id}`, { user: s.owner }),
+		status: { internal: 200, v1: 200 },
+		sources: { internal: ['card_discarded ui', 'card.discarded ui'], v1: ['api:card_discarded api', 'card.discarded api'] }
+	},
+	{
+		row: 3,
+		what: 'deleting an option for good, which discards it first',
+		build: () => optionsScene('Ideas'),
+		internal: (s) => api('DELETE', `/api/cards/${s.first.id}?permanent=true`, { user: s.owner }),
+		v1: (s) => api('DELETE', `/api/v1/cards/${s.first.id}?permanent=true`, { user: s.owner }),
+		status: { internal: 200, v1: 200 },
+		sources: {
+			internal: ['card_discarded ui', 'card_deleted ui', 'card.discarded ui', 'card.deleted ui'],
+			v1: ['api:card_discarded api', 'api:card_deleted api', 'card.discarded api', 'card.deleted api']
+		}
+	},
+	// An option sent to another delivery board's To Do (card 2463, rulings b and l): card_sent on the
+	// board it left, which sends card.moved; the arrival and the commitment on the board it joined, each
+	// heard by a webhook there (the S6 review's Q3): its own card.moved, then card.committed.
+	{
+		row: 4,
+		what: "sending an option to another board's To Do, which commits it",
+		build: () => {
+			const s = optionsScene('Ideas');
+			makeWebhook(s.S.board);
+			return s;
+		},
+		internal: (s) => api('POST', `/api/cards/${s.first.id}/send`, { user: s.owner, body: { boardId: s.S.board.id, to: 'todo' } }),
+		v1: (s) => api('POST', `/api/v1/cards/${s.first.id}/send`, { user: s.owner, body: { boardId: s.S.board.id, to: 'todo' } }),
+		status: { internal: 200, v1: 200 },
+		sources: {
+			internal: ['card_sent ui', 'card_moved_in ui', 'card_committed ui', 'card.moved ui', 'card.moved ui', 'card.committed ui'],
+			v1: ['api:card_sent api', 'api:card_moved_in api', 'api:card_committed api', 'card.moved api', 'card.moved api', 'card.committed api']
+		}
 	},
 	// Card 2381: out of its board's milestone, recorded on the board it left.
 	{
@@ -1229,6 +1275,31 @@ const SERVICE_TWINS: ServiceTwin[] = [
 		status: { internal: 200, v1: 200 },
 		sources: { internal: ['board_updated ui'], v1: ['api:board_updated api'] }
 	},
+	// Milestone 22, card 2464 (item 9): an empty board switched to an ideas board (card 2463,
+	// ruling j), its columns replaced, with one board_updated.
+	{
+		row: 25,
+		what: 'switching an empty board to an ideas board',
+		build: scene,
+		internal: (s) => api('PUT', `/api/boards/${s.S.board.id}`, { user: s.owner, body: { kind: 'ideas' } }),
+		v1: (s) => api('PUT', `/api/v1/boards/${s.S.board.id}`, { user: s.owner, body: { kind: 'ideas' } }),
+		status: { internal: 200, v1: 200 },
+		sources: { internal: ['board_updated ui'], v1: ['api:board_updated api'] }
+	},
+	// And a board holding a card converted to an ideas board (ruling i): one summary entry, no webhook.
+	{
+		row: 25,
+		what: 'converting a board that holds a card to an ideas board',
+		build: () => {
+			const s = cardScene();
+			makeCard(s.S.cols['In Progress'], { title: 'Working' });
+			return s;
+		},
+		internal: (s) => api('POST', `/api/boards/${s.S.board.id}/convert`, { user: s.owner, body: { kind: 'ideas', cards: 1 } }),
+		v1: (s) => api('POST', `/api/v1/boards/${s.S.board.id}/convert`, { user: s.owner, body: { kind: 'ideas', cards: 1 } }),
+		status: { internal: 200, v1: 200 },
+		sources: { internal: ['board_converted_to_ideas ui'], v1: ['api:board_converted_to_ideas api'] }
+	},
 	{
 		row: 25,
 		what: 'deleting a board',
@@ -1309,6 +1380,37 @@ const SERVICE_TWINS: ServiceTwin[] = [
 		status: { internal: 200, v1: 200 },
 		sources: { internal: [], v1: [] },
 		entries: { internal: [], v1: [] }
+	},
+	// Milestone 22, card 2464 (item 9): the Options role given to an empty column (card 2459), which
+	// records no entry, as a change of a column never has; the column goes leftmost, its WIP limit 0.
+	{
+		row: 27,
+		what: 'giving an empty column the Options role',
+		build: () => {
+			const s = cardScene();
+			db.insert(columns).values({ boardId: s.A.board.id, title: 'Spare', position: 9 }).run();
+			return s;
+		},
+		internal: (s) => api('PUT', `/api/columns/${spareColumnId()}`, { user: s.owner, body: { role: 'options' } }),
+		v1: (s) => api('PUT', `/api/v1/columns/${spareColumnId()}`, { user: s.owner, body: { role: 'options' } }),
+		status: { internal: 200, v1: 200 },
+		sources: { internal: [], v1: [] },
+		entries: { internal: [], v1: [] }
+	},
+	// And a column holding a card converted to the Options column (ruling i): one summary entry, no webhook.
+	{
+		row: 27,
+		what: 'converting a column that holds a card to the Options column',
+		build: () => {
+			const s = cardScene();
+			const backlog = db.insert(columns).values({ boardId: s.A.board.id, title: 'Backlog', position: 0.5 }).returning().get();
+			db.update(cards).set({ columnId: backlog.id }).where(eq(cards.id, s.first.id)).run();
+			return s;
+		},
+		internal: (s) => api('POST', `/api/columns/${backlogColumnId()}/convert`, { user: s.owner, body: { role: 'options', cards: 1 } }),
+		v1: (s) => api('POST', `/api/v1/columns/${backlogColumnId()}/convert`, { user: s.owner, body: { role: 'options', cards: 1 } }),
+		status: { internal: 200, v1: 200 },
+		sources: { internal: ['column_converted_to_options ui'], v1: ['api:column_converted_to_options api'] }
 	},
 	{
 		row: 27,

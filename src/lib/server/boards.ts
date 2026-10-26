@@ -40,7 +40,7 @@ import { deleteBoard } from './deletes';
 import { emit } from './events';
 import { changedFields } from './card-changes';
 import { ACTIONS, actorOf, logActivity } from './logActivity';
-import { readBoolean, readChoice, readId, readNumber, readText, type RequestBody } from './request-body';
+import { choiceRefusal, readBoolean, readChoice, readId, readNumber, readText, type RequestBody } from './request-body';
 import { requireBoard, requireBoardCategory, requireBoardOwner, requireParentCard, requireSubBoardLink, requireUser } from './route-guards';
 import { tooDeepToMake, tooDeepUnder } from './sub-boards';
 import { getCardBoardId } from './work-access';
@@ -85,11 +85,11 @@ function makeDefaultColumns(boardId: number, kind: BoardKind): void {
 /**
  * The 400 for a kind that is not one, quoting what was sent (ruling r):
  * `kind must be "delivery" or "ideas", not "portfolio"`. Long text is cut, so
- * the refusal does not repeat a whole body back.
+ * the refusal does not repeat a whole body back (`choiceRefusal`, the one
+ * wording of every such refusal, the S6 review's Q4).
  */
 function kindRefusal(sent: unknown, kinds: readonly string[] = BOARD_KINDS): string {
-	const shown = JSON.stringify(sent) ?? 'nothing';
-	return `kind must be ${kinds.map((k) => `"${k}"`).join(' or ')}, not ${shown.length > 60 ? `${shown.slice(0, 57)}...` : shown}`;
+	return choiceRefusal('kind', kinds, sent);
 }
 
 /** The refusal of an ideas board under a card (card 2463, ruling p): a sub-board is part of a card's delivery. */
