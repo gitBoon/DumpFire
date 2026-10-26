@@ -16,15 +16,18 @@
  * every address of the page loads the same answer.
  */
 import { readCrossBoardCards } from '$lib/server/cross-board-cards';
-import { isTodoColumnTitle, todoColumnIds } from '$lib/column-role';
+import { isTodoColumnTitle, isUpstreamColumn, todoColumnIds } from '$lib/column-role';
 import type { PageServerLoad } from './$types';
 
 export const load: PageServerLoad = async ({ locals }) => {
 	const user = locals.user!;
-	const read = readCrossBoardCards(user, { inColumn: (column) => isTodoColumnTitle(column.title) });
+	// Never an upstream column, whatever it is called (milestone 22, the S5a
+	// review's L1): an ideas board has no To Do column, and an idea is not work
+	// waiting to be started. A second guard: an ideas board refuses the title.
+	const read = readCrossBoardCards(user, { inColumn: (column, kind) => isTodoColumnTitle(column.title) && !isUpstreamColumn(column, kind) });
 
 	const todoIds = todoColumnIds(read.columns);
-	const withTodo = new Set(read.columns.filter((c) => todoIds.has(c.id)).map((c) => c.boardId));
+	const withTodo = new Set(read.columns.filter((c) => todoIds.has(c.id) && !read.upstreamColumnIds.has(c.id)).map((c) => c.boardId));
 
 	return {
 		boards: read.boards.map((b) => ({ ...b, hasTodo: withTodo.has(b.id) })),

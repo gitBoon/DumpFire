@@ -18,7 +18,7 @@
  */
 import { db, sqlite } from '$lib/server/db';
 import { activityLog, boards, columns } from '$lib/server/db/schema';
-import { and, eq, inArray, like, max, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, like, max, or, sql, type SQL } from 'drizzle-orm';
 import { isOptionsColumn, isQueueColumn, isUpstreamColumn } from '$lib/column-role';
 import { ACTIONS, storedActions } from '$lib/server/logActivity';
 import { optionsAging } from '$lib/board/board-view';
@@ -35,6 +35,20 @@ import { parseStamp, toStamp } from '$lib/timestamps';
 export function conversionSuffix(columnId: number): string {
 	return ` (column ${columnId})`;
 }
+
+/**
+ * How a `board_converted_to_ideas` entry's detail ends: ` (board <id>)`, the
+ * board made an ideas board (milestone 22, card 2463), after the quoted name,
+ * where no name can put it, as `conversionSuffix` names a column. Its cards
+ * are options from then, and the aging reads it back (`optionsSince`,
+ * `upstreamFigures`, `timeInOptions`).
+ */
+export function boardConversionSuffix(boardId: number): string {
+	return ` (board ${boardId})`;
+}
+
+/** The end of a board conversion's detail, ` (board <id>)` (`boardConversionSuffix`), read back. */
+const CONVERTED_BOARD = / \(board (\d+)\)$/;
 
 /**
  * How a `card_committed` entry's detail ends: ` (column <to>, from column
@@ -60,43 +74,67 @@ export function commitmentColumns(detail: string | null): { to: number | null; f
 	return { to: found ? Number(found[1]) : null, from: found?.[2] ? Number(found[2]) : null };
 }
 
+/** The later of two stored moments, either of which may be missing. Stored moments share one form, so the later is the greater text. */
+const later = (a: string | null | undefined, b: string | null | undefined): string | undefined => (a && b ? (a > b ? a : b) : (a ?? b ?? undefined));
+
 /**
- * When each of these cards, all in the Options column `column`, became an
- * option, for the strip's aging (milestone 22, ruling g, amended by the S1b
- * review's B2): the latest of its creation, its latest
- * `card_returned_to_options` entry, and the latest conversion of the column,
- * each in either spelling. A card converted with its column is an option from
- * the conversion, not from its creation; a card sent here from an ideas board
- * keeps its age. Two reads, and none for no cards. Stored moments share one
- * form, so the latest is the greatest text.
+ * When each of these cards, all upstream on board `scope.boardId`, became an
+ * option, for the aging (milestone 22, ruling g, amended by the S1b review's
+ * B2): the latest of its creation, its latest `card_returned_to_options`
+ * entry, and the latest conversion that made it one, each in either
+ * spelling. The conversions are the column's, `scope.columnId`, made the
+ * Options column, and the board's made an ideas board (card 2463). A card
+ * converted where it stood is an option from the conversion, not from its
+ * creation.
+ *
+ * A Send keeps the age (decision M22-20), and so does any move from another
+ * board's upstream: a conversion counts only if the card was on the board
+ * when it happened, that is with no `card_moved_in` to this board after it,
+ * as `timeInOptions` reads it (the S4a review's H3). Without that, a card
+ * sent into a column converted earlier would have looked as young as the
+ * conversion. Two reads, and none for no cards.
  */
-export function optionsSince(column: { id: number; boardId: number }, cards: readonly { id: number; createdAt: string }[]): Map<number, string> {
+export function optionsSince(scope: { boardId: number; columnId?: number }, cards: readonly { id: number; createdAt: string }[]): Map<number, string> {
 	const since = new Map<number, string>();
 	if (cards.length === 0) return since;
-	const returned = new Map(
-		db
-			.select({ cardId: activityLog.cardId, at: max(activityLog.createdAt) })
-			.from(activityLog)
-			.where(and(inArray(activityLog.cardId, cards.map((c) => c.id)), inArray(activityLog.action, storedActions('card_returned_to_options'))))
-			.groupBy(activityLog.cardId)
-			.all()
-			.map((r) => [r.cardId, r.at])
-	);
+	const returnedActions = storedActions(ACTIONS.cardReturnedToOptions);
+	const returned = new Map<number, string>();
+	const arrived = new Map<number, string>();
+	const acts = db
+		.select({ cardId: activityLog.cardId, action: activityLog.action, at: max(activityLog.createdAt) })
+		.from(activityLog)
+		.where(
+			and(
+				inArray(activityLog.cardId, cards.map((c) => c.id)),
+				or(
+					inArray(activityLog.action, returnedActions),
+					and(inArray(activityLog.action, storedActions(ACTIONS.cardMovedIn)), eq(activityLog.boardId, scope.boardId))
+				)
+			)
+		)
+		.groupBy(activityLog.cardId, activityLog.action)
+		.all();
+	for (const { cardId, action, at } of acts) {
+		if (cardId === null) continue;
+		const into = returnedActions.includes(action) ? returned : arrived;
+		const latest = later(into.get(cardId), at);
+		if (latest) into.set(cardId, latest);
+	}
+	const conversions = [inArray(activityLog.action, storedActions(ACTIONS.boardConvertedToIdeas))];
+	if (scope.columnId !== undefined) {
+		conversions.push(
+			and(inArray(activityLog.action, storedActions(ACTIONS.columnConvertedToOptions)), like(activityLog.detail, `%${conversionSuffix(scope.columnId)}`))!
+		);
+	}
 	const converted =
 		db
 			.select({ at: max(activityLog.createdAt) })
 			.from(activityLog)
-			.where(
-				and(
-					eq(activityLog.boardId, column.boardId),
-					inArray(activityLog.action, storedActions(ACTIONS.columnConvertedToOptions)),
-					like(activityLog.detail, `%${conversionSuffix(column.id)}`)
-				)
-			)
+			.where(and(eq(activityLog.boardId, scope.boardId), or(...conversions)))
 			.get()?.at ?? null;
 	for (const card of cards) {
-		const moments = [card.createdAt, returned.get(card.id), converted].filter((m): m is string => typeof m === 'string');
-		since.set(card.id, moments.reduce((latest, m) => (m > latest ? m : latest)));
+		const arrivedSince = converted !== null && (arrived.get(card.id) ?? '') > converted;
+		since.set(card.id, later(later(card.createdAt, returned.get(card.id)), arrivedSince ? null : converted)!);
 	}
 	return since;
 }
@@ -195,10 +233,10 @@ export type UpstreamFigures = {
 
 /**
  * `card_sent`, written on the board a card is sent from, in place of
- * `card_moved_away` (ruling b). Card 2463 writes it; it is counted here
- * already so that the figures need no change when it does.
+ * `card_moved_away` (ruling b), at the same moment as the `card_moved_in` on
+ * the board it went to (card 2463), so that the two pair by their time.
  */
-const CARD_SENT = 'card_sent';
+const CARD_SENT = ACTIONS.cardSent;
 
 /**
  * The upstream acts, each a figure, by canonical action (ruling c): of these a
@@ -239,10 +277,11 @@ const CONVERTED_COLUMN = / \(column (\d+)\)$/;
  *
  * Options now and their aging are read as they stand, whatever the window:
  * an option's age runs from the latest of its creation, its latest return to
- * options and the latest conversion of its column (the rule of
- * `optionsSince`, the S1b review's B2), in whole days, as the Options strip
- * shows it. Four reads in all, however many boards and columns (the S3
- * review's E3). `now` is for tests.
+ * options and the latest conversion of its column or of its board to an ideas
+ * board, a conversion counting only if the card has not arrived from another
+ * board since (the rule of `optionsSince`, the S1b review's B2 and decision
+ * M22-20), in whole days, as the Options strip shows it. Four reads in all,
+ * however many boards and columns (the S3 review's E3). `now` is for tests.
  *
  * `boardIds` null is every board (the S4a review's H9): no list of every
  * board's id is bound, which past SQLite's limit on bound values would fail,
@@ -307,36 +346,46 @@ export function upstreamFigures(boardIds: readonly number[] | null, from: string
 		WHERE ${onBoards('col.board_id')} AND c.archived_at IS NULL AND ${UPSTREAM}`;
 	const optionCards = `SELECT c.id ${optionsFrom}`;
 	const options = sqlite
-		.prepare(`SELECT c.id AS id, c.created_at AS createdAt, col.id AS columnId ${optionsFrom}`)
-		.all(...boardValues) as { id: number; createdAt: string; columnId: number }[];
+		.prepare(`SELECT c.id AS id, c.created_at AS createdAt, col.id AS columnId, col.board_id AS boardId ${optionsFrom}`)
+		.all(...boardValues) as { id: number; createdAt: string; columnId: number; boardId: number }[];
 	figures.options = options.length;
 	if (options.length === 0) return figures;
+	// Each option's latest return to options, on any board, and its latest
+	// arrival on each board, in one read.
 	const returnedActions = storedActions(ACTIONS.cardReturnedToOptions);
-	const returned = new Map(
-		(
-			sqlite
-				.prepare(
-					`SELECT card_id AS cardId, MAX(created_at) AS at FROM activity_log
-					WHERE action IN (?, ?) AND card_id IN (${optionCards}) GROUP BY card_id`
-				)
-				.all(...returnedActions, ...boardValues) as { cardId: number; at: string }[]
-		).map((r) => [r.cardId, r.at])
-	);
-	// Only on the boards that hold options now, whose columns are the ones asked about.
+	const returned = new Map<number, string>();
+	const arrived = new Map<string, string>();
+	const optionActs = sqlite
+		.prepare(
+			`SELECT card_id AS cardId, action, board_id AS boardId, MAX(created_at) AS at FROM activity_log
+			WHERE action IN (?, ?, ?, ?) AND card_id IN (${optionCards}) GROUP BY card_id, action, board_id`
+		)
+		.all(...returnedActions, ...storedActions(ACTIONS.cardMovedIn), ...boardValues) as { cardId: number; action: string; boardId: number; at: string }[];
+	for (const { cardId, action, boardId, at } of optionActs) {
+		if (returnedActions.includes(action)) returned.set(cardId, later(returned.get(cardId), at)!);
+		else arrived.set(`${cardId}:${boardId}`, later(arrived.get(`${cardId}:${boardId}`), at)!);
+	}
+	// Only on the boards that hold options now, whose columns are the ones asked
+	// about: each column's latest conversion to the Options column, and each
+	// board's to an ideas board (card 2463).
 	const converted = new Map<number, string>();
+	const convertedBoards = new Map<number, string>();
 	const conversions = sqlite
 		.prepare(
 			`SELECT detail, created_at AS at FROM activity_log
-			WHERE action IN (?, ?) AND board_id IN (SELECT DISTINCT col.board_id ${optionsFrom})`
+			WHERE action IN (?, ?, ?, ?) AND board_id IN (SELECT DISTINCT col.board_id ${optionsFrom})`
 		)
-		.all(...storedActions(ACTIONS.columnConvertedToOptions), ...boardValues) as { detail: string; at: string }[];
+		.all(...storedActions(ACTIONS.columnConvertedToOptions, ACTIONS.boardConvertedToIdeas), ...boardValues) as { detail: string; at: string }[];
 	for (const { detail, at } of conversions) {
 		const columnId = Number(CONVERTED_COLUMN.exec(detail)?.[1]);
 		if (columnId && at > (converted.get(columnId) ?? '')) converted.set(columnId, at);
+		const boardId = Number(CONVERTED_BOARD.exec(detail)?.[1]);
+		if (boardId && at > (convertedBoards.get(boardId) ?? '')) convertedBoards.set(boardId, at);
 	}
 	const aged = options.map((card) => {
-		const moments = [card.createdAt, returned.get(card.id), converted.get(card.columnId)].filter((m): m is string => typeof m === 'string');
-		return { createdAt: card.createdAt, optionSince: moments.reduce((latest, m) => (m > latest ? m : latest)) };
+		const conversion = later(converted.get(card.columnId), convertedBoards.get(card.boardId));
+		const arrivedSince = conversion !== undefined && (arrived.get(`${card.id}:${card.boardId}`) ?? '') > conversion;
+		return { createdAt: card.createdAt, optionSince: later(later(card.createdAt, returned.get(card.id)), arrivedSince ? undefined : conversion)! };
 	});
 	const { oldestDays, over } = optionsAging(aged, now);
 	figures.oldestOptionDays = oldestDays;
@@ -403,7 +452,8 @@ export type TimeInOptions = { cardId: number; optionSince: string; committedAt: 
  * the Options strip (the S1b review's B2), each taken before the commitment:
  * its creation, its latest return to options, and the latest conversion of
  * the column it left, which the commitment's detail names
- * (`commitmentSuffix`; the S4a review's H3). The conversion counts only if
+ * (`commitmentSuffix`; the S4a review's H3), or of that column's board to an
+ * ideas board (card 2463). The conversion counts only if
  * the card was on that column's board when it happened: a `card_moved_in`
  * there between the conversion and the commitment means it arrived later,
  * from another board's upstream, keeping its age (decision M22-20), and then
@@ -441,7 +491,9 @@ export function timeInOptions(boardIds: readonly number[], from: string, to: str
 		.prepare(`SELECT card_id AS cardId, created_at AS at FROM activity_log WHERE card_id IN ${inCards} AND action IN (?, ?)`)
 		.all(...cardIds, ...storedActions(ACTIONS.cardReturnedToOptions)) as { cardId: number; at: string }[];
 	// The conversions on the boards of the columns the cards left, by the
-	// index that leads on the board, each with the column it converted.
+	// index that leads on the board, each with the column it made an option of:
+	// the column it converted, or, for a board made an ideas board (card 2463),
+	// each of the columns left that are on that board.
 	const left = [...new Set(committed.map((c) => c.left).filter((id): id is number => id !== null))];
 	const conversions =
 		left.length === 0
@@ -449,11 +501,17 @@ export function timeInOptions(boardIds: readonly number[], from: string, to: str
 			: (
 					sqlite
 						.prepare(
-							`SELECT board_id AS boardId, detail, created_at AS at FROM activity_log
-							WHERE action IN (?, ?) AND board_id IN (SELECT board_id FROM columns WHERE id IN (${left.map(() => '?').join(', ')}))`
+							`SELECT a.board_id AS boardId, a.detail AS detail, a.created_at AS at, col.id AS leftId FROM activity_log a
+							JOIN columns col ON col.board_id = a.board_id
+							WHERE a.action IN (?, ?, ?, ?) AND col.id IN (${left.map(() => '?').join(', ')})`
 						)
-						.all(...storedActions(ACTIONS.columnConvertedToOptions), ...left) as { boardId: number; detail: string; at: string }[]
-				).map((c) => ({ ...c, columnId: Number(CONVERTED_COLUMN.exec(c.detail)?.[1]) || null }));
+						.all(...storedActions(ACTIONS.columnConvertedToOptions, ACTIONS.boardConvertedToIdeas), ...left) as {
+						boardId: number;
+						detail: string;
+						at: string;
+						leftId: number;
+					}[]
+				).map((c) => ({ ...c, columnId: CONVERTED_BOARD.test(c.detail) ? c.leftId : Number(CONVERTED_COLUMN.exec(c.detail)?.[1]) || null }));
 	const arrivals = sqlite
 		.prepare(`SELECT card_id AS cardId, board_id AS boardId, created_at AS at FROM activity_log WHERE card_id IN ${inCards} AND action IN (?, ?)`)
 		.all(...cardIds, ...storedActions(ACTIONS.cardMovedIn)) as { cardId: number; boardId: number; at: string }[];

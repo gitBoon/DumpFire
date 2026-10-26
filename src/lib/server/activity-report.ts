@@ -711,6 +711,10 @@ function lookupUser(userId: number) {
  * 30-day window — and nothing let a reader tell which board it was on when.
  * The events always recorded the board correctly; what was missing was any way
  * to read the sequence back.
+ *
+ * A card sent to another board (milestone 22, card 2463) left with a
+ * `card_sent` in place of `card_moved_away`, which is read as the departure
+ * it is (decision M22-19).
  */
 export function getCardBoardHistory(cardId: number): {
 	boardId: number;
@@ -725,7 +729,7 @@ export function getCardBoardHistory(cardId: number): {
 			 FROM activity_log al JOIN boards b ON b.id = al.board_id
 			 WHERE al.card_id = ?
 			   AND (al.action LIKE '%card_moved_in' OR al.action LIKE '%card_moved_away'
-			        OR al.action LIKE '%card_created')
+			        OR al.action LIKE '%card_sent' OR al.action LIKE '%card_created')
 			 ORDER BY al.created_at ASC, al.id ASC`
 		)
 		.all(cardId) as { boardId: number; boardName: string; action: string; createdAt: string }[];
@@ -757,7 +761,7 @@ export function getCardBoardHistory(cardId: number): {
 	// the two tie and the start was dropped. The departure is written first, so
 	// it has the lower id, and the order of the rows says what the times cannot.
 	const first = moves[0];
-	if (first && first.action.endsWith('card_moved_away')) {
+	if (first && (first.action.endsWith('card_moved_away') || first.action.endsWith('card_sent'))) {
 		spans.push({
 			boardId: first.boardId,
 			boardName: first.boardName,

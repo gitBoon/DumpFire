@@ -104,6 +104,8 @@ const TEST_FILES = [
 	'gdrive-retention.test.ts',
 	'harness.test.ts',
 	'header-menus.svelte.test.ts',
+	// Milestone 22, slice S5a: an ideas board, its kind, its conversion, and Send to board.
+	'ideas-board.test.ts',
 	'import-working-copy.test.ts',
 	'internal-refusals.test.ts',
 	'kanban-column-header.svelte.test.ts',

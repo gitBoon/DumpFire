@@ -38,9 +38,10 @@ export type CrossBoardOptions = {
 	/**
 	 * Which columns' cards to read; every column's when it is left out. Asked
 	 * of the columns before any card is read, so a page that wants one column
-	 * of each board reads only those cards.
+	 * of each board reads only those cards. Given each column's board's kind
+	 * too (milestone 22), for a page that leaves upstream columns out.
 	 */
-	inColumn?: (column: ColumnRow) => boolean;
+	inColumn?: (column: ColumnRow, boardKind: string | null) => boolean;
 };
 
 export function readCrossBoardCards(user: Actor, options: CrossBoardOptions = {}) {
@@ -69,7 +70,7 @@ export function readCrossBoardCards(user: Actor, options: CrossBoardOptions = {}
 
 	// The columns whose cards are read: every one, or those the page asked for.
 	const { inColumn } = options;
-	const columnIds = (inColumn ? allColumns.filter(inColumn) : allColumns).map(c => c.id);
+	const columnIds = (inColumn ? allColumns.filter(c => inColumn(c, kindOf.get(c.boardId) ?? null)) : allColumns).map(c => c.id);
 	// By position, ties by id (card 2347): a page's bucket takes in a column of
 	// every board, and a tie came by the column it was in.
 	const allCards = columnIds.length > 0
@@ -173,10 +174,12 @@ export function readCrossBoardCards(user: Actor, options: CrossBoardOptions = {}
 	return {
 		// What a page reads of each board and no more: not its parent card,
 		// which is on a board the caller may not be able to open, nor its
-		// maker, category or dates (card 1990's review).
+		// maker, category or dates (card 1990's review). Its kind, a delivery
+		// or an ideas board, for the pages to say what archiving a card there
+		// records and what the board's figures are (milestone 22, card 2463).
 		boards: allBoards.map(b => {
 			const { name, emoji } = boardMap.get(b.id)!;
-			return { id: b.id, name, emoji, ...places.get(b.id)! };
+			return { id: b.id, name, emoji, kind: b.kind, ...places.get(b.id)! };
 		}),
 		/** Every column of those boards, by position, whichever `inColumn` let through. */
 		columns: allColumns,

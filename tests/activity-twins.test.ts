@@ -2562,6 +2562,13 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 	'src/routes/api/v1/cards/[cardId]/move/+server.ts PUT': [
 		{ service: 'moveCard', args: [code('caller'), { cardId: code('cardId') }, code('body'), { source: 'api', baseUrl: code('baseUrl') }] }
 	],
+	// Milestone 22, card 2463: an option sent to another delivery board.
+	'src/routes/api/cards/[id]/send/+server.ts POST': [
+		{ service: 'sendCard', args: [code('caller'), { cardId: code('id') }, code('body'), { source: 'ui', baseUrl: code('baseUrl') }] }
+	],
+	'src/routes/api/v1/cards/[cardId]/send/+server.ts POST': [
+		{ service: 'sendCard', args: [code('caller'), { cardId: code('cardId') }, code('body'), { source: 'api', baseUrl: code('baseUrl') }] }
+	],
 	// Slice A2: what is on a card. Each tree's words (`says`, a constant of
 	// the route file where two handlers share them), and what each does
 	// differently today: v1's comment entry words and mail-first order, v1's
@@ -2796,6 +2803,13 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 	'src/routes/api/boards/[id]/+server.ts DELETE': [{ service: 'deleteBoardFor', args: [code('caller'), { boardId: code('id') }, null, { source: 'ui' }] }],
 	'src/routes/api/v1/boards/[boardId]/+server.ts DELETE': [
 		{ service: 'deleteBoardFor', args: [code('caller'), { boardId: code('boardId') }, null, { source: 'api' }] }
+	],
+	// Milestone 22, card 2463, ruling i: a board made an ideas board, cards and all.
+	'src/routes/api/boards/[id]/convert/+server.ts POST': [
+		{ service: 'convertBoardFor', args: [code('caller'), { boardId: code('id') }, code('body'), { source: 'ui' }] }
+	],
+	'src/routes/api/v1/boards/[boardId]/convert/+server.ts POST': [
+		{ service: 'convertBoardFor', args: [code('caller'), { boardId: code('boardId') }, code('body'), { source: 'api' }] }
 	],
 	'src/routes/api/board-categories/+server.ts POST': [{ service: 'createBoardGrouping', args: [code('caller'), {}, code('body'), { source: 'ui' }] }],
 	'src/routes/api/v1/board-categories/+server.ts POST': [{ service: 'createBoardGrouping', args: [code('caller'), {}, code('body'), { source: 'api' }] }],

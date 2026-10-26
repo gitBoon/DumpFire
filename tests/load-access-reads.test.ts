@@ -87,6 +87,13 @@
  * `upstreamFigures`'s window and options now. In the review (H9) an
  * administrator who names no board stopped having every board read and
  * bound for it: their report is two more too, where it was three.
+ *
+ * Card 2463 (milestone 22, slice S5a) gave each board of All Tasks' and All
+ * To Do's cross-board load its `kind`. The 10 hashes that moved (each marked
+ * "re-pinned (2463)") were taken again on the code as it is, once a run had
+ * shown every one of them equal to its old pin with `kind` taken out of the
+ * answer before hashing (a temporary edit of `hashOf`): nothing else in any
+ * answer moved. No count of reads moved.
  */
 import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -326,18 +333,18 @@ type Pin = { reads: number; access: number; hash: string };
  */
 const PINS: Record<string, Record<Kind, Pin>> = {
 	'All Tasks': {
-		owner: { reads: 26, access: 1, hash: '0de093198a898612' }, // 42 → 30, 4 → 1; re-pinned; 30 → 26 (card 2400); re-pinned (0060)
-		member: { reads: 26, access: 1, hash: '4af92fd8e02ebdfd' }, // 45 → 33, 4 → 1; re-pinned; 33 → 26 (card 2400); re-pinned (0060)
-		mate: { reads: 27, access: 1, hash: 'a5afe8605f3c644c' }, // 54 → 39, 4 → 1; re-pinned; 39 → 27 (card 2400); re-pinned (0060)
-		admin: { reads: 20, access: 0, hash: '0de093198a898612' }, // 20 → 20, 0 → 0; re-pinned; re-pinned (0060)
-		outsider: { reads: 24, access: 1, hash: '9d6e342aa717b3f6' } // 36 → 24, 4 → 1; re-pinned (0060)
+		owner: { reads: 26, access: 1, hash: 'caa58a1419d874bb' }, // 42 → 30, 4 → 1; re-pinned; 30 → 26 (card 2400); re-pinned (0060); re-pinned (2463)
+		member: { reads: 26, access: 1, hash: '677f1c79d87df2c7' }, // 45 → 33, 4 → 1; re-pinned; 33 → 26 (card 2400); re-pinned (0060); re-pinned (2463)
+		mate: { reads: 27, access: 1, hash: '6cf5821b309ad6ea' }, // 54 → 39, 4 → 1; re-pinned; 39 → 27 (card 2400); re-pinned (0060); re-pinned (2463)
+		admin: { reads: 20, access: 0, hash: 'caa58a1419d874bb' }, // 20 → 20, 0 → 0; re-pinned; re-pinned (0060); re-pinned (2463)
+		outsider: { reads: 24, access: 1, hash: 'e7e183da2208a668' } // 36 → 24, 4 → 1; re-pinned (0060); re-pinned (2463)
 	},
 	'All To Do': {
-		owner: { reads: 24, access: 1, hash: '674b280920321af0' }, // 38 → 26, 4 → 1; re-pinned, 27 with B's card in A's goal; 27 → 24 (card 2400); re-pinned (0060)
-		member: { reads: 24, access: 1, hash: 'af9b278c25a19e80' }, // 41 → 29, 4 → 1; re-pinned; 29 → 24 (card 2400); re-pinned (0060)
-		mate: { reads: 25, access: 1, hash: '1810a257ebbf2cef' }, // 48 → 33, 4 → 1; re-pinned; 33 → 25 (card 2400); re-pinned (0060)
-		admin: { reads: 18, access: 0, hash: '674b280920321af0' }, // 18 → 18, 0 → 0; re-pinned; re-pinned (0060)
-		outsider: { reads: 22, access: 1, hash: '4ada76321c53cd78' } // 34 → 22, 4 → 1; re-pinned (0060)
+		owner: { reads: 24, access: 1, hash: 'efa78b76a2bb5ddd' }, // 38 → 26, 4 → 1; re-pinned, 27 with B's card in A's goal; 27 → 24 (card 2400); re-pinned (0060); re-pinned (2463)
+		member: { reads: 24, access: 1, hash: 'e2617b1e18b6ad94' }, // 41 → 29, 4 → 1; re-pinned; 29 → 24 (card 2400); re-pinned (0060); re-pinned (2463)
+		mate: { reads: 25, access: 1, hash: '0e3db0ce7a23f2ff' }, // 48 → 33, 4 → 1; re-pinned; 33 → 25 (card 2400); re-pinned (0060); re-pinned (2463)
+		admin: { reads: 18, access: 0, hash: 'efa78b76a2bb5ddd' }, // 18 → 18, 0 → 0; re-pinned; re-pinned (0060); re-pinned (2463)
+		outsider: { reads: 22, access: 1, hash: 'b55857313a9360ae' } // 34 → 22, 4 → 1; re-pinned (0060); re-pinned (2463)
 	},
 	Reports: {
 		owner: { reads: 13, access: 1, hash: 'f30944d9a51498be' }, // 17 → 13, 2 → 1; re-pinned

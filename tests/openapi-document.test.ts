@@ -100,7 +100,7 @@ const V1_JSON = '$lib/server/v1-json';
  * has lost some, fails. Adding operations to the document means changing it,
  * knowingly.
  */
-const OPERATIONS = 82;
+const OPERATIONS = 84;
 
 // ─── The document ────────────────────────────────────────────────────────────
 
@@ -2851,6 +2851,14 @@ describe('what a route answers, against the schema the document gives for it', (
 		const goal = makeMilestone({ board, createdBy: admin, cards: [first] });
 		const ofGoal = await ok('GET', `/api/v1/burndown?milestoneId=${goal.id}`);
 		expect(ofGoal.scope.milestone).toMatchObject({ id: goal.id, name: goal.name, boardId: board.id });
+
+		// Milestone 22, card 2463: an ideas board made, an idea on it sent to this board's To Do, and an
+		// empty delivery board made an ideas board by its conversion.
+		const ideas = await ok('POST', '/api/v1/boards', { name: 'Ideas', kind: 'ideas' });
+		const idea = await ok('POST', `/api/v1/boards/${ideas.id}/cards`, { title: 'An idea', columnId: ideas.columns[0].id });
+		await ok('POST', `/api/v1/cards/${idea.id}/send`, { boardId: board.id, to: 'todo' });
+		const spare = await ok('POST', '/api/v1/boards', { name: 'Spare' });
+		await ok('POST', `/api/v1/boards/${spare.id}/convert`, { kind: 'ideas', cards: 0 });
 
 		await ok('DELETE', `/api/v1/cards/${second.id}`);
 		await ok('DELETE', `/api/v1/boards/${board.id}`);

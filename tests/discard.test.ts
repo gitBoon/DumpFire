@@ -366,7 +366,8 @@ describe('the other paths', () => {
 		const admin = makeUser({ username: 'admin', role: 'admin' });
 		// The Options column may go once it holds archived cards alone, which go with it.
 		cardIn(A.cols['Ideas'], 'Archived option', { archivedAt: OLD });
-		cardIn(I.cols['New Ideas'], 'An idea');
+		// So may a column of an ideas board (card 2463, the S5a review's L2).
+		cardIn(I.cols['New Ideas'], 'An archived idea', { archivedAt: OLD });
 		const archivedIdea = cardIn(I.cols['Shaping'], 'Archived idea', { archivedAt: OLD });
 		const other = makeBoard({ owner, name: 'Other', columns: ['Ideas', 'To Do'] });
 		db.update(columns).set({ role: 'options' }).where(eq(columns.id, other.cols['Ideas'].id)).run();

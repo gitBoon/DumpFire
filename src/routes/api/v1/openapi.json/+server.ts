@@ -2572,6 +2572,13 @@ const spec = {
 										description:
 											'The board category to file the new board under on the dashboard. null, or left out, for none. One that does not exist is 404, and one that holds boards, none of which the key\'s user can open, is 403. ' +
 											'Until 2026-10-14 it was ignored and the board made unfiled.'
+									},
+									kind: {
+										type: 'string',
+										enum: ['delivery', 'ideas'],
+										description:
+											'"delivery", the default, made with To Do, On Hold, In Progress and Complete; or "ideas", an ideas board, every column of which is upstream of the commitment point, made with New Ideas, Shaping and Ready for Replenishment. ' +
+											'Anything else is 400 kind must be "delivery" or "ideas", not <what was sent>. A sub-board is a delivery board: "ideas" with a parentCardId is 409.'
 									}
 								}
 							},
@@ -2615,7 +2622,9 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Parent card not found' } } }
 					},
 					'409': {
-						description: 'Sub-board only: a board under that card would be more than 20 levels deep. Nothing was created.',
+						description:
+							'Sub-board only: a board under that card would be more than 20 levels deep, which is the example; kind is "ideas" (`A sub-board is a delivery board.`); ' +
+							'or the card is an option, which has no sub-boards: on an ideas board, `An idea has no sub-boards; send it to a delivery board first.`, and in an Options column, `An option has no sub-boards; commit it first, by moving it out of the Options column.` Nothing was created.',
 						content: {
 							'application/json': {
 								schema: { $ref: '#/components/schemas/Error' },
@@ -2695,6 +2704,13 @@ const spec = {
 											'Accepted only as the card the board hangs under, or null for a board on the dashboard, so a board read with GET can be sent back whole (an editor leaves isPublic out). ' +
 											'Any other value, null on a sub-board included, is 400 (`parentCardId 12 is not this board\'s parent card (none): …`), and nothing is saved. ' +
 											'A board is put under a card, or taken out from under one, on the board page. It does not count as a field to update.'
+									},
+									kind: {
+										type: 'string',
+										enum: ['delivery', 'ideas'],
+										description:
+											'"delivery" or "ideas". Left out, or sent as the board holds it, the kind is kept. A change is the board\'s owner\'s or an administrator\'s (403 otherwise), and only of an empty board, no card live or archived: its columns are then replaced with the other kind\'s defaults. ' +
+											'A board holding cards becomes an ideas board by POST /api/v1/boards/{boardId}/convert; an ideas board holding cards does not become a delivery board. Anything else is 400 kind must be "delivery" or "ideas", not <what was sent>.'
 									}
 								}
 							},
@@ -2720,12 +2736,27 @@ const spec = {
 						description:
 							'No edit access to this board. ' +
 							'Or `isPublic` was sent by a caller who can edit the board and is neither its owner nor an administrator, which is the example. ' +
+							'Or `kind` was sent changed by such a caller: `Only the board\'s owner or an administrator can change whether it is an ideas board`. ' +
 							'Or categoryId names a board category that holds boards, none of which the key\'s user can open: `No access to this board category`. Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Only board owners and admins can change visibility' } } }
 					},
 					'404': {
 						description: 'There is no such board, whoever asks: it is looked for before access is checked, and until 2026-10-14 everyone but an administrator was answered 403. Or the board category sent as categoryId does not exist: `Board category not found`, where it was stored. Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board not found' } } }
+					},
+					'409': {
+						description:
+							'A change of kind that cannot be made, and nothing was written: the board is a sub-board, which is a delivery board (`A sub-board is a delivery board.`); ' +
+							'or the board holds cards, archived ones included, whose commitment the change would decide without anyone deciding it: to "ideas" the message names POST /api/v1/boards/{boardId}/convert, which is the example, and back to "delivery" it says to move or delete them first.',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/Error' },
+								example: {
+									message:
+										'This board holds 3 cards. Making it an ideas board would make them options without anyone deciding it: convert it instead (POST /api/v1/boards/12/convert), which counts the cards first and records it.'
+								}
+							}
+						}
 					},
 					'413': { $ref: '#/components/responses/PayloadTooLarge' },
 					'429': { $ref: '#/components/responses/RateLimited' },
@@ -2769,6 +2800,68 @@ const spec = {
 						description: 'There is no such board, whoever asks: it is looked for before access is checked. Until 2026-10-14 everyone but an administrator was answered 403.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board not found' } } }
 					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
+				}
+			}
+		},
+
+		'/api/v1/boards/{boardId}/convert': {
+			post: {
+				tags: ['Boards'],
+				summary: 'Make a board an ideas board, cards and all',
+				description:
+					'Makes the board an ideas board with the cards it holds: every card on it, archived ones included, becomes an option (its committedAt and committedBy are cleared), its To Do, On Hold and Complete columns, which must be empty, are deleted (a board with no card at all is given the ideas board\'s default columns instead), ' +
+					'and its Options column, if it has one, becomes an ordinary column, every column of an ideas board being upstream. One `api:board_converted_to_ideas` entry is written ("N cards became ideas"); nothing is written or sent for each card, and no webhook. ' +
+					'Only the board\'s owner or an administrator may. `cards` is how many cards, live and archived, the board was seen to hold: a board that holds another number now is 409, so a card added since is not made an option unseen. ' +
+					'An empty board can also be switched with PUT /api/v1/boards/{boardId} and kind, which gives it the ideas board\'s default columns instead. An ideas board holding cards is not made a delivery board.',
+				operationId: 'convertBoard',
+				parameters: [{ $ref: '#/components/parameters/boardId' }],
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								required: ['kind', 'cards'],
+								properties: {
+									kind: { type: 'string', enum: ['ideas'], description: 'What the board becomes. Anything else is 400 kind must be "ideas", not <what was sent>.' },
+									cards: { type: 'integer', minimum: 0, description: 'How many cards, live and archived, the board holds, as the caller last saw it.' }
+								}
+							},
+							example: { kind: 'ideas', cards: 7 }
+						}
+					}
+				},
+				responses: {
+					'200': {
+						description: 'The board, now an ideas board, with its columns',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/BoardDetail' } } }
+					},
+					'400': { $ref: '#/components/responses/BadRequest' },
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'The caller cannot open the board, or can and is neither its owner nor an administrator',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/Error' },
+								example: { message: "Only the board's owner or an administrator can make it an ideas board" }
+							}
+						}
+					},
+					'404': {
+						description: 'There is no such board',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board not found' } } }
+					},
+					'409': {
+						description:
+							'Nothing was changed. In this order: the board is an ideas board already (`This board is already an ideas board.`); a card on it has a sub-board, and a card with sub-boards is never an option; ' +
+							'the board is a sub-board (`A sub-board is a delivery board.`); a column whose title makes it To Do, On Hold or Complete holds a card, live or archived, which an ideas board has none of ' +
+							'(a To Do or On Hold column is renamed first, `"To Do" holds 2 cards, and an ideas board has no To Do column: rename it first.`; a Complete column\'s cards are moved or deleted); the board holds another number of cards than `cards`. ' +
+							'On success the empty To Do, On Hold and Complete columns are removed, and a board holding no card at all is given the ideas board\'s default columns (New Ideas, Shaping, Ready for Replenishment) in place of its own; the entry names the columns removed or replaced.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'The board now holds 5 cards; look again.' } } }
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
 					'429': { $ref: '#/components/responses/RateLimited' },
 					'500': { $ref: '#/components/responses/InternalError' }
 				}
@@ -2858,7 +2951,8 @@ const spec = {
 					'409': {
 						description:
 							'The column cannot be made as sent, and nothing was written: an Options column on an ideas board, a second Options column on a board that has one, ' +
-							'an Options column whose title makes a column To Do, On Hold or Complete, or a position at or left of the board\'s Options column, which stays the leftmost.',
+							'an Options column whose title makes a column To Do, On Hold or Complete, or a position at or left of the board\'s Options column, which stays the leftmost. ' +
+							'And on an ideas board, a column whose title makes it To Do, On Hold or Complete: `An ideas board has no Complete column: "Done" would make one. Choose another name.`',
 						content: {
 							'application/json': {
 								schema: { $ref: '#/components/schemas/Error' },
@@ -2964,7 +3058,8 @@ const spec = {
 							'A card is finished because of the column it is in, so the rename would mark its cards finished without anyone finishing them, or turn finished work back into open work. ' +
 							'The message says how many cards the column holds and, when any are, how many of them are archived. Nothing was written. An empty column is renamed freely, and so is one whose new title keeps its role, such as Complete to Done. ' +
 							'Also 409, with nothing written, for the Options column\'s rules: the role given on an ideas board, or on a board that has an Options column, or given or taken away while the column holds cards; ' +
-							'an Options column called To Do, On Hold or Complete (or a column so called given the role); a WIP limit above 0 on an Options column; and a position that would put a column at or left of the Options column, which stays the leftmost.',
+							'an Options column called To Do, On Hold or Complete (or a column so called given the role); a WIP limit above 0 on an Options column; and a position that would put a column at or left of the Options column, which stays the leftmost. ' +
+							'And a column of an ideas board renamed so that its title makes it To Do, On Hold or Complete: `An ideas board has no To Do column: "To Do" would make one. Choose another name.`',
 						content: {
 							'application/json': {
 								schema: { $ref: '#/components/schemas/Error' },
@@ -3018,7 +3113,9 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Column not found' } } }
 					},
 					'409': {
-						description: 'The column is the board\'s Options column and holds cards that are not archived: options are moved out, or archived to discard them, not deleted with their column. Nothing was deleted.',
+						description:
+							'The column is the board\'s Options column and holds cards that are not archived: options are moved out, or archived to discard them, not deleted with their column. ' +
+							'The same for a column of an ideas board holding ideas: `This column of an ideas board still holds 2 ideas: move them out, or archive them to discard them, first.` Nothing was deleted.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'This Options column still holds 2 options: move them out, or archive them to discard them, first.' } } }
 					},
 					'429': { $ref: '#/components/responses/RateLimited' },
@@ -3461,7 +3558,8 @@ const spec = {
 					'An archived card on a sub-board is not counted: a sub-board holds the card back while it has a card that is not archived and not in a Complete column. Until 2026-10-14 an archived card held it back. ' +
 					'The 409 for sub-boards names an unfinished one the key\'s user can open; when the only unfinished ones are sub-boards they cannot open it reads "A sub-board you cannot open still has incomplete cards that must be completed first. Ask this board\'s owner.", with no name and no count. ' +
 					'A move to another board takes the card out of its milestone when the milestone belongs to a board other than the one the card arrives on, and the answer has milestoneId null and names the milestone it left as leftMilestone, which is null for any other move; a milestone across boards keeps the card. Until 2026-10-14 the card kept the milestone. ' +
-					'Leaving it logs `api:milestone_card_removed` on the board it left, and that board\'s webhooks are sent `milestone.card_removed` (item 103).',
+					'Leaving it logs `api:milestone_card_removed` on the board it left, and that board\'s webhooks are sent `milestone.card_removed` (item 103). ' +
+					'An option, a card in an upstream column, moved to another board is sent on: the board it leaves logs `api:card_sent` in place of `api:card_moved_away`, at the same moment as the arrival, as POST /cards/{cardId}/send does.',
 				operationId: 'moveCard',
 				parameters: [{ $ref: '#/components/parameters/cardId' }],
 				requestBody: {
@@ -3518,13 +3616,77 @@ const spec = {
 					},
 					'409': {
 						description: 'Card has incomplete subtasks or sub-boards and cannot be moved to Complete, as `Card has 3 incomplete subtasks that must be completed first` (an archived card on a sub-board is not counted), or the target column is on a board beneath the card, one of its own sub-boards at any depth: `Card "<title>" cannot go onto "<board>", which hangs beneath it`, or onto a board where its sub-boards would be more than 20 levels deep: `Card "<title>" cannot go onto "<board>": its sub-boards would then be nested more than 20 levels deep.` ' +
-							'Or the move would take an archived card across the commitment point, out of an upstream column (a board\'s Options column, or any column of an ideas board) into a committed one or back: `Card "<title>" is archived: restore it before moving it out of or back into Options`; or a committed card with a sub-board would go into an upstream column: `Card "<title>" has a sub-board, so it cannot go into the Options column: a card with sub-boards is committed work. Keep it in a committed column, or archive it if it is no longer wanted.` (`onto an ideas board` in place of `into the Options column`). A card already upstream with a sub-board may still move within upstream. Nothing was moved.',
+							'Or the move would take an archived card across the commitment point, out of an upstream column (a board\'s Options column, or any column of an ideas board) into a committed one or back: `Card "<title>" is archived: restore it before moving it out of or back into Options`; or a committed card with a sub-board would go into an upstream column: `Card "<title>" has a sub-board, so it cannot go into the Options column: a card with sub-boards is committed work. Keep it in a committed column, or archive it if it is no longer wanted.` (`onto an ideas board` in place of `into the Options column`). A card already upstream with a sub-board may still move within its own board\'s upstream, but not into another board\'s. Nothing was moved.',
 						content: {
 							'application/json': {
 								schema: { $ref: '#/components/schemas/Error' },
 								example: { message: 'Card "Design work" cannot go onto "Design", which hangs beneath it' }
 							}
 						}
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
+				}
+			}
+		},
+
+		'/api/v1/cards/{cardId}/send': {
+			post: {
+				tags: ['Cards'],
+				summary: 'Send an option to another delivery board',
+				description:
+					'Sends an option, a card in an upstream column (any column of an ideas board, or a delivery board\'s Options column), to another delivery board: to its Options column, where it is still an option and keeps its age, ' +
+					'or to its To Do, which commits it on arrival (committedAt now, committedBy the key\'s user). "To Do" is the board\'s first column titled To Do, or else its first committed column that is neither Complete nor On Hold: never On Hold. ' +
+					'Committed work is moved with PUT /cards/{cardId}/move, not sent. Edit access to both boards is needed. The move is made as every move is: the board\'s labels, a category of the board it left and a milestone of that board are shed, as for PUT /cards/{cardId}/move. ' +
+					'The board it leaves logs `api:card_sent` ("<title>" sent to another board\'s Options, or To Do, with the columns) in place of `api:card_moved_away`, and its webhooks are sent `card.moved`; the board it joins logs `api:card_moved_in`, at the same moment, and `api:card_committed` for To Do, which sends `card.committed`. Neither entry names the other board.',
+				operationId: 'sendCard',
+				parameters: [{ $ref: '#/components/parameters/cardId' }],
+				requestBody: {
+					required: true,
+					content: {
+						'application/json': {
+							schema: {
+								type: 'object',
+								required: ['boardId', 'to'],
+								properties: {
+									boardId: { type: 'integer', minimum: 1, description: 'The delivery board it is sent to: not an ideas board, and not the board it is on.' },
+									to: { type: 'string', enum: ['options', 'todo'], description: '"options", the board\'s Options column, or "todo", its To Do, which commits it. Anything else is 400 to must be "options" or "todo", not <what was sent>.' },
+									position: { type: 'number', description: 'Position within the column: a number, or a number written as text. Default: the position the card has.' }
+								}
+							},
+							example: { boardId: 12, to: 'todo' }
+						}
+					}
+				},
+				responses: {
+					'200': {
+						description: 'Card sent. The boardId in the response is the board it was sent to.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/MovedCard' } } }
+					},
+					'400': {
+						description:
+							'No boardId or no to, a field of the wrong type or value (`boardId must be an id`, `to must be "options" or "todo", not "backlog"`), a cardId that is not a whole number of 1 or more, or a body that is missing, is not valid JSON or is not an object. ' +
+							'Or, once both boards are found and the key\'s user may edit them: the card is committed work (`A committed card is moved, not sent`), the board named is an ideas board (`"<board>" is an ideas board: a card is sent to a delivery board, and moved onto an ideas board`), ' +
+							'or it is the board the card is on (`The card is already on "<board>": move it within the board instead`). Nothing was moved.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'A committed card is moved, not sent' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'No edit access to the board the card is on, or to the board it is sent to. Nothing was moved.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to this board' } } }
+					},
+					'404': {
+						description: 'There is no such card, or no board with the id given as boardId',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board not found' } } }
+					},
+					'409': {
+						description:
+							'Nothing was moved. The card is archived: `Card "<title>" is archived: restore it before moving it out of or back into Options`. ' +
+							'Or `to` is "options" and the board has no Options column: `"<board>" has no Options column`; or it is "todo" and the board has no column to commit into, every column being Complete, On Hold or Options: `"<board>" has no column to commit into: add a To Do column`. ' +
+							'Or a card with a sub-board, which never goes into another board\'s upstream: `Card "<title>" has a sub-board, so it cannot go into the Options column: …`. ' +
+							'Or any other refusal of a move (PUT /cards/{cardId}/move): onto a board beneath the card, or too deep.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: '"Delivery" has no Options column' } } }
 					},
 					'413': { $ref: '#/components/responses/PayloadTooLarge' },
 					'429': { $ref: '#/components/responses/RateLimited' },

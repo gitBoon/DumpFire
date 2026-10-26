@@ -1899,6 +1899,8 @@ describe('which action sends which event, and what each move sends (card 2278)',
 			// event, as a completion is; back into one is a move.
 			card_committed: 'card.committed',
 			card_returned_to_options: 'card.moved',
+			// An option sent to another board, on the board it left, in place of card_moved_away (card 2463, ruling b).
+			card_sent: 'card.moved',
 			card_deleted: 'card.deleted',
 			card_archived: null,
 			// An option dropped, archived or deleted from upstream, is its own event (milestone 22, card 2461);
@@ -1911,6 +1913,8 @@ describe('which action sends which event, and what each move sends (card 2278)',
 			column_deleted: null,
 			// One entry for a column made the Options column, cards and all (milestone 22, ruling i): no event.
 			column_converted_to_options: null,
+			// And one for a board made an ideas board, cards and all (card 2463, ruling i): no event.
+			board_converted_to_ideas: null,
 			subtask_created: null,
 			subtask_updated: null,
 			subtask_completed: null,
@@ -2110,8 +2114,9 @@ describe('which action sends which event, and what each move sends (card 2278)',
 		const w = withOptions();
 		const card = makeCard(w.ideas, { title: 'Chosen' });
 
+		// The board it left hears it sent on, as by a Send (card 2463, the S5a review's L5).
 		expect(await deliveries(w, () => move(w.owner, card.id, w.B.cols['To Do'].id))).toEqual([
-			['a', 'card.moved', 'card_moved_away', '"Chosen" moved to another board (Ideas → To Do)'],
+			['a', 'card.moved', 'card_sent', '"Chosen" sent to another board\'s To Do (Ideas → To Do)'],
 			['b', 'card.moved', 'card_moved_in', '"Chosen" moved from another board (Ideas → To Do)'],
 			['b', 'card.committed', 'card_committed', `"Chosen": Ideas → To Do (column ${w.B.cols['To Do'].id}, from column ${w.ideas.id})`]
 		]);

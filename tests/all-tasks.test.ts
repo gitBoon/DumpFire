@@ -624,7 +624,8 @@ describe('the review of card 1990', () => {
 		expect(json).not.toContain('createdBy');
 		expect(json).not.toContain('categoryId":');
 		expect(JSON.stringify(data)).not.toContain('parentCardId');
-		expect(Object.keys(data.boards[0]).sort()).toEqual(['emoji', 'filterCategoryId', 'hiddenAbove', 'id', 'name', 'parentId']);
+		// Its kind too, a delivery or an ideas board (milestone 22, card 2463).
+		expect(Object.keys(data.boards[0]).sort()).toEqual(['emoji', 'filterCategoryId', 'hiddenAbove', 'id', 'kind', 'name', 'parentId']);
 	});
 
 	it('the boards the load sends grow with how many there are, not with the square of their depth', async () => {
@@ -761,7 +762,7 @@ describe('the All Tasks answer, pinned (card 2240)', () => {
 		expect(data.buckets[0].cards.find((c: any) => c.id === upper.id)).toMatchObject({ columnTitle: ' TODO ', bucket: 'To Do' });
 
 		// A board, every field of it.
-		expect(data.boards).toEqual([{ id: board.id, name: 'Pinned board', emoji: '📋', parentId: null, hiddenAbove: false, filterCategoryId: groupingId }]);
+		expect(data.boards).toEqual([{ id: board.id, name: 'Pinned board', emoji: '📋', kind: 'delivery', parentId: null, hiddenAbove: false, filterCategoryId: groupingId }]);
 
 		// The rest of the answer.
 		expect(Object.keys(data.blockedState).map(Number)).toEqual([todo.id]);
