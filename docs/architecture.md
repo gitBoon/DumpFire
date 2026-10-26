@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.56
+version: 1.57
 status: As-Built
 date: 2026-10-26
 tags:
@@ -1575,6 +1575,24 @@ flowchart TD
     Send --> Move["applyCardMove, one stamp"]
     Move --> Sent["source: card_sent → card.moved"]
     Move --> In["target: card_moved_in<br/>(+ card_committed for To Do)"]
+```
+
+The public API's 1.3.0 (slice S6, card 2464) adds reads only, each in its v1 route and none in a service of its own: the upstream route asks the very functions the page's metrics route asks, and the two filters and the field are v1's alone, no page asking for them:
+
+- **`GET /api/v1/boards/{boardId}/upstream`** (`src/routes/api/v1/boards/[boardId]/upstream/+server.ts`, new): `pathId`, then `requireBoard(…, 'view')` (404, then 403), then `days` by `readQueryCount` (1 to 365, 30 by default, else 400), then `upstreamFigures([board], from, to, now)` and `committedAll([board], from, to)` over a window from `days` ago to now, both ends included, answered `{ boardId, kind, days, period: {from, to}, …figures, committedAll }`. The same two functions `GET /api/boards/:id/metrics` asks for the Stats panel, so the API and the panel cannot differ.
+- **`GET /api/v1/boards?kind=`** filters `listBoardsFor`'s answer, after access, by `boards.kind`; the page's list takes no filter.
+- **`GET /api/v1/boards/{boardId}/cards?stage=`** adds one condition to the list's one read: on an ideas board every card is an option (`1`), on a delivery board `columns.role IS 'options'`, and `NOT (…)` for `committed`, the kind coming from the board `requireBoard` read. The subtask counts take the same condition.
+- **`avgLeadTimeDays`** on `GET /api/v1/me/stats` is the average `avgCycleTimeDays` now gives, commitment to done (creation to done before milestone 22, the same figure for older cards), answered under its right name beside the old one.
+
+```mermaid
+flowchart LR
+    R["GET /api/v1/boards/:boardId/upstream?days=N"] --> P["pathId: 400"]
+    P --> B["requireBoard view:<br/>404, then 403"]
+    B --> D["readQueryCount days:<br/>1 to 365, else 400"]
+    D --> UF["upstreamFigures"]
+    D --> CA["committedAll"]
+    M["GET /api/boards/:id/metrics<br/>(Stats panel)"] --> UF
+    M --> CA
 ```
 
 ### Sub-boards and the board tree

@@ -1,3 +1,4 @@
+import { error } from '@sveltejs/kit';
 import { json } from '$lib/server/v1-json';
 import { db } from '$lib/server/db';
 import { cards, columns, subtasks } from '$lib/server/db/schema';
@@ -5,10 +6,13 @@ import { eq, and, isNull, sql } from 'drizzle-orm';
 import { createCard } from '$lib/server/cards';
 import { CARD_ORDER, COLUMN_ORDER } from '$lib/server/card-order';
 import { linkBaseUrl } from '$lib/server/email';
-import { pathId, readBody, readQueryId } from '$lib/server/request-body';
+import { choiceRefusal, pathId, readBody, readQueryId } from '$lib/server/request-body';
 import { requireBoard, requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
+
+/** The two stages a card can be listed by: upstream of the commitment point, or committed (milestone 22, card 2464). */
+const STAGES = ['option', 'committed'] as const;
 
 /**
  * GET /api/v1/boards/:boardId/cards — List all cards on a board.
@@ -19,14 +23,32 @@ import type { RequestHandler } from './$types';
  * or added between two others was listed in the wrong place, and each
  * column's cards were read in a query of their own. Now one query reads them
  * all, joined to their columns.
+ *
+ * `stage` (milestone 22, card 2464) lists the options alone, `option`, or the
+ * committed cards alone, `committed`: a card is an option when it is in the
+ * board's Options column, or on an ideas board, whose every column is
+ * upstream (`isUpstreamColumn` in `$lib/column-role`, the rule every measure
+ * asks). Decided by the column the card is in, archived cards included when
+ * `archived=true`, so a discarded card, archived from Options, is listed as
+ * an option. Not sent, or empty, every card; anything else is 400, quoting
+ * what was sent.
  */
 export const GET: RequestHandler = async ({ params, url, locals }) => {
 	const boardId = pathId(params.boardId, 'board');
 	// A board that is not there is 404 to everyone, then one the caller cannot open 403.
-	requireBoard(locals.user, boardId, 'view');
+	const board = requireBoard(locals.user, boardId, 'view');
 
 	const columnFilter = readQueryId(url.searchParams.get('columnId'), 'column');
 	const includeArchived = url.searchParams.get('archived') === 'true';
+	const stage = url.searchParams.get('stage');
+	if (stage !== null && stage !== '' && !(STAGES as readonly string[]).includes(stage)) error(400, choiceRefusal('stage', STAGES, stage));
+
+	// The board is the one in the path, so its kind is known here: on an ideas
+	// board every card is an option, and on a delivery board the cards in its
+	// Options column are. `IS`, not `=`, as `upstreamCondition` says: an
+	// ordinary column's role is NULL, and `NOT (NULL = 'options')` is NULL.
+	const option = board.kind === 'ideas' ? sql`1` : sql`${columns.role} IS 'options'`;
+	const byStage = stage === 'option' ? option : stage === 'committed' ? sql`NOT (${option})` : undefined;
 
 	// The board in the path bounds the list whatever is filtered: `columnId` is
 	// a condition beside it and never in its place, so a column of another
@@ -35,7 +57,8 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
 	const listed = and(
 		eq(columns.boardId, boardId),
 		columnFilter !== undefined ? eq(cards.columnId, columnFilter) : undefined,
-		includeArchived ? undefined : isNull(cards.archivedAt)
+		includeArchived ? undefined : isNull(cards.archivedAt),
+		byStage
 	);
 
 	const rows = db

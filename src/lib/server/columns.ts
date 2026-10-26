@@ -42,7 +42,7 @@ import { completionRoleRefusal } from './card-completion';
 import { deleteColumn } from './deletes';
 import { emit } from './events';
 import { ACTIONS, actorOf, logActivity } from './logActivity';
-import { readBoolean, readChoice, readColour, readId, readNumber, readObjects, readText, type RequestBody } from './request-body';
+import { choiceRefusal, readBoolean, readChoice, readColour, readId, readNumber, readObjects, readText, type RequestBody } from './request-body';
 import { requireBoard, requireBoardOwner, requireColumn, requireUser } from './route-guards';
 import { inWrite, type ServiceOptions } from './write-as';
 import { COLUMN_ROLES, columnRole, isOptionsColumn, isUpstreamColumn } from '$lib/column-role';
@@ -54,11 +54,11 @@ export const READS: readonly string[] = [];
 /**
  * The 400 for a role that is not one, quoting what was sent (milestone 22,
  * ruling r): `role must be "options" or null, not "backlog"`. Long text is
- * cut, so the refusal does not repeat a whole body back.
+ * cut, so the refusal does not repeat a whole body back (`choiceRefusal`, the
+ * S6 review's Q4).
  */
 function roleRefusal(sent: unknown, nullable = true): string {
-	const shown = JSON.stringify(sent) ?? 'nothing';
-	return `role must be "options"${nullable ? ' or null' : ''}, not ${shown.length > 60 ? `${shown.slice(0, 57)}...` : shown}`;
+	return choiceRefusal('role', nullable ? ['options', null] : ['options'], sent);
 }
 
 /** A column as the Options rules read it: the board's other columns, and the one being written. */
@@ -312,6 +312,11 @@ export function createColumn(caller: SessionUser | null, at: { boardId?: number 
 		color = readColour(body, 'color', {});
 	}
 	const role = readChoice(body, 'role', { from: COLUMN_ROLES, nullable: true, says: roleRefusal(body.role) }) ?? null;
+	// A new column is made with no WIP limit, and `wipLimit` is not stored here.
+	// It is read, as the update reads it (`wipLimitOf`), for the Options rule
+	// alone: an Options column sent a limit above 0 is refused, 409, as an
+	// update is, where it was made with 0 and nothing said (the S6 review's Q8).
+	const wipLimit = 'wipLimit' in body ? wipLimitOf(body.wipLimit) : undefined;
 
 	// No position sent: at 0 from the page, after the board's last through v1.
 	let unplaced = 0;
@@ -323,7 +328,7 @@ export function createColumn(caller: SessionUser | null, at: { boardId?: number 
 	// The Options rules (milestone 22), once every field is read, and then an
 	// ideas board's own: it has no Complete column (card 2463).
 	const board = boardForOptions(boardId);
-	const refusal = optionsRoleRefusal(board, null, { title, role, wipLimit: undefined }, opts.source);
+	const refusal = optionsRoleRefusal(board, null, { title, role, wipLimit }, opts.source);
 	if (refusal) throw error(409, refusal);
 	const ideasTitle = board.kind === 'ideas' ? ideasTitleRefusal(title) : null;
 	if (ideasTitle) throw error(409, ideasTitle);

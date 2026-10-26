@@ -5,7 +5,7 @@ const spec = {
 	openapi: '3.1.0',
 	info: {
 		title: 'DumpFire API',
-		version: '1.2.0',
+		version: '1.3.0',
 		description:
 			'REST API for the DumpFire Kanban board. Automate card creation, movement, assignments, and more.\n\n' +
 			'**Failures.** Every failure DumpFire answers under /api/v1/ is JSON with a `message` that says why, as in ' +
@@ -13,6 +13,54 @@ const spec = {
 			'(404, {"message": "Not found"}) and a method the route does not have (405, with an Allow header naming the ones it has). ' +
 			'Some failures carry more beside the message: a 429 has `retryAfterSecs`, the 409 for a dependency that would close a loop has `cycle`, ' +
 			'and the 409 for a batch that was refused lists every item of it that was at fault.\n\n' +
+			'**Changed on 2026-10-26 (version 1.3.0).** Upstream of the commitment point: options, committed work and ideas boards (milestone 22). Four operations and two filters are new, and these answers and fields changed: ' +
+			'(1) a card is an **option**, upstream of the commitment point, when it is in a board\'s Options column (a column whose role is options) or in any column of an ideas board (a board whose kind is ideas); every other card is committed work. ' +
+			'No board has either until someone makes one: every card made before this release is committed, its committedAt being its createdAt, and a board with no Options column answers every operation as before but for the fields named here and the entry an archive of unfinished work writes (card_abandoned, item 12); ' +
+			'(2) every column carries role, "options" for the board\'s Options column and null for any other: POST /api/v1/boards/{boardId}/columns and PUT /api/v1/columns/{columnId} take role, "options" or null (left out on PUT, kept), ' +
+			'anything else 400 role must be "options" or null, not <what was sent>; given the role, a column goes left of every other and its wipLimit to 0; and each answers 409, writing nothing, for the role on a column of an ideas board, for a second Options column, ' +
+			'for the role given or taken away while the column holds cards, archived ones included (giving it, the message names POST /api/v1/columns/{columnId}/convert; taking it away, it says to move the cards out, and to restore and move, or delete, archived ones, first), for an Options column whose title makes it To Do, On Hold or Complete, ' +
+			'for a WIP limit above 0 on an Options column, on a create as on an update, and for a position at or left of the Options column, which stays the leftmost; PUT counts role among its six fields; and DELETE /api/v1/columns/{columnId} answers 409 for an Options column, or a column of an ideas board, that holds cards not archived: ' +
+			'options are moved out, or archived to discard them, not deleted with their column; ' +
+			'(3) POST /api/v1/columns/{columnId}/convert is new: the board\'s owner or an administrator makes a column the Options column with the cards it holds, {"role": "options", "cards": <the live and archived cards seen>}; ' +
+			'every card in it becomes an option, its committedAt and committedBy cleared, and one api:column_converted_to_options entry is written, with no entry or webhook for each card; it answers the column, and 409 for an ideas board, a board that has an Options column, ' +
+			'a column whose title makes it To Do, On Hold or Complete, a card in it with a sub-board, and a count of cards that is not the column\'s now; ' +
+			'(4) every board carries kind, "delivery", which every board was, or "ideas": POST /api/v1/boards takes kind, and makes an ideas board with the columns New Ideas, Shaping and Ready for Replenishment (409 `A sub-board is a delivery board.` with a parentCardId, ' +
+			'and 409 for a sub-board under an option); PUT /api/v1/boards/{boardId} takes kind, kept when it is left out or sent as the board holds it: a change is the board\'s owner\'s or an administrator\'s (403), and of an empty board only, no card live or archived, whose columns are replaced with the other kind\'s, ' +
+			'and it is 409 for a sub-board and for a board holding cards (giving it the ideas kind, the message names POST /api/v1/boards/{boardId}/convert; back to delivery, it says to move the cards to a delivery board or delete them first); PUT counts kind among its five fields; and a column of an ideas board whose title makes it To Do, On Hold or Complete is 409 on create and on rename; ' +
+			'(5) POST /api/v1/boards/{boardId}/convert is new: the board\'s owner or an administrator makes a board an ideas board with the cards it holds, {"kind": "ideas", "cards": <the live and archived cards seen>}; every card becomes an option, ' +
+			'its empty To Do, On Hold and Complete columns go (a board with no card at all is given the ideas board\'s columns), and one api:board_converted_to_ideas entry is written, with no webhook; it answers the board with its columns; ' +
+			'(6) GET /api/v1/boards takes kind=delivery or kind=ideas, which lists only the boards of that kind the key\'s user can open; anything else is 400 kind must be "delivery" or "ideas", not <what was sent>; ' +
+			'(7) every card answer carries committedAt and committedBy, when and by whom the card crossed the commitment point (null while it is an option), and discardedAt and discardedBy, set when it is archived as an option and cleared by its restore; ' +
+			'no operation takes them in a body: a move, a creation, an archive, a restore and a conversion set them; ' +
+			'(8) GET /api/v1/boards/{boardId}/cards takes stage=option or stage=committed, by the column each card is in, archived cards included with archived=true; anything else is 400 stage must be "option" or "committed", not <what was sent>; ' +
+			'(9) POST /api/v1/boards/{boardId}/cards commits a card created outside an upstream column as it is created, committedAt its createdAt and committedBy the key\'s user, with no entry beyond api:card_created; one created in an Options column or on an ideas board is an option; ' +
+			'(10) PUT /api/v1/cards/{cardId}/move records the commitment point: a move out of an upstream column into a committed one sets committedAt and committedBy and writes api:card_committed in place of api:card_moved, ' +
+			'`"<title>": <from> → <to> (column <to id>, from column <from id>)`, sending card.committed, within one board instead of card.moved (straight into Complete, api:card_committed then api:card_completed, and card.committed then card.completed); ' +
+			'across boards each board is still sent its own card.moved, the board it left with card_sent and the board it joins with card_moved_in, and the board it joins card.committed after it; ' +
+			'a move back into an upstream column clears both and writes api:card_returned_to_options, sending card.moved (from Complete, api:card_reopened then api:card_returned_to_options, with the one card.moved); ' +
+			'it answers 409 for an archived card crossing the commitment point either way, for a committed card with a sub-board going into an upstream column, and for a card with a sub-board going into another board\'s upstream; ' +
+			'and an option moved to another board writes api:card_sent on the board it leaves, in place of api:card_moved_away; ' +
+			'(11) POST /api/v1/cards/{cardId}/send is new: an option is sent to another delivery board, {"boardId": <board>, "to": "options" | "todo"}, into its Options column, still an option, or its To Do, which commits it; ' +
+			'edit access to both boards; it answers the moved card, 400 for committed work, an ideas board or the card\'s own board, and 409 for an archived card, a board with no Options column or no column to commit into, and the refusals of a move; ' +
+			'(12) DELETE /api/v1/cards/{cardId} records what it archives: an option is **discarded**, discardedAt and discardedBy set with archivedAt, writing api:card_discarded and sending card.discarded; ' +
+			'committed work not in a Complete column is **abandoned**, api:card_abandoned, with no webhook; and api:card_archived is written only for a card archived from a Complete column. A live option deleted with ?permanent=true writes api:card_discarded and then api:card_deleted, ' +
+			'and sends card.discarded and then card.deleted; archivedAt null on PUT /api/v1/cards/{cardId} restores a discarded card as an option, clearing discardedAt and discardedBy; ' +
+			'(13) **the activity vocabulary changes**, for readers of GET /api/v1/audit-log, GET /api/v1/reports/activity and recentActivity on GET /api/v1/me/stats: seven actions are new, card_committed, card_returned_to_options, card_discarded, card_abandoned, card_sent, ' +
+			'column_converted_to_options and board_converted_to_ideas, each stored with api: when made through the API; and three are written less: card_archived only for work archived from Complete, unfinished committed work being card_abandoned and an option card_discarded, ' +
+			'so a filter or a count of card_archived alone misses both; card_moved not for a move across the commitment point, card_committed or card_returned_to_options being written in its place; and card_moved_away not for an option leaving its board, which is card_sent. Entries written before are unchanged; ' +
+			'(14) two webhook events are new, card.committed (a card moved out of an upstream column into a committed one, by any route, a Send to To Do included; data.action card_committed) and card.discarded (an option archived, or a live option deleted for good; data.action card_discarded; before card.deleted, with the card\'s id, for a delete), ' +
+			'making ten, each of which can be named in events; **a webhook whose events list is empty is sent every event, so one made before this release receives both**; a webhook that lists card.moved and not card.committed no longer hears a move out of an Options column within one board ' +
+			'(a move to another board still sends each board its own card.moved, card_sent and card_moved_in, and the board it joins card.committed too), ' +
+			'as one that lists card.moved and not card.completed hears no completion; and card.moved also carries data.action card_returned_to_options, a card moved back upstream, and card_sent, an option sent or moved to another board, on the board it left: ' +
+			'a move from a committed column of another board into upstream sends the board it joins two card.moved, card_moved_in and card_returned_to_options; ' +
+			'(15) every delivery measure leaves options out: GET /api/v1/burndown charts committed cards only, each from its committedAt, worked out from each card as it is now, so a card returned to options leaves the past scope too; ' +
+			'GET /api/v1/reports/activity puts no option in a bucket or a total, takes the created bucket\'s first column to be the board\'s first column that is not an Options column, and answers upstream, the boards\' upstream figures (null for a report on one user); ' +
+			'GET /api/v1/milestones counts options in optionsCount and not in cardCount or doneCount, and GET /api/v1/milestones/{milestoneId}/summary in progress.options alone, each node with isOption, an option never in nextActionable and still an open blocker in the graph; ' +
+			'and GET /api/v1/me/stats leaves options out of activeCards and of the average; ' +
+			'(16) GET /api/v1/boards/{boardId}/upstream is new, with view access to the board: over the last days days (?days=, a whole number from 1 to 365, 30 by default), the board\'s options now and how long they have waited, how many cards were committed from options, ' +
+			'returned to options, discarded, sent on and abandoned, the discard rate, and committedAll, "Committed (all)": the cards that arrived as committed work, each counted once, which credits a card created committed to the board it is on now and counts a card created and then returned to options as no arrival; ' +
+			'(17) GET /api/v1/me/stats answers avgLeadTimeDays, the average days from commitment to done over the completed cards assigned to the key\'s user on boards they can open, and avgCycleTimeDays at the same value: it is a lead time, ' +
+			'named cycle time for history, and kept so that no caller breaks; for a card made before this release the commitment is its creation, so the figure is as it was.\n\n' +
 			'**Changed on 2026-10-14 (version 1.2.0).** New answers and fields, and one new operation, (85): (1) a 413 for a body over the size limit carries `limitBytes`, ' +
 			'the limit as a number, beside its `message`; (2) a 413 for a body that declares more than the limit in Content-Length is answered ' +
 			'before the key is looked at, so a request with no key, or a wrong one, can be answered 413 where it was 401; (3) a request with no key ' +
@@ -748,9 +796,15 @@ const spec = {
 					'and the names localhost, *.localhost, a name with no dot, *.local, *.internal and *.home.arpa, are refused when the webhook is created or its url changed; ' +
 					'a name is judged again at each delivery by every address it resolves to, and a delivery to one that resolves inside is not made. Redirects are not followed, ' +
 					'and an address with a user name or password is refused. The server\'s operator may let named receivers inside the network be sent to. A board has at most 10 webhooks. ' +
-					'card.moved is every column change but a completion, told apart by data.action: card_moved, card_reopened (out of a Complete column), and card_moved_away and card_moved_in (to another board, each sent to its own board with its own entry, which names neither board); ' +
-					'a move into a Complete column sends card.completed instead (a move into another board\'s Complete column also sends each board its card.moved). ' +
-					'milestone.card_added and milestone.card_removed (since 2026-10-21, item 102) are a card put in a milestone or taken out, sent to the card\'s board; a webhook with an empty events list receives them too. ' +
+					'There are ten events: card.created, card.updated, card.moved, card.completed, card.deleted, comment.added, milestone.card_added, milestone.card_removed, card.committed and card.discarded. ' +
+					'card.moved is every column change but a completion and a commitment, told apart by data.action: card_moved, card_reopened (out of a Complete column), card_moved_away and card_moved_in (to another board, each sent to its own board with its own entry, which names neither board), ' +
+					'card_returned_to_options (since 2026-10-26: a committed card moved back into an upstream column, a board\'s Options column or any column of an ideas board; the one card.moved of a move from Complete into Options, whose card_reopened entry sends none) ' +
+					'and card_sent (since 2026-10-26: an option sent, or moved, to another board, on the board it left, in place of card_moved_away). ' +
+					'A move into a Complete column sends card.completed instead (a move into another board\'s Complete column also sends each board its card.moved), and a move out of an upstream column into a committed one within one board sends card.committed instead, ' +
+					'so a webhook that lists card.moved and not card.committed does not hear it; across boards each board is sent its own card.moved (card_sent to the board it left, card_moved_in to the board it joins), and the board it joins card.committed after it; a move from a committed column of another board into upstream sends the board it joins two card.moved, card_moved_in and card_returned_to_options. ' +
+					'card.committed (since 2026-10-26) is a card committed out of upstream, by any route, a Send to To Do included, with data.action card_committed; card.discarded (since 2026-10-26) is an option archived or deleted, ' +
+					'with data.action card_discarded, sent before card.deleted, with the card\'s id, for a delete. Archiving any other card sends nothing. ' +
+					'milestone.card_added and milestone.card_removed (since 2026-10-21, item 102) are a card put in a milestone or taken out, sent to the card\'s board. A webhook with an empty events list receives every event, the four newest among them. ' +
 					'Who it is sent for (since 2026-10-20): a webhook is sent only while the account that set it up, the one that created it or last set its url or secret or switched it on, can open the board, asked at each event with that account\'s role as it is then. ' +
 					'One whose setter cannot, or that has no recorded setter (one made before setters were recorded on 2026-10-18/19), is held: nothing is sent to it, active is left as it is, and pausedBecause says why. ' +
 					'One whose setter is given the board back is sent again with nothing else changed. To keep one without that, the board owner or an administrator takes it over: switches it off, then on, which makes them its setter, sets a new secret and updates the receiver.',
@@ -1251,13 +1305,28 @@ const spec = {
 					avgCycleTimeDays: {
 						type: ['number', 'null'],
 						description:
-							'Mean days from creation to completion, to one decimal place, over the completed cards the user is assigned to on boards the key\'s user can open. null when there is none. An average of 0 is 0: until 2026-10-14 it was null, and the cards of every board were averaged.'
+							'Average lead time, commitment to done; named cycle time for history. The same value as avgLeadTimeDays, kept so that no caller that reads it breaks: ' +
+							'mean days from each card\'s committedAt to its completion, to one decimal place, over the completed cards the user is assigned to on boards the key\'s user can open, options left out. ' +
+							'For a card made before 2026-10-26 the commitment is its creation, so the figure is as it was; until then it was described as from creation to completion. ' +
+							'null when there is none. An average of 0 is 0: until 2026-10-14 it was null, and the cards of every board were averaged.'
+					},
+					avgLeadTimeDays: {
+						type: ['number', 'null'],
+						description:
+							'Average lead time, commitment to done (since 2026-10-26): mean days from each card\'s committedAt to its completion, to one decimal place, over the completed cards the user is assigned to ' +
+							'on boards the key\'s user can open. An option, a card in a board\'s Options column or on an ideas board, is never among them. null when there is none; an average of 0 is 0. ' +
+							'Complete is the delivery point, so this lead time is the customer\'s and the system\'s alike. The same value as avgCycleTimeDays.'
 					},
 					streak: {
 						type: 'integer',
 						description: 'Consecutive UTC days with at least one completion, counted back from today, or from yesterday if there is none today'
 					},
-					activeCards: { type: 'integer', description: 'Cards the user is assigned to that are neither completed nor archived, on boards the key\'s user can open. Until 2026-10-14 the cards of every board were counted.' },
+					activeCards: {
+						type: 'integer',
+						description:
+							'Cards the user is assigned to that are neither completed nor archived, on boards the key\'s user can open, options left out: a card in a board\'s Options column or on an ideas board is not open work (since 2026-10-26). ' +
+							'Until 2026-10-14 the cards of every board were counted.'
+					},
 					recentActivity: {
 						type: 'array',
 						description:
@@ -1275,7 +1344,7 @@ const spec = {
 						}
 					}
 				},
-				required: ['cardsCompleted', 'avgCycleTimeDays', 'streak', 'activeCards', 'recentActivity']
+				required: ['cardsCompleted', 'avgCycleTimeDays', 'avgLeadTimeDays', 'streak', 'activeCards', 'recentActivity']
 			},
 			CardDetail: {
 				type: 'object',
@@ -2497,9 +2566,10 @@ const spec = {
 				tags: ['User'],
 				summary: 'Get personal stats',
 				description:
-					'How the key\'s user is doing: cards completed in all, in the last 7 days and in the last 30, the average days from creation to completion of the cards assigned to them, ' +
-					'the current streak of days with a completion, how many cards are assigned and open, and the last 20 activity entries. The average, the open count and the entries ' +
-					'are of boards the key\'s user can open; the completed count and the streak are of the user\'s own completions, on any board.',
+					'How the key\'s user is doing: cards completed in all, in the last 7 days and in the last 30, the average lead time of the cards assigned to them, the days from commitment to done ' +
+					'(avgLeadTimeDays, and avgCycleTimeDays at the same value, its name for history), the current streak of days with a completion, how many cards are assigned and open, and the last 20 activity entries. ' +
+					'The average, the open count and the entries are of boards the key\'s user can open; the completed count and the streak are of the user\'s own completions, on any board. ' +
+					'The average and the open count are of committed work: an option, a card in a board\'s Options column or on an ideas board, is in neither (since 2026-10-26, milestone 22).',
 				operationId: 'getMeStats',
 				responses: {
 					'200': {
@@ -2510,6 +2580,7 @@ const spec = {
 								example: {
 									cardsCompleted: { total: 41, last7Days: 3, last30Days: 12 },
 									avgCycleTimeDays: 4.2,
+									avgLeadTimeDays: 4.2,
 									streak: 2,
 									activeCards: 5,
 									recentActivity: [
@@ -2531,8 +2602,20 @@ const spec = {
 			get: {
 				tags: ['Boards'],
 				summary: 'List boards',
-				description: "Returns all boards the API key's user has access to.",
+				description:
+					"Returns all boards the API key's user has access to, newest first. `kind` lists only the delivery boards or only the ideas boards among them (since 2026-10-26, milestone 22): " +
+					'a filter of the list, so it never lists a board the key\'s user cannot open.',
 				operationId: 'listBoards',
+				parameters: [
+					{
+						name: 'kind',
+						in: 'query',
+						schema: { type: 'string', enum: ['delivery', 'ideas'] },
+						description:
+							'Only the boards of this kind: "delivery", boards of committed work (every board that is not an ideas board), or "ideas", ideas boards, every column of which is upstream of the commitment point. Not sent, or empty, every board. ' +
+							'Anything else is 400 kind must be "delivery" or "ideas", not <what was sent>.'
+					}
+				],
 				responses: {
 					'200': {
 						description: 'List of boards',
@@ -2541,6 +2624,10 @@ const spec = {
 								schema: { type: 'array', items: { $ref: '#/components/schemas/Board' } }
 							}
 						}
+					},
+					'400': {
+						description: 'kind is neither "delivery" nor "ideas"',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'kind must be "delivery" or "ideas", not "backlog"' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
 					'429': { $ref: '#/components/responses/RateLimited' },
@@ -2551,7 +2638,9 @@ const spec = {
 				tags: ['Boards'],
 				summary: 'Create a board',
 				description:
-					'Creates a new board with default columns (To Do, On Hold, In Progress, Complete). The API key\'s user is automatically added as board owner. To create a sub-board linked to a card, pass parentCardId. ' +
+					'Creates a new board with its kind\'s default columns: To Do, On Hold, In Progress and Complete for a delivery board, the default, and New Ideas, Shaping and Ready for Replenishment for an ideas board (kind, since 2026-10-26). ' +
+					'A delivery board is made with no Options column: one is added with POST /boards/{boardId}/columns and role "options". ' +
+					'The API key\'s user is automatically added as board owner. To create a sub-board linked to a card, pass parentCardId: a sub-board is always a delivery board, and no sub-board is made under an option. ' +
 					'To file it under a board category on the dashboard, pass categoryId: until 2026-10-14 it was ignored and the board made unfiled (item 91). ' +
 					'A new board is private; its owner sets isPublic with PUT /boards/{boardId}.',
 				operationId: 'createBoard',
@@ -2597,7 +2686,7 @@ const spec = {
 				},
 				responses: {
 					'201': {
-						description: 'Board created with default columns',
+						description: 'Board created with its kind\'s default columns',
 						content: {
 							'application/json': {
 								schema: { $ref: '#/components/schemas/BoardDetail' }
@@ -2605,7 +2694,7 @@ const spec = {
 						}
 					},
 					'400': {
-						description: 'No name, a name that is empty or over 200 characters, an emoji that is empty or over 32, a field of the wrong type (`name must be text`; `parentCardId must be an id`; `categoryId must be an id`), or a body that is missing, is not valid JSON or is not an object. The fields are read before the parent card and the board category are looked for. Nothing was created.',
+						description: 'No name, a name that is empty or over 200 characters, an emoji that is empty or over 32, a field of the wrong type (`name must be text`; `parentCardId must be an id`; `categoryId must be an id`), a kind that is neither kind (`kind must be "delivery" or "ideas", not "backlog"`), or a body that is missing, is not valid JSON or is not an object. The fields are read before the parent card and the board category are looked for. Nothing was created.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'name is required' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
@@ -2676,7 +2765,7 @@ const spec = {
 				tags: ['Boards'],
 				summary: 'Update a board',
 				description:
-					'Updates the fields sent. Updatable fields: name, emoji, categoryId, isPublic. At least one of them must be sent.\n\n' +
+					'Updates the fields sent. Updatable fields: name, emoji, categoryId, isPublic, kind. At least one of them must be sent.\n\n' +
 					'Only the fields whose value changes are written, logged and told: a body whose every field is as the board holds it (a name that trims to the stored one included) ' +
 					'answers 200 with the board as it is, with no api:board_updated and updatedAt unchanged, and api:board_updated names only the fields that changed. ' +
 					'A request that would be refused is still refused first. Until 2026-10-14 every field sent was written and named (item 95).\n\n' +
@@ -2728,7 +2817,7 @@ const spec = {
 						}
 					},
 					'400': {
-						description: 'None of the four fields was sent, the name is empty or over 200 characters, the emoji empty or over 32, a field of the wrong type (`name must be text`, `categoryId must be an id`), `isPublic` is not `true` or `false` (`isPublic must be true or false`, answered to the board\'s owner or an administrator: anyone else who sends it is answered 403 whatever its value), a parentCardId other than the board\'s own (`parentCardId 12 is not this board\'s parent card (none): the board has been moved since it was read, or a link was meant. A board is put under a card, or taken out from under one, on the board page`, null on a sub-board included) or one that is not an id (`parentCardId must be an id`), boardId is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not an object. Nothing was written.',
+						description: 'None of the five fields was sent, the name is empty or over 200 characters, the emoji empty or over 32, a field of the wrong type (`name must be text`, `categoryId must be an id`), a kind that is neither kind (`kind must be "delivery" or "ideas", not "backlog"`), `isPublic` is not `true` or `false` (`isPublic must be true or false`, answered to the board\'s owner or an administrator: anyone else who sends it is answered 403 whatever its value), a parentCardId other than the board\'s own (`parentCardId 12 is not this board\'s parent card (none): the board has been moved since it was read, or a link was meant. A board is put under a card, or taken out from under one, on the board page`, null on a sub-board included) or one that is not an id (`parentCardId must be an id`), boardId is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not an object. Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No valid fields to update' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
@@ -2868,6 +2957,115 @@ const spec = {
 			}
 		},
 
+		'/api/v1/boards/{boardId}/upstream': {
+			get: {
+				tags: ['Boards'],
+				summary: 'What happened upstream of the commitment point on a board',
+				description:
+					'The board\'s upstream figures over the last `days` days, ending now, both ends included (since 2026-10-26, milestone 22): the options it holds now and how long they have waited, ' +
+					'and how many cards were committed from options, returned to options, discarded, sent on to another board and abandoned in the window, with the discard rate; ' +
+					'beside them `committedAll`, "Committed (all)", the cards that arrived as committed work in the window. They are the figures the board\'s Stats panel shows, worked out by the same code. ' +
+					'An option is a card in the board\'s Options column, or any card of an ideas board. Acts are read from the activity log, which is never pruned, and counted when they happened: ' +
+					'each card counts once, under its last act in the window among committed, returned, discarded and sent on, so a card committed, returned and committed again is one commitment, ' +
+					'and a discard later restored still happened. Abandoned work is counted on its own, and is not in the discard rate. A deleted card\'s entries have no card id, and each counts once. ' +
+					'View access to the board is enough. Nothing is written.',
+				operationId: 'getBoardUpstream',
+				parameters: [
+					{ $ref: '#/components/parameters/boardId' },
+					{
+						name: 'days',
+						in: 'query',
+						schema: { type: 'integer', minimum: 1, maximum: 365, default: 30 },
+						description: 'How many days the window runs back from now: a whole number from 1 to 365. Not sent, or empty, 30. Anything else is 400 days must be a whole number from 1 to 365.'
+					}
+				],
+				responses: {
+					'200': {
+						description: 'The board\'s upstream figures',
+						content: {
+							'application/json': {
+								schema: {
+									type: 'object',
+									properties: {
+										boardId: { type: 'integer' },
+										kind: { type: 'string', enum: ['delivery', 'ideas'], description: 'The board\'s kind: on an ideas board every card is an option' },
+										days: { type: 'integer', description: 'The window\'s length in days, as asked or 30' },
+										period: {
+											type: 'object',
+											description: 'The window: from `days` days ago to now, both ends included',
+											properties: {
+												from: { type: 'string', format: 'date-time' },
+												to: { type: 'string', format: 'date-time' }
+											},
+											required: ['from', 'to']
+										},
+										options: { type: 'integer', description: 'Options now: cards not archived in an upstream column of the board, whatever the window' },
+										committedFromOptions: { type: 'integer', description: 'Cards whose last act in the window was a commitment out of upstream (card_committed)' },
+										returnedToOptions: { type: 'integer', description: 'Cards whose last act in the window was a return into upstream (card_returned_to_options), a figure of its own, not taken off the commitments' },
+										discarded: { type: 'integer', description: 'Cards whose last act in the window was a discard, archived or deleted from upstream (card_discarded)' },
+										sentOn: { type: 'integer', description: 'Cards whose last act in the window was a Send, or any move of an option, to another board (card_sent)' },
+										abandoned: { type: 'integer', description: 'Cards of committed work archived before Complete in the window (card_abandoned), each once, whatever else it did' },
+										discardRate: {
+											type: ['number', 'null'],
+											description: 'discarded / (discarded + committedFromOptions + sentOn), from 0 to 1; null when all three are 0'
+										},
+										oldestOptionDays: {
+											type: ['integer', 'null'],
+											description:
+												'Whole days the oldest option now has waited, from when it became an option: the latest of its creation, its latest return to options and the latest conversion of its column, or its board, that made it one. null with no options.'
+										},
+										agingOptions: { type: 'integer', description: 'Options now that have waited more than 30 days' },
+										committedAll: {
+											type: 'integer',
+											description:
+												'"Committed (all)": the cards that arrived as committed work on the board in the window, each counted once: a card committed out of upstream (a card_committed entry on this board), ' +
+												'and a card created in the window straight into a committed column. A card created committed is credited to the board it is on now, wherever it was made; ' +
+												'a card created and then returned to options is no arrival, until it is committed again. A deleted card\'s entry counts once.'
+										}
+									},
+									required: [
+										'boardId', 'kind', 'days', 'period', 'options', 'committedFromOptions', 'returnedToOptions', 'discarded', 'sentOn', 'abandoned',
+										'discardRate', 'oldestOptionDays', 'agingOptions', 'committedAll'
+									]
+								},
+								example: {
+									boardId: 12,
+									kind: 'delivery',
+									days: 30,
+									period: { from: '2026-09-26T09:00:00.000Z', to: '2026-10-26T09:00:00.000Z' },
+									options: 6,
+									committedFromOptions: 3,
+									returnedToOptions: 1,
+									discarded: 1,
+									sentOn: 0,
+									abandoned: 0,
+									discardRate: 0.25,
+									oldestOptionDays: 41,
+									agingOptions: 2,
+									committedAll: 9
+								}
+							}
+						}
+					},
+					'400': {
+						description: 'boardId is not a whole number of 1 or more, or days is not a whole number from 1 to 365',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'days must be a whole number from 1 to 365' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'No access to this board',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board' } } }
+					},
+					'404': {
+						description: 'There is no such board, whoever asks: it is looked for before access is checked',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Board not found' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
+				}
+			}
+		},
+
 		// ─── Columns ────────────────────────────────────────────────────────
 		'/api/v1/boards/{boardId}/columns': {
 			get: {
@@ -2924,6 +3122,11 @@ const spec = {
 										description:
 											'"options" makes the board\'s Options column, upstream of the commitment point, whose cards are options and not committed work; null or left out, an ordinary column. ' +
 											'An Options column is placed left of every other column whatever position is sent, and has no WIP limit. Anything else is 400 role must be "options" or null, not <what was sent>.'
+									},
+									wipLimit: {
+										type: ['integer', 'null'],
+										description:
+											'Not stored: a new column has no WIP limit (0), and one is set with PUT /columns/{columnId}. Read, as the update reads it, for the Options column alone: with role "options", a limit above 0 is 409 An Options column has no WIP limit. (since 2026-10-26; it was made with 0 and nothing said).'
 									}
 								}
 							},
@@ -2951,7 +3154,7 @@ const spec = {
 					'409': {
 						description:
 							'The column cannot be made as sent, and nothing was written: an Options column on an ideas board, a second Options column on a board that has one, ' +
-							'an Options column whose title makes a column To Do, On Hold or Complete, or a position at or left of the board\'s Options column, which stays the leftmost. ' +
+							'an Options column whose title makes a column To Do, On Hold or Complete, an Options column sent a wipLimit above 0 (`An Options column has no WIP limit.`), or a position at or left of the board\'s Options column, which stays the leftmost. ' +
 							'And on an ideas board, a column whose title makes it To Do, On Hold or Complete: `An ideas board has no Complete column: "Done" would make one. Choose another name.`',
 						content: {
 							'application/json': {
@@ -3043,7 +3246,7 @@ const spec = {
 						}
 					},
 					'400': {
-						description: 'None of the five fields was sent, a field of the wrong type (a title that is not text, a position that is not a number, showAddCard that is not true or false), the title is empty or over 200 characters, a colour that is not written #rrggbb (`color must be a colour written #rrggbb`), columnId is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not an object. Nothing was written.',
+						description: 'None of the six fields was sent, a field of the wrong type (a title that is not text, a position that is not a number, showAddCard that is not true or false), the title is empty or over 200 characters, a colour that is not written #rrggbb (`color must be a colour written #rrggbb`), a role that is neither "options" nor null (`role must be "options" or null, not "backlog"`), columnId is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not an object. Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No valid fields to update' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
@@ -3193,7 +3396,9 @@ const spec = {
 					'Returns the board\'s cards, column by column in order of column position, ties by column id, and within a column in order of card position, ties by card id. ' +
 					'Each card comes with the title of its column and a count of its subtasks. ' +
 					'Archived cards are left out unless `archived=true`, and take their place by position among the rest. `columnId` narrows the list to that column of this board: ' +
-					'a column of another board gives an empty list. Until 2026-10-14 the columns came in the order they were made in, so a column moved or added between two others was listed in the wrong place (item 93).',
+					'a column of another board gives an empty list. Until 2026-10-14 the columns came in the order they were made in, so a column moved or added between two others was listed in the wrong place (item 93). ' +
+					'`stage` lists the options alone or the committed cards alone (since 2026-10-26, milestone 22): an option is a card in the board\'s Options column, or any card of an ideas board. ' +
+					'Each card also carries committedAt and committedBy, null for an option, and discardedAt and discardedBy, set on an option archived from upstream.',
 				operationId: 'listCards',
 				parameters: [
 					{ $ref: '#/components/parameters/boardId' },
@@ -3208,6 +3413,15 @@ const spec = {
 						in: 'query',
 						schema: { type: 'boolean', default: false },
 						description: 'Include archived cards'
+					},
+					{
+						name: 'stage',
+						in: 'query',
+						schema: { type: 'string', enum: ['option', 'committed'] },
+						description:
+							'"option": only the cards upstream of the commitment point, in the board\'s Options column or on an ideas board; "committed": only the others, so an ideas board gives an empty list. ' +
+							'Decided by the column each card is in, archived cards included with archived=true, so a discarded card is an option. Not sent, or empty, every card. ' +
+							'Anything else is 400 stage must be "option" or "committed", not <what was sent>.'
 					}
 				],
 				responses: {
@@ -3220,7 +3434,7 @@ const spec = {
 						}
 					},
 					'400': {
-						description: 'boardId is not a whole number of 1 or more, or columnId is not one (`Invalid column ID`)',
+						description: 'boardId is not a whole number of 1 or more, columnId is not one (`Invalid column ID`), or stage is neither "option" nor "committed" (`stage must be "option" or "committed", not "backlog"`)',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid board ID' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
@@ -3243,7 +3457,9 @@ const spec = {
 					'Creates a card in a column of this board. A card created in a Complete column, one called Complete or Done, is completed as it is created, as a card moved into one is: ' +
 					'its completedAt and firstCompletedAt are the moment it was created, the key\'s user is given the XP for its priority, an api:card_created and then an api:card_completed activity entry are written, ' +
 					'and the board\'s webhooks are sent card.created and card.completed. The check for open subtasks and sub-boards is not made: a new card has neither. ' +
-					'The answer is the card as it was written, with its completedAt. Until 2026-10-14 such a card was left in the column with no completion date, no XP and no api:card_completed entry.',
+					'The answer is the card as it was written, with its completedAt. Until 2026-10-14 such a card was left in the column with no completion date, no XP and no api:card_completed entry. ' +
+					'A card created outside an upstream column is committed as it is created (since 2026-10-26): its committedAt is its createdAt and its committedBy the key\'s user, with no entry beyond api:card_created. ' +
+					'One created in the board\'s Options column, or on an ideas board, is an option, with committedAt and committedBy null.',
 				operationId: 'createCard',
 				parameters: [{ $ref: '#/components/parameters/boardId' }],
 				requestBody: {
@@ -3559,7 +3775,12 @@ const spec = {
 					'The 409 for sub-boards names an unfinished one the key\'s user can open; when the only unfinished ones are sub-boards they cannot open it reads "A sub-board you cannot open still has incomplete cards that must be completed first. Ask this board\'s owner.", with no name and no count. ' +
 					'A move to another board takes the card out of its milestone when the milestone belongs to a board other than the one the card arrives on, and the answer has milestoneId null and names the milestone it left as leftMilestone, which is null for any other move; a milestone across boards keeps the card. Until 2026-10-14 the card kept the milestone. ' +
 					'Leaving it logs `api:milestone_card_removed` on the board it left, and that board\'s webhooks are sent `milestone.card_removed` (item 103). ' +
-					'An option, a card in an upstream column, moved to another board is sent on: the board it leaves logs `api:card_sent` in place of `api:card_moved_away`, at the same moment as the arrival, as POST /cards/{cardId}/send does.',
+					'An option, a card in an upstream column, moved to another board is sent on: the board it leaves logs `api:card_sent` in place of `api:card_moved_away`, at the same moment as the arrival, as POST /cards/{cardId}/send does.\n\n' +
+					'**The commitment point** (since 2026-10-26, milestone 22). A card in an upstream column, a board\'s Options column or any column of an ideas board, is an option. ' +
+					'A move out of an upstream column into a committed one commits it: committedAt is the moment and committedBy the key\'s user, and `api:card_committed` is written in place of `api:card_moved`, ' +
+					'`"<title>": <from> → <to> (column <to id>, from column <from id>)`, which sends `card.committed`, within one board instead of `card.moved`; across boards each board is still sent its own `card.moved` (`card_sent` to the board it left, `card_moved_in` to the board it joins), and the board it joins `card.committed` after it. Straight into a Complete column it writes `api:card_committed` and then `api:card_completed`, and sends `card.committed` and then `card.completed`. ' +
+					'A move back into an upstream column clears committedAt and committedBy and writes `api:card_returned_to_options`, which sends `card.moved`; from a Complete column it writes `api:card_reopened` and then `api:card_returned_to_options`, with one `card.moved`. ' +
+					'Across boards the board it joins logs `api:card_moved_in` first. A move within upstream, or between committed columns, leaves the commitment as it is.',
 				operationId: 'moveCard',
 				parameters: [{ $ref: '#/components/parameters/cardId' }],
 				requestBody: {
@@ -5554,7 +5775,7 @@ const spec = {
 								properties: {
 									url: { type: 'string', format: 'uri', maxLength: 2048, description: 'Webhook delivery URL: an http or https address' },
 									secret: { type: 'string', maxLength: 256, description: 'Shared secret for HMAC verification' },
-									events: { type: 'array', items: { type: 'string', enum: ['card.created', 'card.updated', 'card.moved', 'card.completed', 'card.deleted', 'comment.added', 'milestone.card_added', 'milestone.card_removed', 'card.committed', 'card.discarded'] }, description: 'Event types to subscribe to, each trimmed of spaces at either end. An empty list, or none, is every event, the two milestone events among them (item 102). Goal membership sends no card.updated on any route: it sends milestone.card_added or milestone.card_removed.' }
+									events: { type: 'array', items: { type: 'string', enum: ['card.created', 'card.updated', 'card.moved', 'card.completed', 'card.deleted', 'comment.added', 'milestone.card_added', 'milestone.card_removed', 'card.committed', 'card.discarded'] }, description: 'Event types to subscribe to, each trimmed of spaces at either end, among the ten. An empty list, or none, is every event, the two milestone events among them (item 102), and card.committed and card.discarded (since 2026-10-26). Goal membership sends no card.updated on any route: it sends milestone.card_added or milestone.card_removed.' }
 								}
 							},
 							example: { url: 'https://example.com/webhook', secret: 'my-secret', events: ['card.created', 'card.moved'] }
@@ -5569,7 +5790,7 @@ const spec = {
 						}
 					},
 					'400': {
-						description: 'No url, a url that is not an http or https address, one that points inside the network as written ("Webhook url points inside the network: 127.0.0.1 is a loopback address"), one that carries a user name or password, a secret over 256 characters, an event that is not one of the six, boardId not a whole number of 1 or more, or a body that is missing, is not valid JSON or is not an object. Nothing was created.',
+						description: 'No url, a url that is not an http or https address, one that points inside the network as written ("Webhook url points inside the network: 127.0.0.1 is a loopback address"), one that carries a user name or password, a secret over 256 characters, an event that is not one of the ten, boardId not a whole number of 1 or more, or a body that is missing, is not valid JSON or is not an object. Nothing was created.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'URL is required' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
@@ -5643,7 +5864,7 @@ const spec = {
 								properties: {
 									url: { type: 'string', format: 'uri', maxLength: 2048, description: 'An http or https address' },
 									secret: { type: 'string', maxLength: 256 },
-									events: { type: 'array', items: { type: 'string', enum: ['card.created', 'card.updated', 'card.moved', 'card.completed', 'card.deleted', 'comment.added', 'milestone.card_added', 'milestone.card_removed', 'card.committed', 'card.discarded'] }, description: 'Each trimmed of spaces at either end. An empty list is every event, the two milestone events among them (item 102). Goal membership sends no card.updated on any route: it sends milestone.card_added or milestone.card_removed.' },
+									events: { type: 'array', items: { type: 'string', enum: ['card.created', 'card.updated', 'card.moved', 'card.completed', 'card.deleted', 'comment.added', 'milestone.card_added', 'milestone.card_removed', 'card.committed', 'card.discarded'] }, description: 'Each trimmed of spaces at either end, among the ten. An empty list is every event, the two milestone events among them (item 102), and card.committed and card.discarded (since 2026-10-26). Goal membership sends no card.updated on any route: it sends milestone.card_added or milestone.card_removed.' },
 									active: { type: 'boolean' }
 								}
 							},
@@ -5659,7 +5880,7 @@ const spec = {
 						}
 					},
 					'400': {
-						description: 'None of the four fields was sent, a field that is not what it may hold (a url that is not an http or https address, one that points inside the network as written, one that carries a user name or password, a secret over 256 characters, an event that is not one of the six, active that is not true or false), webhookId is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not an object. Nothing was written.',
+						description: 'None of the four fields was sent, a field that is not what it may hold (a url that is not an http or https address, one that points inside the network as written, one that carries a user name or password, a secret over 256 characters, an event that is not one of the ten, active that is not true or false), webhookId is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not an object. Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No fields to update' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
@@ -5733,7 +5954,9 @@ const spec = {
 				tags: ['Burndown'],
 				summary: 'Burndown series and forecast',
 				description:
-					'How much work was open on each UTC day, and where it is heading, for a board, several boards, a board category, a milestone or everything you can see, narrowed by card category, label, assignee or priority. Rebuilt from each card\'s created, completed and archived dates rather than daily snapshots, so any filter works over any window. Read meta.notes before quoting a figure.',
+					'How much work was open on each UTC day, and where it is heading, for a board, several boards, a board category, a milestone or everything you can see, narrowed by card category, label, assignee or priority. Rebuilt from each card\'s created, completed and archived dates rather than daily snapshots, so any filter works over any window. Read meta.notes before quoting a figure. ' +
+					'Committed work only (since 2026-10-26, milestone 22): an option, a card in a board\'s Options column or on an ideas board, is not charted, and a card\'s scope starts when it was committed, its committedAt, ' +
+					'which for a card made before then is its creation. Each card is charted as it is now, so a card returned to options leaves the past days\' scope too.',
 				operationId: 'getBurndown',
 				parameters: [
 					{ name: 'boardIds', in: 'query', schema: { type: 'string' }, description: 'Comma-separated board ids. View access to each is required.' },
@@ -5782,7 +6005,10 @@ const spec = {
 					'Returns activity log entries from every board, newest first, and by id within a second, a page at a time. Administrators only. ' +
 					'The filters all apply together. A page holds 100 entries unless `limit` says otherwise, and 500 at most: ' +
 					'read `pagination.hasMore`, and ask for the next page with `before` (or `offset`), before taking a page for the whole answer. ' +
-					'`before` names the last entry you hold, so entries written while you page are not given twice (item 104).',
+					'`before` names the last entry you hold, so entries written while you page are not given twice (item 104). ' +
+					'Since 2026-10-26 (milestone 22) the actions include card_committed, card_returned_to_options, card_discarded, card_abandoned, card_sent, column_converted_to_options and board_converted_to_ideas, ' +
+					'and card_archived is written only for a card archived from a Complete column: unfinished committed work archived is card_abandoned, and an option card_discarded. ' +
+					'A commitment is card_committed, not card_moved, and an option leaving its board card_sent, not card_moved_away. Entries written before keep their actions.',
 				operationId: 'getAuditLog',
 				parameters: [
 					{

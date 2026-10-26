@@ -151,6 +151,8 @@ const TEST_FILES = [
 	'transaction.test.ts',
 	// Milestone 22, slice S4a: options are left out of every delivery measure; lead and cycle time from the commitment.
 	'upstream-measures.test.ts',
+	// Milestone 22, slice S6: the public API's reads of upstream, its filters and the upstream figures.
+	'upstream-api.test.ts',
 	// Milestone 22, slice S4b: the same on the screens (Stats panel, flow diagram, dashboard, All Tasks, goals, reports).
 	'upstream-screens.svelte.test.ts',
 	'uploads-sweep.test.ts',

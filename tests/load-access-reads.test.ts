@@ -94,6 +94,13 @@
  * shown every one of them equal to its old pin with `kind` taken out of the
  * answer before hashing (a temporary edit of `hashOf`): nothing else in any
  * answer moved. No count of reads moved.
+ *
+ * Card 2464 (milestone 22, slice S6) gave `GET /api/v1/me/stats`
+ * `avgLeadTimeDays`, the value `avgCycleTimeDays` has. The 5 hashes that moved
+ * (each marked "re-pinned (2464)") were taken again on the code as it is, once
+ * a run had shown every one of them equal to its old pin with
+ * `avgLeadTimeDays` taken out of the answer before hashing (a temporary edit
+ * of `hashOf`): nothing else in any answer moved. No count of reads moved.
  */
 import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -354,11 +361,11 @@ const PINS: Record<string, Record<Kind, Pin>> = {
 		outsider: { reads: 12, access: 1, hash: 'd02051ab7fbbbe3a' } // 16 → 12, 2 → 1
 	},
 	'GET /api/v1/me/stats': {
-		owner: { reads: 11, access: 1, hash: '9aa573a47033195c' }, // 15 → 11, 2 → 1
-		member: { reads: 11, access: 1, hash: 'edc3d758646f96a2' }, // 15 → 11, 2 → 1
-		mate: { reads: 12, access: 1, hash: 'b2d6ff8e33d818e8' }, // 17 → 12, 2 → 1
-		admin: { reads: 7, access: 0, hash: '755f43e24e7d3549' }, // 7 → 7, 0 → 0
-		outsider: { reads: 11, access: 1, hash: '953480566ec10ee5' } // 15 → 11, 2 → 1
+		owner: { reads: 11, access: 1, hash: 'b526c7421a7f3681' }, // 15 → 11, 2 → 1; re-pinned (2464)
+		member: { reads: 11, access: 1, hash: 'aed2186f243b531f' }, // 15 → 11, 2 → 1; re-pinned (2464)
+		mate: { reads: 12, access: 1, hash: 'e2113e54c4927506' }, // 17 → 12, 2 → 1; re-pinned (2464)
+		admin: { reads: 7, access: 0, hash: '4c6d4071a7526cb5' }, // 7 → 7, 0 → 0; re-pinned (2464)
+		outsider: { reads: 11, access: 1, hash: '39a89510992eafdf' } // 15 → 11, 2 → 1; re-pinned (2464)
 	},
 	'the board page, A': {
 		owner: { reads: 37, access: 1, hash: '887ea2d8f1902d30' }, // 57 → 41, 5 → 1; 41 → 38 (card 2399); 38 → 37 (card 2402); re-pinned (0060)

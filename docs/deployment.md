@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.99
+version: 1.100
 status: As-Built
 date: 2026-10-26
 tags:
@@ -5082,6 +5082,58 @@ On production, as **O**, signed in. Checks 527 to 541 write, on three boards mad
 #### Going back to the previous image
 
 Nothing is done to the database. The older image still reads `boards.kind`, so an ideas board's cards stay upstream and out of every figure, but it offers no kind on New Board, no **Make this an ideas board…**, no **Send to board…** and no `/send` or `/convert` route for boards; an ideas board's columns there offer Add Task as an ordinary board's, and it lets a column of an ideas board be called Complete. An idea moved to another board on the older image is recorded as Moved card to another board. The entries written on this image (Sent card to another board, Converted board to an ideas board) keep their labels there.
+
+### Upstream Kanban, Part Six: the Public API, Version 1.3.0
+
+**Card 2464, milestone 22, slice S6.** No migration. The OpenAPI document (`/api/v1/openapi.json`, drawn at `/docs`) is version **1.3.0**, with a change note of its own dated 2026-10-26 listing every change milestone 22 made to v1; `DUMPFIRE_API.md` and [External API Reference](api-reference.md#changes-on-2026-10-26) each have a "Changes on 2026-10-26" section with the same list. The writes of Parts One to Five reached v1 as they were built; this slice adds:
+
+- **`GET /api/v1/boards/{boardId}/upstream`** (new), view access: over the last `days` days (1 to 365, 30 by default) the board's options now and their aging, committed from options, returned to options, discarded, sent on and abandoned, the discard rate, and `committedAll`, **Committed (all)**, the figures the board's Stats panel shows.
+- **`GET /api/v1/boards?kind=delivery|ideas`** and **`GET /api/v1/boards/{boardId}/cards?stage=option|committed`** (new filters); anything else is `400` quoting what was sent.
+- **`avgLeadTimeDays` on `GET /api/v1/me/stats`**, the average days from commitment to done, beside `avgCycleTimeDays` at the same value, which is a lead time named cycle time for history.
+
+**What changes at the first start.** Nothing: no migration, and no repair.
+
+**Owner to know.**
+
+- An integration that reads `info.version` sees `1.3.0`. Every addition is a field, a filter or an operation, with one exception: a `kind` on `GET /api/v1/boards` or a `stage` on `GET /api/v1/boards/{boardId}/cards` that the older image ignored, `?kind=all` for example, is now `400`.
+- **Scripts that read the audit log or the activity report**: `card_archived` is now written only for a card archived from a Complete column. Unfinished committed work archived is `card_abandoned`, and an option `card_discarded`, so a count of `card_archived` alone undercounts; a commitment is `card_committed`, not `card_moved`, and an idea leaving its board `card_sent`, not `card_moved_away`.
+- **Webhooks**: a webhook with an empty events list receives `card.committed` and `card.discarded`; one that lists `card.moved` but not `card.committed` does not hear a card leave an Options column within one board. A move to another board still sends each board its own `card.moved` (`card_sent` to the board it left, `card_moved_in` to the board it joins), and the board it joins `card.committed` after it.
+- `avgCycleTimeDays` on `me/stats` is unchanged in value; its description now says what it is, a lead time, commitment to done. Read `avgLeadTimeDays` in new code.
+
+```mermaid
+flowchart LR
+    Key["API key"] --> U["GET /boards/:id/upstream<br/>?days=N"]
+    Key --> K["GET /boards?kind="]
+    Key --> S["GET /boards/:id/cards?stage="]
+    Key --> M["GET /me/stats<br/>avgLeadTimeDays"]
+    U --> F["upstreamFigures +<br/>committedAll"]
+    F --> P["the same figures as<br/>the Stats panel"]
+```
+
+#### After the deploy
+
+On production, with an API key of **O**, your administrator account (My Account → API Keys; check 549's audit log is an administrator's), from a PowerShell prompt. Each check is a `curl.exe` call: `GET` with `curl.exe -s -w " %{http_code}\n" -H "Authorization: Bearer <key>" "https://<host><path>"`, the address in double quotes so that PowerShell takes a `&` in it (check 549) as part of the address, and a write with `-X <method> -H "Content-Type: application/json" -d "@body.json"` added, the body written to `body.json` first. Checks 542 to 553 make two boards and delete them at the end. Note each id an answer gives.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 542 | 2464 | `GET /api/v1/openapi.json`, no key needed, and read `info` | `"version":"1.3.0"`, and `info.description` holds `**Changed on 2026-10-26 (version 1.3.0).**` before `**Changed on 2026-10-14 (version 1.2.0).**` | `1.2.0`, or no 2026-10-26 note |
+| 543 | 2464 | `POST /api/v1/boards` with `{"name":"API check"}`; note its id (B) and its To Do column's id. Then `POST /api/v1/boards/<B>/columns` with `{"title":"Ideas","role":"options"}`; note its id | The board answers `"kind":"delivery"` and four columns, each `"role":null`; the column `201` with `"role":"options"`, `"wipLimit":0` and a `position` below To Do's | `kind` missing, or the column not leftmost |
+| 544 | 2464 | `POST /api/v1/boards` with `{"name":"API ideas","kind":"ideas"}`; note its id (I). Then `GET /api/v1/boards?kind=ideas`, `GET /api/v1/boards?kind=delivery` and `GET /api/v1/boards?kind=backlog` | I answers New Ideas, Shaping and Ready for Replenishment. `kind=ideas` lists `API ideas` and not `API check`; `kind=delivery` lists `API check` and not `API ideas`; `kind=backlog` is `{"message":"kind must be \"delivery\" or \"ideas\", not \"backlog\""} 400` | A board of the other kind listed, or `200` for `backlog` |
+| 545 | 2464 | `POST /api/v1/boards/<B>/cards` with `{"columnId":<Ideas id>,"title":"Option A"}`, then with `{"columnId":<To Do id>,"title":"Work A"}`; note both ids | Option A `201` with `"committedAt":null` and `"committedBy":null`; Work A with `committedAt` equal to its `createdAt` and `committedBy` your id | Option A committed, or Work A not |
+| 546 | 2464 | `GET /api/v1/boards/<B>/cards?stage=option`, then `?stage=committed`, then `?stage=nonsense` | `option`: Option A alone; `committed`: Work A alone; `nonsense`: `{"message":"stage must be \"option\" or \"committed\", not \"nonsense\""} 400` | A card in the wrong list, or `200` for `nonsense` |
+| 547 | 2464 | `GET /api/v1/boards/<B>/upstream` | `200` with `"boardId":<B>`, `"kind":"delivery"`, `"days":30`, a `period` whose `to` is now and `from` 30 days before, both ISO with `Z`, `"options":1`, `"committedFromOptions":0`, `"discardRate":null`, `"oldestOptionDays":0` and `"committedAll":1` (Work A, created committed) | Another figure, or a `404` |
+| 548 | 2464 | `PUT /api/v1/cards/<Option A>/move` with `{"columnId":<To Do id>}`; then `GET /api/v1/boards/<B>/upstream` again | The move answers `committedAt` now and `committedBy` your id; the figures now `"options":0`, `"committedFromOptions":1` and `"committedAll":2` | `committedFromOptions` still 0, or `committedAll` 3 |
+| 549 | 2464 | `GET /api/v1/audit-log?boardId=<B>&action=card_committed` | One entry, `"action":"card_committed"`, `"rawAction":"api:card_committed"`, its detail `"Option A": Ideas → To Do (column <To Do id>, from column <Ideas id>)` | A `card_moved` for the move, or none |
+| 550 | 2464 | `GET /api/v1/boards/<B>/upstream?days=7`, then `?days=0`, then `?days=366` | `?days=7`: `"days":7`; the other two `{"message":"days must be a whole number from 1 to 365"} 400` | `200` for `0` or `366` |
+| 551 | 2464 | `GET /api/v1/boards/<I>/upstream`, and `GET /api/v1/boards/<I>/cards?stage=committed` | `"kind":"ideas"`, `"options":0`, `"committedAll":0`; the card list `[] 200` | Delivery figures for an ideas board |
+| 552 | 2464 | `GET /api/v1/me/stats` | `avgLeadTimeDays` beside `avgCycleTimeDays`, the two equal (both `null` if you have no completed card assigned to you) | `avgLeadTimeDays` missing, or the two differ |
+| 553 | 2464 | `DELETE /api/v1/cards/<Work A>`; `GET /api/v1/boards/<B>/upstream`; then `DELETE /api/v1/boards/<B>` and `DELETE /api/v1/boards/<I>` | The upstream figures now `"abandoned":1` (Work A, archived unfinished); both deletes `{"success":true} 200` | `abandoned` 0, or a board left |
+
+**Afterwards.** Nothing: check 553 deleted both boards and every card the checks made. Delete the API key if it was made for these checks.
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image answers `info.version` `1.2.0`. It has no `GET /api/v1/boards/{boardId}/upstream` (`404` `Not found`), ignores `?kind=` and `?stage=` and lists every board and card, and answers `me/stats` without `avgLeadTimeDays`. A script written against 1.3.0 checks `info.version` first.
 
 ## Changing the Schema
 

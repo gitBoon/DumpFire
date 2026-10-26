@@ -341,6 +341,20 @@ describe.each(TREES)('the Options role, through %s', (tree) => {
 			expect(none.status).toBe(200);
 		});
 
+		it('refuses a WIP limit above 0 on an Options column being created, as the update does, where it was made with 0 (the S6 review\'s Q8)', async () => {
+			await expectRefused(() => tree.create({ title: 'Ideas', role: 'options', wipLimit: 3 }), 409, 'An Options column has no WIP limit.');
+			await expectRefused(() => tree.create({ title: 'Ideas', role: 'options', wipLimit: '2' }), 409, 'An Options column has no WIP limit.');
+
+			// A limit of 0, or none, is what an Options column has: made, at the far left, with 0.
+			const zero = await tree.create({ title: 'Ideas', role: 'options', wipLimit: 0 });
+			expect(zero.status).toBe(201);
+			expect(stored(zero.body.id)).toMatchObject({ role: 'options', wipLimit: 0 });
+			// An ordinary column is made as before: a limit sent with it is not stored.
+			const ordinary = await tree.create({ title: 'Review', wipLimit: 3 });
+			expect(ordinary.status).toBe(201);
+			expect(stored(ordinary.body.id)).toMatchObject({ role: null, wipLimit: 0 });
+		});
+
 		it('keeps the Options column the leftmost: no column moved to or past it, and it moved to no other column', async () => {
 			asOptions(board.cols['Backlog']);
 
