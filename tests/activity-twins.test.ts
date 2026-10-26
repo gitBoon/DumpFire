@@ -567,7 +567,8 @@ const SERVICE_TWINS: ServiceTwin[] = [
 		internal: (s) => api('DELETE', `/api/cards/${s.first.id}`, { user: s.owner }),
 		v1: (s) => api('DELETE', `/api/v1/cards/${s.first.id}`, { user: s.owner }),
 		status: { internal: 200, v1: 200 },
-		sources: { internal: ['card_archived ui'], v1: ['api:card_archived api'] }
+		// The card is in To Do, so its archive is abandoned work (milestone 22, ruling f), with no webhook.
+		sources: { internal: ['card_abandoned ui'], v1: ['api:card_abandoned api'] }
 	},
 	{
 		row: 3,

@@ -11,8 +11,12 @@
 	import { parseStamp } from '$lib/timestamps';
 	import SidePanel from './SidePanel.svelte';
 
-	/** An archived card, as `GET /api/boards/[id]/archive` answers it. */
-	type ArchivedCard = { id: number; title: string; archivedAt?: string | null };
+	/**
+	 * An archived card, as `GET /api/boards/[id]/archive` answers it.
+	 * `discardedAt` is set on an option archived from upstream, which is marked
+	 * "Discarded" (milestone 22, card 2461).
+	 */
+	type ArchivedCard = { id: number; title: string; archivedAt?: string | null; discardedAt?: string | null };
 
 	let {
 		cards,
@@ -45,6 +49,9 @@
 				<div class="archive-card">
 					<div class="archive-card-info">
 						<span class="archive-card-title">{card.title}</span>
+						{#if card.discardedAt}
+							<span class="archive-card-discarded" title="Discarded from the Options column. Restoring it makes it an idea again.">Discarded</span>
+						{/if}
 						{#if card.archivedAt}
 							<span class="archive-card-date">Archived {parseStamp(card.archivedAt)?.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) ?? ''}</span>
 						{/if}
@@ -82,6 +89,11 @@
 	.archive-card-info { flex: 1; min-width: 0; }
 	.archive-card-title { font-size: 0.82rem; font-weight: 600; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 	.archive-card-date { font-size: 0.68rem; color: var(--text-tertiary); }
+	.archive-card-discarded {
+		font-size: 0.62rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+		padding: 1px 6px; margin-right: 4px; border-radius: var(--radius-sm);
+		color: var(--accent-amber); border: 1px solid currentColor;
+	}
 	.archive-card-actions { display: flex; gap: 4px; flex-shrink: 0; }
 	.archive-card-actions .danger { color: var(--accent-rose); }
 	.archive-card-actions .danger:hover { background: rgba(239, 68, 68, 0.1); }

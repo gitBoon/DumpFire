@@ -203,6 +203,8 @@ export function webhookShareNotes(board: Pick<Board, 'id' | 'createdBy' | 'isPub
  * goal and one taken out (card 2343), sent to the card's board.
  * `card.committed` is a card moved out of an upstream column into a committed
  * one, across the commitment point (milestone 22, card 2460).
+ * `card.discarded` is an option dropped: a card archived or deleted from an
+ * upstream column (milestone 22, card 2461).
  */
 export type WebhookEvent =
 	| 'card.created'
@@ -213,7 +215,8 @@ export type WebhookEvent =
 	| 'comment.added'
 	| 'milestone.card_added'
 	| 'milestone.card_removed'
-	| 'card.committed';
+	| 'card.committed'
+	| 'card.discarded';
 
 /**
  * Every event a webhook can ask for, as the two routes that save one read
@@ -229,7 +232,8 @@ export const WEBHOOK_EVENTS: readonly WebhookEvent[] = [
 	'comment.added',
 	'milestone.card_added',
 	'milestone.card_removed',
-	'card.committed'
+	'card.committed',
+	'card.discarded'
 ];
 
 /**

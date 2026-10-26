@@ -68,7 +68,7 @@ const { flushSync, mount, unmount, tick }: typeof Svelte = await import(/* @vite
 let sent: { what: string; body: unknown }[] = [];
 let drawn: { component: ReturnType<typeof mount>; target: HTMLElement } | null = null;
 /** The archived cards, as `/api/cards/archived` answers them. */
-let archived: { id: number; title: string; boardName: string }[] = [];
+let archived: { id: number; title: string; boardName: string; archivedAt?: string; discardedAt?: string | null }[] = [];
 /** The activity, as `/api/activity` answers it. */
 let activity: { id: number; action: string; userName: string; userEmoji: string; detail: string | null; boardName: string; createdAt: string }[] = [];
 
@@ -402,6 +402,22 @@ describe('All Tasks, its components joined up through the page (card 2281, slice
 		expect(target.querySelector('.archive-card-item')).toBeNull();
 		expect(toastsSaid()).toContain('Card restored');
 		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
+	});
+
+	it('marks an option archived from upstream "Discarded", and no other archived card (milestone 22, card 2461)', async () => {
+		archived = [
+			{ id: 9, title: 'Old idea', boardName: 'Website', archivedAt: '2026-10-20 09:00:00', discardedAt: '2026-10-20 09:00:00' },
+			{ id: 10, title: 'Old work', boardName: 'Website', archivedAt: '2026-10-20 09:00:00', discardedAt: null }
+		];
+		const target = draw();
+		fromMoreMenu(target, '🗄️ Archived Cards');
+		await settle();
+
+		const items = [...target.querySelectorAll('.activity-panel .archive-card-item')];
+		expect(items.map((item) => [item.querySelector('.archive-card-title')!.textContent, item.querySelector('.archive-card-discarded')?.textContent ?? null])).toEqual([
+			['Old idea', 'Discarded'],
+			['Old work', null]
+		]);
 	});
 
 	it('asks through the page’s confirm dialog before deleting an archived card for good', async () => {

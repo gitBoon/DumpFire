@@ -1901,6 +1901,10 @@ describe('which action sends which event, and what each move sends (card 2278)',
 			card_returned_to_options: 'card.moved',
 			card_deleted: 'card.deleted',
 			card_archived: null,
+			// An option dropped, archived or deleted from upstream, is its own event (milestone 22, card 2461);
+			// committed work archived unfinished sends none, as an archive does not (ruling f).
+			card_discarded: 'card.discarded',
+			card_abandoned: null,
 			card_restored: null,
 			cards_purged: null,
 			cards_cleared: null,

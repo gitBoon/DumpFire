@@ -24,6 +24,15 @@
  * entry, and touches nothing else, so that restoring it brings it back whole.
  * A card already archived it leaves as it is, writing nothing (card 2285).
  *
+ * An option archived or deleted, a card in an upstream column, is discarded
+ * (milestone 22, card 2461): an archive stamps `discarded_at`/`discarded_by`
+ * with `archived_at` and writes `card_discarded` in place of `card_archived`;
+ * a delete of a live option writes `card_discarded` before `card_deleted`.
+ * Committed work archived before it was finished is abandoned,
+ * `card_abandoned` ("Archived unfinished card"), in the activity log alone. Deleting a column
+ * or a board, clearing a board and purging the archive discard nothing
+ * (decision M22-9): they are housekeeping, with no entry for each card.
+ *
  * A user is deleted here too (`deleteUser`). The keys take what was theirs,
  * except for five columns that name a user with no `ON DELETE` action, which
  * are cleared first. The webhooks they set are switched off before they go.
@@ -49,6 +58,7 @@ import { afterCommit, inTransaction } from './db/transaction';
 import { namingIds } from './auth';
 import { emit } from './events';
 import { ACTIONS, logActivity, type ActivitySource } from './logActivity';
+import { columnRoleOf, isUpstreamColumn } from '$lib/column-role';
 import { createLogger } from './logger';
 import { logCardLeftGoal } from './milestones';
 import { moveToTrash, type UploadFile } from './uploads';
@@ -414,6 +424,17 @@ export function trashAfterCommit(files: readonly UploadFile[]): void {
  * no second entry (card 2285). It is read in this transaction, so two
  * archives racing cannot both write. The restore has the same rule for a
  * card that is not archived (`card-restore.ts`).
+ *
+ * What the archive is decides its one entry (milestone 22, card 2461):
+ *   - from an upstream column, a discard: `discarded_at` and `discarded_by`
+ *     are stamped in the same UPDATE as `archived_at`, and `card_discarded`,
+ *     `"<title>": discarded from <column>`, is written, which sends
+ *     `card.discarded`;
+ *   - from a committed column that is not Complete, abandoned work:
+ *     `card_abandoned`, labelled "Archived unfinished card", `"<title>":
+ *     archived unfinished, from <column>`, with no webhook and no mark on the
+ *     card (ruling f, decision M22-21, the S3 review's E5);
+ *   - from a Complete column, `card_archived`, as before.
  */
 export function archiveCard(
 	cardId: number,
@@ -421,21 +442,29 @@ export function archiveCard(
 	source: ActivitySource
 ): { title: string; boardId: number; archived: boolean } | null {
 	return inTransaction(() => {
-		const card = cardAndBoard(cardId);
-		if (!card) return null;
-
-		const { archivedAt } = sqlite.prepare('SELECT archived_at AS archivedAt FROM cards WHERE id = ?').get(cardId) as {
-			archivedAt: string | null;
-		};
+		const found = cardAndBoard(cardId);
+		if (!found) return null;
+		const { archivedAt, columnTitle, upstream, complete } = found;
+		const card = { title: found.title, boardId: found.boardId };
 		if (archivedAt !== null) return { ...card, archived: false };
 
 		const now = stamp();
-		sqlite.prepare('UPDATE cards SET archived_at = ?, updated_at = ? WHERE id = ?').run(now, now, cardId);
+		if (upstream) {
+			sqlite
+				.prepare('UPDATE cards SET archived_at = ?, discarded_at = ?, discarded_by = ?, updated_at = ? WHERE id = ?')
+				.run(now, now, actor.id, now, cardId);
+		} else {
+			sqlite.prepare('UPDATE cards SET archived_at = ?, updated_at = ? WHERE id = ?').run(now, now, cardId);
+		}
 		logActivity({
 			boardId: card.boardId,
 			cardId,
-			action: ACTIONS.cardArchived,
-			detail: `"${card.title}"`,
+			action: upstream ? ACTIONS.cardDiscarded : complete ? ACTIONS.cardArchived : ACTIONS.cardAbandoned,
+			detail: upstream
+				? `"${card.title}": discarded from ${columnTitle}`
+				: complete
+					? `"${card.title}"`
+					: `"${card.title}": archived unfinished, from ${columnTitle}`,
 			source,
 			...actorFields(actor)
 		});
@@ -443,14 +472,32 @@ export function archiveCard(
 	});
 }
 
-function cardAndBoard(cardId: number): { title: string; boardId: number } | null {
+/**
+ * The card, its board, and what an archive or a delete of it is: whether its
+ * column is upstream (the Options column, or any column of an ideas board) or
+ * a Complete column, and whether it is archived already.
+ */
+function cardAndBoard(cardId: number): {
+	title: string;
+	boardId: number;
+	columnTitle: string;
+	upstream: boolean;
+	complete: boolean;
+	archivedAt: string | null;
+} | null {
 	const row = sqlite
 		.prepare(
-			`SELECT c.title AS title, col.board_id AS boardId
-			FROM cards c JOIN columns col ON col.id = c.column_id WHERE c.id = ?`
+			`SELECT c.title AS title, col.board_id AS boardId, col.title AS columnTitle, col.role AS role, b.kind AS kind,
+				c.archived_at AS archivedAt
+			FROM cards c JOIN columns col ON col.id = c.column_id JOIN boards b ON b.id = col.board_id WHERE c.id = ?`
 		)
-		.get(cardId) as { title: string; boardId: number } | undefined;
-	return row ?? null;
+		.get(cardId) as
+		| { title: string; boardId: number; columnTitle: string; role: string | null; kind: string; archivedAt: string | null }
+		| undefined;
+	if (!row) return null;
+	const { role, kind, ...rest } = row;
+	const column = { title: row.columnTitle, role };
+	return { ...rest, upstream: isUpstreamColumn(column, kind), complete: columnRoleOf(column) === 'complete' };
 }
 
 /**
@@ -465,6 +512,14 @@ function cardAndBoard(cardId: number): { title: string; boardId: number } | null
  *
  * Each sub-board that went with it is told it was deleted (R7). The route
  * tells the card's board.
+ *
+ * A live card in an upstream column is an option, and deleting it discards
+ * it (milestone 22, card 2461): `card_discarded`, `"<title>": deleted from
+ * <column>`, stored with no card id as `card_deleted` is, is written before
+ * `card_deleted`, so `card.discarded` is sent before `card.deleted`. An
+ * archived card writes only `card_deleted`, wherever it is: one discarded
+ * already was discarded once, and one archived as committed work in a column
+ * converted since was never an option in play (the S3 review's E2).
  */
 export function deleteCard(
 	cardId: number,
@@ -472,8 +527,13 @@ export function deleteCard(
 	source: ActivitySource
 ): { title: string; boardId: number; removed: Removed } | null {
 	return inTransaction(() => {
-		const card = cardAndBoard(cardId);
-		if (!card) return null;
+		const found = cardAndBoard(cardId);
+		if (!found) return null;
+		const card = { title: found.title, boardId: found.boardId };
+		// Only a live option: an archived card had already left play, discarded
+		// then or archived as committed work before its column was converted
+		// (the S3 review's E2).
+		const discarding = found.upstream && found.archivedAt === null;
 
 		const { removed, files, subBoardIds, leftGoals } = removeUnder(
 			{ seed: 'SELECT id FROM cards WHERE id = ?', params: [cardId] },
@@ -483,6 +543,17 @@ export function deleteCard(
 		);
 
 		if (boardExists(card.boardId)) {
+			if (discarding) {
+				logActivity({
+					boardId: card.boardId,
+					cardId: null,
+					webhookCardId: cardId,
+					action: ACTIONS.cardDiscarded,
+					detail: `"${card.title}": deleted from ${found.columnTitle}`,
+					source,
+					...actorFields(actor)
+				});
+			}
 			logActivity({
 				boardId: card.boardId,
 				cardId: null,

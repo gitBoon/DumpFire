@@ -51,6 +51,12 @@ export const ACTIONS = {
 	cardReturnedToOptions: 'card_returned_to_options',
 	cardDeleted: 'card_deleted',
 	cardArchived: 'card_archived',
+	// An archive or a delete from an upstream column, an option dropped, which
+	// sends `card.discarded`; and an archive of committed work that was not
+	// finished, which sends nothing, as an archive does (milestone 22, card
+	// 2461, rulings f and 7.2). Each archive writes one of the three, never two.
+	cardDiscarded: 'card_discarded',
+	cardAbandoned: 'card_abandoned',
 	cardRestored: 'card_restored',
 	cardsPurged: 'cards_purged',
 	cardsCleared: 'cards_cleared',
@@ -201,6 +207,12 @@ export function readSource(row: { action: string; source?: string | null }): Act
  * a receiver asking only for `card.moved` does not hear it. One moved back
  * into an upstream column sends `card.moved`, a column change like a
  * reopening; from Complete, that is the move's only webhook (ruling q).
+ *
+ * A card archived or deleted from an upstream column sends `card.discarded`
+ * (card 2461): an archive sends nothing otherwise, but a discard is the
+ * upstream act a receiver mirroring the options needs. A delete from upstream
+ * sends it, then `card.deleted`. `card_abandoned` sends nothing, as
+ * `card_archived` does not.
  */
 const ACTION_TO_EVENT: Record<string, WebhookEvent> = {
 	card_created: 'card.created',
@@ -212,6 +224,7 @@ const ACTION_TO_EVENT: Record<string, WebhookEvent> = {
 	card_returned_to_options: 'card.moved',
 	card_completed: 'card.completed',
 	card_deleted: 'card.deleted',
+	card_discarded: 'card.discarded',
 	card_updated: 'card.updated',
 	comment_added: 'comment.added',
 	milestone_card_added: 'milestone.card_added',

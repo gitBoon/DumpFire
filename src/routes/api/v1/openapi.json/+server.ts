@@ -2979,8 +2979,8 @@ const spec = {
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Column not found' } } }
 					},
 					'409': {
-						description: 'The column is the board\'s Options column and holds cards that are not archived: options are archived or moved, not deleted with their column. Nothing was deleted.',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'This Options column holds 2 options: archive or move them first.' } } }
+						description: 'The column is the board\'s Options column and holds cards that are not archived: options are moved out, or archived to discard them, not deleted with their column. Nothing was deleted.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'This Options column still holds 2 options: move them out, or archive them to discard them, first.' } } }
 					},
 					'429': { $ref: '#/components/responses/RateLimited' },
 					'500': { $ref: '#/components/responses/InternalError' }
@@ -3358,13 +3358,18 @@ const spec = {
 				description:
 					'Archives the card by default (soft-delete). Add `?permanent=true` to permanently delete. Both answer 200.\n\n' +
 					'**Archive** sets `archivedAt` and writes a `card_archived` activity entry. Nothing else is touched: the card keeps its subtasks, ' +
-					'comments, attachments, dependency links and sub-boards, and has them all when it is restored. No webhook is sent. ' +
+					'comments, attachments, dependency links and sub-boards, and has them all when it is restored. No webhook is sent, except `card.discarded` for an option. ' +
+					'Two archives are recorded as what they are, with one entry each in place of `card_archived` (milestone 22): a card in an upstream column ' +
+					'(a board\'s Options column, or any column of an ideas board) is **discarded**, `discardedAt` and `discardedBy` are set with `archivedAt`, ' +
+					'and `card_discarded` is written, which sends `card.discarded`; a card in a committed column that is not Complete is **abandoned**, ' +
+					'`card_abandoned`, with no webhook and no field on the card. A restore clears `discardedAt` and `discardedBy`. ' +
 					'A card already archived is answered 200 as it is: nothing is written, `archivedAt` keeps its first value, and no entry is logged. ' +
 					'Until 2026-10-14 it was stamped again and a second entry logged (item 86).\n\n' +
 					'**Permanent delete** removes the card with its subtasks, comments, assignees and attachments, every sub-board under it at every depth ' +
 					'with everything on it, and every dependency link that has a deleted card or subtask at either end. Attachment files are kept on the server for 30 days. ' +
 					'One `card_deleted` activity entry is written, with a null card id because the card is gone, and one `card.deleted` webhook is sent ' +
-					'whose `data.cardId` is the id of the deleted card. A card in a milestone also logs `api:milestone_card_removed` and sends `milestone.card_removed` (item 103).',
+					'whose `data.cardId` is the id of the deleted card. A card in a milestone also logs `api:milestone_card_removed` and sends `milestone.card_removed` (item 103). ' +
+					'A live card deleted from an upstream column (an archived card never) first writes `card_discarded` (null card id) and sends `card.discarded`, then `card_deleted` and `card.deleted`.',
 				operationId: 'deleteCard',
 				parameters: [
 					{ $ref: '#/components/parameters/cardId' },
@@ -5348,7 +5353,7 @@ const spec = {
 								properties: {
 									url: { type: 'string', format: 'uri', maxLength: 2048, description: 'Webhook delivery URL: an http or https address' },
 									secret: { type: 'string', maxLength: 256, description: 'Shared secret for HMAC verification' },
-									events: { type: 'array', items: { type: 'string', enum: ['card.created', 'card.updated', 'card.moved', 'card.completed', 'card.deleted', 'comment.added', 'milestone.card_added', 'milestone.card_removed', 'card.committed'] }, description: 'Event types to subscribe to, each trimmed of spaces at either end. An empty list, or none, is every event, the two milestone events among them (item 102). Goal membership sends no card.updated on any route: it sends milestone.card_added or milestone.card_removed.' }
+									events: { type: 'array', items: { type: 'string', enum: ['card.created', 'card.updated', 'card.moved', 'card.completed', 'card.deleted', 'comment.added', 'milestone.card_added', 'milestone.card_removed', 'card.committed', 'card.discarded'] }, description: 'Event types to subscribe to, each trimmed of spaces at either end. An empty list, or none, is every event, the two milestone events among them (item 102). Goal membership sends no card.updated on any route: it sends milestone.card_added or milestone.card_removed.' }
 								}
 							},
 							example: { url: 'https://example.com/webhook', secret: 'my-secret', events: ['card.created', 'card.moved'] }
@@ -5437,7 +5442,7 @@ const spec = {
 								properties: {
 									url: { type: 'string', format: 'uri', maxLength: 2048, description: 'An http or https address' },
 									secret: { type: 'string', maxLength: 256 },
-									events: { type: 'array', items: { type: 'string', enum: ['card.created', 'card.updated', 'card.moved', 'card.completed', 'card.deleted', 'comment.added', 'milestone.card_added', 'milestone.card_removed', 'card.committed'] }, description: 'Each trimmed of spaces at either end. An empty list is every event, the two milestone events among them (item 102). Goal membership sends no card.updated on any route: it sends milestone.card_added or milestone.card_removed.' },
+									events: { type: 'array', items: { type: 'string', enum: ['card.created', 'card.updated', 'card.moved', 'card.completed', 'card.deleted', 'comment.added', 'milestone.card_added', 'milestone.card_removed', 'card.committed', 'card.discarded'] }, description: 'Each trimmed of spaces at either end. An empty list is every event, the two milestone events among them (item 102). Goal membership sends no card.updated on any route: it sends milestone.card_added or milestone.card_removed.' },
 									active: { type: 'boolean' }
 								}
 							},

@@ -590,7 +590,7 @@ never followed by a rollback.
 
 | Request | Removes | Leaves |
 |---|---|---|
-| `DELETE /api/v1/cards/:cardId` | Nothing: the card is **archived**. `archivedAt` is set and a `card_archived` entry is written. A card already archived is left as it is, with no entry | Everything. Its subtasks, comments, attachments, dependency links and sub-boards are untouched, and restoring the card brings it back whole |
+| `DELETE /api/v1/cards/:cardId` | Nothing: the card is **archived**. `archivedAt` is set and a `card_archived` entry is written (`card_discarded`, with `discardedAt`, for an option; `card_abandoned` for unfinished committed work: milestone 22). A card already archived is left as it is, with no entry | Everything. Its subtasks, comments, attachments, dependency links and sub-boards are untouched, and restoring the card brings it back whole |
 | `DELETE /api/v1/cards/:cardId?permanent=true` | The card, its subtasks, comments, assignees and attachments; every sub-board under it, at every depth, with everything on it; every dependency link with a deleted card or subtask at either end | Cards that were waiting on a deleted card. They are no longer waiting on it |
 | `DELETE /api/v1/columns/:columnId` | The column and **every card in it**, archived or not. Each card goes as a permanent delete does | The board and its other columns |
 | `DELETE /api/v1/boards/:boardId` | The board with its columns, cards, labels, milestones, webhooks and card categories (since 2026-10-14: the categories were kept, as categories of no board); every sub-board under it, with its categories; the report schedules that name it | Cards on other boards that were in one of its milestones, now in no milestone, and any that carried one of its categories, now in none |
@@ -609,8 +609,8 @@ What each delete records:
 
 | Delete | Activity and audit log | Webhook |
 |---|---|---|
-| Archive | `card_archived`, with the card's id, only when the card was not already archived (since 2026-10-14) | None |
-| Restore (`PUT /cards/:cardId` with `archivedAt: null`) | `card_restored`, with the card's id and title, only when the card was archived (since 2026-10-14) | None |
+| Archive | `card_archived`, with the card's id, only when the card was not already archived (since 2026-10-14); `card_discarded` from an upstream column, `card_abandoned` from a committed column that is not Complete (milestone 22, card 2461) | None; `card.discarded` for a discard |
+| Restore (`PUT /cards/:cardId` with `archivedAt: null`) | `card_restored`, with the card's id and title, only when the card was archived (since 2026-10-14); `"<title>": back in <column>` for a discard | None |
 | Card, permanent | `card_deleted`, with a null `cardId`: the card is gone; and, for a card in a milestone, `milestone_card_removed` after it (since 2026-10-21) | One `card.deleted`, carrying the id of the card asked for, and one `milestone.card_removed` for a card in a milestone (since 2026-10-21). Cards on sub-boards under it go with it and get no `card.deleted` of their own |
 | Column | One `column_deleted` on its board, naming the column and how many cards went with it; and `milestone_card_removed` for each card that was in a milestone (since 2026-10-21) | None for the column, and no `card.deleted`; one `milestone.card_removed` for each card that was in a milestone (since 2026-10-21) |
 | Board | None on the board: its log is deleted with it. A card on another board released from one of its milestones writes `milestone_card_removed` on its own board (since 2026-10-21) | None from the board, whose webhooks go with it; `milestone.card_removed` to the board of each card released elsewhere (since 2026-10-21) |
@@ -1013,8 +1013,19 @@ By default, this **archives** the card (soft-delete). Add `?permanent=true` to p
 
 **Archive.** `archivedAt` is set and a `card_archived` activity entry is written. Nothing
 else is touched: no subtask, comment, attachment, dependency link or sub-board. No webhook
-is sent. A card already archived is answered `200` as it is, with nothing written and no
+is sent, except `card.discarded` for an option. A card already archived is answered `200` as it is, with nothing written and no
 live update: `archivedAt` keeps its first value and no second entry is logged (card 2285).
+
+Since milestone 22 (card 2461) the entry says what was archived, in place of `card_archived`.
+A card in an upstream column (a board's Options column, or any column of an ideas board) is
+**discarded**: `discardedAt` and `discardedBy` are set with `archivedAt`, and `card_discarded`
+is written, which sends `card.discarded`. A card in a committed column that is not Complete is
+**abandoned**: `card_abandoned` ("Archived unfinished card", `"<title>": archived unfinished,
+from <column>`), with no webhook and no field on the card. Restoring a card (`archivedAt:
+null`) clears `discardedAt` and `discardedBy`, and a discard's restore reads `"<title>": back
+in <column>`. A permanent delete of a live option writes `card_discarded` and sends
+`card.discarded` before its `card_deleted` and `card.deleted`; an archived card deleted for
+good writes `card_deleted` alone.
 
 **Permanent delete.** The card goes with its subtasks, comments, assignees and attachments,
 with every sub-board under it and everything on those, and with every dependency link that
@@ -2394,8 +2405,8 @@ milestone or board category you cannot see; `404` for one that does not exist.
 
 A webhook sends each event of its board that it asks for (`card.created`, `card.updated`,
 `card.moved`, `card.completed`, `card.deleted`, `comment.added`, `milestone.card_added`,
-`milestone.card_removed`, `card.committed`) to its `url` as a `POST`, after the change is
-committed, signed with its `secret`. An empty `events` list, or none, is every event. What is sent, and how a receiver checks the
+`milestone.card_removed`, `card.committed`, `card.discarded`) to its `url` as a `POST`, after
+the change is committed, signed with its `secret`. An empty `events` list, or none, is every event. What is sent, and how a receiver checks the
 signature: [Notifications & Email](docs/notifications-email.md#webhooks).
 
 `card.moved` is every column change but a completion: a move within the board (`data.action`
@@ -2420,6 +2431,17 @@ change, ask for `card.moved`, `card.completed` and `card.committed`. A webhook w
 /cards/:cardId/move` refuses, `409`, an archived card across the commitment point (`Card
 "<title>" is archived: restore it before moving it out of or back into Options`) and a
 committed card with a sub-board into an upstream column.
+
+`card.discarded` (milestone 22, card 2461) is an option dropped: a card in an upstream column
+archived, through `DELETE /cards/:cardId` or the web application, or deleted for good. Its
+`data.action` is `card_discarded` and its `data.detail` `"<title>": discarded from <column>`,
+or `"<title>": deleted from <column>` for a delete, which then sends `card.deleted` too; both
+carry the card's id in `data.cardId`. An archived card deleted for good, a discarded one included, sends
+`card.deleted` alone. No other archive sends anything: a committed card archived before it
+reached Complete is recorded as `card_abandoned`, with no event. A restore sends nothing.
+Deleting a column or a board, clearing a board's cards and purging archived cards send no
+`card.discarded`. A webhook with an empty `events` list receives `card.discarded` from the
+deploy that adds it.
 
 **A card put in a milestone or taken out** sends `milestone.card_added` or
 `milestone.card_removed` (card 2343, since 2026-10-21), by every route and page that does it:

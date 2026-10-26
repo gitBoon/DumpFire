@@ -50,6 +50,7 @@ import DangerZonePanel from '$lib/components/admin/DangerZonePanel.svelte';
 import AdminPage from '../src/routes/admin/+page.svelte';
 import BackupRestorePanel from '$lib/components/admin/BackupRestorePanel.svelte';
 import ArchivedPage from '../src/routes/archived/+page.svelte';
+import ArchivePanel from '$lib/components/board/ArchivePanel.svelte';
 import TeamsPage from '../src/routes/teams/+page.svelte';
 import { toasts } from '$lib/stores/toast';
 import Toast from '$lib/components/Toast.svelte';
@@ -886,6 +887,47 @@ describe('the Archived page’s confirm, mounted (card 2362)', () => {
 		await settle();
 		expect(asked('DELETE /api/cards/9?permanent=true')).toHaveLength(1);
 		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
+	});
+});
+
+// Milestone 22, card 2461: an option archived from upstream is a discard, and
+// the Archived page and the board's Archived Cards panel say so.
+describe('the archive markers, mounted (card 2461)', () => {
+	const card = { description: '', priority: 'low', archivedAt: '2026-10-20 09:00:00', createdAt: '2026-10-01 09:00:00', boardName: 'Website', boardEmoji: '📋', boardId: 3 };
+	const marks = (target: HTMLElement, item: string, title: string, mark: string) =>
+		[...target.querySelectorAll(item)].map((row) => [row.querySelector(title)!.textContent, row.querySelector(mark)?.textContent?.trim() ?? null]);
+
+	it('the Archived page marks a discarded card "Discarded", and no other', () => {
+		const target = draw(ArchivedPage, {
+			data: {
+				archivedCards: [
+					{ ...card, id: 9, title: 'Old idea', discardedAt: '2026-10-20 09:00:00' },
+					{ ...card, id: 8, title: 'Old work', discardedAt: null }
+				],
+				isAdmin: true
+			}
+		});
+		expect(marks(target, '.archived-card', '.archived-card-title', '.archived-card-discarded')).toEqual([
+			['Old idea', 'Discarded'],
+			['Old work', null]
+		]);
+	});
+
+	it('the board’s Archived Cards panel marks a discarded card "Discarded", and no other', () => {
+		const target = draw(ArchivePanel, {
+			cards: [
+				{ id: 9, title: 'Old idea', archivedAt: '2026-10-20 09:00:00', discardedAt: '2026-10-20 09:00:00' },
+				{ id: 8, title: 'Old work', archivedAt: '2026-10-20 09:00:00', discardedAt: null }
+			],
+			loading: false,
+			onClose: () => {},
+			onRestore: () => {},
+			onDeleteForever: () => {}
+		});
+		expect(marks(target, '.archive-card', '.archive-card-title', '.archive-card-discarded')).toEqual([
+			['Old idea', 'Discarded'],
+			['Old work', null]
+		]);
 	});
 });
 

@@ -535,6 +535,15 @@ written: the two routes of the web application then tell its board nothing, and 
 names `archivedAt` in its `api:card_updated` entry, as it did. Until 2026-10-14 a restore
 wrote no entry, and the API's was recorded as `api:card_updated`.
 
+Since milestone 22 (card 2461) the archive's one entry says what was archived: an option, in
+an upstream column, is **discarded** (`discarded_at` and `discarded_by` stamped with
+`archived_at`, `card_discarded`, which sends `card.discarded`); committed work that is not in
+a Complete column is **abandoned** (`card_abandoned`, "Archived unfinished card", no field, no
+webhook); finished work is `card_archived` as before. A restore clears the discard mark too.
+A permanent delete of a live option writes `card_discarded` before `card_deleted`. See
+[An archive, a delete and a restore](#an-archive-a-delete-and-a-restore). None of the
+wholesale deletes below discards anything (decision M22-9).
+
 ### Permanent deletes
 
 A permanent delete starts from a set of cards and takes everything beneath them.
@@ -613,9 +622,9 @@ What is recorded:
 
 | Delete | Activity entry | Webhook |
 |--------|----------------|---------|
-| Archive | `card_archived`, with the card's id | None |
-| Restore | `card_restored`, with the card's id, only when the card was archived | None |
-| Card | `card_deleted`, stored with `card_id` NULL because the card is gone | `card.deleted`, whose `data.cardId` is the deleted card's id |
+| Archive | `card_archived`, with the card's id: from a Complete column. From an upstream column `card_discarded` instead, and from any other column `card_abandoned` (milestone 22, card 2461) | None; `card.discarded` for a discard |
+| Restore | `card_restored`, with the card's id, only when the card was archived; `"<title>": back in <column>` for a discard | None |
+| Card | `card_deleted`, stored with `card_id` NULL because the card is gone; for a live card in an upstream column, `card_discarded` (also with `card_id` NULL) first | `card.deleted`, whose `data.cardId` is the deleted card's id; `card.discarded` before it for an option |
 | Column | `column_deleted` on its board, naming the column and how many cards went | None, for the column or for its cards |
 | Purge Archived Cards | `cards_purged` on each board that had any, with the count | None |
 | Clear Cards | `cards_cleared` on the board, with the count, if it held any | None |
@@ -798,8 +807,9 @@ after the completion rule below, each refusal `409` with nothing written:
    numbered again 0, 1, 2… in their order, in the same transaction, first (`renumberColumns`).
    Through v1 it still goes after the last.
 7. The Options column is not deleted while it holds a card that is not archived (ruling m):
-   `This Options column holds N options: archive or move them first.` Its archived cards go
-   with it, as any column's.
+   `This Options column still holds N options: move them out, or archive them to discard them,
+   first.` (`1 option: move it out, or archive it to discard it, first.`). Its archived cards
+   go with it, as any column's, and are not discarded by it (decision M22-9).
 
 **The conversion** (`POST /api/columns/:id/convert`, `POST /api/v1/columns/:columnId/convert`,
 ruling i) makes a column holding cards the Options column. Only the board's owner or an
@@ -1150,6 +1160,62 @@ stateDiagram-v2
     Committed --> Option: column converted to Options (one entry for the column)
 ```
 
+#### An archive, a delete and a restore
+
+Every archive goes through `archiveCard` and every permanent delete of one card through
+`deleteCard` (`src/lib/server/deletes.ts`); every restore through `restoreCard`
+(`src/lib/server/card-restore.ts`). The routes: `DELETE /api/cards/:id` (the card window and
+the card menu on a board, the card window in All Tasks and in All To Do, the board page's bulk
+archive, which sends one card at a time) and `DELETE
+/api/v1/cards/:cardId`, each with `?permanent=true` for a delete; `POST /api/cards/:id/restore`
+(All Tasks, the Archived page), `POST /api/boards/:id/archive` (the board's Archived Cards) and
+`PUT /api/v1/cards/:cardId` with `archivedAt: null`. Since milestone 22 (card 2461, slice S3)
+what the card's column is decides the record, one entry per act:
+
+| The act | Card fields | Entry, on the card's board | Webhook |
+|---|---|---|---|
+| Archive from an upstream column (the Options column, any column of an ideas board): a **discard** | `archived_at`, `discarded_at` = now, `discarded_by` = the archiver, in one `UPDATE` | `card_discarded`, `"<title>": discarded from <column>`, in place of `card_archived` | `card.discarded` |
+| Archive from a committed column that is not Complete: **abandoned** work (ruling f) | `archived_at` alone: no marker column (decision M22-21) | `card_abandoned`, labelled "Archived unfinished card", `"<title>": archived unfinished, from <column>`, in place of `card_archived` (the S3 review's E5). A final column not titled Complete or Done (Released, Shipped) reads as unfinished | none |
+| Archive from a Complete column | `archived_at` | `card_archived`, `"<title>"`, as before | none |
+| Archive of a card already archived | nothing (card 2285) | none | none |
+| Delete of a live card (not archived) in an upstream column | the row goes | `card_discarded`, `"<title>": deleted from <column>`, then `card_deleted`, both with `card_id` NULL | `card.discarded`, then `card.deleted`, each naming the card |
+| Delete of anything else, any archived card included (a discarded one, or one archived as committed work before its column was converted to Options: it had left play, the S3 review's E2) | the row goes | `card_deleted` alone | `card.deleted` |
+| Restore | `archived_at`, `discarded_at` and `discarded_by` NULL | `card_restored`, `"<title>"`, or `"<title>": back in <column>` for a discard | none |
+
+A restored discard is back in its column, still upstream and uncommitted; its
+`card_discarded` entry stays, since the discard happened, and `upstreamFigures` still counts
+it in its window (decision M22-10, ruling c). Deleting a column or a board, Clear Board and
+Purge Archived discard nothing (decision M22-9): housekeeping, with no entry for each card.
+
+```mermaid
+stateDiagram-v2
+    Option: Option (archived_at NULL)
+    Discarded: Discarded (archived_at = discarded_at, discarded_by)
+    Work: Committed, not finished
+    Abandoned: Archived (archived_at, no mark)
+    Option --> Discarded: archive (card_discarded, card.discarded)
+    Discarded --> Option: restore (card_restored, back in its column)
+    Option --> [*]: delete (card_discarded, card_deleted)
+    Discarded --> [*]: delete (card_deleted alone)
+    Work --> Abandoned: archive (card_abandoned, archived unfinished, no webhook)
+    Abandoned --> Work: restore (card_restored)
+```
+
+**The upstream figures** (`upstreamFigures(boardIds, from, to)` in
+`src/lib/server/upstream.ts`, read by the measures, reports and API of later slices) are
+counted from the activity log over a window, the boards named and no others. **Both ends of
+the window are included**, as in `reports.ts`: a bare date as the end is the whole of that
+day, and a caller passing a moment passes the end of the day it means (the S3 review's E4).
+The figures take four reads, however many boards and columns (E3):
+
+| Figure | What it counts |
+|---|---|
+| `options` | Live cards in an upstream column of the boards, now |
+| `committedFromOptions`, `returnedToOptions`, `discarded`, `sentOn` | Distinct cards whose **last** upstream act in the window was `card_committed`, `card_returned_to_options`, `card_discarded` or `card_sent`, both spellings (ruling c). Entries with no card id (a deleted card's) each count once. A `card_sent` whose `card_moved_in` (same card, same moment) is on a board in scope is dropped (ruling b) |
+| `abandoned` | Distinct cards with a `card_abandoned` in the window, counted on their own: abandonment is downstream, so a card committed and then abandoned counts as committed and as abandoned (the S3 review's E1) |
+| `discardRate` | `discarded / (discarded + committedFromOptions + sentOn)`, null when that is 0. Abandoned work is not in it |
+| `oldestOptionDays`, `agingOptions` | The oldest option's age in whole days, and how many are older than 30 days. An option's age runs from the latest of its creation, its latest `card_returned_to_options` and the latest conversion of its column (the rule of `optionsSince`, the S1b review's B2, read here for every column at once: one read of the returns, one of the conversions), as the Options strip counts it |
+
 The browser does not write activity entries. It used to write a second one for
 every create, move, completion and delete, with no user id; `POST /api/activity`
 has been removed.
@@ -1425,7 +1491,10 @@ of about zero.
     column to the Options column clears both on every card in it, archived ones included.
     Nothing reads a NULL `committed_at` as upstream: the column and the board decide that.
   - `cards.discarded_at` and `cards.discarded_by` (`ON DELETE SET NULL`): when an option was
-    archived, which discards it, and by whom. Nothing writes them yet (slice S3).
+    archived, which discards it, and by whom. `archiveCard` stamps them with `archived_at`, in
+    one `UPDATE`, for a card in an upstream column, and `restoreCard` clears them with it (card
+    2461, slice S3; see [An archive, a delete and a restore](#an-archive-a-delete-and-a-restore)).
+    Set only while `archived_at` is set: the start-up repair clears them on a live card.
   - Indexes `idx_cards_committed_by` and `idx_cards_discarded_by`, card 2106's rule, `IF NOT
     EXISTS`.
 

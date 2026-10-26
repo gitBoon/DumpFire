@@ -2448,7 +2448,8 @@ describe('the cards side of /api/v1 asks at the write (slice 2253-7)', () => {
 
 		expect(db.select().from(tokenUsage).all()).toEqual([]);
 		expect(db.select().from(cardComments).all()).toEqual([]);
-		// An archive is `card_archived`, which fires none, and a comment deleted
+		// The archive, of a card in To Do, is `card_abandoned` (milestone 22, ruling
+		// f), which fires none, as `card_archived` does not, and a comment deleted
 		// is `comment_deleted`, which fires none either (card 2283). The milestone
 		// deleted releases its two cards, each `milestone.card_removed` (card 2381).
 		expect(sent.webhooks.map((w) => w.event)).toEqual(['milestone.card_removed', 'milestone.card_removed', 'card.deleted']);
