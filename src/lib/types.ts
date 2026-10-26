@@ -160,6 +160,13 @@ export type ColumnType = {
 	color: string;
 	showAddCard: boolean;
 	wipLimit: number;
+	/**
+	 * 'options' for the board's Options column, upstream of the commitment
+	 * point (milestone 22); null for an ordinary column whose title decides
+	 * what it is. Required, so that a page that builds columns of its own says
+	 * which they are.
+	 */
+	role: string | null;
 	cards: CardType[];
 };
 

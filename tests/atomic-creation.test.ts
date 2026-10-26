@@ -220,8 +220,9 @@ describe('POST /api/cards', () => {
 		});
 
 		// A failure at the second used to leave a card with no record of who
-		// raised it, which is what the entry was added for.
-		expect(shape(run.writes)).toEqual(['insert into cards', 'insert into activity_log']);
+		// raised it, which is what the entry was added for. The third stamps its
+		// commitment (milestone 22): a card created in To Do is committed work.
+		expect(shape(run.writes)).toEqual(['insert into cards', 'insert into activity_log', 'update cards set']);
 		expect(run.effects.map(name)).toEqual(['webhook card.created', 'event update (card) on board 1']);
 	});
 

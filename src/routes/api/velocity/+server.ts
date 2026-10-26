@@ -58,7 +58,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	const colIds = [...new Set(myCards.map(c => c.columnId))];
 	let doneColIds = new Set<number>();
 	if (colIds.length > 0) {
-		const cols = db.select({ id: columns.id, title: columns.title })
+		const cols = db.select({ id: columns.id, title: columns.title, role: columns.role })
 			.from(columns)
 			.where(inArray(columns.id, colIds))
 			.all();

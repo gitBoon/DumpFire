@@ -642,6 +642,8 @@ export function defaultOutside(
  *   at every restore (below), so that backfill finds nothing to do. One
  *   taken before cards 2155 and 2179 can hold a card in a milestone of
  *   another board: the backfills take it out, as 0057 did once (card 2179).
+ *   One taken before 0060 has no commitment on any card: the backfills
+ *   commit every card that is not upstream, as 0060 did once (milestone 22).
  * - A backup taken before card 2095 holds timestamps in two forms. They are
  *   brought to the stored one after the backfills, as at every start
  *   (`normaliseTimestamps`), and the count is in `timestamps`. A failure, or a
@@ -1057,7 +1059,10 @@ function restoreInOneSnapshot(live: Database.Database, backup: Database.Database
 		releasedFromMilestones: 0,
 		released: [],
 		unfiledBoards: 0,
-		unfiled: []
+		unfiled: [],
+		committedFilled: 0,
+		upstreamCleared: 0,
+		discardedCleared: 0
 	};
 	try {
 		backfilled = runBackfills(live);

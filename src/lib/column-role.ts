@@ -15,10 +15,53 @@
  *
  * Everything now asks here. This module has no server imports, so the browser
  * and the server share the one definition.
+ *
+ * Upstream joined them with milestone 22, and it is the one meaning that is
+ * stored rather than read from the title: a column whose `role` is 'options'
+ * is the board's Options column, and every column of a board whose `kind` is
+ * 'ideas' is upstream too. Cards there are options, not committed work. An
+ * Options column is never also To Do, On Hold or Complete, whatever it is
+ * called.
  */
 
 /** What a column means for the cards in it. `null` is an ordinary working column. */
 export type ColumnRole = 'complete' | 'hold' | 'todo';
+
+/** The roles a column can have stored (`columns.role`); NULL is none, and the title decides. */
+export const COLUMN_ROLES = ['options'] as const;
+export type StoredColumnRole = (typeof COLUMN_ROLES)[number];
+
+/** The kinds of board (`boards.kind`). Every board was a delivery board before milestone 22. */
+export const BOARD_KINDS = ['delivery', 'ideas'] as const;
+export type BoardKind = (typeof BOARD_KINDS)[number];
+
+/** True if this is a board's Options column: upstream of the commitment point. */
+export function isOptionsColumn(column: { role: string | null }): boolean {
+	return column.role === 'options';
+}
+
+/**
+ * True if cards in this column are upstream, options rather than committed
+ * work: it is the Options column, or its board is an ideas board. Every rule
+ * about commitment, discards and what the delivery measures count asks this.
+ *
+ * Both are required, the column's `role` and its board's kind (the S1a
+ * review's R4), so that a caller that forgot to read either is told so by the
+ * compiler instead of taking every column for an ordinary one. A board of any
+ * kind but 'ideas' is a delivery board here, as in the backfills.
+ */
+export function isUpstreamColumn(column: { role: string | null }, boardKind: string | null): boolean {
+	return isOptionsColumn(column) || boardKind === 'ideas';
+}
+
+/**
+ * What a column means, its stored role first: an Options column is 'options'
+ * whatever its title, and so never To Do, On Hold or Complete on any page.
+ * Any other column is what its title says.
+ */
+export function columnRoleOf(column: { title: string | null | undefined; role: string | null }): 'options' | ColumnRole | null {
+	return isOptionsColumn(column) ? 'options' : columnRole(column.title);
+}
 
 /** Titles that mean the work is finished. */
 const COMPLETE_TITLES: ReadonlySet<string> = new Set(['complete', 'done']);
@@ -82,22 +125,32 @@ export function isTodoColumnTitle(title: string | null | undefined): boolean {
  * whoever made it (card 2134), so a card made for some other reason, the copy
  * of a finished card or a sub-board's parent card, is not put in one when the
  * board has another column.
+ *
+ * Nor in the Options column (milestone 22): a copy of finished work is not an
+ * idea, and would be hidden in a collapsed strip. The Options column is taken
+ * only when the board has no other column that is not Complete.
  */
-export function firstOpenColumn<C extends { title: string; position: number }>(columns: readonly C[]): C | undefined {
-	return [...columns].sort((a, b) => a.position - b.position).find((c) => !isCompleteColumnTitle(c.title));
+export function firstOpenColumn<C extends { title: string; position: number; role: string | null }>(
+	columns: readonly C[]
+): C | undefined {
+	const open = [...columns].sort((a, b) => a.position - b.position).filter((c) => columnRoleOf(c) !== 'complete');
+	return open.find((c) => !isOptionsColumn(c)) ?? open[0];
 }
 
-/** The ids of the columns, among these, that mean finished. */
-export function completeColumnIds(columns: readonly { id: number; title: string }[]): Set<number> {
-	return new Set(columns.filter((c) => isCompleteColumnTitle(c.title)).map((c) => c.id));
+/** The ids of the columns, among these, that mean finished. Never the Options column. */
+export function completeColumnIds(columns: readonly { id: number; title: string; role: string | null }[]): Set<number> {
+	return new Set(columns.filter((c) => columnRoleOf(c) === 'complete').map((c) => c.id));
 }
 
-/** The ids of the columns, among these, that mean paused. */
-export function holdColumnIds(columns: readonly { id: number; title: string }[]): Set<number> {
-	return new Set(columns.filter((c) => isHoldColumnTitle(c.title)).map((c) => c.id));
+/** The ids of the columns, among these, that mean paused. Never the Options column. */
+export function holdColumnIds(columns: readonly { id: number; title: string; role: string | null }[]): Set<number> {
+	return new Set(columns.filter((c) => columnRoleOf(c) === 'hold').map((c) => c.id));
 }
 
-/** The ids of the columns, among these, that mean waiting to be started: every one, a board may have two. */
-export function todoColumnIds(columns: readonly { id: number; title: string }[]): Set<number> {
-	return new Set(columns.filter((c) => isTodoColumnTitle(c.title)).map((c) => c.id));
+/**
+ * The ids of the columns, among these, that mean waiting to be started: every one, a board may have two.
+ * Never the Options column: an option is not yet work anyone has taken on.
+ */
+export function todoColumnIds(columns: readonly { id: number; title: string; role: string | null }[]): Set<number> {
+	return new Set(columns.filter((c) => columnRoleOf(c) === 'todo').map((c) => c.id));
 }

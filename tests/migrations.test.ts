@@ -27,6 +27,7 @@ import {
 	BOARDS_LEAVE_DELETED_GROUPINGS,
 	BOARDS_LEAVING_DELETED_GROUPINGS,
 	CARDS_LEAVE_OTHER_BOARDS_MILESTONES,
+	COMMITTED_BEFORE_UPSTREAM,
 	MigrationError,
 	RECONCILED_TABLES,
 	TOLERANT_FILES,
@@ -386,6 +387,40 @@ const FILE_0058 = '0058_add_report_schedule_time_zone.sql';
 /** The file of card 2397: who last changed the mail settings, the App URL and each backup destination. */
 const FILE_0059 = '0059_add_setting_setters.sql';
 
+/** The file of milestone 22: the Options role, the ideas kind, and each card's commitment and discard. */
+const FILE_0060 = '0060_add_upstream_options.sql';
+
+/** The tables 0060 changes the rows of: each gains its new columns, and cards are committed. */
+const TABLES_OF_0060 = ['boards', 'columns', 'cards'];
+
+/**
+ * Rows of `table` read, as `contentsOf` gives them, before 0060, as 0060
+ * leaves them: every board gains `kind` 'delivery', every column `role` NULL,
+ * and every card the commitment and discard columns, committed when and by
+ * whom it was created, unless its id is in `uncommitted` (a card on a column
+ * or a board that is not there). Any other table's rows are as they were.
+ */
+function after0060(table: string, rows: string[], uncommitted: readonly number[] = []): string[] {
+	if (!TABLES_OF_0060.includes(table)) return rows;
+	return rows
+		.map((json) => {
+			const row = JSON.parse(json) as Record<string, unknown>;
+			if (table === 'boards') row.kind = 'delivery';
+			if (table === 'columns') row.role = null;
+			if (table === 'cards') {
+				const committed = !uncommitted.includes(row.id as number);
+				Object.assign(row, {
+					committed_at: committed ? row.created_at : null,
+					committed_by: committed ? row.created_by : null,
+					discarded_at: null,
+					discarded_by: null
+				});
+			}
+			return JSON.stringify(Object.fromEntries(Object.entries(row).sort(([a], [b]) => a.localeCompare(b))));
+		})
+		.sort();
+}
+
 /**
  * The indexes the model declares that a database from before 0053 lacks:
  * 0053's 39, with 0054's index on user_id and created_at in place of 0053's on
@@ -480,6 +515,11 @@ function preCardDatabase(): Database.Database {
  * In `boards`, `columns` and `categories` a row has been created and deleted,
  * so each id counter is ahead of the highest id in use. An id is never reused,
  * and a rebuild that forgot the counter would reuse one.
+ *
+ * On a database that has 0060's columns, every card is committed when it was
+ * created, as every write commits a card created in a committed column
+ * (milestone 22), so the backfills find nothing to fill in. On an older one
+ * there is nothing to set, and the backfills commit them once 0060 is there.
  */
 function seed(database: Database.Database): void {
 	database.exec(`
@@ -520,6 +560,9 @@ function seed(database: Database.Database): void {
 			('token-for-ann', 1, '2026-12-01 00:00:00', 0),
 			('token-for-bob', 2, '2026-12-01 00:00:00', 1);
 	`);
+	if (database.prepare("SELECT 1 FROM pragma_table_info('cards') WHERE name = 'committed_at'").get()) {
+		database.exec('UPDATE cards SET committed_at = created_at, committed_by = created_by');
+	}
 }
 
 /**
@@ -1098,7 +1141,8 @@ describe('the backfills, repeated at every start', () => {
 		const { error } = halted({ database, migrationsDir: REAL_MIGRATIONS });
 
 		expect(error.message).toBe(
-			'Migrations halted (backfilling cards.first_completed_at, task_requests.access_token, cards.milestone_id and boards.category_id): ' +
+			'Migrations halted (backfilling cards.first_completed_at, task_requests.access_token, cards.milestone_id, boards.category_id, ' +
+				'cards.committed_at and cards.discarded_at): ' +
 				`first completion is frozen. No migration was committed earlier in this start. ${WHAT_NEXT}`
 		);
 		// As it says: the card is as it was before the step that failed.
@@ -1157,7 +1201,12 @@ describe('the backfills, repeated at every start', () => {
 				{ cardId: 5, milestoneId: 3 }
 			],
 			unfiledBoards: 0,
-			unfiled: []
+			unfiled: [],
+			// Cards 1 to 7, on a column of a board that is there, were inserted
+			// with no commitment; card 8 is on a column that is not.
+			committedFilled: 7,
+			upstreamCleared: 0,
+			discardedCleared: 0
 		});
 
 		expect(milestonesOf().map((card) => [card.id, card.milestone_id])).toEqual([
@@ -1178,7 +1227,10 @@ describe('the backfills, repeated at every start', () => {
 			releasedFromMilestones: 0,
 			released: [],
 			unfiledBoards: 0,
-			unfiled: []
+			unfiled: [],
+			committedFilled: 0,
+			upstreamCleared: 0,
+			discardedCleared: 0
 		});
 	});
 
@@ -1240,7 +1292,10 @@ describe('the backfills, repeated at every start', () => {
 			releasedFromMilestones: 0,
 			released: [],
 			unfiledBoards: 1,
-			unfiled: [{ boardId: 2, groupingId: 7 }]
+			unfiled: [{ boardId: 2, groupingId: 7 }],
+			committedFilled: 0,
+			upstreamCleared: 0,
+			discardedCleared: 0
 		});
 
 		expect(groupingsOf().map((board) => [board.id, board.category_id])).toEqual([
@@ -1256,7 +1311,10 @@ describe('the backfills, repeated at every start', () => {
 			releasedFromMilestones: 0,
 			released: [],
 			unfiledBoards: 0,
-			unfiled: []
+			unfiled: [],
+			committedFilled: 0,
+			upstreamCleared: 0,
+			discardedCleared: 0
 		});
 	});
 
@@ -2326,10 +2384,11 @@ describe('the six reconciled tables', () => {
 				is_public INTEGER DEFAULT false NOT NULL,
 				created_by INTEGER REFERENCES users(id),
 				created_at TEXT DEFAULT (datetime('now')) NOT NULL,
-				updated_at TEXT DEFAULT (datetime('now')) NOT NULL
+				updated_at TEXT DEFAULT (datetime('now')) NOT NULL,
+				kind TEXT DEFAULT 'delivery' NOT NULL
 			);
-			INSERT INTO boards_older (id, name, emoji, parent_card_id, category_id, is_public, created_by, created_at, updated_at)
-				SELECT id, name, emoji, parent_card_id, category_id, is_public, created_by, created_at, updated_at FROM boards;
+			INSERT INTO boards_older (id, name, emoji, parent_card_id, category_id, is_public, created_by, created_at, updated_at, kind)
+				SELECT id, name, emoji, parent_card_id, category_id, is_public, created_by, created_at, updated_at, kind FROM boards;
 			DROP TABLE boards;
 			ALTER TABLE boards_older RENAME TO boards;
 			INSERT INTO boards (id, name, parent_card_id) VALUES (6, 'Left behind', 99);
@@ -2383,8 +2442,10 @@ describe('the six reconciled tables', () => {
 			CREATE TEMP TABLE boards_kept AS SELECT * FROM boards;
 			DROP TABLE boards;
 			${older};
-			INSERT INTO boards (id, name, emoji, parent_card_id, category_id, is_public, created_by, created_at, updated_at)
-				SELECT id, name, emoji, parent_card_id, category_id, is_public, created_by, created_at, updated_at FROM boards_kept;
+			-- As 0060 adds it to such a table.
+			ALTER TABLE boards ADD COLUMN kind text DEFAULT 'delivery' NOT NULL;
+			INSERT INTO boards (id, name, emoji, parent_card_id, category_id, is_public, created_by, created_at, updated_at, kind)
+				SELECT id, name, emoji, parent_card_id, category_id, is_public, created_by, created_at, updated_at, kind FROM boards_kept;
 			DROP TABLE boards_kept;
 			INSERT INTO boards (id, name, created_by) VALUES (6, 'By nobody', 99);
 		`);
@@ -3529,7 +3590,17 @@ describe('the start-up schema check', () => {
 			leftAlone: [],
 			detachedSubBoards: [],
 			reconciliationSkipped: null,
-			backfilled: { firstCompletedAt: 0, accessTokens: 0, releasedFromMilestones: 0, released: [], unfiledBoards: 0, unfiled: [] },
+			backfilled: {
+				firstCompletedAt: 0,
+				accessTokens: 0,
+				releasedFromMilestones: 0,
+				released: [],
+				unfiledBoards: 0,
+				unfiled: [],
+				committedFilled: 0,
+				upstreamCleared: 0,
+				discardedCleared: 0
+			},
 			timestamps: { converted: {}, unreadable: {}, failed: null },
 			schemaDifferences: [],
 			missingFromDisk: []
@@ -4064,19 +4135,41 @@ describe('restoring a backup taken before the latest migrations', () => {
 
 	it('fills in what the backup is too old to have', () => {
 		const { live, backup } = liveAndBackup();
+		// Bob raised card 3; the others were raised before authorship was recorded.
+		backup.exec('UPDATE cards SET created_by = 2 WHERE id = 3');
 
 		const result = restoreFromBackup(live, backup);
 
 		// The links are given inside the restore, as every request's is at every
-		// restore (card 2158), so the backfill after it has none to give.
+		// restore (card 2158), so the backfill after it has none to give. The
+		// backup is older than 0060, so every card, none of them upstream, is
+		// committed when and by whom it was created (milestone 22).
 		expect(result.backfilled).toEqual({
 			firstCompletedAt: 2,
 			accessTokens: 0,
 			releasedFromMilestones: 0,
 			released: [],
 			unfiledBoards: 0,
-			unfiled: []
+			unfiled: [],
+			committedFilled: 5,
+			upstreamCleared: 0,
+			discardedCleared: 0
 		});
+		const cardsIn = live
+			.prepare('SELECT id, created_at, committed_at, committed_by, discarded_at, discarded_by FROM cards ORDER BY id')
+			.all() as { id: number; created_at: string; committed_at: string | null; committed_by: number | null }[];
+		expect(cardsIn.map((card) => [card.id, card.committed_at === card.created_at, card.committed_by])).toEqual([
+			[1, true, null],
+			[2, true, null],
+			[3, true, 2],
+			[4, true, null],
+			[5, true, null]
+		]);
+		expect(cardsIn.every((card) => card.committed_at !== null)).toBe(true);
+		expect(live.prepare('SELECT COUNT(*) AS n FROM cards WHERE discarded_at IS NOT NULL OR discarded_by IS NOT NULL').get()).toEqual({ n: 0 });
+		// Every board a delivery board, and no column the Options column.
+		expect(live.prepare('SELECT DISTINCT kind FROM boards').all()).toEqual([{ kind: 'delivery' }]);
+		expect(live.prepare('SELECT COUNT(*) AS n FROM columns WHERE role IS NOT NULL').get()).toEqual({ n: 0 });
 		expect(result.requestLinksReplaced).toBe(2);
 		expect(live.prepare('SELECT id, first_completed_at FROM cards ORDER BY id').all()).toEqual([
 			{ id: 1, first_completed_at: '2026-09-01 10:00:00' },
@@ -4226,7 +4319,10 @@ describe('restoring a backup taken before the latest migrations', () => {
 			releasedFromMilestones: 0,
 			released: [],
 			unfiledBoards: 0,
-			unfiled: []
+			unfiled: [],
+			committedFilled: 0,
+			upstreamCleared: 0,
+			discardedCleared: 0
 		});
 	});
 
@@ -4432,7 +4528,10 @@ describe('restoring a backup taken before the latest migrations', () => {
 			releasedFromMilestones: 0,
 			released: [],
 			unfiledBoards: 0,
-			unfiled: []
+			unfiled: [],
+			committedFilled: 0,
+			upstreamCleared: 0,
+			discardedCleared: 0
 		});
 		expect(result.restored['cards']).toBe(5);
 		expect(live.prepare('SELECT id FROM boards ORDER BY id').all()).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
@@ -4639,6 +4738,8 @@ describe('restoring a backup taken before the latest migrations', () => {
 				new RegExp(
 					`^\\[INFO\\] \\[IMPORT\\] Database restored from an uploaded backup \\(${size.replace('.', '\\.')}\\)\\. ` +
 						'Rows: .*\\bcards: 6\\b.*\\. Filled in: first_completed_at on 2 card\\(s\\), access_token on 0 request\\(s\\), ' +
+						// Card 6 is on no column, so it is not committed (milestone 22).
+						'committed_at and committed_by on 5 card\\(s\\) not upstream, ' +
 						'the default \\(0\\) in place of NULL in columns\\.wip_limit on 2 row\\(s\\)\\. ' +
 						'2 request link\\(s\\) replaced: a link mailed before this restore no longer works, and its requester can have ' +
 						'a new one sent from the page it opens\\.$'
@@ -4672,12 +4773,14 @@ describe('restoring a backup taken before the latest migrations', () => {
 			expect(response.body.message).toMatch(new RegExp(`^Database restored \\(${size.replace('.', '\\.')}\\)\\. `));
 			expect(response.body.message).not.toContain('problem');
 			// One line, at INFO: how many rows of what, and what was filled in for
-			// a backup too old to have it. The NULL WIP limits are among those.
+			// a backup too old to have it. The NULL WIP limits are among those, and
+			// so is the commitment of every card, the backup being older than 0060.
 			expect(logged).toHaveLength(1);
 			expect(logged[0]).toMatch(
 				new RegExp(
 					`^\\[INFO\\] \\[IMPORT\\] Database restored from an uploaded backup \\(${size.replace('.', '\\.')}\\)\\. ` +
 						'Rows: .*\\bcards: 5\\b.*\\. Filled in: first_completed_at on 2 card\\(s\\), access_token on 0 request\\(s\\), ' +
+						'committed_at and committed_by on 5 card\\(s\\) not upstream, ' +
 						'the default \\(0\\) in place of NULL in columns\\.wip_limit on 2 row\\(s\\)\\. ' +
 						'2 request link\\(s\\) replaced: a link mailed before this restore no longer works, and its requester can have ' +
 						'a new one sent from the page it opens\\.$'
@@ -4705,7 +4808,8 @@ describe('restoring a backup taken before the latest migrations', () => {
 			expect(logged).toHaveLength(1);
 			expect(logged[0]).toContain(
 				'Filled in: first_completed_at on 2 card(s), access_token on 0 request(s), ' +
-					'1 card(s) taken out of a milestone of another board (card 3 left milestone 1), the default (0)'
+					'1 card(s) taken out of a milestone of another board (card 3 left milestone 1), ' +
+					'committed_at and committed_by on 5 card(s) not upstream, the default (0)'
 			);
 		});
 
@@ -4720,9 +4824,42 @@ describe('restoring a backup taken before the latest migrations', () => {
 			expect(response.status).toBe(200);
 			expect(logged.join('\n')).toContain(
 				'Filled in: first_completed_at on 2 card(s), access_token on 0 request(s), ' +
-					'1 board(s) taken out of a grouping that no longer exists (board 2 (grouping 9)), the default (0)'
+					'1 board(s) taken out of a grouping that no longer exists (board 2 (grouping 9)), ' +
+					'committed_at and committed_by on 5 card(s) not upstream, the default (0)'
 			);
 			expect(sqlite.prepare('SELECT category_id FROM boards WHERE id = 2').get()).toEqual({ category_id: null });
+		});
+
+		it('names each repair of the commitment point, the fill in its Filled in and the two clears as clears (milestone 22)', async () => {
+			// A backup in the current shape: a card in To Do with no commitment, an
+			// option holding one, and a live card marked discarded.
+			const backup = memoryDb();
+			runMigrations({ database: backup, migrationsDir: REAL_MIGRATIONS });
+			backup.exec(`
+				INSERT INTO users (id, username, email, password_hash) VALUES (1, 'ann', 'ann@example.test', 'x');
+				INSERT INTO boards (id, name) VALUES (1, 'A');
+				INSERT INTO columns (id, board_id, title, position, role) VALUES (1, 1, 'Ideas', 0, 'options'), (2, 1, 'To Do', 1, NULL);
+				INSERT INTO cards (id, column_id, title, committed_at, committed_by, discarded_at, discarded_by) VALUES
+					(1, 2, 'Never committed', NULL, NULL, NULL, NULL),
+					(2, 1, 'An option, committed', '2026-10-01 09:00:00', 1, NULL, NULL),
+					(3, 2, 'Live, discarded', '2026-10-01 09:00:00', 1, '2026-10-01 09:00:00', 1);
+			`);
+			process.env.LOG_LEVEL = 'INFO';
+
+			const { response, logged } = await upload(backup);
+
+			expect(response.status).toBe(200);
+			expect(logged).toHaveLength(1);
+			expect(logged[0]).toMatch(
+				/Filled in: first_completed_at on 0 card\(s\), access_token on 0 request\(s\), committed_at and committed_by on 1 card\(s\) not upstream\. Cleared: the commitment of 1 upstream card\(s\), the discard mark of 1 card\(s\) that are not archived\.$/
+			);
+			// A restore that clears nothing says nothing of clearing: the pre-0060 ones above end at their Filled in.
+			expect(logged[0].match(/Cleared:/g)).toHaveLength(1);
+			expect(sqlite.prepare('SELECT id, committed_by, discarded_by FROM cards ORDER BY id').all()).toEqual([
+				{ id: 1, committed_by: null, discarded_by: null },
+				{ id: 2, committed_by: null, discarded_by: null },
+				{ id: 3, committed_by: 1, discarded_by: null }
+			]);
 		});
 
 		it('refuses a backup that would leave cards on a column it could not copy, and changes nothing', async () => {
@@ -5180,12 +5317,23 @@ describe('the database the runner leaves, against the model', () => {
 		database.exec("INSERT INTO sqlite_sequence (name, seq) VALUES ('categories', 3)");
 		// Where it starts. Every difference card 2006 set out to close, the 39
 		// indexes of 0053 (card 2106), the column of 0056 (card 2168), the
-		// column of 0058 (card 2159), the table of 0059 (card 2397), and no other.
+		// column of 0058 (card 2159), the table of 0059 (card 2397), the columns,
+		// keys and indexes of 0060 (milestone 22), and no other.
 		expect(withoutTheIndexesOf0053(differencesFromModel(structureOf(database), structureOf(modelDatabase())))).toEqual([
+			'boards.kind: the column is in the model but not in the database',
+			'cards.committed_at: the column is in the model but not in the database',
+			'cards.committed_by: the column is in the model but not in the database',
+			'cards.discarded_at: the column is in the model but not in the database',
+			'cards.discarded_by: the column is in the model but not in the database',
 			'cards.first_completed_at: the column is in the model but not in the database',
+			'cards: foreign key in the model but not in the database: (committed_by) references users(id), on update NO ACTION, on delete SET NULL',
+			'cards: foreign key in the model but not in the database: (discarded_by) references users(id), on update NO ACTION, on delete SET NULL',
+			'cards: index in the model but not in the database: index idx_cards_committed_by on (committed_by)',
+			'cards: index in the model but not in the database: index idx_cards_discarded_by on (discarded_by)',
 			'categories.board_id: is NOT NULL; the model has it nullable',
 			'categories: foreign key not in the model: (board_id) references boards(id), on update NO ACTION, on delete CASCADE',
 			'categories: foreign key in the model but not in the database: (board_id) references boards(id), on update NO ACTION, on delete SET NULL',
+			'columns.role: the column is in the model but not in the database',
 			'columns.wip_limit: is nullable; the model has it NOT NULL',
 			'invite_tokens.token: is nullable; the model has it NOT NULL',
 			'report_schedules.time_zone: the column is in the model but not in the database',
@@ -5212,13 +5360,14 @@ describe('the database the runner leaves, against the model', () => {
 			FILE_0056,
 			FILE_0057,
 			FILE_0058,
-			FILE_0059
+			FILE_0059,
+			FILE_0060
 		]);
 		expect(report.tolerated).toEqual([]);
 		expect(report.rebuilt.map((r) => r.table)).toEqual(['columns', 'categories', 'settings', 'user_xp', 'invite_tokens']);
 		expect(report.missingFromDisk).toEqual([]);
 		expect(report.schemaDifferences).toEqual([]);
-		expect(recordedIn(database)).toHaveLength(65);
+		expect(recordedIn(database)).toHaveLength(66);
 		expect(sequenceIn(database, 'categories')).toBe(3);
 		expect(foreignKeysOn(database)).toBe(true);
 		expect(differencesIn(database)).toEqual(NONE);
@@ -5241,14 +5390,25 @@ describe('the database the runner leaves, against the model', () => {
 		seed(database);
 		// Where it starts: `boards` with neither of its foreign keys right,
 		// none of the 39 indexes of 0053 (card 2106), no column of 0056
-		// (card 2168) or 0058 (card 2159), and no table of 0059 (card 2397).
+		// (card 2168) or 0058 (card 2159), no table of 0059 (card 2397), and
+		// nothing of 0060 (milestone 22).
 		expect(withoutTheIndexesOf0053(differencesFromModel(structureOf(database), structureOf(modelDatabase())))).toEqual([
+			'boards.kind: the column is in the model but not in the database',
 			'boards: foreign key not in the model: (created_by) references users(id), on update NO ACTION, on delete NO ACTION',
 			'boards: foreign key in the model but not in the database: (created_by) references users(id), on update NO ACTION, on delete SET NULL',
 			'boards: foreign key in the model but not in the database: (parent_card_id) references cards(id), on update NO ACTION, on delete CASCADE',
+			'cards.committed_at: the column is in the model but not in the database',
+			'cards.committed_by: the column is in the model but not in the database',
+			'cards.discarded_at: the column is in the model but not in the database',
+			'cards.discarded_by: the column is in the model but not in the database',
+			'cards: foreign key in the model but not in the database: (committed_by) references users(id), on update NO ACTION, on delete SET NULL',
+			'cards: foreign key in the model but not in the database: (discarded_by) references users(id), on update NO ACTION, on delete SET NULL',
+			'cards: index in the model but not in the database: index idx_cards_committed_by on (committed_by)',
+			'cards: index in the model but not in the database: index idx_cards_discarded_by on (discarded_by)',
 			'categories.board_id: is NOT NULL; the model has it nullable',
 			'categories: foreign key not in the model: (board_id) references boards(id), on update NO ACTION, on delete CASCADE',
 			'categories: foreign key in the model but not in the database: (board_id) references boards(id), on update NO ACTION, on delete SET NULL',
+			'columns.role: the column is in the model but not in the database',
 			'report_schedules.time_zone: the column is in the model but not in the database',
 			'setting_setters: the table is in the model but not in the database',
 			'time_entries: the table is not in the model',
@@ -5258,10 +5418,12 @@ describe('the database the runner leaves, against the model', () => {
 		]);
 		const rowsOf = (table: string) => contentsOf(database)[table];
 		const before = Object.fromEntries(['boards', 'columns', 'categories', 'cards', 'labels'].map((t) => [t, rowsOf(t)]));
-		// Less the indexes of 0053, which the run creates before it rebuilds.
+		// Less the indexes of 0053, which the run creates before it rebuilds, and
+		// boards.kind, which 0060 adds before it rebuilds (milestone 22).
 		const notOf0053 = (difference: string) => !INDEXES_FROM_0053.some(({ name }) => difference.includes(` index ${name} on `));
+		const notOf0060 = (difference: string) => !difference.startsWith('boards.kind: ');
 		const differed = {
-			boards: differencesOf(database, 'boards').filter(notOf0053),
+			boards: differencesOf(database, 'boards').filter(notOf0053).filter(notOf0060),
 			categories: differencesOf(database, 'categories').filter(notOf0053)
 		};
 		expect(differed.boards).toHaveLength(3);
@@ -5269,14 +5431,16 @@ describe('the database the runner leaves, against the model', () => {
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual(['0052_drop_time_entries.sql', '0053_index_foreign_keys_end_sessions.sql', FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059]);
+		expect(report.applied).toEqual(['0052_drop_time_entries.sql', '0053_index_foreign_keys_end_sessions.sql', FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060]);
 		expect(report.rebuilt).toEqual([
 			{ table: 'boards', rows: 3, defaulted: [], differences: differed.boards },
 			{ table: 'categories', rows: 3, defaulted: [], differences: differed.categories }
 		]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect(differencesIn(database)).toEqual(NONE);
-		for (const table of Object.keys(before)) expect(rowsOf(table)).toEqual(before[table]);
+		// Every row kept, and as it was, but for what 0060 adds: `boards`, rebuilt
+		// in the same start, keeps the `kind` it gave (milestone 22).
+		for (const table of Object.keys(before)) expect(rowsOf(table)).toEqual(after0060(table, before[table]));
 		expect(sequenceIn(database, 'boards')).toBe(8);
 		expect(database.pragma('foreign_key_check')).toEqual([]);
 	});
@@ -5390,7 +5554,7 @@ describe('0053, which ends every session once (card 2106)', () => {
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0053, FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059]);
+		expect(report.applied).toEqual([FILE_0053, FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060]);
 		expect(report.schemaDifferences).toEqual([]);
 		const after = contentsOf(database);
 		expect(after.sessions).toEqual([]);
@@ -5702,7 +5866,7 @@ describe('0054, which indexes a person’s entries by time and ends every unused
 	});
 
 	it('is the file after 0053: the composite index in place of the one on user_id, then the delete of unused invites', () => {
-		expect(realFiles.filter((f) => f > FILE_0053)).toEqual([FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059]);
+		expect(realFiles.filter((f) => f > FILE_0053)).toEqual([FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060]);
 		const sql = sqlStatements(readFileSync(join(REAL_MIGRATIONS, FILE_0054), 'utf-8')).map((s) => s.text);
 		expect(sql).toEqual([
 			'DROP INDEX IF EXISTS `idx_activity_log_user_id`;',
@@ -5843,7 +6007,7 @@ describe('0054, which indexes a person’s entries by time and ends every unused
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059]);
+		expect(report.applied).toEqual([FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect((database.prepare('SELECT token FROM invite_tokens').all() as { token: string }[]).map((r) => r.token)).toEqual([
 			'used-long-ago'
@@ -5921,7 +6085,7 @@ describe('0055, which gives every task request a new link once (card 2158)', () 
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059]);
+		expect(report.applied).toEqual([FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060]);
 		expect(report.schemaDifferences).toEqual([]);
 		const links = linksIn(database);
 		expect(links).toHaveLength(3);
@@ -5954,7 +6118,7 @@ describe('0055, which gives every task request a new link once (card 2158)', () 
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059]);
+		expect(report.applied).toEqual([FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060]);
 		expect(linksIn(database)).toEqual([]);
 	});
 
@@ -6014,7 +6178,7 @@ describe("0056, which adds who last set a webhook's address or secret (card 2168
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0056, FILE_0057, FILE_0058, FILE_0059]);
+		expect(report.applied).toEqual([FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect(database.prepare('SELECT id, url, secret, active, set_by FROM webhooks').all()).toEqual([
 			{ id: 1, url: 'https://hooks.example.test/x', secret: 's3cret', active: 1, set_by: null }
@@ -6022,8 +6186,9 @@ describe("0056, which adds who last set a webhook's address or secret (card 2168
 		const after = contentsOf(database);
 		for (const table of Object.keys(before)) {
 			// The migration record, and its id counter, gain the file; each webhook gains the empty column.
+			// The rest are as they were, but for what 0060, applied in the same run, adds.
 			if (['webhooks', '__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
-			expect(after[table], table).toEqual(before[table]);
+			expect(after[table], table).toEqual(after0060(table, before[table]));
 		}
 		expect(indexesOf(database)).toContain('idx_webhooks_set_by');
 		expect(database.prepare('PRAGMA foreign_key_list(webhooks)').all()).toContainEqual(
@@ -6149,21 +6314,34 @@ ORDER BY m.id, c.id;`;
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0057, FILE_0058, FILE_0059]);
+		expect(report.applied).toEqual([FILE_0057, FILE_0058, FILE_0059, FILE_0060]);
 		expect(report.schemaDifferences).toEqual([]);
 		const cardsAfter = cardsIn(database);
-		const changed = cardsAfter.filter((row, i) => JSON.stringify(row) !== JSON.stringify(cardsBefore[i])).map((row) => row.id);
+		// 0060, applied in the same run, commits all seven, each on a column of a
+		// board that is there, when it was created (milestone 22). Less its four
+		// columns, each card is as 0057 leaves it.
+		expect(cardsAfter.map((row) => [row.id, row.committed_at, row.committed_by, row.discarded_at, row.discarded_by])).toEqual(
+			cardsBefore.map((row) => [row.id, STAMP, null, null, null])
+		);
+		const OF_0060 = ['committed_at', 'committed_by', 'discarded_at', 'discarded_by'];
+		const without0060 = (row: Record<string, unknown>) => Object.fromEntries(Object.entries(row).filter(([key]) => !OF_0060.includes(key)));
+		const changed = cardsAfter
+			.filter((row, i) => JSON.stringify(without0060(row)) !== JSON.stringify(cardsBefore[i]))
+			.map((row) => row.id);
 		expect(changed).toEqual(listed.map((row) => row.card_id));
 		// Each of them differs in its milestone alone: updated_at is as it was.
 		for (const [i, row] of cardsAfter.entries()) {
-			expect(row, `card ${row.id}`).toEqual(changed.includes(row.id as number) ? { ...cardsBefore[i], milestone_id: null } : cardsBefore[i]);
+			expect(without0060(row), `card ${row.id}`).toEqual(
+				changed.includes(row.id as number) ? { ...cardsBefore[i], milestone_id: null } : cardsBefore[i]
+			);
 		}
 		expect(cardsAfter.map((row) => row.updated_at)).toEqual(Array(7).fill(STAMP));
 		const after = contentsOf(database);
 		for (const table of Object.keys(before)) {
-			// The migration record, and its id counter, gain the file.
+			// The migration record, and its id counter, gain the file; boards and
+			// columns gain 0060's columns.
 			if (['cards', '__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
-			expect(after[table], table).toEqual(before[table]);
+			expect(after[table], table).toEqual(after0060(table, before[table]));
 		}
 
 		// The same statement again, as the backfill repeats it at every start
@@ -6178,7 +6356,9 @@ ORDER BY m.id, c.id;`;
 		expect(found).toEqual({
 			problems: [],
 			notes: [
-				`cards: milestone_id cleared where it named a milestone of another board in its 7 row(s) by ${FILE_0057}, a one-off declared in tests/rehearsal/one-offs.ts`
+				`cards: milestone_id cleared where it named a milestone of another board in its 7 row(s) by ${FILE_0057}, a one-off declared in tests/rehearsal/one-offs.ts`,
+				// And 0060's, applied in the same run.
+				`cards: committed_at and committed_by filled from created_at and created_by for every card not upstream in its 7 row(s) by ${FILE_0060}, a one-off declared in tests/rehearsal/one-offs.ts`
 			]
 		});
 	});
@@ -6188,7 +6368,7 @@ ORDER BY m.id, c.id;`;
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0057, FILE_0058, FILE_0059]);
+		expect(report.applied).toEqual([FILE_0057, FILE_0058, FILE_0059, FILE_0060]);
 		expect(cardsIn(database)).toEqual([]);
 	});
 
@@ -6239,14 +6419,15 @@ describe("0058, which adds the time zone a report schedule's time is read in (ca
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0058, FILE_0059]);
+		expect(report.applied).toEqual([FILE_0058, FILE_0059, FILE_0060]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect(database.prepare('SELECT * FROM report_schedules').get()).toEqual({ ...scheduleBefore, time_zone: 'UTC' });
 		const after = contentsOf(database);
 		for (const table of Object.keys(before)) {
 			// The migration record, and its id counter, gain the file; each schedule gains the column.
+			// The rest are as they were, but for what 0060, applied in the same run, adds.
 			if (['report_schedules', '__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
-			expect(after[table], table).toEqual(before[table]);
+			expect(after[table], table).toEqual(after0060(table, before[table]));
 		}
 		// The rehearsal: every row kept, nothing to note.
 		const found: Findings = { problems: [], notes: [] };
@@ -6313,7 +6494,7 @@ describe('0059, which adds who last changed the mail settings, the App URL and e
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0059]);
+		expect(report.applied).toEqual([FILE_0059, FILE_0060]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect(database.prepare('SELECT * FROM setting_setters').all()).toEqual([]);
 		const after = contentsOf(database);
@@ -6393,5 +6574,326 @@ describe('0059, which adds who last changed the mail settings, the App URL and e
 			{ setting: 'mail', place: 'p', user_id: 2 }
 		]);
 		expect(live.prepare('SELECT username FROM users WHERE id = 2').get()).toEqual({ username: 'ann' });
+	});
+});
+
+// ─── 0060: upstream, the commitment point and discards ───────────────────────
+
+describe('0060, which adds the Options role, the ideas kind, and each card’s commitment and discard (milestone 22)', () => {
+	const STAMP = '2026-10-01 09:00:00';
+
+	/**
+	 * A database with every migration before 0060 applied and, unless `empty`:
+	 * Ann (1) and Bob (2); boards A (1) and B (2), and a board 3 deleted with
+	 * foreign keys off, as a restore runs, so that its column is left. Cards:
+	 *
+	 *   1  on A's To Do, raised by Ann          committed by Ann
+	 *   2  on A's Complete, archived, by nobody committed, by nobody recorded
+	 *   3  on B's Doing, raised by Bob          committed by Bob
+	 *   4  on a column that is not there        left alone
+	 *   5  on the deleted board's column        left alone
+	 */
+	function beforeIt(empty = false): Database.Database {
+		const database = memoryDb();
+		const before = Object.fromEntries(
+			realFiles.filter((f) => f < FILE_0060).map((f) => [f, readFileSync(join(REAL_MIGRATIONS, f), 'utf-8')])
+		);
+		applyFilesOnly(database, migrationsDir(before));
+		if (empty) return database;
+		database.exec(`
+			INSERT INTO users (id, username, email, password_hash) VALUES (1, 'ann', 'ann@example.test', 'x'), (2, 'bob', 'bob@example.test', 'x');
+			INSERT INTO boards (id, name, created_by, created_at, updated_at) VALUES
+				(1, 'A', 1, '${STAMP}', '${STAMP}'), (2, 'B', 2, '${STAMP}', '${STAMP}'), (3, 'Gone', 1, '${STAMP}', '${STAMP}');
+			INSERT INTO columns (id, board_id, title) VALUES (1, 1, 'To Do'), (2, 1, 'Complete'), (3, 2, 'Doing'), (5, 3, 'To Do');
+			PRAGMA foreign_keys = OFF;
+			INSERT INTO cards (id, column_id, title, created_by, archived_at, completed_at, first_completed_at, created_at, updated_at) VALUES
+				(1, 1, 'Raised by Ann', 1, NULL, NULL, NULL, '2026-09-01 08:00:00', '${STAMP}'),
+				(2, 2, 'Done and archived', NULL, '${STAMP}', '${STAMP}', '${STAMP}', '2026-09-02 08:00:00', '${STAMP}'),
+				(3, 3, 'Raised by Bob', 2, NULL, NULL, NULL, '2026-09-03 08:00:00', '${STAMP}'),
+				(4, 99, 'On no column', 1, NULL, NULL, NULL, '2026-09-04 08:00:00', '${STAMP}'),
+				(5, 5, 'On a board gone', 1, NULL, NULL, NULL, '2026-09-05 08:00:00', '${STAMP}');
+			DELETE FROM boards WHERE id = 3;
+			PRAGMA foreign_keys = ON;
+		`);
+		return database;
+	}
+
+	const commitmentsIn = (database: Database.Database) =>
+		database
+			.prepare('SELECT id, committed_at, committed_by, discarded_at, discarded_by, updated_at FROM cards ORDER BY id')
+			.all();
+
+	it('adds the five columns and two indexes, then commits the cards in one UPDATE, the backfill’s own text', () => {
+		const sql = readFileSync(join(REAL_MIGRATIONS, FILE_0060), 'utf-8');
+		const statements = sqlStatements(sql).map((s) => s.text.replace(/\r\n/g, '\n'));
+		expect(statements.slice(0, -1)).toEqual([
+			'ALTER TABLE `columns` ADD COLUMN `role` text;',
+			"ALTER TABLE `boards` ADD COLUMN `kind` text DEFAULT 'delivery' NOT NULL;",
+			'ALTER TABLE `cards` ADD COLUMN `committed_at` text;',
+			'ALTER TABLE `cards` ADD COLUMN `committed_by` integer REFERENCES `users`(`id`) ON UPDATE no action ON DELETE set null;',
+			'ALTER TABLE `cards` ADD COLUMN `discarded_at` text;',
+			'ALTER TABLE `cards` ADD COLUMN `discarded_by` integer REFERENCES `users`(`id`) ON UPDATE no action ON DELETE set null;',
+			'CREATE INDEX IF NOT EXISTS `idx_cards_committed_by` ON `cards` (`committed_by`);',
+			'CREATE INDEX IF NOT EXISTS `idx_cards_discarded_by` ON `cards` (`discarded_by`);'
+		]);
+		// The UPDATE alone is the backfill's: the runner repeats it at every start
+		// and after every restore, so the two are held to the same text.
+		const words = (text: string) => text.replace(/\s+/g, ' ').trim();
+		const updates = statements.filter((text) => text.startsWith('UPDATE'));
+		expect(updates.map(words)).toEqual([words(COMMITTED_BEFORE_UPSTREAM)]);
+		// What it changes, why, what people see, that it runs once (card 2106, decision 3), and a restore.
+		for (const said of ['What people see:', 'Runs once.', 'duplicate column', 'A backup made before this file']) {
+			expect(sql, said).toContain(said);
+		}
+	});
+
+	it('commits every card on a column of a board that is there, archived ones included, from when and by whom it was created, and nothing else', () => {
+		const database = beforeIt();
+		const before = contentsOf(database);
+		const state = stateOf(database);
+
+		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+
+		expect(report.applied).toEqual([FILE_0060]);
+		expect(report.schemaDifferences).toEqual([]);
+		// The file committed them, so the backfill after it found none.
+		expect(report.backfilled.committedFilled).toBe(0);
+		expect(commitmentsIn(database)).toEqual([
+			{ id: 1, committed_at: '2026-09-01 08:00:00', committed_by: 1, discarded_at: null, discarded_by: null, updated_at: STAMP },
+			{ id: 2, committed_at: '2026-09-02 08:00:00', committed_by: null, discarded_at: null, discarded_by: null, updated_at: STAMP },
+			{ id: 3, committed_at: '2026-09-03 08:00:00', committed_by: 2, discarded_at: null, discarded_by: null, updated_at: STAMP },
+			{ id: 4, committed_at: null, committed_by: null, discarded_at: null, discarded_by: null, updated_at: STAMP },
+			{ id: 5, committed_at: null, committed_by: null, discarded_at: null, discarded_by: null, updated_at: STAMP }
+		]);
+		expect(database.prepare('SELECT id, kind FROM boards ORDER BY id').all()).toEqual([
+			{ id: 1, kind: 'delivery' },
+			{ id: 2, kind: 'delivery' }
+		]);
+		expect(database.prepare('SELECT COUNT(*) AS n FROM columns WHERE role IS NOT NULL').get()).toEqual({ n: 0 });
+		// Every other table, and every other cell of these three, as it was.
+		const after = contentsOf(database);
+		for (const table of Object.keys(before)) {
+			if (['__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
+			expect(after[table], table).toEqual(after0060(table, before[table], [4, 5]));
+		}
+		// The rehearsal: every row kept, and the change noted as the one-off declared for it.
+		const found: Findings = { problems: [], notes: [] };
+		compare(state, stateOf(database), report.applied, found);
+		expect(found).toEqual({
+			problems: [],
+			notes: [
+				`cards: committed_at and committed_by filled from created_at and created_by for every card not upstream in its 5 row(s) by ${FILE_0060}, a one-off declared in tests/rehearsal/one-offs.ts`
+			]
+		});
+
+		// Nothing at the next start.
+		const again = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+		expect(again.applied).toEqual([]);
+		expect(again.backfilled).toMatchObject({ committedFilled: 0, upstreamCleared: 0, discardedCleared: 0 });
+		expect(contentsOf(database)).toEqual(after);
+	});
+
+	it('empties who committed or discarded a card when that account is deleted, and indexes both', () => {
+		const database = beforeIt();
+		runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+		for (const from of ['committed_by', 'discarded_by']) {
+			expect(database.prepare('PRAGMA foreign_key_list(cards)').all(), from).toContainEqual(
+				expect.objectContaining({ table: 'users', from, to: 'id', on_delete: 'SET NULL' })
+			);
+		}
+		expect(indexesOf(database)).toEqual(expect.arrayContaining(['idx_cards_committed_by', 'idx_cards_discarded_by']));
+		expect(unindexedForeignKeys(database)).toEqual([]);
+
+		database.prepare("UPDATE cards SET archived_at = ?, discarded_at = ?, discarded_by = 2 WHERE id = 1").run(STAMP, STAMP);
+		database.prepare('DELETE FROM users WHERE id = 2').run();
+
+		expect(database.prepare('SELECT id, committed_by, discarded_by FROM cards WHERE id IN (1, 3) ORDER BY id').all()).toEqual([
+			{ id: 1, committed_by: 1, discarded_by: null },
+			{ id: 3, committed_by: null, discarded_by: null }
+		]);
+		// The work is kept: the cards are there, and still committed.
+		expect(database.prepare('SELECT committed_at FROM cards WHERE id = 3').get()).toEqual({ committed_at: '2026-09-03 08:00:00' });
+	});
+
+	it('does not survive a second run: "duplicate column" is not tolerated in it', () => {
+		const database = beforeIt(true);
+		runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+		expect(TOLERANT_FILES).not.toContain(FILE_0060);
+		const files = Object.fromEntries(realFiles.map((f) => [f, readFileSync(join(REAL_MIGRATIONS, f), 'utf-8')]));
+		const again = '0061_0060_again.sql';
+
+		const { error } = halted({ database, migrationsDir: migrationsDir({ ...files, [again]: files[FILE_0060] }) });
+
+		expect(error.message).toContain(again);
+		expect(error.message).toContain('duplicate column name: role');
+		expect(recordedIn(database)).not.toContain(again);
+	});
+
+	it('is harmless on an empty database, as a new installation has', () => {
+		const database = beforeIt(true);
+
+		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+
+		expect(report.applied).toEqual([FILE_0060]);
+		expect(report.schemaDifferences).toEqual([]);
+		expect(database.prepare('SELECT COUNT(*) AS n FROM cards').get()).toEqual({ n: 0 });
+	});
+
+	it('is declared to the rehearsal as a one-off that keeps every row of cards', () => {
+		expect(ONE_OFFS).toContainEqual({
+			file: FILE_0060,
+			table: 'cards',
+			change: 'committed_at and committed_by filled from created_at and created_by for every card not upstream',
+			keepsRows: true
+		});
+	});
+});
+
+// ─── The three backfills of the commitment point ─────────────────────────────
+
+describe('the backfills of the commitment point, repeated at every start (milestone 22)', () => {
+	const STAMP = '2026-10-01 09:00:00';
+
+	/**
+	 * A current database. Board A (1) is a delivery board with an Options
+	 * column (1), To Do (2) and Complete (3); board B (2) is an ideas board
+	 * (column 4). Cards:
+	 *
+	 *    1  To Do, no commitment, raised by Bob       committed, by Bob
+	 *    2  Complete, archived, no commitment         committed, by nobody recorded
+	 *    3  Options, no commitment                    left an option
+	 *    4  the ideas board, no commitment            left an option
+	 *    5  Options, holding a commitment             cleared
+	 *    6  the ideas board, holding a commitment     cleared
+	 *    7  To Do, committed earlier than created     left as it is
+	 *    8  To Do, not archived, marked discarded     the mark cleared
+	 *    9  Options, archived and discarded           left as it is
+	 *   10  a column that is not there                left alone
+	 */
+	function current(): Database.Database {
+		const database = memoryDb();
+		runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+		database.exec(`
+			INSERT INTO users (id, username, email, password_hash) VALUES (1, 'ann', 'ann@example.test', 'x'), (2, 'bob', 'bob@example.test', 'x');
+			INSERT INTO boards (id, name, kind) VALUES (1, 'Delivery', 'delivery'), (2, 'Ideas', 'ideas');
+			INSERT INTO columns (id, board_id, title, position, role) VALUES
+				(1, 1, 'Ideas', 0, 'options'), (2, 1, 'To Do', 1, NULL), (3, 1, 'Complete', 2, NULL), (4, 2, 'New Ideas', 0, NULL);
+			PRAGMA foreign_keys = OFF;
+			INSERT INTO cards (id, column_id, title, created_by, created_at, updated_at, archived_at, committed_at, committed_by, discarded_at, discarded_by) VALUES
+				(1, 2, 'One', 2, '2026-09-01 08:00:00', '${STAMP}', NULL, NULL, NULL, NULL, NULL),
+				(2, 3, 'Two', NULL, '2026-09-02 08:00:00', '${STAMP}', '${STAMP}', NULL, NULL, NULL, NULL),
+				(3, 1, 'Three', 1, '2026-09-03 08:00:00', '${STAMP}', NULL, NULL, NULL, NULL, NULL),
+				(4, 4, 'Four', 1, '2026-09-04 08:00:00', '${STAMP}', NULL, NULL, NULL, NULL, NULL),
+				(5, 1, 'Five', 1, '2026-09-05 08:00:00', '${STAMP}', NULL, '2026-09-06 08:00:00', 1, NULL, NULL),
+				(6, 4, 'Six', 1, '2026-09-06 08:00:00', '${STAMP}', NULL, '2026-09-07 08:00:00', 2, NULL, NULL),
+				(7, 2, 'Seven', 1, '2026-09-07 08:00:00', '${STAMP}', NULL, '2026-09-08 08:00:00', 2, NULL, NULL),
+				(8, 2, 'Eight', 1, '2026-09-08 08:00:00', '${STAMP}', NULL, '2026-09-08 08:00:00', 1, '${STAMP}', 1),
+				(9, 1, 'Nine', 1, '2026-09-09 08:00:00', '${STAMP}', '${STAMP}', NULL, NULL, '${STAMP}', 1),
+				(10, 99, 'Ten', 1, '2026-09-10 08:00:00', '${STAMP}', NULL, NULL, NULL, NULL, NULL);
+			PRAGMA foreign_keys = ON;
+		`);
+		return database;
+	}
+
+	const commitmentsIn = (database: Database.Database) =>
+		(
+			database
+				.prepare('SELECT id, committed_at, committed_by, discarded_at, discarded_by, updated_at FROM cards ORDER BY id')
+				.all() as { id: number; committed_at: string | null; committed_by: number | null; discarded_at: string | null; discarded_by: number | null; updated_at: string }[]
+		).map((c) => [c.id, c.committed_at, c.committed_by, c.discarded_at, c.discarded_by, c.updated_at]);
+
+	it('commit each card not upstream that has no commitment, clear one on an upstream card and a discard mark on a live card, once', () => {
+		const database = current();
+
+		expect(runBackfills(database)).toEqual({
+			firstCompletedAt: 0,
+			accessTokens: 0,
+			releasedFromMilestones: 0,
+			released: [],
+			unfiledBoards: 0,
+			unfiled: [],
+			committedFilled: 2,
+			upstreamCleared: 2,
+			discardedCleared: 1
+		});
+		expect(commitmentsIn(database)).toEqual([
+			[1, '2026-09-01 08:00:00', 2, null, null, STAMP],
+			[2, '2026-09-02 08:00:00', null, null, null, STAMP],
+			[3, null, null, null, null, STAMP],
+			[4, null, null, null, null, STAMP],
+			[5, null, null, null, null, STAMP],
+			[6, null, null, null, null, STAMP],
+			[7, '2026-09-08 08:00:00', 2, null, null, STAMP],
+			[8, '2026-09-08 08:00:00', 1, null, null, STAMP],
+			[9, null, null, STAMP, 1, STAMP],
+			[10, null, null, null, null, STAMP]
+		]);
+		// Every card's updated_at is as it was: nobody edited them.
+		expect(runBackfills(database)).toMatchObject({ committedFilled: 0, upstreamCleared: 0, discardedCleared: 0 });
+	});
+
+	it('say what they did at a start in WARN lines, none of them beginning "Took"', () => {
+		const database = current();
+		process.env.LOG_LEVEL = 'WARN';
+		const lines: string[] = [];
+		vi.spyOn(console, 'warn').mockImplementation((line) => {
+			lines.push(String(line).replace(/^\[[^\]]+\] /, ''));
+		});
+
+		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+
+		expect(report.backfilled).toMatchObject({ committedFilled: 2, upstreamCleared: 2, discardedCleared: 1 });
+		expect(lines).toEqual([
+			'[WARN] [DB] Committed 2 card(s) that are not upstream and had no commitment recorded, at the moment each was created and by whoever created it',
+			'[WARN] [DB] Cleared the commitment on 2 card(s) in an Options column or on an ideas board: an option is not committed',
+			'[WARN] [DB] Cleared the discard mark on 1 card(s) that are not archived'
+		]);
+		expect(lines.filter((line) => line.includes('Took '))).toEqual([]);
+	});
+
+	it('commit a card on a board of a kind it does not know, the exact complement of the clear (the S1a review, R3)', () => {
+		const database = memoryDb();
+		runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+		database.exec(`
+			INSERT INTO boards (id, name, kind) VALUES (1, 'Portfolio', 'portfolio');
+			INSERT INTO columns (id, board_id, title, position, role) VALUES (1, 1, 'Ideas', 0, 'options'), (2, 1, 'Doing', 1, NULL);
+			INSERT INTO cards (id, column_id, title, created_at) VALUES (1, 2, 'Committed', '${STAMP}'), (2, 1, 'An option', '${STAMP}');
+		`);
+
+		expect(runBackfills(database)).toMatchObject({ committedFilled: 1, upstreamCleared: 0 });
+		expect(commitmentsIn(database).map((row) => row.slice(0, 2))).toEqual([
+			[1, STAMP],
+			[2, null]
+		]);
+		// Every card is on one side or the other: one more run moves nothing either way.
+		expect(runBackfills(database)).toMatchObject({ committedFilled: 0, upstreamCleared: 0 });
+	});
+
+	it('skip what is not there, as on a database the runner was given other files for', () => {
+		const database = memoryDb();
+		database.exec('CREATE TABLE cards (id INTEGER PRIMARY KEY, created_at TEXT, created_by INTEGER, archived_at TEXT)');
+		database.exec("INSERT INTO cards (id, created_at) VALUES (1, '2026-09-01 08:00:00')");
+
+		expect(runBackfills(database)).toMatchObject({ committedFilled: 0, upstreamCleared: 0, discardedCleared: 0 });
+	});
+
+	it('repair a restored backup as they repair a start', () => {
+		// A backup in the current shape, as one made after 0060 and restored into
+		// an older build, then brought forward, can be: a card with no
+		// commitment, commitments on options and a discard mark on a live card.
+		// Card 10, on no column, is left out: the restore reports such a row, which is another test's.
+		const backup = current();
+		backup.exec("UPDATE users SET role = 'superadmin' WHERE id = 1; DELETE FROM cards WHERE id = 10");
+		const live = memoryDb();
+		runMigrations({ database: live, migrationsDir: REAL_MIGRATIONS });
+		const repaired = current();
+		repaired.exec('DELETE FROM cards WHERE id = 10');
+		runBackfills(repaired);
+
+		const result = restoreFromBackup(live, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(result.backfilled).toMatchObject({ committedFilled: 2, upstreamCleared: 2, discardedCleared: 1 });
+		expect(commitmentsIn(live)).toEqual(commitmentsIn(repaired));
 	});
 });

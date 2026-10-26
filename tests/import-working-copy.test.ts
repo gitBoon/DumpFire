@@ -208,7 +208,9 @@ const APP_URL = 'https://dumpfire.example.test';
  *
  * and two users, two boards, two columns and two cards for those to belong to.
  * One of the users is the superadmin: the import refuses a backup that has
- * users and none.
+ * users and none. The cards are committed, as a card created in To Do is
+ * (milestone 22), so that the restore's backfills find nothing to fill in and
+ * every table comes back exactly as the backup has it.
  */
 function seed(database: Database.Database): void {
 	database.exec(`
@@ -218,6 +220,7 @@ function seed(database: Database.Database): void {
 		INSERT INTO boards (id, name, created_by) VALUES (1, 'A', 1), (2, 'B', 2);
 		INSERT INTO columns (id, board_id, title) VALUES (1, 1, 'To Do'), (2, 2, 'To Do');
 		INSERT INTO cards (id, column_id, title) VALUES (1, 1, 'One'), (2, 2, 'Two');
+		UPDATE cards SET committed_at = created_at;
 		INSERT INTO report_schedules (id, user_id, name, enabled, recipients) VALUES
 			(1, 1, 'Weekly to the board', 1, 'board@example.test'),
 			(2, 1, 'Monthly to finance', 1, 'finance@example.test'),

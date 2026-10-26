@@ -97,6 +97,12 @@ export const boards = sqliteTable('boards', {
 		.references((): AnySQLiteColumn => cards.id, { onDelete: 'cascade' }),
 	categoryId: integer('category_id'),
 	isPublic: integer('is_public', { mode: 'boolean' }).notNull().default(false),
+	// 'delivery' (every board until milestone 22) or 'ideas': a board whose
+	// every column is upstream, holding options that nobody has committed to
+	// (migration 0060). Free text checked in code (`BOARD_KINDS` in
+	// src/lib/column-role.ts), not a CHECK: this table is rebuilt from the model,
+	// and the rebuild refuses a table with one.
+	kind: text('kind').notNull().default('delivery'),
 	createdBy: integer('created_by')
 		.references(() => users.id, { onDelete: 'set null' }),
 	createdAt: text('created_at')
@@ -157,7 +163,12 @@ export const columns = sqliteTable('columns', {
 	position: real('position').notNull().default(0),
 	color: text('color').notNull().default('#6366f1'),
 	showAddCard: integer('show_add_card', { mode: 'boolean' }).notNull().default(false),
-	wipLimit: integer('wip_limit').notNull().default(0)
+	wipLimit: integer('wip_limit').notNull().default(0),
+	// NULL: an ordinary column, whose title decides whether it is To Do, On
+	// Hold or Complete. 'options': the board's Options column, upstream of the
+	// commitment point (migration 0060). Free text checked in code
+	// (`COLUMN_ROLES` in src/lib/column-role.ts), for the reason `boards.kind` is.
+	role: text('role')
 }, (table) => [
 	index('idx_columns_board_id').on(table.boardId)
 ]);
@@ -198,6 +209,23 @@ export const cards = sqliteTable('cards', {
 	 */
 	firstCompletedAt: text('first_completed_at'),
 	archivedAt: text('archived_at'),
+	/**
+	 * When the card crossed the commitment point, and who moved it across.
+	 * NULL while the card is an option: in an Options column or on an ideas
+	 * board. A card created in a committed column is committed as it is
+	 * created, by its creator; moving it back upstream clears both (migration
+	 * 0060). Upstream is decided by the column and the board, never by this
+	 * being NULL. `committedBy` is NULL too once that account is deleted, as
+	 * `createdBy` is: losing an account must never lose the work.
+	 */
+	committedAt: text('committed_at'),
+	committedBy: integer('committed_by').references(() => users.id, { onDelete: 'set null' }),
+	/**
+	 * When an archived card was discarded from upstream, and by whom: set with
+	 * `archivedAt` when an option is archived, cleared by a restore.
+	 */
+	discardedAt: text('discarded_at'),
+	discardedBy: integer('discarded_by').references(() => users.id, { onDelete: 'set null' }),
 	coverUrl: text('cover_url'),
 	recurrenceRule: text('recurrence_rule'),
 	nextRecurrence: text('next_recurrence'),
@@ -235,7 +263,9 @@ export const cards = sqliteTable('cards', {
 	index('idx_cards_completed_at').on(table.completedAt),
 	index('idx_cards_column_id').on(table.columnId),
 	index('idx_cards_category_id').on(table.categoryId),
-	index('idx_cards_created_by').on(table.createdBy)
+	index('idx_cards_created_by').on(table.createdBy),
+	index('idx_cards_committed_by').on(table.committedBy),
+	index('idx_cards_discarded_by').on(table.discardedBy)
 ]);
 
 export const subtasks = sqliteTable('subtasks', {

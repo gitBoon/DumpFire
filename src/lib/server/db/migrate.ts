@@ -242,6 +242,12 @@ export type Backfill = {
 	unfiledBoards: number;
 	/** The first 50 of them, by board id, with the id of the grouping each named. */
 	unfiled: UnfiledBoard[];
+	/** Cards not upstream given the commitment they were created with (milestone 22). */
+	committedFilled: number;
+	/** Upstream cards whose commitment was cleared: an option is not committed. */
+	upstreamCleared: number;
+	/** Cards that are not archived whose discard mark was cleared: only an archived card is discarded. */
+	discardedCleared: number;
 };
 
 /** A card the backfill took out of a milestone of another board, and that milestone. */
@@ -2432,6 +2438,48 @@ export function unfiledBoardsList(backfill: Pick<Backfill, 'unfiledBoards' | 'un
 }
 
 /**
+ * 0060's statement (milestone 22), which `runBackfills` repeats: every card
+ * that is not upstream and has no commitment recorded, archived ones included,
+ * committed at the moment it was created and by whoever created it. Upstream
+ * is a card in an Options column or on an ideas board, and this is the exact
+ * complement of the clear below (the S1a review's R3): a column whose role is
+ * not 'options' on a board whose kind is not 'ideas', a third kind of board
+ * counting as delivery. A card on a column or a board that is not there is
+ * left alone, as being on neither side. `updated_at` is left as it is, since
+ * nobody edited the cards. The text is 0060's own, and a test holds the two to
+ * it, so that a restore is repaired exactly as the deploy was.
+ */
+export const COMMITTED_BEFORE_UPSTREAM = [
+	'UPDATE `cards` SET `committed_at` = `created_at`, `committed_by` = `created_by`',
+	'WHERE `committed_at` IS NULL',
+	'  AND EXISTS (SELECT 1 FROM `columns` `c` JOIN `boards` `b` ON `b`.`id` = `c`.`board_id`',
+	"              WHERE `c`.`id` = `cards`.`column_id` AND `c`.`role` IS NOT 'options' AND `b`.`kind` IS NOT 'ideas');"
+].join('\n');
+
+/**
+ * Every upstream card that holds a commitment, cleared of it: a card in an
+ * Options column or on an ideas board is an option, and an option is not
+ * committed. Every write that moves a card upstream clears both, so at an
+ * ordinary start this finds nothing; a backup made after 0060 and restored
+ * into an older build, then brought forward, can hold such a card.
+ */
+export const UPSTREAM_NOT_COMMITTED = [
+	'UPDATE `cards` SET `committed_at` = NULL, `committed_by` = NULL',
+	'WHERE (`committed_at` IS NOT NULL OR `committed_by` IS NOT NULL)',
+	'  AND EXISTS (SELECT 1 FROM `columns` `c` JOIN `boards` `b` ON `b`.`id` = `c`.`board_id`',
+	"              WHERE `c`.`id` = `cards`.`column_id` AND (`c`.`role` IS 'options' OR `b`.`kind` IS 'ideas'));"
+].join('\n');
+
+/**
+ * Every card that is not archived, cleared of a discard mark: a discard is
+ * an archive from upstream, and a restore clears the mark with `archived_at`.
+ */
+export const LIVE_NOT_DISCARDED = [
+	'UPDATE `cards` SET `discarded_at` = NULL, `discarded_by` = NULL',
+	'WHERE `archived_at` IS NULL AND (`discarded_at` IS NOT NULL OR `discarded_by` IS NOT NULL);'
+].join('\n');
+
+/**
  * Fill in the two values that 0050 and 0051 filled in once, and take out of
  * their milestones the cards 0057 took out once.
  *
@@ -2458,6 +2506,18 @@ export function unfiledBoardsList(backfill: Pick<Backfill, 'unfiledBoards' | 'un
  * (`strandedBy` in restore.ts), so this never unfiles a board because a
  * restore failed to copy its grouping.
  *
+ * And the commitment point (milestone 22, 0060). Every card that is not
+ * upstream is committed, so one without a commitment is given the one it was
+ * created with, as 0060 gave every card once; every upstream card is an
+ * option, so one holding a commitment is cleared of it; and only an archived
+ * card is discarded, so a card that is not archived is cleared of a discard
+ * mark. A backup made before 0060 brings cards with no commitment, and one
+ * made after it and restored into an older build, then brought forward, can
+ * bring the other two. Every write keeps all three, so a count at a start that
+ * follows no restore and no return from an older image means some write does
+ * not. Nothing here, or anywhere, takes a NULL `committed_at` to mean
+ * upstream: the column and the board decide that.
+ *
  * A table or column that is not there is skipped. After the migration loop
  * all of them always exist; they are missing only when the runner is driven
  * against some other set of files, as the tests do, and then there is nothing
@@ -2471,7 +2531,10 @@ export function runBackfills(database: Database.Database = sqlite): Backfill {
 			releasedFromMilestones: 0,
 			released: [],
 			unfiledBoards: 0,
-			unfiled: []
+			unfiled: [],
+			committedFilled: 0,
+			upstreamCleared: 0,
+			discardedCleared: 0
 		};
 
 		if (hasColumn(database, 'cards', 'first_completed_at') && hasColumn(database, 'cards', 'completed_at')) {
@@ -2504,6 +2567,21 @@ export function runBackfills(database: Database.Database = sqlite): Backfill {
 			// Which boards first, with the id each named: once cleared, nothing records it.
 			result.unfiled = database.prepare(BOARDS_LEAVING_DELETED_GROUPINGS).all() as UnfiledBoard[];
 			result.unfiledBoards = database.prepare(BOARDS_LEAVE_DELETED_GROUPINGS).run().changes;
+		}
+
+		const upstreamKnown =
+			hasColumn(database, 'cards', 'committed_at') &&
+			hasColumn(database, 'cards', 'committed_by') &&
+			hasColumn(database, 'columns', 'role') &&
+			hasColumn(database, 'boards', 'kind');
+		if (upstreamKnown) {
+			// The two touch different cards, upstream and not, so their order does not matter.
+			result.committedFilled = database.prepare(COMMITTED_BEFORE_UPSTREAM).run().changes;
+			result.upstreamCleared = database.prepare(UPSTREAM_NOT_COMMITTED).run().changes;
+		}
+
+		if (hasColumn(database, 'cards', 'discarded_at') && hasColumn(database, 'cards', 'discarded_by')) {
+			result.discardedCleared = database.prepare(LIVE_NOT_DISCARDED).run().changes;
 		}
 
 		return result;
@@ -2837,13 +2915,18 @@ export function runMigrations(options: MigrationOptions = {}): MigrationReport {
 		releasedFromMilestones: 0,
 		released: [],
 		unfiledBoards: 0,
-		unfiled: []
+		unfiled: [],
+		committedFilled: 0,
+		upstreamCleared: 0,
+		discardedCleared: 0
 	};
 	try {
 		backfilled = runBackfills(database);
 	} catch (err) {
 		halt({
-			stage: 'backfilling cards.first_completed_at, task_requests.access_token, cards.milestone_id and boards.category_id',
+			stage:
+				'backfilling cards.first_completed_at, task_requests.access_token, cards.milestone_id, boards.category_id, ' +
+				'cards.committed_at and cards.discarded_at',
 			reason: messageOf(err),
 			cause: err
 		});
@@ -2869,6 +2952,26 @@ export function runMigrations(options: MigrationOptions = {}): MigrationReport {
 		log.warn(
 			`Took ${backfilled.unfiledBoards} board(s) out of a grouping that no longer exists: ` + unfiledBoardsList(backfilled)
 		);
+	}
+	// The first start of the image with migration 0060 commits every card the
+	// file did not see, and a restore can bring more of all three. At any other
+	// start each finds none, and a count means some write does not keep the
+	// commitment point. None of these lines begins "Took", which the lines above
+	// do and a test of them looks for.
+	if (backfilled.committedFilled > 0) {
+		log.warn(
+			`Committed ${backfilled.committedFilled} card(s) that are not upstream and had no commitment recorded, ` +
+				'at the moment each was created and by whoever created it'
+		);
+	}
+	if (backfilled.upstreamCleared > 0) {
+		log.warn(
+			`Cleared the commitment on ${backfilled.upstreamCleared} card(s) in an Options column or on an ideas board: ` +
+				'an option is not committed'
+		);
+	}
+	if (backfilled.discardedCleared > 0) {
+		log.warn(`Cleared the discard mark on ${backfilled.discardedCleared} card(s) that are not archived`);
 	}
 
 	// Every timestamp in one form (card 2095). Not on a database that may be

@@ -11,6 +11,7 @@ import { isAbsolute, relative, sep } from 'node:path';
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
 import { attachmentPath, cardDir, uploadsDir } from '$lib/server/uploads';
+import { isUpstreamColumnId } from '$lib/server/upstream';
 import {
 	apiKeys,
 	boardMembers,
@@ -204,13 +205,27 @@ export function makeBoard(
 	return { board, cols };
 }
 
+/**
+ * A card in `column`. In a committed column it is committed as every write
+ * commits one created there (milestone 22): `committedAt` is its `createdAt`
+ * and `committedBy` its `createdBy`, so a fixture keeps the rule the backfill
+ * would otherwise repair. In an Options column or on an ideas board it is an
+ * option, with neither. A `committedAt` given, null included, is kept as given.
+ */
 export function makeCard(
 	column: Column,
 	opts: Partial<typeof cards.$inferInsert> = {}
 ): Card {
-	return db
+	const card = db
 		.insert(cards)
 		.values({ title: `Card ${next()}`, ...opts, columnId: column.id })
+		.returning()
+		.get();
+	if ('committedAt' in opts || isUpstreamColumnId(column.id)) return card;
+	return db
+		.update(cards)
+		.set({ committedAt: card.createdAt, committedBy: opts.committedBy ?? card.createdBy })
+		.where(eq(cards.id, card.id))
 		.returning()
 		.get();
 }

@@ -63,7 +63,7 @@
 	// A sub-board hangs off a parent card, so the form offers the board's cards
 	// as parents and defaults to creating a fresh card named after the sub-board.
 	type PickerCard = { id: number; title: string; columnId: number; columnTitle: string };
-	type PickerColumn = { id: number; title: string; position: number };
+	type PickerColumn = { id: number; title: string; position: number; role: string | null };
 	let showSubBoardForm = $state(false);
 	let subBoardName = $state('');
 	let subBoardParent = $state<'new' | number>('new');

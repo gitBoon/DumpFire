@@ -32,7 +32,8 @@ export const GET: RequestHandler = async ({ locals }) => {
 	const cols = db.select({
 		id: columns.id,
 		title: columns.title,
-		boardId: columns.boardId
+		boardId: columns.boardId,
+		role: columns.role
 	}).from(columns).where(inArray(columns.id, colIds)).all();
 
 	// Identify "done" columns
