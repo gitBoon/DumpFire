@@ -32,10 +32,31 @@ export type Node = WorkRef & {
 	openBlockers: WorkRef[];
 	downstreamCount: number;
 	onCriticalPath: boolean;
+	/**
+	 * An option, or a subtask of one, in an Options column or on an ideas
+	 * board (milestone 22): open, and a blocker of what waits on it, but never
+	 * startable nor waiting.
+	 */
+	isOption?: boolean;
 };
 
 /** `card:123` / `subtask:456` — matches the server's node key exactly. */
 export const key = (r: WorkRef) => `${r.kind}:${r.id}`;
+
+/** How a node is drawn in the graph: its box's colour and the legend's word for it. */
+export type NodeState = 'complete' | 'external' | 'option' | 'blocked' | 'ready';
+
+/**
+ * A node's state in the graph: complete, outside the goal, an option
+ * (milestone 22: never startable, nor blocked, as the summary's lists have
+ * it), blocked by something open, or startable.
+ */
+export function nodeState(n: Pick<Node, 'isComplete' | 'external' | 'isOption' | 'openBlockers'>): NodeState {
+	if (n.isComplete) return 'complete';
+	if (n.external) return 'external';
+	if (n.isOption) return 'option';
+	return n.openBlockers.length > 0 ? 'blocked' : 'ready';
+}
 
 // ─── Graph geometry ──────────────────────────────────────────────────────
 //

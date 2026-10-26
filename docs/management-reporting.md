@@ -1,9 +1,9 @@
 ---
 title: "Management Activity Reporting"
 category: Reporting
-version: 1.9
+version: 1.10
 status: As-Built
-date: 2026-10-20
+date: 2026-10-26
 tags:
   - reporting
   - audit-log
@@ -160,6 +160,35 @@ activity in the window is such an edit is in the window and is the work of
 whoever made the edit; until then it was neither, and the count of cards worked
 on can rise from the deploy on. A change of a subtask's position alone, and a
 save that changes nothing, are not recorded and do not count.
+
+### Options, upstream of the commitment point
+
+Since milestone 22 (card 2462) a card in a board's Options column, or on an ideas board, is
+an **option**: an idea not yet committed to. It is in no bucket and no total, and the "leftmost
+column that is not Done" a board falls back to for its first column is never its Options
+column. What happened upstream is told apart, in the report's **`upstream`**, for the boards it
+covers over the same window, both ends included:
+
+| Field | What it counts |
+|---|---|
+| `options` | Options held now (not archived) |
+| `committedFromOptions`, `returnedToOptions`, `discarded`, `sentOn` | Distinct cards whose last upstream act in the window was a commitment out of upstream, a return into it, a discard, or a Send to another board |
+| `abandoned` | Distinct cards of committed work archived before Complete in the window, which any board can have |
+| `discardRate` | `discarded / (discarded + committedFromOptions + sentOn)`, or null with none of them |
+| `oldestOptionDays`, `agingOptions` | The oldest option's age in whole days, and how many are older than 30 days, as they stand now |
+
+`upstream` is **null for a report about one person** (`userId` given): the figures describe the
+boards, whoever's work it was. An administrator who names no board gets every board's figures,
+with no list of boards bound. The board PDF report carries the same figures as one Upstream line
+and an Abandoned line, and says in a report about one person that they are left out.
+
+```mermaid
+flowchart LR
+    Cards["cards in scope"] --> Up{"upstream column?"}
+    Up -->|"yes: an option"| Out["no bucket, no total"]
+    Up -->|"no"| Buckets["completed, closed, on hold,<br/>created, progressed"]
+    Log[("activity log<br/>in the window")] --> Fig["upstream<br/>(null for one person)"]
+```
 
 ## The five reporting fields
 

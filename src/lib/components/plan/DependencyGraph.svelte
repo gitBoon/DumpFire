@@ -11,7 +11,7 @@
 <script lang="ts">
 	import type { PageData } from '../../../routes/plan/[id]/$types';
 	import { orderSubtaskNodes } from '$lib/plan-table';
-	import { NODE_H, NODE_W, clip, key, type Node, type WorkRef } from '$lib/plan-graph';
+	import { NODE_H, NODE_W, clip, key, nodeState, type Node, type WorkRef } from '$lib/plan-graph';
 	import * as geometry from '$lib/plan-graph';
 
 	let {
@@ -105,6 +105,10 @@
 			<span class="legend-item"><span class="legend-swatch blocked"></span>Blocked</span>
 			<span class="legend-item"><span class="legend-swatch ready"></span>Startable</span>
 			<span class="legend-item"><span class="legend-swatch external"></span>Outside this goal</span>
+			<!-- Only where the graph has one (milestone 22). -->
+			{#if nodes.some((n) => n.isOption && !n.isComplete && !n.external)}
+				<span class="legend-item"><span class="legend-swatch option"></span>Option (not committed)</span>
+			{/if}
 		</div>
 
 		<!-- Scrolls in its own container: nodes keep a readable size and the
@@ -135,13 +139,7 @@
 				{#each drawnNodes as n (key(n))}
 					{@const p = positions.get(key(n))}
 					{#if p}
-						{@const state = n.isComplete
-							? 'complete'
-							: n.external
-								? 'external'
-								: n.openBlockers.length > 0
-									? 'blocked'
-									: 'ready'}
+						{@const state = nodeState(n)}
 						{@const subs = n.kind === 'card' ? (subtasksByCard.get(n.id) ?? []) : []}
 						{@const isOpen = n.kind === 'card' && expandedCards.has(n.id)}
 						<g class="node node-{state}" class:node-critical={n.onCriticalPath} class:node-subtask={n.kind === 'subtask'}>
@@ -163,6 +161,8 @@
 									<text class="node-sub" x={p.x + 11} y={p.y + 50}>
 										{#if n.external}
 											{n.withheld ? 'outside goal' : `${clip(n.boardName, 20)} · outside goal`}
+										{:else if n.isOption && !n.isComplete}
+											option{n.downstreamCount > 0 ? ` · unblocks ${n.downstreamCount}` : ''}
 										{:else if n.downstreamCount > 0}
 											unblocks {n.downstreamCount}
 										{:else if n.isComplete}
@@ -214,6 +214,8 @@
 							{#if n.priority}<span class="prio-dot prio-{n.priority}" title="Priority: {n.priority}"></span>{/if}
 							<span class="card-id">#{n.id}</span>
 							<span class="card-title">{n.title}</span>
+							<!-- An option, not committed to (milestone 22). -->
+							{#if n.isOption && !n.isComplete}<span class="option-tag">option</span>{/if}
 							{#if !n.withheld}<span class="card-where">{n.boardName} / {n.columnTitle}</span>{/if}
 						</button>
 					{/each}
@@ -259,6 +261,12 @@
 		transition: all var(--duration-fast) var(--ease-out);
 	}
 	.list-card:hover { border-color: var(--accent-indigo); }
+	/* An option in the unordered list (milestone 22). */
+	.option-tag {
+		font-size: 0.62rem; font-weight: 700; color: var(--text-tertiary);
+		border: 1px dashed rgba(136, 136, 170, 0.5); border-radius: var(--radius-full);
+		padding: 0 6px; flex-shrink: 0;
+	}
 
 	/* ─── Graph ────────────────────────────────────────────────────────── */
 
@@ -273,6 +281,7 @@
 	.legend-swatch.blocked { background: rgba(245, 158, 11, 0.12); border-color: #f59e0b; }
 	.legend-swatch.ready { background: rgba(99, 102, 241, 0.12); border-color: var(--accent-indigo); }
 	.legend-swatch.external { background: rgba(136, 136, 170, 0.1); border-color: rgba(136, 136, 170, 0.5); }
+	.legend-swatch.option { background: transparent; border-color: var(--text-tertiary); border-style: dashed; }
 
 	/* Wide graphs scroll here, never on the page body. */
 	.graph-scroll {
@@ -309,6 +318,8 @@
 	/* Greyed, as the card asks: done work should recede so the open chain reads. */
 	.node-complete text { opacity: 0.55; }
 	.node-external rect { stroke: rgba(136, 136, 170, 0.5); stroke-dasharray: 4 3; }
+	/* An option (milestone 22): open and a blocker, but not committed to. */
+	.node-option rect { stroke: var(--text-tertiary); stroke-dasharray: 2 2; fill: transparent; }
 	.node-critical rect { stroke: #f43f5e; stroke-width: 2.5; fill: rgba(244, 63, 94, 0.07); }
 
 	.node text { font-family: var(--font-family); }

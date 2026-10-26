@@ -3082,8 +3082,9 @@ is needed on both). Goes through the same service as a drag in the web UI:
 - across the commitment point (milestone 22, card 2460): out of an upstream column (a board's
   Options column, or any column of an ideas board) into a committed one, the card's
   `committedAt` becomes now and `committedBy` the key's user, and `api:card_committed` is
-  logged in place of `api:card_moved`, `"<title>": <from> → <to> (column <id>)`, the id naming
-  the column it went into, which sends `card.committed`; straight into Complete,
+  logged in place of `api:card_moved`, `"<title>": <from> → <to> (column <to id>, from column
+  <from id>)`, the ids naming the column it went into and the column it left (an entry written
+  before card 2462 names only the first, `(column <to id>)`), which sends `card.committed`; straight into Complete,
   `api:card_completed` follows it. A committed card moved into an upstream column has both
   cleared, with `api:card_returned_to_options` (`card.moved`); from Complete,
   `api:card_reopened` comes first and sends nothing. A move within upstream, or between
@@ -3922,7 +3923,8 @@ an upstream column, a board's Options column or any column of an ideas board, in
 one, by any route that moves a card. Within a board it is sent **instead of** `card.moved`; a
 move to another board also sends each board its `card.moved`, the departure and the arrival. Its
 `data.action` is `card_committed` and its `data.detail` the entry's words, `"<title>": <from> →
-<to> (column <id>)`, the id naming the column it went into; straight into a Complete column it
+<to> (column <to id>, from column <from id>)`, the ids naming the column it went into and the
+column it left (before card 2462, only ` (column <to id>)`); straight into a Complete column it
 is followed by `card.completed`. A committed card moved back into an upstream column sends
 `card.moved` with `data.action` `card_returned_to_options`; within a board that is the move's
 only delivery from Complete (the `card_reopened` entry written before it sends none), and a move

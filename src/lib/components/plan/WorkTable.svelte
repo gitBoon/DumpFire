@@ -166,7 +166,8 @@
 	 */
 	const expandAll = $derived(expandAllTargets(visibleRows));
 
-	const STATE_LABEL: Record<RowState, string> = { done: 'Done', ready: 'Startable', blocked: 'Blocked', open: 'Open' };
+	/** Option: in an Options column or on an ideas board, not committed to (milestone 22). */
+	const STATE_LABEL: Record<RowState, string> = { done: 'Done', ready: 'Startable', blocked: 'Blocked', open: 'Open', option: 'Option' };
 
 	/**
 	 * Taking a card out of the goal asks first, with the dialog every other
@@ -217,6 +218,12 @@
 			<button class:active={stateFilter === 'done'} onclick={() => (stateFilter = 'done')}>
 				Done <span class="fc">{stateCounts.done}</span>
 			</button>
+			<!-- Only in a goal with options (milestone 22): they are neither startable nor blocked. -->
+			{#if stateCounts.option > 0 || stateFilter === 'option'}
+				<button class:active={stateFilter === 'option'} onclick={() => (stateFilter = 'option')} title="Cards in an Options column or on an ideas board: not committed to, so never startable">
+					Options <span class="fc">{stateCounts.option}</span>
+				</button>
+			{/if}
 		</div>
 
 		{#if expandAll.ids.length > 0}
@@ -231,11 +238,13 @@
 	{:else if visibleRows.length === 0}
 		<p class="muted">
 			{#if tableSearch.trim()}
-				Nothing matches “{tableSearch.trim()}”{#if stateFilter !== 'all'} among {stateFilter === 'ready' ? 'startable' : stateFilter} cards{/if}.
+				Nothing matches “{tableSearch.trim()}”{#if stateFilter === 'option'} among the options{:else if stateFilter !== 'all'} among {stateFilter === 'ready' ? 'startable' : stateFilter} cards{/if}.
 			{:else if stateFilter === 'ready'}
 				Nothing is startable — every remaining card is waiting on something.
 			{:else if stateFilter === 'blocked'}
 				Nothing is blocked.
+			{:else if stateFilter === 'option'}
+				No card in this goal is an option.
 			{:else}
 				Nothing is complete yet.
 			{/if}
@@ -579,6 +588,11 @@
 	.state-open {
 		background: rgba(136, 136, 170, 0.1); color: var(--text-secondary);
 		border: 1px solid rgba(136, 136, 170, 0.25);
+	}
+	/* An option (milestone 22): upstream of the commitment point, not committed to. */
+	.state-option {
+		background: transparent; color: var(--text-tertiary);
+		border: 1px dashed rgba(136, 136, 170, 0.5);
 	}
 
 	.expander {

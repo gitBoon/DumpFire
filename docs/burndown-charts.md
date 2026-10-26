@@ -1,9 +1,9 @@
 ---
 title: "Burndown Charts"
 category: Reporting & Analytics
-version: 1.6
+version: 1.7
 status: As-Built
-date: 2026-10-19
+date: 2026-10-26
 tags:
   - burndown
   - burn-up
@@ -168,7 +168,7 @@ column a card was in on a past day, which is recorded nowhere else.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Open : created_at (day it enters scope)
+    [*] --> Open : committed_at, else created_at (day it enters scope)
     Open --> Done : completed_at — only if the card is in a Complete/Done column now
     Open --> Dropped : archived_at while open
     Done --> Done : archived later — still counted as done
@@ -178,7 +178,8 @@ stateDiagram-v2
 
 | Rule | Why |
 |---|---|
-| A card **enters scope** on the UTC day of `created_at` | The day the work existed. |
+| A card **enters scope** on the UTC day of its commitment, `committed_at`, or of `created_at` where none is recorded | The day the work was taken on (milestone 22, card 2462). For every card made before milestone 22 the commitment is its creation, so its line is as it was. |
+| **Options are not in scope** | A card in a board's Options column or on an ideas board is an idea, not work taken on: it is left out of every line, as is one discarded from there. The chart is worked out from each card's state now, so a card moved back into the Options column leaves the scope of the days it had been in, and one committed today joins from today. |
 | It is **done** on the day of `completed_at`, but only while it sits in a Complete/Done column | `completed_at` is stamped on every move into Complete. Since October 2026 it is cleared when the card leaves; before that it was **never cleared**, so an older card can carry a stamp while sitting elsewhere. Either way a card that has been completed (`first_completed_at`) and is not in a Complete column now was reopened. |
 | A **reopened** card is charted as open for its whole life | When it was reopened is not recorded, so a guessed interval would be invented data. Counted in `meta.reopenedCards`. |
 | A card **in Complete with no stamp** uses its last update as its completion day | Such cards predate the stamping fixes. Counted in `meta.inferredCompletionDates`. |

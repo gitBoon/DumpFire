@@ -9,7 +9,7 @@
 	 */
 	import { onMount, onDestroy } from 'svelte';
 	import { invalidateAll, goto } from '$app/navigation';
-	import { completionPercent } from '$lib/progress';
+	import { completionPercent, goalProgressText, readyToCloseTitle } from '$lib/progress';
 	import { daysUntilDue, formatDueDate } from '$lib/utils/date-utils';
 
 	let { data } = $props();
@@ -38,6 +38,8 @@
 		cardCount: number;
 		readyToClose?: boolean;
 		doneCount: number;
+		/** Its options, counted apart from its cards (milestone 22). */
+		optionsCount?: number;
 		percent: number;
 		scope: string;
 		daysLeft: number | null;
@@ -368,7 +370,8 @@
 									<div class="progress-cell">
 										<div class="progress-track"><div class="progress-fill" style="width: {m.percent}%"></div></div>
 										<span class="progress-label">
-											{#if m.cardCount === 0}no cards{:else}{m.doneCount}/{m.cardCount}{/if}
+											<!-- Its options after the fraction, in neither figure (milestone 22). -->
+										{goalProgressText(m.doneCount, m.cardCount, m.optionsCount ?? 0)}
 										</span>
 									</div>
 								</td>
@@ -378,7 +381,7 @@
 										class:open={m.status === 'open' && !m.readyToClose}
 										class:ready={m.readyToClose}
 										class:closed={m.status !== 'open'}
-										title={m.readyToClose ? 'Every card in this goal is complete — close it when you are satisfied it is delivered' : ''}
+										title={m.readyToClose ? readyToCloseTitle(m.optionsCount ?? 0) : ''}
 									>
 										{#if m.readyToClose}Ready{:else if m.status === 'open'}Open{:else}Closed{/if}
 									</span>

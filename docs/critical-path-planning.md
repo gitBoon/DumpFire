@@ -1,9 +1,9 @@
 ---
 title: "Critical-Path Planning"
 category: Architecture
-version: 1.22
+version: 1.23
 status: As-Built
-date: 2026-10-21
+date: 2026-10-26
 tags:
   - planning
   - dependencies
@@ -197,6 +197,28 @@ A dependency is resolved when its blocker sits in a **Complete** column, decided
 `isCompleteColumnTitle()` in `card-completion.ts` — the same strict helper the rest of the
 app uses for XP and completion blocking. One definition of done across the whole app; two
 would be exactly the drift this feature exists to remove.
+
+### Options in a goal
+
+Since milestone 22 (card 2462) a card in a board's Options column, or on an ideas board, is
+an **option**: an idea nobody has committed to. A goal can hold one, and it is counted apart:
+`progress.total`, `done`, `percent`, `byColumn` and the subtask counts leave it out, and
+`progress.options` (and `optionsCount` on `/plan`, `GET /api/milestones` and `GET
+/api/v1/milestones`) counts it. It stays in the graph, marked `isOption` on its node, and
+an open option still blocks what waits on it. It is never in `nextActionable` and never in
+`blocked`: it is not work anyone has committed to start, nor work that is waiting.
+
+```mermaid
+stateDiagram-v2
+    Option: Option (isOption, open)
+    Startable: Startable (nextActionable)
+    Blocked: Blocked (blocked)
+    [*] --> Option: in an Options column or on an ideas board
+    [*] --> Startable: committed, nothing open before it
+    [*] --> Blocked: committed, an open blocker
+    Option --> Startable: committed out of Options
+    Option --> Blocked: committed, an open blocker
+```
 
 ## How a milestone summary is computed
 
@@ -592,7 +614,10 @@ they answer a real question:
 
 The work is one table of every card in the goal, searchable and sortable, with a state filter
 (All, Startable, Blocked, Done) whose counts are what were once the Next actionable and Blocked
-lists. A blocked row opens to what it is waiting on.
+lists. A blocked row opens to what it is waiting on. A goal with options also has an **Options**
+filter, and each option's state reads **Option**, never Startable or Blocked; the Progress block
+notes "and N options" under its cards complete, and `/plan` writes a goal's progress as
+"3/5 and 2 options" (card 2462).
 
 Nothing is computed in the browser. The server hands over a `MilestoneSummary` and the page
 draws it, so the page and the API can never disagree about what the critical path is.
@@ -722,6 +747,7 @@ graph does not have.
 | Blocked | Amber |
 | Startable | Indigo |
 | Outside the milestone | Dashed grey border |
+| An option (card 2462) | Dashed grey border, no fill, "option" on its last line; the legend adds "Option (not committed)" where the graph has one, and the critical path and the Parallel / unordered list tag it "option" |
 | Withheld: on a board the reader cannot open | "A card on a board you cannot open", with no board or column line and no priority dot, and it does not open: there is no card the reader may see behind it |
 
 Cards with no dependencies recorded in either direction appear in a **Parallel / unordered**

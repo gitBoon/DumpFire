@@ -4,11 +4,20 @@
   Displays card counts per column over time. Each column is rendered as a
   stacked area layer using the column's colour. Includes X/Y axis labels
   and hover tooltips.
+
+  Milestone 22 (card 2462, ruling h): a delivery board's Options column, sent
+  only when the viewer asks for it, comes first, so its band is at the bottom
+  of the stack. The top edge of the upstream band is drawn as a dashed line
+  labelled "commitment point": what is above it is committed work. The chart
+  stacks counts by day and is not cumulative, so the line is where the
+  options end on each day, not a count of arrivals. An ideas board, all of
+  whose columns are upstream, has no such line.
 -->
 <script lang="ts">
   import { drawnColour } from '$lib/colours';
 
-  type CfdColumn = { id: number; title: string; color: string };
+  /** `upstream`: an Options column, or a column of an ideas board (milestone 22). */
+  type CfdColumn = { id: number; title: string; color: string; upstream?: boolean };
   type CfdDataPoint = { date: string; columns: { columnId: number; count: number }[] };
 
   let {
@@ -82,6 +91,33 @@
     return result;
   });
 
+  /**
+   * How many columns, from the bottom of the stack, are upstream: the band
+   * below the commitment point. 0 with none shown; every column on an ideas
+   * board, which then has no commitment point to draw.
+   */
+  const upstreamCount = $derived(columns.filter(col => col.upstream).length);
+
+  /**
+   * The commitment point: the top edge of the upstream band, as a line of
+   * points, or null where there is no committed band above it. None with
+   * fewer than two days: one day is a single point, a line of no length,
+   * and its label would sit on the baseline (the S4b review's J10).
+   */
+  const commitmentEdge = $derived.by(() => {
+    if (data.length < 2 || upstreamCount === 0 || upstreamCount === columns.length) return null;
+    const max = maxTotal();
+    const n = data.length;
+    const xStep = n > 1 ? chartW / (n - 1) : 0;
+    // The answer puts them first, at the bottom of the stack.
+    const upstreamIds = new Set(columns.filter(col => col.upstream).map(col => col.id));
+    const points = data.map((d, i) => {
+      const below = d.columns.filter(c => upstreamIds.has(c.columnId)).reduce((s, c) => s + c.count, 0);
+      return { x: PAD_L + i * xStep, y: PAD_T + chartH - (below / max) * chartH };
+    });
+    return { path: points.map(p => `${p.x},${p.y}`).join(' '), label: points[points.length - 1] };
+  });
+
   /** Y-axis labels (0, mid, max). */
   const yLabels = $derived(() => {
     const max = maxTotal();
@@ -129,6 +165,12 @@
         <path d={layer.path} fill="{drawnColour(layer.color)}40" stroke={drawnColour(layer.color)} stroke-width="1.5" />
       {/each}
 
+      <!-- The commitment point: the top edge of the Options band (ruling h). -->
+      {#if commitmentEdge}
+        <polyline points={commitmentEdge.path} class="commitment-line" fill="none" />
+        <text x={commitmentEdge.label.x} y={commitmentEdge.label.y - 3} class="commitment-label">commitment point</text>
+      {/if}
+
       <!-- X-axis labels -->
       {#each xLabels() as xl}
         <text x={xl.x} y={H - 4} class="x-label">{xl.label}</text>
@@ -140,7 +182,7 @@
       {#each columns as col}
         <span class="cfd-legend-item">
           <span class="cfd-legend-dot" style="background: {drawnColour(col.color)}"></span>
-          {col.title}
+          {col.title}{col.upstream && upstreamCount < columns.length ? ' (Options)' : ''}
         </span>
       {/each}
     </div>
@@ -155,6 +197,8 @@
   .grid-line { stroke: var(--glass-border); stroke-width: 0.5; stroke-dasharray: 2,2; }
   .y-label { font-size: 0.5rem; fill: var(--text-tertiary); text-anchor: end; }
   .x-label { font-size: 0.5rem; fill: var(--text-tertiary); text-anchor: middle; }
+  .commitment-line { stroke: var(--text-primary); stroke-width: 1.2; stroke-dasharray: 4,2; }
+  .commitment-label { font-size: 0.5rem; font-weight: 700; fill: var(--text-secondary); text-anchor: end; }
 
   .cfd-legend {
     display: flex; flex-wrap: wrap; gap: var(--space-xs);

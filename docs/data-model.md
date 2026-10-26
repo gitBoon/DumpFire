@@ -1125,7 +1125,7 @@ the bare name and so ignored everything done through the API.
 
 | The move | `committed_at` / `committed_by` | Entries, on the board the card is on now | Webhooks |
 |---|---|---|---|
-| Upstream (the Options column, any column of an ideas board) to a committed column | the moment of the move / the mover | `card_committed`, `"<title>": <from> → <to> (column <id>)`, in place of `card_moved` | `card.committed` |
+| Upstream (the Options column, any column of an ideas board) to a committed column | the moment of the move / the mover | `card_committed`, `"<title>": <from> → <to> (column <to>, from column <from>)`, in place of `card_moved` | `card.committed` |
 | … into a Complete column | as above, equal to `completed_at` | `card_committed`, then `card_completed` | `card.committed`, then `card.completed` |
 | A committed column to an upstream one | both NULL | `card_returned_to_options`, in place of `card_moved` | `card.moved` |
 | … from a Complete column | both NULL, and `completed_at` | `card_reopened`, then `card_returned_to_options` | one `card.moved`, from the return (ruling q: `webhook: false` on the reopening) |
@@ -1133,11 +1133,16 @@ the bare name and so ignored everything done through the API.
 
 A move to another board writes `card_moved_away` and `card_moved_in` first, as always, then
 the commitment entry on the board it joined. The commitment entry names the column the card
-went into twice: by its title in the route and by its id at the end of its detail,
-`(column <id>)`, the same suffix a conversion's entry ends with (`conversionSuffix` in
-`upstream.ts`), so the cycle time reads the column by its id, not by its title (ruling a; the
-S2 review's C3). It is not a `card_moved`, so the first `card_moved` after it is still the
-start of work. Two moves are refused, 409, with nothing written: an archived card across the
+went into twice: by its title in the route and by its id at the end of its detail, and the
+column it left by its id after that: ` (column <to>, from column <from>)`, for example
+`"An option": Ideas → To Do (column 12, from column 15)` (`commitmentSuffix` in `upstream.ts`,
+read back by `commitmentColumns`). The cycle time reads the column it went into by its id, not
+by its title (ruling a; the S2 review's C3), and the time in options the column it left (the
+S4a review's H3). An entry written before card 2462 ends ` (column <to>)` alone, the suffix a
+conversion's entry ends with (`conversionSuffix`), and still reads: it names no column left,
+so its card's time in options runs from its creation or its latest return. A commitment
+into a queue is not the start of work: the first `card_moved` after it is (see [Delivery
+measures](#delivery-measures-and-the-commitment-point)). Two moves are refused, 409, with nothing written: an archived card across the
 commitment point, either way (`Card "<title>" is archived: restore it before moving it out of
 or back into Options`, ruling n), and a committed card with a sub-board into an upstream column
 (`Card "<title>" has a sub-board, so it cannot go into the Options column: a card with
@@ -1202,8 +1207,10 @@ stateDiagram-v2
 ```
 
 **The upstream figures** (`upstreamFigures(boardIds, from, to)` in
-`src/lib/server/upstream.ts`, read by the measures, reports and API of later slices) are
-counted from the activity log over a window, the boards named and no others. **Both ends of
+`src/lib/server/upstream.ts`, read by the board's metrics, the reports and the activity
+report since card 2462, and by the API of a later slice) are counted from the activity log
+over a window, the boards named and no others; `null` for the boards is every board, with no
+list of ids bound (the S4a review's H9). **Both ends of
 the window are included**, as in `reports.ts`: a bare date as the end is the whole of that
 day, and a caller passing a moment passes the end of the day it means (the S3 review's E4).
 The figures take four reads, however many boards and columns (E3):
@@ -1219,6 +1226,46 @@ The figures take four reads, however many boards and columns (E3):
 The browser does not write activity entries. It used to write a second one for
 every create, move, completion and delete, with no user id; `POST /api/activity`
 has been removed.
+
+#### Delivery measures and the commitment point
+
+Since milestone 22 (card 2462, slices S4a and S4b) **a delivery measure counts committed
+cards on delivery boards only**: a card is left out of every one when its column is upstream
+(`columns.role IS 'options'` or `boards.kind IS 'ideas'`; `UPSTREAM` and `notUpstream()` in
+`upstream.ts`, `isUpstreamColumn` in the browser). Nothing takes a NULL `committed_at` to mean
+upstream: the column and the board decide it. What each measure reads:
+
+| Measure | Fields and entries read |
+|---|---|
+| Lead time, "commitment to done" | `completed_at − COALESCE(committed_at, created_at)` of each card completed in the window (`flowTimes`) |
+| Cycle time, "start of work to done" | The first `card_moved`, or `card_committed` into a column that is not a queue, at or after `committed_at` and not after `completed_at` (`cycleStarts`); clamped to [0, lead time]. A queue is the board's first committed column, a To Do or On Hold column, or a queue title. The target column is the `(column <to>, …)` of the entry's detail |
+| Committed (all) | Distinct cards with a `card_committed` in the window, and cards created in it with `committed_at = created_at` (`committedAll`) |
+| Time in options | For each card whose last upstream act in the window is `card_committed`: that entry's moment minus when it became an option, the latest of `created_at`, its last `card_returned_to_options` and the last conversion of the column named by `from column <from>` while the card was on its board (`timeInOptions`) |
+| Delivery aging (dashboard, Stats panel) | `COALESCE(committed_at, created_at)` of live committed cards |
+| Burndown scope | From `COALESCE(committed_at, created_at)`; upstream cards left out |
+| Exports' Stage and Committed | The column's verdict (`stageOf`: Option or Committed, since the exports list live cards only; its Discarded, from `discarded_at`, is for a reader of archived ones), and `committed_at` |
+
+For every card made before milestone 22, `committed_at = created_at` (0060's one-off), so each
+figure is what it was; the one change on such a board is that a cycle time can no longer be
+negative (the S4a review's H5).
+
+```mermaid
+erDiagram
+    BOARDS ||--o{ COLUMNS : "kind: delivery or ideas"
+    COLUMNS ||--o{ CARDS : "role: NULL or options"
+    CARDS ||--o{ ACTIVITY_LOG : "card_committed, card_moved, card_returned_to_options, card_discarded, card_abandoned"
+    CARDS {
+        text created_at
+        text committed_at "lead time and aging run from it"
+        text completed_at "the delivery point"
+        text discarded_at "the discard mark"
+    }
+    ACTIVITY_LOG {
+        text action
+        text detail "(column to, from column from)"
+        text created_at "cycle start, time in options"
+    }
+```
 
 #### A creation
 

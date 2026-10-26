@@ -9,8 +9,8 @@
  * is not aging work, ruling g, and committed work ages from its commitment,
  * the S4a review's H2) nor the per-column and per-category bars. The
  * panel shows the options apart, from `optionsCount` and the metrics answer's
- * `upstream`. For a board with no upstream column every figure is what the
- * panel worked out before.
+ * `upstream` (`optionsLine`, `showsUpstream`, slice S4b). For a board with no
+ * upstream column every figure is what the panel worked out before.
  *
  * No server imports: the panel runs in the browser.
  */
@@ -74,4 +74,58 @@ export function boardStats(columns: readonly StatsColumn[], boardKind: string | 
 		byCategory,
 		optionsCount: columns.filter((c) => isUpstreamColumn(c, boardKind)).reduce((sum, c) => sum + c.cards.length, 0)
 	};
+}
+
+/**
+ * The upstream figures of `GET /api/boards/:id/metrics`, as the panel reads
+ * them (`upstreamFigures` on the server, milestone 22): counts of cards over
+ * the window, but `options`, `oldestOptionDays` and `agingOptions`, which are
+ * the options held now. `discardRate` is a fraction from 0 to 1.
+ */
+export type UpstreamFiguresShown = {
+	options: number;
+	committedFromOptions: number;
+	returnedToOptions: number;
+	discarded: number;
+	sentOn: number;
+	abandoned: number;
+	discardRate: number | null;
+	oldestOptionDays: number | null;
+	agingOptions: number;
+};
+
+/** A discard rate as the panel and the reports show it: "25%", or "—" with nothing to rate. */
+export function discardRateText(rate: number | null | undefined): string {
+	return rate === null || rate === undefined ? '—' : `${Math.round(rate * 100)}%`;
+}
+
+/**
+ * The Stats panel's line for the board's options (milestone 22, card 2462):
+ * "Options 3 · discard rate 25%", the rate once the metrics have come, or
+ * null for a board with no option, which shows no line.
+ */
+export function optionsLine(optionsCount: number, upstream: Pick<UpstreamFiguresShown, 'discardRate'> | null | undefined): string | null {
+	if (optionsCount === 0) return null;
+	return upstream ? `Options ${optionsCount} · discard rate ${discardRateText(upstream.discardRate)}` : `Options ${optionsCount}`;
+}
+
+/**
+ * Whether the panel shows the upstream figures: on a board with an upstream
+ * column, or where any of them is not zero (a board whose Options column has
+ * since gone still had its commitments and discards in the window). Abandoned
+ * work is not among them: it is committed work, which any board can have,
+ * and the panel shows it on its own.
+ */
+export function showsUpstream(hasUpstreamColumn: boolean, upstream: UpstreamFiguresShown | null | undefined, timeInOptions: unknown = null): boolean {
+	if (hasUpstreamColumn) return true;
+	if (!upstream) return false;
+	return (
+		upstream.options > 0 ||
+		upstream.committedFromOptions > 0 ||
+		upstream.returnedToOptions > 0 ||
+		upstream.discarded > 0 ||
+		upstream.sentOn > 0 ||
+		upstream.agingOptions > 0 ||
+		timeInOptions !== null
+	);
 }

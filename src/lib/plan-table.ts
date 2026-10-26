@@ -41,6 +41,12 @@ export interface TableNode extends WorkRef {
 	boardId: number | null;
 	boardName: string;
 	isComplete: boolean;
+	/**
+	 * An option, or a subtask of one: in an Options column or on an ideas
+	 * board (milestone 22, the summary's `isOption`). Never startable, nor
+	 * waiting: it is no work anyone has committed to.
+	 */
+	isOption?: boolean;
 	parentCardId?: number;
 	external?: boolean;
 	/** On a board the viewer cannot open (card 2129). */
@@ -61,9 +67,14 @@ export interface PlanBlocker {
 	withheld: boolean;
 }
 
-/** Startable, Blocked and Done are the plan's states. Open is a plain subtask not yet ticked. */
-export type RowState = 'done' | 'ready' | 'blocked' | 'open';
-export type StateFilter = 'all' | 'ready' | 'blocked' | 'done';
+/**
+ * Startable, Blocked and Done are the plan's states. Open is a plain subtask
+ * not yet ticked. Option is a card in an Options column or on an ideas board,
+ * or an ordered subtask of one, not ticked (milestone 22): never startable or
+ * blocked, as the server never offers it to start nor lists it as waiting.
+ */
+export type RowState = 'done' | 'ready' | 'blocked' | 'open' | 'option';
+export type StateFilter = 'all' | 'ready' | 'blocked' | 'done' | 'option';
 export type SortKey = 'id' | 'title' | 'boardName' | 'columnTitle' | 'downstreamCount' | 'state';
 
 export interface PlanRow {
@@ -128,7 +139,7 @@ export function cardGroups(
 		withheld: n.withheld,
 		downstreamCount: n.downstreamCount,
 		onCriticalPath: n.onCriticalPath,
-		state: n.isComplete ? 'done' : n.openBlockers.length > 0 ? 'blocked' : 'ready',
+		state: n.isComplete ? 'done' : n.isOption ? 'option' : n.openBlockers.length > 0 ? 'blocked' : 'ready',
 		blockers: blockersByKey.get(key(n)) ?? [],
 		depth,
 		parentCardId: n.parentCardId,
@@ -210,20 +221,22 @@ export function orderSubtaskNodes<T extends { id: number }>(nodes: readonly T[],
 /**
  * The state filter's counts: cards and ordered subtasks, as they were before a
  * card could be opened to its plain subtasks, which have no Startable or
- * Blocked and are never what a filter finds.
+ * Blocked and are never what a filter finds. `option` counts the options
+ * (milestone 22), 0 for a goal with none.
  */
-export function stateCounts(groups: CardGroup[]): { all: number; ready: number; blocked: number; done: number } {
+export function stateCounts(groups: CardGroup[]): { all: number; ready: number; blocked: number; done: number; option: number } {
 	const rows = groups.flatMap((g) => [g.card, ...g.subtasks.filter((s) => s.inGraph)]);
 	return {
 		all: rows.length,
 		ready: rows.filter((r) => r.state === 'ready').length,
 		blocked: rows.filter((r) => r.state === 'blocked').length,
-		done: rows.filter((r) => r.state === 'done').length
+		done: rows.filter((r) => r.state === 'done').length,
+		option: rows.filter((r) => r.state === 'option').length
 	};
 }
 
-/** Blocked before ready before done, so a state sort surfaces problems. */
-const STATE_ORDER: Record<RowState, number> = { blocked: 0, ready: 1, open: 1, done: 2 };
+/** Blocked before ready before options before done, so a state sort surfaces problems. */
+const STATE_ORDER: Record<RowState, number> = { blocked: 0, ready: 1, open: 1, option: 2, done: 3 };
 
 export interface TableOptions {
 	query: string;

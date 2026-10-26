@@ -9,6 +9,10 @@
   delete asks first through the page's confirm dialog; a right-click opens
   the page's context menu; Manage Categories and Create Board open windows
   the page draws.
+
+  A board's count and bar are its committed work (milestone 22): an ideas
+  board's row reads "N ideas" with no completion bar, and a delivery board
+  with options says on its count that they are not counted.
 -->
 <script lang="ts">
 	import type { PageData } from '../../../routes/$types';
@@ -19,7 +23,7 @@
 	import { failureMessage } from '$lib/api';
 	import { drawnColour } from '$lib/colours';
 	import { parseStamp } from '$lib/timestamps';
-	import { timeAgo } from '$lib/dashboard/format';
+	import { boardRowCount, boardRowSize, boardRowTitle, drawsCompletion, timeAgo } from '$lib/dashboard/format';
 	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
 
 	let {
@@ -140,7 +144,8 @@
 
 		for (const board of data.boards) {
 			// Hide completed boards when toggle is off
-			if (!showCompletedBoards && board.totalCards > 0 && board.completedCards === board.totalCards) continue;
+			// A board that still holds options is not done (the S4b review's J5).
+			if (!showCompletedBoards && board.totalCards > 0 && board.completedCards === board.totalCards && !(board.optionsCount > 0)) continue;
 			const key = board.categoryName || '__uncategorised__';
 			let group = catMap.get(key);
 			if (!group) {
@@ -174,7 +179,8 @@
 						return dir * (aTime - bTime);
 					}
 					case 'cards':
-						return dir * (a.totalCards - b.totalCards);
+						// An ideas board by its ideas, the figure its row shows (J5).
+						return dir * (boardRowSize(a) - boardRowSize(b));
 					case 'progress': {
 						const aPct = a.totalCards > 0 ? a.completedCards / a.totalCards : 0;
 						const bPct = b.totalCards > 0 ? b.completedCards / b.totalCards : 0;
@@ -258,7 +264,7 @@
 			<span class="board-row-emoji glass">🌐</span>
 			<span class="board-row-name">All Tasks</span>
 			<span class="board-row-activity"></span>
-			<span class="board-row-count" title="Cards: every non-archived card across all boards and sub-boards. Tasks: those cards plus their {data.allTasksTotals.subtasks} subtasks.">{totalCards} cards · {totalTasks} tasks</span>
+			<span class="board-row-count" title="Cards: every committed, non-archived card across all boards and sub-boards; options are not counted. Tasks: those cards plus their {data.allTasksTotals.subtasks} subtasks.">{totalCards} cards · {totalTasks} tasks</span>
 			<div class="board-row-progress">
 				{#if totalCards > 0}
 					{@const allPct = completionPercent(completedCards, totalCards)}
@@ -292,9 +298,11 @@
 							<span class="board-row-emoji glass">{board.emoji}</span>
 							<span class="board-row-name">{board.name} <span class="board-id">#{board.id}</span></span>
 							<span class="board-row-activity">{timeAgo(board.lastActivity)}</span>
-							<span class="board-row-count">{board.totalCards} card{board.totalCards !== 1 ? 's' : ''}</span>
+							<span class="board-row-count" title={boardRowTitle(board)}>{boardRowCount(board)}</span>
 							<div class="board-row-progress">
-								{#if board.totalCards > 0}
+								{#if !drawsCompletion(board)}
+									<!-- An ideas board completes nothing: no bar (milestone 22). -->
+								{:else if board.totalCards > 0}
 									{@const pct = completionPercent(board.completedCards, board.totalCards)}
 									<div class="progress-track"><div class="progress-fill" class:complete={pct === 100} style="width: {pct}%"></div></div>
 									<span class="progress-pct" class:complete={pct === 100}>{pct}%</span>
@@ -351,9 +359,11 @@
 										<span class="board-row-name">{board.name} <span class="board-id">#{board.id}</span></span>
 									</a>
 									<span class="board-row-activity">{timeAgo(board.lastActivity)}</span>
-									<span class="board-row-count">{board.totalCards} card{board.totalCards !== 1 ? 's' : ''}</span>
+									<span class="board-row-count" title={boardRowTitle(board)}>{boardRowCount(board)}</span>
 									<div class="board-row-progress">
-										{#if board.totalCards > 0}
+										{#if !drawsCompletion(board)}
+											<!-- An ideas board completes nothing: no bar (milestone 22). -->
+										{:else if board.totalCards > 0}
 											{@const pct = completionPercent(board.completedCards, board.totalCards)}
 											<div class="progress-track"><div class="progress-fill" class:complete={pct === 100} style="width: {pct}%"></div></div>
 											<span class="progress-pct" class:complete={pct === 100}>{pct}%</span>

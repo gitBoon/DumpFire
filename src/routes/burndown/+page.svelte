@@ -781,11 +781,11 @@
 							{#snippet tip()}
 								{#if view === 'burnup'}
 									<p><strong>Finished</strong> (green) counts up everything finished since the start of the period.</p>
-									<p><strong>Work in play</strong> (orange) is what was open at the start plus everything added since. When the green line meets it, everything is done.</p>
+									<p><strong>Work in play</strong> (orange) is what was open at the start plus everything committed since. When the green line meets it, everything is done.</p>
 								{:else}
-									<p><strong>Remaining</strong> (blue) is how many cards were open at the end of each day.</p>
+									<p><strong>Remaining</strong> (blue) is how many committed cards were open at the end of each day.</p>
 									<p>
-										<strong>Work in play</strong> (orange) is what was open at the start plus everything added since. The
+										<strong>Work in play</strong> (orange) is what was open at the start plus everything committed since. The
 										gap between the two lines is what got finished.
 									</p>
 								{/if}

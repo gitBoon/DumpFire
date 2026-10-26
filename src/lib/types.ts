@@ -76,6 +76,14 @@ export type CardType = {
 	 * creation. Given by the board page for a card in the Options column alone.
 	 */
 	optionSince?: string;
+	/**
+	 * When the card was committed to, which its delivery age runs from
+	 * (milestone 22, the S4a review's H2): stored on every card, null on an
+	 * option. Every answer that sends the whole card row carries it, the
+	 * board's contents among them; a card that does not carry it ages from
+	 * `createdAt`, as before.
+	 */
+	committedAt?: string | null;
 	assignees: { id: number; username: string; emoji: string }[];
 	archivedAt: string | null;
 	coverUrl: string | null;
