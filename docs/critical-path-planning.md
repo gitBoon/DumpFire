@@ -1,7 +1,7 @@
 ---
 title: "Critical-Path Planning"
 category: Architecture
-version: 1.23
+version: 1.24
 status: As-Built
 date: 2026-10-26
 tags:
@@ -12,6 +12,7 @@ tags:
   - graph
   - scheduling
   - errors
+  - upstream
 description: "How DumpFire derives critical path, next-actionable work and blocked state from two recorded facts, and where the planning view sits relative to the Kanban board"
 ---
 
@@ -219,6 +220,15 @@ stateDiagram-v2
     Option --> Startable: committed out of Options
     Option --> Blocked: committed, an open blocker
 ```
+
+**Options in a plan, in practice** (ruling w; the feature whole is in [Upstream
+Kanban](upstream-kanban.md)). An idea a goal may need belongs in the Options column, not On Hold:
+on hold it counts as committed, open work in the goal's progress, though nobody has committed to
+it. When an option in a goal turns out not to be needed, archive it, which discards it. An option
+is already out of the goal's percentage, so the archive only takes it off the "and N options"
+note; moving it to Complete instead would commit it, count it as done and lift the percentage. Moving a committed card back into Options takes it
+out of `progress.total` at once, so a goal's percentage can rise without anything being finished;
+the plan says so by listing it under "and N options".
 
 ## How a milestone summary is computed
 

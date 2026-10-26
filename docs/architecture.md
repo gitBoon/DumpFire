@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.57
+version: 1.58
 status: As-Built
 date: 2026-10-26
 tags:
@@ -1594,6 +1594,8 @@ flowchart LR
     M["GET /api/boards/:id/metrics<br/>(Stats panel)"] --> UF
     M --> CA
 ```
+
+The tracking wrapper (slice S7, card 2465), `.agent/scripts/dumpfire-api.ps1`, which the agents that keep the DumpFire board use, reaches all of it through v1 and adds no route: `create-column -Role options` and `update-column -Role options|none` send `role`; `convert-column -ColumnId N -Cards N` and `convert-board -BoardId N -Cards N` the two converts, with `-Cards` checked to be a whole number before any request; `create-board -Kind ideas` and `update-board -Kind` send `kind`; `send-card -CardId N -BoardId N -To options|todo` the Send, refusing a missing `-BoardId` or `-To` before any request; `upstream -BoardId N [-Days N]` the figures, printed whole whatever `-Compact` says; `boards -Kind` and `cards -Stage` the two filters. The two converts are in the wrapper's destructive actions, as every `delete-*` is: a typed `yes` in a terminal, refused non-interactively and through from-file, since each clears commitments for good and is the board owner's step (the S7 review's T3). For the same reason a discard is never the tracking agent's: `delete-card` is destructive and v1 refuses an archive by `PUT`, so the workflow has the agent ask the user to discard an idea and never move it to Complete instead (T1). Its `-Compact` keeps `committedAt`, `discardedAt`, `role` and `kind`, and `-DryRun` prints each request. A server older than 1.3.0 answers the four new operations `404`, answers `update-column -Role` or `update-board -Kind` sent alone `400 No valid fields to update` and drops either when other fields go with it, and ignores `-Role`, `-Kind` and `-Stage` on the creates and lists, which the wrapper's help says. Its reference and the tracking workflow in `.agent/workflows/` carry the usage guidance of ruling w (ideas in Options, not On Hold; an idea not needed discarded, not completed; a return to options changes past burndown scope), as do the user documents; the feature whole, high and low level, is [Upstream Kanban](upstream-kanban.md).
 
 ### Sub-boards and the board tree
 

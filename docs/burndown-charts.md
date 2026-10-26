@@ -1,7 +1,7 @@
 ---
 title: "Burndown Charts"
 category: Reporting & Analytics
-version: 1.7
+version: 1.8
 status: As-Built
 date: 2026-10-26
 tags:
@@ -15,6 +15,7 @@ tags:
   - categories
   - reporting
   - api
+  - upstream
 description: "How DumpFire draws burndown and burn-up charts for any board, board group, milestone or filter — rebuilt from card timestamps, with an honest forecast, a time-to-deliver estimate and plain-English explanations"
 ---
 
@@ -187,6 +188,15 @@ stateDiagram-v2
 | **Finished work that is archived** stays done | Archiving a finished card is housekeeping. Counting it as removed scope would make a burn-up show delivered work going backwards. Counted in `meta.archivedDoneCards`, because scope can then read higher than the board shows. |
 | A card completed before it was created is treated as arriving on its completion day | Imports and clock fixes; it never counts as done while not in scope. |
 | Every date is **cut to the UTC day** | `created_at` is SQLite's `2026-09-14 09:00:00` and `completed_at` is ISO `2026-09-14T09:00:00.000Z`; the first ten characters are the day either way. |
+
+**Using options with a burndown** (milestone 22, ruling w; the feature whole is in [Upstream
+Kanban](upstream-kanban.md)). Because every line is worked out from each card's state now, a
+card moved back into the Options column takes itself out of the scope of every past day, and a
+chart already shared or exported will read lower afterwards; return a card to options only when
+nobody is committed to it any more. Ideas belong in the Options column, not in On Hold: a card on
+hold is committed and stays in scope, as open work, for as long as it waits. And an idea closed as
+not needed is archived, which discards it and keeps it out of the chart, rather than moved to
+Complete, which commits it, brings it into scope that day and burns it down as delivered work.
 
 **Membership is as it stands today.** A card's milestone, category, labels and
 assignees are not historised, so they are applied across the whole window — the
