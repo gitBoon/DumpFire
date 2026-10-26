@@ -27,6 +27,8 @@
 	import BoardContextMenu from '$lib/components/dashboard/BoardContextMenu.svelte';
 	import ActiveTasksModal from '$lib/components/dashboard/ActiveTasksModal.svelte';
 	import RequestToasts from '$lib/components/dashboard/RequestToasts.svelte';
+	import { loadXp } from '$lib/board/xp-utils';
+	import type { XpEntry } from '$lib/types';
 
 	let { data }: { data: PageData } = $props();
 
@@ -51,10 +53,27 @@
 	// current. Without it this screen only told the truth as at page load.
 	let stopLiveRefresh: (() => void) | null = null;
 
+	/**
+	 * Everyone's XP, for the sidebar's XP leaderboard (card 2466: the one place
+	 * XP is shown since the board header stopped drawing it). Read as the page
+	 * mounts and again with each live refresh, which the stream's `xp-update`
+	 * (a card completed anywhere) schedules as it does an `update`. `loadXp`
+	 * gives an empty list for a read that fails, as for none, and the panel is
+	 * then not drawn: it is not critical, as on the board before.
+	 */
+	let xpEntries = $state<XpEntry[]>([]);
+	async function refreshXp() {
+		xpEntries = await loadXp();
+	}
+
 	onMount(async () => {
 		// The due figures' day moves on at midnight, on the board pages' tick.
 		clockInterval = setInterval(() => { clock = new Date(); }, 15000);
-		stopLiveRefresh = connectLiveRefresh(() => invalidateAll());
+		refreshXp();
+		stopLiveRefresh = connectLiveRefresh(() => {
+			invalidateAll();
+			refreshXp();
+		});
 	});
 
 	onDestroy(() => {
@@ -125,6 +144,7 @@
 			<AnalyticsSidebar
 				{data}
 				{clock}
+				{xpEntries}
 				openActiveTasksModal={() => activeTasksModal?.openActiveTasksModal()}
 				bind:showVelocityModal
 				bind:showSpendModal

@@ -1,16 +1,18 @@
 <!--
-  XpLeaderboard.svelte — The board header's XP bars (card 2280, slice B3:
-  moved from the board page).
+  XpLeaderboard.svelte — The XP bars (card 2280, slice B3: moved from the
+  board page, whose header drew them as a strip until card 2466).
 
   Each person's level and their progress towards the next, highest first,
-  as the page last read them. Drawn only once someone has XP; hidden under
-  768 px.
+  as the page last read them. Drawn only once someone has XP. Since card
+  2466 they are drawn only on the dashboard's sidebar, `stacked`: one row
+  each, at the panel's width, with the XP total, shown at every width. The
+  strip (not stacked) is hidden under 768 px; nothing draws it now.
 -->
 <script lang="ts">
 	import type { XpEntry } from '$lib/types';
 	import { getLevel, getXpProgress } from '$lib/board/xp-utils';
 
-	let { entries }: { entries: XpEntry[] } = $props();
+	let { entries, stacked = false }: { entries: XpEntry[]; stacked?: boolean } = $props();
 
 	// A sorted copy (card 2304). Sorting `entries` itself writes to the page's
 	// state while drawing, which Svelte refuses once there are two people.
@@ -18,7 +20,7 @@
 </script>
 
 {#if entries.length > 0}
-	<div class="xp-bar-container">
+	<div class="xp-bar-container" class:stacked>
 		{#each ranked as entry (entry.name)}
 			{@const level = getLevel(entry.xp)}
 			{@const progress = getXpProgress(entry.xp)}
@@ -27,6 +29,7 @@
 				<div class="xp-info">
 					<div class="xp-name-row">
 						<span class="xp-name">{entry.name}</span>
+						{#if stacked}<span class="xp-amount">{entry.xp} XP</span>{/if}
 						<span class="xp-level">Lv.{level}</span>
 					</div>
 					<div class="xp-track">
@@ -70,9 +73,21 @@
 		transition: width var(--duration-normal) var(--ease-out);
 	}
 
+	/* Stacked, in the dashboard's sidebar panel: a row each, the panel's width. */
+	.xp-bar-container.stacked {
+		flex-direction: column; align-items: stretch; gap: 6px;
+		max-width: none; overflow: visible;
+	}
+	.stacked .xp-entry { min-width: 0; background: transparent; }
+	.stacked .xp-name { font-size: 0.75rem; }
+	.xp-amount {
+		margin-left: auto; font-size: 0.65rem; font-weight: 600;
+		color: var(--text-tertiary); font-variant-numeric: tabular-nums; white-space: nowrap;
+	}
+
 	/* ─── Mobile Responsive ──────────────────────────────────────────────── */
 
 	@media (max-width: 768px) {
-		.xp-bar-container { display: none; }
+		.xp-bar-container:not(.stacked) { display: none; }
 	}
 </style>

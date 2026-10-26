@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.41
+version: 1.42
 status: As-Built
-date: 2026-10-21
+date: 2026-10-26
 tags:
   - features
   - overview
@@ -44,6 +44,24 @@ Boards are your workspaces. Each board has columns that represent stages of work
 - **Public boards** — make a board visible to all users
 - **Favourites** — star boards for quick access from the dashboard
 - **Your dashboard figures are yours** — the assigned, active, overdue and due-soon counts, Upcoming Deadlines, the trends and Recent Activity cover only boards you can open. When you are taken off a board, its cards and your past actions on it leave them
+
+### The Header Bars
+
+The dashboard's and each board's header keep what you use every minute in view, and put the rest one click away in a menu (from 26 October 2026; until then every control sat in the bar).
+
+- **The dashboard** — **All Tasks**, **Inbox** (with how many requests wait), **Planning** and **+ New Board** are always shown. **Views** holds **All To Do**, **Reports**, **Burndown** and **Graph**. **More** holds **Teams**, **Archived**, **Admin** and **Audit & Logs** (for administrators), **Request**, **API Docs** and the theme. On a phone or narrow window (under 640 px) All Tasks, Inbox and Planning leave the bar and are listed first in Views, and the inbox count shows on the Views button instead. Every menu opens wholly on the screen, moved in from the edge where it would not fit.
+- **Your Boards** — **Display**, beside the title, holds the **done boards** and **done subs** switches and **Manage Categories**. A small dot on the button means a switch is not at its usual setting (done boards hidden, or done sub-boards shown).
+- **A board** — on the left the way back, the board's emoji and name and what it has cost; in the middle the search; on the right **Board | List**, **Filter** and **More**. **Filter** holds the assignee filter and **Hide blocked**; its button says how many are on ("Filter · 2"), so a board showing fewer cards says why. **More** holds **Planning** and **All To Do** for this board, the Activity Log, Statistics and Archived Cards panels, **Add Column**, **Burndown**, **Manage Categories**, **Bulk Select**, **Share Board**, **Delete Sub-board** (on a sub-board) and the theme. The XP bars are no longer shown on a board: they are the XP Leaderboard on the dashboard's sidebar.
+- **From the keyboard** — every menu opens with Enter, Space or the down arrow, the arrow keys move between its items, Escape closes it and puts you back on its button, and Tab moves on. A click anywhere else closes it.
+
+```mermaid
+flowchart LR
+    Dash["Dashboard"] --> DV["Views: All To Do, Reports, Burndown, Graph"]
+    Dash --> DM["More: Teams … API Docs, Theme"]
+    Boards["Your Boards"] --> DD["Display: done boards, done subs, Manage Categories"]
+    Board["A board"] --> BF["Filter: assignee, Hide blocked"]
+    Board --> BM["More: Planning, All To Do, panels, Add Column … Theme"]
+```
 
 ### Cards
 
@@ -141,7 +159,7 @@ A bulk priority or archive changes every selected card on screen at once. The ca
 Filter cards in real time using the search bar:
 - **Text search** — matches card titles, descriptions, categories, and assignee names
 - **Card ID search** — type `#221` to jump to card 221 instantly
-- **Assignee filter** — filter cards by assigned team member
+- **Assignee filter** — filter cards by assigned team member, under the board's **Filter** menu, beside **Hide blocked**; the button counts the filters on
 - **Sub-boards on All Tasks** — the search on All Tasks covers the cards of every sub-board you can open, at any depth. Choosing a board in its filter also shows the cards of that board's sub-boards, and choosing a category also shows the sub-boards under that category's boards, unless a sub-board has a category of its own. In the filter, each sub-board is listed under its parent when you can open that parent and it is in the same group, indented ("↳"; past eight levels the indent stops and the arrow gives the depth, "↳ 12"). A board whose category has been deleted is listed under Uncategorized, with the sub-boards beneath it. A sub-board whose parent you cannot open, or whose parent is in another group, is listed at the top of its group, and choosing the board above still takes in its cards. A sub-board made by someone else is shown only if you can open it: it does not come with the board above it
 - **What a chosen board covers elsewhere** — with a board chosen in the All Tasks filter, Export to CSV, Planning and Statistics still cover that board alone, while the list also shows its sub-boards' cards; pointing at those buttons says so
 - **Where a card lives** — on All Tasks, each card's board tag names the boards above its board, from the top level down ("📋 DumpFire › 🗂️ Search fixes"), cut short with "…" when long, with the whole path when you point at it. Boards above it that you cannot open are shown as one "…", with no name and no count
@@ -155,7 +173,7 @@ A second way to look at a board, made for a portrait monitor: one column at a ti
 - **Choosing a column** — a strip of the board's columns above the list, each with its card count ("shown/total" while a filter is on, as the board's column headers say it). It wraps onto a second line when narrow. Choosing a column starts its list at the top; if the column shown is deleted, the list moves to To Do at once.
 - **What a row shows** — the title in full, the card's summary (the plain-English line written for reports), up to five lines of its description, and one line with Blocked, milestone, priority, category, assignees, age, due date, subtasks done and cost. In On Hold, the hold note. Labels and sub-boards are in the card window.
 - **What a row does** — click it (or Tab to its title and press Enter or Space) to open the card; with Bulk Select on, a click selects it. Right-click opens the same menu as on the board, where **Move to** moves the card to another column. Cards are not dragged or reordered in the list, because the order on screen is not the board's stored order.
-- **Filters** — the header's search, assignee filter and Hide blocked apply to the list too; a card that does not match is left out of it. Live updates from other people appear as they do on the board.
+- **Filters** — the header's search, and the assignee filter and Hide blocked under its **Filter** menu, apply to the list too; a card that does not match is left out of it. Live updates from other people appear as they do on the board.
 - **Remembered** — the choice (board or list, the column, and the order) is remembered for you and for that board, in this browser (in a private window, until it is closed). Another person signing in on the same browser has their own. Nothing is remembered with site data blocked; the control still works there.
 - **Bookmarking** — while the list is shown the address ends `?view=list&column=<id>`, so a portrait monitor can bookmark its list and open straight into it.
 
@@ -174,7 +192,7 @@ One table of every card waiting to be started, across every board you can open: 
 
 - **What it lists** — the cards in every column titled "To Do" or "Todo" (any capitals, spaces round it ignored), on every board and sub-board you can open, exactly the cards All Tasks shows under To Do. A board with two such columns has both listed. In Progress, On Hold, Complete and archived cards are left out.
 - **A board with no To Do column** is not given one: its cards are not listed under another column's name. The header says how many boards have none ("2 boards have no To Do column"); opening that line lists them, each a link to its board. Renaming a column to To Do brings its cards in.
-- **The three ways in** — **All To Do** on the dashboard, after All Tasks; **All To Do** in every board's header, after Planning, which opens the page filtered to that board and its sub-boards; and **All To Do** on All Tasks, beside Planning, which carries the board or grouping chosen there.
+- **The three ways in** — **All To Do** under the dashboard's **Views** menu; **All To Do** in every board's **More** menu, after Planning, which opens the page filtered to that board and its sub-boards; and **All To Do** on All Tasks, beside Planning, which carries the board or grouping chosen there.
 - **The table** — title, priority, board, category, labels, assignees, due date, subtasks done, milestone and Blocked. Where it is wider than the window (from 1000 px to about 1400 px) it scrolls sideways inside its own box, which the arrow keys scroll once it has the focus, and long titles wrap. Click a column's heading to sort by it, click it again to reverse it; a card with no value sorts last either way. Unsorted, the most urgent come first, then the soonest due, then board name, then the board's own order. Pinned cards are not put first here (a pin shows on the row), so sorting by due date sorts by due date. Labels and assignees do not sort, as a card can have several.
 - **The filters** — board (with its sub-boards, or a whole grouping, as on All Tasks), priority, category, label, assignee (Anyone, Me, Unassigned or a person), milestone (or No milestone), Blocked or Startable, and a search that finds `#123` exactly, or words in the id, title, description, category or an assignee's name. A category or label is chosen by name, so "Bug" on five boards is one choice. The header reads "n of N cards" while a filter is on, and **Clear filters** puts them back (to the board the page was opened for, when it came from a board).
 - **The address keeps the filters** — every filter and the sort are in the address a moment after you change them, so a filtered view can be bookmarked or sent, and **Back** from a board or a plan opened from the page comes back to it with the same filters. **Me** means whoever opens the link. A board in the address that you cannot open, or that does not exist, is dropped with the same notice either way: "The board in the address is not one you can open"; so is a grouping that holds none of your boards. If the chosen board stops being one you can open while the page is open, the page goes back to every board with the same notice.
@@ -185,8 +203,8 @@ One table of every card waiting to be started, across every board you can open: 
 
 ```mermaid
 flowchart LR
-    Dash["Dashboard: All To Do"] --> Todo["/todo"]
-    Board["A board's header: All To Do"] -->|"?board=&lt;id&gt;"| Todo
+    Dash["Dashboard: Views, All To Do"] --> Todo["/todo"]
+    Board["A board's More: All To Do"] -->|"?board=&lt;id&gt;"| Todo
     All["All Tasks: All To Do"] -->|"its board filter"| Todo
     Todo --> Rows["Every To Do column's cards,<br/>filtered and sorted in the page"]
     Rows -->|"click a row"| Window["The card window, on the page"]
@@ -334,7 +352,7 @@ is created, and its creator earns the XP then.
 
 ### Levelling
 
-Every 500 XP earns a new level. Progress is shown in the board header.
+Every 500 XP earns a new level. Each person's level, XP and progress to the next level are shown in the **XP Leaderboard** on the dashboard's sidebar, highest first, kept current as cards are completed anywhere. Until 26 October 2026 they were shown in every board's header instead; a board no longer shows them, and the XP gained still shows in the celebration.
 
 ### Celebrations
 
@@ -345,6 +363,8 @@ Every 500 XP earns a new level. Progress is shown in the board header.
 ## Customisation
 
 ### 16 Built-In Themes
+
+Chosen from the Theme list, each theme by its icon and name, at the foot of the **More** menu on the dashboard and on a board, or from the theme button on the other pages. The choice is kept in your browser.
 
 | Theme | Style |
 |-------|-------|

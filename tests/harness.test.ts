@@ -99,6 +99,7 @@ const TEST_FILES = [
 	'gate.test.ts',
 	'gdrive-retention.test.ts',
 	'harness.test.ts',
+	'header-menus.svelte.test.ts',
 	'import-working-copy.test.ts',
 	'internal-refusals.test.ts',
 	'kanban-column-header.svelte.test.ts',

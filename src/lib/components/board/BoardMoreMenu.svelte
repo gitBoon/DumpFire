@@ -2,15 +2,21 @@
   BoardMoreMenu.svelte — The board header's More menu (card 2280, slice B3:
   moved from the board page).
 
-  The panels (Activity Log, Statistics, Archived Cards), and what is done to
-  the board as a whole: Burndown, Manage Categories, Bulk Select, Share Board
-  for someone who manages it, and Delete Sub-board when the board is one.
-  Each item closes the menu after it hands its choice to the page; Delete
-  Sub-board closes it first, as the page's confirmation opens. The menu
-  holds no state of its own: whether it is open is the page's, which closes
-  it on any click outside.
+  Where to go from the board (Planning and All To Do, scoped to it), the
+  panels (Activity Log, Statistics, Archived Cards), what is done to the
+  board as a whole (Add Column, Burndown, Manage Categories, Bulk Select,
+  Share Board for someone who manages it, and Delete Sub-board when the board
+  is one), and the theme. Card 2466 moved Planning, All To Do, Add Column and
+  the theme here from the bar, and made the menu a HeaderMenu: keyboard
+  operable, and each item closes it, the focus back on More, before the item
+  hands its choice to the page, so a window that gives the focus back as it
+  closes (Delete Sub-board's confirm) gives it to More. Whether it is open is
+  the page's, which closes it on any click outside.
 -->
 <script lang="ts">
+	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
+	import ThemeMenuItems from '$lib/components/ThemeMenuItems.svelte';
+
 	let {
 		open = $bindable(),
 		showActivityPanel,
@@ -20,6 +26,7 @@
 		canManage,
 		isSubBoard,
 		boardId,
+		onAddColumn,
 		onToggleActivity,
 		onToggleStats,
 		onToggleArchive,
@@ -37,6 +44,7 @@
 		/** The board is a sub-board: Delete Sub-board is offered. */
 		isSubBoard: boolean;
 		boardId: number;
+		onAddColumn: () => void;
 		onToggleActivity: () => void;
 		onToggleStats: () => void;
 		onToggleArchive: () => void;
@@ -46,129 +54,122 @@
 		/** Asks first, in the page's confirmation. */
 		onDeleteSubBoard: () => void;
 	} = $props();
+
+	/** Each section is a group named by its heading, so a screen reader in the menu says it. */
+	const uid = $props.id();
+	const goId = `more-go-${uid}`;
+	const panelsId = `more-panels-${uid}`;
+	const boardSectionId = `more-board-${uid}`;
 </script>
 
-<!-- More menu (progressive disclosure) -->
-<div class="more-menu-wrapper">
-	<button class="hdr-control hdr-action more-menu-trigger" class:active-panel-btn={open} onclick={(e) => { e.stopPropagation(); open = !open; }} title="More actions">
-		<svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+<!-- More menu (progressive disclosure). HeaderMenu closes it, the focus on
+     More, before each item's own click runs. -->
+<HeaderMenu label="More" bind:open triggerClass="hdr-control hdr-action more-menu-trigger" triggerTitle="More actions">
+	{#snippet trigger()}
+		<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
 			<circle cx="3" cy="8" r="1.5" fill="currentColor"/>
 			<circle cx="8" cy="8" r="1.5" fill="currentColor"/>
 			<circle cx="13" cy="8" r="1.5" fill="currentColor"/>
 		</svg>
 		More
+	{/snippet}
+	<div class="hm-label" id={goId}>Go to</div>
+	<div role="group" aria-labelledby={goId}>
+	<!-- Scoped to this board: arriving from a board, the question is about
+	     this board's goals, not every goal in the workspace. -->
+	<a class="hm-item" role="menuitem" tabindex="-1" href="/plan?board={boardId}" title="Planning — critical path and what is startable for this board">
+		<span class="hm-icon">
+			<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+				<circle cx="3.5" cy="8" r="1.8" stroke="currentColor" stroke-width="1.2"/>
+				<circle cx="8" cy="4" r="1.8" stroke="currentColor" stroke-width="1.2"/>
+				<circle cx="12.5" cy="8" r="1.8" stroke="currentColor" stroke-width="1.2"/>
+				<path d="M5.2 7.1L6.4 4.9M9.6 4.9l1.2 2.2" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/>
+				<path d="M5.3 8.9l5.4 2.6" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-dasharray="1.5 1.5"/>
+			</svg>
+		</span>
+		Planning
+	</a>
+	<!-- Every board's To Do column as one table, filtered to this board and
+	     its sub-boards (card 2240). Shown on every board, one with no To Do
+	     column too: its sub-boards may have one. -->
+	<a class="hm-item" role="menuitem" tabindex="-1" href="/todo?board={boardId}" title="This board's To Do column, and its sub-boards', with every other board's a filter away">
+		<span class="hm-icon">
+			<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+				<rect x="2" y="2.5" width="12" height="11" rx="2" stroke="currentColor" stroke-width="1.3"/>
+				<path d="M4.8 6.2l1.2 1.2 2-2.2M9.6 6.4h2M4.8 10.2h6.8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+			</svg>
+		</span>
+		All To Do
+	</a>
+	</div>
+
+	<div class="hm-divider" role="separator"></div>
+
+	<div class="hm-label" id={panelsId}>Panels</div>
+	<div role="group" aria-labelledby={panelsId}>
+	<button class="hm-item" role="menuitemcheckbox" data-menu-close tabindex="-1" aria-checked={showActivityPanel} onclick={() => onToggleActivity()}>
+		<span class="hm-icon">📋</span> Activity Log
+		{#if showActivityPanel}<span class="hm-check">✓</span>{/if}
 	</button>
-	{#if open}
-		<!-- svelte-ignore a11y_click_events_have_key_events -->
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<div class="more-dropdown" onclick={(e) => e.stopPropagation()}>
-			<div class="more-dropdown-section">
-				<div class="more-dropdown-label">Panels</div>
-				<button class="more-dropdown-item" class:more-active={showActivityPanel} onclick={() => { onToggleActivity(); open = false; }}>
-					<span class="more-item-icon">📋</span> Activity Log
-					{#if showActivityPanel}<span class="more-check">✓</span>{/if}
-				</button>
-				<button class="more-dropdown-item" class:more-active={showStatsPanel} onclick={() => { onToggleStats(); open = false; }}>
-					<span class="more-item-icon">📊</span> Statistics
-					{#if showStatsPanel}<span class="more-check">✓</span>{/if}
-				</button>
-				<button class="more-dropdown-item" class:more-active={showArchivePanel} onclick={() => { onToggleArchive(); open = false; }}>
-					<span class="more-item-icon">🗄️</span> Archived Cards
-					{#if showArchivePanel}<span class="more-check">✓</span>{/if}
-				</button>
-			</div>
+	<button class="hm-item" role="menuitemcheckbox" data-menu-close tabindex="-1" aria-checked={showStatsPanel} onclick={() => onToggleStats()}>
+		<span class="hm-icon">📊</span> Statistics
+		{#if showStatsPanel}<span class="hm-check">✓</span>{/if}
+	</button>
+	<button class="hm-item" role="menuitemcheckbox" data-menu-close tabindex="-1" aria-checked={showArchivePanel} onclick={() => onToggleArchive()}>
+		<span class="hm-icon">🗄️</span> Archived Cards
+		{#if showArchivePanel}<span class="hm-check">✓</span>{/if}
+	</button>
+	</div>
 
-			<div class="more-dropdown-divider"></div>
+	<div class="hm-divider" role="separator"></div>
 
-			<div class="more-dropdown-section">
-				<div class="more-dropdown-label">Board</div>
-				<a class="more-dropdown-item" href="/burndown?boardIds={boardId}" onclick={() => (open = false)}>
-					<span class="more-item-icon">📉</span> Burndown
-				</a>
-				<button class="more-dropdown-item" onclick={() => { onManageCategories(); open = false; }}>
-					<span class="more-item-icon">🏷️</span> Manage Categories
-				</button>
-				<button class="more-dropdown-item" class:more-active={selectionMode} onclick={() => { onToggleSelection(); open = false; }}>
-					<span class="more-item-icon">☑️</span> Bulk Select
-					{#if selectionMode}<span class="more-check">✓</span>{/if}
-				</button>
-				{#if canManage}
-					<button class="more-dropdown-item" onclick={() => { onShare(); open = false; }}>
-						<span class="more-item-icon">🔗</span> Share Board
-					</button>
-				{/if}
-				{#if isSubBoard}
-					<button class="more-dropdown-item more-danger" onclick={() => { open = false; onDeleteSubBoard(); }}>
-						<span class="more-item-icon">🗑️</span> Delete Sub-board
-					</button>
-				{/if}
-			</div>
-		</div>
+	<div class="hm-label" id={boardSectionId}>Board</div>
+	<div role="group" aria-labelledby={boardSectionId}>
+	<button class="hm-item" role="menuitem" tabindex="-1" onclick={() => onAddColumn()} title="Add column">
+		<span class="hm-icon">
+			<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+				<rect x="2" y="2" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.5"/>
+				<path d="M8 5v6M5 8h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+			</svg>
+		</span>
+		Add Column
+	</button>
+	<a class="hm-item" role="menuitem" tabindex="-1" href="/burndown?boardIds={boardId}">
+		<span class="hm-icon">📉</span> Burndown
+	</a>
+	<button class="hm-item" role="menuitem" tabindex="-1" onclick={() => onManageCategories()}>
+		<span class="hm-icon">🏷️</span> Manage Categories
+	</button>
+	<button class="hm-item" role="menuitemcheckbox" data-menu-close tabindex="-1" aria-checked={selectionMode} onclick={() => onToggleSelection()}>
+		<span class="hm-icon">☑️</span> Bulk Select
+		{#if selectionMode}<span class="hm-check">✓</span>{/if}
+	</button>
+	{#if canManage}
+		<button class="hm-item" role="menuitem" tabindex="-1" onclick={() => onShare()}>
+			<span class="hm-icon">🔗</span> Share Board
+		</button>
 	{/if}
-</div>
+	{#if isSubBoard}
+		<button class="hm-item more-danger" role="menuitem" tabindex="-1" onclick={() => onDeleteSubBoard()}>
+			<span class="hm-icon">🗑️</span> Delete Sub-board
+		</button>
+	{/if}
+	</div>
+
+	<div class="hm-divider" role="separator"></div>
+
+	<ThemeMenuItems />
+</HeaderMenu>
 
 <style>
-	/* More menu dropdown */
-	.more-menu-wrapper { position: relative; }
-	.more-menu-trigger { display: flex; align-items: center; gap: 6px; }
-	.more-dropdown {
-		position: absolute; top: calc(100% + 6px); right: 0;
-		background: var(--bg-card); border: 1px solid var(--glass-border);
-		border-radius: var(--radius-lg); min-width: 220px;
-		box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(255, 255, 255, 0.04);
-		z-index: 200; padding: var(--space-xs) 0;
-		animation: moreDropdownIn 0.15s ease-out;
-		backdrop-filter: blur(12px);
-	}
-	@keyframes moreDropdownIn {
-		from { opacity: 0; transform: translateY(-6px) scale(0.97); }
-		to { opacity: 1; transform: translateY(0) scale(1); }
-	}
-	.more-dropdown-section { padding: var(--space-xs) 0; }
-	.more-dropdown-label {
-		font-size: 0.62rem; font-weight: 700; text-transform: uppercase;
-		letter-spacing: 0.08em; color: var(--text-tertiary);
-		padding: var(--space-xs) var(--space-md) 4px;
-	}
-	.more-dropdown-divider {
-		height: 1px; background: var(--glass-border);
-		margin: var(--space-xs) var(--space-md);
-	}
-	.more-dropdown-item {
-		display: flex; align-items: center; gap: var(--space-sm);
-		width: 100%; padding: 7px var(--space-md);
-		border: none; background: transparent;
-		color: var(--text-secondary); font-size: 0.82rem; font-weight: 500;
-		font-family: var(--font-family); cursor: pointer;
-		text-decoration: none; text-align: left;
-		transition: all 0.1s ease;
-	}
-	.more-dropdown-item:hover {
-		background: rgba(99, 102, 241, 0.08); color: var(--text-primary);
-	}
-	.more-dropdown-item.more-active {
-		color: var(--accent-indigo); font-weight: 600;
-	}
-	.more-dropdown-item.more-danger { color: var(--text-tertiary); }
-	.more-dropdown-item.more-danger:hover {
+	/* The panel and its items are HeaderMenu's (the shared hm-* look); only
+	   what is this menu's own stays here. */
+	:global(.hm-panel) .hm-item.more-danger { color: var(--text-tertiary); }
+	:global(.hm-panel) .hm-item.more-danger:hover,
+	:global(.hm-panel) .hm-item.more-danger:focus {
 		color: var(--accent-rose); background: rgba(244, 63, 94, 0.08);
 	}
-	.more-item-icon { font-size: 0.9rem; width: 20px; text-align: center; flex-shrink: 0; }
-	.more-check {
-		margin-left: auto; font-size: 0.75rem; font-weight: 700;
-		color: var(--accent-indigo);
-	}
 
-	/* Active panel button */
-	.active-panel-btn { background: rgba(99, 102, 241, 0.12) !important; color: var(--accent-indigo) !important; }
-
-	/* ─── Mobile Responsive ──────────────────────────────────────────────── */
-
-	@media (max-width: 768px) {
-		/* Touch-friendly buttons */
-		.more-dropdown-item {
-			padding: var(--space-md) var(--space-lg) !important;
-			min-height: 40px;
-		}
-	}
+	/* The button while open, as it was drawn. :global, as HeaderMenu draws it. */
+	:global(.more-menu-trigger.hm-open) { background: rgba(99, 102, 241, 0.12) !important; color: var(--accent-indigo) !important; }
 </style>

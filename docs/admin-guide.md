@@ -1,9 +1,9 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.74
+version: 1.75
 status: As-Built
-date: 2026-10-22
+date: 2026-10-26
 tags:
   - admin
   - operations
@@ -241,7 +241,7 @@ The 🗑️ button beside a user in **Admin → User Management** asks for confi
 | Their API keys. Anything that calls the API with one stops working | Milestones, templates and dependencies they created |
 | Their report schedules. Those reports are no longer sent | Boards and cards they created |
 | Their team memberships, board memberships and card assignments | Requests addressed to them |
-| Their sessions, so they are signed out everywhere | Their XP, which stays on the leaderboard |
+| Their sessions, so they are signed out everywhere | Their XP, which stays on the dashboard's XP Leaderboard (on every board's header until 26 October 2026) |
 | | Webhooks they set up, **switched off** (card 2168), and then naming nobody |
 | The mail settings, the App URL and the backup destinations still where they set them (card 2397): see [Who May Do What](#who-may-do-what) | Settings somebody else has moved since, settings moved back to where somebody else put them, and settings saved before migration 0059 |
 
@@ -800,7 +800,7 @@ flowchart TD
 
 Organise boards into categories for the dashboard sidebar:
 
-1. Go to **Admin → Board Categories** (or use the dashboard category manager)
+1. Go to **Admin → Board Categories** (or use the dashboard category manager: **Display → 🏷️ Manage Categories** beside Your Boards, since 26 October 2026, when its button moved into the Display menu)
 2. Create categories with names and colours
 3. Assign boards to categories
 
@@ -808,7 +808,7 @@ Categories appear as collapsible groups in the dashboard sidebar.
 
 The dashboard's **Manage Categories** window says a change it could not make under its header, in the server's words or as "No answer from the server. The category may not have been created." (saved, deleted), and keeps what was typed (card 2358, 2026-10-21; it said nothing, and a change with no answer left the window's buttons dead). Deleting a category asks first in the app's confirm dialog, "Delete Category", naming it.
 
-From the keyboard (card 2365, 2026-10-21; it took no focus, Tab walked the page behind it, and Escape did nothing): as the window opens the name box under **Create New** has the focus; Tab and Shift+Tab stay in the window; **Escape** closes it, as × does, except while a change is on its way, so that what the server says of it is not lost (× likewise since card 2375, 2026-10-21: it closed the window and the answer was said to nobody; it is marked unavailable to a screen reader meanwhile); with a category's edit open, Escape cancels that edit alone, and the focus goes back to its ✎ (the next Escape closes the window); and as it closes the focus goes back to **🏷️ Manage Categories**. While the delete's confirm is up, Escape closes the confirm alone.
+From the keyboard (card 2365, 2026-10-21; it took no focus, Tab walked the page behind it, and Escape did nothing): as the window opens the name box under **Create New** has the focus; Tab and Shift+Tab stay in the window; **Escape** closes it, as × does, except while a change is on its way, so that what the server says of it is not lost (× likewise since card 2375, 2026-10-21: it closed the window and the answer was said to nobody; it is marked unavailable to a screen reader meanwhile); with a category's edit open, Escape cancels that edit alone, and the focus goes back to its ✎ (the next Escape closes the window); and as it closes the focus goes back to the **Display** button whose menu it was opened from (card 2466, 2026-10-26; it went back to the **🏷️ Manage Categories** button, which is now an item of that menu). While the delete's confirm is up, Escape closes the confirm alone.
 
 ---
 

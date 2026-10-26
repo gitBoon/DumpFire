@@ -4,9 +4,11 @@
 
   On the left the way back (the boards above this one, or the dashboard), the
   board's emoji and name, each changed in place, and what the board has cost;
-  then the XP bars the page hands it (`xp`), the search, the assignee filter
-  and Hide blocked; on the right the Board | List switch, Planning, All To
-  Do, Add Column, the More menu the page hands it (`more`) and the theme.
+  then the search; on the right the Board | List switch, the Filter menu (the
+  assignee filter and Hide blocked, its button counting those on) and the
+  More menu the page hands it (`more`), which holds Planning, All To Do, Add
+  Column and the theme (card 2466: they were all in the bar, with the XP
+  bars, which the board no longer shows).
 
   It sends nothing itself. The name being typed, the search and the filters
   are the page's, bound here; the rename, the emoji and the rest are handed
@@ -15,7 +17,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
-	import ThemePicker from '$lib/components/ThemePicker.svelte';
+	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
 	import BoardViewSwitch from './BoardViewSwitch.svelte';
 	import { formatTokens } from '$lib/tokens';
 	import { formatUsd, BLEND_NOTE, SOURCE_NOTE, NOT_BILLED_NOTE } from '$lib/pricing';
@@ -40,8 +42,6 @@
 		onStartRename,
 		onRename,
 		onViewChange,
-		onAddColumn,
-		xp,
 		more
 	}: {
 		boardId: number;
@@ -63,12 +63,15 @@
 		/** The box's blur and Enter: the page sends the name, once. */
 		onRename: () => void;
 		onViewChange: (view: BoardViewName) => void;
-		onAddColumn: () => void;
-		/** The XP bars, between the name and the search. */
-		xp?: Snippet;
-		/** The More menu, before the theme. */
+		/** The More menu, last on the right. */
 		more?: Snippet;
 	} = $props();
+
+	/** How many of the Filter menu's filters are on: its button says so ("Filter · 2"). */
+	const activeFilters = $derived((filterAssigneeId != null ? 1 : 0) + (hideBlocked ? 1 : 0));
+	/** The Assignee heading names its radio items' group, so a screen reader in the menu says it. */
+	const uid = $props.id();
+	const assigneeLabelId = `filter-assignee-${uid}`;
 </script>
 
 <header class="board-header">
@@ -124,8 +127,6 @@
 		{/if}
 	</div>
 
-	{@render xp?.()}
-
 	<div class="search-wrapper hdr-search">
 		<svg class="search-icon" width="14" height="14" viewBox="0 0 14 14" fill="none">
 			<circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.5"/>
@@ -143,63 +144,63 @@
 			</button>
 		{/if}
 	</div>
-	<select class="hdr-control assignee-filter" bind:value={filterAssigneeId}>
-		<option value={null}>All assignees</option>
-		{#if currentUser}
-			<option value={currentUser.id}>👤 My Cards</option>
-		{/if}
-		{#each boardUsers.filter(u => u.id !== currentUser?.id) as u}
-			<option value={u.id}>{u.emoji || '👤'} {u.username}</option>
-		{/each}
-	</select>
-	<button
-		class="hdr-control blocked-filter-toggle"
-		class:is-on={hideBlocked}
-		onclick={() => (hideBlocked = !hideBlocked)}
-		title="Hide cards that are still waiting on another card"
-	>
-		<svg width="13" height="13" viewBox="0 0 10 10" fill="none" aria-hidden="true">
-			<circle cx="5" cy="5" r="4" stroke="currentColor" stroke-width="1.4"/>
-			<path d="M2.2 7.8L7.8 2.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-		</svg>
-		Hide blocked
-	</button>
-
 	<div class="board-header-right">
 		<BoardViewSwitch {view} onChange={(view) => onViewChange(view)} />
-		<!-- Scoped to this board: arriving from a board, the question is about
-		     this board's goals, not every goal in the workspace. -->
-		<a href="/plan?board={boardId}" class="hdr-control hdr-action" title="Planning — critical path and what is startable for this board">
-			<svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-				<circle cx="3.5" cy="8" r="1.8" stroke="currentColor" stroke-width="1.2"/>
-				<circle cx="8" cy="4" r="1.8" stroke="currentColor" stroke-width="1.2"/>
-				<circle cx="12.5" cy="8" r="1.8" stroke="currentColor" stroke-width="1.2"/>
-				<path d="M5.2 7.1L6.4 4.9M9.6 4.9l1.2 2.2" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/>
-				<path d="M5.3 8.9l5.4 2.6" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-dasharray="1.5 1.5"/>
-			</svg>
-			Planning
-		</a>
-		<!-- Every board's To Do column as one table, filtered to this board and
-		     its sub-boards (card 2240). Shown on every board, one with no To Do
-		     column too: its sub-boards may have one. -->
-		<a href="/todo?board={boardId}" class="hdr-control hdr-action" title="This board's To Do column, and its sub-boards', with every other board's a filter away">
-			<svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-				<rect x="2" y="2.5" width="12" height="11" rx="2" stroke="currentColor" stroke-width="1.3"/>
-				<path d="M4.8 6.2l1.2 1.2 2-2.2M9.6 6.4h2M4.8 10.2h6.8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-			</svg>
-			All To Do
-		</a>
-		<button class="hdr-control hdr-action" onclick={() => onAddColumn()} title="Add column">
-			<svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-				<rect x="2" y="2" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.5"/>
-				<path d="M8 5v6M5 8h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-			</svg>
-			Add Column
-		</button>
+		<!-- The assignee filter and Hide blocked, one click deeper (card 2466);
+		     the button counts those on, so a filtered board says so. It is a
+		     filter, so it looks like a field (hdr-control without hdr-action:
+		     app.css's header control row). -->
+		<HeaderMenu
+			label="Filter"
+			triggerClass="hdr-control filter-trigger"
+			triggerId="board-filter-btn"
+			triggerTitle={activeFilters ? `${activeFilters} filter${activeFilters === 1 ? '' : 's'} on` : 'Filter by assignee, or hide blocked cards'}
+			triggerActive={activeFilters > 0}
+		>
+			{#snippet trigger()}
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+					<path d="M2 3h12l-4.5 5.5V13l-3-1.5V8.5L2 3z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+				</svg>
+				Filter{#if activeFilters}<span class="filter-count">{` · ${activeFilters}`}</span>{/if}
+			{/snippet}
+			<div class="hm-label" id={assigneeLabelId}>Assignee</div>
+			<div role="group" aria-labelledby={assigneeLabelId}>
+			<button class="hm-item" role="menuitemradio" tabindex="-1" aria-checked={filterAssigneeId == null} onclick={() => (filterAssigneeId = null)}>
+				All assignees
+				{#if filterAssigneeId == null}<span class="hm-check" aria-hidden="true">✓</span>{/if}
+			</button>
+			{#if currentUser}
+				<button class="hm-item" role="menuitemradio" tabindex="-1" aria-checked={filterAssigneeId === currentUser.id} onclick={() => (filterAssigneeId = currentUser.id)}>
+					👤 My Cards
+					{#if filterAssigneeId === currentUser.id}<span class="hm-check" aria-hidden="true">✓</span>{/if}
+				</button>
+			{/if}
+			{#each boardUsers.filter(u => u.id !== currentUser?.id) as u (u.id)}
+				<button class="hm-item" role="menuitemradio" tabindex="-1" aria-checked={filterAssigneeId === u.id} onclick={() => (filterAssigneeId = u.id)}>
+					{u.emoji || '👤'} {u.username}
+					{#if filterAssigneeId === u.id}<span class="hm-check" aria-hidden="true">✓</span>{/if}
+				</button>
+			{/each}
+			</div>
+			<div class="hm-divider" role="separator"></div>
+			<button
+				class="hm-item"
+				role="menuitemcheckbox"
+				tabindex="-1"
+				aria-checked={hideBlocked}
+				onclick={() => (hideBlocked = !hideBlocked)}
+				title="Hide cards that are still waiting on another card"
+			>
+				<svg width="13" height="13" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+					<circle cx="5" cy="5" r="4" stroke="currentColor" stroke-width="1.4"/>
+					<path d="M2.2 7.8L7.8 2.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+				</svg>
+				Hide blocked
+				{#if hideBlocked}<span class="hm-check" aria-hidden="true">✓</span>{/if}
+			</button>
+		</HeaderMenu>
 
 		{@render more?.()}
-
-		<ThemePicker />
 	</div>
 </header>
 
@@ -291,8 +292,6 @@
 	   board, All Tasks and the planning view cannot drift apart again. Only
 	   what is genuinely local to this header stays here. */
 	.search-input { width: 100%; }
-	.assignee-filter { padding-right: 8px; }
-
 
 	.search-input::placeholder { color: var(--text-tertiary); }
 	.search-input:focus { outline: none; border-color: var(--accent-indigo); }
@@ -301,13 +300,14 @@
 		opacity: 0.5;
 	}
 	.search-clear:hover { opacity: 1; }
-	.assignee-filter:focus { outline: none; border-color: var(--accent-indigo); }
 
-	/* Amber is specific to "blocked", so this state stays local to the filter. */
-	.blocked-filter-toggle.is-on {
-		background: rgba(245, 158, 11, 0.14); color: #f59e0b;
-		border-color: rgba(245, 158, 11, 0.35);
+	/* A filter on: the Filter button reads as on, so a board showing fewer cards says why.
+	   :global, as HeaderMenu draws the button. */
+	.board-header-right :global(.filter-trigger.hm-on) {
+		background: rgba(99, 102, 241, 0.12); color: var(--accent-indigo);
+		border-color: rgba(99, 102, 241, 0.35);
 	}
+	.filter-count { font-variant-numeric: tabular-nums; }
 
 	/* ─── Mobile Responsive ──────────────────────────────────────────────── */
 

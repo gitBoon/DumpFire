@@ -825,28 +825,36 @@ describe('the board filter, src/lib/components/BoardFilterSelect.svelte (test 15
 });
 
 describe('the three ways in (test 16)', () => {
-	it('the board header links to /todo?board=<id> after Planning, with BoardViewSwitch still first', () => {
+	it('the board’s More menu links to /todo?board=<id> after Planning, with BoardViewSwitch still first in the header', () => {
 		// The board's header, moved from the board page by card 2280's slice B3; the page hands it the board's id.
-		const source = read('src/lib/components/board/BoardHeader.svelte');
-		expect(read('src/routes/board/[id]/+page.svelte')).toMatch(/<BoardHeader\s+boardId=\{data\.board\.id\}/);
-		expect(source).toMatch(/<div class="board-header-right">\s*<BoardViewSwitch /);
-		const planning = source.indexOf('<a href="/plan?board={boardId}"');
-		const todo = source.indexOf('<a href="/todo?board={boardId}" class="hdr-control hdr-action"');
+		// Card 2466 moved Planning, All To Do and Add Column from the header's bar into its More menu, in that order.
+		const header = read('src/lib/components/board/BoardHeader.svelte');
+		const page = read('src/routes/board/[id]/+page.svelte');
+		expect(page).toMatch(/<BoardHeader\s+boardId=\{data\.board\.id\}/);
+		expect(page).toMatch(/<BoardMoreMenu[\s\S]*?boardId=\{data\.board\.id\}/);
+		expect(header).toMatch(/<div class="board-header-right">\s*<BoardViewSwitch /);
+		expect(header).not.toContain('/todo?board=');
+		const source = read('src/lib/components/board/BoardMoreMenu.svelte');
+		const planning = source.indexOf('href="/plan?board={boardId}"');
+		const todo = source.indexOf('href="/todo?board={boardId}"');
 		const addColumn = source.indexOf('title="Add column"');
 		expect(planning).toBeGreaterThan(-1);
 		expect(todo).toBeGreaterThan(planning);
 		expect(addColumn).toBeGreaterThan(todo);
 	});
 
-	it('the dashboard has an All To Do pill straight after All Tasks', () => {
+	it('the dashboard has All To Do first in its Views menu, after the All Tasks pill', () => {
 		// In the dashboard's header (card 2281, slice C2: moved from src/routes/+page.svelte).
+		// Card 2466 moved it from a pill of its own into Views; mounted, in tests/header-menus.svelte.test.ts.
 		const source = read('src/lib/components/dashboard/DashboardHeader.svelte');
-		const all = source.indexOf('<a href="/all" class="nav-pill">');
-		const todo = source.indexOf('<a href="/todo" class="nav-pill" id="todo-link">');
-		const inbox = source.indexOf('<a href="/inbox" class="nav-pill">');
+		const all = source.indexOf('<a href="/all" class="nav-pill wide-only">');
+		const views = source.indexOf('<HeaderMenu label="Views"');
+		const todo = source.indexOf('<a href="/todo" class="hm-item" role="menuitem" tabindex="-1" id="todo-link">');
+		const reports = source.indexOf('<a href="/reports" class="hm-item"');
 		expect(all).toBeGreaterThan(-1);
-		expect(todo).toBeGreaterThan(all);
-		expect(inbox).toBeGreaterThan(todo);
+		expect(views).toBeGreaterThan(all);
+		expect(todo).toBeGreaterThan(views);
+		expect(reports).toBeGreaterThan(todo);
 	});
 
 	it('All Tasks links to /todo beside Planning, carrying its board filter', () => {

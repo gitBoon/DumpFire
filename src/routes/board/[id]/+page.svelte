@@ -9,7 +9,6 @@
 	 *   - card-actions.ts  (card CRUD, duplicate, pin, sub-boards)
 	 *   - dnd-handlers.ts  (drag-and-drop orchestration)
 	 *   - bulk-actions.ts  (multi-select operations)
-	 *   - xp-utils.ts      (XP levelling calculations)
 	 *   - sse.ts           (Server-Sent Events connection)
 	 *   - board-state.svelte.ts (what the page draws, and the re-read of the
 	 *     board's contents alone, coalesced and held; card 2280, slice B2a;
@@ -21,7 +20,7 @@
 	 *     opened, and its archive; slice B2c)
 	 *
 	 * What it draws is in components (slice B3, a move): the header with its
-	 * XP bars and More menu, each column's head and each card's body, and the
+	 * More menu, each column's head and each card's body, and the
 	 * Activity Log and Archived Cards panels, under $lib/components/board/.
 	 * Each is handed what it shows and calls back into this page, which keeps
 	 * every write, the board state, the card window, the columns and cards
@@ -39,7 +38,7 @@
 	import { toasts } from '$lib/stores/toast';
 
 	// Shared types
-	import type { CardType, CategoryType, ColumnType, ActivityType, SortOption, XpEntry, BlockedState, OnHoldState } from '$lib/types';
+	import type { CardType, CategoryType, ColumnType, ActivityType, SortOption, BlockedState, OnHoldState } from '$lib/types';
 
 	// Shared utilities
 	import { FLIP_DURATION_MS } from '$lib/utils/constants';
@@ -56,7 +55,6 @@
 	import * as cardActions from '$lib/board/card-actions';
 	import * as dndHandlers from '$lib/board/dnd-handlers';
 	import * as bulkOps from '$lib/board/bulk-actions';
-	import { loadXp as fetchXpData } from '$lib/board/xp-utils';
 	import { attachmentsChanged, commentsChanged, connectSSE } from '$lib/board/sse';
 	import { BoardState, type WriteWords } from '$lib/board/board-state.svelte';
 	import { CARD_GONE, CardWindow, type CardWindowSave } from '$lib/board/card-window.svelte';
@@ -80,7 +78,6 @@
 	import CompletionPromptModal from '$lib/components/board/CompletionPromptModal.svelte';
 	import ColumnListView from '$lib/components/board/ColumnListView.svelte';
 	import BoardHeader from '$lib/components/board/BoardHeader.svelte';
-	import XpLeaderboard from '$lib/components/board/XpLeaderboard.svelte';
 	import BoardMoreMenu from '$lib/components/board/BoardMoreMenu.svelte';
 	import KanbanColumnHeader from '$lib/components/board/KanbanColumnHeader.svelte';
 	import KanbanCardBody from '$lib/components/board/KanbanCardBody.svelte';
@@ -641,7 +638,9 @@
 	let contextMenu = $state<{ show: boolean; x: number; y: number; card: CardType | null; columnId: number }>({ show: false, x: 0, y: 0, card: null, columnId: 0 });
 
 	function toggleDropdown(id: string) { openDropdown = openDropdown === id ? null : id; }
-	function closeDropdowns() { openDropdown = null; showMoreMenu = false; contextMenu = { ...contextMenu, show: false }; }
+	// Not the header's menus: each closes itself on a click outside it, and the
+	// click that opens one comes here too, so it shuts these as it opens (card 2466).
+	function closeDropdowns() { openDropdown = null; contextMenu = { ...contextMenu, show: false }; }
 
 	function openContextMenu(e: MouseEvent, card: CardType, columnId: number) {
 		e.preventDefault();
@@ -1189,14 +1188,6 @@
 	let celebrateUserEmoji = $state('');
 	let celebrateXpGained = $state(0);
 
-	// ─── XP Leaderboard ──────────────────────────────────────────────────────
-
-	let xpLeaderboard = $state<XpEntry[]>([]);
-
-	async function refreshXp() {
-		xpLeaderboard = await fetchXpData();
-	}
-
 	// ─── Live Timestamps ─────────────────────────────────────────────────────
 
 	let tick = $state(0);
@@ -1435,7 +1426,6 @@
 	// the card window to read its comments again (card 2282), and one to its
 	// files, or the same gaps, its files (card 2337).
 	onMount(() => {
-		refreshXp();
 		tickInterval = setInterval(() => { tick++; }, 15000);
 		if (browser) {
 			cleanupSSE = connectSSE(data.board.id, {
@@ -1453,8 +1443,8 @@
 					showFireworks = true;
 					playCompleteSound();
 					setTimeout(() => (showFireworks = false), 3000);
-				},
-				onXpUpdate: () => refreshXp()
+				}
+				// Nothing for an XP update: the board shows no XP since card 2466.
 			});
 		}
 	});
@@ -1475,8 +1465,9 @@
 <div class="board-page-wrapper">
 <div class="board-page">
 	<!-- The header (slice B3: a component). The name typed, the search and the
-	     filters are this page's, bound; the XP bars and the More menu are
-	     drawn in it from here, each with what it needs of this page. -->
+	     filters are this page's, bound; the More menu is drawn in it from
+	     here, with what it needs of this page. The XP bars were drawn here
+	     too, until card 2466: the board shows no XP. -->
 	<BoardHeader
 		boardId={data.board.id}
 		{boardName}
@@ -1495,12 +1486,7 @@
 		onStartRename={startEditBoardName}
 		onRename={saveBoardName}
 		onViewChange={(view) => setBoardView({ ...boardView, view })}
-		onAddColumn={() => (showAddColumnModal = true)}
 	>
-		{#snippet xp()}
-			<!-- XP Leaderboard -->
-			<XpLeaderboard entries={xpLeaderboard} />
-		{/snippet}
 		{#snippet more()}
 			<BoardMoreMenu
 				bind:open={showMoreMenu}
@@ -1511,6 +1497,7 @@
 				{canManage}
 				isSubBoard={boardState.breadcrumbs && boardState.breadcrumbs.length > 0}
 				boardId={data.board.id}
+				onAddColumn={() => (showAddColumnModal = true)}
 				onToggleActivity={toggleActivityPanel}
 				onToggleStats={toggleStatsPanel}
 				onToggleArchive={toggleArchivePanel}
@@ -1851,7 +1838,7 @@
 	.board-page { height: 100vh; display: flex; flex-direction: column; overflow: hidden; flex: 1; min-width: 0; }
 	.board-panels-area { display: flex; flex-shrink: 0; }
 
-	/* The header, its XP bars and More menu, each column's head, each card's
+	/* The header and its More menu, each column's head, each card's
 	   body and the two side panels style themselves, in their components
 	   (slice B3). What a component draws that is styled by a state of an
 	   element this page keeps (a column's or a card's hover, a pinned card, a

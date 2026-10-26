@@ -1,9 +1,14 @@
 <!--
   AnalyticsSidebar.svelte — The dashboard's sidebar: the four figure tiles
   and Notional spend, Priority Spread, Board Health, the 4-week trend,
-  Category Distribution, Task Aging, the leaderboard, Upcoming Deadlines,
-  the quick figures and Recent Activity (card 2281, slice C2: moved from
-  src/routes/+page.svelte).
+  Category Distribution, Task Aging, the leaderboard, the XP leaderboard,
+  Upcoming Deadlines, the quick figures and Recent Activity (card 2281,
+  slice C2: moved from src/routes/+page.svelte).
+
+  The XP leaderboard (card 2466: the owner, "We can show XP on the dashboard
+  otherwise naaah") is the XP bars the board header drew until then, each
+  person's level and XP, stacked, from the list the page reads from
+  GET /api/xp and reads again on each live refresh.
 
   Drawn by the page inside its grid's sidebar column. The clock its due
   figures are counted on is the page's, which Active Tasks reads too. The
@@ -16,10 +21,13 @@
 	import { drawnColour } from '$lib/colours';
 	import { daysUntilDue, dueFigures, formatDueDate } from '$lib/utils/date-utils';
 	import { timeAgo } from '$lib/dashboard/format';
+	import XpLeaderboard from '$lib/components/board/XpLeaderboard.svelte';
+	import type { XpEntry } from '$lib/types';
 
 	let {
 		data,
 		clock,
+		xpEntries = [],
 		openActiveTasksModal,
 		showVelocityModal = $bindable(),
 		showSpendModal = $bindable()
@@ -28,6 +36,8 @@
 		data: PageData;
 		/** The page's: the viewer's moment once the page is up, null until then (card 2258). */
 		clock: Date | null;
+		/** The page's: everyone's XP, as GET /api/xp last answered (card 2466). */
+		xpEntries?: XpEntry[];
 		/** Opens the page's Active Tasks window, which reads its list as it opens. */
 		openActiveTasksModal: () => void;
 		/** The page's: whether the velocity window is open. */
@@ -312,6 +322,14 @@
 				</div>
 			{/each}
 		</div>
+	</div>
+{/if}
+
+<!-- XP Leaderboard (card 2466): the one place XP and levels are shown. -->
+{#if xpEntries.length > 0}
+	<div class="sidebar-panel glass" id="xp-leaderboard-panel">
+		<h3 class="panel-title">XP Leaderboard</h3>
+		<XpLeaderboard entries={xpEntries} stacked />
 	</div>
 {/if}
 
