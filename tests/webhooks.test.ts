@@ -1899,6 +1899,8 @@ describe('which action sends which event, and what each move sends (card 2278)',
 			cards_purged: null,
 			cards_cleared: null,
 			column_deleted: null,
+			// One entry for a column made the Options column, cards and all (milestone 22, ruling i): no event.
+			column_converted_to_options: null,
 			subtask_created: null,
 			subtask_updated: null,
 			subtask_completed: null,

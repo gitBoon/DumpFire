@@ -484,7 +484,9 @@ describe('the board header (card 2466)', () => {
 		const page = read('src/routes/board/[id]/+page.svelte');
 		expect(page).not.toMatch(/XpLeaderboard|loadXp|fetchXpData|refreshXp|onXpUpdate:/);
 		expect(read('src/lib/components/board/BoardHeader.svelte')).not.toMatch(/\bxp\b/);
-		expect(page).toMatch(/<BoardMoreMenu[\s\S]*?onAddColumn=\{\(\) => \(showAddColumnModal = true\)\}/);
+		// Add Column opens the window as an ordinary column; Add Options Column as the Options column (milestone 22).
+		expect(page).toMatch(/<BoardMoreMenu[\s\S]*?onAddColumn=\{\(\) => openAddColumn\(false\)\}/);
+		expect(page).toMatch(/<BoardMoreMenu[\s\S]*?onAddOptionsColumn=\{\(\) => openAddColumn\(true\)\}/);
 	});
 
 	it('filters by assignee from Filter, as the select did, and its button counts the filters on', async () => {

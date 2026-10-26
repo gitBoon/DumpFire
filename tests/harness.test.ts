@@ -115,6 +115,8 @@ const TEST_FILES = [
 	'mentions.test.ts',
 	'migrations.test.ts',
 	'openapi-document.test.ts',
+	// Milestone 22, slice S1b: the Options column's rules, its conversion and its strip.
+	'options-column.test.ts',
 	'page-card-window.test.ts',
 	'page-failures.test.ts',
 	'password-checks.test.ts',

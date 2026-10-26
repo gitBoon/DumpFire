@@ -70,6 +70,12 @@ export type CardType = {
 	 * page; absent elsewhere.
 	 */
 	hiddenOpenCount?: number;
+	/**
+	 * When this card became an option, for the Options strip's aging
+	 * (milestone 22, ruling g): its latest return to options, else its
+	 * creation. Given by the board page for a card in the Options column alone.
+	 */
+	optionSince?: string;
 	assignees: { id: number; username: string; emoji: string }[];
 	archivedAt: string | null;
 	coverUrl: string | null;

@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.35
+version: 1.36
 status: As-Built
-date: 2026-10-22
+date: 2026-10-26
 tags:
   - database
   - schema
@@ -18,7 +18,11 @@ tags:
   - completion
   - indexes
   - timestamps
-description: "Complete database schema documentation with ER diagram, table descriptions, relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, and how migrations and schema reconciliation bring every database to the model"
+  - milestone-22
+  - migration-0060
+  - options-column
+  - commitment-point
+description: "Complete database schema documentation with ER diagram, table descriptions, relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), and how migrations and schema reconciliation bring every database to the model"
 ---
 
 # DumpFire Data Model
@@ -85,6 +89,7 @@ erDiagram
         int category_id "no foreign key"
         bool is_public
         int created_by FK
+        text kind "delivery (default) or ideas, 0060"
         text created_at
         text updated_at
     }
@@ -115,6 +120,7 @@ erDiagram
         text color
         bool show_add_card
         int wip_limit
+        text role "NULL or options, 0060"
     }
 
     categories {
@@ -145,6 +151,10 @@ erDiagram
         text next_recurrence
         int milestone_id FK
         int created_by FK
+        text committed_at "when committed; NULL on an option, 0060"
+        int committed_by FK
+        text discarded_at "0060"
+        int discarded_by FK
         text summary
         text theme
         text customer_impact
@@ -367,6 +377,7 @@ erDiagram
     users ||--o{ card_comments : "writes"
     users ||--o{ report_schedules : "configures"
     users |o--o{ webhooks : "set by"
+    users |o--o{ cards : "created, committed, discarded (SET NULL)"
 
     boards ||--o{ columns : "contains"
     boards ||--o{ board_members : "shared with"
@@ -435,6 +446,8 @@ erDiagram
 | `users` | `webhooks.set_by` (migration 0056, card 2168) | SET NULL. `deleteUser()` switches the user's webhooks off first, while they still name the user |
 | `users` | `setting_setters.user_id` (migration 0059, card 2397) | CASCADE. `deleteUser()` removes first the mail settings, App URL and destinations still at a place the rows record (`removeSettingsSetBy`), and a demotion to user does the same; the key then takes only the rows |
 | `users` | `cards.createdBy`, `activity_log.userId`, `task_requests.requesterUserId`, `task_requests.resolvedBy`, `token_usage.reportedByUserId` | SET NULL |
+| `users` | `cards.committed_by` (migration 0060, milestone 22) | SET NULL: the card keeps `committed_at`, and who committed it reads as not recorded. `deleteUser()` clears nothing of it by hand |
+| `users` | `cards.discarded_by` (migration 0060, milestone 22) | SET NULL, as `committed_by` |
 
 What the rows marked "in code" mean for each kind of delete is set out under
 [What a Delete Removes](#what-a-delete-removes).
@@ -738,8 +751,82 @@ which has no server imports so the browser and the server share it:
 The `todo` role (card 2240) changes nothing about a card: no move stamps, clears or
 awards anything for it. It says which columns All Tasks puts in its To Do bucket and All
 To Do lists, every such column of a board, and which column the board's list view opens
-on (the first of them, else the first column). "To-Do", "Backlog" and the like are not
+on (the first of them, else the first column that is not the Options column, else the
+first). "To-Do", "Backlog" and the like are not
 To Do; the reports' own wider list (`src/lib/server/reports.ts`) is separate.
+
+#### The Options column (milestone 22)
+
+One meaning is stored rather than read from the title: `columns.role = 'options'`, the
+board's Options column, upstream of the commitment point; and every column of a board whose
+`kind` is `'ideas'` is upstream too. `column-role.ts` asks it first:
+
+| Helper | What it answers |
+|--------|-----------------|
+| `isOptionsColumn(column)` | `role === 'options'` |
+| `isUpstreamColumn(column, boardKind)` | the Options column, or any column of an ideas board; both arguments required |
+| `columnRoleOf(column)` | `'options'` first, then `columnRole(title)`: an Options column is never also To Do, On Hold or Complete on any page |
+| `firstOpenColumn(columns)` | the leftmost column whose `columnRoleOf` is not Complete and that is not the Options column; the Options column only when nothing else is open (decision M22-6). Where a copy of a finished card and a sub-board's parent card go |
+| `completeColumnIds`, `holdColumnIds`, `todoColumnIds` | never the Options column |
+
+`src/lib/server/upstream.ts` reads what the rule needs from the database: `UPSTREAM` (the SQL
+fragment, with `IS`), `boardKinds(boardIds)` in one query, `upstreamColumnIds(rows)`,
+`isUpstreamColumnId(columnId)`, and `commitmentOnCreation`, which every creation route asks.
+
+Every column write in both trees holds the Options column to its rules (`createColumn`,
+`updateColumn`, `reorderColumns`, `deleteColumnFor` and `convertColumnFor` in
+`src/lib/server/columns.ts`), inside the write's transaction, after every field is read and
+after the completion rule below, each refusal `409` with nothing written:
+
+1. `role` is `'options'` or null, read with the column's own as `keep`, so an update that
+   leaves it out keeps it; anything else is `400 role must be "options" or null, not
+   "<what was sent>"`.
+2. No Options column on an ideas board; no second Options column on a board.
+3. The role is given or taken away with a plain update only while the column is empty,
+   archived cards included. A column that holds cards becomes the Options column by the
+   conversion (below); the role comes off only once the column is empty.
+4. No Options column whose title means To Do, On Hold or Complete, whether the role is
+   given or the Options column renamed (ruling x): about thirty places still ask the title
+   alone.
+5. No WIP limit above 0 on the Options column.
+6. The Options column stays the leftmost. Given the role, a column moves to one less than the
+   lowest position of the others and its `wip_limit` goes to 0, whatever was sent; any other
+   column placed at or left of it, by a create, an update or a reorder, is refused, and so is
+   the Options column moved to or past another. A column made on the board page with no
+   position goes straight after the Options column, half way to the next; when halving has
+   left no number strictly between the two (about 53 such creates), the board's columns are
+   numbered again 0, 1, 2… in their order, in the same transaction, first (`renumberColumns`).
+   Through v1 it still goes after the last.
+7. The Options column is not deleted while it holds a card that is not archived (ruling m):
+   `This Options column holds N options: archive or move them first.` Its archived cards go
+   with it, as any column's.
+
+**The conversion** (`POST /api/columns/:id/convert`, `POST /api/v1/columns/:columnId/convert`,
+ruling i) makes a column holding cards the Options column. Only the board's owner or an
+administrator may. The body carries `role: 'options'` and `cards`, the number of live and
+archived cards the page's question named; another number now is refused. It is also refused
+on an ideas board, on a board that has an Options column, for a column whose title means To
+Do, On Hold or Complete, and for a column holding a card with a sub-board. One transaction
+clears `committed_at` and `committed_by` on every card in the column, archived ones included,
+gives the column the role, moves it leftmost and sets `wip_limit` to 0, and writes one
+`column_converted_to_options` entry (`"<title>": N cards became options (column <id>)`): no
+entry, webhook or mail for any card, and one `update (column)` event to the board. The
+activity log has no column of its own for a column, so the entry names it at the end of its
+detail (`conversionSuffix` in `upstream.ts`), after the quoted title, where no title can put
+it: the board's contents read an option's age from the latest of its creation, its latest
+`card_returned_to_options` entry and its column's latest conversion (`optionsSince`), so a
+converted card is an option from the conversion, not from its creation.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Ordinary: column made (role NULL)
+    [*] --> Options: column made with role options, placed leftmost, no WIP limit
+    Ordinary --> Options: PUT role options (empty column only)
+    Ordinary --> Options: convert, cards and all (owner or admin, count confirmed, commitments cleared, one entry)
+    Options --> Ordinary: PUT role null (empty column only)
+    Options --> [*]: DELETE (no live options left)
+    Ordinary --> [*]: DELETE, with its cards
+```
 
 Until October 2026 this was worked out wherever it was needed — about twenty places
 with three different word lists. The browser accepted only "complete" where the
@@ -1163,8 +1250,9 @@ of about zero.
   ```
 - **Indexes are named `idx_<table>_<column>`**, and an index on two columns
   `idx_<table>_<first>_<second>`. Migration 0053 added 39, one for every foreign key column
-  that led no index (card 2106); 0056 created `idx_webhooks_set_by` with its column, and 0059
-  `idx_setting_setters_user_id` with its table (card 2397).
+  that led no index (card 2106); 0056 created `idx_webhooks_set_by` with its column, 0059
+  `idx_setting_setters_user_id` with its table (card 2397), and 0060 `idx_cards_committed_by`
+  and `idx_cards_discarded_by` with their columns (milestone 22).
   `tests/migrations.test.ts` fails on a foreign key column
   that leads no index, in the model, on a new database and on the production fixture taken
   through the runner, and names it.
@@ -1271,6 +1359,36 @@ of about zero.
   the rehearsal. A backup from before 0059 restores with the table empty; one from after it
   brings its rows, with the accounts they name. A backup copy keeps the table (it holds no
   secret).
+- **Upstream and the commitment point** (milestone 22, migration
+  `0060_add_upstream_options.sql`, 2026-10-26). Four things are stored, each free text
+  checked in code rather than a `CHECK`, since `columns` and `boards` are reconciled tables
+  that the rebuild refuses with a `CHECK` naming them:
+  - `columns.role`, text, nullable, no default: NULL for an ordinary column, whose title still
+    decides To Do, On Hold or Complete, or `'options'` for the board's **Options column**,
+    upstream of the commitment point. A board has one at most, at its far left, with
+    `wip_limit` 0 (see [What a column means](#what-a-column-means)).
+  - `boards.kind`, text `NOT NULL DEFAULT 'delivery'`: `'delivery'` or `'ideas'`, a board every
+    column of which is upstream. Any other value counts as delivery everywhere.
+  - `cards.committed_at` (a moment) and `cards.committed_by` (`REFERENCES users(id) ON DELETE
+    SET NULL`): when the card crossed the commitment point and who moved it across. NULL while
+    the card is an option. A card created outside an upstream column is committed as it is
+    created, at its `created_at` and by its creator, on every creation route
+    (`recordCardCreated`, `commitmentOnCreation` in `src/lib/server/upstream.ts`). Converting a
+    column to the Options column clears both on every card in it, archived ones included.
+    Nothing reads a NULL `committed_at` as upstream: the column and the board decide that.
+  - `cards.discarded_at` and `cards.discarded_by` (`ON DELETE SET NULL`): when an option was
+    archived, which discards it, and by whom. Nothing writes them yet (slice S3).
+  - Indexes `idx_cards_committed_by` and `idx_cards_discarded_by`, card 2106's rule, `IF NOT
+    EXISTS`.
+
+  0060 also commits every existing card not upstream, archived ones included, at its
+  `created_at` and by its `created_by` (NULL stays NULL: not recorded). No card was upstream
+  before it, so that is every card, and it is the value a card created in a committed column is
+  given; it is declared to the rehearsal as a `keepsRows` one-off on `cards`. The runner repeats
+  it (step 5 below), with two clears beside it. Upstream as SQL is `UPSTREAM` in
+  `upstream.ts`, `(col.role IS 'options' OR b.kind IS 'ideas')`: `IS`, never `=`, so that the
+  negation keeps every ordinary column whose role is NULL. One Options column a board is
+  checked in the write's immediate transaction, not by a partial unique index.
 - **No secret is in a backup's copy** (card 2169): no `smtp_pass` row, every secret field of
   `backup_config`'s destinations `''`, and every `webhooks.secret` `''` with the webhook's
   `active` 0. The `webhook_secrets_left_out` row of `settings` lists, as a JSON array of
@@ -1412,7 +1530,7 @@ is in [Deployment](deployment.md#start-up-sequence). This section is how it work
 | 2. Convert a `card_dependencies` table still in its original shape | Yes, if the conversion fails |
 | 3. Apply each file not yet recorded, one transaction per file | Yes, on the first failure |
 | 4. Rebuild any of the six reconciled tables that is not in the model's shape | Only if foreign keys cannot be switched back on |
-| 5. Repeat four backfills (`runBackfills`, one transaction): `first_completed_at` of migration `0050` and `access_token` of `0051` for rows that lack them, `0057`'s statement, which takes a card out of a milestone that belongs to another board (card 2179), and the statement that takes a board out of a grouping that no longer exists (card 2293) | Yes, if they fail: the halt's stage reads `backfilling cards.first_completed_at, task_requests.access_token, cards.milestone_id and boards.category_id` |
+| 5. Repeat seven backfills (`runBackfills`, one transaction): `first_completed_at` of migration `0050` and `access_token` of `0051` for rows that lack them, `0057`'s statement, which takes a card out of a milestone that belongs to another board (card 2179), the statement that takes a board out of a grouping that no longer exists (card 2293), and the commitment point's three (milestone 22): `0060`'s commit of every card not upstream that has none (`COMMITTED_BEFORE_UPSTREAM`), the clear of the commitment of every upstream card (`UPSTREAM_NOT_COMMITTED`), and the clear of the discard mark of every card that is not archived (`LIVE_NOT_DISCARDED`) | Yes, if they fail: the halt's stage reads `backfilling cards.first_completed_at, task_requests.access_token, cards.milestone_id, boards.category_id, cards.committed_at and cards.discarded_at` |
 | 6. Bring every timestamp to the stored form (`normaliseTimestamps`, card 2095), unless the database records a migration this build has no file for | No: a failure is rolled back, logged at `ERROR`, and tried again at the next start |
 | 7. Compare the whole database with the model and report differences | No |
 
@@ -1451,6 +1569,23 @@ before it commits, as for a foreign key, so the backfill never clears a board be
 restore could not copy its grouping. It keeps every row, moves no id counter and makes no
 foreign-key violation, so the rehearsal has nothing to note for it and nothing is declared
 for it in `tests/rehearsal/one-offs.ts`.
+
+The commitment point's three (milestone 22) each run only where their columns exist
+(`hasColumn`). The first is 0060's own `UPDATE`, exported as `COMMITTED_BEFORE_UPSTREAM`
+and held to the file's text by a test: every card with no `committed_at` on a column whose
+`role IS NOT 'options'` of a board whose `kind IS NOT 'ideas'` is given `committed_at =
+created_at` and `committed_by = created_by`. The second is its exact complement, clearing both
+on every card in an Options column or on an ideas board; the third clears `discarded_at` and
+`discarded_by` on every card whose `archived_at` is NULL. Each logs at `WARN` when it changes
+anything, and none of the lines begins "Took": `Committed <n> card(s) that are not upstream and
+had no commitment recorded, at the moment each was created and by whoever created it`,
+`Cleared the commitment on <n> card(s) in an Options column or on an ideas board: an option is
+not committed`, and `Cleared the discard mark on <n> card(s) that are not archived`. A
+restore reports the first in its "Filled in" and the two clears after it, in a separate
+"Cleared:". The first start of the image with 0060 commits whatever the file did not see; a
+backup made before 0060 brings cards with no commitment, and one made after it, restored into
+an older build and brought forward, can bring the other two. Every write keeps all three, so a
+count at any other start means some write does not.
 
 A migration file may hold a one-off change to stored data as well as structure, as 0053
 ends every session once, 0054 every invite not yet used, and 0055 gives every task request

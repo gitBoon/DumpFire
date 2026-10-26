@@ -14,6 +14,7 @@
 import type { CardType, CategoryType, ColumnType } from '$lib/types';
 import { matchesSearch, sortCards } from '$lib/utils/card-utils';
 import { isTodoColumnTitle } from '$lib/column-role';
+import { parseStamp } from '$lib/timestamps';
 
 export type BoardViewName = 'board' | 'list';
 
@@ -113,20 +114,87 @@ export function openingView(
 	return remembered ?? { ...BOARD_VIEW };
 }
 
+/** A column as the list's choice of column reads it; `role` where the page has it (milestone 22). */
+type ListColumn = Pick<ColumnType, 'id' | 'title'> & { role?: string | null };
+
 /**
  * The column the list opens on: the first To Do column (`isTodoColumnTitle`:
- * "To Do" or "Todo", any case, spaces trimmed), else the first. The list must
- * show some column, so it falls back where the All To Do page does not.
+ * "To Do" or "Todo", any case, spaces trimmed), else the first that is not
+ * the Options column (milestone 22: options are not where work is picked up),
+ * else the first. The list must show some column, so it falls back where the
+ * All To Do page does not.
  */
-export function defaultListColumn(columns: Pick<ColumnType, 'id' | 'title'>[]): number | null {
-	const todo = columns.find((c) => isTodoColumnTitle(c.title));
-	return (todo ?? columns[0])?.id ?? null;
+export function defaultListColumn(columns: ListColumn[]): number | null {
+	const todo = columns.find((c) => isTodoColumnTitle(c.title) && c.role !== 'options');
+	return (todo ?? columns.find((c) => c.role !== 'options') ?? columns[0])?.id ?? null;
 }
 
 /** The column to show: the one chosen while it is still on the board, else the one the list opens on. */
-export function resolveListColumn(columns: Pick<ColumnType, 'id' | 'title'>[], columnId: number | null): number | null {
+export function resolveListColumn(columns: ListColumn[], columnId: number | null): number | null {
 	if (columnId !== null && columns.some((c) => c.id === columnId)) return columnId;
 	return defaultListColumn(columns);
+}
+
+// ─── The Options strip (milestone 22) ───────────────────────────────────────
+
+/**
+ * The `localStorage` key of one viewer's choice, for one board, of whether its
+ * Options column is open or collapsed to a strip.
+ */
+export function optionsOpenKey(userId: number, boardId: number): string {
+	return `dumpfire-options-open:${userId}:${boardId}`;
+}
+
+/**
+ * Whether this viewer left this board's Options column open. Collapsed, false,
+ * when nothing is remembered or storage cannot be read: the board opens with
+ * the options out of the way, and their count on the strip.
+ */
+export function readOptionsOpen(userId: number, boardId: number): boolean {
+	try {
+		return localStorage.getItem(optionsOpenKey(userId, boardId)) === 'open';
+	} catch {
+		return false;
+	}
+}
+
+/** Remembers the choice. Storage that cannot be written remembers nothing, and says nothing. */
+export function writeOptionsOpen(userId: number, boardId: number, open: boolean): void {
+	try {
+		if (open) localStorage.setItem(optionsOpenKey(userId, boardId), 'open');
+		else localStorage.removeItem(optionsOpenKey(userId, boardId));
+	} catch {
+		// Blocked or full: the strip still opens and closes, and is collapsed again on reload.
+	}
+}
+
+/** How many days old an option is before the strip counts it as aging. */
+export const OPTION_AGING_DAYS = 30;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Options aging (milestone 22, ruling g): how many whole days the oldest
+ * option has waited, and how many have waited more than `OPTION_AGING_DAYS`.
+ * An option's age runs from `optionSince`, which the board's contents give
+ * each card in the Options column (its latest return to options, else its
+ * creation), else from its `createdAt`: a card dropped into the column since
+ * the last read. `null` for an empty column.
+ */
+export function optionsAging(
+	cards: Pick<CardType, 'createdAt' | 'optionSince'>[],
+	now: number = Date.now()
+): { oldestDays: number | null; over: number } {
+	let oldest: number | null = null;
+	let over = 0;
+	for (const card of cards) {
+		const since = parseStamp(card.optionSince ?? card.createdAt);
+		if (!since) continue;
+		const days = Math.max(0, Math.floor((now - since.getTime()) / DAY_MS));
+		if (oldest === null || days > oldest) oldest = days;
+		if (days > OPTION_AGING_DAYS) over++;
+	}
+	return { oldestDays: oldest, over };
 }
 
 /** The header's filters, as the board applies them. */

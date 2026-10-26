@@ -1067,6 +1067,8 @@ const TABLE: Record<string, Case | Case[]> = {
 	'PUT /api/columns/reorder': edit((w) =>
 		json('/api/columns/reorder', { updates: [{ id: w.A.cols['Spare'].id, position: 9 }] })
 	),
+	// Milestone 22, ruling i: the board's owner or an administrator, not an editor.
+	'POST /api/columns/[id]/convert': owns((w) => json(`/api/columns/${w.A.cols['Spare'].id}/convert`, { role: 'options', cards: 0 })),
 
 	// ── Live events ───────────────────────────────────────────────────────
 	// Every signed-in caller may listen. What they are sent is filtered event by event.
@@ -1586,6 +1588,7 @@ const TABLE: Record<string, Case | Case[]> = {
 	'GET /api/v1/columns/[columnId]': view((w) => `/api/v1/columns/${w.A.cols['Spare'].id}`),
 	'PUT /api/v1/columns/[columnId]': edit((w) => json(`/api/v1/columns/${w.A.cols['Spare'].id}`, { title: 'Renamed' })),
 	'DELETE /api/v1/columns/[columnId]': edit((w) => `/api/v1/columns/${w.A.cols['Spare'].id}`),
+	'POST /api/v1/columns/[columnId]/convert': owns((w) => json(`/api/v1/columns/${w.A.cols['Spare'].id}/convert`, { role: 'options', cards: 0 })),
 
 	'GET /api/v1/comments/[commentId]': view((w) => `/api/v1/comments/${w.A.comment.id}`),
 	'PUT /api/v1/comments/[commentId]': [

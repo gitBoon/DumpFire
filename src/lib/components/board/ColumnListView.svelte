@@ -27,6 +27,7 @@
 	} from '$lib/board/board-view';
 	import CardListRow from './CardListRow.svelte';
 	import { drawnColour } from '$lib/colours';
+	import { isOptionsColumn } from '$lib/column-role';
 
 	let {
 		columns,
@@ -93,7 +94,8 @@
 					onclick={() => onChange({ ...choice, columnId: col.id })}
 				>
 					<span class="strip-dot" style="background: {drawnColour(col.color)}" aria-hidden="true"></span>
-					<span class="strip-title">{col.title}</span>
+					<!-- The Options column first, as on the board, with "(Options)" after its title (milestone 22). -->
+					<span class="strip-title">{col.title}{#if isOptionsColumn(col)}<span class="strip-options">{' (Options)'}</span>{/if}</span>
 					<span class="strip-count">{shown}{#if filtering}<span class="of-total">/{col.cards.length}</span>{/if}</span>
 				</button>
 			{/each}
@@ -164,6 +166,7 @@
 	.strip-btn:focus-visible { outline: 2px solid var(--accent-indigo); outline-offset: 2px; }
 	.strip-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 	.strip-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.strip-options { color: var(--text-tertiary); font-weight: 500; }
 	.strip-count { font-variant-numeric: tabular-nums; opacity: 0.8; }
 	.of-total { opacity: 0.6; font-size: 0.65rem; }
 

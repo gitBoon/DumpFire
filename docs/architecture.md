@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.54
+version: 1.55
 status: As-Built
 date: 2026-10-26
 tags:
@@ -22,6 +22,8 @@ tags:
   - card-window
   - live-updates
   - components
+  - milestone-22
+  - options-column
 description: "High-level and component-level architecture of the DumpFire Kanban board system, including the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
 ---
 
@@ -1473,6 +1475,25 @@ flowchart LR
 ```
 
 Each function in the module opens its own `inTransaction` and checks no access. A route calls it inside the transaction in which it read the row and checked the caller, which makes the delete a savepoint of the route's transaction.
+
+### Upstream and the commitment point
+
+Since milestone 22 (2026-10-26, card 2459), migration `0060_add_upstream_options.sql` adds the data model of upstream Kanban: `columns.role` (NULL, or `'options'` for the board's Options column), `boards.kind` (`NOT NULL DEFAULT 'delivery'`, or `'ideas'`), and on `cards` `committed_at`/`committed_by` and `discarded_at`/`discarded_by` (each `_by` `REFERENCES users(id) ON DELETE SET NULL`, with `idx_cards_committed_by` and `idx_cards_discarded_by`). Free text checked in code, not a `CHECK`, since `columns` and `boards` are reconciled tables. Its one-off commits every card at its `created_at` by its `created_by`, and `runBackfills` repeats it with two clears beside it (the commitment of upstream cards, the discard mark of cards not archived), each with its `WARN` line and its part of a restore's report. A card is **upstream**, an option rather than committed work, when it is in the Options column or on an ideas board: `isUpstreamColumn(column, boardKind)` in `src/lib/column-role.ts`, shared with the browser, where `columnRoleOf` reads the role before the title (an Options column is never To Do, On Hold or Complete), `firstOpenColumn` and the To Do/On Hold/Complete id helpers skip the Options column, and `role` is a required field of every column type. `src/lib/server/upstream.ts` reads what the rule needs: `UPSTREAM` as SQL (`IS`, so its negation keeps ordinary columns), `boardKinds`, `upstreamColumnIds`, `isUpstreamColumnId`, and `commitmentOnCreation`, through which `recordCardCreated` stamps `committed_at = created_at` and `committed_by` = the creator on every creation route outside an upstream column. The board contents answer the board's `kind` (`BoardContentsData.board`), and each card in the Options column its `optionSince` (`optionsSince` in `upstream.ts`: the latest of its creation, its latest `card_returned_to_options` entry and its column's latest conversion, which the conversion's entry names at the end of its detail, `conversionSuffix`), read in two queries and only when the Options column holds a card, for the strip's aging.
+
+The column rules (slice S1b) live in `src/lib/server/columns.ts`, asked by both trees inside the write's transaction after every field is read: `role` read with `keep`, so an update that leaves it out keeps it; `optionsRoleRefusal` (no Options column on an ideas board, no second one, no role given or taken away with a plain update while the column holds cards, no Options column whose title means To Do, On Hold or Complete, no WIP limit on it); `optionsPlacement` (the role places a column at one less than the lowest other position with `wip_limit` 0; any other column at or left of it is 409; a page create with no position goes straight after it, the board's columns numbered again first, in the same transaction, when no number is left strictly between, `renumberColumns`); refusals reached from the page name the menu item, and through v1 the operation (`source`); the reorder's check per board before anything is written; and `deleteColumnFor`'s refusal of an Options column holding live cards. `convertColumnFor` (`POST /api/columns/:id/convert`, `POST /api/v1/columns/:columnId/convert`) makes a column holding cards the Options column: the board's owner or an administrator (`requireBoardOwner`), the body's `cards` held to the live and archived count, refusals for an ideas board, an Options column already there, a titled column and a card with a sub-board, then one transaction that clears every card's commitment, places the column and writes one `column_converted_to_options` entry, with no webhook and no mail. The board page draws the Options column collapsed to a strip (`readOptionsOpen`/`writeOptionsOpen` and `optionsAging` in `src/lib/board/board-view.ts`, storage inside `try`; the choice read as the page is made, and again only when the user's or the board's id changes; the focus following an open or a collapse), keeps it first on a column drag, says at once that an Options column holding options cannot be deleted, and offers Add Options Column (to whoever can edit the board), Make this the Options column… (asking first, through `ConfirmModal`, with the archived count read from `GET /api/boards/[id]/archive`) and Stop being the Options column, each written through `boardState.write`. A column made by Add Options Column is put on the board from the answer by `insertColumn`, as Add Column's is; a column given or relieved of the role, or converted, is placed from the answer by `placeColumn`.
+
+```mermaid
+flowchart TD
+    Write["POST / PUT a column, reorder, delete, convert"] --> Guard["requireBoard / requireColumn<br/>(convert: requireBoardOwner)"]
+    Guard --> Read["every field read: role with keep"]
+    Read --> Completion["completionRoleRefusal"]
+    Completion --> Options["optionsRoleRefusal"]
+    Options --> Place["optionsPlacement: Options leftmost"]
+    Place --> Commit["write, one transaction"]
+    Commit -->|"convert only"| Clear["committed_at / committed_by cleared<br/>on every card in the column"]
+    Commit --> Entry["convert: one column_converted_to_options entry"]
+    Commit --> Event["update (column) to the board"]
+```
 
 ### Sub-boards and the board tree
 

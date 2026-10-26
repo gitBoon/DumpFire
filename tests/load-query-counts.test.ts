@@ -38,12 +38,17 @@
  *
  * The plan is `docs/planning/cards-2297-2298-2389.md`; card 2391's is
  * `docs/planning/card-2391.md` and card 2393's `docs/planning/card-2393.md`.
+ *
+ * Milestone 22 (the S1b review's B7) added the board page's load with an
+ * Options column holding a card: two reads more than a board without, as
+ * many for ten options as for one, pinned at 34
+ * (`docs/planning/milestone-22-upstream-kanban.md`, section 7.8).
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db } from '$lib/server/db';
 import { defaultOutside } from '$lib/server/db/restore';
-import { activityLog, boardCategories, boards, cards, categories, taskRequests, teamMembers, tokenUsage, users, type Card } from '$lib/server/db/schema';
+import { activityLog, boardCategories, boards, cards, categories, columns, taskRequests, teamMembers, tokenUsage, users, type Card } from '$lib/server/db/schema';
 import { boardCategoriesFor, boardCategoryRule, recentActivityFor, subBoardsFor } from '$lib/server/list-access';
 import type { SessionUser } from '$lib/server/auth';
 import { pageLoad } from './helpers/actions';
@@ -615,3 +620,46 @@ describe('a null list of boards, handed to the list helpers (card 2393’s revie
 		expect(subBoardsFor(admin, [card.id], null).map((b) => b.id)).toEqual([under.board.id]);
 	});
 });
+
+// ─── Milestone 22: the board page with an Options column ────────────────────
+
+/**
+ * The board page's load reads when each option became one, for the Options
+ * strip's aging (ruling g, the S1b review's B2 and B7): two reads, the
+ * options' latest returns to options and the column's latest conversion,
+ * made only when the Options column holds a card, and as many for ten options
+ * as for one. A board with no options reads exactly what it did.
+ */
+describe('the board page’s load with an Options column (milestone 22)', () => {
+	/** A board of the owner's whose first column holds `options` cards and one more in To Do; the first column the Options column when `asOptions`. */
+	function boardWith(options: number, asOptions: boolean) {
+		resetDb();
+		const owner = makeUser({ username: 'owner' });
+		const { board, cols } = makeBoard({ owner, columns: ['Ideas', 'To Do', 'In Progress', 'Complete'] });
+		if (asOptions) db.update(columns).set({ role: 'options', position: -1 }).where(eq(columns.id, cols['Ideas'].id)).run();
+		for (let i = 0; i < options; i++) makeCard(cols['Ideas'], { title: `Idea ${i}` });
+		makeCard(cols['To Do'], { title: 'Work' });
+		return { owner, board };
+	}
+
+	async function readsOf(options: number, asOptions: boolean) {
+		const { owner, board } = boardWith(options, asOptions);
+		return (await loadCounted(`/board/${board.id}`, owner)).reads;
+	}
+
+	it('reads two more for an Options column holding a card, as many for ten as for one, and nothing more for an empty one', async () => {
+		const ordinary = await readsOf(1, false);
+		const one = await readsOf(1, true);
+		const ten = await readsOf(10, true);
+		const empty = await readsOf(0, true);
+
+		expect(one).toBe(ordinary + 2);
+		expect(ten).toBe(one);
+		expect(empty).toBe(await readsOf(0, false));
+		// The pin, as it reads now: 32 for the board with no options.
+		expect(one).toBeLessThanOrEqual(BOARD_WITH_OPTIONS_READS);
+	});
+});
+
+/** The most reads the board page's load makes for its owner, on a board whose Options column holds a card (B7). */
+const BOARD_WITH_OPTIONS_READS = 34;

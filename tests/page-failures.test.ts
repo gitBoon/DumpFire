@@ -87,7 +87,7 @@ import * as cardActions from '$lib/board/card-actions';
 import * as dndHandlers from '$lib/board/dnd-handlers';
 import { BoardState } from '$lib/board/board-state.svelte';
 import { CardWindow, changedFields, WINDOW_FIELDS, windowFields } from '$lib/board/card-window.svelte';
-import { copyColumns, moveCards, patchCard, removeCard, reorderColumns, undoDrag, withCurrentCards } from '$lib/board/board-patches';
+import { copyColumns, moveCards, patchCard, placeColumn, removeCard, reorderColumns, undoDrag, withCurrentCards } from '$lib/board/board-patches';
 import * as apiModule from '$lib/api';
 import * as boardActions from '$lib/board/board-actions';
 import type { BoardContentsData } from '$lib/board/contents-answer';
@@ -101,6 +101,7 @@ import { requireManagedAccount } from '$lib/server/route-guards';
 import { endsTheSession, watchForSignOut, type Fetch } from '$lib/signed-out';
 import { MOST_FAILURES, TOAST_MS, toasts } from '$lib/stores/toast';
 import type { CardType, ColumnType } from '$lib/types';
+import { isOptionsColumn } from '$lib/column-role';
 import { isCardBlocked, subBoardIncompleteCount } from '$lib/utils/card-utils';
 import { makeUser, resetDb } from './helpers/fixtures';
 
@@ -6774,9 +6775,14 @@ describe('the board page draws from its board state and reads the board alone (c
 				columns: new Response('{}')
 			};
 			const confirmed: { note: string; pendingUpdates: unknown[] }[] = [];
+			// The order of each column drag sent, by column id (milestone 22: the Options column first).
+			const finalized: number[][] = [];
 			const dnd = {
 				handleCardDndFinalize: async () => next.finalize,
-				handleColumnDndFinalize: async () => next.columns,
+				handleColumnDndFinalize: async (items: { id: number }[]) => {
+					finalized.push(items.map((c) => c.id));
+					return next.columns;
+				},
 				confirmOnHold: (held: { note: string; pendingUpdates: unknown[] }) => {
 					confirmed.push({ note: held.note, pendingUpdates: held.pendingUpdates });
 					return next.confirm();
@@ -6789,16 +6795,16 @@ describe('the board page draws from its board state and reads the board alone (c
 			];
 			const page = new Function(
 				'boardState', 'dndHandlers', 'TRIGGERS', 'toasts', 'data', 'currentUser', 'playCompleteSound', 'playMoveSound', 'queueCompletionPrompt', 'warnIfStillBlocked',
-				'copyColumns', 'undoDrag', 'moveCards', 'patchCard', 'reorderColumns', 'withCurrentCards', 'SOURCES',
+				'copyColumns', 'undoDrag', 'moveCards', 'patchCard', 'reorderColumns', 'withCurrentCards', 'SOURCES', 'isOptionsColumn',
 				'let dragHold = null; let dragFrom = null; let onHoldRelease = null; let onHoldFrom = null; let blockedRelease = null; let blockedState = { show: false }; let onHoldState = { show: false };\n' +
 					`${runnable(board(), names)}\n` +
 					`return { ${names.join(', ')}, get onHoldState() { return onHoldState; }, get blockedState() { return blockedState; } };`
 			)(
 				state, dnd, TRIGGERS, { navigation: () => 'started', add: (...args: unknown[]) => said.push(args) }, { board: { id: 9 } }, { username: 'editor', emoji: '🦊' }, () => {}, () => {}, () => {}, () => {},
-				copyColumns, undoDrag, moveCards, patchCard, reorderColumns, withCurrentCards, SOURCES
+				copyColumns, undoDrag, moveCards, patchCard, reorderColumns, withCurrentCards, SOURCES, isOptionsColumn
 			);
 			const event = (trigger: string, items: unknown[] = []) => ({ detail: { items, info: { trigger, id: 5 } } });
-			return { page, schedule, state, next, event, said, confirmed, five, reads: () => reads };
+			return { page, schedule, state, next, event, said, confirmed, five, finalized, reads: () => reads };
 		}
 
 		/** Where each card is: each column's id with its cards' ids. */
@@ -6920,6 +6926,33 @@ describe('the board page draws from its board state and reads the board alone (c
 			]);
 			expect(drag.said).toEqual([['The columns were not reordered.', 'error', 'started']]);
 			expect(drag.schedule.holds).toBe(0);
+		});
+
+		// Milestone 22 (the S1b review's U4): the Options column stays first.
+		it('keeps the Options column first: a column dropped left of it lands just after it, and that order is drawn and sent', async () => {
+			const drag = dragPage();
+			const [inProgress, onHold] = drag.state.columns;
+			const ideas = { id: 3, title: 'Ideas', position: -1, role: 'options', cards: [] as unknown[] };
+			drag.state.columns = [ideas, inProgress, onHold] as typeof drag.state.columns;
+			drag.page.handleColumnDndConsider(drag.event(TRIGGERS.DRAG_STARTED, [ideas, inProgress, onHold]));
+			drag.page.handleColumnDndConsider(drag.event(TRIGGERS.DRAGGED_OVER_INDEX, [onHold, ideas, inProgress]));
+			await drag.page.handleColumnDndFinalize(drag.event(TRIGGERS.DROPPED_INTO_ZONE, [onHold, ideas, inProgress]));
+
+			expect(drag.finalized).toEqual([[3, 2, 1]]);
+			expect(drag.state.columns.map((c) => [c.id, c.position])).toEqual([
+				[3, 0],
+				[2, 1],
+				[1, 2]
+			]);
+			expect(drag.said).toEqual([]);
+
+			// The Options column itself dragged to the end goes back to the start.
+			const again = dragPage();
+			const [a, b] = again.state.columns;
+			again.state.columns = [ideas, a, b] as typeof again.state.columns;
+			again.page.handleColumnDndConsider(again.event(TRIGGERS.DRAG_STARTED, [ideas, a, b]));
+			await again.page.handleColumnDndFinalize(again.event(TRIGGERS.DROPPED_INTO_ZONE, [a, b, ideas]));
+			expect(again.finalized).toEqual([[3, 1, 2]]);
 		});
 
 		it('lets a keyboard drag’s hold go at its stop, which comes as a consider with no drop, and a read asked meanwhile goes out at once', async () => {
@@ -7747,5 +7780,122 @@ describe('no rule in any component matches nothing, as the compiler judges it (c
 				.map((warning) => `${file}:${warning.start?.line}: ${warning.message.split('\n')[0]}`)
 		);
 		expect(unused).toEqual([]);
+	});
+});
+
+/**
+ * The board page's "Make this the Options column…" (milestone 22, card 2459;
+ * the S1b review's U4), run as written: `makeOptionsColumn` and `takeColumn`
+ * from the page, with a stand-in `fetch` for the archived cards, a stand-in
+ * board state whose `write` sends and takes as the real one does, and the
+ * page's confirm recorded. It counts the column's archived cards from `GET
+ * /api/boards/:id/archive`, says so and changes nothing when that fails, gives
+ * an empty column the role at once, and asks first for a column holding cards,
+ * sending the count it asked about: live plus archived.
+ */
+describe('the board page’s Options column, run as written (milestone 22)', () => {
+	const PAGE = 'src/routes/board/[id]/+page.svelte';
+
+	type Column = { id: number; title: string; position: number; role: string | null; wipLimit: number; cards: { id: number }[] };
+
+	function optionsPage(archive: () => Response | Promise<Response>) {
+		const said: unknown[][] = [];
+		const sent: string[] = [];
+		const confirms: { title: string; message: string; confirmText: string; run: () => Promise<void>; danger: boolean }[] = [];
+		const columns: Column[] = [
+			{ id: 1, title: 'To Do', position: 0, role: null, wipLimit: 0, cards: [] },
+			{ id: 2, title: 'Backlog', position: 1, role: null, wipLimit: 3, cards: [{ id: 10 }, { id: 11 }] },
+			{ id: 3, title: 'Spare', position: 2, role: null, wipLimit: 0, cards: [] }
+		];
+		const answer = (columnId: number) =>
+			answered(200, { id: columnId, role: 'options', position: -1, wipLimit: 0 });
+		const state = {
+			columns,
+			write: async (_change: unknown, send: () => Promise<Response>, words: { refused: string }, take?: (columns: Column[], answer: Record<string, unknown> | null) => Column[]) => {
+				const res = await send();
+				if (!res.ok) return { ok: false, failure: words.refused };
+				const body = (await res.json()) as Record<string, unknown>;
+				if (take) state.columns = take(state.columns, body);
+				return { ok: true, res, answer: body };
+			}
+		};
+		const actions = {
+			updateColumn: async (id: number, updates: Record<string, unknown>) => {
+				sent.push(`PUT ${id} ${JSON.stringify(updates)}`);
+				return answer(id);
+			},
+			convertColumn: async (id: number, cards: number) => {
+				sent.push(`CONVERT ${id} cards=${cards}`);
+				return answer(id);
+			}
+		};
+		const { fetch, asked } = fetchBy(() => archive());
+		const page = new Function(
+			'boardState', 'boardActions', 'api', 'toasts', 'data', 'fetch', 'showConfirm', 'placeColumn', 'ROLE_WORDS',
+			`${runnable(scriptOf(PAGE), ['makeOptionsColumn', 'takeColumn'])}\nreturn { makeOptionsColumn };`
+		)(
+			state,
+			actions,
+			{ optionsConversionWarning: (title: string, live: number, archived: number) => `${title}: ${live} live, ${archived} archived` },
+			{ navigation: () => 'started', add: (...args: unknown[]) => said.push(args) },
+			{ board: { id: 9 } },
+			fetch,
+			(title: string, message: string, confirmText: string, run: () => Promise<void>, danger = true) => confirms.push({ title, message, confirmText, run, danger }),
+			placeColumn,
+			{ refused: 'The Options column was not changed.', noAnswer: 'No answer.' }
+		) as { makeOptionsColumn: (column: Column) => Promise<void> };
+		return { page, state, said, sent, confirms, asked };
+	}
+
+	it('counts the column’s archived cards, asks first, and sends live plus archived as the count', async () => {
+		const run = optionsPage(() => answered(200, [{ id: 20, columnId: 2 }, { id: 21, columnId: 3 }, { id: 22, columnId: 2 }]));
+		await run.page.makeOptionsColumn(run.state.columns[1]);
+
+		expect(run.asked).toEqual(['GET /api/boards/9/archive']);
+		expect(run.sent).toEqual([]);
+		expect(run.confirms.map((c) => [c.title, c.message, c.confirmText, c.danger])).toEqual([
+			['Convert to the Options column', 'Backlog: 2 live, 2 archived', 'Convert', false]
+		]);
+
+		await run.confirms[0].run();
+		expect(run.sent).toEqual(['CONVERT 2 cards=4']);
+		expect(run.said).toEqual([['"Backlog" is now the Options column']]);
+		// Drawn from the answer, at the far left, with no limit.
+		expect(run.state.columns.map((c) => [c.id, c.role, c.position, c.wipLimit])).toEqual([
+			[2, 'options', -1, 0],
+			[1, null, 0, 0],
+			[3, null, 2, 0]
+		]);
+	});
+
+	it('gives an empty column the role at once, with the same word as the conversion, and asks nothing', async () => {
+		const run = optionsPage(() => answered(200, [{ id: 21, columnId: 2 }]));
+		await run.page.makeOptionsColumn(run.state.columns[2]);
+
+		expect(run.confirms).toEqual([]);
+		expect(run.sent).toEqual(['PUT 3 {"role":"options"}']);
+		expect(run.said).toEqual([['"Spare" is now the Options column']]);
+		expect(run.state.columns[0]).toMatchObject({ id: 3, role: 'options', position: -1 });
+	});
+
+	it('asks first for a column whose only cards are archived', async () => {
+		const run = optionsPage(() => answered(200, [{ id: 21, columnId: 3 }]));
+		await run.page.makeOptionsColumn(run.state.columns[2]);
+
+		expect(run.sent).toEqual([]);
+		expect(run.confirms.map((c) => c.message)).toEqual(['Spare: 0 live, 1 archived']);
+		await run.confirms[0].run();
+		expect(run.sent).toEqual(['CONVERT 3 cards=1']);
+	});
+
+	it('changes nothing, and says why, when the archived cards cannot be counted', async () => {
+		for (const archive of [() => answered(500, { message: 'down' }), noAnswer]) {
+			const run = optionsPage(archive);
+			await run.page.makeOptionsColumn(run.state.columns[1]);
+
+			expect(run.sent).toEqual([]);
+			expect(run.confirms).toEqual([]);
+			expect(run.said).toEqual([['Could not count the archived cards in "Backlog". Nothing was changed.', 'error', 'started']]);
+		}
 	});
 });

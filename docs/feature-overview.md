@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.42
+version: 1.43
 status: As-Built
 date: 2026-10-26
 tags:
@@ -10,6 +10,7 @@ tags:
   - stakeholder
   - user-guide
   - non-technical
+  - options-column
 description: "Non-technical overview of all DumpFire features for stakeholders, managers, and end users"
 ---
 
@@ -401,6 +402,20 @@ Audio feedback for card actions:
 - **Add Card button** — toggle quick-add on specific columns; the choice is saved with the column. A column called "To Do" or "Todo", in any capitals and with any space around the name, always has it, with the double-click to add a card, as All Tasks already treats such columns (from 20 October 2026: "Todo" did not; "To-Do" is not one)
 - **Reorderable** — drag columns to rearrange
 - **Renaming keeps what the cards mean** — a column called Complete or Done is where finished work lives. While it holds any card, archived ones included, it can be renamed only to Complete or Done, and a column that holds cards cannot be renamed Complete or Done: the cards would turn back into open work, or be finished without anyone finishing them. The board says why and keeps the old name. An empty column can be renamed to anything
+
+### The Options Column
+
+From 26 October 2026 (milestone 22), a board can keep ideas apart from the work it has committed to, as the Kanban Method does: ideas that may or may not be done (options) on one side, committed work on the other, and the **commitment point** between them. Nothing changes on any board until somebody adds an Options column.
+
+- **One per board, at the far left.** **More → Add Options Column**, offered to anyone who can edit the board, adds a column called **Ideas**; its header reads **Ideas (Options)**. It has no WIP limit, always offers **Add idea**, and no column can be put left of it.
+- **Collapsed to a strip.** It is drawn as a narrow strip showing how many ideas it holds, how old the oldest is, and how many are older than 30 days, so stale ideas are seen. A press opens it; each person's choice is remembered in their own browser. Cards can still be dragged onto the strip.
+- **Making an existing column the Options column.** For the board's owner and administrators, a column's menu offers **Make this the Options column…** where its name does not already mean To Do, On Hold or Complete. A column with cards in it is converted after a question that counts its cards: they all become ideas in one step, recorded as one entry in the activity log, with no mail, and their age as ideas starts then. It can be made an ordinary column again, from the same menu, once it is empty.
+- **Kept safe.** An Options column cannot be deleted while it holds ideas: the board says so at once; archive or move them first. Every card created from now on records when it was committed and by whom, which later updates use for lead time.
+
+```mermaid
+flowchart LR
+    Ideas["Ideas (Options)<br/>options: may or may not be done"] -->|"commitment point"| ToDo["To Do"] --> Doing["In Progress"] --> Done["Complete"]
+```
 
 ---
 
