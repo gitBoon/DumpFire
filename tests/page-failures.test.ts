@@ -69,7 +69,9 @@ import { get } from 'svelte/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	answerBody,
+	cardArchivedMessage,
 	cardArchiveWarning,
+	cardsArchivedMessage,
 	dependencyEndBody,
 	dependencyRow,
 	failureMessage,
@@ -101,7 +103,7 @@ import { requireManagedAccount } from '$lib/server/route-guards';
 import { endsTheSession, watchForSignOut, type Fetch } from '$lib/signed-out';
 import { MOST_FAILURES, TOAST_MS, toasts } from '$lib/stores/toast';
 import type { CardType, ColumnType } from '$lib/types';
-import { isOptionsColumn } from '$lib/column-role';
+import { isOptionsColumn, isUpstreamColumn } from '$lib/column-role';
 import { isCardBlocked, subBoardIncompleteCount } from '$lib/utils/card-utils';
 import { makeUser, resetDb } from './helpers/fixtures';
 
@@ -2473,7 +2475,8 @@ const WRITES: Record<string, Write[]> = {
 		// Sent, read, and the card taken off the board as answered, by the card
 		// window's controller (card 2280, slice B2c; its cases are in
 		// `tests/card-window.test.ts`), which gives back what to say.
-		{ name: 'confirmDeleteCard', via: 'cardWindow.archive', done: ["toasts.add('Card archived. Restore it from Archived Cards.', 'info')"] },
+		// Milestone 22, the S3 review's E6: what it says names an option discarded.
+		{ name: 'confirmDeleteCard', via: 'cardWindow.archive', done: ["toasts.add(api.cardArchivedMessage(card?.title, discards), 'info')"] },
 		// Card 2139: it said "Board linked as sub-board" whatever the answer, and nothing was saved.
 		{ name: 'linkSubBoard', reads: 'failureMessage', done: ['await boardState.refreshNow()', "toasts.add('Board linked as sub-board')"] },
 		// Card 2134: a rename that would change whether the column is a Complete
@@ -2525,7 +2528,8 @@ const WRITES: Record<string, Write[]> = {
 		// controller (card 2281, slice C3a-1; `tests/page-card-window.test.ts`),
 		// which gives back what to say.
 		{ name: 'saveFromWindow', via: 'cardWindow.save', done: ['toasts.add(message)', 'await invalidateAll()'] },
-		{ name: 'archiveFromWindow', via: 'cardWindow.archive', done: ["toasts.add('Card archived. Restore it from Archived Cards.', 'info')", 'await invalidateAll()'] }
+		// Milestone 22, the S3 review's E6: what it says names an option discarded.
+		{ name: 'archiveFromWindow', via: 'cardWindow.archive', done: ["toasts.add(cardArchivedMessage(title, discards), 'info')", 'await invalidateAll()'] }
 	],
 	'src/lib/components/tasks/MoveCardModal.svelte': [
 		// The review's O3: a move to another board that took the card out of its milestone says so.
@@ -3439,7 +3443,10 @@ describe.each(WINDOW_PAGES)('the card window on $file goes through the controlle
 		const archiving = functionNamed(page, archive);
 		const asked = callsOf(archiving, 'showConfirm');
 		expect(asked).toHaveLength(1);
-		expect(asked[0].arguments[1].getText()).toBe('cardArchiveWarning(cardWindow.card?.title)');
+		// All Tasks names an option's archive a discard, before and after (milestone 22, the S3 review's E6);
+		// All To Do lists no Options column, so it has nothing to add.
+		const discards = file === 'src/routes/all/+page.svelte';
+		expect(asked[0].arguments[1].getText()).toBe(discards ? 'cardArchiveWarning(title, discards)' : 'cardArchiveWarning(cardWindow.card?.title)');
 		const confirmed = asked[0].arguments[3];
 		expect(ts.isArrowFunction(confirmed)).toBe(true);
 		const archived = callsOf(archiving, 'cardWindow.archive');
@@ -3448,14 +3455,31 @@ describe.each(WINDOW_PAGES)('the card window on $file goes through the controlle
 		expect(modal).toContain(`onDelete={${archive}}`);
 
 		expect(callsOf(functionNamed(board, 'confirmDeleteCard'), 'api.cardArchiveWarning')).toHaveLength(1);
-		for (const tree of [page, board]) {
-			expect(tree.getText()).toContain("toasts.add('Card archived. Restore it from Archived Cards.', 'info');");
-			expect(tree.getText()).not.toContain('It is taken off the board and nothing on it is deleted');
-		}
+		expect(board.getText()).toContain("toasts.add(api.cardArchivedMessage(card?.title, discards), 'info');");
+		expect(page.getText()).toContain(
+			discards ? "toasts.add(cardArchivedMessage(title, discards), 'info');" : "toasts.add('Card archived. Restore it from Archived Cards.', 'info');"
+		);
+		for (const tree of [page, board]) expect(tree.getText()).not.toContain('It is taken off the board and nothing on it is deleted');
 		expect(cardArchiveWarning('Ship it')).toBe(
 			'Archive "Ship it"? It is taken off the board and nothing on it is deleted. It can be restored from Archived Cards, in the More menu.'
 		);
+		expect(cardArchiveWarning('Idea', true)).toBe(
+			'Archive "Idea"? It is taken off the board and nothing on it is deleted. It can be restored from Archived Cards, in the More menu. This idea will be recorded as discarded.'
+		);
 		expect(cardArchiveWarning(undefined)).toMatch(/^Archive this card\? /);
+		expect([cardArchivedMessage('Idea', true), cardArchivedMessage('Work', false), cardArchivedMessage(undefined, true)]).toEqual([
+			'Discarded "Idea". Restore it from Archived Cards.',
+			'Card archived. Restore it from Archived Cards.',
+			'Discarded the idea. Restore it from Archived Cards.'
+		]);
+		expect([cardsArchivedMessage(3, 0), cardsArchivedMessage(1, 0), cardsArchivedMessage(2, 2), cardsArchivedMessage(1, 1), cardsArchivedMessage(3, 1), cardsArchivedMessage(4, 2)]).toEqual([
+			'3 cards archived. Restore from Archived Cards.',
+			'1 card archived. Restore from Archived Cards.',
+			'Discarded 2 ideas. Restore from Archived Cards.',
+			'Discarded 1 idea. Restore from Archived Cards.',
+			'3 cards archived, 1 of them an idea recorded as discarded. Restore from Archived Cards.',
+			'4 cards archived, 2 of them ideas recorded as discarded. Restore from Archived Cards.'
+		]);
 
 		expect(markup).toContain('{#if confirmState.show}');
 		expect(markup).toContain('onConfirm={() => { confirmState.show = false; confirmState.onConfirm(); }}');
@@ -7052,7 +7076,9 @@ describe('the board page draws from its board state and reads the board alone (c
 		];
 		const NAMES = [
 			'holdDrag', 'takeDragHold', 'takeDragFrom', 'stopDrag', 'takeCardItems', 'handleCardDndConsider', 'handleCardDndFinalize', 'releaseOnHold', 'putBackOnHold', 'cancelOnHold',
-			'releaseBlocked', 'closeBlocked', 'cyclePriority', 'saveInlineEdit', 'cancelInlineEdit', 'saveBoardName', 'handleBulkPriority', 'clearSelection', 'confirmDeleteCard'
+			'releaseBlocked', 'closeBlocked', 'cyclePriority', 'saveInlineEdit', 'cancelInlineEdit', 'saveBoardName', 'handleBulkPriority', 'clearSelection', 'confirmDeleteCard',
+			// Milestone 22, the S3 review's E6: whether the card is an option, which the archive's words ask.
+			'isOptionOnBoard', 'handleBulkDelete'
 		];
 
 		function livePage(columns: ReturnType<typeof column>[]) {
@@ -7101,10 +7127,12 @@ describe('the board page draws from its board state and reads the board alone (c
 			const said: unknown[][] = [];
 			// The confirm dialog's Confirm, pressed when the test says.
 			const confirms: (() => Promise<void>)[] = [];
+			// And what it asked.
+			const questions: string[] = [];
 			const page = new Function(
 				'boardState', 'dndHandlers', 'TRIGGERS', 'SOURCES', 'toasts', 'data', 'currentUser', 'playCompleteSound', 'playMoveSound', 'queueCompletionPrompt', 'warnIfStillBlocked',
 				'copyColumns', 'undoDrag', 'moveCards', 'patchCard', 'reorderColumns', 'withCurrentCards', 'api', 'bulkOps', 'boardActions', 'PRIORITY_CYCLE', 'PRIORITY_WORDS',
-				'cardActions', 'removeCard', 'showConfirm', 'BULK_HOLD_MS', 'cardWindow',
+				'cardActions', 'removeCard', 'showConfirm', 'BULK_HOLD_MS', 'cardWindow', 'isUpstreamColumn',
 				`let ${LETS.map((name) => `${name} = null`).join(', ')};\n` +
 					"blockedState = { show: false }; onHoldState = { show: false }; selectedCards = new Set(); contextMenu = { show: false }; selectionMode = true; confirmState = { show: false };\n" +
 					`${runnable(board(), NAMES)}\n` +
@@ -7113,11 +7141,12 @@ describe('the board page draws from its board state and reads the board alone (c
 				state, dnd, TRIGGERS, SOURCES, { navigation: () => 'started', add: (...args: unknown[]) => said.push(args) }, { board: { id: 9 } }, { username: 'editor', emoji: '🦊' }, () => {}, () => {}, () => {}, () => {},
 				copyColumns, undoDrag, moveCards, patchCard, reorderColumns, withCurrentCards, apiModule, bulkActions, boardActions,
 				['low', 'medium', 'high', 'critical'], { refused: 'The priority was not changed.', noAnswer: 'No answer from the server. The priority may not have been changed.' },
-				cardActions, removeCard, (_title: string, _message: string, _text: string, onConfirm: () => Promise<void>) => confirms.push(onConfirm), BULK_HOLD_MS,
+				cardActions, removeCard, (_title: string, message: string, _text: string, onConfirm: () => Promise<void>) => { questions.push(message); confirms.push(onConfirm); }, BULK_HOLD_MS,
 				// The card window's controller on the same board state (slice B2c), which archives.
-				new CardWindow(state, 9)
+				new CardWindow(state, 9),
+				isUpstreamColumn
 			);
-			return { page, state, asked, next, said, reads, confirms, columns: () => state.columns as unknown as Column[] };
+			return { page, state, asked, next, said, reads, confirms, questions, columns: () => state.columns as unknown as Column[] };
 		}
 
 		/** What `dndHandlers` gives for a drop that is taken, or held for its note: the column dropped into holds `items`. */
@@ -7318,6 +7347,45 @@ describe('the board page draws from its board state and reads the board alone (c
 					[1, [5]],
 					[2, []]
 				]);
+			} finally {
+				live.state.dispose();
+			}
+		});
+
+		// Milestone 22, the S3 review's E6: archiving an option discards it, and
+		// the page says so before (the question) and after (the toast); the bulk
+		// archive counts the ideas among what it archived.
+		it('says an option archived is discarded, asked and told, and counts the ideas a bulk archive discarded; any other card as before', async () => {
+			const ideas = Object.assign(column(1, 0, 'Ideas', [card(5, 1, 0), card(6, 1, 1)]), { role: 'options' });
+			const live = livePage([ideas, column(2, 1, 'To Do', [card(7, 2, 0), card(8, 2, 1)])]);
+			const answered = async (n: number) => {
+				for (let i = 0; i < 50 && live.asked.length < n; i++) await Promise.resolve();
+				expect(live.asked).toHaveLength(n);
+				live.asked[n - 1].answer(json(200, { success: true }));
+			};
+			try {
+				live.page.confirmDeleteCard(5);
+				live.page.confirmDeleteCard(7);
+				expect(live.questions[0]).toMatch(/ This idea will be recorded as discarded\.$/);
+				expect(live.questions[1]).not.toContain('discarded');
+				const first = live.confirms[0]();
+				await answered(1);
+				await first;
+				const second = live.confirms[1]();
+				await answered(2);
+				await second;
+				expect(live.said).toEqual([
+					['Discarded "Card 5". Restore it from Archived Cards.', 'info'],
+					['Card archived. Restore it from Archived Cards.', 'info']
+				]);
+
+				live.page.vars.selectedCards = new Set([6, 8]);
+				const bulk = live.page.handleBulkDelete();
+				await answered(3);
+				await answered(4);
+				await bulk;
+				expect(live.asked.map((a) => a.what)).toEqual(['DELETE /api/cards/5', 'DELETE /api/cards/7', 'DELETE /api/cards/6', 'DELETE /api/cards/8']);
+				expect(live.said.at(-1)).toEqual(['2 cards archived, 1 of them an idea recorded as discarded. Restore from Archived Cards.', 'info']);
 			} finally {
 				live.state.dispose();
 			}
@@ -7613,7 +7681,7 @@ describe('the board page’s card window goes through its controller (card 2280,
 			'const failure = await cardWindow.archive(cardId);',
 			'confirmState.show = false;',
 			"if (failure) { // The card is still on the board, so its window stays open. toasts.add(failure, 'error', started); return; }",
-			"toasts.add('Card archived. Restore it from Archived Cards.', 'info');"
+			"toasts.add(api.cardArchivedMessage(card?.title, discards), 'info');"
 		]);
 	});
 });

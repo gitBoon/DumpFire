@@ -304,10 +304,29 @@ export async function updateCard(cardId: number, updates: Record<string, unknown
 /**
  * What archiving a card does, asked before it is done: on a board, and in the
  * card's window in All Tasks and All To Do. `title` is the card's, when it is
- * known.
+ * known. `discards` is true for an option, a card in an upstream column,
+ * whose archive is recorded as a discard (milestone 22, the S3 review's E6),
+ * which the question then says.
  */
-export function cardArchiveWarning(title?: string | null): string {
-	return `Archive ${title ? `"${title}"` : 'this card'}? It is taken off the board and nothing on it is deleted. It can be restored from Archived Cards, in the More menu.`;
+export function cardArchiveWarning(title?: string | null, discards = false): string {
+	return `Archive ${title ? `"${title}"` : 'this card'}? It is taken off the board and nothing on it is deleted. It can be restored from Archived Cards, in the More menu.${discards ? ' This idea will be recorded as discarded.' : ''}`;
+}
+
+/** What is said once a card is archived: that an option was discarded (the S3 review's E6), or that a card was archived. */
+export function cardArchivedMessage(title: string | null | undefined, discarded: boolean): string {
+	return discarded ? `Discarded ${title ? `"${title}"` : 'the idea'}. Restore it from Archived Cards.` : 'Card archived. Restore it from Archived Cards.';
+}
+
+/**
+ * What the board page's bulk archive says once `archived` cards are archived,
+ * `discarded` of them options, which were discarded (the S3 review's E6).
+ */
+export function cardsArchivedMessage(archived: number, discarded: number): string {
+	const cards = (n: number) => `${n} ${n === 1 ? 'card' : 'cards'}`;
+	const ideas = (n: number) => `${n} ${n === 1 ? 'idea' : 'ideas'}`;
+	if (discarded === 0) return `${cards(archived)} archived. Restore from Archived Cards.`;
+	if (discarded === archived) return `Discarded ${ideas(discarded)}. Restore from Archived Cards.`;
+	return `${cards(archived)} archived, ${discarded} of them ${discarded === 1 ? 'an idea' : 'ideas'} recorded as discarded. Restore from Archived Cards.`;
 }
 
 /**

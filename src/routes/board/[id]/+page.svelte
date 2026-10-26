@@ -46,7 +46,7 @@
 	import { isCompleteColumn, isOnHoldColumn, matchesSearch } from '$lib/utils/card-utils';
 	// The add-card columns: "To Do" or "Todo", trimmed, any capitals (card 2280, slice B5a).
 	// The still-blocked warning keeps its own test of the title (warnIfStillBlocked).
-	import { isOptionsColumn, isTodoColumnTitle } from '$lib/column-role';
+	import { isOptionsColumn, isTodoColumnTitle, isUpstreamColumn } from '$lib/column-role';
 	import { playMoveSound, playCompleteSound } from '$lib/utils/sounds';
 
 	// Board-specific modules
@@ -238,11 +238,14 @@
 	async function handleBulkDelete() {
 		// Each card is archived, not deleted (`api.deleteCard`).
 		const started = toasts.navigation();
+		// The options among them, read before they leave the board: each is discarded (the S3 review's E6).
+		const options = [...selectedCards].filter((cardId) => isOptionOnBoard(cardId));
 		const release = boardState.hold({ watchdogMs: BULK_HOLD_MS });
 		try {
 			const { archived, failed } = await bulkOps.bulkDelete(selectedCards, data.board.id, boardState);
 			if (archived > 0) {
-				toasts.add(`${archived} ${archived === 1 ? 'card' : 'cards'} archived. Restore from Archived Cards.`, 'info');
+				const discarded = options.filter((cardId) => !failed.some((f) => f.cardId === cardId)).length;
+				toasts.add(api.cardsArchivedMessage(archived, discarded), 'info');
 			}
 			if (failed.length > 0) {
 				// What the server did not archive is back on the board, and stays selected.
@@ -417,9 +420,11 @@
 	 */
 	function confirmDeleteCard(cardId: number) {
 		const card = boardState.columns.flatMap(c => c.cards).find(c => c.id === cardId);
+		// An option's archive is a discard, said before and after (milestone 22, the S3 review's E6).
+		const discards = isOptionOnBoard(cardId);
 		showConfirm(
 			'Archive Card',
-			api.cardArchiveWarning(card?.title),
+			api.cardArchiveWarning(card?.title, discards),
 			'Archive Card',
 			async () => {
 				const started = toasts.navigation();
@@ -430,9 +435,15 @@
 					toasts.add(failure, 'error', started);
 					return;
 				}
-				toasts.add('Card archived. Restore it from Archived Cards.', 'info');
+				toasts.add(api.cardArchivedMessage(card?.title, discards), 'info');
 			}
 		);
+	}
+
+	/** True if the card is in an upstream column of this board: the Options column, or any column of an ideas board. */
+	function isOptionOnBoard(cardId: number): boolean {
+		const column = boardState.columns.find((c) => c.cards.some((x) => x.id === cardId));
+		return column !== undefined && isUpstreamColumn(column, boardState.board.kind);
 	}
 
 	// ─── Board Identity ──────────────────────────────────────────────────────
@@ -673,7 +684,7 @@
 		const options = boardState.columns.find((c) => c.id === colId && isOptionsColumn(c));
 		if (options && options.cards.length > 0) {
 			const live = options.cards.length;
-			toasts.add(`This Options column holds ${live === 1 ? '1 option: archive or move it first.' : `${live} options: archive or move them first.`}`, 'error');
+			toasts.add(`This Options column still holds ${live === 1 ? '1 option: move it out, or archive it to discard it, first.' : `${live} options: move them out, or archive them to discard them, first.`}`, 'error');
 			return;
 		}
 		showConfirm(

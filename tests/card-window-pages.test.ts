@@ -317,6 +317,27 @@ describe('All Tasks shows a save on the card at once, and takes it back alone wh
 	});
 });
 
+// Milestone 22, the S3 review's E6: a card in an Options column is an idea,
+// and archiving it discards it, which All Tasks says before and after.
+describe('archiving an idea from All Tasks’ card window', () => {
+	it('asks with "This idea will be recorded as discarded." and says it was discarded', async () => {
+		const data = allTasksData();
+		draw(AllTasksPage, { ...data, columns: [{ ...data.columns[0], title: 'Ideas', role: 'options' }] });
+		document.querySelector<HTMLElement>('.card')!.click();
+		await settle();
+		document.querySelector<HTMLButtonElement>('.btn-danger')!.click();
+		flushSync();
+		expect(document.querySelector('.confirm-message')!.textContent).toBe(
+			'Archive "Plan"? It is taken off the board and nothing on it is deleted. It can be restored from Archived Cards, in the More menu. This idea will be recorded as discarded.'
+		);
+		document.querySelector<HTMLButtonElement>('.confirm-actions button:last-child')!.click();
+		await settle();
+
+		expect(sent).toEqual([{ what: 'DELETE /api/cards/7', body: { boardId: 3 } }]);
+		expect(toastsSaid()).toEqual(['Discarded "Plan". Restore it from Archived Cards.']);
+	});
+});
+
 describe.each(PAGES.slice(0, 2))('archiving from the card window on $name goes through the controller (card 2281, slice C3a-1)', (page) => {
 	async function archive() {
 		draw(page.component, page.data());

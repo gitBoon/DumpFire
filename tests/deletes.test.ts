@@ -376,9 +376,12 @@ const shape = (writes: string[]) =>
 
 // ─── Archive ────────────────────────────────────────────────────────────────
 
+// The card is in To Do, committed and not finished, so its archive is recorded
+// as abandoned work, `card_abandoned`, in place of `card_archived` (milestone 22,
+// ruling f); it is still the one entry. A discard is in tests/discard.test.ts.
 describe.each([
-	{ tree: 'the internal API', path: '/api/cards', action: 'card_archived', source: 'ui' },
-	{ tree: 'the v1 API', path: '/api/v1/cards', action: 'api:card_archived', source: 'api' }
+	{ tree: 'the internal API', path: '/api/cards', action: 'card_abandoned', source: 'ui' },
+	{ tree: 'the v1 API', path: '/api/v1/cards', action: 'api:card_abandoned', source: 'api' }
 ])('archiving a card through $tree', ({ path, action, source }) => {
 	it('stamps the card, writes the entry, and touches nothing else, or does neither', async () => {
 		const run = await eachWriteInTurn({
@@ -391,7 +394,7 @@ describe.each([
 				const card = db.select().from(cards).where(eq(cards.id, w.doomed.id)).get()!;
 				expect(card.archivedAt).not.toBeNull();
 				expect(entries()).toEqual([
-					{ boardId: w.A.board.id, cardId: w.doomed.id, userId: w.owner.id, action, detail: '"Doomed"', source }
+					{ boardId: w.A.board.id, cardId: w.doomed.id, userId: w.owner.id, action, detail: '"Doomed": archived unfinished, from To Do', source }
 				]);
 
 				// The card's own row and nothing else: not a link, not an attachment

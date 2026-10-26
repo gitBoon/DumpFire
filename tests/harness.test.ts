@@ -96,6 +96,8 @@ const TEST_FILES = [
 	'deletes-no-parent-key.test.ts',
 	'deletes.test.ts',
 	'dependency-refusals.test.ts',
+	// Milestone 22, slice S3: archiving or deleting an option is a discard, by every route; the upstream figures.
+	'discard.test.ts',
 	'docs-format.test.ts',
 	'error-shape.test.ts',
 	'gate.test.ts',

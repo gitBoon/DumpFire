@@ -418,8 +418,9 @@ export function updateColumn(caller: SessionUser | null, at: { columnId: number 
  *
  * The Options column is refused, 409, while it holds a card that is not
  * archived (milestone 22, ruling m): deleting it silently deleted the options
- * in it, which are archived or moved instead. Its archived cards go with it,
- * as any column's do.
+ * in it, which are archived or moved instead; archiving one discards it
+ * (card 2461), and the refusal says so. Its archived cards go with it, as any
+ * column's do.
  */
 export function deleteColumnFor(caller: SessionUser | null, at: { columnId: number }, body: null, opts: ServiceOptions): void {
 	inWrite();
@@ -430,7 +431,10 @@ export function deleteColumnFor(caller: SessionUser | null, at: { columnId: numb
 		const { total, archived } = cardsHeld(column.id);
 		const live = total - archived;
 		if (live > 0) {
-			throw error(409, `This Options column holds ${live === 1 ? '1 option: archive or move it first.' : `${live} options: archive or move them first.`}`);
+			throw error(
+				409,
+				`This Options column still holds ${live === 1 ? '1 option: move it out, or archive it to discard it, first.' : `${live} options: move them out, or archive them to discard them, first.`}`
+			);
 		}
 	}
 

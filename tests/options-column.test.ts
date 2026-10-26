@@ -358,10 +358,10 @@ describe.each(TREES)('the Options role, through %s', (tree) => {
 		it('is refused while it holds an option that is not archived', async () => {
 			asOptions(board.cols['Backlog']);
 			makeCard(board.cols['Backlog']);
-			await expectRefused(() => tree.remove(board.cols['Backlog'].id), 409, 'This Options column holds 1 option: archive or move it first.');
+			await expectRefused(() => tree.remove(board.cols['Backlog'].id), 409, 'This Options column still holds 1 option: move it out, or archive it to discard it, first.');
 
 			makeCard(board.cols['Backlog']);
-			await expectRefused(() => tree.remove(board.cols['Backlog'].id), 409, 'This Options column holds 2 options: archive or move them first.');
+			await expectRefused(() => tree.remove(board.cols['Backlog'].id), 409, 'This Options column still holds 2 options: move them out, or archive them to discard them, first.');
 		});
 
 		it('deletes it with its archived cards, and an empty one, as any column', async () => {

@@ -32,6 +32,8 @@ export const GET: RequestHandler = async ({ locals }) => {
 		id: c.id,
 		title: c.title,
 		archivedAt: c.archivedAt,
+		// Set on an option archived from upstream, which All Tasks marks "Discarded" (milestone 22, card 2461).
+		discardedAt: c.discardedAt,
 		boardName: boardMap.get(colToBoardMap.get(c.columnId)!) || 'Unknown'
 	})));
 };

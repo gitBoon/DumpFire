@@ -38,6 +38,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 			description: c.description || '',
 			priority: c.priority,
 			archivedAt: c.archivedAt,
+			// Set on an option archived from upstream, marked "Discarded" (milestone 22, card 2461).
+			discardedAt: c.discardedAt,
 			createdAt: c.createdAt,
 			boardName: boardInfo?.name || 'Unknown',
 			boardEmoji: boardInfo?.emoji || '📋',

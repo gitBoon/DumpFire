@@ -130,6 +130,8 @@
 				<div class="archive-card-item">
 					<div class="archive-card-info">
 						<span class="archive-card-title">{card.title}</span>
+						<!-- An option archived from upstream (milestone 22, card 2461). -->
+						{#if card.discardedAt}<span class="archive-card-discarded" title="Discarded from the Options column. Restoring it makes it an idea again.">Discarded</span>{/if}
 						{#if card.boardName}<span class="archive-card-board">{card.boardName}</span>{/if}
 					</div>
 					<div style="display:flex;gap:4px;">
@@ -155,4 +157,9 @@
 	.archive-card-info { flex: 1; min-width: 0; }
 	.archive-card-title { font-size: 0.82rem; font-weight: 600; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 	.archive-card-board { font-size: 0.68rem; color: var(--text-tertiary); }
+	.archive-card-discarded {
+		font-size: 0.62rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+		padding: 1px 6px; margin-right: 4px; border-radius: var(--radius-sm);
+		color: var(--accent-amber); border: 1px solid currentColor;
+	}
 </style>

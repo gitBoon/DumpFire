@@ -35,7 +35,8 @@ export const ACTIVITY_LABELS: Readonly<Record<string, string>> = Object.freeze({
 	card_committed: 'Committed card',
 	card_returned_to_options: 'Returned card to Options',
 	card_discarded: 'Discarded card',
-	card_abandoned: 'Abandoned card',
+	// "Abandoned" is the figure's name for managers; the entry says what was done (the S3 review's E5).
+	card_abandoned: 'Archived unfinished card',
 	card_sent: 'Sent card to another board',
 	column_converted_to_options: 'Converted column to Options',
 	board_converted_to_ideas: 'Converted board to an ideas board',

@@ -200,6 +200,10 @@
 								<div class="archived-card-meta">
 									<span class="archived-card-board">{card.boardEmoji} {card.boardName}</span>
 									<span class="archived-card-date">Archived {formatArchiveDate(card.archivedAt)}</span>
+									<!-- An option archived from upstream (milestone 22, card 2461). -->
+									{#if card.discardedAt}
+										<span class="archived-card-discarded" title="Discarded from the Options column. Restoring it makes it an idea again.">Discarded</span>
+									{/if}
 								</div>
 							</div>
 						</div>
@@ -427,6 +431,18 @@
 	.archived-card-date {
 		font-size: 0.72rem;
 		color: var(--text-tertiary);
+		white-space: nowrap;
+	}
+
+	.archived-card-discarded {
+		font-size: 0.65rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		padding: 1px 6px;
+		border-radius: var(--radius-sm);
+		color: var(--accent-amber);
+		border: 1px solid currentColor;
 		white-space: nowrap;
 	}
 
