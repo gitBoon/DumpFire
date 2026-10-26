@@ -669,8 +669,9 @@ const SERVICE_TWINS: ServiceTwin[] = [
 		v1: (s) => api('PUT', `/api/v1/cards/${s.first.id}/move`, { user: s.owner, body: { columnId: s.A.cols['To Do'].id, position: 0 } }),
 		status: { internal: 200, v1: 200 },
 		sources: { internal: ['card_committed ui', 'card.committed ui'], v1: ['api:card_committed api', 'card.committed api'] },
-		// The commitment's detail names the column it went into by its id too: To Do is column 1 (the S2 review's C3).
-		told: movedAcross('card.committed', 'card_committed', 'Ideas', 'To Do', ' (column 1)')
+		// The commitment's detail names the column it went into by its id too: To Do is column 1 (the S2 review's C3);
+		// and the column it left, Ideas, made after the scene's eight, column 9 (the S4a review's H3).
+		told: movedAcross('card.committed', 'card_committed', 'Ideas', 'To Do', ' (column 1, from column 9)')
 	},
 	{
 		row: 4,

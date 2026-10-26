@@ -3,6 +3,7 @@ import { cards, columns, subtasks, boards, type Column } from '$lib/server/db/sc
 import { and, count, eq, inArray, isNull } from 'drizzle-orm';
 import { isCompleteColumnTitle, isHoldColumnTitle } from '$lib/column-role';
 import { canViewBoard, type Actor } from './board-access';
+import { notUpstream } from './upstream';
 
 /** How far a sub-board is: `total` live cards, `done` of them in a Complete column. */
 export type SubBoardProgress = { done: number; total: number };
@@ -26,6 +27,11 @@ export type SubBoardProgress = { done: number; total: number };
  * asks what a rename does to the cards a restore would put back in the column,
  * which is a different question.
  *
+ * Nor is an option work to finish (milestone 22, decision M22-11): a card in
+ * the board's Options column, or on an ideas board, is not in `total`, so an
+ * idea parked on a sub-board does not hold back completing the card above
+ * it, and every page that shows these figures agrees.
+ *
  * One query for every board, grouped by column.
  */
 export function subBoardProgress(boardIds: number[]): Map<number, SubBoardProgress> {
@@ -36,8 +42,9 @@ export function subBoardProgress(boardIds: number[]): Map<number, SubBoardProgre
 	const held = db
 		.select({ boardId: columns.boardId, title: columns.title, cards: count(cards.id) })
 		.from(columns)
+		.innerJoin(boards, eq(boards.id, columns.boardId))
 		.innerJoin(cards, and(eq(cards.columnId, columns.id), isNull(cards.archivedAt)))
-		.where(inArray(columns.boardId, [...progress.keys()]))
+		.where(and(inArray(columns.boardId, [...progress.keys()]), notUpstream()))
 		.groupBy(columns.id)
 		.all();
 	for (const column of held) {

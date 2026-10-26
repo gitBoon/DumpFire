@@ -440,12 +440,14 @@ const MOST_READS: Record<string, number> = { owner: 23, member: 21, mate: 21, ad
 
 /**
  * The keys of the answer, of each board in it and of its analytics, in order, the same for every caller.
- * A board's row gained `kind` with migration 0060 (milestone 22), in the model's place for it.
+ * A board's row gained `kind` with migration 0060 (milestone 22), in the model's place for it,
+ * and `optionsCount`, after `completedCards`, with card 2462 (slice S4a): every other figure
+ * pinned below is unchanged, and no read was added.
  */
 const KEYED = {
 	keys: 'boards,analytics,allCategories,favouriteBoardIds,allTasksTotals,spendByUser',
 	boardKeys: [
-		'id,name,emoji,parentCardId,categoryId,isPublic,kind,createdBy,createdAt,updatedAt,totalCards,completedCards,tokenTotal,costUsd,lastActivity,subBoards,categoryName,categoryColor'
+		'id,name,emoji,parentCardId,categoryId,isPublic,kind,createdBy,createdAt,updatedAt,totalCards,completedCards,optionsCount,tokenTotal,costUsd,lastActivity,subBoards,categoryName,categoryColor'
 	],
 	analyticsKeys:
 		'totalAssigned,active,completed,completionRate,completedThisWeek,completedThisMonth,priorityCounts,pendingRequests,recentActivity,weeklyActivity,totalSubBoards,boardHealth,totalBoards,categoryDistribution,agingBuckets,teamLeaderboard,dueCards,longOverdue,asOf,weeklyTrend,onHoldCount'

@@ -264,7 +264,8 @@ describe('the board’s CSV export names its file safely when the board has no c
 			vi.useRealTimers();
 		}
 		expect(res.status).toBe(200);
-		expect(String(res.body)).toBe('Title,Description,Priority,Column,Assignees,Due Date,Created,Completed,Labels,Category,Subtasks\n');
+		// Stage and Committed joined the end of the header with milestone 22 (card 2462).
+		expect(String(res.body)).toBe('Title,Description,Priority,Column,Assignees,Due Date,Created,Completed,Labels,Category,Subtasks,Stage,Committed\n');
 		expect(res.headers.get('content-disposition')).toBe('attachment; filename="Q3__launch____-2026-10-22.csv"');
 	});
 });

@@ -28,6 +28,7 @@ import { getBlockedStateForCards } from '$lib/server/planning';
 import { milestoneNamesForCards } from '$lib/server/milestones';
 import { boardAncestry } from '$lib/server/board-tree';
 import { placeBoards } from '$lib/board-tree';
+import { isUpstreamColumn } from '$lib/column-role';
 import { SUBTASK_ORDER } from '$lib/server/subtask-order';
 import { CARD_ORDER, COLUMN_ORDER } from '$lib/server/card-order';
 
@@ -61,6 +62,7 @@ export function readCrossBoardCards(user: Actor, options: CrossBoardOptions = {}
 	}
 
 	const accessibleBoardIds = allBoards.map(b => b.id);
+	const kindOf = new Map(allBoards.map(b => [b.id, b.kind]));
 	const allColumns = accessibleBoardIds.length > 0
 		? db.select().from(columns).where(inArray(columns.boardId, accessibleBoardIds)).orderBy(...COLUMN_ORDER).all()
 		: [];
@@ -178,6 +180,13 @@ export function readCrossBoardCards(user: Actor, options: CrossBoardOptions = {}
 		}),
 		/** Every column of those boards, by position, whichever `inColumn` let through. */
 		columns: allColumns,
+		/**
+		 * The ids of those columns that are upstream (milestone 22, card 2462):
+		 * each board's Options column and every column of an ideas board,
+		 * worked out from the boards read above, with no read of its own. For
+		 * the page's own figures; no page hands it on.
+		 */
+		upstreamColumnIds: new Set(allColumns.filter(c => isUpstreamColumn(c, kindOf.get(c.boardId) ?? null)).map(c => c.id)),
 		cards: enrichedCards,
 		labels: allLabels,
 		categories: allCategories,

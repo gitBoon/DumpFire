@@ -6,6 +6,7 @@ import { getBoardRole } from '$lib/server/board-access';
 import { pathId } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { COLUMN_ORDER } from '$lib/server/card-order';
+import { isUpstreamColumn } from '$lib/column-role';
 import type { RequestHandler } from './$types';
 
 /**
@@ -13,6 +14,17 @@ import type { RequestHandler } from './$types';
  *
  * Returns daily card counts per column over the last N days.
  * Query params: ?days=N (default: 30, max: 365)
+ *
+ * Milestone 22 (card 2462, ruling h): the flow of a delivery board is its
+ * committed work, so its Options column is left out unless the viewer asks
+ * for it with `?upstream=true` (the panel's "Show upstream", off by default).
+ * Asked for, it is drawn first, at the bottom of the stack, where it already
+ * is as the leftmost column; the top edge of its band is the commitment
+ * point. An ideas board is all upstream and draws its own columns whatever
+ * is asked. Each column says whether it is `upstream`; `kind` is the board's,
+ * `hasUpstream` whether it has any upstream column to show, and
+ * `upstreamShown` whether they are in this answer. Snapshots are captured for
+ * every column as before, so turning it on shows the history.
  */
 export const GET: RequestHandler = async ({ params, locals, url }) => {
 	// A caller who is not signed in is 401, where `locals.user!` threw and
@@ -29,14 +41,20 @@ export const GET: RequestHandler = async ({ params, locals, url }) => {
 	const days = Math.min(Math.max(Number(url.searchParams.get('days')) || 30, 1), 365);
 	const cutoff = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
 
-	// Get columns metadata
-	const boardCols = db.select()
+	// Get columns metadata, each marked upstream or not, and the upstream
+	// ones left out of a delivery board's flow unless asked for.
+	const everyCol = db.select()
 		.from(columns)
 		.where(eq(columns.boardId, boardId))
 		.orderBy(...COLUMN_ORDER)
-		.all();
+		.all()
+		.map(c => ({ ...c, upstream: isUpstreamColumn(c, board.kind) }));
+	const hasUpstream = everyCol.some(c => c.upstream);
+	const upstreamShown = hasUpstream && (board.kind === 'ideas' || url.searchParams.get('upstream') === 'true');
+	const boardCols = upstreamShown ? everyCol : everyCol.filter(c => !c.upstream);
+	const shape = { kind: board.kind, hasUpstream, upstreamShown };
 
-	if (boardCols.length === 0) return json({ days, columns: [], data: [] });
+	if (boardCols.length === 0) return json({ days, columns: [], data: [], ...shape });
 
 	const colIds = boardCols.map(c => c.id);
 
@@ -71,7 +89,8 @@ export const GET: RequestHandler = async ({ params, locals, url }) => {
 
 	return json({
 		days,
-		columns: boardCols.map(c => ({ id: c.id, title: c.title, color: c.color })),
-		data
+		columns: boardCols.map(c => ({ id: c.id, title: c.title, color: c.color, upstream: c.upstream })),
+		data,
+		...shape
 	});
 };

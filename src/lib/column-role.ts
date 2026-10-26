@@ -83,6 +83,33 @@ const HOLD_TITLES: ReadonlySet<string> = new Set(['on hold', 'hold', 'blocked', 
  */
 const TODO_TITLES: ReadonlySet<string> = new Set(['to do', 'todo']);
 
+/**
+ * Titles reports count as To Do beside `TODO_TITLES` (`reports.ts`). Kept as
+ * reports have always read them: aligning them with the two above would move
+ * ordinary boards' figures, and is card 2474's question.
+ */
+export const REPORT_TODO_TITLES: readonly string[] = ['to-do', 'backlog', 'inbox', 'not started', 'new', 'planned', 'ideas', 'idea', 'later'];
+
+/**
+ * Titles of queues, where committed work waits to be started (milestone 22,
+ * the S4a review's H1): the report titles above, and the usual names of a
+ * replenishment queue. Read only by `isQueueColumn`, for the cycle time.
+ */
+const QUEUE_TITLES: ReadonlySet<string> = new Set([...REPORT_TODO_TITLES, 'ready', 'selected', 'next', 'up next', 'queue', 'queued']);
+
+/**
+ * True if work in this column is waiting, not started: a To Do or On Hold
+ * column, or one whose title names a queue (Backlog, Ready, Selected, Next
+ * and the like). A card committed into one has not started; one committed
+ * anywhere else has (the S4a review's H1). The board's first committed
+ * column is a queue too, which only the caller, holding the board's
+ * columns, can tell.
+ */
+export function isQueueColumn(column: { title: string | null | undefined; role: string | null }): boolean {
+	const role = columnRoleOf(column);
+	return role === 'todo' || role === 'hold' || QUEUE_TITLES.has((column.title ?? '').trim().toLowerCase());
+}
+
 /** The role a column title implies. Case and surrounding space are ignored. */
 export function columnRole(title: string | null | undefined): ColumnRole | null {
 	const t = (title ?? '').trim().toLowerCase();

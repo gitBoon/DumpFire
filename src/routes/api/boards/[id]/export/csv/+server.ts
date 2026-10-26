@@ -7,7 +7,17 @@ import { pathId } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { SUBTASK_ORDER } from '$lib/server/subtask-order';
 import { CARD_ORDER, COLUMN_ORDER } from '$lib/server/card-order';
+import { stageOf } from '$lib/server/upstream';
+import { isUpstreamColumn } from '$lib/column-role';
 import type { RequestHandler } from './$types';
+
+/**
+ * The file's columns. The last two are milestone 22's (card 2462), added at
+ * the end so that every other column keeps its place: "Stage", whether the
+ * card is an option or committed work (`stageOf`), and "Committed", when it
+ * was committed, empty for an option.
+ */
+const HEADER = 'Title,Description,Priority,Column,Assignees,Due Date,Created,Completed,Labels,Category,Subtasks,Stage,Committed';
 
 /** Escape a value for CSV: wrap in quotes if it contains commas, quotes, or newlines. */
 function csvEscape(val: string | null | undefined): string {
@@ -45,9 +55,10 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		.all();
 	const colIds = boardCols.map(c => c.id);
 	const colMap = new Map(boardCols.map(c => [c.id, c.title]));
+	const upstream = new Set(boardCols.filter(c => isUpstreamColumn(c, board.kind)).map(c => c.id));
 
 	if (colIds.length === 0) {
-		return new Response('Title,Description,Priority,Column,Assignees,Due Date,Created,Completed,Labels,Category,Subtasks\n', {
+		return new Response(`${HEADER}\n`, {
 			headers: {
 				'Content-Type': 'text/csv; charset=utf-8',
 				'Content-Disposition': disposition
@@ -93,7 +104,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 		: [];
 
 	// Build CSV
-	const header = 'Title,Description,Priority,Column,Assignees,Due Date,Created,Completed,Labels,Category,Subtasks';
+	const header = HEADER;
 	const rows = allCards.map(card => {
 		const columnName = colMap.get(card.columnId) || '';
 		const categoryName = card.categoryId ? (catMap.get(card.categoryId) || '') : '';
@@ -122,7 +133,9 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 			csvEscape(card.completedAt),
 			csvEscape(cardLabelNames),
 			csvEscape(categoryName),
-			csvEscape(cardSubtasks)
+			csvEscape(cardSubtasks),
+			csvEscape(stageOf(card, upstream.has(card.columnId))),
+			csvEscape(card.committedAt)
 		].join(',');
 	});
 

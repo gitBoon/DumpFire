@@ -5,7 +5,25 @@ import { readQueryId } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { SUBTASK_ORDER } from '$lib/server/subtask-order';
 import { CARD_ORDER, COLUMN_ORDER } from '$lib/server/card-order';
+import { stageOf } from '$lib/server/upstream';
+import { isUpstreamColumn } from '$lib/column-role';
 import type { RequestHandler } from './$types';
+
+/**
+ * The file's columns. The last two are milestone 22's (card 2462), added at
+ * the end so that every other column keeps its place: "Stage", whether the
+ * card is an option or committed work (`stageOf`), and "Committed", when it
+ * was committed, empty for an option.
+ */
+const HEADER = 'Board,Title,Description,Priority,Column,Assignees,Due Date,Created,Completed,Labels,Category,Subtasks,Stage,Committed';
+/** The answer with no card in it: the header alone. */
+const NO_CARDS = () =>
+	new Response(`${HEADER}\n`, {
+		headers: {
+			'Content-Type': 'text/csv; charset=utf-8',
+			'Content-Disposition': `attachment; filename="dumpfire-export.csv"`
+		}
+	});
 
 /** Escape a value for CSV: wrap in quotes if it contains commas, quotes, or newlines. */
 function csvEscape(val: string | null | undefined): string {
@@ -70,27 +88,18 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 		if (accessibleBoardIds.includes(boardFilter)) {
 			accessibleBoardIds = [boardFilter];
 		} else {
-			return new Response('Board,Title,Description,Priority,Column,Assignees,Due Date,Created,Completed,Labels,Category,Subtasks\n', {
-				headers: {
-					'Content-Type': 'text/csv; charset=utf-8',
-					'Content-Disposition': `attachment; filename="dumpfire-export.csv"`
-				}
-			});
+			return NO_CARDS();
 		}
 	}
 
 	if (accessibleBoardIds.length === 0) {
-		return new Response('Board,Title,Description,Priority,Column,Assignees,Due Date,Created,Completed,Labels,Category,Subtasks\n', {
-			headers: {
-				'Content-Type': 'text/csv; charset=utf-8',
-				'Content-Disposition': `attachment; filename="dumpfire-export.csv"`
-			}
-		});
+		return NO_CARDS();
 	}
 
 	// Get all boards
 	const allBoards = db.select().from(boards).where(inArray(boards.id, accessibleBoardIds)).all();
 	const boardMap = new Map(allBoards.map(b => [b.id, b.name]));
+	const kindOf = new Map(allBoards.map(b => [b.id, b.kind]));
 
 	// Get all columns
 	const allCols = db.select().from(columns)
@@ -100,14 +109,10 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	const colIds = allCols.map(c => c.id);
 	const colMap = new Map(allCols.map(c => [c.id, c.title]));
 	const colBoardMap = new Map(allCols.map(c => [c.id, c.boardId]));
+	const upstream = new Set(allCols.filter(c => isUpstreamColumn(c, kindOf.get(c.boardId) ?? null)).map(c => c.id));
 
 	if (colIds.length === 0) {
-		return new Response('Board,Title,Description,Priority,Column,Assignees,Due Date,Created,Completed,Labels,Category,Subtasks\n', {
-			headers: {
-				'Content-Type': 'text/csv; charset=utf-8',
-				'Content-Disposition': `attachment; filename="dumpfire-export.csv"`
-			}
-		});
+		return NO_CARDS();
 	}
 
 	// Get all active cards, board by board in the order the boards were made,
@@ -151,7 +156,7 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 		: [];
 
 	// Build CSV
-	const header = 'Board,Title,Description,Priority,Column,Assignees,Due Date,Created,Completed,Labels,Category,Subtasks';
+	const header = HEADER;
 	const rows = allCards.map(card => {
 		const boardId = colBoardMap.get(card.columnId) || 0;
 		const boardName = boardMap.get(boardId) || '';
@@ -183,7 +188,9 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 			csvEscape(card.completedAt),
 			csvEscape(cardLabelNames),
 			csvEscape(categoryName),
-			csvEscape(cardSubtasks)
+			csvEscape(cardSubtasks),
+			csvEscape(stageOf(card, upstream.has(card.columnId))),
+			csvEscape(card.committedAt)
 		].join(',');
 	});
 

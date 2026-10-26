@@ -3,7 +3,7 @@ import { db } from '$lib/server/db';
 import { boards, columns, cards, cardAssignees } from '$lib/server/db/schema';
 import { eq, inArray, isNull, and } from 'drizzle-orm';
 import { getAccessibleBoardIds } from '$lib/server/board-access';
-import { completeColumnIds } from '$lib/column-role';
+import { completeColumnIds, isUpstreamColumn } from '$lib/column-role';
 import type { RequestHandler } from './$types';
 
 export const GET: RequestHandler = async ({ locals }) => {
@@ -49,14 +49,17 @@ export const GET: RequestHandler = async ({ locals }) => {
 	// Get all unique board IDs
 	const boardIds = [...new Set(cols.map(c => c.boardId))];
 
-	// Fetch boards
+	// Fetch boards, with their kinds: an option, in a board's Options column or
+	// on an ideas board, is not a task anyone has on (milestone 22, card 2462).
 	const boardRows = db.select({
 		id: boards.id,
 		name: boards.name,
-		emoji: boards.emoji
+		emoji: boards.emoji,
+		kind: boards.kind
 	}).from(boards).where(inArray(boards.id, boardIds)).all();
 
 	const boardLookup = new Map(boardRows.map(b => [b.id, b]));
+	const upstream = new Set(cols.filter(c => isUpstreamColumn(c, boardLookup.get(c.boardId)?.kind ?? null)).map(c => c.id));
 
 	// Group active cards by board
 	const grouped = new Map<number, {
@@ -79,7 +82,7 @@ export const GET: RequestHandler = async ({ locals }) => {
 
 	for (const card of activeCards) {
 		const col = colLookup.get(card.columnId);
-		if (!col) continue;
+		if (!col || upstream.has(card.columnId)) continue;
 		if (accessible !== null && !accessible.includes(col.boardId)) continue;
 		const board = boardLookup.get(col.boardId);
 		if (!board) continue;

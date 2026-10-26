@@ -136,8 +136,11 @@ describe.each(ROUTES)('a move by $name', ({ move, prefix }) => {
 		const { committedAt, committedBy } = commitmentOf(option);
 		expect(committedBy).toBe(mover.id);
 		expect(committedAt! >= before).toBe(true);
-		// The column it went into named by its id too, for the cycle time (the S2 review's C3).
-		expect(entriesOf(option)).toEqual([[`${prefix}card_committed`, A.board.id, `"An option": Ideas → To Do (column ${A.cols['To Do'].id})`]]);
+		// The column it went into named by its id too, for the cycle time (the S2 review's C3), and
+		// the column it left, for its time in options (the S4a review's H3).
+		expect(entriesOf(option)).toEqual([
+			[`${prefix}card_committed`, A.board.id, `"An option": Ideas → To Do (column ${A.cols['To Do'].id}, from column ${A.cols['Ideas'].id})`]
+		]);
 		nothingToRepair();
 	});
 
@@ -175,7 +178,7 @@ describe.each(ROUTES)('a move by $name', ({ move, prefix }) => {
 		expect(row.committedBy).toBe(mover.id);
 		expect(row.committedAt).toBe(row.completedAt);
 		expect(entriesOf(option)).toEqual([
-			[`${prefix}card_committed`, A.board.id, `"Done at once": Ideas → Complete (column ${A.cols['Complete'].id})`],
+			[`${prefix}card_committed`, A.board.id, `"Done at once": Ideas → Complete (column ${A.cols['Complete'].id}, from column ${A.cols['Ideas'].id})`],
 			[`${prefix}card_completed`, A.board.id, '"Done at once": Ideas → Complete']
 		]);
 		expect(db.select().from(userXp).where(eq(userXp.name, 'mover')).get()?.xp).toBe(150);
@@ -257,7 +260,7 @@ describe.each(ROUTES.filter((route) => route.acrossBoards))('a move to another b
 		expect(entriesOf(idea)).toEqual([
 			[`${prefix}card_moved_away`, I.board.id, '"An idea" moved to another board (Shaping → To Do)'],
 			[`${prefix}card_moved_in`, B.board.id, '"An idea" moved from another board (Shaping → To Do)'],
-			[`${prefix}card_committed`, B.board.id, `"An idea": Shaping → To Do (column ${B.cols['To Do'].id})`]
+			[`${prefix}card_committed`, B.board.id, `"An idea": Shaping → To Do (column ${B.cols['To Do'].id}, from column ${I.cols['Shaping'].id})`]
 		]);
 		nothingToRepair();
 	});
