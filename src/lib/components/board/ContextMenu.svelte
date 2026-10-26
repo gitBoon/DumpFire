@@ -8,6 +8,7 @@
 <script lang="ts">
   import type { CardType, ColumnType } from '$lib/types';
   import { drawnColour } from '$lib/colours';
+  import { isOptionsColumn } from '$lib/column-role';
 
   /**
    * @prop card — The card this context menu is for
@@ -65,7 +66,7 @@
     {#each columns as col}
       {#if col.id !== columnId}
         <button class="ctx-item" onclick={() => onMove(card, col.id)}>
-          <span class="ctx-dot" style="background: {drawnColour(col.color)}"></span> {col.title}
+          <span class="ctx-dot" style="background: {drawnColour(col.color)}"></span> {col.title}{isOptionsColumn(col) ? ' (Options)' : ''}
         </button>
       {/if}
     {/each}

@@ -44,6 +44,11 @@ export const ACTIONS = {
 	cardMovedIn: 'card_moved_in',
 	cardCompleted: 'card_completed',
 	cardReopened: 'card_reopened',
+	// A card moved across the commitment point (milestone 22, card 2460): out
+	// of an upstream column into a committed one, which sends `card.committed`,
+	// and back, which sends `card.moved`. Each in place of `card_moved`.
+	cardCommitted: 'card_committed',
+	cardReturnedToOptions: 'card_returned_to_options',
 	cardDeleted: 'card_deleted',
 	cardArchived: 'card_archived',
 	cardRestored: 'card_restored',
@@ -110,6 +115,14 @@ export interface ActivityEntry {
 	 * existing API callers that pass `api:card_moved` need no change.
 	 */
 	source?: ActivitySource;
+	/**
+	 * `false` writes the entry and sends no webhook for it, where another entry
+	 * of the same act sends the act's one webhook: a card moved from Complete
+	 * back to Options writes `card_reopened` and `card_returned_to_options`, and
+	 * only the second sends its `card.moved` (milestone 22, ruling q). Left out,
+	 * the action's event is sent, as always.
+	 */
+	webhook?: false;
 }
 
 /** Strip the historic `api:` prefix to get the canonical action name. */
@@ -182,6 +195,12 @@ export function readSource(row: { action: string; source?: string | null }): Act
  * `card_updated`: goal membership sends no `card.updated` on any route. No
  * other goal entry is here (card 2289, decision 9; card 2343's ruling 1): a
  * goal changed, closed, reopened, deleted or made names no card.
+ *
+ * A card committed by a move, out of an upstream column, sends
+ * `card.committed` (milestone 22), as a completion sends `card.completed`:
+ * a receiver asking only for `card.moved` does not hear it. One moved back
+ * into an upstream column sends `card.moved`, a column change like a
+ * reopening; from Complete, that is the move's only webhook (ruling q).
  */
 const ACTION_TO_EVENT: Record<string, WebhookEvent> = {
 	card_created: 'card.created',
@@ -189,6 +208,8 @@ const ACTION_TO_EVENT: Record<string, WebhookEvent> = {
 	card_reopened: 'card.moved',
 	card_moved_away: 'card.moved',
 	card_moved_in: 'card.moved',
+	card_committed: 'card.committed',
+	card_returned_to_options: 'card.moved',
 	card_completed: 'card.completed',
 	card_deleted: 'card.deleted',
 	card_updated: 'card.updated',
@@ -228,7 +249,7 @@ export function logActivity(entry: ActivityEntry): void {
 	// commit and is dropped if it rolls back: it used to be sent from inside
 	// it, so a drop of several cards that failed on the last had already
 	// announced the others.
-	const event = ACTION_TO_EVENT[canonical];
+	const event = entry.webhook === false ? undefined : ACTION_TO_EVENT[canonical];
 	if (event) {
 		const payload = {
 			cardId: entry.cardId ?? entry.webhookCardId ?? null,

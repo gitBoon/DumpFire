@@ -447,6 +447,44 @@ function boardScene(): Scene {
 	return s;
 }
 
+/**
+ * As `cardScene`, with an Options column "Ideas" at the far left of board A
+ * (milestone 22) and the card in column `at`: an option in Ideas, committed
+ * in To Do, and completed as well in Complete.
+ */
+function optionsScene(at: 'Ideas' | 'To Do' | 'Complete'): Scene {
+	const s = cardScene();
+	const ideas = db.insert(columns).values({ boardId: s.A.board.id, title: 'Ideas', position: -1, role: 'options' }).returning().get();
+	if (at === 'Ideas') db.update(cards).set({ columnId: ideas.id, committedAt: null, committedBy: null }).where(eq(cards.id, s.first.id)).run();
+	if (at === 'Complete') db.update(cards).set({ columnId: s.A.cols['Complete'].id, completedAt: '2026-10-01 09:00:00' }).where(eq(cards.id, s.first.id)).run();
+	return s;
+}
+
+/** The id of board A's Options column, made by `optionsScene`. */
+const optionsColumnId = () => db.select().from(columns).all().find((c) => c.role === 'options')!.id;
+
+/**
+ * What a move of the card across the commitment point tells, in each tree: the
+ * webhook, then, from the page alone, the assignee's mail, then the board's
+ * update, as any other move (announceCardMoves).
+ */
+function movedAcross(event: string, action: string, from: string, to: string, suffix = ''): { internal: unknown[]; v1: unknown[] } {
+	const webhook = {
+		webhook: event,
+		boardId: 1,
+		data: { cardId: 1, action, detail: `"First": ${from} → ${to}${suffix}`, source: undefined, user: 'owner' }
+	};
+	const update = {
+		event: 'update',
+		boardId: 1,
+		data: { type: 'card', action: 'moved', cardTitle: 'First', fromColumn: from, toColumn: to, userName: 'owner', userEmoji: '👤' }
+	};
+	return {
+		internal: [webhook, { email: 'helper@example.test', subject: `Card moved: First → ${to}` }, update],
+		v1: [webhook, update]
+	};
+}
+
 type ServiceTwin = {
 	/** The pair's row in section 3.1 of the plan. */
 	row: number;
@@ -619,6 +657,42 @@ const SERVICE_TWINS: ServiceTwin[] = [
 				v1: [webhook, update]
 			};
 		})()
+	},
+	// Milestone 22 (card 2460): across the commitment point, each tree writes
+	// the same entry in place of `card_moved`, with the same webhook.
+	{
+		row: 4,
+		what: 'moving a card out of the Options column, which commits it',
+		build: () => optionsScene('Ideas'),
+		internal: (s) => api('PUT', '/api/cards/reorder', { user: s.owner, body: { updates: [{ id: s.first.id, columnId: s.A.cols['To Do'].id, position: 0 }] } }),
+		v1: (s) => api('PUT', `/api/v1/cards/${s.first.id}/move`, { user: s.owner, body: { columnId: s.A.cols['To Do'].id, position: 0 } }),
+		status: { internal: 200, v1: 200 },
+		sources: { internal: ['card_committed ui', 'card.committed ui'], v1: ['api:card_committed api', 'card.committed api'] },
+		// The commitment's detail names the column it went into by its id too: To Do is column 1 (the S2 review's C3).
+		told: movedAcross('card.committed', 'card_committed', 'Ideas', 'To Do', ' (column 1)')
+	},
+	{
+		row: 4,
+		what: 'moving a card back into the Options column, which clears its commitment',
+		build: () => optionsScene('To Do'),
+		internal: (s) => api('PUT', '/api/cards/reorder', { user: s.owner, body: { updates: [{ id: s.first.id, columnId: optionsColumnId(), position: 0 }] } }),
+		v1: (s) => api('PUT', `/api/v1/cards/${s.first.id}/move`, { user: s.owner, body: { columnId: optionsColumnId(), position: 0 } }),
+		status: { internal: 200, v1: 200 },
+		sources: { internal: ['card_returned_to_options ui', 'card.moved ui'], v1: ['api:card_returned_to_options api', 'card.moved api'] },
+		told: movedAcross('card.moved', 'card_returned_to_options', 'To Do', 'Ideas')
+	},
+	{
+		row: 4,
+		what: 'moving a card from Complete back into the Options column: two entries, one webhook (ruling q)',
+		build: () => optionsScene('Complete'),
+		internal: (s) => api('PUT', '/api/cards/reorder', { user: s.owner, body: { updates: [{ id: s.first.id, columnId: optionsColumnId(), position: 0 }] } }),
+		v1: (s) => api('PUT', `/api/v1/cards/${s.first.id}/move`, { user: s.owner, body: { columnId: optionsColumnId(), position: 0 } }),
+		status: { internal: 200, v1: 200 },
+		sources: {
+			internal: ['card_reopened ui', 'card_returned_to_options ui', 'card.moved ui'],
+			v1: ['api:card_reopened api', 'api:card_returned_to_options api', 'card.moved api']
+		},
+		told: movedAcross('card.moved', 'card_returned_to_options', 'Complete', 'Ideas')
 	},
 	// Card 2381: out of its board's milestone, recorded on the board it left.
 	{

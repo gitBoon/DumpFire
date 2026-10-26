@@ -25,7 +25,8 @@ import { ACTIONS, storedActions } from '$lib/server/logActivity';
  * The activity log has no column of its own for a column, so the conversion
  * names it here, at the end of the detail, after the quoted title, where no
  * title can put it; `optionsSince` looks for it there (milestone 22, the S1b
- * review's B2).
+ * review's B2). A `card_committed` entry ends with it too, naming the column
+ * the card was committed into, for the cycle time (the S2 review's C3).
  */
 export function conversionSuffix(columnId: number): string {
 	return ` (column ${columnId})`;

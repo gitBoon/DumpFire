@@ -47,7 +47,9 @@ import { createHmac } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import { isHttpError } from '@sveltejs/kit';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { sqlite } from '$lib/server/db';
+import { eq } from 'drizzle-orm';
+import { db, sqlite } from '$lib/server/db';
+import { activityLog, boards, columns } from '$lib/server/db/schema';
 import type { SessionUser } from '$lib/server/auth';
 import { ACTIONS, logActivity } from '$lib/server/logActivity';
 import { deliver, deliveryResultFor, dispatchWebhook, forgetDeliveries, WARNINGS_REMEMBERED, WEBHOOK_EVENTS, webhookShareNotes } from '$lib/server/webhooks';
@@ -1893,6 +1895,10 @@ describe('which action sends which event, and what each move sends (card 2278)',
 			card_completed: 'card.completed',
 			// A move out of Complete is a move (card 2278).
 			card_reopened: 'card.moved',
+			// Across the commitment point (milestone 22, card 2460): out of an upstream column is its own
+			// event, as a completion is; back into one is a move.
+			card_committed: 'card.committed',
+			card_returned_to_options: 'card.moved',
 			card_deleted: 'card.deleted',
 			card_archived: null,
 			card_restored: null,
@@ -2043,6 +2049,110 @@ describe('which action sends which event, and what each move sends (card 2278)',
 			['b', 'card.moved', 'card_moved_in', '"Moving" moved from another board (Complete → To Do)'],
 			['b', 'card.moved', 'card_reopened', '"Moving": Complete → To Do']
 		]);
+	});
+
+	// ─── Across the commitment point (milestone 22, card 2460) ───────────────
+
+	/** As `twoBoards`, with an Options column "Ideas" at the far left of A; B an ideas board when `ideasBoard`. */
+	const withOptions = (opts: { ideasBoard?: boolean } = {}) => {
+		const w = twoBoards();
+		const ideas = db.insert(columns).values({ boardId: w.A.board.id, title: 'Ideas', position: -1, role: 'options' }).returning().get();
+		if (opts.ideasBoard) db.update(boards).set({ kind: 'ideas' }).where(eq(boards.id, w.B.board.id)).run();
+		return { ...w, ideas };
+	};
+
+	it.each(routes)('%s: out of the Options column sends card.committed, as card_committed, and no card.moved', async (_route, move) => {
+		const w = withOptions();
+		const card = makeCard(w.ideas, { title: 'Chosen' });
+
+		expect(await deliveries(w, () => move(w.owner, card.id, w.A.cols['To Do'].id))).toEqual([
+			['a', 'card.committed', 'card_committed', `"Chosen": Ideas → To Do (column ${w.A.cols['To Do'].id})`]
+		]);
+	});
+
+	it.each(routes)('%s: back into the Options column sends card.moved, as card_returned_to_options', async (_route, move) => {
+		const w = withOptions();
+		const card = makeCard(w.A.cols['To Do'], { title: 'Put back' });
+
+		expect(await deliveries(w, () => move(w.owner, card.id, w.ideas.id))).toEqual([
+			['a', 'card.moved', 'card_returned_to_options', '"Put back": To Do → Ideas']
+		]);
+	});
+
+	it.each(routes)('%s: from Complete back into the Options column sends one card.moved, from the return, and none from the reopening (ruling q)', async (_route, move) => {
+		const w = withOptions();
+		const card = makeCard(w.A.cols['Complete'], { title: 'Not needed', completedAt: '2026-10-01 09:00:00' });
+
+		expect(await deliveries(w, () => move(w.owner, card.id, w.ideas.id))).toEqual([
+			['a', 'card.moved', 'card_returned_to_options', '"Not needed": Complete → Ideas']
+		]);
+		// The reopening is still recorded: it sends nothing.
+		const written = db.select().from(activityLog).where(eq(activityLog.cardId, card.id)).orderBy(activityLog.id).all();
+		expect(written.map((e) => e.action.replace('api:', ''))).toEqual(['card_reopened', 'card_returned_to_options']);
+	});
+
+	it.each(routes)('%s: from the Options column straight into Complete sends card.committed and then card.completed', async (_route, move) => {
+		const w = withOptions();
+		const card = makeCard(w.ideas, { title: 'Done at once' });
+
+		expect(await deliveries(w, () => move(w.owner, card.id, w.A.cols['Complete'].id))).toEqual([
+			['a', 'card.committed', 'card_committed', `"Done at once": Ideas → Complete (column ${w.A.cols['Complete'].id})`],
+			['a', 'card.completed', 'card_completed', '"Done at once": Ideas → Complete'],
+			['a-completions', 'card.completed', 'card_completed', '"Done at once": Ideas → Complete']
+		]);
+	});
+
+	it.each(acrossBoards)("%s: from the Options column into another board's To Do, the joined board hears the arrival and the commitment", async (_route, move) => {
+		const w = withOptions();
+		const card = makeCard(w.ideas, { title: 'Chosen' });
+
+		expect(await deliveries(w, () => move(w.owner, card.id, w.B.cols['To Do'].id))).toEqual([
+			['a', 'card.moved', 'card_moved_away', '"Chosen" moved to another board (Ideas → To Do)'],
+			['b', 'card.moved', 'card_moved_in', '"Chosen" moved from another board (Ideas → To Do)'],
+			['b', 'card.committed', 'card_committed', `"Chosen": Ideas → To Do (column ${w.B.cols['To Do'].id})`]
+		]);
+	});
+
+	it.each(acrossBoards)("%s: from Complete onto an ideas board, the joined board hears two card.moved, the arrival and the return, and none for the reopening (C2)", async (_route, move) => {
+		const w = withOptions({ ideasBoard: true });
+		const card = makeCard(w.A.cols['Complete'], { title: 'Not needed', completedAt: '2026-10-01 09:00:00' });
+
+		expect(await deliveries(w, () => move(w.owner, card.id, w.B.cols['To Do'].id))).toEqual([
+			['a', 'card.moved', 'card_moved_away', '"Not needed" moved to another board (Complete → To Do)'],
+			['b', 'card.moved', 'card_moved_in', '"Not needed" moved from another board (Complete → To Do)'],
+			['b', 'card.moved', 'card_returned_to_options', '"Not needed": Complete → To Do']
+		]);
+		const written = db.select().from(activityLog).where(eq(activityLog.cardId, card.id)).orderBy(activityLog.id).all();
+		expect(written.map((e) => e.action.replace('api:', ''))).toEqual(['card_moved_away', 'card_moved_in', 'card_reopened', 'card_returned_to_options']);
+	});
+
+	it.each(acrossBoards)('%s: from To Do onto an ideas board, the joined board hears the arrival and the return', async (_route, move) => {
+		const w = withOptions({ ideasBoard: true });
+		const card = makeCard(w.A.cols['To Do'], { title: 'Not yet' });
+
+		expect(await deliveries(w, () => move(w.owner, card.id, w.B.cols['To Do'].id))).toEqual([
+			['a', 'card.moved', 'card_moved_away', '"Not yet" moved to another board (To Do → To Do)'],
+			['b', 'card.moved', 'card_moved_in', '"Not yet" moved from another board (To Do → To Do)'],
+			['b', 'card.moved', 'card_returned_to_options', '"Not yet": To Do → To Do']
+		]);
+	});
+
+	it('a webhook asking for card.committed alone hears a commitment and nothing else of the move', async () => {
+		const w = withOptions();
+		makeWebhook(w.A.board, { url: 'https://hooks.example.test/a-commitments', events: ['card.committed'] });
+		const chosen = makeCard(w.ideas, { title: 'Chosen' });
+		const back = makeCard(w.A.cols['To Do'], { title: 'Put back' });
+
+		const v1Move = routes[2][1];
+		expect((await v1Move(w.owner, chosen.id, w.A.cols['To Do'].id)).status).toBe(200);
+		expect((await v1Move(w.owner, back.id, w.ideas.id)).status).toBe(200);
+		await sent.settle();
+
+		expect(sent.webhooks.filter((d) => d.url.endsWith('/a-commitments')).map((d) => [d.event, d.body.data.action, d.body.data.source])).toEqual([
+			['card.committed', 'card_committed', 'api']
+		]);
+		// The webhook asking for every event heard both.
+		expect(sent.webhooks.filter((d) => d.url.endsWith('/a')).map((d) => d.event)).toEqual(['card.committed', 'card.moved']);
 	});
 });
 

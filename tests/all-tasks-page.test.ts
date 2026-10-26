@@ -310,6 +310,33 @@ describe('All Tasks, its components joined up through the page (card 2281, slice
 		expect(asked('PUT /api/cards/8').map((request) => request.body)).toEqual([{ columnId: 22, boardId: 4 }]);
 		expect(target.querySelector('.move-modal')).toBeNull();
 		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
+		// An ordinary move says nothing of the commitment point.
+		expect(toastsSaid().filter((said) => said.startsWith('Committed') || said.startsWith('Returned'))).toEqual([]);
+	});
+
+	it('marks the Options column in the Move window, and says a move across the commitment point as the answer names it (milestone 22, the S2 review’s C7 and C10)', async () => {
+		const columns = [
+			{ id: 11, boardId: 3, title: 'To Do', position: 0, role: null },
+			{ id: 20, boardId: 4, title: 'Ideas', position: -1, role: 'options' },
+			{ id: 21, boardId: 4, title: 'To Do', position: 0, role: null },
+			{ id: 22, boardId: 4, title: 'Complete', position: 1, role: null }
+		];
+		answer = (what) => (what === 'PUT /api/cards/8' ? json({ id: 8, leftMilestone: null, returnedToOptions: [8] }) : undefined);
+		const target = draw({ columns });
+
+		cardNamed(target, 'Ship').querySelector<HTMLButtonElement>('.move-btn')!.click();
+		flushSync();
+		const modal = target.querySelector('.move-modal')!;
+		const column = modal.querySelector<HTMLSelectElement>('#move-col')!;
+		expect([...column.options].map((option) => option.textContent)).toEqual(['Select column...', 'Ideas (Options)', 'To Do', 'Complete']);
+		column.value = '20';
+		column.dispatchEvent(new Event('change', { bubbles: true }));
+		flushSync();
+		buttonNamed(modal, 'Move Card').click();
+		await settle();
+
+		expect(asked('PUT /api/cards/8').map((request) => request.body)).toEqual([{ columnId: 20, boardId: 4 }]);
+		expect(toastsSaid()).toContain('Returned "Ship" to Options');
 	});
 
 	it('opens and closes the Activity Log from the More menu, reads it as it first opens, and keeps it while it is shut', async () => {

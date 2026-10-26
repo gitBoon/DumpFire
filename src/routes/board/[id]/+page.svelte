@@ -841,7 +841,11 @@
 			toasts.add(written.failure, 'error', started);
 			return;
 		}
-		toasts.add(`Moved to ${col.title}`);
+		// A move across the commitment point says so, as the drag does
+		// (milestone 22, the S2 review's C7); any other, where it went.
+		const crossed = dndHandlers.commitmentToasts(written.answer, [card]);
+		for (const message of crossed) toasts.add(message);
+		if (crossed.length === 0) toasts.add(`Moved to ${col.title}`);
 		// WIP limit violation alert
 		if (col.wipLimit > 0 && count + 1 > col.wipLimit) {
 			toasts.add(`⚠ ${col.title} exceeds WIP limit (${count + 1}/${col.wipLimit})`, 'warning');

@@ -9,12 +9,15 @@
  * - Activity logging for card movements
  * - Position persistence via the API, for the columns a drop touched alone
  *   (card 2213)
+ * - A toast for a card the drop took across the commitment point, out of the
+ *   Options column or back into it, as the server's answer says (milestone 22)
  *
  * These functions accept board state as parameters and return
  * action descriptors that the board page uses to update its $state.
  */
 
 import * as api from '$lib/api';
+import { toasts } from '$lib/stores/toast';
 import type { CardType, ColumnType, OnHoldState, BlockedState } from '$lib/types';
 import {
 	isCompleteColumn,
@@ -53,6 +56,30 @@ export function touchedUpdates(
 		}
 	}
 	return updates;
+}
+
+/**
+ * What a drop's answer says of the commitment point (milestone 22, card
+ * 2460), as the toasts to show: `Committed "<title>"` for a card taken out of
+ * the Options column into a committed one, `Returned "<title>" to Options` for
+ * one taken back, and the count for several. Nothing for any other drop, or
+ * an answer that names neither list. The server decides, from the columns as
+ * they are; `moved` gives the titles.
+ */
+export function commitmentToasts(answer: unknown, moved: readonly CardType[]): string[] {
+	const ids = (key: string): number[] => {
+		const listed = answer !== null && typeof answer === 'object' ? (answer as Record<string, unknown>)[key] : undefined;
+		return Array.isArray(listed) ? listed.filter((id): id is number => typeof id === 'number') : [];
+	};
+	const say = (cardIds: number[], one: (title: string) => string, many: (n: number) => string): string[] => {
+		if (cardIds.length === 0) return [];
+		const title = cardIds.length === 1 ? moved.find((card) => card.id === cardIds[0])?.title : undefined;
+		return [title !== undefined ? one(title) : many(cardIds.length)];
+	};
+	return [
+		...say(ids('committed'), (title) => `Committed "${title}"`, (n) => `Committed ${n === 1 ? '1 card' : `${n} cards`}`),
+		...say(ids('returnedToOptions'), (title) => `Returned "${title}" to Options`, (n) => `Returned ${n === 1 ? '1 card' : `${n} cards`} to Options`)
+	];
 }
 
 /**
@@ -165,6 +192,16 @@ export async function handleCardDndFinalize(
 	}
 	if (!res.ok) return { action: 'refused', message: await api.failureMessage(res, 'The move was not saved.') };
 
+	// Taken. A card that crossed the commitment point is said to have, from
+	// the answer; an answer that cannot be read says nothing more.
+	let answer: unknown = null;
+	try {
+		answer = await res.json();
+	} catch {
+		// Nothing more to say.
+	}
+	for (const message of commitmentToasts(answer, movedCards)) toasts.add(message);
+
 	const movedEntries = movedCards.map(card => {
 		const fromCol = columns.find(c => c.id === card.columnId);
 		return {
@@ -203,6 +240,10 @@ export async function confirmOnHold(
 			return { failure: 'No answer from the server. The card may not have been put on hold.', noteFailure: null };
 		}
 		if (!moved.ok) return { failure: await api.failureMessage(moved, 'The card was not put on hold.'), noteFailure: null };
+		// An option put straight on hold is committed: said as the drop says it
+		// (milestone 22, the S2 review's C7).
+		const card = { id: onHoldState.cardId, title: onHoldState.cardTitle } as CardType;
+		for (const message of commitmentToasts(await api.answerBody(moved), [card])) toasts.add(message);
 	}
 	let noted: Response;
 	try {

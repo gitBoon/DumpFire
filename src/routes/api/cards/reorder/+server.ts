@@ -33,6 +33,11 @@ import type { RequestHandler } from './$types';
  * The work is `moveCards` in `$lib/server/cards`, which shares its moves with
  * the v1 move (card 2012). The body is read there, after the session is asked
  * for again (card 2012, S2).
+ *
+ * Answers `{ success: true, committed, returnedToOptions }`: the ids of the
+ * cards the drop took across the commitment point, out of the Options column
+ * and back into it (milestone 22), for the page to say so. Each is empty for
+ * any other drop.
  */
 export const PUT: RequestHandler = async ({ request, url, locals }) => {
 	requireUser(locals.user);
@@ -44,7 +49,11 @@ export const PUT: RequestHandler = async ({ request, url, locals }) => {
 	// a refusal or a failed write leaves the board as it was. It asks first
 	// whether the session is still open, and who its account is now (card
 	// 2253).
-	writeAs(locals, (caller) => moveCards(caller, {}, body, { source: 'ui', baseUrl }));
+	const moves = writeAs(locals, (caller) => moveCards(caller, {}, body, { source: 'ui', baseUrl }));
 
-	return json({ success: true });
+	return json({
+		success: true,
+		committed: moves.filter((move) => move.committed).map((move) => move.card.id),
+		returnedToOptions: moves.filter((move) => move.returnedToOptions).map((move) => move.card.id)
+	});
 };

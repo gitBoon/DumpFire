@@ -33,7 +33,9 @@ import type { RequestHandler } from './$types';
  *
  * The answer is the card with `leftMilestone` beside it: the milestone of the
  * board it left that a move to another board took it out of (card 2155), for
- * All Tasks to tell the mover, and null otherwise (the review's O3).
+ * All Tasks to tell the mover, and null otherwise (the review's O3). A move
+ * across the commitment point adds `committed: [id]` or `returnedToOptions:
+ * [id]` (milestone 22, the S2 review's C7).
  *
  * The work is `updateCard` in `$lib/server/cards`, which the v1 update shares
  * (card 2012). This route takes a move (`allowMove`) and answers a body that
@@ -54,8 +56,16 @@ export const PUT: RequestHandler = async ({ params, request, url, locals }) => {
 	// request could have changed it in between. So is the caller: the session
 	// is asked again, and who its account is now (card 2253).
 	const updated = writeAs(locals, (caller) => {
-		const { card, leftMilestone } = updateCard(caller, { cardId: id }, body, { source: 'ui', baseUrl, allowMove: true });
-		return { ...card, leftMilestone };
+		const { card, leftMilestone, committed, returnedToOptions } = updateCard(caller, { cardId: id }, body, { source: 'ui', baseUrl, allowMove: true });
+		// A move across the commitment point is named as the drag's answer
+		// names it, `committed: [id]` or `returnedToOptions: [id]`, for All
+		// Tasks to say so (milestone 22); any other answer is as it was.
+		return {
+			...card,
+			leftMilestone,
+			...(committed ? { committed: [card.id] } : {}),
+			...(returnedToOptions ? { returnedToOptions: [card.id] } : {})
+		};
 	});
 
 	return json(updated);
