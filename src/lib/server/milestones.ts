@@ -206,7 +206,7 @@ export function logCardInOrOut(
 }
 
 /** Why a card left a goal by a change to something else (card 2381), as its entry says in brackets. */
-export type LeftGoalBecause = 'moved to another board' | 'milestone deleted' | 'card deleted' | 'milestone deleted with its board';
+export type LeftGoalBecause = 'moved to another board' | 'sent to another board' | 'milestone deleted' | 'card deleted' | 'milestone deleted with its board';
 
 /**
  * The entry for a card that left a goal because of a change to something

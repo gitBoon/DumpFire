@@ -59,7 +59,7 @@ import {
 	type Card,
 	type Column
 } from './db/schema';
-import { columnRole, isUpstreamColumn } from '$lib/column-role';
+import { columnRole, columnRoleOf, isOptionsColumn, isUpstreamColumn } from '$lib/column-role';
 import { stamp } from '$lib/timestamps';
 import { boardKinds, commitmentSuffix } from './upstream';
 import { getCompletionBlocker } from './card-completion';
@@ -169,6 +169,25 @@ export interface MoveRequest {
 	actor: SessionUser;
 	/** Where the move came from; recorded on the activity entry. */
 	source: ActivitySource;
+	/**
+	 * The move is a Send (milestone 22, card 2463, `sendCard`): to another
+	 * board's Options column or, committing it, its To Do column, which its
+	 * `card_sent` names. Every move of an option to another board, a Send or
+	 * not, records `card_sent` in place of `card_moved_away` on the board it
+	 * leaves, and stores every entry of the move at the one moment, so that the
+	 * `card_sent` and the `card_moved_in` pair by their time (ruling b; the S5a
+	 * review's L5).
+	 */
+	sent?: 'options' | 'todo';
+}
+
+/**
+ * The refusal of an archived card crossing the commitment point (ruling n),
+ * by a move or a Send: an archived card is not work anyone is choosing or
+ * doing.
+ */
+export function archivedAcrossCommitment(title: string): string {
+	return `Card "${title}" is archived: restore it before moving it out of or back into Options`;
 }
 
 /**
@@ -281,15 +300,16 @@ function moveCard(request: MoveRequest): CardMove {
 	// commitment point would stamp or clear a commitment on it (ruling n). A
 	// move within one side is left as it was.
 	if (before.archivedAt && (committing || returning)) {
-		throw new CardMoveError(409, `Card "${before.title}" is archived: restore it before moving it out of or back into Options`);
+		throw new CardMoveError(409, archivedAcrossCommitment(before.title));
 	}
 
 	// A card with sub-boards is committed work, never an option (ruling o): a
 	// committed card that has one does not go back into upstream, as the
 	// conversion refuses a column holding one. A card already upstream with a
-	// sub-board, made before that was refused, may still move within upstream
-	// (the S2 review's C1), and out of it.
-	if (returning && subBoards().length > 0) {
+	// sub-board, made before that was refused, may still move within its own
+	// board's upstream (the S2 review's C1), and out of it; but not into
+	// another board's upstream, by a Send or a move (the S5a review's L6).
+	if ((returning || (crossBoard && toUpstream)) && subBoards().length > 0) {
 		const into = kinds.get(toColumn.boardId) === 'ideas' ? 'onto an ideas board' : 'into the Options column';
 		throw new CardMoveError(
 			409,
@@ -399,7 +419,11 @@ function moveCard(request: MoveRequest): CardMove {
 
 	awardXp(actor, xpAwarded);
 
-	const who = { userId: actor.id, userName: actor.username, userEmoji: actor.emoji || '👤', source };
+	// An option leaving its board for another is sent on, by a Send or by any
+	// move (card 2463, ruling b; the S5a review's L5), and its entries share
+	// the move's one moment, so that the `card_sent` pairs with its arrival.
+	const sending = crossBoard && fromUpstream;
+	const who = { userId: actor.id, userName: actor.username, userEmoji: actor.emoji || '👤', source, ...(sending ? { createdAt: now } : {}) };
 	const route = `${fromColumn.title} → ${toColumn.title}`;
 
 	if (crossBoard) {
@@ -418,19 +442,30 @@ function moveCard(request: MoveRequest): CardMove {
 				? ` and out of milestone "${leftMilestone.name}"`
 				: ' and out of a milestone of another board'
 			: '';
+		// An option sent on is recorded as sent, in place of the departure
+		// (ruling b, decision M22-19, the S5a review's L5): `card_sent`, saying
+		// whether it went to the other board's Options, its To Do, or another
+		// column, which it names, and naming that board no more than a move
+		// does. Every other move to another board is a departure, as before.
+		const sentTo =
+			request.sent === 'options' || (!request.sent && isOptionsColumn(toColumn))
+				? 'Options'
+				: request.sent === 'todo' || columnRoleOf(toColumn) === 'todo'
+					? 'To Do'
+					: `"${toColumn.title}" column`;
 		logActivity({
 			...who,
 			boardId: fromColumn.boardId,
 			cardId,
-			action: ACTIONS.cardMovedAway,
-			detail: `"${before.title}" moved to another board (${route})${leftGoal}`
+			action: sending ? ACTIONS.cardSent : ACTIONS.cardMovedAway,
+			detail: sending ? `"${before.title}" sent to another board's ${sentTo} (${route})${leftGoal}` : `"${before.title}" moved to another board (${route})${leftGoal}`
 		});
 		// And the goal's own entry for it, on the board it left, the one it
 		// was on while it was in the goal, where the goal's webhooks are (card
 		// 2381): `milestone.card_removed`, which a receiver mirroring the goal
 		// listens for. It sent only `card.moved`, with the words above.
 		if (leftGoalRow) {
-			logCardLeftGoal(actor, source, { boardId: fromColumn.boardId, cardId, title: before.title }, leftGoalRow, 'moved to another board');
+			logCardLeftGoal(actor, source, { boardId: fromColumn.boardId, cardId, title: before.title }, leftGoalRow, sending ? 'sent to another board' : 'moved to another board');
 		}
 		logActivity({
 			...who,

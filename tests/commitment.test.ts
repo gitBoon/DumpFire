@@ -257,8 +257,9 @@ describe.each(ROUTES.filter((route) => route.acrossBoards))('a move to another b
 		expect((await move(idea, B.cols['To Do'])).status).toBe(200);
 
 		expect(commitmentOf(idea).committedBy).toBe(mover.id);
+		// An option moved to another board is sent on, as by a Send (card 2463, the S5a review's L5).
 		expect(entriesOf(idea)).toEqual([
-			[`${prefix}card_moved_away`, I.board.id, '"An idea" moved to another board (Shaping → To Do)'],
+			[`${prefix}card_sent`, I.board.id, '"An idea" sent to another board\'s To Do (Shaping → To Do)'],
 			[`${prefix}card_moved_in`, B.board.id, '"An idea" moved from another board (Shaping → To Do)'],
 			[`${prefix}card_committed`, B.board.id, `"An idea": Shaping → To Do (column ${B.cols['To Do'].id}, from column ${I.cols['Shaping'].id})`]
 		]);
@@ -271,7 +272,7 @@ describe.each(ROUTES.filter((route) => route.acrossBoards))('a move to another b
 		expect((await move(idea, B.cols['Ideas'])).status).toBe(200);
 
 		expect(commitmentOf(idea)).toEqual({ committedAt: null, committedBy: null });
-		expect(entriesOf(idea).map(([action]) => action)).toEqual([`${prefix}card_moved_away`, `${prefix}card_moved_in`]);
+		expect(entriesOf(idea).map(([action]) => action)).toEqual([`${prefix}card_sent`, `${prefix}card_moved_in`]);
 		nothingToRepair();
 	});
 
@@ -316,14 +317,19 @@ describe.each(ROUTES.filter((route) => route.acrossBoards))('a move to another b
 		expectUnchanged(before);
 	});
 
-	it('moves an option with a sub-board, made before that was refused, within upstream: off an ideas board into another board’s Options column (the S2 review’s C1)', async () => {
+	it('refuses an option with a sub-board, made before that was refused, going into another board’s upstream: off an ideas board into another board’s Options column (the S5a review’s L6, which narrows the S2 review’s C1)', async () => {
 		const idea = cardIn(I.cols['Shaping'], 'An idea with a sub-board');
 		makeSubBoard(idea, { owner });
 
-		expect((await move(idea, B.cols['Ideas'])).status).toBe(200);
+		const res = await move(idea, B.cols['Ideas']);
 
-		expect(commitmentOf(idea)).toEqual({ committedAt: null, committedBy: null });
-		expect(entriesOf(idea).map(([action]) => action)).toEqual([`${prefix}card_moved_away`, `${prefix}card_moved_in`]);
+		expect(res.status).toBe(409);
+		expect(res.body.message).toBe(
+			'Card "An idea with a sub-board" has a sub-board, so it cannot go into the Options column: a card with sub-boards is committed work. Keep it in a committed column, or archive it if it is no longer wanted.'
+		);
+		expect(db.select().from(cards).where(eq(cards.id, idea.id)).get()!.columnId).toBe(I.cols['Shaping'].id);
+		// Out of upstream, into another board's committed work, it still goes.
+		expect((await move(idea, B.cols['To Do'])).status).toBe(200);
 		nothingToRepair();
 	});
 

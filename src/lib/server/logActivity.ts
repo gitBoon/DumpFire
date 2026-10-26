@@ -49,6 +49,11 @@ export const ACTIONS = {
 	// and back, which sends `card.moved`. Each in place of `card_moved`.
 	cardCommitted: 'card_committed',
 	cardReturnedToOptions: 'card_returned_to_options',
+	// A card sent from upstream to another delivery board's Options or To Do
+	// column (milestone 22, card 2463, ruling b): written on the board it left
+	// in place of `card_moved_away`, and sends `card.moved` as that did. The
+	// board it joins keeps its `card_moved_in`, at the same moment.
+	cardSent: 'card_sent',
 	cardDeleted: 'card_deleted',
 	cardArchived: 'card_archived',
 	// An archive or a delete from an upstream column, an option dropped, which
@@ -64,6 +69,9 @@ export const ACTIONS = {
 	// A column made the board's Options column, cards and all (milestone 22,
 	// ruling i): one entry for the conversion, none for each card. No webhook.
 	columnConvertedToOptions: 'column_converted_to_options',
+	// A board made an ideas board, cards and all (milestone 22, ruling i): one
+	// entry for the conversion, none for each card. No webhook.
+	boardConvertedToIdeas: 'board_converted_to_ideas',
 	subtaskCreated: 'subtask_created',
 	subtaskUpdated: 'subtask_updated',
 	subtaskCompleted: 'subtask_completed',
@@ -129,6 +137,14 @@ export interface ActivityEntry {
 	 * the action's event is sent, as always.
 	 */
 	webhook?: false;
+	/**
+	 * The moment the entry is stored at, in the stored form (`stamp()`). Left
+	 * out, the database's own clock, as always. A Send gives its `card_sent`
+	 * and the `card_moved_in` written with it one moment, so that the two are
+	 * paired by their time and never split across a second (milestone 22,
+	 * card 2463).
+	 */
+	createdAt?: string;
 }
 
 /** Strip the historic `api:` prefix to get the canonical action name. */
@@ -213,6 +229,12 @@ export function readSource(row: { action: string; source?: string | null }): Act
  * upstream act a receiver mirroring the options needs. A delete from upstream
  * sends it, then `card.deleted`. `card_abandoned` sends nothing, as
  * `card_archived` does not.
+ *
+ * A card sent to another board (card 2463) sends `card.moved` from its
+ * `card_sent`, on the board it left, as `card_moved_away` did; the board it
+ * joins hears its `card_moved_in`, and `card.committed` if it was sent to
+ * To Do. A board converted to an ideas board sends nothing, as a column
+ * converted to the Options column does not.
  */
 const ACTION_TO_EVENT: Record<string, WebhookEvent> = {
 	card_created: 'card.created',
@@ -222,6 +244,7 @@ const ACTION_TO_EVENT: Record<string, WebhookEvent> = {
 	card_moved_in: 'card.moved',
 	card_committed: 'card.committed',
 	card_returned_to_options: 'card.moved',
+	card_sent: 'card.moved',
 	card_completed: 'card.completed',
 	card_deleted: 'card.deleted',
 	card_discarded: 'card.discarded',
@@ -250,7 +273,8 @@ export function logActivity(entry: ActivityEntry): void {
 		detail: entry.detail || '',
 		userName: entry.userName || '',
 		userEmoji: entry.userEmoji || '👤',
-		source
+		source,
+		...(entry.createdAt === undefined ? {} : { createdAt: entry.createdAt })
 	}).run();
 
 	// Webhooks fire off the canonical name, so a UI move and an API move deliver

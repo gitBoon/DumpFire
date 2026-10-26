@@ -741,6 +741,30 @@ const aCardToGoUnder = (w: World): void => {
 };
 
 /**
+ * Board B made an ideas board, so that its cards are options, which a Send
+ * takes and a move would not (milestone 22, card 2463): the Send cases run it
+ * before their request.
+ */
+const bIsAnIdeasBoard = (w: World): void => void db.update(boards).set({ kind: 'ideas' }).where(eq(boards.id, w.B.board.id)).run();
+
+/**
+ * How many cards board A holds, archived ones included: what its conversion
+ * to an ideas board is told it holds (card 2463). 0 in the hollow world the
+ * request's shape is read from, which has no ids and no database.
+ */
+const cardsOnA = (w: World): number =>
+	typeof w.A.board.id !== 'number'
+		? 0
+		: (sqlite.prepare('SELECT COUNT(*) AS n FROM cards c JOIN columns col ON col.id = c.column_id WHERE col.board_id = ?').get(w.A.board.id) as { n: number }).n;
+
+/**
+ * Board A's To Do column renamed, so that the board holds no card in a column
+ * an ideas board cannot have, and its conversion goes ahead (card 2463, the
+ * S5a review's L1): the conversion cases run it before their request.
+ */
+const aHasNoTodo = (w: World): void => void sqlite.prepare("UPDATE columns SET title = 'Next up' WHERE id = ?").run(w.A.cols['To Do'].id);
+
+/**
  * Removing a link between the two boards, the same three cases for each of the
  * four routes that remove one. The end that waits is on board B and the end it
  * waits on is on board A.
@@ -887,9 +911,17 @@ const TABLE: Record<string, Case | Case[]> = {
 		// Public means anyone may read it. Nobody but its owner may change it.
 		own('owner', ['outsider', 'editor', 'viewer'], (w) => json(`/api/boards/${w.publicBoard.board.id}`, { name: 'Renamed' }), {
 			of: 'a public board'
+		}),
+		// Milestone 22, card 2463: the kind decides whether its cards are committed, so its owner is asked.
+		owns((w) => json(`/api/boards/${w.A.board.id}`, { kind: 'ideas' }), {
+			of: 'making it an ideas board',
+			answers: 409,
+			because: 'board A holds cards, and a board holding cards becomes an ideas board only by the conversion'
 		})
 	],
 	'DELETE /api/boards/[id]': owns((w) => `/api/boards/${w.A.board.id}`),
+	// Milestone 22, card 2463, ruling i: the board's owner or an administrator, not an editor.
+	'POST /api/boards/[id]/convert': owns((w) => json(`/api/boards/${w.A.board.id}/convert`, { kind: 'ideas', cards: cardsOnA(w) }), { setup: aHasNoTodo }),
 	'GET /api/boards/[id]/archive': view((w) => `/api/boards/${w.A.board.id}/archive`),
 	'POST /api/boards/[id]/archive': edit((w) => json(`/api/boards/${w.A.board.id}/archive`, { cardId: w.A.archived.id })),
 	'GET /api/boards/[id]/cards': [
@@ -1015,6 +1047,11 @@ const TABLE: Record<string, Case | Case[]> = {
 		)
 	],
 	'POST /api/cards/[id]/restore': edit((w) => `/api/cards/${w.A.archived.id}/restore`),
+	// Milestone 22, card 2463: an option on board B, an ideas board, sent to board A's To Do. Edit access to both.
+	'POST /api/cards/[id]/send': across((w) => json(`/api/cards/${w.B.card.id}/send`, { boardId: w.A.board.id, to: 'todo' }), {
+		of: 'an option sent to another board',
+		setup: bIsAnIdeasBoard
+	}),
 	'GET /api/cards/[id]/tokens': view((w) => `/api/cards/${w.A.card.id}/tokens`),
 	'GET /api/cards/archived': signedIn(() => '/api/cards/archived', { nobody: 'empty' }),
 	'GET /api/cards/export/csv': [
@@ -1488,9 +1525,17 @@ const TABLE: Record<string, Case | Case[]> = {
 		edit((w) => json(`/api/v1/boards/${w.A.board.id}`, { name: 'Renamed' })),
 		owns((w) => json(`/api/v1/boards/${w.A.board.id}`, { isPublic: true }), {
 			of: 'making the board public'
+		}),
+		// Milestone 22, card 2463: the kind decides whether its cards are committed, so its owner is asked.
+		owns((w) => json(`/api/v1/boards/${w.A.board.id}`, { kind: 'ideas' }), {
+			of: 'making it an ideas board',
+			answers: 409,
+			because: 'board A holds cards, and a board holding cards becomes an ideas board only by the conversion'
 		})
 	],
 	'DELETE /api/v1/boards/[boardId]': owns((w) => `/api/v1/boards/${w.A.board.id}`),
+	// Milestone 22, card 2463, ruling i: the board's owner or an administrator, not an editor.
+	'POST /api/v1/boards/[boardId]/convert': owns((w) => json(`/api/v1/boards/${w.A.board.id}/convert`, { kind: 'ideas', cards: cardsOnA(w) }), { setup: aHasNoTodo }),
 	'GET /api/v1/boards/[boardId]/cards': view((w) => `/api/v1/boards/${w.A.board.id}/cards`),
 	'POST /api/v1/boards/[boardId]/cards': edit((w) =>
 		json(`/api/v1/boards/${w.A.board.id}/cards`, { title: 'A new card', columnId: w.A.cols['To Do'].id })
@@ -1564,6 +1609,11 @@ const TABLE: Record<string, Case | Case[]> = {
 			of: "a move to another board's column"
 		})
 	],
+	// Milestone 22, card 2463: an option on board B, an ideas board, sent to board A's To Do. Edit access to both.
+	'POST /api/v1/cards/[cardId]/send': across((w) => json(`/api/v1/cards/${w.B.card.id}/send`, { boardId: w.A.board.id, to: 'todo' }), {
+		of: 'an option sent to another board',
+		setup: bIsAnIdeasBoard
+	}),
 	'GET /api/v1/cards/[cardId]/subtasks': view((w) => `/api/v1/cards/${w.A.card.id}/subtasks`),
 	'POST /api/v1/cards/[cardId]/subtasks': edit((w) => json(`/api/v1/cards/${w.A.card.id}/subtasks`, { title: 'A subtask' })),
 	'GET /api/v1/cards/[cardId]/tokens': view((w) => `/api/v1/cards/${w.A.card.id}/tokens`),

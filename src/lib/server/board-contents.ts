@@ -224,12 +224,17 @@ export function readBoardContents(user: SessionUser, boardId: number) {
 	// When each card in the Options column became an option, for the strip's
 	// aging (milestone 22, ruling g and the S1b review's B2): the latest of its
 	// creation, its latest return to options and the column's latest
-	// conversion (`optionsSince`). Two reads, and only for a board whose
-	// Options column holds a card; every other board reads nothing more.
-	const optionsColumn = boardColumns.find(isOptionsColumn);
-	const optionsColumnIds = new Set(optionsColumn ? [optionsColumn.id] : []);
-	const returnedAt = optionsColumn
-		? optionsSince(optionsColumn, allCards.filter((card) => card.columnId === optionsColumn.id))
+	// conversion (`optionsSince`). On an ideas board every card is an option,
+	// and the conversion is the board's to an ideas board (card 2463). Two
+	// reads, and only for a board whose Options column holds a card, or an ideas
+	// board that holds one; every other board reads nothing more.
+	const optionsColumn = board.kind === 'ideas' ? undefined : boardColumns.find(isOptionsColumn);
+	const optionsColumnIds = new Set(board.kind === 'ideas' ? boardColumns.map((c) => c.id) : optionsColumn ? [optionsColumn.id] : []);
+	const returnedAt = optionsColumnIds.size > 0
+		? optionsSince(
+			{ boardId: board.id, columnId: optionsColumn?.id },
+			allCards.filter((card) => optionsColumnIds.has(card.columnId))
+		)
 		: new Map<number, string>();
 
 	// Group cards by column with their subtasks, labels, sub-board info, and assignees

@@ -2902,7 +2902,7 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 	it('writes each service to the rule: READS, inWrite() first in every write, no inTransaction before it, nothing of the request (2, 3)', () => {
 		expect([...services.values()].flatMap((service) => service.findings)).toEqual([]);
 		// Something was read: the cards service's six writes, and A2's modules' writes and reads.
-		expect(services.get('src/lib/server/cards.ts')?.writes).toEqual(['createCard', 'updateCard', 'removeCard', 'moveCard', 'moveCards', 'restoreCardFor']);
+		expect(services.get('src/lib/server/cards.ts')?.writes).toEqual(['createCard', 'updateCard', 'removeCard', 'moveCard', 'sendCard', 'moveCards', 'restoreCardFor']);
 		expect(Object.fromEntries([...services].slice(1).map(([file, { reads, writes }]) => [file, { reads, writes }]))).toEqual({
 			'src/lib/server/card-assignees.ts': { reads: [], writes: ['assignToCard', 'unassignFromCard'] },
 			'src/lib/server/card-comments.ts': { reads: ['listComments'], writes: ['addComment', 'editComment', 'deleteComment'] },
@@ -2916,7 +2916,7 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 				writes: ['createMilestoneFor', 'changeMilestone', 'deleteMilestoneFor', 'attachCardToMilestone', 'detachCardFromMilestone']
 			},
 			// Slice A4: boards, dashboard groupings, columns, card categories and labels.
-			'src/lib/server/boards.ts': { reads: ['listBoardsFor'], writes: ['createBoard', 'updateBoard', 'deleteBoardFor'] },
+			'src/lib/server/boards.ts': { reads: ['listBoardsFor'], writes: ['createBoard', 'updateBoard', 'convertBoardFor', 'deleteBoardFor'] },
 			'src/lib/server/board-groupings.ts': { reads: [], writes: ['createBoardGrouping', 'updateBoardGrouping', 'deleteBoardGrouping'] },
 			'src/lib/server/columns.ts': { reads: [], writes: ['createColumn', 'updateColumn', 'deleteColumnFor', 'reorderColumns', 'convertColumnFor'] },
 			'src/lib/server/card-categories.ts': { reads: [], writes: ['createCardCategory', 'updateCardCategory', 'deleteCardCategory'] },
@@ -2951,10 +2951,12 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 			'src/routes/api/cards/+server.ts',
 			'src/routes/api/cards/[id]/+server.ts',
 			'src/routes/api/cards/[id]/restore/+server.ts',
+			'src/routes/api/cards/[id]/send/+server.ts',
 			'src/routes/api/cards/reorder/+server.ts',
 			'src/routes/api/v1/boards/[boardId]/cards/+server.ts',
 			'src/routes/api/v1/cards/[cardId]/+server.ts',
-			'src/routes/api/v1/cards/[cardId]/move/+server.ts'
+			'src/routes/api/v1/cards/[cardId]/move/+server.ts',
+			'src/routes/api/v1/cards/[cardId]/send/+server.ts'
 		]);
 		// Slice A2: what is on a card, both trees.
 		const a2 = routes.filter((file) => /from '\$lib\/server\/(card-assignees|card-comments|card-labels|subtasks)'/.test(readFileSync(join(ROOT, file), 'utf8')));
@@ -3001,6 +3003,7 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 			'src/routes/api/board-categories/[id]/+server.ts',
 			'src/routes/api/boards/+server.ts',
 			'src/routes/api/boards/[id]/+server.ts',
+			'src/routes/api/boards/[id]/convert/+server.ts',
 			'src/routes/api/categories/+server.ts',
 			'src/routes/api/categories/[id]/+server.ts',
 			'src/routes/api/columns/+server.ts',
@@ -3014,6 +3017,7 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 			'src/routes/api/v1/boards/[boardId]/+server.ts',
 			'src/routes/api/v1/boards/[boardId]/categories/+server.ts',
 			'src/routes/api/v1/boards/[boardId]/columns/+server.ts',
+			'src/routes/api/v1/boards/[boardId]/convert/+server.ts',
 			'src/routes/api/v1/boards/[boardId]/labels/+server.ts',
 			'src/routes/api/v1/categories/[categoryId]/+server.ts',
 			'src/routes/api/v1/columns/[columnId]/+server.ts',

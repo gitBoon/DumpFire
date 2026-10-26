@@ -45,8 +45,8 @@ import { ACTIONS, actorOf, logActivity } from './logActivity';
 import { readBoolean, readChoice, readColour, readId, readNumber, readObjects, readText, type RequestBody } from './request-body';
 import { requireBoard, requireBoardOwner, requireColumn, requireUser } from './route-guards';
 import { inWrite, type ServiceOptions } from './write-as';
-import { COLUMN_ROLES, columnRole, isOptionsColumn } from '$lib/column-role';
-import { conversionSuffix } from './upstream';
+import { COLUMN_ROLES, columnRole, isOptionsColumn, isUpstreamColumn } from '$lib/column-role';
+import { boardKinds, conversionSuffix } from './upstream';
 
 /** The functions here that only read. None: every export but this list is a write, and starts with `inWrite()`. */
 export const READS: readonly string[] = [];
@@ -97,6 +97,22 @@ function titleRefusal(title: string): string | null {
 
 /** The refusal of a column that would sit at or left of the Options column, on every write that places one. */
 const OPTIONS_LEFTMOST = 'The Options column stays at the left of the board.';
+
+/**
+ * Why a column of an ideas board cannot be called `title`, or `null` if it
+ * can (milestone 22, card 2463; the S5a review's L1, which extends ruling x
+ * to ideas boards): a title that makes a column To Do, On Hold or Complete.
+ * Every card on an ideas board is an option, committed on a delivery board
+ * and finished there; about thirty places still read a column's meaning from
+ * its title alone, and would take the ideas there for work waiting, paused or
+ * done.
+ */
+function ideasTitleRefusal(title: string): string | null {
+	const titled = columnRole(title);
+	if (!titled) return null;
+	const what = titled === 'todo' ? 'To Do' : titled === 'hold' ? 'On Hold' : 'Complete';
+	return `An ideas board has no ${what} column: "${title}" would make one. Choose another name.`;
+}
 
 /**
  * Why a column may not be, or stop being, the board's Options column with
@@ -268,7 +284,9 @@ export type CreateColumnOptions = {
  * left of every other column whatever position was sent, and is refused as
  * `optionsRoleRefusal` says. On a board with an Options column, a position
  * at or left of it is 409, and a column made on the page with no position
- * goes straight after it (`optionsPlacement`).
+ * goes straight after it (`optionsPlacement`). On an ideas board a column
+ * whose title makes it To Do, On Hold or Complete is 409 (`ideasTitleRefusal`,
+ * card 2463).
  */
 export function createColumn(caller: SessionUser | null, at: { boardId?: number }, body: RequestBody, opts: ServiceOptions & CreateColumnOptions): Column {
 	inWrite();
@@ -302,10 +320,13 @@ export function createColumn(caller: SessionUser | null, at: { boardId?: number 
 		unplaced = (existingCols.length > 0 ? Math.max(...existingCols.map((c) => c.position)) : -1) + 1;
 	}
 
-	// The Options rules (milestone 22), once every field is read.
+	// The Options rules (milestone 22), once every field is read, and then an
+	// ideas board's own: it has no Complete column (card 2463).
 	const board = boardForOptions(boardId);
 	const refusal = optionsRoleRefusal(board, null, { title, role, wipLimit: undefined }, opts.source);
 	if (refusal) throw error(409, refusal);
+	const ideasTitle = board.kind === 'ideas' ? ideasTitleRefusal(title) : null;
+	if (ideasTitle) throw error(409, ideasTitle);
 	position = optionsPlacement(board, null, role, role === 'options', position, opts.placeAfterLast ? 'end' : 'start');
 
 	const column = db
@@ -349,7 +370,9 @@ export function createColumn(caller: SessionUser | null, at: { boardId?: number 
  * an empty column goes left of every other and its WIP limit to 0; the rest
  * of the Options rules are `optionsRoleRefusal`'s and `optionsPlacement`'s,
  * asked after the completion rule. A column holding cards becomes the Options
- * column through `convertColumnFor`, never here.
+ * column through `convertColumnFor`, never here. On an ideas board a rename to
+ * a title that makes the column To Do, On Hold or Complete is 409
+ * (`ideasTitleRefusal`), after the completion rule (card 2463).
  */
 export function updateColumn(caller: SessionUser | null, at: { columnId: number }, body: RequestBody, opts: ServiceOptions): Column {
 	inWrite();
@@ -383,6 +406,10 @@ export function updateColumn(caller: SessionUser | null, at: { columnId: number 
 	// was decided after the write, which the refusal rolled back.
 	const refusal = completionRoleRefusal(column, updates.title ?? column.title);
 	if (refusal) throw error(409, refusal);
+	// An ideas board has no To Do, On Hold or Complete column (card 2463; the
+	// S5a review's L1): its board is read only for a rename into one.
+	const ideasTitle = updates.title !== undefined && updates.title !== column.title ? ideasTitleRefusal(updates.title) : null;
+	if (ideasTitle && boardKinds([boardId]).get(boardId) === 'ideas') throw error(409, ideasTitle);
 
 	// The Options rules (milestone 22), on the column as it will be stored.
 	// Read only for a write that can touch them: one that gives or takes the
@@ -420,16 +447,27 @@ export function updateColumn(caller: SessionUser | null, at: { columnId: number 
  * archived (milestone 22, ruling m): deleting it silently deleted the options
  * in it, which are archived or moved instead; archiving one discards it
  * (card 2461), and the refusal says so. Its archived cards go with it, as any
- * column's do.
+ * column's do. So is a column of an ideas board holding live ideas (card 2463;
+ * the S5a review's L2), every column of which is upstream.
  */
 export function deleteColumnFor(caller: SessionUser | null, at: { columnId: number }, body: null, opts: ServiceOptions): void {
 	inWrite();
 	const user = requireUser(caller);
 	const { column, boardId } = requireColumn(user, at.columnId, 'edit');
 
-	if (isOptionsColumn(column)) {
+	// Any upstream column, the Options column or a column of an ideas board
+	// (the S5a review's L2): one read of the board's kind for the second.
+	const kind = isOptionsColumn(column) ? null : (boardKinds([boardId]).get(boardId) ?? null);
+	const ideasBoard = kind === 'ideas';
+	if (isUpstreamColumn(column, kind)) {
 		const { total, archived } = cardsHeld(column.id);
 		const live = total - archived;
+		if (live > 0 && ideasBoard) {
+			throw error(
+				409,
+				`This column of an ideas board still holds ${live === 1 ? '1 idea: move it out, or archive it to discard it, first.' : `${live} ideas: move them out, or archive them to discard them, first.`}`
+			);
+		}
 		if (live > 0) {
 			throw error(
 				409,

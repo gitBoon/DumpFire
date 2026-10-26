@@ -544,7 +544,7 @@ describe('the load, as a board’s owner (test 7)', () => {
 		});
 		// What the page is sent, and no more: no columns, no token figures, no completed cards.
 		expect(Object.keys(data).sort()).toEqual(['allUsers', 'blockedState', 'boardCategories', 'boards', 'cards', 'categories', 'labels', 'milestoneNames']);
-		expect(data.boards).toEqual([{ id: board.id, name: 'Work', emoji: '📋', parentId: null, hiddenAbove: false, filterCategoryId: null, hasTodo: true }]);
+		expect(data.boards).toEqual([{ id: board.id, name: 'Work', emoji: '📋', kind: 'delivery', parentId: null, hiddenAbove: false, filterCategoryId: null, hasTodo: true }]);
 		expect(data.labels.map((l: any) => l.id)).toEqual([label.id]);
 		expect(data.allUsers).toEqual(expect.arrayContaining([{ id: helper.id, username: 'helper', emoji: '👤' }]));
 		// No address but the caller's own: the requester's is not on the card.
@@ -619,7 +619,7 @@ describe('access, as card 1990’s tests ask it (test 10)', () => {
 		const data = await load('/todo', member);
 
 		expect(todoIds(data)).toEqual([lower.cards[0].id]);
-		expect(data.boards).toEqual([{ id: lower.board.id, name: 'Lower board', emoji: '📋', parentId: null, hiddenAbove: true, filterCategoryId: null, hasTodo: true }]);
+		expect(data.boards).toEqual([{ id: lower.board.id, name: 'Lower board', emoji: '📋', kind: 'delivery', parentId: null, hiddenAbove: true, filterCategoryId: null, hasTodo: true }]);
 		expect(JSON.stringify(data)).not.toContain(MARK);
 	});
 

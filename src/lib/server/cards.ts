@@ -47,7 +47,7 @@
 import { error, isHttpError } from '@sveltejs/kit';
 import { eq } from 'drizzle-orm';
 import { db } from './db';
-import { cards, columns, type Card, type Column } from './db/schema';
+import { boards, cards, columns, type Card, type Column } from './db/schema';
 import type { SessionUser } from './auth';
 import { requireBoard, requireCard, requireColumn, requireUser } from './route-guards';
 import { announceCardCreated, recordCardCreated } from './card-create';
@@ -56,6 +56,7 @@ import { changedFields } from './card-changes';
 import {
 	applyCardMove,
 	announceCardMoves,
+	archivedAcrossCommitment,
 	leftMilestoneOf,
 	recordUnblockedByMoves,
 	reorderTooLarge,
@@ -71,7 +72,9 @@ import { restoreCard } from './card-restore';
 import { emit } from './events';
 import { ACTIONS, actorOf, logActivity } from './logActivity';
 import { setCardMilestone, takeCardOutOfMilestone, MilestoneError } from './milestones';
-import { readId, readIds, readNumber, readObjects, type RequestBody } from './request-body';
+import { readChoice, readId, readIds, readNumber, readObjects, type RequestBody } from './request-body';
+import { COLUMN_ORDER } from './card-order';
+import { columnRoleOf, isOptionsColumn, isUpstreamColumn } from '$lib/column-role';
 import { CREATE_SUBTASK_PAGE_OPTIONS, createSubtask } from './subtasks';
 import { TOGGLE_LABEL_PAGE_OPTIONS, toggleCardLabel } from './card-labels';
 import { ASSIGN_PAGE_OPTIONS, assignToCard } from './card-assignees';
@@ -539,6 +542,102 @@ export function moveCard(caller: SessionUser | null, at: { cardId: number }, bod
 
 	const target = requireColumn(user, toColumnId, 'edit');
 	const move = moved({ cardId: at.cardId, toColumnId: target.column.id, position, actor: user, source: opts.source });
+	announceMoves([move], user, opts);
+	return move;
+}
+
+/** Where a Send takes a card on the other board (milestone 22, card 2463): its Options column, or its To Do. */
+const SEND_TO = ['options', 'todo'] as const;
+
+/** The 400 for a `to` that is not one, quoting what was sent, as the role's is (ruling r). */
+function sendToRefusal(sent: unknown): string {
+	const shown = JSON.stringify(sent) ?? 'nothing';
+	return `to must be "options" or "todo", not ${shown.length > 60 ? `${shown.slice(0, 57)}...` : shown}`;
+}
+
+/**
+ * The column "Send to To Do" commits a card into, on a delivery board whose
+ * columns are `boardColumns`, in their order (ruling l): the first column
+ * titled To Do, or else the first committed column that is neither Complete
+ * nor On Hold. Never the Options column, and never On Hold: a card sent to be
+ * worked on is not parked. Undefined when no column qualifies.
+ */
+function sendToTodoColumn<C extends { title: string; role: string | null }>(boardColumns: readonly C[]): C | undefined {
+	return (
+		boardColumns.find((c) => columnRoleOf(c) === 'todo') ??
+		boardColumns.find((c) => {
+			const role = columnRoleOf(c);
+			return role !== 'options' && role !== 'complete' && role !== 'hold';
+		})
+	);
+}
+
+/**
+ * Send an option to another delivery board (`POST /api/cards/:id/send`, `POST
+ * /api/v1/cards/:cardId/send`; milestone 22, card 2463, rulings b and l).
+ *
+ * An option is sent from where it waits, any upstream column, a column of an
+ * ideas board or a delivery board's Options column, to another delivery board:
+ * to its Options column, where it is still an option and keeps its age
+ * (decision M22-20), or to its To Do, which commits it on arrival. Committed
+ * work is moved, never sent.
+ *
+ * Body: `boardId`, the board it goes to, an id; `to`, `"options"` or
+ * `"todo"`; and `position`, a number, optional, where in the column it goes.
+ * In this order:
+ *
+ *   - 401; the card looked for and the caller checked for edit access to its
+ *     board (404, then 403);
+ *   - the body's fields (400): `boardId is required`, `to must be "options"
+ *     or "todo", not "backlog"`;
+ *   - the board it goes to, looked for and edit access to it (404, then 403);
+ *   - 400: the card is committed ("A committed card is moved, not sent"); the
+ *     board is an ideas board, or the card's own board;
+ *   - 409: the card is archived (ruling n, as a move across the commitment
+ *     point is); `to: "options"` and the board has no Options column; `to:
+ *     "todo"` and it has no column to commit into (`sendToTodoColumn`).
+ *
+ * Then the move, as every move is made (`applyCardMove`): every move refusal,
+ * the board's labels, a board's category and a milestone of the board it
+ * left shed, the commitment on arrival in To Do, and the entries. The board it
+ * leaves records `card_sent` in place of `card_moved_away` (decision M22-19),
+ * which sends `card.moved`; the board it joins records `card_moved_in`, and
+ * `card_committed` for To Do, which sends `card.committed`; all at one
+ * moment, so that the Send is paired with its arrival (ruling b). Neither
+ * names the other board (card 2181). The live updates and mail are a move's.
+ */
+export function sendCard(caller: SessionUser | null, at: { cardId: number }, body: RequestBody, opts: ServiceOptions): CardMove {
+	inWrite();
+	const user = requireUser(caller);
+	const { card, boardId: fromBoardId } = requireCard(user, at.cardId, 'edit');
+	const boardId = readId(body, 'boardId', { required: true, says: { missing: 'boardId is required' } });
+	const to = readChoice(body, 'to', {
+		from: SEND_TO,
+		required: true,
+		says: { missing: 'to is required', type: sendToRefusal(body.to), invalid: sendToRefusal(body.to) }
+	});
+	const position = readNumber(body, 'position', {});
+
+	const target = requireBoard(user, boardId, 'edit');
+
+	const from = db
+		.select({ role: columns.role, kind: boards.kind })
+		.from(columns)
+		.innerJoin(boards, eq(boards.id, columns.boardId))
+		.where(eq(columns.id, card.columnId))
+		.get();
+	if (!from || !isUpstreamColumn(from, from.kind)) throw error(400, 'A committed card is moved, not sent');
+	if (target.kind === 'ideas') throw error(400, `"${target.name}" is an ideas board: a card is sent to a delivery board, and moved onto an ideas board`);
+	if (target.id === fromBoardId) throw error(400, `The card is already on "${target.name}": move it within the board instead`);
+	if (card.archivedAt) throw error(409, archivedAcrossCommitment(card.title));
+
+	const targetColumns = db.select().from(columns).where(eq(columns.boardId, target.id)).orderBy(...COLUMN_ORDER).all();
+	const column = to === 'options' ? targetColumns.find(isOptionsColumn) : sendToTodoColumn(targetColumns);
+	if (!column) {
+		throw error(409, to === 'options' ? `"${target.name}" has no Options column` : `"${target.name}" has no column to commit into: add a To Do column`);
+	}
+
+	const move = moved({ cardId: card.id, toColumnId: column.id, position, actor: user, source: opts.source, sent: to });
 	announceMoves([move], user, opts);
 	return move;
 }
