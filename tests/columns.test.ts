@@ -12,6 +12,10 @@
  * `/api/columns/[id]` is the route the board page uses, and
  * `/api/v1/columns/[columnId]` is the documented one. They are two handlers
  * and are tested as two.
+ *
+ * And what a column means once it can be the board's Options column, or be on
+ * an ideas board (milestone 22): the helpers in `$lib/column-role` and
+ * `$lib/server/upstream` that every rule about upstream asks.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { sqlite } from '$lib/server/db';
@@ -21,6 +25,18 @@ import { api } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
 import { makeBoard, makeCard, makeUser, resetDb, type BoardFixture } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
+import {
+	BOARD_KINDS,
+	COLUMN_ROLES,
+	columnRoleOf,
+	completeColumnIds,
+	firstOpenColumn,
+	holdColumnIds,
+	isOptionsColumn,
+	isUpstreamColumn,
+	todoColumnIds
+} from '$lib/column-role';
+import { UPSTREAM, boardKinds, isUpstreamColumnId, upstreamColumnIds, upstreamCondition } from '$lib/server/upstream';
 
 let owner: SessionUser;
 let board: BoardFixture;
@@ -223,5 +239,117 @@ describe('the WIP limit in the API document', () => {
 		// `nullable` is not a keyword of OpenAPI 3.1, which this document is.
 		expect(sent).not.toHaveProperty('nullable');
 		expect(res.body.openapi).toBe('3.1.0');
+	});
+});
+
+describe('what a column means, with the Options role and the ideas board (milestone 22)', () => {
+	/** A column as the helpers read one: a title, a place, and a role or none. */
+	const col = (id: number, title: string, position: number, role: string | null = null) => ({ id, title, position, role });
+
+	it('knows one stored role and two kinds of board', () => {
+		expect(COLUMN_ROLES).toEqual(['options']);
+		expect(BOARD_KINDS).toEqual(['delivery', 'ideas']);
+	});
+
+	it('takes a card as upstream in the Options column or on an ideas board, and nowhere else', () => {
+		expect(isOptionsColumn({ role: 'options' })).toBe(true);
+		for (const role of [null, 'backlog', 'Options']) expect(isOptionsColumn({ role }), String(role)).toBe(false);
+		expect(isUpstreamColumn({ role: 'options' }, 'delivery')).toBe(true);
+		expect(isUpstreamColumn({ role: null }, 'ideas')).toBe(true);
+		expect(isUpstreamColumn({ role: null }, 'delivery')).toBe(false);
+		// A board of another kind is a delivery board, and one whose kind is not there is not an ideas board.
+		expect(isUpstreamColumn({ role: null }, 'portfolio')).toBe(false);
+		expect(isUpstreamColumn({ role: null }, null)).toBe(false);
+	});
+
+	it('reads the Options role before the title, so an Options column is never To Do, On Hold or Complete', () => {
+		expect(columnRoleOf({ title: 'To Do', role: 'options' })).toBe('options');
+		expect(columnRoleOf({ title: 'On Hold', role: 'options' })).toBe('options');
+		expect(columnRoleOf({ title: 'Ideas', role: 'options' })).toBe('options');
+		expect(columnRoleOf({ title: 'To Do', role: null })).toBe('todo');
+		expect(columnRoleOf({ title: 'Done', role: null })).toBe('complete');
+		expect(columnRoleOf({ title: 'Doing', role: null })).toBeNull();
+
+		const columns = [col(1, 'To Do', 0, 'options'), col(2, 'To Do', 1), col(3, 'On Hold', 2), col(4, 'Done', 3)];
+		expect([...todoColumnIds(columns)]).toEqual([2]);
+		expect([...holdColumnIds([col(5, 'Waiting', 0, 'options'), col(3, 'On Hold', 1)])]).toEqual([3]);
+		expect([...completeColumnIds([col(6, 'Done', 0, 'options'), col(4, 'Done', 1)])]).toEqual([4]);
+		// Columns with no role are read as before, by title alone.
+		expect([...todoColumnIds([{ id: 7, title: 'todo', role: null }])]).toEqual([7]);
+	});
+
+	it('puts new work in the first open column that is not Options, and in Options only when nothing else is open', () => {
+		const options = col(1, 'Ideas', -1, 'options');
+		expect(firstOpenColumn([col(3, 'Complete', 2), col(2, 'To Do', 0), options])?.id).toBe(2);
+		expect(firstOpenColumn([options, col(3, 'Complete', 2)])?.id).toBe(1);
+		expect(firstOpenColumn([col(3, 'Complete', 2)])).toBeUndefined();
+		// As before, for a board with no Options column.
+		expect(firstOpenColumn([col(4, 'Done', 0), col(5, 'Doing', 1)])?.id).toBe(5);
+		// Complete is decided as every page decides it, the role first: an
+		// Options column is never a Complete column, whatever it is called.
+		expect(firstOpenColumn([col(6, 'Done', 0, 'options'), col(7, 'Complete', 1)])?.id).toBe(6);
+	});
+
+	it('reads the boards’ kinds and the columns that are upstream from the database', () => {
+		const options = board.cols['To Do'];
+		sqlite.prepare("UPDATE columns SET role = 'options' WHERE id = ?").run(options.id);
+		const ideas = makeBoard({ owner, columns: ['New Ideas', 'Shaping'] });
+		sqlite.prepare("UPDATE boards SET kind = 'ideas' WHERE id = ?").run(ideas.board.id);
+		const read = (id: number) => sqlite.prepare('SELECT id, board_id AS boardId, role FROM columns WHERE id = ?').get(id) as {
+			id: number;
+			boardId: number;
+			role: string | null;
+		};
+
+		expect(boardKinds([board.board.id, ideas.board.id, board.board.id, 999])).toEqual(
+			new Map([
+				[board.board.id, 'delivery'],
+				[ideas.board.id, 'ideas']
+			])
+		);
+		expect(boardKinds([])).toEqual(new Map());
+		const all = [options.id, board.cols['In Progress'].id, ideas.cols['New Ideas'].id, ideas.cols['Shaping'].id].map(read);
+		expect([...upstreamColumnIds(all)].sort((a, b) => a - b)).toEqual([options.id, ideas.cols['New Ideas'].id, ideas.cols['Shaping'].id]);
+		expect(isUpstreamColumnId(options.id)).toBe(true);
+		expect(isUpstreamColumnId(ideas.cols['Shaping'].id)).toBe(true);
+		expect(isUpstreamColumnId(board.cols['Complete'].id)).toBe(false);
+		expect(isUpstreamColumnId(999)).toBe(false);
+		// The same rule as SQL, for the readers that write their own.
+		const upstreamIds = sqlite
+			.prepare(`SELECT col.id FROM columns col JOIN boards b ON b.id = col.board_id WHERE ${UPSTREAM} ORDER BY col.id`)
+			.all()
+			.map((row) => (row as { id: number }).id);
+		expect(upstreamIds).toEqual([options.id, ideas.cols['New Ideas'].id, ideas.cols['Shaping'].id]);
+		expect(upstreamCondition('c', 'bd')).toBe("(c.role IS 'options' OR bd.kind IS 'ideas')");
+	});
+
+	it('is false, never NULL, as SQL for an ordinary column, so that NOT the rule finds every committed card (the S1a review, R1)', () => {
+		// A delivery board with one card in To Do, the role NULL: `role = 'options'`
+		// was NULL there, and NOT of it found no card at all.
+		const card = makeCard(board.cols['To Do']);
+		const ideas = makeBoard({ owner, columns: ['New Ideas'] });
+		sqlite.prepare("UPDATE boards SET kind = 'ideas' WHERE id = ?").run(ideas.board.id);
+		const idea = makeCard(ideas.cols['New Ideas']);
+		const ids = (where: string, join = 'JOIN') =>
+			(
+				sqlite
+					.prepare(
+						`SELECT c.id FROM cards c ${join} columns col ON col.id = c.column_id ${join} boards b ON b.id = col.board_id WHERE ${where} ORDER BY c.id`
+					)
+					.all() as { id: number }[]
+			).map((row) => row.id);
+
+		expect(ids(`NOT ${UPSTREAM}`)).toEqual([card.id]);
+		expect(ids(UPSTREAM)).toEqual([idea.id]);
+		// A card whose column is not there, under a LEFT JOIN: not upstream, so committed.
+		sqlite.pragma('foreign_keys = OFF');
+		try {
+			sqlite.prepare("INSERT INTO cards (id, column_id, title) VALUES (9999, 9999, 'On no column')").run();
+		} finally {
+			sqlite.pragma('foreign_keys = ON');
+		}
+		expect(ids(`NOT ${UPSTREAM}`, 'LEFT JOIN')).toEqual([card.id, 9999]);
+		expect(ids(UPSTREAM, 'LEFT JOIN')).toEqual([idea.id]);
+		sqlite.prepare('DELETE FROM cards WHERE id = 9999').run();
 	});
 });

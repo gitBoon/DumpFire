@@ -433,11 +433,14 @@ describe('the dashboard’s load (card 2298)', () => {
  */
 const MOST_READS: Record<string, number> = { owner: 23, member: 21, mate: 21, admin: 16, outsider: 22 };
 
-/** The keys of the answer, of each board in it and of its analytics, in order, the same for every caller. */
+/**
+ * The keys of the answer, of each board in it and of its analytics, in order, the same for every caller.
+ * A board's row gained `kind` with migration 0060 (milestone 22), in the model's place for it.
+ */
 const KEYED = {
 	keys: 'boards,analytics,allCategories,favouriteBoardIds,allTasksTotals,spendByUser',
 	boardKeys: [
-		'id,name,emoji,parentCardId,categoryId,isPublic,createdBy,createdAt,updatedAt,totalCards,completedCards,tokenTotal,costUsd,lastActivity,subBoards,categoryName,categoryColor'
+		'id,name,emoji,parentCardId,categoryId,isPublic,kind,createdBy,createdAt,updatedAt,totalCards,completedCards,tokenTotal,costUsd,lastActivity,subBoards,categoryName,categoryColor'
 	],
 	analyticsKeys:
 		'totalAssigned,active,completed,completionRate,completedThisWeek,completedThisMonth,priorityCounts,pendingRequests,recentActivity,weeklyActivity,totalSubBoards,boardHealth,totalBoards,categoryDistribution,agingBuckets,teamLeaderboard,dueCards,longOverdue,asOf,weeklyTrend,onHoldCount'

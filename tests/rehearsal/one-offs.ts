@@ -3,7 +3,8 @@
  * on, that deletes rows, drops a table or replaces rows (card 2106, decision 3),
  * and every one that rewrites a column in the rows it keeps (`keepsRows`: 0055,
  * card 2158, which gives every task request a new link; 0057, card 2155, which
- * takes cards out of a milestone of another board).
+ * takes cards out of a milestone of another board; 0060, milestone 22, which
+ * commits every card that is not upstream).
  *
  * The rehearsal (copy.rehearsal.ts) fails on any table that has fewer rows
  * after the runner than before. A file named here is allowed to take rows from
@@ -18,9 +19,13 @@
  * marked `keepsRows` must name a file that loses no row and updates its table;
  * any other, a file that can lose rows.
  *
- * A one-off runs once, when its file is applied. It is not repeated at start-up
- * or after a restore: a change that has to be repeated is a backfill
- * (`runBackfills` in src/lib/server/db/migrate.ts), not a one-off.
+ * A one-off runs once, when its file is applied, and that is what is declared
+ * here. A file's change can also be repeated at start-up and after a restore,
+ * as a backfill (`runBackfills` in src/lib/server/db/migrate.ts): 0057's and
+ * 0060's are both, the backfill holding the file's own statement, so that a
+ * restored older backup is repaired as the deploy was. Such a file is still
+ * declared here, for the run that applies it; the backfill's repeats are the
+ * runner's to report, not the rehearsal's.
  */
 export type OneOff = {
 	/** The migration file, as it is named in drizzle/. */
@@ -44,6 +49,12 @@ export const ONE_OFFS: readonly OneOff[] = Object.freeze([
 		file: '0057_cards_leave_other_boards_milestones.sql',
 		table: 'cards',
 		change: 'milestone_id cleared where it named a milestone of another board',
+		keepsRows: true
+	},
+	{
+		file: '0060_add_upstream_options.sql',
+		table: 'cards',
+		change: 'committed_at and committed_by filled from created_at and created_by for every card not upstream',
 		keepsRows: true
 	}
 ]);

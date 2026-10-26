@@ -153,13 +153,16 @@ describe('stamp, toStamp and parseStamp', () => {
 describe('timestampColumns', () => {
 	it('names every TEXT *_at column and system_logs.timestamp, and nothing that holds a day', () => {
 		const found = timestampColumns(sqlite).map((c) => `${c.table}.${c.column}`);
-		expect(found).toHaveLength(37);
+		expect(found).toHaveLength(39);
 		for (const column of [
 			'activity_log.created_at',
 			'api_keys.expires_at',
 			'cards.completed_at',
 			'cards.first_completed_at',
 			'cards.archived_at',
+			// Milestone 22's two moments, found by their names alone.
+			'cards.committed_at',
+			'cards.discarded_at',
 			'report_schedules.next_run_at',
 			'sessions.expires_at',
 			'system_logs.timestamp'

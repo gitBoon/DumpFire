@@ -46,7 +46,7 @@ export type WriteResult = { ok: true; res: Response; answer: Record<string, unkn
 export type WriteWords = { refused: string; noAnswer: string };
 
 export class BoardState {
-	board = $state<BoardContentsData['board']>({ id: 0, name: '', emoji: null, parentCardId: null });
+	board = $state<BoardContentsData['board']>({ id: 0, name: '', emoji: null, parentCardId: null, kind: 'delivery' });
 	breadcrumbs = $state<BreadcrumbType[]>([]);
 	columns = $state<ColumnType[]>([]);
 	categories = $state<CategoryType[]>([]);

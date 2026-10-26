@@ -11,10 +11,11 @@
  *
  * Now each route inserts its row and then, inside the same transaction:
  *
- *   1. `recordCardCreated`, which writes the `card_created` entry and, in a
- *      Complete column, completes the card by the rule a move uses
- *      (`completionOf` and `awardXp` in `card-moves.ts`), with its
- *      `card_completed` entry;
+ *   1. `recordCardCreated`, which writes the `card_created` entry; outside an
+ *      upstream column stamps the card committed, at its creation and by its
+ *      creator (milestone 22, `commitmentOnCreation`); and, in a Complete
+ *      column, completes the card by the rule a move uses (`completionOf` and
+ *      `awardXp` in `card-moves.ts`), with its `card_completed` entry;
  *   2. `announceCardCreated`, which tells people. Nothing it sends leaves
  *      before the transaction has committed, and nothing leaves if it rolls
  *      back.
@@ -36,11 +37,12 @@ import { awardXp, celebrateCompletions, completionOf } from './card-moves';
 import { emit } from './events';
 import { ACTIONS, actorOf, logActivity, type ActivitySource } from './logActivity';
 import { notifyRequesterProgress } from './notifications';
+import { commitmentOnCreation } from './upstream';
 import type { SessionUser } from './auth';
 
 /** What a creation recorded. */
 export interface CardCreation {
-	/** The card as it is written: with its completion stamped, when it was completed. */
+	/** The card as it is written: with its commitment stamped when it is not an option, and its completion when it was completed. */
 	card: Card;
 	/** The column it was created in. */
 	column: Column;
@@ -90,12 +92,24 @@ function record({
 	// started, and no record of who raised it: `createdBy` answers the second half.
 	logActivity({ ...who, action: ACTIONS.cardCreated, detail: card.title });
 
+	// Outside an upstream column the card is committed as it is created, by its
+	// creator (milestone 22): stamped here, in the one write a completion makes
+	// too, so that every creating route records it. No entry of its own:
+	// `card_created` is the record.
+	const commitment = commitmentOnCreation(column, card, actor.id);
+
 	if (!isCompleteColumnTitle(column.title)) {
-		return { card, column, boardId: column.boardId, completed: false, xpAwarded: 0 };
+		const committed = commitment ? db.update(cards).set(commitment).where(eq(cards.id, card.id)).returning().get() : card;
+		return { card: committed, column, boardId: column.boardId, completed: false, xpAwarded: 0 };
 	}
 
 	const { stamp: completion, xp } = completionOf(card, stamp());
-	const written = db.update(cards).set(completion).where(eq(cards.id, card.id)).returning().get();
+	const written = db
+		.update(cards)
+		.set({ ...commitment, ...completion })
+		.where(eq(cards.id, card.id))
+		.returning()
+		.get();
 	awardXp(actor, xp);
 	logActivity({ ...who, action: ACTIONS.cardCompleted, detail: `"${card.title}": created in ${column.title}` });
 

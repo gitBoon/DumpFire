@@ -21,7 +21,9 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	// administrator an empty list (card 2117, decision 10).
 	const boardId = requireBoard(locals.user, pathId(params.id, 'board'), 'view').id;
 
-	const boardCols = db.select({ id: columns.id, title: columns.title, position: columns.position })
+	// With its role, so that the dashboard's new sub-board puts its parent card
+	// in a column that is not the Options column (`firstOpenColumn`, milestone 22).
+	const boardCols = db.select({ id: columns.id, title: columns.title, position: columns.position, role: columns.role })
 		.from(columns)
 		.where(eq(columns.boardId, boardId))
 		.orderBy(...COLUMN_ORDER)

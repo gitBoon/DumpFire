@@ -673,6 +673,32 @@ describe('the builders', () => {
 		// It is a sub-board to the application too: the parent cannot be completed.
 		expect(getCompletionBlocker(parent.id, owner)).toMatch(/has 2 incomplete cards/);
 	});
+
+	it('makeCard commits a card in a committed column as it is created, and leaves an option uncommitted (milestone 22)', () => {
+		const owner = makeUser();
+		const { cols } = makeBoard({ owner, columns: ['Ideas', 'To Do', 'Complete'] });
+		sqlite.prepare("UPDATE columns SET role = 'options' WHERE id = ?").run(cols['Ideas'].id);
+		const ideas = makeBoard({ owner, columns: ['New Ideas'] });
+		sqlite.prepare("UPDATE boards SET kind = 'ideas' WHERE id = ?").run(ideas.board.id);
+
+		const committed = makeCard(cols['To Do'], { createdBy: owner.id });
+		const done = makeCard(cols['Complete']);
+		const option = makeCard(cols['Ideas'], { createdBy: owner.id });
+		const idea = makeCard(ideas.cols['New Ideas'], { createdBy: owner.id });
+		const asGiven = makeCard(cols['To Do'], { committedAt: null });
+
+		// From when and by whom it was created, as every write commits one, so a
+		// fixture never holds what the start's backfill would repair.
+		expect(committed).toMatchObject({ committedAt: committed.createdAt, committedBy: owner.id });
+		expect(done).toMatchObject({ committedAt: done.createdAt, committedBy: null });
+		expect([option, idea].map((card) => [card.committedAt, card.committedBy])).toEqual([
+			[null, null],
+			[null, null]
+		]);
+		expect(asGiven.committedAt).toBeNull();
+		// What it returns is what is stored.
+		expect(db.select().from(cards).where(eq(cards.id, committed.id)).get()).toEqual(committed);
+	});
 });
 
 describe('eachWriteInTurn', () => {

@@ -601,7 +601,8 @@ describe('POST /api/v1/boards/:boardId/cards', () => {
 			}
 		});
 
-		expect(shape(run.writes)).toEqual(['insert into cards', 'insert into activity_log']);
+		// The third stamps the card's commitment (milestone 22): a card created in To Do is committed work.
+		expect(shape(run.writes)).toEqual(['insert into cards', 'insert into activity_log', 'update cards set']);
 		expect(run.effects.map(name)).toEqual(['webhook card.created', 'event update (card) on board 1']);
 	});
 

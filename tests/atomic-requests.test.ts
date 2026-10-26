@@ -246,10 +246,12 @@ describe('PATCH /api/requests/:id, accept', () => {
 		// assigned and nobody told.
 		// The card's `card_created` entry is written with it (card 2134): this
 		// route wrote none, and the board's webhook and open pages were not told.
-		// Nor the assignee's `assignee_added`, the last write (card 2143).
+		// Nor the assignee's `assignee_added`, the last write (card 2143). The
+		// card's commitment is stamped with its entry (milestone 22).
 		expect(shape(run.writes)).toEqual([
 			'insert into cards',
 			'insert into activity_log',
+			'update cards set',
 			'update task_requests set',
 			'insert into card_comments',
 			'insert into card_comments',

@@ -1218,7 +1218,7 @@ const SERVICE_TWINS: ServiceTwin[] = [
 		// Each tree's place for it (R2): first from the page, after board A's last (3) through v1.
 		rows: (() => {
 			const added = (position: number) => [
-				{ table: 'columns', row: '9', was: undefined, is: { id: 9, board_id: 1, title: 'Review', position, color: '#6366f1', wip_limit: 0, show_add_card: 0 } },
+				{ table: 'columns', row: '9', was: undefined, is: { id: 9, board_id: 1, title: 'Review', position, color: '#6366f1', wip_limit: 0, show_add_card: 0, role: null } },
 				{ table: 'sqlite_sequence', row: 'columns', was: { name: 'columns', seq: 8 }, is: { name: 'columns', seq: 9 } }
 			];
 			return { internal: added(0), v1: added(4) };

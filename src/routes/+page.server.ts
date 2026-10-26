@@ -82,7 +82,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 	// of their ids and a column's cards in the order of theirs, as each board's
 	// own reads gave them, so a board's sub-boards are listed as they were.
 	const shownColumns = shownBoardIds.length > 0
-		? db.select({ id: columns.id, boardId: columns.boardId, title: columns.title })
+		? db.select({ id: columns.id, boardId: columns.boardId, title: columns.title, role: columns.role })
 			.from(columns)
 			.where(inArray(columns.boardId, shownBoardIds))
 			.orderBy(columns.id)
@@ -285,7 +285,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 	// hold (On Hold count, below): the same query was made for each.
 	const allColumnIds = [...new Set(myCards.map(c => c.columnId))];
 	const myColumns = allColumnIds.length > 0
-		? db.select({ id: columns.id, title: columns.title })
+		? db.select({ id: columns.id, title: columns.title, role: columns.role })
 			.from(columns)
 			.where(inArray(columns.id, allColumnIds))
 			.all()

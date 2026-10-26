@@ -97,13 +97,13 @@ describe('the To Do role (test 1)', () => {
 
 	it('todoColumnIds gives every To Do column among those given, two on one board included', () => {
 		const columns = [
-			{ id: 1, title: 'Backlog' },
-			{ id: 2, title: ' TODO ' },
-			{ id: 3, title: 'To Do' },
-			{ id: 4, title: 'Done' }
+			{ id: 1, title: 'Backlog', role: null },
+			{ id: 2, title: ' TODO ', role: null },
+			{ id: 3, title: 'To Do', role: null },
+			{ id: 4, title: 'Done', role: null }
 		];
 		expect([...todoColumnIds(columns)].sort()).toEqual([2, 3]);
-		expect(todoColumnIds([{ id: 9, title: 'Doing' }]).size).toBe(0);
+		expect(todoColumnIds([{ id: 9, title: 'Doing', role: null }]).size).toBe(0);
 	});
 });
 

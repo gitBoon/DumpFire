@@ -497,6 +497,7 @@
 		color: b.title === 'Complete' ? '#10b981' : b.title === 'In Progress' ? '#6366f1' : b.title === 'On Hold' ? '#f59e0b' : '#64748b',
 		showAddCard: false,
 		wipLimit: 0,
+		role: null,
 		cards: b.cards as unknown as CardType[]
 	} satisfies ColumnType))}
 	<StatsPanel

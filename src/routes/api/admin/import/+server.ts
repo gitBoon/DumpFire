@@ -371,9 +371,25 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 								`(${unfiledBoardsList(result.backfilled)})`
 						]
 					: []),
+				// The commitment point (milestone 22), only when there were any: a
+				// backup made before 0060 brings cards with no commitment.
+				...(result.backfilled.committedFilled > 0
+					? [`committed_at and committed_by on ${result.backfilled.committedFilled} card(s) not upstream`]
+					: []),
 				...result.defaulted.map(
 					(d) => `the default (${d.value}) in place of NULL in ${d.table}.${d.column} on ${d.rows} row(s)`
 				)
+			].join(', ');
+			// What the commitment point's repairs took away is not something
+			// filled in, and is said as what it is (the S1a review's R7), each
+			// part only when there were any, so a restore with none reads as it did.
+			const cleared = [
+				...(result.backfilled.upstreamCleared > 0
+					? [`the commitment of ${result.backfilled.upstreamCleared} upstream card(s)`]
+					: []),
+				...(result.backfilled.discardedCleared > 0
+					? [`the discard mark of ${result.backfilled.discardedCleared} card(s) that are not archived`]
+					: [])
 			].join(', ');
 			// A working copy says what it switched off and removed, at the end
 			// of this line and of the answer, with or without a problem.
@@ -412,7 +428,10 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 				superadmins
 			};
 			log.info(
-				ending(`Database restored from an uploaded backup (${size}). Rows: ${summary || 'none'}. Filled in: ${filled}.`)
+				ending(
+					`Database restored from an uploaded backup (${size}). Rows: ${summary || 'none'}. Filled in: ${filled}.` +
+						(cleared ? ` Cleared: ${cleared}.` : '')
+				)
 			);
 			// What is to enter, on a line of its own at WARN as well (R2), so that
 			// it stands out on the log page beside the line every start writes

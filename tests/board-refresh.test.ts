@@ -354,7 +354,7 @@ function card(id: number, columnId: number, position: number, extra: Partial<Car
 }
 
 function column(id: number, position: number, cards: CardType[], extra: Partial<ColumnType> = {}): ColumnType {
-	return { id, boardId: 1, title: `Column ${id}`, position, color: '#888888', showAddCard: false, wipLimit: 0, cards, ...extra };
+	return { id, boardId: 1, title: `Column ${id}`, position, color: '#888888', showAddCard: false, wipLimit: 0, cards, ...extra, role: extra.role ?? null };
 }
 
 /** Two columns: 10 holds cards 1 (low), 2 (critical) and 3 (high); 20 holds card 4. */
@@ -568,7 +568,7 @@ describe('board-patches: a write on the screen, and its undo', () => {
 
 function contents(columns: ColumnType[] = board(), extra: Partial<BoardContentsData> = {}): BoardContentsData {
 	return {
-		board: { id: 1, name: 'Board', emoji: '📋', parentCardId: null },
+		board: { id: 1, name: 'Board', emoji: '📋', parentCardId: null, kind: 'delivery' },
 		breadcrumbs: [],
 		columns,
 		categories: [],
@@ -612,7 +612,7 @@ afterEach(() => {
 
 describe('the contents answer, and the board state that takes it', () => {
 	it('re-applies the column sorts the viewer chose after a refresh', async () => {
-		const { state, asked } = stateWith([async () => answer(200, contents(board(), { board: { id: 1, name: 'Renamed', emoji: '🔥', parentCardId: null } }))]);
+		const { state, asked } = stateWith([async () => answer(200, contents(board(), { board: { id: 1, name: 'Renamed', emoji: '🔥', parentCardId: null, kind: 'delivery' } }))]);
 		states.push(state);
 
 		state.setSort(10, 'priority');

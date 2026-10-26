@@ -412,11 +412,17 @@ const spec = {
 					parentCardId: { type: ['integer', 'null'], description: 'The card this board is a sub-board of, or null' },
 					categoryId: { type: ['integer', 'null'], description: 'The board category it is filed under on the dashboard, or null' },
 					isPublic: { type: 'boolean' },
+					kind: {
+						type: 'string',
+						enum: ['delivery', 'ideas'],
+						description:
+							'delivery for a board of committed work, which every board was before 2026-10-26; ideas for a board whose every column is upstream of the commitment point, holding options nobody has committed to yet.'
+					},
 					createdBy: { type: ['integer', 'null'], description: 'The user who created it. null once that user has been deleted.' },
 					createdAt: { type: 'string', format: 'date-time' },
 					updatedAt: { type: 'string', format: 'date-time' }
 				},
-				required: ['id', 'name', 'emoji', 'parentCardId', 'categoryId', 'isPublic', 'createdBy', 'createdAt', 'updatedAt']
+				required: ['id', 'name', 'emoji', 'parentCardId', 'categoryId', 'isPublic', 'kind', 'createdBy', 'createdAt', 'updatedAt']
 			},
 			Column: {
 				type: 'object',
@@ -427,9 +433,15 @@ const spec = {
 					position: { type: 'number', description: 'Order on the board, lowest first. Not always a whole number.' },
 					color: { type: 'string', description: 'A colour written #rrggbb; one stored before this rule is returned as stored' },
 					wipLimit: { type: 'integer', minimum: 0, description: 'Work-in-progress limit. 0 means no limit. Never null.' },
-					showAddCard: { type: 'boolean' }
+					showAddCard: { type: 'boolean' },
+					role: {
+						type: ['string', 'null'],
+						enum: ['options', null],
+						description:
+							'options for the board\'s Options column, upstream of the commitment point: cards in it are options, not committed work. null for every other column, whose title decides whether it is To Do, On Hold or Complete.'
+					}
 				},
-				required: ['id', 'boardId', 'title', 'position', 'color', 'wipLimit', 'showAddCard']
+				required: ['id', 'boardId', 'title', 'position', 'color', 'wipLimit', 'showAddCard', 'role']
 			},
 			BoardDetail: {
 				type: 'object',
@@ -441,12 +453,13 @@ const spec = {
 					parentCardId: { type: ['integer', 'null'] },
 					categoryId: { type: ['integer', 'null'] },
 					isPublic: { type: 'boolean' },
+					kind: { type: 'string', enum: ['delivery', 'ideas'] },
 					createdBy: { type: ['integer', 'null'] },
 					createdAt: { type: 'string', format: 'date-time' },
 					updatedAt: { type: 'string', format: 'date-time' },
 					columns: { type: 'array', items: { $ref: '#/components/schemas/Column' } }
 				},
-				required: ['id', 'name', 'emoji', 'parentCardId', 'categoryId', 'isPublic', 'createdBy', 'createdAt', 'updatedAt', 'columns']
+				required: ['id', 'name', 'emoji', 'parentCardId', 'categoryId', 'isPublic', 'kind', 'createdBy', 'createdAt', 'updatedAt', 'columns']
 			},
 			Card: {
 				type: 'object',
@@ -477,6 +490,27 @@ const spec = {
 						description: 'When the card was first completed. Kept when it is reopened.'
 					},
 					archivedAt: { type: ['string', 'null'], format: 'date-time', description: 'When the card was archived, or null' },
+					committedAt: {
+						type: ['string', 'null'],
+						format: 'date-time',
+						description:
+							'When the card crossed the commitment point. Set when the card is created outside an upstream column (an Options column, or any column of an ideas board), ' +
+							'and when it is moved out of the Options column or off an ideas board; filled from createdAt by the repair the server makes at start-up for a card that has none, ' +
+							'such as one restored from a backup made before 2026-10-26. null while the card is an option: cleared whenever a card becomes one, by a move back upstream or by converting its column to the Options column.'
+					},
+					committedBy: {
+						type: ['integer', 'null'],
+						description: 'The user who committed it. null while the card is an option, when it was not recorded, or once that user has been deleted.'
+					},
+					discardedAt: {
+						type: ['string', 'null'],
+						format: 'date-time',
+						description: 'When the card was discarded: archived while it was an option. null for a card that is not archived, or was archived as committed work.'
+					},
+					discardedBy: {
+						type: ['integer', 'null'],
+						description: 'The user who discarded it. null when it was not discarded, or once that user has been deleted.'
+					},
 					coverUrl: {
 						type: ['string', 'null'],
 						description:
@@ -522,7 +556,7 @@ const spec = {
 				},
 				required: [
 					'id', 'columnId', 'categoryId', 'title', 'description', 'position', 'priority', 'colorTag', 'dueDate', 'onHoldNote',
-					'businessValue', 'pinned', 'completedAt', 'firstCompletedAt', 'archivedAt', 'coverUrl', 'recurrenceRule', 'nextRecurrence',
+					'businessValue', 'pinned', 'completedAt', 'firstCompletedAt', 'archivedAt', 'committedAt', 'committedBy', 'discardedAt', 'discardedBy', 'coverUrl', 'recurrenceRule', 'nextRecurrence',
 					'milestoneId', 'createdBy', 'summary', 'theme', 'customerImpact', 'closeReason', 'releaseState', 'createdAt', 'updatedAt'
 				]
 			},
@@ -546,6 +580,10 @@ const spec = {
 					completedAt: { type: ['string', 'null'], format: 'date-time' },
 					firstCompletedAt: { type: ['string', 'null'], format: 'date-time' },
 					archivedAt: { type: ['string', 'null'], format: 'date-time' },
+					committedAt: { type: ['string', 'null'], format: 'date-time' },
+					committedBy: { type: ['integer', 'null'] },
+					discardedAt: { type: ['string', 'null'], format: 'date-time' },
+					discardedBy: { type: ['integer', 'null'] },
 					coverUrl: {
 						type: ['string', 'null'],
 						description:
@@ -575,7 +613,7 @@ const spec = {
 				},
 				required: [
 					'id', 'columnId', 'categoryId', 'title', 'description', 'position', 'priority', 'colorTag', 'dueDate', 'onHoldNote',
-					'businessValue', 'pinned', 'completedAt', 'firstCompletedAt', 'archivedAt', 'coverUrl', 'recurrenceRule', 'nextRecurrence',
+					'businessValue', 'pinned', 'completedAt', 'firstCompletedAt', 'archivedAt', 'committedAt', 'committedBy', 'discardedAt', 'discardedBy', 'coverUrl', 'recurrenceRule', 'nextRecurrence',
 					'milestoneId', 'createdBy', 'summary', 'theme', 'customerImpact', 'closeReason', 'releaseState', 'createdAt', 'updatedAt',
 					'columnTitle', 'subtaskCount', 'subtaskCompleted'
 				]
@@ -600,6 +638,10 @@ const spec = {
 					completedAt: { type: ['string', 'null'], format: 'date-time' },
 					firstCompletedAt: { type: ['string', 'null'], format: 'date-time' },
 					archivedAt: { type: ['string', 'null'], format: 'date-time' },
+					committedAt: { type: ['string', 'null'], format: 'date-time' },
+					committedBy: { type: ['integer', 'null'] },
+					discardedAt: { type: ['string', 'null'], format: 'date-time' },
+					discardedBy: { type: ['integer', 'null'] },
 					coverUrl: {
 						type: ['string', 'null'],
 						description:
@@ -639,7 +681,7 @@ const spec = {
 				},
 				required: [
 					'id', 'columnId', 'categoryId', 'title', 'description', 'position', 'priority', 'colorTag', 'dueDate', 'onHoldNote',
-					'businessValue', 'pinned', 'completedAt', 'firstCompletedAt', 'archivedAt', 'coverUrl', 'recurrenceRule', 'nextRecurrence',
+					'businessValue', 'pinned', 'completedAt', 'firstCompletedAt', 'archivedAt', 'committedAt', 'committedBy', 'discardedAt', 'discardedBy', 'coverUrl', 'recurrenceRule', 'nextRecurrence',
 					'milestoneId', 'createdBy', 'summary', 'theme', 'customerImpact', 'closeReason', 'releaseState', 'createdAt', 'updatedAt',
 					'columnTitle', 'boardId', 'leftMilestone'
 				]
@@ -1255,6 +1297,10 @@ const spec = {
 					completedAt: { type: ['string', 'null'], format: 'date-time' },
 					firstCompletedAt: { type: ['string', 'null'], format: 'date-time' },
 					archivedAt: { type: ['string', 'null'], format: 'date-time' },
+					committedAt: { type: ['string', 'null'], format: 'date-time' },
+					committedBy: { type: ['integer', 'null'] },
+					discardedAt: { type: ['string', 'null'], format: 'date-time' },
+					discardedBy: { type: ['integer', 'null'] },
 					coverUrl: {
 						type: ['string', 'null'],
 						description:
@@ -1289,7 +1335,7 @@ const spec = {
 				},
 				required: [
 					'id', 'columnId', 'categoryId', 'title', 'description', 'position', 'priority', 'colorTag', 'dueDate', 'onHoldNote',
-					'businessValue', 'pinned', 'completedAt', 'firstCompletedAt', 'archivedAt', 'coverUrl', 'recurrenceRule', 'nextRecurrence',
+					'businessValue', 'pinned', 'completedAt', 'firstCompletedAt', 'archivedAt', 'committedAt', 'committedBy', 'discardedAt', 'discardedBy', 'coverUrl', 'recurrenceRule', 'nextRecurrence',
 					'milestoneId', 'createdBy', 'summary', 'theme', 'customerImpact', 'closeReason', 'releaseState', 'createdAt', 'updatedAt',
 					'boardId', 'columnTitle', 'subtasks', 'labelIds', 'assignees', 'isBlocked', 'blockedBy', 'blocks'
 				]

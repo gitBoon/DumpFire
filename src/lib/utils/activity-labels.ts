@@ -30,6 +30,15 @@ export const ACTIVITY_LABELS: Readonly<Record<string, string>> = Object.freeze({
 	card_deleted: 'Deleted card',
 	card_moved_away: 'Moved card to another board',
 	card_moved_in: 'Moved card from another board',
+	// Upstream and the commitment point (milestone 22), labelled before the
+	// slices that write them, so that each reads in words from its first entry.
+	card_committed: 'Committed card',
+	card_returned_to_options: 'Returned card to Options',
+	card_discarded: 'Discarded card',
+	card_abandoned: 'Abandoned card',
+	card_sent: 'Sent card to another board',
+	column_converted_to_options: 'Converted column to Options',
+	board_converted_to_ideas: 'Converted board to an ideas board',
 	cards_purged: 'Purged archived cards',
 	cards_cleared: 'Cleared cards',
 	column_deleted: 'Deleted column',

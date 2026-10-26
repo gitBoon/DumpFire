@@ -9,12 +9,15 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { db } from '$lib/server/db';
+import { db, sqlite } from '$lib/server/db';
+import { runBackfills } from '$lib/server/db/migrate';
 import {
 	activityLog,
+	boards,
 	cardLabels,
 	cards,
 	categories,
+	columns,
 	settings,
 	subtasks,
 	taskRequests,
@@ -395,7 +398,8 @@ const creatingRoutes: {
 					requesterEmail: 'rita@example.test',
 					title: card.title,
 					priority: card.priority,
-					accessToken: 'b'.repeat(64)
+					// One of its own, so that a test can accept several.
+					accessToken: crypto.randomUUID().replace(/-/g, '').padEnd(64, 'b')
 				})
 				.returning()
 				.get();
@@ -460,6 +464,35 @@ describe.each(creatingRoutes)('creating a card by $name', ({ source, ready, then
 			['card_created', 'Shipped'],
 			['card_completed', '"Shipped": created in Done']
 		]);
+	});
+
+	it('commits a card created outside an upstream column, at its creation and by its creator, so the start-up repair finds nothing (milestone 22)', async () => {
+		const options = makeBoard({ owner, name: 'With Options', columns: ['Ideas', 'To Do'] });
+		db.update(columns).set({ role: 'options' }).where(eq(columns.id, options.cols['Ideas'].id)).run();
+		const ideas = makeBoard({ owner, name: 'Ideas board', columns: ['New Ideas'] });
+		db.update(boards).set({ kind: 'ideas' }).where(eq(boards.id, ideas.board.id)).run();
+		const other = makeBoard({ owner, name: 'Another kind', columns: ['Doing'] });
+		db.update(boards).set({ kind: 'portfolio' }).where(eq(boards.id, other.board.id)).run();
+		const into = async (column: Column, title: string) => cardRow((await create(column, { title, priority: 'low' })).cardId);
+
+		const toDo = await into(A.cols['To Do'], 'Committed work');
+		const done = await into(A.cols['Complete'], 'Done already');
+		const elsewhere = await into(other.cols['Doing'], 'On a board of another kind');
+		const option = await into(options.cols['Ideas'], 'An option');
+		const idea = await into(ideas.cols['New Ideas'], 'An idea');
+
+		for (const row of [toDo, done, elsewhere]) {
+			expect({ title: row.title, committedAt: row.committedAt, committedBy: row.committedBy }).toEqual({
+				title: row.title,
+				committedAt: row.createdAt,
+				committedBy: owner.id
+			});
+		}
+		expect([option, idea].map((row) => [row.committedAt, row.committedBy])).toEqual([
+			[null, null],
+			[null, null]
+		]);
+		expect(runBackfills(sqlite).committedFilled).toBe(0);
 	});
 
 	it('records a card created in any other column as created, and nothing more', async () => {
@@ -611,6 +644,18 @@ describe('duplicating a card from the board page', () => {
 		expect(copyOf(working).columnId).toBe(A.cols['In Progress'].id);
 	});
 
+	it('commits the copy as it is created, by whoever copied it, not by the original’s creator (milestone 22)', async () => {
+		const someoneElse = makeUser();
+		const working = makeCard(A.cols['In Progress'], { title: 'Building', createdBy: someoneElse.id });
+		const page = onThePage(Object.values(A.cols));
+
+		await duplicateCard(working as unknown as CardType, page, A.board.id, []);
+
+		const copy = copyOf(working);
+		expect([copy.committedAt, copy.committedBy]).toEqual([copy.createdAt, owner.id]);
+		expect(runBackfills(sqlite).committedFilled).toBe(0);
+	});
+
 	it('keeps the copy beside the original on a board with no other column, where it is completed', async () => {
 		const B = makeBoard({ owner, name: 'B', columns: ['Done', 'Complete'] });
 		const done = makeCard(B.cols['Complete'], { title: 'Finished', completedAt: '2026-10-01 00:00:00' });
@@ -645,12 +690,17 @@ describe('duplicating a card from the board page', () => {
 describe('the parent card the dashboard makes for a sub-board', () => {
 	it('goes to the first column, by position, that is not a Complete column', () => {
 		const cols = [
-			{ id: 3, title: 'In Progress', position: 2 },
-			{ id: 1, title: 'Done', position: 0 },
-			{ id: 2, title: 'To Do', position: 1 }
+			{ id: 3, title: 'In Progress', position: 2, role: null },
+			{ id: 1, title: 'Done', position: 0, role: null },
+			{ id: 2, title: 'To Do', position: 1, role: null }
 		];
 		expect(firstOpenColumn(cols)?.id).toBe(2);
-		expect(firstOpenColumn([{ id: 1, title: 'Complete', position: 0 }, { id: 2, title: 'done', position: 1 }])).toBeUndefined();
+		expect(
+			firstOpenColumn([
+				{ id: 1, title: 'Complete', position: 0, role: null },
+				{ id: 2, title: 'done', position: 1, role: null }
+			])
+		).toBeUndefined();
 		expect(firstOpenColumn([])).toBeUndefined();
 	});
 

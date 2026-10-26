@@ -14,6 +14,7 @@
  *     stream's reconnect or a return to the tab reads again.
  */
 import type { Fetch } from '$lib/signed-out';
+import type { BoardKind } from '$lib/column-role';
 import type { CategoryType, ColumnType, LabelType, MilestoneType } from '$lib/types';
 
 /** One board above this one, as the breadcrumbs show it. */
@@ -36,7 +37,8 @@ export type BoardBlockerType = {
  * the page.
  */
 export type BoardContentsData = {
-	board: { id: number; name: string; emoji: string | null; parentCardId: number | null };
+	/** `kind`: a delivery board, or an ideas board whose every column is upstream (milestone 22). */
+	board: { id: number; name: string; emoji: string | null; parentCardId: number | null; kind: BoardKind };
 	breadcrumbs: BreadcrumbType[];
 	columns: ColumnType[];
 	categories: CategoryType[];
