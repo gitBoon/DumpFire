@@ -1,7 +1,7 @@
 ---
 title: "Testing"
 category: Testing
-version: 1.159
+version: 1.160
 status: Living
 date: 2026-10-27
 tags:
@@ -66,7 +66,7 @@ reports `9695 passed`:
   while two real worker threads check passwords (`it.skipIf(CPUS < 3)`, with `CPUS` from
   `os.availableParallelism()`). With fewer than three, the two threads and the test's own
   share them, and the half-a-check and 100 ms bounds could fail the image build for a fault that is
-  not there; the run then reports `8834 passed | 2 skipped`, which is a pass. See
+  not there; the run then reports those two as skipped, which is a pass. See
   [Deployment](deployment.md#the-suite-inside-the-image-build).
 
 `npm run verify` is to be run before every image is built, as the quick check. The image

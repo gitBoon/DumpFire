@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.52
+version: 1.53
 status: As-Built
 date: 2026-10-27
 tags:
@@ -370,7 +370,7 @@ Every 500 XP earns a new level. Each person's level, XP and progress to the next
 
 ## Customisation
 
-### 16 Built-In Themes
+### 17 Built-In Themes
 
 Chosen from the Theme list, each theme by its icon and name, at the foot of the **More** menu on the dashboard and on a board, or from the theme button on the other pages. The choice is kept in your browser.
 

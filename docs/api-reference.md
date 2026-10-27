@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.102
+version: 1.103
 status: As-Built
 date: 2026-10-27
 tags:
@@ -520,7 +520,7 @@ new, `DELETE /comments/:commentId` (card 2283); these operations, answers and fi
   - A webhook's `url` is an `http` or `https` address of at most 2,048 characters, trimmed
     (`url must be an http or https address`); any text was stored, and `''` was accepted on
     an update. Its `secret` is text of at most 256 characters. Its `events` are a list of the
-    six names, each trimmed (`events must be a list`, `events[n] must be one of: ...`): text
+    webhook event names (six at 1.2.0), each trimmed (`events must be a list`, `events[n] must be one of: ...`): text
     and `null` were stored, and `null` stopped the board's deliveries.
   - `labelId` on `POST /cards/:cardId/labels` is an id, `400` `labelId must be an id`: `0`,
     `''` and `false` were `labelId is required`, and `true` and a list went on.
