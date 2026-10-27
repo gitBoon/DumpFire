@@ -13,6 +13,12 @@ import type { RequestHandler } from './$types';
  * If ?boardId=N is provided, returns activity for that specific board.
  * If no boardId is provided, returns activity across all accessible boards
  * (for use in the All Tasks activity panel).
+ *
+ * Newest first, and by id within a second (card 2512), as the audit log and
+ * the dashboard's recent activity are: entries are stored in whole seconds,
+ * and a move that commits a card and completes it wrote both in one second,
+ * so ordered by the time alone "Completed card" could be listed below
+ * "Committed card".
  */
 export const GET: RequestHandler = async ({ url, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
@@ -32,7 +38,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 			.select()
 			.from(activityLog)
 			.where(eq(activityLog.boardId, boardId))
-			.orderBy(desc(activityLog.createdAt))
+			.orderBy(desc(activityLog.createdAt), desc(activityLog.id))
 			.limit(50)
 			.all();
 
@@ -60,7 +66,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 			})
 			.from(activityLog)
 			.leftJoin(boards, eq(activityLog.boardId, boards.id))
-			.orderBy(desc(activityLog.createdAt))
+			.orderBy(desc(activityLog.createdAt), desc(activityLog.id))
 			.limit(100)
 			.all();
 	} else if (accessibleIds.length === 0) {
@@ -82,7 +88,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 			.from(activityLog)
 			.leftJoin(boards, eq(activityLog.boardId, boards.id))
 			.where(inArray(activityLog.boardId, accessibleIds))
-			.orderBy(desc(activityLog.createdAt))
+			.orderBy(desc(activityLog.createdAt), desc(activityLog.id))
 			.limit(100)
 			.all();
 	}

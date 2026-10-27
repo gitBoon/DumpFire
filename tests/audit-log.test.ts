@@ -25,7 +25,7 @@ import { db, sqlite } from '$lib/server/db';
 import { activityLog } from '$lib/server/db/schema';
 import { toIso } from '$lib/timestamps';
 import { api } from './helpers/api';
-import { makeBoard, makeCard, makeUser, resetDb } from './helpers/fixtures';
+import { addBoardMember, makeBoard, makeCard, makeUser, resetDb } from './helpers/fixtures';
 
 beforeEach(resetDb);
 
@@ -292,5 +292,42 @@ describe('the two audit routes page by a cursor, the last entry held (card 2387)
 		// One person's: the person's own index, as the plan and the documents say (the review).
 		expect(person[0]).toMatch(/idx_activity_log_user_id_created_at \(user_id=\? AND \(created_at,rowid\)<\(\?,\?\)\)/);
 		for (const plan of [...plain, ...board, ...person]) expect(plan).not.toMatch(/\bSCAN\b/);
+	});
+});
+
+/**
+ * `GET /api/activity`, the board page's activity panel and All Tasks'
+ * (card 2512). Entries are stored in whole seconds, and it was ordered by the
+ * time alone, so a second's entries came back in whatever order SQLite read
+ * them: a move that committed a card and completed it could list "Completed
+ * card" below "Committed card". Within a second the later entry, by id, comes
+ * first, as on the audit routes above and the dashboard's recent activity.
+ */
+describe('the activity list puts a second’s entries newest first by id (card 2512)', () => {
+	it('on one board, across every board to an administrator, and across the boards a member can open', async () => {
+		const w = world();
+		const member = makeUser({ username: 'member' });
+		// The member opens Alpha and Bravo, not Charlie.
+		for (const board of [w.A, w.B]) addBoardMember(board.board, member, 'viewer');
+		const at = '2026-10-08 09:00:00';
+		const entry = (boardId: number, cardId: number, action: string) =>
+			db.insert(activityLog).values({ boardId, cardId, userId: w.owner.id, action, source: 'ui', createdAt: at }).returning().get().id;
+		// Written in turn in one second, on two boards: Bravo's first, then
+		// Alpha's commitment and completion, then Bravo's again.
+		const tied = [
+			entry(w.B.board.id, w.b.id, 'card_moved'),
+			entry(w.A.board.id, w.a.id, 'card_committed'),
+			entry(w.A.board.id, w.a.id, 'card_completed'),
+			entry(w.B.board.id, w.b.id, 'card_moved')
+		];
+		const read = async (query: string, user: ReturnType<typeof makeUser>) => {
+			const res = await api('GET', `/api/activity${query}`, { user });
+			expect(res.status, JSON.stringify(res.body)).toBe(200);
+			return (res.body as { id: number; createdAt: string }[]).filter((row) => row.createdAt === at).map((row) => row.id);
+		};
+
+		expect(await read(`?boardId=${w.A.board.id}`, w.owner)).toEqual([tied[2], tied[1]]);
+		expect(await read('', w.admin)).toEqual([...tied].reverse());
+		expect(await read('', member)).toEqual([...tied].reverse());
 	});
 });

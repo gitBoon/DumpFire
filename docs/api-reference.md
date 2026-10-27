@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.101
+version: 1.102
 status: As-Built
 date: 2026-10-27
 tags:
@@ -341,6 +341,12 @@ The OpenAPI document's version went from `1.3.0` to `1.3.1` with these correctio
   still be in the board's first column that is not an Options column. Until this release every
   card had to be, so a card raised in another column and left alone was `progressed`, and one
   moved into the first column `created`.
+- **`POST /boards/:boardId/columns` stores the `wipLimit` sent** (card 2520), read as
+  `PUT /columns/:columnId` reads it: a whole number, `0` meaning no limit; `null`, a negative
+  number or a value that is not a number is stored as `0`, and a fraction loses its fractional
+  part. Left out, it is `0`. Until this release a limit sent with a new column was not stored,
+  and was set only by a `PUT` after. The web application's `POST /api/columns` reads and
+  stores it the same way.
 
 ### Changes on 2026-10-26
 
@@ -3094,6 +3100,10 @@ and a position that would put a column at or left of it. A title or role sent ba
 column holds it changes nothing and is not refused. On an ideas board a column whose title
 makes it To Do, On Hold or Complete is `409` on create and rename (card 2463). A v1 column
 created with no position still goes after the board's last column.
+
+**`wipLimit`** on `POST /api/v1/boards/:boardId/columns` is read as this operation reads it
+and stored, `0` when it is left out (card 2520, version 1.3.1). Until 2026-10-27 a limit sent
+with a new column was not stored.
 
 `POST /api/v1/columns/:columnId/convert`, which made a column holding cards the Options column,
 was removed before it was released (card 2527): every delivery board has its Options column

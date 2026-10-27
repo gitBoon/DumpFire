@@ -15,7 +15,8 @@ const spec = {
 			'and the 409 for a batch that was refused lists every item of it that was at fault.\n\n' +
 			'**Changed on 2026-10-27 (version 1.3.1).** Corrections to answers: (1) GET /api/v1/reports/activity puts a card in the created bucket when it was raised in the window, not edited since and no move of it is recorded in the activity log ' +
 			'(card_moved, card_moved_in, card_moved_away, card_sent, card_committed, card_returned_to_options or card_reopened, in either spelling); a card raised before 2026-10-01, when the board\'s drag route recorded no move, must also still be in the board\'s first column that is not an Options column. ' +
-			'Until this release every card had to be, so a card raised in another column and left alone was progressed (card 2480).\n\n' +
+			'Until this release every card had to be, so a card raised in another column and left alone was progressed (card 2480); ' +
+			'(2) POST /api/v1/boards/{boardId}/columns stores the wipLimit sent, read as PUT /api/v1/columns/{columnId} reads it, and 0 when it is left out. Until this release a limit sent with a new column was not stored (card 2520).\n\n' +
 			'**Changed on 2026-10-26 (version 1.3.0).** Upstream of the commitment point: options, committed work and ideas boards (milestone 22). Three operations and two filters are new, and these answers and fields changed: ' +
 			'(1) a card is an **option**, upstream of the commitment point, when it is in a board\'s Options column (a column whose role is options) or in any column of an ideas board (a board whose kind is ideas); every other card is committed work. ' +
 			'Every delivery board has its Options column, made with it, and one made before this release is given an empty one at the far left when the server starts (item 3); no board is an ideas board until someone makes one. Every card made before this release is committed, its committedAt being its createdAt, and a board answers every operation as before but for its Options column among its columns, the fields named here and the entry an archive of unfinished work writes (card_abandoned, item 12); ' +
@@ -3128,7 +3129,9 @@ const spec = {
 									},
 									wipLimit: {
 										type: ['integer', 'null'],
-										description: 'Not stored: a new column has no WIP limit (0), and one is set with PUT /columns/{columnId}.'
+										description:
+											'Work-in-progress limit, read as PUT /columns/{columnId} reads it: a whole number, 0 meaning no limit, and 0 when it is left out. null, a negative number or a value that is not a number is stored as 0; a fraction loses its fractional part. ' +
+											'Until 2026-10-27 (version 1.3.1) it was not stored, and a new column had no limit.'
 									}
 								}
 							},

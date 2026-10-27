@@ -257,7 +257,9 @@ export type CreateColumnOptions = {
  * (card 2117, R1): `title` text, trimmed, of 1 to 200 characters; `position`
  * a number; `color` a colour written `#rrggbb`. A title that was missing gave
  * "New Column", text was stored as a position, and any colour was stored.
- * The answer is the column as written.
+ * `wipLimit` is read as `updateColumn` reads it (`wipLimitOf`), 0 when it is
+ * left out; until card 2520 it was not stored. The answer is the column as
+ * written.
  *
  * `role` is `'options'` or null (milestone 22). Since card 2527 a delivery
  * board is made with its Options column, so `'options'` is refused, 409, on
@@ -292,9 +294,10 @@ export function createColumn(caller: SessionUser | null, at: { boardId?: number 
 		color = readColour(body, 'color', {});
 	}
 	const role = readChoice(body, 'role', { from: COLUMN_ROLES, nullable: true, says: roleRefusal(body.role) }) ?? null;
-	// A new column is made with no WIP limit, and `wipLimit` is not stored
-	// here. No new column is the Options column (card 2527), so nothing reads
-	// it: a limit sent with a new column is not stored, as before.
+	// The WIP limit, read as the update reads it (card 2520): a whole number,
+	// 0 for none, and so when it is left out. A limit sent with a new column
+	// was not stored, so it was set only by a change after.
+	const wipLimit = 'wipLimit' in body ? wipLimitOf(body.wipLimit) : 0;
 
 	// No position sent: at 0 from the page, after the board's last through v1.
 	let unplaced = 0;
@@ -309,7 +312,7 @@ export function createColumn(caller: SessionUser | null, at: { boardId?: number 
 	const board = boardForOptions(boardId);
 	const ideasTitle = board.kind === 'ideas' ? ideasTitleRefusal(title) : null;
 	if (ideasTitle) throw error(409, ideasTitle);
-	const refusal = optionsRoleRefusal(board, null, { title, retitled: true, role, wipLimit: undefined });
+	const refusal = optionsRoleRefusal(board, null, { title, retitled: true, role, wipLimit });
 	if (refusal) throw error(409, refusal);
 	position = optionsPlacement(board, null, role, position, opts.placeAfterLast ? 'end' : 'start');
 
@@ -320,6 +323,7 @@ export function createColumn(caller: SessionUser | null, at: { boardId?: number 
 			title,
 			position: position ?? unplaced,
 			color: color ?? '#6366f1',
+			wipLimit,
 			role
 		})
 		.returning()
