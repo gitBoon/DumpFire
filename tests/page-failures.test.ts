@@ -5952,6 +5952,12 @@ describe('the SFTP host key on the admin page, src/lib/components/admin/Schedule
 // `finally`. The functions are run as written, with stand-ins for `fetch`.
 
 /** The named functions of a page's script, as written, made into JavaScript that can be run. */
+/** The folded strip's two timings, as the board page declares them (card 2535), for the page's functions run here. */
+function parkedConstants(): string {
+	const page = readFileSync(join(ROOT, 'src/routes/board/[id]/+page.svelte'), 'utf8');
+	return ['PULSE_MS', 'PARKED_SAID_MS'].map((name) => new RegExp(`const ${name} = \\d+;`).exec(page)![0]).join(' ');
+}
+
 function runnable(tree: ts.SourceFile, names: string[]): string {
 	return ts.transpileModule(names.map((name) => functionNamed(tree, name).getText()).join('\n'), {
 		compilerOptions: { target: ts.ScriptTarget.ES2022 }
@@ -6824,17 +6830,23 @@ describe('the board page draws from its board state and reads the board alone (c
 				confirmOnHold: (held: { note: string; pendingUpdates: unknown[] }) => {
 					confirmed.push({ note: held.note, pendingUpdates: held.pendingUpdates });
 					return next.confirm();
-				}
+				},
+				// The folded strip's own, as they are (card 2535): no Options column here, so none folded.
+				foldedDropItems: dndHandlers.foldedDropItems,
+				foldedDropOver: dndHandlers.foldedDropOver,
+				parkedInOptionsSaid: dndHandlers.parkedInOptionsSaid
 			};
 			const said: unknown[][] = [];
 			const names = [
 				'holdDrag', 'takeDragHold', 'takeDragFrom', 'stopDrag', 'takeCardItems', 'handleCardDndConsider', 'handleColumnDndConsider', 'handleCardDndFinalize', 'handleColumnDndFinalize',
-				'releaseOnHold', 'putBackOnHold', 'confirmOnHold', 'cancelOnHold', 'releaseBlocked', 'closeBlocked'
+				'releaseOnHold', 'putBackOnHold', 'confirmOnHold', 'cancelOnHold', 'releaseBlocked', 'closeBlocked', 'isFoldedOptions', 'sayParked', 'pulseParked'
 			];
 			const page = new Function(
 				'boardState', 'dndHandlers', 'TRIGGERS', 'toasts', 'data', 'currentUser', 'playCompleteSound', 'playMoveSound', 'queueCompletionPrompt', 'warnIfStillBlocked',
 				'copyColumns', 'undoDrag', 'moveCards', 'patchCard', 'reorderColumns', 'withCurrentCards', 'SOURCES', 'isOptionsColumn',
 				'let dragHold = null; let dragFrom = null; let onHoldRelease = null; let onHoldFrom = null; let blockedRelease = null; let blockedState = { show: false }; let onHoldState = { show: false };\n' +
+					'let optionsOpen = false; let optionsColumn = null; let optionsDropOver = false; let optionsParked = 0; let optionsPulse = false; let parkedSaid = \'\'; let parkedTimer; let pulseTimer;\n' +
+					`${parkedConstants()}\n` +
 					`${runnable(board(), names)}\n` +
 					`return { ${names.join(', ')}, get onHoldState() { return onHoldState; }, get blockedState() { return blockedState; } };`
 			)(
@@ -7084,13 +7096,15 @@ describe('the board page draws from its board state and reads the board alone (c
 		const keyed = (trigger: string, items: unknown[], source: string = SOURCES.POINTER) => ({ detail: { items, info: { trigger, id: 5, source } } });
 		const LETS = [
 			'dragHold', 'dragFrom', 'onHoldRelease', 'onHoldFrom', 'blockedRelease', 'blockedState', 'onHoldState', 'inlineEditCardId', 'inlineEditValue', 'boardNameDraft', 'editingBoardName',
-			'selectionMode', 'selectedCards', 'contextMenu', 'confirmState'
+			'selectionMode', 'selectedCards', 'contextMenu', 'confirmState',
+			// The folded strip's (card 2535): no Options column here, so none folded.
+			'optionsOpen', 'optionsColumn', 'optionsDropOver', 'optionsParked', 'optionsPulse', 'parkedSaid', 'parkedTimer', 'pulseTimer'
 		];
 		const NAMES = [
 			'holdDrag', 'takeDragHold', 'takeDragFrom', 'stopDrag', 'takeCardItems', 'handleCardDndConsider', 'handleCardDndFinalize', 'releaseOnHold', 'putBackOnHold', 'cancelOnHold',
 			'releaseBlocked', 'closeBlocked', 'cyclePriority', 'saveInlineEdit', 'cancelInlineEdit', 'saveBoardName', 'handleBulkPriority', 'clearSelection', 'confirmDeleteCard',
 			// Milestone 22, the S3 review's E6: whether the card is an option, which the archive's words ask.
-			'isOptionOnBoard', 'handleBulkDelete'
+			'isOptionOnBoard', 'handleBulkDelete', 'isFoldedOptions', 'sayParked', 'pulseParked'
 		];
 
 		function livePage(columns: ReturnType<typeof column>[]) {
@@ -7134,7 +7148,10 @@ describe('the board page draws from its board state and reads the board alone (c
 			const next: { finalize: unknown } = { finalize: null };
 			const dnd = {
 				handleCardDndFinalize: async (columnId: number, items: unknown[], cols: unknown[]) =>
-					typeof next.finalize === 'function' ? next.finalize(columnId, items, cols) : next.finalize
+					typeof next.finalize === 'function' ? next.finalize(columnId, items, cols) : next.finalize,
+				foldedDropItems: dndHandlers.foldedDropItems,
+				foldedDropOver: dndHandlers.foldedDropOver,
+				parkedInOptionsSaid: dndHandlers.parkedInOptionsSaid
 			};
 			const said: unknown[][] = [];
 			// The confirm dialog's Confirm, pressed when the test says.
@@ -7146,6 +7163,7 @@ describe('the board page draws from its board state and reads the board alone (c
 				'copyColumns', 'undoDrag', 'moveCards', 'patchCard', 'reorderColumns', 'withCurrentCards', 'api', 'bulkOps', 'boardActions', 'PRIORITY_CYCLE', 'PRIORITY_WORDS',
 				'cardActions', 'removeCard', 'showConfirm', 'BULK_HOLD_MS', 'cardWindow', 'isUpstreamColumn',
 				`let ${LETS.map((name) => `${name} = null`).join(', ')};\n` +
+					`${parkedConstants()}\n` +
 					"blockedState = { show: false }; onHoldState = { show: false }; selectedCards = new Set(); contextMenu = { show: false }; selectionMode = true; confirmState = { show: false };\n" +
 					`${runnable(board(), NAMES)}\n` +
 					`return { ${NAMES.join(', ')}, vars: { ${LETS.map((name) => `get ${name}() { return ${name}; }, set ${name}(v) { ${name} = v; }`).join(', ')} } };`
@@ -7298,6 +7316,146 @@ describe('the board page draws from its board state and reads the board alone (c
 			} finally {
 				live.state.dispose();
 			}
+		});
+
+		// Card 2535: a card dropped on the folded Options strip, driven as
+		// svelte-dnd-action drives it. Its cards are hidden, so the index the
+		// library gives means nothing: the card goes last, the strip lit while
+		// the card is over it and left folded, its count pulsed and the drop
+		// said, once. An open Options column keeps the index.
+		describe('a drop on the folded Options strip (card 2535)', () => {
+			/** Options (1) holding cards 1 and 2, To Do (2) holding card 5; the Options column folded or open. */
+			function strip(open: boolean, said: string[] = []) {
+				const one = card(1, 1, 0);
+				const two = card(2, 1, 1);
+				const five = card(5, 2);
+				const live = livePage([column(1, 0, 'Options', [one, two]), column(2, 1, 'To Do', [five])]);
+				live.page.vars.optionsColumn = live.columns()[0];
+				live.page.vars.optionsOpen = open;
+				live.page.vars.optionsDropOver = false;
+				live.page.vars.optionsParked = 0;
+				live.page.vars.optionsPulse = false;
+				live.page.vars.parkedSaid = '';
+				const sent: number[][] = [];
+				live.next.finalize = (columnId: number, items: Card[], cols: Column[]) => {
+					sent.push(items.map((k) => k.id));
+					return { ...dropped('committed')(columnId, items, cols), movedCards: [{ card: five, fromName: 'To Do', toName: 'Options', isComplete: false }], said };
+				};
+				return { live, one, two, five, sent };
+			}
+
+			it('lights the folded strip while a card is over it, puts the card last whatever index it was given, leaves the strip folded and says it', async () => {
+				const { live, one, two, five, sent } = strip(false);
+				const { page } = live;
+				try {
+					page.handleCardDndConsider(2, keyed(TRIGGERS.DRAG_STARTED, []));
+					page.handleCardDndConsider(1, keyed(TRIGGERS.DRAGGED_ENTERED, [one, five, two]));
+					expect(page.vars.optionsDropOver).toBe(true);
+					page.handleCardDndConsider(1, keyed(TRIGGERS.DRAGGED_OVER_INDEX, [five, one, two]));
+					expect(page.vars.optionsDropOver).toBe(true);
+					page.handleCardDndConsider(1, keyed(TRIGGERS.DRAGGED_LEFT, [one, two]));
+					expect(page.vars.optionsDropOver).toBe(false);
+					page.handleCardDndConsider(1, keyed(TRIGGERS.DRAGGED_ENTERED, [five, one, two]));
+					expect(page.vars.optionsDropOver).toBe(true);
+
+					await page.handleCardDndFinalize(2, keyed(TRIGGERS.DROPPED_INTO_ANOTHER, []));
+					await page.handleCardDndFinalize(1, keyed(TRIGGERS.DROPPED_INTO_ZONE, [five, one, two]));
+					expect(sent).toEqual([[1, 2, 5]]);
+					expect(places(live.columns())).toEqual([[1, [1, 2, 5]], [2, []]]);
+					expect(page.vars.optionsDropOver).toBe(false);
+					expect(page.vars.optionsOpen).toBe(false);
+					expect(page.vars.optionsParked).toBe(1);
+					expect(page.vars.optionsPulse).toBe(true);
+					vi.advanceTimersByTime(100);
+					expect(page.vars.parkedSaid).toBe('"Card 5" parked in Options');
+					// The pulse ends by itself, with no animation to end it (reduced
+					// motion), and the words go a few seconds on (the review's F1, F6).
+					vi.advanceTimersByTime(600);
+					expect(page.vars.optionsPulse).toBe(false);
+					vi.advanceTimersByTime(4300);
+					expect(page.vars.parkedSaid).toBe('"Card 5" parked in Options');
+					vi.advanceTimersByTime(100);
+					expect(page.vars.parkedSaid).toBe('');
+				} finally {
+					live.state.dispose();
+				}
+			});
+
+			it('says nothing more when the commitment toast has said the card went back to Options', async () => {
+				const { live, one, two, five } = strip(false, ['Returned "Card 5" to Options']);
+				try {
+					live.page.handleCardDndConsider(2, keyed(TRIGGERS.DRAG_STARTED, []));
+					live.page.handleCardDndConsider(1, keyed(TRIGGERS.DRAGGED_ENTERED, [one, five, two]));
+					await live.page.handleCardDndFinalize(2, keyed(TRIGGERS.DROPPED_INTO_ANOTHER, []));
+					await live.page.handleCardDndFinalize(1, keyed(TRIGGERS.DROPPED_INTO_ZONE, [one, five, two]));
+					vi.advanceTimersByTime(100);
+					expect(live.page.vars.optionsParked).toBe(1);
+					expect(live.page.vars.parkedSaid).toBe('');
+				} finally {
+					live.state.dispose();
+				}
+			});
+
+			it('puts a keyboard drag’s card last on the folded strip too', async () => {
+				const { live, one, two, five, sent } = strip(false);
+				try {
+					live.page.handleCardDndConsider(2, keyed(TRIGGERS.DRAG_STARTED, [five], SOURCES.KEYBOARD));
+					await live.page.handleCardDndFinalize(2, keyed(TRIGGERS.DROPPED_INTO_ANOTHER, [], SOURCES.KEYBOARD));
+					await live.page.handleCardDndFinalize(1, keyed(TRIGGERS.DROPPED_INTO_ZONE, [five, one, two], SOURCES.KEYBOARD));
+					expect(sent).toEqual([[1, 2, 5]]);
+					expect(live.page.vars.optionsOpen).toBe(false);
+				} finally {
+					live.state.dispose();
+				}
+			});
+
+			it('keeps the card where it was dropped in an open Options column, with no light and no pulse', async () => {
+				const { live, one, two, five, sent } = strip(true);
+				try {
+					live.page.handleCardDndConsider(2, keyed(TRIGGERS.DRAG_STARTED, []));
+					live.page.handleCardDndConsider(1, keyed(TRIGGERS.DRAGGED_ENTERED, [one, five, two]));
+					expect(live.page.vars.optionsDropOver).toBe(false);
+					await live.page.handleCardDndFinalize(2, keyed(TRIGGERS.DROPPED_INTO_ANOTHER, []));
+					await live.page.handleCardDndFinalize(1, keyed(TRIGGERS.DROPPED_INTO_ZONE, [one, five, two]));
+					expect(sent).toEqual([[1, 5, 2]]);
+					expect(places(live.columns())).toEqual([[1, [1, 5, 2]], [2, []]]);
+					expect(live.page.vars.optionsParked).toBe(0);
+					expect(live.page.vars.optionsPulse).toBe(false);
+					vi.advanceTimersByTime(100);
+					expect(live.page.vars.parkedSaid).toBe('');
+				} finally {
+					live.state.dispose();
+				}
+			});
+
+			it('puts the light out on any drop, not only one on the folded strip (the review’s F3)', async () => {
+				const { live, five } = strip(false);
+				try {
+					live.page.vars.optionsDropOver = true;
+					live.next.finalize = dropped('committed');
+					await live.page.handleCardDndFinalize(2, keyed(TRIGGERS.DROPPED_INTO_ZONE, [five]));
+					expect(live.page.vars.optionsDropOver).toBe(false);
+				} finally {
+					live.state.dispose();
+				}
+			});
+
+			it.each([
+				[false, 'priority'],
+				[true, 'none']
+			] as const)('keeps a sort set on the Options column for a drop on its folded strip, and clears it for one into it open (open: %s; the review’s F5)', async (open, after) => {
+				const { live, one, two, five } = strip(open);
+				try {
+					live.state.setSort(1, 'priority');
+					live.page.handleCardDndConsider(2, keyed(TRIGGERS.DRAG_STARTED, []));
+					live.page.handleCardDndConsider(1, keyed(TRIGGERS.DRAGGED_ENTERED, [one, five, two]));
+					await live.page.handleCardDndFinalize(2, keyed(TRIGGERS.DROPPED_INTO_ANOTHER, []));
+					await live.page.handleCardDndFinalize(1, keyed(TRIGGERS.DROPPED_INTO_ZONE, [one, five, two]));
+					expect(live.state.columnSorts[1]).toBe(after);
+				} finally {
+					live.state.dispose();
+				}
+			});
 		});
 
 		// SHOULD 4: Escape takes the input away, and Chromium's blur then saved it.
@@ -7497,7 +7655,8 @@ describe('the board page draws from its board state and reads the board alone (c
 		const writes = apiWrites();
 		const HELPER = /^(cardActions|boardActions|bulkOps|dndHandlers)\.(\w+)$/;
 		// `commitmentToasts` reads an answer already had and sends nothing (milestone 22).
-		const SENDS_NOTHING = ['navigationClosesWindow', 'findSubBoardName', 'commitmentToasts'];
+		// Nor do the folded strip's three (card 2535): a drop's order, its light and its words.
+		const SENDS_NOTHING = ['navigationClosesWindow', 'findSubBoardName', 'commitmentToasts', 'foldedDropItems', 'foldedDropOver', 'parkedInOptionsSaid'];
 		// The card window's controller holds while each of its sends is out (slice B2c; shown in tests/card-window.test.ts).
 		const WINDOW = /^cardWindow\.(save|archive)$/;
 		const sending: string[] = [];
@@ -7597,7 +7756,8 @@ describe('the board page draws from its board state and reads the board alone (c
 		expect(flat(functionNamed(tree, 'setColumnSort').body!)).toBe('{ boardState.setSort(columnId, sort); openDropdown = null; }');
 		expect(callsOf(tree, 'sortCards')).toEqual([]);
 		expect(tree.getText()).not.toMatch(/\blet columnSorts\b/);
-		expect(flat(functionNamed(tree, 'handleCardDndFinalize'))).toContain("if (boardState.columnSorts[columnId]) boardState.setSort(columnId, 'none');");
+		// Not the Options column's sort for a drop on its folded strip (card 2535's review, F5).
+		expect(flat(functionNamed(tree, 'handleCardDndFinalize'))).toContain("if (!folded && boardState.columnSorts[columnId]) boardState.setSort(columnId, 'none');");
 	});
 });
 

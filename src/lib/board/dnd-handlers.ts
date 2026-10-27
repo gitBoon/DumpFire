@@ -16,6 +16,7 @@
  * action descriptors that the board page uses to update its $state.
  */
 
+import { TRIGGERS } from 'svelte-dnd-action';
 import * as api from '$lib/api';
 import { toasts } from '$lib/stores/toast';
 import type { CardType, ColumnType, OnHoldState, BlockedState } from '$lib/types';
@@ -83,14 +84,51 @@ export function commitmentToasts(answer: unknown, moved: readonly CardType[]): s
 }
 
 /**
+ * The folded Options strip (card 2535): its cards are hidden, so where the
+ * library puts a card dropped on it means nothing; the drop's index was
+ * worked out from cards no one can see. A card dropped on the folded strip
+ * goes last, whatever index was reported. `folded` false (an open Options
+ * column, or any other) gives the items as dropped, so a card lands where it
+ * was pointed. Only the dragged card moves; the others keep their order.
+ */
+export function foldedDropItems<T extends { id: number }>(items: T[], draggedId: unknown, folded: boolean): T[] {
+	if (!folded) return items;
+	const dragged = items.find((card) => card.id === draggedId);
+	if (!dragged) return items;
+	return [...items.filter((card) => card !== dragged), dragged];
+}
+
+/**
+ * Whether the folded strip shows that it will take the card (card 2535),
+ * from the trigger of the consider event its list has just had: lit while a
+ * card is over it (DRAGGED_ENTERED, and DRAGGED_OVER_INDEX as the card moves
+ * about on it), out on anything else (DRAGGED_LEFT, a drag stopped). A drop
+ * puts it out too: the page does that in its finalize.
+ */
+export function foldedDropOver(trigger: unknown): boolean {
+	return trigger === TRIGGERS.DRAGGED_ENTERED || trigger === TRIGGERS.DRAGGED_OVER_INDEX;
+}
+
+/**
+ * What a screen reader is told of a drop on the folded strip (card 2535):
+ * `"<title>" parked in Options`, or the count for several. Nothing when a
+ * commitment toast has said it already (`said`, "Returned ... to Options"),
+ * as that toast is read as it shows, nor when no card came in.
+ */
+export function parkedInOptionsSaid(titles: readonly string[], said: readonly string[]): string {
+	if (said.length > 0 || titles.length === 0) return '';
+	return titles.length === 1 ? `"${titles[0]}" parked in Options` : `${titles.length} cards parked in Options`;
+}
+
+/**
  * Result of processing a card DnD finalize event.
  * The board page reads this to decide what state updates to apply.
  */
 export type DndFinalizeResult =
 	| { action: 'blocked'; blockedState: BlockedState }
 	| { action: 'on-hold'; onHoldState: OnHoldState; updatedColumns: ColumnType[] }
-	/** `updates`: each card's column and place as sent, which the page sets on its cards (card 2280, slice B2b). */
-	| { action: 'committed'; movedCards: { card: CardType; fromName: string; toName: string; isComplete: boolean }[]; updatedColumns: ColumnType[]; updates: { id: number; columnId: number; position: number }[] }
+	/** `updates`: each card's column and place as sent, which the page sets on its cards (card 2280, slice B2b). `said`: the commitment toasts shown (card 2535). */
+	| { action: 'committed'; movedCards: { card: CardType; fromName: string; toName: string; isComplete: boolean }[]; updatedColumns: ColumnType[]; updates: { id: number; columnId: number; position: number }[]; said: string[] }
 	/** The server did not take the move, in its own words: the page puts the columns back and says so. */
 	| { action: 'refused'; message: string };
 
@@ -115,7 +153,7 @@ export async function handleCardDndFinalize(
 	const columns = boardColumns.map(c => ({ ...c, cards: [...c.cards] }));
 	const targetCol = columns.find((c) => c.id === columnId);
 	if (!targetCol) {
-		return { action: 'committed', movedCards: [], updatedColumns: columns, updates: [] };
+		return { action: 'committed', movedCards: [], updatedColumns: columns, updates: [], said: [] };
 	}
 
 	// ── Check: blocked cards moving to Complete ──
@@ -200,7 +238,8 @@ export async function handleCardDndFinalize(
 	} catch {
 		// Nothing more to say.
 	}
-	for (const message of commitmentToasts(answer, movedCards)) toasts.add(message);
+	const said = commitmentToasts(answer, movedCards);
+	for (const message of said) toasts.add(message);
 
 	const movedEntries = movedCards.map(card => {
 		const fromCol = columns.find(c => c.id === card.columnId);
@@ -212,7 +251,7 @@ export async function handleCardDndFinalize(
 		};
 	});
 
-	return { action: 'committed', movedCards: movedEntries, updatedColumns: columns, updates };
+	return { action: 'committed', movedCards: movedEntries, updatedColumns: columns, updates, said };
 }
 
 /**
