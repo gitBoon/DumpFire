@@ -314,6 +314,41 @@ describe('All Tasks, its components joined up through the page (card 2281, slice
 		expect(toastsSaid().filter((said) => said.startsWith('Committed') || said.startsWith('Returned'))).toEqual([]);
 	});
 
+	// Card 2479: All Tasks' Move said nothing of the column's WIP limit, as the
+	// board's drag and card menu did. The load counts each column's cards
+	// before the Complete bucket's cap, so the count is the column's own.
+	it.each([
+		[2, ['⚠ Complete exceeds WIP limit (3/2)']],
+		[1, []]
+	])('warns of a move into a column over its WIP limit, the column holding %i of its 2 before it (card 2479)', async (cardCount, warned) => {
+		const columns = [
+			{ id: 11, boardId: 3, title: 'To Do', position: 0, wipLimit: 0, cardCount: 1 },
+			{ id: 21, boardId: 4, title: 'To Do', position: 0, wipLimit: 1, cardCount: 1 },
+			{ id: 22, boardId: 4, title: 'Complete', position: 1, wipLimit: 2, cardCount }
+		];
+		const target = draw({ columns });
+		const moveTo = async (title: string) => {
+			cardNamed(target, 'Ship').querySelector<HTMLButtonElement>('.move-btn')!.click();
+			flushSync();
+			const modal = target.querySelector('.move-modal')!;
+			const column = modal.querySelector<HTMLSelectElement>('#move-col')!;
+			column.value = [...column.options].find((option) => option.textContent === title)!.value;
+			column.dispatchEvent(new Event('change', { bubbles: true }));
+			flushSync();
+			buttonNamed(modal, 'Move Card').click();
+			await settle();
+		};
+
+		await moveTo('Complete');
+		expect(asked('PUT /api/cards/8').map((request) => request.body)).toEqual([{ columnId: 22, boardId: 4 }]);
+		expect(toastsSaid().filter((said) => said.includes('WIP limit'))).toEqual(warned);
+
+		// Its own column, already at its limit, is not a move into it.
+		await moveTo('To Do');
+		expect(asked('PUT /api/cards/8')).toHaveLength(2);
+		expect(toastsSaid().filter((said) => said.includes('WIP limit'))).toEqual(warned);
+	});
+
 	it('marks the Options column in the Move window, and says a move across the commitment point as the answer names it (milestone 22, the S2 review’s C7 and C10)', async () => {
 		const columns = [
 			{ id: 11, boardId: 3, title: 'To Do', position: 0, role: null },

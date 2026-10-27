@@ -3876,7 +3876,7 @@ describe('the bulk move, src/lib/board/bulk-actions.ts and the board page (card 
 		const said = handle.getText().replace(/\s+/g, ' ');
 
 		expect(said).toContain("const failure = await bulkOps.bulkMove(selectedCards, targetColumnId, targetCol.cards.length, data.board.id, currentUser?.username || '', currentUser?.emoji || '👤', boardState);");
-		expect(said).toContain("if (failure) { toasts.add(failure, 'error', started); } else { clearSelection(); }");
+		expect(said).toContain("if (failure) { toasts.add(failure, 'error', started); } else { clearSelection();");
 		expect(said).not.toContain('boardState.refresh()');
 		// The only clearSelection is the one for a move that was made.
 		const cleared = callsOf(handle, 'clearSelection');
@@ -3884,6 +3884,32 @@ describe('the bulk move, src/lib/board/bulk-actions.ts and the board page (card 
 		const ifFailure = ts.findAncestor(cleared[0], ts.isIfStatement)!;
 		expect(ifFailure.expression.getText()).toBe('failure');
 		expect(isWithin(cleared[0], ifFailure.elseStatement!)).toBe(true);
+	});
+});
+
+describe('the WIP limit warning on every move, src/lib/board/dnd-handlers.ts and the board page (card 2479)', () => {
+	// The drag and the card menu each wrote the warning for themselves; the
+	// bulk move and All Tasks' Move gave none. One helper says it for all four.
+	// The bulk move is run in 'the B2b review, replayed against a real board
+	// state' below, and All Tasks' Move in `tests/all-tasks-page.test.ts`.
+	const column = { title: 'Review', wipLimit: 3 };
+	const board = () => scriptOf('src/routes/board/[id]/+page.svelte');
+	const flat = (node: ts.Node) => node.getText().replace(/\s+/g, ' ');
+
+	it('warns only above the limit, in the words the drag and the menu used, and never for a column with no limit', () => {
+		expect(dndHandlers.wipWarning(column, 2)).toBeNull();
+		expect(dndHandlers.wipWarning(column, 3)).toBeNull();
+		expect(dndHandlers.wipWarning(column, 4)).toBe('⚠ Review exceeds WIP limit (4/3)');
+		expect(dndHandlers.wipWarning({ title: 'Options', wipLimit: 0 }, 40)).toBeNull();
+	});
+
+	it('is the drag’s and the card menu’s, which no longer write the words themselves', () => {
+		const page = readFileSync(join(ROOT, 'src/routes/board/[id]/+page.svelte'), 'utf8');
+		expect(page).not.toContain('exceeds WIP limit');
+		expect(flat(functionNamed(board(), 'moveFromMenu'))).toContain("const overLimit = dndHandlers.wipWarning(col, count + 1); if (overLimit) toasts.add(overLimit, 'warning');");
+		expect(flat(functionNamed(board(), 'handleCardDndFinalize'))).toContain(
+			"const overLimit = destCol ? dndHandlers.wipWarning(destCol, destCol.cards.length) : null; if (overLimit) toasts.add(overLimit, 'warning');"
+		);
 	});
 });
 
@@ -6834,7 +6860,9 @@ describe('the board page draws from its board state and reads the board alone (c
 				// The folded strip's own, as they are (card 2535): no Options column here, so none folded.
 				foldedDropItems: dndHandlers.foldedDropItems,
 				foldedDropOver: dndHandlers.foldedDropOver,
-				parkedInOptionsSaid: dndHandlers.parkedInOptionsSaid
+				parkedInOptionsSaid: dndHandlers.parkedInOptionsSaid,
+				// The WIP limit warning, as it is (card 2479).
+				wipWarning: dndHandlers.wipWarning
 			};
 			const said: unknown[][] = [];
 			const names = [
@@ -7104,7 +7132,9 @@ describe('the board page draws from its board state and reads the board alone (c
 			'holdDrag', 'takeDragHold', 'takeDragFrom', 'stopDrag', 'takeCardItems', 'handleCardDndConsider', 'handleCardDndFinalize', 'releaseOnHold', 'putBackOnHold', 'cancelOnHold',
 			'releaseBlocked', 'closeBlocked', 'cyclePriority', 'saveInlineEdit', 'cancelInlineEdit', 'saveBoardName', 'handleBulkPriority', 'clearSelection', 'confirmDeleteCard',
 			// Milestone 22, the S3 review's E6: whether the card is an option, which the archive's words ask.
-			'isOptionOnBoard', 'handleBulkDelete', 'isFoldedOptions', 'sayParked', 'pulseParked'
+			'isOptionOnBoard', 'handleBulkDelete', 'isFoldedOptions', 'sayParked', 'pulseParked',
+			// Card 2479: the bulk move, and its WIP limit warning.
+			'handleBulkMove'
 		];
 
 		function livePage(columns: ReturnType<typeof column>[]) {
@@ -7151,7 +7181,9 @@ describe('the board page draws from its board state and reads the board alone (c
 					typeof next.finalize === 'function' ? next.finalize(columnId, items, cols) : next.finalize,
 				foldedDropItems: dndHandlers.foldedDropItems,
 				foldedDropOver: dndHandlers.foldedDropOver,
-				parkedInOptionsSaid: dndHandlers.parkedInOptionsSaid
+				parkedInOptionsSaid: dndHandlers.parkedInOptionsSaid,
+				// The WIP limit warning, as it is (card 2479).
+				wipWarning: dndHandlers.wipWarning
 			};
 			const said: unknown[][] = [];
 			// The confirm dialog's Confirm, pressed when the test says.
@@ -7599,6 +7631,57 @@ describe('the board page draws from its board state and reads the board alone (c
 				live.state.dispose();
 			}
 		});
+
+		// Card 2479: the bulk move said nothing of the column's WIP limit, as
+		// the drag and the card menu did. Card 7 is in Review already, so it is
+		// not counted twice: Review holds 3 once the move is made, not 4.
+		it.each([
+			[2, [['⚠ Review exceeds WIP limit (3/2)', 'warning']]],
+			[3, []]
+		])('a bulk move into a column whose WIP limit is %i warns once if it is now over it, counted from the column as it is (card 2479)', async (wipLimit, warned) => {
+			const live = livePage([column(1, 0, 'In Progress', [card(5, 1, 0), card(6, 1, 1)]), { ...column(2, 1, 'Review', [card(7, 2, 0)]), wipLimit }]);
+			try {
+				live.page.vars.selectedCards = new Set([5, 6, 7]);
+				const moving = live.page.handleBulkMove(2);
+				await vi.advanceTimersByTimeAsync(0);
+				expect(live.asked.map((a) => a.what)).toEqual(['PUT /api/cards/reorder']);
+				live.asked[0].answer(json(200, { success: true }));
+				await moving;
+				expect(live.columns()[1].cards.map((k) => k.id).sort()).toEqual([5, 6, 7]);
+				expect(live.said).toEqual(warned);
+				expect(live.page.vars.selectedCards.size).toBe(0);
+			} finally {
+				live.state.dispose();
+			}
+		});
+
+		it('a bulk move of cards already in a column over its WIP limit is not a move into it, and warns of nothing (card 2479)', async () => {
+			const live = livePage([column(1, 0, 'In Progress', [card(5, 1, 0)]), { ...column(2, 1, 'Review', [card(6, 2, 0), card(7, 2, 1)]), wipLimit: 1 }]);
+			try {
+				live.page.vars.selectedCards = new Set([6, 7]);
+				const moving = live.page.handleBulkMove(2);
+				await vi.advanceTimersByTimeAsync(0);
+				live.asked[0].answer(json(200, { success: true }));
+				await moving;
+				expect(live.said).toEqual([]);
+			} finally {
+				live.state.dispose();
+			}
+		});
+
+		it('a bulk move that is refused says the refusal and no WIP limit warning (card 2479)', async () => {
+			const live = livePage([column(1, 0, 'In Progress', [card(5, 1, 0), card(6, 1, 1)]), { ...column(2, 1, 'Review', [card(7, 2, 0)]), wipLimit: 1 }]);
+			try {
+				live.page.vars.selectedCards = new Set([5, 6]);
+				const moving = live.page.handleBulkMove(2);
+				await vi.advanceTimersByTimeAsync(0);
+				live.asked[0].answer(json(403, { message: 'No' }));
+				await moving;
+				expect(live.said).toEqual([['No', 'error', 'started']]);
+			} finally {
+				live.state.dispose();
+			}
+		});
 	});
 
 	// SHOULD 5: the category window emptied its box as it handed the name on,
@@ -7656,7 +7739,8 @@ describe('the board page draws from its board state and reads the board alone (c
 		const HELPER = /^(cardActions|boardActions|bulkOps|dndHandlers)\.(\w+)$/;
 		// `commitmentToasts` reads an answer already had and sends nothing (milestone 22).
 		// Nor do the folded strip's three (card 2535): a drop's order, its light and its words.
-		const SENDS_NOTHING = ['navigationClosesWindow', 'findSubBoardName', 'commitmentToasts', 'foldedDropItems', 'foldedDropOver', 'parkedInOptionsSaid'];
+		// Nor does the WIP limit warning, which only words it (card 2479).
+		const SENDS_NOTHING = ['navigationClosesWindow', 'findSubBoardName', 'commitmentToasts', 'foldedDropItems', 'foldedDropOver', 'parkedInOptionsSaid', 'wipWarning'];
 		// The card window's controller holds while each of its sends is out (slice B2c; shown in tests/card-window.test.ts).
 		const WINDOW = /^cardWindow\.(save|archive)$/;
 		const sending: string[] = [];

@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.50
+version: 1.51
 status: As-Built
 date: 2026-10-27
 tags:
@@ -402,7 +402,7 @@ Audio feedback for card actions:
 
 ### Column Customisation
 
-- **WIP limits** — set maximum cards per column with visual warnings
+- **WIP limits** — set maximum cards per column with visual warnings. Every move that takes a column over its limit says so: a drag, the card menu's Move to, a bulk move and All Tasks' Move window (from 27 October 2026, card 2479: a bulk move and All Tasks' Move said nothing). A bulk move warns once, counting each card in the column once, and a move within a column is not a move into it
 - **Colour coding** — customise column header colours. A colour stored before 15 October 2026 that is not a plain colour is shown grey until a new one is picked; every other colour looks as it did. A column's, a label's, a category's or a board group's is fixed by picking a colour in its own colour picker. A card's or a subtask's colour tag has no control on the page, so it is fixed through the API: with the tracking wrapper, `update-card` or `update-subtask` with `-ColorTag '#rrggbb'`, quoted, or `-ColorTag none` to clear it. Renaming any of them sends the old colour back unchanged and keeps it, grey or not
 - **Add Card button** — toggle quick-add on specific columns; the choice is saved with the column. A column called "To Do" or "Todo", in any capitals and with any space around the name, always has it, with the double-click to add a card, as All Tasks already treats such columns (from 20 October 2026: "Todo" did not; "To-Do" is not one)
 - **Reorderable** — drag columns to rearrange

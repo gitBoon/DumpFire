@@ -14,7 +14,7 @@
 	import { toasts } from '$lib/stores/toast';
 	import { isCompleteColumnTitle, optionsSuffix } from '$lib/column-role';
 	import { answerBody, failureMessage, leftMilestoneNotice } from '$lib/api';
-	import { commitmentToasts } from '$lib/board/dnd-handlers';
+	import { commitmentToasts, wipWarning } from '$lib/board/dnd-handlers';
 	import { playMoveSound, playCompleteSound } from '$lib/utils/sounds';
 
 	/** What All Tasks' load gave it, passed on as it is. */
@@ -67,6 +67,12 @@
 		// And a move across the commitment point, as the board's drag says it
 		// (milestone 22, the S2 review's C7).
 		for (const message of commitmentToasts(answer, [moveCard])) toasts.add(message);
+		// And a move into a column now over its WIP limit, as the board says it
+		// (card 2479), counted from the load's count of the column's cards.
+		if (targetCol && moveColumnId !== moveCard.columnId) {
+			const overLimit = wipWarning(targetCol, (targetCol.cardCount ?? 0) + 1);
+			if (overLimit) toasts.add(overLimit, 'warning');
+		}
 
 		// Play appropriate sound
 		if (isCompletingMove) {

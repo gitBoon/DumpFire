@@ -101,6 +101,13 @@
  * a run had shown every one of them equal to its old pin with
  * `avgLeadTimeDays` taken out of the answer before hashing (a temporary edit
  * of `hashOf`): nothing else in any answer moved. No count of reads moved.
+ *
+ * Card 2479 gave each column of All Tasks' answer its `cardCount`, for the
+ * Move window's WIP limit warning. The 5 hashes that moved (each marked
+ * "re-pinned (2479)") were taken again on the code as it is, once a run had
+ * shown every one of them equal to its old pin with `cardCount` taken out of
+ * the answer before hashing (a temporary edit of `hashOf`): nothing else in
+ * All Tasks' answer moved. No count of reads moved.
  */
 import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -340,11 +347,11 @@ type Pin = { reads: number; access: number; hash: string };
  */
 const PINS: Record<string, Record<Kind, Pin>> = {
 	'All Tasks': {
-		owner: { reads: 26, access: 1, hash: 'caa58a1419d874bb' }, // 42 → 30, 4 → 1; re-pinned; 30 → 26 (card 2400); re-pinned (0060); re-pinned (2463)
-		member: { reads: 26, access: 1, hash: '677f1c79d87df2c7' }, // 45 → 33, 4 → 1; re-pinned; 33 → 26 (card 2400); re-pinned (0060); re-pinned (2463)
-		mate: { reads: 27, access: 1, hash: '6cf5821b309ad6ea' }, // 54 → 39, 4 → 1; re-pinned; 39 → 27 (card 2400); re-pinned (0060); re-pinned (2463)
-		admin: { reads: 20, access: 0, hash: 'caa58a1419d874bb' }, // 20 → 20, 0 → 0; re-pinned; re-pinned (0060); re-pinned (2463)
-		outsider: { reads: 24, access: 1, hash: 'e7e183da2208a668' } // 36 → 24, 4 → 1; re-pinned (0060); re-pinned (2463)
+		owner: { reads: 26, access: 1, hash: 'e882bc2d88157a5b' }, // 42 → 30, 4 → 1; re-pinned; 30 → 26 (card 2400); re-pinned (0060); re-pinned (2463); re-pinned (2479)
+		member: { reads: 26, access: 1, hash: 'eddb00f6deced885' }, // 45 → 33, 4 → 1; re-pinned; 33 → 26 (card 2400); re-pinned (0060); re-pinned (2463); re-pinned (2479)
+		mate: { reads: 27, access: 1, hash: '08a41f05fbf2c9ac' }, // 54 → 39, 4 → 1; re-pinned; 39 → 27 (card 2400); re-pinned (0060); re-pinned (2463); re-pinned (2479)
+		admin: { reads: 20, access: 0, hash: 'e882bc2d88157a5b' }, // 20 → 20, 0 → 0; re-pinned; re-pinned (0060); re-pinned (2463); re-pinned (2479)
+		outsider: { reads: 24, access: 1, hash: 'c7071971a8df2e46' } // 36 → 24, 4 → 1; re-pinned (0060); re-pinned (2463); re-pinned (2479)
 	},
 	'All To Do': {
 		owner: { reads: 24, access: 1, hash: 'efa78b76a2bb5ddd' }, // 38 → 26, 4 → 1; re-pinned, 27 with B's card in A's goal; 27 → 24 (card 2400); re-pinned (0060); re-pinned (2463)
