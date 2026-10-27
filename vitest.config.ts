@@ -34,6 +34,14 @@ export default defineConfig({
 			LOG_LEVEL: 'ERROR'
 		},
 		// Each test file runs in its own process and so gets its own database.
-		pool: 'forks'
+		pool: 'forks',
+		// Sized for a busy machine, not an idle one (cards 2513 and 2540). The
+		// tests that walk src/ or compile every .svelte file take a second or
+		// two alone, and ran past vitest's default 5 s when the whole suite ran
+		// alongside svelte-check. A hook past the default 10 s fails its whole
+		// file with no test named, and that file's tests are not counted. A
+		// real hang still fails, only later.
+		testTimeout: 20_000,
+		hookTimeout: 30_000
 	}
 });

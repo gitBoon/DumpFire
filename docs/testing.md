@@ -1,7 +1,7 @@
 ---
 title: "Testing"
 category: Testing
-version: 1.158
+version: 1.159
 status: Living
 date: 2026-10-27
 tags:
@@ -232,6 +232,32 @@ sequenceDiagram
     T->>DB: assert on the rows, not just the status
 ```
 
+### Timeouts
+
+`vitest.config.ts` gives every test 20 s (`testTimeout`) and every `beforeAll`, `beforeEach`,
+`afterEach` and `afterAll` hook 30 s (`hookTimeout`), in place of vitest's 5 s and 10 s
+(cards 2513 and 2540). They are sized for a busy machine: the whole suite on the default
+worker count, often alongside `svelte-check` or another full run.
+
+- **A test past its timeout (card 2513).** The tests that walk `src/` or compile every
+  `.svelte` file take a second or two alone. Under load, five of them ran past 5 s in one full
+  run on 2026-10-27, and passed alone and in the next run.
+- **A hook past its timeout (card 2540).** A hook that times out fails its whole file, and
+  vitest names no failing test and does not count the file's tests: the run ends
+  "1 failed | 104 passed" files with tens of tests fewer than expected. That happened four
+  times on 2026-10-27, in builders' runs alongside `svelte-check`; a hook timeout is the very
+  likely cause. Should it happen again, run once more with
+  `--reporter=default --reporter=json --outputFile=<a scratch path>`: the JSON names the file
+  and its message.
+
+A timeout asserts nothing, so a longer one hides no fault: a real hang still fails, only
+later. A test or file that needs longer still sets its own (`{ timeout: 30_000 }`, or a
+number after the function). Some set a lower one than the suite's, sized against the old
+defaults, and are left as they are: `withChecks(5)` and `withChecks(6)` in `tests/gate.test.ts`,
+and 10 s in `tests/test-helpers.test.ts` (two `sendAround()` tests) and `tests/webhooks.test.ts`
+(the closed-port test). None depends on failing at that time. A `vi.waitFor(..., { timeout })`
+inside a test is its own bound (1 s unless given), and these settings do not change it.
+
 ## The Pieces
 
 | File | What it does |
@@ -422,8 +448,12 @@ waits up to four seconds on a timer before it is answered (card 2177), so the te
 
 So `expect(await heldInTurn([D, D, D].map((ip) => wrongAt(name, ip)))).toEqual([2000, 4000, 4000])`
 reads as what a person would wait, and a test of requests sent together passes them to one
-`heldFor` call. A request that is neither answered nor waiting on a timer after 200 rounds
-fails the test rather than hang it.
+`heldFor` call. A request that is neither answered nor waiting on a timer is still working
+on the real clock (a route's first request loads its modules from disk), so `heldFor` waits
+for it to become one or the other, up to 10 real seconds by `performance.now()`, which is not
+faked, and then fails the test rather than hang it. It gave up after 200 rounds of letting
+requests run until 2026-10-27, which a loaded machine ran through in about 100 ms while the
+first `/logout` of a test was very likely still loading (found with cards 2513 and 2540).
 
 The waits take no real time; the password checks do. The account these tests sign in to is
 re-hashed at cost 4, about a millisecond a check, but a sign-in at a name that is no account
@@ -431,7 +461,9 @@ is checked against `DUMMY_HASH`, at cost 12 (card 2192), on the test's own threa
 200 ms alone, and more than twice that under the whole suite, where a test making eleven of
 them ran past vitest's 5 s default (card 2279). So a test that makes five or more passes
 `withChecks(n)` as its timeout, `n` the checks it makes: 5 s, and 1.5 s a check on top. A
-timeout asserts nothing, so it is sized for a loaded machine. A test that times out leaves
+timeout asserts nothing, so it is sized for a loaded machine. It was sized against the old 5 s
+default: `withChecks(5)` (12.5 s) and `withChecks(6)` (14 s) are now below the suite's 20 s
+(see [Timeouts](#timeouts)), and are left as they are. A test that times out leaves
 its sign-ins still running, counting into the next test's state, so a timeout here can show
 as a wrong wait or a wrong status in the test after it.
 
