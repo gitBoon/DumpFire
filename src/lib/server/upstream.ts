@@ -25,12 +25,15 @@ import { optionsAging } from '$lib/board/board-view';
 import { parseStamp, toStamp } from '$lib/timestamps';
 
 /**
- * How a `column_converted_to_options` entry's detail ends: ` (column <id>)`.
+ * How a `column_converted_to_options` entry's detail ended: ` (column <id>)`.
  * The activity log has no column of its own for a column, so the conversion
- * names it here, at the end of the detail, after the quoted title, where no
+ * named it here, at the end of the detail, after the quoted title, where no
  * title can put it; `optionsSince` looks for it there (milestone 22, the S1b
- * review's B2). A `card_committed` entry ends with `commitmentSuffix`
- * instead, which names two columns.
+ * review's B2). Nothing writes a column conversion now: it went before
+ * release, when every delivery board was given its Options column (card
+ * 2527), but the entries a milestone 22 build wrote are still read. A
+ * `card_committed` entry ends with `commitmentSuffix` instead, which names
+ * two columns.
  */
 export function conversionSuffix(columnId: number): string {
 	return ` (column ${columnId})`;
@@ -83,7 +86,8 @@ const later = (a: string | null | undefined, b: string | null | undefined): stri
  * B2): the latest of its creation, its latest `card_returned_to_options`
  * entry, and the latest conversion that made it one, each in either
  * spelling. The conversions are the column's, `scope.columnId`, made the
- * Options column, and the board's made an ideas board (card 2463). A card
+ * Options column, which only a milestone 22 build recorded (nothing has
+ * since card 2527), and the board's made an ideas board (card 2463). A card
  * converted where it stood is an option from the conversion, not from its
  * creation.
  *
@@ -250,7 +254,7 @@ const ACTS: Record<string, keyof Pick<UpstreamFigures, 'committedFromOptions' | 
 	[CARD_SENT]: 'sentOn'
 };
 
-/** The end of a conversion entry's detail, ` (column <id>)` (`conversionSuffix`), read back. */
+/** The end of a column conversion entry's detail, ` (column <id>)` (`conversionSuffix`), read back from the entries written before card 2527. */
 const CONVERTED_COLUMN = / \(column (\d+)\)$/;
 
 /**
@@ -277,8 +281,8 @@ const CONVERTED_COLUMN = / \(column (\d+)\)$/;
  *
  * Options now and their aging are read as they stand, whatever the window:
  * an option's age runs from the latest of its creation, its latest return to
- * options and the latest conversion of its column or of its board to an ideas
- * board, a conversion counting only if the card has not arrived from another
+ * options and the latest conversion of its column (recorded only before card
+ * 2527) or of its board to an ideas board, a conversion counting only if the card has not arrived from another
  * board since (the rule of `optionsSince`, the S1b review's B2 and decision
  * M22-20), in whole days, as the Options strip shows it. Four reads in all,
  * however many boards and columns (the S3 review's E3). `now` is for tests.
@@ -339,7 +343,8 @@ export function upstreamFigures(boardIds: readonly number[] | null, from: string
 	figures.discardRate = outcomes === 0 ? null : figures.discarded / outcomes;
 
 	// The options now, and when each became one: the latest of its creation,
-	// its latest return to options and its column's latest conversion, as
+	// its latest return to options and its column's latest conversion, if one
+	// was recorded before card 2527, as
 	// `optionsSince` reads for one column, here for all of them at once, so
 	// that the reads do not grow with the boards (the S3 review's E3).
 	const optionsFrom = `FROM cards c JOIN columns col ON col.id = c.column_id JOIN boards b ON b.id = col.board_id
@@ -366,8 +371,8 @@ export function upstreamFigures(boardIds: readonly number[] | null, from: string
 		else arrived.set(`${cardId}:${boardId}`, later(arrived.get(`${cardId}:${boardId}`), at)!);
 	}
 	// Only on the boards that hold options now, whose columns are the ones asked
-	// about: each column's latest conversion to the Options column, and each
-	// board's to an ideas board (card 2463).
+	// about: each column's latest conversion to the Options column, as
+	// recorded before card 2527, and each board's to an ideas board (card 2463).
 	const converted = new Map<number, string>();
 	const convertedBoards = new Map<number, string>();
 	const conversions = sqlite
@@ -451,7 +456,8 @@ export type TimeInOptions = { cardId: number; optionSince: string; committedAt: 
  * It became an option at the latest of the moments `optionsSince` reads for
  * the Options strip (the S1b review's B2), each taken before the commitment:
  * its creation, its latest return to options, and the latest conversion of
- * the column it left, which the commitment's detail names
+ * the column it left (recorded only before card 2527), which the
+ * commitment's detail names
  * (`commitmentSuffix`; the S4a review's H3), or of that column's board to an
  * ideas board (card 2463). The conversion counts only if
  * the card was on that column's board when it happened: a `card_moved_in`
@@ -492,7 +498,8 @@ export function timeInOptions(boardIds: readonly number[], from: string, to: str
 		.all(...cardIds, ...storedActions(ACTIONS.cardReturnedToOptions)) as { cardId: number; at: string }[];
 	// The conversions on the boards of the columns the cards left, by the
 	// index that leads on the board, each with the column it made an option of:
-	// the column it converted, or, for a board made an ideas board (card 2463),
+	// the column it converted (an entry written before card 2527), or, for a
+	// board made an ideas board (card 2463),
 	// each of the columns left that are on that board.
 	const left = [...new Set(committed.map((c) => c.left).filter((id): id is number => id !== null))];
 	const conversions =

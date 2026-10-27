@@ -46,7 +46,7 @@
 	import { isCompleteColumn, isOnHoldColumn, matchesSearch } from '$lib/utils/card-utils';
 	// The add-card columns: "To Do" or "Todo", trimmed, any capitals (card 2280, slice B5a).
 	// The still-blocked warning keeps its own test of the title (warnIfStillBlocked).
-	import { isOptionsColumn, isTodoColumnTitle, isUpstreamColumn } from '$lib/column-role';
+	import { isOptionsColumn, isOptionsTitle, isTodoColumnTitle, isUpstreamColumn, optionsSuffix } from '$lib/column-role';
 	import { playMoveSound, playCompleteSound } from '$lib/utils/sounds';
 
 	// Board-specific modules
@@ -60,10 +60,10 @@
 	// A board's kind and Send to board (milestone 22, card 2463): what is decided and sent, in a module the tests run.
 	import * as ideasBoard from '$lib/board/ideas-board';
 	import { CARD_GONE, CardWindow, type CardWindowSave } from '$lib/board/card-window.svelte';
-	import { copyColumns, insertColumn, moveCards, patchCard, placeColumn, removeColumn, reorderColumns, undoDrag, withCurrentCards } from '$lib/board/board-patches';
+	import { copyColumns, insertColumn, moveCards, patchCard, removeColumn, reorderColumns, undoDrag, withCurrentCards } from '$lib/board/board-patches';
 	import { BULK_HOLD_MS, type Release } from '$lib/board/refresh-schedule';
 	import type { BoardContentsData } from '$lib/board/contents-answer';
-	import { OPTION_AGING_DAYS, openingView, optionsAging, readBoardView, readOptionsOpen, resolveListColumn, viewFromUrl, withViewParams, writeBoardView, writeOptionsOpen, type BoardViewChoice } from '$lib/board/board-view';
+	import { NARROW_WIDTH, OPTION_AGING_DAYS, openingView, optionsAging, readBoardView, readOptionsOpen, resolveListColumn, scrollPastFoldedStrip, viewFromUrl, withViewParams, writeBoardView, writeOptionsOpen, type BoardViewChoice } from '$lib/board/board-view';
 
 	// Components
 	import CardModal from '$lib/components/CardModal.svelte';
@@ -506,21 +506,12 @@
 	let newColumnTitle = $state('');
 	let newColumnColor = $state('#6366f1');
 	let newColumnPosition = $state('end');
-	/** 'options' for the board's Options column (milestone 22). */
-	let newColumnRole = $state<'options' | null>(null);
-	/** The Add Column window was opened from Add Options Column: "Options column" starts ticked. */
-	let addColumnAsOptions = $state(false);
-
-	function openAddColumn(asOptions: boolean) {
-		addColumnAsOptions = asOptions;
-		showAddColumnModal = true;
-	}
 
 	// The column answered is put on the board, with no read; a refusal keeps
 	// the window open, and says why (slice B2b).
 	async function addColumn() {
 		const started = toasts.navigation();
-		const written = await boardState.write(null, () => boardActions.addColumn(data.board.id, newColumnTitle, newColumnColor, newColumnPosition, boardState.columns, newColumnRole), {
+		const written = await boardState.write(null, () => boardActions.addColumn(data.board.id, newColumnTitle, newColumnColor, newColumnPosition, boardState.columns), {
 			refused: 'The column was not added.',
 			noAnswer: 'No answer from the server. The column may not have been added.'
 		});
@@ -535,18 +526,16 @@
 		showAddColumnModal = false;
 		newColumnTitle = '';
 		newColumnPosition = 'end';
-		newColumnRole = null;
 	}
 
 	// ─── The Options column (milestone 22, card 2459) ────────────────────────
 
-	/** The board's Options column, if it has one; an ideas board has none. */
-	const optionsColumn = $derived(boardState.columns.find(isOptionsColumn) ?? null);
 	/**
-	 * A delivery board with no Options column can add one, by someone who can
-	 * edit it (the S1b review's U11: a viewer is not offered it).
+	 * The board's Options column: every delivery board has one, made with it
+	 * (card 2527); an ideas board has none, and nor has a board read before
+	 * the start-up step has given it one, so null is still handled.
 	 */
-	const canAddOptions = $derived(boardState.board.kind !== 'ideas' && optionsColumn === null && boardState.canEdit);
+	const optionsColumn = $derived(boardState.columns.find(isOptionsColumn) ?? null);
 
 	/**
 	 * Whether this viewer has the Options column open; collapsed to a strip with
@@ -584,78 +573,31 @@
 		document.querySelector<HTMLElement>(open ? '.options-column .options-collapse' : '.options-column .options-strip')?.focus();
 	}
 
+	/**
+	 * At narrow widths the board opens scrolled past the folded strip to the
+	 * first committed column, so To Do is not cut off (card 2527, R13). Done
+	 * as a board is opened, or the board view chosen in place of the list,
+	 * not as the strip is folded later. It reads a boolean, not `boardView`
+	 * itself, which every navigation reassigns: a same-board link would
+	 * otherwise jump a board scrolled on a phone back to To Do (the S2
+	 * review's P1).
+	 */
+	// A closure: boardView is declared further down the page.
+	const boardShown = $derived.by(() => boardView.view !== 'list');
+	$effect(() => {
+		void optionsBoardId;
+		if (!boardShown) return;
+		untrack(() => {
+			if (!optionsColumn || optionsOpen) return;
+			void nextTick().then(() => scrollPastFoldedStrip(document.querySelector<HTMLElement>('.columns-wrapper'), window.matchMedia(`(max-width: ${NARROW_WIDTH}px)`).matches));
+		});
+	});
+
 	/** The strip's options aging (ruling g), as of the last tick of the page's clock. */
 	const optionsAgingNow = $derived.by(() => {
 		void tick;
 		return optionsColumn ? optionsAging(optionsColumn.cards) : { oldestDays: null, over: 0 };
 	});
-
-	/** What a change of a column's role says when it is refused or unanswered. */
-	const ROLE_WORDS: WriteWords = {
-		refused: 'The Options column was not changed.',
-		noAnswer: 'No answer from the server. The Options column may not have been changed.'
-	};
-
-	/** The column as answered, put on the board in its place (the Options column at the far left). */
-	function takeColumn(columnId: number) {
-		return (columns: ColumnType[], answer: Record<string, unknown> | null) => {
-			if (!answer || typeof answer.position !== 'number') return columns;
-			return placeColumn(columns, columnId, { role: (answer.role as string | null) ?? null, position: answer.position, wipLimit: Number(answer.wipLimit) || 0 });
-		};
-	}
-
-	/**
-	 * "Make this the Options column…" (ruling i). An empty column, archived
-	 * cards included, is given the role at once: no card changes. One holding
-	 * cards is converted, cards and all, once the page has asked, naming how
-	 * many live and archived cards become options; the count asked about goes
-	 * with the request, and the server refuses a column that holds another
-	 * number by then.
-	 */
-	async function makeOptionsColumn(column: ColumnType) {
-		const started = toasts.navigation();
-		let archived = 0;
-		try {
-			const res = await fetch(`/api/boards/${data.board.id}/archive`);
-			if (!res.ok) throw new Error(String(res.status));
-			archived = ((await res.json()) as { columnId: number }[]).filter((c) => c.columnId === column.id).length;
-		} catch {
-			toasts.add(`Could not count the archived cards in "${column.title}". Nothing was changed.`, 'error', started);
-			return;
-		}
-		const live = column.cards.length;
-		if (live + archived === 0) {
-			const written = await boardState.write(null, () => boardActions.updateColumn(column.id, { role: 'options' }, data.board.id), ROLE_WORDS, takeColumn(column.id));
-			if (!written.ok) {
-				toasts.add(written.failure, 'error', started);
-				return;
-			}
-			// Said as the conversion says it (the S1b review's U9).
-			toasts.add(`"${column.title}" is now the Options column`);
-			return;
-		}
-		showConfirm(
-			'Convert to the Options column',
-			api.optionsConversionWarning(column.title, live, archived),
-			'Convert',
-			async () => {
-				const written = await boardState.write(null, () => boardActions.convertColumn(column.id, live + archived), ROLE_WORDS, takeColumn(column.id));
-				if (!written.ok) {
-					toasts.add(written.failure, 'error', started);
-					return;
-				}
-				toasts.add(`"${column.title}" is now the Options column`);
-			},
-			false
-		);
-	}
-
-	/** "Stop being the Options column": an empty one only; the server says so of an archived card. */
-	async function stopOptionsColumn(column: ColumnType) {
-		const started = toasts.navigation();
-		const written = await boardState.write(null, () => boardActions.updateColumn(column.id, { role: null }, data.board.id), ROLE_WORDS, takeColumn(column.id));
-		if (!written.ok) toasts.add(written.failure, 'error', started);
-	}
 
 	// ─── The board's kind (milestone 22, card 2463) ──────────────────────────
 
@@ -869,10 +811,10 @@
 	}
 
 	function confirmDeleteColumn(colId: number, colTitle: string) {
-		// The Options column holding options is refused (ruling m): said at once,
-		// in the server's words, rather than asked and then refused (the S1b
-		// review's U5). Archived ones the page does not hold go with it.
-		// And a column of an ideas board holding ideas, the same (the S5a review's L2).
+		// A column of an ideas board holding ideas is refused (the S5a review's
+		// L2): said at once, in the server's words, rather than asked and then
+		// refused (the S1b review's U5). Archived ones the page does not hold go
+		// with it. The Options column is never offered a delete (card 2527).
 		const refused = ideasBoard.columnDeleteRefusal(boardState.columns, colId, boardState.board.kind);
 		if (refused) {
 			toasts.add(refused, 'error');
@@ -1849,9 +1791,7 @@
 				{canManage}
 				isSubBoard={boardState.breadcrumbs && boardState.breadcrumbs.length > 0}
 				boardId={data.board.id}
-				onAddColumn={() => openAddColumn(false)}
-				{canAddOptions}
-				onAddOptionsColumn={() => openAddColumn(true)}
+				onAddColumn={() => (showAddColumnModal = true)}
 				boardKind={boardState.board.kind}
 				onMakeIdeas={makeIdeasBoard}
 				onMakeDelivery={makeDeliveryBoard}
@@ -1909,13 +1849,14 @@
 							class="options-strip"
 							onclick={() => setOptionsOpen(true)}
 							title="Open the Options column"
-							aria-label="Open the Options column, {column.title}: {column.cards.length} {column.cards.length === 1 ? 'option' : 'options'}{optionsAgingNow.oldestDays !== null ? `, the oldest ${optionsAgingNow.oldestDays} ${optionsAgingNow.oldestDays === 1 ? 'day' : 'days'} old` : ''}{optionsAgingNow.over > 0 ? `, ${optionsAgingNow.over} older than ${OPTION_AGING_DAYS} days` : ''}"
+							aria-expanded="false"
+							aria-label="Open the Options column{isOptionsTitle(column.title) ? '' : `, ${column.title}`}: {column.cards.length} {column.cards.length === 1 ? 'option' : 'options'}{optionsAgingNow.oldestDays !== null ? `, the oldest ${optionsAgingNow.oldestDays} ${optionsAgingNow.oldestDays === 1 ? 'day' : 'days'} old` : ''}{optionsAgingNow.over > 0 ? `, ${optionsAgingNow.over} older than ${OPTION_AGING_DAYS} days` : ''}"
 						>
 							<span class="options-strip-count">{column.cards.length}</span>
 							{#if optionsAgingNow.over > 0}
 								<span class="options-strip-aging" title="{optionsAgingNow.over} older than {OPTION_AGING_DAYS} days">{optionsAgingNow.over} &gt;{OPTION_AGING_DAYS}d</span>
 							{/if}
-							<span class="options-strip-title">{column.title}<span class="options-suffix">{' (Options)'}</span></span>
+							<span class="options-strip-title">{column.title}{#if optionsSuffix(column)}<span class="options-suffix">{optionsSuffix(column)}</span>{/if}</span>
 							{#if optionsAgingNow.oldestDays !== null}
 								<span class="options-strip-oldest" title="The oldest option's age">oldest {optionsAgingNow.oldestDays}d</span>
 							{/if}
@@ -1928,9 +1869,6 @@
 						{column}
 						{canManage}
 						boardKind={boardState.board.kind}
-						hasOptionsColumn={optionsColumn !== null}
-						onMakeOptions={makeOptionsColumn}
-						onStopOptions={stopOptionsColumn}
 						onCollapse={() => setOptionsOpen(false)}
 						aging={isIdeasBoard ? agingOf(column) : null}
 						editing={editingColumn === column.id}
@@ -2174,13 +2112,10 @@
 {#if showAddColumnModal}
 	<AddColumnModal
 		columns={boardState.columns}
-		{canAddOptions}
-		asOptions={addColumnAsOptions}
-		onAdd={({ title, position, color, role }) => {
+		onAdd={({ title, position, color }) => {
 			newColumnTitle = title;
 			newColumnPosition = position;
 			newColumnColor = color;
-			newColumnRole = role;
 			addColumn();
 		}}
 		onClose={() => (showAddColumnModal = false)}

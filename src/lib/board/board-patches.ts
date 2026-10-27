@@ -211,15 +211,6 @@ export function patchColumnStill<C extends ColumnLike>(columns: C[], columnId: n
 	return patchColumn(columns, columnId, stillSet(column as Omit<C, 'cards'>, set, values)).columns;
 }
 
-/**
- * A column's fields as a write answered them, and every column back in order
- * of position (milestone 22): a column made the Options column, or converted,
- * is answered at the far left, and is drawn there with no read.
- */
-export function placeColumn<C extends ColumnLike>(columns: C[], columnId: number, fields: Partial<Omit<C, 'cards'>>): C[] {
-	return [...patchColumn(columns, columnId, fields).columns].sort((a, b) => a.position - b.position);
-}
-
 /** Add a column, before the first placed after it. */
 export function insertColumn<C extends ColumnLike>(columns: C[], column: C): Patched<C> {
 	const next = [...columns];

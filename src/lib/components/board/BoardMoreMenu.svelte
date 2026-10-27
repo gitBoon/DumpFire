@@ -4,8 +4,7 @@
 
   Where to go from the board (Planning and All To Do, scoped to it), the
   panels (Activity Log, Statistics, Archived Cards), what is done to the
-  board as a whole (Add Column, Add Options Column on a delivery board that
-  has none (milestone 22), Burndown on a delivery board, Manage Categories,
+  board as a whole (Add Column, Burndown on a delivery board, Manage Categories,
   Bulk Select, Share Board and the board's kind for someone who manages it
   ("Make this an ideas board…", or "Make this a delivery board…" on an ideas
   board; card 2463), and Delete Sub-board when the board is one), and the
@@ -29,10 +28,8 @@
 		canManage,
 		isSubBoard,
 		boardId,
-		canAddOptions = false,
 		boardKind = 'delivery',
 		onAddColumn,
-		onAddOptionsColumn = () => {},
 		onMakeIdeas = () => {},
 		onMakeDelivery = () => {},
 		onToggleActivity,
@@ -52,12 +49,9 @@
 		/** The board is a sub-board: Delete Sub-board is offered. */
 		isSubBoard: boolean;
 		boardId: number;
-		/** A delivery board with no Options column: Add Options Column is offered (milestone 22). */
-		canAddOptions?: boolean;
 		/** The board's kind (milestone 22, card 2463): an ideas board has no burndown, and its owner can make it a delivery board again. */
 		boardKind?: string;
 		onAddColumn: () => void;
-		onAddOptionsColumn?: () => void;
 		/** "Make this an ideas board…": the page counts the cards and asks first. */
 		onMakeIdeas?: () => void;
 		/** "Make this a delivery board…": the page says why not while the board holds cards, and asks first when it holds none. */
@@ -151,13 +145,6 @@
 		</span>
 		Add Column
 	</button>
-	<!-- A delivery board with no Options column can add one (milestone 22):
-	     the Add Column window, opened as an Options column called Ideas. -->
-	{#if canAddOptions}
-		<button class="hm-item" role="menuitem" tabindex="-1" onclick={() => onAddOptionsColumn()} title="Add an Options column at the far left, for ideas not yet committed">
-			<span class="hm-icon">💡</span> Add Options Column
-		</button>
-	{/if}
 	<!-- An ideas board has no burndown: nothing on it is committed work (milestone 22). -->
 	{#if boardKind !== 'ideas'}
 		<a class="hm-item" role="menuitem" tabindex="-1" href="/burndown?boardIds={boardId}">

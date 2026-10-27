@@ -15,13 +15,12 @@
   `{#each}` that `animate:flip` and the columns' drag zone need, and styles
   this header's hover from it (`.kanban-column:hover`).
 
-  The board's Options column (milestone 22, card 2459) shows its title with
-  a "(Options)" after it, which is not part of the title and is not renamed
-  with it; it has no WIP limit, always offers "Add idea", and can be
-  collapsed back to its strip. Someone who manages a delivery board with no
-  Options column can make one of a column whose title is not To Do, On Hold
-  or Complete ("Make this the Options column…": the page asks first when it
-  holds cards), and make it an ordinary column again once it is empty.
+  The board's Options column (milestone 22, card 2459) has no WIP limit,
+  always offers "Add idea", and can be folded back to its strip. Every
+  delivery board has one, called Options, made with the board (card 2527):
+  it is not renamed or deleted, so it offers neither, only its colour, its
+  sort and the fold. Should it carry another title, until the start-up step
+  renames it, a "(Options)" follows the title, which is not part of it.
 
   Every column of an ideas board (card 2463) is upstream as the Options
   column is: it always offers "Add idea", has no Show Add Task switch, and
@@ -36,16 +35,13 @@
 	import { drawnColour } from '$lib/colours';
 	import { holdFocus } from '$lib/dialog-focus';
 	// "To Do" or "Todo", trimmed, any capitals: All Tasks' rule (card 2280, slice B5a).
-	import { columnRole, isOptionsColumn, isTodoColumnTitle, isUpstreamColumn } from '$lib/column-role';
+	import { isOptionsColumn, isTodoColumnTitle, isUpstreamColumn, optionsSuffix } from '$lib/column-role';
 	import { OPTION_AGING_DAYS } from '$lib/board/board-view';
 
 	let {
 		column,
 		canManage,
 		boardKind = 'delivery',
-		hasOptionsColumn = false,
-		onMakeOptions = () => {},
-		onStopOptions = () => {},
 		onCollapse = () => {},
 		aging = null,
 		editing,
@@ -73,13 +69,7 @@
 		canManage: boolean;
 		/** The board's kind: an ideas board has no Options column (milestone 22). */
 		boardKind?: string;
-		/** The board has an Options column already, this one or another: no second is offered. */
-		hasOptionsColumn?: boolean;
-		/** "Make this the Options column…": the page asks first when the column holds cards. */
-		onMakeOptions?: (column: ColumnType) => void;
-		/** "Stop being the Options column", offered while it is empty. */
-		onStopOptions?: (column: ColumnType) => void;
-		/** Collapse the Options column back to its strip. */
+		/** Fold the Options column back to its strip. */
 		onCollapse?: () => void;
 		/**
 		 * Options aging (ruling g) for a column of an ideas board, which has no
@@ -116,8 +106,8 @@
 	} = $props();
 
 	const isOptions = $derived(isOptionsColumn(column));
-	/** "Make this the Options column…" is offered: a delivery board with none, and a title that means nothing else (ruling x). */
-	const canBecomeOptions = $derived(!isOptions && boardKind !== 'ideas' && !hasOptionsColumn && columnRole(column.title) === null);
+	/** Renamed, given a WIP limit or deleted by someone who manages the board: not the Options column, which keeps its title and stays (card 2527). */
+	const canChange = $derived(canManage && !isOptions);
 	/** Its cards are options: the Options column, or any column of an ideas board (card 2463), which always offers "Add idea" as the Options column does. */
 	const upstream = $derived(isUpstreamColumn(column, boardKind));
 	const addsCards = $derived(upstream || isTodoColumnTitle(column.title) || column.showAddCard);
@@ -126,7 +116,7 @@
 <div class="column-header">
 	<div class="column-top-bar" style="background: {drawnColour(column.color)}"></div>
 	<div class="column-title-row">
-		{#if editing && canManage}
+		{#if editing && canChange}
 			<input
 				class="column-title-input"
 				type="text"
@@ -136,10 +126,19 @@
 				autofocus
 			/>
 		{:else}
+			<!-- The Options column's title is fixed: a press does not rename it (card 2527).
+			     It is out of the Tab order, but the page can still put the focus on
+			     it, as it does on the column a Send left (focusColumn). -->
+			{#if isOptions}
+			<h3 class="column-title fixed-title" tabindex="-1">
+				{column.title}{#if optionsSuffix(column)}<span class="options-suffix">{optionsSuffix(column)}</span>{/if}
+			</h3>
+			{:else}
 			<!-- svelte-ignore a11y_click_events_have_key_events -->
 			<h3 class="column-title" onclick={() => canManage && onStartRename(column)} role="button" tabindex="0">
-				{column.title}{#if isOptions}<span class="options-suffix">{' (Options)'}</span>{/if}
+				{column.title}
 			</h3>
+			{/if}
 		{/if}
 		<span class="column-count" class:wip-over={!isOptions && column.wipLimit > 0 && column.cards.length >= column.wipLimit}>{#if visibleCount !== null}{visibleCount}<span class="of-total">/{column.cards.length}</span>{:else}{column.cards.length}{/if}{#if !isOptions && column.wipLimit > 0}<span class="wip-limit-label">/{column.wipLimit}</span>{/if}</span>
 		{#if sort && sort !== 'none'}
@@ -160,7 +159,7 @@
 			</button>
 		{/if}
 		{#if isOptions}
-			<button class="btn-ghost column-action-btn options-collapse" title="Collapse the Options column" aria-label="Collapse the Options column" onclick={(e) => { e.stopPropagation(); onCollapse(); }}>
+			<button class="btn-ghost column-action-btn options-collapse" title="Collapse the Options column" aria-label="Collapse the Options column" aria-expanded="true" onclick={(e) => { e.stopPropagation(); onCollapse(); }}>
 				<svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M7.5 2.5L4 6l3.5 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
 			</button>
 		{/if}
@@ -199,11 +198,14 @@
 				<!-- svelte-ignore a11y_click_events_have_key_events -->
 				<!-- svelte-ignore a11y_no_static_element_interactions -->
 				<div class="column-menu-dropdown show" onclick={(e) => e.stopPropagation()} use:holdFocus={{ first: '.column-menu-item', onEscape: onCloseDropdowns }}>
+					<!-- No Rename on the Options column, which is always called Options (card 2527). -->
+					{#if !isOptions}
 					<button class="column-menu-item" onclick={() => { onStartRename(column); onCloseDropdowns(); }}>
 						<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M8.5 1.5l2 2L4 10H2v-2l6.5-6.5z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
 						Rename
 					</button>
 					<div class="menu-divider"></div>
+					{/if}
 					<div class="menu-label">Sort by</div>
 					<button class="column-menu-item" class:active-sort={sort === 'date-asc'} onclick={() => onSort(column.id, 'date-asc')}>
 						↑ Oldest first
@@ -225,33 +227,16 @@
 							✕ Clear sort
 						</button>
 					{/if}
-					{#if canManage}
+					<!-- The Options column has nothing here: no Show Add Task (it always
+					     offers Add idea), no WIP limit, and no delete (card 2527). -->
+					{#if canChange}
 					<div class="menu-divider"></div>
-					<!-- The Options role (milestone 22). Made of a column whose title means
-					     nothing else, on a delivery board that has none; taken away once
-					     the column is empty (the server says so of an archived card). -->
-					{#if canBecomeOptions}
-						<button class="column-menu-item" onclick={() => { onCloseDropdowns(); onMakeOptions(column); }}>
-							💡 Make this the Options column…
-						</button>
-					{:else if isOptions}
-						<button
-							class="column-menu-item"
-							disabled={column.cards.length > 0}
-							title={column.cards.length > 0 ? 'Move its options out first' : 'Make this an ordinary column'}
-							onclick={() => { onCloseDropdowns(); onStopOptions(column); }}
-						>
-							Stop being the Options column
-						</button>
-					{/if}
 					{#if !upstream}
 					<button class="column-menu-item" onclick={() => onToggleAddCard(column)}>
 						{column.showAddCard || isTodoColumnTitle(column.title) ? '✓' : '○'} Show Add Task
 					</button>
 					{/if}
-					{#if isOptions}
-						<!-- An Options column has no WIP limit: nothing to set. -->
-					{:else if editingWip}
+					{#if editingWip}
 						<!-- svelte-ignore a11y_click_events_have_key_events -->
 						<!-- svelte-ignore a11y_no_static_element_interactions -->
 						<div class="wip-limit-edit" onclick={(e) => e.stopPropagation()}>
@@ -320,8 +305,6 @@
 		border: none; transition: all var(--duration-fast) var(--ease-out);
 	}
 	.column-menu-item:hover { background: var(--glass-hover); color: var(--text-primary); }
-	.column-menu-item:disabled { opacity: 0.5; cursor: not-allowed; }
-	.column-menu-item:disabled:hover { background: transparent; color: var(--text-secondary); }
 	/* The Options column's "(Options)": not part of the title, and not renamed with it (ruling k). */
 	.options-suffix { font-weight: 500; color: var(--text-tertiary); font-size: 0.8rem; }
 	.column-menu-item.danger { color: var(--accent-rose); }
@@ -333,6 +316,9 @@
 	.column-title-row { display: flex; align-items: center; gap: var(--space-xs); }
 	.column-title { font-size: 0.9rem; font-weight: 600; cursor: pointer; padding: 2px var(--space-xs); border-radius: var(--radius-sm); transition: background var(--duration-fast) var(--ease-out); white-space: nowrap; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 	.column-title:hover { background: var(--glass-hover); }
+	/* The Options column's title, which is not renamed: no pointer and no hover (card 2527). */
+	.column-title.fixed-title { cursor: default; }
+	.column-title.fixed-title:hover { background: none; }
 	.column-title-input { font-size: 0.9rem; font-weight: 600; padding: 2px var(--space-xs); width: 100%; }
 	.column-count {
 		font-size: 0.78rem; font-weight: 700; color: var(--text-secondary);

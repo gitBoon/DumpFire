@@ -10,8 +10,9 @@
  *   - `convertBoardAndRead` and `switchBoardKindAndRead`: the change sent
  *     through the board state, and then the board's contents read again, as
  *     the answer is the board alone and its columns have changed.
- *   - `columnDeleteRefusal`: why a column holding options cannot be deleted,
- *     said before the delete is asked (ruling m; the S5a review's L2).
+ *   - `columnDeleteRefusal`: why a column of an ideas board holding ideas
+ *     cannot be deleted, said before the delete is asked (the S5a review's
+ *     L2). The Options column is never offered a delete (card 2527).
  *   - `sendOption`: a Send through the board state, the card taken off the
  *     board once it is sent and its window closed, and what to say.
  *   - `isUpstreamCard`: whether a card is an option, for All Tasks, from the
@@ -48,9 +49,11 @@ export function hasSubBoards(card: Pick<CardType, 'subBoards' | 'hiddenOpenCount
  * board holding cards, said at once, a live card with a sub-board or a To Do,
  * On Hold or Complete column holding cards, live or archived (the S5a
  * review's L1); else the question, naming the counts and the empty titled
- * columns that go, or, for a board with no card at all, the columns the ideas
- * board's replace (decision M22-18). A hidden or archived sub-board is the
- * server's to refuse (the S5b review's P4).
+ * columns that go, with the Options column when it holds no card, live or
+ * archived, as the server removes it (card 2527, ruling O7), in the board's
+ * order; or, for a board with no card at all, the columns the ideas board's
+ * replace (decision M22-18). A hidden or archived sub-board is the server's
+ * to refuse (the S5b review's P4).
  */
 export function ideasConversion(name: string, columns: readonly ColumnType[], archived: ReadonlyMap<number, number>): KindQuestion {
 	const { live, archived: archivedCount } = counts(columns, archived);
@@ -64,9 +67,11 @@ export function ideasConversion(name: string, columns: readonly ColumnType[], ar
 			if (role && held(column) > 0) return { refused: api.ideasBoardColumnRefusal(column.title, held(column), role) };
 		}
 	}
-	const removed = live + archivedCount > 0 ? titled.map((column) => column.title) : [];
+	const emptyOptions = (column: ColumnType) => isOptionsColumn(column) && column.cards.length + (archived.get(column.id) ?? 0) === 0;
+	const going = live + archivedCount > 0 ? columns.filter((column) => titled.includes(column) || emptyOptions(column)) : [];
+	const removed = going.map((column) => column.title);
 	return {
-		question: api.ideasBoardWarning(name, live, archivedCount, columns.map((column) => column.title), removed),
+		question: api.ideasBoardWarning(name, live, archivedCount, columns.map((column) => column.title), removed, going.some(isOptionsColumn)),
 		cards: live + archivedCount
 	};
 }
@@ -98,18 +103,17 @@ export async function switchBoardKindAndRead(boardState: BoardState, boardId: nu
 
 /**
  * Why column `columnId` cannot be deleted, said at once instead of asked and
- * then refused: an Options column holding options (ruling m), or a column of
- * an ideas board holding ideas (the S5a review's L2), in the server's words.
- * Null for any other column, or one that holds only archived cards, which go
- * with it.
+ * then refused: a column of an ideas board holding ideas (the S5a review's
+ * L2), in the server's words. Null for any other column, or one that holds
+ * only archived cards, which go with it. A delivery board's Options column is
+ * never offered a delete, which the server refuses whatever it holds (card
+ * 2527).
  */
 export function columnDeleteRefusal(columns: readonly ColumnType[], columnId: number, boardKind: string | null): string | null {
 	const column = columns.find((c) => c.id === columnId);
-	if (!column || column.cards.length === 0 || !isUpstreamColumn(column, boardKind)) return null;
+	if (!column || column.cards.length === 0 || boardKind !== 'ideas') return null;
 	const live = column.cards.length;
-	const where = isOptionsColumn(column) ? 'This Options column' : 'This column of an ideas board';
-	const what = isOptionsColumn(column) ? ['option', 'options'] : ['idea', 'ideas'];
-	return `${where} still holds ${live === 1 ? `1 ${what[0]}: move it out, or archive it to discard it, first.` : `${live} ${what[1]}: move them out, or archive them to discard them, first.`}`;
+	return `This column of an ideas board still holds ${live === 1 ? '1 idea: move it out, or archive it to discard it, first.' : `${live} ideas: move them out, or archive them to discard them, first.`}`;
 }
 
 /** Where a Send goes. */

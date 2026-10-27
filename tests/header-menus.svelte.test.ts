@@ -484,9 +484,10 @@ describe('the board header (card 2466)', () => {
 		const page = read('src/routes/board/[id]/+page.svelte');
 		expect(page).not.toMatch(/XpLeaderboard|loadXp|fetchXpData|refreshXp|onXpUpdate:/);
 		expect(read('src/lib/components/board/BoardHeader.svelte')).not.toMatch(/\bxp\b/);
-		// Add Column opens the window as an ordinary column; Add Options Column as the Options column (milestone 22).
-		expect(page).toMatch(/<BoardMoreMenu[\s\S]*?onAddColumn=\{\(\) => openAddColumn\(false\)\}/);
-		expect(page).toMatch(/<BoardMoreMenu[\s\S]*?onAddOptionsColumn=\{\(\) => openAddColumn\(true\)\}/);
+		// Add Column opens the window; there is no Add Options Column, as every delivery board has its Options column (card 2527).
+		expect(page).toMatch(/<BoardMoreMenu[\s\S]*?onAddColumn=\{\(\) => \(showAddColumnModal = true\)\}/);
+		expect(page).not.toMatch(/onAddOptionsColumn|canAddOptions|openAddColumn/);
+		expect(read('src/lib/components/board/BoardMoreMenu.svelte')).not.toContain('Add Options Column');
 	});
 
 	it('filters by assignee from Filter, as the select did, and its button counts the filters on', async () => {

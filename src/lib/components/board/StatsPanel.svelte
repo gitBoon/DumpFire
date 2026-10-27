@@ -9,17 +9,19 @@
   count committed work only; a board's options are one line of their own,
   "Options N · discard rate X%". The delivery metrics name lead time "Lead
   time (commitment to done)", put "Committed (all)" beside throughput, and
-  show the upstream figures on a board with an upstream column, or where
-  any of them is not zero; abandoned work on any board that has some. The
-  flow diagram leaves the Options band out unless the viewer turns on "Show
-  upstream", which this browser remembers. An ideas board shows its ideas,
+  show abandoned work on any board that has some. The flow diagram leaves
+  the Options band out unless the viewer turns on "Show upstream", which
+  this browser remembers. The upstream figures and that toggle show only
+  where there is something to show (card 2527, R12: every delivery board has
+  an Options column, mostly empty): the Options column holds a card now, or
+  one of the period's figures is not zero. An ideas board shows its ideas,
   the upstream figures and the flow diagram only.
 -->
 <script lang="ts">
   import { isUpstreamColumn } from '$lib/column-role';
   import type { ColumnType, CategoryType } from '$lib/types';
   import { boardStats, discardRateText, optionsLine, showsUpstream, type UpstreamFiguresShown } from '$lib/board/board-stats';
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import CfdChart from './CfdChart.svelte';
   import BurndownChart from './BurndownChart.svelte';
   import type { BurndownResult } from '$lib/burndown';
@@ -58,6 +60,8 @@
 
   /** Whether the board has an upstream column: its Options column, or any column of an ideas board. */
   const hasUpstreamColumn = $derived(boardColumns.some(c => isUpstreamColumn(c, boardKind ?? null)));
+  /** How many cards its upstream columns hold now. */
+  const upstreamCards = $derived(boardColumns.filter(c => isUpstreamColumn(c, boardKind ?? null)).reduce((n, c) => n + c.cards.length, 0));
 
   // ─── Cycle/Lead Time Metrics ─────────────────────────────────────────
   type Times = { avgFormatted: string; medianFormatted: string };
@@ -112,8 +116,17 @@
 
   /** The board's options line, the discard rate once the metrics have come; null with no option. */
   const optionsText = $derived(optionsLine(stats.optionsCount, metrics?.upstream));
-  /** The upstream figures, on a board with an upstream column or where any is not zero. */
-  const upstreamShown = $derived(metrics?.upstream ? showsUpstream(hasUpstreamColumn, metrics.upstream, metrics.timeInOptions ?? null) : false);
+  /**
+   * Whether there is anything upstream to show (R12): the board has an
+   * upstream column, and it holds a card now or one of the period's figures
+   * is not zero. Before the metrics come, or if they cannot be read, only the
+   * cards held count.
+   */
+  const upstreamWorthShowing = $derived(
+    showsUpstream({ kind: boardKind ?? null, hasUpstreamColumn, upstreamCards }, metrics?.upstream, metrics?.timeInOptions ?? null)
+  );
+  /** The upstream figures, once the metrics have come, where there is something to show. */
+  const upstreamShown = $derived(metrics?.upstream ? upstreamWorthShowing : false);
 
   // ─── CFD Chart Data ──────────────────────────────────────────────────
   type CfdColumn = { id: number; title: string; color: string; upstream?: boolean };
@@ -150,15 +163,22 @@
   } catch {
     showUpstream = false;
   }
+  /**
+   * Whether the band is asked for: the viewer's choice, where there is an
+   * upstream column with something to show (R12), so a band the toggle is
+   * not offered for is never drawn. Not on an ideas board, which draws every
+   * column of its own.
+   */
+  const wantsBand = $derived(showUpstream && boardKind !== 'ideas' && hasUpstreamColumn && upstreamWorthShowing);
 
   async function loadCfd() {
     if (!boardId) return;
     const asked = ++cfdRequest;
     cfdLoading = true;
     try {
-      // Asked for only where there is an upstream column to draw: a board with
+      // Asked for only where there is an upstream band to draw: a board with
       // none asks as it always has.
-      const upstream = showUpstream && boardKind !== 'ideas' && hasUpstreamColumn ? '&upstream=true' : '';
+      const upstream = wantsBand ? '&upstream=true' : '';
       const res = await fetch(`/api/boards/${boardId}/cfd?days=30${upstream}`);
       if (asked !== cfdRequest) return;
       if (res.ok) {
@@ -181,8 +201,15 @@
     } catch {
       // Not kept; the chart works the same.
     }
-    loadCfd();
   }
+
+  // The flow diagram is read as the panel opens, and again whenever the band
+  // is wanted or not: the toggle is turned, or the metrics show something
+  // upstream to draw after the first read.
+  $effect(() => {
+    void wantsBand;
+    untrack(() => loadCfd());
+  });
 
   // ─── Burndown Data ──────────────────────────────────────────────────────
   let burndown = $state<BurndownResult | null>(null);
@@ -220,7 +247,7 @@
   });
 
   // An ideas board has no burndown to read (J2).
-  onMount(() => { loadMetrics(); loadCfd(); if (!isIdeas) loadBurndown(); });
+  onMount(() => { loadMetrics(); if (!isIdeas) loadBurndown(); });
 </script>
 
 <aside class="side-panel">
@@ -381,7 +408,7 @@
       </div>
       {/if}
 
-      <!-- Before the commitment point (milestone 22): on a board with an upstream column, or where any figure is not zero. -->
+      <!-- Before the commitment point (milestone 22): where the Options column holds a card or a figure is not zero (card 2527, R12). -->
       {#if upstreamShown && metrics.upstream}
         {@const up = metrics.upstream}
         <h4 class="stats-section-title upstream-title">
@@ -416,7 +443,7 @@
     <!-- Cumulative Flow Diagram -->
     <h4 class="stats-section-title">
       Flow Diagram (30 days)
-      {#if offersUpstream}
+      {#if offersUpstream && upstreamWorthShowing}
         <InfoTip title="Show upstream" width={280} prefer="top" focusable={false} dotted={false}>
           <label class="upstream-toggle">
             <input type="checkbox" checked={showUpstream} onchange={toggleUpstream} />
@@ -424,7 +451,7 @@
           </label>
           {#snippet tip()}
             <p>Draws the Options band at the bottom of the chart. Its top edge is the commitment point: what is above it is committed work.</p>
-            <p class="muted">A column converted to Options during the period is left out with its band, so in this view the committed history it had before the conversion is hidden too. Turn Show upstream on to see it.</p>
+            <p class="muted">Off, the chart is committed work only, as the figures above are: the Options column's cards are left out.</p>
           {/snippet}
         </InfoTip>
       {/if}

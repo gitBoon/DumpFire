@@ -56,6 +56,17 @@ export function isOptionsColumn(column: { role: string | null }): boolean {
 }
 
 /**
+ * What a screen says after a column's title to mark it as the board's Options
+ * column: " (Options)", not part of the title. Nothing for any other column,
+ * and nothing for an Options column already called Options, which every one
+ * is once the start-up step has run (card 2527): "Options (Options)" says it
+ * twice.
+ */
+export function optionsSuffix(column: { title: string | null | undefined; role: string | null }): string {
+	return isOptionsColumn(column) && !isOptionsTitle(column.title) ? ' (Options)' : '';
+}
+
+/**
  * True if cards in this column are upstream, options rather than committed
  * work: it is the Options column, or its board is an ideas board. Every rule
  * about commitment, discards and what the delivery measures count asks this.

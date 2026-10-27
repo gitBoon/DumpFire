@@ -239,6 +239,12 @@
 	 * its card at once and taken back if refused. Each re-read replaces them.
 	 */
 	let buckets = $derived(data.buckets);
+	/**
+	 * The buckets drawn: the Options bucket only while it holds cards (card
+	 * 2527, R12). Every delivery board has an Options column now, so the load
+	 * always gives it, mostly empty. The Stats panel still reads every bucket.
+	 */
+	const shownBuckets = $derived(buckets.filter((b) => !isOptionsBucket(b) || b.cards.length > 0));
 
 	/**
 	 * The card window (card 2281, slice C3a-1): opened, saved and archived
@@ -431,7 +437,7 @@
 
 	<div class="kanban-scroll">
 		<div class="kanban-track">
-			{#each buckets as bucket}
+			{#each shownBuckets as bucket}
 				{@const sortKey = bucketKey(bucket)}
 				{@const filteredCards = getSortedCards(bucket.cards.filter(matchesFilters), sortKey)}
 				<div class="column" class:column-options={isOptionsBucket(bucket)}>

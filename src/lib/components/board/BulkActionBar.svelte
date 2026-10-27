@@ -6,7 +6,7 @@
 -->
 <script lang="ts">
   import type { ColumnType } from '$lib/types';
-  import { isOptionsColumn } from '$lib/column-role';
+  import { optionsSuffix } from '$lib/column-role';
 
   /**
    * @prop selectedCount — Number of currently selected cards
@@ -40,7 +40,7 @@
     <div class="bulk-group">
       <span class="bulk-label">Move to:</span>
       {#each columns as col}
-        <button class="btn-ghost bulk-btn" onclick={() => onMove(col.id)}>{col.title}{isOptionsColumn(col) ? ' (Options)' : ''}</button>
+        <button class="btn-ghost bulk-btn" onclick={() => onMove(col.id)}>{col.title}{optionsSuffix(col)}</button>
       {/each}
     </div>
     <div class="bulk-divider"></div>
