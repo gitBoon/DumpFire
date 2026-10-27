@@ -154,6 +154,8 @@ const TEST_FILES = [
 	'subtask-order.test.ts',
 	'team-owners.test.ts',
 	'test-helpers.test.ts',
+	// Cards 2471 and 2516: the theme as a menu on every page, and help tips a screen reader announces.
+	'theme-menus-and-tips.svelte.test.ts',
 	'timestamps.test.ts',
 	'todo-page.test.ts',
 	'transaction.test.ts',

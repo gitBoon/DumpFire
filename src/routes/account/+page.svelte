@@ -3,8 +3,9 @@
 	 * My Account — View profile info and change password.
 	 */
 	import type { PageData } from './$types';
-	import { theme } from '$lib/stores/theme';
-	import ThemePicker from '$lib/components/ThemePicker.svelte';
+	import { theme, themeIcon } from '$lib/stores/theme';
+	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
+	import ThemeMenuItems from '$lib/components/ThemeMenuItems.svelte';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import { answerBody, failureMessage } from '$lib/api';
 	import { MASTER_PREF, NOTIFICATION_PREFS, type NotificationPrefKey } from '$lib/notification-prefs';
@@ -427,7 +428,11 @@
 			</svg>
 		</a>
 		<h1>⚙️ My Account</h1>
-		<ThemePicker />
+		<!-- The theme, as the dashboard's More draws it: a menu worked from the keyboard (card 2471). -->
+		<HeaderMenu label="Theme" triggerClass="btn-ghost" triggerTitle="Change theme">
+			{#snippet trigger()}<span aria-hidden="true">{themeIcon($theme)}</span>{/snippet}
+			<ThemeMenuItems heading={false} />
+		</HeaderMenu>
 	</header>
 
 	<main class="account-content">

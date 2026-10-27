@@ -9,7 +9,9 @@
 	 */
 	import type { PageData } from './$types';
 	import { onMount } from 'svelte';
-	import ThemePicker from '$lib/components/ThemePicker.svelte';
+	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
+	import ThemeMenuItems from '$lib/components/ThemeMenuItems.svelte';
+	import { theme, themeIcon } from '$lib/stores/theme';
 	import { parseStamp } from '$lib/timestamps';
 	import { failureMessage } from '$lib/api';
 
@@ -270,7 +272,11 @@
 			</a>
 			<h1 class="header-title">🔍 Audit & Logging</h1>
 			<div class="audit-header-right">
-				<ThemePicker />
+				<!-- The theme, as the dashboard's More draws it: a menu worked from the keyboard (card 2471). -->
+				<HeaderMenu label="Theme" triggerClass="btn-ghost" triggerTitle="Change theme">
+					{#snippet trigger()}<span aria-hidden="true">{themeIcon($theme)}</span>{/snippet}
+					<ThemeMenuItems heading={false} />
+				</HeaderMenu>
 			</div>
 		</div>
 	</header>

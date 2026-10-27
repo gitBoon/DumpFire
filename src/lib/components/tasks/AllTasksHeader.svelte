@@ -2,7 +2,7 @@
   AllTasksHeader.svelte — All Tasks' header: the back link, the title and
   its counts, the spend across every board, the board filter, the search,
   Hide blocked, Planning, All To Do, the More menu with its three panels,
-  Export to CSV and the theme picker (card 2281, slice C3a-2: moved from
+  Export to CSV and the theme menu (card 2281, slice C3a-2: moved from
   src/routes/all/+page.svelte).
 
   The filter, the search and Hide blocked are the page's, bound here, which
@@ -14,7 +14,9 @@
 	import type { PageData } from '../../../routes/all/$types';
 	import { formatTokens } from '$lib/tokens';
 	import { formatUsd, BLEND_NOTE, SOURCE_NOTE, NOT_BILLED_NOTE } from '$lib/pricing';
-	import ThemePicker from '$lib/components/ThemePicker.svelte';
+	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
+	import ThemeMenuItems from '$lib/components/ThemeMenuItems.svelte';
+	import { theme, themeIcon } from '$lib/stores/theme';
 	import { boardOptionLabel, boardOptions } from '$lib/board-tree';
 
 	let {
@@ -190,7 +192,11 @@
 		<a class="hdr-control hdr-action export-csv-btn" href={chosenBoard ? `/api/cards/export/csv?boardId=${chosenBoard}` : '/api/cards/export/csv'} download title="Export to CSV{chosenBoard ? ownBoardOnly : ''}">
 			<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M8 2v8M5 7l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 11v2a1 1 0 001 1h10a1 1 0 001-1v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
 		</a>
-		<ThemePicker />
+		<!-- The theme, as the dashboard's More draws it: a menu worked from the keyboard (card 2471). -->
+		<HeaderMenu label="Theme" triggerClass="hdr-control hdr-action" triggerTitle="Change theme">
+			{#snippet trigger()}<span aria-hidden="true">{themeIcon($theme)}</span>{/snippet}
+			<ThemeMenuItems heading={false} />
+		</HeaderMenu>
 	</div>
 </header>
 
