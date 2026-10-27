@@ -114,7 +114,8 @@
 
 	<div class="list-rows">
 		{#if !column}
-			<p class="list-empty">This board has no columns yet.</p>
+			<!-- A board whose only column is its Options column opens on none (card 2527): it is chosen in the strip. -->
+			<p class="list-empty">{columns.length > 0 ? 'Choose a column above.' : 'This board has no columns yet.'}</p>
 		{:else if rows.length === 0}
 			<p class="list-empty">{filtering && column.cards.length > 0 ? 'No cards match' : `No cards in ${column.title}`}</p>
 		{:else}

@@ -47,10 +47,10 @@ export const GET: RequestHandler = async ({ locals, url }) => {
  * the caller cannot open 403. It was ignored, and the board made unfiled. A
  * new board is private: `isPublic` is not read here.
  *
- * Default columns are created automatically, the kind's own: To Do, On
- * Hold, In Progress and Complete for a delivery board, New Ideas, Shaping and
- * Ready for Replenishment for an ideas board (`kind`, milestone 22). The API
- * key's user is added as board owner.
+ * Default columns are created automatically, the kind's own: Options (card
+ * 2527), To Do, On Hold, In Progress and Complete for a delivery board, New
+ * Ideas, Shaping and Ready for Replenishment for an ideas board (`kind`,
+ * milestone 22). The API key's user is added as board owner.
  *
  * A new board has no row to guard, so its fields are read first (card 2117,
  * R1): `name` text, trimmed, of 1 to 200 characters; `emoji` text of 1 to 32;

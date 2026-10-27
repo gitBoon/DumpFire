@@ -111,7 +111,7 @@ function announceMoves(moves: CardMove[], user: SessionUser, opts: ServiceOption
  * ruling 3): each is a write, an entry and an event, and all of them are one
  * transaction holding the write lock. A drop's moves have the same cap. The
  * cap is per list, so one request can still hold 400 parts, some 1,000 rows
- * and more (a sub-board alone is a board, four columns, an owner and an
+ * and more (a sub-board alone is a board, five columns, an owner and an
  * entry): far past what a window sends, and far short of the some 25,000
  * sub-boards a 512 KB body could hold without it (the review).
  */

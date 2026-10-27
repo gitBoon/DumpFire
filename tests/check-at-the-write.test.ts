@@ -2918,7 +2918,7 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 			// Slice A4: boards, dashboard groupings, columns, card categories and labels.
 			'src/lib/server/boards.ts': { reads: ['listBoardsFor'], writes: ['createBoard', 'updateBoard', 'convertBoardFor', 'deleteBoardFor'] },
 			'src/lib/server/board-groupings.ts': { reads: [], writes: ['createBoardGrouping', 'updateBoardGrouping', 'deleteBoardGrouping'] },
-			'src/lib/server/columns.ts': { reads: [], writes: ['createColumn', 'updateColumn', 'deleteColumnFor', 'reorderColumns', 'convertColumnFor'] },
+			'src/lib/server/columns.ts': { reads: [], writes: ['createColumn', 'updateColumn', 'deleteColumnFor', 'reorderColumns'] },
 			'src/lib/server/card-categories.ts': { reads: [], writes: ['createCardCategory', 'updateCardCategory', 'deleteCardCategory'] },
 			'src/lib/server/labels.ts': { reads: ['labelsOfBoard'], writes: ['createLabel', 'updateLabel', 'deleteLabel'] },
 			// Card 2337.
@@ -3008,7 +3008,6 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 			'src/routes/api/categories/[id]/+server.ts',
 			'src/routes/api/columns/+server.ts',
 			'src/routes/api/columns/[id]/+server.ts',
-			'src/routes/api/columns/[id]/convert/+server.ts',
 			'src/routes/api/columns/reorder/+server.ts',
 			'src/routes/api/labels/+server.ts',
 			'src/routes/api/v1/board-categories/+server.ts',
@@ -3021,7 +3020,6 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 			'src/routes/api/v1/boards/[boardId]/labels/+server.ts',
 			'src/routes/api/v1/categories/[categoryId]/+server.ts',
 			'src/routes/api/v1/columns/[columnId]/+server.ts',
-			'src/routes/api/v1/columns/[columnId]/convert/+server.ts',
 			'src/routes/api/v1/labels/[labelId]/+server.ts'
 		]);
 	});

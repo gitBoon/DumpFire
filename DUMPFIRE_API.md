@@ -249,29 +249,36 @@ The OpenAPI document's version went from `1.2.0` to `1.3.0` with these (mileston
 2459 to 2464): **upstream of the commitment point**, the Kanban Method's split between options,
 ideas that may or may not be done, and committed work. A card is an **option** when it is in a
 board's Options column (a column whose `role` is `"options"`) or in any column of an ideas board
-(a board whose `kind` is `"ideas"`); every other card is committed. No board has either until
-someone makes one: every card made before this release is committed, its `committedAt` its
-`createdAt`, and a board with no Options column answers as before but for the fields named here
-and the entry an archive of unfinished work writes (`card_abandoned`, below). Four operations
-and two filters are new; these operations, answers and fields are:
+(a board whose `kind` is `"ideas"`); every other card is committed. Every delivery board has
+its Options column, made with it, and one made before this release is given an empty one at its
+far left when the server starts (card 2527); no board is an ideas board until someone makes
+one. Every card made before this release is committed, its `committedAt` its `createdAt`, and a
+board answers as before but for its Options column among its columns, the fields named here and
+the entry an archive of unfinished work writes (`card_abandoned`, below). Three operations and
+two filters are new; these operations, answers and fields are:
 
 - **Every column carries `role`**, `"options"` for the board's Options column and `null` for
   any other. `POST /boards/:boardId/columns` and `PUT /columns/:columnId` take `role`
   (`"options"` or `null`; left out on `PUT`, kept; anything else `400` `role must be "options"
-  or null, not "backlog"`). Given the role, a column goes left of every other and its
-  `wipLimit` to 0. `409`, with nothing written, for the role on a column of an ideas board, a
-  second Options column, the role given or taken away while the column holds cards (archived
-  ones included; giving it, the message names the conversion below; taking it away, it says to
-  move the cards out, and to restore and move, or delete, archived ones, first), an Options
-  column whose title makes it To Do, On Hold or Complete, a WIP limit above 0 on one (on a
-  create as on an update), and a position at or left of it,
-  which stays the leftmost. `PUT` counts `role` among its six fields. `DELETE /columns/:columnId`
-  is `409` for an Options column, or a column of an ideas board, holding cards that are not
-  archived: options are moved out, or archived to discard them.
-- **`POST /columns/:columnId/convert` is new**: the board's owner or an administrator makes a
-  column the Options column with its cards, `{"role": "options", "cards": N}`, N being the live
-  and archived cards seen. Every card in it becomes an option, its commitment cleared, with one
-  `api:column_converted_to_options` entry and no webhook. It answers the column.
+  or null, not "backlog"`). `409`, with nothing written, for `"options"` on any other column
+  (`This board already has its Options column.`; on a board that has none yet, made before this
+  release or restored from a backup, until the next start, `A delivery board's Options column is
+  made with the board; it comes back at the next start.`; or on a column of an ideas board, every
+  column of which is upstream), for any other column of a delivery board called Options, in any case
+  (`Only the board's Options column is called Options. Choose another name.`), for the Options
+  column renamed to anything but Options (`The Options column is always called Options.`) or
+  given `role: null`
+  (`Every delivery board keeps its Options column.`), for a WIP limit above 0 on it, and for a
+  position at or left of it, which stays the leftmost. A value sent back as the column holds it
+  changes nothing and is not refused. `PUT` counts `role` among its six fields.
+  `DELETE /columns/:columnId` is `409` for the Options column, empty or not (`Every delivery
+  board keeps its Options column. Fold it away with the arrow on its strip instead.`), and for a
+  column of an ideas board holding ideas that are not archived.
+- **Every delivery board has one Options column, made with the board and by a start-up step for
+  existing boards; it cannot be renamed to anything but Options, deleted or given away.** `POST /boards` makes a
+  delivery board with Options, To Do, On Hold, In Progress and Complete, in that order. When the
+  server starts, each delivery board that has none is given one, empty, titled Options, at its
+  far left, with no entry and no webhook.
 - **Every board carries `kind`**, `"delivery"`, which every board was, or `"ideas"`.
   `POST /boards` takes `kind`, and makes an ideas board with New Ideas, Shaping and Ready for
   Replenishment; a sub-board is always a delivery board (`409`), and none is made under an
@@ -321,8 +328,9 @@ and two filters are new; these operations, answers and fields are:
 - **The activity vocabulary changes**, for readers of `GET /audit-log`, `GET /reports/activity`
   and `recentActivity` on `GET /me/stats`. Seven actions are new: `card_committed`,
   `card_returned_to_options`, `card_discarded`, `card_abandoned`, `card_sent`,
-  `column_converted_to_options` and `board_converted_to_ideas`, each with `api:` when made
-  through the API. Three are written less: **`card_archived` only for work archived from
+  `column_converted_to_options`, which nothing writes now (the column conversion it recorded
+  went before this release), and `board_converted_to_ideas`, each with `api:` when made through
+  the API. Three are written less: **`card_archived` only for work archived from
   Complete**, unfinished committed work being `card_abandoned` and an option `card_discarded`, so
   a filter or a count of `card_archived` alone now misses both; `card_moved` not for a move across
   the commitment point; and `card_moved_away` not for an option leaving its board, which is
@@ -916,11 +924,11 @@ is a sub-board (`A sub-board is a delivery board.`); a To Do or On Hold column h
 Complete column holds one (`… no Complete column: move them to a delivery board, or delete
 them, first.`); `cards` is not the number it holds now (`The board now holds K cards; look
 again.`). Then, in one transaction, every card's `committedAt` and `committedBy` are cleared,
-the empty To Do, On Hold and Complete columns are deleted, an Options column becomes an
-ordinary column, and `kind` becomes `"ideas"`; a board holding no card at all is given the
-ideas board's three columns in place of its own. One `api:board_converted_to_ideas` entry is
-written, `"<name>": N cards became ideas; its columns To Do, Complete were removed (board
-<id>)`; nothing for each card, no webhook and no mail. The answer is the board with its
+the empty To Do, On Hold and Complete columns are deleted, and the Options column with them
+when it holds no card, live or archived (one holding cards becomes an ordinary column), and
+`kind` becomes `"ideas"`; a board holding no card at all is given the ideas board's three
+columns in place of its own. One `api:board_converted_to_ideas` entry is written, `"<name>": N
+cards became ideas; its columns Options, To Do, Complete were removed (board <id>)`; nothing for each card, no webhook and no mail. The answer is the board with its
 `columns`.
 
 ---

@@ -52,7 +52,7 @@ const OLD = '2026-01-05 09:00:00';
 
 let owner: SessionUser;
 let member: SessionUser;
-/** Delivery board A, with an Options column "Ideas"; ideas board I. Each has a webhook for every event. */
+/** Delivery board A, with its Options column (card 2527); ideas board I. Each has a webhook for every event. */
 let A: BoardFixture;
 let I: BoardFixture;
 let sent: Effects;
@@ -61,9 +61,8 @@ beforeEach(() => {
 	resetDb();
 	owner = makeUser({ username: 'owner' });
 	member = makeUser({ username: 'member' });
-	A = makeBoard({ owner, name: 'A', columns: ['Ideas', 'To Do', 'In Progress', 'Complete'] });
+	A = makeBoard({ owner, name: 'A', options: true, columns: ['To Do', 'In Progress', 'Complete'] });
 	I = makeBoard({ owner, name: 'I', columns: ['New Ideas', 'Shaping'] });
-	db.update(columns).set({ role: 'options' }).where(eq(columns.id, A.cols['Ideas'].id)).run();
 	db.update(boards).set({ kind: 'ideas' }).where(eq(boards.id, I.board.id)).run();
 	for (const board of [A, I]) {
 		addBoardMember(board.board, member, 'editor');
@@ -132,7 +131,7 @@ const ROUTES: Route[] = [
 
 describe.each(ROUTES)('through $name', ({ prefix, archive, remove }) => {
 	it('archiving an option in the Options column discards it: archived and discarded at once, by the archiver, with card_discarded in place of card_archived, and card.discarded', async () => {
-		const option = cardIn(A.cols['Ideas'], 'An option');
+		const option = cardIn(A.cols['Options'], 'An option');
 		const before = stamp();
 
 		expect((await archive(option)).status).toBe(200);
@@ -140,8 +139,8 @@ describe.each(ROUTES)('through $name', ({ prefix, archive, remove }) => {
 		const mark = markOf(option);
 		expect(mark.archivedAt! >= before).toBe(true);
 		expect(mark).toEqual({ archivedAt: mark.archivedAt, discardedAt: mark.archivedAt, discardedBy: member.id });
-		expect(entriesOn(A)).toEqual([[`${prefix}card_discarded`, option.id, '"An option": discarded from Ideas']]);
-		expect(await heard()).toEqual([['card.discarded', 'card_discarded', option.id, '"An option": discarded from Ideas']]);
+		expect(entriesOn(A)).toEqual([[`${prefix}card_discarded`, option.id, '"An option": discarded from Options']]);
+		expect(await heard()).toEqual([['card.discarded', 'card_discarded', option.id, '"An option": discarded from Options']]);
 		// Still an option: a discard is not a commitment.
 		expect(db.select().from(cards).where(eq(cards.id, option.id)).get()!.committedAt).toBeNull();
 		nothingToRepair();
@@ -188,7 +187,7 @@ describe.each(ROUTES)('through $name', ({ prefix, archive, remove }) => {
 	});
 
 	it('archiving a discarded card again writes nothing: the first discard and its time are kept (card 2285)', async () => {
-		const option = cardIn(A.cols['Ideas'], 'An option');
+		const option = cardIn(A.cols['Options'], 'An option');
 		expect((await archive(option)).status).toBe(200);
 		const first = markOf(option);
 		sent.clear();
@@ -202,24 +201,24 @@ describe.each(ROUTES)('through $name', ({ prefix, archive, remove }) => {
 	});
 
 	it('deleting an option writes card_discarded and then card_deleted, both with no card id, and sends card.discarded then card.deleted naming the card', async () => {
-		const option = cardIn(A.cols['Ideas'], 'An option');
+		const option = cardIn(A.cols['Options'], 'An option');
 
 		expect((await remove(option)).status).toBe(200);
 
 		expect(db.select().from(cards).where(eq(cards.id, option.id)).get()).toBeUndefined();
 		expect(entriesOn(A)).toEqual([
-			[`${prefix}card_discarded`, null, '"An option": deleted from Ideas'],
+			[`${prefix}card_discarded`, null, '"An option": deleted from Options'],
 			[`${prefix}card_deleted`, null, '"An option"']
 		]);
 		expect(await heard()).toEqual([
-			['card.discarded', 'card_discarded', option.id, '"An option": deleted from Ideas'],
+			['card.discarded', 'card_discarded', option.id, '"An option": deleted from Options'],
 			['card.deleted', 'card_deleted', option.id, '"An option"']
 		]);
 		nothingToRepair();
 	});
 
 	it('deleting a card discarded already, archived from upstream, writes only card_deleted: it was discarded once', async () => {
-		const option = cardIn(A.cols['Ideas'], 'An option');
+		const option = cardIn(A.cols['Options'], 'An option');
 		expect((await archive(option)).status).toBe(200);
 		sent.clear();
 
@@ -227,7 +226,7 @@ describe.each(ROUTES)('through $name', ({ prefix, archive, remove }) => {
 
 		expect(entriesOn(A)).toEqual([
 			// The discard's entry lost its card id with the card, as every entry of a deleted card does.
-			[`${prefix}card_discarded`, null, '"An option": discarded from Ideas'],
+			[`${prefix}card_discarded`, null, '"An option": discarded from Options'],
 			[`${prefix}card_deleted`, null, '"An option"']
 		]);
 		expect(await heard()).toEqual([['card.deleted', 'card_deleted', option.id, '"An option"']]);
@@ -244,15 +243,19 @@ describe.each(ROUTES)('through $name', ({ prefix, archive, remove }) => {
 		nothingToRepair();
 	});
 
-	it('deleting a card archived as committed work, in a column converted to Options since, is no discard: it had left play (the S3 review’s E2)', async () => {
-		const B = makeBoard({ owner, name: 'B', columns: ['Backlog', 'To Do', 'Complete'] });
+	it('deleting a card archived as committed work, in a column that is the Options column since, is no discard: it had left play (the S3 review’s E2)', async () => {
+		// The conversion that did this went before release (card 2527); a column
+		// given the role in the database, as a backup or dev data can hold, is
+		// the one way left, and the rule is the delete's all the same.
+		const B = makeBoard({ owner, name: 'B', columns: ['Options', 'To Do', 'Complete'] });
 		addBoardMember(B.board, member, 'editor');
 		makeWebhook(B.board, { url: 'https://hooks.example.test/B' });
-		const first = cardIn(B.cols['Backlog'], 'First');
-		const second = cardIn(B.cols['Backlog'], 'Second');
+		const first = cardIn(B.cols['Options'], 'First');
+		const second = cardIn(B.cols['Options'], 'Second');
 		for (const card of [first, second]) expect((await archive(card)).status).toBe(200);
-		const converted = await api('POST', `/api/columns/${B.cols['Backlog'].id}/convert`, { user: owner, body: { role: 'options', cards: 2 } });
-		expect(converted.status).toBe(200);
+		db.update(columns).set({ role: 'options', position: -1 }).where(eq(columns.id, B.cols['Options'].id)).run();
+		// Its cards are options now, as the conversion left them.
+		db.update(cards).set({ committedAt: null, committedBy: null }).where(eq(cards.columnId, B.cols['Options'].id)).run();
 		sent.clear();
 
 		expect((await remove(first)).status).toBe(200);
@@ -305,7 +308,7 @@ const RESTORES: { name: string; prefix: '' | 'api:'; restore: (card: Card) => Pr
 
 describe.each(RESTORES)('a restore through $name', ({ prefix, restore }) => {
 	it('clears the discard mark with the archive, leaves the card an option in its column, and says it is back there', async () => {
-		const option = cardIn(A.cols['Ideas'], 'An option');
+		const option = cardIn(A.cols['Options'], 'An option');
 		expect((await api('DELETE', `/api/cards/${option.id}`, { user: owner })).status).toBe(200);
 		sent.clear();
 
@@ -314,10 +317,10 @@ describe.each(RESTORES)('a restore through $name', ({ prefix, restore }) => {
 		expect(res.status).toBe(200);
 		expect(markOf(option)).toEqual({ archivedAt: null, discardedAt: null, discardedBy: null });
 		const row = db.select().from(cards).where(eq(cards.id, option.id)).get()!;
-		expect([row.columnId, row.committedAt, row.committedBy]).toEqual([A.cols['Ideas'].id, null, null]);
+		expect([row.columnId, row.committedAt, row.committedBy]).toEqual([A.cols['Options'].id, null, null]);
 		expect(entriesOn(A)).toEqual([
-			['card_discarded', option.id, '"An option": discarded from Ideas'],
-			[`${prefix}card_restored`, option.id, '"An option": back in Ideas']
+			['card_discarded', option.id, '"An option": discarded from Options'],
+			[`${prefix}card_restored`, option.id, '"An option": back in Options']
 		]);
 		// A restore sends nothing, as before.
 		expect(await heard()).toEqual([]);
@@ -338,8 +341,8 @@ describe.each(RESTORES)('a restore through $name', ({ prefix, restore }) => {
 
 describe('the other paths', () => {
 	it("the board page's bulk archive, which sends each card in turn, discards each option and abandons the rest", async () => {
-		const one = cardIn(A.cols['Ideas'], 'One');
-		const two = cardIn(A.cols['Ideas'], 'Two');
+		const one = cardIn(A.cols['Options'], 'One');
+		const two = cardIn(A.cols['Options'], 'Two');
 		const work = cardIn(A.cols['To Do'], 'Work');
 		vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
 			const res = await api(init.method as 'DELETE', url, { user: member, body: JSON.parse(String(init.body)) });
@@ -364,22 +367,22 @@ describe('the other paths', () => {
 
 	it('deleting a column or a board, clearing a board and purging the archive discard nothing (decision M22-9)', async () => {
 		const admin = makeUser({ username: 'admin', role: 'admin' });
-		// The Options column may go once it holds archived cards alone, which go with it.
-		cardIn(A.cols['Ideas'], 'Archived option', { archivedAt: OLD });
-		// So may a column of an ideas board (card 2463, the S5a review's L2).
+		// A delivery board's Options column is never deleted (card 2527); its
+		// archived options go with its board, deleted below.
+		cardIn(A.cols['Options'], 'Archived option', { archivedAt: OLD });
+		// A column of an ideas board may go once it holds archived cards alone (card 2463, the S5a review's L2).
 		cardIn(I.cols['New Ideas'], 'An archived idea', { archivedAt: OLD });
 		const archivedIdea = cardIn(I.cols['Shaping'], 'Archived idea', { archivedAt: OLD });
-		const other = makeBoard({ owner, name: 'Other', columns: ['Ideas', 'To Do'] });
-		db.update(columns).set({ role: 'options' }).where(eq(columns.id, other.cols['Ideas'].id)).run();
-		cardIn(other.cols['Ideas'], 'Another option');
+		const other = makeBoard({ owner, name: 'Other', options: true, columns: ['To Do'] });
+		cardIn(other.cols['Options'], 'Another option');
 
-		expect((await api('DELETE', `/api/columns/${A.cols['Ideas'].id}`, { user: owner })).status).toBe(200);
 		expect((await api('DELETE', `/api/v1/columns/${I.cols['New Ideas'].id}`, { user: owner })).status).toBe(200);
 		expect((await api('POST', '/api/admin/purge-archived', { user: admin })).status).toBe(200);
 		expect(db.select().from(cards).where(eq(cards.id, archivedIdea.id)).get()).toBeUndefined();
 		expect((await api('POST', `/api/admin/boards/${other.board.id}/clear-cards`, { user: admin })).status).toBe(200);
 		cardIn(I.cols['Shaping'], 'Last idea');
 		expect((await api('DELETE', `/api/boards/${I.board.id}`, { user: owner })).status).toBe(200);
+		expect((await api('DELETE', `/api/v1/boards/${A.board.id}`, { user: owner })).status).toBe(200);
 
 		expect(db.select().from(activityLog).all().filter((e) => e.action.endsWith('card_discarded'))).toEqual([]);
 		expect((await heard()).filter(([event]) => event === 'card.discarded')).toEqual([]);
@@ -387,7 +390,7 @@ describe('the other paths', () => {
 	});
 
 	it("the three archive reads carry discardedAt: the board's Archived Cards, All Tasks' and the Archived page", async () => {
-		const option = cardIn(A.cols['Ideas'], 'An option');
+		const option = cardIn(A.cols['Options'], 'An option');
 		const work = cardIn(A.cols['To Do'], 'Work');
 		for (const card of [option, work]) expect((await api('DELETE', `/api/cards/${card.id}`, { user: owner })).status).toBe(200);
 		const discardedAt = markOf(option).discardedAt;
@@ -422,8 +425,8 @@ describe('upstreamFigures (rulings b, c, f and g)', () => {
 	it('counts each card once, under its last upstream act in the window, both spellings alike; a return is a figure of its own; abandonment apart', () => {
 		const once = cardIn(A.cols['To Do'], 'Committed once');
 		const twice = cardIn(A.cols['To Do'], 'Committed, returned, committed');
-		const back = cardIn(A.cols['Ideas'], 'Committed then returned');
-		const dropped = cardIn(A.cols['Ideas'], 'Discarded', { archivedAt: '2026-10-09 09:00:00', discardedAt: '2026-10-09 09:00:00' });
+		const back = cardIn(A.cols['Options'], 'Committed then returned');
+		const dropped = cardIn(A.cols['Options'], 'Discarded', { archivedAt: '2026-10-09 09:00:00', discardedAt: '2026-10-09 09:00:00' });
 		const left = cardIn(A.cols['To Do'], 'Committed then abandoned', { archivedAt: '2026-10-12 09:00:00' });
 		const earlier = cardIn(A.cols['To Do'], 'Committed before the window');
 		entry(A, 'card_committed', '2026-10-02 09:00:00', once.id);
@@ -453,7 +456,7 @@ describe('upstreamFigures (rulings b, c, f and g)', () => {
 
 	it('counts a card committed and then abandoned as committed and as abandoned, and leaves the rate to commitments and discards (the S3 review’s E1)', () => {
 		const left = cardIn(A.cols['To Do'], 'Committed then abandoned', { archivedAt: '2026-10-03 09:00:00' });
-		const dropped = cardIn(A.cols['Ideas'], 'Discarded', { archivedAt: '2026-10-04 09:00:00', discardedAt: '2026-10-04 09:00:00' });
+		const dropped = cardIn(A.cols['Options'], 'Discarded', { archivedAt: '2026-10-04 09:00:00', discardedAt: '2026-10-04 09:00:00' });
 		entry(A, 'card_committed', '2026-10-02 09:00:00', left.id);
 		entry(A, 'card_abandoned', '2026-10-03 09:00:00', left.id);
 		entry(A, 'card_discarded', '2026-10-04 09:00:00', dropped.id);
@@ -480,10 +483,10 @@ describe('upstreamFigures (rulings b, c, f and g)', () => {
 
 	it('reads the same four statements for one board as for twenty with options and an ideas board (the S3 review’s E3)', () => {
 		const boardWithOptions = (name: string) => {
-			const board = makeBoard({ owner, name, columns: ['Ideas', 'To Do'] });
-			db.update(columns).set({ role: 'options' }).where(eq(columns.id, board.cols['Ideas'].id)).run();
-			cardIn(board.cols['Ideas'], `${name} idea`, { createdAt: '2026-09-01 12:00:00' });
-			entry(board, 'column_converted_to_options', '2026-10-21 12:00:00', null, `1 card became an option${conversionSuffix(board.cols['Ideas'].id)}`);
+			const board = makeBoard({ owner, name, options: true, columns: ['To Do'] });
+			cardIn(board.cols['Options'], `${name} idea`, { createdAt: '2026-09-01 12:00:00' });
+			// A conversion entry from before card 2527, which the aging still reads.
+			entry(board, 'column_converted_to_options', '2026-10-21 12:00:00', null, `1 card became an option${conversionSuffix(board.cols['Options'].id)}`);
 			return board.board.id;
 		};
 		const reads = (boardIds: number[]) => {
@@ -506,8 +509,8 @@ describe('upstreamFigures (rulings b, c, f and g)', () => {
 	});
 
 	it('counts a discard later restored, as it happened; entries with no card id, a deleted card’s, each once', async () => {
-		const restored = cardIn(A.cols['Ideas'], 'Discarded then restored');
-		const deleted = cardIn(A.cols['Ideas'], 'Returned then deleted');
+		const restored = cardIn(A.cols['Options'], 'Discarded then restored');
+		const deleted = cardIn(A.cols['Options'], 'Returned then deleted');
 		const archive = (card: Card) => api('DELETE', `/api/cards/${card.id}`, { user: owner });
 		expect((await archive(restored)).status).toBe(200);
 		expect((await api('POST', `/api/cards/${restored.id}/restore`, { user: owner })).status).toBe(200);
@@ -561,31 +564,31 @@ describe('upstreamFigures (rulings b, c, f and g)', () => {
 
 	it('holds the options now, live ones in upstream columns alone, aged from the latest of creation, return and conversion (B2)', () => {
 		// 55 days old, from its creation.
-		cardIn(A.cols['Ideas'], 'Old', { createdAt: '2026-09-01 12:00:00' });
+		cardIn(A.cols['Options'], 'Old', { createdAt: '2026-09-01 12:00:00' });
 		// Made long ago, returned 10 days ago.
-		const returned = cardIn(A.cols['Ideas'], 'Returned', { createdAt: '2026-01-01 12:00:00' });
+		const returned = cardIn(A.cols['Options'], 'Returned', { createdAt: '2026-01-01 12:00:00' });
 		entry(A, 'card_returned_to_options', '2026-10-16 12:00:00', returned.id);
 		// On the ideas board, 31 days old.
 		cardIn(I.cols['New Ideas'], 'Idea', { createdAt: '2026-09-25 11:00:00' });
 		// Not options now: archived, and committed work.
-		cardIn(A.cols['Ideas'], 'Discarded', { createdAt: '2025-01-01 12:00:00', archivedAt: OLD, discardedAt: OLD });
+		cardIn(A.cols['Options'], 'Discarded', { createdAt: '2025-01-01 12:00:00', archivedAt: OLD, discardedAt: OLD });
 		cardIn(A.cols['To Do'], 'Work', { createdAt: '2025-01-01 12:00:00' });
 
 		expect(figuresOf([A.board.id, I.board.id])).toMatchObject({ options: 3, oldestOptionDays: 55, agingOptions: 2 });
 		expect(figuresOf([I.board.id])).toMatchObject({ options: 1, oldestOptionDays: 31, agingOptions: 1 });
 
 		// The column converted 5 days ago: every card in it is an option from then.
-		entry(A, 'column_converted_to_options', '2026-10-21 12:00:00', null, `2 cards became options${conversionSuffix(A.cols['Ideas'].id)}`);
+		entry(A, 'column_converted_to_options', '2026-10-21 12:00:00', null, `2 cards became options${conversionSuffix(A.cols['Options'].id)}`);
 		expect(figuresOf([A.board.id])).toMatchObject({ options: 2, oldestOptionDays: 5, agingOptions: 0 });
 	});
 
 	it('agrees with the routes: an option committed, one returned, one discarded and work abandoned', async () => {
-		const chosen = cardIn(A.cols['Ideas'], 'Chosen');
+		const chosen = cardIn(A.cols['Options'], 'Chosen');
 		const back = cardIn(A.cols['To Do'], 'Back');
-		const dropped = cardIn(A.cols['Ideas'], 'Dropped');
+		const dropped = cardIn(A.cols['Options'], 'Dropped');
 		const left = cardIn(A.cols['In Progress'], 'Left');
 		expect((await api('PUT', `/api/v1/cards/${chosen.id}/move`, { user: member, body: { columnId: A.cols['To Do'].id } })).status).toBe(200);
-		expect((await api('PUT', `/api/v1/cards/${back.id}/move`, { user: member, body: { columnId: A.cols['Ideas'].id } })).status).toBe(200);
+		expect((await api('PUT', `/api/v1/cards/${back.id}/move`, { user: member, body: { columnId: A.cols['Options'].id } })).status).toBe(200);
 		expect((await api('DELETE', `/api/v1/cards/${dropped.id}`, { user: member })).status).toBe(200);
 		expect((await api('DELETE', `/api/cards/${left.id}`, { user: member })).status).toBe(200);
 

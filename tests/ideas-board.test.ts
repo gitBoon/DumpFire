@@ -63,10 +63,12 @@ import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 /** When every card here was made, long before any write. */
 const OLD = '2026-01-05 09:00:00';
 
-const DELIVERY = ['Ideas', 'To Do', 'On Hold', 'In Progress', 'Complete'];
+const DELIVERY = ['To Do', 'On Hold', 'In Progress', 'Complete'];
 const IDEAS = ['New Ideas', 'Shaping', 'Ready for Replenishment'];
-/** A new board's columns, by kind. */
-const DELIVERY_DEFAULTS = ['To Do', 'On Hold', 'In Progress', 'Complete'];
+/** A new board's columns, by kind: a delivery board's Options column first (card 2527). */
+const DELIVERY_DEFAULTS = ['Options', 'To Do', 'On Hold', 'In Progress', 'Complete'];
+/** A new delivery board's columns as stored, at 0 to 4, the first with the Options role. */
+const DELIVERY_STORED = DELIVERY_DEFAULTS.map((title, position) => ({ title, position, role: title === 'Options' ? 'options' : null }));
 
 const SUB_BOARD = 'A sub-board is a delivery board.';
 const UNDER_IDEA = 'An idea has no sub-boards; send it to a delivery board first.';
@@ -76,7 +78,7 @@ const noColumn = (what: string, title: string) => `An ideas board has no ${what}
 
 let owner: SessionUser;
 let editor: SessionUser;
-/** "Delivery", a delivery board whose Options column is "Ideas". */
+/** "Delivery", a delivery board with its Options column (card 2527), and To Do, On Hold, In Progress and Complete. */
 let D: BoardFixture;
 /** "Ideas board", an ideas board. */
 let I: BoardFixture;
@@ -86,9 +88,8 @@ beforeEach(() => {
 	resetDb();
 	owner = makeUser({ username: 'owner' });
 	editor = makeUser({ username: 'editor' });
-	D = makeBoard({ owner, name: 'Delivery', columns: DELIVERY });
+	D = makeBoard({ owner, name: 'Delivery', options: true, columns: DELIVERY });
 	I = makeBoard({ owner, name: 'Ideas board', columns: IDEAS });
-	sqlite.prepare("UPDATE columns SET role = 'options', position = -1 WHERE id = ?").run(D.cols['Ideas'].id);
 	sqlite.prepare("UPDATE boards SET kind = 'ideas' WHERE id = ?").run(I.board.id);
 	for (const board of [D, I]) addBoardMember(board.board, editor, 'editor');
 	sent = effects();
@@ -98,10 +99,14 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
-/** A delivery board with the columns given, and the editor an editor of it; `options` names its Options column. */
-function deliveryBoard(name: string, titles: string[], options?: string): BoardFixture {
-	const board = makeBoard({ owner, name, columns: titles });
-	if (options) sqlite.prepare("UPDATE columns SET role = 'options', position = -1 WHERE id = ?").run(board.cols[options].id);
+/**
+ * A delivery board with the columns given, and the editor an editor of it;
+ * with `options`, its Options column too (`cols['Options']`, card 2527).
+ * Without, it has none, as a board made before card 2527 has until the next
+ * start.
+ */
+function deliveryBoard(name: string, titles: string[], options = false): BoardFixture {
+	const board = makeBoard({ owner, name, options, columns: titles });
 	addBoardMember(board.board, editor, 'editor');
 	return board;
 }
@@ -195,13 +200,13 @@ const TREES: Tree[] = [
 
 describe.each(TREES)('a board’s kind, through $name', (tree) => {
 	describe('on a new board', () => {
-		it('makes a delivery board by default with its four columns, and an ideas board with its three (M22-12), the kind stored', async () => {
+		it('makes a delivery board by default with its Options column and its four (M22-12, card 2527), and an ideas board with its three, the kind stored', async () => {
 			const delivery = await tree.create({ name: 'New work' });
 			const ideas = await tree.create({ name: 'New ideas', kind: 'ideas' });
 
 			expect(delivery.status).toBe(201);
 			expect(delivery.body.kind).toBe('delivery');
-			expect(boardAsStored(delivery.body.id)).toEqual({ kind: 'delivery', columns: DELIVERY_DEFAULTS.map((title, position) => ({ title, position, role: null })) });
+			expect(boardAsStored(delivery.body.id)).toEqual({ kind: 'delivery', columns: DELIVERY_STORED });
 			expect(ideas.status).toBe(201);
 			expect(ideas.body.kind).toBe('ideas');
 			expect(boardAsStored(ideas.body.id)).toEqual({ kind: 'ideas', columns: IDEAS.map((title, position) => ({ title, position, role: null })) });
@@ -218,7 +223,7 @@ describe.each(TREES)('a board’s kind, through $name', (tree) => {
 
 		it('refuses an ideas sub-board, and a sub-board under an option, in the Options column or on an ideas board (rulings o and p)', async () => {
 			const committed = cardIn(D.cols['To Do'], 'Committed work');
-			const option = cardIn(D.cols['Ideas'], 'An option');
+			const option = cardIn(D.cols['Options'], 'An option');
 			const idea = cardIn(I.cols['Shaping'], 'An idea');
 
 			await expectRefused(() => tree.create({ name: 'S', kind: 'ideas', parentCardId: committed.id }), 409, SUB_BOARD);
@@ -263,7 +268,7 @@ describe.each(TREES)('a board’s kind, through $name', (tree) => {
 		});
 
 		it('is the owner’s or an administrator’s to change: an editor is refused, and nothing else sent is saved', async () => {
-			const empty = deliveryBoard('Empty', DELIVERY_DEFAULTS);
+			const empty = deliveryBoard('Empty', DELIVERY, true);
 			const admin = makeUser({ role: 'admin' });
 
 			await expectRefused(
@@ -275,7 +280,7 @@ describe.each(TREES)('a board’s kind, through $name', (tree) => {
 		});
 
 		it('switches an empty delivery board to an ideas board, replacing its columns with the ideas defaults, and back (ruling j, M22-18), saying what it replaced (L3)', async () => {
-			const empty = deliveryBoard('Empty', ['Backlog', 'To Do', 'Done'], 'Backlog');
+			const empty = deliveryBoard('Empty', ['To Do', 'Done'], true);
 			const oldIds = Object.values(empty.cols).map((c) => c.id);
 			// The CFD's snapshots of the old columns, which go with them (the S5a review's L8).
 			snapshotsOf(empty);
@@ -292,7 +297,7 @@ describe.each(TREES)('a board’s kind, through $name', (tree) => {
 				{
 					action: `${tree.prefix}board_updated`,
 					detail:
-						'Updated board "Empty" (fields: kind): now an ideas board; its columns Backlog, To Do, Done were replaced with New Ideas, Shaping, Ready for Replenishment'
+						'Updated board "Empty" (fields: kind): now an ideas board; its columns Options, To Do, Done were replaced with New Ideas, Shaping, Ready for Replenishment'
 				}
 			]);
 			expect(sent.events.map((e) => `${e.event} (${e.data.type})`).sort()).toEqual(['update (board)', 'update (column)']);
@@ -301,9 +306,9 @@ describe.each(TREES)('a board’s kind, through $name', (tree) => {
 
 			const back = await tree.update(empty.board.id, { kind: 'delivery' });
 			expect(back.status).toBe(200);
-			expect(boardAsStored(empty.board.id)).toEqual({ kind: 'delivery', columns: DELIVERY_DEFAULTS.map((title, position) => ({ title, position, role: null })) });
+			expect(boardAsStored(empty.board.id)).toEqual({ kind: 'delivery', columns: DELIVERY_STORED });
 			expect((sqlite.prepare('SELECT detail FROM activity_log WHERE board_id = ? ORDER BY id DESC LIMIT 1').get(empty.board.id) as { detail: string }).detail).toBe(
-				'Updated board "Empty" (fields: kind): now a delivery board; its columns New Ideas, Shaping, Ready for Replenishment were replaced with To Do, On Hold, In Progress, Complete'
+				'Updated board "Empty" (fields: kind): now a delivery board; its columns New Ideas, Shaping, Ready for Replenishment were replaced with Options, To Do, On Hold, In Progress, Complete'
 			);
 			nothingToRepair();
 		});
@@ -354,7 +359,7 @@ describe('putting a board under a card, from the board page (rulings o and p)', 
 
 	it('refuses an ideas board under any card, and a kind of ideas sent with a parent', async () => {
 		const committed = cardIn(D.cols['To Do'], 'Committed work');
-		const empty = deliveryBoard('Empty', DELIVERY_DEFAULTS);
+		const empty = deliveryBoard('Empty', DELIVERY, true);
 		const ideas = deliveryBoard('Empty ideas', IDEAS);
 		sqlite.prepare("UPDATE boards SET kind = 'ideas' WHERE id = ?").run(ideas.board.id);
 
@@ -363,8 +368,8 @@ describe('putting a board under a card, from the board page (rulings o and p)', 
 	});
 
 	it('refuses any board under an option, in the Options column or on an ideas board, and puts one under committed work as before', async () => {
-		const empty = deliveryBoard('Empty', DELIVERY_DEFAULTS);
-		const option = cardIn(D.cols['Ideas'], 'An option');
+		const empty = deliveryBoard('Empty', DELIVERY, true);
+		const option = cardIn(D.cols['Options'], 'An option');
 		const idea = cardIn(I.cols['New Ideas'], 'An idea');
 
 		await expectRefused(() => put(empty.board.id, { parentCardId: option.id }), 409, UNDER_OPTION);
@@ -379,7 +384,7 @@ describe('putting a board under a card, from the board page (rulings o and p)', 
 describe('a new card made in an upstream column with a sub-board', () => {
 	it('is refused whole, as the sub-board under an option is (ruling o)', async () => {
 		await expectRefused(
-			() => api('POST', '/api/cards', { user: owner, body: { columnId: D.cols['Ideas'].id, title: 'An option', subBoards: [{ name: 'Its plan' }] } }),
+			() => api('POST', '/api/cards', { user: owner, body: { columnId: D.cols['Options'].id, title: 'An option', subBoards: [{ name: 'Its plan' }] } }),
 			409,
 			`subBoards[0]: ${UNDER_OPTION}`
 		);
@@ -394,7 +399,7 @@ describe.each(TREES)('converting a board to an ideas board, cards and all, throu
 		addBoardMember(D.board, member, 'editor');
 		const live = [cardIn(D.cols['In Progress'], 'Doing', { createdBy: member.id }), cardIn(D.cols['In Progress'], 'Also doing')];
 		const archived = cardIn(D.cols['In Progress'], 'Stopped long ago', { archivedAt: stamp() });
-		const option = cardIn(D.cols['Ideas'], 'An option');
+		const option = cardIn(D.cols['Options'], 'An option');
 		expect(commitmentOf(live[0])).toEqual({ committedAt: OLD, committedBy: member.id });
 		snapshotsOf(D);
 
@@ -404,7 +409,8 @@ describe.each(TREES)('converting a board to an ideas board, cards and all, throu
 		expect(res.status, JSON.stringify(res.body)).toBe(200);
 		expect(res.body).toMatchObject({ id: D.board.id, kind: 'ideas' });
 		expect(res.body.columns.map((c: { title: string; role: string | null }) => [c.title, c.role])).toEqual([
-			['Ideas', null],
+			// The Options column, holding an option, kept with its role taken off (card 2527, O7).
+			['Options', null],
 			['In Progress', null]
 		]);
 		expect(boardAsStored(D.board.id).kind).toBe('ideas');
@@ -452,14 +458,16 @@ describe.each(TREES)('converting a board to an ideas board, cards and all, throu
 		cardIn(D.cols['To Do'], 'Waiting too');
 		await expectRefused(() => tree.convert(D.board.id, { kind: 'ideas', cards: 3 }), 409, '"To Do" holds 2 cards, and an ideas board has no To Do column: rename it first.');
 
-		// Renamed, they stay, with their cards, and only the empty Complete column goes.
+		// Renamed, they stay, with their cards, and only the empty Complete
+		// column goes, with the empty Options column, named first in the board's
+		// order (card 2527, O7).
 		sqlite.prepare("UPDATE columns SET title = 'Next up' WHERE id = ?").run(D.cols['To Do'].id);
 		sqlite.prepare("UPDATE columns SET title = 'Paused' WHERE id = ?").run(D.cols['On Hold'].id);
 		const res = await tree.convert(D.board.id, { kind: 'ideas', cards: 3 });
 		expect(res.status, JSON.stringify(res.body)).toBe(200);
-		expect(boardAsStored(D.board.id).columns.map((c) => c.title)).toEqual(['Ideas', 'Next up', 'Paused', 'In Progress']);
+		expect(boardAsStored(D.board.id).columns.map((c) => c.title)).toEqual(['Next up', 'Paused', 'In Progress']);
 		expect((sqlite.prepare('SELECT detail FROM activity_log').get() as { detail: string }).detail).toBe(
-			`"Delivery": 3 cards became ideas; its column Complete was removed (board ${D.board.id})`
+			`"Delivery": 3 cards became ideas; its columns Options, Complete were removed (board ${D.board.id})`
 		);
 	});
 
@@ -583,12 +591,12 @@ describe.each(TREES)('sending an option to another delivery board, through $name
 		await sent.settle();
 
 		expect(res.status, JSON.stringify(res.body)).toBe(200);
-		expect(res.body).toMatchObject({ id: idea.id, columnId: D.cols['Ideas'].id, columnTitle: 'Ideas', boardId: D.board.id, leftMilestone: null });
+		expect(res.body).toMatchObject({ id: idea.id, columnId: D.cols['Options'].id, columnTitle: 'Options', boardId: D.board.id, leftMilestone: null });
 		expect(commitmentOf(idea)).toEqual({ committedAt: null, committedBy: null });
 		const entries = entriesOf(idea);
 		expect(entries.map((e) => [e.action, e.boardId, e.detail])).toEqual([
-			[`${tree.prefix}card_sent`, I.board.id, `"An idea" sent to another board's Options (Ready for Replenishment → Ideas)`],
-			[`${tree.prefix}card_moved_in`, D.board.id, '"An idea" moved from another board (Ready for Replenishment → Ideas)']
+			[`${tree.prefix}card_sent`, I.board.id, `"An idea" sent to another board's Options (Ready for Replenishment → Options)`],
+			[`${tree.prefix}card_moved_in`, D.board.id, '"An idea" moved from another board (Ready for Replenishment → Options)']
 		]);
 		expect(entries[1].at).toBe(entries[0].at);
 		expect(sent.webhooks.map((w) => [w.body.boardId, w.event, w.body.data.action])).toEqual([
@@ -632,13 +640,13 @@ describe.each(TREES)('sending an option to another delivery board, through $name
 	});
 
 	it('from a delivery board’s Options column too, to another delivery board (ruling l)', async () => {
-		const other = deliveryBoard('Other', ['Later', 'To Do', 'Complete'], 'Later');
-		const option = cardIn(D.cols['Ideas'], 'An option');
+		const other = deliveryBoard('Other', ['To Do', 'Complete'], true);
+		const option = cardIn(D.cols['Options'], 'An option');
 
 		const res = await tree.send(option.id, { boardId: other.board.id, to: 'options' });
 
 		expect(res.status, JSON.stringify(res.body)).toBe(200);
-		expect(res.body.columnId).toBe(other.cols['Later'].id);
+		expect(res.body.columnId).toBe(other.cols['Options'].id);
 		expect(entriesOf(option).map((e) => [e.action, e.boardId])).toEqual([
 			[`${tree.prefix}card_sent`, D.board.id],
 			[`${tree.prefix}card_moved_in`, other.board.id]
@@ -647,14 +655,14 @@ describe.each(TREES)('sending an option to another delivery board, through $name
 	});
 
 	it('refuses committed work, which is moved, not sent, 400', async () => {
-		const other = deliveryBoard('Other', ['Later', 'To Do'], 'Later');
+		const other = deliveryBoard('Other', ['To Do'], true);
 		const committed = cardIn(D.cols['To Do'], 'Committed work');
 
 		await expectRefused(() => tree.send(committed.id, { boardId: other.board.id, to: 'options' }), 400, 'A committed card is moved, not sent');
 	});
 
 	it('refuses an ideas board, and the card’s own board, as where it goes, 400', async () => {
-		const option = cardIn(D.cols['Ideas'], 'An option');
+		const option = cardIn(D.cols['Options'], 'An option');
 
 		await expectRefused(
 			() => tree.send(option.id, { boardId: I.board.id, to: 'options' }),
@@ -699,7 +707,7 @@ describe.each(TREES)('sending an option to another delivery board, through $name
 
 	it('refuses a board with no Options column, and one with no column to commit into, 409', async () => {
 		const plain = deliveryBoard('Plain', ['To Do', 'Done']);
-		const parked = deliveryBoard('Parked', ['Later', 'On Hold', 'Complete'], 'Later');
+		const parked = deliveryBoard('Parked', ['On Hold', 'Complete'], true);
 		const idea = cardIn(I.cols['Shaping'], 'An idea');
 
 		await expectRefused(() => tree.send(idea.id, { boardId: plain.board.id, to: 'options' }), 409, '"Plain" has no Options column');
@@ -707,7 +715,7 @@ describe.each(TREES)('sending an option to another delivery board, through $name
 	});
 
 	it('to To Do takes the first column titled To Do, else the first committed one that is neither Complete nor On Hold: never On Hold', async () => {
-		const titled = deliveryBoard('Titled', ['Later', 'On Hold', 'Backlog', 'To Do', 'Complete'], 'Later');
+		const titled = deliveryBoard('Titled', ['On Hold', 'Backlog', 'To Do', 'Complete'], true);
 		const untitled = deliveryBoard('Untitled', ['On Hold', 'Complete', 'Backlog', 'In Progress']);
 
 		const one = await tree.send(cardIn(I.cols['Shaping'], 'One').id, { boardId: titled.board.id, to: 'todo' });
@@ -730,7 +738,7 @@ describe.each(TREES)('sending an option to another delivery board, through $name
 		expect(res.status).toBe(200);
 		expect(res.body).toMatchObject({ categoryId: null, milestoneId: null, leftMilestone: { id: goal.id, name: 'Spring ideas' } });
 		expect(db.select().from(cardLabels).where(eq(cardLabels.cardId, idea.id)).all()).toEqual([]);
-		expect(entriesOf(idea)[0].detail).toBe(`"An idea" sent to another board's Options (Shaping → Ideas) and out of milestone "Spring ideas"`);
+		expect(entriesOf(idea)[0].detail).toBe(`"An idea" sent to another board's Options (Shaping → Options) and out of milestone "Spring ideas"`);
 		// The goal's own entry says it was sent (the S5a review's L7).
 		expect(entriesOf(idea).find((e) => e.action.endsWith('milestone_card_removed'))!.detail).toBe('Removed "An idea" from milestone "Spring ideas" (sent to another board)');
 	});
@@ -788,9 +796,9 @@ describe('a Send, counted and aged', () => {
 	});
 
 	it('keeps the option’s age, even in an Options column converted after it was made, where a card there already is an option from the conversion (M22-20)', async () => {
-		const there = cardIn(D.cols['Ideas'], 'Already there');
+		const there = cardIn(D.cols['Options'], 'Already there');
 		const entry = sqlite.prepare('INSERT INTO activity_log (board_id, action, detail, created_at) VALUES (?, ?, ?, ?)');
-		entry.run(D.board.id, 'column_converted_to_options', `"Ideas": 1 card became an option (column ${D.cols['Ideas'].id})`, '2026-09-01 08:00:00');
+		entry.run(D.board.id, 'column_converted_to_options', `"Ideas": 1 card became an option (column ${D.cols['Options'].id})`, '2026-09-01 08:00:00');
 		const idea = cardIn(I.cols['Shaping'], 'An idea');
 
 		expect((await send(idea.id, D.board.id, 'options')).status).toBe(200);
@@ -823,13 +831,13 @@ describe('a Send, counted and aged', () => {
 	});
 
 	it('pairs a Send by its stamp: one sent out of scope and moved into scope later is still sent on (L8)', async () => {
-		const later = deliveryBoard('Later', ['Someday', 'To Do'], 'Someday');
+		const later = deliveryBoard('Later', ['To Do'], true);
 		const idea = cardIn(I.cols['Shaping'], 'An idea');
 		vi.useFakeTimers({ toFake: ['Date'] });
 		vi.setSystemTime(new Date('2026-06-01T10:00:00Z'));
 		expect((await send(idea.id, D.board.id, 'options')).status).toBe(200);
 		vi.setSystemTime(new Date('2026-06-01T10:05:00Z'));
-		expect((await api('PUT', `/api/v1/cards/${idea.id}/move`, { user: editor, body: { columnId: later.cols['Someday'].id } })).status).toBe(200);
+		expect((await api('PUT', `/api/v1/cards/${idea.id}/move`, { user: editor, body: { columnId: later.cols['Options'].id } })).status).toBe(200);
 
 		// The Send from the ideas board went out of scope (D); the later move into scope (Later) is not its pair.
 		expect(upstreamFigures([I.board.id, later.board.id], '2026-06-01', '2026-06-01').sentOn).toBe(1);
@@ -860,14 +868,14 @@ describe('an option moved to another board, not sent, is sent on all the same (t
 
 	it('by the card window’s and All Tasks’ move (PUT /api/cards/:id with a column of another board): to Options, and to To Do', async () => {
 		const one = cardIn(I.cols['Shaping'], 'One');
-		const two = cardIn(D.cols['Ideas'], 'Two');
-		const other = deliveryBoard('Other', ['Later', 'To Do'], 'Later');
+		const two = cardIn(D.cols['Options'], 'Two');
+		const other = deliveryBoard('Other', ['To Do'], true);
 
-		expect((await api('PUT', `/api/cards/${one.id}`, { user: editor, body: { boardId: D.board.id, columnId: D.cols['Ideas'].id } })).status).toBe(200);
+		expect((await api('PUT', `/api/cards/${one.id}`, { user: editor, body: { boardId: D.board.id, columnId: D.cols['Options'].id } })).status).toBe(200);
 		expect((await api('PUT', `/api/cards/${two.id}`, { user: editor, body: { columnId: other.cols['To Do'].id } })).status).toBe(200);
 
-		expect(entriesOf(one).map((e) => [e.action, e.detail])[0]).toEqual(['card_sent', `"One" sent to another board's Options (Shaping → Ideas)`]);
-		expect(entriesOf(two).map((e) => [e.action, e.detail])[0]).toEqual(['card_sent', `"Two" sent to another board's To Do (Ideas → To Do)`]);
+		expect(entriesOf(one).map((e) => [e.action, e.detail])[0]).toEqual(['card_sent', `"One" sent to another board's Options (Shaping → Options)`]);
+		expect(entriesOf(two).map((e) => [e.action, e.detail])[0]).toEqual(['card_sent', `"Two" sent to another board's To Do (Options → To Do)`]);
 		nothingToRepair();
 	});
 
@@ -883,13 +891,13 @@ describe('an option moved to another board, not sent, is sent on all the same (t
 	});
 
 	it('keeps the option’s age, moved from another board’s Options into an Options column converted since it was made (M22-20)', async () => {
-		const other = deliveryBoard('Other', ['Later', 'To Do'], 'Later');
-		const option = cardIn(other.cols['Later'], 'An option');
+		const other = deliveryBoard('Other', ['To Do'], true);
+		const option = cardIn(other.cols['Options'], 'An option');
 		sqlite
 			.prepare('INSERT INTO activity_log (board_id, action, detail, created_at) VALUES (?, ?, ?, ?)')
-			.run(D.board.id, 'column_converted_to_options', `"Ideas": 0 cards became options (column ${D.cols['Ideas'].id})`, '2026-09-01 08:00:00');
+			.run(D.board.id, 'column_converted_to_options', `"Ideas": 0 cards became options (column ${D.cols['Options'].id})`, '2026-09-01 08:00:00');
 
-		expect((await api('PUT', `/api/v1/cards/${option.id}/move`, { user: editor, body: { columnId: D.cols['Ideas'].id } })).status).toBe(200);
+		expect((await api('PUT', `/api/v1/cards/${option.id}/move`, { user: editor, body: { columnId: D.cols['Options'].id } })).status).toBe(200);
 
 		const onD = readBoardContents(owner, D.board.id).columns.flatMap((c) => c.cards).find((c) => c.id === option.id) as Record<string, unknown>;
 		expect(onD.optionSince).toBe(OLD);
@@ -975,7 +983,7 @@ describe('the boards the Send window offers, GET /api/cards/:id/send (slice S5b)
 			]
 		});
 		// An option on a delivery board's Options column is offered the other boards, its own left out.
-		const option = cardIn(D.cols['Ideas'], 'An option');
+		const option = cardIn(D.cols['Options'], 'An option');
 		expect((await targets(option.id)).body.boards.map((b: { id: number }) => b.id)).toEqual([plain.board.id, none.board.id]);
 		// Every delivery board for an administrator, who can edit them all.
 		const admin = makeUser({ username: 'admin', role: 'admin' });
@@ -1092,7 +1100,7 @@ describe('the board page’s own words, said before it asks (slice S5b)', () => 
 			'Make "Empty" an ideas board? It holds no cards, so its columns To Do, On Hold, In Progress and Complete are replaced with New Ideas, Shaping and Ready for Replenishment. Its ideas are sent on to delivery boards when they are chosen. It can be made a delivery board again while it holds no cards.'
 		);
 		expect(deliveryBoardWarning('Ideas', ['New Ideas', 'Shaping', 'Ready for Replenishment'])).toBe(
-			'Make "Ideas" a delivery board? Its columns New Ideas, Shaping and Ready for Replenishment are replaced with To Do, On Hold, In Progress and Complete.'
+			'Make "Ideas" a delivery board? Its columns New Ideas, Shaping and Ready for Replenishment are replaced with Options, To Do, On Hold, In Progress and Complete.'
 		);
 		expect(cardSentMessage('Idea', 'Ops', 'options')).toBe(`Sent "Idea" to Ops's Options`);
 		expect(cardSentMessage('Idea', 'Ops', 'todo')).toBe(`Sent "Idea" to Ops's To Do`);

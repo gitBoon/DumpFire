@@ -13,7 +13,7 @@ export const GET: RequestHandler = async ({ locals }) => {
 };
 
 /**
- * POST /api/boards — make a board, with its four columns and its owner.
+ * POST /api/boards — make a board, with its kind's columns and its owner.
  *
  * A new board has no row to guard, so its fields are read first (card 2117,
  * R1): `name` text, trimmed, of 1 to 200 characters; `emoji` text of 1 to

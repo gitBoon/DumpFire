@@ -98,9 +98,10 @@ const V1_JSON = '$lib/server/v1-json';
  *
  * Written as a number so that a parser which finds none, or a document that
  * has lost some, fails. Adding operations to the document means changing it,
- * knowingly.
+ * knowingly. Card 2527 took one away, POST /api/v1/columns/{columnId}/convert,
+ * before it was released.
  */
-const OPERATIONS = 85;
+const OPERATIONS = 84;
 
 // ─── The document ────────────────────────────────────────────────────────────
 
@@ -2735,7 +2736,10 @@ describe('what a route answers, against the schema the document gives for it', (
 		// Every change to v1 the milestone made, each in its item.
 		const item = (n: number) => changes.slice(changes.indexOf(`(${n}) `), n === 17 ? undefined : changes.indexOf(`(${n + 1}) `));
 		expect(item(2)).toContain('every column carries role');
-		expect(item(3)).toContain('POST /api/v1/columns/{columnId}/convert is new');
+		// The column conversion went before release (card 2527): item 3 is every delivery board's Options column.
+		expect(item(3)).toContain('every delivery board has one Options column, made with the board and by a start-up step for existing boards; it cannot be renamed to anything but Options, deleted or given away');
+		expect(changes).not.toContain('/columns/{columnId}/convert');
+		expect(spec.paths['/api/v1/columns/{columnId}/convert']).toBeUndefined();
 		expect(item(4)).toContain('every board carries kind');
 		expect(item(5)).toContain('POST /api/v1/boards/{boardId}/convert is new');
 		expect(item(6)).toContain('GET /api/v1/boards takes kind=delivery or kind=ideas');
@@ -2868,8 +2872,6 @@ describe('what a route answers, against the schema the document gives for it', (
 		const column = await ok('POST', `/api/v1/boards/${board.id}/columns`, { title: 'Review' });
 		await ok('GET', `/api/v1/columns/${column.id}`);
 		await ok('PUT', `/api/v1/columns/${column.id}`, { wipLimit: 3 });
-		// Milestone 22: the empty column made the board's Options column, and then deleted.
-		await ok('POST', `/api/v1/columns/${column.id}/convert`, { role: 'options', cards: 0 });
 		await ok('DELETE', `/api/v1/columns/${column.id}`);
 
 		expect(await ok('GET', `/api/v1/cards/${first.id}/assignees`)).toHaveLength(1);

@@ -120,13 +120,15 @@ type ListColumn = Pick<ColumnType, 'id' | 'title'> & { role?: string | null };
 /**
  * The column the list opens on: the first To Do column (`isTodoColumnTitle`:
  * "To Do" or "Todo", any case, spaces trimmed), else the first that is not
- * the Options column (milestone 22: options are not where work is picked up),
- * else the first. The list must show some column, so it falls back where the
- * All To Do page does not.
+ * the Options column (milestone 22: options are not where work is picked up).
+ * Never the Options column (card 2527, K1), which every delivery board has: a
+ * board with no other column opens on none, and the list asks for one, its
+ * strip offering the Options column. It falls back where the All To Do page
+ * does not.
  */
 export function defaultListColumn(columns: ListColumn[]): number | null {
 	const todo = columns.find((c) => isTodoColumnTitle(c.title) && c.role !== 'options');
-	return (todo ?? columns.find((c) => c.role !== 'options') ?? columns[0])?.id ?? null;
+	return (todo ?? columns.find((c) => c.role !== 'options'))?.id ?? null;
 }
 
 /** The column to show: the one chosen while it is still on the board, else the one the list opens on. */

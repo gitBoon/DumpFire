@@ -35,6 +35,21 @@ export type StoredColumnRole = (typeof COLUMN_ROLES)[number];
 export const BOARD_KINDS = ['delivery', 'ideas'] as const;
 export type BoardKind = (typeof BOARD_KINDS)[number];
 
+/**
+ * The title of every delivery board's Options column, which it always has and
+ * keeps (card 2527): no other column of a delivery board is called it, in any
+ * case. Made with the board, and by `runBackfills` for a board made before.
+ */
+export const OPTIONS_TITLE = 'Options';
+
+/** The colour an Options column is made with. */
+export const OPTIONS_COLOUR = '#8b5cf6';
+
+/** True if `title` is the Options column's, whatever its case and surrounding space. */
+export function isOptionsTitle(title: string | null | undefined): boolean {
+	return (title ?? '').trim().toLowerCase() === OPTIONS_TITLE.toLowerCase();
+}
+
 /** True if this is a board's Options column: upstream of the commitment point. */
 export function isOptionsColumn(column: { role: string | null }): boolean {
 	return column.role === 'options';
@@ -144,8 +159,8 @@ export function isTodoColumnTitle(title: string | null | undefined): boolean {
 }
 
 /**
- * The first column, by position, that is not a Complete column, or undefined
- * when every one is.
+ * The first column, by position, that is neither a Complete column nor the
+ * Options column, or undefined when there is none.
  *
  * Where new work goes when nobody chose its column. A card created in a
  * Complete column is completed as it is created, with XP and fireworks for
@@ -154,14 +169,15 @@ export function isTodoColumnTitle(title: string | null | undefined): boolean {
  * board has another column.
  *
  * Nor in the Options column (milestone 22): a copy of finished work is not an
- * idea, and would be hidden in a collapsed strip. The Options column is taken
- * only when the board has no other column that is not Complete.
+ * idea, and would be hidden in a collapsed strip. Every delivery board has one
+ * at its far left (card 2527), so it is never taken, not even when the board
+ * has no other column that is not Complete: then the answer is undefined, and
+ * each caller does what it does for a board with no open column.
  */
 export function firstOpenColumn<C extends { title: string; position: number; role: string | null }>(
 	columns: readonly C[]
 ): C | undefined {
-	const open = [...columns].sort((a, b) => a.position - b.position).filter((c) => columnRoleOf(c) !== 'complete');
-	return open.find((c) => !isOptionsColumn(c)) ?? open[0];
+	return [...columns].sort((a, b) => a.position - b.position).find((c) => !isOptionsColumn(c) && columnRoleOf(c) !== 'complete');
 }
 
 /** The ids of the columns, among these, that mean finished. Never the Options column. */

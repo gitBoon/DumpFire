@@ -106,10 +106,12 @@
 			let parentCardId: number | null = subBoardParent === 'new' ? null : subBoardParent;
 
 			// Default path: create a card named after the sub-board in the first
-			// column that is not a Complete column, or the first of all when every
-			// one is. A card created in a Complete column is completed (card 2134).
+			// column that is neither a Complete column nor the Options column. A
+			// card created in a Complete column is completed (card 2134), and one
+			// in the Options column is an option, which has no sub-boards (card
+			// 2527): a board with no other column is told it has none to hold one.
 			if (parentCardId === null) {
-				const firstCol = firstOpenColumn(subBoardColumns) ?? subBoardColumns[0];
+				const firstCol = firstOpenColumn(subBoardColumns);
 				if (!firstCol) {
 					subBoardError = 'This board has no columns to hold a parent card';
 					return;

@@ -234,7 +234,7 @@ export function readSource(row: { action: string; source?: string | null }): Act
  * `card_sent`, on the board it left, as `card_moved_away` did; the board it
  * joins hears its `card_moved_in`, and `card.committed` if it was sent to
  * To Do. A board converted to an ideas board sends nothing, as a column
- * converted to the Options column does not.
+ * converted to the Options column did, before card 2527.
  */
 const ACTION_TO_EVENT: Record<string, WebhookEvent> = {
 	card_created: 'card.created',

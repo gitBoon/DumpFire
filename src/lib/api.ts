@@ -488,7 +488,7 @@ export async function convertBoard(boardId: number, cards: number): Promise<Resp
 /** The ideas board's columns, and the delivery board's, as a new board of each kind is made (`DEFAULT_COLUMNS` in `$lib/server/boards`). */
 export const DEFAULT_COLUMN_TITLES = {
 	ideas: ['New Ideas', 'Shaping', 'Ready for Replenishment'],
-	delivery: ['To Do', 'On Hold', 'In Progress', 'Complete']
+	delivery: ['Options', 'To Do', 'On Hold', 'In Progress', 'Complete']
 } as const;
 
 /** "A", "A and B", "A, B and C". */
