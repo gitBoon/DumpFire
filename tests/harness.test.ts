@@ -124,6 +124,8 @@ const TEST_FILES = [
 	'markdown.test.ts',
 	'mentions.test.ts',
 	'migrations.test.ts',
+	// Card 2537: the New badge on the board's card and on the list's row, on one clock.
+	'new-badge.svelte.test.ts',
 	'openapi-document.test.ts',
 	// Milestone 22, slice S1b: the Options column's rules and its strip.
 	'options-column.test.ts',

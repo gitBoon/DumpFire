@@ -243,3 +243,19 @@ export function isNew(dateStr: string): boolean {
 	const hours = (Date.now() - parseUTC(dateStr).getTime()) / (1000 * 60 * 60);
 	return hours < 24;
 }
+
+/**
+ * Whether a card shows its "New" badge: created under 24 hours ago, and not
+ * in a Complete column. The board's card and the list view's row both ask
+ * this, so the two agree (card 2537).
+ *
+ * @param card — The card, of which only `createdAt` is read
+ * @param completed — The card is in a Complete column
+ * @param tick — Reactive tick counter (read to trigger re-evaluation), so the
+ *   badge goes at the 24-hour mark without a reload, in both views at once
+ * @returns True while the badge is shown
+ */
+export function showsNewBadge(card: { createdAt: string }, completed: boolean, tick: number): boolean {
+	void tick; // Reactive dependency — forces re-evaluation every 15s
+	return !completed && isNew(card.createdAt);
+}

@@ -7,7 +7,7 @@
   A click opens the page's card window; Move opens the page's Move window.
   What blocks a card is the page's (`blockersFor`), which also filters by
   it; where each board sits in the tree is the page's too. The 15-second
-  tick the age and due words move on is the page's.
+  tick the age and due words move on, and the New badge goes on, is the page's.
 -->
 <script lang="ts">
 	import type { PageData } from '../../../routes/all/$types';
@@ -15,7 +15,7 @@
 	import { boardPathText } from '$lib/board-tree';
 	import { formatTokens } from '$lib/tokens';
 	import { formatUsd, BLEND_NOTE, NOT_BILLED_NOTE, UNPRICED_SUM_NOTE } from '$lib/pricing';
-	import { getRelativeAge, getDueRelative, getDueStatus, formatDueDate, parseUTC, isNew } from '$lib/utils/date-utils';
+	import { getRelativeAge, getDueRelative, getDueStatus, formatDueDate, parseUTC, showsNewBadge } from '$lib/utils/date-utils';
 	import { subtaskProgress } from '$lib/utils/card-utils';
 	import { drawnColour } from '$lib/colours';
 
@@ -36,9 +36,9 @@
 		data: PageData;
 		/** The card, as the page draws it. */
 		card: Bucket['cards'][number];
-		/** The bucket the card is drawn in: an On Hold card shows its note. */
+		/** The bucket the card is drawn in: an On Hold card shows its note, and a Complete one no New badge. */
 		bucket: Bucket;
-		/** The page's: counts up every 15 seconds, so the age and due words move on. */
+		/** The page's: counts up every 15 seconds, so the age and due words move on, and the New badge goes at 24 hours. */
 		tick: number;
 		/** The page's: where each board sits in the tree (card 1990). */
 		boardPlaces: ReadonlyMap<number, BoardPlace>;
@@ -90,7 +90,7 @@
 	{#if card.pinned}
 		<span class="pin-badge" title="Pinned">📌</span>
 	{/if}
-	{#if isNew(card.createdAt)}
+	{#if showsNewBadge(card, bucket.title === 'Complete', tick)}
 		<span class="new-badge">New</span>
 	{/if}
 	<div class="card-header">

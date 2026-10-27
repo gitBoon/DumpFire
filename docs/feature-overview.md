@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.48
+version: 1.49
 status: As-Built
 date: 2026-10-27
 tags:
@@ -175,6 +175,7 @@ A second way to look at a board, made for a portrait monitor: one column at a ti
 - **Opens on To Do, most urgent first** — the list opens on the column titled "To Do" (or "Todo"), or the first column if there is none. The cards are in priority order: pinned cards first, then critical, high, medium and low, keeping the board's order within each priority. **Board order** beside it shows the column exactly as the board does.
 - **Choosing a column** — a strip of the board's columns above the list, each with its card count ("shown/total" while a filter is on, as the board's column headers say it). It wraps onto a second line when narrow. Choosing a column starts its list at the top; if the column shown is deleted, the list moves to To Do at once.
 - **What a row shows** — the title in full, the card's summary (the plain-English line written for reports), up to five lines of its description, and one line with Blocked, milestone, priority, category, assignees, age, due date, subtasks done and cost. In On Hold, the hold note. Labels and sub-boards are in the card window.
+- **New** — a card made in the last 24 hours shows the green **New** badge beside its title, as it does on the board, and not once it is in a Complete column. Pointing at it says "Created in the last 24 hours". The badge goes at the 24-hour mark in both views together, within 15 seconds and without reloading. All Tasks follows the same rule: no badge in its Complete column, and gone at 24 hours without reloading (from 27 October 2026: the list never showed it, on the board it stayed until the page redrew the card, and All Tasks showed it on new cards in Complete too).
 - **What a row does** — click it (or Tab to its title and press Enter or Space) to open the card; with Bulk Select on, a click selects it. Right-click opens the same menu as on the board, where **Move to** moves the card to another column. Cards are not dragged or reordered in the list, because the order on screen is not the board's stored order.
 - **Filters** — the header's search, and the assignee filter and Hide blocked under its **Filter** menu, apply to the list too; a card that does not match is left out of it. Live updates from other people appear as they do on the board.
 - **Remembered** — the choice (board or list, the column, and the order) is remembered for you and for that board, in this browser (in a private window, until it is closed). Another person signing in on the same browser has their own. Nothing is remembered with site data blocked; the control still works there.
