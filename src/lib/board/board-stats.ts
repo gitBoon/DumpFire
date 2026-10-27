@@ -9,8 +9,10 @@
  * is not aging work, ruling g, and committed work ages from its commitment,
  * the S4a review's H2) nor the per-column and per-category bars. The
  * panel shows the options apart, from `optionsCount` and the metrics answer's
- * `upstream` (`optionsLine`, `showsUpstream`, slice S4b). For a board with no
- * upstream column every figure is what the panel worked out before.
+ * `upstream` (`optionsLine`, `showsUpstream`, slice S4b). The overdue count
+ * is of open work only: a card in a Complete column is done, whatever its due
+ * date (card 2476). For a board with no upstream column every other figure is
+ * what the panel worked out before.
  *
  * No server imports: the panel runs in the browser.
  */
@@ -34,7 +36,12 @@ export type BoardStats = {
 	totalCards: number;
 	/** Of those, the cards in a Complete column. */
 	completedCards: number;
-	/** Of those, the cards with a due date before today, in the viewer's own day (`getDueStatus`). Complete cards too, as the panel always counted them. */
+	/**
+	 * Of those, the cards not in a Complete column with a due date before
+	 * today, in the viewer's own day (`getDueStatus`). A card finished after its
+	 * due date is done, not overdue: the panel counted Complete cards too, so
+	 * one stayed overdue for ever (card 2476).
+	 */
 	overdueCards: number;
 	/** Their average age in whole days, from `committedAt ?? createdAt`, rounded; 0 for none. A card whose time cannot be read is left out. */
 	avgAgeDays: number;
@@ -55,6 +62,8 @@ export type BoardStats = {
 export function boardStats(columns: readonly StatsColumn[], boardKind: string | null, now: number = Date.now()): BoardStats {
 	const delivery = columns.filter((c) => !isUpstreamColumn(c, boardKind));
 	const cards = delivery.flatMap((c) => c.cards);
+	const complete = delivery.filter((c) => isCompleteColumnTitle(c.title));
+	const open = delivery.filter((c) => !isCompleteColumnTitle(c.title)).flatMap((c) => c.cards);
 	const ages = cards
 		.map((c) => parseStamp(c.committedAt ?? c.createdAt))
 		.filter((at): at is Date => at !== null)
@@ -66,8 +75,8 @@ export function boardStats(columns: readonly StatsColumn[], boardKind: string | 
 	}
 	return {
 		totalCards: cards.length,
-		completedCards: delivery.filter((c) => isCompleteColumnTitle(c.title)).flatMap((c) => c.cards).length,
-		overdueCards: cards.filter((c) => c.dueDate && getDueStatus(c.dueDate) === 'overdue').length,
+		completedCards: complete.flatMap((c) => c.cards).length,
+		overdueCards: open.filter((c) => c.dueDate && getDueStatus(c.dueDate) === 'overdue').length,
 		avgAgeDays,
 		avgAge: `${avgAgeDays}d`,
 		columns: delivery.map((c) => ({ id: c.id, title: c.title, color: c.color, count: c.cards.length })),

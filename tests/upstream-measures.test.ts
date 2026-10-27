@@ -524,6 +524,40 @@ describe('lead time and cycle time (rulings a and e)', () => {
 	});
 });
 
+describe('the board’s metrics measure live completed cards only (card 2475)', () => {
+	it('leaves a completed card archived in the window out of throughput, lead time and cycle time, as velocity does', async () => {
+		const { owner, A } = flowBoard();
+		// Committed on 10 June and completed on the 12th, each moved on the 11th:
+		// 48 hours' lead time and 24 hours' cycle time.
+		const live = completedCard(A, 'Live', '2026-06-01 09:00:00', '2026-06-10 09:00:00', '2026-06-12 09:00:00');
+		entry(A, live, 'card_moved', '2026-06-11 09:00:00');
+		// Committed on 1 June and completed on the 20th, moved on the 2nd: had it
+		// counted, the lead time would be 456 hours and the cycle time 432.
+		const archived = makeCard(A.cols['Complete'], {
+			title: 'Archived',
+			createdAt: '2026-06-01 09:00:00',
+			committedAt: '2026-06-01 09:00:00',
+			completedAt: '2026-06-20 09:00:00',
+			archivedAt: '2026-06-21 09:00:00'
+		});
+		entry(A, archived, 'card_moved', '2026-06-02 09:00:00');
+
+		const res = await api('GET', `/api/boards/${A.board.id}/metrics?days=30`, { user: owner });
+		expect(res.status).toBe(200);
+		expect(res.body.completed).toBe(1);
+		expect(res.body.cards.map((c: any) => c.title)).toEqual(['Live']);
+		expect(res.body.leadTime).toMatchObject({ avgHours: 48, medianHours: 48 });
+		expect(res.body.cycleTime).toMatchObject({ avgHours: 24, medianHours: 24 });
+	});
+
+	it('answers nothing completed for a board whose only completed card is archived', async () => {
+		const { owner, A } = flowBoard();
+		makeCard(A.cols['Complete'], { title: 'Archived', createdAt: '2026-06-01 09:00:00', completedAt: '2026-06-20 09:00:00', archivedAt: '2026-06-21 09:00:00' });
+		const res = await api('GET', `/api/boards/${A.board.id}/metrics?days=30`, { user: owner });
+		expect(res.body).toMatchObject({ completed: 0, leadTime: null, cycleTime: null, cards: [] });
+	});
+});
+
 describe('the start of work after a commitment into a queue (H1) and after completion (H5)', () => {
 	/** A board Ideas (Options) | `titles` …, each card committed into `into` on 1 June, moved on the 10th and completed on the 12th. */
 	function startOf(titles: string[], into: string, moved = true) {
@@ -997,8 +1031,9 @@ describe('the board’s Stats panel figures (`boardStats`)', () => {
 
 	it('gives a board with no Options column the figures the panel worked out', () => {
 		const stats = boardStats(ordinary, 'delivery', now);
-		// Ages 10, 20, 1 and 30 days: 15.25, shown as 15d.
-		expect(stats).toMatchObject({ totalCards: 4, completedCards: 1, overdueCards: 2, avgAgeDays: 15, avgAge: '15d', optionsCount: 0 });
+		// Ages 10, 20, 1 and 30 days: 15.25, shown as 15d. One overdue: the
+		// Complete card past its due date is done (card 2476).
+		expect(stats).toMatchObject({ totalCards: 4, completedCards: 1, overdueCards: 1, avgAgeDays: 15, avgAge: '15d', optionsCount: 0 });
 		expect(stats.columns.map((c) => [c.title, c.count])).toEqual([['To Do', 2], ['In Progress', 1], ['Complete', 1]]);
 		expect([...stats.byCategory]).toEqual([[7, 2]]);
 	});
@@ -1006,10 +1041,19 @@ describe('the board’s Stats panel figures (`boardStats`)', () => {
 	it('leaves the Options column out of every figure and every bar, and counts its cards apart', () => {
 		const options = { id: 9, title: 'Ideas', color: '#9', role: 'options', cards: [card('2026-01-01 12:00:00', { dueDate: '2026-01-02', categoryId: 7 })] };
 		const stats = boardStats([options, ...ordinary], 'delivery', now);
-		expect(stats).toMatchObject({ totalCards: 4, completedCards: 1, overdueCards: 2, avgAge: '15d', optionsCount: 1 });
+		expect(stats).toMatchObject({ totalCards: 4, completedCards: 1, overdueCards: 1, avgAge: '15d', optionsCount: 1 });
 		expect(stats.columns.map((c) => c.title)).toEqual(['To Do', 'In Progress', 'Complete']);
 		expect([...stats.byCategory]).toEqual([[7, 2]]);
 		expect(boardStats(ordinary, 'ideas', now)).toMatchObject({ totalCards: 0, completedCards: 0, overdueCards: 0, avgAge: '0d', columns: [], optionsCount: 4 });
+	});
+
+	it('counts an overdue card in To Do as overdue and one in Complete not, it being done (card 2476)', () => {
+		const late = card('2026-06-01 12:00:00', { dueDate: '2026-06-10' });
+		const toDo = { id: 1, title: 'To Do', color: '#1', role: null, cards: [late] };
+		const complete = { id: 3, title: 'Complete', color: '#3', role: null, cards: [{ ...late }] };
+		expect(boardStats([toDo], 'delivery', now).overdueCards).toBe(1);
+		expect(boardStats([complete], 'delivery', now).overdueCards).toBe(0);
+		expect(boardStats([toDo, complete], 'delivery', now)).toMatchObject({ totalCards: 2, completedCards: 1, overdueCards: 1 });
 	});
 
 	it('ages each card from its commitment where it has one (H2)', () => {

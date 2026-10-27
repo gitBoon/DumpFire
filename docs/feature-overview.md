@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.49
+version: 1.50
 status: As-Built
 date: 2026-10-27
 tags:
@@ -321,7 +321,7 @@ Set up automatic weekly or monthly reports delivered to up to 10 email addresses
 
 - **Burndown & burn-up charts** — for any board, several boards, a board group, a milestone or everything, narrowed by category, label, assignee or priority; with work in play, an ideal line to the target date, a forecast (dated on a single board; across several boards the time to deliver is the one finish date) and a time-to-deliver estimate (likely and 85% dates, and the chance of hitting a target). Every figure explains itself on hover. Full page at `/burndown`, a compact chart in board Statistics, and a panel on every milestone plan. See [Burndown Charts](burndown-charts.md)
 - **Cumulative Flow Diagram** — visualise workload distribution across columns. On a delivery board the ideas in its Options column are left out, unless **Show upstream** is ticked above the chart: it draws them as the bottom band, with its top edge marked **commitment point**, and each person's choice is remembered in their own browser. The tick is offered only where there is something upstream to show: the Options column holds an idea now, or something happened upstream in the chosen period of the board's metrics. A column made the Options column during the 30 days, which only a milestone 22 build before 27 October could do, is left out with its band, earlier days included, until Show upstream is ticked
-- **Delivery metrics** — in board Statistics: **Lead time (commitment to done)**, from when a card was committed to until it reached Complete (Complete is the delivery point, so customer and system lead time are the same here); **cycle time**, the time from start of work to done, never longer than the lead time (a card created straight into a working column has none); **Throughput** beside **Committed (all)**, the cards that arrived as committed work; **Abandoned**, committed work archived before Complete, when there is any; and, where the Options column has something to show, the upstream figures (see [The Options Column](#the-options-column)). An ideas board's Statistics show its ideas, the upstream figures and the flow diagram only
+- **Delivery metrics** — in board Statistics: **Lead time (commitment to done)**, from when a card was committed to until it reached Complete (Complete is the delivery point, so customer and system lead time are the same here); **cycle time**, the time from start of work to done, never longer than the lead time (a card created straight into a working column has none); **Throughput** beside **Committed (all)**, the cards that arrived as committed work; throughput, lead time and cycle time count the completed cards that are not archived, as velocity and the reports do (from 27 October 2026: a finished card that was archived still counted in them); **Abandoned**, committed work archived before Complete, when there is any; and, where the Options column has something to show, the upstream figures (see [The Options Column](#the-options-column)). An ideas board's Statistics show its ideas, the upstream figures and the flow diagram only
 
 ### Graph View
 
