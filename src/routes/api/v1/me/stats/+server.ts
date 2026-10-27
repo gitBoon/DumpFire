@@ -16,10 +16,17 @@ import type { RequestHandler } from './$types';
  * Returns:
  * - cardsCompleted (total + last 7/30 days)
  * - avgCycleTimeDays and avgLeadTimeDays (one figure under two names: days
- *   from commitment to completion, on boards the caller can open)
+ *   from commitment to completion, of live cards on boards the caller can
+ *   open)
  * - streak (consecutive days with at least one completion)
  * - activeCards (assigned, open and committed, on boards the caller can open)
  * - recentActivity (last 20 actions, on boards the caller can open)
+ *
+ * The completion counts and the streak are a record of what the caller did:
+ * the completions they made, on any board, archived cards included (card
+ * 2541). Archiving a card afterwards does not undo the work. The averages
+ * measure the cards there are now, so they leave archived cards out, as the
+ * board's metrics do.
  */
 /**
  * A completion is stored as `card_completed` from the web UI and
@@ -83,6 +90,8 @@ export const GET: RequestHandler = async ({ locals }) => {
 	// before the milestone the commitment is its creation, as it was. Both
 	// figures count committed work only: an option, in a board's Options
 	// column or on an ideas board, is neither finished work nor open work.
+	// Live cards only (card 2541), as the board's metrics have measured since
+	// card 2475: an archived card counted here and nowhere else.
 	const cycleResult = opensNone ? [] : db.all(sql`
 		SELECT AVG(julianday(c.completed_at) - julianday(COALESCE(c.committed_at, c.created_at))) as avg_days
 		FROM cards c
@@ -91,6 +100,7 @@ export const GET: RequestHandler = async ({ locals }) => {
 		INNER JOIN boards b ON b.id = col.board_id
 		WHERE ca.user_id = ${userId}
 			AND c.completed_at IS NOT NULL
+			AND c.archived_at IS NULL
 			AND NOT ${sql.raw(UPSTREAM)}
 			${onBoardsTheyOpen}
 	`) as { avg_days: number | null }[];

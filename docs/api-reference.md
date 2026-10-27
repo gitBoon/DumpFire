@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.103
+version: 1.104
 status: As-Built
 date: 2026-10-27
 tags:
@@ -347,6 +347,11 @@ The OpenAPI document's version went from `1.3.0` to `1.3.1` with these correctio
   part. Left out, it is `0`. Until this release a limit sent with a new column was not stored,
   and was set only by a `PUT` after. The web application's `POST /api/columns` reads and
   stores it the same way.
+- **`GET /me/stats` leaves archived cards out of `avgLeadTimeDays` and `avgCycleTimeDays`**
+  (card 2541), as the board metrics leave them out of theirs. Until this release an archived
+  completed card assigned to the user was averaged. `cardsCompleted` and `streak` are unchanged:
+  they count the completions the user made, archived cards included, as archiving a card
+  afterwards does not undo the work.
 
 ### Changes on 2026-10-26
 
@@ -2864,8 +2869,8 @@ How the key's user is doing. Takes no parameters.
 
 | Field | Meaning |
 |-------|---------|
-| `cardsCompleted` | Completions the activity log records as this user's, made in the web UI or through the API: in all, in the last 7 days and in the last 30 |
-| `avgLeadTimeDays` | Average lead time, commitment to done (since 2026-10-26, card 2464): mean days from a card's `committedAt` to its completion, to one decimal place, over the completed cards the user is assigned to on boards they can open. Options are never among them. `null` when there is none, and `0` when they were completed as they were committed. For a card made before 2026-10-26 the commitment is its creation. Complete is the delivery point, so the customer's lead time and the system's are the same here |
+| `cardsCompleted` | Completions the activity log records as this user's, made in the web UI or through the API, on any board: in all, in the last 7 days and in the last 30. A record of what the user did: a card archived afterwards still counts, here and in `streak` |
+| `avgLeadTimeDays` | Average lead time, commitment to done (since 2026-10-26, card 2464): mean days from a card's `committedAt` to its completion, to one decimal place, over the completed cards the user is assigned to on boards they can open. Options are never among them, nor archived cards (since 2026-10-27, card 2541), as in the board metrics. `null` when there is none, and `0` when they were completed as they were committed. For a card made before 2026-10-26 the commitment is its creation. Complete is the delivery point, so the customer's lead time and the system's are the same here |
 | `avgCycleTimeDays` | Average lead time, commitment to done; named cycle time for history. The same value as `avgLeadTimeDays`, kept so that nothing that reads it breaks. Until 2026-10-26 it was described as from creation to completion, the same figure for every card made before then |
 | `streak` | Consecutive UTC days with at least one completion, counted back from today, or from yesterday if there is none today |
 | `activeCards` | Cards the user is assigned to that are neither completed nor archived, on boards they can open. An option, a card in a board's Options column or on an ideas board, is not counted: it is not open work |

@@ -16,7 +16,9 @@ const spec = {
 			'**Changed on 2026-10-27 (version 1.3.1).** Corrections to answers: (1) GET /api/v1/reports/activity puts a card in the created bucket when it was raised in the window, not edited since and no move of it is recorded in the activity log ' +
 			'(card_moved, card_moved_in, card_moved_away, card_sent, card_committed, card_returned_to_options or card_reopened, in either spelling); a card raised before 2026-10-01, when the board\'s drag route recorded no move, must also still be in the board\'s first column that is not an Options column. ' +
 			'Until this release every card had to be, so a card raised in another column and left alone was progressed (card 2480); ' +
-			'(2) POST /api/v1/boards/{boardId}/columns stores the wipLimit sent, read as PUT /api/v1/columns/{columnId} reads it, and 0 when it is left out. Until this release a limit sent with a new column was not stored (card 2520).\n\n' +
+			'(2) POST /api/v1/boards/{boardId}/columns stores the wipLimit sent, read as PUT /api/v1/columns/{columnId} reads it, and 0 when it is left out. Until this release a limit sent with a new column was not stored (card 2520); ' +
+			'(3) GET /api/v1/me/stats leaves archived cards out of avgLeadTimeDays and avgCycleTimeDays, as the board metrics leave them out of theirs. Until this release an archived completed card assigned to the user was averaged. ' +
+			'cardsCompleted and streak are unchanged: they count the completions the user made, archived cards included, as archiving a card afterwards does not undo the work (card 2541).\n\n' +
 			'**Changed on 2026-10-26 (version 1.3.0).** Upstream of the commitment point: options, committed work and ideas boards (milestone 22). Three operations and two filters are new, and these answers and fields changed: ' +
 			'(1) a card is an **option**, upstream of the commitment point, when it is in a board\'s Options column (a column whose role is options) or in any column of an ideas board (a board whose kind is ideas); every other card is committed work. ' +
 			'Every delivery board has its Options column, made with it, and one made before this release is given an empty one at the far left when the server starts (item 3); no board is an ideas board until someone makes one. Every card made before this release is committed, its committedAt being its createdAt, and a board answers every operation as before but for its Options column among its columns, the fields named here and the entry an archive of unfinished work writes (card_abandoned, item 12); ' +
@@ -1298,7 +1300,9 @@ const spec = {
 				properties: {
 					cardsCompleted: {
 						type: 'object',
-						description: 'How many cards the user has completed, counted from the completions the activity log records as theirs',
+						description:
+							'How many cards the user has completed, counted from the completions the activity log records as theirs, on any board. ' +
+							'A record of what the user did: a card archived afterwards still counts, as archiving it does not undo the work.',
 						properties: {
 							total: { type: 'integer' },
 							last7Days: { type: 'integer' },
@@ -1310,15 +1314,16 @@ const spec = {
 						type: ['number', 'null'],
 						description:
 							'Average lead time, commitment to done; named cycle time for history. The same value as avgLeadTimeDays, kept so that no caller that reads it breaks: ' +
-							'mean days from each card\'s committedAt to its completion, to one decimal place, over the completed cards the user is assigned to on boards the key\'s user can open, options left out. ' +
-							'For a card made before 2026-10-26 the commitment is its creation, so the figure is as it was; until then it was described as from creation to completion. ' +
+							'mean days from each card\'s committedAt to its completion, to one decimal place, over the completed cards the user is assigned to on boards the key\'s user can open, options and archived cards left out. ' +
+							'Archived cards were averaged until 2026-10-27. For a card made before 2026-10-26 the commitment is its creation, so the figure is as it was; until then it was described as from creation to completion. ' +
 							'null when there is none. An average of 0 is 0: until 2026-10-14 it was null, and the cards of every board were averaged.'
 					},
 					avgLeadTimeDays: {
 						type: ['number', 'null'],
 						description:
 							'Average lead time, commitment to done (since 2026-10-26): mean days from each card\'s committedAt to its completion, to one decimal place, over the completed cards the user is assigned to ' +
-							'on boards the key\'s user can open. An option, a card in a board\'s Options column or on an ideas board, is never among them. null when there is none; an average of 0 is 0. ' +
+							'on boards the key\'s user can open. An option, a card in a board\'s Options column or on an ideas board, is never among them, and since 2026-10-27 neither is an archived card, as in the board metrics. ' +
+							'null when there is none; an average of 0 is 0. ' +
 							'Complete is the delivery point, so this lead time is the customer\'s and the system\'s alike. The same value as avgCycleTimeDays.'
 					},
 					streak: {
@@ -2573,7 +2578,8 @@ const spec = {
 					'How the key\'s user is doing: cards completed in all, in the last 7 days and in the last 30, the average lead time of the cards assigned to them, the days from commitment to done ' +
 					'(avgLeadTimeDays, and avgCycleTimeDays at the same value, its name for history), the current streak of days with a completion, how many cards are assigned and open, and the last 20 activity entries. ' +
 					'The average, the open count and the entries are of boards the key\'s user can open; the completed count and the streak are of the user\'s own completions, on any board. ' +
-					'The average and the open count are of committed work: an option, a card in a board\'s Options column or on an ideas board, is in neither (since 2026-10-26, milestone 22).',
+					'The average and the open count are of committed work: an option, a card in a board\'s Options column or on an ideas board, is in neither (since 2026-10-26, milestone 22). ' +
+					'Both are of live cards: an archived card is in neither (the average since 2026-10-27); the completed count and the streak include it, as archiving a card does not undo its completion.',
 				operationId: 'getMeStats',
 				responses: {
 					'200': {
