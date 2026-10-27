@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.100
+version: 1.101
 status: As-Built
 date: 2026-10-27
 tags:
@@ -328,6 +328,19 @@ moment as `YYYY-MM-DD HH:MM:SS` in UTC, and the web application's own routes and
 exports answer that form; the API turns it into ISO 8601 as it answers. Until 2026-10-14
 some fields were answered in that form, which names no zone, and the same field could be in
 either.
+
+### Changes on 2026-10-27
+
+The OpenAPI document's version went from `1.3.0` to `1.3.1` with these corrections:
+
+- **`GET /reports/activity` decides "never moved" from the activity log** (card 2480): a card
+  is `created` when it was raised in the window, not edited since, and no move of it is
+  recorded (`card_moved`, `card_moved_in`, `card_moved_away`, `card_sent`, `card_committed`,
+  `card_returned_to_options` or `card_reopened`, in either spelling). The board's drag route
+  recorded no move before mid-September 2026, so a card raised before 2026-10-01 must also
+  still be in the board's first column that is not an Options column. Until this release every
+  card had to be, so a card raised in another column and left alone was `progressed`, and one
+  moved into the first column `created`.
 
 ### Changes on 2026-10-26
 
@@ -2646,8 +2659,11 @@ cannot open, and `milestones` lists only the milestones they can open (card 2257
 user can open, as its burndown counts them (card 2326).
 
 Options are no work in the report (milestone 22, card 2462): a card in a board's Options column
-or on an ideas board is in no bucket and no total, and the `created` bucket's "never moved"
-reads the board's first column that is not an Options column. `upstream` gives the boards'
+or on an ideas board is in no bucket and no total. A card is `created` when it was raised in
+the window, its `updatedAt` is still its `createdAt`, and no move of it is recorded in the
+activity log (card 2480; until then the `created` bucket's "never moved" read the board's first
+column that is not an Options column). A card raised before 2026-10-01, when the board's drag
+route recorded no move, must also still be in that first column. `upstream` gives the boards'
 upstream figures for the window, as `GET /api/v1/boards/:boardId/upstream` gives one board's
 (without `committedAll`), and is `null` for a report on one user.
 

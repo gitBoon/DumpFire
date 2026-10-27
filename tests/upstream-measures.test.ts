@@ -33,6 +33,7 @@ import { activityLog, boards, cards, columns, dailySnapshots, subtasks, type Car
 import type { SessionUser } from '$lib/server/auth';
 import { generateBoardReport, generateCardReport, generateReportPdf } from '$lib/server/reports';
 import { buildActivityReport } from '$lib/server/activity-report';
+import { ACTIONS, storedActions } from '$lib/server/logActivity';
 import { listMilestones } from '$lib/server/milestones';
 import { getMilestoneSummary } from '$lib/server/planning';
 import { getCompletionBlocker, subBoardProgress } from '$lib/server/card-completion';
@@ -883,6 +884,124 @@ describe('the activity report', () => {
 		// No read of every board for the figures, nor a list of them bound; the conversions read only on the boards holding options.
 		expect(budget.sources.some((s) => /^SELECT id FROM boards$/.test(s.trim()))).toBe(false);
 		expect(budget.sources.filter((s) => /AND board_id IN \(SELECT DISTINCT col\.board_id/.test(s))).toHaveLength(1);
+	});
+});
+
+describe('the activity report’s created bucket: never moved is no move recorded (card 2480)', () => {
+	// Every card here is raised in the window and its `updatedAt` left at its
+	// `createdAt`, as a move made before moves were stamped left it: only the
+	// recorded moves, and before October 2026 the column, tell a card left
+	// alone from one moved. Raised after the cutoff unless the test says.
+	const raised = '2026-10-10 09:00:00';
+	const unstamped = { createdAt: raised, updatedAt: raised };
+
+	beforeEach(() => {
+		vi.setSystemTime(new Date('2026-10-31T12:00:00Z'));
+	});
+
+	/** Each card of the report on `board`, as `title: bucket`. */
+	function bucketsOn(owner: SessionUser, board: BoardFixture, from = '2026-10-01', to = '2026-10-31'): string[] {
+		return buildActivityReport({ actor: owner, from, to, boardIds: [board.board.id] }).boards.flatMap((b) =>
+			b.cards.map((c) => `${c.title}: ${c.bucket}`)
+		);
+	}
+
+	it('counts a card raised in a column that is not the board’s first, and never moved, as created', () => {
+		const { owner, A } = flowBoard();
+		const card = makeCard(A.cols['In Progress'], { title: 'Raised in progress', ...unstamped });
+		// Its creation and a comment are recorded: neither is a move.
+		entry(A, card, 'card_created', raised);
+		entry(A, card, 'comment_added', '2026-10-11 09:00:00');
+		expect(bucketsOn(owner, A)).toEqual(['Raised in progress: created']);
+	});
+
+	it('does not count a card raised elsewhere and moved into the first column as created', () => {
+		const { owner, A } = flowBoard();
+		const card = makeCard(A.cols['To Do'], { title: 'Moved back', ...unstamped });
+		entry(A, card, 'card_created', raised);
+		entry(A, card, 'card_moved', '2026-10-11 09:00:00');
+		expect(bucketsOn(owner, A)).toEqual(['Moved back: progressed']);
+	});
+
+	it('does not count a card moved through the API as created', () => {
+		const { owner, A } = flowBoard();
+		const card = makeCard(A.cols['To Do'], { title: 'Moved by a key', ...unstamped });
+		entry(A, card, 'api:card_moved', '2026-10-11 09:00:00');
+		expect(bucketsOn(owner, A)).toEqual(['Moved by a key: progressed']);
+	});
+
+	it('takes every move action, in both spellings and at any time, for a move, and nothing else', () => {
+		const { owner, A } = flowBoard();
+		const moves = storedActions(
+			ACTIONS.cardMoved,
+			ACTIONS.cardMovedIn,
+			ACTIONS.cardMovedAway,
+			ACTIONS.cardSent,
+			ACTIONS.cardCommitted,
+			ACTIONS.cardReturnedToOptions,
+			ACTIONS.cardReopened
+		);
+		// `card_completed` is no move: it is written for a card created straight into Complete (card 2134).
+		const others = storedActions(ACTIONS.cardCreated, ACTIONS.cardCompleted, ACTIONS.commentAdded, ACTIONS.subtaskCompleted, ACTIONS.dependencyAdded);
+		for (const action of [...moves, ...others]) {
+			const card = makeCard(A.cols['To Do'], { title: action, ...unstamped });
+			// A move recorded before the window is a move all the same.
+			entry(A, card, action, '2026-05-01 09:00:00');
+		}
+		expect(bucketsOn(owner, A)).toEqual([
+			...moves.map((action) => `${action}: progressed`),
+			...others.map((action) => `${action}: created`)
+		]);
+	});
+
+	it('asks the board’s first column as well for a card raised before moves were logged (the review’s G1)', () => {
+		const { owner, A } = flowBoard();
+		// Raised in September in a column that is not the first, with nothing recorded: the drag route of the day wrote no entry.
+		makeCard(A.cols['In Progress'], { title: 'Dragged in September', createdAt: '2026-09-20 09:00:00', updatedAt: '2026-09-20 09:00:00' });
+		// Still in the first column with nothing recorded: never moved, as the old rule had it.
+		makeCard(A.cols['To Do'], { title: 'Left in To Do', createdAt: '2026-09-20 09:00:00', updatedAt: '2026-09-20 09:00:00' });
+		// In the first column with a move recorded: the log still counts.
+		const back = makeCard(A.cols['To Do'], { title: 'Moved back in September', createdAt: '2026-09-20 09:00:00', updatedAt: '2026-09-20 09:00:00' });
+		entry(A, back, 'card_moved', '2026-09-21 09:00:00');
+		expect(bucketsOn(owner, A, '2026-09-01', '2026-09-30')).toEqual([
+			'Dragged in September: progressed',
+			'Left in To Do: created',
+			'Moved back in September: progressed'
+		]);
+	});
+
+	it('reads a card dragged into Complete on 14 or 15 September, with no entry, no completion and no stamp, as progressed', () => {
+		const { owner, A } = flowBoard();
+		makeCard(A.cols['Complete'], { title: 'Dragged to Complete', createdAt: '2026-09-14 09:00:00', updatedAt: '2026-09-14 09:00:00' });
+		expect(bucketsOn(owner, A, '2026-09-01', '2026-09-30')).toEqual(['Dragged to Complete: progressed']);
+	});
+
+	it('takes the log alone from the first second of October 2026', () => {
+		const { owner, A } = flowBoard();
+		makeCard(A.cols['In Progress'], { title: 'Last second before', createdAt: '2026-09-30 23:59:59', updatedAt: '2026-09-30 23:59:59' });
+		makeCard(A.cols['In Progress'], { title: 'First second after', createdAt: '2026-10-01 00:00:00', updatedAt: '2026-10-01 00:00:00' });
+		expect(bucketsOn(owner, A, '2026-09-30', '2026-10-01')).toEqual(['Last second before: progressed', 'First second after: created']);
+	});
+
+	it('reads the moves in the report’s one query: the reads do not grow with the cards', () => {
+		const { owner, A } = flowBoard();
+		const readsFor = () => {
+			const budget = readBudget(1_000);
+			try {
+				bucketsOn(owner, A);
+			} finally {
+				budget.restore();
+			}
+			return budget.count;
+		};
+		const first = makeCard(A.cols['In Progress'], { title: 'One', ...unstamped });
+		entry(A, first, 'card_moved', raised);
+		const one = readsFor();
+		for (let i = 0; i < 20; i++) {
+			const card = makeCard(A.cols[i % 2 ? 'To Do' : 'In Progress'], { title: `More ${i}`, ...unstamped });
+			if (i % 3) entry(A, card, 'card_moved', raised);
+		}
+		expect(readsFor()).toBe(one);
 	});
 });
 
