@@ -8,10 +8,11 @@
 	import type { PageData } from './$types';
 	import { untrack } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
-	import { theme } from '$lib/stores/theme';
+	import { theme, themeIcon } from '$lib/stores/theme';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
-	import ThemePicker from '$lib/components/ThemePicker.svelte';
+	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
+	import ThemeMenuItems from '$lib/components/ThemeMenuItems.svelte';
 	import Toast from '$lib/components/Toast.svelte';
 	import { toasts } from '$lib/stores/toast';
 	import { answerBody, deleteFailure, failureMessage } from '$lib/api';
@@ -313,7 +314,11 @@
 			</a>
 			<h1 class="header-title">🏢 My Teams</h1>
 			<div class="teams-header-right">
-				<ThemePicker />
+				<!-- The theme, as the dashboard's More draws it: a menu worked from the keyboard (card 2471). -->
+				<HeaderMenu label="Theme" triggerClass="btn-ghost" triggerTitle="Change theme">
+					{#snippet trigger()}<span aria-hidden="true">{themeIcon($theme)}</span>{/snippet}
+					<ThemeMenuItems heading={false} />
+				</HeaderMenu>
 				<button class="btn-primary" onclick={() => (showCreateTeam = true)}>
 					<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
 						<path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>

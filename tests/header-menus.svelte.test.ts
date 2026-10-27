@@ -280,8 +280,10 @@ describe('the dashboard header (card 2466)', () => {
 		expect(bar.querySelector('a[href="/inbox"] .inbox-count-badge')!.textContent).toBe('3');
 		expect(bar.querySelector('#plan-link')!.getAttribute('href')).toBe('/plan');
 		for (const gone of ['/todo', '/reports', '/burndown', '/graph']) expect(bar.querySelector(`a[href="${gone}"]`), gone).toBeNull();
-		// The theme picker is in More now, not the bar.
-		expect(target.querySelector('.theme-picker')).toBeNull();
+		// The theme is in More now, not the bar: no button of its own (the old picker's and the
+		// other pages' Theme menus are titled "Change theme"), and no theme item drawn while More is shut.
+		expect(target.querySelector('button[title="Change theme"]')).toBeNull();
+		expect(target.querySelector('[role="menuitemradio"]')).toBeNull();
 	});
 
 	it('opens the create window from New Board, as before', () => {
@@ -476,7 +478,7 @@ describe('the board header (card 2466)', () => {
 		// Moved out of the bar: the assignee select, Hide blocked, Planning, All To Do, Add Column, the theme.
 		expect(header.querySelector('select')).toBeNull();
 		expect(shownNamed(header, 'Hide blocked')).toHaveLength(0);
-		expect(header.querySelector('a[href^="/plan"], a[href^="/todo"], button[title="Add column"], .theme-picker')).toBeNull();
+		expect(header.querySelector('a[href^="/plan"], a[href^="/todo"], button[title="Add column"], button[title="Change theme"], [role="menuitemradio"]')).toBeNull();
 		// The XP bars are not drawn on the board (the owner, 2026-10-26).
 		expect(header.querySelector('.xp-bar-container')).toBeNull();
 	});

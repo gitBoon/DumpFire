@@ -24,6 +24,11 @@ export const THEMES: { id: ThemeName; label: string; icon: string }[] = [
 	{ id: 'hacker',     label: 'Hacker',      icon: '💻' }
 ];
 
+/** A theme's icon: what a header's theme menu button shows for the theme in use (card 2471). */
+export function themeIcon(name: ThemeName): string {
+	return THEMES.find((t) => t.id === name)?.icon ?? '☀️';
+}
+
 function createThemeStore() {
 	const initial = browser ? (localStorage.getItem('dumpfire-theme') as ThemeName) || 'light' : 'light';
 	const { subscribe, set: rawSet, update } = writable<ThemeName>(initial);

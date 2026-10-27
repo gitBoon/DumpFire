@@ -7,7 +7,9 @@
 	 * database operations (reset, vacuum), and import/export.
 	 */
 	import type { PageData } from './$types';
-	import ThemePicker from '$lib/components/ThemePicker.svelte';
+	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
+	import ThemeMenuItems from '$lib/components/ThemeMenuItems.svelte';
+	import { theme, themeIcon } from '$lib/stores/theme';
 	import Toast from '$lib/components/Toast.svelte';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	// The superadmin's panel (card 2281, slice C1a): the export and the import, drawn in the markup's isSuperadmin block alone.
@@ -104,7 +106,11 @@
 			</a>
 			<h1 class="header-title">⚙️ Admin Panel</h1>
 			<div class="admin-header-right">
-				<ThemePicker />
+				<!-- The theme, as the dashboard's More draws it: a menu worked from the keyboard (card 2471). -->
+				<HeaderMenu label="Theme" triggerClass="btn-ghost" triggerTitle="Change theme">
+					{#snippet trigger()}<span aria-hidden="true">{themeIcon($theme)}</span>{/snippet}
+					<ThemeMenuItems heading={false} />
+				</HeaderMenu>
 			</div>
 		</div>
 	</header>

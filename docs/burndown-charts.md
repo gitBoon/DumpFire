@@ -1,9 +1,9 @@
 ---
 title: "Burndown Charts"
 category: Reporting & Analytics
-version: 1.8
+version: 1.9
 status: As-Built
-date: 2026-10-26
+date: 2026-10-27
 tags:
   - burndown
   - burn-up
@@ -510,7 +510,13 @@ this period: N" (`summarise(series).doneStart`).
 card surface, border and shadow with the theme's accent along the top, so it
 matches every theme. It opens on hover (with a short delay, and a grace period to
 move into it), on keyboard focus, or on a tap on a touch screen. It closes on
-blur, Escape or a tap elsewhere. `Popover.svelte` is the click-to-open
+blur, Escape or a tap elsewhere. A screen reader hears the explanation as the
+focus arrives (card 2516): the tip's text is always in the page, `hidden` at the
+end of `<body>` (an element named by `aria-describedby` is read as the
+description even when hidden), and the control that takes the focus (the wrapper, or
+with `focusable={false}` the first focusable element inside, its own
+`aria-describedby` kept) names it in `aria-describedby` from the start. The
+panel on hover is the `role="tooltip"`, under an id of its own. `Popover.svelte` is the click-to-open
 counterpart behind the control pills: it moves focus into the panel on opening
 and returns it to the pill on closing. Both are placed by `placeFloating` (below
 the trigger if it fits, above if not, kept on screen, arrow on the trigger) and

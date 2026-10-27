@@ -7,8 +7,9 @@
 	 */
 	import type { PageData } from './$types';
 	import { invalidateAll } from '$app/navigation';
-	import { theme } from '$lib/stores/theme';
-	import ThemePicker from '$lib/components/ThemePicker.svelte';
+	import { theme, themeIcon } from '$lib/stores/theme';
+	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
+	import ThemeMenuItems from '$lib/components/ThemeMenuItems.svelte';
 	import Toast from '$lib/components/Toast.svelte';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import { toasts } from '$lib/stores/toast';
@@ -170,7 +171,11 @@
 					{purging ? '⏳ Purging...' : '🗑️ Purge All'}
 				</button>
 			{/if}
-			<ThemePicker />
+			<!-- The theme, as the dashboard's More draws it: a menu worked from the keyboard (card 2471). -->
+			<HeaderMenu label="Theme" triggerClass="btn-ghost" triggerTitle="Change theme">
+				{#snippet trigger()}<span aria-hidden="true">{themeIcon($theme)}</span>{/snippet}
+				<ThemeMenuItems heading={false} />
+			</HeaderMenu>
 		</div>
 	</header>
 
