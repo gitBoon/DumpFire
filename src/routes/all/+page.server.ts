@@ -148,6 +148,11 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		? { total: tokenSum, costUsd: pricedAny ? costSum : null }
 		: null;
 
+	// How many live cards each column holds, counted before the Complete
+	// bucket's cap, for the Move window's WIP limit warning (card 2479).
+	const cardCounts = new Map<number, number>();
+	for (const card of crossBoardCards) cardCounts.set(card.columnId, (cardCounts.get(card.columnId) ?? 0) + 1);
+
 	return {
 		cardTokens,
 		allTokenSummary,
@@ -158,7 +163,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		categories: allCategories,
 		boardCategories: allBoardCategories,
 		labels: allLabels,
-		columns: allColumns,
+		columns: allColumns.map(col => ({ ...col, cardCount: cardCounts.get(col.id) ?? 0 })),
 		allUsers: allUsers.map(u => ({ id: u.id, username: u.username, emoji: u.emoji || '👤' })),
 		// Committed work only (milestone 22): the header's total, complete and
 		// remaining leave the Options bucket out.

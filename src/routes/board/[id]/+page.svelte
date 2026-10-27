@@ -220,10 +220,16 @@
 	/**
 	 * A refusal is said, and the selection kept: a move of more than 100 cards
 	 * to another column at once is refused whole, and nothing moves (card 2209).
+	 * A move into a column, made, that takes it over its WIP limit is warned
+	 * of once, counted from the column as it now is, so a card already in it
+	 * is not counted twice (card 2479: the bulk move said nothing).
 	 */
 	async function handleBulkMove(targetColumnId: number) {
 		const targetCol = boardState.columns.find(c => c.id === targetColumnId);
 		if (!targetCol) return;
+		// Whether a card goes into the column from another: as for the drag, a
+		// move within the column is not a move into it (card 2479).
+		const entering = [...selectedCards].some((cardId) => !targetCol.cards.some((c) => c.id === cardId));
 		const started = toasts.navigation();
 		const release = boardState.hold({ watchdogMs: BULK_HOLD_MS });
 		try {
@@ -232,6 +238,9 @@
 				toasts.add(failure, 'error', started);
 			} else {
 				clearSelection();
+				const moved = boardState.columns.find((c) => c.id === targetColumnId);
+				const overLimit = moved && entering ? dndHandlers.wipWarning(moved, moved.cards.length) : null;
+				if (overLimit) toasts.add(overLimit, 'warning');
 			}
 		} finally {
 			release();
@@ -1045,10 +1054,9 @@
 		const crossed = dndHandlers.commitmentToasts(written.answer, [card]);
 		for (const message of crossed) toasts.add(message);
 		if (crossed.length === 0) toasts.add(`Moved to ${col.title}`);
-		// WIP limit violation alert
-		if (col.wipLimit > 0 && count + 1 > col.wipLimit) {
-			toasts.add(`⚠ ${col.title} exceeds WIP limit (${count + 1}/${col.wipLimit})`, 'warning');
-		}
+		// Over the column's WIP limit, said as every move says it (card 2479).
+		const overLimit = dndHandlers.wipWarning(col, count + 1);
+		if (overLimit) toasts.add(overLimit, 'warning');
 	}
 
 	async function setPriorityFromMenu(card: CardType, priority: string) {
@@ -1740,9 +1748,8 @@
 					// Check WIP limit on destination column
 					if (result.movedCards.length > 0) {
 						const destCol = boardState.columns.find(c => c.id === columnId);
-						if (destCol && destCol.wipLimit > 0 && destCol.cards.length > destCol.wipLimit) {
-							toasts.add(`⚠ ${destCol.title} exceeds WIP limit (${destCol.cards.length}/${destCol.wipLimit})`, 'warning');
-						}
+						const overLimit = destCol ? dndHandlers.wipWarning(destCol, destCol.cards.length) : null;
+						if (overLimit) toasts.add(overLimit, 'warning');
 					}
 					break;
 			}

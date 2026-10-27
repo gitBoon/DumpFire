@@ -60,6 +60,18 @@ export function touchedUpdates(
 }
 
 /**
+ * The warning that a move has taken `column` over its WIP limit, holding
+ * `countAfter` cards once the move is made; null when it has no limit (0,
+ * as the Options column always has) or is within it. One place for every
+ * move to say it alike (card 2479): the drag and the card menu wrote it
+ * each for themselves, and the bulk move and All Tasks' Move said nothing.
+ */
+export function wipWarning(column: { title: string; wipLimit: number }, countAfter: number): string | null {
+	if (!(column.wipLimit > 0) || countAfter <= column.wipLimit) return null;
+	return `⚠ ${column.title} exceeds WIP limit (${countAfter}/${column.wipLimit})`;
+}
+
+/**
  * What a drop's answer says of the commitment point (milestone 22, card
  * 2460), as the toasts to show: `Committed "<title>"` for a card taken out of
  * the Options column into a committed one, `Returned "<title>" to Options` for

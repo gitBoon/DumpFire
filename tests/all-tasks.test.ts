@@ -402,6 +402,26 @@ describe('the All Tasks load', () => {
 		// What the page asks for at the cap: 550, read as 500.
 		expect(await at(550)).toEqual({ shown: 500, hasMoreCompleted: false, totalCompletedCount: 501, completedLimit: 500 });
 	});
+
+	// Card 2479: the Move window warns of a column over its WIP limit from
+	// each column's count of live cards, counted before the Complete bucket's
+	// cap; an archived card is not counted.
+	it('gives each column the count of its live cards, the Complete column’s past the cap', async () => {
+		const owner = makeUser({ username: 'counter' });
+		const { cols } = makeBoard({ owner, name: 'Counted' });
+		for (let i = 0; i < 3; i++) makeCard(cols['Complete'], { title: `Done ${i}`, position: i });
+		makeCard(cols['To Do'], { title: 'Open', position: 0 });
+		makeCard(cols['To Do'], { title: 'Gone', position: 1, archivedAt: '2026-10-15 00:00:00' });
+
+		const res = await pageLoad('/all?completedLimit=1', { user: owner });
+		if (res.type !== 'data') throw new Error(`All Tasks answered ${JSON.stringify(res)}`);
+		const data = res.data as any;
+		expect(data.buckets.find((b: any) => b.title === 'Complete').cards).toHaveLength(1);
+		const counted = (id: number) => data.columns.find((c: any) => c.id === id).cardCount;
+		expect(counted(cols['Complete'].id)).toBe(3);
+		expect(counted(cols['To Do'].id)).toBe(1);
+		expect(counted(cols['In Progress'].id)).toBe(0);
+	});
 });
 
 describe('the picker’s search, GET /api/cards/search', () => {
