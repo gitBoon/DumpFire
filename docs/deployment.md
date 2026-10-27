@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.102
+version: 1.103
 status: As-Built
 date: 2026-10-27
 tags:
@@ -5205,13 +5205,14 @@ The going-back note in `0060_add_upstream_options.sql`'s header ("No board has a
 
 ### API 1.3.1 (2026-10-27)
 
-**Cards 2480, 2520 and 2512.** No migration, no schema change and nothing new at the first start. The OpenAPI document is version **1.3.1**, its "Changed on 2026-10-27" note listing the two v1 corrections; `DUMPFIRE_API.md` and [External API Reference](api-reference.md#changes-on-2026-10-27) each have a "Changes on 2026-10-27" section with the same list. Three answers change:
+**Cards 2480, 2520, 2512 and 2541.** No migration, no schema change and nothing new at the first start. The OpenAPI document is version **1.3.1**, its "Changed on 2026-10-27" note listing the three v1 corrections; `DUMPFIRE_API.md` and [External API Reference](api-reference.md#changes-on-2026-10-27) each have a "Changes on 2026-10-27" section with the same list. Four answers change:
 
 - **The activity report's `created` bucket** (card 2480): a card raised in the window, not edited since and never moved, by the activity log, is `created` wherever it was raised. It had to be in the board's first column, so a card raised straight into In Progress and left alone was `progressed`.
 - **A new column keeps the WIP limit sent with it** (card 2520), on `POST /api/v1/boards/{boardId}/columns` and the board page's route, read as an update reads it. It was dropped, and the column made with no limit.
 - **Activity entries written in the same second list the later first** (card 2512), on the board's Activity Log and All Tasks' activity panel (`GET /api/activity`). A move that commits and completes a card writes both in one second, and "Committed card" could be listed above "Completed card".
+- **`GET /api/v1/me/stats` averages live cards only** (card 2541): `avgLeadTimeDays` and `avgCycleTimeDays` leave out an archived card, as the board metrics do. `cardsCompleted` and `streak` still count its completion, a record of what the person did.
 
-On production, as **O** with an API key of O's, in the `curl.exe` form of [Part Six](#upstream-kanban-part-six-the-public-api-version-130). Check 561 makes a board; check 564 deletes it.
+On production, as **O** with an API key of O's, in the `curl.exe` form of [Part Six](#upstream-kanban-part-six-the-public-api-version-130). Check 561 makes a board; check 564 deletes it. Check 565 makes and deletes its own.
 
 | # | Card | Do | Expect | A fault if |
 |---|---|---|---|---|
@@ -5219,8 +5220,9 @@ On production, as **O** with an API key of O's, in the `curl.exe` form of [Part 
 | 562 | 2520 | `POST /api/v1/boards/<B>/columns` with `{"title":"Review","wipLimit":3}`; then with `{"title":"Review two"}` | `201` with `"wipLimit":3`; then `201` with `"wipLimit":0` | `"wipLimit":0` on the first |
 | 563 | 2512 | `POST /api/v1/boards/<B>/cards` with `{"columnId":<Options id>,"title":"Option done"}`; `PUT /api/v1/cards/<its id>/move` with `{"columnId":<Complete id>}`. Open board B, **More → Activity Log** | `Option done`'s **Completed card** is listed above its **Committed card**, both the same minute | **Committed card** above **Completed card** |
 | 564 | | `DELETE /api/v1/boards/<B>` | `{"success":true} 200` | The board left |
+| 565 | 2541 | `GET /api/v1/me` for O's id, and `GET /api/v1/me/stats`: note `avgLeadTimeDays` (S1). `POST /api/v1/boards` with `{"name":"API 1.3.1 stats check"}` (C); `POST /api/v1/boards/<C>/cards` with `{"columnId":<C's To Do id>,"title":"Done then archived"}`; `POST /api/v1/cards/<its id>/assignees` with `{"userId":<O's id>}`; `PUT /api/v1/cards/<its id>/move` with `{"columnId":<C's Complete id>}`. `GET /api/v1/me/stats`: note `cardsCompleted.total` (T2). `DELETE /api/v1/cards/<its id>` (an archive); `GET /api/v1/me/stats` again. Then `DELETE /api/v1/boards/<C>` | After the archive, `avgLeadTimeDays` is S1 again, `avgCycleTimeDays` equal to it, and `cardsCompleted.total` is still T2; the board deleted, `{"success":true} 200` | `avgLeadTimeDays` not S1, or `cardsCompleted.total` below T2 |
 
-**Going back to the previous image.** Nothing is done to the database. A column's limit made by the newer image stays. The older image answers `info.version` `1.3.0`, drops a limit sent with a new column, puts a card raised outside the first column in `progressed`, and lists a second's entries in no set order.
+**Going back to the previous image.** Nothing is done to the database. A column's limit made by the newer image stays. The older image answers `info.version` `1.3.0`, drops a limit sent with a new column, puts a card raised outside the first column in `progressed`, lists a second's entries in no set order, and averages an archived card in `me/stats`.
 
 ## Changing the Schema
 

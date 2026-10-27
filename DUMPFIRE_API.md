@@ -262,6 +262,11 @@ The OpenAPI document's version went from `1.3.0` to `1.3.1` with these correctio
   part. Left out, it is `0`. Until this release a limit sent with a new column was not stored,
   and was set only by a `PUT` after. The web application's `POST /api/columns` reads and
   stores it the same way.
+- **`GET /me/stats` leaves archived cards out of `avgLeadTimeDays` and `avgCycleTimeDays`**
+  (card 2541), as the board metrics leave them out of theirs. Until this release an archived
+  completed card assigned to the user was averaged. `cardsCompleted` and `streak` are unchanged:
+  they count the completions the user made, archived cards included, as archiving a card
+  afterwards does not undo the work.
 
 ### Changes on 2026-10-26
 

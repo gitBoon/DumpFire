@@ -1207,4 +1207,45 @@ describe('personal figures', () => {
 		const mine = (await api('GET', '/api/my-tasks', { user: owner })).body;
 		expect(mine.flatMap((g: any) => g.cards.map((c: any) => c.title))).toEqual(['My task']);
 	});
+
+	// Card 2541. The averages measure live completed cards, as the board's
+	// metrics have since card 2475; the completions counted are what the caller
+	// did, and archiving the card afterwards does not undo that.
+	it('leave an archived completed card out of the averages in GET /api/v1/me/stats, and count its completion', async () => {
+		const { owner, A } = flowBoard();
+		const now = new Date();
+		const daysAgo = (n: number) => stamp(new Date(now.getTime() - n * 86400000));
+		// Committed 4 days ago and completed 2 days ago: 2 days.
+		const live = makeCard(A.cols['Complete'], { title: 'Live', createdAt: daysAgo(4), committedAt: daysAgo(4), completedAt: daysAgo(2) });
+		// Committed 20 days ago and completed 10 days ago: had it counted, the
+		// average would be 6 days.
+		const archived = makeCard(A.cols['Complete'], {
+			title: 'Archived',
+			createdAt: daysAgo(20),
+			committedAt: daysAgo(20),
+			completedAt: daysAgo(10),
+			archivedAt: daysAgo(9)
+		});
+		assignCard(live, owner);
+		assignCard(archived, owner);
+		for (const [card, at] of [[live, daysAgo(2)], [archived, daysAgo(10)]] as const) {
+			db.insert(activityLog).values({ boardId: A.board.id, cardId: card.id, userId: owner.id, action: 'card_completed', detail: '', createdAt: at }).run();
+		}
+
+		const res = await api('GET', '/api/v1/me/stats', { user: owner });
+		expect(res.status).toBe(200);
+		expect([res.body.avgLeadTimeDays, res.body.avgCycleTimeDays]).toEqual([2, 2]);
+		expect(res.body.cardsCompleted).toEqual({ total: 2, last7Days: 1, last30Days: 2 });
+	});
+
+	it('say so in the OpenAPI document, the 1.3.1 note among it (card 2541)', async () => {
+		const spec = (await api('GET', '/api/v1/openapi.json')).body;
+		const note = spec.info.description as string;
+		const changes = note.slice(note.indexOf('**Changed on 2026-10-27 (version 1.3.1).**'), note.indexOf('**Changed on 2026-10-26'));
+		expect(changes).toContain('(3) GET /api/v1/me/stats leaves archived cards out of avgLeadTimeDays and avgCycleTimeDays');
+		const stats = spec.components.schemas.UserStats.properties;
+		expect(stats.avgLeadTimeDays.description).toContain('neither is an archived card');
+		expect(stats.avgCycleTimeDays.description).toContain('options and archived cards left out');
+		expect(stats.cardsCompleted.description).toContain('a card archived afterwards still counts');
+	});
 });
