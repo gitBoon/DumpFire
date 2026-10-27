@@ -12,7 +12,7 @@
 	import type { PageData } from '../../../routes/all/$types';
 	import { invalidateAll } from '$app/navigation';
 	import { toasts } from '$lib/stores/toast';
-	import { isCompleteColumnTitle, isOptionsColumn } from '$lib/column-role';
+	import { isCompleteColumnTitle, optionsSuffix } from '$lib/column-role';
 	import { answerBody, failureMessage, leftMilestoneNotice } from '$lib/api';
 	import { commitmentToasts } from '$lib/board/dnd-handlers';
 	import { playMoveSound, playCompleteSound } from '$lib/utils/sounds';
@@ -103,7 +103,7 @@
 					<select id="move-col" bind:value={moveColumnId}>
 						<option value={null}>Select column...</option>
 						{#each getBoardColumns(moveBoardId) as col}
-							<option value={col.id}>{col.title}{isOptionsColumn(col) ? ' (Options)' : ''}</option>
+							<option value={col.id}>{col.title}{optionsSuffix(col)}</option>
 						{/each}
 					</select>
 				</div>

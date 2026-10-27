@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.38
+version: 1.39
 status: As-Built
-date: 2026-10-26
+date: 2026-10-27
 tags:
   - database
   - schema
@@ -760,22 +760,31 @@ which has no server imports so the browser and the server share it:
 The `todo` role (card 2240) changes nothing about a card: no move stamps, clears or
 awards anything for it. It says which columns All Tasks puts in its To Do bucket and All
 To Do lists, every such column of a board, and which column the board's list view opens
-on (the first of them, else the first column that is not the Options column, else the
-first). "To-Do", "Backlog" and the like are not
+on (the first of them, else the first column that is not the Options column, else none:
+the Options column, which every delivery board has, is never where it opens, card 2527).
+"To-Do", "Backlog" and the like are not
 To Do; the reports' own wider list (`src/lib/server/reports.ts`) is separate.
 
 #### The Options column (milestone 22)
 
 One meaning is stored rather than read from the title: `columns.role = 'options'`, the
 board's Options column, upstream of the commitment point; and every column of a board whose
-`kind` is `'ideas'` is upstream too. `column-role.ts` asks it first:
+`kind` is `'ideas'` is upstream too. Since card 2527 every delivery board has exactly one,
+titled `Options` (`OPTIONS_TITLE`), colour `#8b5cf6` (`OPTIONS_COLOUR`), at its lowest
+position: made with the board (`DEFAULT_COLUMNS.delivery` in `src/lib/server/boards.ts` is
+Options, To Do, On Hold, In Progress, Complete, for creation in both trees, a sub-board and
+the empty switch to delivery), and given to every board made before by the start-up step
+(below). No read assumes one exists: a direct insert, or a board restored from an older
+backup, has none until the next start. `column-role.ts` asks it first:
 
 | Helper | What it answers |
 |--------|-----------------|
 | `isOptionsColumn(column)` | `role === 'options'` |
 | `isUpstreamColumn(column, boardKind)` | the Options column, or any column of an ideas board; both arguments required |
 | `columnRoleOf(column)` | `'options'` first, then `columnRole(title)`: an Options column is never also To Do, On Hold or Complete on any page |
-| `firstOpenColumn(columns)` | the leftmost column whose `columnRoleOf` is not Complete and that is not the Options column; the Options column only when nothing else is open (decision M22-6). Where a copy of a finished card and a sub-board's parent card go |
+| `firstOpenColumn(columns)` | the leftmost column whose `columnRoleOf` is not Complete and that is not the Options column; `undefined` when nothing else is open, never the Options column (card 2527, R5). Where a copy of a finished card and a sub-board's parent card go |
+| `isOptionsTitle(title)` | the title is Options, trimmed and in any case: no other column of a delivery board may have it |
+| `optionsSuffix(column)` | what a screen says after the title: " (Options)" for an Options column with another title, nothing otherwise, so no screen reads "Options (Options)" |
 | `completeColumnIds`, `holdColumnIds`, `todoColumnIds` | never the Options column |
 
 `src/lib/server/upstream.ts` reads what the rule needs from the database: `UPSTREAM` (the SQL
@@ -783,58 +792,65 @@ fragment, with `IS`), `boardKinds(boardIds)` in one query, `upstreamColumnIds(ro
 `isUpstreamColumnId(columnId)`, and `commitmentOnCreation`, which every creation route asks.
 
 Every column write in both trees holds the Options column to its rules (`createColumn`,
-`updateColumn`, `reorderColumns`, `deleteColumnFor` and `convertColumnFor` in
-`src/lib/server/columns.ts`), inside the write's transaction, after every field is read and
-after the completion rule below, each refusal `409` with nothing written:
+`updateColumn`, `reorderColumns` and `deleteColumnFor` in `src/lib/server/columns.ts`;
+`fixedOptionsRefusal`, `optionsRoleRefusal`, `optionsPlacement`), inside the write's
+transaction, each refusal `409` with nothing written. The order (card 2527, R4) is: the `400`
+field reads; the Options column's own rename and role (rule 2); the completion rule below; an
+ideas board's titles; then the rest of the Options rules.
 
 1. `role` is `'options'` or null, read with the column's own as `keep`, so an update that
    leaves it out keeps it; anything else is `400 role must be "options" or null, not
    "<what was sent>"`.
-2. No Options column on an ideas board; no second Options column on a board.
-3. The role is given or taken away with a plain update only while the column is empty,
-   archived cards included. A column that holds cards becomes the Options column by the
-   conversion (below); the role comes off only once the column is empty.
-4. No Options column whose title means To Do, On Hold or Complete, whether the role is
-   given or the Options column renamed (ruling x): about thirty places still ask the title
-   alone.
-5. No WIP limit above 0 on the Options column.
-6. The Options column stays the leftmost. Given the role, a column moves to one less than the
-   lowest position of the others and its `wip_limit` goes to 0, whatever was sent; any other
+2. The Options column is fixed (ruling O4): renamed to anything but Options, `The Options
+   column is always called Options.`; given `role: null`, `Every delivery board keeps its
+   Options column.` Titles are compared trimmed, and a value sent back as the column holds it
+   writes nothing and is not refused.
+3. No second Options column and no other column called Options (ruling O5): the role on any
+   other column is `This board already has its Options column.` (on a board that has none
+   yet, `A delivery board's Options column is made with the board; it comes back at the next
+   start.`); any other column of a delivery board created or renamed Options, trimmed and in
+   any case, is `Only the board's Options column is called Options. Choose another name.` Any
+   title write reaches this check. A column already called Options with no role, from before,
+   is left as it is. Neither rule applies on an ideas board, which has no Options column.
+4. No WIP limit above 0 on the Options column.
+5. The Options column stays the leftmost: any other
    column placed at or left of it, by a create, an update or a reorder, is refused, and so is
    the Options column moved to or past another. A column made on the board page with no
    position goes straight after the Options column, half way to the next; when halving has
    left no number strictly between the two (about 53 such creates), the board's columns are
    numbered again 0, 1, 2… in their order, in the same transaction, first (`renumberColumns`).
    Through v1 it still goes after the last.
-7. The Options column is not deleted while it holds a card that is not archived (ruling m):
-   `This Options column still holds N options: move them out, or archive them to discard them,
-   first.` (`1 option: move it out, or archive it to discard it, first.`). Its archived cards
-   go with it, as any column's, and are not discarded by it (decision M22-9).
+6. The Options column is not deleted, empty or not (card 2527, R3, in `deleteColumnFor`
+   before the cards are counted): `Every delivery board keeps its Options column. Fold it away
+   with the arrow on its strip instead.`
 
-**The conversion** (`POST /api/columns/:id/convert`, `POST /api/v1/columns/:columnId/convert`,
-ruling i) makes a column holding cards the Options column. Only the board's owner or an
-administrator may. The body carries `role: 'options'` and `cards`, the number of live and
-archived cards the page's question named; another number now is refused. It is also refused
-on an ideas board, on a board that has an Options column, for a column whose title means To
-Do, On Hold or Complete, and for a column holding a card with a sub-board. One transaction
-clears `committed_at` and `committed_by` on every card in the column, archived ones included,
-gives the column the role, moves it leftmost and sets `wip_limit` to 0, and writes one
-`column_converted_to_options` entry (`"<title>": N cards became options (column <id>)`): no
-entry, webhook or mail for any card, and one `update (column)` event to the board. The
-activity log has no column of its own for a column, so the entry names it at the end of its
-detail (`conversionSuffix` in `upstream.ts`), after the quoted title, where no title can put
-it: the board's contents read an option's age from the latest of its creation, its latest
-`card_returned_to_options` entry and its column's latest conversion (`optionsSince`), so a
-converted card is an option from the conversion, not from its creation.
+**The start-up step** (card 2527, rulings O3, R1 and R2). The first step of `runBackfills`, at
+every start and after every restore, with no migration file. On every delivery board (`kind IS
+NOT 'ideas'`), in this order: a second Options column (another at or left of it, by position
+then id: `SECOND_OPTIONS_COLUMN`) loses the role and keeps its cards (`OPTIONS_DUPLICATES_DEMOTED`;
+its cards' discard marks are cleared, and the commitment backfill after it commits them); an
+Options column with another title is renamed Options (`OPTIONS_RENAMED`); one with another column
+at or left of it moves to one less than the lowest other position (`OPTIONS_MOVED`); and a board
+with none gets one, titled Options, `#8b5cf6`, at `MIN(position) - 1`, or 0 on a board with no
+columns (`OPTIONS_ADDED`). No activity entry, webhook or mail. The counts `optionsDemoted`,
+`optionsRenamed`, `optionsMoved` and `optionsAdded` join the `Backfill` result, and each has a
+`WARN` line at a start and a clause in the restore's report when it is not 0.
+
+**The column conversion** of milestone 22 (`POST /api/columns/:id/convert` and its v1 twin,
+`convertColumnFor`) went before release with card 2527: every delivery board has its Options
+column, so none is made of another column. Its entry, `column_converted_to_options`
+(`"<title>": N cards became options (column <id>)`, the column's id at the end of the detail,
+`conversionSuffix` in `upstream.ts`), stays in `ACTIONS` and the labels, and `optionsSince`
+still reads it, so a database a milestone 22 build wrote still ages its options from the
+conversion. Nothing writes it now.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Ordinary: column made (role NULL)
-    [*] --> Options: column made with role options, placed leftmost, no WIP limit
-    Ordinary --> Options: PUT role options (empty column only)
-    Ordinary --> Options: convert, cards and all (owner or admin, count confirmed, commitments cleared, one entry)
-    Options --> Ordinary: PUT role null (empty column only)
-    Options --> [*]: DELETE (no live options left)
+    [*] --> Options: made with a delivery board (or by the start-up step), leftmost, no WIP limit
+    [*] --> Ordinary: column made (role NULL, never titled Options on a delivery board)
+    Options --> Options: colour, sort, fold, or a title or role sent back unchanged
+    Options --> Ordinary: board converted to an ideas board while it holds cards (role cleared)
+    Options --> [*]: board converted to an ideas board while it is empty, or the board deleted
     Ordinary --> [*]: DELETE, with its cards
 ```
 
@@ -1162,7 +1178,7 @@ stateDiagram-v2
     Committed --> Option: moved into upstream (card_returned_to_options, card.moved)
     Option --> Option: moved within upstream (no change)
     Committed --> Committed: moved between committed columns (no change)
-    Committed --> Option: column converted to Options (one entry for the column)
+    Committed --> Option: column converted to Options (milestone 22 builds only, before card 2527)
     Committed --> Option: board converted to an ideas board (one entry for the board)
     Option --> Option: sent to another board's Options (card_sent, card_moved_in)
     Option --> Committed: sent to another board's To Do (card_sent, card_moved_in, card_committed)
@@ -1204,8 +1220,8 @@ administrator's:
 
 | The change | What is written | Entry |
 |---|---|---|
-| An empty board (no card, live or archived) switched with `PUT kind` (ruling j, decision M22-18) | `kind`; its columns deleted, with their CFD snapshots, and the other kind's defaults made | `board_updated`, `Updated board "<name>" (fields: kind): now an ideas board; its columns A, B, C were replaced with New Ideas, Shaping, Ready for Replenishment`, or `… now a delivery board; … replaced with To Do, On Hold, In Progress, Complete`; `it was given the columns …` for a board with none |
-| A board holding cards converted (`POST /api/boards/:id/convert`, `{kind: 'ideas', cards}`, ruling i) | `committed_at` and `committed_by` NULL on every card of the board, archived ones included; its empty To Do, On Hold and Complete columns deleted; the Options role cleared; `kind` | **`board_converted_to_ideas`**, `"<name>": N cards became ideas; its columns To Do, On Hold, Complete were removed (board <id>)` (`its column Complete was removed`; no clause when nothing went; `1 card became an idea`) |
+| An empty board (no card, live or archived) switched with `PUT kind` (ruling j, decision M22-18) | `kind`; its columns deleted, with their CFD snapshots, and the other kind's defaults made | `board_updated`, `Updated board "<name>" (fields: kind): now an ideas board; its columns A, B, C were replaced with New Ideas, Shaping, Ready for Replenishment`, or `… now a delivery board; … replaced with Options, To Do, On Hold, In Progress, Complete` (the Options column first, since card 2527); `it was given the columns …` for a board with none |
+| A board holding cards converted (`POST /api/boards/:id/convert`, `{kind: 'ideas', cards}`, ruling i) | `committed_at` and `committed_by` NULL on every card of the board, archived ones included; its empty To Do, On Hold and Complete columns deleted, and its Options column with them when it holds no card, live or archived (card 2527, ruling O7); the Options role cleared on one that holds cards; `kind` | **`board_converted_to_ideas`**, `"<name>": N cards became ideas; its columns Options, To Do, On Hold, Complete were removed (board <id>)` (`its column Complete was removed`; no clause when nothing went; `1 card became an idea`) |
 | A board holding no card at all converted | as the empty switch: its columns replaced with the ideas defaults | `board_converted_to_ideas`, `"<name>": 0 cards became ideas; its columns A, B were replaced with New Ideas, Shaping, Ready for Replenishment (board <id>)` |
 
 The `board_converted_to_ideas` detail always ends ` (board <id>)` (`boardConversionSuffix`),
@@ -1598,8 +1614,9 @@ of about zero.
   that the rebuild refuses with a `CHECK` naming them:
   - `columns.role`, text, nullable, no default: NULL for an ordinary column, whose title still
     decides To Do, On Hold or Complete, or `'options'` for the board's **Options column**,
-    upstream of the commitment point. A board has one at most, at its far left, with
-    `wip_limit` 0 (see [What a column means](#what-a-column-means)).
+    upstream of the commitment point. Every delivery board has exactly one, titled Options, at
+    its far left, with `wip_limit` 0 (card 2527: made with the board and by the start-up step);
+    an ideas board has none (see [What a column means](#what-a-column-means)).
   - `boards.kind`, text `NOT NULL DEFAULT 'delivery'`: `'delivery'` or `'ideas'`, a board every
     column of which is upstream. Any other value counts as delivery everywhere. Chosen when the
     board is made, switched by its owner only while it holds no card, or made `'ideas'` by the
@@ -1611,8 +1628,9 @@ of about zero.
     (`recordCardCreated`, `commitmentOnCreation` in `src/lib/server/upstream.ts`). A move out of
     an upstream column into a committed one sets them to the moment of the move and the mover,
     and a move back into an upstream column clears them, on every move route (`moveCard`, slice
-    S2; see [A move](#a-move)). Converting a
-    column to the Options column clears both on every card in it, archived ones included.
+    S2; see [A move](#a-move)). Converting a board to an ideas board clears both on every card
+    on it, archived ones included, as the column conversion of milestone 22 builds did on
+    every card in the column.
     Nothing reads a NULL `committed_at` as upstream: the column and the board decide that.
   - `cards.discarded_at` and `cards.discarded_by` (`ON DELETE SET NULL`): when an option was
     archived, which discards it, and by whom. `archiveCard` stamps them with `archived_at`, in
@@ -1771,7 +1789,7 @@ is in [Deployment](deployment.md#start-up-sequence). This section is how it work
 | 2. Convert a `card_dependencies` table still in its original shape | Yes, if the conversion fails |
 | 3. Apply each file not yet recorded, one transaction per file | Yes, on the first failure |
 | 4. Rebuild any of the six reconciled tables that is not in the model's shape | Only if foreign keys cannot be switched back on |
-| 5. Repeat seven backfills (`runBackfills`, one transaction): `first_completed_at` of migration `0050` and `access_token` of `0051` for rows that lack them, `0057`'s statement, which takes a card out of a milestone that belongs to another board (card 2179), the statement that takes a board out of a grouping that no longer exists (card 2293), and the commitment point's three (milestone 22): `0060`'s commit of every card not upstream that has none (`COMMITTED_BEFORE_UPSTREAM`), the clear of the commitment of every upstream card (`UPSTREAM_NOT_COMMITTED`), and the clear of the discard mark of every card that is not archived (`LIVE_NOT_DISCARDED`) | Yes, if they fail: the halt's stage reads `backfilling cards.first_completed_at, task_requests.access_token, cards.milestone_id, boards.category_id, cards.committed_at and cards.discarded_at` |
+| 5. Repeat the backfills (`runBackfills`, one transaction): first every delivery board's one Options column (card 2527: the duplicates demoted, the title Options, the far-left place, one added where there is none; see [The Options column](#the-options-column-milestone-22)), then `first_completed_at` of migration `0050` and `access_token` of `0051` for rows that lack them, `0057`'s statement, which takes a card out of a milestone that belongs to another board (card 2179), the statement that takes a board out of a grouping that no longer exists (card 2293), and the commitment point's three (milestone 22): `0060`'s commit of every card not upstream that has none (`COMMITTED_BEFORE_UPSTREAM`), the clear of the commitment of every upstream card (`UPSTREAM_NOT_COMMITTED`), and the clear of the discard mark of every card that is not archived (`LIVE_NOT_DISCARDED`) | Yes, if they fail: the halt's stage reads `backfilling each delivery board's Options column (columns.role), cards.first_completed_at, task_requests.access_token, cards.milestone_id, boards.category_id, cards.committed_at and cards.discarded_at` |
 | 6. Bring every timestamp to the stored form (`normaliseTimestamps`, card 2095), unless the database records a migration this build has no file for | No: a failure is rolled back, logged at `ERROR`, and tried again at the next start |
 | 7. Compare the whole database with the model and report differences | No |
 

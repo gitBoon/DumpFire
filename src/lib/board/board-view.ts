@@ -170,6 +170,35 @@ export function writeOptionsOpen(userId: number, boardId: number, open: boolean)
 	}
 }
 
+/**
+ * The widest screen at which the board page's columns scroll sideways, each
+ * nearly the screen's width (the page's `max-width: 768px` rules): a tablet
+ * held upright as well as a phone. At 481 to 559 pixels To Do was still cut
+ * off by a few pixels, so the scroll below is not kept to phones (the S2
+ * review's P2).
+ */
+export const NARROW_WIDTH = 768;
+
+/**
+ * At narrow widths the board's columns scroll sideways, each nearly as wide
+ * as the screen, and the folded Options strip at the far left, which every
+ * delivery board has (card 2527), pushes To Do partly off it. So the board
+ * opens scrolled to the first committed column, the strip a swipe to its
+ * left (R13). `wrapper` is the scrolling row of columns (`.columns-wrapper`);
+ * nothing is scrolled when the strip is open, when there is no strip or no
+ * other column, or above `NARROW_WIDTH`. Says whether it scrolled.
+ */
+export function scrollPastFoldedStrip(wrapper: HTMLElement | null, narrow: boolean): boolean {
+	if (!narrow || !wrapper) return false;
+	const strip = wrapper.querySelector<HTMLElement>('.kanban-column.options-collapsed');
+	const first = wrapper.querySelector<HTMLElement>('.kanban-column:not(.options-column)');
+	if (!strip || !first) return false;
+	// The strip is the row's first column, so how far the first committed
+	// column starts from it is the scroll that brings that column to the left.
+	wrapper.scrollLeft = first.getBoundingClientRect().left - strip.getBoundingClientRect().left;
+	return true;
+}
+
 /** How many days old an option is before the strip counts it as aging. */
 export const OPTION_AGING_DAYS = 30;
 

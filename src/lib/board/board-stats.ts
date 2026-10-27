@@ -109,15 +109,22 @@ export function optionsLine(optionsCount: number, upstream: Pick<UpstreamFigures
 	return upstream ? `Options ${optionsCount} · discard rate ${discardRateText(upstream.discardRate)}` : `Options ${optionsCount}`;
 }
 
+/** What `showsUpstream` reads of the board: its kind, whether it has an upstream column, and how many cards its upstream columns hold now. */
+export type UpstreamBoard = { kind: string | null; hasUpstreamColumn: boolean; upstreamCards: number };
+
 /**
- * Whether the panel shows the upstream figures: on a board with an upstream
- * column, or where any of them is not zero (a board whose Options column has
- * since gone still had its commitments and discards in the window). Abandoned
+ * Whether the panel shows the upstream figures and offers the flow diagram's
+ * "Show upstream" (card 2527, R12). Every delivery board has an Options
+ * column now, mostly empty, so both show only where there is something to
+ * show: the board has an upstream column, and either it holds a card now or
+ * one of the period's figures is not zero. An ideas board, all of whose
+ * columns are upstream, always shows them: they are its figures. Abandoned
  * work is not among them: it is committed work, which any board can have,
  * and the panel shows it on its own.
  */
-export function showsUpstream(hasUpstreamColumn: boolean, upstream: UpstreamFiguresShown | null | undefined, timeInOptions: unknown = null): boolean {
-	if (hasUpstreamColumn) return true;
+export function showsUpstream(board: UpstreamBoard, upstream: UpstreamFiguresShown | null | undefined, timeInOptions: unknown = null): boolean {
+	if (!board.hasUpstreamColumn) return false;
+	if (board.kind === 'ideas' || board.upstreamCards > 0) return true;
 	if (!upstream) return false;
 	return (
 		upstream.options > 0 ||

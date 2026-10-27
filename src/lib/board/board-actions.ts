@@ -57,12 +57,8 @@ export async function addColumn(
 	title: string,
 	color: string,
 	positionChoice: string,
-	columns: ColumnType[],
-	role: 'options' | null = null
+	columns: ColumnType[]
 ): Promise<Response> {
-	// The Options column goes at the far left whatever position is sent
-	// (milestone 22): none is sent.
-	if (role === 'options') return api.createColumn({ boardId, title: title.trim() || 'Ideas', color, role });
 	let position: number;
 	if (positionChoice === 'end') {
 		position = columns.length > 0 ? Math.max(...columns.map((c) => c.position)) + 1 : 0;
@@ -95,14 +91,6 @@ export async function addColumn(
  */
 export async function updateColumn(colId: number, updates: Record<string, unknown>, boardId: number): Promise<Response> {
 	return api.updateColumn(colId, { ...updates, boardId });
-}
-
-/**
- * Makes a column the board's Options column, cards and all, once the page has
- * asked (milestone 22, ruling i). Returns the answer: the column as written.
- */
-export async function convertColumn(colId: number, cards: number): Promise<Response> {
-	return api.convertColumn(colId, cards);
 }
 
 /** Deletes a column via the API. Returns the answer, for the caller to check. */

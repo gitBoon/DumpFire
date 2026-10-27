@@ -241,11 +241,47 @@ describe('the board’s Stats panel (milestone 22)', () => {
 		expect(text(target.querySelector('.upstream-title'))).toBe('Upstream');
 	});
 
-	it('shows the upstream figures on a board with no upstream column when one is not zero', async () => {
+	// Card 2527, R12: every delivery board has an Options column, mostly empty, so the upstream
+	// figures and the toggle show only where there is something to show.
+	it('shows no upstream figures on a board with no upstream column, even when one is not zero (R12)', async () => {
 		answer({ metrics: metricsOf({ ...NOTHING_UPSTREAM, committedFromOptions: 1, discardRate: 0 }), cfd: cfdOf() });
 		const target = await drawPanel(ORDINARY);
-		expect(target.querySelector('.upstream-figures')).not.toBeNull();
+		expect(target.querySelector('.upstream-figures')).toBeNull();
 		expect(target.querySelector('.options-line')).toBeNull();
+	});
+
+	it('shows neither the upstream figures nor "Show upstream" for an empty Options column with nothing in the period, and asks for no band (R12)', async () => {
+		localStorage.setItem('df-cfd-show-upstream', 'true');
+		answer({ metrics: metricsOf(NOTHING_UPSTREAM), cfd: cfdOf({ hasUpstream: true }) });
+		const empty = [column(9, 'Options', [], 'options'), ...ORDINARY];
+		const target = await drawPanel(empty);
+
+		expect(target.querySelector('.upstream-figures')).toBeNull();
+		expect(target.querySelector('.upstream-title')).toBeNull();
+		expect(target.querySelector('.upstream-toggle')).toBeNull();
+		expect(target.querySelector('.options-line')).toBeNull();
+		// The viewer's stored choice asks for no band the toggle is not offered for.
+		expect(cfdRequests()).toEqual(['/api/boards/1/cfd?days=30']);
+	});
+
+	it('shows both for an empty Options column once a figure of the period is not zero, asking again for the band the viewer chose (R12)', async () => {
+		localStorage.setItem('df-cfd-show-upstream', 'true');
+		answer({ metrics: metricsOf({ ...NOTHING_UPSTREAM, discarded: 1, discardRate: 1 }), cfd: cfdOf({ hasUpstream: true }) });
+		const empty = [column(9, 'Options', [], 'options'), ...ORDINARY];
+		const target = await drawPanel(empty);
+
+		expect(target.querySelector('.upstream-figures')).not.toBeNull();
+		expect(target.querySelector<HTMLInputElement>('.upstream-toggle input')!.checked).toBe(true);
+		// Asked first without it, before the metrics came; then with it.
+		expect(cfdRequests()).toEqual(['/api/boards/1/cfd?days=30', '/api/boards/1/cfd?days=30&upstream=true']);
+	});
+
+	it('shows both for an Options column holding a card, even with every figure of the period zero (R12)', async () => {
+		answer({ metrics: metricsOf(NOTHING_UPSTREAM), cfd: cfdOf({ hasUpstream: true }) });
+		const target = await drawPanel([column(9, 'Options', [card(11)], 'options'), ...ORDINARY]);
+
+		expect(target.querySelector('.upstream-figures')).not.toBeNull();
+		expect(target.querySelector('.upstream-toggle')).not.toBeNull();
 	});
 
 	it('offers "Show upstream", off, asks for the band when it is turned on, and remembers it for the next board', async () => {
@@ -267,10 +303,10 @@ describe('the board’s Stats panel (milestone 22)', () => {
 		const again = await drawPanel(WITH_OPTIONS, 'delivery', 2);
 		expect(again.querySelector<HTMLInputElement>('.upstream-toggle input')!.checked).toBe(true);
 		expect(cfdRequests().at(-1)).toBe('/api/boards/2/cfd?days=30&upstream=true');
-		// Help text on a column converted mid-window.
-		expect(source('src/lib/components/board/StatsPanel.svelte')).toContain(
-			'A column converted to Options during the period is left out with its band, so in this view the committed history it had before the conversion is hidden too.'
-		);
+		// Its help no longer speaks of converting a column (card 2527, R12).
+		const panel = source('src/lib/components/board/StatsPanel.svelte');
+		expect(panel).toContain("Off, the chart is committed work only, as the figures above are: the Options column's cards are left out.");
+		expect(panel).not.toMatch(/converted to Options|the conversion/);
 	});
 
 	it('works with storage that throws: the toggle starts off and is not kept', async () => {
@@ -431,12 +467,22 @@ describe('the board’s Stats panel (milestone 22)', () => {
 		expect(optionsLine(1, { discardRate: 1 / 3 })).toBe('Options 1 · discard rate 33%');
 		expect(discardRateText(null)).toBe('—');
 		expect(discardRateText(0)).toBe('0%');
-		expect(showsUpstream(true, NOTHING_UPSTREAM)).toBe(true);
-		expect(showsUpstream(false, NOTHING_UPSTREAM)).toBe(false);
+		const emptyColumn = { kind: 'delivery', hasUpstreamColumn: true, upstreamCards: 0 };
+		const noColumn = { kind: 'delivery', hasUpstreamColumn: false, upstreamCards: 0 };
+		// An Options column holding a card shows them, whatever the period's figures (card 2527, R12).
+		expect(showsUpstream({ ...emptyColumn, upstreamCards: 1 }, NOTHING_UPSTREAM)).toBe(true);
+		expect(showsUpstream({ ...emptyColumn, upstreamCards: 1 }, null)).toBe(true);
+		// An empty one, only where a figure of the period is not zero.
+		expect(showsUpstream(emptyColumn, NOTHING_UPSTREAM)).toBe(false);
+		expect(showsUpstream(emptyColumn, null)).toBe(false);
+		expect(showsUpstream(emptyColumn, { ...NOTHING_UPSTREAM, sentOn: 1 })).toBe(true);
+		expect(showsUpstream(emptyColumn, NOTHING_UPSTREAM, times('1d', '1d'))).toBe(true);
 		// Abandoned work is committed work: it shows on its own, not the upstream figures.
-		expect(showsUpstream(false, { ...NOTHING_UPSTREAM, abandoned: 4 })).toBe(false);
-		expect(showsUpstream(false, { ...NOTHING_UPSTREAM, sentOn: 1 })).toBe(true);
-		expect(showsUpstream(false, NOTHING_UPSTREAM, times('1d', '1d'))).toBe(true);
+		expect(showsUpstream(emptyColumn, { ...NOTHING_UPSTREAM, abandoned: 4 })).toBe(false);
+		// No upstream column, none at all.
+		expect(showsUpstream(noColumn, { ...NOTHING_UPSTREAM, sentOn: 1 })).toBe(false);
+		// An ideas board's figures are its own: always shown.
+		expect(showsUpstream({ kind: 'ideas', hasUpstreamColumn: true, upstreamCards: 0 }, NOTHING_UPSTREAM)).toBe(true);
 	});
 });
 
@@ -594,8 +640,11 @@ describe('the dashboard’s board rows', () => {
 describe('All Tasks’ Options bucket', () => {
 	const page = source('src/routes/all/+page.svelte');
 
-	it('is drawn as the load orders it, first, and marked as options', () => {
-		expect(page).toContain('{#each buckets as bucket}');
+	it('is drawn as the load orders it, first, and marked as options, only while it holds cards (card 2527, R12)', () => {
+		expect(page).toContain('const shownBuckets = $derived(buckets.filter((b) => !isOptionsBucket(b) || b.cards.length > 0));');
+		expect(page).toContain('{#each shownBuckets as bucket}');
+		// The Stats panel still reads every bucket.
+		expect(page).toContain('buckets.filter((b) => !isOptionsBucket(b) || chosenHasUpstream)');
 		expect(page).toContain('<div class="column" class:column-options={isOptionsBucket(bucket)}>');
 		expect(page).toMatch(/\{#if isOptionsBucket\(bucket\)\}\s*<span class="options-tag"[^>]*>not committed<\/span>/);
 	});

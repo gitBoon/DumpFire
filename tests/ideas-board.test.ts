@@ -1090,8 +1090,13 @@ describe('the board page’s own words, said before it asks (slice S5b)', () => 
 	});
 
 	it('asks with the counts, the columns that go and the columns that replace them', () => {
-		expect(ideasBoardWarning('Work', 2, 1, ['To Do', 'Backlog', 'Complete'], ['To Do', 'Complete'])).toBe(
-			'Make "Work" an ideas board? The 2 live cards and 1 archived card on it become ideas: options not yet committed to, sent on to a delivery board when chosen, and the commitment recorded on them is cleared. Its empty columns To Do and Complete are removed: an ideas board has no To Do, On Hold or Complete column. This is recorded as one entry in the activity log. It can be made a delivery board again only once it holds no cards.'
+		// An empty Options column goes with them, named first, as the server removes it (card 2527, ruling O7).
+		expect(ideasBoardWarning('Work', 2, 1, ['Options', 'To Do', 'Backlog', 'Complete'], ['Options', 'To Do', 'Complete'], true)).toBe(
+			'Make "Work" an ideas board? The 2 live cards and 1 archived card on it become ideas: options not yet committed to, sent on to a delivery board when chosen, and the commitment recorded on them is cleared. Its empty columns Options, To Do and Complete are removed: an ideas board has no Options, To Do, On Hold or Complete column. This is recorded as one entry in the activity log. It can be made a delivery board again only once it holds no cards.'
+		);
+		// The Options column kept (it holds a card): the sentence names only what an ideas board has none of among those that go (the S2 review's P4).
+		expect(ideasBoardWarning('Work', 2, 0, ['Options', 'To Do', 'Backlog'], ['To Do'])).toBe(
+			'Make "Work" an ideas board? The 2 live cards on it become ideas: options not yet committed to, sent on to a delivery board when chosen, and the commitment recorded on them is cleared. Its empty column To Do is removed: an ideas board has no To Do, On Hold or Complete column. This is recorded as one entry in the activity log. It can be made a delivery board again only once it holds no cards.'
 		);
 		expect(ideasBoardWarning('Work', 1, 0, ['Backlog'], [])).toBe(
 			'Make "Work" an ideas board? The 1 live card on it becomes an idea: an option not yet committed to, sent on to a delivery board when chosen, and the commitment recorded on it is cleared. This is recorded as one entry in the activity log. It can be made a delivery board again only once it holds no cards.'

@@ -1,9 +1,9 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.46
+version: 1.47
 status: As-Built
-date: 2026-10-26
+date: 2026-10-27
 tags:
   - notifications
   - email
@@ -2024,7 +2024,7 @@ log pairs `card_sent` with its `card_moved_in`. A webhook's `timestamp` is when 
 that moment. Converting a board to an ideas board (`POST
 /api/boards/{id}/convert`, `POST /api/v1/boards/{boardId}/convert`) writes one
 `board_converted_to_ideas` entry and sends **no webhook** and **no mail**, for the board or any
-of its cards, as converting a column to the Options column does not.
+of its cards, as converting a column to the Options column did not while milestone 22 builds offered it (card 2527 took that conversion out before release: every delivery board has its Options column).
 
 **Across the commitment point** (milestone 22, card 2460). `moveCard` in
 `src/lib/server/card-moves.ts` decides, for every route that moves a card: the drag, the board

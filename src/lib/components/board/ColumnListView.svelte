@@ -27,7 +27,7 @@
 	} from '$lib/board/board-view';
 	import CardListRow from './CardListRow.svelte';
 	import { drawnColour } from '$lib/colours';
-	import { isOptionsColumn } from '$lib/column-role';
+	import { optionsSuffix } from '$lib/column-role';
 
 	let {
 		columns,
@@ -94,8 +94,8 @@
 					onclick={() => onChange({ ...choice, columnId: col.id })}
 				>
 					<span class="strip-dot" style="background: {drawnColour(col.color)}" aria-hidden="true"></span>
-					<!-- The Options column first, as on the board, with "(Options)" after its title (milestone 22). -->
-					<span class="strip-title">{col.title}{#if isOptionsColumn(col)}<span class="strip-options">{' (Options)'}</span>{/if}</span>
+					<!-- The Options column first, as on the board, with "(Options)" after its title unless it is called Options (milestone 22; card 2527). -->
+					<span class="strip-title">{col.title}{#if optionsSuffix(col)}<span class="strip-options">{optionsSuffix(col)}</span>{/if}</span>
 					<span class="strip-count">{shown}{#if filtering}<span class="of-total">/{col.cards.length}</span>{/if}</span>
 				</button>
 			{/each}

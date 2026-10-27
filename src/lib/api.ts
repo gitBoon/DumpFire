@@ -157,17 +157,6 @@ export function columnDeleteWarning(title: string): string {
 	return `Delete "${title}" and every card in it? The cards are deleted for good, not archived, each with its subtasks, comments and dependency links and with every sub-board under it. ${TRASH_SENTENCE}`;
 }
 
-/**
- * What converting a column to the Options column does to its cards
- * (milestone 22, ruling i): the question names how many live and archived
- * cards become options, which is the count the server is sent.
- */
-export function optionsConversionWarning(title: string, live: number, archived: number): string {
-	const count = (n: number, what: string) => `${n} ${what} card${n === 1 ? '' : 's'}`;
-	const held = archived === 0 ? count(live, 'live') : live === 0 ? count(archived, 'archived') : `${count(live, 'live')} and ${count(archived, 'archived')}`;
-	return `Make "${title}" the board's Options column? It moves to the far left with no WIP limit, and the ${held} in it become options: ideas not yet committed to, until each is moved out again. This is recorded as one entry in the activity log. It can be turned back into an ordinary column only once it is empty.`;
-}
-
 /** What goes with a board or a sub-board, and what stays. */
 export function boardDeleteWarning(name: string): string {
 	return `Permanently delete "${name}"? Everything on it goes: its columns and cards, every sub-board under it, and any report schedules for it. Cards on other boards that were in one of its milestones stay, in no milestone. Its card categories stay, with no board. ${TRASH_SENTENCE}`;
@@ -371,23 +360,10 @@ export async function reorderCards(updates: { id: number; columnId: number; posi
 export async function createColumn(data: {
 	boardId: number;
 	title: string;
-	/** Left out for the Options column, which the server places at the far left. */
-	position?: number;
+	position: number;
 	color: string;
-	/** 'options' for the board's Options column (milestone 22). */
-	role?: 'options' | null;
 }): Promise<Response> {
 	return jsonRequest('/api/columns', 'POST', data);
-}
-
-/**
- * Makes a column the board's Options column with the cards it holds
- * (milestone 22, ruling i). `cards` is how many, live and archived, the
- * page's question named: the server refuses a column that holds another
- * number now.
- */
-export async function convertColumn(colId: number, cards: number): Promise<Response> {
-	return jsonRequest(`/api/columns/${colId}/convert`, 'POST', { role: 'options', cards });
 }
 
 /**
@@ -500,10 +476,20 @@ function listed(items: readonly string[]): string {
  * What making a board an ideas board does, asked before it is done (milestone
  * 22, card 2463). A board holding cards: they become ideas, `live` and
  * `archived` of them, which is the count the server is sent, and its empty
- * To Do, On Hold and Complete columns (`removed`) go. A board holding none:
- * its columns (`columns`) are replaced with the ideas board's.
+ * Options, To Do, On Hold and Complete columns (`removed`) go (card 2527:
+ * the Options column when it holds no card, live or archived). The sentence
+ * saying why names Options only when the Options column is among them
+ * (`optionsRemoved`, the S2 review's P4). A board holding none: its columns
+ * (`columns`) are replaced with the ideas board's.
  */
-export function ideasBoardWarning(name: string, live: number, archived: number, columns: readonly string[], removed: readonly string[]): string {
+export function ideasBoardWarning(
+	name: string,
+	live: number,
+	archived: number,
+	columns: readonly string[],
+	removed: readonly string[],
+	optionsRemoved = false
+): string {
 	if (live + archived === 0) {
 		const now = columns.length === 0 ? 'It holds no cards and no columns, so it is given' : `It holds no cards, so its ${columns.length === 1 ? 'column' : 'columns'} ${listed(columns)} ${columns.length === 1 ? 'is' : 'are'} replaced with`;
 		return `Make "${name}" an ideas board? ${now} ${listed(DEFAULT_COLUMN_TITLES.ideas)}. Its ideas are sent on to delivery boards when they are chosen. It can be made a delivery board again while it holds no cards.`;
@@ -513,7 +499,7 @@ export function ideasBoardWarning(name: string, live: number, archived: number, 
 	const gone =
 		removed.length === 0
 			? ''
-			: ` Its empty ${removed.length === 1 ? 'column' : 'columns'} ${listed(removed)} ${removed.length === 1 ? 'is' : 'are'} removed: an ideas board has no To Do, On Hold or Complete column.`;
+			: ` Its empty ${removed.length === 1 ? 'column' : 'columns'} ${listed(removed)} ${removed.length === 1 ? 'is' : 'are'} removed: an ideas board has no ${optionsRemoved ? 'Options, To Do, On Hold or Complete' : 'To Do, On Hold or Complete'} column.`;
 	const one = live + archived === 1;
 	return `Make "${name}" an ideas board? The ${held} on it ${one ? 'becomes an idea: an option' : 'become ideas: options'} not yet committed to, sent on to a delivery board when chosen, and the commitment recorded on ${one ? 'it is' : 'them is'} cleared.${gone} This is recorded as one entry in the activity log. It can be made a delivery board again only once it holds no cards.`;
 }

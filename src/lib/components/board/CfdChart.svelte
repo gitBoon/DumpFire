@@ -15,6 +15,7 @@
 -->
 <script lang="ts">
   import { drawnColour } from '$lib/colours';
+  import { isOptionsTitle } from '$lib/column-role';
 
   /** `upstream`: an Options column, or a column of an ideas board (milestone 22). */
   type CfdColumn = { id: number; title: string; color: string; upstream?: boolean };
@@ -182,7 +183,8 @@
       {#each columns as col}
         <span class="cfd-legend-item">
           <span class="cfd-legend-dot" style="background: {drawnColour(col.color)}"></span>
-          {col.title}{col.upstream && upstreamCount < columns.length ? ' (Options)' : ''}
+          <!-- No "Options (Options)": the Options column is called Options (card 2527). -->
+          {col.title}{col.upstream && upstreamCount < columns.length && !isOptionsTitle(col.title) ? ' (Options)' : ''}
         </span>
       {/each}
     </div>

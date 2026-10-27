@@ -89,7 +89,7 @@
 				<p class="kind-hint">
 					{newBoardKind === 'ideas'
 						? 'An ideas board holds ideas not yet committed to, in New Ideas, Shaping and Ready for Replenishment. Each is sent on to a delivery board when it is chosen.'
-						: 'A delivery board holds committed work, in To Do, On Hold, In Progress and Complete.'}
+						: 'A delivery board holds committed work, in To Do, On Hold, In Progress and Complete, with an Options column at the far left for ideas not yet committed to, folded away until it is opened.'}
 				</p>
 			</fieldset>
 			<div class="form-group">

@@ -125,7 +125,10 @@ describe('Create Board’s kind (card 2463)', () => {
 			['ideas', false, 'Ideas board']
 		]);
 		expect(text(target.querySelector('.board-kind legend'))).toBe('Kind');
-		expect(text(target.querySelector('.kind-hint'))).toBe('A delivery board holds committed work, in To Do, On Hold, In Progress and Complete.');
+		// It names the Options column every delivery board is made with (card 2527, R11).
+		expect(text(target.querySelector('.kind-hint'))).toBe(
+			'A delivery board holds committed work, in To Do, On Hold, In Progress and Complete, with an Options column at the far left for ideas not yet committed to, folded away until it is opened.'
+		);
 
 		// Asked for as it always was: no kind, the server's default (tests/dashboard.test.ts holds the same body).
 		expect(await create(target, 'Sprint 24')).toEqual({ name: 'Sprint 24', emoji: '📋', categoryId: null });
@@ -313,6 +316,26 @@ describe('the board’s kind, decided and sent (card 2463)', () => {
 		expect(asked).toEqual({ question: ideasBoardWarning('Roadmap', 2, 1, ['Backlog', 'On Hold', 'Complete'], ['On Hold', 'Complete']), cards: 3 });
 		const empty = ideasConversion('Roadmap', [boardColumn(1, 'To Do', []), boardColumn(2, 'Complete', [])], none);
 		expect(empty).toEqual({ question: ideasBoardWarning('Roadmap', 0, 0, ['To Do', 'Complete'], []), cards: 0 });
+		// An empty Options column goes too, named in the board's order, as the server removes it (card 2527, R11 and ruling O7);
+		// one holding a card, live or archived, stays, an ordinary column of the ideas board.
+		const withOptions = [boardColumn(9, 'Options', [], 'options'), boardColumn(1, 'Backlog', [1]), boardColumn(3, 'Complete', [])];
+		expect(ideasConversion('Roadmap', withOptions, none)).toEqual({
+			question: ideasBoardWarning('Roadmap', 1, 0, ['Options', 'Backlog', 'Complete'], ['Options', 'Complete'], true),
+			cards: 1
+		});
+		expect((ideasConversion('Roadmap', withOptions, none) as { question: string }).question).toContain(
+			'Its empty columns Options and Complete are removed: an ideas board has no Options, To Do, On Hold or Complete column.'
+		);
+		// The Options column kept, holding an archived card: Options is not named among what an ideas board lacks (P4).
+		expect((ideasConversion('Roadmap', withOptions, new Map([[9, 1]])) as { question: string }).question).toContain(
+			'Its empty column Complete is removed: an ideas board has no To Do, On Hold or Complete column.'
+		);
+		expect(ideasConversion('Roadmap', withOptions, new Map([[9, 1]]))).toEqual({
+			question: ideasBoardWarning('Roadmap', 1, 1, ['Options', 'Backlog', 'Complete'], ['Complete']),
+			cards: 2
+		});
+		const holding = [boardColumn(9, 'Options', [2], 'options'), boardColumn(1, 'Backlog', [1])];
+		expect(ideasConversion('Roadmap', holding, none)).toEqual({ question: ideasBoardWarning('Roadmap', 2, 0, ['Options', 'Backlog'], []), cards: 2 });
 		expect(deliverySwitch('Ideas', [boardColumn(1, 'Shaping', [1])], none)).toEqual({ refused: deliveryBoardRefusal(1) });
 		expect(deliverySwitch('Ideas', [boardColumn(1, 'Shaping', [])], new Map([[1, 2]]))).toEqual({ refused: deliveryBoardRefusal(2) });
 		expect(deliverySwitch('Ideas', [boardColumn(1, 'Shaping', [])], none)).toEqual({ question: deliveryBoardWarning('Ideas', ['Shaping']), cards: 0 });
@@ -342,9 +365,11 @@ describe('the board’s kind, decided and sent (card 2463)', () => {
 		expect(refused.state.board.kind).toBe('delivery');
 	});
 
-	it('says at once why a column holding options or ideas is not deleted, in the server’s words, and nothing for any other (L2, ruling m)', () => {
-		const columns = [boardColumn(1, 'Ideas', [1], 'options'), boardColumn(2, 'To Do', [2, 3]), boardColumn(3, 'Shaping', [4, 5]), boardColumn(4, 'Empty', [])];
-		expect(columnDeleteRefusal(columns, 1, 'delivery')).toBe('This Options column still holds 1 option: move it out, or archive it to discard it, first.');
+	it('says at once why a column holding ideas is not deleted, in the server’s words, and nothing for any other (L2)', () => {
+		const columns = [boardColumn(1, 'Options', [1], 'options'), boardColumn(2, 'To Do', [2, 3]), boardColumn(3, 'Shaping', [4, 5]), boardColumn(4, 'Empty', [])];
+		// The Options column is never offered a delete (card 2527, R9): the page has nothing of its own to say of it.
+		expect(columnDeleteRefusal(columns, 1, 'delivery')).toBeNull();
+		expect(source('src/lib/board/ideas-board.ts')).not.toContain('This Options column still holds');
 		expect(columnDeleteRefusal(columns, 2, 'delivery')).toBeNull();
 		expect(columnDeleteRefusal(columns, 3, 'ideas')).toBe('This column of an ideas board still holds 2 ideas: move them out, or archive them to discard them, first.');
 		expect(columnDeleteRefusal([boardColumn(3, 'Shaping', [4])], 3, 'ideas')).toBe('This column of an ideas board still holds 1 idea: move it out, or archive it to discard it, first.');
