@@ -34,6 +34,7 @@
 	import { getSortLabel } from '$lib/utils/card-utils';
 	import { drawnColour } from '$lib/colours';
 	import { holdFocus } from '$lib/dialog-focus';
+	import ColourSwatches from '$lib/components/ColourSwatches.svelte';
 	// "To Do" or "Todo", trimmed, any capitals: All Tasks' rule (card 2280, slice B5a).
 	import { isOptionsColumn, isTodoColumnTitle, isUpstreamColumn, optionsSuffix } from '$lib/column-role';
 	import { OPTION_AGING_DAYS } from '$lib/board/board-view';
@@ -171,15 +172,9 @@
 			{#if colorOpen}
 				<!-- svelte-ignore a11y_click_events_have_key_events -->
 				<!-- svelte-ignore a11y_no_static_element_interactions -->
+				<!-- The shared picker, presets only (card 2546): each swatch named and pressed while it is the column's; a pick is the page's, which closes the menu. -->
 				<div class="color-picker-dropdown show" onclick={(e) => e.stopPropagation()}>
-					{#each COLUMN_COLORS as color}
-						<button
-							class="color-swatch"
-							class:active={column.color === color}
-							style="background: {drawnColour(color)}"
-							onclick={() => onColor(column.id, color)}
-						></button>
-					{/each}
+					<ColourSwatches colours={COLUMN_COLORS} value={column.color} onpick={(color) => onColor(column.id, color)} custom={false} label="Colour for column {column.title}" />
 				</div>
 			{/if}
 		</div>
@@ -351,12 +346,10 @@
 		display: none; position: absolute; top: 100%; right: 0; z-index: 500;
 		background: var(--bg-surface); border: 1px solid var(--glass-border);
 		border-radius: var(--radius-md); padding: var(--space-sm);
-		gap: 4px; flex-wrap: wrap; width: 160px; box-shadow: var(--shadow-lg);
+		width: 168px; box-shadow: var(--shadow-lg);
 	}
+	/* 168px: five 24px swatches to a row at the shared picker's 6px gap (144px of the 150 inside), as there were five at the old 4px in 160px. */
 	.color-picker-wrapper:hover .color-picker-dropdown, .color-picker-dropdown.show { display: flex; }
-	.color-swatch { width: 24px; height: 24px; border-radius: var(--radius-sm); border: 2px solid transparent; cursor: pointer; transition: all var(--duration-fast) var(--ease-out); }
-	.color-swatch:hover { transform: scale(1.15); }
-	.color-swatch.active { border-color: var(--text-primary); box-shadow: 0 0 8px rgba(255, 255, 255, 0.2); }
 
 	/* Search count */
 	.of-total { opacity: 0.5; font-size: 0.6rem; }

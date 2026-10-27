@@ -4,6 +4,7 @@
 	import { drawnColour } from '$lib/colours';
 	import { deleteFailure, failureMessage } from '$lib/api';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
+	import ColourSwatches from '$lib/components/ColourSwatches.svelte';
 	import { keepTab, takeFocus } from '$lib/dialog-focus';
 	import { tick } from 'svelte';
 
@@ -186,7 +187,7 @@
 					{#if editingId === cat.id}
 						<div class="edit-mode">
 							<label class="color-picker-wrap">
-								<input type="color" bind:value={editColor} class="color-native" title="Pick color" />
+								<input type="color" bind:value={editColor} class="color-native" title="Pick color" aria-label="Colour for {cat.name}" />
 								<div class="color-swatch custom" style="background: {drawnColour(editColor)}">🎨</div>
 							</label>
 							<input type="text" bind:value={editName} class="edit-input" onkeydown={(e) => e.key === 'Enter' && saveEdit()} autofocus />
@@ -217,16 +218,15 @@
 			<h3>Create New</h3>
 			<div class="create-form">
 				<label class="color-picker-wrap">
-					<input type="color" bind:value={newColor} class="color-native" title="Pick color" />
+					<input type="color" bind:value={newColor} class="color-native" title="Pick color" aria-label="New category colour" />
 					<div class="color-swatch custom" style="background: {drawnColour(newColor)}">🎨</div>
 				</label>
 				<input type="text" placeholder="Category name..." bind:value={newName} class="create-input" onkeydown={(e) => e.key === 'Enter' && createCategory()} bind:this={createInput} />
 				<button class="btn-primary" onclick={createCategory} disabled={loading || !newName.trim()}>Add</button>
 			</div>
+			<!-- The shared picker, presets only: the 🎨 box above is the custom colour (card 2546). -->
 			<div class="quick-colors">
-				{#each COLUMN_COLORS.slice(0, 8) as c}
-					<button class="quick-swatch" class:active={newColor === c} style="background: {c}" onclick={() => (newColor = c)} type="button"></button>
-				{/each}
+				<ColourSwatches colours={COLUMN_COLORS.slice(0, 8)} bind:value={newColor} custom={false} size="tiny" label="Quick colours for the new category" />
 			</div>
 		</div>
 	</div>
@@ -320,13 +320,7 @@
 	}
 	.color-picker-wrap:hover .color-swatch { transform: scale(1.05); }
 
-	.quick-colors { display: flex; gap: 6px; padding-left: 40px; }
-	.quick-swatch {
-		width: 16px; height: 16px; border-radius: 4px; border: 2px solid transparent; padding: 0;
-		cursor: pointer; transition: transform 0.1s;
-	}
-	.quick-swatch:hover { transform: scale(1.2); }
-	.quick-swatch.active { border-color: var(--text-primary); transform: scale(1.1); }
+	.quick-colors { padding-left: 40px; }
 	
 	.btn-primary.small { padding: 4px 10px; font-size: 0.75rem; }
 	.btn-ghost.small { padding: 4px 10px; font-size: 0.75rem; }

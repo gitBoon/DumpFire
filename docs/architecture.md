@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.62
+version: 1.63
 status: As-Built
 date: 2026-10-27
 tags:
@@ -1001,7 +1001,7 @@ The card window, `src/lib/components/CardModal.svelte` (1,273 lines, CRLF), keep
 | `CardAttachments.svelte` | The Files tab; `uploadFile`, `deleteAttachment` |
 | `CardDependencies.svelte` | The goal and the dependency lists with the picker; `addDependency`, `removeDependency`, `saveMilestone`. Every close of the picker (Escape, ✕, a link added, the other list's picker opened) goes through the window's `closePicker` (`onClosePicker`), which clears the search's 250 ms timer and moves its number on, so a search typed just before is not sent (card 2388) |
 | `CardSubBoards.svelte` | The Sub-board section, saved card and new card |
-| `CardCoverPicker.svelte` | The Cover section; `setCover`, `clearCover`. Its custom colour opens on `coverPickerColour(coverUrl)` (`$lib/colours`): the cover's own colour, a gradient's first colour, or `#6366f1`, never black |
+| `CardCoverPicker.svelte` | The Cover section; `setCover`, `clearCover`. Its swatches are the shared `ColourSwatches.svelte` with `onpick={setCover}` (card 2546), No cover drawn first in the group and each cover drawn through `coverDrawn`, which asks `isCoverValue`. Its custom colour opens on `coverPickerColour(coverUrl)` (`$lib/colours`): the cover's own colour, a gradient's first colour, or `#6366f1`, never black |
 | `CardTemplates.svelte` | The Save as Template and From template dialogs; `saveAsTemplate`, `deleteTemplate` |
 
 The window's fifteen writes of its own (now in its sections, but for the New Category form's `createCategoryInline`, which stays in the window) neither hold the board's reads nor change the board state: the board shows them at the read their live event asks for. All Tasks, All To Do and the plan page draw the same `<CardModal>` and, since card 2281, save it through the same controller over their own lists: see [The Card Window off the Board](#the-card-window-off-the-board).

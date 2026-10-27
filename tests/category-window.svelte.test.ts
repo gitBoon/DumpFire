@@ -13,7 +13,10 @@
  *   - The window is named by its heading.
  *   - Its colour swatches are named by their colour, the chosen one pressed,
  *     and the custom colour's own picker is a named Tab stop laid over the
- *     ✎ swatch, no longer one at no size with nothing to show.
+ *     ✎ swatch, no longer one at no size with nothing to show. They are
+ *     the shared `ColourSwatches` now (card 2546, whose own file is
+ *     `tests/colour-swatches.svelte.test.ts`).
+ *   - Each category's ✕ is named by the category it deletes (card 2546).
  *
  * Adding a category one at a time is in `tests/page-failures.test.ts`. The
  * plan is `docs/planning/2470-2473-board-keyboard.md`.
@@ -146,8 +149,16 @@ describe('Manage Categories names its colours (card 2473’s follow-up)', () => 
 		expect(picker.getAttribute('aria-label')).toBe('Custom colour');
 		expect(picker.tabIndex).toBe(0);
 		expect(picker.nextElementSibling?.getAttribute('aria-hidden')).toBe('true');
-		const rule = /\.color-native-input \{([^}]*)\}/.exec(readFileSync(join(process.cwd(), 'src/lib/components/board/CategoryModal.svelte'), 'utf8'))![1];
+		// The rule is the shared picker's now (card 2546).
+		const rule = /\.color-native-input \{([^}]*)\}/.exec(readFileSync(join(process.cwd(), 'src/lib/components/ColourSwatches.svelte'), 'utf8'))![1];
 		expect(rule).toContain('width: 100%');
 		expect(rule).not.toMatch(/width: 0|pointer-events: none/);
+	});
+
+	// Card 2546: a chip's ✕ was named "Delete" alone, the same for every category.
+	it('names each category’s ✕ by the category it deletes', () => {
+		const target = open([{ id: 4, name: 'Bug', color: '#ef4444' }, { id: 5, name: 'Chore', color: '#6366f1' }]);
+		const named = [...target.querySelectorAll('.chip-delete')].map((b) => b.getAttribute('aria-label'));
+		expect(named).toEqual(['Delete category Bug', 'Delete category Chore']);
 	});
 });

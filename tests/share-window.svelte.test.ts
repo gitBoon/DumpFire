@@ -24,6 +24,7 @@
  *     drawn, Tab and Shift+Tab kept inside, Escape closing it and the focus
  *     back on what opened it; while one of its confirms is up, Escape and
  *     Tab are the confirm's alone.
+ *   - Each person's and team's role list is named by whose it is (card 2546).
  *
  * What the list answers, and to whom, is in `tests/webhooks.test.ts`. The
  * plans are `docs/planning/cards-2329-2383-2384.md` and
@@ -468,6 +469,19 @@ describe('the Share window takes, holds and gives back the focus (card 2473)', (
 		button(target, '🏢 Team').click();
 		flushSync();
 		expect(named()).toEqual(['Team to share with', 'Role to share with']);
+	});
+
+	// Card 2546: a row's role list had no name, so a screen reader read "Editor, combo box" with no word of whose; and its ✕ said whose nowhere.
+	it('names each person’s and team’s role list and ✕ by whose they are', async () => {
+		list.members = [member(5, 'sam', 0), member(6, 'ana', 0)];
+		list.teams = [team(9, 'Ops', 0)];
+		const target = await open();
+		const named = [...target.querySelectorAll('.share-list select')].map((el) => el.getAttribute('aria-label'));
+		expect(named).toEqual(['Role for sam', 'Role for ana', 'Role for team Ops']);
+		// And each ✕, named "Remove access" alone on every row; its tooltip is kept.
+		const removes = [...target.querySelectorAll<HTMLButtonElement>('.share-remove-btn')];
+		expect(removes.map((b) => b.getAttribute('aria-label'))).toEqual(['Remove access for sam', 'Remove access for ana', 'Remove access for team Ops']);
+		expect(removes.map((b) => b.title)).toEqual(['Remove access', 'Remove access', 'Remove access']);
 	});
 
 	it('closes on Escape, and gives the focus back to what opened it', async () => {

@@ -28,6 +28,7 @@
 	import CardSubBoards from './card/CardSubBoards.svelte';
 	import CardCoverPicker from './card/CardCoverPicker.svelte';
 	import CardTemplates, { type TemplateItem } from './card/CardTemplates.svelte';
+	import ColourSwatches from './ColourSwatches.svelte';
 	import { COLUMN_COLORS } from '$lib/utils/constants';
 	import { isCoverValue } from '$lib/colours';
 	import { drawnColour } from '$lib/colours';
@@ -1141,15 +1142,7 @@
 		<div class="inline-cat-form" style="margin-bottom: var(--space-lg);">
 			<label style="font-size:0.75rem; font-weight:600; color:var(--text-secondary); margin-bottom:6px; display:block;">New Category</label>
 			<input type="text" class="inline-cat-input" placeholder="Category name..." bind:value={newCatName} onkeydown={(e) => { if (e.key !== 'Enter') return; if (e.ctrlKey || e.metaKey) e.stopPropagation(); createCategoryInline(); }} autofocus />
-			<div class="inline-cat-colors">
-				{#each COLUMN_COLORS.slice(0, 8) as color}
-					<button class="cat-color-swatch" class:active={newCatColor === color} style="background: {drawnColour(color)}" onclick={() => (newCatColor = color)} type="button"></button>
-				{/each}
-				<label class="color-custom-wrapper">
-					<input type="color" bind:value={newCatColor} class="color-native-input" />
-					<span class="cat-color-swatch custom" style="background: {drawnColour(newCatColor)}">✎</span>
-				</label>
-			</div>
+			<ColourSwatches colours={COLUMN_COLORS.slice(0, 8)} bind:value={newCatColor} size="small" label="Category colour" />
 			<div class="inline-cat-actions">
 				<button class="btn-primary small" onclick={createCategoryInline} disabled={!newCatName.trim()} type="button">Create</button>
 				<button class="btn-ghost small" onclick={() => (showNewCategory = false)} type="button">Cancel</button>
@@ -1445,22 +1438,8 @@
 		font-family: var(--font-family);
 	}
 	.inline-cat-input:focus { outline: none; border-color: var(--accent-indigo); }
-	.inline-cat-colors { display: flex; gap: 4px; flex-wrap: wrap; }
-	.cat-color-swatch {
-		width: 20px; height: 20px; border-radius: var(--radius-sm);
-		border: 2px solid transparent; cursor: pointer;
-		transition: all var(--duration-fast) var(--ease-out);
-	}
-	.cat-color-swatch:hover { transform: scale(1.15); }
-	.cat-color-swatch.active { border-color: var(--text-primary); box-shadow: 0 0 6px rgba(255,255,255,0.2); }
 	.inline-cat-actions { display: flex; gap: var(--space-sm); }
 	.inline-cat-actions .small { padding: var(--space-xs) var(--space-md); font-size: 0.75rem; }
-	.color-custom-wrapper { position: relative; cursor: pointer; display: inline-flex; }
-	.color-native-input { position: absolute; width: 0; height: 0; opacity: 0; pointer-events: none; }
-	.cat-color-swatch.custom {
-		display: flex; align-items: center; justify-content: center;
-		font-size: 0.6rem; color: white; text-shadow: 0 1px 2px rgba(0,0,0,0.5); cursor: pointer;
-	}
 
 	/* A refusal said in the window (also in the Dependencies, Files and template sections) */
 	.dep-error {

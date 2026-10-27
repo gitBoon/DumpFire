@@ -87,6 +87,8 @@ const TEST_FILES = [
 	// Card 2473: Manage Categories holds the keyboard's focus.
 	'category-window.svelte.test.ts',
 	'check-at-the-write.test.ts',
+	// Card 2546: the one colour picker the five colour forms share.
+	'colour-swatches.svelte.test.ts',
 	'colours.test.ts',
 	'columns.test.ts',
 	// Milestone 22, slice S2: a move across the commitment point, by every route.

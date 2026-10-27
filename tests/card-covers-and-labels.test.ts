@@ -422,8 +422,13 @@ describe('a cover, as the pages draw it', () => {
 				for (const value of values) expect(guards, `${file}: ${style[0]}`).toContain(`isCoverValue(${value})`);
 			}
 		}
-		// The board's strip, and in the card window its header strip and (in its cover picker) the custom swatch.
-		expect(drawn.sort()).toEqual([BOARD_CARD, CARD_WINDOW, COVER_PICKER].sort());
+		// The board's strip, and in the card window its header strip.
+		expect(drawn.sort()).toEqual([BOARD_CARD, CARD_WINDOW].sort());
+		// The cover picker's swatches, the custom one too, are the shared picker's (card 2546), drawn through
+		// `coverDrawn`, which asks the same: a cover is drawn only when it is one.
+		const picker = readFileSync(join(ROOT, COVER_PICKER), 'utf8');
+		expect(markupOf(COVER_PICKER)).toMatch(/<ColourSwatches\b[^>]*\bdraw=\{coverDrawn\}/);
+		expect(picker).toContain("return isCoverValue(cover) ? cover : 'var(--bg-elevated)';");
 		// Each is read whole as blocks that open and close: none is left open at its end.
 		for (const file of [BOARD_PAGE, BOARD_CARD, CARD_WINDOW, COVER_PICKER]) {
 			const markup = markupOf(file);
@@ -452,7 +457,7 @@ describe('the card window’s labels and cover', () => {
 		const picker = [...markup.matchAll(/<LabelPicker\b[^>]*\/>/g)];
 		expect(picker.map((found) => found[0])).toEqual(['<LabelPicker cardId={card.id} {boardId} {labels} bind:selected={cardLabelIds} />']);
 		// The presets are drawn by the cover picker (card 2280, slice B4), once, and the window draws the picker.
-		expect([...markupOf(COVER_PICKER).matchAll(/\{#each COVER_PRESETS as preset\}/g)]).toHaveLength(1);
+		expect([...markupOf(COVER_PICKER).matchAll(/<ColourSwatches colours=\{COVER_PRESETS\}/g)]).toHaveLength(1);
 		const coverSwatches = [...markup.matchAll(/<CardCoverPicker\b[^>]*\/>/g)];
 		expect(coverSwatches.map((found) => found[0])).toEqual(['<CardCoverPicker {card} {boardId} bind:coverUrl bind:windowError />']);
 
@@ -541,8 +546,9 @@ describe('the cover picker’s custom colour (card 2280, slice B5b)', () => {
 
 	it('is what the picker’s colour box is given', () => {
 		const markup = markupOf(COVER_PICKER);
-		const box = /<input type="color"[^>]*>/.exec(markup)?.[0] ?? '';
-		expect(box).toContain('value={coverPickerColour(coverUrl)}');
+		// The colour box is the shared picker's (card 2546), opened on `customValue`.
+		const box = /<ColourSwatches\b[^>]*>/.exec(markup)?.[0] ?? '';
+		expect(box).toContain('customValue={coverPickerColour(coverUrl)}');
 		expect(markup).not.toContain("coverUrl || '#6366f1'");
 	});
 });

@@ -17,6 +17,7 @@
 	import { toasts as failureToasts } from '$lib/stores/toast';
 	import { failureMessage } from '$lib/api';
 	import { drawnColour } from '$lib/colours';
+	import ColourSwatches from '$lib/components/ColourSwatches.svelte';
 
 	let {
 		data,
@@ -226,15 +227,7 @@
 					{#if showNewBoardCat}
 						<div class="ctx-new-cat">
 							<input type="text" class="ctx-cat-input" placeholder="Category name..." bind:value={newBoardCatName} onkeydown={(e) => e.key === 'Enter' && createBoardCategoryInline()} autofocus />
-							<div class="ctx-cat-colors">
-								{#each COLUMN_COLORS.slice(0, 8) as color}
-									<button class="ctx-color-swatch" class:active={newBoardCatColor === color} style="background: {drawnColour(color)}" onclick={() => (newBoardCatColor = color)} type="button"></button>
-								{/each}
-								<label class="color-custom-wrapper">
-									<input type="color" bind:value={newBoardCatColor} class="color-native-input" />
-									<span class="ctx-color-swatch custom" style="background: {drawnColour(newBoardCatColor)}">✎</span>
-								</label>
-							</div>
+							<ColourSwatches colours={COLUMN_COLORS.slice(0, 8)} bind:value={newBoardCatColor} size="tiny" label="Category colour" />
 							<div class="ctx-cat-actions">
 								<button class="btn-primary small" onclick={createBoardCategoryInline} disabled={!newBoardCatName.trim()}>Create</button>
 								<button class="btn-ghost small" onclick={() => (showNewBoardCat = false)}>Cancel</button>
@@ -339,17 +332,6 @@
 		border-radius: var(--radius-sm); color: var(--text-primary); font-family: var(--font-family);
 	}
 	.ctx-cat-input:focus { outline: none; border-color: var(--accent-indigo); }
-	.ctx-cat-colors { display: flex; gap: 3px; flex-wrap: wrap; }
-	.ctx-color-swatch {
-		width: 16px; height: 16px; border-radius: 3px; border: 2px solid transparent;
-		cursor: pointer; transition: transform var(--duration-fast) var(--ease-out);
-	}
-	.ctx-color-swatch:hover { transform: scale(1.2); }
-	.ctx-color-swatch.active { border-color: var(--text-primary); }
-	.ctx-color-swatch.custom {
-		display: flex; align-items: center; justify-content: center;
-		font-size: 0.5rem; color: white; text-shadow: 0 1px 2px rgba(0,0,0,0.5);
-	}
 	.ctx-field-label {
 		font-size: 0.65rem; font-weight: 700; text-transform: uppercase;
 		letter-spacing: 0.04em; color: var(--text-tertiary);
@@ -357,6 +339,4 @@
 	.ctx-error { font-size: 0.72rem; color: #ef4444; }
 	.ctx-cat-actions { display: flex; gap: var(--space-sm); }
 	.ctx-cat-actions .small { padding: 2px var(--space-sm); font-size: 0.72rem; }
-	.color-custom-wrapper { position: relative; cursor: pointer; display: inline-flex; }
-	.color-native-input { position: absolute; width: 0; height: 0; opacity: 0; pointer-events: none; }
 </style>

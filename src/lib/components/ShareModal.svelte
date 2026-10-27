@@ -482,6 +482,7 @@
 										value={member.role}
 										onchange={(e) => updateRole('user', member.userId, e.currentTarget)}
 										class="share-role-badge"
+										aria-label="Role for {member.username}"
 									>
 										<option value="viewer">Viewer</option>
 										<option value="editor">Editor</option>
@@ -489,7 +490,7 @@
 											<option value="owner">Owner</option>
 										{/if}
 									</select>
-									<button class="share-remove-btn" onclick={() => askToRemove('user', member.userId)} title="Remove access">
+									<button class="share-remove-btn" onclick={() => askToRemove('user', member.userId)} title="Remove access" aria-label="Remove access for {member.username}">
 										<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 2l8 8M10 2L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
 									</button>
 								{:else}
@@ -517,11 +518,12 @@
 										value={team.role}
 										onchange={(e) => updateRole('team', team.teamId, e.currentTarget)}
 										class="share-role-badge"
+										aria-label="Role for team {team.teamName}"
 									>
 										<option value="viewer">Viewer</option>
 										<option value="editor">Editor</option>
 									</select>
-									<button class="share-remove-btn" onclick={() => askToRemove('team', team.teamId)} title="Remove access">
+									<button class="share-remove-btn" onclick={() => askToRemove('team', team.teamId)} title="Remove access" aria-label="Remove access for team {team.teamName}">
 										<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 2l8 8M10 2L2 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
 									</button>
 								{:else}
