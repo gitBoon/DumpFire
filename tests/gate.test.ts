@@ -403,6 +403,13 @@ async function letRun(): Promise<void> {
  * The requests are let run; while any is unanswered and a timer is set, the
  * clock is moved 250 ms and they are let run again. A request answered with
  * no timer set was held 0 ms.
+ *
+ * One that is neither answered nor waiting on a timer is still working on
+ * the real clock: a route's first request loads its modules from disk. It is
+ * given up to 10 real seconds (`performance` is not faked) to become one or
+ * the other. It was given 200 rounds of `letRun`, which a loaded machine ran
+ * through in about 100 ms, very likely while /logout was still loading (found with
+ * cards 2513 and 2540).
  */
 async function heldFor(...requests: Promise<Answer>[]): Promise<{ ms: number; res: Answer }[]> {
 	const held: ({ ms: number; res: Answer } | undefined)[] = requests.map(() => undefined);
@@ -414,12 +421,13 @@ async function heldFor(...requests: Promise<Answer>[]): Promise<{ ms: number; re
 			(reason) => (failed = { reason })
 		)
 	);
-	for (let rounds = 0; ; rounds++) {
+	const giveUpAt = performance.now() + 10_000;
+	for (;;) {
 		await letRun();
 		if (failed) throw failed.reason;
 		if (held.every((answer) => answer !== undefined)) return held as { ms: number; res: Answer }[];
 		if (vi.getTimerCount() === 0) {
-			if (rounds > 200) throw new Error('a sign-in was neither answered nor waiting on a timer');
+			if (performance.now() > giveUpAt) throw new Error('a sign-in was neither answered nor waiting on a timer');
 			continue;
 		}
 		moved += 250;
