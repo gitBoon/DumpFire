@@ -6,8 +6,10 @@
  * task request (PATCH /api/requests/:id). Each wrote its own `card_created`
  * entry, or none, and none of them knew about Complete columns: a card created
  * in one was finished on the board and had no `completedAt`, no XP and no
- * `card_completed` entry, so velocity, the dashboard's figures, board metrics,
- * personal stats and the activity report never counted it (card 2134).
+ * `card_completed` entry. Velocity, the dashboard's figures, board metrics, the
+ * activity report and the reports read `completedAt`, so they never counted it;
+ * personal stats (`/api/v1/me/stats`) count `card_completed` entries, so they
+ * did not either (card 2134).
  *
  * Now each route inserts its row and then, inside the same transaction:
  *

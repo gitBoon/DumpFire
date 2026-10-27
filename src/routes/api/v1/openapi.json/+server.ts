@@ -80,7 +80,7 @@ const spec = {
 			'column, a label, a category or a webhook, that change a board category, and that put a label on a card or take it off, answer 400 naming the field for a ' +
 			'field of the wrong type or one it may not hold, where it was stored as sent or was a 500: a name or a title is text, trimmed, of 1 to 200 ' +
 			'characters, a colour written #rrggbb (item 52), a position a number, showAddCard and active true or false, a webhook\'s url an http or https address of at ' +
-			'most 2048 characters, its secret at most 256 characters and its events names among the six, each trimmed, and an id in the path or the body a ' +
+			'most 2048 characters, its secret at most 256 characters and its events names among the six webhook events there were then (ten since 2026-10-21), each trimmed, and an id in the path or the body a ' +
 			'whole number of 1 or more; a value the row already holds, sent back unchanged, is accepted as it is; (9) taking a label off a card that does ' +
 			'not have it is answered 404 where it was 200, and a label, column, category, board category or webhook deleted while its update was arriving ' +
 			'is answered 404 where it was 200 with no body, or for a webhook 500; (10) the four operations that add or remove one dependency, on a card ' +
