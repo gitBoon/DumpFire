@@ -5,7 +5,7 @@ const spec = {
 	openapi: '3.1.0',
 	info: {
 		title: 'DumpFire API',
-		version: '1.3.0',
+		version: '1.3.1',
 		description:
 			'REST API for the DumpFire Kanban board. Automate card creation, movement, assignments, and more.\n\n' +
 			'**Failures.** Every failure DumpFire answers under /api/v1/ is JSON with a `message` that says why, as in ' +
@@ -13,6 +13,9 @@ const spec = {
 			'(404, {"message": "Not found"}) and a method the route does not have (405, with an Allow header naming the ones it has). ' +
 			'Some failures carry more beside the message: a 429 has `retryAfterSecs`, the 409 for a dependency that would close a loop has `cycle`, ' +
 			'and the 409 for a batch that was refused lists every item of it that was at fault.\n\n' +
+			'**Changed on 2026-10-27 (version 1.3.1).** Corrections to answers: (1) GET /api/v1/reports/activity puts a card in the created bucket when it was raised in the window, not edited since and no move of it is recorded in the activity log ' +
+			'(card_moved, card_moved_in, card_moved_away, card_sent, card_committed, card_returned_to_options or card_reopened, in either spelling); a card raised before 2026-10-01, when the board\'s drag route recorded no move, must also still be in the board\'s first column that is not an Options column. ' +
+			'Until this release every card had to be, so a card raised in another column and left alone was progressed (card 2480).\n\n' +
 			'**Changed on 2026-10-26 (version 1.3.0).** Upstream of the commitment point: options, committed work and ideas boards (milestone 22). Three operations and two filters are new, and these answers and fields changed: ' +
 			'(1) a card is an **option**, upstream of the commitment point, when it is in a board\'s Options column (a column whose role is options) or in any column of an ideas board (a board whose kind is ideas); every other card is committed work. ' +
 			'Every delivery board has its Options column, made with it, and one made before this release is given an empty one at the far left when the server starts (item 3); no board is an ideas board until someone makes one. Every card made before this release is committed, its committedAt being its createdAt, and a board answers every operation as before but for its Options column among its columns, the fields named here and the entry an archive of unfinished work writes (card_abandoned, item 12); ' +
@@ -2171,7 +2174,7 @@ const spec = {
 						enum: ['completed', 'closed', 'progressed', 'on hold', 'created'],
 						description:
 							'What happened to the card in the window. completed: its completion date is in the window. closed: likewise, and its close reason is not needed or superseded, so nothing was built. ' +
-							'on hold: it is in a column titled On Hold, Hold, Blocked, Parked or Waiting, or has an on-hold note. created: it was raised in the window and has not been touched or moved since. ' +
+							'on hold: it is in a column titled On Hold, Hold, Blocked, Parked or Waiting, or has an on-hold note. created: it was raised in the window, has not been edited since (updatedAt is its createdAt), and the activity log records no move of it; one raised before 2026-10-01 is also still in the board\'s first column that is not an Options column (since 2026-10-27, version 1.3.1). ' +
 							'progressed: anything else, a card that sits in a Complete column and was completed outside the window included.'
 					},
 					priority: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },

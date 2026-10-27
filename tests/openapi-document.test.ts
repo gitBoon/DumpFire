@@ -2647,14 +2647,14 @@ describe('what a route answers, against the schema the document gives for it', (
 
 	// ─── The document itself ─────────────────────────────────────────────────
 
-	it('GET /openapi.json: answered to a caller with no key, as version 1.3.0, and listing itself', async () => {
+	it('GET /openapi.json: answered to a caller with no key, as version 1.3.1, and listing itself', async () => {
 		const name = 'GET /api/v1/openapi.json';
 
 		// No user: the one route under /api/v1/ that is reached without a key.
 		const res = await api('GET', '/api/v1/openapi.json');
 
 		expect(res.status).toBe(200);
-		expect(res.body.info.version).toBe('1.3.0');
+		expect(res.body.info.version).toBe('1.3.1');
 		const schema = answerSchema(name, 200);
 		expect(keysOf(res.body)).toEqual(propertiesOf(schema));
 		expect(keysOf(res.body.info)).toEqual(propertiesOf(schema.properties.info));
@@ -2724,8 +2724,7 @@ describe('what a route answers, against the schema the document gives for it', (
 
 	it('announces milestone 22 as version 1.3.0, in a note of its own dated 2026-10-26, and describes each change where it is (card 2464)', () => {
 		const note = spec.info.description as string;
-		expect(spec.info.version).toBe('1.3.0');
-		// Its own note, first of the dated notes, with its own numbered list (the plan's ruling v).
+		// Its own note, before 2026-10-14's and after 2026-10-27's (1.3.1), with its own numbered list (the plan's ruling v).
 		const start = note.indexOf('**Changed on 2026-10-26 (version 1.3.0).**');
 		expect(start).toBeGreaterThan(0);
 		expect(start).toBeLessThan(note.indexOf('**Changed on 2026-10-14 (version 1.2.0).**'));
@@ -2806,6 +2805,20 @@ describe('what a route answers, against the schema the document gives for it', (
 		const upstream = spec.paths['/api/v1/boards/{boardId}/upstream'].get;
 		expect(upstream.parameters.map((p: Json) => deref(p).name)).toEqual(['boardId', 'days']);
 		expect(upstream.responses['200'].content['application/json'].schema.properties.committedAll.description).toContain('credited to the board it is on now');
+	});
+
+	it('announces the corrections of 2026-10-27 as version 1.3.1, first of the dated notes, the activity report’s created bucket among them (card 2480)', () => {
+		const note = spec.info.description as string;
+		expect(spec.info.version).toBe('1.3.1');
+		const start = note.indexOf('**Changed on 2026-10-27 (version 1.3.1).**');
+		expect(start).toBeGreaterThan(0);
+		expect(start).toBeLessThan(note.indexOf('**Changed on 2026-10-26 (version 1.3.0).**'));
+		expect(note.indexOf('**Changed on')).toBe(start);
+		const changes = note.slice(start, note.indexOf('**Changed on 2026-10-26'));
+		expect(changes).toContain('(1) GET /api/v1/reports/activity puts a card in the created bucket');
+		expect(changes).toContain('card_reopened');
+		expect(changes).toContain('a card raised before 2026-10-01');
+		expect(spec.components.schemas.ActivityReportCard.properties.bucket.description).toContain("one raised before 2026-10-01 is also still in the board's first column");
 	});
 
 	// ─── What is said in words, and can be tried ─────────────────────────────

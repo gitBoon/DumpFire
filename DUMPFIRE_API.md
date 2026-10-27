@@ -13,6 +13,7 @@ This document does not list every route. The complete list, with every field, st
   - [The Request Body](#the-request-body)
   - [What a Field May Hold](#what-a-field-may-hold)
   - [Answers That Are Not JSON](#answers-that-are-not-json)
+  - [Changes on 2026-10-27](#changes-on-2026-10-27)
   - [Changes on 2026-10-26](#changes-on-2026-10-26)
   - [Changes on 2026-10-14](#changes-on-2026-10-14)
   - [Changes on 2026-10-13](#changes-on-2026-10-13)
@@ -242,6 +243,19 @@ Three answers are not JSON. Each is made by SvelteKit before DumpFire's gate is 
 `/api/v1` with nothing after it is not under `/api/v1/`. DumpFire's gate takes it for a path of the web application's own, which a key does not open: it is answered `401` `{ "message": "Not authenticated" }`, or, to a browser, with a redirect to the login page. Send `/api/v1/` and a route.
 
 A `502`, `503` or `504` is not DumpFire's either: see [Writes, Failures and Retries](#writes-failures-and-retries).
+
+### Changes on 2026-10-27
+
+The OpenAPI document's version went from `1.3.0` to `1.3.1` with these corrections:
+
+- **`GET /reports/activity` decides "never moved" from the activity log** (card 2480): a card
+  is `created` when it was raised in the window, not edited since, and no move of it is
+  recorded (`card_moved`, `card_moved_in`, `card_moved_away`, `card_sent`, `card_committed`,
+  `card_returned_to_options` or `card_reopened`, in either spelling). The board's drag route
+  recorded no move before mid-September 2026, so a card raised before 2026-10-01 must also
+  still be in the board's first column that is not an Options column. Until this release every
+  card had to be, so a card raised in another column and left alone was `progressed`, and one
+  moved into the first column `created`.
 
 ### Changes on 2026-10-26
 

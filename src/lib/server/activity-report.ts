@@ -201,12 +201,12 @@ interface CardRow {
 	priority: string;
 	columnTitle: string;
 	/**
-	 * Where this column sits on its board, and where the board's first column
-	 * sits, the Options column aside (milestone 22): it is the leftmost
-	 * column, but work is raised in the first column after it.
+	 * 1 where the activity log records no move of this card at all
+	 * (`MOVES_OF_THE_CARD`) and, for a card raised before `MOVES_LOGGED_FROM`,
+	 * it is still in the board's first committed column; 0 otherwise (card
+	 * 2480).
 	 */
-	columnPosition: number;
-	firstColumnPosition: number;
+	neverMoved: number;
 	boardId: number;
 	boardName: string;
 	boardEmoji: string | null;
@@ -247,6 +247,42 @@ const NOT_WORK_ON_THE_CARD = storedActions(
 )
 	.map((action) => `'${action}'`)
 	.join(', ');
+
+/**
+ * Activity entries that record a card moving, as SQL text: within its board,
+ * onto another board and off it, sent on, committed out of upstream and
+ * returned to it, and moved out of a finished column (`card_reopened`). Any of
+ * them, ever, and the card has been moved (card 2480). `card_completed` is
+ * left out: it is also written for a card created straight into a Complete
+ * column (card 2134), which has not moved. Each in both spellings
+ * (`storedActions`); fixed text, written into the query as
+ * `NOT_WORK_ON_THE_CARD` is.
+ */
+const MOVES_OF_THE_CARD = storedActions(
+	ACTIONS.cardMoved,
+	ACTIONS.cardMovedIn,
+	ACTIONS.cardMovedAway,
+	ACTIONS.cardSent,
+	ACTIONS.cardCommitted,
+	ACTIONS.cardReturnedToOptions,
+	ACTIONS.cardReopened
+)
+	.map((action) => `'${action}'`)
+	.join(', ');
+
+/**
+ * The first moment from which every move is recorded in the activity log, in
+ * the stored form. The board's drag route (`PUT /api/cards/reorder`, which the
+ * list view and the bulk moves use too) wrote no entry for a move before
+ * commit 4b7a1ea (2026-09-14), and did not stamp `updatedAt` before e14d2ff
+ * (2026-09-15). A card raised before then, dragged and left alone since, has
+ * no recorded move and still carries its creation stamp. The date leaves a
+ * margin after the two commits for when they reached the live server. For a
+ * card raised before it, the board's first column is asked as well (card
+ * 2480's review, G1). Fixed text, written into the query as
+ * `MOVES_OF_THE_CARD` is.
+ */
+const MOVES_LOGGED_FROM = '2026-10-01 00:00:00';
 
 /**
  * Ids written into a query as text, which is how every board list here is
@@ -402,8 +438,11 @@ export function buildActivityReport(opts: ActivityReportOptions): ActivityReport
 			c.priority          AS priority,
 			c.on_hold_note      AS onHoldNote,
 			col.title           AS columnTitle,
-			col.position        AS columnPosition,
-			(SELECT MIN(c2.position) FROM columns c2 WHERE c2.board_id = col.board_id AND c2.role IS NOT 'options') AS firstColumnPosition,
+			(NOT EXISTS (SELECT 1 FROM activity_log mv
+			              WHERE mv.card_id = c.id AND mv.action IN (${MOVES_OF_THE_CARD}))
+			 AND (c.created_at >= '${MOVES_LOGGED_FROM}'
+			      OR col.position = (SELECT MIN(c2.position) FROM columns c2 WHERE c2.board_id = col.board_id AND c2.role IS NOT 'options'))
+			) AS neverMoved,
 			col.board_id        AS boardId,
 			b.name              AS boardName,
 			b.emoji             AS boardEmoji,
@@ -593,17 +632,20 @@ function bucketOf(r: CardRow, from: string, to: string): ActivityBucket {
 	// untouched. Checked against a hand-built report, that put 20 in-flight cards
 	// in the "to do" bucket and reported one finished card as not started.
 	//
-	// The column alone is not enough either, because a card genuinely raised and
-	// left alone sits in the first column exactly as a card moved back there does.
+	// The recorded moves alone are not enough either: a card edited and never
+	// moved has changed, and only `updatedAt` says so.
 	//
-	// So: untouched *and* still where it was raised. `columnPosition` is the
-	// board's first column, which is where new cards land; anything further along
-	// has been moved by somebody, whatever the timestamps say. The Options
-	// column is not that first column: its cards are options, never in the
-	// report, and work is raised in the column after it (milestone 22).
+	// So: untouched *and* never moved, by the activity log (card 2480). The
+	// column alone was asked whether the card sat in the board's first column,
+	// which was wrong both ways on a board whose cards are not all raised there:
+	// a card raised in In Progress and left alone read as progressed, and one
+	// moved back into the first column as never moved. But the log does not hold
+	// every move: the board's drag route recorded none before 4b7a1ea and
+	// stamped none before e14d2ff (September 2026), so a card raised before
+	// `MOVES_LOGGED_FROM` must still be in the board's first committed column
+	// too, as the old rule asked.
 	const raisedInWindow = r.createdAt >= from && r.createdAt <= to;
-	const neverMoved = r.columnPosition === r.firstColumnPosition;
-	if (raisedInWindow && r.updatedAt === r.createdAt && neverMoved) return 'created';
+	if (raisedInWindow && r.updatedAt === r.createdAt && r.neverMoved) return 'created';
 
 	// Sitting in a Complete column is deliberately NOT enough to count as a
 	// completion. A card finished in May that picked up one comment in September

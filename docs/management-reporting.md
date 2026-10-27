@@ -1,9 +1,9 @@
 ---
 title: "Management Activity Reporting"
 category: Reporting
-version: 1.11
+version: 1.12
 status: As-Built
-date: 2026-10-26
+date: 2026-10-27
 tags:
   - reporting
   - audit-log
@@ -86,8 +86,11 @@ silently under-report for every window predating the fix. The card's own
 
 Three rules follow:
 
-- **Bucketing never reads audit events.** Only `completedAt`, `createdAt`,
-  `updatedAt` and the card's column.
+- **Bucketing never takes a completion from audit events.** Only `completedAt`
+  decides `completed` and `closed`; the other buckets read `createdAt`,
+  `updatedAt`, the card's column and its on-hold note, and `created` also asks
+  the log whether the card was ever moved (card 2480, below). The log can keep a card out of
+  `created`; it never makes one a completion.
 - **Sitting in a Complete column is not a completion.** A card finished in May
   that picks up one comment in September is `progressed`, not a September
   delivery. Counting it would overstate the period — exactly what this replaces.
@@ -105,7 +108,7 @@ stateDiagram-v2
     InWindow --> completed: completedAt in window<br/>and closeReason is not<br/>"not needed" / "superseded"
     InWindow --> closed: completedAt in window<br/>but nothing was built
     InWindow --> on_hold: hold column<br/>or on-hold note
-    InWindow --> created: raised in window,<br/>untouched since
+    InWindow --> created: raised in window,<br/>not edited, no move recorded,<br/>raised before Oct 2026 also<br/>still in first column
     InWindow --> progressed: anything else<br/>that moved
     completed --> [*]
     closed --> [*]
@@ -118,6 +121,29 @@ A card is "touched in the window" if **any** of these hold: it completed, it was
 raised, it was edited, an audit event names it, or someone commented on it. The
 union matters — relying on the audit log alone is what made the hand-built report
 miss 30% of completions.
+
+A card is `created` when it was raised in the window, has not been edited since
+(`updatedAt` is still its `createdAt`) and the activity log records no move of it:
+no `card_moved`, `card_moved_in`, `card_moved_away`, `card_sent`, `card_committed`,
+`card_returned_to_options` or `card_reopened`, in either spelling, at any time.
+`card_completed` is not taken for a move: it is also written for a card created
+straight into a Complete column. Both are asked because neither is enough alone: a
+move made before moves stamped `updatedAt` left the card looking untouched, and an
+edit is not a move. Until card 2480 (27 October 2026) "never moved" was "still in
+the board's first column", which was wrong both ways where cards are not all raised
+there: a card raised in In Progress and left alone was reported `progressed`, and
+one moved back into the first column `created`.
+
+The log does not hold every move. The board's drag route (`PUT /api/cards/reorder`,
+which the list view and the bulk moves use too) recorded no entry before 14
+September 2026 (commit 4b7a1ea) and stamped no `updatedAt` before 15 September
+(e14d2ff), so a card raised before then, dragged and left alone since, has neither.
+For a card raised before **1 October 2026** (`MOVES_LOGGED_FROM`, a margin after
+the two commits for when they reached the live server), the card must also still be
+in the board's first column that is not an Options column, as the old rule asked.
+From that moment the log alone decides. Both are read in the report's one query, the
+log against its index on `card_id`, so the number of reads does not grow with the
+cards.
 
 "Edited" means a field changed. Since 15 October 2026 a save that changes nothing,
 such as Save pressed on an unchanged card in the card window or an API call that
