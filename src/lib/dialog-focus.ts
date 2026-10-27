@@ -80,20 +80,24 @@ export function keepTab(e: KeyboardEvent, dialog: HTMLElement, first: HTMLElemen
 }
 
 /** What `holdFocus` is given: see below. */
-type HoldOptions = { first: string; onEscape?: () => void; returnTo?: () => HTMLElement | null | undefined };
+type HoldOptions = { first: string; onEscape?: () => void; returnTo?: () => HTMLElement | null | undefined; paused?: boolean };
 
 /**
  * The same hold as a Svelte action, for a dialog drawn inside an `{#if}`:
  * `use:holdFocus={{ first: '.modal-actions .btn-ghost', onEscape: close }}` on the
  * dialog's box. `first` is a selector for the button inside it that takes
  * the focus; Escape, pressed anywhere while it is up, runs `onEscape`;
- * `returnTo` is `takeFocus`'s, asked as the dialog closes.
+ * `returnTo` is `takeFocus`'s, asked as the dialog closes. While `paused`
+ * is true the hold stands aside, its Escape and Tab left alone: a confirm
+ * the dialog opened over itself (the Share window's, card 2473) holds the
+ * keyboard then, and Escape there cancels the confirm, not the dialog too.
  */
 export function holdFocus(node: HTMLElement, options: HoldOptions) {
 	let current = options;
 	const first = () => node.querySelector<HTMLElement>(current.first) ?? node;
 	const handBack = takeFocus(first(), () => current.returnTo?.());
 	const keys = (e: KeyboardEvent) => {
+		if (current.paused) return;
 		if (e.key === 'Escape') current.onEscape?.();
 		keepTab(e, node, first());
 	};

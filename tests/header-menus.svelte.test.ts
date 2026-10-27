@@ -209,7 +209,7 @@ function drawBoardsTable() {
 	return { target, props };
 }
 
-function drawBoardHeader() {
+function drawBoardHeader(canRename = true) {
 	const props = $state({
 		boardId: 7,
 		boardName: 'Website',
@@ -217,6 +217,7 @@ function drawBoardHeader() {
 		breadcrumbs: [],
 		tokenSummary: { total: 12000, entries: 1, costUsd: 1.5, unpricedTokens: 0 },
 		editingName: false,
+		canRename,
 		nameDraft: '',
 		searchQuery: '',
 		filterAssigneeId: null as number | null,
@@ -547,6 +548,130 @@ describe('the board header (card 2466)', () => {
 		props.filterAssigneeId = 2;
 		flushSync();
 		expect(textOf(target.querySelector('#board-filter-btn')!)).toBe('Filter · 2');
+	});
+});
+
+// Card 2470: the name was an <h1 role="button" tabindex="0"> with a click alone, the
+// a11y warning silenced: Enter and Space on it did nothing.
+describe('renaming the board from the keyboard (card 2470)', () => {
+	/** The header as the page draws it: the rename box opened and closed by the page's own state. */
+	function drawRenamable(canRename = true) {
+		const { target, props } = drawBoardHeader(canRename);
+		const renames: string[] = [];
+		const calls = { rename: 0, cancel: 0 };
+		props.onStartRename = () => {
+			props.nameDraft = props.boardName;
+			props.editingName = true;
+		};
+		// The page's saveBoardName: it closes the box, and sends the name trimmed when it is not empty and not the stored one.
+		props.onRename = () => {
+			calls.rename++;
+			props.editingName = false;
+			const name = props.nameDraft.trim();
+			if (name && name !== props.boardName) renames.push(name);
+		};
+		Object.assign(props, {
+			onCancelRename: () => {
+				calls.cancel++;
+				props.editingName = false;
+			}
+		});
+		flushSync();
+		return { target, props, renames, calls };
+	}
+	const nameButton = (target: HTMLElement) => target.querySelector<HTMLButtonElement>('h1.board-name > button');
+	const nameBox = (target: HTMLElement) => target.querySelector<HTMLInputElement>('.board-name-input');
+	function type(box: HTMLInputElement, value: string) {
+		box.value = value;
+		box.dispatchEvent(new Event('input', { bubbles: true }));
+		flushSync();
+	}
+
+	it('draws the name as a real button inside the heading, named "Rename board <name> #<id>", which starts the rename', () => {
+		const { target } = drawRenamable();
+		const button = nameButton(target)!;
+		// A <button type="button">: the browser presses it on Enter and on Space (jsdom does not, so the press is a click here).
+		expect([button.tagName, button.type, button.disabled, button.tabIndex]).toEqual(['BUTTON', 'button', false, 0]);
+		expect(button.getAttribute('aria-label')).toBe('Rename board Website #7');
+		expect(textOf(button)).toBe('Website #7');
+		const heading = target.querySelector('h1.board-name')!;
+		expect([heading.getAttribute('role'), heading.getAttribute('tabindex')]).toEqual([null, null]);
+
+		button.focus();
+		button.click();
+		flushSync();
+		expect(nameBox(target)).not.toBeNull();
+		expect(nameBox(target)!.value).toBe('Website');
+	});
+
+	it('draws the name as plain text, no button, for someone who cannot rename the board', () => {
+		const { target } = drawRenamable(false);
+		expect(nameButton(target)).toBeNull();
+		expect(target.querySelector('h1.board-name button, h1.board-name [role="button"], h1.board-name [tabindex]')).toBeNull();
+		const heading = target.querySelector<HTMLElement>('h1.board-name')!;
+		expect(textOf(heading)).toBe('Website #7');
+		expect([heading.getAttribute('role'), heading.getAttribute('tabindex')]).toEqual([null, null]);
+		heading.click();
+		flushSync();
+		expect(nameBox(target)).toBeNull();
+	});
+
+	it('gives the focus back to the name’s button once Enter sends the name', async () => {
+		const { target, renames } = drawRenamable();
+		nameButton(target)!.click();
+		flushSync();
+		type(nameBox(target)!, 'Webshop');
+		press('Enter', nameBox(target));
+		await settle();
+		expect(nameBox(target)).toBeNull();
+		expect(renames).toEqual(['Webshop']);
+		expect(document.activeElement).toBe(nameButton(target));
+	});
+
+	// The review of card 2470: Escape called onRename with the name put back, and the page's
+	// check compares the trimmed name with the stored one, so a stored name with spaces round
+	// it was sent, trimmed, by Escape and again by the blur that follows.
+	it('Escape cancels only: the box closed by onCancelRename, onRename never called, not even by the blur that follows, with spaces round the stored name', async () => {
+		const { target, props, renames, calls } = drawRenamable();
+		props.boardName = '  Website ';
+		flushSync();
+		nameButton(target)!.click();
+		flushSync();
+		const box = nameBox(target)!;
+		type(box, 'Webshop');
+		const escape = press('Escape', box);
+		// As Chromium does, the blur of the box as it is taken away, before the focus is given back.
+		box.dispatchEvent(new FocusEvent('blur'));
+		await settle();
+		expect(escape.defaultPrevented).toBe(true);
+		expect(nameBox(target)).toBeNull();
+		expect(props.nameDraft).toBe('  Website ');
+		expect([calls.rename, calls.cancel, renames]).toEqual([0, 1, []]);
+		expect(document.activeElement).toBe(nameButton(target));
+
+		// The next rename's blur sends, as before.
+		nameButton(target)!.click();
+		flushSync();
+		type(nameBox(target)!, 'Webshop');
+		nameBox(target)!.dispatchEvent(new FocusEvent('blur'));
+		await settle();
+		expect([calls.rename, renames]).toEqual([1, ['Webshop']]);
+	});
+
+	it('offers the emoji picker only with the same right, and shows the emoji alone without it', () => {
+		expect(drawRenamable().target.querySelector('.emoji-trigger')).not.toBeNull();
+		const { target } = drawRenamable(false);
+		expect(target.querySelector('.emoji-trigger')).toBeNull();
+		expect(textOf(target.querySelector('.board-emoji-text')!)).toBe('📋');
+	});
+
+	it('hands the page who may rename, and no longer silences the heading’s a11y warning', () => {
+		const header = read('src/lib/components/board/BoardHeader.svelte');
+		expect(header).not.toContain('svelte-ignore');
+		expect(header).not.toMatch(/<h1[^>]*(role=|tabindex=|onclick=)/);
+		const page = read('src/routes/board/[id]/+page.svelte');
+		expect(page).toMatch(/<BoardHeader[\s\S]*?canRename=\{boardState\.canEdit\}/);
+		expect(page).toMatch(/<BoardHeader[\s\S]*?onCancelRename=\{\(\) => \(editingBoardName = false\)\}/);
 	});
 });
 
