@@ -20,7 +20,7 @@
 <script lang="ts">
 	import type { CardType, CategoryType, LabelType } from '$lib/types';
 	import type { BoardBlockerType } from '$lib/board/contents-answer';
-	import { parseUTC, getRelativeAge, getDueRelative, getDueStatus, formatDueDate, isNew } from '$lib/utils/date-utils';
+	import { parseUTC, getRelativeAge, getDueRelative, getDueStatus, formatDueDate, showsNewBadge } from '$lib/utils/date-utils';
 	import { subtaskProgress, getCategoryById, getLabelById, getPriorityLabel } from '$lib/utils/card-utils';
 	import { isCoverValue } from '$lib/colours';
 	import { drawnColour } from '$lib/colours';
@@ -59,7 +59,7 @@
 		blockerTooltip: (cardId: number) => string;
 		milestoneNameById: Map<number, string>;
 		cardTokens: Record<number, { tokens: number; costUsd: number | null }>;
-		/** The live timestamps' counter, which redraws the ages and due dates. */
+		/** The live timestamps' counter, which redraws the ages, due dates and New badge. */
 		tick: number;
 		selectionMode: boolean;
 		selected: boolean;
@@ -79,7 +79,7 @@
 {#if card.pinned}
 	<span class="pin-indicator" title="Pinned">📌</span>
 {/if}
-{#if isNew(card.createdAt) && !isComplete}
+{#if showsNewBadge(card, isComplete, tick)}
 	<span class="new-badge">New</span>
 {/if}
 {#if selectionMode}

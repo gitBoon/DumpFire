@@ -5,7 +5,9 @@
   summary (the plain-English line written for reports), five lines of its
   description, and one line of what the tile shows beneath (blocked,
   milestone, priority, category, assignees, age, due date, subtasks, cost).
-  Labels and sub-boards are left to the card window.
+  Labels and sub-boards are left to the card window. A card made in the last
+  24 hours, and not complete, has the board's New badge beside its title, by
+  the board's own rule (`showsNewBadge`, card 2537).
 
   It makes no request: a click, Enter or Space is the board's own open (or,
   with Bulk Select on, its select), and a right-click is the board's own
@@ -14,12 +16,13 @@
   The row is an article, its title a heading, and what opens it a real button
   over the title, whose name is the card's number and title. The button is
   stretched over the whole row (the stretched-link pattern), so a click
-  anywhere on the row is a click on it; the milestone link and the Blocked
-  chip, whose tooltip names each blocker, sit above the stretch.
+  anywhere on the row is a click on it; the milestone link, the Blocked
+  chip, whose tooltip names each blocker, and the New badge, whose tooltip
+  says what it means, sit above the stretch.
 -->
 <script lang="ts">
 	import type { CardType, CategoryType } from '$lib/types';
-	import { parseUTC, getRelativeAge, getDueRelative, getDueStatus, formatDueDate } from '$lib/utils/date-utils';
+	import { parseUTC, getRelativeAge, getDueRelative, getDueStatus, formatDueDate, showsNewBadge } from '$lib/utils/date-utils';
 	import { subtaskProgress, getCategoryById, getPriorityLabel } from '$lib/utils/card-utils';
 	import { formatTokens } from '$lib/tokens';
 	import { formatUsd, BLEND_NOTE, NOT_BILLED_NOTE, UNPRICED_SUM_NOTE } from '$lib/pricing';
@@ -53,7 +56,7 @@
 		milestoneName: string | null;
 		/** What the card cost, when something was recorded; nothing is shown otherwise. */
 		tokens: { tokens: number; costUsd: number | null } | undefined;
-		/** The page's live-timestamp counter, so "Created … ago" stays current. */
+		/** The page's live-timestamp counter, so "Created … ago" and the New badge stay current. */
 		tick: number;
 		selected: boolean;
 		selectionMode: boolean;
@@ -96,6 +99,7 @@
 			onkeydown={onKeydown}
 		><span class="row-id">#{card.id}</span> <span class="row-title-text">{card.title}</span></button>
 		{#if card.pinned}<span class="row-pin" title="Pinned">📌</span>{/if}
+		{#if showsNewBadge(card, completed, tick)}<span class="row-new-badge" title="Created in the last 24 hours">New</span>{/if}
 	</h4>
 	{#if card.summary}
 		<p class="row-summary">{card.summary}</p>
@@ -189,6 +193,18 @@
 	.chip-milestone, .chip-blocked { position: relative; z-index: 1; }
 	.row-id { color: var(--text-tertiary); font-weight: 500; }
 	.row-pin { font-size: 0.75rem; margin-left: 4px; }
+	/* The board's New badge, in its colours, as a pill in the title's line
+	   rather than in a tile's corner; above the stretch, so its tooltip shows. */
+	.row-new-badge {
+		position: relative; z-index: 1;
+		display: inline-block; margin-left: 6px; vertical-align: middle; cursor: help;
+		font-size: 0.6rem; font-weight: 700; text-transform: uppercase;
+		letter-spacing: 0.06em; line-height: 1.5; padding: 0 6px;
+		border-radius: var(--radius-full);
+		background: linear-gradient(135deg, #22c55e, #10b981);
+		color: #fff;
+		box-shadow: 0 0 6px rgba(34, 197, 94, 0.3);
+	}
 	.priority-dot {
 		display: inline-block; width: 8px; height: 8px; border-radius: 50%;
 		margin-right: 4px; vertical-align: middle;
