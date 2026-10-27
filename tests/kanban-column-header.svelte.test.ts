@@ -391,4 +391,13 @@ describe('the list view with an Options column (milestone 22)', () => {
 		expect(pressed?.textContent).toBe('Doing');
 		expect(target.querySelector('.list-empty')?.textContent).toBe('No cards in Doing');
 	});
+
+	it('opens on no column when the Options column is the only one, and asks for one; chosen, it is shown (card 2527, K1)', () => {
+		const { target, changed } = drawList([{ title: 'Options', role: 'options', cards: [{ id: 1 }] as never }]);
+
+		expect(target.querySelector('.strip-btn[aria-pressed="true"]')).toBeNull();
+		expect(target.querySelector('.list-empty')?.textContent).toBe('Choose a column above.');
+		target.querySelector<HTMLButtonElement>('.strip-btn')!.click();
+		expect(changed).toEqual([{ view: 'list', columnId: 1, order: 'priority' }]);
+	});
 });

@@ -71,6 +71,7 @@ import { join } from 'node:path';
 import { sqlite } from './index';
 import { EXPECTED_SCHEMA } from './expected-schema';
 import { createLogger, ensureSystemLogsTable } from '../logger';
+import { OPTIONS_COLOUR, OPTIONS_TITLE } from '../../column-role';
 import {
 	convertedList,
 	normaliseTimestamps,
@@ -248,6 +249,14 @@ export type Backfill = {
 	upstreamCleared: number;
 	/** Cards that are not archived whose discard mark was cleared: only an archived card is discarded. */
 	discardedCleared: number;
+	/** Delivery boards given the Options column every delivery board has (card 2527). */
+	optionsAdded: number;
+	/** Options columns moved to the far left of their board, where one always is. */
+	optionsMoved: number;
+	/** Options columns given the title Options, which one always has. */
+	optionsRenamed: number;
+	/** Second Options columns of a board, which lost the role and kept their cards, now committed work. */
+	optionsDemoted: number;
 };
 
 /** A card the backfill took out of a milestone of another board, and that milestone. */
@@ -2479,6 +2488,52 @@ export const LIVE_NOT_DISCARDED = [
 	'WHERE `archived_at` IS NULL AND (`discarded_at` IS NOT NULL OR `discarded_by` IS NOT NULL);'
 ].join('\n');
 
+/** A delivery board, in the statements below: a board whose kind is not 'ideas', as in 0060's. */
+const ON_DELIVERY_BOARD = "EXISTS (SELECT 1 FROM `boards` `b` WHERE `b`.`id` = `columns`.`board_id` AND `b`.`kind` IS NOT 'ideas')";
+
+/**
+ * Every delivery board's one Options column (card 2527, rulings O3 and R1),
+ * in five statements, run in this order. A board that somehow has two keeps
+ * the leftmost, by position and then id, and the others lose the role and
+ * keep their cards, which the commitment's backfill then commits: their
+ * discard marks are cleared first, as an archived card in a committed column
+ * is abandoned, never discarded (the S1 review's K2). The one
+ * kept is titled Options and put left of every other column. A delivery board
+ * with none is given one, at the far left, or at 0 on a board with no column.
+ */
+/** A column that is a second Options column of its delivery board: another is left of it, or level with it and made before. */
+const SECOND_OPTIONS_COLUMN = [
+	"`columns`.`role` IS 'options' AND " + ON_DELIVERY_BOARD,
+	"  AND EXISTS (SELECT 1 FROM `columns` `o` WHERE `o`.`board_id` = `columns`.`board_id` AND `o`.`role` IS 'options'",
+	'              AND (`o`.`position` < `columns`.`position` OR (`o`.`position` = `columns`.`position` AND `o`.`id` < `columns`.`id`)))'
+].join('\n');
+
+export const OPTIONS_DUPLICATES_UNDISCARDED = [
+	'UPDATE `cards` SET `discarded_at` = NULL, `discarded_by` = NULL',
+	'WHERE (`discarded_at` IS NOT NULL OR `discarded_by` IS NOT NULL)',
+	'  AND `column_id` IN (SELECT `columns`.`id` FROM `columns` WHERE ' + SECOND_OPTIONS_COLUMN + ');'
+].join('\n');
+
+export const OPTIONS_DUPLICATES_DEMOTED = ['UPDATE `columns` SET `role` = NULL', 'WHERE ' + SECOND_OPTIONS_COLUMN + ';'].join('\n');
+
+export const OPTIONS_RENAMED = [
+	`UPDATE \`columns\` SET \`title\` = '${OPTIONS_TITLE}'`,
+	`WHERE \`role\` IS 'options' AND \`title\` IS NOT '${OPTIONS_TITLE}' AND ` + ON_DELIVERY_BOARD + ';'
+].join('\n');
+
+export const OPTIONS_MOVED = [
+	'UPDATE `columns` SET `position` = (SELECT MIN(`o`.`position`) FROM `columns` `o` WHERE `o`.`board_id` = `columns`.`board_id` AND `o`.`id` <> `columns`.`id`) - 1',
+	"WHERE `role` IS 'options' AND " + ON_DELIVERY_BOARD,
+	'  AND EXISTS (SELECT 1 FROM `columns` `o` WHERE `o`.`board_id` = `columns`.`board_id` AND `o`.`id` <> `columns`.`id` AND `o`.`position` <= `columns`.`position`);'
+].join('\n');
+
+export const OPTIONS_ADDED = [
+	'INSERT INTO `columns` (`board_id`, `title`, `position`, `color`, `role`)',
+	`SELECT \`b\`.\`id\`, '${OPTIONS_TITLE}', COALESCE((SELECT MIN(\`c\`.\`position\`) FROM \`columns\` \`c\` WHERE \`c\`.\`board_id\` = \`b\`.\`id\`) - 1, 0), '${OPTIONS_COLOUR}', 'options'`,
+	"FROM `boards` `b` WHERE `b`.`kind` IS NOT 'ideas'",
+	"  AND NOT EXISTS (SELECT 1 FROM `columns` `c` WHERE `c`.`board_id` = `b`.`id` AND `c`.`role` IS 'options');"
+].join('\n');
+
 /**
  * Fill in the two values that 0050 and 0051 filled in once, and take out of
  * their milestones the cards 0057 took out once.
@@ -2518,6 +2573,13 @@ export const LIVE_NOT_DISCARDED = [
  * not. Nothing here, or anywhere, takes a NULL `committed_at` to mean
  * upstream: the column and the board decide that.
  *
+ * And every delivery board's Options column (card 2527), first of all, so
+ * that the cards of a second one, which loses the role, are committed by the
+ * statement above in the same run. Every board made since card 2527 has one,
+ * so the first start of its image gives one to every board made before, and a
+ * restore of an older backup brings boards with none, or one under another
+ * title. Like the rest, it writes no entry, no webhook and no mail.
+ *
  * A table or column that is not there is skipped. After the migration loop
  * all of them always exist; they are missing only when the runner is driven
  * against some other set of files, as the tests do, and then there is nothing
@@ -2534,8 +2596,25 @@ export function runBackfills(database: Database.Database = sqlite): Backfill {
 			unfiled: [],
 			committedFilled: 0,
 			upstreamCleared: 0,
-			discardedCleared: 0
+			discardedCleared: 0,
+			optionsAdded: 0,
+			optionsMoved: 0,
+			optionsRenamed: 0,
+			optionsDemoted: 0
 		};
+
+		if (hasColumn(database, 'columns', 'role') && hasColumn(database, 'boards', 'kind')) {
+			// In this order: the second Options columns demoted, their cards'
+			// discard marks cleared first, then the one kept titled and placed,
+			// then one made where there is none (ruling R1).
+			if (hasColumn(database, 'cards', 'discarded_at') && hasColumn(database, 'cards', 'discarded_by')) {
+				database.prepare(OPTIONS_DUPLICATES_UNDISCARDED).run();
+			}
+			result.optionsDemoted = database.prepare(OPTIONS_DUPLICATES_DEMOTED).run().changes;
+			result.optionsRenamed = database.prepare(OPTIONS_RENAMED).run().changes;
+			result.optionsMoved = database.prepare(OPTIONS_MOVED).run().changes;
+			result.optionsAdded = database.prepare(OPTIONS_ADDED).run().changes;
+		}
 
 		if (hasColumn(database, 'cards', 'first_completed_at') && hasColumn(database, 'cards', 'completed_at')) {
 			// A card that is complete has been completed at least once.
@@ -2918,15 +2997,19 @@ export function runMigrations(options: MigrationOptions = {}): MigrationReport {
 		unfiled: [],
 		committedFilled: 0,
 		upstreamCleared: 0,
-		discardedCleared: 0
+		discardedCleared: 0,
+		optionsAdded: 0,
+		optionsMoved: 0,
+		optionsRenamed: 0,
+		optionsDemoted: 0
 	};
 	try {
 		backfilled = runBackfills(database);
 	} catch (err) {
 		halt({
 			stage:
-				'backfilling cards.first_completed_at, task_requests.access_token, cards.milestone_id, boards.category_id, ' +
-				'cards.committed_at and cards.discarded_at',
+				"backfilling each delivery board's Options column (columns.role), cards.first_completed_at, " +
+				'task_requests.access_token, cards.milestone_id, boards.category_id, cards.committed_at and cards.discarded_at',
 			reason: messageOf(err),
 			cause: err
 		});
@@ -2972,6 +3055,26 @@ export function runMigrations(options: MigrationOptions = {}): MigrationReport {
 	}
 	if (backfilled.discardedCleared > 0) {
 		log.warn(`Cleared the discard mark on ${backfilled.discardedCleared} card(s) that are not archived`);
+	}
+	// Every delivery board has its Options column (card 2527). The first start
+	// of the image with it adds one to every board made before, and a restore
+	// of an older backup can bring more. At any other start each finds none,
+	// and a count means some write makes a delivery board without one, or
+	// renames or moves it. None of these lines begins "Took" either.
+	if (backfilled.optionsAdded > 0) {
+		log.warn(`Added an Options column at the far left of ${backfilled.optionsAdded} delivery board(s) that had none`);
+	}
+	if (backfilled.optionsRenamed > 0) {
+		log.warn(`Renamed ${backfilled.optionsRenamed} Options column(s) to Options, the title every one has`);
+	}
+	if (backfilled.optionsMoved > 0) {
+		log.warn(`Moved ${backfilled.optionsMoved} Options column(s) to the far left of their board, where every one is`);
+	}
+	if (backfilled.optionsDemoted > 0) {
+		log.warn(
+			`Made ${backfilled.optionsDemoted} second Options column(s) ordinary columns, each board keeping its leftmost: ` +
+				'their cards are committed work now, and no discard mark is left on them'
+		);
 	}
 
 	// Every timestamp in one form (card 2095). Not on a database that may be

@@ -16,6 +16,14 @@ export type State = {
 	sequences: Record<string, number>;
 	/** How many rows `PRAGMA foreign_key_check` reports. */
 	violations: number;
+	/**
+	 * How many boards have an Options column, a column whose role is 'options'
+	 * (0 before 0060): the start gives one to every delivery board that has
+	 * none (card 2527). Boards, not columns, so that a board's second Options
+	 * column made ordinary in the same start (the S1 review's K2) does not
+	 * hide the columns added.
+	 */
+	optionsColumns?: number;
 };
 
 /** Where `compare` writes what it found. */
@@ -45,7 +53,12 @@ export function stateOf(database: Database.Database): State {
 		}
 	}
 
-	return { rows, sequences, violations: (database.pragma('foreign_key_check') as unknown[]).length };
+	const hasRole = database.prepare("SELECT 1 FROM pragma_table_info('columns') WHERE name = 'role'").get();
+	const optionsColumns = hasRole
+		? (database.prepare("SELECT COUNT(DISTINCT board_id) AS n FROM columns WHERE role IS 'options'").get() as { n: number }).n
+		: 0;
+
+	return { rows, sequences, violations: (database.pragma('foreign_key_check') as unknown[]).length, optionsColumns };
 }
 
 /**
@@ -88,6 +101,12 @@ export function compare(
 			} else {
 				found.problems.push(`${table} had ${had} row(s) and has ${has}`);
 			}
+		} else if (table === 'columns' && has > expected && has - expected === (after.optionsColumns ?? 0) - (before.optionsColumns ?? 0)) {
+			// The start's own step, after the migrations (card 2527): expected
+			// once, at the first start of the image that has it.
+			found.notes.push(
+				`columns had ${had} row(s) and has ${has}: each delivery board that had none was given its Options column at the start (card 2527)`
+			);
 		} else if (has > expected) {
 			found.notes.push(`${table} had ${had} row(s) and has ${has}: a migration put the others there`);
 		}

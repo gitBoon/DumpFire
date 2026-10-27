@@ -129,7 +129,7 @@ function scene(): Scene {
 // ─── Boards ─────────────────────────────────────────────────────────────────
 
 describe('POST /api/boards', () => {
-	it('makes the board, its four columns and its owner, or none of them', async () => {
+	it('makes the board, its five columns (its Options column among them, card 2527) and its owner, or none of them', async () => {
 		const run = await eachWriteInTurn({
 			build: () => ({ owner: makeUser({ username: 'owner' }) }),
 			request: ({ owner }) => api('POST', '/api/boards', { user: owner, body: { name: 'Roadmap', emoji: '🗺️' } }),
@@ -146,10 +146,11 @@ describe('POST /api/boards', () => {
 						.from(columns)
 						.all()
 				).toEqual([
-					{ boardId: made[0].id, title: 'To Do', position: 0 },
-					{ boardId: made[0].id, title: 'On Hold', position: 1 },
-					{ boardId: made[0].id, title: 'In Progress', position: 2 },
-					{ boardId: made[0].id, title: 'Complete', position: 3 }
+					{ boardId: made[0].id, title: 'Options', position: 0 },
+					{ boardId: made[0].id, title: 'To Do', position: 1 },
+					{ boardId: made[0].id, title: 'On Hold', position: 2 },
+					{ boardId: made[0].id, title: 'In Progress', position: 3 },
+					{ boardId: made[0].id, title: 'Complete', position: 4 }
 				]);
 				expect(
 					db

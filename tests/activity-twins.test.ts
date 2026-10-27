@@ -463,10 +463,6 @@ function optionsScene(at: 'Ideas' | 'To Do' | 'Complete'): Scene {
 /** The id of board A's Options column, made by `optionsScene`. */
 const optionsColumnId = () => db.select().from(columns).all().find((c) => c.role === 'options')!.id;
 
-/** The id of the column called Spare, or Backlog, that a twin of card 2464 adds to board A. */
-const spareColumnId = () => db.select().from(columns).all().find((c) => c.title === 'Spare')!.id;
-const backlogColumnId = () => db.select().from(columns).all().find((c) => c.title === 'Backlog')!.id;
-
 /**
  * What a move of the card across the commitment point tells, in each tree: the
  * webhook, then, from the page alone, the assignee's mail, then the board's
@@ -1381,37 +1377,9 @@ const SERVICE_TWINS: ServiceTwin[] = [
 		sources: { internal: [], v1: [] },
 		entries: { internal: [], v1: [] }
 	},
-	// Milestone 22, card 2464 (item 9): the Options role given to an empty column (card 2459), which
-	// records no entry, as a change of a column never has; the column goes leftmost, its WIP limit 0.
-	{
-		row: 27,
-		what: 'giving an empty column the Options role',
-		build: () => {
-			const s = cardScene();
-			db.insert(columns).values({ boardId: s.A.board.id, title: 'Spare', position: 9 }).run();
-			return s;
-		},
-		internal: (s) => api('PUT', `/api/columns/${spareColumnId()}`, { user: s.owner, body: { role: 'options' } }),
-		v1: (s) => api('PUT', `/api/v1/columns/${spareColumnId()}`, { user: s.owner, body: { role: 'options' } }),
-		status: { internal: 200, v1: 200 },
-		sources: { internal: [], v1: [] },
-		entries: { internal: [], v1: [] }
-	},
-	// And a column holding a card converted to the Options column (ruling i): one summary entry, no webhook.
-	{
-		row: 27,
-		what: 'converting a column that holds a card to the Options column',
-		build: () => {
-			const s = cardScene();
-			const backlog = db.insert(columns).values({ boardId: s.A.board.id, title: 'Backlog', position: 0.5 }).returning().get();
-			db.update(cards).set({ columnId: backlog.id }).where(eq(cards.id, s.first.id)).run();
-			return s;
-		},
-		internal: (s) => api('POST', `/api/columns/${backlogColumnId()}/convert`, { user: s.owner, body: { role: 'options', cards: 1 } }),
-		v1: (s) => api('POST', `/api/v1/columns/${backlogColumnId()}/convert`, { user: s.owner, body: { role: 'options', cards: 1 } }),
-		status: { internal: 200, v1: 200 },
-		sources: { internal: ['column_converted_to_options ui'], v1: ['api:column_converted_to_options api'] }
-	},
+	// Milestone 22, card 2464 (item 9) had two more here, the Options role given to an empty column and a
+	// column holding a card converted to the Options column: card 2527 made the Options column every
+	// delivery board's own, made with it, and both writes are refused or gone (tests/options-everywhere.test.ts).
 	{
 		row: 27,
 		what: 'deleting a column, and the card in it',
@@ -2945,13 +2913,6 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 		{ service: 'deleteColumnFor', args: [code('caller'), { columnId: code('columnId') }, null, { source: 'api' }] }
 	],
 	'src/routes/api/columns/reorder/+server.ts PUT': [{ service: 'reorderColumns', args: [code('caller'), {}, code('body'), { source: 'ui' }] }],
-	// Milestone 22, ruling i: a column made the Options column, cards and all.
-	'src/routes/api/columns/[id]/convert/+server.ts POST': [
-		{ service: 'convertColumnFor', args: [code('caller'), { columnId: code('id') }, code('body'), { source: 'ui' }] }
-	],
-	'src/routes/api/v1/columns/[columnId]/convert/+server.ts POST': [
-		{ service: 'convertColumnFor', args: [code('caller'), { columnId: code('columnId') }, code('body'), { source: 'api' }] }
-	],
 	'src/routes/api/categories/+server.ts POST': [{ service: 'createCardCategory', args: [code('caller'), {}, code('body'), { source: 'ui' }] }],
 	'src/routes/api/v1/boards/[boardId]/categories/+server.ts POST': [
 		{ service: 'createCardCategory', args: [code('caller'), { boardId: code('boardId') }, code('body'), { source: 'api' }] }

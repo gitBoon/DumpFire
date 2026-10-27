@@ -13,22 +13,22 @@ const spec = {
 			'(404, {"message": "Not found"}) and a method the route does not have (405, with an Allow header naming the ones it has). ' +
 			'Some failures carry more beside the message: a 429 has `retryAfterSecs`, the 409 for a dependency that would close a loop has `cycle`, ' +
 			'and the 409 for a batch that was refused lists every item of it that was at fault.\n\n' +
-			'**Changed on 2026-10-26 (version 1.3.0).** Upstream of the commitment point: options, committed work and ideas boards (milestone 22). Four operations and two filters are new, and these answers and fields changed: ' +
+			'**Changed on 2026-10-26 (version 1.3.0).** Upstream of the commitment point: options, committed work and ideas boards (milestone 22). Three operations and two filters are new, and these answers and fields changed: ' +
 			'(1) a card is an **option**, upstream of the commitment point, when it is in a board\'s Options column (a column whose role is options) or in any column of an ideas board (a board whose kind is ideas); every other card is committed work. ' +
-			'No board has either until someone makes one: every card made before this release is committed, its committedAt being its createdAt, and a board with no Options column answers every operation as before but for the fields named here and the entry an archive of unfinished work writes (card_abandoned, item 12); ' +
+			'Every delivery board has its Options column, made with it, and one made before this release is given an empty one at the far left when the server starts (item 3); no board is an ideas board until someone makes one. Every card made before this release is committed, its committedAt being its createdAt, and a board answers every operation as before but for its Options column among its columns, the fields named here and the entry an archive of unfinished work writes (card_abandoned, item 12); ' +
 			'(2) every column carries role, "options" for the board\'s Options column and null for any other: POST /api/v1/boards/{boardId}/columns and PUT /api/v1/columns/{columnId} take role, "options" or null (left out on PUT, kept), ' +
-			'anything else 400 role must be "options" or null, not <what was sent>; given the role, a column goes left of every other and its wipLimit to 0; and each answers 409, writing nothing, for the role on a column of an ideas board, for a second Options column, ' +
-			'for the role given or taken away while the column holds cards, archived ones included (giving it, the message names POST /api/v1/columns/{columnId}/convert; taking it away, it says to move the cards out, and to restore and move, or delete, archived ones, first), for an Options column whose title makes it To Do, On Hold or Complete, ' +
-			'for a WIP limit above 0 on an Options column, on a create as on an update, and for a position at or left of the Options column, which stays the leftmost; PUT counts role among its six fields; and DELETE /api/v1/columns/{columnId} answers 409 for an Options column, or a column of an ideas board, that holds cards not archived: ' +
-			'options are moved out, or archived to discard them, not deleted with their column; ' +
-			'(3) POST /api/v1/columns/{columnId}/convert is new: the board\'s owner or an administrator makes a column the Options column with the cards it holds, {"role": "options", "cards": <the live and archived cards seen>}; ' +
-			'every card in it becomes an option, its committedAt and committedBy cleared, and one api:column_converted_to_options entry is written, with no entry or webhook for each card; it answers the column, and 409 for an ideas board, a board that has an Options column, ' +
-			'a column whose title makes it To Do, On Hold or Complete, a card in it with a sub-board, and a count of cards that is not the column\'s now; ' +
+			'anything else 400 role must be "options" or null, not <what was sent>; and each answers 409, writing nothing, for "options" on any other column (`This board already has its Options column.`; on a board that has none yet (made before this release, or restored from a backup), until the next start, `A delivery board\'s Options column is made with the board; it comes back at the next start.`; or on a column of an ideas board, every column of which is upstream), ' +
+			'for any other column of a delivery board called Options, in any case (`Only the board\'s Options column is called Options. Choose another name.`), for the Options column renamed to anything but Options (`The Options column is always called Options.`) or given role null (`Every delivery board keeps its Options column.`), ' +
+			'for a WIP limit above 0 on the Options column, and for a position at or left of the Options column, which stays the leftmost; a value sent back as the column holds it changes nothing and is not refused; PUT counts role among its six fields; ' +
+			'and DELETE /api/v1/columns/{columnId} answers 409 for the Options column, empty or not (`Every delivery board keeps its Options column. Fold it away with the arrow on its strip instead.`), and for a column of an ideas board that holds cards not archived: ' +
+			'ideas are moved out, or archived to discard them, not deleted with their column; ' +
+			'(3) every delivery board has one Options column, made with the board and by a start-up step for existing boards; it cannot be renamed to anything but Options, deleted or given away: POST /api/v1/boards makes a delivery board with Options, To Do, On Hold, In Progress and Complete, in that order, ' +
+			'and when the server starts, each delivery board that has none is given one, empty, titled Options, at its far left, writing no entry and sending no webhook; ' +
 			'(4) every board carries kind, "delivery", which every board was, or "ideas": POST /api/v1/boards takes kind, and makes an ideas board with the columns New Ideas, Shaping and Ready for Replenishment (409 `A sub-board is a delivery board.` with a parentCardId, ' +
 			'and 409 for a sub-board under an option); PUT /api/v1/boards/{boardId} takes kind, kept when it is left out or sent as the board holds it: a change is the board\'s owner\'s or an administrator\'s (403), and of an empty board only, no card live or archived, whose columns are replaced with the other kind\'s, ' +
 			'and it is 409 for a sub-board and for a board holding cards (giving it the ideas kind, the message names POST /api/v1/boards/{boardId}/convert; back to delivery, it says to move the cards to a delivery board or delete them first); PUT counts kind among its five fields; and a column of an ideas board whose title makes it To Do, On Hold or Complete is 409 on create and on rename; ' +
 			'(5) POST /api/v1/boards/{boardId}/convert is new: the board\'s owner or an administrator makes a board an ideas board with the cards it holds, {"kind": "ideas", "cards": <the live and archived cards seen>}; every card becomes an option, ' +
-			'its empty To Do, On Hold and Complete columns go (a board with no card at all is given the ideas board\'s columns), and one api:board_converted_to_ideas entry is written, with no webhook; it answers the board with its columns; ' +
+			'its empty To Do, On Hold, Complete and Options columns go (an Options column holding cards stays, an ordinary column; a board with no card at all is given the ideas board\'s columns), and one api:board_converted_to_ideas entry is written, with no webhook; it answers the board with its columns; ' +
 			'(6) GET /api/v1/boards takes kind=delivery or kind=ideas, which lists only the boards of that kind the key\'s user can open; anything else is 400 kind must be "delivery" or "ideas", not <what was sent>; ' +
 			'(7) every card answer carries committedAt and committedBy, when and by whom the card crossed the commitment point (null while it is an option), and discardedAt and discardedBy, set when it is archived as an option and cleared by its restore; ' +
 			'no operation takes them in a body: a move, a creation, an archive, a restore and a conversion set them; ' +
@@ -46,7 +46,7 @@ const spec = {
 			'committed work not in a Complete column is **abandoned**, api:card_abandoned, with no webhook; and api:card_archived is written only for a card archived from a Complete column. A live option deleted with ?permanent=true writes api:card_discarded and then api:card_deleted, ' +
 			'and sends card.discarded and then card.deleted; archivedAt null on PUT /api/v1/cards/{cardId} restores a discarded card as an option, clearing discardedAt and discardedBy; ' +
 			'(13) **the activity vocabulary changes**, for readers of GET /api/v1/audit-log, GET /api/v1/reports/activity and recentActivity on GET /api/v1/me/stats: seven actions are new, card_committed, card_returned_to_options, card_discarded, card_abandoned, card_sent, ' +
-			'column_converted_to_options and board_converted_to_ideas, each stored with api: when made through the API; and three are written less: card_archived only for work archived from Complete, unfinished committed work being card_abandoned and an option card_discarded, ' +
+			'column_converted_to_options, which nothing writes now (the column conversion it recorded went before this release), and board_converted_to_ideas, each stored with api: when made through the API; and three are written less: card_archived only for work archived from Complete, unfinished committed work being card_abandoned and an option card_discarded, ' +
 			'so a filter or a count of card_archived alone misses both; card_moved not for a move across the commitment point, card_committed or card_returned_to_options being written in its place; and card_moved_away not for an option leaving its board, which is card_sent. Entries written before are unchanged; ' +
 			'(14) two webhook events are new, card.committed (a card moved out of an upstream column into a committed one, by any route, a Send to To Do included; data.action card_committed) and card.discarded (an option archived, or a live option deleted for good; data.action card_discarded; before card.deleted, with the card\'s id, for a delete), ' +
 			'making ten, each of which can be named in events; **a webhook whose events list is empty is sent every event, so one made before this release receives both**; a webhook that lists card.moved and not card.committed no longer hears a move out of an Options column within one board ' +
@@ -486,7 +486,7 @@ const spec = {
 						type: ['string', 'null'],
 						enum: ['options', null],
 						description:
-							'options for the board\'s Options column, upstream of the commitment point: cards in it are options, not committed work. null for every other column, whose title decides whether it is To Do, On Hold or Complete.'
+							'options for the board\'s Options column, upstream of the commitment point: cards in it are options, not committed work. Every delivery board has one, titled Options, at its far left (since 2026-10-26). null for every other column, whose title decides whether it is To Do, On Hold or Complete.'
 					}
 				},
 				required: ['id', 'boardId', 'title', 'position', 'color', 'wipLimit', 'showAddCard', 'role']
@@ -544,7 +544,7 @@ const spec = {
 						description:
 							'When the card crossed the commitment point. Set when the card is created outside an upstream column (an Options column, or any column of an ideas board), ' +
 							'and when it is moved out of the Options column or off an ideas board; filled from createdAt by the repair the server makes at start-up for a card that has none, ' +
-							'such as one restored from a backup made before 2026-10-26. null while the card is an option: cleared whenever a card becomes one, by a move back upstream or by converting its column to the Options column.'
+							'such as one restored from a backup made before 2026-10-26. null while the card is an option: cleared whenever a card becomes one, by a move back upstream or by converting its board to an ideas board.'
 					},
 					committedBy: {
 						type: ['integer', 'null'],
@@ -2638,8 +2638,8 @@ const spec = {
 				tags: ['Boards'],
 				summary: 'Create a board',
 				description:
-					'Creates a new board with its kind\'s default columns: To Do, On Hold, In Progress and Complete for a delivery board, the default, and New Ideas, Shaping and Ready for Replenishment for an ideas board (kind, since 2026-10-26). ' +
-					'A delivery board is made with no Options column: one is added with POST /boards/{boardId}/columns and role "options". ' +
+					'Creates a new board with its kind\'s default columns: Options, To Do, On Hold, In Progress and Complete for a delivery board, the default, and New Ideas, Shaping and Ready for Replenishment for an ideas board (kind, since 2026-10-26). ' +
+					'A delivery board\'s Options column, first, is its own for good: it is not renamed to anything but Options, deleted or given away, and no other is made. ' +
 					'The API key\'s user is automatically added as board owner. To create a sub-board linked to a card, pass parentCardId: a sub-board is always a delivery board, and no sub-board is made under an option. ' +
 					'To file it under a board category on the dashboard, pass categoryId: until 2026-10-14 it was ignored and the board made unfiled (item 91). ' +
 					'A new board is private; its owner sets isPublic with PUT /boards/{boardId}.',
@@ -2666,7 +2666,7 @@ const spec = {
 										type: 'string',
 										enum: ['delivery', 'ideas'],
 										description:
-											'"delivery", the default, made with To Do, On Hold, In Progress and Complete; or "ideas", an ideas board, every column of which is upstream of the commitment point, made with New Ideas, Shaping and Ready for Replenishment. ' +
+											'"delivery", the default, made with Options, To Do, On Hold, In Progress and Complete; or "ideas", an ideas board, every column of which is upstream of the commitment point, made with New Ideas, Shaping and Ready for Replenishment. ' +
 											'Anything else is 400 kind must be "delivery" or "ideas", not <what was sent>. A sub-board is a delivery board: "ideas" with a parentCardId is 409.'
 									}
 								}
@@ -2901,7 +2901,7 @@ const spec = {
 				summary: 'Make a board an ideas board, cards and all',
 				description:
 					'Makes the board an ideas board with the cards it holds: every card on it, archived ones included, becomes an option (its committedAt and committedBy are cleared), its To Do, On Hold and Complete columns, which must be empty, are deleted (a board with no card at all is given the ideas board\'s default columns instead), ' +
-					'and its Options column, if it has one, becomes an ordinary column, every column of an ideas board being upstream. One `api:board_converted_to_ideas` entry is written ("N cards became ideas"); nothing is written or sent for each card, and no webhook. ' +
+					'and its Options column is deleted with them when it holds no card, live or archived, or else becomes an ordinary column, every column of an ideas board being upstream. One `api:board_converted_to_ideas` entry is written ("N cards became ideas"); nothing is written or sent for each card, and no webhook. ' +
 					'Only the board\'s owner or an administrator may. `cards` is how many cards, live and archived, the board was seen to hold: a board that holds another number now is 409, so a card added since is not made an option unseen. ' +
 					'An empty board can also be switched with PUT /api/v1/boards/{boardId} and kind, which gives it the ideas board\'s default columns instead. An ideas board holding cards is not made a delivery board.',
 				operationId: 'convertBoard',
@@ -3120,13 +3120,12 @@ const spec = {
 										type: ['string', 'null'],
 										enum: ['options', null],
 										description:
-											'"options" makes the board\'s Options column, upstream of the commitment point, whose cards are options and not committed work; null or left out, an ordinary column. ' +
-											'An Options column is placed left of every other column whatever position is sent, and has no WIP limit. Anything else is 400 role must be "options" or null, not <what was sent>.'
+											'null or left out, an ordinary column. "options" is 409 on every board (since 2026-10-26): a delivery board is made with its Options column, and has one only, ' +
+											'and every column of an ideas board is upstream already. Anything else is 400 role must be "options" or null, not <what was sent>.'
 									},
 									wipLimit: {
 										type: ['integer', 'null'],
-										description:
-											'Not stored: a new column has no WIP limit (0), and one is set with PUT /columns/{columnId}. Read, as the update reads it, for the Options column alone: with role "options", a limit above 0 is 409 An Options column has no WIP limit. (since 2026-10-26; it was made with 0 and nothing said).'
+										description: 'Not stored: a new column has no WIP limit (0), and one is set with PUT /columns/{columnId}.'
 									}
 								}
 							},
@@ -3153,13 +3152,18 @@ const spec = {
 					},
 					'409': {
 						description:
-							'The column cannot be made as sent, and nothing was written: an Options column on an ideas board, a second Options column on a board that has one, ' +
-							'an Options column whose title makes a column To Do, On Hold or Complete, an Options column sent a wipLimit above 0 (`An Options column has no WIP limit.`), or a position at or left of the board\'s Options column, which stays the leftmost. ' +
+							'The column cannot be made as sent, and nothing was written: role "options" on a delivery board, which has its Options column from when it was made ' +
+							'(`This board already has its Options column.`; on a board that has none yet (made before this release, or restored from a backup), until the next start, `A delivery board\'s Options column is made with the board; it comes back at the next start.`), ' +
+							'or on an ideas board, every column of which is upstream; a column of a delivery board called Options, in any case (`Only the board\'s Options column is called Options. Choose another name.`); ' +
+							'or a position at or left of the board\'s Options column, which stays the leftmost. ' +
 							'And on an ideas board, a column whose title makes it To Do, On Hold or Complete: `An ideas board has no Complete column: "Done" would make one. Choose another name.`',
 						content: {
 							'application/json': {
 								schema: { $ref: '#/components/schemas/Error' },
-								example: { message: 'This board already has an Options column, "Ideas".' }
+								examples: {
+									secondOptions: { summary: 'role "options" on a delivery board', value: { message: 'This board already has its Options column.' } },
+									titledOptions: { summary: 'Another column called Options', value: { message: "Only the board's Options column is called Options. Choose another name." } }
+								}
 							}
 						}
 					},
@@ -3228,9 +3232,8 @@ const spec = {
 										type: ['string', 'null'],
 										enum: ['options', null],
 										description:
-											'"options" makes this empty column the board\'s Options column: it moves left of every other column and its WIP limit goes to 0. null makes an empty Options column an ordinary one again. ' +
-											'Left out, the role is kept. A column that holds cards, archived ones included, is 409: one is made the Options column by POST /api/v1/columns/{columnId}/convert, and the role is taken away only once the column is empty. ' +
-											'Anything else is 400 role must be "options" or null, not <what was sent>.'
+											'Left out, or sent as the column holds it, the role is kept. Since 2026-10-26 it is not changed: "options" on any other column is 409 (a delivery board has its Options column from when it was made, and only the one), ' +
+											'and null on a delivery board\'s Options column is 409 `Every delivery board keeps its Options column.` Anything else is 400 role must be "options" or null, not <what was sent>.'
 									}
 								}
 							},
@@ -3260,15 +3263,24 @@ const spec = {
 							'The title would make the column a Complete column, one called Complete or Done, or stop it being one, while the column holds any card, archived ones included. ' +
 							'A card is finished because of the column it is in, so the rename would mark its cards finished without anyone finishing them, or turn finished work back into open work. ' +
 							'The message says how many cards the column holds and, when any are, how many of them are archived. Nothing was written. An empty column is renamed freely, and so is one whose new title keeps its role, such as Complete to Done. ' +
-							'Also 409, with nothing written, for the Options column\'s rules: the role given on an ideas board, or on a board that has an Options column, or given or taken away while the column holds cards; ' +
-							'an Options column called To Do, On Hold or Complete (or a column so called given the role); a WIP limit above 0 on an Options column; and a position that would put a column at or left of the Options column, which stays the leftmost. ' +
+							'Also 409, with nothing written, for the Options column\'s rules (since 2026-10-26), asked before the rule above: a delivery board\'s Options column renamed to anything but Options (`The Options column is always called Options.`) or given role null (`Every delivery board keeps its Options column.`). ' +
+							'And after it: another column given role "options" (`This board already has its Options column.`; on a board that has none yet (made before this release, or restored from a backup), until the next start, `A delivery board\'s Options column is made with the board; it comes back at the next start.`; or on an ideas board, every column of which is upstream), another column of a delivery board renamed Options, in any case ' +
+							'(`Only the board\'s Options column is called Options. Choose another name.`; one already so called keeps its title), a WIP limit above 0 on the Options column, and a position that would put a column at or left of the Options column, which stays the leftmost. ' +
 							'And a column of an ideas board renamed so that its title makes it To Do, On Hold or Complete: `An ideas board has no To Do column: "To Do" would make one. Choose another name.`',
 						content: {
 							'application/json': {
 								schema: { $ref: '#/components/schemas/Error' },
-								example: {
-									message:
-										'This column holds 3 cards, 1 of them archived. They count as finished because the column is called Complete or Done, and renaming it to "Shipped" would turn them back into open work. Keep it called Complete or Done.'
+								examples: {
+									completeRenamed: {
+										summary: 'A Complete column holding cards renamed',
+										value: {
+											message:
+												'This column holds 3 cards, 1 of them archived. They count as finished because the column is called Complete or Done, and renaming it to "Shipped" would turn them back into open work. Keep it called Complete or Done.'
+										}
+									},
+									optionsRenamed: { summary: 'The Options column renamed to anything but Options', value: { message: 'The Options column is always called Options.' } },
+									optionsGivenAway: { summary: 'The Options column given role null', value: { message: 'Every delivery board keeps its Options column.' } },
+									titledOptions: { summary: 'Another column renamed Options', value: { message: "Only the board's Options column is called Options. Choose another name." } }
 								}
 							}
 						}
@@ -3317,70 +3329,24 @@ const spec = {
 					},
 					'409': {
 						description:
-							'The column is the board\'s Options column and holds cards that are not archived: options are moved out, or archived to discard them, not deleted with their column. ' +
-							'The same for a column of an ideas board holding ideas: `This column of an ideas board still holds 2 ideas: move them out, or archive them to discard them, first.` Nothing was deleted.',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'This Options column still holds 2 options: move them out, or archive them to discard them, first.' } } }
-					},
-					'429': { $ref: '#/components/responses/RateLimited' },
-					'500': { $ref: '#/components/responses/InternalError' }
-				}
-			}
-		},
-
-		'/api/v1/columns/{columnId}/convert': {
-			post: {
-				tags: ['Columns'],
-				summary: 'Make a column the Options column, cards and all',
-				description:
-					'Makes the column the board\'s Options column with the cards it holds: every card in it, archived ones included, becomes an option (its committedAt and committedBy are cleared), ' +
-					'the column moves left of every other column and its WIP limit goes to 0. One `api:column_converted_to_options` entry is written ("N cards became options"); nothing is written or sent for each card, and no webhook. ' +
-					'Only the board\'s owner or an administrator may. `cards` is how many cards, live and archived, the column was seen to hold: a column that holds another number now is 409, so a card moved in since is not made an option unseen. ' +
-					'The way back, taking the role away, is PUT /api/v1/columns/{columnId} with role null, once the column is empty.',
-				operationId: 'convertColumn',
-				parameters: [{ $ref: '#/components/parameters/columnId' }],
-				requestBody: {
-					required: true,
-					content: {
-						'application/json': {
-							schema: {
-								type: 'object',
-								required: ['role', 'cards'],
-								properties: {
-									role: { type: 'string', enum: ['options'], description: 'What the column becomes. Anything else is 400 role must be "options", not <what was sent>.' },
-									cards: { type: 'integer', minimum: 0, description: 'How many cards, live and archived, the column holds, as the caller last saw it.' }
-								}
-							},
-							example: { role: 'options', cards: 4 }
-						}
-					}
-				},
-				responses: {
-					'200': {
-						description: 'The column, now the board\'s Options column',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Column' } } }
-					},
-					'400': { $ref: '#/components/responses/BadRequest' },
-					'401': { $ref: '#/components/responses/Unauthorized' },
-					'403': {
-						description: 'The caller cannot open the board, or can and is neither its owner nor an administrator',
+							'The column is a delivery board\'s Options column, which every delivery board keeps, empty or not (since 2026-10-26): it is folded away on the board, not deleted. ' +
+							'Or a column of an ideas board holding ideas: `This column of an ideas board still holds 2 ideas: move them out, or archive them to discard them, first.` Nothing was deleted.',
 						content: {
 							'application/json': {
 								schema: { $ref: '#/components/schemas/Error' },
-								example: { message: "Only the board's owner or an administrator can convert a column to the Options column" }
+								examples: {
+									optionsColumn: {
+										summary: 'The Options column',
+										value: { message: 'Every delivery board keeps its Options column. Fold it away with the arrow on its strip instead.' }
+									},
+									ideas: {
+										summary: 'A column of an ideas board holding ideas',
+										value: { message: 'This column of an ideas board still holds 2 ideas: move them out, or archive them to discard them, first.' }
+									}
+								}
 							}
 						}
 					},
-					'404': {
-						description: 'There is no such column',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Column not found' } } }
-					},
-					'409': {
-						description:
-							'Nothing was changed. In this order: the board is an ideas board; the board already has an Options column, this one or another; the column\'s title makes it a To Do, On Hold or Complete column; ' +
-							'a card in it has a sub-board, and a card with sub-boards is never an option; the column holds another number of cards than `cards`.',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'The column now holds 5 cards; look again.' } } }
-					},
-					'413': { $ref: '#/components/responses/PayloadTooLarge' },
 					'429': { $ref: '#/components/responses/RateLimited' },
 					'500': { $ref: '#/components/responses/InternalError' }
 				}

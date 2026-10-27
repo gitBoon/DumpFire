@@ -125,8 +125,10 @@ const TEST_FILES = [
 	'mentions.test.ts',
 	'migrations.test.ts',
 	'openapi-document.test.ts',
-	// Milestone 22, slice S1b: the Options column's rules, its conversion and its strip.
+	// Milestone 22, slice S1b: the Options column's rules and its strip.
 	'options-column.test.ts',
+	// Card 2527: every delivery board has its Options column, made with it and by the start-up step.
+	'options-everywhere.test.ts',
 	'page-card-window.test.ts',
 	'page-failures.test.ts',
 	'password-checks.test.ts',

@@ -21,6 +21,8 @@
  *   - no more rows break a foreign key than did before
  *   - `PRAGMA integrity_check` says ok, and foreign keys are on afterwards
  *   - a second run applies nothing, rebuilds nothing and changes no row count
+ *   - a second run's Options step (card 2527) adds, moves, renames and demotes
+ *     no Options column
  *   - the timestamp conversion (card 2095) does not fail, and a second run
  *     converts nothing
  *
@@ -119,6 +121,14 @@ it('takes the migration runner over the copy', () => {
 					found.problems.push(
 						`a second run converted timestamps again: ${reconverted.map(([column, n]) => `${column} ${n}`).join(', ')}`
 					);
+				}
+				// The first run gave every delivery board its one Options column,
+				// titled and placed (card 2527), so the second finds none to change.
+				const options = (['optionsAdded', 'optionsMoved', 'optionsRenamed', 'optionsDemoted'] as const).filter(
+					(count) => found.second!.backfilled[count] > 0
+				);
+				if (options.length > 0) {
+					found.problems.push(`a second run's Options step found work: ${options.map((count) => `${count} ${found.second!.backfilled[count]}`).join(', ')}`);
 				}
 				const again = stateOf(database);
 				for (const [table, has] of Object.entries(found.after.rows)) {

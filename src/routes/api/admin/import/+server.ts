@@ -376,6 +376,17 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 				...(result.backfilled.committedFilled > 0
 					? [`committed_at and committed_by on ${result.backfilled.committedFilled} card(s) not upstream`]
 					: []),
+				// Every delivery board's Options column (card 2527), only when there
+				// were any: a backup made before it holds boards with none.
+				...(result.backfilled.optionsAdded > 0
+					? [`an Options column at the far left of ${result.backfilled.optionsAdded} delivery board(s)`]
+					: []),
+				...(result.backfilled.optionsRenamed > 0
+					? [`the title Options on ${result.backfilled.optionsRenamed} Options column(s)`]
+					: []),
+				...(result.backfilled.optionsMoved > 0
+					? [`the far-left place on its board for ${result.backfilled.optionsMoved} Options column(s)`]
+					: []),
 				...result.defaulted.map(
 					(d) => `the default (${d.value}) in place of NULL in ${d.table}.${d.column} on ${d.rows} row(s)`
 				)
@@ -389,6 +400,10 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 					: []),
 				...(result.backfilled.discardedCleared > 0
 					? [`the discard mark of ${result.backfilled.discardedCleared} card(s) that are not archived`]
+					: []),
+				// A board's second Options column (card 2527), only when there were any.
+				...(result.backfilled.optionsDemoted > 0
+					? [`the Options role of ${result.backfilled.optionsDemoted} second Options column(s), each board keeping its leftmost`]
 					: [])
 			].join(', ');
 			// A working copy says what it switched off and removed, at the end

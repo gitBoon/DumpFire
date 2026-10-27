@@ -1062,7 +1062,11 @@ function restoreInOneSnapshot(live: Database.Database, backup: Database.Database
 		unfiled: [],
 		committedFilled: 0,
 		upstreamCleared: 0,
-		discardedCleared: 0
+		discardedCleared: 0,
+		optionsAdded: 0,
+		optionsMoved: 0,
+		optionsRenamed: 0,
+		optionsDemoted: 0
 	};
 	try {
 		backfilled = runBackfills(live);

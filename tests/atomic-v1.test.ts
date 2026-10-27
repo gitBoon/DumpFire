@@ -415,7 +415,7 @@ describe('PUT /api/v1/cards/:cardId', () => {
 describe('POST /api/v1/boards', () => {
 	const post = (user: SessionUser | null, body: unknown) => () => api('POST', '/api/v1/boards', { user, body });
 
-	it('makes the board, its four columns, its owner and its activity entry, or none of them', async () => {
+	it('makes the board, its five columns (its Options column among them, card 2527), its owner and its activity entry, or none of them', async () => {
 		const run = await eachWriteInTurn({
 			build: scene,
 			request: ({ owner, first }) => post(owner, { name: '  Roadmap ', emoji: '🗺️', parentCardId: first.id })(),
@@ -430,10 +430,11 @@ describe('POST /api/v1/boards', () => {
 				const id = res.body.id;
 
 				const titles = [
-					{ boardId: id, title: 'To Do', position: 0 },
-					{ boardId: id, title: 'On Hold', position: 1 },
-					{ boardId: id, title: 'In Progress', position: 2 },
-					{ boardId: id, title: 'Complete', position: 3 }
+					{ boardId: id, title: 'Options', position: 0 },
+					{ boardId: id, title: 'To Do', position: 1 },
+					{ boardId: id, title: 'On Hold', position: 2 },
+					{ boardId: id, title: 'In Progress', position: 3 },
+					{ boardId: id, title: 'Complete', position: 4 }
 				];
 				// The answer carries the columns, read in the transaction that made them.
 				expect(

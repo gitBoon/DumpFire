@@ -48,21 +48,23 @@ import { boardConversionSuffix } from './upstream';
 import { COLUMN_ORDER } from './card-order';
 import { stamp } from '$lib/timestamps';
 import { inWrite, type ServiceOptions } from './write-as';
-import { BOARD_KINDS, columnRole, isOptionsColumn, isUpstreamColumn, type BoardKind } from '$lib/column-role';
+import { BOARD_KINDS, OPTIONS_COLOUR, OPTIONS_TITLE, columnRole, isOptionsColumn, isUpstreamColumn, type BoardKind, type StoredColumnRole } from '$lib/column-role';
 
 /** The functions here that only read. Every other export is a write, and starts with `inWrite()`. */
 export const READS: readonly string[] = ['listBoardsFor'];
 
 /**
  * The columns a new board is made with, by its kind, left to right
- * (milestone 22, decisions M22-5 and M22-12): a delivery board's four, as
- * every board has had, and no Options column, which is added when wanted; an
- * ideas board's three, all upstream, with no Complete column. A board switched
- * from one kind to the other while empty is given the other kind's (ruling j,
- * decision M22-18).
+ * (milestone 22, decisions M22-5 and M22-12): a delivery board's Options
+ * column, which every delivery board has (card 2527, rulings O1 and O2), and
+ * then the four every board has had; an ideas board's three, all upstream,
+ * with no Complete column. A board switched from one kind to the other while
+ * empty is given the other kind's (ruling j, decision M22-18). Boards made
+ * before card 2527 are given their Options column by `runBackfills`.
  */
-const DEFAULT_COLUMNS: Record<BoardKind, readonly { title: string; color: string }[]> = {
+const DEFAULT_COLUMNS: Record<BoardKind, readonly { title: string; color: string; role?: StoredColumnRole }[]> = {
 	delivery: [
+		{ title: OPTIONS_TITLE, color: OPTIONS_COLOUR, role: 'options' },
 		{ title: 'To Do', color: '#6366f1' },
 		{ title: 'On Hold', color: '#ef4444' },
 		{ title: 'In Progress', color: '#f59e0b' },
@@ -78,7 +80,7 @@ const DEFAULT_COLUMNS: Record<BoardKind, readonly { title: string; color: string
 /** Make board `boardId`'s default columns for `kind`, at 0, 1, 2… */
 function makeDefaultColumns(boardId: number, kind: BoardKind): void {
 	db.insert(columns)
-		.values(DEFAULT_COLUMNS[kind].map(({ title, color }, position) => ({ boardId, title, position, color })))
+		.values(DEFAULT_COLUMNS[kind].map(({ title, color, role }, position) => ({ boardId, title, position, color, role: role ?? null })))
 		.run();
 }
 
@@ -175,7 +177,7 @@ export type CreateBoardOptions = {
 export const CREATE_BOARD_PAGE_OPTIONS = { source: 'ui', allowCategory: true } as const satisfies ServiceOptions & CreateBoardOptions;
 
 /**
- * Make a board, with its four columns and its owner (`POST /api/boards`,
+ * Make a board, with its kind's columns and its owner (`POST /api/boards`,
  * `POST /api/v1/boards`).
  *
  * The fields (card 2117, R1): `name` text, trimmed, of 1 to 200 characters;
@@ -499,8 +501,10 @@ export function updateBoard(caller: SessionUser | null, at: { boardId: number },
  *
  * One transaction then clears `committed_at` and `committed_by` on every card
  * on the board, archived ones included, makes it an ideas board, deletes its
- * To Do, On Hold and Complete columns, empty by the rule above, and takes the
- * Options role off its Options column, every column now being upstream. A
+ * To Do, On Hold and Complete columns, empty by the rule above, and its
+ * Options column with them when it holds no card, live or archived (card 2527,
+ * ruling O7); one holding cards keeps them, with the Options role taken off,
+ * every column now being upstream. A
  * board with no card at all is given the ideas board's default columns in
  * place of its own instead, as an empty board switched with its kind is
  * (decision M22-18). It writes one entry, `board_converted_to_ideas` ("N
@@ -575,9 +579,17 @@ export function convertBoardFor(caller: SessionUser | null, at: { boardId: numbe
 		changed = `; ${replacedColumns(boardColumns.map((c) => c.title), 'ideas')}`;
 	} else {
 		db.update(cards).set({ committedAt: null, committedBy: null }).where(inArray(cards.columnId, boardColumns.map((c) => c.id))).run();
-		if (titled.length > 0) db.delete(columns).where(inArray(columns.id, titled.map((c) => c.id))).run();
+		// An empty Options column goes with the titled ones, named among them in
+		// the board's order (card 2527, ruling O7): an ideas board has none.
+		const emptyOptions = new Set(
+			boardColumns
+				.filter((c) => isOptionsColumn(c) && (db.select({ total: count() }).from(cards).where(eq(cards.columnId, c.id)).get()?.total ?? 0) === 0)
+				.map((c) => c.id)
+		);
+		const removed = boardColumns.filter((c) => titled.includes(c) || emptyOptions.has(c.id));
+		if (removed.length > 0) db.delete(columns).where(inArray(columns.id, removed.map((c) => c.id))).run();
 		db.update(columns).set({ role: null }).where(and(eq(columns.boardId, board.id), eq(columns.role, 'options'))).run();
-		changed = titled.length === 0 ? '' : `; ${columnsNamed(titled.map((c) => c.title))} removed`;
+		changed = removed.length === 0 ? '' : `; ${columnsNamed(removed.map((c) => c.title))} removed`;
 	}
 	const row = db.update(boards).set({ kind: 'ideas', updatedAt: stamp() }).where(eq(boards.id, board.id)).returning().get();
 	// The columns removed or replaced are named before the board's id, which

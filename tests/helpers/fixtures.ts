@@ -181,6 +181,14 @@ export function makeBoard(
 		isPublic?: boolean;
 		parentCardId?: number;
 		columns?: string[];
+		/**
+		 * Give the board the Options column every delivery board has (card
+		 * 2527), as `cols['Options']`: at -1, left of the others, titled Options,
+		 * with the role. Without it the board has none, as a board put in by a
+		 * direct insert has until the next start, which a file that runs the
+		 * backfills would see given one part-way through.
+		 */
+		options?: boolean;
 	} = {}
 ): BoardFixture {
 	const board = db
@@ -195,6 +203,13 @@ export function makeBoard(
 		.get();
 
 	const cols: Record<string, Column> = {};
+	if (opts.options) {
+		cols['Options'] = db
+			.insert(columns)
+			.values({ boardId: board.id, title: 'Options', position: -1, color: '#8b5cf6', role: 'options' })
+			.returning()
+			.get();
+	}
 	(opts.columns ?? DEFAULT_COLUMNS).forEach((title, i) => {
 		cols[title] = db
 			.insert(columns)

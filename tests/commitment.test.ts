@@ -31,7 +31,7 @@ import { get } from 'svelte/store';
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
 import { runBackfills } from '$lib/server/db/migrate';
-import { activityLog, boards, cards, columns, userXp, type Card, type Column } from '$lib/server/db/schema';
+import { activityLog, boards, cards, userXp, type Card, type Column } from '$lib/server/db/schema';
 import type { SessionUser } from '$lib/server/auth';
 import { stamp } from '$lib/timestamps';
 import { toasts } from '$lib/stores/toast';
@@ -48,21 +48,20 @@ const OLD = '2026-01-05 09:00:00';
 
 let owner: SessionUser;
 let mover: SessionUser;
-/** Delivery boards A and B, each with an Options column "Ideas"; ideas board I. */
+/** Delivery boards A and B, each with its Options column (card 2527); ideas board I. */
 let A: BoardFixture;
 let B: BoardFixture;
 let I: BoardFixture;
 
-const DELIVERY = ['Ideas', 'To Do', 'In Progress', 'Complete'];
+const DELIVERY = ['To Do', 'In Progress', 'Complete'];
 
 beforeEach(() => {
 	resetDb();
 	owner = makeUser({ username: 'owner' });
 	mover = makeUser({ username: 'mover' });
-	A = makeBoard({ owner, name: 'A', columns: DELIVERY });
-	B = makeBoard({ owner, name: 'B', columns: DELIVERY });
+	A = makeBoard({ owner, name: 'A', options: true, columns: DELIVERY });
+	B = makeBoard({ owner, name: 'B', options: true, columns: DELIVERY });
 	I = makeBoard({ owner, name: 'I', columns: ['New Ideas', 'Shaping'] });
-	for (const board of [A, B]) db.update(columns).set({ role: 'options' }).where(eq(columns.id, board.cols['Ideas'].id)).run();
 	db.update(boards).set({ kind: 'ideas' }).where(eq(boards.id, I.board.id)).run();
 	for (const board of [A, B, I]) addBoardMember(board.board, mover, 'editor');
 });
@@ -126,7 +125,7 @@ const ROUTES: Route[] = [
 
 describe.each(ROUTES)('a move by $name', ({ move, prefix }) => {
 	it('out of the Options column into To Do commits the card, now and by the mover, with card_committed in place of card_moved', async () => {
-		const option = cardIn(A.cols['Ideas'], 'An option');
+		const option = cardIn(A.cols['Options'], 'An option');
 		expect(commitmentOf(option)).toEqual({ committedAt: null, committedBy: null });
 		const before = stamp();
 
@@ -139,7 +138,7 @@ describe.each(ROUTES)('a move by $name', ({ move, prefix }) => {
 		// The column it went into named by its id too, for the cycle time (the S2 review's C3), and
 		// the column it left, for its time in options (the S4a review's H3).
 		expect(entriesOf(option)).toEqual([
-			[`${prefix}card_committed`, A.board.id, `"An option": Ideas → To Do (column ${A.cols['To Do'].id}, from column ${A.cols['Ideas'].id})`]
+			[`${prefix}card_committed`, A.board.id, `"An option": Options → To Do (column ${A.cols['To Do'].id}, from column ${A.cols['Options'].id})`]
 		]);
 		nothingToRepair();
 	});
@@ -148,19 +147,19 @@ describe.each(ROUTES)('a move by $name', ({ move, prefix }) => {
 		const work = cardIn(A.cols['To Do'], 'Work');
 		expect(commitmentOf(work)).toEqual({ committedAt: OLD, committedBy: owner.id });
 
-		expect((await move(work, A.cols['Ideas'])).status).toBe(200);
+		expect((await move(work, A.cols['Options'])).status).toBe(200);
 
 		expect(commitmentOf(work)).toEqual({ committedAt: null, committedBy: null });
-		expect(entriesOf(work)).toEqual([[`${prefix}card_returned_to_options`, A.board.id, '"Work": To Do → Ideas']]);
+		expect(entriesOf(work)).toEqual([[`${prefix}card_returned_to_options`, A.board.id, '"Work": To Do → Options']]);
 		nothingToRepair();
 	});
 
 	it('between committed columns, and within the Options column, leaves the commitment as it was', async () => {
 		const work = cardIn(A.cols['To Do'], 'Work');
-		const option = cardIn(A.cols['Ideas'], 'An option', { position: 0 });
+		const option = cardIn(A.cols['Options'], 'An option', { position: 0 });
 
 		expect((await move(work, A.cols['In Progress'])).status).toBe(200);
-		expect((await move(option, A.cols['Ideas'], 3)).status).toBe(200);
+		expect((await move(option, A.cols['Options'], 3)).status).toBe(200);
 
 		expect(commitmentOf(work)).toEqual({ committedAt: OLD, committedBy: owner.id });
 		expect(entriesOf(work)).toEqual([[`${prefix}card_moved`, A.board.id, '"Work": To Do → In Progress']]);
@@ -170,7 +169,7 @@ describe.each(ROUTES)('a move by $name', ({ move, prefix }) => {
 	});
 
 	it('straight from the Options column to Complete writes card_committed and then card_completed, and awards the XP', async () => {
-		const option = cardIn(A.cols['Ideas'], 'Done at once', { priority: 'high' });
+		const option = cardIn(A.cols['Options'], 'Done at once', { priority: 'high' });
 
 		expect((await move(option, A.cols['Complete'])).status).toBe(200);
 
@@ -178,8 +177,8 @@ describe.each(ROUTES)('a move by $name', ({ move, prefix }) => {
 		expect(row.committedBy).toBe(mover.id);
 		expect(row.committedAt).toBe(row.completedAt);
 		expect(entriesOf(option)).toEqual([
-			[`${prefix}card_committed`, A.board.id, `"Done at once": Ideas → Complete (column ${A.cols['Complete'].id}, from column ${A.cols['Ideas'].id})`],
-			[`${prefix}card_completed`, A.board.id, '"Done at once": Ideas → Complete']
+			[`${prefix}card_committed`, A.board.id, `"Done at once": Options → Complete (column ${A.cols['Complete'].id}, from column ${A.cols['Options'].id})`],
+			[`${prefix}card_completed`, A.board.id, '"Done at once": Options → Complete']
 		]);
 		expect(db.select().from(userXp).where(eq(userXp.name, 'mover')).get()?.xp).toBe(150);
 		nothingToRepair();
@@ -188,19 +187,19 @@ describe.each(ROUTES)('a move by $name', ({ move, prefix }) => {
 	it('from Complete back to the Options column writes card_reopened and then card_returned_to_options, and clears both dates', async () => {
 		const done = cardIn(A.cols['Complete'], 'Not needed after all', { completedAt: OLD, firstCompletedAt: OLD });
 
-		expect((await move(done, A.cols['Ideas'])).status).toBe(200);
+		expect((await move(done, A.cols['Options'])).status).toBe(200);
 
 		const row = db.select().from(cards).where(eq(cards.id, done.id)).get()!;
 		expect([row.completedAt, row.committedAt, row.committedBy]).toEqual([null, null, null]);
 		expect(entriesOf(done)).toEqual([
-			[`${prefix}card_reopened`, A.board.id, '"Not needed after all": Complete → Ideas'],
-			[`${prefix}card_returned_to_options`, A.board.id, '"Not needed after all": Complete → Ideas']
+			[`${prefix}card_reopened`, A.board.id, '"Not needed after all": Complete → Options'],
+			[`${prefix}card_returned_to_options`, A.board.id, '"Not needed after all": Complete → Options']
 		]);
 		nothingToRepair();
 	});
 
 	it('from the Options column to Complete with an open subtask is refused, as any completion is, and writes nothing', async () => {
-		const option = cardIn(A.cols['Ideas'], 'Half thought out');
+		const option = cardIn(A.cols['Options'], 'Half thought out');
 		makeSubtask(option, { title: 'Think it through' });
 		const before = snapshotDb();
 
@@ -212,12 +211,12 @@ describe.each(ROUTES)('a move by $name', ({ move, prefix }) => {
 	});
 
 	it('refuses an archived card across the commitment point, either way, and writes nothing; within one side it moves (ruling n)', async () => {
-		const option = cardIn(A.cols['Ideas'], 'Archived option', { archivedAt: OLD });
+		const option = cardIn(A.cols['Options'], 'Archived option', { archivedAt: OLD });
 		const work = cardIn(A.cols['To Do'], 'Archived work', { archivedAt: OLD });
 		const before = snapshotDb();
 
 		const out = await move(option, A.cols['To Do']);
-		const back = await move(work, A.cols['Ideas']);
+		const back = await move(work, A.cols['Options']);
 
 		expect([out.status, out.body.message]).toEqual([409, 'Card "Archived option" is archived: restore it before moving it out of or back into Options']);
 		expect([back.status, back.body.message]).toEqual([409, 'Card "Archived work" is archived: restore it before moving it out of or back into Options']);
@@ -233,7 +232,7 @@ describe.each(ROUTES)('a move by $name', ({ move, prefix }) => {
 		makeSubBoard(parent, { owner });
 		const before = snapshotDb();
 
-		const res = await move(parent, A.cols['Ideas']);
+		const res = await move(parent, A.cols['Options']);
 
 		expect([res.status, res.body.message]).toEqual([
 			409,
@@ -242,7 +241,7 @@ describe.each(ROUTES)('a move by $name', ({ move, prefix }) => {
 		expectUnchanged(before);
 
 		// An option given a sub-board before the rule is not held there.
-		const option = cardIn(A.cols['Ideas'], 'An option with a sub-board');
+		const option = cardIn(A.cols['Options'], 'An option with a sub-board');
 		makeSubBoard(option, { owner });
 		expect((await move(option, A.cols['To Do'])).status).toBe(200);
 		expect(commitmentOf(option).committedBy).toBe(mover.id);
@@ -269,7 +268,7 @@ describe.each(ROUTES.filter((route) => route.acrossBoards))('a move to another b
 	it("from an ideas board into a delivery board's Options column, it stays an option", async () => {
 		const idea = cardIn(I.cols['Shaping'], 'An idea');
 
-		expect((await move(idea, B.cols['Ideas'])).status).toBe(200);
+		expect((await move(idea, B.cols['Options'])).status).toBe(200);
 
 		expect(commitmentOf(idea)).toEqual({ committedAt: null, committedBy: null });
 		expect(entriesOf(idea).map(([action]) => action)).toEqual([`${prefix}card_sent`, `${prefix}card_moved_in`]);
@@ -321,7 +320,7 @@ describe.each(ROUTES.filter((route) => route.acrossBoards))('a move to another b
 		const idea = cardIn(I.cols['Shaping'], 'An idea with a sub-board');
 		makeSubBoard(idea, { owner });
 
-		const res = await move(idea, B.cols['Ideas']);
+		const res = await move(idea, B.cols['Options']);
 
 		expect(res.status).toBe(409);
 		expect(res.body.message).toBe(
@@ -336,15 +335,15 @@ describe.each(ROUTES.filter((route) => route.acrossBoards))('a move to another b
 	it("from another board's Complete into the Options column: the pair, then card_reopened and card_returned_to_options on the board it joined (the S2 review's C4)", async () => {
 		const done = cardIn(A.cols['Complete'], 'Not needed', { completedAt: OLD, firstCompletedAt: OLD });
 
-		expect((await move(done, B.cols['Ideas'])).status).toBe(200);
+		expect((await move(done, B.cols['Options'])).status).toBe(200);
 
 		const row = db.select().from(cards).where(eq(cards.id, done.id)).get()!;
-		expect([row.columnId, row.completedAt, row.committedAt, row.committedBy]).toEqual([B.cols['Ideas'].id, null, null, null]);
+		expect([row.columnId, row.completedAt, row.committedAt, row.committedBy]).toEqual([B.cols['Options'].id, null, null, null]);
 		expect(entriesOf(done)).toEqual([
-			[`${prefix}card_moved_away`, A.board.id, '"Not needed" moved to another board (Complete → Ideas)'],
-			[`${prefix}card_moved_in`, B.board.id, '"Not needed" moved from another board (Complete → Ideas)'],
-			[`${prefix}card_reopened`, B.board.id, '"Not needed": Complete → Ideas'],
-			[`${prefix}card_returned_to_options`, B.board.id, '"Not needed": Complete → Ideas']
+			[`${prefix}card_moved_away`, A.board.id, '"Not needed" moved to another board (Complete → Options)'],
+			[`${prefix}card_moved_in`, B.board.id, '"Not needed" moved from another board (Complete → Options)'],
+			[`${prefix}card_reopened`, B.board.id, '"Not needed": Complete → Options'],
+			[`${prefix}card_returned_to_options`, B.board.id, '"Not needed": Complete → Options']
 		]);
 		nothingToRepair();
 	});
@@ -364,7 +363,7 @@ describe('the S2 review: moves within upstream, and a drop that a refusal rolls 
 
 	/** A bulk drop of one card that commits and one the server refuses: nothing moves, nothing is sent. */
 	async function refusedWhole(refused: Card) {
-		const option = cardIn(A.cols['Ideas'], 'An option');
+		const option = cardIn(A.cols['Options'], 'An option');
 		makeWebhook(A.board);
 		const before = snapshotDb();
 		const sent = effects();
@@ -374,7 +373,7 @@ describe('the S2 review: moves within upstream, and a drop that a refusal rolls 
 				body: {
 					updates: [
 						{ id: option.id, columnId: A.cols['To Do'].id, position: 0 },
-						{ id: refused.id, columnId: A.cols[refused.columnId === A.cols['Ideas'].id ? 'To Do' : 'Ideas'].id, position: 0 }
+						{ id: refused.id, columnId: A.cols[refused.columnId === A.cols['Options'].id ? 'To Do' : 'Options'].id, position: 0 }
 					]
 				}
 			});
@@ -388,7 +387,7 @@ describe('the S2 review: moves within upstream, and a drop that a refusal rolls 
 	}
 
 	it('a bulk move of an option and an archived card, out of Options, is refused whole: nothing committed, no webhook (C4, ruling n)', async () => {
-		const archived = cardIn(A.cols['Ideas'], 'Archived option', { archivedAt: OLD });
+		const archived = cardIn(A.cols['Options'], 'Archived option', { archivedAt: OLD });
 
 		expect(await refusedWhole(archived)).toEqual([409, 'Card "Archived option" is archived: restore it before moving it out of or back into Options']);
 	});
@@ -411,7 +410,7 @@ describe('what the drag is answered, and the toast it shows (dnd-handlers.ts)', 
 	});
 
 	it('answers the ids of the cards a drop committed and returned, and empty lists for any other drop', async () => {
-		const option = cardIn(A.cols['Ideas'], 'An option');
+		const option = cardIn(A.cols['Options'], 'An option');
 		const work = cardIn(A.cols['To Do'], 'Work');
 		const other = cardIn(A.cols['In Progress'], 'Other');
 
@@ -420,7 +419,7 @@ describe('what the drag is answered, and the toast it shows (dnd-handlers.ts)', 
 			body: {
 				updates: [
 					{ id: option.id, columnId: A.cols['To Do'].id, position: 0 },
-					{ id: work.id, columnId: A.cols['Ideas'].id, position: 0 },
+					{ id: work.id, columnId: A.cols['Options'].id, position: 0 },
 					{ id: other.id, columnId: A.cols['Complete'].id, position: 0 }
 				]
 			}
@@ -445,14 +444,14 @@ describe('what the drag is answered, and the toast it shows (dnd-handlers.ts)', 
 	});
 
 	it('shows the toast for a drop out of the Options column the server took, as the server answered it', async () => {
-		const option = cardIn(A.cols['Ideas'], 'An option');
+		const option = cardIn(A.cols['Options'], 'An option');
 		vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
 			const res = await api(init.method as 'PUT', url, { user: mover, body: JSON.parse(String(init.body)) });
 			return new Response(JSON.stringify(res.body), { status: res.status, headers: { 'content-type': 'application/json' } });
 		});
 		// As the drag leaves the page: the card gone from the column it left, still carrying that column.
 		const page = [
-			{ ...A.cols['Ideas'], cards: [] },
+			{ ...A.cols['Options'], cards: [] },
 			{ ...A.cols['To Do'], cards: [] }
 		] as unknown as ColumnType[];
 
@@ -494,12 +493,12 @@ describe('every other way of moving a card says what crossed the commitment poin
 	const said = () => get(toasts).map((t) => `${t.type}: ${t.message}`);
 
 	it('the bulk move: by title through the board state, which holds the cards; counted with none; nothing for a move between committed columns', async () => {
-		const one = cardIn(A.cols['Ideas'], 'One');
-		const two = cardIn(A.cols['Ideas'], 'Two');
+		const one = cardIn(A.cols['Options'], 'One');
+		const two = cardIn(A.cols['Options'], 'Two');
 		const work = cardIn(A.cols['To Do'], 'Work');
 		throughTheRoutes();
 		// The board state's write, as far as the bulk move needs it: the change made on the columns it shows, then the answer read.
-		const page = [{ ...A.cols['Ideas'], cards: [one, two] }, { ...A.cols['To Do'], cards: [work] }, { ...A.cols['In Progress'], cards: [] }] as unknown as ColumnType[];
+		const page = [{ ...A.cols['Options'], cards: [one, two] }, { ...A.cols['To Do'], cards: [work] }, { ...A.cols['In Progress'], cards: [] }] as unknown as ColumnType[];
 		const writer = {
 			async write(change: ((columns: ColumnType[]) => unknown) | null, send: () => Promise<Response>) {
 				change?.(page);
@@ -513,8 +512,8 @@ describe('every other way of moving a card says what crossed the commitment poin
 		expect(said()).toEqual(['success: Committed "One"']);
 
 		toasts.dismiss(get(toasts)[0].id);
-		expect(await bulkMove(new Set([two.id, work.id]), A.cols['Ideas'].id, 0, A.board.id, 'mover', '🦊')).toBeNull();
-		// Two came from Ideas and stays there; Work went back. With no board state there are no titles.
+		expect(await bulkMove(new Set([two.id, work.id]), A.cols['Options'].id, 0, A.board.id, 'mover', '🦊')).toBeNull();
+		// Two came from Options and stays there; Work went back. With no board state there are no titles.
 		expect(said()).toEqual(['success: Returned 1 card to Options']);
 
 		toasts.dismiss(get(toasts)[0].id);
@@ -524,10 +523,9 @@ describe('every other way of moving a card says what crossed the commitment poin
 	});
 
 	it('the On Hold confirmation: an option put straight on hold is committed, and said to be', async () => {
-		const held = makeBoard({ owner, name: 'Held', columns: ['Ideas', 'On Hold'] });
-		db.update(columns).set({ role: 'options' }).where(eq(columns.id, held.cols['Ideas'].id)).run();
+		const held = makeBoard({ owner, name: 'Held', options: true, columns: ['On Hold'] });
 		addBoardMember(held.board, mover, 'editor');
-		const option = cardIn(held.cols['Ideas'], 'Waiting idea');
+		const option = cardIn(held.cols['Options'], 'Waiting idea');
 		throughTheRoutes();
 
 		const result = await confirmOnHold(
@@ -543,12 +541,12 @@ describe('every other way of moving a card says what crossed the commitment poin
 	});
 
 	it('All Tasks’ move (PUT /api/cards/:id): the answer names a card committed or returned, and is as it was for any other move', async () => {
-		const option = cardIn(A.cols['Ideas'], 'An option');
+		const option = cardIn(A.cols['Options'], 'An option');
 		const work = cardIn(A.cols['To Do'], 'Work');
 		const other = cardIn(A.cols['To Do'], 'Other');
 
 		const committed = await api('PUT', `/api/cards/${option.id}`, { user: mover, body: { columnId: A.cols['To Do'].id } });
-		const returned = await api('PUT', `/api/cards/${work.id}`, { user: mover, body: { columnId: A.cols['Ideas'].id } });
+		const returned = await api('PUT', `/api/cards/${work.id}`, { user: mover, body: { columnId: A.cols['Options'].id } });
 		const plain = await api('PUT', `/api/cards/${other.id}`, { user: mover, body: { columnId: A.cols['In Progress'].id } });
 
 		expect([committed.body.committed, committed.body.returnedToOptions]).toEqual([[option.id], undefined]);

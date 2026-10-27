@@ -17,7 +17,6 @@ import {
 	cardLabels,
 	cards,
 	categories,
-	columns,
 	settings,
 	subtasks,
 	taskRequests,
@@ -58,7 +57,9 @@ let A: BoardFixture;
 beforeEach(() => {
 	resetDb();
 	owner = makeUser({ username: 'owner' });
-	A = makeBoard({ owner, name: 'A' });
+	// With its Options column, as every delivery board has (card 2527), so the
+	// start-up repair run below has none to add.
+	A = makeBoard({ owner, name: 'A', options: true });
 });
 
 const cardRow = (id: number) => db.select().from(cards).where(eq(cards.id, id)).get()!;
@@ -467,8 +468,7 @@ describe.each(creatingRoutes)('creating a card by $name', ({ source, ready, then
 	});
 
 	it('commits a card created outside an upstream column, at its creation and by its creator, so the start-up repair finds nothing (milestone 22)', async () => {
-		const options = makeBoard({ owner, name: 'With Options', columns: ['Ideas', 'To Do'] });
-		db.update(columns).set({ role: 'options' }).where(eq(columns.id, options.cols['Ideas'].id)).run();
+		const options = makeBoard({ owner, name: 'With Options', options: true, columns: ['To Do'] });
 		const ideas = makeBoard({ owner, name: 'Ideas board', columns: ['New Ideas'] });
 		db.update(boards).set({ kind: 'ideas' }).where(eq(boards.id, ideas.board.id)).run();
 		const other = makeBoard({ owner, name: 'Another kind', columns: ['Doing'] });
@@ -478,7 +478,7 @@ describe.each(creatingRoutes)('creating a card by $name', ({ source, ready, then
 		const toDo = await into(A.cols['To Do'], 'Committed work');
 		const done = await into(A.cols['Complete'], 'Done already');
 		const elsewhere = await into(other.cols['Doing'], 'On a board of another kind');
-		const option = await into(options.cols['Ideas'], 'An option');
+		const option = await into(options.cols['Options'], 'An option');
 		const idea = await into(ideas.cols['New Ideas'], 'An idea');
 
 		for (const row of [toDo, done, elsewhere]) {
@@ -704,13 +704,25 @@ describe('the parent card the dashboard makes for a sub-board', () => {
 		expect(firstOpenColumn([])).toBeUndefined();
 	});
 
-	it('is where the dashboard puts it, and the first column only when every column is a Complete one', () => {
+	it('is where the dashboard puts it, and nowhere when no column is open: never the first column, which is the Options column (card 2527, K1)', () => {
 		// The dashboard's context menu makes it (card 2281, slice C2: moved from src/routes/+page.svelte).
 		const dashboard = readFileSync(join(process.cwd(), 'src/lib/components/dashboard/BoardContextMenu.svelte'), 'utf8');
 		const create = dashboard.slice(dashboard.indexOf('async function createSubBoardInline()'));
 
-		expect(create).toContain('const firstCol = firstOpenColumn(subBoardColumns) ?? subBoardColumns[0];');
+		expect(create).toContain('const firstCol = firstOpenColumn(subBoardColumns);');
+		expect(create).not.toContain('subBoardColumns[0]');
+		// With none, it says so and makes no card.
+		const refused = create.slice(create.indexOf('if (!firstCol) {'));
+		expect(refused.slice(0, refused.indexOf('}'))).toContain("subBoardError = 'This board has no columns to hold a parent card';");
+		expect(create.indexOf('if (!firstCol) {')).toBeLessThan(create.indexOf("fetch('/api/cards'"));
 		expect(create).toContain('body: JSON.stringify({ columnId: firstCol.id, boardId: boardCtx.boardId, title: name })');
+		// A board whose only other column is Complete has no open column.
+		expect(
+			firstOpenColumn([
+				{ id: 1, title: 'Options', position: 0, role: 'options' },
+				{ id: 2, title: 'Complete', position: 1, role: null }
+			])
+		).toBeUndefined();
 	});
 });
 

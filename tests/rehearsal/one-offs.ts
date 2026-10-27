@@ -26,6 +26,11 @@
  * restored older backup is repaired as the deploy was. Such a file is still
  * declared here, for the run that applies it; the backfill's repeats are the
  * runner's to report, not the rehearsal's.
+ *
+ * One backfill is no file's: every delivery board's Options column (card
+ * 2527), which the first start of its image gives to every board made before.
+ * It takes no row, and adds one to `columns` for each such board, which the
+ * rehearsal notes as that (`compare`), not as a migration's doing.
  */
 export type OneOff = {
 	/** The migration file, as it is named in drizzle/. */

@@ -422,6 +422,26 @@ function after0060(table: string, rows: string[], uncommitted: readonly number[]
 }
 
 /**
+ * `rows` of `table`, as `contentsOf` gives them, less the Options columns a
+ * start gives every delivery board that has none (card 2527). A database from
+ * before 0060 has no Options column, so each of its boards is given one by the
+ * backfill after the run; `optionsGiven` names them.
+ */
+function lessOptionsGiven(table: string, rows: string[]): string[] {
+	if (table !== 'columns') return rows;
+	return rows.filter((json) => (JSON.parse(json) as { role: unknown }).role !== 'options');
+}
+
+/** The Options columns among `rows` of `columns`, as [board, title, position, colour], by board. */
+function optionsGiven(rows: string[]): [number, string, number, string][] {
+	return rows
+		.map((json) => JSON.parse(json) as { board_id: number; title: string; position: number; color: string; role: unknown })
+		.filter((row) => row.role === 'options')
+		.map((row): [number, string, number, string] => [row.board_id, row.title, row.position, row.color])
+		.sort((a, b) => a[0] - b[0]);
+}
+
+/**
  * The indexes the model declares that a database from before 0053 lacks:
  * 0053's 39, with 0054's index on user_id and created_at in place of 0053's on
  * user_id alone.
@@ -507,7 +527,8 @@ function preCardDatabase(): Database.Database {
  * them.
  *
  *   boards         1 and 2, each created by a user; 3 is a sub-board of card 1
- *   columns        1 and 2 on board 1, 4 on board 2
+ *   columns        1 and 2 on board 1, 4 on board 2; on a database with
+ *                  0060's columns, each board's Options column too (3, 5, 6)
  *   categories     1 and 2 on board 1, 5 on board 2
  *   cards          1, 2 and 5 on board 1, 3 and 4 on board 2; four categorised
  *   settings, user_xp, invite_tokens   two rows each
@@ -563,6 +584,26 @@ function seed(database: Database.Database): void {
 	if (database.prepare("SELECT 1 FROM pragma_table_info('cards') WHERE name = 'committed_at'").get()) {
 		database.exec('UPDATE cards SET committed_at = created_at, committed_by = created_by');
 	}
+	// Every delivery board has its Options column (card 2527), as every board
+	// made since has, so the backfills find nothing to add. At ids no row has
+	// used, so the column counter stays at 7.
+	if (database.prepare("SELECT 1 FROM pragma_table_info('columns') WHERE name = 'role'").get()) {
+		database.exec(`
+			INSERT INTO columns (id, board_id, title, position, color, role) VALUES
+				(3, 1, 'Options', -1, '#8b5cf6', 'options'),
+				(5, 2, 'Options', -1, '#8b5cf6', 'options'),
+				(6, 3, 'Options', 0, '#8b5cf6', 'options');
+		`);
+	}
+}
+
+/**
+ * Give board `boardId`, put in by a test, the Options column every delivery
+ * board has (card 2527), so that the backfills add none and the database is
+ * left as the test means it to be.
+ */
+function giveOptions(database: Database.Database, boardId: number): void {
+	database.prepare("INSERT INTO columns (board_id, title, position, color, role) VALUES (?, 'Options', 0, '#8b5cf6', 'options')").run(boardId);
 }
 
 /**
@@ -1141,8 +1182,8 @@ describe('the backfills, repeated at every start', () => {
 		const { error } = halted({ database, migrationsDir: REAL_MIGRATIONS });
 
 		expect(error.message).toBe(
-			'Migrations halted (backfilling cards.first_completed_at, task_requests.access_token, cards.milestone_id, boards.category_id, ' +
-				'cards.committed_at and cards.discarded_at): ' +
+			"Migrations halted (backfilling each delivery board's Options column (columns.role), cards.first_completed_at, " +
+				'task_requests.access_token, cards.milestone_id, boards.category_id, cards.committed_at and cards.discarded_at): ' +
 				`first completion is frozen. No migration was committed earlier in this start. ${WHAT_NEXT}`
 		);
 		// As it says: the card is as it was before the step that failed.
@@ -1206,7 +1247,12 @@ describe('the backfills, repeated at every start', () => {
 			// with no commitment; card 8 is on a column that is not.
 			committedFilled: 7,
 			upstreamCleared: 0,
-			discardedCleared: 0
+			discardedCleared: 0,
+			// Boards A and B, made here with no Options column (card 2527).
+			optionsAdded: 2,
+			optionsMoved: 0,
+			optionsRenamed: 0,
+			optionsDemoted: 0
 		});
 
 		expect(milestonesOf().map((card) => [card.id, card.milestone_id])).toEqual([
@@ -1230,7 +1276,11 @@ describe('the backfills, repeated at every start', () => {
 			unfiled: [],
 			committedFilled: 0,
 			upstreamCleared: 0,
-			discardedCleared: 0
+			discardedCleared: 0,
+			optionsAdded: 0,
+			optionsMoved: 0,
+			optionsRenamed: 0,
+			optionsDemoted: 0
 		});
 	});
 
@@ -1295,7 +1345,12 @@ describe('the backfills, repeated at every start', () => {
 			unfiled: [{ boardId: 2, groupingId: 7 }],
 			committedFilled: 0,
 			upstreamCleared: 0,
-			discardedCleared: 0
+			discardedCleared: 0,
+			// The three boards, made here with no Options column (card 2527).
+			optionsAdded: 3,
+			optionsMoved: 0,
+			optionsRenamed: 0,
+			optionsDemoted: 0
 		});
 
 		expect(groupingsOf().map((board) => [board.id, board.category_id])).toEqual([
@@ -1314,7 +1369,11 @@ describe('the backfills, repeated at every start', () => {
 			unfiled: [],
 			committedFilled: 0,
 			upstreamCleared: 0,
-			discardedCleared: 0
+			discardedCleared: 0,
+			optionsAdded: 0,
+			optionsMoved: 0,
+			optionsRenamed: 0,
+			optionsDemoted: 0
 		});
 	});
 
@@ -1523,7 +1582,8 @@ const BEHAVES: Record<string, (database: Database.Database) => void> = {
 
 		// What referred to `boards` still does: its columns and their cards go with it.
 		database.prepare('DELETE FROM boards WHERE id = 2').run();
-		expect(idsIn(database, 'columns')).toEqual([1, 2]);
+		// Board 1's, its Options column 3 among them.
+		expect(idsIn(database, 'columns')).toEqual([1, 2, 3]);
 		expect(idsIn(database, 'cards')).toEqual([2, 5]);
 		expect(idsIn(database, 'labels')).toEqual([1]);
 	},
@@ -1658,7 +1718,8 @@ describe('the six reconciled tables', () => {
 		expect(report.rebuilt).toEqual([
 			{
 				table: 'columns',
-				rows: 3,
+				// The seed's three and its boards' three Options columns.
+				rows: 6,
 				defaulted: [{ column: 'wip_limit', rows: 2, value: '0' }],
 				differences: ['columns.wip_limit: is nullable; the model has it NOT NULL']
 			},
@@ -1696,7 +1757,7 @@ describe('the six reconciled tables', () => {
 		// take it off just as quietly: here is where that can be read.
 		const rebuilt = lines.filter((entry) => entry.line.includes('rebuilt'));
 		expect(rebuilt.map((entry) => entry.line.replace(/^\[[^\]]+\] /, ''))).toEqual([
-			"[WARN] [DB] columns rebuilt in the model's shape — 3 row(s) carried across; 2 NULL wip_limit value(s) became the default, 0. " +
+			"[WARN] [DB] columns rebuilt in the model's shape — 6 row(s) carried across; 2 NULL wip_limit value(s) became the default, 0. " +
 				'What differed, and no longer does: columns.wip_limit: is nullable; the model has it NOT NULL',
 			"[WARN] [DB] categories rebuilt in the model's shape — 3 row(s) carried across. " +
 				'What differed, and no longer does: categories.board_id: is NOT NULL; the model has it nullable; ' +
@@ -1756,7 +1817,10 @@ describe('the six reconciled tables', () => {
 		expect(limits()).toEqual([
 			{ id: 1, wip_limit: null },
 			{ id: 2, wip_limit: 3 },
-			{ id: 4, wip_limit: null }
+			{ id: 3, wip_limit: 0 },
+			{ id: 4, wip_limit: null },
+			{ id: 5, wip_limit: 0 },
+			{ id: 6, wip_limit: 0 }
 		]);
 
 		runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
@@ -1764,7 +1828,10 @@ describe('the six reconciled tables', () => {
 		expect(limits()).toEqual([
 			{ id: 1, wip_limit: 0 },
 			{ id: 2, wip_limit: 3 },
-			{ id: 4, wip_limit: 0 }
+			{ id: 3, wip_limit: 0 },
+			{ id: 4, wip_limit: 0 },
+			{ id: 5, wip_limit: 0 },
+			{ id: 6, wip_limit: 0 }
 		]);
 	});
 
@@ -1799,7 +1866,10 @@ describe('the six reconciled tables', () => {
 		expect(positions()).toEqual([
 			{ id: 1, written: '0.0', stored: 'real' },
 			{ id: 2, written: 'NULL', stored: 'null' },
-			{ id: 4, written: '0.0', stored: 'real' }
+			{ id: 3, written: '-1.0', stored: 'real' },
+			{ id: 4, written: '0.0', stored: 'real' },
+			{ id: 5, written: '-1.0', stored: 'real' },
+			{ id: 6, written: '0.0', stored: 'real' }
 		]);
 
 		const { report, errors } = reporting({ database, migrationsDir: REAL_MIGRATIONS });
@@ -1809,7 +1879,7 @@ describe('the six reconciled tables', () => {
 		expect(errors).toEqual([]);
 		expect(report.rebuilt.find((table) => table.table === 'columns')).toEqual({
 			table: 'columns',
-			rows: 3,
+			rows: 6,
 			// As it is stored, which is what the row now holds.
 			defaulted: [
 				{ column: 'position', rows: 1, value: '0.0' },
@@ -1825,7 +1895,10 @@ describe('the six reconciled tables', () => {
 		expect(positions()).toEqual([
 			{ id: 1, written: '0.0', stored: 'real' },
 			{ id: 2, written: '0.0', stored: 'real' },
-			{ id: 4, written: '0.0', stored: 'real' }
+			{ id: 3, written: '-1.0', stored: 'real' },
+			{ id: 4, written: '0.0', stored: 'real' },
+			{ id: 5, written: '-1.0', stored: 'real' },
+			{ id: 6, written: '0.0', stored: 'real' }
 		]);
 		expect(report.schemaDifferences).toEqual([]);
 	});
@@ -2038,7 +2111,7 @@ describe('the six reconciled tables', () => {
 			// Each table with its rows, and the NULLs that were given a default:
 			// the lines that would have said so come after the point of the halt.
 			'the rebuild had been committed: ' +
-				'columns rebuilt with 3 row(s) carried across and 2 NULL wip_limit value(s) given the default 0, ' +
+				'columns rebuilt with 6 row(s) carried across and 2 NULL wip_limit value(s) given the default 0, ' +
 				'categories rebuilt with 3 row(s) carried across, ' +
 				'user_xp rebuilt with 2 row(s) carried across, ' +
 				'invite_tokens rebuilt with 2 row(s) carried across',
@@ -2241,6 +2314,7 @@ describe('the six reconciled tables', () => {
 		database.exec(
 			"INSERT INTO boards (id, name, emoji, parent_card_id, is_public, created_by) VALUES (6, 'Left behind', '🧹', 99, 1, 2)"
 		);
+		giveOptions(database, 6);
 		const board = (id: number) => database.prepare('SELECT * FROM boards WHERE id = ?').get(id) as Record<string, unknown>;
 		const orphan = board(6);
 		const before = contentsOf(database);
@@ -2330,6 +2404,7 @@ describe('the six reconciled tables', () => {
 		// prepared, which is the only way to see the check from outside.
 		const database = preCardWithRows();
 		database.exec("INSERT INTO boards (id, name, parent_card_id) VALUES (6, 'Left behind', 99)");
+		giveOptions(database, 6);
 		const master = masterOf(database);
 		const before = contentsOf(database);
 		const real = database.prepare.bind(database);
@@ -2449,6 +2524,7 @@ describe('the six reconciled tables', () => {
 			DROP TABLE boards_kept;
 			INSERT INTO boards (id, name, created_by) VALUES (6, 'By nobody', 99);
 		`);
+		giveOptions(database, 6);
 		database.pragma('foreign_keys = ON');
 		const differed = differencesOf(database, 'boards');
 		expect(differed).toContain(
@@ -2577,13 +2653,16 @@ describe('the six reconciled tables', () => {
 		// Which column, and a value from each side, so that the line can be acted on.
 		expect(reason).toBe(
 			'the rebuild was rolled back: the copy of columns would not hold its rows as they are: ' +
-				"columns.title: 2 value(s) in the table are not in the copy, such as 'Doing', " +
+				"columns.title: 3 value(s) in the table are not in the copy, such as 'Doing', " +
 				"and the copy has 1 that the table has not, such as ''"
 		);
 		expect(database.prepare('SELECT title FROM columns ORDER BY id').all()).toEqual([
 			{ title: 'To Do' },
 			{ title: 'Doing' },
-			{ title: 'To Do' }
+			{ title: 'Options' },
+			{ title: 'To Do' },
+			{ title: 'Options' },
+			{ title: 'Options' }
 		]);
 	});
 
@@ -2666,7 +2745,8 @@ describe('the six reconciled tables', () => {
 		const reason = expectRolledBack(database, was, outcome);
 		expect(reason).toBe(
 			'the rebuild was rolled back: it changed what it must leave alone: ' +
-				'values in columns.board_id (before: 3 set, adding up to 4; after: 3 set, adding up to 3)'
+				// Columns 1, 2 and 3 on board 1, 4 and 5 on board 2, 6 on board 3.
+				'values in columns.board_id (before: 6 set, adding up to 10; after: 6 set, adding up to 6)'
 		);
 	});
 
@@ -3599,7 +3679,11 @@ describe('the start-up schema check', () => {
 				unfiled: [],
 				committedFilled: 0,
 				upstreamCleared: 0,
-				discardedCleared: 0
+				discardedCleared: 0,
+				optionsAdded: 0,
+				optionsMoved: 0,
+				optionsRenamed: 0,
+				optionsDemoted: 0
 			},
 			timestamps: { converted: {}, unreadable: {}, failed: null },
 			schemaDifferences: [],
@@ -4005,10 +4089,15 @@ describe('restoring a backup taken before the latest migrations', () => {
 		expect(result.errors).toEqual([]);
 		// The NULLs became the column's default, which means "no limit"; the
 		// limit that was set is the limit that was set.
+		// And each board, from a backup made before card 2527, is given its
+		// Options column by the backfill that follows the restore.
 		expect(columnsIn(live)).toEqual([
 			{ id: 1, board_id: 1, title: 'To Do', wip_limit: 0 },
 			{ id: 2, board_id: 1, title: 'Doing', wip_limit: 3 },
-			{ id: 4, board_id: 2, title: 'To Do', wip_limit: 0 }
+			{ id: 4, board_id: 2, title: 'To Do', wip_limit: 0 },
+			{ id: 5, board_id: 1, title: 'Options', wip_limit: 0 },
+			{ id: 6, board_id: 2, title: 'Options', wip_limit: 0 },
+			{ id: 7, board_id: 3, title: 'Options', wip_limit: 0 }
 		]);
 		expect(result.restored['columns']).toBe(3);
 		expect(result.defaulted).toEqual([{ table: 'columns', column: 'wip_limit', rows: 2, value: '0' }]);
@@ -4048,7 +4137,8 @@ describe('restoring a backup taken before the latest migrations', () => {
 		expect(result.restored['settings']).toBe(2);
 		// The rest of the backup is in, and committed.
 		expect(live.prepare('SELECT id FROM boards ORDER BY id').all()).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
-		expect(columnsIn(live)).toHaveLength(3);
+		// The backup's three, and each board's Options column, which it was made before.
+		expect(columnsIn(live)).toHaveLength(6);
 		expect(cardColumnsIn(live)).toEqual(cardColumnsIn(backup));
 		expect(live.pragma('foreign_key_check')).toEqual([]);
 		expect(foreignKeysOn(live)).toBe(true);
@@ -4143,7 +4233,8 @@ describe('restoring a backup taken before the latest migrations', () => {
 		// The links are given inside the restore, as every request's is at every
 		// restore (card 2158), so the backfill after it has none to give. The
 		// backup is older than 0060, so every card, none of them upstream, is
-		// committed when and by whom it was created (milestone 22).
+		// committed when and by whom it was created (milestone 22), and each of
+		// its three boards, all delivery boards, is given its Options column (card 2527).
 		expect(result.backfilled).toEqual({
 			firstCompletedAt: 2,
 			accessTokens: 0,
@@ -4153,7 +4244,11 @@ describe('restoring a backup taken before the latest migrations', () => {
 			unfiled: [],
 			committedFilled: 5,
 			upstreamCleared: 0,
-			discardedCleared: 0
+			discardedCleared: 0,
+			optionsAdded: 3,
+			optionsMoved: 0,
+			optionsRenamed: 0,
+			optionsDemoted: 0
 		});
 		const cardsIn = live
 			.prepare('SELECT id, created_at, committed_at, committed_by, discarded_at, discarded_by FROM cards ORDER BY id')
@@ -4167,9 +4262,13 @@ describe('restoring a backup taken before the latest migrations', () => {
 		]);
 		expect(cardsIn.every((card) => card.committed_at !== null)).toBe(true);
 		expect(live.prepare('SELECT COUNT(*) AS n FROM cards WHERE discarded_at IS NOT NULL OR discarded_by IS NOT NULL').get()).toEqual({ n: 0 });
-		// Every board a delivery board, and no column the Options column.
+		// Every board a delivery board, and each given its Options column (card 2527).
 		expect(live.prepare('SELECT DISTINCT kind FROM boards').all()).toEqual([{ kind: 'delivery' }]);
-		expect(live.prepare('SELECT COUNT(*) AS n FROM columns WHERE role IS NOT NULL').get()).toEqual({ n: 0 });
+		expect(live.prepare("SELECT board_id AS boardId FROM columns WHERE role IS 'options' AND title = 'Options' ORDER BY board_id").all()).toEqual([
+			{ boardId: 1 },
+			{ boardId: 2 },
+			{ boardId: 3 }
+		]);
 		expect(result.requestLinksReplaced).toBe(2);
 		expect(live.prepare('SELECT id, first_completed_at FROM cards ORDER BY id').all()).toEqual([
 			{ id: 1, first_completed_at: '2026-09-01 10:00:00' },
@@ -4322,7 +4421,11 @@ describe('restoring a backup taken before the latest migrations', () => {
 			unfiled: [],
 			committedFilled: 0,
 			upstreamCleared: 0,
-			discardedCleared: 0
+			discardedCleared: 0,
+			optionsAdded: 0,
+			optionsMoved: 0,
+			optionsRenamed: 0,
+			optionsDemoted: 0
 		});
 	});
 
@@ -4531,7 +4634,11 @@ describe('restoring a backup taken before the latest migrations', () => {
 			unfiled: [],
 			committedFilled: 0,
 			upstreamCleared: 0,
-			discardedCleared: 0
+			discardedCleared: 0,
+			optionsAdded: 0,
+			optionsMoved: 0,
+			optionsRenamed: 0,
+			optionsDemoted: 0
 		});
 		expect(result.restored['cards']).toBe(5);
 		expect(live.prepare('SELECT id FROM boards ORDER BY id').all()).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
@@ -4740,6 +4847,8 @@ describe('restoring a backup taken before the latest migrations', () => {
 						'Rows: .*\\bcards: 6\\b.*\\. Filled in: first_completed_at on 2 card\\(s\\), access_token on 0 request\\(s\\), ' +
 						// Card 6 is on no column, so it is not committed (milestone 22).
 						'committed_at and committed_by on 5 card\\(s\\) not upstream, ' +
+						// Each of the backup's boards, made before card 2527.
+						'an Options column at the far left of 3 delivery board\\(s\\), ' +
 						'the default \\(0\\) in place of NULL in columns\\.wip_limit on 2 row\\(s\\)\\. ' +
 						'2 request link\\(s\\) replaced: a link mailed before this restore no longer works, and its requester can have ' +
 						'a new one sent from the page it opens\\.$'
@@ -4781,6 +4890,8 @@ describe('restoring a backup taken before the latest migrations', () => {
 					`^\\[INFO\\] \\[IMPORT\\] Database restored from an uploaded backup \\(${size.replace('.', '\\.')}\\)\\. ` +
 						'Rows: .*\\bcards: 5\\b.*\\. Filled in: first_completed_at on 2 card\\(s\\), access_token on 0 request\\(s\\), ' +
 						'committed_at and committed_by on 5 card\\(s\\) not upstream, ' +
+						// Each of the backup's boards, made before card 2527.
+						'an Options column at the far left of 3 delivery board\\(s\\), ' +
 						'the default \\(0\\) in place of NULL in columns\\.wip_limit on 2 row\\(s\\)\\. ' +
 						'2 request link\\(s\\) replaced: a link mailed before this restore no longer works, and its requester can have ' +
 						'a new one sent from the page it opens\\.$'
@@ -4789,7 +4900,11 @@ describe('restoring a backup taken before the latest migrations', () => {
 			expect(sqlite.prepare('SELECT id, wip_limit FROM columns ORDER BY id').all()).toEqual([
 				{ id: 1, wip_limit: 0 },
 				{ id: 2, wip_limit: 3 },
-				{ id: 4, wip_limit: 0 }
+				{ id: 4, wip_limit: 0 },
+				// The three boards' Options columns, which the backfill gave them.
+				{ id: 5, wip_limit: 0 },
+				{ id: 6, wip_limit: 0 },
+				{ id: 7, wip_limit: 0 }
 			]);
 		});
 
@@ -4809,7 +4924,8 @@ describe('restoring a backup taken before the latest migrations', () => {
 			expect(logged[0]).toContain(
 				'Filled in: first_completed_at on 2 card(s), access_token on 0 request(s), ' +
 					'1 card(s) taken out of a milestone of another board (card 3 left milestone 1), ' +
-					'committed_at and committed_by on 5 card(s) not upstream, the default (0)'
+					'committed_at and committed_by on 5 card(s) not upstream, ' +
+					'an Options column at the far left of 3 delivery board(s), the default (0)'
 			);
 		});
 
@@ -4825,7 +4941,8 @@ describe('restoring a backup taken before the latest migrations', () => {
 			expect(logged.join('\n')).toContain(
 				'Filled in: first_completed_at on 2 card(s), access_token on 0 request(s), ' +
 					'1 board(s) taken out of a grouping that no longer exists (board 2 (grouping 9)), ' +
-					'committed_at and committed_by on 5 card(s) not upstream, the default (0)'
+					'committed_at and committed_by on 5 card(s) not upstream, ' +
+					'an Options column at the far left of 3 delivery board(s), the default (0)'
 			);
 			expect(sqlite.prepare('SELECT category_id FROM boards WHERE id = 2').get()).toEqual({ category_id: null });
 		});
@@ -4838,7 +4955,7 @@ describe('restoring a backup taken before the latest migrations', () => {
 			backup.exec(`
 				INSERT INTO users (id, username, email, password_hash) VALUES (1, 'ann', 'ann@example.test', 'x');
 				INSERT INTO boards (id, name) VALUES (1, 'A');
-				INSERT INTO columns (id, board_id, title, position, role) VALUES (1, 1, 'Ideas', 0, 'options'), (2, 1, 'To Do', 1, NULL);
+				INSERT INTO columns (id, board_id, title, position, role) VALUES (1, 1, 'Options', 0, 'options'), (2, 1, 'To Do', 1, NULL);
 				INSERT INTO cards (id, column_id, title, committed_at, committed_by, discarded_at, discarded_by) VALUES
 					(1, 2, 'Never committed', NULL, NULL, NULL, NULL),
 					(2, 1, 'An option, committed', '2026-10-01 09:00:00', 1, NULL, NULL),
@@ -4859,6 +4976,33 @@ describe('restoring a backup taken before the latest migrations', () => {
 				{ id: 1, committed_by: null, discarded_by: null },
 				{ id: 2, committed_by: null, discarded_by: null },
 				{ id: 3, committed_by: 1, discarded_by: null }
+			]);
+		});
+
+		it('names the repairs of the Options column: the column added and the title given as filled in, a second one made ordinary as cleared (card 2527)', async () => {
+			// A backup in the current shape: board A's Options column called Ideas,
+			// board B with two, and board C with none.
+			const backup = memoryDb();
+			runMigrations({ database: backup, migrationsDir: REAL_MIGRATIONS });
+			backup.exec(`
+				INSERT INTO users (id, username, email, password_hash) VALUES (1, 'ann', 'ann@example.test', 'x');
+				INSERT INTO boards (id, name) VALUES (1, 'A'), (2, 'B'), (3, 'C');
+				INSERT INTO columns (id, board_id, title, position, role) VALUES
+					(1, 1, 'Ideas', -1, 'options'), (2, 1, 'To Do', 0, NULL), (3, 2, 'Options', -1, 'options'), (4, 2, 'Later', 0, 'options'), (5, 3, 'To Do', 0, NULL);
+			`);
+			process.env.LOG_LEVEL = 'INFO';
+
+			const { response, logged } = await upload(backup);
+
+			expect(response.status).toBe(200);
+			expect(logged).toHaveLength(1);
+			expect(logged[0]).toMatch(
+				/Filled in: first_completed_at on 0 card\(s\), access_token on 0 request\(s\), an Options column at the far left of 1 delivery board\(s\), the title Options on 1 Options column\(s\)\. Cleared: the Options role of 1 second Options column\(s\), each board keeping its leftmost\.$/
+			);
+			expect(sqlite.prepare("SELECT board_id AS boardId, title FROM columns WHERE role IS 'options' ORDER BY board_id").all()).toEqual([
+				{ boardId: 1, title: 'Options' },
+				{ boardId: 2, title: 'Options' },
+				{ boardId: 3, title: 'Options' }
 			]);
 		});
 
@@ -5440,7 +5584,13 @@ describe('the database the runner leaves, against the model', () => {
 		expect(differencesIn(database)).toEqual(NONE);
 		// Every row kept, and as it was, but for what 0060 adds: `boards`, rebuilt
 		// in the same start, keeps the `kind` it gave (milestone 22).
-		for (const table of Object.keys(before)) expect(rowsOf(table)).toEqual(after0060(table, before[table]));
+		for (const table of Object.keys(before)) expect(lessOptionsGiven(table, rowsOf(table))).toEqual(after0060(table, before[table]));
+		// And each board its Options column (card 2527): left of its columns, or at 0 on the sub-board, which has none.
+		expect(optionsGiven(rowsOf('columns'))).toEqual([
+			[1, 'Options', -1, '#8b5cf6'],
+			[2, 'Options', -1, '#8b5cf6'],
+			[3, 'Options', 0, '#8b5cf6']
+		]);
 		expect(sequenceIn(database, 'boards')).toBe(8);
 		expect(database.pragma('foreign_key_check')).toEqual([]);
 	});
@@ -6188,16 +6338,18 @@ describe("0056, which adds who last set a webhook's address or secret (card 2168
 			// The migration record, and its id counter, gain the file; each webhook gains the empty column.
 			// The rest are as they were, but for what 0060, applied in the same run, adds.
 			if (['webhooks', '__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
-			expect(after[table], table).toEqual(after0060(table, before[table]));
+			expect(lessOptionsGiven(table, after[table]), table).toEqual(after0060(table, before[table]));
 		}
+		// And the board its Options column, which the start gives it (card 2527).
+		expect(optionsGiven(after.columns)).toEqual([[1, 'Options', 0, '#8b5cf6']]);
 		expect(indexesOf(database)).toContain('idx_webhooks_set_by');
 		expect(database.prepare('PRAGMA foreign_key_list(webhooks)').all()).toContainEqual(
 			expect.objectContaining({ table: 'users', from: 'set_by', to: 'id', on_delete: 'SET NULL' })
 		);
-		// The rehearsal: every row kept, nothing to note.
+		// The rehearsal: every row kept, and the board noted as given its Options column (card 2527).
 		const found: Findings = { problems: [], notes: [] };
 		compare(state, stateOf(database), report.applied, found);
-		expect(found).toEqual({ problems: [], notes: [] });
+		expect(found).toEqual({ problems: [], notes: [`columns had 0 row(s) and has 1: each delivery board that had none was given its Options column at the start (card 2527)`] });
 
 		expect(foreignKeysOn(database)).toBe(true);
 		database.exec("INSERT INTO users (id, username, email, password_hash) VALUES (2, 'bob', 'bob@example.test', 'x')");
@@ -6341,8 +6493,13 @@ ORDER BY m.id, c.id;`;
 			// The migration record, and its id counter, gain the file; boards and
 			// columns gain 0060's columns.
 			if (['cards', '__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
-			expect(after[table], table).toEqual(after0060(table, before[table]));
+			expect(lessOptionsGiven(table, after[table]), table).toEqual(after0060(table, before[table]));
 		}
+		// And each board its Options column, which the start gives it (card 2527).
+		expect(optionsGiven(after.columns)).toEqual([
+			[1, 'Options', -1, '#8b5cf6'],
+			[2, 'Options', -1, '#8b5cf6']
+		]);
 
 		// The same statement again, as the backfill repeats it at every start
 		// (card 2179), changes nothing, and neither does the next start.
@@ -6356,6 +6513,8 @@ ORDER BY m.id, c.id;`;
 		expect(found).toEqual({
 			problems: [],
 			notes: [
+				// Each board given its Options column at the start (card 2527).
+				`columns had 2 row(s) and has 4: each delivery board that had none was given its Options column at the start (card 2527)`,
 				`cards: milestone_id cleared where it named a milestone of another board in its 7 row(s) by ${FILE_0057}, a one-off declared in tests/rehearsal/one-offs.ts`,
 				// And 0060's, applied in the same run.
 				`cards: committed_at and committed_by filled from created_at and created_by for every card not upstream in its 7 row(s) by ${FILE_0060}, a one-off declared in tests/rehearsal/one-offs.ts`
@@ -6427,12 +6586,14 @@ describe("0058, which adds the time zone a report schedule's time is read in (ca
 			// The migration record, and its id counter, gain the file; each schedule gains the column.
 			// The rest are as they were, but for what 0060, applied in the same run, adds.
 			if (['report_schedules', '__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
-			expect(after[table], table).toEqual(after0060(table, before[table]));
+			expect(lessOptionsGiven(table, after[table]), table).toEqual(after0060(table, before[table]));
 		}
-		// The rehearsal: every row kept, nothing to note.
+		// And the board its Options column, which the start gives it (card 2527).
+		expect(optionsGiven(after.columns)).toEqual([[1, 'Options', 0, '#8b5cf6']]);
+		// The rehearsal: every row kept, and the board noted as given its Options column (card 2527).
 		const found: Findings = { problems: [], notes: [] };
 		compare(state, stateOf(database), report.applied, found);
-		expect(found).toEqual({ problems: [], notes: [] });
+		expect(found).toEqual({ problems: [], notes: [`columns had 0 row(s) and has 1: each delivery board that had none was given its Options column at the start (card 2527)`] });
 
 		const again = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 		expect(again.applied).toEqual([]);
@@ -6669,19 +6830,31 @@ describe('0060, which adds the Options role, the ideas kind, and each card’s c
 			{ id: 1, kind: 'delivery' },
 			{ id: 2, kind: 'delivery' }
 		]);
-		expect(database.prepare('SELECT COUNT(*) AS n FROM columns WHERE role IS NOT NULL').get()).toEqual({ n: 0 });
+		// The file gives no column a role: the backfill after it gives boards A
+		// and B their Options columns (card 2527), and the deleted board's column
+		// stays as it is.
+		expect(database.prepare('SELECT board_id AS boardId FROM columns WHERE role IS NOT NULL ORDER BY board_id').all()).toEqual([
+			{ boardId: 1 },
+			{ boardId: 2 }
+		]);
 		// Every other table, and every other cell of these three, as it was.
 		const after = contentsOf(database);
 		for (const table of Object.keys(before)) {
 			if (['__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
-			expect(after[table], table).toEqual(after0060(table, before[table], [4, 5]));
+			expect(lessOptionsGiven(table, after[table]), table).toEqual(after0060(table, before[table], [4, 5]));
 		}
+		expect(optionsGiven(after.columns)).toEqual([
+			[1, 'Options', -1, '#8b5cf6'],
+			[2, 'Options', -1, '#8b5cf6']
+		]);
 		// The rehearsal: every row kept, and the change noted as the one-off declared for it.
 		const found: Findings = { problems: [], notes: [] };
 		compare(state, stateOf(database), report.applied, found);
 		expect(found).toEqual({
 			problems: [],
 			notes: [
+				// Boards A and B given their Options columns at the start (card 2527).
+				`columns had 4 row(s) and has 6: each delivery board that had none was given its Options column at the start (card 2527)`,
 				`cards: committed_at and committed_by filled from created_at and created_by for every card not upstream in its 5 row(s) by ${FILE_0060}, a one-off declared in tests/rehearsal/one-offs.ts`
 			]
 		});
@@ -6777,7 +6950,7 @@ describe('the backfills of the commitment point, repeated at every start (milest
 			INSERT INTO users (id, username, email, password_hash) VALUES (1, 'ann', 'ann@example.test', 'x'), (2, 'bob', 'bob@example.test', 'x');
 			INSERT INTO boards (id, name, kind) VALUES (1, 'Delivery', 'delivery'), (2, 'Ideas', 'ideas');
 			INSERT INTO columns (id, board_id, title, position, role) VALUES
-				(1, 1, 'Ideas', 0, 'options'), (2, 1, 'To Do', 1, NULL), (3, 1, 'Complete', 2, NULL), (4, 2, 'New Ideas', 0, NULL);
+				(1, 1, 'Options', 0, 'options'), (2, 1, 'To Do', 1, NULL), (3, 1, 'Complete', 2, NULL), (4, 2, 'New Ideas', 0, NULL);
 			PRAGMA foreign_keys = OFF;
 			INSERT INTO cards (id, column_id, title, created_by, created_at, updated_at, archived_at, committed_at, committed_by, discarded_at, discarded_by) VALUES
 				(1, 2, 'One', 2, '2026-09-01 08:00:00', '${STAMP}', NULL, NULL, NULL, NULL, NULL),
@@ -6814,7 +6987,11 @@ describe('the backfills of the commitment point, repeated at every start (milest
 			unfiled: [],
 			committedFilled: 2,
 			upstreamCleared: 2,
-			discardedCleared: 1
+			discardedCleared: 1,
+			optionsAdded: 0,
+			optionsMoved: 0,
+			optionsRenamed: 0,
+			optionsDemoted: 0
 		});
 		expect(commitmentsIn(database)).toEqual([
 			[1, '2026-09-01 08:00:00', 2, null, null, STAMP],

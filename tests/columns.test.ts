@@ -278,16 +278,19 @@ describe('what a column means, with the Options role and the ideas board (milest
 		expect([...todoColumnIds([{ id: 7, title: 'todo', role: null }])]).toEqual([7]);
 	});
 
-	it('puts new work in the first open column that is not Options, and in Options only when nothing else is open', () => {
-		const options = col(1, 'Ideas', -1, 'options');
+	it('puts new work in the first open column that is not Options, and never in Options, even with nothing else open (card 2527, R5)', () => {
+		const options = col(1, 'Options', -1, 'options');
 		expect(firstOpenColumn([col(3, 'Complete', 2), col(2, 'To Do', 0), options])?.id).toBe(2);
-		expect(firstOpenColumn([options, col(3, 'Complete', 2)])?.id).toBe(1);
+		// Every delivery board has its Options column: a board whose only other
+		// column is Complete has no open column, and each caller does what it
+		// does for none, rather than hide new work in the folded strip.
+		expect(firstOpenColumn([options, col(3, 'Complete', 2)])).toBeUndefined();
+		expect(firstOpenColumn([options])).toBeUndefined();
 		expect(firstOpenColumn([col(3, 'Complete', 2)])).toBeUndefined();
 		// As before, for a board with no Options column.
 		expect(firstOpenColumn([col(4, 'Done', 0), col(5, 'Doing', 1)])?.id).toBe(5);
-		// Complete is decided as every page decides it, the role first: an
-		// Options column is never a Complete column, whatever it is called.
-		expect(firstOpenColumn([col(6, 'Done', 0, 'options'), col(7, 'Complete', 1)])?.id).toBe(6);
+		// The role is read first: an Options column called Done is still never taken.
+		expect(firstOpenColumn([col(6, 'Done', 0, 'options'), col(7, 'Complete', 1)])).toBeUndefined();
 	});
 
 	it('reads the boards’ kinds and the columns that are upstream from the database', () => {
