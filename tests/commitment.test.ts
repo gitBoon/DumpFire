@@ -459,6 +459,8 @@ describe('what the drag is answered, and the toast it shows (dnd-handlers.ts)', 
 
 		expect(result.action).toBe('committed');
 		expect(get(toasts).map((t) => `${t.type}: ${t.message}`)).toEqual(['success: Committed "An option"']);
+		// And hands what it said to the page, which says no more of a drop on the folded strip (card 2535).
+		expect(result.action === 'committed' ? result.said : null).toEqual(['Committed "An option"']);
 		expect(commitmentOf(option).committedBy).toBe(mover.id);
 	});
 
@@ -475,6 +477,23 @@ describe('what the drag is answered, and the toast it shows (dnd-handlers.ts)', 
 
 		expect((await handleCardDndFinalize(A.cols['In Progress'].id, [work as unknown as CardType], page, A.board.id, 'mover', '🦊')).action).toBe('committed');
 		expect(get(toasts)).toEqual([]);
+	});
+
+	it('hands the page the toast for a card dropped back into Options, so a drop on the folded strip is said once (card 2535)', async () => {
+		const work = cardIn(A.cols['To Do'], 'Work');
+		vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
+			const res = await api(init.method as 'PUT', url, { user: mover, body: JSON.parse(String(init.body)) });
+			return new Response(JSON.stringify(res.body), { status: res.status, headers: { 'content-type': 'application/json' } });
+		});
+		const page = [
+			{ ...A.cols['Options'], cards: [] },
+			{ ...A.cols['To Do'], cards: [] }
+		] as unknown as ColumnType[];
+
+		const result = await handleCardDndFinalize(A.cols['Options'].id, [work as unknown as CardType], page, A.board.id, 'mover', '🦊');
+
+		expect(get(toasts).map((t) => `${t.type}: ${t.message}`)).toEqual(['success: Returned "Work" to Options']);
+		expect(result.action === 'committed' ? result.said : null).toEqual(['Returned "Work" to Options']);
 	});
 });
 

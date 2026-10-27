@@ -555,6 +555,61 @@
 		if (optionsUserId !== null && optionsBoardId) optionsOpen = readOptionsOpen(optionsUserId, optionsBoardId);
 	});
 
+	/**
+	 * A drop on the folded strip (card 2535): whether a card is over it now,
+	 * from its list's consider events; how many cards it has taken, which
+	 * draws its count again so a second pulse starts afresh; whether the count
+	 * is pulsing now, set by a drop alone and cleared as the pulse ends, so a
+	 * strip folded again (which draws its count again) does not pulse; and
+	 * what a screen reader is told of the last one, politely.
+	 */
+	let optionsDropOver = $state(false);
+	let optionsParked = $state(0);
+	let optionsPulse = $state(false);
+	let parkedSaid = $state('');
+	let parkedTimer: ReturnType<typeof setTimeout> | undefined;
+	let pulseTimer: ReturnType<typeof setTimeout> | undefined;
+	/** How long the pulse may last before it is cleared anyway: under reduced motion no animation runs, so none ends. */
+	const PULSE_MS = 700;
+	/** How long the words stay in the region once said (card 2535's review, F6). */
+	const PARKED_SAID_MS = 5000;
+
+	/**
+	 * Says a drop on the folded strip. The region is emptied and filled a
+	 * moment later, as a region whose words do not change is not read again
+	 * (as `Toast.svelte` does for its own), and emptied again a few seconds on.
+	 */
+	function sayParked(words: string) {
+		clearTimeout(parkedTimer);
+		parkedSaid = '';
+		if (!words) return;
+		parkedTimer = setTimeout(() => {
+			parkedSaid = words;
+			parkedTimer = setTimeout(() => (parkedSaid = ''), PARKED_SAID_MS);
+		}, 100);
+	}
+
+	/** Pulses the folded strip's count once, for a card it has just taken. */
+	function pulseParked() {
+		optionsParked++;
+		optionsPulse = true;
+		clearTimeout(pulseTimer);
+		pulseTimer = setTimeout(() => (optionsPulse = false), PULSE_MS);
+	}
+
+	/** Another board: nothing of the last one's drops is pulsed or said. */
+	function forgetParked() {
+		clearTimeout(pulseTimer);
+		clearTimeout(parkedTimer);
+		optionsDropOver = false;
+		optionsPulse = false;
+		parkedSaid = '';
+	}
+	$effect(() => {
+		void optionsBoardId;
+		untrack(forgetParked);
+	});
+
 	/** The stored choice for the user the page was loaded for, or collapsed. */
 	function initialOptionsOpen(): boolean {
 		const userId = $page.data.user?.id;
@@ -1564,6 +1619,11 @@
 		}
 	}
 
+	/** Whether this column is the Options column folded to its strip, which takes a drop at its end (card 2535). */
+	function isFoldedOptions(columnId: number): boolean {
+		return !optionsOpen && optionsColumn?.id === columnId;
+	}
+
 	function handleCardDndConsider(columnId: number, e: CustomEvent) {
 		if (e.detail.info?.trigger === TRIGGERS.DRAG_STOPPED) {
 			takeCardItems(columnId, e);
@@ -1571,6 +1631,9 @@
 			return;
 		}
 		holdDrag();
+		// The folded strip lit while a pointer's card is over it (card 2535); a
+		// keyboard drag never lights it, so its stop above has nothing to put out.
+		if (isFoldedOptions(columnId)) optionsDropOver = dndHandlers.foldedDropOver(e.detail.info?.trigger);
 		takeCardItems(columnId, e);
 	}
 
@@ -1582,8 +1645,12 @@
 	}
 
 	async function handleCardDndFinalize(columnId: number, e: CustomEvent) {
-		// Clear sort on manual drag
-		if (boardState.columnSorts[columnId]) boardState.setSort(columnId, 'none');
+		// Any drop puts the folded strip's light out, and the strip stays folded (card 2535).
+		optionsDropOver = false;
+		const folded = isFoldedOptions(columnId);
+		// Clear sort on manual drag; not the Options column's for a drop on its
+		// folded strip, where the card goes last and no order was chosen (card 2535).
+		if (!folded && boardState.columnSorts[columnId]) boardState.setSort(columnId, 'none');
 		// A drop into another column fires here twice, in either order: for the
 		// column dropped into, and for the column the card left. The call for
 		// the column dropped into sends both (card 2213), so the other only
@@ -1601,14 +1668,17 @@
 		}
 		const release = takeDragHold();
 		const from = takeDragFrom();
+		// On the folded strip the card goes last, whatever index the drop gave,
+		// as its cards are hidden (card 2535); anywhere else, where it was put.
+		const items = dndHandlers.foldedDropItems(e.detail.items as CardType[], e.detail.info?.id, folded);
 		// The cards this drop carries: the one dragged, and any that came into
 		// the column. Only their columns are put back, and only they may come
 		// back from the copy while on the board nowhere (the B2b re-check).
-		const dragged = [e.detail.info?.id, ...(e.detail.items as CardType[]).filter((c) => c.columnId !== columnId).map((c) => c.id)].filter((id): id is number => typeof id === 'number');
+		const dragged = [e.detail.info?.id, ...items.filter((c) => c.columnId !== columnId).map((c) => c.id)].filter((id): id is number => typeof id === 'number');
 		const started = toasts.navigation();
 		try {
 			const result = await dndHandlers.handleCardDndFinalize(
-				columnId, e.detail.items, boardState.columns,
+				columnId, items, boardState.columns,
 				data.board.id, currentUser?.username || '', currentUser?.emoji || '👤'
 			);
 			switch (result.action) {
@@ -1660,6 +1730,12 @@
 						// allowed — sometimes you know better than the graph — but it
 						// should never happen silently.
 						warnIfStillBlocked(entry.card, entry.toName);
+					}
+					// A card taken by the folded strip: its count pulses, and a screen
+					// reader is told, unless the commitment toast has said it (card 2535).
+					if (folded && result.movedCards.length > 0) {
+						pulseParked();
+						sayParked(dndHandlers.parkedInOptionsSaid(result.movedCards.map((entry) => entry.card.title), result.said));
 					}
 					// Check WIP limit on destination column
 					if (result.movedCards.length > 0) {
@@ -1827,6 +1903,8 @@
 	{:else}
 	<!-- Kanban columns -->
 	<div class="kanban-container">
+		<!-- A card dropped on the folded Options strip, said politely (card 2535). -->
+		<p class="parked-said" role="status">{parkedSaid}</p>
 		<div
 			class="columns-wrapper"
 			use:dndzone={{
@@ -1840,11 +1918,15 @@
 		>
 			{#each boardState.columns as column (column.id)}
 				{@const collapsed = isOptionsColumn(column) && !optionsOpen}
-				<div class="kanban-column glass" class:wip-warning={!isOptionsColumn(column) && column.wipLimit > 0 && column.cards.length >= column.wipLimit} class:options-column={isOptionsColumn(column)} class:options-collapsed={collapsed} data-column-id={column.id} animate:flip={{ duration: FLIP_DURATION_MS }}>
+				<div class="kanban-column glass" class:wip-warning={!isOptionsColumn(column) && column.wipLimit > 0 && column.cards.length >= column.wipLimit} class:options-column={isOptionsColumn(column)} class:options-collapsed={collapsed} class:options-drop-over={collapsed && optionsDropOver} data-column-id={column.id} animate:flip={{ duration: FLIP_DURATION_MS }}>
 					{#if collapsed}
 						<!-- The Options column collapsed to a strip (milestone 22): its
 						     title, its count and its aging (ruling g). It opens on a
-						     press, and still takes a card dropped on it. -->
+						     press, and still takes a card dropped on it: lit while one
+						     is over it, the card put last, the strip left folded and its
+						     count pulsed (card 2535). The list under it takes the drop,
+						     as the library finds a list by where it is on the screen,
+						     not by what is under the pointer. -->
 						<button
 							class="options-strip"
 							onclick={() => setOptionsOpen(true)}
@@ -1852,7 +1934,9 @@
 							aria-expanded="false"
 							aria-label="Open the Options column{isOptionsTitle(column.title) ? '' : `, ${column.title}`}: {column.cards.length} {column.cards.length === 1 ? 'option' : 'options'}{optionsAgingNow.oldestDays !== null ? `, the oldest ${optionsAgingNow.oldestDays} ${optionsAgingNow.oldestDays === 1 ? 'day' : 'days'} old` : ''}{optionsAgingNow.over > 0 ? `, ${optionsAgingNow.over} older than ${OPTION_AGING_DAYS} days` : ''}"
 						>
-							<span class="options-strip-count">{column.cards.length}</span>
+							{#key optionsParked}
+								<span class="options-strip-count" class:parked={optionsPulse} onanimationend={() => (optionsPulse = false)}>{column.cards.length}</span>
+							{/key}
 							{#if optionsAgingNow.over > 0}
 								<span class="options-strip-aging" title="{optionsAgingNow.over} older than {OPTION_AGING_DAYS} days">{optionsAgingNow.over} &gt;{OPTION_AGING_DAYS}d</span>
 							{/if}
@@ -1903,7 +1987,15 @@
 							flipDurationMs: FLIP_DURATION_MS,
 							type: 'cards',
 							dropTargetStyle: { outline: 'none' },
-							dropTargetClasses: ['drop-target-active']
+							dropTargetClasses: ['drop-target-active'],
+							// A list is found by the pointer, not by the dragged card's
+							// middle (card 2535): a card held near its edge could not be
+							// brought over the 56px folded strip at the board's left.
+							useCursorForDetection: true,
+							// The folded strip's cards are hidden, the library's
+							// placeholder too, whose place is all zeros: the drag's copy
+							// would fly to the window's top left on a drop (card 2535).
+							dropAnimationDisabled: collapsed
 						}}
 						onconsider={(e) => handleCardDndConsider(column.id, e)}
 						onfinalize={(e) => handleCardDndFinalize(column.id, e)}
@@ -2217,6 +2309,29 @@
 	}
 	.options-strip-aging, .options-strip-oldest { font-size: 0.6rem; font-weight: 600; color: var(--text-tertiary); text-align: center; line-height: 1.2; }
 	.options-strip-aging { color: #f59e0b; }
+	/* A card over the folded strip (card 2535): the whole strip lit, as the list
+	   under it will take the card. */
+	.kanban-column.options-collapsed.options-drop-over {
+		outline: 2px solid var(--accent-indigo); outline-offset: -2px;
+		background: rgba(99, 102, 241, 0.18);
+	}
+	.kanban-column.options-drop-over .options-strip { color: var(--text-primary); }
+	.kanban-column.options-drop-over .options-strip-count { border-color: var(--accent-indigo); }
+	/* Its count pulses once on each card it takes (redrawn, so it starts again). */
+	.options-strip-count.parked { animation: parked-pulse 0.6s ease-out; }
+	@keyframes parked-pulse {
+		0% { transform: scale(1); }
+		35% { transform: scale(1.35); border-color: var(--accent-indigo); }
+		100% { transform: scale(1); }
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.options-strip-count.parked { animation: none; }
+	}
+	/* For screen readers alone. */
+	.parked-said {
+		position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+		overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+	}
 
 	/* A list's scroll ends above the user badge (card 2239), or its last card is under it. */
 	.column-cards {

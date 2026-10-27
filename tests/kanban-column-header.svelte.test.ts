@@ -19,7 +19,8 @@
  *
  * And the board's Options column on its header, its menu's keyboard hold, and
  * the Add Column window (milestone 22, slice S1b; card 2527, which made the
- * Options column part of every delivery board): see the last three blocks.
+ * Options column part of every delivery board): see the three blocks after
+ * the To Do ones. And a card dropped on the folded strip (card 2535): the last.
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -32,6 +33,8 @@ import ColumnListView from '$lib/components/board/ColumnListView.svelte';
 import CfdChart from '$lib/components/board/CfdChart.svelte';
 import { optionsSuffix } from '$lib/column-role';
 import { NARROW_WIDTH, scrollPastFoldedStrip } from '$lib/board/board-view';
+import { foldedDropItems, foldedDropOver, parkedInOptionsSaid } from '$lib/board/dnd-handlers';
+import { TRIGGERS } from 'svelte-dnd-action';
 import type { ColumnType } from '$lib/types';
 
 // The browser's `mount`, loaded by its path: a bare 'svelte' gives the server's (see the XP bars' file).
@@ -582,5 +585,131 @@ describe('the Options column on every board’s screens (card 2527)', () => {
 		flushSync();
 		expect(runs).toBe(2);
 		stop();
+	});
+});
+
+/**
+ * A card dropped on the folded Options strip (card 2535). Its list is laid
+ * under the strip with every card hidden, the library's placeholder too, so
+ * nothing showed the strip would take the card, the card landed at an index
+ * worked out from cards no one could see, and only the count said it had
+ * come. The page's drop is not mounted here (the board page is not drawn in
+ * a test): what it decides is in `dnd-handlers.ts`, drawn from its source.
+ */
+describe('a card dropped on the folded Options strip (card 2535)', () => {
+	const read = (path: string) => readFileSync(join(process.cwd(), path), 'utf8');
+	/** The text of the page's function `name`, to the next function. */
+	const fn = (page: string, name: string) => {
+		const start = page.indexOf(`function ${name}(`);
+		expect(start, name).toBeGreaterThan(-1);
+		const next = page.slice(start + 1).search(/\n\t(async )?function /);
+		return page.slice(start, next === -1 ? undefined : start + 1 + next);
+	};
+	const cards = (...ids: number[]) => ids.map((id) => ({ id, title: `Card ${id}` }));
+
+	it('puts the card last on the folded strip, whatever index the drop gave, the others in their order', () => {
+		// Dropped first, in the middle, and last already.
+		expect(foldedDropItems(cards(7, 1, 2, 3), 7, true).map((c) => c.id)).toEqual([1, 2, 3, 7]);
+		expect(foldedDropItems(cards(1, 7, 2, 3), 7, true).map((c) => c.id)).toEqual([1, 2, 3, 7]);
+		expect(foldedDropItems(cards(1, 2, 3, 7), 7, true).map((c) => c.id)).toEqual([1, 2, 3, 7]);
+		// Into an empty Options column: the card alone.
+		expect(foldedDropItems(cards(7), 7, true).map((c) => c.id)).toEqual([7]);
+		// No dragged card among them (no id, or another list's): as given.
+		expect(foldedDropItems(cards(1, 2), undefined, true).map((c) => c.id)).toEqual([1, 2]);
+		expect(foldedDropItems(cards(1, 2), 9, true).map((c) => c.id)).toEqual([1, 2]);
+	});
+
+	it('keeps the card where it was dropped in an open Options column, or any other', () => {
+		const dropped = cards(1, 7, 2, 3);
+		expect(foldedDropItems(dropped, 7, false)).toBe(dropped);
+		expect(foldedDropItems(dropped, 7, false).map((c) => c.id)).toEqual([1, 7, 2, 3]);
+	});
+
+	it('is done by the page’s drop, for the Options column only while it is folded, before the move is sent', () => {
+		const page = read(BOARD_PAGE);
+		expect(fn(page, 'isFoldedOptions')).toContain('return !optionsOpen && optionsColumn?.id === columnId;');
+		const finalize = fn(page, 'handleCardDndFinalize');
+		expect(finalize).toContain('const folded = isFoldedOptions(columnId);');
+		expect(finalize).toContain('const items = dndHandlers.foldedDropItems(e.detail.items as CardType[], e.detail.info?.id, folded);');
+		expect(finalize).toMatch(/dndHandlers\.handleCardDndFinalize\(\s+columnId, items, boardState\.columns,/);
+		// The items as the drop gave them are not sent past it.
+		expect(finalize.slice(finalize.indexOf('const items ='))).not.toMatch(/e\.detail\.items(?! as CardType\[\], e\.detail\.info\?\.id, folded\))/);
+	});
+
+	it('lights the strip while a card is over it, and puts it out as the card leaves', () => {
+		expect(foldedDropOver(TRIGGERS.DRAGGED_ENTERED)).toBe(true);
+		expect(foldedDropOver(TRIGGERS.DRAGGED_OVER_INDEX)).toBe(true);
+		for (const trigger of [TRIGGERS.DRAGGED_LEFT, TRIGGERS.DRAGGED_LEFT_ALL, TRIGGERS.DRAG_STARTED, TRIGGERS.DRAG_STOPPED, TRIGGERS.DROPPED_INTO_ZONE, undefined]) {
+			expect(foldedDropOver(trigger), String(trigger)).toBe(false);
+		}
+	});
+
+	it('lights the whole strip from its list’s consider events, puts it out on the drop, and finds the strip by the pointer', () => {
+		const page = read(BOARD_PAGE);
+		expect(fn(page, 'handleCardDndConsider')).toMatch(/\bholdDrag\(\);\s+(\/\/.*\s+)*if \(isFoldedOptions\(columnId\)\) optionsDropOver = dndHandlers\.foldedDropOver\(e\.detail\.info\?\.trigger\);\s+takeCardItems\(columnId, e\);\s+\}/);
+		// Put out first by every drop, folded or not, before a drop's early return
+		// for the column the card left (card 2535's review, F3).
+		expect(fn(page, 'handleCardDndFinalize')).toMatch(/^function handleCardDndFinalize\(columnId: number, e: CustomEvent\) \{\s+(\/\/.*\s+)*optionsDropOver = false;\s+const folded = isFoldedOptions\(columnId\);/);
+		// On the column, so the whole strip is lit, and only while it is folded.
+		expect(page).toContain('class:options-collapsed={collapsed} class:options-drop-over={collapsed && optionsDropOver}');
+		expect(page).toMatch(/\.kanban-column\.options-collapsed\.options-drop-over \{\s+outline: 2px solid var\(--accent-indigo\);/);
+		// A card held near its edge is found over the 56px strip by the pointer.
+		expect(page).toMatch(/dropTargetClasses: \['drop-target-active'\],[\s\S]{0,300}useCursorForDetection: true,[\s\S]{0,300}\}\}\s+onconsider=\{\(e\) => handleCardDndConsider\(column\.id, e\)\}/);
+	});
+
+	it('drops onto the folded strip with no flying copy: its list has no drop animation while folded (card 2535’s review, F2)', () => {
+		const page = read(BOARD_PAGE);
+		// The placeholder in the folded list is hidden, its place all zeros, so the
+		// drag's copy flew to the window's top left. svelte-dnd-action reads the
+		// switch from the list dropped into.
+		expect(page).toContain('{@const collapsed = isOptionsColumn(column) && !optionsOpen}');
+		expect(page).toMatch(/useCursorForDetection: true,\s+(\/\/.*\s+)*dropAnimationDisabled: collapsed\s+\}\}\s+onconsider=\{\(e\) => handleCardDndConsider\(column\.id, e\)\}/);
+	});
+
+	it('leaves the strip folded on a drop: nothing in the drag opens it', () => {
+		const page = read(BOARD_PAGE);
+		for (const name of ['handleCardDndConsider', 'handleCardDndFinalize', 'takeCardItems', 'isFoldedOptions']) {
+			const body = fn(page, name);
+			expect(body, name).not.toContain('setOptionsOpen(');
+			expect(body, name).not.toMatch(/optionsOpen\s*=[^=]/);
+		}
+		// The strip's press still opens it.
+		expect(page).toMatch(/class="options-strip"\s+onclick=\{\(\) => setOptionsOpen\(true\)\}/);
+	});
+
+	it('says the drop politely, unless the commitment toast has said it', () => {
+		expect(parkedInOptionsSaid(['Fix the login'], [])).toBe('"Fix the login" parked in Options');
+		expect(parkedInOptionsSaid(['One', 'Two'], [])).toBe('2 cards parked in Options');
+		expect(parkedInOptionsSaid(['Fix the login'], ['Returned "Fix the login" to Options'])).toBe('');
+		expect(parkedInOptionsSaid([], [])).toBe('');
+	});
+
+	it('pulses the count on each card the folded strip takes, not under reduced motion, and says it in a polite region', () => {
+		const page = read(BOARD_PAGE);
+		const finalize = fn(page, 'handleCardDndFinalize');
+		expect(finalize).toMatch(/if \(folded && result\.movedCards\.length > 0\) \{\s+pulseParked\(\);\s+sayParked\(dndHandlers\.parkedInOptionsSaid\(result\.movedCards\.map\(\(entry\) => entry\.card\.title\), result\.said\)\);/);
+		// Drawn again on each, so the animation starts again; pulsing only while
+		// the drop's flag is up, cleared as the pulse ends.
+		expect(page).toMatch(/\{#key optionsParked\}\s+<span class="options-strip-count" class:parked=\{optionsPulse\} onanimationend=\{\(\) => \(optionsPulse = false\)\}>\{column\.cards\.length\}<\/span>\s+\{\/key\}/);
+		expect(page).toMatch(/@media \(prefers-reduced-motion: reduce\) \{\s+\.options-strip-count\.parked \{ animation: none; \}/);
+		expect(page).toContain('<p class="parked-said" role="status">{parkedSaid}</p>');
+	});
+
+	it('does not pulse the count when the strip is folded again with no drop (card 2535’s review, F1)', () => {
+		const page = read(BOARD_PAGE);
+		// Folding draws the strip's count again (`{#if collapsed}`): it pulses only
+		// if the flag is up, and only a drop raises it, which a timer lowers too,
+		// as under reduced motion no animation runs to end.
+		expect(page).not.toMatch(/class:parked=\{optionsParked/);
+		expect(page.match(/optionsPulse = true/g)).toHaveLength(1);
+		expect(fn(page, 'pulseParked')).toMatch(/optionsParked\+\+;\s+optionsPulse = true;\s+clearTimeout\(pulseTimer\);\s+pulseTimer = setTimeout\(\(\) => \(optionsPulse = false\), PULSE_MS\);/);
+		expect(fn(page, 'setOptionsOpen')).not.toContain('optionsPulse');
+	});
+
+	it('forgets the last board’s pulse and words when the board changes, and empties the words a few seconds on (card 2535’s review, F1, F6)', () => {
+		const page = read(BOARD_PAGE);
+		expect(page).toMatch(/\$effect\(\(\) => \{\s+void optionsBoardId;\s+untrack\(forgetParked\);\s+\}\);/);
+		expect(fn(page, 'forgetParked')).toMatch(/clearTimeout\(pulseTimer\);\s+clearTimeout\(parkedTimer\);\s+optionsDropOver = false;\s+optionsPulse = false;\s+parkedSaid = '';/);
+		expect(fn(page, 'sayParked')).toMatch(/parkedTimer = setTimeout\(\(\) => \(parkedSaid = ''\), PARKED_SAID_MS\);/);
 	});
 });
