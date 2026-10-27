@@ -239,6 +239,8 @@ export type LoadOptions = {
 	/** The load of the layout at this path, rather than the page's. */
 	layout?: boolean;
 	headers?: Record<string, string>;
+	/** The request's cookies by name, as `cookies.get` gives them: decoded. None by default. */
+	cookies?: Record<string, string>;
 };
 
 export type LoadResult =
@@ -268,8 +270,8 @@ export async function pageLoad(path: string, opts: LoadOptions = {}): Promise<Lo
 		route: { id: found.page.pattern },
 		request: new Request(url, { headers: opts.headers }),
 		cookies: {
-			get: () => undefined,
-			getAll: () => [],
+			get: (name: string) => opts.cookies?.[name],
+			getAll: () => Object.entries(opts.cookies ?? {}).map(([name, value]) => ({ name, value })),
 			set: () => {},
 			delete: () => {},
 			serialize: () => ''

@@ -91,6 +91,8 @@ const TEST_FILES = [
 	'commitment.test.ts',
 	'confirm-modal.svelte.test.ts',
 	'content-security-policy.test.ts',
+	// Card 2526: the side pane's panels in the dashboard's Display menu, remembered per user.
+	'dashboard-side-pane.svelte.test.ts',
 	'dashboard.test.ts',
 	'database-location.test.ts',
 	'deletes-no-parent-key.test.ts',

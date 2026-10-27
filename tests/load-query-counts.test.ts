@@ -442,10 +442,13 @@ const MOST_READS: Record<string, number> = { owner: 23, member: 21, mate: 21, ad
  * The keys of the answer, of each board in it and of its analytics, in order, the same for every caller.
  * A board's row gained `kind` with migration 0060 (milestone 22), in the model's place for it,
  * and `optionsCount`, after `completedCards`, with card 2462 (slice S4a): every other figure
- * pinned below is unchanged, and no read was added.
+ * pinned below is unchanged, and no read was added. The answer gained `dashboardDisplay`, last,
+ * with card 2526: the caller's Display choice, from their cookie (the defaults here, with none).
+ * Re-pinned once a run had passed on the old pins with that key taken out of `keys` (a temporary
+ * edit of `shown`): nothing else in any answer moved, and it reads nothing of the database.
  */
 const KEYED = {
-	keys: 'boards,analytics,allCategories,favouriteBoardIds,allTasksTotals,spendByUser',
+	keys: 'boards,analytics,allCategories,favouriteBoardIds,allTasksTotals,spendByUser,dashboardDisplay',
 	boardKeys: [
 		'id,name,emoji,parentCardId,categoryId,isPublic,kind,createdBy,createdAt,updatedAt,totalCards,completedCards,optionsCount,tokenTotal,costUsd,lastActivity,subBoards,categoryName,categoryColor'
 	],

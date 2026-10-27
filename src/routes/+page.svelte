@@ -7,7 +7,8 @@
 	 */
 	import type { PageData } from './$types';
 	import { invalidateAll } from '$app/navigation';
-	import { onMount, onDestroy } from 'svelte';
+	import { page } from '$app/stores';
+	import { onMount, onDestroy, untrack } from 'svelte';
 	import { connectLiveRefresh } from '$lib/live-refresh';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	// The shared toast, for a write that failed (card 2148: each in the server's
@@ -29,6 +30,8 @@
 	import RequestToasts from '$lib/components/dashboard/RequestToasts.svelte';
 	import { loadXp } from '$lib/board/xp-utils';
 	import type { XpEntry } from '$lib/types';
+	import { defaultDisplay, sidePaneShown, writeDashboardDisplay, type DashboardDisplay } from '$lib/dashboard/side-pane';
+	import { dueFigures } from '$lib/utils/date-utils';
 
 	let { data }: { data: PageData } = $props();
 
@@ -43,6 +46,33 @@
 	let showCategoryManager = $state(false);
 	let showVelocityModal = $state(false);
 	let showSpendModal = $state(false);
+
+	// ─── The Display choice (card 2526) ──────────────────────────────────────
+	// The done switches and the side pane's panels, set from the boards
+	// table's Display menu and remembered for this viewer in this browser, in
+	// a cookie of their own (`src/lib/dashboard/side-pane.ts`). The load reads
+	// that cookie and hands the choice over as `data.dashboardDisplay`, so the
+	// server draws the dashboard as it was left and nothing flashes up as the
+	// page wakes; the page starts from it, and writes the cookie on each
+	// change. It is taken from the load again only when the user changes, by
+	// id: a live refresh hands the same choice back, or, with cookies blocked,
+	// the defaults, which would undo what was just chosen.
+	const displayUserId = $derived.by(() => $page.data.user?.id ?? null);
+	let display = $state<DashboardDisplay>(data.dashboardDisplay ?? defaultDisplay());
+	let displayFor = $page.data.user?.id ?? null;
+	$effect(() => {
+		const id = displayUserId;
+		if (id === displayFor) return;
+		displayFor = id;
+		display = untrack(() => data.dashboardDisplay) ?? defaultDisplay();
+	});
+	/** Takes the boards table's new choice and remembers it. */
+	function changeDisplay(next: DashboardDisplay) {
+		display = next;
+		writeDashboardDisplay(displayUserId, next);
+	}
+	/** The panels switched off, for the sidebar. */
+	const hiddenPanels = $derived<ReadonlySet<string>>(new Set(display.hiddenPanels));
 
 	/** The Active Tasks window, which the sidebar's tile opens. */
 	let activeTasksModal = $state<ReturnType<typeof ActiveTasksModal>>();
@@ -113,6 +143,18 @@
 		void data.analytics;
 		clock = new Date();
 	});
+
+	/**
+	 * Whether the side pane's column is drawn (card 2526): not with the pane
+	 * off, nor when no panel switched on has anything to draw, so no empty
+	 * column is left; the boards then take the width. Upcoming Deadlines is
+	 * counted on the page's clock as the sidebar counts it.
+	 */
+	const paneShown = $derived.by(() => {
+		const a = data.analytics;
+		const upcoming = clock ? dueFigures(a.dueCards, clock, undefined, a.longOverdue) : dueFigures(a.dueCards, new Date(a.asOf), 'UTC', a.longOverdue);
+		return sidePaneShown(display, { analytics: a, xpCount: xpEntries.length, upcomingCount: upcoming.upcoming.length });
+	});
 </script>
 
 <svelte:head>
@@ -123,7 +165,7 @@
 	<DashboardHeader {inboxCount} bind:showCreate />
 
 	<!-- ─── Analytics Section ────────────────────────────────────────────── -->
-	<div class="dashboard-grid">
+	<div class="dashboard-grid" class:no-sidebar={!paneShown}>
 		<div class="main-column stagger-children">
 			<!-- ─── Boards List ─────────────────────────────────────────────── -->
 			<BoardsTable
@@ -135,21 +177,25 @@
 				bind:expandedBoards
 				bind:collapsedCategories
 				bind:showCategoryManager
+				bind:display={() => display, changeDisplay}
 			/>
 		</div>
 
 		<!-- ─── Sidebar (Analytics) ──────────────────────────────────────── -->
+		{#if paneShown}
 		<div class="sidebar-column stagger-children">
 
 			<AnalyticsSidebar
 				{data}
 				{clock}
 				{xpEntries}
+				hidden={hiddenPanels}
 				openActiveTasksModal={() => activeTasksModal?.openActiveTasksModal()}
 				bind:showVelocityModal
 				bind:showSpendModal
 			/>
 		</div>
+		{/if}
 	</div>
 
 	<!-- Support modals -->
@@ -199,6 +245,8 @@
 		display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: var(--space-xl);
 		align-items: start;
 	}
+	/* The side pane off, or every panel in it (card 2526): the boards list takes the width. */
+	.dashboard-grid.no-sidebar { grid-template-columns: minmax(0, 1fr); }
 	.main-column { min-width: 0; }
 	.sidebar-column { display: flex; flex-direction: column; gap: var(--space-lg); position: sticky; top: var(--space-xl); }
 

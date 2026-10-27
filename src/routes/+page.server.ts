@@ -10,9 +10,10 @@ import { completeColumnIds, holdColumnIds, isCompleteColumnTitle, isUpstreamColu
 import { notUpstream } from '$lib/server/upstream';
 import { parseStamp, stamp } from '$lib/timestamps';
 import { daysFromDay, todayIn } from '$lib/utils/date-utils';
+import { dashboardDisplayCookie, parseDashboardDisplay } from '$lib/dashboard/side-pane';
 import type { PageServerLoad } from './$types';
 
-export const load: PageServerLoad = async ({ locals }) => {
+export const load: PageServerLoad = async ({ locals, cookies }) => {
 	const user = locals.user!;
 
 	// Get board IDs this user can access (null = admin, sees all). Read once
@@ -546,5 +547,11 @@ export const load: PageServerLoad = async ({ locals }) => {
 		.all();
 	const favouriteBoardIds = userFavourites.map(f => f.boardId);
 
-	return { boards: enriched, analytics, allCategories, favouriteBoardIds, allTasksTotals, spendByUser };
+	// The caller's Display choice (card 2526): the done switches and the side
+	// pane, from the cookie the page writes for them, so the page is drawn as
+	// it was left from the server's first paint. The defaults with no cookie,
+	// or one that cannot be read. Reads nothing of the database.
+	const dashboardDisplay = parseDashboardDisplay(cookies.get(dashboardDisplayCookie(user.id)));
+
+	return { boards: enriched, analytics, allCategories, favouriteBoardIds, allTasksTotals, spendByUser, dashboardDisplay };
 };
