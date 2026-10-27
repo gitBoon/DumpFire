@@ -12,6 +12,7 @@
 	import { COVER_PRESETS, coverPickerColour, isCoverValue } from '$lib/colours';
 	import { failureMessage } from '$lib/api';
 	import type { CardType } from '$lib/types';
+	import ColourSwatches from '$lib/components/ColourSwatches.svelte';
 
 	let {
 		card,
@@ -56,35 +57,30 @@
 	async function clearCover() {
 		await setCover('');
 	}
+
+	/** A cover is drawn only when it is one (`isCoverValue`): a gradient as it is, and a value stored before the rule as no cover. */
+	function coverDrawn(cover: string): string {
+		return isCoverValue(cover) ? cover : 'var(--bg-elevated)';
+	}
+
+	/** A cover's name: "Colour #6366f1", or "Gradient #667eea to #764ba2" for one of the gradients. */
+	function coverName(cover: string): string {
+		const ends = cover.match(/#[0-9a-fA-F]{6}/g) ?? [];
+		return ends.length === 2 ? `Gradient ${ends[0]} to ${ends[1]}` : `Colour ${cover}`;
+	}
 </script>
 
 <div class="form-group">
 	<label>Cover</label>
-	<div class="cover-picker">
-		<button class="cover-swatch cover-swatch-none" class:active={!coverUrl} onclick={clearCover} title="No cover" type="button"></button>
-		{#each COVER_PRESETS as preset}
-			<button class="cover-swatch" class:active={coverUrl === preset} style="background: {preset}" onclick={() => setCover(preset)} title="Set cover" type="button"></button>
-		{/each}
-		<label class="color-custom-wrapper">
-			<input type="color" value={coverPickerColour(coverUrl)} onchange={(e) => setCover((e.target as HTMLInputElement).value)} class="color-native-input" />
-			{#if isCoverValue(coverUrl)}
-				<span class="cover-swatch custom" style="background: {coverUrl}">✎</span>
-			{:else}
-				<span class="cover-swatch custom" style="background: var(--bg-elevated)">✎</span>
-			{/if}
-		</label>
-	</div>
+	<!-- The shared picker (card 2546): each pick saved as it is made, the custom colour's as its picker is closed. -->
+	<ColourSwatches colours={COVER_PRESETS} value={coverUrl} onpick={setCover} customValue={coverPickerColour(coverUrl)} draw={coverDrawn} nameOf={coverName} size="large" label="Cover">
+		{#snippet lead()}
+			<button class="cover-swatch cover-swatch-none" class:active={!coverUrl} aria-pressed={!coverUrl} onclick={clearCover} title="No cover" type="button"></button>
+		{/snippet}
+	</ColourSwatches>
 </div>
 
 <style>
-	/* The window's own field style, on the colour box here (CardModal.svelte's `.card-modal-content input`). */
-	:global(.card-modal-content) input {
-		background: var(--bg-base); border: 1px solid var(--glass-border);
-	}
-	:global(.card-modal-content) input:focus {
-		border-color: var(--accent-indigo); box-shadow: 0 0 0 2px var(--accent-purple-glow);
-	}
-
 	.form-group { margin-bottom: var(--space-lg); }
 	.form-group label {
 		display: flex; align-items: center; gap: var(--space-sm);
@@ -92,10 +88,7 @@
 		text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: var(--space-sm);
 	}
 
-	/* ─── Cover ──────────────────────────────────────────── */
-	.cover-picker {
-		display: flex; flex-wrap: wrap; gap: 4px;
-	}
+	/* ─── Cover: No cover, drawn first in the shared picker's row ─── */
 	.cover-swatch {
 		width: 24px; height: 24px; border-radius: 6px; border: 2px solid transparent;
 		cursor: pointer; transition: all 0.15s; flex-shrink: 0;
@@ -103,8 +96,6 @@
 	.cover-swatch:hover { transform: scale(1.15); }
 	.cover-swatch.active { border-color: var(--text-primary); box-shadow: 0 0 0 1px var(--bg-card); }
 
-	/* Cover swatches */
-	.cover-picker { display: flex; gap: 6px; flex-wrap: wrap; }
 	.cover-swatch {
 		width: 26px; height: 26px; border-radius: var(--radius-sm);
 		border: 2px solid transparent; cursor: pointer;
@@ -119,11 +110,5 @@
 		content: ''; position: absolute; inset: 4px;
 		border: 1.5px dashed var(--text-tertiary); border-radius: 3px;
 	}
-	.cover-swatch.custom {
-		font-size: 0.6rem; color: white; text-shadow: 0 1px 2px rgba(0,0,0,0.5);
-	}
-
-	/* Custom color picker (shared pattern) */
-	.color-custom-wrapper { position: relative; cursor: pointer; display: inline-flex; }
-	.color-native-input { position: absolute; width: 0; height: 0; opacity: 0; pointer-events: none; }
+	.cover-swatch:focus-visible { outline: 2px solid var(--accent-indigo); outline-offset: 2px; }
 </style>

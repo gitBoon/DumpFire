@@ -27,6 +27,7 @@
 	import { COLUMN_COLORS } from '$lib/utils/constants';
 	import type { LabelType } from '$lib/types';
 	import { drawnColour } from '$lib/colours';
+	import ColourSwatches from '$lib/components/ColourSwatches.svelte';
 
 	let {
 		cardId,
@@ -242,11 +243,7 @@
 		{#if editingLabel}
 			<div class="label-form">
 				<input type="text" class="label-input" placeholder="Label name" maxlength="200" bind:value={editName} onkeydown={(e) => nameKeys(e, saveLabel, stopEditing)} aria-label="Label name" />
-				<div class="label-colors">
-					{#each COLUMN_COLORS as color}
-						<button class="label-swatch" class:active={editColor === color} style="background: {drawnColour(color)}" onclick={() => (editColor = color)} aria-label="Colour {color}" type="button"></button>
-					{/each}
-				</div>
+				<ColourSwatches colours={COLUMN_COLORS} bind:value={editColor} custom={false} size="small" label="Colour for label {editingLabel.name}" />
 				{#if confirmingDelete}
 					<p class="label-confirm">Take “{editingLabel.name}” off every card on this board and delete it?</p>
 					<div class="label-actions">
@@ -268,11 +265,8 @@
 		<div class="label-form">
 			<!-- svelte-ignore a11y_autofocus -->
 			<input type="text" class="label-input" placeholder="Label name" maxlength="200" bind:value={newName} onkeydown={(e) => nameKeys(e, createLabel, () => (showNew = false))} aria-label="New label name" autofocus />
-			<div class="label-colors">
-				{#each COLUMN_COLORS as color}
-					<button class="label-swatch" class:active={newColor === color} style="background: {drawnColour(color)}" onclick={() => (newColor = color)} aria-label="Colour {color}" type="button"></button>
-				{/each}
-			</div>
+			<!-- The shared picker, presets only (card 2546), as in the edit form above. -->
+			<ColourSwatches colours={COLUMN_COLORS} bind:value={newColor} custom={false} size="small" label="New label colour" />
 			<div class="label-actions">
 				<button class="label-btn primary" onclick={createLabel} disabled={saving || !newName.trim()} type="button">Create</button>
 				<button class="label-btn" onclick={() => (showNew = false)} type="button">Cancel</button>
@@ -320,14 +314,6 @@
 		font-family: var(--font-family);
 	}
 	.label-input:focus { outline: none; border-color: var(--accent-indigo); }
-	.label-colors { display: flex; gap: 4px; flex-wrap: wrap; }
-	.label-swatch {
-		width: 20px; height: 20px; border-radius: var(--radius-sm);
-		border: 2px solid transparent; cursor: pointer;
-		transition: all var(--duration-fast) var(--ease-out);
-	}
-	.label-swatch:hover { transform: scale(1.15); }
-	.label-swatch.active { border-color: var(--text-primary); box-shadow: 0 0 6px rgba(255, 255, 255, 0.2); }
 	.label-confirm { font-size: 0.75rem; color: var(--text-primary); margin: 0; }
 
 	.label-actions { display: flex; gap: var(--space-sm); flex-wrap: wrap; }

@@ -11,6 +11,7 @@
   import { COLUMN_COLORS } from '$lib/utils/constants';
   import { drawnColour } from '$lib/colours';
   import { holdFocus } from '$lib/dialog-focus';
+  import ColourSwatches from '$lib/components/ColourSwatches.svelte';
 
   /**
    * @prop categories — Current board categories
@@ -68,7 +69,7 @@
       {#each categories as cat (cat.id)}
         <span class="category-chip" style="background: {drawnColour(cat.color)}15; color: {drawnColour(cat.color)}; border: 1px solid {drawnColour(cat.color)}35">
           {cat.name}
-          <button class="chip-delete" onclick={() => onDeleteCategory(cat.id)} title="Delete" style="color: {drawnColour(cat.color)}">
+          <button type="button" class="chip-delete" onclick={() => onDeleteCategory(cat.id)} title="Delete" aria-label="Delete category {cat.name}" style="color: {drawnColour(cat.color)}">
             <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 2l6 6M8 2L2 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
           </button>
         </span>
@@ -79,15 +80,9 @@
     <!-- Add new category -->
     <div class="add-category-row">
       <input id="category-name" type="text" placeholder="Category name..." bind:value={newName} onkeydown={(e) => e.key === 'Enter' && addCategory()} />
-      <div class="color-row compact">
-        {#each COLUMN_COLORS.slice(0, 8) as color}
-          <button type="button" class="color-swatch small" class:active={newColor === color} aria-label="Colour {color}" aria-pressed={newColor === color} style="background: {drawnColour(color)}" onclick={() => (newColor = color)}></button>
-        {/each}
-        <!-- The browser's own colour picker, laid over the ✎ swatch: the Tab stop is the swatch you see, named (card 2473's follow-up). It sat at no size, a Tab stop with nothing to show. -->
-        <label class="color-custom-wrapper">
-          <input type="color" bind:value={newColor} class="color-native-input" aria-label="Custom colour" />
-          <span class="color-swatch small custom" style="background: {drawnColour(newColor)}" aria-hidden="true">✎</span>
-        </label>
+      <!-- Named swatches, and the browser's own picker laid over the ✎ swatch (card 2473's follow-up, now shared: card 2546). -->
+      <div class="swatches">
+        <ColourSwatches colours={COLUMN_COLORS.slice(0, 8)} bind:value={newColor} size="small" label="Category colour" />
       </div>
       <button class="btn-primary small" onclick={addCategory} disabled={!newName.trim() || adding}>Add</button>
     </div>
@@ -121,19 +116,6 @@
   .empty-cats { font-size: 0.85rem; color: var(--text-tertiary); text-align: center; padding: var(--space-lg); width: 100%; }
   .add-category-row { margin-top: var(--space-lg); padding-top: var(--space-lg); border-top: 1px solid var(--glass-border); display: flex; flex-direction: column; gap: var(--space-sm); }
   .add-category-row .btn-primary.small { padding: var(--space-sm) var(--space-lg); font-size: 0.8rem; align-self: flex-start; }
-  .color-row { display: flex; flex-wrap: wrap; gap: 6px; }
-  .color-row.compact { margin-top: var(--space-sm); }
-  .color-swatch { width: 24px; height: 24px; border-radius: var(--radius-sm); border: 2px solid transparent; cursor: pointer; transition: all var(--duration-fast) var(--ease-out); }
-  .color-swatch:hover { transform: scale(1.15); }
-  .color-swatch.active { border-color: var(--text-primary); box-shadow: 0 0 8px rgba(255, 255, 255, 0.2); }
-  .color-swatch.small { width: 20px; height: 20px; }
-  .color-custom-wrapper { position: relative; cursor: pointer; display: inline-flex; }
-  .color-native-input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0; opacity: 0; cursor: pointer; }
-  .color-native-input:focus-visible + .color-swatch.custom,
-  .color-swatch.small:focus-visible { outline: 2px solid var(--accent-indigo); outline-offset: 2px; }
-  .color-swatch.custom {
-    display: flex; align-items: center; justify-content: center;
-    font-size: 0.6rem; color: white; text-shadow: 0 1px 2px rgba(0,0,0,0.5); cursor: pointer;
-  }
+  .swatches { margin-top: var(--space-sm); }
   .modal-actions { display: flex; justify-content: flex-end; gap: var(--space-md); margin-top: var(--space-2xl); }
 </style>
