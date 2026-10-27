@@ -1,7 +1,7 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { boards, columns, cards } from '$lib/server/db/schema';
-import { eq, and, isNotNull, inArray, gte } from 'drizzle-orm';
+import { eq, and, isNotNull, isNull, inArray, gte } from 'drizzle-orm';
 import { getBoardRole } from '$lib/server/board-access';
 import { completeColumnIds } from '$lib/column-role';
 import { committedAll, cycleStarts, flowTimes, timeInOptions, upstreamFigures } from '$lib/server/upstream';
@@ -49,6 +49,13 @@ function timesOf(hours: number[]) {
  *
  * Returns lead time, cycle time, and throughput data for completed cards.
  * Query params: ?days=N (default: 30)
+ *
+ * Only live completed cards are measured: an archived card is left out of
+ * `completed`, `leadTime`, `cycleTime` and `cards`, as velocity on the
+ * dashboard and the reports leave it out (card 2475). The window's flow
+ * figures below are not narrowed so: they count what arrived and what
+ * happened upstream, and `upstream` counts archived options as discarded and
+ * archived committed work as abandoned by design.
  *
  * Milestone 22 (card 2462): options are no delivery work. Only completed
  * cards are measured, and a Complete column is never upstream, so no option
@@ -112,7 +119,11 @@ export const GET: RequestHandler = async ({ params, locals, url }) => {
 		.where(and(
 			inArray(cards.columnId, completeColIds),
 			isNotNull(cards.completedAt),
-			gte(cards.completedAt, cutoff)
+			gte(cards.completedAt, cutoff),
+			// Live cards only, as velocity and the reports count them (card
+			// 2475): archiving a finished card took it out of those but not
+			// out of the throughput, lead time and cycle time here.
+			isNull(cards.archivedAt)
 		))
 		.all();
 
