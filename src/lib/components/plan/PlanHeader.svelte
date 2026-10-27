@@ -1,6 +1,7 @@
 <!--
   PlanHeader.svelte — The plan page's header: the back link to every
-  milestone, the goal's name (double-click to rename), its status chip, the
+  milestone, the goal's name (a button that renames it, for someone who may:
+  card 2472), its status chip, the
   target date (a date until you go to change it, late while work remains),
   PDF, Close or Reopen, and Add cards (card 2281, slice C3a-3: moved from
   src/routes/plan/[id]/+page.svelte).
@@ -16,13 +17,14 @@
 	import { daysUntilDue, formatDueDate } from '$lib/utils/date-utils';
 	// The Ready chip's tooltip, which names the goal's options (the S4b review's J7).
 	import { readyToCloseTitle } from '$lib/progress';
-	import { onDestroy, onMount } from 'svelte';
+	import { onDestroy, onMount, tick as nextTick } from 'svelte';
 
 	let {
 		summary,
 		milestone,
 		busy,
 		mutate,
+		canRename = false,
 		picking = $bindable()
 	}: {
 		/** The page's: the plan, as its load gave it. */
@@ -33,6 +35,8 @@
 		busy: boolean;
 		/** The page's one PATCH path for every change to the goal: true once it is saved. */
 		mutate: (body: Record<string, unknown>) => Promise<boolean>;
+		/** The page's load: whether the caller may change the goal (`canEditMilestone`, the PATCH's own rule): the name is a button only then (card 2472). */
+		canRename?: boolean;
 		/** The page's: whether the card picker is open. */
 		picking: boolean;
 	} = $props();
@@ -41,11 +45,6 @@
 	let nameDraft = $state('');
 	let editingTarget = $state(false);
 
-	/**
-	 * Overdue only counts while work remains. A goal finished after its target
-	 * date is done, not late, and flagging it red would be nagging about
-	 * something nobody can act on.
-	 */
 	/**
 	 * Everything in the goal is done, but it has not been closed.
 	 *
@@ -72,6 +71,11 @@
 		if (tickInterval) clearInterval(tickInterval);
 	});
 
+	/**
+	 * Overdue only counts while work remains. A goal finished after its target
+	 * date is done, not late, and flagging it red would be nagging about
+	 * something nobody can act on.
+	 */
 	const targetOverdue = $derived.by(() => {
 		void tick;
 		if (!milestone.targetDate) return false;
@@ -121,6 +125,30 @@
 		}
 	}
 
+	/** The name's button, where the focus goes back once the rename box closes from the keyboard. */
+	let renameButton = $state<HTMLButtonElement>();
+
+	/**
+	 * The rename box's keys (card 2472, as card 2470 did the board's name).
+	 * Enter sends the name; Escape closes the box and sends nothing (the blur
+	 * that follows finds it closed: saveName). Once the box has gone, the
+	 * focus goes back to the name's button, drawn again in its place, only
+	 * where it fell to the page: someone who went on to another field while
+	 * the save was out stays there (the review). A refused rename keeps the
+	 * box open, and the focus in it.
+	 */
+	async function renameKey(e: KeyboardEvent) {
+		if (e.key === 'Escape') {
+			e.preventDefault();
+			editingName = false;
+		} else if (e.key === 'Enter') {
+			await saveName();
+		} else return;
+		await nextTick();
+		const fellToPage = !document.activeElement || document.activeElement === document.body;
+		if (!editingName && fellToPage) renameButton?.focus();
+	}
+
 	async function toggleStatus() {
 		await mutate({ status: milestone.status === 'open' ? 'closed' : 'open' });
 	}
@@ -144,13 +172,21 @@
 				class="name-input"
 				bind:value={nameDraft}
 				onblur={() => saveName(true)}
-				onkeydown={(e) => { if (e.key === 'Enter') saveName(); if (e.key === 'Escape') editingName = false; }}
+				onkeydown={renameKey}
 				autofocus
 			/>
 		{:else}
-			<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-			<h1 ondblclick={startRename} title="Double-click to rename">
-				{milestone.name}
+			<!-- The heading holds a real button (card 2472, as card 2470 did the board's
+			     name), so Enter and Space start the rename, and a click or a double-click;
+			     someone who cannot change the goal sees its name only. -->
+			<h1>
+				{#if canRename}
+					<button type="button" class="name-btn" aria-label="Rename goal {milestone.name}" title="Rename this goal" onclick={startRename} bind:this={renameButton}>
+						{milestone.name}
+					</button>
+				{:else}
+					{milestone.name}
+				{/if}
 			</h1>
 		{/if}
 		<span
@@ -251,8 +287,20 @@
 	.plan-header h1 {
 		font-size: 1.1rem; font-weight: 700; color: var(--text-primary);
 		letter-spacing: -0.02em; min-width: 0;
-		overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: text;
+		overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 	}
+	/* The name's button looks as the heading did (card 2472): the heading's
+	   font, no button chrome, and a ring where the keyboard has it, drawn
+	   inside the button as the heading clips what overflows it. */
+	.name-btn {
+		display: block; max-width: 100%; padding: 0;
+		font: inherit; color: inherit; letter-spacing: inherit;
+		background: none; border: none; text-align: inherit; cursor: pointer;
+		border-radius: var(--radius-sm);
+		overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+	}
+	.name-btn:hover { background: var(--glass-hover); }
+	.name-btn:focus-visible { outline: 2px solid var(--accent-indigo); outline-offset: -2px; }
 
 	.name-input {
 		flex: 1; min-width: 0; padding: 5px 10px;

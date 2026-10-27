@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.61
+version: 1.62
 status: As-Built
 date: 2026-10-27
 tags:
@@ -1209,7 +1209,7 @@ The page keeps its props, the live stream (its one `keepStreamOpen`), the filter
 
 | Component (`src/lib/components/tasks/`) | What it holds |
 |---|---|
-| `AllTasksHeader.svelte` | Filters, search, Hide blocked and the More menu; binds `boardFilter`, `searchQuery`, `hideBlocked`, `showMoreMenu`. Its board filter is as it was, not `BoardFilterSelect.svelte`, which would change its width and add a label |
+| `AllTasksHeader.svelte` | The board filter and the search in the bar; a `HeaderMenu` **Views** (Planning and All To Do, carrying the chosen board) and a `HeaderMenu` **More**: a Show group of `menuitemcheckbox` items (Hide blocked, which leaves it open, and the Activity Log, Statistics and Archived Cards panels, which close it, `data-menu-close`), an Export group (Export to CSV) and `ThemeMenuItems` with its heading; More's dot is lit by Hide blocked alone (card 2472). Binds `boardFilter`, `searchQuery`, `hideBlocked`; the panels' open flags come from the page with their toggles, and whether a menu is open is HeaderMenu's own. Its board filter is as it was, not `BoardFilterSelect.svelte`, which would change its width and add a label |
 | `AllTaskCard.svelte` | A card's face; calls the page's `openCard` and opens the Move window |
 | `TasksActivityPanel.svelte` | The Activity Log, always mounted; binds `activityOpen`; exports `toggleActivity` and `fetchActivity` |
 | `TasksArchivePanel.svelte` | Archived Cards, always mounted; restore, and delete for good through the page's `showConfirm`; binds `showArchivePanel` |

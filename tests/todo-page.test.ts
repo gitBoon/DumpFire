@@ -864,7 +864,8 @@ describe('the three ways in (test 16)', () => {
 			"const todoHref = $derived(String(boardFilter) === 'all' ? '/todo' : `/todo?${new URLSearchParams({ board: String(boardFilter) })}`);"
 		);
 		const planning = source.indexOf("href={chosenBoard ? `/plan?board=${chosenBoard}` : '/plan'}");
-		const todo = source.indexOf('<a href={todoHref} class="hdr-control hdr-action"');
+		// Both in its Views menu since card 2472.
+		const todo = source.indexOf('<a href={todoHref} class="hm-item" role="menuitem" tabindex="-1"');
 		expect(planning).toBeGreaterThan(-1);
 		expect(todo).toBeGreaterThan(planning);
 		// What the link hands /todo is read back there as the same board filter.

@@ -46,8 +46,8 @@ function filesUnder(dir: string): string[] {
 }
 
 describe('the theme as a menu on every page (card 2471)', () => {
+	// All Tasks' header is not among them since card 2472: its theme is in its More menu, with the heading.
 	const pages = [
-		'src/lib/components/tasks/AllTasksHeader.svelte',
 		'src/routes/account/+page.svelte',
 		'src/routes/admin/+page.svelte',
 		'src/routes/archived/+page.svelte',

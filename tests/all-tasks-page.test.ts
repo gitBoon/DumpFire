@@ -180,11 +180,14 @@ const cardNamed = (target: HTMLElement, title: string) =>
 	[...target.querySelectorAll<HTMLElement>('.card')].find((each) => each.querySelector('.card-title')!.textContent!.includes(title))!;
 const toastsSaid = () => [...document.querySelectorAll('.toast-msg')].map((toast) => toast.textContent!.trim());
 
+/** The header's menu named `label` (card 2472: a HeaderMenu), or null while it is shut. */
+const menuOf = (target: HTMLElement, label: string) => target.querySelector<HTMLElement>(`[role="menu"][aria-label="${label}"]`);
+
 /** Opens the header's More menu and picks one of its panels. */
 function fromMoreMenu(target: HTMLElement, panel: string) {
 	buttonNamed(target, 'More').click();
 	flushSync();
-	buttonNamed(target.querySelector('.more-dropdown')!, panel).click();
+	buttonNamed(menuOf(target, 'More')!, panel).click();
 	flushSync();
 }
 
@@ -192,7 +195,7 @@ function fromMoreMenu(target: HTMLElement, panel: string) {
 function ticked(target: HTMLElement) {
 	buttonNamed(target, 'More').click();
 	flushSync();
-	const items = [...target.querySelectorAll('.more-dropdown-item')].filter((item) => item.querySelector('.more-check')).map((item) => item.textContent!.replace('✓', '').trim());
+	const items = [...menuOf(target, 'More')!.querySelectorAll('[role="menuitemcheckbox"]')].filter((item) => item.querySelector('.hm-check')).map((item) => item.textContent!.replace('✓', '').trim());
 	// A click anywhere on the page closes it again.
 	target.querySelector<HTMLElement>('.all-page-wrapper')!.click();
 	flushSync();
@@ -576,11 +579,11 @@ describe('All Tasks, its components joined up through the page (card 2281, slice
 		const target = draw();
 		buttonNamed(target, 'More').click();
 		flushSync();
-		expect(target.querySelector('.more-dropdown')).not.toBeNull();
+		expect(menuOf(target, 'More')).not.toBeNull();
 
 		target.querySelector<HTMLElement>('.kanban-scroll')!.click();
 		flushSync();
-		expect(target.querySelector('.more-dropdown')).toBeNull();
+		expect(menuOf(target, 'More')).toBeNull();
 	});
 
 	it('opens and closes Statistics from the More menu, drawn by the page', async () => {
@@ -617,13 +620,20 @@ describe('All Tasks, its components joined up through the page (card 2281, slice
 		filter.dispatchEvent(new Event('change', { bubbles: true }));
 		flushSync();
 		expect(cardTitles(target)).toEqual(['#7 Plan']);
-		// The links that carry the filter follow it.
-		expect(target.querySelector<HTMLAnchorElement>('a[href^="/plan"]')!.getAttribute('href')).toBe('/plan?board=3');
+		// The links that carry the filter follow it: Planning, in Views (card 2472).
+		buttonNamed(target, 'Views').click();
+		flushSync();
+		expect(menuOf(target, 'Views')!.querySelector<HTMLAnchorElement>('a[href^="/plan"]')!.getAttribute('href')).toBe('/plan?board=3');
+		document.body.click();
+		flushSync();
 		filter.value = 'all';
 		filter.dispatchEvent(new Event('change', { bubbles: true }));
 		flushSync();
 
-		buttonNamed(target, 'Hide blocked').click();
+		// Hide blocked, in More (card 2472).
+		buttonNamed(target, 'More').click();
+		flushSync();
+		buttonNamed(menuOf(target, 'More')!, 'Hide blocked').click();
 		flushSync();
 		expect(cardTitles(target)).toEqual(['#7 Plan']);
 	});
@@ -808,7 +818,10 @@ describe('All Tasks, its components joined up through the page (card 2281, slice
 		filter.dispatchEvent(new Event('change', { bubbles: true }));
 		flushSync();
 
-		buttonNamed(target, 'Hide blocked').click();
+		// Hide blocked, in More (card 2472).
+		buttonNamed(target, 'More').click();
+		flushSync();
+		buttonNamed(menuOf(target, 'More')!, 'Hide blocked').click();
 		flushSync();
 		expect(showMore()).toBe('Show More');
 	});

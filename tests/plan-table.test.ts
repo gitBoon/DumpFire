@@ -46,6 +46,7 @@ import {
 	type TableRow
 } from '$lib/plan-table';
 import { pageLoad } from './helpers/actions';
+import { api } from './helpers/api';
 import {
 	addBoardMember,
 	makeBoard,
@@ -599,5 +600,33 @@ describe('the page, as source', () => {
 			}
 		}
 		expect(unread).toEqual([]);
+	});
+});
+
+// Card 2472: the goal's name is a rename button only for someone the PATCH would take a rename from.
+describe('who the plan page offers the rename to (card 2472)', () => {
+	it('offers it to whoever can edit the goal’s board and to an administrator, not to a viewer, as the PATCH answers each', async () => {
+		const admin = makeUser({ username: 'admin', role: 'admin' });
+		expect((await planData(owner)).canRename).toBe(true);
+		expect((await planData(admin)).canRename).toBe(true);
+		expect((await planData(viewer)).canRename).toBe(false);
+
+		const rename = (user: SessionUser, name: string) => api('PATCH', `/api/milestones/${milestoneId}`, { user, body: { name } });
+		expect((await rename(viewer, 'Not taken')).status).toBe(403);
+		expect((await rename(owner, 'Taken')).status).toBe(200);
+	});
+
+	it('offers a goal across boards to its maker, not to another who can open it', async () => {
+		const other = makeUser({ username: 'other' });
+		addBoardMember(A.board, other, 'editor');
+		const across = makeMilestone({ name: 'Across', createdBy: owner, cards: [a2] }).id;
+		const load = async (user: SessionUser) => {
+			const res = await pageLoad(`/plan/${across}`, { user });
+			if (res.type !== 'data') throw new Error(`the plan page answered ${JSON.stringify(res)}`);
+			return res.data.canRename;
+		};
+		expect(await load(owner)).toBe(true);
+		expect(await load(other)).toBe(false);
+		expect((await api('PATCH', `/api/milestones/${across}`, { user: other, body: { name: 'Not taken' } })).status).toBe(403);
 	});
 });
