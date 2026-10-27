@@ -13,6 +13,12 @@
   A board's count and bar are its committed work (milestone 22): an ideas
   board's row reads "N ideas" with no completion bar, and a delivery board
   with options says on its count that they are not counted.
+
+  The Display menu also shows and hides the side pane and each of its panels
+  (card 2526). The whole choice, the two switches with it, is the page's,
+  bound here (`display`): the page draws the pane from it and remembers it
+  for the viewer (`src/lib/dashboard/side-pane.ts`). Each change here hands
+  the page a new choice, never a changed one, so the page's binding sees it.
 -->
 <script lang="ts">
 	import type { PageData } from '../../../routes/$types';
@@ -25,6 +31,7 @@
 	import { parseStamp } from '$lib/timestamps';
 	import { boardRowCount, boardRowSize, boardRowTitle, drawsCompletion, timeAgo } from '$lib/dashboard/format';
 	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
+	import { SIDE_PANE_PANELS, defaultDisplay, displayChanged as isDisplayChanged, displayTitle, withPanel, type DashboardDisplay, type SidePanePanel } from '$lib/dashboard/side-pane';
 
 	let {
 		data,
@@ -34,7 +41,8 @@
 		showCreate = $bindable(),
 		expandedBoards = $bindable(),
 		collapsedCategories = $bindable(),
-		showCategoryManager = $bindable()
+		showCategoryManager = $bindable(),
+		display = $bindable(defaultDisplay())
 	}: {
 		/** What the dashboard's load gave it, passed on as it is. */
 		data: PageData;
@@ -52,12 +60,36 @@
 		collapsedCategories: Set<string>;
 		/** The page's: whether Manage Categories is open. */
 		showCategoryManager: boolean;
+		/** The page's: the Display choice, the done switches and the side pane (card 2526). */
+		display?: DashboardDisplay;
 	} = $props();
 
-	let showCompletedSubs = $state(false);
-	let showCompletedBoards = $state(true);
-	/** Either switch off its default (done boards shown, done subs hidden): the Display button's dot. */
-	let displayChanged = $derived(!showCompletedBoards || showCompletedSubs);
+	let showCompletedSubs = $derived(display.showCompletedSubs);
+	let showCompletedBoards = $derived(display.showCompletedBoards);
+	/** Any of the choice off its default (a switch, the pane or a panel): the Display button's dot. */
+	let displayChanged = $derived(isDisplayChanged(display));
+	/** The panels' switches are greyed and skipped while the whole pane is off. */
+	let paneHidden = $derived(display.paneHidden);
+
+	/** A new choice for the page, the rest of it as it was. */
+	function setDisplay(change: Partial<DashboardDisplay>) {
+		display = { ...display, ...change };
+	}
+
+	/**
+	 * A greyed switch takes no focus from a press of the mouse: the focus stays
+	 * where it was, so ↓ goes on from there. HeaderMenu's keys skip it, and
+	 * with the focus on an item they do not list, ↓ would start again at the top.
+	 */
+	function keepFocusOffGreyed(e: MouseEvent) {
+		if (display.paneHidden) e.preventDefault();
+	}
+
+	/** Switches one panel, unless the pane is off, when its switch is greyed and does nothing. */
+	function togglePanel(key: SidePanePanel) {
+		if (display.paneHidden) return;
+		display = withPanel(display, key, display.hiddenPanels.includes(key));
+	}
 
 	// Sort state
 	type SortColumn = 'name' | 'activity' | 'cards' | 'progress' | 'tokens' | 'cost';
@@ -203,6 +235,10 @@
 
 	// Removed onMount category expanding since we default to not collapsed
 
+	/** Names the Display menu's Side pane section for a screen reader. */
+	const uid = $props.id();
+	const sidePaneLabelId = `display-side-pane-${uid}`;
+
 	function toggleCategory(catName: string) {
 		const next = new Set(collapsedCategories);
 		if (next.has(catName)) next.delete(catName);
@@ -217,26 +253,40 @@
 			<h2>Your Boards</h2>
 			<span class="section-count">{a.totalBoards} boards · {a.totalSubBoards} sub-boards</span>
 		</div>
-		<!-- The done-board and done-sub switches and Manage Categories, in one
-		     menu (card 2466). Its dot says a switch is off its default. -->
+		<!-- The done-board and done-sub switches, the side pane and its panels
+		     (card 2526), and Manage Categories, in one menu (card 2466). Its dot
+		     says something is off its default. -->
 		<div class="header-actions">
 			<HeaderMenu
 				label="Display"
 				triggerClass="toggle-completed-btn display-btn"
 				triggerId="display-menu-btn"
-				triggerTitle={displayChanged ? 'Display: a setting is changed from its default' : 'Display: done boards, done sub-boards and categories'}
+				triggerTitle={displayTitle(display)}
 				triggerActive={displayChanged}
 			>
 				{#snippet trigger()}
 					Display
 					{#if displayChanged}<span class="display-dot" aria-label="changed"></span>{/if}
 				{/snippet}
-				<button class="hm-item" role="menuitemcheckbox" tabindex="-1" aria-checked={showCompletedBoards} onclick={() => showCompletedBoards = !showCompletedBoards}>
+				<button class="hm-item" role="menuitemcheckbox" tabindex="-1" aria-checked={showCompletedBoards} onclick={() => setDisplay({ showCompletedBoards: !showCompletedBoards })}>
 					{showCompletedBoards ? '✅ Showing done boards' : '👁️ Show done boards'}
 				</button>
-				<button class="hm-item" role="menuitemcheckbox" tabindex="-1" aria-checked={showCompletedSubs} onclick={() => showCompletedSubs = !showCompletedSubs}>
+				<button class="hm-item" role="menuitemcheckbox" tabindex="-1" aria-checked={showCompletedSubs} onclick={() => setDisplay({ showCompletedSubs: !showCompletedSubs })}>
 					{showCompletedSubs ? '✅ Showing done subs' : '👁️ Show done subs'}
 				</button>
+				<div class="hm-divider" role="separator"></div>
+				<div class="hm-label" id={sidePaneLabelId}>Side pane</div>
+				<div role="group" aria-labelledby={sidePaneLabelId}>
+					<button class="hm-item" role="menuitemcheckbox" tabindex="-1" aria-checked={!paneHidden} onclick={() => setDisplay({ paneHidden: !paneHidden })}>
+						{paneHidden ? '👁️ Show the side pane' : '✅ Showing the side pane'}
+					</button>
+					{#each SIDE_PANE_PANELS as panel (panel.key)}
+						{@const shown = !display.hiddenPanels.includes(panel.key)}
+						<button class="hm-item" role="menuitemcheckbox" tabindex="-1" aria-checked={shown} aria-disabled={paneHidden ? 'true' : undefined} data-panel={panel.key} title={paneHidden ? 'The side pane is hidden' : undefined} onmousedown={keepFocusOffGreyed} onclick={() => togglePanel(panel.key)}>
+							{shown ? '✅' : '👁️'} {panel.label}
+						</button>
+					{/each}
+				</div>
 				<div class="hm-divider" role="separator"></div>
 				<button class="hm-item" role="menuitem" tabindex="-1" title="Manage Categories" onclick={() => showCategoryManager = true}>
 					🏷️ Manage Categories
@@ -485,6 +535,15 @@
 		display: inline-block; width: 7px; height: 7px; border-radius: 50%;
 		background: var(--accent-indigo);
 	}
+	/* A panel's switch while the whole pane is off: greyed, with no hover or
+	   focus highlight, and HeaderMenu's keys skip it (card 2526). */
+	.header-actions :global(.hm-item[aria-disabled='true']) { opacity: 0.45; cursor: default; }
+	.header-actions :global(.hm-item[aria-disabled='true']:hover),
+	.header-actions :global(.hm-item[aria-disabled='true']:focus) {
+		background: transparent; color: var(--text-secondary); box-shadow: none;
+	}
+	.header-actions :global(.hm-item[aria-disabled='true'][aria-checked='true']:hover),
+	.header-actions :global(.hm-item[aria-disabled='true'][aria-checked='true']:focus) { color: var(--accent-indigo); }
 
 
 	.board-row {

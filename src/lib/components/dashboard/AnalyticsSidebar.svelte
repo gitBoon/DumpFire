@@ -13,6 +13,13 @@
   Drawn by the page inside its grid's sidebar column. The clock its due
   figures are counted on is the page's, which Active Tasks reads too. The
   Active Tasks, Velocity and Spend tiles open windows the page draws.
+
+  Each group can be switched off from the dashboard's Display menu (card
+  2526): `hidden` holds the keys of those off (`SIDE_PANE_PANELS`,
+  src/lib/dashboard/side-pane.ts), and a group is drawn only while its key is
+  not there and, as before, it has something to show (`panelHasContent`, the
+  same test the page decides its column by). With the whole pane off, or no
+  panel switched on with anything to show, the page does not draw this at all.
 -->
 <script lang="ts">
 	import type { PageData } from '../../../routes/$types';
@@ -22,6 +29,7 @@
 	import { daysUntilDue, dueFigures, formatDueDate } from '$lib/utils/date-utils';
 	import { timeAgo } from '$lib/dashboard/format';
 	import XpLeaderboard from '$lib/components/board/XpLeaderboard.svelte';
+	import { panelHasContent, type SidePanePanel } from '$lib/dashboard/side-pane';
 	import type { XpEntry } from '$lib/types';
 
 	let {
@@ -30,7 +38,8 @@
 		xpEntries = [],
 		openActiveTasksModal,
 		showVelocityModal = $bindable(),
-		showSpendModal = $bindable()
+		showSpendModal = $bindable(),
+		hidden = new Set<string>()
 	}: {
 		/** What the dashboard's load gave it, passed on as it is. */
 		data: PageData;
@@ -44,6 +53,8 @@
 		showVelocityModal: boolean;
 		/** The page's: whether the spend window is open. */
 		showSpendModal: boolean;
+		/** The page's: the keys of the panels switched off in the Display menu (card 2526). */
+		hidden?: ReadonlySet<string>;
 	} = $props();
 
 	const a = $derived(data.analytics);
@@ -60,9 +71,13 @@
 	// and are not sent.
 	const due = $derived(clock ? dueFigures(a.dueCards, clock, undefined, a.longOverdue) : dueFigures(a.dueCards, new Date(a.asOf), 'UTC', a.longOverdue));
 
+	/** A panel is drawn while it is switched on and has something to show (card 2526). */
+	function shows(key: SidePanePanel): boolean {
+		return !hidden.has(key) && panelHasContent(key, { analytics: a, xpCount: xpEntries.length, upcomingCount: due.upcoming.length });
+	}
+
 	// Computed analytics helpers
 	let maxTrend = $derived(Math.max(1, ...a.weeklyTrend.map((w: any) => w.count)));
-	let totalCatCards = $derived(a.categoryDistribution.reduce((s: number, c: any) => s + c.count, 0));
 	let agingTotal = $derived(a.agingBuckets.fresh + a.agingBuckets.week + a.agingBuckets.fortnight + a.agingBuckets.month + a.agingBuckets.stale);
 	let agingItems = $derived([
 		{ label: '< 3d', count: a.agingBuckets.fresh, color: 'var(--priority-low)' },
@@ -97,6 +112,7 @@
 </script>
 
 <!-- Primary Metrics -->
+{#if shows('figures')}
 <div class="metrics-grid">
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -194,9 +210,10 @@
 		{/if}
 	</div>
 </div>
+{/if}
 
 <!-- Priority breakdown -->
-{#if a.active > 0}
+{#if shows('priority')}
 	<div class="sidebar-panel glass">
 		<h3 class="panel-title">Priority Spread</h3>
 		<div class="priority-bar">
@@ -215,7 +232,7 @@
 {/if}
 
 <!-- Board Health -->
-{#if a.boardHealth.length > 0}
+{#if shows('health')}
 	<div class="sidebar-panel glass">
 		<h3 class="panel-title">Board Health Overview</h3>
 		<div class="health-list">
@@ -236,7 +253,7 @@
 {/if}
 
 <!-- 4-Week Completion Trend -->
-{#if a.weeklyTrend.some((w: any) => w.count > 0)}
+{#if shows('trend')}
 	<div class="sidebar-panel glass">
 		<h3 class="panel-title">4-Week Trend</h3>
 		<div class="trend-chart">
@@ -254,7 +271,7 @@
 {/if}
 
 <!-- Category Distribution -->
-{#if a.categoryDistribution.length > 0 && totalCatCards > 0}
+{#if shows('categories')}
 		<div class="sidebar-panel glass">
 			<h3 class="panel-title">Category Distribution</h3>
 			<div class="cat-dist-bar">
@@ -279,7 +296,7 @@
 {/if}
 
 <!-- Task Aging -->
-{#if a.active > 0}
+{#if shows('aging')}
 	<div class="sidebar-panel glass">
 		<h3 class="panel-title">Task Aging</h3>
 		<div class="aging-grid">
@@ -297,7 +314,7 @@
 {/if}
 
 <!-- Team Leaderboard -->
-{#if a.teamLeaderboard.length > 0}
+{#if shows('team')}
 	<div class="sidebar-panel glass">
 		<h3 class="panel-title">Team Leaderboard</h3>
 		<div class="leaderboard-list">
@@ -326,7 +343,7 @@
 {/if}
 
 <!-- XP Leaderboard (card 2466): the one place XP and levels are shown. -->
-{#if xpEntries.length > 0}
+{#if shows('xp')}
 	<div class="sidebar-panel glass" id="xp-leaderboard-panel">
 		<h3 class="panel-title">XP Leaderboard</h3>
 		<XpLeaderboard entries={xpEntries} stacked />
@@ -334,7 +351,7 @@
 {/if}
 
 <!-- Upcoming Deadlines -->
-{#if due.upcoming.length > 0}
+{#if shows('deadlines')}
 	<div class="sidebar-panel glass">
 		<h3 class="panel-title">Upcoming Deadlines</h3>
 		<div class="deadlines-list">
@@ -355,6 +372,7 @@
 {/if}
 
 <!-- Quick Stats Summary -->
+{#if shows('quick')}
 <div class="sidebar-panel glass quick-stats">
 	<div class="qs-row">
 		<span class="qs-label">On Hold</span>
@@ -369,9 +387,10 @@
 		<span class="qs-value">{a.completedThisMonth}/mo</span>
 	</div>
 </div>
+{/if}
 
 <!-- Recent Activity -->
-{#if a.recentActivity.length > 0}
+{#if shows('activity')}
 	<div class="sidebar-panel glass activity-section">
 		<h3 class="panel-title">Recent Activity</h3>
 		<div class="activity-list">

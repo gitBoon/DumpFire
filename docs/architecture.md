@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.58
+version: 1.59
 status: As-Built
-date: 2026-10-26
+date: 2026-10-27
 tags:
   - architecture
   - sveltekit
@@ -1108,12 +1108,14 @@ The page keeps its props, `isSuperadmin` and `superadminName`, the `{#if isSuper
 
 The page keeps its props, `connectLiveRefresh(() => invalidateAll())`, `deleteBoard` with its `ConfirmModal`, the grid, the Category Manager, Velocity and Spend windows, and the clock (`clock`, set on each live refresh and on a 15-second tick), which it hands to the sidebar and Active Tasks so the due figures and words move on at midnight in both. `src/lib/dashboard/format.ts` holds `timeAgo`, which the table and the sidebar share.
 
+It also holds the viewer's **Display choice** (card 2526): the done-board and done-sub switches, whether the side pane is shown, and which of its eleven panels are switched off. `src/lib/dashboard/side-pane.ts` names the panels (`SIDE_PANE_PANELS`, in the pane's order, each with its label in the menu), gives the choice its type and defaults, and keeps it in a cookie per user, `dumpfire-dashboard-display-<user id>`: URI-encoded JSON, `Path=/`, a year, `SameSite=Lax`, not HttpOnly, written from the browser with `document.cookie` (`writeDashboardDisplay`, inside a `try`). The dashboard's load reads that cookie for the caller with `cookies.get` and hands the choice to the page as `dashboardDisplay`, parsed by `parseDashboardDisplay`, which needs no browser and gives the defaults for no cookie, JSON it cannot read, and a field it does not know or cannot use; so the server draws the page as it was left and nothing flashes up as it wakes. The page starts from `data.dashboardDisplay`, binds it into the boards table through a function binding that writes the cookie on each change, and takes the load's choice again only when the signed-in user's id changes (a live refresh hands back the same choice, or, with cookies blocked, the defaults). `panelHasContent` is the one test of whether a panel has anything to draw (the figure tiles and the quick figures always; each other panel from the analytics, the XP list's length and the Upcoming Deadlines count on the page's clock): the sidebar draws each panel by it, and the page draws the `sidebar-column` only while the pane is on and a panel switched on passes it (`sidePaneShown`); otherwise `.dashboard-grid.no-sidebar` gives the boards the full width.
+
 | Component (`src/lib/components/dashboard/`) | What it holds |
 |---|---|
 | `DashboardHeader.svelte` | The header: All Tasks, Inbox, Planning and New Board in view, the Views menu (All To Do, Reports, Burndown, Graph; under 640 px, read with `matchMedia` as it mounts and on each change, All Tasks, Inbox and Planning too, their pills hidden by `.header-nav .wide-only` and the inbox count on Views by `.header-nav .narrow-only`; its panel from the button's left edge) and the More menu with the theme list, each a `HeaderMenu` (card 2466); the typewriter; reads `inboxCount`, binds `showCreate` |
 | `RequestToasts.svelte` | The new-request toasts and the inbox poll; binds the page's `inboxCount` |
-| `BoardsTable.svelte` | The boards table: the Display menu (the done-board and done-sub switches and Manage Categories, a dot on its button while a switch is off its default; card 2466), favourites, groupings, the star and its request, sub-boards, the progress bars; binds `showCreate`, `expandedBoards`, `collapsedCategories`, `showCategoryManager`; a row's right-click calls the page's `openBoardContextMenu` |
-| `AnalyticsSidebar.svelte` | The analytics tiles and the due figures on `clock`; the XP Leaderboard panel (card 2466: `XpLeaderboard` stacked, from the page's `xpEntries`, which the page reads from `GET /api/xp` as it mounts and on each live refresh, `xp-update` included); binds `showVelocityModal`, `showSpendModal`; its Active Tasks tile calls `openActiveTasksModal` |
+| `BoardsTable.svelte` | The boards table: the Display menu (the done-board and done-sub switches, a Side pane section with **Show the side pane** and one switch per panel, greyed with `aria-disabled`, skipped by the keys and taking no focus from the mouse while the pane is off (card 2526), and Manage Categories; a dot on its button and its title saying what is off its default; card 2466), favourites, groupings, the star and its request, sub-boards, the progress bars; binds `showCreate`, `expandedBoards`, `collapsedCategories`, `showCategoryManager` and `display`, the page's Display choice, each change handed back as a new object (card 2526); a row's right-click calls the page's `openBoardContextMenu` |
+| `AnalyticsSidebar.svelte` | The analytics tiles and the due figures on `clock`; the XP Leaderboard panel (card 2466: `XpLeaderboard` stacked, from the page's `xpEntries`, which the page reads from `GET /api/xp` as it mounts and on each live refresh, `xp-update` included); binds `showVelocityModal`, `showSpendModal`; its Active Tasks tile calls `openActiveTasksModal`; takes `hidden`, the keys of the panels switched off, and draws each panel only while it is not there and `panelHasContent` passes (card 2526) |
 | `BoardContextMenu.svelte` | A board's context menu and its writes (file under a grouping or a new one, make a sub-board), and Delete Board through the page's `confirmDeleteBoard`; exports `openBoardContextMenu`; binds `expandedBoards` and `collapsedCategories` |
 | `CreateBoardModal.svelte` | New Board, always mounted; binds `showCreate` |
 | `ActiveTasksModal.svelte` | Active Tasks, its due words on `clock`; exports `openActiveTasksModal`, which reads its list as it opens |

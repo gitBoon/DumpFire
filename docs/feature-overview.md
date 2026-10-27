@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.45
+version: 1.46
 status: As-Built
-date: 2026-10-26
+date: 2026-10-27
 tags:
   - features
   - overview
@@ -53,7 +53,7 @@ Boards are your workspaces. Each board has columns that represent stages of work
 The dashboard's and each board's header keep what you use every minute in view, and put the rest one click away in a menu (from 26 October 2026; until then every control sat in the bar).
 
 - **The dashboard** — **All Tasks**, **Inbox** (with how many requests wait), **Planning** and **+ New Board** are always shown. **Views** holds **All To Do**, **Reports**, **Burndown** and **Graph**. **More** holds **Teams**, **Archived**, **Admin** and **Audit & Logs** (for administrators), **Request**, **API Docs** and the theme. On a phone or narrow window (under 640 px) All Tasks, Inbox and Planning leave the bar and are listed first in Views, and the inbox count shows on the Views button instead. Every menu opens wholly on the screen, moved in from the edge where it would not fit.
-- **Your Boards** — **Display**, beside the title, holds the **done boards** and **done subs** switches and **Manage Categories**. A small dot on the button means a switch is not at its usual setting (done boards hidden, or done sub-boards shown).
+- **Your Boards** — **Display**, beside the title, holds the **done boards** and **done subs** switches, the **Side pane** and **Manage Categories**. Under **Side pane**, **Show the side pane** turns the whole right-hand pane off or on, and each of its panels can be turned off on its own: the figure tiles, Priority Spread, Board Health Overview, 4-Week Trend, Category Distribution, Task Aging, Team Leaderboard, XP Leaderboard, Upcoming Deadlines, the quick figures and Recent Activity. With the pane off, or no panel left on with anything in it to show, the boards list takes the full width; the panels' switches are greyed while the pane is off, and come back as they were when it is turned on again. Every Display choice is remembered for you in this browser, so the dashboard opens the way you left it, and someone else signing in on the same browser has their own (from 27 October 2026; until then the switches reset on each visit). A small dot on the button means something is not at its usual setting (done boards hidden, done sub-boards shown, or the pane or a panel hidden).
 - **A board** — on the left the way back, the board's emoji and name and what it has cost; in the middle the search; on the right **Board | List**, **Filter** and **More**. **Filter** holds the assignee filter and **Hide blocked**; its button says how many are on ("Filter · 2"), so a board showing fewer cards says why. **More** holds **Planning** and **All To Do** for this board, the Activity Log, Statistics and Archived Cards panels, **Add Column**, **Burndown**, **Manage Categories**, **Bulk Select**, **Share Board**, **Delete Sub-board** (on a sub-board) and the theme. The XP bars are no longer shown on a board: they are the XP Leaderboard on the dashboard's sidebar.
 - **From the keyboard** — every menu opens with Enter, Space or the down arrow, the arrow keys move between its items, Escape closes it and puts you back on its button, and Tab moves on. A click anywhere else closes it.
 
@@ -61,7 +61,7 @@ The dashboard's and each board's header keep what you use every minute in view, 
 flowchart LR
     Dash["Dashboard"] --> DV["Views: All To Do, Reports, Burndown, Graph"]
     Dash --> DM["More: Teams … API Docs, Theme"]
-    Boards["Your Boards"] --> DD["Display: done boards, done subs, Manage Categories"]
+    Boards["Your Boards"] --> DD["Display: done boards, done subs, side pane and its panels, Manage Categories"]
     Board["A board"] --> BF["Filter: assignee, Hide blocked"]
     Board --> BM["More: Planning, All To Do, panels, Add Column … Theme"]
 ```
