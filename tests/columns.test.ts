@@ -11,7 +11,8 @@
  *
  * `/api/columns/[id]` is the route the board page uses, and
  * `/api/v1/columns/[columnId]` is the documented one. They are two handlers
- * and are tested as two.
+ * and are tested as two. A limit sent with a new column, through the two
+ * routes that add one, is read the same way (card 2520).
  *
  * And what a column means once it can be the board's Options column, or be on
  * an ideas board (milestone 22): the helpers in `$lib/column-role` and
@@ -109,6 +110,61 @@ describe.each(ROUTES)('a WIP limit sent to %s', (_name, pathOf) => {
 		expect(res.status).toBe(200);
 		expect(res.body.title).toBe('Doing');
 		expect(stored(column.id)).toEqual({ wipLimit: 6, kind: 'integer' });
+	});
+});
+
+/**
+ * A WIP limit sent with a new column (card 2520). The create read no
+ * `wipLimit`, so a column made with a limit had none, and the limit could only
+ * be set by a change after. It is read as the update reads it: every value the
+ * update takes, and what it makes of it, is the same here, and a column made
+ * without one has no limit, 0.
+ */
+const CREATE_ROUTES: [string, (boardId: number) => string, (boardId: number) => Record<string, unknown>][] = [
+	['the board page’s route', () => '/api/columns', (boardId) => ({ boardId })],
+	['the documented route', (boardId) => `/api/v1/boards/${boardId}/columns`, () => ({})]
+];
+
+describe.each(CREATE_ROUTES)('a WIP limit sent with a new column to %s', (_name, pathOf, bodyOf) => {
+	const create = (fields: Record<string, unknown>) =>
+		api('POST', pathOf(board.board.id), { user: owner, body: { ...bodyOf(board.board.id), title: 'Review', ...fields } });
+
+	it.each<[string, unknown, number]>([
+		['null', null, 0],
+		['a negative number', -3, 0],
+		['a fraction', 2.9, 2],
+		['text that is not a number', 'abc', 0],
+		['a number sent as text', '5', 5],
+		['a whole number', 3, 3]
+	])('is stored as the update stores it: %s', async (_what, sent, kept) => {
+		const res = await create({ wipLimit: sent });
+
+		expect(res.status, JSON.stringify(res.body)).toBe(201);
+		expect(res.body.wipLimit).toBe(kept);
+		expect(stored(res.body.id)).toEqual({ wipLimit: kept, kind: 'integer' });
+
+		// And the update, sent the same value, keeps the same.
+		const put = await api('PUT', `/api/v1/columns/${res.body.id}`, { user: owner, body: { wipLimit: sent, title: 'Reviewed' } });
+		expect(put.status).toBe(200);
+		expect(put.body.wipLimit).toBe(kept);
+	});
+
+	it('is 0, no limit, when none is sent', async () => {
+		const res = await create({});
+
+		expect(res.status).toBe(201);
+		expect(res.body.wipLimit).toBe(0);
+		expect(stored(res.body.id)).toEqual({ wipLimit: 0, kind: 'integer' });
+	});
+
+	it('does not make the Options column: the role is refused as before, with or without a limit', async () => {
+		const before = snapshotDb();
+
+		const res = await create({ title: 'Upstream', role: 'options', wipLimit: 3 });
+
+		// The fixture's board was made with no Options column, as one made before card 2527 was.
+		expect([res.status, res.body.message]).toEqual([409, "A delivery board's Options column is made with the board; it comes back at the next start."]);
+		expectUnchanged(before);
 	});
 });
 
@@ -239,6 +295,21 @@ describe('the WIP limit in the API document', () => {
 		// `nullable` is not a keyword of OpenAPI 3.1, which this document is.
 		expect(sent).not.toHaveProperty('nullable');
 		expect(res.body.openapi).toBe('3.1.0');
+	});
+
+	it('is stored when a column is made, and the 1.3.1 note says so (card 2520)', async () => {
+		const res = await api('GET', '/api/v1/openapi.json');
+
+		const created =
+			res.body.paths['/api/v1/boards/{boardId}/columns'].post.requestBody.content['application/json'].schema.properties.wipLimit;
+		expect(created.type).toEqual(['integer', 'null']);
+		expect(created.description).toContain('read as PUT /columns/{columnId} reads it');
+		expect(created.description).toContain('0 when it is left out');
+		expect(created.description).not.toContain('Not stored');
+		const note = res.body.info.description as string;
+		const changes = note.slice(note.indexOf('**Changed on 2026-10-27 (version 1.3.1).**'), note.indexOf('**Changed on 2026-10-26'));
+		expect(changes).toContain('(2) POST /api/v1/boards/{boardId}/columns stores the wipLimit sent');
+		expect(res.body.info.version).toBe('1.3.1');
 	});
 });
 

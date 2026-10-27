@@ -192,10 +192,10 @@ describe.each(TREES)('the Options role, through %s', (tree) => {
 			expect(none.status).toBe(200);
 		});
 
-		it('makes an ordinary column as before: a limit sent with it is not stored', async () => {
+		it('makes an ordinary column with the limit sent with it, which was not stored until card 2520', async () => {
 			const ordinary = await tree.create({ title: 'Review', wipLimit: 3 });
 			expect(ordinary.status).toBe(201);
-			expect(stored(ordinary.body.id)).toMatchObject({ role: null, wipLimit: 0 });
+			expect(stored(ordinary.body.id)).toMatchObject({ role: null, wipLimit: 3 });
 		});
 
 		it('keeps the Options column the leftmost: no column moved to or past it, and it moved to no other column', async () => {

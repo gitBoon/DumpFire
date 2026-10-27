@@ -13,7 +13,8 @@ import type { RequestHandler } from './$types';
  * fields are read (card 2117, R1): `title` text, trimmed, of 1 to 200
  * characters; `position` a number; `color` a colour written `#rrggbb`. A
  * title that was missing gave "New Column", text was stored as a position,
- * and any colour was stored. A column sent with no position goes at 0, as it
+ * and any colour was stored. `wipLimit` is read as the update reads it, and
+ * stored (card 2520), where it was dropped. A column sent with no position goes at 0, as it
  * did (R2 of card 2012's plan; v1 puts it after the last).
  *
  * The work is `createColumn` in `$lib/server/columns`, which the v1 route

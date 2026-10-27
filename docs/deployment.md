@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.101
+version: 1.102
 status: As-Built
 date: 2026-10-27
 tags:
@@ -5202,6 +5202,25 @@ Nothing is done to the database: no migration came with this card, and the Optio
 - **A milestone 22 build from before card 2527** let the role be taken off an empty Options column, and a column be made the Options column. Going back to one, doing either there, and **coming forward again** leaves a second, plain column called Options beside the new Options column, for a column whose role was taken away; and renames, moves or makes ordinary a column given the role there, each with its `WARN` line. A plain column called Options can be renamed or deleted as any column.
 
 The going-back note in `0060_add_upstream_options.sql`'s header ("No board has an Options column … until somebody makes one") was written before this card; the applied file is not edited, and this section is the one to read.
+
+### API 1.3.1 (2026-10-27)
+
+**Cards 2480, 2520 and 2512.** No migration, no schema change and nothing new at the first start. The OpenAPI document is version **1.3.1**, its "Changed on 2026-10-27" note listing the two v1 corrections; `DUMPFIRE_API.md` and [External API Reference](api-reference.md#changes-on-2026-10-27) each have a "Changes on 2026-10-27" section with the same list. Three answers change:
+
+- **The activity report's `created` bucket** (card 2480): a card raised in the window, not edited since and never moved, by the activity log, is `created` wherever it was raised. It had to be in the board's first column, so a card raised straight into In Progress and left alone was `progressed`.
+- **A new column keeps the WIP limit sent with it** (card 2520), on `POST /api/v1/boards/{boardId}/columns` and the board page's route, read as an update reads it. It was dropped, and the column made with no limit.
+- **Activity entries written in the same second list the later first** (card 2512), on the board's Activity Log and All Tasks' activity panel (`GET /api/activity`). A move that commits and completes a card writes both in one second, and "Committed card" could be listed above "Completed card".
+
+On production, as **O** with an API key of O's, in the `curl.exe` form of [Part Six](#upstream-kanban-part-six-the-public-api-version-130). Check 561 makes a board; check 564 deletes it.
+
+| # | Card | Do | Expect | A fault if |
+|---|---|---|---|---|
+| 561 | 2480 | `GET /api/v1/openapi.json` and read `info`. Then `POST /api/v1/boards` with `{"name":"API 1.3.1 check"}`; note its id (B) and its Options, In Progress and Complete columns' ids. `POST /api/v1/boards/<B>/cards` with `{"columnId":<In Progress id>,"title":"Raised in progress"}`; then `GET /api/v1/reports/activity?boardIds=<B>` | `"version":"1.3.1"`, and `info.description` holds `**Changed on 2026-10-27 (version 1.3.1).**` before `**Changed on 2026-10-26 (version 1.3.0).**`. In the report, `Raised in progress` has `"bucket":"created"` | `1.3.0`, or the card `progressed` |
+| 562 | 2520 | `POST /api/v1/boards/<B>/columns` with `{"title":"Review","wipLimit":3}`; then with `{"title":"Review two"}` | `201` with `"wipLimit":3`; then `201` with `"wipLimit":0` | `"wipLimit":0` on the first |
+| 563 | 2512 | `POST /api/v1/boards/<B>/cards` with `{"columnId":<Options id>,"title":"Option done"}`; `PUT /api/v1/cards/<its id>/move` with `{"columnId":<Complete id>}`. Open board B, **More → Activity Log** | `Option done`'s **Completed card** is listed above its **Committed card**, both the same minute | **Committed card** above **Completed card** |
+| 564 | | `DELETE /api/v1/boards/<B>` | `{"success":true} 200` | The board left |
+
+**Going back to the previous image.** Nothing is done to the database. A column's limit made by the newer image stays. The older image answers `info.version` `1.3.0`, drops a limit sent with a new column, puts a card raised outside the first column in `progressed`, and lists a second's entries in no set order.
 
 ## Changing the Schema
 

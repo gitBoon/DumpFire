@@ -256,6 +256,12 @@ The OpenAPI document's version went from `1.3.0` to `1.3.1` with these correctio
   still be in the board's first column that is not an Options column. Until this release every
   card had to be, so a card raised in another column and left alone was `progressed`, and one
   moved into the first column `created`.
+- **`POST /boards/:boardId/columns` stores the `wipLimit` sent** (card 2520), read as
+  `PUT /columns/:columnId` reads it: a whole number, `0` meaning no limit; `null`, a negative
+  number or a value that is not a number is stored as `0`, and a fraction loses its fractional
+  part. Left out, it is `0`. Until this release a limit sent with a new column was not stored,
+  and was set only by a `PUT` after. The web application's `POST /api/columns` reads and
+  stores it the same way.
 
 ### Changes on 2026-10-26
 
