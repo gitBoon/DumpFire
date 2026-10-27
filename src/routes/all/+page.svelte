@@ -393,8 +393,7 @@
 	/** The Activity Log, which the More menu opens and the live stream reads again. */
 	let activityPanel = $state<ReturnType<typeof TasksActivityPanel>>();
 
-	// More menu & panel state
-	let showMoreMenu = $state(false);
+	// The panels More opens (the menu itself is HeaderMenu's, which closes on a click outside: card 2472)
 	let showStatsPanel = $state(false);
 	let showArchivePanel = $state(false);
 	/** Archived Cards, which the More menu opens. */
@@ -418,7 +417,7 @@
 
 <svelte:window onclick={closeSortDropdowns} />
 
-<div class="all-page-wrapper" onclick={() => { showMoreMenu = false; }}>
+<div class="all-page-wrapper">
 <div class="all-page">
 	<AllTasksHeader
 		{data}
@@ -432,7 +431,6 @@
 		bind:boardFilter
 		bind:searchQuery
 		bind:hideBlocked
-		bind:showMoreMenu
 	/>
 
 	<div class="kanban-scroll">

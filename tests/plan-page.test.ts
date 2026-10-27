@@ -109,6 +109,8 @@ const ref = (kind: string, id: number) => ({ kind, id });
 const planData = (progress: Record<string, unknown> = {}, shipDone = false) => ({
 	user: { id: 1, username: 'alice', role: 'user' },
 	subtasks: {},
+	// The load's: the caller may change the goal, so its name is the rename button (card 2472).
+	canRename: true,
 	summary: {
 		milestone: { id: 4, name: 'Launch', status: 'open', targetDate: null, boardId: 3 },
 		progress: {
@@ -1087,7 +1089,7 @@ describe('the plan page’s card picker (card 2281, slice C3a-3)', () => {
 describe('the plan page’s changes to the goal go through its one PATCH path (card 2281, slice C3a-3)', () => {
 	it('renames the goal from the header', async () => {
 		await draw();
-		$('.plan-header h1')!.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+		$<HTMLButtonElement>('.plan-header h1 > button')!.click();
 		flushSync();
 		const box = $<HTMLInputElement>('.name-input')!;
 		expect(box.value).toBe('Launch');
@@ -1099,14 +1101,14 @@ describe('the plan page’s changes to the goal go through its one PATCH path (c
 		expect($('.name-input')).toBeNull();
 	});
 
-	// Card 2351: the box closed whether or not the name was saved, and the next double-click started from the old name.
+	// Card 2351: the box closed whether or not the name was saved, and the next rename started from the old name.
 	it.each([
 		['is refused', () => json({ message: 'Viewers cannot change goals' }, 403)],
 		['gets no answer', () => Promise.reject(new TypeError('Failed to fetch'))]
 	])('keeps the name box open with what was typed when a rename %s (card 2351)', async (_, answer) => {
 		answerPatch = answer;
 		await draw();
-		$('.plan-header h1')!.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+		$<HTMLButtonElement>('.plan-header h1 > button')!.click();
 		flushSync();
 		const box = $<HTMLInputElement>('.name-input')!;
 		type(box, 'Launch v2');
@@ -1121,7 +1123,7 @@ describe('the plan page’s changes to the goal go through its one PATCH path (c
 		let answer!: () => void;
 		answerPatch = () => new Promise<Response>((resolve) => (answer = () => resolve(json({ id: 4 }))));
 		await draw();
-		$('.plan-header h1')!.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+		$<HTMLButtonElement>('.plan-header h1 > button')!.click();
 		flushSync();
 		const box = $<HTMLInputElement>('.name-input')!;
 		type(box, 'Launch v2');
@@ -1139,7 +1141,7 @@ describe('the plan page’s changes to the goal go through its one PATCH path (c
 	it('sends nothing more on the blur after a refused rename, and Enter sends it again (card 2363)', async () => {
 		answerPatch = () => json({ message: 'Viewers cannot change goals' }, 403);
 		await draw();
-		$('.plan-header h1')!.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+		$<HTMLButtonElement>('.plan-header h1 > button')!.click();
 		flushSync();
 		const box = $<HTMLInputElement>('.name-input')!;
 		type(box, 'Launch v2');
@@ -1165,7 +1167,7 @@ describe('the plan page’s changes to the goal go through its one PATCH path (c
 		let answer!: () => void;
 		answerPatch = () => new Promise<Response>((resolve) => (answer = () => resolve(json({ id: 4 }))));
 		await draw();
-		$('.plan-header h1')!.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+		$<HTMLButtonElement>('.plan-header h1 > button')!.click();
 		flushSync();
 		const box = $<HTMLInputElement>('.name-input')!;
 		type(box, 'Launch v2');
@@ -1188,7 +1190,7 @@ describe('the plan page’s changes to the goal go through its one PATCH path (c
 	// Card 2363's build: a blur after the box was closed (a browser may blur a focused box as it is removed) saved what Escape had thrown away.
 	it('sends nothing for a blur that comes once Escape has closed the box (card 2363)', async () => {
 		await draw();
-		$('.plan-header h1')!.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+		$<HTMLButtonElement>('.plan-header h1 > button')!.click();
 		flushSync();
 		const box = $<HTMLInputElement>('.name-input')!;
 		type(box, 'Launch v2');

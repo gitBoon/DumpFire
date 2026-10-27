@@ -255,7 +255,7 @@
 </svelte:head>
 
 <div class="plan-page">
-	<PlanHeader {summary} {milestone} {busy} {mutate} bind:picking />
+	<PlanHeader {summary} {milestone} {busy} {mutate} canRename={data.canRename} bind:picking />
 
 	<div class="plan-body">
 		{#if actionError}

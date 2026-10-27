@@ -17,6 +17,11 @@
  *     filter and Hide blocked in Filter, whose button counts those on; Planning,
  *     All To Do, Add Column and the theme in More. The XP bars are gone from
  *     the board (the owner, 2026-10-26).
+ *   - All Tasks (`AllTasksHeader.svelte`, card 2472): the board filter and the
+ *     search in view; Planning and All To Do in Views; Hide blocked, the three
+ *     panels, Export to CSV and the theme in More, whose button has a dot
+ *     while one of its switches is on. And the Plan page's goal name
+ *     (`PlanHeader.svelte`) is a rename button, as card 2470 made the board's.
  *
  * Each moved control is found in its new home and still does what it did;
  * and each menu is worked from the keyboard: opened with Enter, Space or
@@ -37,6 +42,8 @@ import DashboardHeader from '$lib/components/dashboard/DashboardHeader.svelte';
 import BoardsTable from '$lib/components/dashboard/BoardsTable.svelte';
 import BoardHeader from '$lib/components/board/BoardHeader.svelte';
 import BoardMoreMenu from '$lib/components/board/BoardMoreMenu.svelte';
+import AllTasksHeader from '$lib/components/tasks/AllTasksHeader.svelte';
+import PlanHeader from '$lib/components/plan/PlanHeader.svelte';
 import { theme } from '$lib/stores/theme';
 
 // The dashboard's header reads who is signed in from the page store, which only a running SvelteKit app has.
@@ -259,6 +266,58 @@ function drawBoardMoreMenu(canManage = true, isSubBoard = false) {
 	});
 	const target = draw(BoardMoreMenu, props);
 	return { target, props, calls };
+}
+
+/** All Tasks' header, its panels opened and closed by the page's own state as the page does. */
+function drawAllTasksHeader(boardFilter = 'all') {
+	const allBoard = (id: number, name: string, parentId: number | null = null) => ({ id, name, emoji: '📋', parentId, hiddenAbove: false, filterCategoryId: null });
+	const props = $state({
+		data: {
+			totalCards: 5,
+			completedCards: 2,
+			allTokenSummary: null,
+			boardCategories: [],
+			boards: [allBoard(3, 'Website'), allBoard(4, 'Launch', 3)]
+		},
+		chosenBoard: /^\d+$/.test(boardFilter) ? Number(boardFilter) : 0,
+		activityOpen: false,
+		showStatsPanel: false,
+		showArchivePanel: false,
+		toggleActivity: () => {},
+		toggleStatsPanel: () => {},
+		toggleArchivePanel: () => {},
+		boardFilter,
+		searchQuery: '',
+		hideBlocked: false
+	});
+	props.toggleActivity = () => (props.activityOpen = !props.activityOpen);
+	props.toggleStatsPanel = () => (props.showStatsPanel = !props.showStatsPanel);
+	props.toggleArchivePanel = () => (props.showArchivePanel = !props.showArchivePanel);
+	const target = draw(AllTasksHeader, props);
+	return { target, props };
+}
+
+/** The Plan page's header for the goal Launch; each change it sends is kept, and answered as `answer` says. */
+function drawPlanHeader(canRename = true) {
+	const sent: Record<string, unknown>[] = [];
+	/** `wait`, where set, holds the answer until the test lets it go. */
+	const answer: { saved: boolean; wait?: Promise<void> } = { saved: true };
+	const props = $state({
+		summary: { progress: { total: 3, done: 1, options: 0 } },
+		milestone: { id: 4, name: 'Launch', status: 'open', targetDate: null, boardId: 3 },
+		busy: false,
+		canRename,
+		picking: false,
+		mutate: async (_body: Record<string, unknown>) => false
+	});
+	props.mutate = async (body: Record<string, unknown>) => {
+		sent.push(body);
+		await answer.wait;
+		if (answer.saved && typeof body.name === 'string') props.milestone = { ...props.milestone, name: body.name };
+		return answer.saved;
+	};
+	const target = draw(PlanHeader, props);
+	return { target, props, sent, answer };
 }
 
 /** Opens a menu by a click on its button, and gives back the menu. */
@@ -747,6 +806,308 @@ describe('the board’s More menu (card 2466)', () => {
 	});
 });
 
+// ─── All Tasks ──────────────────────────────────────────────────────────────
+
+const ALL_TASKS_HEADER = 'src/lib/components/tasks/AllTasksHeader.svelte';
+
+describe('the All Tasks header (card 2472)', () => {
+	it('draws its menus with HeaderMenu: no hand-made Panels dropdown, no Theme menu of its own, and the theme in More with its heading', () => {
+		const header = read(ALL_TASKS_HEADER);
+		expect(header).not.toMatch(/more-dropdown|more-menu-container|showMoreMenu|stopPropagation|svelte-ignore/);
+		expect(header).not.toContain('<HeaderMenu label="Theme"');
+		const views = header.indexOf('<HeaderMenu label="Views"');
+		const more = header.indexOf('<HeaderMenu label="More"');
+		expect(views).toBeGreaterThan(-1);
+		expect(more).toBeGreaterThan(views);
+		const moreMenu = header.slice(more, header.indexOf('</HeaderMenu>', more));
+		expect(moreMenu).toContain('<ThemeMenuItems />');
+		expect(header.match(/<ThemeMenuItems/g)).toHaveLength(1);
+		// Nor does the page keep a flag for it, or close it on a click of its own.
+		const page = read('src/routes/all/+page.svelte');
+		expect(page).not.toContain('showMoreMenu');
+		expect(page).toContain('<div class="all-page-wrapper">');
+	});
+
+	it('keeps the board filter and the search in view, with Views and More; nothing it moved', () => {
+		const { target } = drawAllTasksHeader();
+		const right = target.querySelector<HTMLElement>('.all-header-right')!;
+		expect(shown(right).map((el) => el.tagName === 'SELECT' ? 'select' : el.tagName === 'INPUT' ? 'search' : textOf(el))).toEqual(['select', 'search', 'Views', 'More']);
+		expect(shownNamed(target, 'Hide blocked')).toHaveLength(0);
+		expect(target.querySelector('a[href^="/plan"], a[href^="/todo"], a[href*="export/csv"], button[title="Change theme"], [role="menuitemradio"]')).toBeNull();
+	});
+
+	it('has Planning and All To Do in Views, with their titles, carrying the chosen board', async () => {
+		const { target, props } = drawAllTasksHeader();
+		const button = target.querySelector<HTMLButtonElement>('#all-views-btn')!;
+		let menu = await openByClick(button, 'Views');
+		expect(itemsOf(menu).map((item) => [textOf(item), item.getAttribute('href'), item.getAttribute('title')])).toEqual([
+			['Planning', '/plan', 'Planning — critical path and what is startable'],
+			['All To Do', '/todo', 'All To Do — every To Do column as one table']
+		]);
+		document.body.click();
+		flushSync();
+
+		props.boardFilter = '3';
+		props.chosenBoard = 3;
+		flushSync();
+		menu = await openByClick(button, 'Views');
+		expect(itemsOf(menu).map((item) => [textOf(item), item.getAttribute('href')])).toEqual([
+			['Planning', '/plan?board=3'],
+			['All To Do', '/todo?board=3']
+		]);
+		expect(itemNamed(menu, 'Planning').getAttribute('title')).toBe('Planning — critical path and what is startable (the chosen board alone, not its sub-boards)');
+		expect(itemNamed(menu, 'All To Do').getAttribute('title')).toBe('All To Do — every To Do column as one table, for the boards chosen here');
+		itemNamed(menu, 'All To Do').click();
+		flushSync();
+		expect(menuNamed('Views')).toBeNull();
+		expect(document.activeElement).toBe(button);
+	});
+
+	it('holds Hide blocked and the three panels in Show, Export to CSV, and the theme, each in a group named by its heading', async () => {
+		const { target } = drawAllTasksHeader('3');
+		const menu = await openByClick(target.querySelector<HTMLButtonElement>('#all-more-btn')!, 'More');
+		const show = itemsOf(groupNamed(menu, 'Show'));
+		expect(show.map(textOf)).toEqual(['Hide blocked', '📋 Activity Log', '📊 Statistics', '🗄️ Archived Cards']);
+		expect(show.every((item) => item.getAttribute('role') === 'menuitemcheckbox' && item.getAttribute('aria-checked') === 'false')).toBe(true);
+		expect(itemNamed(menu, 'Hide blocked').getAttribute('title')).toBe('Hide cards that are still waiting on another card');
+		expect(itemNamed(menu, '📊 Statistics').getAttribute('title')).toBe('Statistics (the chosen board alone, not its sub-boards)');
+		const csv = itemsOf(groupNamed(menu, 'Export'));
+		expect(csv.map((item) => [textOf(item), item.getAttribute('href'), item.hasAttribute('download')])).toEqual([['Export to CSV', '/api/cards/export/csv?boardId=3', true]]);
+		expect(itemsOf(groupNamed(menu, 'Theme'))).toHaveLength(17);
+		expect(itemsOf(menu).every((item) => item.closest('[role="group"]'))).toBe(true);
+	});
+
+	it('hides blocked cards from More, as the button did, staying open, the page’s state bound; and lights the dot while it is on', async () => {
+		const { target, props } = drawAllTasksHeader();
+		const button = target.querySelector<HTMLButtonElement>('#all-more-btn')!;
+		const dot = () => button.querySelector('.more-dot');
+		expect(dot()).toBeNull();
+		expect(button.classList.contains('hm-on')).toBe(false);
+		expect(button.title).toBe('More: Hide blocked, the panels, Export to CSV and the theme');
+
+		const menu = await openByClick(button, 'More');
+		const hide = itemNamed(menu, 'Hide blocked');
+		hide.click();
+		flushSync();
+		expect(props.hideBlocked).toBe(true);
+		expect(menuNamed('More')).not.toBeNull();
+		expect(hide.getAttribute('aria-checked')).toBe('true');
+		expect(textOf(hide)).toBe('Hide blocked ✓');
+		expect(dot()).not.toBeNull();
+		expect(button.classList.contains('hm-on')).toBe(true);
+		expect(button.title).toBe('More: Hide blocked is on');
+
+		hide.click();
+		flushSync();
+		expect(props.hideBlocked).toBe(false);
+		expect(dot()).toBeNull();
+	});
+
+	it.each([
+		['📋 Activity Log', 'activityOpen'],
+		['📊 Statistics', 'showStatsPanel'],
+		['🗄️ Archived Cards', 'showArchivePanel']
+	] as const)('opens and closes %s, closing the menu with the focus on More as it did, ticked while it is open, the dot left unlit (the panel shows itself)', async (item, flag) => {
+		const { target, props } = drawAllTasksHeader();
+		const button = target.querySelector<HTMLButtonElement>('#all-more-btn')!;
+		let menu = await openByClick(button, 'More');
+		itemNamed(menu, item).click();
+		flushSync();
+		expect(props[flag]).toBe(true);
+		expect(menuNamed('More')).toBeNull();
+		expect(document.activeElement).toBe(button);
+		expect(button.querySelector('.more-dot')).toBeNull();
+		expect(button.classList.contains('hm-on')).toBe(false);
+		expect(button.title).toBe('More: Hide blocked, the panels, Export to CSV and the theme');
+
+		menu = await openByClick(button, 'More');
+		const on = itemNamed(menu, `${item} ✓`);
+		expect(on.getAttribute('aria-checked')).toBe('true');
+		on.click();
+		flushSync();
+		expect(props[flag]).toBe(false);
+		expect(button.querySelector('.more-dot')).toBeNull();
+	});
+
+	it('lights the dot for Hide blocked set from outside the menu too (the page’s own state, bound), and not for a panel open (the review)', () => {
+		const { target, props } = drawAllTasksHeader();
+		const button = target.querySelector<HTMLButtonElement>('#all-more-btn')!;
+		props.activityOpen = true;
+		props.showStatsPanel = true;
+		props.showArchivePanel = true;
+		flushSync();
+		expect(button.querySelector('.more-dot')).toBeNull();
+		props.hideBlocked = true;
+		flushSync();
+		expect(button.querySelector('.more-dot')).not.toBeNull();
+		expect(button.title).toBe('More: Hide blocked is on');
+	});
+
+	it('sets the theme from More, which closes with the focus on its button', async () => {
+		const { target } = drawAllTasksHeader();
+		const button = target.querySelector<HTMLButtonElement>('#all-more-btn')!;
+		const menu = await openByClick(button, 'More');
+		themeNamed(menu, 'Dark').click();
+		flushSync();
+		expect(get(theme)).toBe('dark');
+		expect(menuNamed('More')).toBeNull();
+		expect(document.activeElement).toBe(button);
+	});
+
+	/**
+	 * Narrow screens, through the compiled CSS as `sheetAt` gives it (jsdom
+	 * lays nothing out, so what is read is the rule that wraps the bar, not
+	 * a width measured): at every width the header and its right side may
+	 * wrap, which a browser does only where they do not fit (the review), the
+	 * controls kept to the right; on a phone the filter and the search share
+	 * the row.
+	 */
+	it.each([
+		[1280, 'wrap', 'wrap', '190px'],
+		[640, 'wrap', 'wrap', 'none'],
+		[375, 'wrap', 'wrap', 'none']
+	])('at %i px the bar wraps as %s, its controls as %s, kept right, the filter capped at %s', (width, bar, right, filterMax) => {
+		const { target } = drawAllTasksHeader();
+		const header = target.querySelector<HTMLElement>('.all-header')!;
+		const style = sheetAt(ALL_TASKS_HEADER, width, header);
+		try {
+			expect(getComputedStyle(header).flexWrap || 'nowrap').toBe(bar);
+			const controls = getComputedStyle(target.querySelector('.all-header-right')!);
+			expect(controls.flexWrap || 'nowrap').toBe(right);
+			expect([controls.marginLeft, controls.minWidth]).toEqual(['auto', '0px']);
+			expect(getComputedStyle(target.querySelector('.board-filter')!).maxWidth).toBe(filterMax);
+		} finally {
+			style.remove();
+		}
+	});
+});
+
+// ─── The Plan page's goal name ──────────────────────────────────────────────
+
+// Card 2472: the name was an <h1 ondblclick> with the a11y warnings silenced, so it could not be renamed from the keyboard.
+describe('renaming a goal from the keyboard (card 2472, as card 2470 did the board)', () => {
+	const nameButton = (target: HTMLElement) => target.querySelector<HTMLButtonElement>('.plan-header h1 > button');
+	const nameBox = (target: HTMLElement) => target.querySelector<HTMLInputElement>('.name-input');
+	function type(box: HTMLInputElement, value: string) {
+		box.value = value;
+		box.dispatchEvent(new Event('input', { bubbles: true }));
+		flushSync();
+	}
+
+	it('draws the name as a real button inside the heading, named "Rename goal <name>", which starts the rename', () => {
+		const { target } = drawPlanHeader();
+		const button = nameButton(target)!;
+		expect([button.tagName, button.type, button.disabled, button.tabIndex]).toEqual(['BUTTON', 'button', false, 0]);
+		expect(button.getAttribute('aria-label')).toBe('Rename goal Launch');
+		expect(textOf(button)).toBe('Launch');
+		const heading = target.querySelector('.plan-header h1')!;
+		expect([heading.getAttribute('role'), heading.getAttribute('tabindex')]).toEqual([null, null]);
+		button.focus();
+		button.click();
+		flushSync();
+		expect(nameBox(target)!.value).toBe('Launch');
+	});
+
+	it('still opens on a double-click', () => {
+		const { target } = drawPlanHeader();
+		const button = nameButton(target)!;
+		// A double-click is two clicks and a dblclick: the first opens the box, the rest land on it.
+		button.click();
+		flushSync();
+		nameBox(target)!.click();
+		nameBox(target)!.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+		flushSync();
+		expect(nameBox(target)!.value).toBe('Launch');
+	});
+
+	it('draws the name as plain text, no button, for someone who cannot change the goal', () => {
+		const { target } = drawPlanHeader(false);
+		expect(nameButton(target)).toBeNull();
+		const heading = target.querySelector<HTMLElement>('.plan-header h1')!;
+		expect(heading.querySelector('button, [role="button"], [tabindex]')).toBeNull();
+		expect(textOf(heading)).toBe('Launch');
+		heading.click();
+		heading.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+		flushSync();
+		expect(nameBox(target)).toBeNull();
+	});
+
+	it('gives the focus back to the name’s button once Enter has saved the name', async () => {
+		const { target, sent } = drawPlanHeader();
+		nameButton(target)!.click();
+		flushSync();
+		type(nameBox(target)!, 'Launch v2');
+		press('Enter', nameBox(target));
+		await settle();
+		expect(sent).toEqual([{ name: 'Launch v2' }]);
+		expect(nameBox(target)).toBeNull();
+		expect(nameButton(target)!.getAttribute('aria-label')).toBe('Rename goal Launch v2');
+		expect(document.activeElement).toBe(nameButton(target));
+	});
+
+	// The review: the focus was taken back to the name even from a field moved on to while the save was out.
+	it('leaves the focus in another field gone on to while the save was out', async () => {
+		const { target, sent, answer } = drawPlanHeader();
+		let release!: () => void;
+		answer.wait = new Promise<void>((resolve) => (release = resolve));
+		const other = document.createElement('input');
+		target.appendChild(other);
+		nameButton(target)!.click();
+		flushSync();
+		const box = nameBox(target)!;
+		box.focus();
+		type(box, 'Launch v2');
+		press('Enter', box);
+		other.focus();
+		release();
+		await settle();
+		expect(sent).toEqual([{ name: 'Launch v2' }]);
+		expect(nameBox(target)).toBeNull();
+		expect(document.activeElement).toBe(other);
+	});
+
+	it('keeps the box open, and the focus in it, when the rename is refused', async () => {
+		const { target, sent, answer } = drawPlanHeader();
+		answer.saved = false;
+		nameButton(target)!.click();
+		flushSync();
+		const box = nameBox(target)!;
+		box.focus();
+		type(box, 'Launch v2');
+		press('Enter', box);
+		await settle();
+		expect(sent).toEqual([{ name: 'Launch v2' }]);
+		expect(nameBox(target)).toBe(box);
+		expect(document.activeElement).toBe(box);
+	});
+
+	it('Escape cancels only: nothing sent, not even by the blur that follows, and the focus back on the button', async () => {
+		const { target, sent } = drawPlanHeader();
+		nameButton(target)!.click();
+		flushSync();
+		const box = nameBox(target)!;
+		type(box, 'Launch v2');
+		const escape = press('Escape', box);
+		box.dispatchEvent(new FocusEvent('blur'));
+		await settle();
+		expect(escape.defaultPrevented).toBe(true);
+		expect(nameBox(target)).toBeNull();
+		expect(sent).toEqual([]);
+		expect(document.activeElement).toBe(nameButton(target));
+		expect(textOf(nameButton(target)!)).toBe('Launch');
+	});
+
+	it('is offered by the plan page on the rule the PATCH asks, and the heading’s a11y warning is no longer silenced', () => {
+		const header = read('src/lib/components/plan/PlanHeader.svelte');
+		expect(header).not.toMatch(/<h1[^>]*(role=|tabindex=|onclick=|ondblclick=)/);
+		expect(header).not.toContain('a11y_no_static_element_interactions');
+		const load = read('src/routes/plan/[id]/+page.server.ts');
+		expect(load).toContain('row = requireMilestone(locals.user, id);');
+		expect(load).toContain('canRename: canEditMilestone(locals.user, row)');
+		expect(read('src/routes/plan/[id]/+page.svelte')).toContain('<PlanHeader {summary} {milestone} {busy} {mutate} canRename={data.canRename} bind:picking />');
+	});
+});
+
 // ─── Every menu, from the keyboard ──────────────────────────────────────────
 
 type Case = { name: string; label: string; open: () => HTMLButtonElement };
@@ -756,7 +1117,9 @@ const cases: Case[] = [
 	{ name: 'the dashboard’s More', label: 'More', open: () => drawDashboardHeader().target.querySelector<HTMLButtonElement>('#nav-more-btn')! },
 	{ name: 'Your Boards’ Display', label: 'Display', open: () => drawBoardsTable().target.querySelector<HTMLButtonElement>('#display-menu-btn')! },
 	{ name: 'the board’s Filter', label: 'Filter', open: () => drawBoardHeader().target.querySelector<HTMLButtonElement>('#board-filter-btn')! },
-	{ name: 'the board’s More', label: 'More', open: () => drawBoardMoreMenu().target.querySelector<HTMLButtonElement>('.more-menu-trigger')! }
+	{ name: 'the board’s More', label: 'More', open: () => drawBoardMoreMenu().target.querySelector<HTMLButtonElement>('.more-menu-trigger')! },
+	{ name: 'All Tasks’ Views', label: 'Views', open: () => drawAllTasksHeader().target.querySelector<HTMLButtonElement>('#all-views-btn')! },
+	{ name: 'All Tasks’ More', label: 'More', open: () => drawAllTasksHeader().target.querySelector<HTMLButtonElement>('#all-more-btn')! }
 ];
 
 describe.each(cases)('$name, from the keyboard (card 2466)', ({ label, open }) => {
