@@ -19,6 +19,12 @@
  *     (`privateStopsWebhooks`, card 2385), and the list is read again after
  *     either switch; only the latest read of the list is shown.
  *
+ *   - The window takes, holds and gives back the keyboard's focus (card
+ *     2473, `holdFocus`): Close as it opens, the user list once the list is
+ *     drawn, Tab and Shift+Tab kept inside, Escape closing it and the focus
+ *     back on what opened it; while one of its confirms is up, Escape and
+ *     Tab are the confirm's alone.
+ *
  * What the list answers, and to whom, is in `tests/webhooks.test.ts`. The
  * plans are `docs/planning/cards-2329-2383-2384.md` and
  * `docs/planning/cards-2385-2386-2387.md`.
@@ -75,11 +81,19 @@ async function settle() {
 	flushSync();
 }
 
-/** Opens the window on board 3, as its owner. */
-async function open() {
+/** Opens the window on board 3, as its owner, and draws it before any answer has come. */
+function openNow(more: { canManage?: boolean; onClose?: () => void } = {}) {
 	const target = document.createElement('div');
 	document.body.appendChild(target);
-	drawn = { component: mount(ShareModal, { target, props: { boardId: 3, boardName: 'Website', canManage: true, onClose: () => {} } }), target };
+	const props = { boardId: 3, boardName: 'Website', canManage: more.canManage ?? true, onClose: more.onClose ?? (() => {}) };
+	drawn = { component: mount(ShareModal, { target, props }), target };
+	flushSync();
+	return target;
+}
+
+/** Opens the window on board 3, as its owner, and lets its list arrive. */
+async function open(more: { canManage?: boolean; onClose?: () => void } = {}) {
+	const target = openNow(more);
 	await settle();
 	return target;
 }
@@ -390,5 +404,110 @@ describe('the switch to private asks first when it stops webhooks, and the list 
 		await settle();
 		expect(patches()).toEqual([{ isPublic: false }, { isPublic: true }]);
 		expect(document.activeElement).toBe(theSwitch());
+	});
+});
+
+// Card 2473: the window moved no focus. It stayed on the More button behind the overlay, Tab
+// walked the page behind, and Escape did nothing; Add Column already held it (`holdFocus`).
+describe('the Share window takes, holds and gives back the focus (card 2473)', () => {
+	const closeButton = () => button(drawn!.target, 'Close');
+	/** A key pressed where the focus is, bubbling to the window as a real one does; gives back whether its default was taken. */
+	function press(key: string, shiftKey = false): boolean {
+		const event = new KeyboardEvent('keydown', { key, shiftKey, bubbles: true, cancelable: true });
+		(document.activeElement ?? document.body).dispatchEvent(event);
+		flushSync();
+		return event.defaultPrevented;
+	}
+
+	it('gives Close the focus as it opens, and the user list once the list is drawn; for someone who cannot manage, Close keeps it', async () => {
+		openNow();
+		expect(document.activeElement).toBe(closeButton());
+		await settle();
+		expect(document.activeElement).toBe(document.querySelector('.share-select'));
+		unmount(drawn!.component);
+		drawn!.target.remove();
+		drawn = null;
+
+		await open({ canManage: false });
+		expect(document.activeElement).toBe(closeButton());
+	});
+
+	// The review of card 2473: a first read that failed still moved the focus to the user list,
+	// away from Close and the line saying why.
+	it('keeps the focus on Close when the first read of the list fails', async () => {
+		vi.mocked(fetch).mockImplementation(async (url: string | URL | Request) => {
+			if (url === '/api/boards/3/share') return json({ message: 'Board not found' }, 404);
+			return json([]);
+		});
+		const target = await open();
+		expect(target.querySelector('.share-error')?.textContent).toContain('Board not found');
+		expect(target.querySelector('.share-select')).not.toBeNull();
+		expect(document.activeElement).toBe(closeButton());
+	});
+
+	it('is named, and keeps Tab and Shift+Tab on its own controls; a Tab from outside comes back to Close', async () => {
+		const target = await open();
+		expect(target.querySelector('[role="dialog"]')!.getAttribute('aria-label')).toBe('Share board');
+		const theSwitch = document.querySelector<HTMLButtonElement>('.toggle-switch')!;
+
+		closeButton().focus();
+		expect(press('Tab')).toBe(true);
+		expect(document.activeElement).toBe(theSwitch);
+		expect(press('Tab', true)).toBe(true);
+		expect(document.activeElement).toBe(closeButton());
+
+		(document.activeElement as HTMLElement).blur();
+		expect(press('Tab')).toBe(true);
+		expect(document.activeElement).toBe(closeButton());
+	});
+
+	it('names its user, team and role lists', async () => {
+		const target = await open();
+		const named = () => [...target.querySelectorAll('.share-add-form select')].map((el) => el.getAttribute('aria-label'));
+		expect(named()).toEqual(['User to share with', 'Role to share with']);
+		button(target, '🏢 Team').click();
+		flushSync();
+		expect(named()).toEqual(['Team to share with', 'Role to share with']);
+	});
+
+	it('closes on Escape, and gives the focus back to what opened it', async () => {
+		const opener = document.createElement('button');
+		document.body.appendChild(opener);
+		opener.focus();
+		const onClose = vi.fn();
+		await open({ onClose });
+
+		press('Escape');
+		expect(onClose).toHaveBeenCalledTimes(1);
+
+		// The page closes it by no longer drawing it.
+		unmount(drawn!.component);
+		drawn!.target.remove();
+		drawn = null;
+		await settle();
+		expect(document.activeElement).toBe(opener);
+	});
+
+	it('stands aside while a confirm is up: Escape cancels the confirm alone, and Shift+Tab is the confirm’s', async () => {
+		list.members = [member(5, 'sam', 1)];
+		const onClose = vi.fn();
+		await open({ onClose });
+
+		removeButton('sam').click();
+		flushSync();
+		const cancel = button(confirmDialog()!, 'Cancel');
+		expect(document.activeElement).toBe(cancel);
+		expect(press('Tab', true)).toBe(true);
+		expect(document.activeElement).toBe(button(confirmDialog()!, 'Remove'));
+
+		press('Escape');
+		await settle();
+		expect(confirmDialog()).toBeNull();
+		expect(onClose).not.toHaveBeenCalled();
+		expect(deletes()).toEqual([]);
+
+		// The hold is back once the confirm has gone.
+		press('Escape');
+		expect(onClose).toHaveBeenCalledTimes(1);
 	});
 });

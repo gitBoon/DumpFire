@@ -16,7 +16,7 @@
   to the page's own functions.
 -->
 <script lang="ts">
-	import type { Snippet } from 'svelte';
+	import { tick, type Snippet } from 'svelte';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
 	import BoardViewSwitch from './BoardViewSwitch.svelte';
@@ -33,6 +33,7 @@
 		breadcrumbs,
 		tokenSummary,
 		editingName,
+		canRename,
 		nameDraft = $bindable(),
 		searchQuery = $bindable(),
 		filterAssigneeId = $bindable(),
@@ -43,6 +44,7 @@
 		onEmoji,
 		onStartRename,
 		onRename,
+		onCancelRename,
 		onViewChange,
 		more
 	}: {
@@ -55,6 +57,8 @@
 		tokenSummary: BoardContentsData['boardTokenSummary'];
 		/** The name is being changed in place: the box is shown, on `nameDraft`. */
 		editingName: boolean;
+		/** Whether the caller can rename the board (the server asks they can edit it): the name is a button, and the emoji a picker, only then (card 2470). */
+		canRename: boolean;
 		nameDraft: string;
 		searchQuery: string;
 		filterAssigneeId: number | null;
@@ -66,6 +70,8 @@
 		onStartRename: () => void;
 		/** The box's blur and Enter: the page sends the name, once. */
 		onRename: () => void;
+		/** Escape in the box: the page closes it, and sends nothing (card 2470's review). */
+		onCancelRename: () => void;
 		onViewChange: (view: BoardViewName) => void;
 		/** The More menu, last on the right. */
 		more?: Snippet;
@@ -76,6 +82,49 @@
 	/** The Assignee heading names its radio items' group, so a screen reader in the menu says it. */
 	const uid = $props.id();
 	const assigneeLabelId = `filter-assignee-${uid}`;
+
+	/** The name's button, where the focus goes back once the rename box closes from the keyboard. */
+	let renameButton = $state<HTMLButtonElement>();
+
+	/**
+	 * Escape pressed in the rename box: the box's blur, which the browser
+	 * fires as the box is taken away, sends nothing. Not `$state`: only the
+	 * blur reads it.
+	 */
+	let cancelled = false;
+
+	/**
+	 * The rename box's keys (card 2470). Enter sends the name. Escape cancels
+	 * only: the name typed is put back and the page closes the box
+	 * (`onCancelRename`), and nothing is sent, not even by the blur that
+	 * follows; the page's own check (no name unchanged) would not stop a
+	 * stored name with spaces round it, which it compares trimmed. Either way
+	 * the focus goes back to the name's button, drawn again once the box has
+	 * gone: it fell to the page. A blur (a click elsewhere) sends the name and
+	 * leaves the focus where it went.
+	 */
+	async function renameKey(e: KeyboardEvent) {
+		if (e.key === 'Escape') {
+			e.preventDefault();
+			cancelled = true;
+			nameDraft = boardName;
+			onCancelRename();
+		} else if (e.key === 'Enter') {
+			onRename();
+		} else return;
+		await tick();
+		cancelled = false;
+		renameButton?.focus();
+	}
+
+	function renameBlur() {
+		if (!cancelled) onRename();
+	}
+
+	function startRename() {
+		cancelled = false;
+		onStartRename();
+	}
 </script>
 
 <header class="board-header">
@@ -101,21 +150,35 @@
 				</svg>
 			</a>
 		{/if}
-		<EmojiPicker value={boardEmoji} onSelect={(emoji) => onEmoji(emoji)} />
+		<!-- The emoji is changed with the same right as the name (card 2470's follow-up): someone who cannot edit the board sees it only. -->
+		{#if canRename}
+			<EmojiPicker value={boardEmoji} onSelect={(emoji) => onEmoji(emoji)} />
+		{:else}
+			<span class="board-emoji-text">{boardEmoji}</span>
+		{/if}
 		{#if editingName}
 			<input
 				class="board-name-input"
 				type="text"
 				bind:value={nameDraft}
-				onblur={onRename}
-				onkeydown={(e) => e.key === 'Enter' && onRename()}
+				onblur={renameBlur}
+				onkeydown={renameKey}
 				autofocus
 			/>
 		{:else}
-			<!-- svelte-ignore a11y_click_events_have_key_events -->
-			<h1 class="board-name" onclick={onStartRename} role="button" tabindex="0">
-				{boardName}
-				<span class="board-id">#{boardId}</span>
+			<!-- The heading holds a real button (card 2470), so Enter and Space start the rename; someone who cannot rename the board sees its name only. -->
+			<h1 class="board-name">
+				{#if canRename}
+					<button type="button" class="board-name-btn" aria-label="Rename board {boardName} #{boardId}" onclick={startRename} bind:this={renameButton}>
+						{boardName}
+						<span class="board-id">#{boardId}</span>
+					</button>
+				{:else}
+					<span class="board-name-text">
+						{boardName}
+						<span class="board-id">#{boardId}</span>
+					</span>
+				{/if}
 			</h1>
 		{/if}
 		<!-- An ideas board (milestone 22, card 2463): all upstream, its ideas sent on to delivery boards. -->
@@ -280,11 +343,22 @@
 	}
 	.hdr-cost-money { font-weight: 800; font-size: 1.1rem; color: var(--accent-purple, #8b5cf6); }
 	.board-name {
-		font-size: 1.25rem; cursor: pointer; padding: 2px var(--space-sm);
-		border-radius: var(--radius-sm); transition: background var(--duration-fast) var(--ease-out);
+		font-size: 1.25rem; min-width: 0;
 		white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 	}
-	.board-name:hover { background: var(--glass-hover); }
+	/* The name's button looks as the heading did (card 2470): the heading's
+	   font, no button chrome, and a ring where the keyboard has it, drawn
+	   inside the button as the heading clips what overflows it. */
+	.board-name-btn, .board-name-text {
+		display: block; max-width: 100%; padding: 2px var(--space-sm);
+		font: inherit; color: inherit; background: none; text-align: inherit;
+		border-radius: var(--radius-sm);
+		white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+	}
+	.board-name-btn { cursor: pointer; transition: background var(--duration-fast) var(--ease-out); }
+	.board-name-btn:hover { background: var(--glass-hover); }
+	.board-name-btn:focus-visible { outline: 2px solid var(--accent-indigo); outline-offset: -2px; }
+	.board-emoji-text { font-size: 1.4rem; line-height: 1; padding: 6px 10px; flex-shrink: 0; }
 	.board-kind-badge {
 		flex-shrink: 0; padding: 2px 10px; border-radius: var(--radius-full);
 		font-size: 0.72rem; font-weight: 600; white-space: nowrap;

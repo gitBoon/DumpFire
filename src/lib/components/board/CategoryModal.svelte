@@ -2,12 +2,15 @@
   CategoryModal.svelte — Modal for managing board categories.
 
   Displays existing categories with delete buttons, and provides
-  an inline form to add new categories with a name and colour.
+  an inline form to add new categories with a name and colour. The name box
+  takes the focus as the window opens, Escape closes it, Tab stays inside
+  it, and the focus goes back to what had it (`holdFocus`, card 2473).
 -->
 <script lang="ts">
   import type { CategoryType } from '$lib/types';
   import { COLUMN_COLORS } from '$lib/utils/constants';
   import { drawnColour } from '$lib/colours';
+  import { holdFocus } from '$lib/dialog-focus';
 
   /**
    * @prop categories — Current board categories
@@ -55,10 +58,10 @@
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
-<div class="modal-overlay" role="dialog" aria-modal="true">
+<div class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="category-heading">
   <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div class="modal-content" onclick={(e) => e.stopPropagation()} role="document">
-    <h2>Manage Categories</h2>
+  <div class="modal-content" onclick={(e) => e.stopPropagation()} role="document" use:holdFocus={{ first: '#category-name', onEscape: onClose }}>
+    <h2 id="category-heading">Manage Categories</h2>
     <p class="modal-subtitle">Categories help organise your cards across the board.</p>
     <!-- Existing categories -->
     <div class="category-list">
@@ -75,14 +78,15 @@
     </div>
     <!-- Add new category -->
     <div class="add-category-row">
-      <input type="text" placeholder="Category name..." bind:value={newName} onkeydown={(e) => e.key === 'Enter' && addCategory()} />
+      <input id="category-name" type="text" placeholder="Category name..." bind:value={newName} onkeydown={(e) => e.key === 'Enter' && addCategory()} />
       <div class="color-row compact">
         {#each COLUMN_COLORS.slice(0, 8) as color}
-          <button class="color-swatch small" class:active={newColor === color} style="background: {drawnColour(color)}" onclick={() => (newColor = color)}></button>
+          <button type="button" class="color-swatch small" class:active={newColor === color} aria-label="Colour {color}" aria-pressed={newColor === color} style="background: {drawnColour(color)}" onclick={() => (newColor = color)}></button>
         {/each}
+        <!-- The browser's own colour picker, laid over the ✎ swatch: the Tab stop is the swatch you see, named (card 2473's follow-up). It sat at no size, a Tab stop with nothing to show. -->
         <label class="color-custom-wrapper">
-          <input type="color" bind:value={newColor} class="color-native-input" />
-          <span class="color-swatch small custom" style="background: {drawnColour(newColor)}">✎</span>
+          <input type="color" bind:value={newColor} class="color-native-input" aria-label="Custom colour" />
+          <span class="color-swatch small custom" style="background: {drawnColour(newColor)}" aria-hidden="true">✎</span>
         </label>
       </div>
       <button class="btn-primary small" onclick={addCategory} disabled={!newName.trim() || adding}>Add</button>
@@ -124,7 +128,9 @@
   .color-swatch.active { border-color: var(--text-primary); box-shadow: 0 0 8px rgba(255, 255, 255, 0.2); }
   .color-swatch.small { width: 20px; height: 20px; }
   .color-custom-wrapper { position: relative; cursor: pointer; display: inline-flex; }
-  .color-native-input { position: absolute; width: 0; height: 0; opacity: 0; pointer-events: none; }
+  .color-native-input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0; opacity: 0; cursor: pointer; }
+  .color-native-input:focus-visible + .color-swatch.custom,
+  .color-swatch.small:focus-visible { outline: 2px solid var(--accent-indigo); outline-offset: 2px; }
   .color-swatch.custom {
     display: flex; align-items: center; justify-content: center;
     font-size: 0.6rem; color: white; text-shadow: 0 1px 2px rgba(0,0,0,0.5); cursor: pointer;

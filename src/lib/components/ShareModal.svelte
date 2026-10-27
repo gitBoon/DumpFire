@@ -19,8 +19,15 @@
 	 * asks first in the same way when it would stop webhooks whose setters
 	 * open the board only because it is public, from a third count the list
 	 * carries (card 2385), and the list is read again after either switch.
+	 *
+	 * The window holds the keyboard's focus (`holdFocus`, card 2473): Close
+	 * takes it as the window opens, and the user list once the first read
+	 * has drawn it (where the focus is still on Close); Escape closes the
+	 * window, Tab stays inside it, and the focus goes back to what opened
+	 * it. While one of its confirms is up the hold stands aside for it.
 	 */
 	import { deleteFailure, failureMessage } from '$lib/api';
+	import { holdFocus } from '$lib/dialog-focus';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import { tick } from 'svelte';
 
@@ -75,6 +82,8 @@
 
 	/** The window's Close button, where the focus goes when a read after a change takes away the control that had it. */
 	let closeButton: HTMLButtonElement;
+	/** The user list, where the focus goes from Close once the first read has drawn it. */
+	let userSelect = $state<HTMLSelectElement>();
 	/** How many reads of the list have been sent: only the latest one's answer is shown (card 2385). */
 	let shareReads = 0;
 	/**
@@ -144,9 +153,14 @@
 		if (failure) error = failure;
 		loading = false;
 		shownOnce = true;
-		if (!refresh) return;
 		await tick();
 		const at = document.activeElement;
+		if (!refresh) {
+			// The first read: the field the window is for takes the focus from Close, unless it has moved on,
+			// or the read failed: Close then stays, beside the line that says why (card 2473's review).
+			if (at === closeButton && !failure) userSelect?.focus();
+			return;
+		}
 		if (!at || at === document.body || !at.isConnected) closeButton?.focus();
 	}
 
@@ -352,7 +366,12 @@
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <div class="modal-overlay" role="dialog" aria-modal="true" aria-label="Share board">
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<div class="modal-content share-modal" onclick={(e) => e.stopPropagation()} role="document">
+	<div
+		class="modal-content share-modal"
+		onclick={(e) => e.stopPropagation()}
+		role="document"
+		use:holdFocus={{ first: '.share-footer .btn-ghost', onEscape: onClose, paused: asking !== null || askingPrivate !== null }}
+	>
 		<div class="share-header">
 			<h2>🔗 Share Board</h2>
 			<p class="share-board-name">{boardName}</p>
@@ -414,14 +433,14 @@
 
 					<div class="share-add-form">
 						{#if addTab === 'user'}
-							<select bind:value={selectedUserId} class="share-select">
+							<select bind:value={selectedUserId} class="share-select" aria-label="User to share with" bind:this={userSelect}>
 								<option value={null}>Select a user...</option>
 								{#each availableUsers as u}
 									<option value={u.id}>{u.emoji} {u.username}{u.email ? ` (${u.email})` : ''}</option>
 								{/each}
 							</select>
 						{:else}
-							<select bind:value={selectedTeamId} class="share-select">
+							<select bind:value={selectedTeamId} class="share-select" aria-label="Team to share with">
 								<option value={null}>Select a team...</option>
 								{#each availableTeams as t}
 									<option value={t.id}>{t.emoji} {t.name}</option>
@@ -429,7 +448,7 @@
 							</select>
 						{/if}
 
-						<select bind:value={selectedRole} class="share-role-select">
+						<select bind:value={selectedRole} class="share-role-select" aria-label="Role to share with">
 							<option value="viewer">👁️ Viewer</option>
 							<option value="editor">✏️ Editor</option>
 						</select>

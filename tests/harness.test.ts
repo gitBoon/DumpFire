@@ -84,6 +84,8 @@ const TEST_FILES = [
 	'card-window-follow.svelte.test.ts',
 	'card-window-keys.svelte.test.ts',
 	'card-window-pages.test.ts',
+	// Card 2473: Manage Categories holds the keyboard's focus.
+	'category-window.svelte.test.ts',
 	'check-at-the-write.test.ts',
 	'colours.test.ts',
 	'columns.test.ts',

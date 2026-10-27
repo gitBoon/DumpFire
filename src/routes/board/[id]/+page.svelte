@@ -1852,6 +1852,7 @@
 		breadcrumbs={boardState.breadcrumbs}
 		tokenSummary={boardState.boardTokenSummary}
 		editingName={editingBoardName}
+		canRename={boardState.canEdit}
 		bind:nameDraft={boardNameDraft}
 		bind:searchQuery
 		bind:filterAssigneeId
@@ -1862,6 +1863,7 @@
 		onEmoji={(emoji) => saveBoardEmoji(emoji)}
 		onStartRename={startEditBoardName}
 		onRename={saveBoardName}
+		onCancelRename={() => (editingBoardName = false)}
 		onViewChange={(view) => setBoardView({ ...boardView, view })}
 	>
 		{#snippet more()}
