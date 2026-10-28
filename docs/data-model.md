@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.40
+version: 1.41
 status: As-Built
 date: 2026-10-28
 tags:
@@ -758,12 +758,16 @@ which has no server imports so the browser and the server share it:
 | none | anything else |
 
 The `todo` role (card 2240) changes nothing about a card: no move stamps, clears or
-awards anything for it. It says which columns All Tasks puts in its To Do bucket and All
-To Do lists, every such column of a board, and which column the board's list view opens
-on (the first of them, else the first column that is not the Options column, else none:
-the Options column, which every delivery board has, is never where it opens, card 2527).
-"To-Do", "Backlog" and the like are not
-To Do; the reports' own wider list (`src/lib/server/reports.ts`) is separate.
+awards anything for it. It is a board's own To Do: where Add Task shows, which column the
+board's list view opens on (the first of them, else the first column that is not the
+Options column, else none: the Options column, which every delivery board has, is never
+where it opens, card 2527), the column Send to To Do and a commit pick, and the titles an
+ideas board refuses. "To-Do", "Backlog" and the like do not have the role.
+
+Across boards more titles count as To Do (card 2474): reports, All Tasks' To Do bucket and
+the All To Do page all ask `countsAsToDo`, which takes the two above and the wider list
+(To-Do, Backlog, Inbox, Not started, New, Planned, Ideas, Idea, Later; `WIDER_TODO_TITLES`
+in `src/lib/column-role.ts`). Upstream columns are left out by each caller.
 
 #### The Options column (milestone 22)
 

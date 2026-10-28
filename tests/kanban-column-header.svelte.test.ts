@@ -7,8 +7,9 @@
  *
  * The board page chose its add-card columns with
  * `title.toLowerCase() === 'to do'`: no trim, and no "Todo", which All Tasks
- * and the All To Do page already count as To Do (`isTodoColumnTitle` in
- * `src/lib/column-role.ts`, card 2240). The header's Add Task and its menu's
+ * and the All To Do page then counted as To Do (`isTodoColumnTitle` in
+ * `src/lib/column-role.ts`, card 2240; card 2474 later widened those two
+ * pages to `countsAsToDo`, and the board kept the two titles). The header's Add Task and its menu's
  * Show Add Task tick, and the page's double-click to add, its empty column's
  * hint and its Show Add Task switch, now ask `isTodoColumnTitle`. A column
  * whose Add Task switch is on offers it whatever it is called, as before.
