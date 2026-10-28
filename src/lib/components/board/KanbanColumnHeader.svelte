@@ -35,7 +35,7 @@
 	import { drawnColour } from '$lib/colours';
 	import { holdFocus } from '$lib/dialog-focus';
 	import ColourSwatches from '$lib/components/ColourSwatches.svelte';
-	// "To Do" or "Todo", trimmed, any capitals: All Tasks' rule (card 2280, slice B5a).
+	// "To Do" or "Todo", trimmed, any capitals: the board's own To Do role (card 2280, slice B5a).
 	import { isOptionsColumn, isTodoColumnTitle, isUpstreamColumn, optionsSuffix } from '$lib/column-role';
 	import { OPTION_AGING_DAYS } from '$lib/board/board-view';
 
