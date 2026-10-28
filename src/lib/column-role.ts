@@ -11,7 +11,10 @@
  *
  * To Do joined them with card 2240: All Tasks' To Do bucket, the list view's
  * opening column and the All To Do page each tested the title for themselves,
- * and the list view and All Tasks did not quite agree on which columns.
+ * and the list view and All Tasks did not quite agree on which columns. Card
+ * 2474 gave the pages that gather boards together, reports, All Tasks and All
+ * To Do, the one wider list of To Do titles (`countsAsToDo`); a board's own
+ * To Do role is still the two titles.
  *
  * Everything now asks here. This module has no server imports, so the browser
  * and the server share the one definition.
@@ -101,27 +104,46 @@ const COMPLETE_TITLES: ReadonlySet<string> = new Set(['complete', 'done']);
 const HOLD_TITLES: ReadonlySet<string> = new Set(['on hold', 'hold', 'blocked', 'parked', 'waiting']);
 
 /**
- * Titles that mean the work is waiting to be started (card 2240).
+ * Titles that give a column a board's own To Do role (card 2240).
  *
- * Only these two, which All Tasks already put in its To Do bucket. Not "To-Do",
- * "Backlog" or the like, which reports count as To Do: adding one here would
- * move cards between buckets on All Tasks, which nobody asked for.
+ * Only these two. The role decides where Add Task shows, the list view's
+ * opening column, the column Send to To Do and a commit pick, and the titles
+ * an ideas board refuses, so it stays this narrow: an ideas board refusing a
+ * column called "Ideas" is not wanted. Across boards more titles count as To
+ * Do (`WIDER_TODO_TITLES`, `countsAsToDo`).
  */
 const TODO_TITLES: ReadonlySet<string> = new Set(['to do', 'todo']);
 
 /**
- * Titles reports count as To Do beside `TODO_TITLES` (`reports.ts`). Kept as
- * reports have always read them: aligning them with the two above would move
- * ordinary boards' figures, and is card 2474's question.
+ * Titles that count as To Do across boards beside `TODO_TITLES` (card 2474):
+ * in the reports, in All Tasks' To Do bucket and on the All To Do page, which
+ * all ask `countsAsToDo`. Reports always counted these; the two pages now
+ * count them as reports do, so a card in a Backlog column is To Do on every
+ * page that gathers boards together.
  */
-export const REPORT_TODO_TITLES: readonly string[] = ['to-do', 'backlog', 'inbox', 'not started', 'new', 'planned', 'ideas', 'idea', 'later'];
+const WIDER_TODO_TITLES: readonly string[] = ['to-do', 'backlog', 'inbox', 'not started', 'new', 'planned', 'ideas', 'idea', 'later'];
+
+/** Every title `countsAsToDo` takes: the board's own two and the wider list. */
+const CROSS_BOARD_TODO_TITLES: ReadonlySet<string> = new Set([...TODO_TITLES, ...WIDER_TODO_TITLES]);
+
+/**
+ * True if a column with this title counts as To Do across boards (card 2474):
+ * "To Do" or "Todo", or a title in `WIDER_TODO_TITLES` (Backlog, Inbox,
+ * Planned and the like), trimmed and in any case. What reports, All Tasks' To
+ * Do bucket and the All To Do page count. Not a board's own To Do role, which
+ * is `columnRole` and stays the two. Never asks whether the column is
+ * upstream: each caller leaves those out itself, as it already does.
+ */
+export function countsAsToDo(title: string | null | undefined): boolean {
+	return CROSS_BOARD_TODO_TITLES.has((title ?? '').trim().toLowerCase());
+}
 
 /**
  * Titles of queues, where committed work waits to be started (milestone 22,
- * the S4a review's H1): the report titles above, and the usual names of a
+ * the S4a review's H1): the wider To Do titles above, and the usual names of a
  * replenishment queue. Read only by `isQueueColumn`, for the cycle time.
  */
-const QUEUE_TITLES: ReadonlySet<string> = new Set([...REPORT_TODO_TITLES, 'ready', 'selected', 'next', 'up next', 'queue', 'queued']);
+const QUEUE_TITLES: ReadonlySet<string> = new Set([...WIDER_TODO_TITLES, 'ready', 'selected', 'next', 'up next', 'queue', 'queued']);
 
 /**
  * True if work in this column is waiting, not started: a To Do or On Hold
@@ -162,8 +184,9 @@ export function isHoldColumnTitle(title: string | null | undefined): boolean {
 }
 
 /**
- * True if cards in a column with this title are waiting to be started: the
- * column All Tasks calls To Do and the All To Do page lists (card 2240).
+ * True if a column with this title has the board's own To Do role (card
+ * 2240): "To Do" or "Todo". Where Add Task shows and the list view opens.
+ * All Tasks and All To Do count more titles as To Do (`countsAsToDo`).
  */
 export function isTodoColumnTitle(title: string | null | undefined): boolean {
 	return columnRole(title) === 'todo';

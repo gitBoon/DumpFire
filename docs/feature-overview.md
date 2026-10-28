@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.54
+version: 1.55
 status: As-Built
-date: 2026-10-27
+date: 2026-10-28
 tags:
   - features
   - overview
@@ -198,10 +198,10 @@ flowchart TD
 
 ### All To Do
 
-One table of every card waiting to be started, across every board you can open: the cards in each board's **To Do** column, and nothing else (card 2240).
+One table of every card waiting to be started, across every board you can open: the cards in each board's **To Do** columns, and nothing else (card 2240).
 
-- **What it lists** — the cards in every column titled "To Do" or "Todo" (any capitals, spaces round it ignored), on every board and sub-board you can open, exactly the cards All Tasks shows under To Do. A board with two such columns has both listed. In Progress, On Hold, Complete and archived cards are left out.
-- **A board with no To Do column** is not given one: its cards are not listed under another column's name. The header says how many boards have none ("2 boards have no To Do column"); opening that line lists them, each a link to its board. Renaming a column to To Do brings its cards in.
+- **What it lists** — the cards in every column whose title counts as To Do, on every board and sub-board you can open, exactly the cards All Tasks shows under To Do. The titles are the ones reports have always counted as To Do: **To Do**, **Todo**, **To-Do**, **Backlog**, **Inbox**, **Not Started**, **New**, **Planned**, **Ideas**, **Idea** and **Later** (any capitals, spaces round it ignored). A board with two such columns has both listed. In Progress, On Hold, Complete and archived cards are left out, and so are the Options column and an ideas board's columns, whatever they are called: an Options column titled "Ideas" holds options, not work waiting to be started. From 28 October 2026 (card 2474) All Tasks and All To Do count the whole list, as reports do; until then they took only "To Do" and "Todo", so a card in a Backlog column was To Do in a report but sat in a "Backlog" bucket of its own on All Tasks and was missing here. On the board itself only "To Do" and "Todo" are To Do columns, as before: they alone always show Add Task, and the list view opens on them.
+- **A board with no To Do column** is not given one: its cards are not listed under another column's name. The header says how many boards have none ("2 boards have no To Do column"); opening that line lists them, each a link to its board. Renaming a column to one of the titles above brings its cards in. Reports differ here alone: they count a board with none of those titles by its left-most open column.
 - **The three ways in** — **All To Do** under the dashboard's **Views** menu; **All To Do** in every board's **More** menu, after Planning, which opens the page filtered to that board and its sub-boards; and **All To Do** in All Tasks' **Views** menu, beside Planning, which carries the board or grouping chosen there.
 - **The table** — title, priority, board, category, labels, assignees, due date, subtasks done, milestone and Blocked. Where it is wider than the window (from 1000 px to about 1400 px) it scrolls sideways inside its own box, which the arrow keys scroll once it has the focus, and long titles wrap. Click a column's heading to sort by it, click it again to reverse it; a card with no value sorts last either way. Unsorted, the most urgent come first, then the soonest due, then board name, then the board's own order. Pinned cards are not put first here (a pin shows on the row), so sorting by due date sorts by due date. Labels and assignees do not sort, as a card can have several.
 - **The filters** — board (with its sub-boards, or a whole grouping, as on All Tasks), priority, category, label, assignee (Anyone, Me, Unassigned or a person), milestone (or No milestone), Blocked or Startable, and a search that finds `#123` exactly, or words in the id, title, description, category or an assignee's name. A category or label is chosen by name, so "Bug" on five boards is one choice. The header reads "n of N cards" while a filter is on, and **Clear filters** puts them back (to the board the page was opened for, when it came from a board).

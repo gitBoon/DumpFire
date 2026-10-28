@@ -2,10 +2,13 @@
  * All To Do (card 2240): the cards in the To Do column of every board the
  * caller can open, as one table, at `/todo`.
  *
- *   - Which columns are To Do is decided in one place: `columnRole(title)` is
- *     `'todo'` for "To Do" and "Todo", trimmed and in any case. Every such
- *     column of a board counts, as All Tasks' To Do bucket counts them, and a
- *     board with none has nothing listed (no fall-back to its first column).
+ *   - Which columns are To Do is decided in one place. A board's own To Do
+ *     role, `columnRole(title)`, is `'todo'` for "To Do" and "Todo", trimmed
+ *     and in any case. Across boards more titles count (`countsAsToDo`, card
+ *     2474): Backlog, Inbox, Planned and the rest of the list reports always
+ *     counted. Every such column of a board counts, as All Tasks' To Do bucket
+ *     and the reports count them, and a board with none has nothing listed (no
+ *     fall-back to its first column, which reports have).
  *   - The load reads the cards through `readCrossBoardCards`, the reader All
  *     Tasks now shares, so the two pages give a caller the same cards and
  *     the same access: card 1990's sub-board places, card 2128's categories,
@@ -26,9 +29,10 @@ import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
-import { boardCategories, boards, cardLabels, cards, categories, taskRequests } from '$lib/server/db/schema';
+import { boardCategories, boards, cardLabels, cards, categories, columns, taskRequests } from '$lib/server/db/schema';
 import type { SessionUser } from '$lib/server/auth';
-import { columnRole, isCompleteColumnTitle, isHoldColumnTitle, isTodoColumnTitle, todoColumnIds } from '$lib/column-role';
+import { columnRole, countsAsToDo, isCompleteColumnTitle, isHoldColumnTitle, isTodoColumnTitle, todoColumnIds } from '$lib/column-role';
+import { generateBoardReport } from '$lib/server/reports';
 import { defaultListColumn } from '$lib/board/board-view';
 import { placeBoards, type VisibleBoard } from '$lib/board-tree';
 import {
@@ -555,8 +559,9 @@ describe('the load, as a board’s owner (test 7)', () => {
 describe('a board with no To Do column (test 8)', () => {
 	it('has none of its cards listed, and is sent with hasTodo false; one titled " TODO " counts', async () => {
 		const owner = makeUser({ username: 'owner' });
-		const none = makeBoard({ owner, name: 'No To Do', columns: ['Backlog', 'Doing', 'Done'] });
-		for (const title of ['Backlog', 'Doing', 'Done']) makeCard(none.cols[title]);
+		// "Queue" is no title that counts as To Do (a Backlog would, since card 2474).
+		const none = makeBoard({ owner, name: 'No To Do', columns: ['Queue', 'Doing', 'Done'] });
+		for (const title of ['Queue', 'Doing', 'Done']) makeCard(none.cols[title]);
 		const spaced = makeBoard({ owner, name: 'Spaced', columns: [' TODO ', 'Done'] });
 		const listed = makeCard(spaced.cols[' TODO ']);
 		makeCard(spaced.cols['Done']);
@@ -597,6 +602,65 @@ describe('All To Do and the To Do bucket of All Tasks (test 9)', () => {
 		}
 		for (const card of sub.cards.slice(0, 2)) expect(asOwner).toContain(card.id);
 		expect(asOwner).not.toContain(sub.cards[2].id);
+	});
+});
+
+describe('the titles reports count as To Do (card 2474)', () => {
+	it('countsAsToDo takes the two To Do titles and the reports’ wider list, trimmed and in any case; columnRole stays the two', () => {
+		const eleven = ['To Do', 'Todo', 'To-Do', 'Backlog', 'Inbox', 'Not Started', 'New', 'Planned', 'Ideas', 'Idea', 'Later'];
+		for (const title of eleven) {
+			for (const spelt of [title, title.toUpperCase(), title.toLowerCase(), `  ${title}\t`]) expect(countsAsToDo(spelt), spelt).toBe(true);
+		}
+		for (const title of ['In Progress', 'To Do Soon', 'Waiting', 'Options', 'Queue', 'Done', '', null, undefined]) {
+			expect(countsAsToDo(title), String(title)).toBe(false);
+		}
+		// A board's own To Do role is not widened: Add Task, the list view and an ideas board's refusals read it.
+		expect(columnRole('Backlog')).toBeNull();
+		expect(columnRole('Ideas')).toBeNull();
+		expect(isTodoColumnTitle('Backlog')).toBe(false);
+	});
+
+	it('All To Do lists a board whose only such column is Backlog, with hasTodo true, and never an Options column or an ideas board’s column called Ideas', async () => {
+		const owner = makeUser({ username: 'owner' });
+		const backlog = makeBoard({ owner, name: 'Backlog only', columns: ['Backlog', 'Doing', 'Done'] });
+		const waiting = makeCard(backlog.cols['Backlog'], { title: 'In the backlog' });
+		makeCard(backlog.cols['Doing']);
+		const optionsCol = db.insert(columns).values({ boardId: backlog.board.id, title: 'Ideas', position: -1, role: 'options' }).returning().get();
+		const option = makeCard(optionsCol, { title: 'An option' });
+		const ideas = makeBoard({ owner, name: 'Ideas board', columns: ['Ideas', 'Shaping'] });
+		db.update(boards).set({ kind: 'ideas' }).where(eq(boards.id, ideas.board.id)).run();
+		const idea = makeCard(ideas.cols['Ideas'], { title: 'An idea' });
+
+		const data = await load('/todo', owner);
+
+		expect(todoIds(data)).toEqual([waiting.id]);
+		expect(todoIds(data)).not.toContain(option.id);
+		expect(todoIds(data)).not.toContain(idea.id);
+		const hasTodo = Object.fromEntries(data.boards.map((b: any) => [b.id, b.hasTodo]));
+		expect(hasTodo).toEqual({ [backlog.board.id]: true, [ideas.board.id]: false });
+		// The same cards as All Tasks' To Do bucket.
+		expect(allTasksTodoIds(await load('/all', owner))).toEqual(todoIds(data));
+	});
+
+	it('a board’s report, All Tasks and All To Do count the same cards as To Do', async () => {
+		const owner = makeUser({ username: 'owner' });
+		const boardsMade = [
+			makeBoard({ owner, name: 'Plain', columns: ['To Do', 'Doing', 'Done'] }),
+			makeBoard({ owner, name: 'Inbox and Planned', columns: ['Inbox', 'Planned', 'Doing', 'Done'] }),
+			makeBoard({ owner, name: 'Later', columns: ['Not Started', 'Later', 'On Hold', 'Complete'] })
+		];
+		for (const fixture of boardsMade) for (const column of Object.values(fixture.cols)) makeCard(column);
+		const todo = await load('/todo', owner);
+		const all = await load('/all', owner);
+		const onBoard = (data: any[], boardId: number) => data.filter((c: any) => c.boardId === boardId).length;
+		const bucket = all.buckets.find((b: any) => b.title === 'To Do').cards;
+
+		for (const { board } of boardsMade) {
+			const report = generateBoardReport(board.id, '2000-01-01', '2099-12-31', owner)!;
+			expect(onBoard(todo.cards, board.id), board.name).toBe(report.summary.todo);
+			expect(onBoard(bucket, board.id), board.name).toBe(report.summary.todo);
+		}
+		for (const title of ['Inbox', 'Planned', 'Not Started', 'Later']) expect(all.buckets.map((b: any) => b.title)).not.toContain(title);
 	});
 });
 

@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.39
+version: 1.40
 status: As-Built
-date: 2026-10-27
+date: 2026-10-28
 tags:
   - database
   - schema
@@ -786,6 +786,7 @@ backup, has none until the next start. `column-role.ts` asks it first:
 | `isOptionsTitle(title)` | the title is Options, trimmed and in any case: no other column of a delivery board may have it |
 | `optionsSuffix(column)` | what a screen says after the title: " (Options)" for an Options column with another title, nothing otherwise, so no screen reads "Options (Options)" |
 | `completeColumnIds`, `holdColumnIds`, `todoColumnIds` | never the Options column |
+| `countsAsToDo(title)` | the title counts as To Do across boards (card 2474): "To Do", "Todo" and the wider list reports always counted (To-Do, Backlog, Inbox, Not Started, New, Planned, Ideas, Idea, Later), trimmed and in any case. Read by reports, All Tasks' To Do bucket and All To Do, each of which leaves upstream columns out itself; a board's own To Do role (`columnRole`) stays the two |
 
 `src/lib/server/upstream.ts` reads what the rule needs from the database: `UPSTREAM` (the SQL
 fragment, with `IS`), `boardKinds(boardIds)` in one query, `upstreamColumnIds(rows)`,
@@ -860,7 +861,8 @@ server also accepted "done", and the dashboard counted "Waiting" as on hold wher
 the reports did not, so the same card could be complete on one screen and in
 progress on another. Nothing may compare a column title to a word list now; ask
 `columnRole()`, `isCompleteColumnTitle()`, `isHoldColumnTitle()`,
-`isTodoColumnTitle()`, `completeColumnIds()`, `holdColumnIds()` or `todoColumnIds()`.
+`isTodoColumnTitle()`, `completeColumnIds()`, `holdColumnIds()` or `todoColumnIds()`, or,
+for To Do across boards, `countsAsToDo()` (card 2474).
 
 The `hold` role also decides what a move does to the card's `on_hold_note`. A move
 from a `hold` column to one that is not clears it to `''`, in the same `UPDATE` as the

@@ -105,7 +105,8 @@ type Scene = {
  * progress and overdue, one waiting in To Do, one on hold, one archived, a
  * sub-board under the card in progress, and a goal of three of them. N has an
  * ordinary column titled "Ideas", which reports have always counted as To Do
- * (it is no Options column), with a card in it.
+ * (it is no Options column), with a card in it; All Tasks counts it as To Do
+ * too since card 2474.
  */
 function ordinaryScene(): Scene {
 	const owner = makeUser({ username: 'owner' });
@@ -341,7 +342,8 @@ const PINNED = {
 	all: {
 		totalCards: 8,
 		completedCards: 3,
-		buckets: ['To Do: Waiting, Card 12', 'Ideas: Ordinary idea', 'On Hold: Held', 'In Progress: Doing', 'Complete: Card 13, Done slow, Done fast']
+		// N's ordinary "Ideas" column is in the To Do bucket, as reports count it (card 2474).
+		buckets: ['To Do: Waiting, Ordinary idea, Card 12', 'On Hold: Held', 'In Progress: Doing', 'Complete: Card 13, Done slow, Done fast']
 	}
 };
 
