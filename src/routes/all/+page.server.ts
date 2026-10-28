@@ -1,7 +1,7 @@
 import type { columns } from '$lib/server/db/schema';
 import { getCardTokenTotals } from '$lib/server/tokens';
 import { readCrossBoardCards } from '$lib/server/cross-board-cards';
-import { columnRole } from '$lib/column-role';
+import { columnRole, countsAsToDo } from '$lib/column-role';
 import type { PageServerLoad } from './$types';
 
 const DEFAULT_COMPLETED_LIMIT = 50;
@@ -29,7 +29,9 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 
 	// Normalize column titles into buckets. An upstream column's cards are
 	// options, whatever the column is called: they go in the Options bucket,
-	// placed first, and are not in the header's figures.
+	// placed first, and are not in the header's figures. To Do is every title
+	// reports count as To Do (`countsAsToDo`, card 2474), so a Backlog
+	// column's cards are in the To Do bucket, not a bucket of their own.
 	function getBucket(colTitle: string, columnId: number): string {
 		if (upstreamColumnIds.has(columnId)) return OPTIONS;
 		const t = colTitle.toLowerCase().trim();
@@ -37,7 +39,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 		if (role === 'complete') return 'Complete';
 		if (t === 'in progress' || t === 'in-progress' || t === 'doing') return 'In Progress';
 		if (role === 'hold') return 'On Hold';
-		if (role === 'todo') return 'To Do';
+		if (countsAsToDo(colTitle)) return 'To Do';
 		// Title case for consistent merging of custom columns
 		return t.replace(/\b\w/g, c => c.toUpperCase());
 	}

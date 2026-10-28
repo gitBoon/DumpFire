@@ -36,6 +36,7 @@ import {
 	cardLabels,
 	cards as cardsTable,
 	categories,
+	columns,
 	taskRequests,
 	users as usersTable,
 	type Card
@@ -704,10 +705,12 @@ describe('the review of card 1990', () => {
  * Card 2240 moved the reading of All Tasks into `readCrossBoardCards`, which
  * All To Do shares. The answer was to be the same afterwards, key for key and
  * value for value, so this was written and passing on the load as it stood
- * before the move, and guards it since.
+ * before the move, and guards it since. Card 2474 changed one thing in it on
+ * purpose: the Backlog column, which reports count as To Do, is in the To Do
+ * bucket now, not a Backlog bucket of its own.
  */
 describe('the All Tasks answer, pinned (card 2240)', () => {
-	it('keeps its keys, its bucket order, every To Do-titled column in To Do, and each card and board as they were', async () => {
+	it('keeps its keys, its bucket order, every column that counts as To Do in To Do, and each card and board as they were', async () => {
 		const owner = makeUser({ username: 'pinned' });
 		const helper = makeUser({ username: 'helper' });
 		const groupingId = db.insert(boardCategories).values({ name: 'Grouping', color: '#123456' }).returning().get().id;
@@ -752,11 +755,10 @@ describe('the All Tasks answer, pinned (card 2240)', () => {
 			'totalCompletedCount'
 		].sort());
 
-		// Both To Do-titled columns in one To Do bucket, first; any other title a bucket of its own.
-		expect(data.buckets.map((b: any) => b.title)).toEqual(['To Do', 'Backlog', 'On Hold', 'In Progress', 'Complete']);
+		// Both To Do-titled columns and the Backlog column (card 2474) in one To Do bucket, first.
+		expect(data.buckets.map((b: any) => b.title)).toEqual(['To Do', 'On Hold', 'In Progress', 'Complete']);
 		const inBucket = (title: string) => data.buckets.find((b: any) => b.title === title).cards.map((c: any) => c.id);
-		expect(inBucket('To Do')).toEqual([upper.id, todo.id]);
-		expect(inBucket('Backlog')).toEqual([backlog.id]);
+		expect(inBucket('To Do')).toEqual([backlog.id, upper.id, todo.id]);
 		expect(inBucket('On Hold')).toEqual([]);
 		expect(inBucket('In Progress')).toEqual([]);
 		expect(inBucket('Complete')).toEqual([done.id]);
@@ -802,5 +804,32 @@ describe('the All Tasks answer, pinned (card 2240)', () => {
 			totalCompletedCount: 1,
 			completedLimit: 50
 		});
+	});
+});
+
+// ─── To Do as reports count it (card 2474) ─────────────────────────────────
+
+describe('the To Do bucket counts the titles reports count (card 2474)', () => {
+	it('puts a Backlog column’s card in To Do beside a To Do column’s on another board, and an Options or ideas-board column called Ideas in Options', async () => {
+		const owner = makeUser({ username: 'owner' });
+		const plain = makeBoard({ owner, name: 'Plain', columns: ['To Do', 'Done'] });
+		const backlogBoard = makeBoard({ owner, name: 'Backlog board', columns: ['Backlog', 'Done'] });
+		const todo = makeCard(plain.cols['To Do'], { title: 'Waiting' });
+		const backlog = makeCard(backlogBoard.cols['Backlog'], { title: 'In the backlog' });
+		const optionsCol = db.insert(columns).values({ boardId: backlogBoard.board.id, title: 'Ideas', position: -1, role: 'options' }).returning().get();
+		const option = makeCard(optionsCol, { title: 'An option' });
+		const ideas = makeBoard({ owner, name: 'Ideas board', columns: ['Ideas', 'Shaping'] });
+		db.update(boards).set({ kind: 'ideas' }).where(eq(boards.id, ideas.board.id)).run();
+		const idea = makeCard(ideas.cols['Ideas'], { title: 'An idea' });
+
+		const data = await allTasks(owner);
+
+		const titles = data.buckets.map((b: any) => b.title);
+		expect(titles).not.toContain('Backlog');
+		expect(titles).not.toContain('Ideas');
+		const inBucket = (title: string) => data.buckets.find((b: any) => b.title === title).cards.map((c: any) => c.id).sort((a: number, b: number) => a - b);
+		expect(inBucket('To Do')).toEqual([todo.id, backlog.id].sort((a, b) => a - b));
+		expect(inBucket('Options')).toEqual([option.id, idea.id].sort((a, b) => a - b));
+		expect(data.buckets.flatMap((b: any) => b.cards).find((c: any) => c.id === backlog.id)).toMatchObject({ columnTitle: 'Backlog', bucket: 'To Do' });
 	});
 });

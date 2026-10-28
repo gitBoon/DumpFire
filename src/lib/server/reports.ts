@@ -15,7 +15,7 @@ import {
 } from './db/schema';
 import { eq, inArray, isNull, isNotNull, and, or, lte } from 'drizzle-orm';
 import { getAccessibleBoardIds, canViewBoard } from './board-access';
-import { REPORT_TODO_TITLES, columnRoleOf, completeColumnIds, isUpstreamColumn } from '$lib/column-role';
+import { columnRoleOf, completeColumnIds, countsAsToDo, isUpstreamColumn } from '$lib/column-role';
 import { upstreamFigures, type UpstreamFigures } from './upstream';
 import { escapeHtml } from '$lib/escape-html';
 import { isSmtpConfigured, sendEmailWithAttachment } from './email';
@@ -223,30 +223,21 @@ export interface ReportData {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /**
- * Titles reports take for To Do beyond `column-role.ts`'s own two ("To Do",
- * "Todo"), which are asked first, so the two cannot disagree about those.
- * The rest (`REPORT_TODO_TITLES`, kept in `column-role.ts` beside the queue
- * titles the cycle time reads) are as reports have always counted them:
- * taking them out would move ordinary boards' figures, and is card 2474's
- * question.
- */
-const TODO_COLUMN_TITLES = REPORT_TODO_TITLES;
-
-/**
  * Classify a column, its stored role first (milestone 22, the S1b review's
  * B6). A column that is `upstream`, a board's Options column or any column
- * of an ideas board, holds options, whatever it is called: the new Options
- * column is titled "Ideas", which the title list below would take for To Do.
- * Any other column is classified by its title. Anything that is neither a
- * Done nor a To Do column counts as In Progress — On Hold, Review, Testing,
- * Blocked… have all left To Do, so for reporting purposes the work has
- * started.
+ * of an ideas board, holds options, whatever it is called: an ideas board's
+ * column may be titled "Ideas", which the title list below would take for
+ * To Do. Any other column is classified by its title: To Do is
+ * `countsAsToDo`, the titles All Tasks and All To Do count too (card 2474).
+ * Anything that is neither a Done nor a To Do column counts as In Progress —
+ * On Hold, Review, Testing, Blocked… have all left To Do, so for reporting
+ * purposes the work has started.
  */
 function classifyColumn(column: { title: string; role: string | null }, upstream: boolean): CardStatus {
 	if (upstream) return 'option';
 	const role = columnRoleOf(column);
 	if (role === 'complete') return 'completed';
-	if (role === 'todo' || TODO_COLUMN_TITLES.includes(column.title.toLowerCase().trim())) return 'todo';
+	if (countsAsToDo(column.title)) return 'todo';
 	return 'in_progress';
 }
 
