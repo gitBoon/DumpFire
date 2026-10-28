@@ -1,9 +1,9 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.37
+version: 1.38
 status: As-Built
-date: 2026-10-27
+date: 2026-10-28
 tags:
   - backup
   - reports
@@ -1158,18 +1158,20 @@ Every report (one-off, emailed and scheduled) carries a `statusFilter` that deci
 | `in_progress` | Open cards that have left To Do (In Progress, On Hold, Review, Testing…) | In Progress per board |
 | `todo` | Open cards still in a To Do / Backlog style column | To Do per board |
 
-Cards are classified by the title of the column they sit in (`classifyColumnTitle`):
+Cards are classified by the column they sit in (`classifyColumn` in `src/lib/server/reports.ts`). An upstream column, a board's Options column or any column of an ideas board, holds options whatever it is called. Any other column goes by its title: To Do is `countsAsToDo` in `src/lib/column-role.ts`, the same rule All Tasks' To Do bucket and the All To Do page use (card 2474).
 
 ```mermaid
 flowchart LR
-    Col["Column title"] --> Done{"complete / done?"}
+    Col["Column"] --> Up{"Options column or\nideas board?"}
+    Up -->|yes| Option["option"]
+    Up -->|no| Done{"complete / done?"}
     Done -->|yes| Completed["completed"]
-    Done -->|no| Todo{"to do / todo / backlog / inbox /\nnot started / new / planned / ideas / later?"}
+    Done -->|no| Todo{"to do / todo / to-do / backlog / inbox /\nnot started / new / planned / ideas / idea / later?"}
     Todo -->|yes| ToDo["todo"]
     Todo -->|no| InProgress["in_progress"]
 ```
 
-A board with no recognisable To Do column still gets one: its left-most column that is not Done is treated as To Do. A stored filter value it does not know falls back to `all` (`parseStatusFilter`), so an existing schedule keeps working. A request that sends one is refused, `400 statusFilter must be one of: all, completed, in_progress, todo`: until card 2117 it was read as `all`.
+A board with no recognisable To Do column still gets one: its left-most column that is neither Done nor the Options column is treated as To Do. All Tasks and All To Do do not do this; they list nothing as To Do for such a board. A stored filter value it does not know falls back to `all` (`parseStatusFilter`), so an existing schedule keeps working. A request that sends one is refused, `400 statusFilter must be one of: all, completed, in_progress, todo`: until card 2117 it was read as `all`.
 
 When a filter other than `all` is active the PDF header carries the filter label and a **SHOWING** banner under the metric tiles states how many cards are in that slice.
 
@@ -1206,7 +1208,7 @@ PDFs are rendered server-side using PDFKit with a professional layout:
 
 - **Header** — DumpFire branding, report title, date range, detail level and (when set) the status filter
 - **Executive Summary** — Six stat tiles: Cards, Tasks incl. subtasks, Completed, Created, Outstanding, Overdue, with a caption spelling out what each one counts. Overdue is the open cards due before the reader's today (card 2258): the day in the zone the Reports page sends, or the schedule's zone, and the UTC day when there is none. It was always the UTC day, so east of UTC after midnight a card due the day before was not yet counted
-- **Options and abandoned work** (milestone 22, card 2462) — A card in a board's Options column or on an ideas board is an option, in none of the figures, lists or breakdowns: a column is classified by its stored role first (`classifyColumn`), so the Options column, titled "Ideas", is never taken for To Do. Under the caption, `Upstream: N options now, oldest D days, A over 30 days · C committed from options · R returned to options · X discarded · S sent to other boards · discard rate P%.` when any upstream figure is not zero (`summary.upstream`, from `upstreamFigures`), and `Abandoned (committed work archived before Complete): N` on its own line when that is not zero, which a board whose Options column has never held an idea can show too. A report about one person (`assigneeUserId`) has `summary.upstream` null and neither line, and says instead that the upstream line is left out because those figures describe the boards, not one person's work, only where there is something to leave out: `summary.upstreamLeftOut`, true when a board in scope has an upstream column or abandoned work in the period. A single card's report lists an option in no outstanding work
+- **Options and abandoned work** (milestone 22, card 2462) — A card in a board's Options column or on an ideas board is an option, in none of the figures, lists or breakdowns: a column is classified by its stored role first (`classifyColumn`), so neither the Options column nor an ideas board's column called "Ideas" is ever taken for To Do. Under the caption, `Upstream: N options now, oldest D days, A over 30 days · C committed from options · R returned to options · X discarded · S sent to other boards · discard rate P%.` when any upstream figure is not zero (`summary.upstream`, from `upstreamFigures`), and `Abandoned (committed work archived before Complete): N` on its own line when that is not zero, which a board whose Options column has never held an idea can show too. A report about one person (`assigneeUserId`) has `summary.upstream` null and neither line, and says instead that the upstream line is left out because those figures describe the boards, not one person's work, only where there is something to leave out: `summary.upstreamLeftOut`, true when a board in scope has an upstream column or abandoned work in the period. A single card's report lists an option in no outstanding work
 - **Dates** — A due date (the Due Date column) is printed as the day stored, in any zone (`formatDueDate`). The period, the generated date and the completion dates are printed in the schedule's zone for a scheduled report and in UTC for one made by hand (card 2258); they were printed in the server's zone, so a Tokyo schedule's PDF read a day before its mail's period
 - **Status banner** — Only when a filter is active: "SHOWING Completed in period only — N cards" etc.
 - **Priority Breakdown** — Visual bar chart of the slice being reported (Outstanding by default, Completed in Period for the completed filter)
