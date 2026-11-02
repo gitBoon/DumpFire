@@ -322,6 +322,19 @@ describe('the Options strip on the board page (ruling g)', () => {
 			expect(readOptionsOpen(4, 9)).toBe(false);
 		});
 
+		it('keeps All Tasks’ choice under a key of its own, apart from every board’s', () => {
+			const store = new Map<string, string>();
+			vi.stubGlobal('localStorage', {
+				getItem: (k: string) => store.get(k) ?? null,
+				setItem: (k: string, v: string) => void store.set(k, v),
+				removeItem: (k: string) => void store.delete(k)
+			});
+
+			writeOptionsOpen(4, 'all', true);
+			expect([...store]).toEqual([['dumpfire-options-open:4:all', 'open']]);
+			expect([readOptionsOpen(4, 'all'), readOptionsOpen(4, 9), readOptionsOpen(5, 'all')]).toEqual([true, false, false]);
+		});
+
 		it('reads collapsed and writes nothing, without throwing, when storage throws', () => {
 			const refuse = () => {
 				throw new Error('blocked');

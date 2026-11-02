@@ -141,9 +141,10 @@ export function resolveListColumn(columns: ListColumn[], columnId: number | null
 
 /**
  * The `localStorage` key of one viewer's choice, for one board, of whether its
- * Options column is open or collapsed to a strip.
+ * Options column is open or collapsed to a strip. `'all'` is All Tasks' Options
+ * bucket, every board's options, which has its own choice.
  */
-export function optionsOpenKey(userId: number, boardId: number): string {
+export function optionsOpenKey(userId: number, boardId: number | 'all'): string {
 	return `dumpfire-options-open:${userId}:${boardId}`;
 }
 
@@ -152,7 +153,7 @@ export function optionsOpenKey(userId: number, boardId: number): string {
  * when nothing is remembered or storage cannot be read: the board opens with
  * the options out of the way, and their count on the strip.
  */
-export function readOptionsOpen(userId: number, boardId: number): boolean {
+export function readOptionsOpen(userId: number, boardId: number | 'all'): boolean {
 	try {
 		return localStorage.getItem(optionsOpenKey(userId, boardId)) === 'open';
 	} catch {
@@ -161,7 +162,7 @@ export function readOptionsOpen(userId: number, boardId: number): boolean {
 }
 
 /** Remembers the choice. Storage that cannot be written remembers nothing, and says nothing. */
-export function writeOptionsOpen(userId: number, boardId: number, open: boolean): void {
+export function writeOptionsOpen(userId: number, boardId: number | 'all', open: boolean): void {
 	try {
 		if (open) localStorage.setItem(optionsOpenKey(userId, boardId), 'open');
 		else localStorage.removeItem(optionsOpenKey(userId, boardId));

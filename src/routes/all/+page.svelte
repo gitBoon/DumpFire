@@ -5,11 +5,12 @@
 	 * Groups cards into swim-lane "buckets" (To Do, On Hold, In Progress, Complete)
 	 * and provides search and board-level filtering. Supports editing and moving cards.
 	 * Every board's options are one Options bucket, drawn first and marked "not
-	 * committed", in none of the header's figures (milestone 22).
+	 * committed", in none of the header's figures (milestone 22), and collapsed
+	 * to a strip with its count by default, as a board's Options column is.
 	 * Live-updates via global SSE and shows celebrations on task completion.
 	 */
 	import type { PageData } from './$types';
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount, onDestroy, tick as nextTick } from 'svelte';
 	import { goto, invalidateAll } from '$app/navigation';
 	import { browser } from '$app/environment';
 	import CardModal from '$lib/components/CardModal.svelte';
@@ -24,6 +25,7 @@
 	import { boardPlaces as placesOf, chosenBoardId, inBoardFilter } from '$lib/board-tree';
 	import { cardArchivedMessage, cardArchiveWarning } from '$lib/api';
 	import { isUpstreamCard } from '$lib/board/ideas-board';
+	import { readOptionsOpen, writeOptionsOpen } from '$lib/board/board-view';
 	import { keepStreamOpen } from '$lib/live-stream';
 	import { attachmentsChanged, commentsChanged } from '$lib/board/sse';
 	import { refreshSchedule } from '$lib/board/refresh-schedule';
@@ -247,6 +249,34 @@
 	const shownBuckets = $derived(buckets.filter((b) => !isOptionsBucket(b) || b.cards.length > 0));
 
 	/**
+	 * Whether this viewer has the Options bucket open; collapsed to a strip with
+	 * its count by default, as a board's Options column is. Their own choice, in
+	 * this browser, apart from every board's (`dumpfire-options-open:<user>:all`).
+	 * Read as the page is made, so a bucket left open is drawn open from the
+	 * first paint where storage can be read.
+	 */
+	let optionsOpen = $state(initialOptionsOpen());
+
+	/** The stored choice for the user the page was loaded for, or collapsed. */
+	function initialOptionsOpen(): boolean {
+		const userId = data.user?.id;
+		return typeof userId === 'number' ? readOptionsOpen(userId, 'all') : false;
+	}
+
+	/**
+	 * Open or collapse the strip and remember it. The keyboard's focus follows,
+	 * as on a board: to the header's collapse button once it opens, to the strip
+	 * once it collapses, as the control pressed is gone.
+	 */
+	async function setOptionsOpen(open: boolean) {
+		optionsOpen = open;
+		const userId = data.user?.id;
+		if (typeof userId === 'number') writeOptionsOpen(userId, 'all', open);
+		await nextTick();
+		document.querySelector<HTMLElement>(open ? '.column-options .options-collapse' : '.column-options .options-strip')?.focus();
+	}
+
+	/**
 	 * The card window (card 2281, slice C3a-1): opened, saved and archived
 	 * through the board page's controller, over the buckets above. A save
 	 * sends only the fields changed in the window, so a change someone else
@@ -438,7 +468,23 @@
 			{#each shownBuckets as bucket}
 				{@const sortKey = bucketKey(bucket)}
 				{@const filteredCards = getSortedCards(bucket.cards.filter(matchesFilters), sortKey)}
-				<div class="column" class:column-options={isOptionsBucket(bucket)}>
+				{@const collapsed = isOptionsBucket(bucket) && !optionsOpen}
+				<div class="column" class:column-options={isOptionsBucket(bucket)} class:options-collapsed={collapsed}>
+					{#if collapsed}
+						<!-- The Options bucket collapsed to a strip, as a board's Options
+						     column is: its title and the count the filters let through.
+						     It opens on a press. -->
+						<button
+							class="options-strip"
+							onclick={() => setOptionsOpen(true)}
+							title="Open the Options column"
+							aria-expanded="false"
+							aria-label="Open the Options column: {filteredCards.length} {filteredCards.length === 1 ? 'option' : 'options'}, not committed"
+						>
+							<span class="options-strip-count">{filteredCards.length}</span>
+							<span class="options-strip-title">{bucket.title}</span>
+						</button>
+					{:else}
 					<div class="column-header">
 						<div class="column-title-row">
 							<span class="column-color-dot" style="background: {drawnColour(bucketColors[bucket.title] || '#8b5cf6')}"></span>
@@ -481,6 +527,11 @@
 									</div>
 								{/if}
 							</div>
+							{#if isOptionsBucket(bucket)}
+								<button class="sort-btn options-collapse" title="Collapse the Options column" aria-label="Collapse the Options column" aria-expanded="true" onclick={(e) => { e.stopPropagation(); setOptionsOpen(false); }}>
+									<svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M7.5 2.5L4 6l3.5 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+								</button>
+							{/if}
 						</div>
 					</div>
 					<div class="card-list">
@@ -512,6 +563,7 @@
 							<p class="completed-capped" id="completed-capped">Showing the latest {data.completedLimit} of {data.totalCompletedCount} completed cards</p>
 						{/if}
 					</div>
+					{/if}
 				</div>
 			{/each}
 		</div>
@@ -688,6 +740,21 @@
 		padding: 1px 6px;
 		border-radius: var(--radius-full);
 		white-space: nowrap;
+	}
+
+	/* Collapsed to a narrow strip by default, as a board's Options column is. */
+	.column.options-collapsed { flex: 0 0 56px; min-width: 56px; }
+	.options-strip {
+		flex: 1; width: 100%; min-height: 0;
+		display: flex; flex-direction: column; align-items: center; gap: var(--space-sm);
+		padding: var(--space-md) 0; background: transparent; border: none; cursor: pointer;
+		color: var(--text-secondary); font-family: var(--font-family);
+	}
+	.options-strip:hover, .options-strip:focus-visible { background: var(--glass-hover); color: var(--text-primary); }
+	.options-strip-title { writing-mode: vertical-rl; transform: rotate(180deg); font-size: 0.85rem; font-weight: 600; white-space: nowrap; }
+	.options-strip-count {
+		font-size: 0.78rem; font-weight: 700; background: var(--bg-base); padding: 2px 8px;
+		border-radius: var(--radius-full); border: 1px solid var(--glass-border); min-width: 22px; text-align: center;
 	}
 
 
