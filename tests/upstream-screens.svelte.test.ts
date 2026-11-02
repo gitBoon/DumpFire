@@ -645,7 +645,7 @@ describe('All Tasks’ Options bucket', () => {
 		expect(page).toContain('{#each shownBuckets as bucket}');
 		// The Stats panel still reads every bucket.
 		expect(page).toContain('buckets.filter((b) => !isOptionsBucket(b) || chosenHasUpstream)');
-		expect(page).toContain('<div class="column" class:column-options={isOptionsBucket(bucket)}>');
+		expect(page).toContain('<div class="column" class:column-options={isOptionsBucket(bucket)} class:options-collapsed={collapsed}>');
 		expect(page).toMatch(/\{#if isOptionsBucket\(bucket\)\}\s*<span class="options-tag"[^>]*>not committed<\/span>/);
 	});
 

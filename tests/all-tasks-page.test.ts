@@ -602,6 +602,38 @@ describe('All Tasks, its components joined up through the page (card 2281, slice
 		expect(heading()).toBeUndefined();
 	});
 
+	it('draws the Options bucket collapsed to a strip with its count, opens it on a press, keeps it open on the next visit, and collapses it again', async () => {
+		const withOptions = () => ({
+			buckets: [
+				{ title: 'Options', upstream: true, cards: [card(5, 'Maybe', { columnId: 20, bucket: 'Options' }), card(6, 'Someday', { columnId: 20, bucket: 'Options' })] },
+				...data().buckets
+			]
+		});
+		let target = draw(withOptions());
+		const strip = () => target.querySelector<HTMLButtonElement>('.column-options .options-strip');
+
+		expect(strip()!.getAttribute('aria-expanded')).toBe('false');
+		expect(strip()!.getAttribute('aria-label')).toBe('Open the Options column: 2 options, not committed');
+		expect(cardTitles(target)).toEqual(['#7 Plan', '#8 Ship']);
+
+		strip()!.click();
+		await settle();
+		expect(strip()).toBeNull();
+		expect(cardTitles(target)).toEqual(['#5 Maybe', '#6 Someday', '#7 Plan', '#8 Ship']);
+		expect(document.activeElement).toBe(target.querySelector('.column-options .options-collapse'));
+
+		// Remembered for this viewer: drawn open from the start next time.
+		unmount(drawn!.component);
+		drawn!.target.remove();
+		target = draw(withOptions());
+		expect(strip()).toBeNull();
+
+		target.querySelector<HTMLButtonElement>('.column-options .options-collapse')!.click();
+		await settle();
+		expect(cardTitles(target)).toEqual(['#7 Plan', '#8 Ship']);
+		expect(document.activeElement).toBe(strip());
+	});
+
 	it('filters the page’s cards by the header’s search, board filter and Hide blocked', () => {
 		const target = draw();
 		expect(cardTitles(target)).toEqual(['#7 Plan', '#8 Ship']);
