@@ -60,9 +60,13 @@
 	<!--
 		Global user badge (shown when logged in, outside login/setup pages).
 		Inside .app-layout, with the pages' windows: outside it, it was drawn
-		above every window and its dimmed backdrop.
+		above every window and its dimmed backdrop. Not on a decision's
+		personal link either, which gives no way into the rest of DumpFire,
+		signed in or not (card 2677, D9): known by its route id, which a
+		percent-encoded address of it shares and its pathname does not (code
+		review C6).
 	-->
-	{#if user && !$page.url.pathname.startsWith('/login') && !$page.url.pathname.startsWith('/setup')}
+	{#if user && !$page.url.pathname.startsWith('/login') && !$page.url.pathname.startsWith('/setup') && $page.route.id !== '/decision-link/[token]'}
 		<div class="user-badge glass">
 			<a href="/account" class="user-badge-link" title="My Account">
 				<span class="user-badge-emoji">{user.emoji}</span>

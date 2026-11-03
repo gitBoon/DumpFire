@@ -46,12 +46,14 @@ import {
 	parseWorkingContent,
 	participantsOf,
 	revisionOf,
+	type VersionContent,
 	type WorkingContent
 } from './decision-content';
 import { peopleById } from './decision-record';
 import { decisionStatus, TRANSITIONS, type ShownStatus } from './decision-status';
 import { requireBoard, requireDecision } from './route-guards';
 import { checkContent, refusalsOf, type ContentAnswer, type Refusal, type Warning } from '$lib/decision-readiness';
+import type { ViewContent } from '$lib/decision-view-types';
 import { stamp, type Stamp } from '$lib/timestamps';
 
 // ─── The one projection (decision 15, R4) ────────────────────────────────────
@@ -142,6 +144,35 @@ export function contentAnswer(content: WorkingContent, admin: boolean): ContentA
 		agentDrafted: { ...content.agentDrafted },
 		reviewed
 	};
+}
+
+/**
+ * A published version's content as the participant page gives it (card 2677,
+ * decision 16, R3), field by field from `parseVersionContent`: its text
+ * sections, its stories and its agent flags, and nothing else. A signed-in
+ * caller (`via: 'session'`) is also given `reviewed`, a yes for each reviewed
+ * section, with no reviewer's name and no moment; a link holder is not, as an
+ * agent flag already says a section is not yet reviewed. The options and the
+ * audiences are given once, by `viewModelOf` in decision-view.ts, so neither is
+ * here, and no group id or reviewer's name reaches the page.
+ */
+export function versionContentAnswer(content: VersionContent, via: 'session' | 'link'): ViewContent {
+	const answer: ViewContent = {
+		situation: content.situation,
+		question: content.question,
+		ask: content.ask,
+		unknowns: content.unknowns,
+		alreadyRuled: content.alreadyRuled,
+		technicalDetail: content.technicalDetail,
+		stories: content.stories.map((story) => ({ title: story.title, body: story.body })),
+		agentDrafted: { ...content.agentDrafted }
+	};
+	if (via === 'session') {
+		const reviewed: Record<string, true> = {};
+		for (const key of Object.keys(content.reviewed)) reviewed[key] = true;
+		answer.reviewed = reviewed;
+	}
+	return answer;
 }
 
 /** A decision as every answer gives it (decision 15), to an administrator (`admin`) with each reviewer's account id besides. */

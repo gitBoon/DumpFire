@@ -12,10 +12,14 @@
  * database's own log once at every start, by startup-checks.ts.
  *
  * A decision's personal link, `/decision-link/<token>` (card 2675, plan
- * decision 9, R3), is masked the same way, from before its route exists (card
- * 2677): its token lets someone with no account see a decision and answer it,
- * and a mail server's refusal can quote it, which `maskMailText` in email.ts
- * masks by this list before the line is logged.
+ * decision 9, R3), is masked the same way: its token lets someone with no
+ * account see a decision and answer it, and a mail server's refusal can quote
+ * it, which `maskMailText` in email.ts masks by this list before the line is
+ * logged. Its page is card 2677's. The holder's response and seen are sent to
+ * `/api/decision-by-link/responses` and `/api/decision-by-link/seen`, the token
+ * in the body (card 2677, decision 4): their paths hold no secret, and do not
+ * contain `/decision-link/`, which `maskSecretPaths`, matching anywhere in a
+ * line, would rewrite (F2).
  *
  * Only the path is ever written down, never the query, so a token sent as
  * `?token=` (the public request form's links, `/request/[id]/reply` and

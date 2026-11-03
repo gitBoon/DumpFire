@@ -16,6 +16,7 @@
 import { error } from '@sveltejs/kit';
 import { sql, type SQL } from 'drizzle-orm';
 import { decisions, type Decision } from './db/schema';
+import type { ShownStatus } from '$lib/decision-view-types';
 import { parseStamp, stamp, type Stamp } from '$lib/timestamps';
 
 /** The statuses a decision is stored with. */
@@ -23,8 +24,12 @@ export const STORED_STATUSES = ['draft', 'open', 'closed', 'ruled', 'superseded'
 
 export type StoredStatus = (typeof STORED_STATUSES)[number];
 
-/** What every reader shows: `closed`, and `open` past its `closes_at`, are `awaiting_ruling`. */
-export type ShownStatus = 'draft' | 'open' | 'awaiting_ruling' | 'ruled' | 'superseded' | 'withdrawn';
+/**
+ * What every reader shows: `closed`, and `open` past its `closes_at`, are
+ * `awaiting_ruling`. Written in the client-safe `$lib/decision-view-types`
+ * (card 2677, decision 21), and named here too for the server's readers.
+ */
+export type { ShownStatus };
 
 /** The status a decision is shown with at `now`. */
 export function decisionStatus(row: Pick<Decision, 'status' | 'closesAt'>, now: Stamp = stamp()): ShownStatus {
@@ -59,7 +64,8 @@ export type DecisionAction =
 	| 'participantAccount'
 	| 'participantAddress'
 	| 'rule'
-	| 'record';
+	| 'record'
+	| 'respond';
 
 /**
  * Each action in words: `verb` for `You cannot <verb> this decision` (the
@@ -82,7 +88,8 @@ export const DECISION_ACTION_WORDS: Readonly<Record<DecisionAction, { verb: stri
 	participantAccount: { verb: "change a participant's account on", done: "a participant's account cannot be changed" },
 	participantAddress: { verb: "change a participant's address on", done: "a participant's address cannot be changed" },
 	rule: { verb: 'rule on', done: 'it cannot be ruled on' },
-	record: { verb: 'read the record of', done: 'its record cannot be read' }
+	record: { verb: 'read the record of', done: 'its record cannot be read' },
+	respond: { verb: 'respond to', done: 'responses are closed' }
 };
 
 /** Each shown status in words, for `This decision is <status>`. */
@@ -111,7 +118,9 @@ export const TRANSITIONS: Readonly<Record<Exclude<DecisionAction, 'view' | 'reco
 	resend: ['open', 'closed'],
 	participantAccount: ['open', 'closed'],
 	participantAddress: ['open', 'closed'],
-	rule: ['open', 'closed']
+	rule: ['open', 'closed'],
+	// Card 2677: a participant's response, while the decision is stored open; the write also asks the shown status (decision 12).
+	respond: ['open']
 };
 
 /**

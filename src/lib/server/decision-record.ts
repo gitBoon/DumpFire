@@ -5,11 +5,13 @@
  *
  * `decision_versions`, `decision_responses`, `decision_rulings` and
  * `decision_events` are insert-only, in code alone (design 4.3: no trigger).
- * These are the only functions in `src` that insert into the events and the
- * versions, but one: the restore's `RECORD_DECISION_LINKS_ENDED` in
- * db/restore.ts, which records `link_revoked { reason: 'restore' }` for each
- * link a restore ends (decision 13). Cards 2677 and 2679 add their response
- * and ruling inserts here. Nothing anywhere updates or deletes a row of them,
+ * These are the only functions in `src` that insert into the events, the
+ * versions and the responses, but one: the restore's
+ * `RECORD_DECISION_LINKS_ENDED` in db/restore.ts, which records
+ * `link_revoked { reason: 'restore' }` for each link a restore ends (decision
+ * 13). Card 2677 adds the response insert, `appendResponse`, and the reads of
+ * a participant's own responses and of what they have seen and been told;
+ * card 2679 adds its ruling insert here. Nothing anywhere updates or deletes a row of them,
  * but the cascade of `deleteDecision`, a restore's wholesale replacement (plan
  * 4.8), and the writers that walk every table by name, which the scan names
  * one by one (`GENERIC_WRITERS`). tests/decision-record.test.ts holds this by
@@ -24,21 +26,24 @@
  * Plain functions with no caller, called inside a service write's
  * transaction, or by the mail effect in a transaction of its own.
  */
-import { and, asc, eq, inArray, isNotNull, isNull, gt, lte, max, or } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNotNull, isNull, gt, lt, lte, max, or } from 'drizzle-orm';
 import { db } from './db';
 import {
 	decisionEvents,
 	decisionOptions,
+	decisionResponses,
 	decisionVersions,
 	decisions,
 	people,
 	peopleGroupMembers,
 	peopleGroups,
+	type DecisionResponse,
 	type DecisionVersion,
 	type Person
 } from './db/schema';
 import type { SessionUser } from './auth';
 import type { ActivitySource } from './logActivity';
+import type { OwnResponse } from '$lib/decision-view-types';
 import { stamp, type Stamp } from '$lib/timestamps';
 
 /** Who an entry on the record is by: an account (its id while it lasts, and its name kept), a link holder, or DumpFire. */
@@ -77,7 +82,10 @@ export const EVENT_KINDS = [
 	'account_attached',
 	'account_cleared',
 	'address_changed',
-	'dry_run'
+	'dry_run',
+	// Card 2677: a participant recorded as having seen a version at a stage (decision 14), and each response given (decision 13).
+	'seen',
+	'responded'
 ] as const;
 
 export type EventKind = (typeof EVENT_KINDS)[number];
@@ -87,6 +95,9 @@ const MAIL_KINDS: readonly EventKind[] = ['invited', 'asked_again', 'told_of_cha
 
 /** The events that say whether a participant's row held an account on this decision (decision 16). */
 const ACCOUNT_KINDS: readonly EventKind[] = ['included', 're_included', 'account_attached', 'account_cleared'];
+
+/** The mail events a participant's banner tells them of (card 2677, decision 19). */
+const TOLD_KINDS = ['invited', 'asked_again', 'told_of_change'] as const;
 
 /**
  * Append one event, `created_at` stamped, and answer its id. An event naming
@@ -149,6 +160,78 @@ export function appendVersion(
 		})
 		.returning()
 		.get();
+}
+
+/**
+ * Append one response (card 2677, decision 11), `created_at` stamped. Its
+ * `scores` and `option_comments` are JSON the write built from the live
+ * option ids, never from a body's keys (R9). A change of answer is a new row,
+ * `replacesId` the one before it in the same round.
+ */
+export function appendResponse(r: {
+	decisionId: number;
+	participantId: number;
+	versionNumber: number;
+	round: number;
+	kind: string;
+	optionId: number | null;
+	scores: string | null;
+	comment: string | null;
+	optionComments: string | null;
+	replacesId: number | null;
+	via: 'session' | 'link';
+}): DecisionResponse {
+	return db
+		.insert(decisionResponses)
+		.values({
+			decisionId: r.decisionId,
+			participantId: r.participantId,
+			versionNumber: r.versionNumber,
+			round: r.round,
+			kind: r.kind,
+			optionId: r.optionId,
+			scores: r.scores,
+			comment: r.comment,
+			optionComments: r.optionComments,
+			replacesId: r.replacesId,
+			via: r.via,
+			createdAt: stamp()
+		})
+		.returning()
+		.get();
+}
+
+/**
+ * The one projection of a response (card 2677, D3), field by field: what the
+ * page shows and every write that answers a response answers. No row id of
+ * the response, its decision, its participant or the response it replaced: a
+ * response's id would count others' responses between two of one's own (S4).
+ * A keyed object is read tolerantly, an option id's key alone kept.
+ */
+export function ownResponseOf(row: DecisionResponse): OwnResponse {
+	return {
+		versionNumber: row.versionNumber,
+		round: row.round,
+		kind: row.kind as OwnResponse['kind'],
+		optionId: row.optionId,
+		scores: row.scores === null ? null : keyedOf(row.scores, (value): value is number => typeof value === 'number'),
+		comment: row.comment,
+		optionComments: row.optionComments === null ? {} : keyedOf(row.optionComments, (value): value is string => typeof value === 'string'),
+		createdAt: row.createdAt
+	};
+}
+
+/** A stored object keyed by option id, each value one `is` accepts; anything else is left out. */
+function keyedOf<T>(json: string, is: (value: unknown) => value is T): Record<string, T> {
+	const read: Record<string, T> = {};
+	try {
+		const parsed = JSON.parse(json) as unknown;
+		if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return read;
+		for (const [key, value] of Object.entries(parsed)) if (/^\d+$/.test(key) && is(value)) read[key] = value;
+	} catch {
+		// Not JSON: nothing is kept.
+	}
+	return read;
 }
 
 /**
@@ -303,4 +386,94 @@ export function lastMailAt(participantIds: number[]): Map<number, Stamp> {
 		for (const row of rows) if (row.participantId !== null && row.at !== null) latest.set(row.participantId, row.at);
 	}
 	return latest;
+}
+
+// ─── A participant's own part (card 2677) ────────────────────────────────────
+
+/** The participant's latest response in `round`, or null for none: what the next one replaces (decision 11). */
+export function latestResponse(participantId: number, round: number): DecisionResponse | null {
+	return (
+		db
+			.select()
+			.from(decisionResponses)
+			.where(and(eq(decisionResponses.participantId, participantId), eq(decisionResponses.round, round)))
+			.orderBy(desc(decisionResponses.id))
+			.limit(1)
+			.get() ?? null
+	);
+}
+
+/** How many responses the participant has given in `round`, for the write's cap (decision 11). */
+export function responsesInRound(participantId: number, round: number): number {
+	const row = db
+		.select({ n: count() })
+		.from(decisionResponses)
+		.where(and(eq(decisionResponses.participantId, participantId), eq(decisionResponses.round, round)))
+		.get();
+	return row?.n ?? 0;
+}
+
+/**
+ * The participant's own responses as the page shows them: the latest in
+ * `round`, and, when there is none, the latest of an earlier round, which the
+ * page shows as for an earlier version (design 4.7).
+ */
+export function ownResponses(participantId: number, round: number): { current: OwnResponse | null; earlier: OwnResponse | null } {
+	const current = latestResponse(participantId, round);
+	if (current !== null) return { current: ownResponseOf(current), earlier: null };
+	const earlier = db
+		.select()
+		.from(decisionResponses)
+		.where(and(eq(decisionResponses.participantId, participantId), lt(decisionResponses.round, round)))
+		.orderBy(desc(decisionResponses.id))
+		.limit(1)
+		.get();
+	return { current: null, earlier: earlier === undefined ? null : ownResponseOf(earlier) };
+}
+
+/** Whether the participant is already recorded as having seen version `versionNumber` at `stage` (decision 14): one `seen` event for the three. */
+export function hasSeen(participantId: number, versionNumber: number, stage: string): boolean {
+	return db
+		.select({ detail: decisionEvents.detail })
+		.from(decisionEvents)
+		.where(and(eq(decisionEvents.participantId, participantId), eq(decisionEvents.kind, 'seen'), eq(decisionEvents.versionNumber, versionNumber)))
+		.all()
+		.some((event) => detailOf(event.detail).stage === stage);
+}
+
+/**
+ * The participant's latest record-bearing mail of the three a banner tells
+ * of (decision 19), or null for none, every mail skipped among them; and
+ * `delivered`, true only when that mail's own `mail_outcome` (`detail.of`
+ * its event's id) says it was (D8). No outcome yet is not delivered.
+ */
+export function lastToldOf(participantId: number): { kind: (typeof TOLD_KINDS)[number]; at: Stamp; delivered: boolean } | null {
+	const told = db
+		.select({ id: decisionEvents.id, kind: decisionEvents.kind, at: decisionEvents.createdAt })
+		.from(decisionEvents)
+		.where(and(eq(decisionEvents.participantId, participantId), inArray(decisionEvents.kind, [...TOLD_KINDS])))
+		.orderBy(desc(decisionEvents.id))
+		.limit(1)
+		.get();
+	if (told === undefined) return null;
+	const delivered = db
+		.select({ detail: decisionEvents.detail })
+		.from(decisionEvents)
+		.where(and(eq(decisionEvents.participantId, participantId), eq(decisionEvents.kind, 'mail_outcome'), gt(decisionEvents.id, told.id)))
+		.all()
+		.some((event) => {
+			const detail = detailOf(event.detail);
+			return detail.of === told.id && detail.delivered === true;
+		});
+	return { kind: told.kind as (typeof TOLD_KINDS)[number], at: told.at, delivered };
+}
+
+/** An event's detail, read; one that cannot be read, or is no object, is empty. */
+function detailOf(detail: string | null): Record<string, unknown> {
+	try {
+		const read = JSON.parse(detail ?? 'null') as unknown;
+		return read !== null && typeof read === 'object' && !Array.isArray(read) ? (read as Record<string, unknown>) : {};
+	} catch {
+		return {};
+	}
 }

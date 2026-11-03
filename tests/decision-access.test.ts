@@ -181,7 +181,9 @@ describe('DECISION_RULES', () => {
 			participantAccount: ['admin'],
 			participantAddress: ['admin'],
 			rule: ['decider'],
-			record: ['admin', 'decider']
+			record: ['admin', 'decider'],
+			// Card 2677 (decision 10).
+			respond: ['participant']
 		});
 		expect(DRAFT_VIEWERS).toEqual(['admin', 'author', 'decider', 'boardOwner']);
 	});

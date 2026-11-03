@@ -234,8 +234,41 @@ export function cspMode(value: string | undefined = process.env.CSP_MODE): CspMo
  */
 export const FRAMEABLE_ROUTES: ReadonlySet<string> = new Set(['/request', '/request/[id]/confirm', '/request/[id]/reply']);
 
+/** What a personal link's routes carry: no address of theirs passed on, kept out of search, and kept in no cache. */
+const PERSONAL_LINK_HEADERS: readonly [name: string, value: string][] = [
+	['Referrer-Policy', 'no-referrer'],
+	['X-Robots-Tag', 'noindex, nofollow'],
+	['Cache-Control', 'no-store']
+];
+
+/** What a decision's own page and its participant's routes carry: they show or answer the caller's own response. */
+const OWN_RESPONSE_HEADERS: readonly [name: string, value: string][] = [['Cache-Control', 'no-store']];
+
 /**
- * `response`, with each of `SECURITY_HEADERS` it does not already carry, but
+ * Headers by route id, exactly (card 2677, decision 7, R6), which are always
+ * set: each replaces whatever the answer carries, unlike `SECURITY_HEADERS`,
+ * which never replaces one. So a handler's own `Cache-Control` cannot keep a
+ * personal link's answer in a cache, and the link's `Referrer-Policy` is the
+ * one sent. On every answer the route gives, its errors and its 429 included,
+ * which `setHeaders` in a load would not reach.
+ *
+ * `/decision-link/[token]`'s address holds the token, so nothing it answers
+ * names its address to another site, is indexed or is cached; its two routes
+ * likewise. `/decisions/[id]` and its participant's two routes show or answer
+ * the caller's own response, and are cached nowhere.
+ */
+export const ROUTE_HEADERS: ReadonlyMap<string, readonly [name: string, value: string][]> = new Map([
+	['/decision-link/[token]', PERSONAL_LINK_HEADERS],
+	['/api/decision-by-link/responses', PERSONAL_LINK_HEADERS],
+	['/api/decision-by-link/seen', PERSONAL_LINK_HEADERS],
+	['/decisions/[id]', OWN_RESPONSE_HEADERS],
+	['/api/decisions/[id]/responses', OWN_RESPONSE_HEADERS],
+	['/api/decisions/[id]/seen', OWN_RESPONSE_HEADERS]
+]);
+
+/**
+ * `response`, with its route's `ROUTE_HEADERS` set, replacing any it carries,
+ * then each of `SECURITY_HEADERS` it does not already carry, but
  * `X-Frame-Options` on a route of `FRAMEABLE_ROUTES`. The one place they are
  * set. `mode` is `cspMode()` unless a test says otherwise.
  *
@@ -263,6 +296,8 @@ export function secured(response: Response, routeId: string | null, mode: CspMod
 			response.headers.set('content-security-policy-report-only', policy);
 		}
 	}
+	// Set, not added: these replace what the answer carries (R6).
+	for (const [name, value] of (routeId === null ? undefined : ROUTE_HEADERS.get(routeId)) ?? []) response.headers.set(name, value);
 	const frameable = routeId !== null && FRAMEABLE_ROUTES.has(routeId);
 	for (const [name, value] of SECURITY_HEADERS) {
 		if (name === 'X-Frame-Options' && frameable) continue;

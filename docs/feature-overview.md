@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.57
+version: 1.58
 status: As-Built
 date: 2026-11-03
 tags:
@@ -280,9 +280,9 @@ A page left open while DumpFire is updated to a new version says so within about
 
 ### Decisions
 
-A decision record puts a question to the people it affects: what the situation is, what is asked, the options with their pros, cons and commercial notes, and who is consulted and who is only told (card 2676, from 3 November 2026). This first part is drafting. Opening a decision, which mails its participants, comes with a later card, so for now nobody is told anything.
+A decision record puts a question to the people it affects: what the situation is, what is asked, the options with their pros, cons and commercial notes, and who is consulted and who is only told (card 2676, from 3 November 2026). So far there is drafting, and the page each participant reads and answers a decision on (card 2677, [below](#reading-and-answering-a-decision)). Opening a decision, which mails its participants, comes with a later card, so for now nobody is told anything.
 
-- **Where they are** — on a board, **More → Go to → Decisions** lists the board's decisions, newest first, with each one's status, decider, closing time and last change, in UTC. Anyone who can open the board sees every decision that has been opened; a draft is seen only by its author, its decider, the board's owners and administrators. A title is a link to its editor where you may edit it
+- **Where they are** — on a board, **More → Go to → Decisions** lists the board's decisions, newest first, with each one's status, decider, closing time and last change, in UTC. Anyone who can open the board sees every decision that has been opened; a draft is seen only by its author, its decider, the board's owners and administrators. An opened decision's title opens its page, with **Edit** beside it where you may edit it; a draft's title opens its editor where you may edit it
 - **Making a draft** — **New decision**, for anyone who can edit the board, asks for a title and opens the editor. The decider starts as the board's Product Owner while they can edit the board, and as you otherwise
 - **The editor** — the sections in the order participants will read them: situation, question, what is asked, the options, how it affects each group, user stories, what is not yet known, what is already settled and technical detail. Options are cards you can add, remove and move left or right; each is given a letter (A, B, C…) when it is first saved, and a letter is never used twice on one decision, even for an option removed before anyone saw it. Beside them: the closing time (in UTC), whether people choose one option or score each from 0 to 5, the decider, the participants and the readability check. **Save** sends everything at once, and an "Unsaved changes" marker shows until you do
 - **Once opened** — the title, closing time and vote mode are fixed (the closing time is moved by Extend, later); the text can still be edited, and participants see only what is published
@@ -302,6 +302,32 @@ flowchart LR
     Editor --> People["Participants: Save participants"]
     Editor --> Check["Readability check"]
     Check -.->|"a later card"| Open["Open: participants are mailed"]
+```
+
+#### Reading and answering a decision
+
+Once a decision is opened (the control for that comes with a later card), each participant reads it on its own page and, if they are consulted, answers it there (card 2677).
+
+- **Two ways in** — someone with an account opens `/decisions/<id>`, signed in, from the board's decision list or from their email. Someone without an account opens the personal link in their email, `/decision-link/[token]`, and needs no account and no password: the link is theirs alone, and the page says "This address is personal to you: do not share it." Anyone else who can open the board sees the same page with no form: the published text and its status
+- **What the page shows** — in this order: when you were told of the decision, the situation, the question, what is asked of you and by when (in UTC), who sees your response, the options side by side (stacked on a phone), how it affects you (your own group's part first and open), the user stories, what is not yet known, what is already settled and the technical detail (closed until you open them). A section an agent drafted says so. The page is made for a phone first: one column, large buttons, and text that does not need zooming
+- **Answering** — choose one option, or score each from 0 to 5 when the decision asks for scores, or say "I abstain" or "I have no concerns"; add a comment, and a comment on any option, if you want. **Send my response** records it and shows what was recorded and when. You can change your answer while the decision is open: each change is kept, and the latest counts. Sending the same answer twice records it once. If the decision was changed and you were only told of it, your answer is shown "Given on version N."; sending it again records it for the version you are reading now. Someone kept informed reads the decision and gives no response
+- **If the decision changed** — if it was changed after you opened it, sending says so and offers **Reload**. If it was changed and you were asked again, your earlier answer is shown as for the earlier version, and you answer again. Once the closing time has passed, or the decision is ruled on, superseded or withdrawn, the page says responses are closed and shows your last one, if you gave one
+- **Who sees your answer** — while the decision is open, only the decider, and DumpFire's administrators in the record. No other participant sees it, or any totals, and the page shows nobody else's
+- **What is recorded when you open it** — your first tap, click, key press or turn of the mouse wheel on the page records that you have seen this version; the page says so. Scrolling alone does not, as a mail scanner's script can scroll a page too. Opening the email, or the link being fetched by a mail scanner, records nothing. Sending a response records it too. Once a decision is ruled on, opening it records nothing yet: that comes when the page shows the ruling (a later card)
+- **Signed in on someone else's computer** — if the browser is signed in to DumpFire when a personal link is opened, the page says "You are signed in as <name>; this is recorded with your response and with your having seen this version", and offers no way into the rest of DumpFire
+- **A link that no longer works** — an old, expired or replaced link shows "This link does not open a decision. It may have expired, or a newer email may have replaced it. Ask whoever sent it to you for a new one." Each new email about the decision carries a new link, and the old one stops working. A link works until 90 days after the decision is ruled on, withdrawn or closes
+
+```mermaid
+sequenceDiagram
+    actor P as Participant
+    participant E as Their email
+    participant Pg as The decision's page
+    E->>Pg: the link (signed in, or the personal link)
+    Pg-->>P: the decision, and the banner saying when you were told
+    P->>Pg: the first tap, click, key press or wheel turn
+    Pg->>Pg: recorded: you have seen this version
+    P->>Pg: Send my response
+    Pg-->>P: "Your response was recorded on …"
 ```
 
 ---

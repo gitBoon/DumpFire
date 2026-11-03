@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.71
+version: 1.72
 status: As-Built
 date: 2026-11-03
 tags:
@@ -136,6 +136,7 @@ no other:
 | `/invite/[token]` | The page an invite links to |
 | `/request`, `/request/[id]/confirm`, `/request/[id]/reply` | The public request form, and the two pages its mails link to |
 | `/api/requests`, `/api/requests/[id]`, `/api/requests/[id]/confirm`, `/api/requests/[id]/link`, `/api/requests/[id]/messages`, `/api/requests/targets` | The form's routes. Each handler asks for itself what it needs: a session, the token the form was given, or a request's link. The new link (card 2158) asks for nothing, answers everyone alike and mails only the request's address, an account's as it is now for a request made signed in (see [The Public Request Form](#the-public-request-form)) |
+| `/decision-link/[token]`, `/api/decision-by-link/responses`, `/api/decision-by-link/seen` | A decision's personal link: its page, and its holder's response and seen, the token in the body (card 2677). Each answers only a token whose hash a participant holds, and signs nobody in (see [The link's page and its routes](#the-links-page-and-its-routes)) |
 | `/api/v1/openapi.json` | The API's description, answered with no key |
 
 `/setup` is the one page there is before there is a user, and is never served once there
@@ -3361,13 +3362,16 @@ see [Testing](testing.md).
 
 Card 2675 built the server side of decision records: who may do what to a decision, and the
 personal link that lets a participant with no account see one. Card 2676 added the first routes
-and pages, for drafting a decision ([What a drafting page is given](#what-a-drafting-page-is-given));
-the lifecycle routes are card 2697's, and the `/decision-link/[token]` page and its protections
-(rate limiting of wrong tokens, headers) card 2677's. What is here is enforced in the modules
-every route calls, and pinned by `tests/decision-access.test.ts`,
-`tests/decision-record.test.ts`, `tests/decision-service.test.ts` and `tests/gate.test.ts`. The
-design is `docs/planning/card-2625-decision-records.md`, the plan
-`docs/planning/card-2675-decision-service.md`.
+and pages, for drafting a decision ([What a drafting page is given](#what-a-drafting-page-is-given)).
+Card 2677 added the participant's page, `/decisions/[id]` signed in and `/decision-link/[token]`
+by personal link, and the writes that answer it ([What a participant is given, and who sees a
+response](#what-a-participant-is-given-and-who-sees-a-response), [The link's page and its
+routes](#the-links-page-and-its-routes)). The lifecycle routes are card 2697's. What is here is
+enforced in the modules every route calls, and pinned by `tests/decision-access.test.ts`,
+`tests/decision-record.test.ts`, `tests/decision-service.test.ts`,
+`tests/decision-participation.test.ts` and `tests/gate.test.ts`. The design is
+`docs/planning/card-2625-decision-records.md`, the plans
+`docs/planning/card-2675-decision-service.md` and `docs/planning/card-2677-participant-page.md`.
 
 ### Roles and the rules
 
@@ -3398,6 +3402,7 @@ is held only as itself: `boardOwner` does not imply `boardReader`.
 | participantAccount, participantAddress | yes | no | no | no | no | no | no |
 | rule (card 2679) | no | no | yes¹ | no | no | no | no |
 | record (card 2680) | yes | no | yes¹ | no | no | no | no |
+| respond (card 2677)² | no | no | no | no | no | no | yes |
 
 ¹ While the decision's board exists, a grant resting on `author`, `decider` or `boardOwner` is
 good for anything but `view` only if the caller can edit the board at that moment
@@ -3408,6 +3413,10 @@ decider keep their writes. Once a
 decision is open, `setDecider` may not name the caller, an administrator included (403 `You cannot
 make yourself the decider of a decision that is open`). The decider must be an account that can
 edit the board when named and again at opening.
+
+² `participant` needs no board access, so it survives a deleted board and a lost share. The write
+asks more than the table: a consulted participant only, one `reachOf` still reaches, and through
+the web application alone (below).
 
 ### No existence oracle
 
@@ -3506,6 +3515,73 @@ one on board B, a draft of board A that its viewer must not see, and a participa
 `tests/decision-authoring.svelte.test.ts` hold the projection's keys, the picker's fields, the
 404 and the words.
 
+### What a participant is given, and who sees a response
+
+Card 2677's two loads, `readDecisionPage` and `readLinkPage` in
+`src/lib/server/decision-view.ts`, give one allowlist, `DecisionPageData`
+(`src/lib/decision-view-types.ts`), written out field by field and never a row spread.
+
+- **Nothing of another participant.** The page reads the caller's own participant row and that
+  row's own responses alone. It lists no participant, no other response, no count and no total,
+  to anyone: the decider and administrators included. Results are card 2679's.
+- **No account or row id.** The decider is given by name; no account id, participant's address
+  or account, `includedBy`, link moment, `linkTokenHash`, author, group id or reviewer's name is
+  given, and no row id of the participant or of a response. A response is given as `OwnResponse`
+  (`ownResponseOf` in `decision-record.ts`, the one projection every response answer uses too),
+  with no `id`: response ids run across every decision, so two of one's own would count everyone
+  else's between them.
+- **Less to a link holder.** A link holder may have no account and no tie to the board, so
+  `boardName` is null for them, and the content has no `reviewed` marks; a signed-in caller gets
+  a reviewed yes per section, with no name and no moment. Reviewer names reach the page for
+  nobody. Options and audiences are given once, as `ViewOption[]` and `ViewAudience[]`, with no
+  group id: the server works out whether each audience's group is one the person is a member of
+  now.
+- **Who sees a response, said honestly.** A consulted participant is told: "While this decision
+  is open, only <decider>, who decides, sees your response. DumpFire's administrators can also see
+  it in the record. No other participant sees it, or any totals."
+- **Responding** (`respondToDecision`, `respondByLink`) needs `respond`, which only
+  `participant` holds (`DECISION_RULES`), and then: a consulted participant (`403` "Someone kept
+  informed gives no response"); `source: 'ui'` (`403` "Responding is a person's act: it cannot
+  be done with an API key"), which internal routes always pass and a v1 route never could; and,
+  signed in, a participant `reachOf` still reaches through the account (`403` "This decision no
+  longer reaches you as a participant: ask whoever sent it to you"). A person who has left, lost
+  the account or changed address cannot respond signed in, as their link is refused by
+  `participantForLink`, and `readDecisionPage` gives them no participant's part. Being recorded
+  as having seen a version (`recordSeen`, `recordSeenByLink`) has the same rules, a caller who may
+  view and is no participant `403`.
+- **A link holder's acts are the link's.** `respondByLink` and `recordSeenByLink` record `via:
+  'link'` and source `link` whatever `opts.source` says, the actor the participant's snapshot
+  name with no account. A browser that is signed in stays signed in as itself, and its account is
+  noted beside the act in the event's detail as `signedIn { userId, name }`, never as the actor;
+  the page says so first (below).
+- **Opening is never recorded by a GET.** Mail scanners follow links, and some draw the page in
+  a headless browser. Neither load writes anything; the page posts `seen` after the first trusted
+  `pointerdown`, `keydown`, `touchstart` or `wheel` while it is visible, and only for a
+  participant. Not `scroll`: a `scroll` event is trusted however it was caused, a script's
+  `scrollTo` included, while `wheel` is trusted only from the device (code review C3). Only the
+  current version is accepted (`400` otherwise), and no `ruling` stage is posted until card
+  2679 shows the ruling. A scanner that drives a real browser with operating-system input can
+  still post; the record shows the source and the moment.
+- **Comments are text.** A response's comments are read with the markdown field's character
+  rule (`readMultiline`, trimmed) and always shown as text. The decision's own markdown is drawn
+  by `MarkdownBlock` after mount, through `renderMarkdown` (see [Markdown in Descriptions and
+  Comments](#markdown-in-descriptions-and-comments)); before it, and on the server, it is the
+  text, escaped.
+- **The stored keyed objects are built from the live option ids**, never from the body's keys:
+  `scores` and `optionComments` are read through `asObject`, a key that is no live option id is
+  refused by `requireClosed`, and each value is read per live id with `Object.hasOwn`, so
+  `__proto__` or `constructor` can never reach a row.
+
+```mermaid
+flowchart LR
+    Load["readDecisionPage / readLinkPage"] --> Own["the caller's own row,<br/>own responses (OwnResponse)"]
+    Load --> Ver["the current version:<br/>text, stories, agent flags"]
+    Ver -->|"signed in"| Rev["reviewed: { key: true }"]
+    Ver -->|"link"| NoRev["no reviewed, no board name"]
+    Load --> VM["viewModelOf: options (labels),<br/>audiences (own first, no group id)"]
+    Load -.->|"never"| Never["another participant, a count, a total,<br/>an account id, an address, a hash,<br/>a reviewer's name, a row id"]
+```
+
 ### The personal link
 
 A participant who has no account is reached by `/decision-link/[token]`.
@@ -3566,6 +3642,93 @@ brings the person back), DumpFire for a restore. `appendEvent` refuses
 an event naming a participant on a draft; no link is issued before opening, and the restore
 records only links on decisions that are not drafts (while still emptying every hash).
 
+### The link's page and its routes
+
+Card 2677 added the route the invitations link to. Three routes are public, by route id in
+`PUBLIC_ROUTES` (`hooks.server.ts`), and each answers only a token whose hash a participant holds:
+
+| Route | What it is |
+|---|---|
+| `GET /decision-link/[token]` | The participant's page, `readLinkPage` |
+| `POST /api/decision-by-link/responses` | `{ token, versionNumber, kind, … }`: `respondByLink` |
+| `POST /api/decision-by-link/seen` | `{ token, versionNumber, stage }`: `recordSeenByLink` |
+
+- **The token in the body, to fixed paths.** The page's own address holds the token; its two
+  writes add no further address that does. Their paths do not contain `/decision-link/`, which
+  `maskSecretPaths` rewrites anywhere in a line, so they are logged as they are. The page takes
+  the token from its address in the browser, and the page data does not carry it.
+- **Same-origin JSON only**, first, on these two and on the signed-in page's two
+  (`/api/decisions/[id]/responses` and `…/seen`): `requireSameOriginJson` in
+  `src/lib/server/same-origin.ts` answers `415` `This route takes JSON only` for any
+  `Content-Type` but `application/json`, then `403` `Cross-site requests are refused` unless
+  `Sec-Fetch-Site` is `same-origin` or, with that header absent, `Origin` is the server's own. A
+  request with neither is refused. SvelteKit's origin check covers form content types alone, and
+  `SameSite=Lax` does not cover a sibling subdomain, and the link routes have no cookie to lean
+  on. A refused request reads no body, no row and no wrong-link count. The gate does not yet do
+  this for every other JSON route; that is its own card.
+- **One answer for every link that opens no decision.** Unknown, expired, revoked and no longer
+  reaching its holder (`participantForLink`'s refusals, a token that is not text among them) are
+  all `404` in the same words, on the page and on both routes: "This link does not open a
+  decision. It may have expired, or a newer email may have replaced it. Ask whoever sent it to you
+  for a new one." (`DEAD_DECISION_LINK` in `src/lib/decision-words.ts`). No "expired" page:
+  that would say the link once worked.
+- **Wrong tokens alone are counted, by address.** Each refusal calls `refuseWrongLink(
+  addressToCount(event))`: 20 in a 15-minute fixed window, one bucket for the page and both
+  routes, an IPv6 address counted by its /64. Past it the routes answer `429` JSON `{ message }`
+  with `Retry-After` in seconds, and the page `429` with the wait in minutes in its words, as an
+  error page carries no header of the load's: "Too many links that do not work were tried from
+  your network. Try again in N minute(s)." A link that works is never counted and never refused,
+  whatever the bucket holds, so one guesser behind an office's address cannot lock out its
+  participants. The defence against guessing is the 256-bit token, which cannot be guessed
+  whatever the limit; the limit does not slow guessing, it only caps the noise of wrong links
+  in the log and the work they cause. One WARN line, the first
+  time an address is over in a window, names the address's key and no token.
+- **No session, ever.** The link routes never make a session or set a cookie. A signed-in
+  browser stays signed in as itself, and the page says so under its banner: "You are signed in as
+  <name>; this is recorded with your response and with your having seen this version." The root
+  layout hides its user badge on the route `/decision-link/[token]`, known by its route id, so
+  that a percent-encoded address of the page does not bring it back (code review C6), and the
+  page has no link into the rest of DumpFire, signed in or not. The page data holds no decision
+  id for a link holder (C5). `endsTheSession` (`src/lib/signed-out.ts`) leaves a `401` from
+  `/api/decision-by-link/` alone, as it does `/api/requests`.
+- **The address is personal.** The page says, under the banner, "This address is personal to
+  you: do not share it." Browser history syncs to a person's other devices and outlives the mail,
+  and people copy addresses; nothing swaps the token for a cookie (a session by another name). The
+  link's own expiry and revocation bound the copy, `no-store` keeps the page out of caches, and a
+  reverse proxy's access log and Referer can be masked as in
+  [Deployment](deployment.md#keeping-link-tokens-out-of-the-access-log). Its error log cannot be
+  masked and holds tokens after an upstream failure, so it is kept as the links themselves are,
+  and any CDN or load balancer in front of it logs the address too.
+- **Headers** by route id (`ROUTE_HEADERS`, [Security Headers](#security-headers)): the three get
+  `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex, nofollow` and `Cache-Control:
+  no-store` on every answer, the `404` and the `429` included; the page writes `<meta
+  name="robots" content="noindex">` and `<meta name="referrer" content="no-referrer">` too.
+
+```mermaid
+sequenceDiagram
+    actor P as Link holder
+    participant G as Gate (secured)
+    participant L as Page load or route
+    participant K as participantForLink
+    participant B as refuseWrongLink
+    P->>G: GET /decision-link/[token], or POST /api/decision-by-link/* { token }
+    G->>G: POST only: requireSameOriginJson (415, 403)
+    G->>L: public route
+    L->>K: the token's hash
+    alt a link that works
+        K-->>L: participant and decision (never counted)
+        L-->>P: 200, no Set-Cookie
+    else any refusal
+        L->>B: addressToCount(event)
+        alt within 20 in 15 minutes
+            L-->>P: 404, DEAD_DECISION_LINK
+        else past it
+            L-->>P: 429 (Retry-After on the routes; the wait in words on the page)
+        end
+    end
+    Note over G,P: every answer: no-referrer, noindex, no-store
+```
+
 ### Who is mailed
 
 One rule, `reachOf`, decides every record-bearing mail, re-send and link. A person who is gone
@@ -3593,8 +3756,10 @@ not sent either, and a WARN line names the decision and the mail event by id.
 ### What is never logged
 
 The path `/decision-link/` is in `SECRET_IN_PATH` (`src/lib/server/secret-paths.ts`) as
-`{ routeId: '/decision-link/[token]', before: '/decision-link/' }`, from before its route exists.
-The gate's line, `maskMailText` (a mail server's refusal that quotes the link), `mailStatus()`'s
+`{ routeId: '/decision-link/[token]', before: '/decision-link/' }`, put there before its route
+existed (card 2677 added the page). The page and its data, `/decision-link/<token>/__data.json`,
+are logged as `/decision-link/[token]`; the link holder's two routes carry the token in the body
+and are logged as their own paths. The gate's line, `maskMailText` (a mail server's refusal that quotes the link), `mailStatus()`'s
 last failure, a backup's copy of the log and the start-up sweep all write `/decision-link/[token]`,
 a path under it and an encoded one (`/%64ecision-link/…`) included. `maskMailText` also reads an
 encoded slash back (`%2F`, `&#47;`, `&#x2F;`) before it masks, finds the path in any case, and
@@ -3988,9 +4153,24 @@ redirects, to a caller who is signed in or not.
 | `X-XSS-Protection` | `0` | Switches off the filter old browsers ran over a page, which could itself be used to make a page leak. Current browsers have dropped it. It was `1; mode=block` |
 | `Content-Security-Policy` | **On pages only**, and set by SvelteKit, not by `secured()`: the directives below, with a new nonce on every page | Says where a page may load scripts, styles, images, fonts and connections from, and that no page asks another site for anything. See [The Content-Security-Policy](#the-content-security-policy) |
 
-- **A header the answer already has is never replaced.** An attachment keeps the
-  `X-Content-Type-Options` and `Content-Security-Policy: sandbox` it is served with (see
-  [Attachments](#attachments)).
+- **A header the answer already has is never replaced**, but those of `ROUTE_HEADERS` below. An
+  attachment keeps the `X-Content-Type-Options` and `Content-Security-Policy: sandbox` it is
+  served with (see [Attachments](#attachments)).
+- **A few routes carry more, by route id, exactly** (`ROUTE_HEADERS`, card 2677). These are
+  always set, replacing whatever the answer carries, before the five above are added where they
+  are missing, so the route's `Referrer-Policy` is the one sent and a handler's own
+  `Cache-Control: max-age=60` leaves as `no-store`. They are on every answer of the route, its
+  errors and its `429` included, which `setHeaders` in a load would not reach.
+
+  | Route id | Headers |
+  |---|---|
+  | `/decision-link/[token]`, `/api/decision-by-link/responses`, `/api/decision-by-link/seen` | `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex, nofollow`, `Cache-Control: no-store` |
+  | `/decisions/[id]`, `/api/decisions/[id]/responses`, `/api/decisions/[id]/seen` | `Cache-Control: no-store` |
+
+  The first three hold or take a personal link's token, so nothing they answer names their
+  address to another site, is indexed or is cached; the other three show or answer the caller's
+  own response. `/invite/[token]` is a credential page too and carries the global set alone: its
+  own card.
 - **The public request form may be framed by another site.** `/request`,
   `/request/[id]/confirm` and `/request/[id]/reply`, by route id, exactly, carry every header
   but `X-Frame-Options`, in case the form is embedded in an intranet page. Every other page,
@@ -4195,6 +4375,12 @@ every comment) by `renderMarkdown` in `src/lib/markdown.ts` (cards 2202 and 2210
 Until then each place ran `DOMPurify.sanitize(marked(...))` with DOMPurify's defaults, which
 keep `style` attributes, `<style>` elements, any class of the page's own, forms, SVG and
 images from any address, and put mention chips into the HTML, attributes included.
+
+A decision's markdown on the participant page is drawn the same way, by `MarkdownBlock`
+(card 2677). That page is drawn on the server, where `renderMarkdown` gives escaped text, and
+Svelte keeps an `{@html}` the server drew on hydration, so the block draws the text itself,
+escaped, until it is mounted, and `{@html renderMarkdown(text)}` after. A response's comments
+are never drawn as markdown.
 
 ```mermaid
 flowchart TD

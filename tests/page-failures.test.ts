@@ -1708,7 +1708,7 @@ describe('a request’s pages, for a link that no longer works (card 2158)', () 
 describe('a 401 that says the page’s session has ended, src/lib/signed-out.ts', () => {
 	const PAGE = 'http://localhost/board/1';
 
-	it('is one from this page’s own server, under /api/, and outside /api/v1/ and the request form’s routes', () => {
+	it('is one from this page’s own server, under /api/, and outside /api/v1/, the request form’s routes and a personal link’s', () => {
 		const cases: [RequestInfo | URL, boolean][] = [
 			['/api/boards', true],
 			['/api/cards/1/attachments', true],
@@ -1725,6 +1725,11 @@ describe('a 401 that says the page’s session has ended, src/lib/signed-out.ts'
 			['/api/requests', false],
 			['/api/requests/targets', false],
 			['/api/requests/4/messages?token=x', false],
+			// A personal link's routes (card 2677, R7): its holder may have no account to sign in to.
+			['/api/decision-by-link/responses', false],
+			['/api/decision-by-link/seen', false],
+			// Named like them, and not one of them.
+			['/api/decision-by-linkX', true],
 			['/login', false],
 			['/board/1/__data.json', false],
 			['/api', false],

@@ -25,6 +25,8 @@ import {
 	columns,
 	decisionOptions,
 	decisionParticipants,
+	decisionResponses,
+	decisionVersions,
 	decisions,
 	labels,
 	milestones,
@@ -44,6 +46,8 @@ import {
 	type Decision,
 	type DecisionOption,
 	type DecisionParticipant,
+	type DecisionResponse,
+	type DecisionVersion,
 	type Label,
 	type Milestone,
 	type NewDecision,
@@ -584,6 +588,59 @@ export function makeParticipant(
 		);
 	}
 	return participant;
+}
+
+/**
+ * A published version of the decision (card 2677), its content given as an
+ * object and stored as JSON: numbered one past the decision's current version
+ * unless told otherwise, and asking for views again unless told not to. The
+ * decision's `current_version` is moved on to it. Its options are the test's
+ * to make live in it (`makeOption` with `addedInVersion`).
+ */
+export function makeVersion(
+	decision: Decision,
+	content: Record<string, unknown> = {},
+	opts: { number?: number; asksAgain?: boolean; changeNote?: string | null; publishedAt?: string } = {}
+): DecisionVersion {
+	const current = db.select({ currentVersion: decisions.currentVersion }).from(decisions).where(eq(decisions.id, decision.id)).get()!.currentVersion;
+	const number = opts.number ?? current + 1;
+	const version = db
+		.insert(decisionVersions)
+		.values({
+			decisionId: decision.id,
+			number,
+			content: JSON.stringify(content),
+			changeNote: opts.changeNote === undefined ? (number === 1 ? null : 'A change') : opts.changeNote,
+			asksAgain: opts.asksAgain ?? true,
+			publishedByName: 'An author',
+			publishedAt: opts.publishedAt ?? '2026-11-01 09:00:00'
+		})
+		.returning()
+		.get();
+	if (number > current) db.update(decisions).set({ currentVersion: number }).where(eq(decisions.id, decision.id)).run();
+	return version;
+}
+
+/**
+ * A response of the participant (card 2677), as `appendResponse` writes one:
+ * an abstention in round 1 of version 1, given signed in, unless told
+ * otherwise; any column given in `opts`.
+ */
+export function makeResponse(participant: DecisionParticipant, opts: Partial<typeof decisionResponses.$inferInsert> = {}): DecisionResponse {
+	return db
+		.insert(decisionResponses)
+		.values({
+			versionNumber: 1,
+			round: 1,
+			kind: 'abstain',
+			via: 'session',
+			createdAt: '2026-11-01 10:00:00',
+			...opts,
+			decisionId: participant.decisionId,
+			participantId: participant.id
+		})
+		.returning()
+		.get();
 }
 
 /**

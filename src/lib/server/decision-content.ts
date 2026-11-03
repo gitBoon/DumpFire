@@ -5,7 +5,10 @@
  * labels, the options a re-publish adds and retires, the facts the
  * readability check is worked out from, and a decision's option and
  * participant rows as the service and the reads both take them (the code
- * review's C7).
+ * review's C7). Card 2677 adds a published version's content read back
+ * (`parseVersionContent`, F1), and shares the markdown field's rule
+ * (`readMultiline`) and the closed-object check (`requireClosed`) with a
+ * response's comments and keyed objects.
  *
  * Plain functions with no caller, called by the service in `decisions.ts`
  * inside its write, and by the authoring reads. Nothing here writes a row of
@@ -150,15 +153,96 @@ export function parseWorkingContent(json: string): WorkingContent {
 	};
 }
 
+/**
+ * A published version's content (card 2677, decision 16, F1): what
+ * `versionContent` in decisions.ts copied, read back tolerantly, as
+ * `parseWorkingContent` reads the working copy. It keeps what a version holds
+ * and the working copy does not: each option's `optionId` and `label`, and
+ * each review stamp as `{ byName, at }`. A server read: nothing it keeps
+ * reaches a page whole.
+ */
+export type VersionContent = {
+	situation: string;
+	question: string;
+	ask: string;
+	unknowns: string;
+	alreadyRuled: string;
+	technicalDetail: string;
+	options: { optionId: number; label: string; title: string; summary: string; pros: string[]; cons: string[]; commercial: string }[];
+	audiences: { groupId: number | null; heading: string; body: string }[];
+	stories: { title: string; body: string }[];
+	agentDrafted: Record<string, true>;
+	reviewed: Record<string, { byName: string; at: string }>;
+};
+
+/**
+ * A version's content as it is stored, read tolerantly: a field missing or of
+ * the wrong type is its empty value, an entry that is not an object is left
+ * out, and so is an option with no id, and a key that is none of a version's
+ * is dropped.
+ */
+export function parseVersionContent(json: string): VersionContent {
+	let read: Record<string, unknown> = {};
+	try {
+		const parsed = JSON.parse(json) as unknown;
+		if (isRecord(parsed)) read = parsed;
+	} catch {
+		// Not JSON: the empty content.
+	}
+	const text = (value: unknown) => (typeof value === 'string' ? value : '');
+	const texts = (value: unknown) => (Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []);
+	const records = (value: unknown) => (Array.isArray(value) ? value.filter(isRecord) : []);
+	const reviewed: VersionContent['reviewed'] = {};
+	if (isRecord(read.reviewed)) {
+		for (const [key, stampOf] of Object.entries(read.reviewed)) {
+			if (isRecord(stampOf) && typeof stampOf.byName === 'string' && typeof stampOf.at === 'string') reviewed[key] = { byName: stampOf.byName, at: stampOf.at };
+		}
+	}
+	const agentDrafted: VersionContent['agentDrafted'] = {};
+	if (isRecord(read.agentDrafted)) for (const [key, flag] of Object.entries(read.agentDrafted)) if (flag === true) agentDrafted[key] = true;
+	return {
+		situation: text(read.situation),
+		question: text(read.question),
+		ask: text(read.ask),
+		unknowns: text(read.unknowns),
+		alreadyRuled: text(read.alreadyRuled),
+		technicalDetail: text(read.technicalDetail),
+		options: records(read.options)
+			.filter((option) => typeof option.optionId === 'number')
+			.map((option) => ({
+				optionId: option.optionId as number,
+				label: text(option.label),
+				title: text(option.title),
+				summary: text(option.summary),
+				pros: texts(option.pros),
+				cons: texts(option.cons),
+				commercial: text(option.commercial)
+			})),
+		audiences: records(read.audiences).map((audience) => ({
+			groupId: typeof audience.groupId === 'number' ? audience.groupId : null,
+			heading: text(audience.heading),
+			body: text(audience.body)
+		})),
+		stories: records(read.stories).map((story) => ({ title: text(story.title), body: text(story.body) })),
+		agentDrafted,
+		reviewed
+	};
+}
+
 /** A key of an object, named in a refusal only when it is a plain word. */
 const named = (key: string) => (/^[A-Za-z0-9_]{1,40}$/.test(key) ? key : null);
 
-/** A 400 for any key of `entry` that is not one of `allowed`, naming its path. */
-function requireClosed(entry: Record<string, unknown>, allowed: readonly string[], path: string, what: string): void {
+/**
+ * A 400 for any key of `entry` that is not one of `allowed`, naming its path
+ * (`content.options[0]`, `scores`). It walks the keys in its own function, so
+ * a body's keyed object is refused here and never walked by its caller (card
+ * 2677, R9).
+ */
+export function requireClosed(entry: Record<string, unknown>, allowed: readonly string[], path: string, what: string): void {
 	for (const key of Object.keys(entry)) {
 		if (allowed.includes(key)) continue;
 		const name = named(key);
-		error(400, name === null ? `content${path} holds a field that is not a field of ${what}` : `content${path}.${name} is not a field of ${what}`);
+		error(400, name === null ? `${path} holds a field that is not a field of ${what}` : `${path}.${name} is not a field of ${what}`);
 	}
 }
 
@@ -169,9 +253,14 @@ function singleLine(value: unknown, path: string, max: number): string {
 	return text;
 }
 
-/** A markdown field at `path`: text up to `max`, holding of `UNPRINTABLE` only what `MARKDOWN_ALLOWED` lets through. Not sent, it is empty. */
-function markdown(value: unknown, path: string, max: number): string {
-	const text = readText({ [path]: value }, path, { max }) ?? '';
+/**
+ * A field of several lines at `path`, a markdown field's or a response's
+ * comment (card 2677, decision 11): text up to `max`, trimmed first when
+ * `trim` is given, holding of `UNPRINTABLE` only what `MARKDOWN_ALLOWED` lets
+ * through. Not sent, it is empty.
+ */
+export function readMultiline(value: unknown, path: string, max: number, opts: { trim?: boolean } = {}): string {
+	const text = readText({ [path]: value }, path, { max, trim: opts.trim === true }) ?? '';
 	if (UNPRINTABLE.test(text.replace(MARKDOWN_ALLOWED, ''))) error(400, unprintable(path));
 	return text;
 }
@@ -200,12 +289,12 @@ export function readContent(body: RequestBody, stored: WorkingContent): ContentF
 	for (const key of SERVER_KEYS) {
 		if (Object.hasOwn(content, key)) error(400, `content.${key} is kept by the server: it cannot be sent`);
 	}
-	requireClosed(content, CONTENT_KEYS, '', "a decision's content");
+	requireClosed(content, CONTENT_KEYS, 'content', "a decision's content");
 
 	const seen = new Set<number>();
 	const options = (readObjects(content, 'options', { max: CONTENT_LIMITS.options }) ?? []).map((entry, index) => {
 		const path = `options[${index}]`;
-		requireClosed(entry, OPTION_KEYS, `.${path}`, 'an option');
+		requireClosed(entry, OPTION_KEYS, `content.${path}`, 'an option');
 		const optionId = readId({ [`${path}.optionId`]: entry.optionId }, `${path}.optionId`, {});
 		if (optionId !== undefined) {
 			if (seen.has(optionId)) error(400, `${path}.optionId ${optionId} is named twice`);
@@ -214,21 +303,21 @@ export function readContent(body: RequestBody, stored: WorkingContent): ContentF
 		return {
 			...(optionId === undefined ? {} : { optionId }),
 			title: singleLine(entry.title, `${path}.title`, CONTENT_LIMITS.optionTitle),
-			summary: markdown(entry.summary, `${path}.summary`, CONTENT_LIMITS.optionText),
+			summary: readMultiline(entry.summary, `${path}.summary`, CONTENT_LIMITS.optionText),
 			pros: itemList(entry.pros, `${path}.pros`),
 			cons: itemList(entry.cons, `${path}.cons`),
-			commercial: markdown(entry.commercial, `${path}.commercial`, CONTENT_LIMITS.optionText)
+			commercial: readMultiline(entry.commercial, `${path}.commercial`, CONTENT_LIMITS.optionText)
 		};
 	});
 
 	const kept = new Set(stored.audiences.map((audience) => audience.groupId).filter((id): id is number => id !== null));
 	const audiences = (readObjects(content, 'audiences', { max: CONTENT_LIMITS.audiences }) ?? []).map((entry, index) => {
 		const path = `audiences[${index}]`;
-		requireClosed(entry, AUDIENCE_KEYS, `.${path}`, 'an audience');
+		requireClosed(entry, AUDIENCE_KEYS, `content.${path}`, 'an audience');
 		return {
 			groupId: readId({ [`${path}.groupId`]: entry.groupId }, `${path}.groupId`, { nullable: true }) ?? null,
 			heading: singleLine(entry.heading, `${path}.heading`, CONTENT_LIMITS.heading),
-			body: markdown(entry.body, `${path}.body`, CONTENT_LIMITS.body)
+			body: readMultiline(entry.body, `${path}.body`, CONTENT_LIMITS.body)
 		};
 	});
 	const asked = [...new Set(audiences.map((audience) => audience.groupId).filter((id): id is number => id !== null && !kept.has(id)))];
@@ -243,20 +332,20 @@ export function readContent(body: RequestBody, stored: WorkingContent): ContentF
 
 	const stories = (readObjects(content, 'stories', { max: CONTENT_LIMITS.stories }) ?? []).map((entry, index) => {
 		const path = `stories[${index}]`;
-		requireClosed(entry, STORY_KEYS, `.${path}`, 'a user story');
-		return { title: singleLine(entry.title, `${path}.title`, CONTENT_LIMITS.heading), body: markdown(entry.body, `${path}.body`, CONTENT_LIMITS.body) };
+		requireClosed(entry, STORY_KEYS, `content.${path}`, 'a user story');
+		return { title: singleLine(entry.title, `${path}.title`, CONTENT_LIMITS.heading), body: readMultiline(entry.body, `${path}.body`, CONTENT_LIMITS.body) };
 	});
 
 	const fields: ContentFields = {
-		situation: markdown(content.situation, 'situation', CONTENT_LIMITS.longText),
+		situation: readMultiline(content.situation, 'situation', CONTENT_LIMITS.longText),
 		question: singleLine(content.question, 'question', CONTENT_LIMITS.question),
-		ask: markdown(content.ask, 'ask', CONTENT_LIMITS.ask),
+		ask: readMultiline(content.ask, 'ask', CONTENT_LIMITS.ask),
 		options,
 		audiences,
 		stories,
-		unknowns: markdown(content.unknowns, 'unknowns', CONTENT_LIMITS.longText),
-		alreadyRuled: markdown(content.alreadyRuled, 'alreadyRuled', CONTENT_LIMITS.longText),
-		technicalDetail: markdown(content.technicalDetail, 'technicalDetail', CONTENT_LIMITS.longText)
+		unknowns: readMultiline(content.unknowns, 'unknowns', CONTENT_LIMITS.longText),
+		alreadyRuled: readMultiline(content.alreadyRuled, 'alreadyRuled', CONTENT_LIMITS.longText),
+		technicalDetail: readMultiline(content.technicalDetail, 'technicalDetail', CONTENT_LIMITS.longText)
 	};
 	if (Buffer.byteLength(JSON.stringify(fields), 'utf8') > CONTENT_LIMITS.bytes) error(400, 'content must be at most 256 KB');
 	return fields;

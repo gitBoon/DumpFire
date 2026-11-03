@@ -106,6 +106,10 @@ const TEST_FILES = [
 	'decision-authoring.test.ts',
 	// Card 2676, slice A2: the picker, the editor and the board's decision list, in the page.
 	'decision-authoring.svelte.test.ts',
+	// Card 2677: a participant's response and opening, signed in or by a personal link.
+	'decision-participation.test.ts',
+	// Card 2677: the participant page, the response form and the seen watch, in the page.
+	'decision-participation.svelte.test.ts',
 	'decision-record.test.ts',
 	'decision-service.test.ts',
 	'deletes-no-parent-key.test.ts',

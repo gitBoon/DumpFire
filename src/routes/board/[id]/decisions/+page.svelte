@@ -1,8 +1,10 @@
 <script lang="ts">
 	/**
 	 * A board's decisions (card 2676, decisions 13 and 14, plan 4.2), newest
-	 * first: each title links to its editor where the caller may edit it, and
-	 * is plain text otherwise. New decision, for those who can edit the board,
+	 * first: each opened decision's title links to its page (card 2677, F4),
+	 * with Edit beside it where the caller may edit it; a draft's title links
+	 * to its editor where the caller may edit it, and is plain text otherwise.
+	 * New decision, for those who can edit the board,
 	 * asks for a title, makes the draft and goes to its editor.
 	 */
 	import type { PageData } from './$types';
@@ -111,7 +113,10 @@
 							{#each data.decisions as decision (decision.id)}
 								<tr data-decision={decision.id}>
 									<td class="title">
-										{#if decision.mayEdit}
+										{#if decision.status !== 'draft'}
+											<a href="/decisions/{decision.id}">{decision.title}</a>
+											{#if decision.mayEdit}<a class="edit-link" href="/decisions/{decision.id}/edit">Edit</a>{/if}
+										{:else if decision.mayEdit}
 											<a href="/decisions/{decision.id}/edit">{decision.title}</a>
 										{:else}
 											<span>{decision.title}</span>
@@ -201,6 +206,7 @@
 	.decisions-table td { padding: var(--space-sm); border-bottom: 1px solid var(--glass-border); vertical-align: middle; }
 	.decisions-table td.title { font-weight: 600; }
 	.decisions-table td.title a { color: var(--accent-indigo); text-decoration: none; }
+	.decisions-table td.title a.edit-link { margin-left: var(--space-sm); font-size: 0.75rem; font-weight: 500; }
 	.status-chip {
 		display: inline-block; padding: 1px var(--space-sm); border-radius: 999px;
 		font-size: 0.7rem; background: rgba(99, 102, 241, 0.12); color: var(--accent-indigo);

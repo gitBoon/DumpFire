@@ -66,7 +66,19 @@ import { passwordChecks } from '$lib/server/passwords';
 import { handleError } from '../src/hooks.server';
 import { api, routeMethods, routePatterns } from './helpers/api';
 import { failingWrite, type FailingWrite } from './helpers/failing-write';
-import { makeApiKey, makeAttachment, makeBoard, makeCard, makeSession, makeUser, resetDb } from './helpers/fixtures';
+import {
+	makeApiKey,
+	makeAttachment,
+	makeBoard,
+	makeCard,
+	makeDecision,
+	makeParticipant,
+	makePerson,
+	makeSession,
+	makeUser,
+	makeVersion,
+	resetDb
+} from './helpers/fixtures';
 import { bodyOverTheLimit, gate, gateApiRoutes, gateRoutes, type GateOptions } from './helpers/gate';
 
 /** SvelteKit's source, as a path Vite resolves from the repository root, as ./helpers/gate.ts loads it. */
@@ -2084,6 +2096,30 @@ describe('the security headers', () => {
 		expect(res.headers.get('content-security-policy')).toBe('sandbox');
 	});
 
+	// Card 2677, plan case 21 (decision 7, R6): by route id, on the function
+	// `handle` calls last; the page's own answers through the gate are case 22
+	// in decision-participation.test.ts. Each is set over whatever the answer
+	// carries.
+	it('give a personal link’s routes no referrer, no index and no cache, and a decision’s own page and routes no cache, replacing the answer’s own (21)', () => {
+		const LINKED = { ...FIVE, 'referrer-policy': 'no-referrer', 'x-robots-tag': 'noindex, nofollow', 'cache-control': 'no-store' };
+		const OWN = { ...FIVE, 'x-robots-tag': null, 'cache-control': 'no-store' };
+		const UNCHANGED = { ...FIVE, 'x-robots-tag': null, 'cache-control': null };
+		const theseOf = (res: Response) => ({ ...headersOf(res), 'x-robots-tag': res.headers.get('x-robots-tag'), 'cache-control': res.headers.get('cache-control') });
+
+		for (const routeId of ['/decision-link/[token]', '/api/decision-by-link/responses', '/api/decision-by-link/seen']) {
+			expect(theseOf(secured(new Response('x'), routeId)), routeId).toEqual(LINKED);
+			// An answer that carries its own leaves with the route's.
+			const cached = secured(new Response('x', { headers: { 'Cache-Control': 'max-age=60', 'Referrer-Policy': 'unsafe-url' } }), routeId);
+			expect(theseOf(cached), `${routeId}, cached`).toEqual(LINKED);
+		}
+		for (const routeId of ['/decisions/[id]', '/api/decisions/[id]/responses', '/api/decisions/[id]/seen']) {
+			expect(theseOf(secured(new Response('x'), routeId)), routeId).toEqual(OWN);
+			expect(theseOf(secured(new Response('x', { headers: { 'Cache-Control': 'max-age=60' } }), routeId)), `${routeId}, cached`).toEqual(OWN);
+		}
+		expect(theseOf(secured(new Response('x'), '/board/[id]'))).toEqual(UNCHANGED);
+		expect(theseOf(secured(new Response('x'), null))).toEqual(UNCHANGED);
+	});
+
 	it(
 		'are on the request form’s three pages but the refusal to be framed, for anybody',
 		async () => {
@@ -2126,6 +2162,10 @@ describe('the routes a caller who is not signed in is let through to', () => {
 		'/api/requests/[id]/link',
 		'/api/requests/[id]/messages',
 		'/api/requests/targets',
+		// Card 2677: a decision's personal link, its page, and its holder's response and seen, the token in the body.
+		'/decision-link/[token]',
+		'/api/decision-by-link/responses',
+		'/api/decision-by-link/seen',
 		'/api/v1/openapi.json'
 	];
 
@@ -2619,28 +2659,44 @@ describe('what the gate writes to the system log', () => {
 		expect(JSON.stringify(sqlite.prepare('SELECT message, meta FROM system_logs').all())).not.toContain(token);
 	});
 
-	it('is a decision’s personal link with its token masked, before its route exists (card 2675, decision 9)', async () => {
+	it('is a decision’s personal link with its token masked, at its page and its data, and kept out of its routes’ paths (cards 2675 and 2677)', async () => {
 		// 32 random bytes in base64url, as a personal link's token is made.
 		const token = 'Qm9vbi1kZWNpc2lvbi1saW5rLXRva2VuLTJfNjc1LXg';
+		// A decision open for responses, whose participant with no account holds the link (card 2677).
+		const decision = makeDecision({ board: makeBoard({ owner: user }).board, status: 'open', closesAt: '2099-01-01 12:00:00', openedAt: '2026-11-01 09:00:00' });
+		makeVersion(decision, { situation: 'Money is short.' }, { number: 1 });
+		makeParticipant(decision, { person: makePerson({ fullName: 'Lin Holder' }), role: 'consulted', token });
 		const kept: LogEntry[] = [];
 		const unsubscribe = subscribeToLogs((entry) => kept.push(entry));
 
 		let lines: { level: string; message: string; status: number }[];
+		let responded = 0;
 		try {
 			lines = await logged(async () => {
 				await gate('GET', `/decision-link/${token}`, { headers: { accept: 'text/html' } });
 				// Encoded, and with more after it: masked as well.
 				await gate('GET', `/%64ecision-link/${token}`, { headers: { accept: 'text/html' } });
 				await gate('GET', `/decision-link/${token}/more`, { headers: { accept: 'text/html' } });
+				// The page's data is asked for at its own address, with the token in it.
+				await gate('GET', `/decision-link/${token}/__data.json`);
+				// The link holder's response carries the token in its body, to a path that holds none (decision 4, F2).
+				const res = await gate('POST', '/api/decision-by-link/responses', {
+					headers: { 'sec-fetch-site': 'same-origin' },
+					body: { token, versionNumber: 1, kind: 'abstain' }
+				});
+				responded = res.status;
 			});
 		} finally {
 			unsubscribe();
 		}
 
+		expect(responded).toBe(200);
 		expect(lines.map((line) => line.message.replace(/ → .*$/, ''))).toEqual([
 			'GET /decision-link/[token]',
 			'GET /decision-link/[token]',
-			'GET /decision-link/[token]'
+			'GET /decision-link/[token]',
+			'GET /decision-link/[token]',
+			'POST /api/decision-by-link/responses'
 		]);
 		expect(kept.length).toBeGreaterThan(0);
 		expect(JSON.stringify(kept)).not.toContain(token);
@@ -2649,6 +2705,8 @@ describe('what the gate writes to the system log', () => {
 		expect(maskSecretPaths(`550 refused: see https://dumpfire.example.test/decision-link/${token} for details`)).toBe(
 			'550 refused: see https://dumpfire.example.test/decision-link/[token] for details'
 		);
+		// The link's routes are named so that the masking, which looks anywhere in a line, leaves them as they are (F2).
+		expect(maskSecretPaths('POST /api/decision-by-link/responses → 200')).toBe('POST /api/decision-by-link/responses → 200');
 	});
 
 	it('is never a query, so a token sent as ?token= is not written down', async () => {

@@ -2656,6 +2656,19 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 	'src/routes/api/decisions/[id]/reviewed/+server.ts POST': [
 		{ service: 'markReviewed', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'ui' }] }
 	],
+	// Card 2677: a participant's response and seen, signed in, and by a personal link with its token in the body.
+	'src/routes/api/decisions/[id]/responses/+server.ts POST': [
+		{ service: 'respondToDecision', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'ui' }] }
+	],
+	'src/routes/api/decisions/[id]/seen/+server.ts POST': [
+		{ service: 'recordSeen', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'ui' }] }
+	],
+	'src/routes/api/decision-by-link/responses/+server.ts POST': [
+		{ service: 'respondByLink', args: [code('caller'), { token: code('token') }, code('body'), { source: 'ui' }] }
+	],
+	'src/routes/api/decision-by-link/seen/+server.ts POST': [
+		{ service: 'recordSeenByLink', args: [code('caller'), { token: code('token') }, code('body'), { source: 'ui' }] }
+	],
 	'src/routes/api/v1/boards/[boardId]/cards/+server.ts POST': [
 		{ service: 'createCard', args: [code('caller'), { boardId: code('boardId') }, code('body'), { source: 'api', baseUrl: code('baseUrl') }] }
 	],

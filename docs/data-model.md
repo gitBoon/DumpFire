@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.44
+version: 1.45
 status: As-Built
 date: 2026-11-03
 tags:
@@ -565,8 +565,10 @@ erDiagram
 
 The decision service (`src/lib/server/decisions.ts` and its helper modules; see
 [Architecture](architecture.md#the-decision-service-and-its-record)) is the only writer. Card
-2676's routes call its drafting writes ([below](#the-working-copy-and-its-revision-card-2676));
-no route calls the lifecycle writes yet (card 2697). It added no column: everything below lives
+2676's routes call its drafting writes ([below](#the-working-copy-and-its-revision-card-2676)),
+and card 2677's a participant's responses and opening
+([below](#responses-and-opening-card-2677)); no route calls the lifecycle writes yet (card
+2697). It added no column: everything below lives
 in 0061's columns or on the record.
 
 **`decisions.status`** is stored as one of `draft`, `open`, `closed`, `ruled`, `superseded` or
@@ -595,8 +597,9 @@ stateDiagram-v2
 ```
 
 **Insert-only.** No code in `src` updates or deletes a row of `decision_versions`,
-`decision_responses`, `decision_rulings` or `decision_events`: `appendEvent` and `appendVersion`
-in `src/lib/server/decision-record.ts` are their only inserts outside the restore, and a scan in
+`decision_responses`, `decision_rulings` or `decision_events`: `appendEvent`, `appendVersion`
+and (card 2677) `appendResponse` in `src/lib/server/decision-record.ts` are their only inserts
+outside the restore, and a scan in
 `tests/decision-record.test.ts` holds it (no trigger, design 4.3). The rows change only in these
 ways, none of them written by the service:
 - deleting an account empties `decision_versions.published_by`, `decision_rulings.ruled_by`,
@@ -677,6 +680,8 @@ refused (comment 5599). A `detail` never holds a token, a hash or a mail server'
 | `account_attached`, `account_cleared` | yes | `{ userId }` |
 | `address_changed` | yes | `{ from, to }` |
 | `dry_run` | no | card 2697 (no write makes one yet) |
+| `seen` (card 2677) | yes | `{ stage }`, `stage` `question`, `ruling` or `withdrawal`, with `version_number`; `signedIn { userId, name }` beside it for a link holder in a signed-in browser |
+| `responded` (card 2677) | yes | `{ responseId }`, with `version_number`; `signedIn` as for `seen` |
 
 **A restore** (`restoreFromBackup` in `src/lib/server/db/restore.ts`) copies the decision tables
 as it copies every other, then, inside its transaction, writes `link_revoked { reason: 'restore' }`
@@ -687,6 +692,77 @@ cannot be copied fails the restore, which rolls back: a lost event strands no ro
 foreign-key check would not stop it, and a partial record would be a false one. A NULL in a NOT
 NULL column of a decision table is never given the column's default, as `defaultsForNull` gives
 it elsewhere: the row is left out, and the restore fails (card 2675's code review, F8).
+
+#### Responses and opening (card 2677)
+
+Card 2677 (plan `docs/planning/card-2677-participant-page.md`) writes `decision_responses` and
+two kinds of `decision_events`, through `respondToDecision`, `respondByLink`, `recordSeen` and
+`recordSeenByLink` in `src/lib/server/decisions.ts`. It added no column and no migration: 0061
+holds every column a response needs, and an event's `kind` is free text checked in code
+(`EVENT_KINDS`, which gains `seen` and `responded`).
+
+| Column | Written |
+|---|---|
+| `version_number` | `current_version`, which the body's `versionNumber` must equal (`409` otherwise) |
+| `round` | `currentRound(decisionId)`: the number of the latest version that asked for views (`asks_again`), so a version that only tells keeps the round |
+| `kind` | `vote`, `abstain` or `no_concerns`; `concern` is card 2679's |
+| `option_id` | a single-mode vote alone: an option live in the current version |
+| `scores` | a score-mode vote alone: JSON `{ "<optionId>": 0..5 }` over every live option, built from the live ids, never from the body's keys; stored in ascending option id order (a JavaScript object keeps integer keys in that order, whatever order they were added in) |
+| `comment` | trimmed, up to 4,000, the markdown field's character rule; NULL when empty |
+| `option_comments` | JSON over live option ids, each trimmed, up to 2,000, the empty ones dropped, built from the live ids; NULL when none is left |
+| `replaces_id` | the participant's latest response in the same round, NULL for the first of a round |
+| `via` | `session` or `link`, fixed by the write, never by the caller |
+| `created_at` | `stamp()` |
+
+- **A change of answer is a new row**, `replaces_id` the one before it in the round; no row is
+  updated. An answer identical to the latest in the round (kind, option, scores and both
+  comments, as stored) **for the same version** writes nothing, and is answered with that row
+  and `unchanged: true`. The same answer confirmed on a newer version, after a re-publish that
+  only tells, is a new row bound to that version, with its `responded` and, where there is
+  none for the version, `seen` (code review C1); the page labels a response given on an older
+  version "Given on version N.".
+- **At most 50 rows per participant per round** (`RESPONSES_PER_ROUND`, private to the service);
+  the 51st is `409`.
+- **Rounds.** A re-publish that asks again starts a round; the first response in it replaces
+  nothing, and the earlier round's rows stay, shown as for an earlier version. The latest of a
+  round is `latestResponse(participantId, round)`, which card 2679's results and card 2685's
+  reminder read.
+- **Only while open.** The stored status must be `open` (`TRANSITIONS.respond`) and the shown
+  status `open`, as an open decision past `closes_at` is awaiting a ruling.
+- **Each response** also writes `responded { responseId }` and, when the participant has none
+  for that version, `seen { stage: 'question' }`.
+- **`seen`** is written once per participant, version and stage (`hasSeen`, read through
+  `idx_decision_events_participant_id`): a second post for the same three writes nothing. Only
+  the current version is accepted (`400` for any other, an earlier one included). The page
+  sends it after the person's first action, never on load, and sends no `ruling` stage until
+  card 2679 shows the ruling.
+- **What a response is answered as** is `OwnResponse`, built by `ownResponseOf(row)`: `versionNumber`,
+  `round`, `kind`, `optionId`, `scores`, `comment`, `optionComments` and `createdAt`, and no row
+  id of its own, its decision, its participant or what it replaced. Stored JSON is read back
+  tolerantly: a key that is not an option id, or a value of the wrong type, is left out.
+- **The actor.** Signed in, `actorFor(user, 'ui')`. By link, no account, the participant's
+  snapshot name and source `link`; a browser signed in at the same time is noted in the detail
+  as `signedIn`, never as the actor.
+
+```mermaid
+erDiagram
+    decision_participants ||--o{ decision_responses : "gives"
+    decision_responses |o--o| decision_responses : "replaces_id (same round)"
+    decision_participants ||--o{ decision_events : "seen, responded"
+    decision_responses ||--o{ decision_events : "responded.detail.responseId"
+    decision_options |o--o{ decision_responses : "option_id (single mode)"
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> First: first response in round R (replaces_id NULL)
+    First --> Changed: a different answer, or the same on a newer version (new row, replaces_id the last)
+    Changed --> Changed: a different answer, or the same on a newer version (new row)
+    First --> First: the same answer on the same version (no row, unchanged)
+    Changed --> NextRound: a re-publish asking again, version V (round V)
+    First --> NextRound
+    NextRound --> [*]: round V's first replaces nothing; R's rows stay
+```
 
 #### The working copy and its revision (card 2676)
 

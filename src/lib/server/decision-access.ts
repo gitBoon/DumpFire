@@ -59,7 +59,9 @@ export const DECISION_RULES: Readonly<Record<DecisionAction, readonly DecisionRo
 	participantAccount: ['admin'],
 	participantAddress: ['admin'],
 	rule: ['decider'],
-	record: ['admin', 'decider']
+	record: ['admin', 'decider'],
+	// Card 2677: a participant's response; the write refuses an informed one, and one `reachOf` no longer reaches (decision 10).
+	respond: ['participant']
 };
 
 /** Who may view a draft (decision 5). */

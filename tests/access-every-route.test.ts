@@ -135,14 +135,17 @@ import {
 	makeDependency,
 	makeLabel,
 	makeMilestone,
+	makeOption,
 	makeParticipant,
 	makePerson,
+	makeResponse,
 	makeSession,
 	makeSmtp,
 	makeSubBoard,
 	makeSubtask,
 	makeTeam,
 	makeUser,
+	makeVersion,
 	makeWebhook,
 	resetDb,
 	shareBoardWithTeam,
@@ -793,6 +796,39 @@ const anOpenDecisionOfEditor = (w: World): void => {
 	decisionPersonId = person.id;
 };
 const revisionOfTheDecision = (): string => (decisionId === undefined ? '' : revisionNow(decisionId));
+
+/**
+ * An open decision on board A, published as version 1 with one option, on
+ * which `viewer` is consulted through their account and a person with no
+ * account holds the personal link `LINK` (card 2677), for a participant's
+ * routes. Made by `aConsultedViewer`, which each test of those cases runs
+ * before its request. `editor` is its author and decider.
+ */
+let participantOptionId: number | undefined;
+const aConsultedViewer = (w: World): void => {
+	const decision = makeDecision({
+		board: w.A.board,
+		author: w.editor,
+		decider: w.editor,
+		title: `${MARK} decision a participant answers`,
+		status: 'open',
+		closesAt: '2099-01-01 12:00:00',
+		openedAt: '2026-11-01 09:00:00'
+	});
+	const option = makeOption(decision, { label: 'A', position: 0, addedInVersion: 1 });
+	makeVersion(decision, { situation: `${MARK} situation`, options: [{ optionId: option.id, label: 'A', title: `${MARK} option` }] }, { number: 1 });
+	makeParticipant(decision, { person: makePerson({ fullName: 'Vi Ewer', email: w.viewer.email, user: w.viewer }), role: 'consulted' });
+	makeParticipant(decision, { person: makePerson({ fullName: 'Lin Holder' }), role: 'consulted', token: LINK });
+	decisionId = decision.id;
+	participantOptionId = option.id;
+};
+
+/**
+ * A JSON request as DumpFire's own page sends it, with its `Origin`: a
+ * participant's four routes take same-origin JSON alone (card 2677, decision
+ * 24), and `api()` sends no `Origin` of its own.
+ */
+const sameOrigin = (path: string, body: unknown): Req => ({ path, body, headers: { origin: 'http://localhost' } });
 
 /**
  * Board B made an ideas board, so that its cards are options, which a Send
@@ -1583,6 +1619,32 @@ const TABLE: Record<string, Case | Case[]> = {
 		() => json(`/api/decisions/${decisionId}/reviewed`, { sections: 'all', revision: revisionOfTheDecision() }),
 		{ setup: aDraftOfEditor }
 	),
+
+	// ── A participant's part (card 2677, decisions 10 to 14, D11) ────────
+	// `own`: `viewer` is consulted on the decision, through their account.
+	// `notMine` is every other caller: each who may view it is no participant
+	// of it, 403, and `outsider` cannot view it, 404. `link`: the decision's
+	// link holder holds `LINK`, and a token nobody holds opens no decision.
+	'POST /api/decisions/[id]/responses': own(
+		'viewer',
+		['owner', 'admin', 'chief', 'editor', 'outsider', 'guest', 'both', 'editsB', 'editsA'],
+		() => sameOrigin(`/api/decisions/${decisionId}/responses`, { versionNumber: 1, kind: 'vote', optionId: participantOptionId }),
+		{ setup: aConsultedViewer }
+	),
+	'POST /api/decisions/[id]/seen': own(
+		'viewer',
+		['owner', 'admin', 'chief', 'editor', 'outsider', 'guest', 'both', 'editsB', 'editsA'],
+		() => sameOrigin(`/api/decisions/${decisionId}/seen`, { versionNumber: 1, stage: 'question' }),
+		{ setup: aConsultedViewer }
+	),
+	'POST /api/decision-by-link/responses': link(() => sameOrigin('/api/decision-by-link/responses', { versionNumber: 1, kind: 'vote', optionId: participantOptionId }), {
+		setup: aConsultedViewer,
+		withLink: () => sameOrigin('/api/decision-by-link/responses', { token: LINK, versionNumber: 1, kind: 'vote', optionId: participantOptionId })
+	}),
+	'POST /api/decision-by-link/seen': link(() => sameOrigin('/api/decision-by-link/seen', { versionNumber: 1, stage: 'question' }), {
+		setup: aConsultedViewer,
+		withLink: () => sameOrigin('/api/decision-by-link/seen', { token: LINK, versionNumber: 1, stage: 'question' })
+	}),
 
 	// ── The documented API ────────────────────────────────────────────────
 	'GET /api/v1/openapi.json': open(() => '/api/v1/openapi.json'),
@@ -2383,8 +2445,8 @@ for (const [key, entry] of Object.entries(TABLE)) {
 					// The gate's own answer: no handler is reached without a key.
 					expect(res.status).toBe(401);
 					expect(JSON.parse(text)).toEqual({ message: 'Missing or invalid Authorization header. Use: Bearer <api_key>' });
-				} else if (pattern.startsWith('/api/requests')) {
-					// The public form's paths are let through the gate, and the handler refuses.
+				} else if (pattern.startsWith('/api/requests') || pattern.startsWith('/api/decision-by-link/')) {
+					// The public form's paths, and a personal link's (card 2677), are let through the gate, and the handler refuses.
 					expect([401, 403, 404]).toContain(res.status);
 				} else {
 					// The gate's own answer to a script: 401, and not the login
@@ -4784,8 +4846,15 @@ describe('every page load, to a caller who cannot open a board (card 2130)', () 
 		hidden = makeSubBoard(w.A.card, { owner: w.outsider, name: `${MARK_B} sub-board of board A's card` });
 		const opened = { status: 'open', closesAt: '2099-01-01 12:00:00', currentVersion: 1, openedAt: '2026-11-01 09:00:00' };
 		const openA = makeDecision({ board: w.A.board, author: w.editor, decider: w.editor, title: `${MARK} open decision`, ...opened });
-		makeParticipant(openA, { person: makePerson({ fullName: 'Pat Page', email: 'pat.page@example.test' }), role: 'consulted' });
+		const pat = makeParticipant(openA, { person: makePerson({ fullName: 'Pat Page', email: 'pat.page@example.test' }), role: 'consulted' });
+		// Card 2677: the participant page's world. `viewer` is consulted on it through their account, a person with no
+		// account holds `LINK`, and Pat Page's response holds `MARK_B`, which no other caller of the page is given (D9).
+		makeVersion(openA, { situation: `${MARK} situation` }, { number: 1 });
+		makeParticipant(openA, { person: makePerson({ fullName: 'Vi Ewer', email: w.viewer.email, user: w.viewer }), role: 'consulted' });
+		makeParticipant(openA, { person: makePerson({ fullName: 'Lin Holder' }), role: 'consulted', token: LINK });
+		makeResponse(pat, { comment: `${MARK_B} said by Pat Page` });
 		const openB = makeDecision({ board: w.B.board, author: w.outsider, decider: w.outsider, title: `${MARK_B} open decision`, ...opened });
+		makeVersion(openB, { situation: `${MARK_B} situation` }, { number: 1 });
 		const draftA = makeDecision({ board: w.A.board, author: w.editor, decider: w.editor, title: `${MARK_B} draft of board A` });
 		decisionIds = { openA: openA.id, openB: openB.id, draftA: draftA.id };
 		db.update(cards).set({ title: `${MARK_B} card on the sub-board` }).where(eq(cards.id, hidden.cards[0].id)).run();
@@ -4819,6 +4888,9 @@ describe('every page load, to a caller who cannot open a board (card 2130)', () 
 		'page /board/[id]/decisions': { paths: (w) => [w.A.board.id, w.B.board.id, hidden.board.id].map((id) => `/board/${id}/decisions`) },
 		'page /burndown': { paths: (w) => ['/burndown', `/burndown?boardCategoryId=${w.groupingOfA.id}`] },
 		'page /decisions/[id]/edit': { paths: () => [decisionIds.openA, decisionIds.openB, decisionIds.draftA].map((id) => `/decisions/${id}/edit`) },
+		// A decision's page (card 2677): to `viewer`, a participant of open A, their own part and no one else's (Pat Page's `MARK_B`).
+		'page /decisions/[id]': { paths: () => [decisionIds.openA, decisionIds.openB, decisionIds.draftA].map((id) => `/decisions/${id}`) },
+		'page /decision-link/[token]': { none: 'gives one decision, to the holder of its link, whoever is signed in' },
 		'page /graph': { none: "gives the caller's own account: the graph is drawn from GET /api/graph, which the table asks" },
 		'page /inbox': { paths: () => ['/inbox'] },
 		'page /invite/[token]': { none: "gives the name of the account an invite is for, to the holder of the invite's link" },

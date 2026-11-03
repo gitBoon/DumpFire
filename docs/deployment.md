@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.103
+version: 1.104
 status: As-Built
-date: 2026-10-27
+date: 2026-11-03
 tags:
   - docker
   - deployment
@@ -5303,6 +5303,59 @@ server {
 > ⚠️ **Without the two `client_max_body_size` lines, nginx refuses any upload over 1 MB itself**, with a page of its own that never reaches DumpFire. The import then says the backup "was refused before it reached DumpFire, probably a size limit at the proxy in front of it (HTTP 413)", and so does an attachment. Before the page could tell the difference it said "Invalid backup file".
 
 Leave `proxy_request_buffering` as it is, which is on. nginx then reads the whole upload before it passes it on, with its length in `Content-Length`, and DumpFire refuses one that declares more than its route accepts before reading any of it. Switched off, nginx passes an upload on in chunks as it arrives, which DumpFire also accepts: it counts such a body as it reads it, and refuses it once it passes the limit (see [Upload Size Limits](#upload-size-limits)). nginx keeps an upload of that size in a temporary file while it reads it, so its temp directory (`client_body_temp_path`) needs room for one backup.
+
+### Keeping Link Tokens Out of the Access Log
+
+Two pages hold a secret in their address: a decision's personal link, `/decision-link/[token]` (card 2677), and an invite, `/invite/[token]`. DumpFire masks both in its own log (`SECRET_IN_PATH` in `src/lib/server/secret-paths.ts`), but nginx's access log is written before DumpFire sees the request, and its default `combined` format keeps the whole request line. A personal link's two writes, `POST /api/decision-by-link/responses` and `…/seen`, carry the token in the body, so only the page's own address (and its data, `/decision-link/<token>/__data.json`) needs masking, in the request line and in the `Referer` of any request made from such a page. Add this to the `http` block (`map` and `log_format` cannot sit inside `server`), and name the format on the `access_log` in the `server` block above:
+
+```nginx
+# In http { }: the request's path, decoded and normalised by nginx, with a link's or an invite's token masked.
+map $uri $masked_uri {
+    "~*^/decision-link/[^/]+(?<uri_after>.*)$"  "/decision-link/[token]$uri_after";
+    "~*^/invite/[^/]+(?<uri_after>.*)$"         "/invite/[token]$uri_after";
+    default                                     $uri;
+}
+
+# The same two masks over the Referer, a whole address as the browser sent it.
+map $http_referer $masked_referer {
+    "~*^(?<ref_before>[^?#]*?)/decision-link/[^/?#]+(?<ref_after>.*)$"  "${ref_before}/decision-link/[token]${ref_after}";
+    "~*^(?<ref_before>[^?#]*?)/invite/[^/?#]+(?<ref_after>.*)$"         "${ref_before}/invite/[token]${ref_after}";
+    default                                                             $http_referer;
+}
+
+# nginx's own "combined" format, with $request replaced by its three parts, the masked path and its query, and the masked Referer.
+log_format masked '$remote_addr - $remote_user [$time_local] '
+                  '"$request_method $masked_uri$is_args$args $server_protocol" '
+                  '$status $body_bytes_sent "$masked_referer" "$http_user_agent"';
+
+# In server { }, beside the proxy settings:
+access_log /var/log/nginx/dumpfire.access.log masked;
+error_log  /var/log/nginx/dumpfire.error.log  error;
+```
+
+- Every `access_log` that logs this server must name `masked`, an `access_log` in an enclosing block included: one left at `combined` still writes the token.
+- **Map on `$uri`, not `$request_uri`.** `$request_uri` is the address as sent, so `/%64ecision-link/…` or `//decision-link/…` would pass its pattern while DumpFire still opens the page. `$uri` is the path nginx has decoded and normalised (keep `merge_slashes` at its default, on), the one it routes on, so neither form gets past it. It holds no query, which is why the format adds `$is_args$args`; no link puts its token there.
+- **The Referer is masked too.** The link's page and its two routes answer `Referrer-Policy: no-referrer`, and the page carries `<meta name="referrer" content="no-referrer">` as well, so a browser sends no address of it. The mask is for a browser or an extension that ignores both. The Referer is not decoded by nginx: a link written with a percent-encoded letter would pass, which no browser makes of a link it was handed.
+- **nginx's error log holds tokens, and nothing can mask it.** When nginx cannot reach DumpFire, for example a `502` while the container restarts, it writes a line for each request it could not pass on, at level `error`, with the request line, the upstream address and the Referer in full: `connect() failed (111: Connection refused) while connecting to upstream, client: …, request: "GET /decision-link/<token> HTTP/1.1", upstream: "http://127.0.0.1:3000/decision-link/<token>", …, referrer: "…"`. `error_log` has no format to mask. A token in it opens its decision for as long as the link works, so treat the error log as you would the links themselves:
+  - give this server its own `error_log` file (above), so that its access and its keeping can be set apart from other sites;
+  - let only root and the administrators read it: `chown root:adm` and `chmod 0640` on the file, `0750` on `/var/log/nginx`, and nobody in `adm` who should not see a personal link;
+  - rotate it daily and keep it briefly, in `/etc/logrotate.d/nginx`: `daily`, `rotate 7`, `compress`, `shred` (so a removed log is overwritten), and `create 0640 www-data adm` (Debian's own, or the owner your rule already creates it with);
+  - do not ship it to a log service whose readers should not open the links, or mask the path in that service before it is kept;
+  - read it only when nginx misbehaves, and never paste a line of it into a ticket or a chat without removing the token.
+- **Anything in front of nginx logs too.** A CDN, a load balancer or a web application firewall in front of nginx (Cloudflare, an AWS ALB, Azure Front Door and the like) writes its own request log, with the full address and Referer, before nginx masks anything. Switch off or mask the path in its log settings, or keep that log as you keep the error log above.
+
+```mermaid
+flowchart LR
+    B["Browser: GET /decision-link/[token]"] --> C["CDN or load balancer, if any"]
+    C -->|"its own log: mask it there"| CL[("CDN log")]
+    C --> N["nginx"]
+    N -->|"access_log … masked: $masked_uri, $masked_referer"| AL[("access log:<br/>GET /decision-link/[token]")]
+    N -->|"upstream failure (502)"| EL[("error log:<br/>the token, unmasked<br/>0640, rotated daily")]
+    N --> D["DumpFire"]
+    D -->|"SECRET_IN_PATH"| SL[("system_logs:<br/>GET /decision-link/[token] → 200")]
+```
+
+To check it, open a personal link once and read the last line of the access log: it shows `/decision-link/[token]`, and `grep -c` of the token over the log is `0`. Open it again as `/%64ecision-link/<token>`: the line still shows `/decision-link/[token]`.
 
 ### The Caller's Address Behind a Proxy
 

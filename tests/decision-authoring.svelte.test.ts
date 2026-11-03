@@ -18,7 +18,8 @@
  *     reviewed (decision 9); the readability panel (decision 11, R4); the
  *     decider select (decision 17, D6).
  *   - The board's decision list: New decision, and a title that links to its
- *     editor only where the row says the caller may edit.
+ *     editor only where the row says the caller may edit; an opened decision's
+ *     title links to its page as well (card 2677, F4).
  *
  * What the server answers, and to whom, is in `tests/decision-authoring.test.ts`.
  * The plan is `docs/planning/card-2676-decision-authoring.md`.
@@ -600,13 +601,27 @@ describe("the board's decision list (case 31)", () => {
 		mayEdit
 	});
 
-	it('31: New decision posts the title and goes to its editor; a row the caller may edit links to its editor, and one they may not is plain text', async () => {
+	it('31: New decision posts the title and goes to its editor; every opened row links to its page, and to its editor too where the caller may edit it; a draft links to its editor alone, or is plain text', async () => {
+		const draft = (id: number, title: string, mayEdit: boolean) => ({ ...listRow(id, title, mayEdit), status: 'draft', shownStatus: 'draft' });
 		const target = draw(BoardDecisionsPage, {
-			data: { board: { id: 7, name: 'Website' }, canCreate: true, decisions: [listRow(40, 'Pick a host', true), listRow(41, 'Pick a font', false)] }
+			data: {
+				board: { id: 7, name: 'Website' },
+				canCreate: true,
+				decisions: [listRow(40, 'Pick a host', true), listRow(41, 'Pick a font', false), draft(43, 'Pick a logo', true), draft(44, 'Pick a name', false)]
+			}
 		});
 		const rows = [...target.querySelectorAll<HTMLElement>('tbody tr')];
-		expect(rows.map((r) => r.querySelector('td')!.querySelector('a')?.getAttribute('href') ?? null)).toEqual(['/decisions/40/edit', null]);
-		expect(textOf(rows[1].querySelector('td')!)).toBe('Pick a font');
+		// Card 2677 (F4): an opened decision's title links to its page.
+		expect(rows.map((r) => [...r.querySelector('td')!.querySelectorAll('a')].map((a) => [textOf(a), a.getAttribute('href')]))).toEqual([
+			[
+				['Pick a host', '/decisions/40'],
+				['Edit', '/decisions/40/edit']
+			],
+			[['Pick a font', '/decisions/41']],
+			[['Pick a logo', '/decisions/43/edit']],
+			[]
+		]);
+		expect(textOf(rows[3].querySelector('td')!)).toBe('Pick a name');
 		expect(textOf(rows[0])).toContain('2099-12-01 12:00 UTC');
 
 		button(target, 'New decision').click();

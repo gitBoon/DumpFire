@@ -105,6 +105,12 @@ const PUBLIC_ROUTES = new Set([
 	'/api/requests/[id]/link',
 	'/api/requests/[id]/messages',
 	'/api/requests/targets',
+	// A decision's personal link (card 2677, decisions 4 and 9): its page, and
+	// its holder's response and seen, the token in the body. Each answers only
+	// a token whose hash a participant holds, and signs nobody in.
+	'/decision-link/[token]',
+	'/api/decision-by-link/responses',
+	'/api/decision-by-link/seen',
 	'/api/v1/openapi.json'
 ]);
 

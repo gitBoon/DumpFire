@@ -20,6 +20,9 @@
  *   - not under /api/requests, the public request form's routes. A requester
  *     who is not signed in is answered 401 there when the form's token has
  *     lapsed, and is not to be sent to a login page they have no account for;
+ *   - not under /api/decision-by-link/, a personal link's routes (card 2677,
+ *     R7): its holder may have no account, and a browser signed in as someone
+ *     else whose session ends is not the link's to send to sign in;
  *   - and the page has a signed-in user. The login page, set-up and the public
  *     request pages have none.
  *
@@ -65,6 +68,7 @@ export function endsTheSession(input: RequestInfo | URL, pageAddress: string): b
 	if (!path.startsWith('/api/')) return false;
 	if (path.startsWith('/api/v1/')) return false;
 	if (path === '/api/requests' || path.startsWith('/api/requests/')) return false;
+	if (path.startsWith('/api/decision-by-link/')) return false;
 	return true;
 }
 

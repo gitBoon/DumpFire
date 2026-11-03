@@ -105,7 +105,9 @@ const READS_NO_ROW = [
 	'requireAdmin',
 	'refuseOwnAccount',
 	'isAdmin',
-	'cookies.get'
+	'cookies.get',
+	// Card 2677, decision 24: same-origin JSON only, from the request's headers and its address alone.
+	'requireSameOriginJson'
 ];
 
 /** The request's own methods that read its body. */
@@ -134,6 +136,12 @@ const ALLOWED: Record<string, string> = {
 	'src/routes/api/requests/[id]/link/+server.ts POST':
 		'The new link a requester asks for (card 2158): the rate limit per address is asked before the body, so that every ask ' +
 		'is counted. It reads no row.',
+	'src/routes/api/decision-by-link/responses/+server.ts POST':
+		"A personal link's response (card 2677, decision 8): the address a wrong link is counted against is read before the " +
+		'body, from the request alone. It reads no row and counts nothing.',
+	'src/routes/api/decision-by-link/seen/+server.ts POST':
+		"A personal link's seen (card 2677, decision 8): the address a wrong link is counted against is read before the body, " +
+		'from the request alone. It reads no row and counts nothing.',
 	'src/routes/api/admin/import/+server.ts POST':
 		'The import settles `outside` and the media type before it reads the upload, and answers either before any of it is read. ' +
 		'Who may import is requireSuperadmin, the session.'
@@ -2214,7 +2222,11 @@ const OUTSIDE_WRITE: Record<string, string> = {
 		'itself, which an upload writes before its row and removes again if the row is not written (card 2337).',
 	cardDir:
 		"The card's folder (`$lib/server/uploads`): no row, made before the transaction for the file and removed after a " +
-		'failed one if the upload made it (card 2337).'
+		'failed one if the upload made it (card 2337).',
+	refuseWrongLink:
+		'A personal link that opened no decision, counted in memory against the address once the write has refused it ' +
+		'(`$lib/server/decision-view`, card 2677, decision 8): it reads no row and writes none, but one WARN line in the log ' +
+		'the first time an address is over the limit in a window.'
 };
 
 /** The source file a `$lib/server/...` import names, or null for any other import. */
@@ -2950,7 +2962,12 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 					'deleteDecision',
 					'resendInvitation',
 					'setParticipantAccount',
-					'changeParticipantAddress'
+					'changeParticipantAddress',
+					// Card 2677: a participant's response and being recorded as having seen, signed in or by a personal link.
+					'respondToDecision',
+					'respondByLink',
+					'recordSeen',
+					'recordSeenByLink'
 				]
 			}
 		});

@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.68
+version: 1.69
 status: As-Built
 date: 2026-11-03
 tags:
@@ -26,6 +26,7 @@ tags:
   - options-column
   - decision-records
   - decision-authoring
+  - participant-page
 description: "High-level and component-level architecture of the DumpFire Kanban board system, including the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
 ---
 
@@ -1199,7 +1200,7 @@ Card 2675 (plan `docs/planning/card-2675-decision-service.md` v1.1) is the serve
 
 ```mermaid
 flowchart LR
-    Routes["Card 2676's routes, and later cards'<br/>(2697, 2677, 2680, 2682)"] -->|"writeAs(locals, caller =>"| Svc["decisions.ts<br/>(service: fourteen writes)"]
+    Routes["Card 2676's routes, and later cards'<br/>(2697, 2677, 2680, 2682)"] -->|"writeAs(locals, caller =>"| Svc["decisions.ts<br/>(service: eighteen writes)"]
     Svc --> Guard["route-guards.ts<br/>requireDecision"]
     Guard --> Acc["decision-access.ts<br/>decisionAccess, DECISION_RULES, mayDo"]
     Acc --> BA["board-access.ts<br/>getBoardRole"]
@@ -1245,6 +1246,7 @@ stateDiagram-v2
 | `open` | draft |
 | `republish`, `extend`, `rule`, `resend`, `participantAccount`, `participantAddress` | open, closed |
 | `close` | open |
+| `respond` (card 2677; the write also asks that the shown status is `open`) | open |
 | `delete` | draft, withdrawn |
 | `view`, `record` | any |
 
@@ -1319,6 +1321,8 @@ sequenceDiagram
 | `resendInvitation` | 404 for a participant not on the decision; 409 for one removed, for each skip reason in its words, for `NO_LINK_ADDRESS`, and within 10 minutes of their last mail. `invited { resend: true }`, a link holder with a new link |
 | `setParticipantAccount` | Administrators. `person`: 409 for a person gone or with no account, or whose account another live row holds; else the account copied, `link_revoked { account_attached }`, `account_attached { userId }`. `none`: 409 when there is nothing to clear; else the account emptied and `account_cleared { userId }`, after which the row may be reached by link again |
 | `changeParticipantAddress` | Administrators. `email`, lower-cased; the same address changes nothing. Else `link_revoked { participant_address }` and `address_changed { from, to }`; no mail |
+| `respondToDecision`, `respondByLink` (card 2677) | A participant's response, signed in or by a personal link. See [The participant page](#the-participant-page) |
+| `recordSeen`, `recordSeenByLink` (card 2677) | A participant recorded as having seen a version. See [The participant page](#the-participant-page) |
 
 **Activity and live events.** The six actions `decision_opened`, `decision_republished`, `decision_closed`, `decision_extended`, `decision_withdrawn` and `decision_deleted` are written only for a decision that has been opened and whose board is there, with no card, `actorOf(caller)`, `source: opts.source`, and a detail of the quoted title and the lifecycle words alone: never a count, a name, a reason or a change note. Each call writes its `action: ACTIONS.decisionX` at its own site, as `tests/activity-twins.test.ts` requires; `decisionEntry` builds the rest. There is no `decision_created`, and none of the six sends a webhook (card 2689). On the same six steps and conditions the service sends `emit(boardId, 'decision', { decisionId, status, boardId })`, `status` the shown one: a named event no page listens for yet (card 2680), so no open board re-reads itself ([Real-Time Updates via SSE](#real-time-updates-via-sse)).
 
@@ -1326,7 +1330,7 @@ sequenceDiagram
 
 ### Authoring a decision
 
-Card 2676 (plan `docs/planning/card-2676-decision-authoring.md` v1.1) is drafting a decision: two new service writes, the revision every authoring write sends, a closed content shape, the readability check, the one shape every answer is given in, six route-methods, two pages and three components. Opening, re-publishing and the other lifecycle controls, the preview and the dry run are card 2697's, which waits on card 2677's participant pages; until it ships nobody is mailed from these pages, except that saving participants on a decision already open includes them, which mails them (no decision can be opened yet, so none is).
+Card 2676 (plan `docs/planning/card-2676-decision-authoring.md` v1.1) is drafting a decision: two new service writes, the revision every authoring write sends, a closed content shape, the readability check, the one shape every answer is given in, six route-methods, two pages and three components. Opening, re-publishing and the other lifecycle controls, the preview and the dry run are card 2697's; card 2677's participant pages, which it waited on, now exist ([The participant page](#the-participant-page)). Until card 2697 ships nobody is mailed from these pages, except that saving participants on a decision already open includes them, which mails them (no decision can be opened yet, so none is).
 
 ```mermaid
 flowchart LR
@@ -1377,7 +1381,7 @@ flowchart LR
 
 **The pages.** Both are signed-in pages; `hooks.server.ts` gates them as it gates every other, and each load guards itself.
 
-- `/board/[id]/decisions` (`readBoardDecisions`, `requireBoard(…, 'view')`): one query, the caller's board role read once, newest first. Every decision that is not a draft, and a draft only to `DRAFT_VIEWERS` (its author, its decider, the board's owners, administrators), each row asked of `mayDo(…, 'view')` and carrying `mayEdit` from `mayDo(…, 'edit')`: the title links to the editor only where it holds. **New decision**, for a caller who can edit the board (`canCreate`), asks for a title in a small dialog, posts it and goes to the editor. The board's More menu has **Decisions** under Go to, for every board viewer.
+- `/board/[id]/decisions` (`readBoardDecisions`, `requireBoard(…, 'view')`): one query, the caller's board role read once, newest first. Every decision that is not a draft, and a draft only to `DRAFT_VIEWERS` (its author, its decider, the board's owners, administrators), each row asked of `mayDo(…, 'view')` and carrying `mayEdit` from `mayDo(…, 'edit')`. Since card 2677 (F4) an opened decision's title links to its page, `/decisions/[id]`, with **Edit** beside it where `mayEdit` holds; a draft's title links to the editor where `mayEdit` holds and is plain text otherwise. **New decision**, for a caller who can edit the board (`canCreate`), asks for a title in a small dialog, posts it and goes to the editor. The board's More menu has **Decisions** under Go to, for every board viewer.
 - `/decisions/[id]/edit` (`readEditPage`, `requireDecision(…, 'edit')`): 404 for a caller who cannot view the decision (a board editor and a draft not theirs among them), 403 for one who can view and not edit. It gives the decision, its live options and every participant row through the projection, the revision, the readability check, `editable` (`TRANSITIONS.edit`), `canSetDecider`, `canReview`, `canSetParticipants` (`edit`, and `include` once opened), `productOwnerUserId`, and the picker's data: active people as `{ id, fullName, jobTitle, groupIds }` (with `email` to an administrator alone), groups as `{ id, name, activeMemberIds }`, and the decider candidates from `editorsOf`. The people, groups and candidates are empty wherever `TRANSITIONS.edit` refuses. The people are also empty, and the groups names alone (`{ id, name }`, for the audience select), wherever `canSetParticipants` is false; the candidates are empty wherever the caller may not change the decider (card 2676's C4); once open, the caller is left out of them.
 
 **The components** (`src/lib/components/decision/`). `DecisionEditor` holds the working copy in design 4.7's order, the title, closing time (UTC) and vote mode (read-only once open and sent unchanged), options as cards with the server's labels and move left, right and remove, the agent label with **Mark reviewed** on each flagged section and **Mark all reviewed** in its top bar, and the decider select (read-only text where `canSetDecider` is false, the Product Owner marked). `ParticipantPicker` searches name, job title and group name (and the address where the server gave one), ticks a group's active members as Consulted, shows a group mixed or with no active members, flags the decision's own participants who have left ("has left: remove before saving", ticked until unticked) or are no longer in the directory ("saving takes them off"), and on an opened decision asks first, with how many are mailed and how many marked removed. `ReadinessPanel` draws the server's refusals as given and the warnings it is handed: the server's, until there are edits not yet saved, then `checkContent`'s. The page holds the revision: each answer gives the next, and the page's data is read again (`invalidateAll()`). A refusal is said in the server's words, the edits kept, and only the stale-revision 409 (`STALE_REVISION` in `$lib/decision-words.ts`, the words the service refuses with) offers **Reload**, which reads the decision again and draws the editor afresh; any other 409 keeps the edits and offers nothing that would throw them away (card 2676's C6). Where the groups' members were withheld (C4), the editor does not judge an audience "nobody ticked" on unsaved edits; the server's check does once they are saved. No page listens to the live stream yet (card 2680).
@@ -1402,6 +1406,142 @@ sequenceDiagram
     else 400 or 409
         Pg->>Pg: keep the edits, say the server's words; Reload on a 409
     end
+```
+
+### The participant page
+
+Card 2677 (plan `docs/planning/card-2677-participant-page.md` v1.1) is the page a participant reads and answers a decision on, and the writes that answer it. There are two ways in to one view: `/decisions/[id]`, signed in, for every account that may view the decision, and `/decision-link/[token]`, the personal link the invitations carry, for a participant with no account and no session. Both loads give `DecisionPageData` (`src/lib/decision-view-types.ts`), and both pages draw `DecisionView`. Nothing live changes until card 2697 adds the route that opens a decision: until then no participant exists outside the tests.
+
+```mermaid
+flowchart LR
+    subgraph Pages
+      DP["/decisions/[id]<br/>+page.server.ts"]
+      LP["/decision-link/[token]<br/>+page.server.ts (public)"]
+    end
+    subgraph Routes["JSON routes (writeAs)"]
+      R1["POST /api/decisions/[id]/responses"]
+      R2["POST /api/decisions/[id]/seen"]
+      R3["POST /api/decision-by-link/responses<br/>(public, token in body)"]
+      R4["POST /api/decision-by-link/seen<br/>(public, token in body)"]
+    end
+    SO["same-origin.ts<br/>requireSameOriginJson (415, 403)"]
+    R1 & R2 & R3 & R4 -->|"first"| SO
+    DP --> V["decision-view.ts<br/>readDecisionPage, readLinkPage,<br/>viewModelOf, refuseWrongLink"]
+    LP --> V
+    V --> A["decision-authoring.ts<br/>versionContentAnswer"]
+    V --> C["decision-content.ts<br/>parseVersionContent"]
+    V --> L["decision-links.ts<br/>participantForLink, reachOf"]
+    V --> RR["decision-record.ts<br/>ownResponses, lastToldOf"]
+    R1 & R2 & R3 & R4 --> S["decisions.ts<br/>respondToDecision, respondByLink,<br/>recordSeen, recordSeenByLink"]
+    R3 & R4 -.->|"a 404 from the write"| V
+    S --> RR2["decision-record.ts<br/>appendResponse, appendEvent, ownResponseOf,<br/>latestResponse, responsesInRound, hasSeen"]
+    UI["DecisionView, ResponseForm,<br/>MarkdownBlock"] -->|"fetch JSON"| Routes
+    W["$lib/decision-seen.ts<br/>watchForSeen"] -->|"fetch JSON"| R2 & R4
+    Gate["hooks.server.ts PUBLIC_ROUTES,<br/>gate-answers.ts ROUTE_HEADERS"] -.-> LP & R3 & R4
+```
+
+`decision-view.ts` is not a service: its reads take `user: SessionUser` or a token and a name, never `caller`, import no `inWrite` and write nothing, so a page load may call them (`tests/check-at-the-write.test.ts`, rule 4). `readLinkPage(token, signedInAs)` takes the signed-in account's name, not the account. `decision-view-types.ts`, `decision-words.ts` and `decision-seen.ts` sit in `src/lib/` and import nothing from `server/`; `ShownStatus` moved to `decision-view-types.ts`, and `decision-status.ts` re-exports it.
+
+**The reads** (`src/lib/server/decision-view.ts`).
+
+- `readDecisionPage(user, decisionId)` guards with `requireDecision(…, 'view')`, so a caller who may not view is `404`, a draft to anyone outside `DRAFT_VIEWERS` included. The caller's participant row (from `decisionAccess`) is used only when `reachOf` still reaches it through the account (D12); a participant who has left, lost the account or changed address is given the page as anyone else who may view it. `mayEdit` is `mayDo(…, 'edit')`.
+- `readLinkPage(token, signedInAs)` asks `participantForLink` and gives `null` for any refusal, and for a draft; the page answers each the same (below).
+- Both build the page in one function, field by field: the decision (`id`, left out for a link holder (code review C5), `title`, shown status, vote mode, `closesAt`, the decider's name, `boardName` (null for a link holder), `withdrawnAt` and `withdrawnReason`), the current version (`number`, `publishedAt` and `versionContentAnswer`'s content), the options and audiences (`viewModelOf`), and for a participant `{ role, includedAt, told }` (`lastToldOf`), `ownResponse` and `earlierResponse` (`ownResponses` for the current round), `mayRespond` (consulted and shown open) and `stage` (`question`, `withdrawal` for withdrawn, and null for ruled and superseded, where the page posts no seen until card 2679 shows the ruling, code review C8). No account id, address, link hash, group id, reviewer's name, author, or row id of a participant or a response is given (decision 16). A draft gives `draft: true` and no version.
+- `versionContentAnswer(content, via)` (`decision-authoring.ts`) gives the six text sections, the stories and the `agentDrafted` flags; a signed-in caller also gets `reviewed` as `{ <key>: true }`, with no name and no moment. `parseVersionContent` (`decision-content.ts`) reads a version back, keeping each option's `optionId` and `label` and each stamp's `{ byName, at }`, which `parseWorkingContent` drops.
+- `viewModelOf(content, options, ownGroupIds)` builds `ViewOption[]` (label, title, summary, pros, cons, commercial, and its agent flag) and `ViewAudience[]` (`heading`, `body`, `own`, `open`): audiences whose group the person is a member of now come first and open, the rest closed; with none of them the person's, every audience is open. It takes a version's content or the working content alike, so card 2697's preview can reuse it.
+- `refuseWrongLink(address)` counts one wrong link: `checkRateLimit('decision-link:' + address, 20, 15 minutes)`, `addressToCount`'s key, and returns `{ limited, retryAfterSecs }`. One WARN line under `DECISIONS` the first time an address is past the limit in a window, naming the key and no token. In memory: it reads no row and writes none, and is on `OUTSIDE_WRITE` with that reason.
+
+**The routes.** Each handler's first line is `requireSameOriginJson(event)` (`src/lib/server/same-origin.ts`): a `Content-Type` other than `application/json` (parameters aside), or none, is `415` `This route takes JSON only`; then, unless `Sec-Fetch-Site` is `same-origin`, or, where it is absent, `Origin` equals the server's own origin, `403` `Cross-site requests are refused`. SvelteKit's own origin check covers form content types only, and `readBody` reads JSON whatever the type, so without it a cross-site `no-cors` POST would reach the handler. Nothing is read before it: no body, no row and no wrong-link count. The gate does not yet apply it to other JSON routes (its own card).
+
+| Route | Service | Answer |
+|---|---|---|
+| `POST /api/decisions/[id]/responses` | `respondToDecision` | `{ response: OwnResponse, unchanged }` |
+| `POST /api/decisions/[id]/seen` | `recordSeen` | `{ recorded }` |
+| `POST /api/decision-by-link/responses` (public) | `respondByLink` | as above; the one `404`; `429` JSON with `Retry-After` |
+| `POST /api/decision-by-link/seen` (public) | `recordSeenByLink` | `{ recorded }`; the one `404`; `429` JSON with `Retry-After` |
+
+The session routes are `requireUser`, `pathId`, `readBody`, then `writeAs(locals, (caller) => service(caller, at, body, { source: 'ui' }))`. The link routes compute `addressToCount(event)` before the body, take the token from it (`''` when it is not text), and catch a `404` from the write: within the limit it is thrown again, past it the route answers `json({ message }, { status: 429, headers: { 'Retry-After': … } })`, the words `tooManyWrongLinks(retryAfterSecs)` in `$lib/decision-words.ts` ("Too many links that do not work were tried from your network. Try again in N minute(s)."). The link routes' paths do not hold `/decision-link/`, which `maskSecretPaths` would rewrite anywhere in a log line (F2).
+
+**The writes** (`src/lib/server/decisions.ts`; the response model is in [Data Model](data-model.md#responses-and-opening-card-2677)).
+
+| Write | Does |
+|---|---|
+| `respondToDecision` | `requireDecision(…, 'respond')` (`DECISION_RULES.respond` is `participant`); `403` unless `source` is `ui` ("Responding is a person's act: it cannot be done with an API key"); the caller's own row; `403` "Someone kept informed gives no response" for an informed one; `403` "This decision no longer reaches you as a participant: ask whoever sent it to you" unless `reachOf` gives `account`. Then `respondAs` with `actorFor(user, 'ui')`, `via: 'session'` |
+| `respondByLink` | `participantForLink(token)`: any refusal is `404` `DEAD_DECISION_LINK`; then the same `ui` and informed refusals, and `respondAs` with the actor `{ userId: null, name: <snapshot name>, source: 'link' }`, `via: 'link'`, and the signed-in browser's account, if any, as `signedIn { userId, name }` in the events' detail |
+| `recordSeen` | `requireDecision(…, 'view')`; `403` unless `ui`; `403` "Only a participant of this decision is recorded as having seen it" for a caller with no row; the same reach rule. Then `seenAs` |
+| `recordSeenByLink` | `participantForLink` (`404`), `403` unless `ui`, then `seenAs` with the link actor and `signedIn` |
+
+`respondAs` and `seenAs` are private and shared, so the two ways in cannot drift. `respondAs` reads the body (`versionNumber`, `kind`, a single-mode `optionId` or a score-mode `scores`, `comment`, `optionComments`; 400), then checks `requireTransition(…, 'respond')` and that the shown status is `open` (`409` "This decision is awaiting a ruling: responses are closed"), that `versionNumber` is `current_version` (`409` in `STALE_REVISION`'s words), that the answer differs from the participant's latest in the round or is for a newer version than it (else that row, `unchanged: true`, nothing written; the same answer confirmed on a newer version is a new row bound to it, code review C1), and the cap of 50 a round (`409` "You have changed your response too many times in this round: ask the decider"). It writes the row, `responded { responseId }` and, where there is none for the version, `seen { stage: 'question' }`, and answers `ownResponseOf(row)`. `seenAs` reads `versionNumber` (`current_version` alone, `400` for any other, an earlier one included, code review C4) and `stage`; `ruling` only on a ruled or superseded decision and `withdrawal` only on a withdrawn one (`409`); then `{ recorded: false }` when `hasSeen` holds, else one `seen { stage }`. No activity entry, live event, webhook or mail is written for either (design S3).
+
+**The pages.**
+
+- `/decisions/[id]` (`readDecisionPage(locals.user!, Number(params.id))`): the board's name (as text: the page data carries no board id), **Edit** where `mayEdit`, then `DecisionView`. A draft, or a decision with no version, shows "This decision has not been opened yet". A participant gets the banner and, consulted, the statement and the form posting to `/api/decisions/[id]/responses`. Anyone else who may view reads the version and its status, with no banner, form or seen watch.
+- `/decision-link/[token]` (`readLinkPage(params.token, locals.user?.username ?? null)`): a public route (`PUBLIC_ROUTES`). Any refusal goes to `refuseWrongLink(addressToCount(event))`: within the limit `404` `DEAD_DECISION_LINK`, past it `error(429, tooManyWrongLinks(…))`, the wait in words since an error page carries no header of the load's. The page has no header menu, board name, Edit, or link into DumpFire, and the root layout hides its user badge on the route id `/decision-link/[token]`, which a percent-encoded address shares (D9, code review C6). Under the banner: "This address is personal to you: do not share it." and, in a signed-in browser, "You are signed in as <name>; this is recorded with your response and with your having seen this version." It writes `<meta name="robots" content="noindex">` and `<meta name="referrer" content="no-referrer">`. The form and the seen watch post to the link routes, the token (`page.params.token`, never in the page data) in the body.
+- On both pages the seen watch is armed in an `$effect` on the decision (the token, on the link page), the version and the stage, held as `$derived` plain values, and its stopper is returned; the form is keyed on the decision (the token), the version and Reload's count. Data read again for another decision or version arms a fresh watch and draws the form afresh; the same data read again leaves both be (code review C2). An own response given on an older version, as after a re-publish that only tells, is labelled "Given on version N." (C1). On a ruled, superseded or withdrawn decision the response section says "Responses are closed." and gives the last response, labelled, where there is one (C7).
+- Neither load writes anything: mail scanners follow links. A banner says when the participant was told, from `lastToldOf`, and "by email" only for a mail whose `mail_outcome` says delivered (D8); otherwise "You were included in this decision on <includedAt>." (`toldWords` in `$lib/decision-words.ts`). A withdrawn decision's banner gives the moment and the reason (`withdrawnWords`).
+
+**Headers by route** (`ROUTE_HEADERS` in `gate-answers.ts`, applied by `secured()` on every answer, errors and `429`s included, overwriting what the answer carries, then the global set where missing): the link page and its two routes get `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex, nofollow` and `Cache-Control: no-store`; `/decisions/[id]` and its two routes `Cache-Control: no-store`. No link route sets a cookie or makes a session.
+
+**The components** (`src/lib/components/decision/`).
+
+- `DecisionView` takes `DecisionViewProps` (`decision`, `content`, `options`, `audiences`, `participant` as `{ role }` or null, `mode: 'participant' | 'preview'`) and the snippets `banner`, `response`, `questions` and `linkedCards`. It holds no version number, publication or inclusion moment, so card 2697's preview can build its props from the working content, and it fetches and posts nothing. Sections in design 4.7's order: title and status, banner, situation, question, what is asked and by when, who sees a response (consulted only), the options (a CSS grid, `repeat(auto-fit, minmax(15rem, 1fr))`, side by side or stacked), how it affects you (`<details>` per audience, open as given), user stories (closed `<details>`), what is not yet known, already settled, technical detail (closed), the `response` snippet (consulted only), then `questions` (card 2678) and `linkedCards` (card 2680), which draw nothing until given. A flagged section carries "Drafted by an agent and not yet reviewed by a person".
+- `MarkdownBlock` draws the text itself, escaped, in a `white-space: pre-wrap` block until it is mounted, then `{@html renderMarkdown(text)}`: DOMPurify needs a DOM, and Svelte keeps an `{@html}` the server drew on hydration (F5). It is the page's only `{@html}`. Comments are always shown as text.
+- `ResponseForm` (`voteMode`, `options`, `versionNumber`, `url`, `extra`, `disabled`, `initial`, `onReload`; `versionNumber` and `url` are optional when `disabled` is true, for card 2697's preview, code review C9): radio cards, one per option, then "I abstain" and "I have no concerns"; in score mode a radio group of six buttons, 0 to 5, per option, Send disabled until every option is scored; a comment and a comment per option. Send posts `{ ...extra, versionNumber, kind, optionId | scores, comment, optionComments }` (only the option comments that are not blank) and shows "Your response was recorded on <moment>:" with what was recorded. A refusal shows the server's words and keeps what was typed; only the `409` in `STALE_REVISION`'s words offers **Reload**, which reads the page again and draws the form afresh. `disabled` draws it and sends nothing (the preview). Every tap target is at least 44px, and every input 16px.
+- `watchForSeen(url, body, { trusted })` in `$lib/decision-seen.ts`, armed by both pages, on `/decisions/[id]` only when `participant` is not null (D7), and on neither where `stage` is null, listens on the window, capturing, for `pointerdown`, `keydown`, `touchstart` and `wheel`. Not `scroll`, which is trusted however it was caused, a script's `scrollTo` included (code review C3). The first event that passes the trust test (`event.isTrusted` unless one is given, which only the tests give) while `document.visibilityState` is `visible` stops the watch and posts `{ versionNumber, stage }` (with the token on the link page). With no answer, or a `429` or a `5xx`, the next action posts again; any other answer ends it.
+
+```mermaid
+sequenceDiagram
+    actor P as Link holder (no account)
+    participant M as Mail client or scanner
+    participant Gt as Gate (hooks, secured)
+    participant Pg as /decision-link/[token] load
+    participant V as decision-view
+    participant Lk as participantForLink
+    participant Api as POST /api/decision-by-link/*
+    participant Sv as decisions.ts (writeAs)
+    participant Rec as decision-record
+    M->>Gt: GET /decision-link/[token]
+    Gt->>Pg: public route; logged as /decision-link/[token]
+    Pg->>V: readLinkPage(token, signedInAs)
+    V->>Lk: hash, unique index, linkUsable, reachOf
+    alt refused: unknown, expired, revoked, unreachable
+        Pg->>V: refuseWrongLink(address)
+        V-->>Pg: { limited, retryAfterSecs }
+        Pg-->>P: 404 in one set of words, or 429 with the wait in words
+    else the participant and the decision
+        V-->>Pg: DecisionPageData (no account ids, no board name)
+        Pg-->>P: the page; no-referrer, noindex, no-store; no Set-Cookie
+        Note over Pg,Rec: the GET writes nothing
+    end
+    Note over P: the first trusted tap, click, key press or wheel turn while visible
+    P->>Api: seen { token, versionNumber, stage } (same-origin JSON)
+    Api->>Api: requireSameOriginJson (415, 403)
+    Api->>Sv: recordSeenByLink(caller, { token }, body, { source: 'ui' })
+    Sv->>Lk: participantForLink(token), inside the write
+    Sv->>Rec: hasSeen? else seen { stage } (source link, signedIn if any)
+    P->>Api: responses { token, versionNumber, kind, ... }
+    Api->>Sv: respondByLink
+    Sv->>Sv: ui only, consulted, the body, open now, current version, unchanged, cap
+    Sv->>Rec: appendResponse (via link), responded, seen if none
+    Sv-->>P: 200 { response: OwnResponse, unchanged }
+```
+
+```mermaid
+flowchart TD
+    A[Page drawn, or read again for<br/>another decision, version or stage] --> P0{participant, and a stage?}
+    P0 -- no --> N[no watch, nothing posted]
+    P0 -- yes --> W[wait for an action]
+    W --> T{trusted pointerdown, keydown,<br/>touchstart or wheel?}
+    T -- no --> W
+    T -- yes --> B{visible now?}
+    B -- no --> W
+    B -- yes --> D["POST seen { versionNumber, stage }"]
+    D --> E{same-origin JSON? participant? reached?<br/>ui? the current version? stage fits the status?}
+    E -- no --> X[415, 403, 400 or 409; nothing written]
+    E -- yes --> F{hasSeen for participant, version, stage?}
+    F -- yes --> G["{ recorded: false }"]
+    F -- no --> H["seen { stage } with version_number"]
+    R[A response] --> F
 ```
 
 ### The dashboard
