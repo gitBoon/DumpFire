@@ -105,6 +105,13 @@ export const boards = sqliteTable('boards', {
 	kind: text('kind').notNull().default('delivery'),
 	createdBy: integer('created_by')
 		.references(() => users.id, { onDelete: 'set null' }),
+	// The board's Product Owner, the default decider of its decisions
+	// (migration 0061, card 2673). NULL until somebody sets it. Only an account
+	// that can edit the board may be set, by the board's owner or an admin, and
+	// both are checked only when the value changes (`updateBoard` in
+	// src/lib/server/boards.ts). SET NULL, as `createdBy` is.
+	productOwnerUserId: integer('product_owner_user_id')
+		.references(() => users.id, { onDelete: 'set null' }),
 	createdAt: text('created_at')
 		.notNull()
 		.default(sql`(datetime('now'))`),
@@ -113,7 +120,8 @@ export const boards = sqliteTable('boards', {
 		.default(sql`(datetime('now'))`)
 }, (table) => [
 	index('idx_boards_parent_card_id').on(table.parentCardId),
-	index('idx_boards_created_by').on(table.createdBy)
+	index('idx_boards_created_by').on(table.createdBy),
+	index('idx_boards_product_owner_user_id').on(table.productOwnerUserId)
 ]);
 
 // ─── Board Categories ────────────────────────────────────────────────────────
@@ -878,6 +886,306 @@ export const tokenUsage = sqliteTable('token_usage', {
 
 export type TokenUsage = typeof tokenUsage.$inferSelect;
 export type NewTokenUsage = typeof tokenUsage.$inferInsert;
+
+// ─── Decision Records ────────────────────────────────────────────────────────
+// Milestone 35, migration 0061 (card 2673). The design is
+// docs/planning/card-2625-decision-records.md, section 4.3.
+//
+// Every reference to `users` is SET NULL with the name kept beside it, so the
+// record never depends on an account. Every table under a decision CASCADEs
+// from it. The six references from the record (responses, questions, events
+// and rulings) to participants and options have no ON DELETE action: the
+// database refuses to delete a participant or an option the record mentions.
+// After a decision opens, participants are only marked removed and options
+// only retired. Status, kind, role, via and source are free text checked in
+// code; no CHECK constraint and no trigger, which the start-up model check
+// cannot see. `decision_versions`, `decision_responses`, `decision_rulings`
+// and `decision_events` are insert-only in code alone.
+
+/** Who can be consulted or informed, with an account or without one. */
+export const people = sqliteTable('people', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	fullName: text('full_name').notNull(),
+	/** Stored lower-case; the code lower-cases it. */
+	email: text('email').notNull().unique(),
+	jobTitle: text('job_title').notNull().default(''),
+	/** The person's account, if they have one. At most one person per account. */
+	userId: integer('user_id').references(() => users.id, { onDelete: 'set null' }),
+	status: text('status').notNull().default('active'), // 'active' | 'left'
+	leftAt: text('left_at'),
+	createdBy: integer('created_by').references(() => users.id, { onDelete: 'set null' }),
+	createdAt: text('created_at')
+		.notNull()
+		.default(sql`(datetime('now'))`),
+	updatedAt: text('updated_at')
+		.notNull()
+		.default(sql`(datetime('now'))`)
+}, (table) => [
+	uniqueIndex('idx_people_user_id').on(table.userId),
+	index('idx_people_created_by').on(table.createdBy)
+]);
+
+export const peopleGroups = sqliteTable('people_groups', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	name: text('name').notNull().unique(),
+	description: text('description').notNull().default(''),
+	createdAt: text('created_at')
+		.notNull()
+		.default(sql`(datetime('now'))`)
+});
+
+export const peopleGroupMembers = sqliteTable('people_group_members', {
+	groupId: integer('group_id')
+		.notNull()
+		.references(() => peopleGroups.id, { onDelete: 'cascade' }),
+	personId: integer('person_id')
+		.notNull()
+		.references(() => people.id, { onDelete: 'cascade' })
+}, (table) => [
+	primaryKey({ columns: [table.groupId, table.personId] }),
+	index('idx_people_group_members_person_id').on(table.personId)
+]);
+
+export const decisions = sqliteTable('decisions', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	/** SET NULL: a decision outlives its board, and keeps its name in `boardName`. */
+	boardId: integer('board_id').references(() => boards.id, { onDelete: 'set null' }),
+	boardName: text('board_name').notNull(),
+	title: text('title').notNull(),
+	status: text('status').notNull().default('draft'),
+	voteMode: text('vote_mode').notNull().default('single'), // 'single' | 'score'
+	/** JSON: the content being written, before it is published. */
+	workingContent: text('working_content').notNull().default('{}'),
+	currentVersion: integer('current_version').notNull().default(0),
+	authorUserId: integer('author_user_id').references(() => users.id, { onDelete: 'set null' }),
+	authorName: text('author_name').notNull(),
+	deciderUserId: integer('decider_user_id').references(() => users.id, { onDelete: 'set null' }),
+	deciderName: text('decider_name'),
+	closesAt: text('closes_at'),
+	openedAt: text('opened_at'),
+	closedAt: text('closed_at'),
+	ruledAt: text('ruled_at'),
+	withdrawnAt: text('withdrawn_at'),
+	withdrawnReason: text('withdrawn_reason'),
+	/** No UNIQUE: at most one superseding decision that is not withdrawn, in code. */
+	supersedesId: integer('supersedes_id').references((): AnySQLiteColumn => decisions.id, { onDelete: 'set null' }),
+	resultsReleasedAt: text('results_released_at'),
+	resultsReleasedBy: integer('results_released_by').references(() => users.id, { onDelete: 'set null' }),
+	createdAt: text('created_at')
+		.notNull()
+		.default(sql`(datetime('now'))`),
+	updatedAt: text('updated_at')
+		.notNull()
+		.default(sql`(datetime('now'))`)
+}, (table) => [
+	index('idx_decisions_board_id').on(table.boardId),
+	index('idx_decisions_author_user_id').on(table.authorUserId),
+	index('idx_decisions_decider_user_id').on(table.deciderUserId),
+	index('idx_decisions_supersedes_id').on(table.supersedesId),
+	index('idx_decisions_results_released_by').on(table.resultsReleasedBy)
+]);
+
+export const decisionOptions = sqliteTable('decision_options', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	decisionId: integer('decision_id')
+		.notNull()
+		.references(() => decisions.id, { onDelete: 'cascade' }),
+	label: text('label').notNull(), // 'A', 'B', ...
+	position: real('position').notNull(),
+	addedInVersion: integer('added_in_version'),
+	retiredInVersion: integer('retired_in_version')
+}, (table) => [
+	index('idx_decision_options_decision_id').on(table.decisionId)
+]);
+
+export const decisionVersions = sqliteTable('decision_versions', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	decisionId: integer('decision_id')
+		.notNull()
+		.references(() => decisions.id, { onDelete: 'cascade' }),
+	number: integer('number').notNull(),
+	/** JSON snapshot of what was published, the options' text included. */
+	content: text('content').notNull(),
+	changeNote: text('change_note'),
+	asksAgain: integer('asks_again', { mode: 'boolean' }).notNull(),
+	publishedBy: integer('published_by').references(() => users.id, { onDelete: 'set null' }),
+	publishedByName: text('published_by_name').notNull(),
+	publishedAt: text('published_at').notNull()
+}, (table) => [
+	uniqueIndex('idx_decision_versions_decision_id_number').on(table.decisionId, table.number),
+	index('idx_decision_versions_published_by').on(table.publishedBy)
+]);
+
+export const decisionParticipants = sqliteTable('decision_participants', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	decisionId: integer('decision_id')
+		.notNull()
+		.references(() => decisions.id, { onDelete: 'cascade' }),
+	personId: integer('person_id').references(() => people.id, { onDelete: 'set null' }),
+	role: text('role').notNull(), // 'consulted' | 'informed'
+	// Snapshots taken at inclusion; directory edits do not reach them.
+	name: text('name').notNull(),
+	email: text('email').notNull(),
+	jobTitle: text('job_title').notNull(),
+	/** JSON: the names of the person's groups. */
+	groups: text('groups').notNull(),
+	includedAt: text('included_at').notNull(),
+	includedBy: integer('included_by').references(() => users.id, { onDelete: 'set null' }),
+	includedByName: text('included_by_name'),
+	removedAt: text('removed_at'),
+	removedBy: integer('removed_by').references(() => users.id, { onDelete: 'set null' }),
+	/**
+	 * A snapshot of `people.user_id` at inclusion: set once, and never made to
+	 * follow the person's account. Its key only empties it when that account
+	 * is deleted.
+	 */
+	userId: integer('user_id').references(() => users.id, { onDelete: 'set null' }),
+	linkTokenHash: text('link_token_hash'),
+	linkIssuedAt: text('link_issued_at')
+}, (table) => [
+	index('idx_decision_participants_decision_id').on(table.decisionId),
+	index('idx_decision_participants_person_id').on(table.personId),
+	index('idx_decision_participants_included_by').on(table.includedBy),
+	index('idx_decision_participants_removed_by').on(table.removedBy),
+	index('idx_decision_participants_user_id').on(table.userId),
+	uniqueIndex('idx_decision_participants_link_token_hash').on(table.linkTokenHash)
+]);
+
+export const decisionResponses = sqliteTable('decision_responses', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	decisionId: integer('decision_id')
+		.notNull()
+		.references(() => decisions.id, { onDelete: 'cascade' }),
+	participantId: integer('participant_id')
+		.notNull()
+		.references(() => decisionParticipants.id),
+	versionNumber: integer('version_number').notNull(),
+	round: integer('round').notNull(),
+	kind: text('kind').notNull(), // 'vote' | 'abstain' | 'no_concerns' | 'concern'
+	optionId: integer('option_id').references(() => decisionOptions.id),
+	scores: text('scores'),
+	comment: text('comment'),
+	optionComments: text('option_comments'),
+	replacesId: integer('replaces_id').references((): AnySQLiteColumn => decisionResponses.id, { onDelete: 'set null' }),
+	via: text('via').notNull(), // 'session' | 'link'
+	createdAt: text('created_at')
+		.notNull()
+		.default(sql`(datetime('now'))`)
+}, (table) => [
+	index('idx_decision_responses_decision_id').on(table.decisionId),
+	index('idx_decision_responses_participant_id').on(table.participantId),
+	index('idx_decision_responses_option_id').on(table.optionId),
+	index('idx_decision_responses_replaces_id').on(table.replacesId)
+]);
+
+export const decisionQuestions = sqliteTable('decision_questions', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	decisionId: integer('decision_id')
+		.notNull()
+		.references(() => decisions.id, { onDelete: 'cascade' }),
+	participantId: integer('participant_id').references(() => decisionParticipants.id),
+	askerName: text('asker_name').notNull(),
+	question: text('question').notNull(),
+	askedInVersion: integer('asked_in_version').notNull(),
+	via: text('via').notNull(),
+	askedAt: text('asked_at').notNull(),
+	answer: text('answer'),
+	answeredBy: integer('answered_by').references(() => users.id, { onDelete: 'set null' }),
+	answeredByName: text('answered_by_name'),
+	answeredAt: text('answered_at'),
+	answerAgentDrafted: integer('answer_agent_drafted', { mode: 'boolean' }).notNull().default(false),
+	answerReviewedBy: integer('answer_reviewed_by').references(() => users.id, { onDelete: 'set null' }),
+	answerReviewedAt: text('answer_reviewed_at')
+}, (table) => [
+	index('idx_decision_questions_decision_id').on(table.decisionId),
+	index('idx_decision_questions_participant_id').on(table.participantId),
+	index('idx_decision_questions_answered_by').on(table.answeredBy),
+	index('idx_decision_questions_answer_reviewed_by').on(table.answerReviewedBy)
+]);
+
+export const decisionRulings = sqliteTable('decision_rulings', {
+	decisionId: integer('decision_id')
+		.primaryKey()
+		.references(() => decisions.id, { onDelete: 'cascade' }),
+	/** NULL: none of the options. */
+	optionId: integer('option_id').references(() => decisionOptions.id),
+	reason: text('reason').notNull(),
+	conditions: text('conditions'),
+	/** The chosen option was not the most chosen. */
+	againstResponses: integer('against_responses', { mode: 'boolean' }).notNull(),
+	early: integer('early', { mode: 'boolean' }).notNull(),
+	versionNumber: integer('version_number').notNull(),
+	ruledBy: integer('ruled_by').references(() => users.id, { onDelete: 'set null' }),
+	ruledByName: text('ruled_by_name').notNull(),
+	ruledAt: text('ruled_at').notNull()
+}, (table) => [
+	index('idx_decision_rulings_option_id').on(table.optionId),
+	index('idx_decision_rulings_ruled_by').on(table.ruledBy)
+]);
+
+export const decisionEvents = sqliteTable('decision_events', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	decisionId: integer('decision_id')
+		.notNull()
+		.references(() => decisions.id, { onDelete: 'cascade' }),
+	participantId: integer('participant_id').references(() => decisionParticipants.id),
+	kind: text('kind').notNull(),
+	versionNumber: integer('version_number'),
+	/** JSON. */
+	detail: text('detail'),
+	actorUserId: integer('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+	actorName: text('actor_name').notNull(),
+	source: text('source').notNull(), // 'ui' | 'api' | 'link' | 'system'
+	createdAt: text('created_at')
+		.notNull()
+		.default(sql`(datetime('now'))`)
+}, (table) => [
+	index('idx_decision_events_decision_id_created_at').on(table.decisionId, table.createdAt),
+	index('idx_decision_events_participant_id').on(table.participantId),
+	index('idx_decision_events_actor_user_id').on(table.actorUserId)
+]);
+
+export const decisionCardLinks = sqliteTable('decision_card_links', {
+	decisionId: integer('decision_id')
+		.notNull()
+		.references(() => decisions.id, { onDelete: 'cascade' }),
+	cardId: integer('card_id')
+		.notNull()
+		.references(() => cards.id, { onDelete: 'cascade' }),
+	relation: text('relation').notNull().default('relates'),
+	createdBy: integer('created_by').references(() => users.id, { onDelete: 'set null' }),
+	createdAt: text('created_at')
+		.notNull()
+		.default(sql`(datetime('now'))`)
+}, (table) => [
+	primaryKey({ columns: [table.decisionId, table.cardId] }),
+	index('idx_decision_card_links_card_id').on(table.cardId),
+	index('idx_decision_card_links_created_by').on(table.createdBy)
+]);
+
+export type Person = typeof people.$inferSelect;
+export type NewPerson = typeof people.$inferInsert;
+export type PeopleGroup = typeof peopleGroups.$inferSelect;
+export type NewPeopleGroup = typeof peopleGroups.$inferInsert;
+export type PeopleGroupMember = typeof peopleGroupMembers.$inferSelect;
+export type Decision = typeof decisions.$inferSelect;
+export type NewDecision = typeof decisions.$inferInsert;
+export type DecisionOption = typeof decisionOptions.$inferSelect;
+export type NewDecisionOption = typeof decisionOptions.$inferInsert;
+export type DecisionVersion = typeof decisionVersions.$inferSelect;
+export type NewDecisionVersion = typeof decisionVersions.$inferInsert;
+export type DecisionParticipant = typeof decisionParticipants.$inferSelect;
+export type NewDecisionParticipant = typeof decisionParticipants.$inferInsert;
+export type DecisionResponse = typeof decisionResponses.$inferSelect;
+export type NewDecisionResponse = typeof decisionResponses.$inferInsert;
+export type DecisionQuestion = typeof decisionQuestions.$inferSelect;
+export type NewDecisionQuestion = typeof decisionQuestions.$inferInsert;
+export type DecisionRuling = typeof decisionRulings.$inferSelect;
+export type NewDecisionRuling = typeof decisionRulings.$inferInsert;
+export type DecisionEvent = typeof decisionEvents.$inferSelect;
+export type NewDecisionEvent = typeof decisionEvents.$inferInsert;
+export type DecisionCardLink = typeof decisionCardLinks.$inferSelect;
+export type NewDecisionCardLink = typeof decisionCardLinks.$inferInsert;
 
 // ─── Insert Types ────────────────────────────────────────────────────────────
 

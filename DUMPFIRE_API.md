@@ -13,6 +13,7 @@ This document does not list every route. The complete list, with every field, st
   - [The Request Body](#the-request-body)
   - [What a Field May Hold](#what-a-field-may-hold)
   - [Answers That Are Not JSON](#answers-that-are-not-json)
+  - [Changes on 2026-11-03](#changes-on-2026-11-03)
   - [Changes on 2026-10-27](#changes-on-2026-10-27)
   - [Changes on 2026-10-26](#changes-on-2026-10-26)
   - [Changes on 2026-10-14](#changes-on-2026-10-14)
@@ -243,6 +244,13 @@ Three answers are not JSON. Each is made by SvelteKit before DumpFire's gate is 
 `/api/v1` with nothing after it is not under `/api/v1/`. DumpFire's gate takes it for a path of the web application's own, which a key does not open: it is answered `401` `{ "message": "Not authenticated" }`, or, to a browser, with a redirect to the login page. Send `/api/v1/` and a route.
 
 A `502`, `503` or `504` is not DumpFire's either: see [Writes, Failures and Retries](#writes-failures-and-retries).
+
+### Changes on 2026-11-03
+
+The OpenAPI document's version went from `1.3.1` to `1.4.0`: a board's Product Owner, the default decider of its decisions (card 2673).
+
+- **Every board answer carries `productOwnerUserId`**, the id of a user or `null`. Every board is `null` until someone sets it, and becomes `null` again if that user is deleted.
+- **`PUT /boards/:boardId` takes `productOwnerUserId`**: the id of a user who can edit the board, or `null` for none. Left out, or sent as the board holds it, it is kept, even when that user can no longer edit the board, so a board read with `GET` can still be sent back whole. A change is the board's owner's or an administrator's: anyone else is answered `403` `Only the board's owner or an administrator can change its Product Owner`, and nothing in the request is saved. A user that does not exist is `400` `productOwnerUserId 99 is not an account`; one who cannot edit the board, a reader of a public board included, is `400` `productOwnerUserId 7 cannot edit this board: a board's Product Owner must be an account that can edit it`; a value that is not an id is `400` `productOwnerUserId must be an id`. `PUT` counts it among its six fields.
 
 ### Changes on 2026-10-27
 
@@ -878,6 +886,7 @@ Returns all boards the API key's user has access to, newest first.
     "isPublic": false,
     "kind": "delivery",
     "createdBy": 1,
+    "productOwnerUserId": null,
     "createdAt": "2026-04-01T12:00:00.000Z",
     "updatedAt": "2026-04-09T10:30:00.000Z"
   }
@@ -920,6 +929,13 @@ kind: `PUT /api/v1/boards/:boardId` with `kind` switches an **empty** board, no 
 archived, giving it the other kind's columns in place of its own; a board holding cards is
 `409`, and becomes an ideas board by the conversion below. An ideas board holding cards never
 becomes a delivery board.
+
+Every board carries `productOwnerUserId` (card 2673): the board's Product Owner, the default
+decider of its decisions, or `null`, which every board is until someone sets it. Only the
+board's owner or an administrator changes it, with `PUT /api/v1/boards/:boardId`, to a user
+who can edit the board or to `null` (`403` for anyone else, `400` for a user that does not
+exist or cannot edit the board, a reader of a public board included). Sent back as the board
+holds it, it is kept, even when that user can no longer edit the board.
 
 ---
 

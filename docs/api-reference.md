@@ -1,9 +1,9 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.104
+version: 1.105
 status: As-Built
-date: 2026-10-27
+date: 2026-11-03
 tags:
   - api
   - rest
@@ -18,6 +18,7 @@ tags:
   - dependencies
   - tokens
   - webhooks
+  - product-owner
 description: "REST API reference for DumpFire's external v1 API: authentication, how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board), and examples"
 ---
 
@@ -328,6 +329,25 @@ moment as `YYYY-MM-DD HH:MM:SS` in UTC, and the web application's own routes and
 exports answer that form; the API turns it into ISO 8601 as it answers. Until 2026-10-14
 some fields were answered in that form, which names no zone, and the same field could be in
 either.
+
+### Changes on 2026-11-03
+
+The OpenAPI document's version went from `1.3.1` to `1.4.0`: a board's Product Owner, the
+default decider of its decisions (card 2673).
+
+- **Every board answer carries `productOwnerUserId`**, the id of a user or `null`. Every board
+  is `null` until someone sets it, and becomes `null` again if that user is deleted.
+- **`PUT /boards/:boardId` takes `productOwnerUserId`**: the id of a user who can edit the
+  board, or `null` for none. Left out, or sent as the board holds it, it is kept, even when
+  that user can no longer edit the board, so a board read with `GET` can still be sent back
+  whole. A change is the board's owner's or an administrator's: anyone else is answered `403`
+  `Only the board's owner or an administrator can change its Product Owner`, and nothing in
+  the request is saved. A user that does not exist is `400` `productOwnerUserId 99 is not an
+  account`; one who cannot edit the board, a reader of a public board included, is `400`
+  `productOwnerUserId 7 cannot edit this board: a board's Product Owner must be an account that
+  can edit it`; a value that is not an id is `400` `productOwnerUserId must be an id`. `PUT`
+  counts it among its six fields. The web application's `PUT /api/boards/{id}` takes it the
+  same way.
 
 ### Changes on 2026-10-27
 
@@ -2883,7 +2903,8 @@ How the key's user is doing. Takes no parameters.
 #### `GET /api/v1/boards`
 
 List all boards accessible to your API key, newest first. Each board carries `kind`,
-`"delivery"` or `"ideas"`.
+`"delivery"` or `"ideas"`, and `productOwnerUserId`, the board's Product Owner or `null`
+(since 2026-11-03, card 2673).
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -2926,6 +2947,7 @@ Update the fields sent, at least one of them. Answers the board.
 | `categoryId` | number or null | Anyone with edit access to the board | The dashboard grouping the board is filed under, or `null` for none. One that does not exist is `404` `Board category not found`. Deleting the grouping sets it to `null` (card 2293) |
 | `isPublic` | boolean | The board's owner, or an administrator | Whether everyone who is signed in can view the board |
 | `kind` | string | The board's owner, or an administrator, when it changes | `"delivery"` or `"ideas"` (milestone 22, card 2463), read with the board's own as the default, so a body without it, or with the kind it has, is any editor's. An **empty** board, no card live or archived, is switched, its columns replaced with the other kind's defaults in the same transaction, `api:board_updated` reading `Updated board "<name>" (fields: kind): now an ideas board; its columns To Do, On Hold, In Progress, Complete were replaced with New Ideas, Shaping, Ready for Replenishment` (or the delivery form). `409` for a sub-board made an ideas board (`A sub-board is a delivery board.`); for a board holding cards made an ideas board, naming the conversion (`POST /api/v1/boards/:boardId/convert`); and for an ideas board holding cards made a delivery board (`… move them to a delivery board, or delete them, first.`) |
+| `productOwnerUserId` | number or null | The board's owner, or an administrator, when it changes | The board's Product Owner, the default decider of its decisions (card 2673): the id of a user who can edit the board, or `null` for none. Read with the board's own as the default, so a body without it, or with the value it has, is any editor's, even when that user can no longer edit the board. `403` `Only the board's owner or an administrator can change its Product Owner` for anyone else's change; `400` `productOwnerUserId 99 is not an account` for a user that does not exist, `400` `productOwnerUserId 7 cannot edit this board: a board's Product Owner must be an account that can edit it` for one who cannot edit it, a reader of a public board included, and `400` `productOwnerUserId must be an id` for a value that is not an id |
 
 The board is looked for and the caller checked first (`404`, then `403`), then the fields
 are read. A value the board already holds, sent back unchanged, is accepted as it is.

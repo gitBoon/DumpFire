@@ -309,7 +309,6 @@ describe('the WIP limit in the API document', () => {
 		const note = res.body.info.description as string;
 		const changes = note.slice(note.indexOf('**Changed on 2026-10-27 (version 1.3.1).**'), note.indexOf('**Changed on 2026-10-26'));
 		expect(changes).toContain('(2) POST /api/v1/boards/{boardId}/columns stores the wipLimit sent');
-		expect(res.body.info.version).toBe('1.3.1');
 	});
 });
 

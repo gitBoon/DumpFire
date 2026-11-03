@@ -108,6 +108,13 @@
  * shown every one of them equal to its old pin with `cardCount` taken out of
  * the answer before hashing (a temporary edit of `hashOf`): nothing else in
  * All Tasks' answer moved. No count of reads moved.
+ *
+ * Card 2673 (migration 0061) gave every board its `productOwnerUserId`, which
+ * the board page and its contents hand on with the board row. The 13 hashes
+ * that moved (each marked "re-pinned (0061)") were taken again on the code as
+ * it is, once a run had shown every one of them equal to its old pin with
+ * `productOwnerUserId` taken out of the answer before hashing (a temporary
+ * edit of `hashOf`): nothing else in any answer moved. No count of reads moved.
  */
 import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -375,24 +382,24 @@ const PINS: Record<string, Record<Kind, Pin>> = {
 		outsider: { reads: 11, access: 1, hash: '39a89510992eafdf' } // 15 → 11, 2 → 1; re-pinned (2464)
 	},
 	'the board page, A': {
-		owner: { reads: 37, access: 1, hash: '887ea2d8f1902d30' }, // 57 → 41, 5 → 1; 41 → 38 (card 2399); 38 → 37 (card 2402); re-pinned (0060)
-		member: { reads: 40, access: 1, hash: '48fb0090bbf99633' }, // 64 → 48, 5 → 1; 48 → 41 (card 2399); 41 → 40 (card 2402); re-pinned (0060)
-		mate: { reads: 40, access: 1, hash: '87ccecb68e0b14d6' }, // 73 → 53, 5 → 1; 53 → 41 (card 2399); 41 → 40 (card 2402); re-pinned (0060)
-		admin: { reads: 30, access: 0, hash: '9fbcac2784ea9333' }, // 30 → 30, 0 → 0; re-pinned (0060)
+		owner: { reads: 37, access: 1, hash: '895bbec70037fdb4' }, // 57 → 41, 5 → 1; 41 → 38 (card 2399); 38 → 37 (card 2402); re-pinned (0060); re-pinned (0061)
+		member: { reads: 40, access: 1, hash: 'ef06d59458d35860' }, // 64 → 48, 5 → 1; 48 → 41 (card 2399); 41 → 40 (card 2402); re-pinned (0060); re-pinned (0061)
+		mate: { reads: 40, access: 1, hash: '72513f0fff14b6ec' }, // 73 → 53, 5 → 1; 53 → 41 (card 2399); 41 → 40 (card 2402); re-pinned (0060); re-pinned (0061)
+		admin: { reads: 30, access: 0, hash: '52da1dc2aff07acf' }, // 30 → 30, 0 → 0; re-pinned (0060); re-pinned (0061)
 		outsider: { reads: 3, access: 0, hash: '586b0bf8447edc8a' } // 3 → 3, 0 → 0 (refused)
 	},
 	'the board page, P': {
-		owner: { reads: 35, access: 1, hash: '845913f2ed9985d7' }, // 54 → 38, 5 → 1; 38 → 36 (card 2399); 36 → 35 (card 2402); re-pinned (0060)
-		member: { reads: 35, access: 1, hash: 'f9ed822c19b94733' }, // 57 → 41, 5 → 1; 41 → 36 (card 2399); 36 → 35 (card 2402); re-pinned (0060)
-		mate: { reads: 38, access: 1, hash: 'f9ed822c19b94733' }, // 67 → 47, 5 → 1; 47 → 39 (card 2399); 39 → 38 (card 2402); re-pinned (0060)
-		admin: { reads: 28, access: 0, hash: '39dfbfff9b7fe2d8' }, // 28 → 28, 0 → 0; re-pinned (0060)
-		outsider: { reads: 35, access: 1, hash: 'ebe9e05b925bbf01' } // 55 → 39, 5 → 1; 39 → 36 (card 2399); 36 → 35 (card 2402); re-pinned (0060)
+		owner: { reads: 35, access: 1, hash: '056119e9b9128bb7' }, // 54 → 38, 5 → 1; 38 → 36 (card 2399); 36 → 35 (card 2402); re-pinned (0060); re-pinned (0061)
+		member: { reads: 35, access: 1, hash: 'd18fc985423a4bc6' }, // 57 → 41, 5 → 1; 41 → 36 (card 2399); 36 → 35 (card 2402); re-pinned (0060); re-pinned (0061)
+		mate: { reads: 38, access: 1, hash: 'd18fc985423a4bc6' }, // 67 → 47, 5 → 1; 47 → 39 (card 2399); 39 → 38 (card 2402); re-pinned (0060); re-pinned (0061)
+		admin: { reads: 28, access: 0, hash: '27a332764857be8e' }, // 28 → 28, 0 → 0; re-pinned (0060); re-pinned (0061)
+		outsider: { reads: 35, access: 1, hash: 'c78b65725cbd2e69' } // 55 → 39, 5 → 1; 39 → 36 (card 2399); 36 → 35 (card 2402); re-pinned (0060); re-pinned (0061)
 	},
 	'GET /api/boards/A/contents': {
-		owner: { reads: 37, access: 1, hash: 'b1f28b6b91414236' }, // 57 → 41, 5 → 1; 41 → 38 (card 2399); 38 → 37 (card 2402); re-pinned (0060)
-		member: { reads: 40, access: 1, hash: '7edb73ad77fef37f' }, // 64 → 48, 5 → 1; 48 → 41 (card 2399); 41 → 40 (card 2402); re-pinned (0060)
-		mate: { reads: 40, access: 1, hash: '53b1111ac60134f0' }, // 73 → 53, 5 → 1; 53 → 41 (card 2399); 41 → 40 (card 2402); re-pinned (0060)
-		admin: { reads: 30, access: 0, hash: '46dc4e040515b611' }, // 30 → 30, 0 → 0; re-pinned (0060)
+		owner: { reads: 37, access: 1, hash: '34f7ffec03bbb102' }, // 57 → 41, 5 → 1; 41 → 38 (card 2399); 38 → 37 (card 2402); re-pinned (0060); re-pinned (0061)
+		member: { reads: 40, access: 1, hash: 'cd81daa5f8dcc99b' }, // 64 → 48, 5 → 1; 48 → 41 (card 2399); 41 → 40 (card 2402); re-pinned (0060); re-pinned (0061)
+		mate: { reads: 40, access: 1, hash: '7ce45835650d3eff' }, // 73 → 53, 5 → 1; 53 → 41 (card 2399); 41 → 40 (card 2402); re-pinned (0060); re-pinned (0061)
+		admin: { reads: 30, access: 0, hash: '30ea79a8a4857efd' }, // 30 → 30, 0 → 0; re-pinned (0060); re-pinned (0061)
 		outsider: { reads: 3, access: 0, hash: '98f0381065d0fdf3' } // 3 → 3, 0 → 0 (refused)
 	},
 	'the burndown page, every board': {

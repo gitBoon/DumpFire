@@ -153,7 +153,8 @@ describe('stamp, toStamp and parseStamp', () => {
 describe('timestampColumns', () => {
 	it('names every TEXT *_at column and system_logs.timestamp, and nothing that holds a day', () => {
 		const found = timestampColumns(sqlite).map((c) => `${c.table}.${c.column}`);
-		expect(found).toHaveLength(39);
+		// 39, and the 23 moments of the decision records (migration 0061).
+		expect(found).toHaveLength(62);
 		for (const column of [
 			'activity_log.created_at',
 			'api_keys.expires_at',

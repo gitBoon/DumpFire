@@ -33,9 +33,9 @@
 import { error } from '@sveltejs/kit';
 import { count, desc, eq, inArray, and } from 'drizzle-orm';
 import { db, sqlite } from './db';
-import { boardMembers, boards, cards, columns, type Board, type Card, type Column } from './db/schema';
+import { boardMembers, boards, cards, columns, users, type Board, type Card, type Column } from './db/schema';
 import type { SessionUser } from './auth';
-import { getAccessibleBoardIds } from './board-access';
+import { canEditBoard, getAccessibleBoardIds } from './board-access';
 import { deleteBoard } from './deletes';
 import { emit } from './events';
 import { changedFields } from './card-changes';
@@ -316,6 +316,12 @@ export type UpdateBoardOptions = {
  * kind's columns in place of its own (ruling j). A sub-board is a delivery
  * board: one is not made an ideas board, nor an ideas board put under a card
  * (409, ruling p); and no board is put under an option (409, ruling o).
+ *
+ * `productOwnerUserId` (card 2673, decision 4) is read the same way: an
+ * account id or null, with the board's own as `keep`. A change of it is the
+ * owner's or an administrator's (403, with a message of its own), and the
+ * account must be there and able to edit the board (400 otherwise); both are
+ * asked only when it changes.
  */
 export function updateBoard(caller: SessionUser | null, at: { boardId: number }, body: RequestBody, opts: ServiceOptions & UpdateBoardOptions): Board {
 	inWrite();
@@ -353,6 +359,17 @@ export function updateBoard(caller: SessionUser | null, at: { boardId: number },
 	if (kind !== undefined) updates.kind = kind;
 	const switching = kind !== undefined && kind !== board.kind;
 	if (switching) requireBoardOwner(user, boardId, "Only the board's owner or an administrator can change whether it is an ideas board");
+	// The Product Owner (card 2673, decision 4), the default decider of the
+	// board's decisions: an account that can edit the board, or null for none.
+	// Read with the board's own as `keep`, and both checks asked only when it
+	// changes, so a board read with GET can be sent back whole even after its
+	// Product Owner has lost access, and the value stays.
+	const productOwnerUserId = readId(body, 'productOwnerUserId', { nullable: true, keep: board.productOwnerUserId });
+	if (productOwnerUserId !== undefined) updates.productOwnerUserId = productOwnerUserId;
+	if (productOwnerUserId !== undefined && productOwnerUserId !== board.productOwnerUserId) {
+		requireBoardOwner(user, boardId, "Only the board's owner or an administrator can change its Product Owner");
+		if (productOwnerUserId !== null) requireProductOwner(productOwnerUserId, boardId);
+	}
 
 	// v1 links no board under a card and takes none out (card 2287): another
 	// parent card is refused, where the other fields were saved and it was
@@ -478,6 +495,23 @@ export function updateBoard(caller: SessionUser | null, at: { boardId: number },
 	});
 	if (!opts.tellBeforeEntry) tell();
 	return row;
+}
+
+/**
+ * Refuse, 400, an account that cannot be board `boardId`'s Product Owner: one
+ * that is not there, or one that cannot edit the board (`canEditBoard`, with
+ * the role read from the account's own row). A reader is refused, someone
+ * whose only access is a public board included: the Product Owner is the
+ * default decider, and a decider must be able to edit the board (card 2673,
+ * decision 4). "Active" means only that the account exists, as `users` has no
+ * disabled column; card 2671, which adds one, refuses a disabled account here.
+ */
+function requireProductOwner(userId: number, boardId: number): void {
+	const account = db.select({ id: users.id, role: users.role }).from(users).where(eq(users.id, userId)).get();
+	if (!account) error(400, `productOwnerUserId ${userId} is not an account`);
+	if (!canEditBoard(account, boardId)) {
+		error(400, `productOwnerUserId ${userId} cannot edit this board: a board's Product Owner must be an account that can edit it`);
+	}
 }
 
 /**

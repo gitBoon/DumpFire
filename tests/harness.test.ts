@@ -70,6 +70,7 @@ const TEST_FILES = [
 	'body-limits.test.ts',
 	'board-contents.test.ts',
 	'board-list-view.test.ts',
+	'board-product-owner.test.ts',
 	'board-refresh.test.ts',
 	'board-tree-loops.test.ts',
 	'bulk-endpoints.test.ts',

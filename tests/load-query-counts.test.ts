@@ -446,11 +446,13 @@ const MOST_READS: Record<string, number> = { owner: 23, member: 21, mate: 21, ad
  * with card 2526: the caller's Display choice, from their cookie (the defaults here, with none).
  * Re-pinned once a run had passed on the old pins with that key taken out of `keys` (a temporary
  * edit of `shown`): nothing else in any answer moved, and it reads nothing of the database.
+ * Each board gained `productOwnerUserId`, after `createdBy`, its place in the model, with card
+ * 2673 (migration 0061): every board row goes out whole.
  */
 const KEYED = {
 	keys: 'boards,analytics,allCategories,favouriteBoardIds,allTasksTotals,spendByUser,dashboardDisplay',
 	boardKeys: [
-		'id,name,emoji,parentCardId,categoryId,isPublic,kind,createdBy,createdAt,updatedAt,totalCards,completedCards,optionsCount,tokenTotal,costUsd,lastActivity,subBoards,categoryName,categoryColor'
+		'id,name,emoji,parentCardId,categoryId,isPublic,kind,createdBy,productOwnerUserId,createdAt,updatedAt,totalCards,completedCards,optionsCount,tokenTotal,costUsd,lastActivity,subBoards,categoryName,categoryColor'
 	],
 	analyticsKeys:
 		'totalAssigned,active,completed,completionRate,completedThisWeek,completedThisMonth,priorityCounts,pendingRequests,recentActivity,weeklyActivity,totalSubBoards,boardHealth,totalBoards,categoryDistribution,agingBuckets,teamLeaderboard,dueCards,longOverdue,asOf,weeklyTrend,onHoldCount'

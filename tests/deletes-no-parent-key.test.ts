@@ -59,8 +59,9 @@ beforeAll(() => {
 		sqlite.pragma('foreign_keys = ON');
 	}
 
-	// The key is gone, and the others are as they were.
-	expect(keysOfBoards().map((k) => k.from)).toEqual(['created_by']);
+	// The key is gone, and the others are as they were: the two to users, its
+	// creator and its Product Owner (0061).
+	expect(keysOfBoards().map((k) => k.from).sort()).toEqual(['created_by', 'product_owner_user_id']);
 	expect(sqlite.pragma('foreign_key_check')).toEqual([]);
 });
 

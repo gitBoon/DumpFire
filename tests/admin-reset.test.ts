@@ -173,6 +173,29 @@ function everything(): Everything {
 		.get();
 	db.insert(requestMessages).values({ requestId: request.id, senderName: 'member', message: 'Hello' }).run();
 
+	// A decision record, a row in each of its twelve tables (card 2673, migration 0061), and a Product Owner.
+	const at = '2026-11-03 09:00:00';
+	sqlite.exec(`
+		UPDATE boards SET product_owner_user_id = ${member.id} WHERE id = ${A.board.id};
+		INSERT INTO people (id, full_name, email, user_id, created_by) VALUES (1, 'Member', 'member@example.test', ${member.id}, ${owner.id});
+		INSERT INTO people_groups (id, name) VALUES (1, 'Finance');
+		INSERT INTO people_group_members (group_id, person_id) VALUES (1, 1);
+		INSERT INTO decisions (id, board_id, board_name, title, author_user_id, author_name, decider_user_id)
+			VALUES (1, ${A.board.id}, 'A', 'Which supplier', ${owner.id}, 'owner', ${member.id});
+		INSERT INTO decision_options (id, decision_id, label, position) VALUES (1, 1, 'A', 1);
+		INSERT INTO decision_versions (decision_id, number, content, asks_again, published_by, published_by_name, published_at)
+			VALUES (1, 1, '{}', 1, ${owner.id}, 'owner', '${at}');
+		INSERT INTO decision_participants (id, decision_id, person_id, role, name, email, job_title, groups, included_at, included_by, user_id)
+			VALUES (1, 1, 1, 'consulted', 'Member', 'member@example.test', '', '[]', '${at}', ${owner.id}, ${member.id});
+		INSERT INTO decision_responses (decision_id, participant_id, version_number, round, kind, option_id, via) VALUES (1, 1, 1, 1, 'vote', 1, 'session');
+		INSERT INTO decision_questions (decision_id, participant_id, asker_name, question, asked_in_version, via, asked_at)
+			VALUES (1, 1, 'Member', 'How much?', 1, 'session', '${at}');
+		INSERT INTO decision_rulings (decision_id, option_id, reason, against_responses, early, version_number, ruled_by, ruled_by_name, ruled_at)
+			VALUES (1, 1, 'Cheaper.', 0, 0, 1, ${member.id}, 'member', '${at}');
+		INSERT INTO decision_events (decision_id, participant_id, kind, actor_user_id, actor_name, source) VALUES (1, 1, 'responded', ${member.id}, 'member', 'ui');
+		INSERT INTO decision_card_links (decision_id, card_id, created_by) VALUES (1, ${first.id}, ${owner.id});
+	`);
+
 	// The two tables a reset keeps.
 	db.insert(backupLog)
 		.values({ destinationType: 'sftp', destinationName: 'Offsite', filename: 'backup-1.db', status: 'success' })

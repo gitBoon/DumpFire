@@ -5,7 +5,7 @@ const spec = {
 	openapi: '3.1.0',
 	info: {
 		title: 'DumpFire API',
-		version: '1.3.1',
+		version: '1.4.0',
 		description:
 			'REST API for the DumpFire Kanban board. Automate card creation, movement, assignments, and more.\n\n' +
 			'**Failures.** Every failure DumpFire answers under /api/v1/ is JSON with a `message` that says why, as in ' +
@@ -13,6 +13,10 @@ const spec = {
 			'(404, {"message": "Not found"}) and a method the route does not have (405, with an Allow header naming the ones it has). ' +
 			'Some failures carry more beside the message: a 429 has `retryAfterSecs`, the 409 for a dependency that would close a loop has `cycle`, ' +
 			'and the 409 for a batch that was refused lists every item of it that was at fault.\n\n' +
+			'**Changed on 2026-11-03 (version 1.4.0).** A board\'s Product Owner, the default decider of its decisions (card 2673): ' +
+			'(1) every board answer, Board and BoardDetail, carries productOwnerUserId, the id of a user or null, and every board is null until someone sets it; ' +
+			'(2) PUT /api/v1/boards/{boardId} takes productOwnerUserId, the id of a user who can edit the board or null for none, kept when it is left out or sent as the board holds it: a change is the board\'s owner\'s or an administrator\'s (403), ' +
+			'and a user that does not exist or cannot edit the board, a reader of a public board included, is 400; PUT counts productOwnerUserId among its six fields. Nothing else changed.\n\n' +
 			'**Changed on 2026-10-27 (version 1.3.1).** Corrections to answers: (1) GET /api/v1/reports/activity puts a card in the created bucket when it was raised in the window, not edited since and no move of it is recorded in the activity log ' +
 			'(card_moved, card_moved_in, card_moved_away, card_sent, card_committed, card_returned_to_options or card_reopened, in either spelling); a card raised before 2026-10-01, when the board\'s drag route recorded no move, must also still be in the board\'s first column that is not an Options column. ' +
 			'Until this release every card had to be, so a card raised in another column and left alone was progressed (card 2480); ' +
@@ -473,10 +477,15 @@ const spec = {
 							'delivery for a board of committed work, which every board was before 2026-10-26; ideas for a board whose every column is upstream of the commitment point, holding options nobody has committed to yet.'
 					},
 					createdBy: { type: ['integer', 'null'], description: 'The user who created it. null once that user has been deleted.' },
+					productOwnerUserId: {
+						type: ['integer', 'null'],
+						description:
+							'The board\'s Product Owner, the default decider of its decisions: a user who could edit the board when set. null until someone sets it, and once that user has been deleted. Set with PUT /api/v1/boards/{boardId}.'
+					},
 					createdAt: { type: 'string', format: 'date-time' },
 					updatedAt: { type: 'string', format: 'date-time' }
 				},
-				required: ['id', 'name', 'emoji', 'parentCardId', 'categoryId', 'isPublic', 'kind', 'createdBy', 'createdAt', 'updatedAt']
+				required: ['id', 'name', 'emoji', 'parentCardId', 'categoryId', 'isPublic', 'kind', 'createdBy', 'productOwnerUserId', 'createdAt', 'updatedAt']
 			},
 			Column: {
 				type: 'object',
@@ -509,11 +518,12 @@ const spec = {
 					isPublic: { type: 'boolean' },
 					kind: { type: 'string', enum: ['delivery', 'ideas'] },
 					createdBy: { type: ['integer', 'null'] },
+					productOwnerUserId: { type: ['integer', 'null'] },
 					createdAt: { type: 'string', format: 'date-time' },
 					updatedAt: { type: 'string', format: 'date-time' },
 					columns: { type: 'array', items: { $ref: '#/components/schemas/Column' } }
 				},
-				required: ['id', 'name', 'emoji', 'parentCardId', 'categoryId', 'isPublic', 'kind', 'createdBy', 'createdAt', 'updatedAt', 'columns']
+				required: ['id', 'name', 'emoji', 'parentCardId', 'categoryId', 'isPublic', 'kind', 'createdBy', 'productOwnerUserId', 'createdAt', 'updatedAt', 'columns']
 			},
 			Card: {
 				type: 'object',
@@ -2775,7 +2785,7 @@ const spec = {
 				tags: ['Boards'],
 				summary: 'Update a board',
 				description:
-					'Updates the fields sent. Updatable fields: name, emoji, categoryId, isPublic, kind. At least one of them must be sent.\n\n' +
+					'Updates the fields sent. Updatable fields: name, emoji, categoryId, isPublic, kind, productOwnerUserId. At least one of them must be sent.\n\n' +
 					'Only the fields whose value changes are written, logged and told: a body whose every field is as the board holds it (a name that trims to the stored one included) ' +
 					'answers 200 with the board as it is, with no api:board_updated and updatedAt unchanged, and api:board_updated names only the fields that changed. ' +
 					'A request that would be refused is still refused first. Until 2026-10-14 every field sent was written and named (item 95).\n\n' +
@@ -2810,6 +2820,13 @@ const spec = {
 										description:
 											'"delivery" or "ideas". Left out, or sent as the board holds it, the kind is kept. A change is the board\'s owner\'s or an administrator\'s (403 otherwise), and only of an empty board, no card live or archived: its columns are then replaced with the other kind\'s defaults. ' +
 											'A board holding cards becomes an ideas board by POST /api/v1/boards/{boardId}/convert; an ideas board holding cards does not become a delivery board. Anything else is 400 kind must be "delivery" or "ideas", not <what was sent>.'
+									},
+									productOwnerUserId: {
+										type: ['integer', 'null'],
+										minimum: 1,
+										description:
+											'The board\'s Product Owner, the default decider of its decisions: the id of a user who can edit the board, or null for none. Left out, or sent as the board holds it, it is kept, even when that user can no longer edit the board. ' +
+											'A change is the board\'s owner\'s or an administrator\'s (403 otherwise). A user that does not exist (`productOwnerUserId 99 is not an account`), or one who cannot edit the board, a reader of a public board included (`productOwnerUserId 7 cannot edit this board: …`), is 400, and so is a value that is not an id (`productOwnerUserId must be an id`).'
 									}
 								}
 							},
@@ -2827,7 +2844,7 @@ const spec = {
 						}
 					},
 					'400': {
-						description: 'None of the five fields was sent, the name is empty or over 200 characters, the emoji empty or over 32, a field of the wrong type (`name must be text`, `categoryId must be an id`), a kind that is neither kind (`kind must be "delivery" or "ideas", not "backlog"`), `isPublic` is not `true` or `false` (`isPublic must be true or false`, answered to the board\'s owner or an administrator: anyone else who sends it is answered 403 whatever its value), a parentCardId other than the board\'s own (`parentCardId 12 is not this board\'s parent card (none): the board has been moved since it was read, or a link was meant. A board is put under a card, or taken out from under one, on the board page`, null on a sub-board included) or one that is not an id (`parentCardId must be an id`), boardId is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not an object. Nothing was written.',
+						description: 'None of the six fields was sent, the name is empty or over 200 characters, the emoji empty or over 32, a field of the wrong type (`name must be text`, `categoryId must be an id`, `productOwnerUserId must be an id`), a kind that is neither kind (`kind must be "delivery" or "ideas", not "backlog"`), a productOwnerUserId changed to a user that does not exist or cannot edit the board, `isPublic` is not `true` or `false` (`isPublic must be true or false`, answered to the board\'s owner or an administrator: anyone else who sends it is answered 403 whatever its value), a parentCardId other than the board\'s own (`parentCardId 12 is not this board\'s parent card (none): the board has been moved since it was read, or a link was meant. A board is put under a card, or taken out from under one, on the board page`, null on a sub-board included) or one that is not an id (`parentCardId must be an id`), boardId is not a whole number of 1 or more, or the body is missing, is not valid JSON or is not an object. Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No valid fields to update' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
@@ -2836,6 +2853,7 @@ const spec = {
 							'No edit access to this board. ' +
 							'Or `isPublic` was sent by a caller who can edit the board and is neither its owner nor an administrator, which is the example. ' +
 							'Or `kind` was sent changed by such a caller: `Only the board\'s owner or an administrator can change whether it is an ideas board`. ' +
+							'Or `productOwnerUserId` was sent changed by such a caller: `Only the board\'s owner or an administrator can change its Product Owner`. ' +
 							'Or categoryId names a board category that holds boards, none of which the key\'s user can open: `No access to this board category`. Nothing was written.',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Only board owners and admins can change visibility' } } }
 					},

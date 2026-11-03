@@ -390,6 +390,28 @@ const FILE_0059 = '0059_add_setting_setters.sql';
 /** The file of milestone 22: the Options role, the ideas kind, and each card's commitment and discard. */
 const FILE_0060 = '0060_add_upstream_options.sql';
 
+/** The file of card 2673: the decision records model, and a Product Owner on each board. */
+const FILE_0061 = '0061_add_decision_records.sql';
+
+/** The twelve tables 0061 creates, in name order. */
+const TABLES_OF_0061 = [
+	'decision_card_links',
+	'decision_events',
+	'decision_options',
+	'decision_participants',
+	'decision_questions',
+	'decision_responses',
+	'decision_rulings',
+	'decision_versions',
+	'decisions',
+	'people',
+	'people_group_members',
+	'people_groups'
+];
+
+/** How the model check reports a table of the model that a database has not got. */
+const notInTheDatabase = (table: string) => `${table}: the table is in the model but not in the database`;
+
 /** The tables 0060 changes the rows of: each gains its new columns, and cards are committed. */
 const TABLES_OF_0060 = ['boards', 'columns', 'cards'];
 
@@ -399,13 +421,15 @@ const TABLES_OF_0060 = ['boards', 'columns', 'cards'];
  * and every card the commitment and discard columns, committed when and by
  * whom it was created, unless its id is in `uncommitted` (a card on a column
  * or a board that is not there). Any other table's rows are as they were.
+ * And as 0061, which every run that applies 0060 applies after it, leaves
+ * them: every board gains `product_owner_user_id` NULL.
  */
 function after0060(table: string, rows: string[], uncommitted: readonly number[] = []): string[] {
 	if (!TABLES_OF_0060.includes(table)) return rows;
 	return rows
 		.map((json) => {
 			const row = JSON.parse(json) as Record<string, unknown>;
-			if (table === 'boards') row.kind = 'delivery';
+			if (table === 'boards') Object.assign(row, { kind: 'delivery', product_owner_user_id: null });
 			if (table === 'columns') row.role = null;
 			if (table === 'cards') {
 				const committed = !uncommitted.includes(row.id as number);
@@ -2460,10 +2484,11 @@ describe('the six reconciled tables', () => {
 				created_by INTEGER REFERENCES users(id),
 				created_at TEXT DEFAULT (datetime('now')) NOT NULL,
 				updated_at TEXT DEFAULT (datetime('now')) NOT NULL,
-				kind TEXT DEFAULT 'delivery' NOT NULL
+				kind TEXT DEFAULT 'delivery' NOT NULL,
+				product_owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL
 			);
-			INSERT INTO boards_older (id, name, emoji, parent_card_id, category_id, is_public, created_by, created_at, updated_at, kind)
-				SELECT id, name, emoji, parent_card_id, category_id, is_public, created_by, created_at, updated_at, kind FROM boards;
+			INSERT INTO boards_older (id, name, emoji, parent_card_id, category_id, is_public, created_by, created_at, updated_at, kind, product_owner_user_id)
+				SELECT id, name, emoji, parent_card_id, category_id, is_public, created_by, created_at, updated_at, kind, product_owner_user_id FROM boards;
 			DROP TABLE boards;
 			ALTER TABLE boards_older RENAME TO boards;
 			INSERT INTO boards (id, name, parent_card_id) VALUES (6, 'Left behind', 99);
@@ -2483,7 +2508,8 @@ describe('the six reconciled tables', () => {
 				differences: [
 					'boards: foreign key in the database but not in the model: (created_by) references users(id), on update NO ACTION, on delete NO ACTION',
 					'boards: foreign key in the model but not in the database: (created_by) references users(id), on update NO ACTION, on delete SET NULL',
-					// 0053 made these, and they went with the table this test replaced.
+					// 0053 and 0061 made these, and they went with the table this test replaced.
+					'boards: index in the model but not in the database: index idx_boards_product_owner_user_id on (product_owner_user_id)',
 					'boards: index in the model but not in the database: index idx_boards_created_by on (created_by)',
 					'boards: index in the model but not in the database: index idx_boards_parent_card_id on (parent_card_id)'
 				]
@@ -2517,10 +2543,11 @@ describe('the six reconciled tables', () => {
 			CREATE TEMP TABLE boards_kept AS SELECT * FROM boards;
 			DROP TABLE boards;
 			${older};
-			-- As 0060 adds it to such a table.
+			-- As 0060 and 0061 add them to such a table.
 			ALTER TABLE boards ADD COLUMN kind text DEFAULT 'delivery' NOT NULL;
-			INSERT INTO boards (id, name, emoji, parent_card_id, category_id, is_public, created_by, created_at, updated_at, kind)
-				SELECT id, name, emoji, parent_card_id, category_id, is_public, created_by, created_at, updated_at, kind FROM boards_kept;
+			ALTER TABLE boards ADD COLUMN product_owner_user_id integer REFERENCES users(id) ON DELETE SET NULL;
+			INSERT INTO boards (id, name, emoji, parent_card_id, category_id, is_public, created_by, created_at, updated_at, kind, product_owner_user_id)
+				SELECT id, name, emoji, parent_card_id, category_id, is_public, created_by, created_at, updated_at, kind, product_owner_user_id FROM boards_kept;
 			DROP TABLE boards_kept;
 			INSERT INTO boards (id, name, created_by) VALUES (6, 'By nobody', 99);
 		`);
@@ -5462,9 +5489,13 @@ describe('the database the runner leaves, against the model', () => {
 		// Where it starts. Every difference card 2006 set out to close, the 39
 		// indexes of 0053 (card 2106), the column of 0056 (card 2168), the
 		// column of 0058 (card 2159), the table of 0059 (card 2397), the columns,
-		// keys and indexes of 0060 (milestone 22), and no other.
+		// keys and indexes of 0060 (milestone 22), the tables, column, key and
+		// index of 0061 (card 2673), and no other.
 		expect(withoutTheIndexesOf0053(differencesFromModel(structureOf(database), structureOf(modelDatabase())))).toEqual([
 			'boards.kind: the column is in the model but not in the database',
+			'boards.product_owner_user_id: the column is in the model but not in the database',
+			'boards: foreign key in the model but not in the database: (product_owner_user_id) references users(id), on update NO ACTION, on delete SET NULL',
+			'boards: index in the model but not in the database: index idx_boards_product_owner_user_id on (product_owner_user_id)',
 			'cards.committed_at: the column is in the model but not in the database',
 			'cards.committed_by: the column is in the model but not in the database',
 			'cards.discarded_at: the column is in the model but not in the database',
@@ -5479,7 +5510,9 @@ describe('the database the runner leaves, against the model', () => {
 			'categories: foreign key in the model but not in the database: (board_id) references boards(id), on update NO ACTION, on delete SET NULL',
 			'columns.role: the column is in the model but not in the database',
 			'columns.wip_limit: is nullable; the model has it NOT NULL',
+			...TABLES_OF_0061.filter((table) => table < 'invite_tokens').map(notInTheDatabase),
 			'invite_tokens.token: is nullable; the model has it NOT NULL',
+			...TABLES_OF_0061.filter((table) => table > 'invite_tokens').map(notInTheDatabase),
 			'report_schedules.time_zone: the column is in the model but not in the database',
 			'setting_setters: the table is in the model but not in the database',
 			'settings.key: is nullable; the model has it NOT NULL',
@@ -5505,13 +5538,14 @@ describe('the database the runner leaves, against the model', () => {
 			FILE_0057,
 			FILE_0058,
 			FILE_0059,
-			FILE_0060
+			FILE_0060,
+			FILE_0061
 		]);
 		expect(report.tolerated).toEqual([]);
 		expect(report.rebuilt.map((r) => r.table)).toEqual(['columns', 'categories', 'settings', 'user_xp', 'invite_tokens']);
 		expect(report.missingFromDisk).toEqual([]);
 		expect(report.schemaDifferences).toEqual([]);
-		expect(recordedIn(database)).toHaveLength(66);
+		expect(recordedIn(database)).toHaveLength(67);
 		expect(sequenceIn(database, 'categories')).toBe(3);
 		expect(foreignKeysOn(database)).toBe(true);
 		expect(differencesIn(database)).toEqual(NONE);
@@ -5534,13 +5568,16 @@ describe('the database the runner leaves, against the model', () => {
 		seed(database);
 		// Where it starts: `boards` with neither of its foreign keys right,
 		// none of the 39 indexes of 0053 (card 2106), no column of 0056
-		// (card 2168) or 0058 (card 2159), no table of 0059 (card 2397), and
-		// nothing of 0060 (milestone 22).
+		// (card 2168) or 0058 (card 2159), no table of 0059 (card 2397),
+		// nothing of 0060 (milestone 22), and nothing of 0061 (card 2673).
 		expect(withoutTheIndexesOf0053(differencesFromModel(structureOf(database), structureOf(modelDatabase())))).toEqual([
 			'boards.kind: the column is in the model but not in the database',
+			'boards.product_owner_user_id: the column is in the model but not in the database',
 			'boards: foreign key not in the model: (created_by) references users(id), on update NO ACTION, on delete NO ACTION',
 			'boards: foreign key in the model but not in the database: (created_by) references users(id), on update NO ACTION, on delete SET NULL',
 			'boards: foreign key in the model but not in the database: (parent_card_id) references cards(id), on update NO ACTION, on delete CASCADE',
+			'boards: foreign key in the model but not in the database: (product_owner_user_id) references users(id), on update NO ACTION, on delete SET NULL',
+			'boards: index in the model but not in the database: index idx_boards_product_owner_user_id on (product_owner_user_id)',
 			'cards.committed_at: the column is in the model but not in the database',
 			'cards.committed_by: the column is in the model but not in the database',
 			'cards.discarded_at: the column is in the model but not in the database',
@@ -5553,6 +5590,7 @@ describe('the database the runner leaves, against the model', () => {
 			'categories: foreign key not in the model: (board_id) references boards(id), on update NO ACTION, on delete CASCADE',
 			'categories: foreign key in the model but not in the database: (board_id) references boards(id), on update NO ACTION, on delete SET NULL',
 			'columns.role: the column is in the model but not in the database',
+			...TABLES_OF_0061.map(notInTheDatabase),
 			'report_schedules.time_zone: the column is in the model but not in the database',
 			'setting_setters: the table is in the model but not in the database',
 			'time_entries: the table is not in the model',
@@ -5562,10 +5600,12 @@ describe('the database the runner leaves, against the model', () => {
 		]);
 		const rowsOf = (table: string) => contentsOf(database)[table];
 		const before = Object.fromEntries(['boards', 'columns', 'categories', 'cards', 'labels'].map((t) => [t, rowsOf(t)]));
-		// Less the indexes of 0053, which the run creates before it rebuilds, and
-		// boards.kind, which 0060 adds before it rebuilds (milestone 22).
+		// Less the indexes of 0053, which the run creates before it rebuilds,
+		// boards.kind, which 0060 adds before it rebuilds (milestone 22), and the
+		// column, key and index 0061 adds to boards before it rebuilds (card 2673).
 		const notOf0053 = (difference: string) => !INDEXES_FROM_0053.some(({ name }) => difference.includes(` index ${name} on `));
-		const notOf0060 = (difference: string) => !difference.startsWith('boards.kind: ');
+		const notOf0060 = (difference: string) =>
+			!difference.startsWith('boards.kind: ') && !difference.includes('product_owner_user_id');
 		const differed = {
 			boards: differencesOf(database, 'boards').filter(notOf0053).filter(notOf0060),
 			categories: differencesOf(database, 'categories').filter(notOf0053)
@@ -5575,7 +5615,7 @@ describe('the database the runner leaves, against the model', () => {
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual(['0052_drop_time_entries.sql', '0053_index_foreign_keys_end_sessions.sql', FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060]);
+		expect(report.applied).toEqual(['0052_drop_time_entries.sql', '0053_index_foreign_keys_end_sessions.sql', FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061]);
 		expect(report.rebuilt).toEqual([
 			{ table: 'boards', rows: 3, defaulted: [], differences: differed.boards },
 			{ table: 'categories', rows: 3, defaulted: [], differences: differed.categories }
@@ -5704,7 +5744,7 @@ describe('0053, which ends every session once (card 2106)', () => {
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0053, FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060]);
+		expect(report.applied).toEqual([FILE_0053, FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061]);
 		expect(report.schemaDifferences).toEqual([]);
 		const after = contentsOf(database);
 		expect(after.sessions).toEqual([]);
@@ -6016,7 +6056,7 @@ describe('0054, which indexes a person’s entries by time and ends every unused
 	});
 
 	it('is the file after 0053: the composite index in place of the one on user_id, then the delete of unused invites', () => {
-		expect(realFiles.filter((f) => f > FILE_0053)).toEqual([FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060]);
+		expect(realFiles.filter((f) => f > FILE_0053)).toEqual([FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061]);
 		const sql = sqlStatements(readFileSync(join(REAL_MIGRATIONS, FILE_0054), 'utf-8')).map((s) => s.text);
 		expect(sql).toEqual([
 			'DROP INDEX IF EXISTS `idx_activity_log_user_id`;',
@@ -6157,7 +6197,7 @@ describe('0054, which indexes a person’s entries by time and ends every unused
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060]);
+		expect(report.applied).toEqual([FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect((database.prepare('SELECT token FROM invite_tokens').all() as { token: string }[]).map((r) => r.token)).toEqual([
 			'used-long-ago'
@@ -6235,7 +6275,7 @@ describe('0055, which gives every task request a new link once (card 2158)', () 
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060]);
+		expect(report.applied).toEqual([FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061]);
 		expect(report.schemaDifferences).toEqual([]);
 		const links = linksIn(database);
 		expect(links).toHaveLength(3);
@@ -6268,7 +6308,7 @@ describe('0055, which gives every task request a new link once (card 2158)', () 
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060]);
+		expect(report.applied).toEqual([FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061]);
 		expect(linksIn(database)).toEqual([]);
 	});
 
@@ -6328,7 +6368,7 @@ describe("0056, which adds who last set a webhook's address or secret (card 2168
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060]);
+		expect(report.applied).toEqual([FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect(database.prepare('SELECT id, url, secret, active, set_by FROM webhooks').all()).toEqual([
 			{ id: 1, url: 'https://hooks.example.test/x', secret: 's3cret', active: 1, set_by: null }
@@ -6466,7 +6506,7 @@ ORDER BY m.id, c.id;`;
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0057, FILE_0058, FILE_0059, FILE_0060]);
+		expect(report.applied).toEqual([FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061]);
 		expect(report.schemaDifferences).toEqual([]);
 		const cardsAfter = cardsIn(database);
 		// 0060, applied in the same run, commits all seven, each on a column of a
@@ -6527,7 +6567,7 @@ ORDER BY m.id, c.id;`;
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0057, FILE_0058, FILE_0059, FILE_0060]);
+		expect(report.applied).toEqual([FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061]);
 		expect(cardsIn(database)).toEqual([]);
 	});
 
@@ -6578,7 +6618,7 @@ describe("0058, which adds the time zone a report schedule's time is read in (ca
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0058, FILE_0059, FILE_0060]);
+		expect(report.applied).toEqual([FILE_0058, FILE_0059, FILE_0060, FILE_0061]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect(database.prepare('SELECT * FROM report_schedules').get()).toEqual({ ...scheduleBefore, time_zone: 'UTC' });
 		const after = contentsOf(database);
@@ -6655,7 +6695,7 @@ describe('0059, which adds who last changed the mail settings, the App URL and e
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0059, FILE_0060]);
+		expect(report.applied).toEqual([FILE_0059, FILE_0060, FILE_0061]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect(database.prepare('SELECT * FROM setting_setters').all()).toEqual([]);
 		const after = contentsOf(database);
@@ -6815,7 +6855,7 @@ describe('0060, which adds the Options role, the ideas kind, and each card’s c
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0060]);
+		expect(report.applied).toEqual([FILE_0060, FILE_0061]);
 		expect(report.schemaDifferences).toEqual([]);
 		// The file committed them, so the backfill after it found none.
 		expect(report.backfilled.committedFilled).toBe(0);
@@ -6907,7 +6947,7 @@ describe('0060, which adds the Options role, the ideas kind, and each card’s c
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0060]);
+		expect(report.applied).toEqual([FILE_0060, FILE_0061]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect(database.prepare('SELECT COUNT(*) AS n FROM cards').get()).toEqual({ n: 0 });
 	});
@@ -6919,6 +6959,331 @@ describe('0060, which adds the Options role, the ideas kind, and each card’s c
 			change: 'committed_at and committed_by filled from created_at and created_by for every card not upstream',
 			keepsRows: true
 		});
+	});
+});
+
+// ─── 0061: decision records, and a Product Owner on each board ───────────────
+
+describe('0061, which adds the decision records model and a Product Owner on each board (card 2673)', () => {
+	const STAMP = '2026-11-03 09:00:00';
+
+	/**
+	 * The 35 indexes 0061 creates, by name: the 34 the plan names (section 4),
+	 * and idx_decision_participants_user_id, from its review (2026-11-03).
+	 */
+	const INDEXES_OF_0061 = [
+		'people_groups_name_unique',
+		'people_email_unique',
+		'idx_people_user_id',
+		'idx_people_created_by',
+		'idx_people_group_members_person_id',
+		'idx_boards_product_owner_user_id',
+		'idx_decisions_board_id',
+		'idx_decisions_author_user_id',
+		'idx_decisions_decider_user_id',
+		'idx_decisions_supersedes_id',
+		'idx_decisions_results_released_by',
+		'idx_decision_options_decision_id',
+		'idx_decision_versions_decision_id_number',
+		'idx_decision_versions_published_by',
+		'idx_decision_participants_decision_id',
+		'idx_decision_participants_person_id',
+		'idx_decision_participants_included_by',
+		'idx_decision_participants_removed_by',
+		'idx_decision_participants_user_id',
+		'idx_decision_participants_link_token_hash',
+		'idx_decision_responses_decision_id',
+		'idx_decision_responses_participant_id',
+		'idx_decision_responses_option_id',
+		'idx_decision_responses_replaces_id',
+		'idx_decision_questions_decision_id',
+		'idx_decision_questions_participant_id',
+		'idx_decision_questions_answered_by',
+		'idx_decision_questions_answer_reviewed_by',
+		'idx_decision_rulings_option_id',
+		'idx_decision_rulings_ruled_by',
+		'idx_decision_events_decision_id_created_at',
+		'idx_decision_events_participant_id',
+		'idx_decision_events_actor_user_id',
+		'idx_decision_card_links_card_id',
+		'idx_decision_card_links_created_by'
+	];
+
+	/**
+	 * A database at 0060, as a start of the build before this one leaves it:
+	 * every migration before 0061 applied, Ann (1, the superadmin) and Bob (2),
+	 * boards A (1) and B (2) each with a To Do column, a card on A, and the
+	 * backfills run, so that a start has nothing of its own to do.
+	 */
+	function beforeIt(): Database.Database {
+		const database = memoryDb();
+		const before = Object.fromEntries(
+			realFiles.filter((f) => f < FILE_0061).map((f) => [f, readFileSync(join(REAL_MIGRATIONS, f), 'utf-8')])
+		);
+		applyFilesOnly(database, migrationsDir(before));
+		database.exec(`
+			INSERT INTO users (id, username, email, password_hash, role, created_at) VALUES
+				(1, 'ann', 'ann@example.test', 'x', 'superadmin', '${STAMP}'), (2, 'bob', 'bob@example.test', 'x', 'user', '${STAMP}');
+			INSERT INTO boards (id, name, created_by, created_at, updated_at) VALUES (1, 'A', 1, '${STAMP}', '${STAMP}'), (2, 'B', 2, '${STAMP}', '${STAMP}');
+			INSERT INTO columns (id, board_id, title, position) VALUES (1, 1, 'To Do', 0), (2, 2, 'To Do', 0);
+			INSERT INTO cards (id, column_id, title, created_by, created_at, updated_at) VALUES (1, 1, 'A card', 1, '${STAMP}', '${STAMP}');
+		`);
+		runBackfills(database);
+		return database;
+	}
+
+	/**
+	 * A current database holding one whole decision record, as later cards will
+	 * write it:
+	 *
+	 *   users          Ann (1), the author; Bob (2), the decider
+	 *   board          A (1), Product Owner Bob; cards 1 and 2 on it
+	 *   people         1 (Ann's account) and 2 (no account), both in group 1
+	 *   decision       1, on board A, ruled for option 2
+	 *   options        1 and 2
+	 *   participants   1 (person 1); 2 (person 2), removed
+	 *   responses      1 (participant 1, option 1); 2 (participant 1, option 2), replacing 1
+	 *   question       1, from participant 1, answered by Ann
+	 *   ruling         option 2, by Bob
+	 *   events         1 (participant 1, by Ann); 2 (no participant, by Bob)
+	 *   card links     cards 1 and 2
+	 */
+	function withRecord(): Database.Database {
+		const database = memoryDb();
+		runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+		database.exec(`
+			INSERT INTO users (id, username, email, password_hash, created_at) VALUES
+				(1, 'ann', 'ann@example.test', 'x', '${STAMP}'), (2, 'bob', 'bob@example.test', 'x', '${STAMP}');
+			INSERT INTO boards (id, name, created_by, product_owner_user_id, created_at, updated_at) VALUES (1, 'A', 1, 2, '${STAMP}', '${STAMP}');
+			INSERT INTO columns (id, board_id, title, position) VALUES (1, 1, 'To Do', 0);
+			INSERT INTO cards (id, column_id, title, created_at, updated_at) VALUES (1, 1, 'One', '${STAMP}', '${STAMP}'), (2, 1, 'Two', '${STAMP}', '${STAMP}');
+			INSERT INTO people (id, full_name, email, user_id, created_by, created_at, updated_at) VALUES
+				(1, 'Ann Author', 'ann@example.test', 1, 1, '${STAMP}', '${STAMP}'),
+				(2, 'Pat Outside', 'pat@example.test', NULL, 1, '${STAMP}', '${STAMP}');
+			INSERT INTO people_groups (id, name, created_at) VALUES (1, 'Finance', '${STAMP}');
+			INSERT INTO people_group_members (group_id, person_id) VALUES (1, 1), (1, 2);
+			INSERT INTO decisions (id, board_id, board_name, title, status, current_version, author_user_id, author_name,
+					decider_user_id, decider_name, opened_at, ruled_at, results_released_at, results_released_by, created_at, updated_at) VALUES
+				(1, 1, 'A', 'Which supplier', 'ruled', 1, 1, 'Ann', 2, 'Bob', '${STAMP}', '${STAMP}', '${STAMP}', 2, '${STAMP}', '${STAMP}');
+			INSERT INTO decision_options (id, decision_id, label, position, added_in_version) VALUES (1, 1, 'A', 1, 1), (2, 1, 'B', 2, 1);
+			INSERT INTO decision_versions (id, decision_id, number, content, asks_again, published_by, published_by_name, published_at) VALUES
+				(1, 1, 1, '{}', 1, 1, 'Ann', '${STAMP}');
+			INSERT INTO decision_participants (id, decision_id, person_id, role, name, email, job_title, groups, included_at,
+					included_by, included_by_name, removed_at, removed_by, user_id) VALUES
+				(1, 1, 1, 'consulted', 'Ann Author', 'ann@example.test', '', '["Finance"]', '${STAMP}', 1, 'Ann', NULL, NULL, 1),
+				(2, 1, 2, 'informed', 'Pat Outside', 'pat@example.test', '', '["Finance"]', '${STAMP}', 1, 'Ann', '${STAMP}', 1, NULL);
+			INSERT INTO decision_responses (id, decision_id, participant_id, version_number, round, kind, option_id, replaces_id, via, created_at) VALUES
+				(1, 1, 1, 1, 1, 'vote', 1, NULL, 'session', '${STAMP}'),
+				(2, 1, 1, 1, 1, 'vote', 2, 1, 'session', '${STAMP}');
+			INSERT INTO decision_questions (id, decision_id, participant_id, asker_name, question, asked_in_version, via, asked_at,
+					answer, answered_by, answered_by_name, answered_at) VALUES
+				(1, 1, 1, 'Ann Author', 'How much?', 1, 'session', '${STAMP}', 'Less.', 1, 'Ann', '${STAMP}');
+			INSERT INTO decision_rulings (decision_id, option_id, reason, against_responses, early, version_number, ruled_by, ruled_by_name, ruled_at) VALUES
+				(1, 2, 'Cheaper.', 0, 0, 1, 2, 'Bob', '${STAMP}');
+			INSERT INTO decision_events (id, decision_id, participant_id, kind, actor_user_id, actor_name, source, created_at) VALUES
+				(1, 1, 1, 'responded', 1, 'Ann', 'ui', '${STAMP}'),
+				(2, 1, NULL, 'ruled', 2, 'Bob', 'ui', '${STAMP}');
+			INSERT INTO decision_card_links (decision_id, card_id, created_by, created_at) VALUES (1, 1, 1, '${STAMP}'), (1, 2, 1, '${STAMP}');
+		`);
+		return database;
+	}
+
+	/** The number of rows in each of the twelve tables. */
+	const countsOf = (database: Database.Database) =>
+		Object.fromEntries(
+			TABLES_OF_0061.map((table) => [table, (database.prepare(`SELECT COUNT(*) AS n FROM "${table}"`).get() as { n: number }).n])
+		);
+	const none = Object.fromEntries(TABLES_OF_0061.map((table) => [table, 0]));
+
+	it('is the twelve tables, the column and the 35 named indexes, each the model’s own statement, after a header that says it runs once', () => {
+		const sql = readFileSync(join(REAL_MIGRATIONS, FILE_0061), 'utf-8');
+		const statements = sqlStatements(sql).map((s) => s.text.replace(/\r\n/g, '\n'));
+		const tables = statements.filter((text) => text.startsWith('CREATE TABLE'));
+		const indexes = statements.filter((text) => /^CREATE (UNIQUE )?INDEX IF NOT EXISTS /.test(text));
+		const nameIn = (text: string) => /`([a-z_]+)`/.exec(text)?.[1];
+
+		expect(statements).toHaveLength(48);
+		// Parent first: each table after every table it refers to.
+		expect(tables.map(nameIn)).toEqual([
+			'people_groups',
+			'people',
+			'people_group_members',
+			'decisions',
+			'decision_options',
+			'decision_versions',
+			'decision_participants',
+			'decision_responses',
+			'decision_questions',
+			'decision_rulings',
+			'decision_events',
+			'decision_card_links'
+		]);
+		expect(statements.filter((text) => text.startsWith('ALTER'))).toEqual([
+			'ALTER TABLE `boards` ADD COLUMN `product_owner_user_id` integer REFERENCES `users`(`id`) ON UPDATE no action ON DELETE set null;'
+		]);
+		expect(indexes.map(nameIn).sort()).toEqual([...INDEXES_OF_0061].sort());
+		// Nothing else: no data change, no trigger, no CHECK.
+		expect(tables.length + 1 + indexes.length).toBe(statements.length);
+		expect(sql).not.toMatch(/\bCHECK\s*\(|CREATE TRIGGER|^\s*(INSERT|UPDATE|DELETE)\b/im);
+		// Each is the statement the model's export prints, so the two cannot drift.
+		for (const text of [...tables, ...indexes]) expect(EXPECTED_SCHEMA, text).toContain(text.replace(' IF NOT EXISTS', ''));
+		for (const said of ['What people see:', 'Runs once.', 'A backup made before this file', 'Going back to an older image']) {
+			expect(sql, said).toContain(said);
+		}
+	});
+
+	it('applies to a database at 0060 and changes no row, leaves the model check nothing, and runs once, declaring nothing to the rehearsal', () => {
+		const database = beforeIt();
+		const before = contentsOf(database);
+		const state = stateOf(database);
+
+		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+
+		expect(report.applied).toEqual([FILE_0061]);
+		expect(report.tolerated).toEqual([]);
+		// boards takes the column in place: it is in the model's shape, so nothing is rebuilt.
+		expect(report.rebuilt).toEqual([]);
+		expect(report.leftAlone).toEqual([]);
+		expect(report.schemaDifferences).toEqual([]);
+		expect(schemaDifferences(database)).toEqual([]);
+		expect(unindexedForeignKeys(database)).toEqual([]);
+		expect(indexesOf(database)).toEqual(expect.arrayContaining(INDEXES_OF_0061));
+		expect(countsOf(database)).toEqual(none);
+		// Every row as it was, but for the column each board gains, NULL.
+		const withProductOwner = (json: string) =>
+			JSON.stringify(
+				Object.fromEntries(
+					Object.entries({ ...JSON.parse(json), product_owner_user_id: null }).sort(([a], [b]) => a.localeCompare(b))
+				)
+			);
+		const after = contentsOf(database);
+		for (const table of Object.keys(before)) {
+			// The migration record, and its id counter, gain the file.
+			if (['__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
+			const expected = table === 'boards' ? before.boards.map(withProductOwner).sort() : before[table];
+			expect(after[table], table).toEqual(expected);
+		}
+		// The rehearsal: every row kept, nothing to note.
+		const found: Findings = { problems: [], notes: [] };
+		compare(state, stateOf(database), report.applied, found);
+		expect(found).toEqual({ problems: [], notes: [] });
+
+		// Runs once: the next start applies nothing, and a second run is not tolerated.
+		const again = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+		expect(again.applied).toEqual([]);
+		expect(again.rebuilt).toEqual([]);
+		expect(contentsOf(database)).toEqual(after);
+		expect(TOLERANT_FILES).not.toContain(FILE_0061);
+		expect(ONE_OFFS.filter((oneOff) => oneOff.file === FILE_0061)).toEqual([]);
+	});
+
+	it('restores a backup made before 0061: the twelve tables empty, and every board’s Product Owner NULL', () => {
+		const live = withRecord();
+		expect(countsOf(live).decisions).toBe(1);
+		const backup = beforeIt();
+		expect(backup.prepare("SELECT name FROM sqlite_master WHERE name = 'decisions'").get()).toBeUndefined();
+
+		const result = restoreFromBackup(live, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(countsOf(live)).toEqual(none);
+		expect(live.prepare('SELECT id, name, product_owner_user_id FROM boards ORDER BY id').all()).toEqual([
+			{ id: 1, name: 'A', product_owner_user_id: null },
+			{ id: 2, name: 'B', product_owner_user_id: null }
+		]);
+		expect(live.pragma('foreign_key_check')).toEqual([]);
+	});
+
+	it('deletes a whole decision through every table under it: the NO ACTION keys do not block the cascade', () => {
+		const database = withRecord();
+		expect(Object.values(countsOf(database)).every((n) => n > 0)).toBe(true);
+
+		database.prepare('DELETE FROM decisions WHERE id = 1').run();
+
+		expect(countsOf(database)).toEqual({ ...none, people: 2, people_groups: 1, people_group_members: 2 });
+		// Only the links went: the cards, the board and its Product Owner are there.
+		expect(database.prepare('SELECT COUNT(*) AS n FROM cards').get()).toEqual({ n: 2 });
+		expect(database.prepare('SELECT product_owner_user_id FROM boards WHERE id = 1').get()).toEqual({ product_owner_user_id: 2 });
+		expect(database.pragma('foreign_key_check')).toEqual([]);
+	});
+
+	it('refuses to delete a participant or an option that a response, question, event or ruling mentions (decision 2)', () => {
+		// Each mention on its own: every other row that mentions the same
+		// participant or option is taken away first, so each key is shown to
+		// refuse by itself.
+		const mentions: [parent: string, id: number, child: string, column: string][] = [
+			['decision_participants', 1, 'decision_responses', 'participant_id'],
+			['decision_participants', 1, 'decision_questions', 'participant_id'],
+			['decision_participants', 1, 'decision_events', 'participant_id'],
+			['decision_options', 2, 'decision_responses', 'option_id'],
+			['decision_options', 2, 'decision_rulings', 'option_id']
+		];
+		for (const [parent, id, child, column] of mentions) {
+			const database = withRecord();
+			for (const [p, , other, by] of mentions) {
+				if (p === parent && other !== child) database.prepare(`DELETE FROM ${other} WHERE ${by} = ?`).run(id);
+			}
+			const remove = () => database.prepare(`DELETE FROM ${parent} WHERE id = ?`).run(id);
+
+			expect(remove, `${child}.${column}`).toThrow(/FOREIGN KEY constraint failed/);
+			expect(database.prepare(`SELECT COUNT(*) AS n FROM ${parent} WHERE id = ?`).get(id), `${child}.${column}`).toEqual({ n: 1 });
+
+			// With the mention gone, the delete goes through: it was that key.
+			database.prepare(`DELETE FROM ${child} WHERE ${column} = ?`).run(id);
+			expect(remove().changes, `${child}.${column}`).toBe(1);
+		}
+	});
+
+	it('keeps the record when its card, its people, their accounts and its board go', () => {
+		const database = withRecord();
+
+		// A card: only its link goes.
+		database.prepare('DELETE FROM cards WHERE id = 1').run();
+		expect(database.prepare('SELECT decision_id, card_id FROM decision_card_links').all()).toEqual([{ decision_id: 1, card_id: 2 }]);
+		expect(database.prepare('SELECT COUNT(*) AS n FROM decisions').get()).toEqual({ n: 1 });
+		// The author's and the decider's accounts: every key to them empties, every name stays.
+		database.prepare('DELETE FROM users WHERE id IN (1, 2)').run();
+		expect(database.prepare('SELECT card_id, created_by FROM decision_card_links').all()).toEqual([{ card_id: 2, created_by: null }]);
+		// Seen before the person and the board go, so that it is the account
+		// keys that empty these, not a row going: the board's Product Owner,
+		// the person's account, and participant 1's snapshot of it.
+		expect(database.prepare('SELECT product_owner_user_id FROM boards WHERE id = 1').get()).toEqual({ product_owner_user_id: null });
+		expect(database.prepare('SELECT user_id FROM people WHERE id = 1').get()).toEqual({ user_id: null });
+		expect(database.prepare('SELECT user_id FROM decision_participants WHERE id = 1').get()).toEqual({ user_id: null });
+		// A person: the participant keeps what it was included with.
+		database.prepare('DELETE FROM people WHERE id = 1').run();
+		// The board: the decision stays, with the board's name. The board's
+		// cards go with it, and so their links.
+		database.prepare('DELETE FROM boards WHERE id = 1').run();
+		expect(database.prepare('SELECT COUNT(*) AS n FROM decision_card_links').get()).toEqual({ n: 0 });
+
+		expect(database.prepare(`SELECT id, board_id, board_name, author_user_id, author_name, decider_user_id, decider_name,
+			results_released_by FROM decisions`).all()).toEqual([
+			{ id: 1, board_id: null, board_name: 'A', author_user_id: null, author_name: 'Ann', decider_user_id: null, decider_name: 'Bob', results_released_by: null }
+		]);
+		expect(database.prepare(`SELECT id, person_id, name, included_by, included_by_name, removed_by, user_id
+			FROM decision_participants ORDER BY id`).all()).toEqual([
+			// user_id is a snapshot, but keyed to users: Ann's account went, so it emptied.
+			{ id: 1, person_id: null, name: 'Ann Author', included_by: null, included_by_name: 'Ann', removed_by: null, user_id: null },
+			{ id: 2, person_id: 2, name: 'Pat Outside', included_by: null, included_by_name: 'Ann', removed_by: null, user_id: null }
+		]);
+		expect(database.prepare('SELECT published_by, published_by_name FROM decision_versions').all()).toEqual([
+			{ published_by: null, published_by_name: 'Ann' }
+		]);
+		expect(database.prepare('SELECT answered_by, answered_by_name FROM decision_questions').all()).toEqual([
+			{ answered_by: null, answered_by_name: 'Ann' }
+		]);
+		expect(database.prepare('SELECT option_id, ruled_by, ruled_by_name FROM decision_rulings').all()).toEqual([
+			{ option_id: 2, ruled_by: null, ruled_by_name: 'Bob' }
+		]);
+		expect(database.prepare('SELECT id, actor_user_id, actor_name FROM decision_events ORDER BY id').all()).toEqual([
+			{ id: 1, actor_user_id: null, actor_name: 'Ann' },
+			{ id: 2, actor_user_id: null, actor_name: 'Bob' }
+		]);
+		expect(database.prepare('SELECT id, user_id, created_by FROM people').all()).toEqual([{ id: 2, user_id: null, created_by: null }]);
+		expect(database.prepare('SELECT group_id, person_id FROM people_group_members').all()).toEqual([{ group_id: 1, person_id: 2 }]);
+		expect(countsOf(database)).toMatchObject({ decision_options: 2, decision_responses: 2 });
+		expect(database.pragma('foreign_key_check')).toEqual([]);
 	});
 });
 

@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.41
+version: 1.42
 status: As-Built
-date: 2026-10-28
+date: 2026-11-03
 tags:
   - database
   - schema
@@ -22,7 +22,10 @@ tags:
   - migration-0060
   - options-column
   - commitment-point
-description: "Complete database schema documentation with ER diagram, table descriptions, relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), and how migrations and schema reconciliation bring every database to the model"
+  - decision-records
+  - migration-0061
+  - product-owner
+description: "Complete database schema documentation with ER diagram, table descriptions, relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), and how migrations and schema reconciliation bring every database to the model"
 ---
 
 # DumpFire Data Model
@@ -90,6 +93,7 @@ erDiagram
         bool is_public
         int created_by FK
         text kind "delivery (default) or ideas, 0060"
+        int product_owner_user_id FK "SET NULL, 0061"
         text created_at
         text updated_at
     }
@@ -409,6 +413,153 @@ erDiagram
     task_requests ||--o{ request_messages : "thread"
 ```
 
+### Decision records (migration 0061)
+
+The people directory, the decisions and their record, and a board's Product Owner (card 2673,
+milestone 35). Every key to `users` is SET NULL, with a name kept beside it; every table under
+a decision cascades from it; the six references from the record to participants and options
+have no ON DELETE action (NO ACTION), so the database refuses to delete one the record
+mentions. Columns are listed in full under [Key Schema Notes](#key-schema-notes).
+
+```mermaid
+erDiagram
+    people {
+        int id PK
+        text full_name
+        text email UK "lower-case"
+        text job_title
+        int user_id FK "UNIQUE, SET NULL"
+        text status "active or left"
+        text left_at
+        int created_by FK
+        text created_at
+        text updated_at
+    }
+    people_groups {
+        int id PK
+        text name UK
+        text description
+        text created_at
+    }
+    people_group_members {
+        int group_id PK_FK
+        int person_id PK_FK
+    }
+    decisions {
+        int id PK
+        int board_id FK "SET NULL"
+        text board_name
+        text title
+        text status "draft by default"
+        text vote_mode "single or score"
+        text working_content "JSON"
+        int current_version
+        int author_user_id FK
+        text author_name
+        int decider_user_id FK
+        text decider_name
+        int supersedes_id FK "self, SET NULL"
+        int results_released_by FK
+    }
+    decision_options {
+        int id PK
+        int decision_id FK
+        text label
+        real position
+        int added_in_version
+        int retired_in_version
+    }
+    decision_versions {
+        int id PK
+        int decision_id FK "UNIQUE with number"
+        int number
+        text content "JSON snapshot"
+        bool asks_again
+        int published_by FK
+        text published_by_name
+        text published_at
+    }
+    decision_participants {
+        int id PK
+        int decision_id FK
+        int person_id FK "SET NULL"
+        text role "consulted or informed"
+        text name "snapshot"
+        text email "snapshot"
+        int user_id FK "snapshot, SET NULL"
+        text link_token_hash UK
+    }
+    decision_responses {
+        int id PK
+        int decision_id FK
+        int participant_id FK "NO ACTION"
+        int option_id FK "NO ACTION"
+        int replaces_id FK "self, SET NULL"
+        text kind
+        text via
+        text created_at
+    }
+    decision_questions {
+        int id PK
+        int decision_id FK
+        int participant_id FK "NO ACTION"
+        text question
+        text answer
+        int answered_by FK
+        int answer_reviewed_by FK
+    }
+    decision_rulings {
+        int decision_id PK_FK
+        int option_id FK "NO ACTION; NULL: none of them"
+        text reason
+        bool against_responses
+        bool early
+        int ruled_by FK
+        text ruled_by_name
+        text ruled_at
+    }
+    decision_events {
+        int id PK
+        int decision_id FK
+        int participant_id FK "NO ACTION"
+        text kind
+        int actor_user_id FK
+        text actor_name
+        text source
+        text created_at
+    }
+    decision_card_links {
+        int decision_id PK_FK
+        int card_id PK_FK
+        text relation
+        int created_by FK
+        text created_at
+    }
+
+    users |o--o{ boards : "product_owner_user_id (SET NULL)"
+    users |o--o| people : "user_id (SET NULL)"
+    people ||--o{ people_group_members : "CASCADE"
+    people_groups ||--o{ people_group_members : "CASCADE"
+    boards |o--o{ decisions : "board_id (SET NULL)"
+    decisions |o--o{ decisions : "supersedes_id (SET NULL)"
+    decisions ||--o{ decision_options : "CASCADE"
+    decisions ||--o{ decision_versions : "CASCADE"
+    decisions ||--o{ decision_participants : "CASCADE"
+    people |o--o{ decision_participants : "person_id (SET NULL)"
+    users |o--o{ decision_participants : "user_id snapshot (SET NULL)"
+    decisions ||--o{ decision_responses : "CASCADE"
+    decision_participants ||--o{ decision_responses : "NO ACTION"
+    decision_options |o--o{ decision_responses : "NO ACTION"
+    decisions ||--o{ decision_questions : "CASCADE"
+    decision_participants |o--o{ decision_questions : "NO ACTION"
+    decisions ||--o| decision_rulings : "CASCADE"
+    decision_options |o--o| decision_rulings : "NO ACTION"
+    decisions ||--o{ decision_events : "CASCADE"
+    decision_participants |o--o{ decision_events : "NO ACTION"
+    decisions ||--o{ decision_card_links : "CASCADE"
+    cards ||--o{ decision_card_links : "CASCADE"
+```
+
 ## Cascade Behaviour
 
 | Parent | Child | On Delete |
@@ -448,6 +599,17 @@ erDiagram
 | `users` | `cards.createdBy`, `activity_log.userId`, `task_requests.requesterUserId`, `task_requests.resolvedBy`, `token_usage.reportedByUserId` | SET NULL |
 | `users` | `cards.committed_by` (migration 0060, milestone 22) | SET NULL: the card keeps `committed_at`, and who committed it reads as not recorded. `deleteUser()` clears nothing of it by hand |
 | `users` | `cards.discarded_by` (migration 0060, milestone 22) | SET NULL, as `committed_by` |
+| `users` | `boards.product_owner_user_id` (migration 0061, card 2673) | SET NULL: the board has no Product Owner until someone sets one |
+| `users` | every user key of the decision records: `people.user_id`, `people.created_by`, `decisions.author_user_id`, `decider_user_id`, `results_released_by`, `decision_versions.published_by`, `decision_participants.included_by`, `removed_by`, `user_id`, `decision_questions.answered_by`, `answer_reviewed_by`, `decision_rulings.ruled_by`, `decision_events.actor_user_id`, `decision_card_links.created_by` (migration 0061) | SET NULL. The name kept beside each (`author_name`, `ruled_by_name` and so on) stays. `decision_participants.user_id` is a snapshot of `people.user_id` taken at inclusion and never made to follow the person; its key only empties it when that account is deleted |
+| `boards` | `decisions.board_id` (migration 0061) | SET NULL: the decision outlives its board, and keeps its name in `board_name` |
+| `decisions` | `decision_options`, `decision_versions`, `decision_participants`, `decision_responses`, `decision_questions`, `decision_rulings`, `decision_events`, `decision_card_links` (migration 0061) | CASCADE |
+| `decisions` | `decisions.supersedes_id` (migration 0061) | SET NULL |
+| `decision_participants` | `decision_responses.participant_id`, `decision_questions.participant_id`, `decision_events.participant_id` (migration 0061) | **NO ACTION**: deleting a participant the record mentions is refused. Deleting the whole decision still cascades, as SQLite checks NO ACTION at the end of the statement |
+| `decision_options` | `decision_responses.option_id`, `decision_rulings.option_id` (migration 0061) | **NO ACTION**, as above |
+| `decision_responses` | `decision_responses.replaces_id` (migration 0061) | SET NULL |
+| `people` | `decision_participants.person_id` (migration 0061) | SET NULL: the participant keeps the name, email, job title and groups it was included with |
+| `people`, `people_groups` | `people_group_members` (migration 0061) | CASCADE |
+| `cards` | `decision_card_links` (migration 0061) | CASCADE: only the link goes |
 
 What the rows marked "in code" mean for each kind of delete is set out under
 [What a Delete Removes](#what-a-delete-removes).
@@ -1506,8 +1668,9 @@ of about zero.
 - **Indexes are named `idx_<table>_<column>`**, and an index on two columns
   `idx_<table>_<first>_<second>`. Migration 0053 added 39, one for every foreign key column
   that led no index (card 2106); 0056 created `idx_webhooks_set_by` with its column, 0059
-  `idx_setting_setters_user_id` with its table (card 2397), and 0060 `idx_cards_committed_by`
-  and `idx_cards_discarded_by` with their columns (milestone 22).
+  `idx_setting_setters_user_id` with its table (card 2397), 0060 `idx_cards_committed_by`
+  and `idx_cards_discarded_by` with their columns (milestone 22), and 0061 the 35 indexes of
+  the decision records with their tables and `boards.product_owner_user_id` (card 2673).
   `tests/migrations.test.ts` fails on a foreign key column
   that leads no index, in the model, on a new database and on the production fixture taken
   through the runner, and names it.
@@ -1654,6 +1817,72 @@ of about zero.
   `upstream.ts`, `(col.role IS 'options' OR b.kind IS 'ideas')`: `IS`, never `=`, so that the
   negation keeps every ordinary column whose role is NULL. One Options column a board is
   checked in the write's immediate transaction, not by a partial unique index.
+- **Decision records and a board's Product Owner** (card 2673, milestone 35, migration
+  `0061_add_decision_records.sql`, 2026-11-03). Twelve tables and one column, the model of
+  `docs/planning/card-2625-decision-records.md` section 4.3 as settled by
+  `docs/planning/card-2673-decision-model.md`. Every id is `INTEGER PRIMARY KEY
+  AUTOINCREMENT`; every moment is a TEXT `*_at` (23 of them); booleans are integers; status,
+  kind, role, `via` and `source` are free text checked in code. No `CHECK`, no trigger and no
+  `COLLATE`, which the start-up check cannot see. Every `created_at` and `updated_at` is
+  `NOT NULL DEFAULT (datetime('now'))`.
+  - `boards.product_owner_user_id`, integer, nullable, `REFERENCES users(id) ON DELETE SET
+    NULL`, with `idx_boards_product_owner_user_id`. NULL on every board until someone sets it.
+    `updateBoard` (`src/lib/server/boards.ts`) takes it as `productOwnerUserId`: null, or an
+    account that `canEditBoard` accepts with the role read from its own row (a reader of a
+    public board is refused, 400). A change is the board's owner's or an administrator's
+    (403); both checks run only when the value changes, so a board read with GET can be sent
+    back whole after its Product Owner has lost access. No `CHECK` and no self-reference, as
+    `boards` is a reconciled table.
+  - `people`: `full_name`, `email` (`NOT NULL`, `people_email_unique`, stored lower-case by
+    the code), `job_title` (`DEFAULT ''`), `user_id` (SET NULL, unique index
+    `idx_people_user_id`), `status` (`DEFAULT 'active'`, or `'left'`), `left_at`,
+    `created_by` (SET NULL), `created_at`, `updated_at`.
+  - `people_groups`: `name` (`people_groups_name_unique`), `description` (`DEFAULT ''`),
+    `created_at`. `people_group_members`: `PRIMARY KEY(group_id, person_id)`, both CASCADE,
+    `idx_people_group_members_person_id`.
+  - `decisions`: `board_id` (SET NULL), `board_name`, `title`, `status` (`DEFAULT 'draft'`),
+    `vote_mode` (`DEFAULT 'single'`), `working_content` (JSON, `DEFAULT '{}'`),
+    `current_version` (`DEFAULT 0`), `author_user_id` and `author_name`, `decider_user_id` and
+    `decider_name`, `closes_at`, `opened_at`, `closed_at`, `ruled_at`, `withdrawn_at`,
+    `withdrawn_reason`, `supersedes_id` (self, SET NULL, no `UNIQUE`), `results_released_at`
+    and `results_released_by`, `created_at`, `updated_at`.
+  - `decision_options`: `decision_id` (CASCADE), `label`, `position` (REAL `NOT NULL`, no
+    default), `added_in_version`, `retired_in_version`.
+  - `decision_versions`: `decision_id` (CASCADE) and `number`, unique together
+    (`idx_decision_versions_decision_id_number`), `content` (JSON snapshot), `change_note`,
+    `asks_again` (`NOT NULL`, no default), `published_by` (SET NULL), `published_by_name`,
+    `published_at` (`NOT NULL`).
+  - `decision_participants`: `decision_id` (CASCADE), `person_id` (SET NULL), `role`, and the
+    snapshots `name`, `email`, `job_title` and `groups` (JSON of names), all `NOT NULL`;
+    `included_at` (`NOT NULL`), `included_by` and `included_by_name`, `removed_at`,
+    `removed_by`, `user_id` (a snapshot of `people.user_id` at inclusion, never made to follow
+    the person; SET NULL to `users`, `idx_decision_participants_user_id`), `link_token_hash`
+    (unique index, NULLs not compared), `link_issued_at`. No `UNIQUE(decision_id, person_id)`:
+    re-adding someone reuses the row.
+  - `decision_responses`: `decision_id` (CASCADE), `participant_id` (`NOT NULL`, NO ACTION),
+    `version_number`, `round`, `kind`, `option_id` (NO ACTION), `scores`, `comment`,
+    `option_comments`, `replaces_id` (self, SET NULL), `via`, `created_at`.
+  - `decision_questions`: `decision_id` (CASCADE), `participant_id` (NO ACTION), `asker_name`,
+    `question`, `asked_in_version`, `via` and `asked_at` (all `NOT NULL`), `answer`,
+    `answered_by` (SET NULL), `answered_by_name`, `answered_at`, `answer_agent_drafted`
+    (`DEFAULT false`), `answer_reviewed_by` (SET NULL), `answer_reviewed_at`.
+  - `decision_rulings`: `decision_id` the primary key (CASCADE), `option_id` (NO ACTION; NULL
+    is "none of these"), `reason`, `conditions`, `against_responses` and `early` (`NOT NULL`,
+    no default), `version_number`, `ruled_by` (SET NULL), `ruled_by_name`, `ruled_at`.
+  - `decision_events`: `decision_id` (CASCADE) with `idx_decision_events_decision_id_created_at`
+    on (`decision_id`, `created_at`), `participant_id` (NO ACTION), `kind`, `version_number`,
+    `detail` (JSON), `actor_user_id` (SET NULL), `actor_name`, `source`, `created_at`.
+  - `decision_card_links`: `PRIMARY KEY(decision_id, card_id)`, both CASCADE, `relation`
+    (`DEFAULT 'relates'`), `created_by` (SET NULL), `created_at`, and
+    `idx_decision_card_links_card_id`.
+
+  The six NO ACTION keys are decision 2 of the card's plan: a deleted option would otherwise
+  turn a ruling for it into a ruling for none of them, and a deleted participant would orphan
+  the record. After a decision opens, participants are only marked removed and options only
+  retired. `decision_versions`, `decision_responses`, `decision_rulings` and `decision_events`
+  are insert-only in code alone. 0061 changes no row and declares nothing to the rehearsal;
+  a backup from before it restores with the twelve tables empty and every Product Owner NULL.
+  Backup, restore, reset and the timestamp upkeep find the tables for themselves.
 - **No secret is in a backup's copy** (card 2169): no `smtp_pass` row, every secret field of
   `backup_config`'s destinations `''`, and every `webhooks.secret` `''` with the webhook's
   `active` 0. The `webhook_secrets_left_out` row of `settings` lists, as a JSON array of
