@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.56
+version: 1.57
 status: As-Built
 date: 2026-11-03
 tags:
@@ -277,6 +277,32 @@ flowchart LR
 A board page listens to the board it shows. Following a sub-board, a breadcrumb or a link in a card's window to another board, or going Back or Forward to one, opens that board's page afresh, listening to that board: no selection, open panel, search or filter is carried over from the board left. Until 14 October 2026 the page went on listening to the first board, so the second showed nothing done by others until it was reloaded.
 
 A page left open while DumpFire is updated to a new version says so within about a minute, in a bar across the foot of the window: "DumpFire has been updated. Save anything you are editing, then reload to use the new version." It never reloads by itself, so nothing typed is lost; **Reload** loads the new version, and so does the next page opened from it.
+
+### Decisions
+
+A decision record puts a question to the people it affects: what the situation is, what is asked, the options with their pros, cons and commercial notes, and who is consulted and who is only told (card 2676, from 3 November 2026). This first part is drafting. Opening a decision, which mails its participants, comes with a later card, so for now nobody is told anything.
+
+- **Where they are** — on a board, **More → Go to → Decisions** lists the board's decisions, newest first, with each one's status, decider, closing time and last change, in UTC. Anyone who can open the board sees every decision that has been opened; a draft is seen only by its author, its decider, the board's owners and administrators. A title is a link to its editor where you may edit it
+- **Making a draft** — **New decision**, for anyone who can edit the board, asks for a title and opens the editor. The decider starts as the board's Product Owner while they can edit the board, and as you otherwise
+- **The editor** — the sections in the order participants will read them: situation, question, what is asked, the options, how it affects each group, user stories, what is not yet known, what is already settled and technical detail. Options are cards you can add, remove and move left or right; each is given a letter (A, B, C…) when it is first saved, and a letter is never used twice on one decision, even for an option removed before anyone saw it. Beside them: the closing time (in UTC), whether people choose one option or score each from 0 to 5, the decider, the participants and the readability check. **Save** sends everything at once, and an "Unsaved changes" marker shows until you do
+- **Once opened** — the title, closing time and vote mode are fixed (the closing time is moved by Extend, later); the text can still be edited, and participants see only what is published
+- **Text an agent drafted** — a section written through the API carries "Drafted by an agent and not yet reviewed by a person" until its author or decider presses **Mark reviewed** (or **Mark all reviewed**). Editing it does not remove the label: a person has to say they have read it, and who did and when is kept with the decision
+- **The decider** — chosen from the people who can edit the board, the Product Owner marked "(Product Owner)". The author, the board's owners and administrators can change it; a decider who is none of those sees it without a list
+- **The participants** — search the people directory by name, job title or group, tick a group to tick its active members as Consulted, and switch anyone to Informed. A group with some of its members ticked shows as mixed; one with no active members cannot be ticked. Nobody's email address is shown, except to an administrator. Once a decision is open, saving asks first ("3 people will be mailed now; 1 will be marked removed"), and only its author and decider can include people
+- **Someone who has left** — a participant who has left since they were added is flagged "has left: remove before saving", and Save is refused, naming them, until you untick them. Someone deleted from the directory is flagged "no longer in the people directory: saving takes them off". Nobody is ever taken off without being shown
+- **The readability check** — lists what stops the decision being opened (no decider, no closing time in the future, fewer than two options, nobody consulted, someone who has left, mail not set up, and the like), and warnings worth a look first (an empty question, an option with no cons or no commercial note, a section an agent drafted). The warnings follow your edits before you save them
+- **Two people at once** — if someone else saved the decision after you opened it, your save is refused with "This decision was changed since you opened it", your edits kept, and **Reload** shows theirs. Any other refusal says why in its own words and keeps your edits, with no Reload to throw them away
+
+```mermaid
+flowchart LR
+    Board["A board: More → Decisions"] --> List["The board's decisions"]
+    List -->|"New decision"| Editor["The editor"]
+    List -->|"a title"| Editor
+    Editor --> Save["Save: text, options,<br/>closing time, vote mode"]
+    Editor --> People["Participants: Save participants"]
+    Editor --> Check["Readability check"]
+    Check -.->|"a later card"| Open["Open: participants are mailed"]
+```
 
 ---
 

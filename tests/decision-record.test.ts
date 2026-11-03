@@ -427,6 +427,9 @@ describe('the shown status (E10)', () => {
 		expect(TRANSITIONS).toEqual({
 			edit: ['draft', 'open', 'closed'],
 			setDecider: ['draft', 'open', 'closed'],
+			// Card 2676 (R3, decision 9).
+			include: ['open', 'closed'],
+			review: ['draft', 'open', 'closed'],
 			open: ['draft'],
 			republish: ['open', 'closed'],
 			close: ['open'],

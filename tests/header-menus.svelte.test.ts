@@ -1215,7 +1215,9 @@ describe('the code review of card 2466', () => {
 	it('names each section of the board’s More and of Filter by its heading, as a group', async () => {
 		const more = drawBoardMoreMenu(true, true);
 		let menu = await openByClick(more.target.querySelector<HTMLButtonElement>('.more-menu-trigger')!, 'More');
-		expect(itemsOf(groupNamed(menu, 'Go to')).map(textOf)).toEqual(['Planning', 'All To Do']);
+		// Card 2676 (its plan's case 30): the board's Decisions joins Go to, for this board.
+		expect(itemsOf(groupNamed(menu, 'Go to')).map(textOf)).toEqual(['Planning', 'All To Do', 'Decisions']);
+		expect(itemNamed(menu, 'Decisions').getAttribute('href')).toBe('/board/7/decisions');
 		expect(itemsOf(groupNamed(menu, 'Panels')).map(textOf)).toEqual(['📋 Activity Log', '📊 Statistics', '🗄️ Archived Cards']);
 		expect(itemsOf(groupNamed(menu, 'Board')).map(textOf)).toEqual([
 			'Add Column',

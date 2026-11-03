@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.81
+version: 1.82
 status: As-Built
 date: 2026-11-03
 tags:
@@ -416,15 +416,30 @@ Each board can have a Product Owner (card 2673): the account that decides its de
 
 Through the API, it is `productOwnerUserId` on `PUT /api/v1/boards/{boardId}`: see the [API Reference](api-reference.md).
 
-### Decisions (no page yet)
+### Decisions
 
-The server side of decisions is built (card 2675), and **there is no page or route for them yet**: nobody can make, open or mail a decision until later cards of milestone 35 add them. What an administrator will be able to do, once a page offers it:
+**Where drafts are made** (card 2676). On a board, **More → Go to → Decisions** opens the board's decisions (`/board/<id>/decisions`): every decision that is not a draft, to anyone who can open the board, and each draft to its author, its decider, the board's owners and administrators. Anyone who can edit the board has **New decision**, which asks for a title and opens the new draft's editor (`/decisions/<id>/edit`). Its decider starts as the board's Product Owner, while they can edit the board, and as its author otherwise. Opening a decision, and so mailing anyone about it, comes with a later card of milestone 35: until then a draft is seen only by those listed above.
 
-- **View, edit, change the decider and withdraw** any decision, a draft included, and **delete** a draft or a withdrawn one; a decision that is open, closed or ruled cannot be deleted. An administrator cannot open, re-publish, close or extend one: those are its author's and decider's, and each can do them, the decider's ruling included, only while they can edit the decision's board (card 2675's code review). Nobody can make themselves the decider of a decision that is already open.
+**What an administrator sees in the editor.** Like the author, the decider and the board's owners, an administrator can open any decision's editor, a draft included, and edit its text, options, closing time and vote mode, change its decider, and save its participants while it is a draft. Only an administrator is given the participants' and the directory's email addresses: the people picker shows you each person's address, and searches it, where everyone else sees names, job titles and groups alone. The picker lists active people only, for you too. If you name someone who has left you are told who it was (`Pat Doe (person 12) has left, and cannot be included`), and an id that is no person is `personId 12 is not a person`; anyone else is told only `personId 12 cannot be included` for either. Two things are not an administrator's, even in the editor: **Mark reviewed** on text an agent drafted, which is the author's and the decider's, and including people on a decision that has been opened, which mails them. A participant who has left since they were added is flagged "has left: remove before saving" to every editor, and Save is refused until they are unticked.
+
+What an administrator will also be able to do, once a later card offers it on a page:
+
+- **Withdraw** any decision, and **delete** a draft or a withdrawn one; a decision that is open, closed or ruled cannot be deleted. An administrator cannot open, re-publish, close or extend one: those are its author's and decider's, and each can do them, the decider's ruling included, only while they can edit the decision's board (card 2675's code review). Nobody can make themselves the decider of a decision that is already open.
 - **Attach a participant's account**, when a person on a decision has gained an account since: the participant then signs in to it, and their personal link is cancelled. Or **clear it**, which lets them be reached by a personal link again.
 - **Change a participant's address**, when their address in the directory has changed: it cancels their personal link and sends nothing; sending them the decision again is a separate step. Until then they are not mailed, with an account or without one: a decision's mail goes only to the address it holds, while that is still the person's address in the directory.
 
 Each is recorded on the decision under your name.
+
+```mermaid
+flowchart LR
+    Board["Board: More → Decisions"] --> List["/board/&lt;id&gt;/decisions"]
+    List -->|"New decision (board editors)"| Draft["A draft"]
+    List -->|"a title you may edit"| Editor["/decisions/&lt;id&gt;/edit"]
+    Draft --> Editor
+    Editor --> Picker["People picker:<br/>addresses shown to administrators alone"]
+    Editor --> Ready["Readability check:<br/>what stops opening, and warnings"]
+    Editor -.->|"a later card"| Open["Open, re-publish, close,<br/>withdraw, delete"]
+```
 
 **What the directory and a restore do to personal links.** Mark left, linking or unlinking an account, a new address and **Delete** in the people directory each cancel the person's personal decision links ([above](#linking-a-person-to-an-account)), and so does deleting the account a person is linked to, which marks them Left ([Deleting a User](#deleting-a-user)). An **Import Backup** cancels every personal decision link there is ([Restoring from Backup](#restoring-from-backup)). Each cancelled link is recorded on its decision. Until decisions can be opened there are none to cancel.
 

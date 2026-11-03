@@ -261,11 +261,12 @@ export function linkBaseUrl(url?: URL, isDev: boolean = dev): string | null {
 	return null;
 }
 
-/** What a request is refused with when the link it would mail cannot be made. */
-export const NO_LINK_ADDRESS =
-	'This server has no address configured to make the link from, so nothing was sent and nothing was saved. ' +
-	'An administrator sets it as the App URL on the admin page, under Application Settings; or the server is ' +
-	'started with ORIGIN set to its public address';
+/**
+ * What a request is refused with when the link it would mail cannot be made.
+ * It lives in `$lib/mail-words`, which the browser may load too (card 2676,
+ * F7), and is re-exported here so that its importers are unchanged.
+ */
+export { NO_LINK_ADDRESS } from '$lib/mail-words';
 
 // ─── Transporter ─────────────────────────────────────────────────────────────
 

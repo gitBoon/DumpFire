@@ -168,6 +168,9 @@ describe('DECISION_RULES', () => {
 			view: ['admin', 'author', 'decider', 'boardOwner', 'boardEditor', 'boardReader', 'participant'],
 			edit: ['admin', 'author', 'decider', 'boardOwner'],
 			setDecider: ['admin', 'author', 'boardOwner'],
+			// Card 2676 (R3, decision 9).
+			include: ['author', 'decider'],
+			review: ['author', 'decider'],
 			open: ['author', 'decider'],
 			republish: ['author', 'decider'],
 			close: ['author', 'decider'],

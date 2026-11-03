@@ -107,6 +107,18 @@ function sign(payload: string): string {
 	return createHmac('sha256', formSecret()).update(payload).digest('hex');
 }
 
+/**
+ * A key of this server's own for one other purpose, derived from the form's
+ * key and never stored: HMAC-SHA256(the form's key, `purpose`). A purpose is
+ * fixed text naming its use (card 2676, the code review's C2: a decision's
+ * revision), so that no key derived here is the form's, or another
+ * purpose's. It changes with the form's key: after a Reset or an import
+ * every value made with it is new.
+ */
+export function purposeKey(purpose: string): Buffer {
+	return createHmac('sha256', formSecret()).update(purpose).digest();
+}
+
 /** A token for a form rendered now. `<expiry>.<nonce>.<signature>`. */
 export function issueFormToken(now: number = Date.now()): string {
 	const payload = `${now + FORM_TOKEN_TTL_MS}.${randomBytes(8).toString('hex')}`;

@@ -2939,6 +2939,9 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 					'createDecision',
 					'setDecider',
 					'setParticipants',
+					// Card 2676: the working copy saved, and agent-drafted text marked reviewed.
+					'updateDraft',
+					'markReviewed',
 					'openDecision',
 					'republishDecision',
 					'closeDecision',

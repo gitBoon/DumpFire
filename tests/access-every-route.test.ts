@@ -121,6 +121,7 @@ import { linkableBoards, tooDeepToLink } from '$lib/server/sub-boards';
 import { recentActivityFor } from '$lib/server/list-access';
 import { WITHHELD_BOARD_NAME, WITHHELD_CARD_TITLE, WITHHELD_SUBTASK_TITLE } from '$lib/server/planning';
 import { api, routeMethods, routePatterns, serverFilesNotServed, type ApiResult } from './helpers/api';
+import { revisionNow } from './helpers/decision-faults';
 import { effects, type Effects } from './helpers/effects';
 import {
 	addBoardMember,
@@ -130,9 +131,12 @@ import {
 	makeBoard,
 	makeCard,
 	makeComment,
+	makeDecision,
 	makeDependency,
 	makeLabel,
 	makeMilestone,
+	makeParticipant,
+	makePerson,
 	makeSession,
 	makeSmtp,
 	makeSubBoard,
@@ -755,6 +759,40 @@ const aPersonInAGroup = (): void => {
 	peopleGroupId = db.insert(peopleGroups).values({ name: 'Finance' }).returning().get().id;
 	db.insert(peopleGroupMembers).values({ groupId: peopleGroupId, personId }).run();
 };
+
+/**
+ * A decision on board A whose author and decider are `editor`, for the routes
+ * whose path names one (card 2676, decision 27), with a person of the
+ * directory to name: a draft (`aDraftOfEditor`), or an open one on which that
+ * person is already consulted (`anOpenDecisionOfEditor`), for including
+ * people once it is open. Each test of those cases runs one before its
+ * request. Each request sends the decision's revision as it is then, as a
+ * page that has just read it holds it; in the world of nothing the shape of a
+ * request is read from, there is none.
+ */
+let decisionId: number | undefined;
+let decisionPersonId: number | undefined;
+const aDraftOfEditor = (w: World): void => {
+	decisionId = makeDecision({ board: w.A.board, author: w.editor, decider: w.editor, title: `${MARK} draft decision` }).id;
+	decisionPersonId = makePerson({ fullName: 'Pat Doe' }).id;
+};
+const anOpenDecisionOfEditor = (w: World): void => {
+	const decision = makeDecision({
+		board: w.A.board,
+		author: w.editor,
+		decider: w.editor,
+		title: `${MARK} open decision`,
+		status: 'open',
+		closesAt: '2099-01-01 12:00:00',
+		currentVersion: 1,
+		openedAt: '2026-11-01 09:00:00'
+	});
+	const person = makePerson({ fullName: 'Pat Doe' });
+	makeParticipant(decision, { person, role: 'consulted' });
+	decisionId = decision.id;
+	decisionPersonId = person.id;
+};
+const revisionOfTheDecision = (): string => (decisionId === undefined ? '' : revisionNow(decisionId));
 
 /**
  * Board B made an ideas board, so that its cards are options, which a Send
@@ -1501,6 +1539,50 @@ const TABLE: Record<string, Case | Case[]> = {
 	'PUT /api/people-groups/[id]/members': admin(() => json(`/api/people-groups/${peopleGroupId}/members`, { personIds: [] }), {
 		setup: aPersonInAGroup
 	}),
+
+	// ── Drafting a decision (card 2676, decision 27) ──────────────────────
+	// `own`: the decision is `editor`'s, its author and decider. `notMine` is
+	// every other caller the action refuses, and never one it lets in: a board
+	// owner may edit a decision on their board and name its decider, and so is
+	// left out of those; an administrator may edit and delete any.
+	'POST /api/boards/[id]/decisions': edit((w) => json(`/api/boards/${w.A.board.id}/decisions`, { title: `${MARK} decision` })),
+	'PUT /api/decisions/[id]': own(
+		'editor',
+		['outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'],
+		() => json(`/api/decisions/${decisionId}`, { revision: revisionOfTheDecision(), title: 'Renamed' }),
+		{ setup: aDraftOfEditor }
+	),
+	'DELETE /api/decisions/[id]': own('editor', ['owner', 'outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'], () => `/api/decisions/${decisionId}`, {
+		setup: aDraftOfEditor
+	}),
+	'PUT /api/decisions/[id]/decider': own(
+		'editor',
+		['outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'],
+		(w) => json(`/api/decisions/${decisionId}/decider`, { deciderUserId: w.both.id, revision: revisionOfTheDecision() }),
+		{ setup: aDraftOfEditor }
+	),
+	'PUT /api/decisions/[id]/participants': [
+		own(
+			'editor',
+			['outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'],
+			() => json(`/api/decisions/${decisionId}/participants`, { participants: [{ personId: decisionPersonId, role: 'consulted' }], revision: revisionOfTheDecision() }),
+			{ setup: aDraftOfEditor }
+		),
+		// Including people once a decision is open mails them: its author's and its decider's alone (R3).
+		own(
+			'editor',
+			['owner', 'admin', 'chief', 'outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'],
+			() => json(`/api/decisions/${decisionId}/participants`, { participants: [{ personId: decisionPersonId, role: 'informed' }], revision: revisionOfTheDecision() }),
+			{ of: 'include: on an open decision', setup: anOpenDecisionOfEditor }
+		)
+	],
+	// Marking agent-drafted text reviewed is the accountable people's act (decision 9).
+	'POST /api/decisions/[id]/reviewed': own(
+		'editor',
+		['owner', 'admin', 'chief', 'outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'],
+		() => json(`/api/decisions/${decisionId}/reviewed`, { sections: 'all', revision: revisionOfTheDecision() }),
+		{ setup: aDraftOfEditor }
+	),
 
 	// ── The documented API ────────────────────────────────────────────────
 	'GET /api/v1/openapi.json': open(() => '/api/v1/openapi.json'),
@@ -4689,8 +4771,23 @@ describe('every page load, to a caller who cannot open a board (card 2130)', () 
 	 */
 	let hidden: { board: Board; cols: Record<string, Column>; cards: Card[] };
 
+	/**
+	 * The decisions the board's decision list and the editor are asked of (card
+	 * 2676, plan D9): an open one on board A, with a participant at an
+	 * example.test address; an open one on board B; and a draft on board A by
+	 * `editor` whose title holds `MARK_B`, so that `viewer`, who can open board
+	 * A, is caught if it is shown to them.
+	 */
+	let decisionIds: { openA: number; openB: number; draftA: number };
+
 	beforeEach(() => {
 		hidden = makeSubBoard(w.A.card, { owner: w.outsider, name: `${MARK_B} sub-board of board A's card` });
+		const opened = { status: 'open', closesAt: '2099-01-01 12:00:00', currentVersion: 1, openedAt: '2026-11-01 09:00:00' };
+		const openA = makeDecision({ board: w.A.board, author: w.editor, decider: w.editor, title: `${MARK} open decision`, ...opened });
+		makeParticipant(openA, { person: makePerson({ fullName: 'Pat Page', email: 'pat.page@example.test' }), role: 'consulted' });
+		const openB = makeDecision({ board: w.B.board, author: w.outsider, decider: w.outsider, title: `${MARK_B} open decision`, ...opened });
+		const draftA = makeDecision({ board: w.A.board, author: w.editor, decider: w.editor, title: `${MARK_B} draft of board A` });
+		decisionIds = { openA: openA.id, openB: openB.id, draftA: draftA.id };
 		db.update(cards).set({ title: `${MARK_B} card on the sub-board` }).where(eq(cards.id, hidden.cards[0].id)).run();
 		db.insert(tokenUsage).values({ cardId: hidden.cards[0].id, tokens: 7000, model: 'claude-opus-5-5', reportedByUserId: w.outsider.id }).run();
 		// The card of board A that is still assigned to `outsider`, due next
@@ -4718,7 +4815,10 @@ describe('every page load, to a caller who cannot open a board (card 2130)', () 
 		'page /archived': { paths: () => ['/archived'] },
 		'page /audit': { paths: () => ['/audit'] },
 		'page /board/[id]': { paths: (w) => [w.A.board.id, w.B.board.id, hidden.board.id].map((id) => `/board/${id}`) },
+		// A board's decisions and a decision's editor (card 2676, D9), on the decisions above.
+		'page /board/[id]/decisions': { paths: (w) => [w.A.board.id, w.B.board.id, hidden.board.id].map((id) => `/board/${id}/decisions`) },
 		'page /burndown': { paths: (w) => ['/burndown', `/burndown?boardCategoryId=${w.groupingOfA.id}`] },
+		'page /decisions/[id]/edit': { paths: () => [decisionIds.openA, decisionIds.openB, decisionIds.draftA].map((id) => `/decisions/${id}/edit`) },
 		'page /graph': { none: "gives the caller's own account: the graph is drawn from GET /api/graph, which the table asks" },
 		'page /inbox': { paths: () => ['/inbox'] },
 		'page /invite/[token]': { none: "gives the name of the account an invite is for, to the holder of the invite's link" },
@@ -4772,6 +4872,14 @@ describe('every page load, to a caller who cannot open a board (card 2130)', () 
 		const asAdmin = JSON.stringify(await pageData('/', 'admin'));
 		expect(asAdmin).toContain(MARK);
 		expect(asAdmin).toContain(MARK_B);
+		// The decisions the sweep is asked of reach the pages (card 2676, D9): a viewer
+		// of board A is listed its open decision and not the draft, its author is
+		// given the draft, and an administrator the participant's address.
+		const listed = JSON.stringify(await pageData(`/board/${w.A.board.id}/decisions`, 'viewer'));
+		expect(listed).toContain(`${MARK} open decision`);
+		expect(listed).not.toContain(MARK_B);
+		expect(JSON.stringify(await pageData(`/board/${w.A.board.id}/decisions`, 'editor'))).toContain(`${MARK_B} draft of board A`);
+		expect(JSON.stringify(await pageData(`/decisions/${decisionIds.openA}/edit`, 'admin'))).toContain('pat.page@example.test');
 	});
 
 	describe('the sub-board, where its card is shown', () => {

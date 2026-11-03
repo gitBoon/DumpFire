@@ -21,7 +21,6 @@ import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
 import type { SessionUser } from '$lib/server/auth';
 import {
-	boardMembers,
 	boards,
 	decisionOptions,
 	decisionParticipants,
@@ -60,6 +59,7 @@ import { requireDecision } from '$lib/server/route-guards';
 import { parseStamp, stamp } from '$lib/timestamps';
 import { writeAs } from '$lib/server/write-as';
 import type { ServiceOptions } from '$lib/server/write-as';
+import { OPEN_FAULTS, readyDraft as readyDraftOn, revisionNow } from './helpers/decision-faults';
 import { effects, type Effects, type OfferedMail } from './helpers/effects';
 import { readBudget } from './helpers/reads';
 import {
@@ -226,7 +226,7 @@ describe('setDecider', () => {
 		addBoardMember(board, editor, 'editor');
 		const draft = makeDecision({ board, author: owner, decider: owner });
 
-		const row = as(owner, (caller) => setDecider(caller, { decisionId: draft.id }, { deciderUserId: editor.id }, UI));
+		const row = as(owner, (caller) => setDecider(caller, { decisionId: draft.id }, { deciderUserId: editor.id, revision: revisionNow(draft.id) }, UI));
 
 		expect(row).toMatchObject({ deciderUserId: editor.id, deciderName: 'ed' });
 		expect(decisionRow(draft.id)).toMatchObject({ deciderUserId: editor.id, deciderName: 'ed' });
@@ -245,7 +245,7 @@ describe('setDecider', () => {
 		addBoardMember(board, reader, 'viewer');
 		const draft = makeDecision({ board, author: owner, decider: owner });
 
-		expect(outcome(() => as(owner, (caller) => setDecider(caller, { decisionId: draft.id }, { deciderUserId: reader.id }, UI)))).toEqual({
+		expect(outcome(() => as(owner, (caller) => setDecider(caller, { decisionId: draft.id }, { deciderUserId: reader.id, revision: revisionNow(draft.id) }, UI)))).toEqual({
 			status: 400,
 			message: `deciderUserId ${reader.id} cannot edit this board: a decision's decider must be an account that can edit its board`
 		});
@@ -253,7 +253,9 @@ describe('setDecider', () => {
 		expect(eventsOf(draft.id)).toEqual([]);
 
 		const boardless = makeDecision({ board: null, author: owner, decider: owner });
-		expect(outcome(() => as(owner, (caller) => setDecider(caller, { decisionId: boardless.id }, { deciderUserId: reader.id }, UI)))).toEqual({
+		expect(
+			outcome(() => as(owner, (caller) => setDecider(caller, { decisionId: boardless.id }, { deciderUserId: reader.id, revision: revisionNow(boardless.id) }, UI)))
+		).toEqual({
 			status: 409,
 			message: "This decision's board has been deleted: its decider cannot be changed"
 		});
@@ -269,7 +271,7 @@ describe('setDecider', () => {
 		const open = makeDecision({ board, author, decider, status: 'open', closesAt: FUTURE });
 
 		for (const who of [author, admin]) {
-			expect(outcome(() => as(who, (caller) => setDecider(caller, { decisionId: open.id }, { deciderUserId: who.id }, UI)))).toEqual({
+			expect(outcome(() => as(who, (caller) => setDecider(caller, { decisionId: open.id }, { deciderUserId: who.id, revision: revisionNow(open.id) }, UI)))).toEqual({
 				status: 403,
 				message: 'You cannot make yourself the decider of a decision that is open'
 			});
@@ -278,7 +280,7 @@ describe('setDecider', () => {
 		expect(eventsOf(open.id)).toEqual([]);
 
 		const draft = makeDecision({ board, author, decider });
-		as(author, (caller) => setDecider(caller, { decisionId: draft.id }, { deciderUserId: author.id }, UI));
+		as(author, (caller) => setDecider(caller, { decisionId: draft.id }, { deciderUserId: author.id, revision: revisionNow(draft.id) }, UI));
 		expect(decisionRow(draft.id)).toMatchObject({ deciderUserId: author.id, deciderName: 'author' });
 	});
 });
@@ -297,7 +299,12 @@ describe('setParticipants on a draft', () => {
 		const draft = makeDecision({ board, author: owner, decider: owner });
 
 		const rows = as(owner, (caller) =>
-			setParticipants(caller, { decisionId: draft.id }, { participants: [{ personId: ana.id, role: 'consulted' }, { personId: bo.id, role: 'informed' }] }, UI)
+			setParticipants(
+				caller,
+				{ decisionId: draft.id },
+				{ participants: [{ personId: ana.id, role: 'consulted' }, { personId: bo.id, role: 'informed' }], revision: revisionNow(draft.id) },
+				UI
+			)
 		);
 
 		expect(rows).toEqual([
@@ -319,7 +326,9 @@ describe('setParticipants on a draft', () => {
 		expect(participantRows(draft.id)).toEqual(rows);
 
 		// (27) Set again: Ana left out, Bo now consulted.
-		const again = as(owner, (caller) => setParticipants(caller, { decisionId: draft.id }, { participants: [{ personId: bo.id, role: 'consulted' }] }, UI));
+		const again = as(owner, (caller) =>
+			setParticipants(caller, { decisionId: draft.id }, { participants: [{ personId: bo.id, role: 'consulted' }], revision: revisionNow(draft.id) }, UI)
+		);
 		expect(again).toEqual([expect.objectContaining({ id: rows[1].id, personId: bo.id, role: 'consulted' })]);
 		expect(participantRows(draft.id)).toHaveLength(1);
 
@@ -328,13 +337,20 @@ describe('setParticipants on a draft', () => {
 		expect(sent.all).toEqual([]);
 	});
 
-	it('refuses a person who has left, 400 naming them, with nothing written (28)', () => {
+	// Card 2676, R6: the board owner calling is no administrator, so neither refusal names whoever the id belongs to.
+	it('refuses a person who has left, 400 naming only the id, with nothing written (28)', () => {
 		const gone = makePerson({ fullName: 'Gone', status: 'left' });
 		const draft = makeDecision({ board, author: owner, decider: owner });
 
-		expect(outcome(() => as(owner, (caller) => setParticipants(caller, { decisionId: draft.id }, { participants: [{ personId: gone.id, role: 'consulted' }] }, UI)))).toEqual({
+		expect(
+			outcome(() =>
+				as(owner, (caller) =>
+					setParticipants(caller, { decisionId: draft.id }, { participants: [{ personId: gone.id, role: 'consulted' }], revision: revisionNow(draft.id) }, UI)
+				)
+			)
+		).toEqual({
 			status: 400,
-			message: `Gone (person ${gone.id}) has left, and cannot be included`
+			message: `personId ${gone.id} cannot be included`
 		});
 		expect(count('decision_participants')).toBe(0);
 	});
@@ -342,9 +358,15 @@ describe('setParticipants on a draft', () => {
 	it('refuses an id that is no person, 400 naming it (29)', () => {
 		const draft = makeDecision({ board, author: owner, decider: owner });
 
-		expect(outcome(() => as(owner, (caller) => setParticipants(caller, { decisionId: draft.id }, { participants: [{ personId: 9999, role: 'consulted' }] }, UI)))).toEqual({
+		expect(
+			outcome(() =>
+				as(owner, (caller) =>
+					setParticipants(caller, { decisionId: draft.id }, { participants: [{ personId: 9999, role: 'consulted' }], revision: revisionNow(draft.id) }, UI)
+				)
+			)
+		).toEqual({
 			status: 400,
-			message: 'personId 9999 is not a person'
+			message: 'personId 9999 cannot be included'
 		});
 		expect(count('decision_participants')).toBe(0);
 	});
@@ -352,7 +374,7 @@ describe('setParticipants on a draft', () => {
 
 describe('setParticipants on an open decision', () => {
 	const set = (decision: Decision, participants: { personId: number; role: string }[]) =>
-		as(owner, (caller) => setParticipants(caller, { decisionId: decision.id }, { participants }, UI));
+		as(owner, (caller) => setParticipants(caller, { decisionId: decision.id }, { participants, revision: revisionNow(decision.id) }, UI));
 
 	it('includes a person added, issues their link and invites them; leaves out one marked removed; brings them back on the same row (30, 31, 32)', async () => {
 		const decision = makeDecision({ board, author: owner, decider: owner, status: 'open', closesAt: FUTURE, currentVersion: 1 });
@@ -420,36 +442,41 @@ describe('setParticipants on an open decision', () => {
 		await sent.settle();
 		expect(sent.emails).toEqual([]);
 	});
+
+	it("marks removed a live row whose person was deleted, which no body can name, and its account loses the participant role (card 2676's C1)", async () => {
+		const decision = makeDecision({ board, author: owner, decider: owner, status: 'open', closesAt: FUTURE, currentVersion: 1 });
+		const account = makeUser({ username: 'deleted-person' });
+		const gone = makePerson({ fullName: 'Gone Person', user: account });
+		const staying = makePerson({ fullName: 'Staying' });
+		const row = makeParticipant(decision, { person: gone, role: 'consulted', hadAccount: true, token: 'a-link-of-the-gone' });
+		const kept = makeParticipant(decision, { person: staying, role: 'informed', hadAccount: false });
+		expect(participantRow(row.id).userId).toBe(account.id);
+		expect(decisionAccess(account, decisionRow(decision.id))).toMatchObject({ participantId: row.id });
+		db.delete(people).where(eq(people.id, gone.id)).run();
+		expect(participantRow(row.id)).toMatchObject({ personId: null, removedAt: null, userId: account.id });
+		const before = eventsOf(decision.id).length;
+
+		set(decision, [{ personId: staying.id, role: 'informed' }]);
+
+		expect(participantRow(row.id)).toMatchObject({ removedBy: owner.id, linkTokenHash: null, linkIssuedAt: null });
+		expect(participantRow(row.id).removedAt).not.toBeNull();
+		expect(participantRow(kept.id).removedAt).toBeNull();
+		expect(eventsOf(decision.id).slice(before)).toEqual([
+			expect.objectContaining({ kind: 'removed', participantId: row.id, detail: null }),
+			expect.objectContaining({ kind: 'link_revoked', participantId: row.id, detail: { reason: 'removed' } })
+		]);
+		const access = decisionAccess(account, decisionRow(decision.id));
+		expect(access.roles.has('participant')).toBe(false);
+		expect(access.participantId).toBeNull();
+		await sent.settle();
+		expect(sent.emails).toEqual([]);
+	});
 });
 
 // ─── Opening (cases 34 to 46) ────────────────────────────────────────────────
 
-/** A draft that opens: a decider who can edit, a closing time ahead, two options, and two participants. */
-function readyDraft(title = 'Ready') {
-	const author = makeUser({ username: 'author' });
-	addBoardMember(board, author, 'editor');
-	const decider = makeUser({ username: 'decider' });
-	addBoardMember(board, decider, 'editor');
-	const draft = makeDecision({ board, author, decider, title, closesAt: FUTURE });
-	const lean = makeOption(draft, { label: 'A' });
-	const full = makeOption(draft, { label: 'B' });
-	const working = {
-		situation: 'Money is short.',
-		question: 'Which budget?',
-		ask: 'Pick the one you can live with.',
-		options: [
-			{ optionId: lean.id, title: 'Lean', summary: '', pros: [], cons: [], commercial: '' },
-			{ optionId: full.id, title: 'Full', summary: '', pros: [], cons: [], commercial: '' }
-		]
-	};
-	db.update(decisions).set({ workingContent: JSON.stringify(working) }).where(eq(decisions.id, draft.id)).run();
-	const holderAccount = makeUser({ username: 'holder' });
-	const holderPerson = makePerson({ fullName: 'Holder', user: holderAccount, jobTitle: 'Old title' });
-	const linkPerson = makePerson({ fullName: 'Linky', email: 'linky@example.test' });
-	const holder = makeParticipant(draft, { person: holderPerson, role: 'consulted' });
-	const linked = makeParticipant(draft, { person: linkPerson, role: 'informed' });
-	return { author, decider, draft: decisionRow(draft.id), lean, full, working, holderAccount, holderPerson, linkPerson, holder, linked };
-}
+/** A draft that opens, on `board` (`tests/helpers/decision-faults.ts`, moved there by card 2676). */
+const readyDraft = (title = 'Ready') => readyDraftOn({ board }, title);
 
 const open = (user: SessionUser, decision: Decision, opts: ServiceOptions = UI) => as(user, (caller) => openDecision(caller, { decisionId: decision.id }, null, opts));
 
@@ -526,34 +553,12 @@ describe('openDecision', () => {
 		expect(sent.duringTransaction).toEqual([]);
 	});
 
-	/** Each refusal of decision 20: what makes the draft refuse, and the words. */
-	const refusals: [string, (ready: ReturnType<typeof readyDraft>) => void, string | ((ready: ReturnType<typeof readyDraft>) => string)][] = [
-		['(a) no decider', (r) => db.update(decisions).set({ deciderUserId: null, deciderName: null }).where(eq(decisions.id, r.draft.id)).run(), 'This decision has no decider: it cannot be opened'],
-		[
-			'(b) a decider who can no longer edit',
-			(r) => db.delete(boardMembers).where(eq(boardMembers.userId, r.decider.id)).run(),
-			'The decider, decider, can no longer edit this board: it cannot be opened until a decider who can is named'
-		],
-		['(c) closes_at not in the future', (r) => db.update(decisions).set({ closesAt: '2020-01-01 00:00:00' }).where(eq(decisions.id, r.draft.id)).run(), 'This decision has no closing time in the future: it cannot be opened'],
-		['(d) one live option', (r) => db.delete(decisionOptions).where(eq(decisionOptions.id, r.full.id)).run(), 'This decision has fewer than two options: it cannot be opened'],
-		['(e) no consulted participant', (r) => db.update(decisionParticipants).set({ role: 'informed' }).where(eq(decisionParticipants.decisionId, r.draft.id)).run(), 'This decision has no consulted participant: it cannot be opened'],
-		[
-			'(f) a participant whose person has left',
-			(r) => db.update(people).set({ status: 'left', leftAt: '2026-11-02 09:00:00' }).where(eq(people.id, r.holderPerson.id)).run(),
-			'Holder has left: this decision cannot be opened until they are taken off it'
-		],
-		['(g) no mail host', () => db.delete(settings).where(eq(settings.key, 'smtp_host')).run(), 'Mail is not set up on this server: a decision cannot be opened, as its participants could not be told'],
-		[
-			'(h) no App URL and no ORIGIN, with a base URL handed in',
-			() => db.delete(settings).where(eq(settings.key, 'app_url')).run(),
-			'This server has no address configured to make the link from, so nothing was sent and nothing was saved. ' +
-				'An administrator sets it as the App URL on the admin page, under Application Settings; or the server is ' +
-				'started with ORIGIN set to its public address'
-		],
-		['(i) the board deleted', () => db.delete(boards).where(eq(boards.id, board.id)).run(), "This decision's board has been deleted: it cannot be opened"]
-	];
-
-	it.each(refusals)('refuses, 409 with nothing written or sent: %s (35-43)', async (_case, make, words) => {
+	/**
+	 * Each refusal of decision 20: what makes the draft refuse, and the words; the table is
+	 * `OPEN_FAULTS` in tests/helpers/decision-faults.ts, shared with card 2676's drift guard,
+	 * which added (j) and (k).
+	 */
+	it.each(OPEN_FAULTS)('refuses, 409 with nothing written or sent: %s (35-43)', async (_case, make, words) => {
 		const ready = readyDraft();
 		make(ready);
 		const env = { ORIGIN: process.env.ORIGIN, APP_URL: process.env.APP_URL };
@@ -564,7 +569,7 @@ describe('openDecision', () => {
 		try {
 			expect(outcome(() => open(ready.author, ready.draft, { source: 'ui', baseUrl: 'http://evil.example' }))).toEqual({
 				status: 409,
-				message: typeof words === 'string' ? words : words(ready)
+				message: words
 			});
 		} finally {
 			for (const [key, value] of Object.entries(env)) if (value !== undefined) process.env[key] = value;
@@ -1385,11 +1390,30 @@ describe('the rules that hold after opening', () => {
 		const admin = makeUser({ role: 'admin' });
 		const x = makeUser({ username: 'x' });
 		const decision = openByHand();
-		// (i) A stale live row holds X; the person now linked to X is added.
-		makeParticipant(decision, { person: null, name: 'Stale', userId: x.id, hadAccount: true });
+		// (i) A stale live row, kept, holds X; the person now linked to X is added. (A row whose person was
+		// deleted is taken off by the save, card 2676's C1, so the stale row here is a person still named.)
+		const old = makePerson({ fullName: 'Old X' });
+		makeParticipant(decision, { person: old, name: 'Stale', userId: x.id, hadAccount: true });
 		const now = makePerson({ fullName: 'Now X', user: x });
 		const before = { events: eventsOf(decision.id).length, rows: participantRows(decision.id).length };
-		expect(outcome(() => as(owner, (caller) => setParticipants(caller, { decisionId: decision.id }, { participants: [{ personId: now.id, role: 'consulted' }] }, UI)))).toEqual({
+		expect(
+			outcome(() =>
+				as(owner, (caller) =>
+					setParticipants(
+						caller,
+						{ decisionId: decision.id },
+						{
+							participants: [
+								{ personId: old.id, role: 'consulted' },
+								{ personId: now.id, role: 'consulted' }
+							],
+							revision: revisionNow(decision.id)
+						},
+						UI
+					)
+				)
+			)
+		).toEqual({
 			status: 409,
 			message: 'Now X cannot be included: another participant of this decision holds the same account'
 		});
@@ -1443,7 +1467,7 @@ describe('the rules that hold after opening', () => {
 		const from = stamp(new Date(parseStamp(invitedAt)!.getTime() + 10 * 60 * 1000));
 		const throttled = { status: 409, message: `Linky was mailed about this decision less than 10 minutes ago: they can be mailed again from ${from} UTC` };
 		const set = (participants: { personId: number; role: string }[]) =>
-			as(r.author, (caller) => setParticipants(caller, { decisionId: r.id }, { participants }, UI));
+			as(r.author, (caller) => setParticipants(caller, { decisionId: r.id }, { participants, revision: revisionNow(r.id) }, UI));
 
 		expect(outcome(() => resend(r.author, r.id, r.linked.id))).toEqual(throttled);
 
@@ -1500,7 +1524,12 @@ describe('the rules that hold after opening', () => {
 			expect(
 				outcome(() =>
 					as(owner, (caller) =>
-						setParticipants(caller, { decisionId: second.id }, { participants: [{ personId: holder.personId!, role: 'consulted' }, { personId: newcomer.id, role: 'consulted' }] }, UI)
+						setParticipants(
+							caller,
+							{ decisionId: second.id },
+							{ participants: [{ personId: holder.personId!, role: 'consulted' }, { personId: newcomer.id, role: 'consulted' }], revision: revisionNow(second.id) },
+							UI
+						)
 					)
 				)
 			).toEqual(refused);

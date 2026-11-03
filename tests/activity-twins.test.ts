@@ -2637,6 +2637,25 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 	'src/routes/api/people-groups/[id]/members/+server.ts PUT': [
 		{ service: 'setGroupMembers', args: [code('caller'), { groupId: code('id') }, code('body'), { source: 'ui' }] }
 	],
+	// Card 2676: drafting a decision, the web application's alone until card 2682's v1.
+	'src/routes/api/boards/[id]/decisions/+server.ts POST': [
+		{ service: 'createDecision', args: [code('caller'), { boardId: code('boardId') }, code('body'), { source: 'ui' }] }
+	],
+	'src/routes/api/decisions/[id]/+server.ts PUT': [
+		{ service: 'updateDraft', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'ui' }] }
+	],
+	'src/routes/api/decisions/[id]/+server.ts DELETE': [
+		{ service: 'deleteDecision', args: [code('caller'), { decisionId: code('id') }, null, { source: 'ui' }] }
+	],
+	'src/routes/api/decisions/[id]/decider/+server.ts PUT': [
+		{ service: 'setDecider', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'ui' }] }
+	],
+	'src/routes/api/decisions/[id]/participants/+server.ts PUT': [
+		{ service: 'setParticipants', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'ui' }] }
+	],
+	'src/routes/api/decisions/[id]/reviewed/+server.ts POST': [
+		{ service: 'markReviewed', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'ui' }] }
+	],
 	'src/routes/api/v1/boards/[boardId]/cards/+server.ts POST': [
 		{ service: 'createCard', args: [code('caller'), { boardId: code('boardId') }, code('body'), { source: 'api', baseUrl: code('baseUrl') }] }
 	],

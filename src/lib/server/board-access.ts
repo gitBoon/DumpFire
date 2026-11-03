@@ -6,8 +6,8 @@
  */
 
 import { db } from './db';
-import { boardMembers, boardTeams, teamMembers, boards, type Board } from './db/schema';
-import { eq, and, inArray, or } from 'drizzle-orm';
+import { boardMembers, boardTeams, teamMembers, boards, users, type Board } from './db/schema';
+import { eq, and, asc, inArray, or } from 'drizzle-orm';
 import type { SessionUser } from './auth';
 
 export type BoardRole = 'owner' | 'editor' | 'viewer';
@@ -212,6 +212,46 @@ export function editableBoardIds(user: Actor): Set<number> | null {
 		for (const share of shares) if (share.role === 'editor' && !direct.has(share.boardId)) ids.add(share.boardId);
 	}
 	return ids;
+}
+
+/**
+ * Every account that can edit the board, as `{ id, username, emoji }` by
+ * username (card 2674, plan decision 8): the accounts `updateBoard` would take
+ * as its Product Owner, and the accounts `setDecider` would take as a
+ * decision's decider. `roleOnBoard` is asked of the board's possible editors
+ * alone (plan review R5): its creator, its members, the members of the teams
+ * it is shared with, and every administrator. Anyone else can at most view
+ * it, as a public board gives, so `roleOnBoard` would not make them one.
+ *
+ * Moved here unchanged from the share route by card 2676 (F2), so that the
+ * Share window's Product Owner candidates and the decider picker are one rule.
+ */
+export function editorsOf(board: Board): { id: number; username: string; emoji: string }[] {
+	const possible = new Set<number>();
+	if (board.createdBy !== null) possible.add(board.createdBy);
+	for (const { userId } of db.select({ userId: boardMembers.userId }).from(boardMembers).where(eq(boardMembers.boardId, board.id)).all()) {
+		possible.add(userId);
+	}
+	const teamIds = db.select({ teamId: boardTeams.teamId }).from(boardTeams).where(eq(boardTeams.boardId, board.id)).all().map((t) => t.teamId);
+	if (teamIds.length > 0) {
+		for (const { userId } of db.select({ userId: teamMembers.userId }).from(teamMembers).where(inArray(teamMembers.teamId, teamIds)).all()) {
+			possible.add(userId);
+		}
+	}
+	for (const { id } of db.select({ id: users.id }).from(users).where(inArray(users.role, ['admin', 'superadmin'])).all()) possible.add(id);
+	if (possible.size === 0) return [];
+
+	return db
+		.select({ id: users.id, username: users.username, emoji: users.emoji, role: users.role })
+		.from(users)
+		.where(inArray(users.id, [...possible]))
+		.orderBy(asc(users.username))
+		.all()
+		.filter((account) => {
+			const role = roleOnBoard(account, board);
+			return role === 'owner' || role === 'editor' || role === 'admin';
+		})
+		.map(({ id, username, emoji }) => ({ id, username, emoji: emoji || '👤' }));
 }
 
 /**

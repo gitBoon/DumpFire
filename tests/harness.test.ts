@@ -102,6 +102,10 @@ const TEST_FILES = [
 	'database-location.test.ts',
 	// Card 2675: who may do what to a decision, and its permanent record and personal links.
 	'decision-access.test.ts',
+	// Card 2676: drafting a decision, its content, revision and readability check.
+	'decision-authoring.test.ts',
+	// Card 2676, slice A2: the picker, the editor and the board's decision list, in the page.
+	'decision-authoring.svelte.test.ts',
 	'decision-record.test.ts',
 	'decision-service.test.ts',
 	'deletes-no-parent-key.test.ts',

@@ -1,0 +1,490 @@
+/**
+ * decision-content.ts — a decision's working copy, read and kept (card 2676,
+ * plan 4.5): its stored form, the strict reading of a body's content, the
+ * title rule, which sections a save changed, the draft revision, option
+ * labels, the options a re-publish adds and retires, the facts the
+ * readability check is worked out from, and a decision's option and
+ * participant rows as the service and the reads both take them (the code
+ * review's C7).
+ *
+ * Plain functions with no caller, called by the service in `decisions.ts`
+ * inside its write, and by the authoring reads. Nothing here writes a row of
+ * a decision; the revision's key is derived from the request form's, which
+ * `request-tokens.ts` makes on its first use.
+ *
+ * The content is closed at every level (decision 8, R5): a key that is not
+ * design 4.4's is a 400 naming its path, and so is each of the server's own
+ * keys (`SERVER_KEYS`). A single-line field holds no character of
+ * `UNPRINTABLE`; a markdown field holds none but tab, newline, carriage
+ * return and U+200D, the joiner inside emoji sequences (D12). Every
+ * direction control stays refused everywhere.
+ */
+import { createHmac } from 'node:crypto';
+import { error } from '@sveltejs/kit';
+import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
+import { db } from './db';
+import {
+	decisionOptions,
+	decisionParticipants,
+	people,
+	peopleGroupMembers,
+	peopleGroups,
+	users,
+	type Decision,
+	type DecisionOption,
+	type DecisionParticipant
+} from './db/schema';
+import { canEditBoard } from './board-access';
+import { labelsInVersions, peopleById, snapshotOf } from './decision-record';
+import { decisionLinkBase } from './decision-mail';
+import { isSmtpConfigured } from './email';
+import { UNPRINTABLE } from './logger';
+import { asObject, readId, readList, readObjects, readText, type RequestBody } from './request-body';
+import { purposeKey } from './request-tokens';
+import type { AudienceFacts, OpenFacts, WorkingContent } from '$lib/decision-readiness';
+import type { Stamp } from '$lib/timestamps';
+
+export type { WorkingContent } from '$lib/decision-readiness';
+
+/** The working content without the keys only the server writes. */
+export type ContentFields = Omit<WorkingContent, 'agentDrafted' | 'reviewed' | 'lastLabel'>;
+
+/** How much each field of the content may hold (decision 8). */
+export const CONTENT_LIMITS = {
+	/** `situation`, `unknowns`, `alreadyRuled`, `technicalDetail`: markdown. */
+	longText: 20_000,
+	/** `question`: one line. */
+	question: 500,
+	/** `ask`: markdown. */
+	ask: 2_000,
+	options: 20,
+	optionTitle: 200,
+	/** An option's `summary` and `commercial`: markdown. */
+	optionText: 4_000,
+	/** The items of an option's `pros` and of its `cons`. */
+	listItems: 20,
+	listItem: 500,
+	audiences: 30,
+	stories: 30,
+	/** An audience's `heading` and a story's `title`: one line. */
+	heading: 200,
+	/** An audience's and a story's `body`: markdown. */
+	body: 10_000,
+	/** The whole, serialised. */
+	bytes: 256 * 1024
+} as const;
+
+/** The keys of the working content that only the server writes: each is a 400 in a body. */
+export const SERVER_KEYS = ['agentDrafted', 'reviewed', 'lastLabel'] as const;
+
+/** The content's own text sections, each flagged under its own key (decision 9). */
+const TEXT_SECTIONS = ['situation', 'question', 'ask', 'unknowns', 'alreadyRuled', 'technicalDetail'] as const;
+
+/** The keys of the content, of an option, of an audience and of a story (design 4.4). */
+const CONTENT_KEYS = [...TEXT_SECTIONS, 'options', 'audiences', 'stories'];
+const OPTION_KEYS = ['optionId', 'title', 'summary', 'pros', 'cons', 'commercial'];
+const AUDIENCE_KEYS = ['groupId', 'heading', 'body'];
+const STORY_KEYS = ['title', 'body'];
+
+/** What a markdown field may hold of `UNPRINTABLE`: tab, newline, carriage return and the zero-width joiner (D12). */
+const MARKDOWN_ALLOWED = /[\t\n\r‍]/g;
+
+/** The words for a field holding a character it may not, as `createDecision`'s for the title (decision 30). */
+const unprintable = (path: string) => `${path} cannot hold control, direction or invisible characters`;
+
+/** A JSON object: not null, and not a list. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The working content as it is stored, read tolerantly: a field missing or
+ * of the wrong type is its empty value, an entry that is not an object is
+ * left out, and a key that is none of design 4.4's is dropped.
+ */
+export function parseWorkingContent(json: string): WorkingContent {
+	let read: Record<string, unknown> = {};
+	try {
+		const parsed = JSON.parse(json) as unknown;
+		if (isRecord(parsed)) read = parsed;
+	} catch {
+		// Not JSON: the empty content.
+	}
+	const text = (value: unknown) => (typeof value === 'string' ? value : '');
+	const texts = (value: unknown) => (Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []);
+	const records = (value: unknown) => (Array.isArray(value) ? value.filter(isRecord) : []);
+	const reviewed: WorkingContent['reviewed'] = {};
+	if (isRecord(read.reviewed)) {
+		for (const [key, stampOf] of Object.entries(read.reviewed)) {
+			if (isRecord(stampOf) && typeof stampOf.byUserId === 'number' && typeof stampOf.byName === 'string' && typeof stampOf.at === 'string') {
+				reviewed[key] = { byUserId: stampOf.byUserId, byName: stampOf.byName, at: stampOf.at };
+			}
+		}
+	}
+	const agentDrafted: WorkingContent['agentDrafted'] = {};
+	if (isRecord(read.agentDrafted)) for (const [key, flag] of Object.entries(read.agentDrafted)) if (flag === true) agentDrafted[key] = true;
+	return {
+		situation: text(read.situation),
+		question: text(read.question),
+		ask: text(read.ask),
+		options: records(read.options).map((option) => ({
+			...(typeof option.optionId === 'number' ? { optionId: option.optionId } : {}),
+			title: text(option.title),
+			summary: text(option.summary),
+			pros: texts(option.pros),
+			cons: texts(option.cons),
+			commercial: text(option.commercial)
+		})),
+		audiences: records(read.audiences).map((audience) => ({
+			groupId: typeof audience.groupId === 'number' ? audience.groupId : null,
+			heading: text(audience.heading),
+			body: text(audience.body)
+		})),
+		stories: records(read.stories).map((story) => ({ title: text(story.title), body: text(story.body) })),
+		unknowns: text(read.unknowns),
+		alreadyRuled: text(read.alreadyRuled),
+		technicalDetail: text(read.technicalDetail),
+		agentDrafted,
+		reviewed,
+		lastLabel: typeof read.lastLabel === 'string' ? read.lastLabel : null
+	};
+}
+
+/** A key of an object, named in a refusal only when it is a plain word. */
+const named = (key: string) => (/^[A-Za-z0-9_]{1,40}$/.test(key) ? key : null);
+
+/** A 400 for any key of `entry` that is not one of `allowed`, naming its path. */
+function requireClosed(entry: Record<string, unknown>, allowed: readonly string[], path: string, what: string): void {
+	for (const key of Object.keys(entry)) {
+		if (allowed.includes(key)) continue;
+		const name = named(key);
+		error(400, name === null ? `content${path} holds a field that is not a field of ${what}` : `content${path}.${name} is not a field of ${what}`);
+	}
+}
+
+/** A single-line field at `path`: text, trimmed, up to `max`, with no character of `UNPRINTABLE`. Not sent, it is empty. */
+function singleLine(value: unknown, path: string, max: number): string {
+	const text = readText({ [path]: value }, path, { trim: true, max }) ?? '';
+	if (UNPRINTABLE.test(text)) error(400, unprintable(path));
+	return text;
+}
+
+/** A markdown field at `path`: text up to `max`, holding of `UNPRINTABLE` only what `MARKDOWN_ALLOWED` lets through. Not sent, it is empty. */
+function markdown(value: unknown, path: string, max: number): string {
+	const text = readText({ [path]: value }, path, { max }) ?? '';
+	if (UNPRINTABLE.test(text.replace(MARKDOWN_ALLOWED, ''))) error(400, unprintable(path));
+	return text;
+}
+
+/** A list of single-line items at `path`, up to `CONTENT_LIMITS.listItems`, each up to `listItem`, the empty ones dropped. */
+function itemList(value: unknown, path: string): string[] {
+	const items = readList({ [path]: value }, path, { max: CONTENT_LIMITS.listItems }) ?? [];
+	return items.map((item, index) => singleLine(item, `${path}[${index}]`, CONTENT_LIMITS.listItem)).filter((item) => item !== '');
+}
+
+/**
+ * The body's `content`, read strictly (decision 8, R5): an object holding
+ * only design 4.4's keys, at every level, each field to its rule and limit,
+ * and the whole up to 256 KB serialised. A field not sent is empty. Each
+ * refusal is a 400 naming the field.
+ *
+ * An option's `optionId` is named once at most; that it is a live option of
+ * this decision is the write's to ask. An audience's `groupId` is an id or
+ * null, and a new one, not held by an audience of `stored`, must be a group
+ * (decision 24): one kept from `stored` whose group has since been deleted
+ * is kept, so that re-saving does not fail.
+ */
+export function readContent(body: RequestBody, stored: WorkingContent): ContentFields {
+	const content = asObject(body.content);
+	if (content === undefined) error(400, body.content === undefined ? 'content is required' : 'content must be an object');
+	for (const key of SERVER_KEYS) {
+		if (Object.hasOwn(content, key)) error(400, `content.${key} is kept by the server: it cannot be sent`);
+	}
+	requireClosed(content, CONTENT_KEYS, '', "a decision's content");
+
+	const seen = new Set<number>();
+	const options = (readObjects(content, 'options', { max: CONTENT_LIMITS.options }) ?? []).map((entry, index) => {
+		const path = `options[${index}]`;
+		requireClosed(entry, OPTION_KEYS, `.${path}`, 'an option');
+		const optionId = readId({ [`${path}.optionId`]: entry.optionId }, `${path}.optionId`, {});
+		if (optionId !== undefined) {
+			if (seen.has(optionId)) error(400, `${path}.optionId ${optionId} is named twice`);
+			seen.add(optionId);
+		}
+		return {
+			...(optionId === undefined ? {} : { optionId }),
+			title: singleLine(entry.title, `${path}.title`, CONTENT_LIMITS.optionTitle),
+			summary: markdown(entry.summary, `${path}.summary`, CONTENT_LIMITS.optionText),
+			pros: itemList(entry.pros, `${path}.pros`),
+			cons: itemList(entry.cons, `${path}.cons`),
+			commercial: markdown(entry.commercial, `${path}.commercial`, CONTENT_LIMITS.optionText)
+		};
+	});
+
+	const kept = new Set(stored.audiences.map((audience) => audience.groupId).filter((id): id is number => id !== null));
+	const audiences = (readObjects(content, 'audiences', { max: CONTENT_LIMITS.audiences }) ?? []).map((entry, index) => {
+		const path = `audiences[${index}]`;
+		requireClosed(entry, AUDIENCE_KEYS, `.${path}`, 'an audience');
+		return {
+			groupId: readId({ [`${path}.groupId`]: entry.groupId }, `${path}.groupId`, { nullable: true }) ?? null,
+			heading: singleLine(entry.heading, `${path}.heading`, CONTENT_LIMITS.heading),
+			body: markdown(entry.body, `${path}.body`, CONTENT_LIMITS.body)
+		};
+	});
+	const asked = [...new Set(audiences.map((audience) => audience.groupId).filter((id): id is number => id !== null && !kept.has(id)))];
+	if (asked.length > 0) {
+		const groups = new Set(db.select({ id: peopleGroups.id }).from(peopleGroups).where(inArray(peopleGroups.id, asked)).all().map((group) => group.id));
+		audiences.forEach((audience, index) => {
+			if (audience.groupId !== null && !kept.has(audience.groupId) && !groups.has(audience.groupId)) {
+				error(400, `audiences[${index}].groupId ${audience.groupId} is not a group`);
+			}
+		});
+	}
+
+	const stories = (readObjects(content, 'stories', { max: CONTENT_LIMITS.stories }) ?? []).map((entry, index) => {
+		const path = `stories[${index}]`;
+		requireClosed(entry, STORY_KEYS, `.${path}`, 'a user story');
+		return { title: singleLine(entry.title, `${path}.title`, CONTENT_LIMITS.heading), body: markdown(entry.body, `${path}.body`, CONTENT_LIMITS.body) };
+	});
+
+	const fields: ContentFields = {
+		situation: markdown(content.situation, 'situation', CONTENT_LIMITS.longText),
+		question: singleLine(content.question, 'question', CONTENT_LIMITS.question),
+		ask: markdown(content.ask, 'ask', CONTENT_LIMITS.ask),
+		options,
+		audiences,
+		stories,
+		unknowns: markdown(content.unknowns, 'unknowns', CONTENT_LIMITS.longText),
+		alreadyRuled: markdown(content.alreadyRuled, 'alreadyRuled', CONTENT_LIMITS.longText),
+		technicalDetail: markdown(content.technicalDetail, 'technicalDetail', CONTENT_LIMITS.longText)
+	};
+	if (Buffer.byteLength(JSON.stringify(fields), 'utf8') > CONTENT_LIMITS.bytes) error(400, 'content must be at most 256 KB');
+	return fields;
+}
+
+/**
+ * A decision's `title` (decision 25, F6): text, trimmed, 1 to 200 characters,
+ * holding no control, direction or invisible character (card 2675, decision
+ * 30). Required unless told otherwise; not sent, then, it is undefined.
+ */
+export function readTitle(body: RequestBody): string;
+export function readTitle(body: RequestBody, opts: { required: boolean }): string | undefined;
+export function readTitle(body: RequestBody, opts: { required: boolean } = { required: true }): string | undefined {
+	const title = readText(body, 'title', { required: opts.required, trim: true, min: 1, max: 200 });
+	if (title !== undefined && UNPRINTABLE.test(title)) error(400, 'title cannot hold control, direction or invisible characters');
+	return title;
+}
+
+/** An option's text, to compare. */
+const optionText = (option: WorkingContent['options'][number]) =>
+	JSON.stringify([option.title, option.summary, option.pros, option.cons, option.commercial]);
+
+/**
+ * The sections of `after` that differ from `before` (decision 9), by the
+ * keys a flag names: each text section, `options.<optionId>` for each option
+ * whose text changed or that is new, and `audiences` and `stories` for each
+ * list as a whole. Every option of `after` carries its id by now.
+ */
+export function changedSections(before: WorkingContent, after: ContentFields): string[] {
+	const changed: string[] = TEXT_SECTIONS.filter((key) => before[key] !== after[key]);
+	const was = new Map(before.options.filter((option) => option.optionId !== undefined).map((option) => [option.optionId!, option]));
+	for (const option of after.options) {
+		if (option.optionId === undefined) continue;
+		const earlier = was.get(option.optionId);
+		if (earlier === undefined || optionText(earlier) !== optionText(option)) changed.push(`options.${option.optionId}`);
+	}
+	if (JSON.stringify(before.audiences) !== JSON.stringify(after.audiences)) changed.push('audiences');
+	if (JSON.stringify(before.stories) !== JSON.stringify(after.stories)) changed.push('stories');
+	return changed;
+}
+
+/** Every key a flag may name in this content: its text sections, each listed option, and the audiences and stories. */
+export function sectionKeysOf(content: WorkingContent): string[] {
+	return [
+		...TEXT_SECTIONS,
+		...content.options.filter((option) => option.optionId !== undefined).map((option) => `options.${option.optionId}`),
+		'audiences',
+		'stories'
+	];
+}
+
+/** What the revision's key is derived for (`purposeKey`): no other value is made with it. */
+const REVISION_PURPOSE = 'decision-revision';
+
+/**
+ * The draft revision (decision 10, R1): HMAC-SHA256, in hex, over every
+ * column any write changes, keyed with `purposeKey('decision-revision')`, a
+ * key derived from the server's own and never stored (the code review's C2).
+ * Unkeyed, a caller who holds the revision could test guesses at the
+ * participants' addresses and accounts it covers offline. The decision's
+ * title, status, closing time, vote mode, working content, current version,
+ * decider and `updated_at`; every option row, retired ones too, by its id,
+ * label, position and the versions it was added and retired in; and every
+ * participant row, removed ones too, by its id, person, role, account,
+ * address and `removed_at`. Rows are taken in id order, however they are
+ * handed in.
+ */
+export function revisionOf(decision: Decision, options: DecisionOption[], participants: DecisionParticipant[]): string {
+	const inOrder = <T extends { id: number }>(rows: T[]) => [...rows].sort((a, b) => a.id - b.id);
+	const covered = {
+		decision: [
+			decision.title,
+			decision.status,
+			decision.closesAt,
+			decision.voteMode,
+			decision.workingContent,
+			decision.currentVersion,
+			decision.deciderUserId,
+			decision.updatedAt
+		],
+		options: inOrder(options).map((option) => [option.id, option.label, option.position, option.addedInVersion, option.retiredInVersion]),
+		participants: inOrder(participants).map((row) => [row.id, row.personId, row.role, row.userId, row.email, row.removedAt])
+	};
+	return createHmac('sha256', purposeKey(REVISION_PURPOSE)).update(JSON.stringify(covered)).digest('hex');
+}
+
+/** Every option row of the decision, retired ones included. */
+export function allOptionsOf(decisionId: number): DecisionOption[] {
+	return db.select().from(decisionOptions).where(eq(decisionOptions.decisionId, decisionId)).all();
+}
+
+/** The decision's options not retired, in their order. */
+export function liveOptionsOf(decisionId: number): DecisionOption[] {
+	return db
+		.select()
+		.from(decisionOptions)
+		.where(and(eq(decisionOptions.decisionId, decisionId), isNull(decisionOptions.retiredInVersion)))
+		.orderBy(asc(decisionOptions.position), asc(decisionOptions.id))
+		.all();
+}
+
+/** Every participant row of the decision, removed ones included, in order. */
+export function participantsOf(decisionId: number): DecisionParticipant[] {
+	return db.select().from(decisionParticipants).where(eq(decisionParticipants.decisionId, decisionId)).orderBy(asc(decisionParticipants.id)).all();
+}
+
+/** A label as this module issues them: one capital letter. */
+const LABEL = /^[A-Z]$/;
+
+/**
+ * The label the decision's next option is given (decision 7, D3): the letter
+ * after the highest it has used, "A" when it has used none. Used means held
+ * by any of its option rows, retired ones included; quoted in any version it
+ * published; or `content.lastLabel`, the last the server issued, which is all
+ * that is left of an option deleted before it was published. A label is
+ * never issued twice. Once "Z" has been used, a 409.
+ */
+export function nextLabel(decisionId: number, content: WorkingContent): string {
+	const used = [
+		...db.select({ label: decisionOptions.label }).from(decisionOptions).where(eq(decisionOptions.decisionId, decisionId)).all().map((row) => row.label),
+		...labelsInVersions(decisionId),
+		...(content.lastLabel === null ? [] : [content.lastLabel])
+	].filter((label) => LABEL.test(label));
+	const highest = used.sort().at(-1);
+	if (highest === 'Z') error(409, 'This decision has used every option label from A to Z: no option can be added');
+	return highest === undefined ? 'A' : String.fromCharCode(highest.charCodeAt(0) + 1);
+}
+
+/**
+ * The option ids the working content lists in its `options`, or null when it
+ * holds no such list, which states nothing about the options and so retires
+ * none (card 2675, decision 24; moved here by card 2676, D7).
+ */
+export function listedOptionIds(workingContent: string): Set<number> | null {
+	try {
+		const read = JSON.parse(workingContent) as { options?: unknown } | null;
+		if (read === null || typeof read !== 'object' || !Array.isArray(read.options)) return null;
+		return new Set(
+			read.options
+				.map((entry: unknown) => (entry !== null && typeof entry === 'object' ? (entry as { optionId?: unknown }).optionId : undefined))
+				.filter((id): id is number => typeof id === 'number')
+		);
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * What publishing again does to the live options (card 2675, decision 24):
+ * one not yet published is added in the new version; a published one no
+ * longer listed is retired in it. With no list, none is retired.
+ */
+export function optionChanges(live: DecisionOption[], listed: Set<number> | null): { adding: DecisionOption[]; retiring: DecisionOption[] } {
+	return {
+		adding: live.filter((option) => option.addedInVersion === null),
+		retiring: live.filter((option) => option.addedInVersion !== null && listed !== null && !listed.has(option.id))
+	};
+}
+
+/**
+ * What opening the decision at `now` asks about (decision 11), read on the
+ * server: the board, the decider's access to it now, the live options, the
+ * participants in id order with their persons, the snapshots taken again
+ * now for one account held twice (card 2675, decision 29), and the mail
+ * settings. It never leaves the server: `refusalsOf` turns it into words.
+ */
+export function openFactsOf(decision: Decision, now: Stamp): OpenFacts {
+	const decider =
+		decision.deciderUserId === null ? undefined : db.select({ id: users.id, role: users.role }).from(users).where(eq(users.id, decision.deciderUserId)).get();
+	const liveOptionCount = db
+		.select({ id: decisionOptions.id })
+		.from(decisionOptions)
+		.where(and(eq(decisionOptions.decisionId, decision.id), isNull(decisionOptions.retiredInVersion)))
+		.all().length;
+	const rows = db.select().from(decisionParticipants).where(eq(decisionParticipants.decisionId, decision.id)).orderBy(asc(decisionParticipants.id)).all();
+	const persons = peopleById(rows.map((row) => row.personId).filter((id): id is number => id !== null));
+
+	const holders = new Map<number, string>();
+	const sharedAccounts: OpenFacts['sharedAccounts'] = [];
+	for (const row of rows) {
+		if (row.personId === null || !persons.has(row.personId)) continue;
+		const snapshot = snapshotOf(row.personId);
+		if (snapshot === null || snapshot.userId === null) continue;
+		const other = holders.get(snapshot.userId);
+		if (other !== undefined) sharedAccounts.push({ name: snapshot.name, other });
+		else holders.set(snapshot.userId, snapshot.name);
+	}
+
+	return {
+		now,
+		boardExists: decision.boardId !== null,
+		deciderUserId: decision.deciderUserId,
+		deciderName: decision.deciderName,
+		deciderCanEdit: decider !== undefined && decision.boardId !== null && canEditBoard(decider, decision.boardId),
+		closesAt: decision.closesAt,
+		liveOptionCount,
+		consultedCount: rows.filter((row) => row.role === 'consulted').length,
+		participants: rows.map((row) => {
+			const person = row.personId === null ? undefined : persons.get(row.personId);
+			return { rowName: row.name, personFound: person !== undefined, personName: person?.fullName ?? null, personActive: person?.status === 'active' };
+		}),
+		sharedAccounts,
+		mail: { host: isSmtpConfigured(), linkAddress: decisionLinkBase() !== null }
+	};
+}
+
+/**
+ * What the audience warnings ask about (decision 12): for each group an
+ * audience of `content` names, whether it is there and its active members;
+ * and the person of each live participant.
+ */
+export function audienceFactsOf(content: WorkingContent, participants: DecisionParticipant[]): AudienceFacts {
+	const ids = [...new Set(content.audiences.map((audience) => audience.groupId).filter((id): id is number => id !== null))];
+	const groups: AudienceFacts['groups'] = {};
+	if (ids.length > 0) {
+		const found = new Set(db.select({ id: peopleGroups.id }).from(peopleGroups).where(inArray(peopleGroups.id, ids)).all().map((group) => group.id));
+		const members = db
+			.select({ groupId: peopleGroupMembers.groupId, personId: peopleGroupMembers.personId })
+			.from(peopleGroupMembers)
+			.innerJoin(people, eq(people.id, peopleGroupMembers.personId))
+			.where(and(inArray(peopleGroupMembers.groupId, ids), eq(people.status, 'active')))
+			.all();
+		for (const id of ids) {
+			groups[id] = { exists: found.has(id), activeMemberIds: members.filter((member) => member.groupId === id).map((member) => member.personId) };
+		}
+	}
+	return {
+		groups,
+		participantPersonIds: participants.filter((row) => row.removedAt === null && row.personId !== null).map((row) => row.personId!)
+	};
+}

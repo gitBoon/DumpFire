@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.43
+version: 1.44
 status: As-Built
 date: 2026-11-03
 tags:
@@ -23,6 +23,7 @@ tags:
   - options-column
   - commitment-point
   - decision-records
+  - working-content
   - migration-0061
   - product-owner
 description: "Complete database schema documentation with ER diagram, table descriptions, relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), and how migrations and schema reconciliation bring every database to the model"
@@ -563,9 +564,10 @@ erDiagram
 #### How the decision tables are written (card 2675)
 
 The decision service (`src/lib/server/decisions.ts` and its helper modules; see
-[Architecture](architecture.md#the-decision-service-and-its-record)) is the only writer, and
-no route calls it yet. It added no column: everything below lives in 0061's columns or on the
-record.
+[Architecture](architecture.md#the-decision-service-and-its-record)) is the only writer. Card
+2676's routes call its drafting writes ([below](#the-working-copy-and-its-revision-card-2676));
+no route calls the lifecycle writes yet (card 2697). It added no column: everything below lives
+in 0061's columns or on the record.
 
 **`decisions.status`** is stored as one of `draft`, `open`, `closed`, `ruled`, `superseded` or
 `withdrawn` (`STORED_STATUSES` in `src/lib/server/decision-status.ts`). Readers show `closed`,
@@ -674,7 +676,7 @@ refused (comment 5599). A `detail` never holds a token, a hash or a mail server'
 | `withdrawn` | no | `{ reason }` |
 | `account_attached`, `account_cleared` | yes | `{ userId }` |
 | `address_changed` | yes | `{ from, to }` |
-| `dry_run` | no | card 2676 |
+| `dry_run` | no | card 2697 (no write makes one yet) |
 
 **A restore** (`restoreFromBackup` in `src/lib/server/db/restore.ts`) copies the decision tables
 as it copies every other, then, inside its transaction, writes `link_revoked { reason: 'restore' }`
@@ -685,6 +687,125 @@ cannot be copied fails the restore, which rolls back: a lost event strands no ro
 foreign-key check would not stop it, and a partial record would be a false one. A NULL in a NOT
 NULL column of a decision table is never given the column's default, as `defaultsForNull` gives
 it elsewhere: the row is left out, and the restore fails (card 2675's code review, F8).
+
+#### The working copy and its revision (card 2676)
+
+Card 2676 (plan `docs/planning/card-2676-decision-authoring.md`) writes `decisions.title`,
+`closes_at`, `vote_mode` and `working_content` on a draft, and `working_content` alone once a
+decision is open or closed, through `updateDraft` in `src/lib/server/decisions.ts`. It added no
+column and no migration. The shape, its limits and the label rule are in
+`src/lib/server/decision-content.ts`; the type, `WorkingContent`, is in
+`src/lib/decision-readiness.ts`, which the browser loads too.
+
+```mermaid
+classDiagram
+    class WorkingContent {
+        situation: markdown
+        question: one line
+        ask: markdown
+        options: Option[] (up to 20)
+        audiences: Audience[] (up to 30)
+        stories: Story[] (up to 30)
+        unknowns: markdown
+        alreadyRuled: markdown
+        technicalDetail: markdown
+        agentDrafted: key to true (server's)
+        reviewed: key to byUserId, byName, at (server's)
+        lastLabel: string or null (server's)
+    }
+    class Option {
+        optionId?: decision_options.id
+        title: one line
+        summary: markdown
+        pros: one line each, up to 20
+        cons: one line each, up to 20
+        commercial: markdown
+    }
+    class Audience {
+        groupId: people_groups.id or null
+        heading: one line
+        body: markdown
+    }
+    class Story {
+        title: one line
+        body: markdown
+    }
+    WorkingContent "1" --> "*" Option
+    WorkingContent "1" --> "*" Audience
+    WorkingContent "1" --> "*" Story
+```
+
+**Closed at every level.** A body's `content` holds design 4.4's keys and no others, at the top
+and in every option, audience and story: an unknown key is 400 naming its path
+(`content.options[1].colour is not a field of an option`). `agentDrafted`, `reviewed` and
+`lastLabel` are the server's: each is 400 in a body. A field not sent is empty, and empty text is
+allowed in a draft. The stored form is read tolerantly (`parseWorkingContent`): a field missing
+or of the wrong type is its empty value.
+
+| Field | Limit |
+|---|---|
+| `situation`, `unknowns`, `alreadyRuled`, `technicalDetail` | markdown, up to 20,000 characters each |
+| `question` | one line, up to 500 |
+| `ask` | markdown, up to 2,000 |
+| `options` | up to 20; `title` one line up to 200; `summary` and `commercial` markdown up to 4,000; `pros` and `cons` up to 20 items each, each one line up to 500, empty items dropped |
+| `audiences` | up to 30; `groupId` an id or null; `heading` one line up to 200; `body` markdown up to 10,000 |
+| `stories` | up to 30; `title` one line up to 200; `body` markdown up to 10,000 |
+| the whole | up to 256 KB serialised |
+
+A one-line field (the title, `question`, an option's `title`, each `pros` and `cons` item, an
+audience's `heading`, a story's `title`) refuses every character of `UNPRINTABLE`
+(`src/lib/server/logger.ts`), the zero-width joiner U+200D included. A markdown field allows of
+it only tab, newline, carriage return and U+200D, so emoji sequences survive; every direction
+control stays refused. The 400 names the field: `options[2].title cannot hold control, direction
+or invisible characters`. An audience's `groupId`, new or changed, must be a group (400); one
+already stored whose group has since been deleted is kept, so re-saving does not fail.
+
+**Option rows kept in step.** `updateDraft` keeps `decision_options` in step with
+`content.options` in the same write. An entry with no `optionId` gets a new row; every entry's
+`position` is its index; an `optionId` named twice is 400, and one that is not a live option of
+this decision is 400. A row left out is deleted while `added_in_version` is NULL; a published one
+left out stays live and is retired at the next publish. The stored content carries every entry's
+`optionId`.
+
+**Labels are never reused within a decision.** The next label is the letter after the highest
+used, `A` when there is none, where used means any of: every `decision_options.label` of the
+decision, retired rows included; every option label quoted in any of its `decision_versions`
+(`labelsInVersions` in `decision-record.ts`); and the working content's `lastLabel`, moved on
+each time a label is issued, the only trace of an option deleted before it was ever published.
+Once `Z` has been used a new option is 409 `This decision has used every option label from A to
+Z: no option can be added`.
+
+**Agent flags and review stamps.** The keys are `situation`, `question`, `ask`, `unknowns`,
+`alreadyRuled`, `technicalDetail`, `options.<optionId>`, `audiences` and `stories` (the last two
+for each list as a whole). A save through an API key flags each section it changed and removes
+that key's `reviewed` stamp; a save through the web application clears none. Only
+`markReviewed`, a person's act through the web application, clears a flag, writing
+`reviewed[key] = { byUserId, byName, at }`. A flag for an option left out of the content goes
+with it. No event is written for either: the next version carries both as they are then, each
+stamp as `{ byName, at }` (card 2676's C3). A version copies an allowlist of the content alone
+(its text sections, audiences, stories, live options, `agentDrafted` and `reviewed`), never
+`lastLabel`, and every answer gives the content the same way, `byUserId` to an administrator
+alone.
+
+**The revision** has no column. `revisionOf` is HMAC-SHA256 in hex, keyed with a key derived
+for that purpose alone from the server's request form key (`purposeKey('decision-revision')`,
+never stored; card 2676's C2), over the decision's `title`,
+`status`, `closes_at`, `vote_mode`, `working_content`, `current_version`, `decider_user_id` and
+`updated_at`, every option row by `id`, `label`, `position`, `added_in_version` and
+`retired_in_version`, and every participant row by `id`, `person_id`, `role`, `user_id`, `email`
+and `removed_at`, retired and removed rows included, in id order. Every column any write changes
+is in it, so `updateDraft`, `setDecider`, `setParticipants` and `markReviewed`, which require it,
+cannot land over a change made since the caller read the decision (409).
+
+```mermaid
+flowchart TD
+    Body["PUT /api/decisions/[id]<br/>{ revision, title, closesAt, voteMode, content }"] --> Read["readContent: closed shape, limits,<br/>characters (400 naming the field)"]
+    Read --> Rev{"revision equal to<br/>revisionOf now?"}
+    Rev -->|no| C409["409: changed since you opened it"]
+    Rev -->|yes| Opts["decision_options in step:<br/>insert with nextLabel, reposition,<br/>delete unpublished left out"]
+    Opts --> Flags["agentDrafted / reviewed<br/>(flagged only through an API key)"]
+    Flags --> Write["decisions: working_content<br/>(with optionIds, lastLabel),<br/>title, closes_at, vote_mode on a draft,<br/>updated_at"]
+```
 
 ## Cascade Behaviour
 

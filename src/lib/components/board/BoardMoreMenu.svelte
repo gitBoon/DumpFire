@@ -2,7 +2,8 @@
   BoardMoreMenu.svelte — The board header's More menu (card 2280, slice B3:
   moved from the board page).
 
-  Where to go from the board (Planning and All To Do, scoped to it), the
+  Where to go from the board (Planning and All To Do, scoped to it, and its
+  Decisions, card 2676), the
   panels (Activity Log, Statistics, Archived Cards), what is done to the
   board as a whole (Add Column, Burndown on a delivery board, Manage Categories,
   Bulk Select, Share Board and the board's kind for someone who manages it
@@ -111,6 +112,18 @@
 			</svg>
 		</span>
 		All To Do
+	</a>
+	<!-- The board's decisions (card 2676, decision 13): every board viewer
+	     sees it, as a board's readers see its opened decisions. -->
+	<a class="hm-item" role="menuitem" tabindex="-1" href="/board/{boardId}/decisions" title="Decisions on this board, and New decision for those who can edit it">
+		<span class="hm-icon">
+			<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+				<path d="M8 2v12M3 5h10" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+				<path d="M3 5l-1.6 4h3.2L3 5zM13 5l-1.6 4h3.2L13 5z" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"/>
+				<path d="M5.5 14h5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+			</svg>
+		</span>
+		Decisions
 	</a>
 	</div>
 

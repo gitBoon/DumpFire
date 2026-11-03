@@ -47,6 +47,8 @@ export type DecisionAction =
 	| 'view'
 	| 'edit'
 	| 'setDecider'
+	| 'include'
+	| 'review'
 	| 'open'
 	| 'republish'
 	| 'close'
@@ -68,6 +70,8 @@ export const DECISION_ACTION_WORDS: Readonly<Record<DecisionAction, { verb: stri
 	view: { verb: 'view', done: 'it cannot be viewed' },
 	edit: { verb: 'edit', done: 'it cannot be edited' },
 	setDecider: { verb: 'change the decider of', done: 'its decider cannot be changed' },
+	include: { verb: 'include people in', done: 'nobody can be included in it' },
+	review: { verb: 'mark text reviewed on', done: 'its text cannot be marked reviewed' },
 	open: { verb: 'open', done: 'it cannot be opened' },
 	republish: { verb: 're-publish', done: 'it cannot be re-published' },
 	close: { verb: 'close', done: 'it cannot be closed' },
@@ -95,6 +99,9 @@ const STATUS_WORDS: Readonly<Record<ShownStatus, string>> = {
 export const TRANSITIONS: Readonly<Record<Exclude<DecisionAction, 'view' | 'record'>, readonly StoredStatus[]>> = {
 	edit: ['draft', 'open', 'closed'],
 	setDecider: ['draft', 'open', 'closed'],
+	// Card 2676: including people once opened (R3), and marking agent-drafted text reviewed (decision 9).
+	include: ['open', 'closed'],
+	review: ['draft', 'open', 'closed'],
 	open: ['draft'],
 	republish: ['open', 'closed'],
 	close: ['open'],

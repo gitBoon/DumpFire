@@ -46,6 +46,9 @@ export const DECISION_RULES: Readonly<Record<DecisionAction, readonly DecisionRo
 	view: ['admin', 'author', 'decider', 'boardOwner', 'boardEditor', 'boardReader', 'participant'],
 	edit: ['admin', 'author', 'decider', 'boardOwner'],
 	setDecider: ['admin', 'author', 'boardOwner'],
+	// Card 2676: the accountable people's acts, each with the board-edit rule while the board exists (R3, decision 9).
+	include: ['author', 'decider'],
+	review: ['author', 'decider'],
 	open: ['author', 'decider'],
 	republish: ['author', 'decider'],
 	close: ['author', 'decider'],

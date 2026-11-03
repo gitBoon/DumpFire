@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.70
+version: 1.71
 status: As-Built
 date: 2026-11-03
 tags:
@@ -40,6 +40,7 @@ tags:
   - fonts
   - ssrf
   - write-as
+  - decision-authoring
 description: "Deep-dive into DumpFire's authentication system, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served"
 ---
 
@@ -3359,10 +3360,11 @@ see [Testing](testing.md).
 ## Decision Access and Personal Links
 
 Card 2675 built the server side of decision records: who may do what to a decision, and the
-personal link that lets a participant with no account see one. **No route or page reaches it
-yet**: the routes, the `/decision-link/[token]` page and its protections (rate limiting of wrong
-tokens, headers) are cards 2676 and 2677's. What is here is already enforced in the modules every
-later route will call, and pinned by `tests/decision-access.test.ts`,
+personal link that lets a participant with no account see one. Card 2676 added the first routes
+and pages, for drafting a decision ([What a drafting page is given](#what-a-drafting-page-is-given));
+the lifecycle routes are card 2697's, and the `/decision-link/[token]` page and its protections
+(rate limiting of wrong tokens, headers) card 2677's. What is here is enforced in the modules
+every route calls, and pinned by `tests/decision-access.test.ts`,
 `tests/decision-record.test.ts`, `tests/decision-service.test.ts` and `tests/gate.test.ts`. The
 design is `docs/planning/card-2625-decision-records.md`, the plan
 `docs/planning/card-2675-decision-service.md`.
@@ -3386,6 +3388,8 @@ is held only as itself: `boardOwner` does not imply `boardReader`.
 | view (a draft: `DRAFT_VIEWERS`) | yes | yes | yes | yes | no | no | no |
 | edit | yes | yes¹ | yes | yes¹ | no | no | no |
 | setDecider | yes | yes¹ | no | yes¹ | no | no | no |
+| include (card 2676: setParticipants once opened, besides edit) | no | yes¹ | yes¹ | no | no | no | no |
+| review (card 2676: Mark reviewed) | no | yes¹ | yes¹ | no | no | no | no |
 | open, republish, close | no | yes¹ | yes¹ | no | no | no | no |
 | extend | no | no | yes¹ | no | no | no | no |
 | withdraw | yes | yes¹ | yes¹ | no | no | no | no |
@@ -3414,6 +3418,93 @@ the caller may not view are both `404` `Decision not found`, with the same words
 many there are. One the caller may view but may not do the action to is `403` `You cannot <verb>
 this decision`. The status is each write's to check after its body: 401, 400, 404, 403, then the
 body's 400 and the status's 409.
+
+### What a drafting page is given
+
+Card 2676 (plan `docs/planning/card-2676-decision-authoring.md`) added the board's decision list,
+`/board/[id]/decisions`, the editor, `/decisions/[id]/edit`, and six internal route-methods
+(`POST /api/boards/[id]/decisions`, `PUT` and `DELETE /api/decisions/[id]`, and `PUT …/decider`,
+`PUT …/participants` and `POST …/reviewed` under it). They are signed-in pages and internal JSON
+routes: the gate turns away a caller with no session, and outside `/api/v1/` a Bearer key is
+ignored, so every write here is `source: 'ui'`.
+
+- **The list** is guarded by `requireBoard(…, 'view')` and lists every decision that is not a
+  draft, and a draft only to `DRAFT_VIEWERS`, each row asked of `mayDo`. A title links to the
+  editor only where `mayDo(…, 'edit')` holds for that row.
+- **The editor** is guarded by `requireDecision(…, 'edit')`. A board editor who is not the
+  author of a draft cannot view it, so they are answered `404`, not `403`: the page does not
+  confirm that the draft exists.
+- **One allowlist projection** (`decisionAnswer`, `optionAnswers`, `participantAnswers` in
+  `src/lib/server/decision-authoring.ts`) shapes the editor's load and every route's answer,
+  field by field, never by spreading a row, so a column added later is given to nobody until it
+  is named. A participant is given to everyone who may edit without an address, an account id,
+  `includedBy`, `removedBy` or `linkIssuedAt`; an administrator also gets those. Nobody is given
+  `linkTokenHash`. The working content is projected too (`contentAnswer`, the code review's C3):
+  never `lastLabel`, and each review stamp as `{ byName, at }`, with the reviewer's `byUserId`
+  to an administrator alone. A published version copies an allowlist of the content, its stamps
+  as `{ byName, at }` and no `lastLabel`, so a participant's later read of it cannot carry
+  either.
+- **The picker** is given active people only, as `{ id, fullName, jobTitle, groupIds }`: no
+  address, no account, nobody who has left. Groups come as `{ id, name, activeMemberIds }`, with
+  no description. An administrator's people also carry `email`, so only an administrator can
+  search by address. The decider candidates are the board's editors (`editorsOf`) by `id`,
+  `username` and `emoji`, which board viewers already see. All three are left out wherever the
+  decision's status refuses `edit` (ruled, superseded, withdrawn). The people and the groups'
+  `activeMemberIds` are left out also wherever the caller may not save the participants
+  (`canSetParticipants`), the groups kept by name alone for the audience select; the
+  candidates wherever the caller may not change the decider (`canSetDecider`; the code review's
+  C4).
+- **No directory oracle.** A caller who is not an administrator, naming in `setParticipants` a
+  person who has left or an id that is no person, is told `personId N cannot be included`, the
+  same words for both. An administrator keeps the named words. The exception is this decision's
+  own participant who has since left: their name is already on it, so everyone is told
+  `participants: <name> has left: remove before saving`. In the same way `setDecider` tells a
+  caller who is not an administrator an id that is no account in the same words, and at the
+  same step after the revision, as an account that cannot edit the board (`deciderUserId N
+  cannot edit this board: …`); an administrator is told `deciderUserId N is not an account`
+  (C5).
+- **A participant whose person is deleted loses the participant role.** On a decision that is
+  not a draft, `setParticipants` marks removed every live row whose person has been deleted
+  (`person_id` NULL), with the `removed` event and its links ended, as for anyone left out; no
+  body can name such a row, and `decisionAccess` reads only live rows, so the account the row
+  held is no longer a participant (C1).
+- **The readability check's refusals** are worked out on the server alone, from facts that never
+  reach the browser (the decider's access, the participants' persons and accounts, the mail
+  settings); the page is handed their codes and words. The browser runs only `checkContent`, on
+  the content it already holds.
+- **Including people once a decision is open mails them**, so it is the accountable people's
+  act: `setParticipants` on a decision that is not a draft also needs `include`, the author's and
+  the decider's, each while they can edit the board. An administrator or a board owner who is
+  neither is `403 You cannot include people in this decision`.
+- **A revision on every authoring write.** `updateDraft`, `setDecider`, `setParticipants` and
+  `markReviewed` require the decision's revision (an HMAC-SHA256 over every column any write
+  changes; see [Data Model](data-model.md#the-working-copy-and-its-revision-card-2676)): missing
+  is `400`, stale is `409`, so two editors, or a save over another write's change, cannot
+  overwrite without anyone knowing. It covers participants' addresses and account ids, so it is
+  keyed (C2): `purposeKey('decision-revision')` in `request-tokens.ts`, HMAC-SHA256 of the
+  request form's key (`request_form_secret`, never in a backup) with that purpose, derived on
+  use and never stored. Unkeyed, anyone handed a revision could confirm a guessed address
+  offline. Only the stale-revision words offer Reload in the editor (C6).
+- **Agent-drafted text.** A save made through an API key (only card 2682's v1 routes will send
+  `source: 'api'`) flags each section it changed. Only **Mark reviewed** clears a flag, and it is
+  refused unless `source` is `ui`: `403 Marking text reviewed is a person's act: it cannot be done
+  with an API key`. It stamps who reviewed what, and when, into the working content.
+
+```mermaid
+flowchart LR
+    Load["readEditPage, and every<br/>card 2676 route's answer"] --> P{"isAdmin(caller)?"}
+    P -->|no| Plain["participants: name, role, jobTitle, groups,<br/>reach, hasLeft, notInDirectory;<br/>people: id, fullName, jobTitle, groupIds"]
+    P -->|yes| Full["the same, and email, userId,<br/>includedBy, removedBy, linkIssuedAt;<br/>people with email"]
+    Plain --> Never["never: linkTokenHash"]
+    Full --> Never
+```
+
+`tests/access-every-route.test.ts` holds the six route-methods (seven rows, the `include` row on
+an opened decision among them) and both pages in its page sweep, with a decision on board A and
+one on board B, a draft of board A that its viewer must not see, and a participant at an
+`example.test` address in the world. `tests/decision-authoring.test.ts` (cases 17 to 21) and
+`tests/decision-authoring.svelte.test.ts` hold the projection's keys, the picker's fields, the
+404 and the words.
 
 ### The personal link
 

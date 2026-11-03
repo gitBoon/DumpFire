@@ -210,6 +210,28 @@ export function liveOptionIds(decisionId: number, versionNumber: number): number
 }
 
 /**
+ * Every option label quoted in any published version of the decision, each
+ * once (card 2676, decision 7): a label once published is never issued again.
+ * A version whose content cannot be read quotes none.
+ */
+export function labelsInVersions(decisionId: number): string[] {
+	const labels = new Set<string>();
+	for (const { content } of db.select({ content: decisionVersions.content }).from(decisionVersions).where(eq(decisionVersions.decisionId, decisionId)).all()) {
+		try {
+			const read = JSON.parse(content) as { options?: unknown } | null;
+			if (read === null || typeof read !== 'object' || !Array.isArray(read.options)) continue;
+			for (const option of read.options as unknown[]) {
+				const label = option !== null && typeof option === 'object' ? (option as { label?: unknown }).label : undefined;
+				if (typeof label === 'string') labels.add(label);
+			}
+		} catch {
+			// Not JSON: it quotes no label.
+		}
+	}
+	return [...labels];
+}
+
+/**
  * Whether each participant's row held an account on this decision
  * (`hadAccount`, decision 16), by participant id, from the latest of its
  * `included`, `re_included` (their `hadAccount`), `account_attached` (true)

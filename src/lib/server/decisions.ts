@@ -28,20 +28,38 @@
  * (decisions 21 and 23).
  */
 import { error } from '@sveltejs/kit';
-import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { db } from './db';
 import { decisionOptions, decisionParticipants, decisions, users, type Decision, type DecisionOption, type DecisionParticipant } from './db/schema';
 import type { SessionUser } from './auth';
-import { canEditBoard } from './board-access';
+import { canEditBoard, isAdmin } from './board-access';
+import { mayDo } from './decision-access';
+import {
+	allOptionsOf,
+	changedSections,
+	liveOptionsOf,
+	listedOptionIds,
+	nextLabel,
+	openFactsOf,
+	optionChanges,
+	parseWorkingContent,
+	participantsOf,
+	readContent,
+	readTitle,
+	revisionOf,
+	sectionKeysOf,
+	type WorkingContent
+} from './decision-content';
 import { accountHistory, actorFor, appendEvent, appendVersion, IDS_AT_ONCE, lastMailAt, peopleById, snapshotOf } from './decision-record';
 import { reachOf, revokeLinks, type Reach, type SkipReason } from './decision-links';
 import { decisionLinkBase, queueRecordMails, RECORD_MAIL_MIN_MINUTES } from './decision-mail';
-import { decisionStatus, requireTransition } from './decision-status';
-import { isSmtpConfigured, NO_LINK_ADDRESS } from './email';
+import { DECISION_ACTION_WORDS, decisionStatus, requireTransition } from './decision-status';
+import { NO_LINK_ADDRESS } from './email';
 import { emit } from './events';
 import { ACTIONS, actorOf, logActivity } from './logActivity';
-import { UNPRINTABLE } from './logger';
-import { readBoolean, readChoice, readEmail, readId, readObjects, readText, readTimestamp, type RequestBody } from './request-body';
+import { readBoolean, readChoice, readEmail, readId, readList, readObjects, readText, readTimestamp, type RequestBody } from './request-body';
+import { refusalsOf } from '$lib/decision-readiness';
+import { STALE_REVISION } from '$lib/decision-words';
 import { requireBoard, requireDecision, requireUser } from './route-guards';
 import { parseStamp, stamp, type Stamp } from '$lib/timestamps';
 import { inWrite, type ServiceOptions } from './write-as';
@@ -57,6 +75,9 @@ const MOST_PARTICIPANTS = 5000;
 
 /** What an administrator does to a participant's account (decision 14). */
 const ACCOUNT_CHANGES = ['person', 'none'] as const;
+
+/** How a decision's options are answered: one choice, or a score for each (card 2676, decision 28). */
+const VOTE_MODES = ['single', 'score'] as const;
 
 /** Why a participant cannot be sent an invitation again, in words, for each reason `reachOf` skips them (decision 16). */
 const SKIP_WORDS: Readonly<Record<SkipReason, (name: string) => string>> = {
@@ -82,8 +103,7 @@ export function createDecision(caller: SessionUser | null, at: { boardId: number
 	const user = requireUser(caller);
 	const board = requireBoard(user, at.boardId, 'edit');
 
-	const title = readText(body, 'title', { required: true, trim: true, min: 1, max: 200 });
-	if (UNPRINTABLE.test(title)) error(400, 'title cannot hold control, direction or invisible characters');
+	const title = readTitle(body);
 
 	// Decision 7: the Product Owner, asked again now (comment 5616 (2)), or the author.
 	const owner =
@@ -115,9 +135,13 @@ export function createDecision(caller: SessionUser | null, at: { boardId: number
 /**
  * Name the decider (`deciderUserId`, an account that can edit the decision's
  * board now). 400 for an account that is not there or cannot edit the board,
- * 409 for a decision whose board is gone, and, once the decision is open,
- * 403 for the caller naming themselves (decision 6, R4). Writes
- * `decider_changed`. Naming the decider it has changes nothing.
+ * in the same words and at the same step for both to a caller who is not an
+ * administrator, so that the refusal does not say which ids are accounts (the
+ * code review's C5); 409 for a decision whose board is gone, and, once the decision is open,
+ * 403 for the caller naming themselves (decision 6, R4). `revision`, the
+ * decision's as the caller read it, is required (card 2676, decision 10): a
+ * different one is a 409. Writes `decider_changed`. Naming the decider it has
+ * changes nothing.
  */
 export function setDecider(caller: SessionUser | null, at: { decisionId: number }, body: RequestBody, opts: ServiceOptions): Decision {
 	inWrite();
@@ -125,13 +149,16 @@ export function setDecider(caller: SessionUser | null, at: { decisionId: number 
 	const { decision } = requireDecision(user, at.decisionId, 'setDecider');
 
 	const deciderUserId = readId(body, 'deciderUserId', { required: true });
+	const revision = readText(body, 'revision', { required: true });
 	if (decision.status !== 'draft' && deciderUserId === user.id) error(403, 'You cannot make yourself the decider of a decision that is open');
 	const account = db.select({ id: users.id, username: users.username, role: users.role }).from(users).where(eq(users.id, deciderUserId)).get();
-	if (!account) error(400, `deciderUserId ${deciderUserId} is not an account`);
+	// The code review's C5: only an administrator is told that an id is no account; anyone else is told it cannot be the decider, at the same step.
+	if (!account && isAdmin(user)) error(400, `deciderUserId ${deciderUserId} is not an account`);
 
 	requireTransition(decision, 'setDecider');
+	requireRevision(decision, revision);
 	if (decision.boardId === null) error(409, "This decision's board has been deleted: its decider cannot be changed");
-	if (!canEditBoard(account, decision.boardId)) {
+	if (!account || !canEditBoard(account, decision.boardId)) {
 		error(400, `deciderUserId ${deciderUserId} cannot edit this board: a decision's decider must be an account that can edit its board`);
 	}
 	if (account.id === decision.deciderUserId) return decision;
@@ -167,13 +194,23 @@ export function setDecider(caller: SessionUser | null, at: { decisionId: number 
  * person is included (`included`), a removed one comes back on the same row
  * (`re_included`), and each is invited, with a link if they have no account.
  * One left out is marked removed (`removed`) and their link ended. A changed
- * role writes `role_changed`. A row whose person has been deleted is left as
- * it is, as the body cannot name it. Including anyone is refused, 409, with
+ * role writes `role_changed`. A live row whose person has been deleted is
+ * marked removed in the same way, as the body cannot name it, so its account
+ * no longer holds the participant role (card 2676, the code review's C1,
+ * superseding decision 29's "left as it is"). Including anyone is refused, 409, with
  * no address to make a link on (decision 28), and re-including a
  * participant mailed in the last 10 minutes (decision 31).
  *
  * 409, naming the person, for a row that would hold the same account as
  * another live row of the decision (decision 29).
+ *
+ * Card 2676: on a decision that is not a draft, including people is the
+ * author's and the decider's alone (`include`, R3), 403 for anyone else.
+ * `revision` is required, and a different one is a 409 (decision 10). A
+ * caller who is not an administrator, naming someone who has left or an id
+ * that is no person, is told only that the id cannot be included, as their
+ * picker holds neither (R6); a participant of this decision who has since
+ * left is named to every editor, as their name is already on it (D6).
  */
 export function setParticipants(
 	caller: SessionUser | null,
@@ -183,28 +220,36 @@ export function setParticipants(
 ): DecisionParticipant[] {
 	inWrite();
 	const user = requireUser(caller);
-	const { decision } = requireDecision(user, at.decisionId, 'edit');
+	const { decision, access } = requireDecision(user, at.decisionId, 'edit');
+	if (decision.status !== 'draft' && !mayDo(access, 'include', decision)) error(403, `You cannot ${DECISION_ACTION_WORDS.include.verb} this decision`);
 
 	const entries = readObjects(body, 'participants', { required: true, max: MOST_PARTICIPANTS });
 	const wanted = entries.map((entry) => ({
 		personId: readId(entry, 'personId', { required: true }),
 		role: readChoice(entry, 'role', { required: true, from: ROLES })
 	}));
+	const revision = readText(body, 'revision', { required: true });
 	const seen = new Set<number>();
 	for (const { personId } of wanted) {
 		if (seen.has(personId)) error(400, `personId ${personId} is named twice`);
 		seen.add(personId);
 	}
 	const persons = peopleById([...seen]);
+	const rows = participantsOf(decision.id);
+	const admin = isAdmin(user);
 	for (const { personId } of wanted) {
 		const person = persons.get(personId);
-		if (!person) error(400, `personId ${personId} is not a person`);
-		if (person.status !== 'active') error(400, `${person.fullName} (person ${personId}) has left, and cannot be included`);
+		if (!person) error(400, admin ? `personId ${personId} is not a person` : `personId ${personId} cannot be included`);
+		if (person.status !== 'active') {
+			const own = rows.find((row) => row.personId === personId);
+			if (own) error(400, `participants: ${own.name} has left: remove before saving`);
+			error(400, admin ? `${person.fullName} (person ${personId}) has left, and cannot be included` : `personId ${personId} cannot be included`);
+		}
 	}
 
 	requireTransition(decision, 'edit');
+	requireRevision(decision, revision);
 	const by = actorFor(user, opts.source);
-	const rows = participantsOf(decision.id);
 	const now = stamp();
 
 	if (decision.status === 'draft') {
@@ -246,7 +291,8 @@ export function setParticipants(
 	const additions = wanted.filter((w) => !live.has(w.personId) && !removed.has(w.personId)).map((w) => ({ ...w, snapshot: snapshotOf(w.personId)! }));
 	const returns = wanted.filter((w) => !live.has(w.personId) && removed.has(w.personId)).map((w) => ({ ...w, row: removed.get(w.personId)! }));
 	const roleChanges = wanted.filter((w) => live.has(w.personId) && live.get(w.personId)!.role !== w.role).map((w) => ({ ...w, row: live.get(w.personId)! }));
-	const removals = [...live.values()].filter((row) => !named.has(row.personId!));
+	// The code review's C1: a live row whose person has been deleted cannot be named by any body, so it is removed like one left out.
+	const removals = rows.filter((row) => row.removedAt === null && (row.personId === null || !named.has(row.personId)));
 
 	if (additions.length + returns.length > 0) {
 		if (decisionLinkBase() === null) error(409, NO_LINK_ADDRESS);
@@ -304,6 +350,168 @@ export function setParticipants(
 }
 
 /**
+ * Save the working copy (card 2676, decisions 6 to 10, plan 4.4):
+ * `revision`, required, and any of `title`, `closesAt` (a timestamp or
+ * null), `voteMode` (`single` or `score`) and `content` (decision 8's shape,
+ * closed at every level). Answers the decision and its live options.
+ *
+ * On a draft each is saved. A changed `closesAt` must be in the future
+ * (400); one equal to the stored value is saved even once it has passed, as
+ * opening refuses it anyway (D5). Once opened, only `content` changes: a
+ * `title`, `closesAt` or `voteMode` equal to the stored value changes
+ * nothing, and a changed one is a 409. A revision that is not the
+ * decision's as it is now is a 409, asked after the status.
+ *
+ * The option rows are kept in step with `content.options` (decision 7): an
+ * entry with no `optionId` is given a row and a label never used on this
+ * decision, which its `optionId` then names; each entry's position is its
+ * index; an entry's `optionId` must be a live option of this decision (400);
+ * and a row left out is deleted if it was never published, and otherwise
+ * stays live, to be retired at the next publish. The last label issued is
+ * kept in the content's `lastLabel`.
+ *
+ * Through an API key each section the save changed is flagged as drafted by
+ * an agent, and its reviewed stamp removed; only Mark reviewed clears a flag
+ * (decision 9). No event, activity entry, live event or mail.
+ */
+export function updateDraft(
+	caller: SessionUser | null,
+	at: { decisionId: number },
+	body: RequestBody,
+	opts: ServiceOptions
+): { decision: Decision; options: DecisionOption[] } {
+	inWrite();
+	const user = requireUser(caller);
+	const { decision } = requireDecision(user, at.decisionId, 'edit');
+
+	const revision = readText(body, 'revision', { required: true });
+	const title = readTitle(body, { required: false });
+	const closesAt = readTimestamp(body, 'closesAt', { nullable: true });
+	const voteMode = readChoice(body, 'voteMode', { from: VOTE_MODES });
+	const stored = parseWorkingContent(decision.workingContent);
+	const content = Object.hasOwn(body, 'content') ? readContent(body, stored) : undefined;
+	const now = stamp();
+	if (closesAt !== undefined && closesAt !== null && closesAt !== decision.closesAt && closesAt <= now) error(400, 'closesAt must be in the future');
+	const live = liveOptionsOf(decision.id);
+	if (content) {
+		const liveIds = new Set(live.map((option) => option.id));
+		content.options.forEach((option, index) => {
+			if (option.optionId !== undefined && !liveIds.has(option.optionId)) {
+				error(400, `options[${index}].optionId ${option.optionId} is not a live option of this decision`);
+			}
+		});
+	}
+
+	requireTransition(decision, 'edit');
+	requireRevision(decision, revision);
+	const draft = decision.status === 'draft';
+	if (!draft) {
+		if (title !== undefined && title !== decision.title) error(409, 'This decision has been opened: its title cannot be changed');
+		if (closesAt !== undefined && closesAt !== decision.closesAt) error(409, 'This decision has been opened: the closing time of an open decision changes by Extend');
+		if (voteMode !== undefined && voteMode !== decision.voteMode) error(409, 'This decision has been opened: its vote mode cannot be changed');
+	}
+
+	let working: WorkingContent | undefined;
+	if (content) {
+		// Decision 7: rows for new entries, each with a label never used, every entry at its index.
+		let lastLabel = stored.lastLabel;
+		const listed = content.options.map((option, index) => {
+			if (option.optionId !== undefined) {
+				const row = live.find((one) => one.id === option.optionId)!;
+				if (row.position !== index) db.update(decisionOptions).set({ position: index }).where(eq(decisionOptions.id, row.id)).run();
+				return option;
+			}
+			const label = nextLabel(decision.id, { ...stored, lastLabel });
+			lastLabel = label;
+			const row = db.insert(decisionOptions).values({ decisionId: decision.id, label, position: index }).returning().get();
+			return { ...option, optionId: row.id };
+		});
+		const kept = new Set(listed.map((option) => option.optionId));
+		const unpublished = live.filter((option) => !kept.has(option.id) && option.addedInVersion === null).map((option) => option.id);
+		if (unpublished.length > 0) db.delete(decisionOptions).where(inArray(decisionOptions.id, unpublished)).run();
+
+		// Decision 9: the flags are the server's; through an API key each changed section is flagged again.
+		const after = { ...content, options: listed };
+		const agentDrafted = { ...stored.agentDrafted };
+		const reviewed = { ...stored.reviewed };
+		if (opts.source === 'api') {
+			for (const key of changedSections(stored, after)) {
+				agentDrafted[key] = true;
+				delete reviewed[key];
+			}
+		}
+		for (const key of Object.keys(agentDrafted)) {
+			const optionId = /^options\.(\d+)$/.exec(key);
+			if (optionId !== null && !kept.has(Number(optionId[1]))) delete agentDrafted[key];
+		}
+		working = { ...after, agentDrafted, reviewed, lastLabel };
+	}
+
+	const row = db
+		.update(decisions)
+		.set({
+			...(draft && title !== undefined ? { title } : {}),
+			...(draft && closesAt !== undefined ? { closesAt } : {}),
+			...(draft && voteMode !== undefined ? { voteMode } : {}),
+			...(working ? { workingContent: JSON.stringify(working) } : {}),
+			updatedAt: now
+		})
+		.where(eq(decisions.id, decision.id))
+		.returning()
+		.get();
+	return { decision: row, options: liveOptionsOf(decision.id) };
+}
+
+/**
+ * Mark sections drafted by an agent reviewed (card 2676, decision 9, R7):
+ * `sections`, a list of section keys or `'all'`, and `revision`, required.
+ * A person's act alone: refused, 403, unless the write came through the web
+ * application (`source: 'ui'`), so that an API key can never clear the label
+ * it set. A key that is no section of this decision is a 400. Each flagged
+ * key named loses its flag and is stamped `reviewed[key] = { byUserId,
+ * byName, at }`, which the next version carries, as `{ byName, at }`, as the
+ * record of who reviewed what. No event (comment 5599), activity entry, live
+ * event or mail.
+ */
+export function markReviewed(caller: SessionUser | null, at: { decisionId: number }, body: RequestBody, opts: ServiceOptions): Decision {
+	inWrite();
+	const user = requireUser(caller);
+	const { decision } = requireDecision(user, at.decisionId, 'review');
+	if (opts.source !== 'ui') error(403, "Marking text reviewed is a person's act: it cannot be done with an API key");
+
+	const working = parseWorkingContent(decision.workingContent);
+	const known = new Set(sectionKeysOf(working));
+	let sections: string[];
+	if (body.sections === 'all') {
+		sections = Object.keys(working.agentDrafted);
+	} else {
+		const listed = readList(body, 'sections', { required: true, max: known.size });
+		sections = listed.map((key, index) => {
+			if (typeof key !== 'string' || !known.has(key)) error(400, `sections[${index}] is not a section of this decision`);
+			return key;
+		});
+	}
+	const revision = readText(body, 'revision', { required: true });
+
+	requireTransition(decision, 'review');
+	requireRevision(decision, revision);
+	const now = stamp();
+	const agentDrafted = { ...working.agentDrafted };
+	const reviewed = { ...working.reviewed };
+	for (const key of sections) {
+		if (agentDrafted[key] !== true) continue;
+		delete agentDrafted[key];
+		reviewed[key] = { byUserId: user.id, byName: user.username, at: now };
+	}
+	return db
+		.update(decisions)
+		.set({ workingContent: JSON.stringify({ ...working, agentDrafted, reviewed }), updatedAt: now })
+		.where(eq(decisions.id, decision.id))
+		.returning()
+		.get();
+}
+
+/**
  * Open a draft: the one moment its participants are told. Refused, 409 with
  * nothing written or sent (decision 20), for no decider; a board that is gone;
  * a decider who can no longer edit it; no `closes_at` in the future; fewer
@@ -318,6 +526,11 @@ export function setParticipants(
  * events `published`, `opened` and `included { role, hadAccount }` for each
  * participant; the invitations, through `reachOf`; `decision_opened`; and the
  * `decision` live event.
+ *
+ * The refusals are `refusalsOf` in `$lib/decision-readiness`, from the facts
+ * `openFactsOf` reads, and the first is answered (card 2676, decision 11):
+ * the readability check on the edit page is the same list, so it cannot say
+ * a draft opens when this refuses it.
  */
 export function openDecision(caller: SessionUser | null, at: { decisionId: number }, body: null, opts: ServiceOptions): Decision {
 	inWrite();
@@ -326,37 +539,13 @@ export function openDecision(caller: SessionUser | null, at: { decisionId: numbe
 
 	const now = stamp();
 	requireTransition(decision, 'open', now);
-	if (decision.deciderUserId === null) error(409, 'This decision has no decider: it cannot be opened');
-	if (decision.boardId === null) error(409, "This decision's board has been deleted: it cannot be opened");
-	const decider = db.select({ id: users.id, role: users.role }).from(users).where(eq(users.id, decision.deciderUserId)).get();
-	if (!decider || !canEditBoard(decider, decision.boardId)) {
-		error(409, `The decider, ${decision.deciderName ?? 'who was named'}, can no longer edit this board: it cannot be opened until a decider who can is named`);
-	}
-	if (decision.closesAt === null || decision.closesAt <= now) error(409, 'This decision has no closing time in the future: it cannot be opened');
+	const [refusal] = refusalsOf(openFactsOf(decision, now));
+	if (refusal !== undefined) error(409, refusal.words);
 	const options = liveOptionsOf(decision.id);
-	if (options.length < 2) error(409, 'This decision has fewer than two options: it cannot be opened');
 	const rows = participantsOf(decision.id);
-	if (!rows.some((row) => row.role === 'consulted')) error(409, 'This decision has no consulted participant: it cannot be opened');
-	const persons = peopleById(rows.map((row) => row.personId).filter((id): id is number => id !== null));
-	for (const row of rows) {
-		const person = row.personId === null ? undefined : persons.get(row.personId);
-		if (!person) error(409, `${row.name} is no longer in the people directory: this decision cannot be opened until they are taken off it`);
-		if (person.status !== 'active') error(409, `${person.fullName} has left: this decision cannot be opened until they are taken off it`);
-	}
-	if (!isSmtpConfigured()) error(409, 'Mail is not set up on this server: a decision cannot be opened, as its participants could not be told');
-	if (decisionLinkBase() === null) error(409, NO_LINK_ADDRESS);
 
-	// Decision 19: the snapshots, taken again now; then decision 29 on them.
+	// Decision 19: the snapshots, taken again now, which decision 29 has been asked of above.
 	const snapshots = rows.map((row) => ({ row, snapshot: snapshotOf(row.personId!)! }));
-	const holders = new Map<number, string>();
-	for (const { snapshot } of snapshots) {
-		if (snapshot.userId === null) continue;
-		const other = holders.get(snapshot.userId);
-		if (other !== undefined) {
-			error(409, `${snapshot.name} and ${other} hold the same account: this decision cannot be opened while two of its participants do`);
-		}
-		holders.set(snapshot.userId, snapshot.name);
-	}
 
 	const by = actorFor(user, opts.source);
 	for (const { row, snapshot } of snapshots) {
@@ -384,8 +573,10 @@ export function openDecision(caller: SessionUser | null, at: { decisionId: numbe
 	}
 	queueRecordMails(opened, 'invitation', { by });
 
-	logActivity({ action: ACTIONS.decisionOpened, ...decisionEntry(decision.boardId, `"${opened.title}"`, user, opts) });
-	emit(decision.boardId, 'decision', { decisionId: opened.id, status: decisionStatus(opened, now), boardId: decision.boardId });
+	// `refusalsOf` refused a decision whose board is gone (`no_board`), so it is there.
+	const boardId = decision.boardId!;
+	logActivity({ action: ACTIONS.decisionOpened, ...decisionEntry(boardId, `"${opened.title}"`, user, opts) });
+	emit(boardId, 'decision', { decisionId: opened.id, status: decisionStatus(opened, now), boardId });
 	return opened;
 }
 
@@ -418,10 +609,8 @@ export function republishDecision(caller: SessionUser | null, at: { decisionId: 
 		error(409, "This decision's closing time has passed: it cannot be re-published until it is extended");
 	}
 	const number = decision.currentVersion + 1;
-	const listed = listedOptionIds(decision);
 	const live = liveOptionsOf(decision.id);
-	const adding = live.filter((option) => option.addedInVersion === null);
-	const retiring = live.filter((option) => option.addedInVersion !== null && listed !== null && !listed.has(option.id));
+	const { adding, retiring } = optionChanges(live, listedOptionIds(decision.workingContent));
 	if (!askAgain && adding.length + retiring.length > 0) {
 		error(409, 'Telling of a change cannot add or retire an option: publish a change to the options by asking everyone again');
 	}
@@ -680,21 +869,6 @@ function snapshotColumns(snapshot: NonNullable<ReturnType<typeof snapshotOf>>) {
 	return { name: snapshot.name, email: snapshot.email, jobTitle: snapshot.jobTitle, groups: snapshot.groups, userId: snapshot.userId };
 }
 
-/** Every participant row of the decision, removed ones included, in order. */
-function participantsOf(decisionId: number): DecisionParticipant[] {
-	return db.select().from(decisionParticipants).where(eq(decisionParticipants.decisionId, decisionId)).orderBy(asc(decisionParticipants.id)).all();
-}
-
-/** The decision's options not retired, in their order. */
-function liveOptionsOf(decisionId: number): DecisionOption[] {
-	return db
-		.select()
-		.from(decisionOptions)
-		.where(and(eq(decisionOptions.decisionId, decisionId), isNull(decisionOptions.retiredInVersion)))
-		.orderBy(asc(decisionOptions.position), asc(decisionOptions.id))
-		.all();
-}
-
 /** The participant row of this decision, or 404 for one that is not on it. */
 function participantOn(decisionId: number, participantId: number): DecisionParticipant {
 	const row = db
@@ -716,22 +890,11 @@ function reachesOf(decisionId: number, rows: DecisionParticipant[]): Map<number,
 }
 
 /**
- * The option ids the working content lists in its `options`, or null when it
- * holds no such list, which states nothing about the options and so retires
- * none (decision 24).
+ * A 409 unless `sent` is the decision's revision as it is now (card 2676,
+ * decision 10): someone changed it since the caller read it.
  */
-function listedOptionIds(decision: Decision): Set<number> | null {
-	try {
-		const read = JSON.parse(decision.workingContent) as { options?: unknown } | null;
-		if (read === null || typeof read !== 'object' || !Array.isArray(read.options)) return null;
-		return new Set(
-			read.options
-				.map((entry: unknown) => (entry !== null && typeof entry === 'object' ? (entry as { optionId?: unknown }).optionId : undefined))
-				.filter((id): id is number => typeof id === 'number')
-		);
-	} catch {
-		return null;
-	}
+function requireRevision(decision: Decision, sent: string): void {
+	if (revisionOf(decision, allOptionsOf(decision.id), participantsOf(decision.id)) !== sent) error(409, STALE_REVISION);
 }
 
 /** Stamp the decision's `updated_at`, and answer the row as it now is. */
@@ -772,22 +935,51 @@ function requireMailRested(rows: DecisionParticipant[], now: Stamp): void {
 	}
 }
 
+/** What a version copies of the working content (the code review's C3): these keys, as the content holds them. */
+const VERSION_TEXT_KEYS = ['situation', 'question', 'ask', 'unknowns', 'alreadyRuled', 'technicalDetail'] as const;
+/** What a version copies of each option's entry, besides the id and label it is given. */
+const VERSION_OPTION_KEYS = ['title', 'summary', 'pros', 'cons', 'commercial'] as const;
+const VERSION_AUDIENCE_KEYS = ['groupId', 'heading', 'body'] as const;
+const VERSION_STORY_KEYS = ['title', 'body'] as const;
+
 /**
- * Version 1's content: the working content, its options those still live,
- * each with its text from the working content and its id and label.
+ * A version's content: of the working content an allowlist alone (the code
+ * review's C3), each key copied only where the content holds it. Its text
+ * sections; its audiences and stories, each entry by its own keys; its
+ * options those still live, each with its text from the working content and
+ * its id and label; its agent flags; and each review stamp as `{ byName, at }`,
+ * the record of who reviewed what (R7). Never `lastLabel`, nor a reviewer's
+ * account id, nor a key the content may hold that is none of these.
  */
 function versionContent(decision: Decision, options: DecisionOption[]): string {
+	const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 	let working: Record<string, unknown> = {};
 	try {
 		const read = JSON.parse(decision.workingContent) as unknown;
-		if (read !== null && typeof read === 'object' && !Array.isArray(read)) working = read as Record<string, unknown>;
+		if (isRecord(read)) working = read;
 	} catch {
 		// Not JSON: the version holds the options alone.
 	}
-	const written = Array.isArray(working.options) ? (working.options as unknown[]) : [];
-	const textOf = (optionId: number) =>
-		written.find((entry): entry is Record<string, unknown> => entry !== null && typeof entry === 'object' && (entry as { optionId?: unknown }).optionId === optionId);
-	return JSON.stringify({ ...working, options: options.map((option) => ({ ...(textOf(option.id) ?? {}), optionId: option.id, label: option.label })) });
+	const pick = (entry: Record<string, unknown>, keys: readonly string[]) =>
+		Object.fromEntries(keys.filter((key) => Object.hasOwn(entry, key)).map((key) => [key, entry[key]]));
+	const version: Record<string, unknown> = pick(working, VERSION_TEXT_KEYS);
+	if (Array.isArray(working.audiences)) version.audiences = working.audiences.filter(isRecord).map((entry) => pick(entry, VERSION_AUDIENCE_KEYS));
+	if (Array.isArray(working.stories)) version.stories = working.stories.filter(isRecord).map((entry) => pick(entry, VERSION_STORY_KEYS));
+	const written = Array.isArray(working.options) ? working.options.filter(isRecord) : [];
+	version.options = options.map((option) => ({
+		...pick(written.find((entry) => entry.optionId === option.id) ?? {}, VERSION_OPTION_KEYS),
+		optionId: option.id,
+		label: option.label
+	}));
+	if (isRecord(working.agentDrafted)) version.agentDrafted = Object.fromEntries(Object.entries(working.agentDrafted).filter(([, flag]) => flag === true));
+	if (isRecord(working.reviewed)) {
+		version.reviewed = Object.fromEntries(
+			Object.entries(working.reviewed)
+				.filter((entry): entry is [string, Record<string, unknown>] => isRecord(entry[1]))
+				.map(([key, stamped]) => [key, { byName: stamped.byName, at: stamped.at }])
+		);
+	}
+	return JSON.stringify(version);
 }
 
 /**

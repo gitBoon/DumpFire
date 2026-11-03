@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.67
+version: 1.68
 status: As-Built
 date: 2026-11-03
 tags:
@@ -25,6 +25,7 @@ tags:
   - milestone-22
   - options-column
   - decision-records
+  - decision-authoring
 description: "High-level and component-level architecture of the DumpFire Kanban board system, including the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
 ---
 
@@ -1194,11 +1195,11 @@ sequenceDiagram
 
 ### The decision service and its record
 
-Card 2675 (plan `docs/planning/card-2675-decision-service.md` v1.1) is the server side of decision records: the engine cards 2676 (authoring), 2677 (the participant's page and `/decision-link/`), 2679 (ruling) and 2680 (the register) call. It is a set of server modules and one service, and **no route or page reaches it yet**. The tests call each write inside `writeAs({ user } as App.Locals, (caller) => …)`, which `auth.ts` allows under vitest alone. The tables are migration 0061's (card 2673; see [Data Model](data-model.md#decision-records-migration-0061)), and no column was added.
+Card 2675 (plan `docs/planning/card-2675-decision-service.md` v1.1) is the server side of decision records: the engine cards 2676 (authoring), 2677 (the participant's page and `/decision-link/`), 2679 (ruling) and 2680 (the register) call. It is a set of server modules and one service. Card 2676's routes and pages are the first to reach it ([Authoring a decision](#authoring-a-decision)); the lifecycle routes (open, re-publish, close, extend, withdraw, re-send and the administrator's two) are card 2697's, and no route calls those writes yet. The tests call each write inside `writeAs({ user } as App.Locals, (caller) => …)`, which `auth.ts` allows under vitest alone. The tables are migration 0061's (card 2673; see [Data Model](data-model.md#decision-records-migration-0061)), and no column was added.
 
 ```mermaid
 flowchart LR
-    Routes["Later cards' routes<br/>(2676, 2677, 2680, 2682)"] -->|"writeAs(locals, caller =>"| Svc["decisions.ts<br/>(service: twelve writes)"]
+    Routes["Card 2676's routes, and later cards'<br/>(2697, 2677, 2680, 2682)"] -->|"writeAs(locals, caller =>"| Svc["decisions.ts<br/>(service: fourteen writes)"]
     Svc --> Guard["route-guards.ts<br/>requireDecision"]
     Guard --> Acc["decision-access.ts<br/>decisionAccess, DECISION_RULES, mayDo"]
     Acc --> BA["board-access.ts<br/>getBoardRole"]
@@ -1239,7 +1240,8 @@ stateDiagram-v2
 
 | Action | Stored statuses allowed (`TRANSITIONS`) |
 |---|---|
-| `edit`, `setDecider`, `withdraw` | draft, open, closed |
+| `edit`, `setDecider`, `withdraw`, `review` (card 2676) | draft, open, closed |
+| `include` (card 2676) | open, closed |
 | `open` | draft |
 | `republish`, `extend`, `rule`, `resend`, `participantAccount`, `participantAddress` | open, closed |
 | `close` | open |
@@ -1304,8 +1306,10 @@ sequenceDiagram
 | Write | Does |
 |---|---|
 | `createDecision` | `title` trimmed, 1 to 200, refusing a control, direction, invisible or other format character (`\p{Cf}`; `UNPRINTABLE` from `logger.ts`). A draft with `board_name` and `author_name`; the decider is the board's Product Owner while that account can edit the board, the author otherwise. Writes `created { decider }`, and no activity, live event or mail |
-| `setDecider` | `deciderUserId`: an account (400) that can edit the board (400); 409 with no board; once open, 403 for naming the caller. Writes `decider_changed` |
-| `setParticipants` | Up to 5,000 `{ personId, role }`, each person once and active (400). A draft: rows inserted with snapshots, re-roled or deleted, with no event naming a participant. Open or closed: added (`included`, an invitation), brought back on the same row (`re_included`), re-roled (`role_changed`) or marked removed (`removed`, `link_revoked { removed }`), never deleted. 409 for a second live row holding one account, and, when anyone is added or brought back, for `NO_LINK_ADDRESS` and for a returning participant mailed in the last 10 minutes |
+| `setDecider` | `deciderUserId`: an account (400) that can edit the board (400); 409 with no board; once open, 403 for naming the caller. `revision` required (card 2676). A caller who is not an administrator is told an id that is no account in the same words, at the same step, as an account that cannot edit the board (`deciderUserId N cannot edit this board: …`, card 2676's C5); an administrator is told `deciderUserId N is not an account`. Writes `decider_changed` |
+| `setParticipants` | Up to 5,000 `{ personId, role }`, each person once and active (400). A draft: rows inserted with snapshots, re-roled or deleted, with no event naming a participant. Open or closed: added (`included`, an invitation), brought back on the same row (`re_included`), re-roled (`role_changed`) or marked removed (`removed`, `link_revoked { removed }`), never deleted; a live row whose person has been deleted (`person_id` NULL), which no body can name, is marked removed the same way, so its `user_id` no longer gives the participant role (card 2676's C1). 409 for a second live row holding one account, and, when anyone is added or brought back, for `NO_LINK_ADDRESS` and for a returning participant mailed in the last 10 minutes. Card 2676: `revision` required; on a decision that is not a draft, 403 unless the caller also holds `include` (author, decider); a caller who is not an administrator naming someone who has left or an id that is no person is told `personId N cannot be included`, and one of this decision's own participants who has left is named to everyone, `participants: <name> has left: remove before saving` |
+| `updateDraft` (card 2676) | The working copy: `revision` required, and any of `title`, `closesAt`, `voteMode` and `content`. See [Authoring a decision](#authoring-a-decision). No event, activity, live event or mail |
+| `markReviewed` (card 2676) | `sections` (keys or `'all'`) and `revision`; `review` (author, decider), and 403 unless `source` is `ui`. Clears agent flags and stamps `reviewed`. No event |
 | `openDecision` | 409 with nothing written for no decider, no board, a decider who can no longer edit it, no `closes_at` in the future, fewer than two live options, no consulted participant, a participant whose person has left or is gone, no mail host, no link address, or two retaken snapshots holding one account. Then snapshots retaken with `included_at` now, `open`, version 1, options numbered, `published`, `opened`, `included { role, hadAccount }` per participant, the invitations, `decision_opened`, the live event |
 | `republishDecision` | `changeNote` (1 to 2,000) and `askAgain`. 409 once `closes_at` has passed, for telling only while an option would be added or retired, when the new version would hold fewer than two live options (decision 20, the code review's F4), for `NO_LINK_ADDRESS`, and while anyone it would mail was mailed in the last 10 minutes. Version N+1, options numbered or retired, `published`; asking again mails `asked_again` and opens a closed decision, telling only mails `told_of_change`. `decision_republished`, the live event |
 | `closeDecision` | `closed`, `closed_at`, the `closed` event, `decision_closed`, the live event; no mail |
@@ -1319,6 +1323,86 @@ sequenceDiagram
 **Activity and live events.** The six actions `decision_opened`, `decision_republished`, `decision_closed`, `decision_extended`, `decision_withdrawn` and `decision_deleted` are written only for a decision that has been opened and whose board is there, with no card, `actorOf(caller)`, `source: opts.source`, and a detail of the quoted title and the lifecycle words alone: never a count, a name, a reason or a change note. Each call writes its `action: ACTIONS.decisionX` at its own site, as `tests/activity-twins.test.ts` requires; `decisionEntry` builds the rest. There is no `decision_created`, and none of the six sends a webhook (card 2689). On the same six steps and conditions the service sends `emit(boardId, 'decision', { decisionId, status, boardId })`, `status` the shown one: a named event no page listens for yet (card 2680), so no open board re-reads itself ([Real-Time Updates via SSE](#real-time-updates-via-sse)).
 
 **Outside the decision modules.** `people.ts` ends a person's links on Mark left, a link, an unlink, a new address and a delete, through `revokeLinks` ([How the directory clears links](#the-people-directory-page)). `deleteUser` in `deletes.ts` marks every person linked to the account left (`status`, `left_at`) before the account goes, ends their links through the same `revokeLinks` with the reason `left`, by the deleting administrator, and writes one `PEOPLE` line per person with no address, inside the delete's own transaction (the code review's S4). `restoreFromBackup` records `link_revoked { reason: 'restore' }` for each participant holding a link on a decision that is not a draft, empties every hash, counts them into `RestoreResult.decisionLinksCleared`, gives no default to a NULL in a decision table (F8), and fails, rolled back, when any row of `decisions` or a `decision_*` table could not be copied (see [Data Model](data-model.md#decision-records-migration-0061)). `SECRET_IN_PATH` in `secret-paths.ts` holds `{ routeId: '/decision-link/[token]', before: '/decision-link/' }`, so the gate's line, `maskMailText`, `mailStatus().lastFailure`, backups and the start-up sweep write `/decision-link/[token]`.
+
+### Authoring a decision
+
+Card 2676 (plan `docs/planning/card-2676-decision-authoring.md` v1.1) is drafting a decision: two new service writes, the revision every authoring write sends, a closed content shape, the readability check, the one shape every answer is given in, six route-methods, two pages and three components. Opening, re-publishing and the other lifecycle controls, the preview and the dry run are card 2697's, which waits on card 2677's participant pages; until it ships nobody is mailed from these pages, except that saving participants on a decision already open includes them, which mails them (no decision can be opened yet, so none is).
+
+```mermaid
+flowchart LR
+    subgraph Pages
+      L["/board/[id]/decisions<br/>+page.server.ts"]
+      E["/decisions/[id]/edit<br/>+page.server.ts"]
+    end
+    L --> R["decision-authoring.ts<br/>readBoardDecisions, readEditPage,<br/>the one projection"]
+    E --> R
+    R --> G["route-guards.ts<br/>requireBoard / requireDecision"]
+    R --> C["decision-content.ts<br/>parseWorkingContent, readContent, readTitle,<br/>revisionOf, nextLabel, openFactsOf,<br/>audienceFactsOf, listedOptionIds, optionChanges"]
+    R --> BA["board-access.ts<br/>editorsOf"]
+    C --> RD["$lib/decision-readiness.ts<br/>refusalsOf (server only),<br/>checkContent (the page too)"]
+    C --> RR["decision-record.ts<br/>labelsInVersions"]
+    RD --> MW["$lib/mail-words.ts<br/>NO_LINK_ADDRESS"]
+    EM["email.ts (re-exports it)"] --> MW
+    UI["edit +page.svelte:<br/>DecisionEditor, ParticipantPicker,<br/>ReadinessPanel"] -->|"checkContent alone"| RD
+    UI -->|"fetch JSON with the revision"| API["/api/boards/[id]/decisions,<br/>/api/decisions/[id]…"]
+    API -->|"writeAs(locals, caller =>"| S["decisions.ts<br/>createDecision, updateDraft, markReviewed,<br/>setDecider, setParticipants, deleteDecision"]
+    API -->|"the answer, inside the callback"| R
+    S --> C
+    S --> RD
+    Share["api/boards/[id]/share"] --> BA
+```
+
+`decision-content.ts` and `decision-authoring.ts` take no `caller` and import no `inWrite`, so they are not services (`tests/check-at-the-write.test.ts`); a page load reads through `decision-authoring.ts`, never through the service. `decision-readiness.ts`, `mail-words.ts` and `decision-words.ts` (`STALE_REVISION`, `STATUS_WORDS` and `shownMoment`, one copy each for the service, the editor, the picker and the list, card 2676's C6 and C7) sit in `src/lib/` and import nothing from `server/`, so the pages can load them. `allOptionsOf`, `liveOptionsOf` and `participantsOf` are in `decision-content.ts` alone, which both the service and the reads import (C7). `editorsOf(board)` moved unchanged from the share route into `board-access.ts`: the Share window's Product Owner candidates and the decider select are one rule.
+
+**The routes.** Each is `requireUser`, `pathId`, `readBody` where there is a body, then `writeAs(locals, (caller) => service(caller, at, body, { source: 'ui' }))`, the answer made inside the callback through the projection. There are no form actions.
+
+| Route | Service | Answer |
+|---|---|---|
+| `POST /api/boards/[id]/decisions` | `createDecision` | `201 { decision, revision }` |
+| `PUT /api/decisions/[id]` | `updateDraft` | `{ decision, options, revision, readiness }` |
+| `DELETE /api/decisions/[id]` | `deleteDecision` | `{ success: true }` |
+| `PUT /api/decisions/[id]/decider` | `setDecider` | `{ decision, revision }` |
+| `PUT /api/decisions/[id]/participants` | `setParticipants` | `{ participants, revision }` |
+| `POST /api/decisions/[id]/reviewed` | `markReviewed` | `{ decision, revision }` |
+
+**The revision** (`revisionOf` in `decision-content.ts`) is HMAC-SHA256 in hex, keyed with `purposeKey('decision-revision')` from `request-tokens.ts` (HMAC-SHA256 of the request form's key, `request_form_secret`, with that purpose; derived on use and never stored), so that a caller holding a revision cannot test guesses at the addresses and accounts it covers offline (card 2676's C2). A Reset or an import replaces that key, after which every revision is new and an open editor's next save is the 409 below. It covers the decision's `title`, `status`, `closes_at`, `vote_mode`, `working_content`, `current_version`, `decider_user_id` and `updated_at`, every option row (retired ones too) by `id`, `label`, `position`, `added_in_version` and `retired_in_version`, and every participant row (removed ones too) by `id`, `person_id`, `role`, `user_id`, `email` and `removed_at`, rows in id order. It is worked out on read, not stored. `updateDraft`, `setDecider`, `setParticipants` and `markReviewed` require it: missing is 400 `revision is required`, different is 409 `This decision was changed since you opened it: reload it to see the change`, asked after `requireTransition` and before any other 409. Every page load and every authoring answer gives the next one.
+
+**`updateDraft`** reads `revision`, `title` (`readTitle`, the rule `createDecision` uses too), `closesAt` (a timestamp or null, without `future`), `voteMode` (`single` or `score`) and `content` (`readContent`). A changed `closesAt` at or before now is 400 `closesAt must be in the future`; one equal to the stored value is accepted even after it has passed. On a draft each is saved. Once open or closed only `content` changes: a `title`, `closesAt` or `voteMode` equal to the stored value is accepted, and a changed one is 409 (for `closesAt`, "the closing time of an open decision changes by Extend"). The option rows are kept in step with `content.options`: an entry with no `optionId` gets a row and a label from `nextLabel`, every entry's position is its index, an `optionId` must be a live option of this decision (400), and a row left out is deleted while it was never published and otherwise stays live, to be retired at the next publish. Through an API key (`source: 'api'`, which only card 2682's v1 routes will send) each changed section is flagged `agentDrafted` and its `reviewed` stamp removed; a person's save clears no flag. No event, activity entry, live event or mail.
+
+**`markReviewed`** needs `review` (author, decider) and is 403 `Marking text reviewed is a person's act: it cannot be done with an API key` unless `source` is `ui`. `sections` is a list of keys of this content (400 for any other) or `'all'`; each flagged one is unflagged and stamped `reviewed[key] = { byUserId, byName, at }`. The next version carries the flags, and each stamp as `{ byName, at }`, as they are then, which is the record of who reviewed what. `versionContent` copies an allowlist alone: the six text sections, `audiences` (`groupId`, `heading`, `body`), `stories` (`title`, `body`), the live options (`title`, `summary`, `pros`, `cons`, `commercial`, with `optionId` and `label`), `agentDrafted` and `reviewed`; never `lastLabel`, a reviewer's account id, or any other key the stored content holds (card 2676's C3). No event.
+
+**The readability check** (`src/lib/decision-readiness.ts`) has two parts. `refusalsOf(facts)` is what stops opening, in `openDecision`'s words and order: no decider, no board, a decider who can no longer edit the board, no closing time in the future, fewer than two live options, no consulted participant, then each participant row in id order (deleted, or left), no mail host, no link address (`NO_LINK_ADDRESS`), and each pair holding one account. It is called on the server alone, by `openDecision` (which answers the first) and by the edit page's load and each save's answer, from `openFactsOf(decision, now)`; the facts (the decider's access, the participants' persons and accounts, the mail settings) never leave the server, and a page is handed codes and words. `checkContent(content, audienceFacts)` gives the warnings (an empty situation, question, ask or audience; an option with no title, pros, cons or commercial note; an audience whose group no live participant is in, or whose group is gone; each section an agent drafted), and is the only part the browser runs, on edits not yet saved. A warning does not stop opening. `tests/decision-authoring.svelte.test.ts` pins that no `.svelte` file names `refusalsOf`.
+
+**The one projection** (`decisionAnswer`, `optionAnswers`, `participantAnswers` in `decision-authoring.ts`) is an allowlist written field by field, never a row spread. A decision is given with its working content projected by `contentAnswer` (its sections, options, audiences, stories and agent flags; no `lastLabel`; each review stamp as `{ byName, at }`, and `byUserId` besides to an administrator alone, card 2676's C3) and no other account id but the decider's; an option by `id`, `label`, `position`, `addedInVersion` and `retiredInVersion`. A participant is given to everyone who may edit as `id`, `personId`, `role`, `name`, `jobTitle`, `groups`, `includedAt`, `includedByName`, `removedAt`, `reach` (`account` or `link`), `hasLeft` and `notInDirectory`; an administrator also gets `email`, `userId`, `includedBy`, `removedBy` and `linkIssuedAt`. Nobody is given `linkTokenHash`.
+
+**The pages.** Both are signed-in pages; `hooks.server.ts` gates them as it gates every other, and each load guards itself.
+
+- `/board/[id]/decisions` (`readBoardDecisions`, `requireBoard(…, 'view')`): one query, the caller's board role read once, newest first. Every decision that is not a draft, and a draft only to `DRAFT_VIEWERS` (its author, its decider, the board's owners, administrators), each row asked of `mayDo(…, 'view')` and carrying `mayEdit` from `mayDo(…, 'edit')`: the title links to the editor only where it holds. **New decision**, for a caller who can edit the board (`canCreate`), asks for a title in a small dialog, posts it and goes to the editor. The board's More menu has **Decisions** under Go to, for every board viewer.
+- `/decisions/[id]/edit` (`readEditPage`, `requireDecision(…, 'edit')`): 404 for a caller who cannot view the decision (a board editor and a draft not theirs among them), 403 for one who can view and not edit. It gives the decision, its live options and every participant row through the projection, the revision, the readability check, `editable` (`TRANSITIONS.edit`), `canSetDecider`, `canReview`, `canSetParticipants` (`edit`, and `include` once opened), `productOwnerUserId`, and the picker's data: active people as `{ id, fullName, jobTitle, groupIds }` (with `email` to an administrator alone), groups as `{ id, name, activeMemberIds }`, and the decider candidates from `editorsOf`. The people, groups and candidates are empty wherever `TRANSITIONS.edit` refuses. The people are also empty, and the groups names alone (`{ id, name }`, for the audience select), wherever `canSetParticipants` is false; the candidates are empty wherever the caller may not change the decider (card 2676's C4); once open, the caller is left out of them.
+
+**The components** (`src/lib/components/decision/`). `DecisionEditor` holds the working copy in design 4.7's order, the title, closing time (UTC) and vote mode (read-only once open and sent unchanged), options as cards with the server's labels and move left, right and remove, the agent label with **Mark reviewed** on each flagged section and **Mark all reviewed** in its top bar, and the decider select (read-only text where `canSetDecider` is false, the Product Owner marked). `ParticipantPicker` searches name, job title and group name (and the address where the server gave one), ticks a group's active members as Consulted, shows a group mixed or with no active members, flags the decision's own participants who have left ("has left: remove before saving", ticked until unticked) or are no longer in the directory ("saving takes them off"), and on an opened decision asks first, with how many are mailed and how many marked removed. `ReadinessPanel` draws the server's refusals as given and the warnings it is handed: the server's, until there are edits not yet saved, then `checkContent`'s. The page holds the revision: each answer gives the next, and the page's data is read again (`invalidateAll()`). A refusal is said in the server's words, the edits kept, and only the stale-revision 409 (`STALE_REVISION` in `$lib/decision-words.ts`, the words the service refuses with) offers **Reload**, which reads the decision again and draws the editor afresh; any other 409 keeps the edits and offers nothing that would throw them away (card 2676's C6). Where the groups' members were withheld (C4), the editor does not judge an audience "nobody ticked" on unsaved edits; the server's check does once they are saved. No page listens to the live stream yet (card 2680).
+
+```mermaid
+sequenceDiagram
+    participant Pg as Edit page
+    participant Rt as PUT /api/decisions/[id]
+    participant Sv as updateDraft (in writeAs)
+    participant Ct as decision-content
+    Pg->>Rt: { revision, title, closesAt, voteMode, content }
+    Rt->>Sv: caller, { decisionId }, body, { source: 'ui' }
+    Sv->>Sv: requireDecision(edit); the body (400: no revision, closed shape, changed past closesAt)
+    Sv->>Sv: requireTransition, the revision, the status rule (409; unchanged values pass)
+    Sv->>Ct: option rows in step (insert with nextLabel, reorder, delete unpublished)
+    Sv->>Ct: changedSections: agent flags when source is 'api'
+    Sv-->>Rt: decision, options
+    Rt->>Rt: projection, revisionFor, readinessOf (refusalsOf + checkContent)
+    Rt-->>Pg: { decision, options, revision, readiness }
+    alt saved
+        Pg->>Pg: take the answer (option ids, labels), the next revision, invalidateAll()
+    else 400 or 409
+        Pg->>Pg: keep the edits, say the server's words; Reload on a 409
+    end
+```
 
 ### The dashboard
 
