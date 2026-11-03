@@ -476,9 +476,25 @@ const BARE_TOKEN = /[0-9a-f-]{16,}/gi;
 const ENCODED_HYPHEN = /%2d|&#0*45;|&#x0*2d;/gi;
 
 /**
+ * A slash encoded: `%2F`, `&#47;` or `&#x2F;`, in any case. Encoded, a
+ * decision link's path is not one `maskSecretPaths` finds, so they are read
+ * back first, as the hyphens are (card 2675, the code review's S1).
+ */
+const ENCODED_SLASH = /%2f|&#0*47;|&#x0*2f;/gi;
+
+/**
+ * A run of 32 or more base64url characters: a decision link's token is 43
+ * (decision-links.ts), and is not hex, so `BARE_TOKEN` alone would leave it
+ * wherever it stood outside its path, or in a piece of it split across two
+ * reply lines (S1).
+ */
+const LONG_TOKEN = /[A-Za-z0-9_-]{32,}/g;
+
+/**
  * The mail server's words, fit to log and to show: an encoded hyphen read
- * back as `-`, `maskSecretPaths`, then every run of 16 or more hex digits and
- * hyphens becomes `[token]` (R-M1).
+ * back as `-` and an encoded slash as `/`, `maskSecretPaths` in any case,
+ * then every run of 16 or more hex digits and hyphens, and every run of 32 or
+ * more base64url characters, becomes `[token]` (R-M1; card 2675's S1).
  *
  * A refusal can quote the mail's link, and nodemailer adds the server's reply
  * to its message: URL-encoded, in capitals, with HTML entities, or split
@@ -490,7 +506,9 @@ const ENCODED_HYPHEN = /%2d|&#0*45;|&#x0*2d;/gi;
  * it would mask every UUID there.
  */
 export function maskMailText(text: string): string {
-	return maskSecretPaths(text.replace(ENCODED_HYPHEN, '-')).replace(BARE_TOKEN, '[token]');
+	const decoded = text.replace(ENCODED_HYPHEN, '-').replace(ENCODED_SLASH, '/');
+	// The long runs first, so that no hex run inside a token is masked alone and leaves the rest of it.
+	return maskSecretPaths(decoded, { anyCase: true }).replace(LONG_TOKEN, '[token]').replace(BARE_TOKEN, '[token]');
 }
 
 /** How much of the mail server's words is kept. */
@@ -555,8 +573,17 @@ type MailMessage = {
  *
  * `test` is Send Test, which throws what this says and is not given R3's
  * line (`warnIfTlsFault`).
+ *
+ * `recipient` names the recipient in the log line in place of the address,
+ * and stands for the address wherever the mail server's words quote it, in
+ * `detail` too: a decision's record mail passes `participant <id> of decision
+ * <id>`, so that no participant's address is logged (card 2675's code review,
+ * S7). Every other mail logs its address as before.
  */
-async function deliverMail(message: MailMessage, { test = false }: { test?: boolean } = {}): Promise<MailOutcome> {
+async function deliverMail(
+	message: MailMessage,
+	{ test = false, recipient }: { test?: boolean; recipient?: string } = {}
+): Promise<MailOutcome> {
 	const config = getSmtpConfig();
 	if (!config || !config.host) {
 		return { sent: false, problem: 'not-configured', detail: MAIL_PROBLEM_WORDS['not-configured'] };
@@ -571,7 +598,8 @@ async function deliverMail(message: MailMessage, { test = false }: { test?: bool
 	} catch (err) {
 		const problem = mailProblem(err);
 		const said = err instanceof Error ? err.message : String(err);
-		const detail = maskMailText(said).slice(0, MAIL_DETAIL_MAX);
+		const masked = maskMailText(said);
+		const detail = (recipient === undefined || message.to === '' ? masked : withoutAddress(masked, message.to, recipient)).slice(0, MAIL_DETAIL_MAX);
 		const { code, command, responseCode } = (err !== null && typeof err === 'object' ? err : {}) as {
 			code?: unknown;
 			command?: unknown;
@@ -584,7 +612,7 @@ async function deliverMail(message: MailMessage, { test = false }: { test?: bool
 			problem: MAIL_PROBLEM_WORDS[problem],
 			detail
 		};
-		log.error(`Failed to send email to ${message.to}: ${message.subject}`, {
+		log.error(`Failed to send email to ${recipient ?? message.to}: ${message.subject}`, {
 			code: typeof code === 'string' ? code.slice(0, 40) : undefined,
 			command: typeof command === 'string' ? command.slice(0, 40) : undefined,
 			responseCode: typeof responseCode === 'number' ? responseCode : undefined,
@@ -594,6 +622,11 @@ async function deliverMail(message: MailMessage, { test = false }: { test?: bool
 		if (!test) warnIfTlsFault(err, detail);
 		return { sent: false, problem, detail };
 	}
+}
+
+/** `text` with every occurrence of `address`, in any case, replaced by `[<label>]`. */
+function withoutAddress(text: string, address: string, label: string): string {
+	return text.replace(new RegExp(address.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), `[${label}]`);
 }
 
 /**
@@ -615,10 +648,12 @@ export class MailNotSent extends Error {
 
 /**
  * Send an email, and say whether it went (card 2196). With no mail host it is
- * not sent: `not-configured`.
+ * not sent: `not-configured`. `opts.recipient` names the recipient in the
+ * log in place of the address (`deliverMail`): a decision's record mail
+ * passes it (card 2675's S7).
  */
-export function trySendEmail(to: string, subject: string, html: string): Promise<MailOutcome> {
-	return deliverMail({ to, subject, html });
+export function trySendEmail(to: string, subject: string, html: string, opts: { recipient?: string } = {}): Promise<MailOutcome> {
+	return deliverMail({ to, subject, html }, { recipient: opts.recipient });
 }
 
 /**

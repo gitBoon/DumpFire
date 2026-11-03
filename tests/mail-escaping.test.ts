@@ -433,7 +433,8 @@ describe('every mail in notifications.ts', () => {
 
 	it('has a case for every mail the module exports', () => {
 		const exported = Object.entries(notifications)
-			.filter(([name, value]) => typeof value === 'function' && name !== 'getUserNotifPrefs')
+			// emailTemplate is the wrapper, not a mail: card 2675's decision mails call it with the title escaped.
+			.filter(([name, value]) => typeof value === 'function' && name !== 'getUserNotifPrefs' && name !== 'emailTemplate')
 			.map(([name]) => name)
 			.sort();
 		const covered = [...new Set(MAILS.map((mail) => mail.name.split(' ')[0]))].sort();

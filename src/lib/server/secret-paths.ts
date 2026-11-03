@@ -11,6 +11,12 @@
  * a backup's copy, by `withoutSecrets` in backup.ts, and in the running
  * database's own log once at every start, by startup-checks.ts.
  *
+ * A decision's personal link, `/decision-link/<token>` (card 2675, plan
+ * decision 9, R3), is masked the same way, from before its route exists (card
+ * 2677): its token lets someone with no account see a decision and answer it,
+ * and a mail server's refusal can quote it, which `maskMailText` in email.ts
+ * masks by this list before the line is logged.
+ *
  * Only the path is ever written down, never the query, so a token sent as
  * `?token=` (the public request form's links, `/request/[id]/reply` and
  * `/request/[id]/confirm`, and what their pages ask of `/api/requests/[id]`
@@ -30,7 +36,10 @@ import type Database from 'better-sqlite3';
  * Each route whose path holds a secret, by route id, with the part of the
  * address that comes before the secret.
  */
-const SECRET_IN_PATH: readonly { routeId: string; before: string }[] = [{ routeId: '/invite/[token]', before: '/invite/' }];
+const SECRET_IN_PATH: readonly { routeId: string; before: string }[] = [
+	{ routeId: '/invite/[token]', before: '/invite/' },
+	{ routeId: '/decision-link/[token]', before: '/decision-link/' }
+];
 
 /**
  * The path to write to the log for a request: `sent`, the address as it was
@@ -58,11 +67,16 @@ export function pathToLog(sent: string, routed: string): string {
  * And a request link's token in a query: what follows `?token=` or
  * `&token=`, up to the next `&`, `#`, quote or space, becomes `[token]` too.
  * Masked text is left as it is, so masking twice changes nothing.
+ *
+ * `anyCase` finds the path in any case too, `/DECISION-LINK/<token>` among
+ * them: a mail server's reply may quote a link in capitals (`maskMailText`,
+ * card 2675's code review, S1). Not for the log at start, whose lines the
+ * gate wrote as it routed them.
  */
-export function maskSecretPaths(text: string): string {
+export function maskSecretPaths(text: string, { anyCase = false }: { anyCase?: boolean } = {}): string {
 	let masked = text;
 	for (const { routeId, before } of SECRET_IN_PATH) {
-		const secret = new RegExp(`${before.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}[^/?#"'\\s]+`, 'g');
+		const secret = new RegExp(`${before.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}[^/?#"'\\s]+`, anyCase ? 'gi' : 'g');
 		masked = masked.replace(secret, routeId);
 	}
 	return masked.replace(/([?&]token=)[^&#"'\s]+/g, '$1[token]');

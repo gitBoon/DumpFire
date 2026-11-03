@@ -215,8 +215,12 @@ function getCardDetails(cardId: number): { description: string; businessValue: s
 	return { description: card?.description || '', businessValue: card?.businessValue || '' };
 }
 
-/** Wrap content in a styled email template. */
-function emailTemplate(title: string, content: string): string {
+/**
+ * Wrap content in a styled email template. `title` is put into the heading as
+ * it is given, so a caller escapes any text in it first: the decision mails
+ * (decision-mail.ts, card 2675) hand it `escapeHtml(title)`.
+ */
+export function emailTemplate(title: string, content: string): string {
 	return `
 	<table width="100%" cellpadding="0" cellspacing="0" style="background-color: #f8fafc; padding: 40px 16px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;">
 		<tr>

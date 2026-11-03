@@ -2193,7 +2193,9 @@ const SERVICES = [
 	// Card 2337: the card window's files, the web application's alone.
 	'src/lib/server/card-attachments.ts',
 	// Card 2674: the people directory and its groups, an administrator's.
-	'src/lib/server/people.ts'
+	'src/lib/server/people.ts',
+	// Card 2675: decisions and their permanent record.
+	'src/lib/server/decisions.ts'
 ];
 
 /**
@@ -2929,6 +2931,24 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 			'src/lib/server/people.ts': {
 				reads: [],
 				writes: ['createPerson', 'updatePerson', 'deletePerson', 'addFromAccounts', 'createGroup', 'updateGroup', 'deleteGroup', 'setGroupMembers']
+			},
+			// Card 2675.
+			'src/lib/server/decisions.ts': {
+				reads: [],
+				writes: [
+					'createDecision',
+					'setDecider',
+					'setParticipants',
+					'openDecision',
+					'republishDecision',
+					'closeDecision',
+					'extendDecision',
+					'withdrawDecision',
+					'deleteDecision',
+					'resendInvitation',
+					'setParticipantAccount',
+					'changeParticipantAddress'
+				]
 			}
 		});
 		// The page routes' options a new card's nested writes share with them (the card 2296 review).

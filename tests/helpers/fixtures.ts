@@ -5,6 +5,7 @@
  * requires is required here too. Defaults are deliberately boring: a test
  * states only what it is about.
  */
+import { createHash } from 'node:crypto';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, relative, sep } from 'node:path';
@@ -22,8 +23,12 @@ import {
 	cardComments,
 	cards,
 	columns,
+	decisionOptions,
+	decisionParticipants,
+	decisions,
 	labels,
 	milestones,
+	people,
 	settings,
 	subtasks,
 	teamMembers,
@@ -36,13 +41,19 @@ import {
 	type CardAttachment,
 	type CardComment,
 	type Column,
+	type Decision,
+	type DecisionOption,
+	type DecisionParticipant,
 	type Label,
 	type Milestone,
+	type NewDecision,
+	type Person,
 	type Subtask,
 	type Team,
 	type WorkDependency
 } from '$lib/server/db/schema';
 import { createSession, generateApiKey, type SessionUser } from '$lib/server/auth';
+import { appendEvent, SYSTEM_ACTOR } from '$lib/server/decision-record';
 import { resetMailStatus } from '$lib/server/email';
 import { forgetConnects } from '$lib/server/gdrive-connect';
 import { forgetDeliveries, forgetWebhookWarnings } from '$lib/server/webhooks';
@@ -470,4 +481,122 @@ export function makeSmtp(): void {
 			{ key: 'smtp_from_address', value: 'dumpfire@example.test' }
 		])
 		.run();
+}
+
+/** A person in the directory (card 2674): active, with no account and no job title unless told otherwise. */
+export function makePerson(
+	opts: { fullName?: string; email?: string; jobTitle?: string; user?: SessionUser | null; status?: 'active' | 'left' } = {}
+): Person {
+	const n = next();
+	const status = opts.status ?? 'active';
+	return db
+		.insert(people)
+		.values({
+			fullName: opts.fullName ?? `Person ${n}`,
+			email: (opts.email ?? `person${n}@example.test`).toLowerCase(),
+			jobTitle: opts.jobTitle ?? '',
+			userId: opts.user?.id ?? null,
+			status,
+			leftAt: status === 'left' ? '2026-11-01 09:00:00' : null
+		})
+		.returning()
+		.get();
+}
+
+/**
+ * A decision, written as card 2675's service would leave it: a draft on no
+ * board unless told otherwise, with the board's and the accounts' names kept
+ * beside their ids. Any other column is given in `row`, `closesAt`,
+ * `ruledAt` and `withdrawnAt` among them.
+ */
+export function makeDecision(
+	opts: { board?: Board | null; author?: SessionUser | null; decider?: SessionUser | null; status?: string; closesAt?: string | null } & Partial<NewDecision> = {}
+): Decision {
+	const { board, author, decider, ...row } = opts;
+	return db
+		.insert(decisions)
+		.values({
+			title: `Decision ${next()}`,
+			...row,
+			boardId: board?.id ?? null,
+			boardName: board?.name ?? 'No board',
+			authorUserId: author?.id ?? null,
+			authorName: author?.username ?? 'An author',
+			deciderUserId: decider?.id ?? null,
+			deciderName: decider?.username ?? null,
+			status: opts.status ?? 'draft',
+			closesAt: opts.closesAt ?? null
+		})
+		.returning()
+		.get();
+}
+
+/** An option of a decision, labelled and placed in the order made unless told otherwise. */
+export function makeOption(decision: Decision, opts: Partial<typeof decisionOptions.$inferInsert> = {}): DecisionOption {
+	const n = next();
+	return db
+		.insert(decisionOptions)
+		.values({ label: `Option ${n}`, position: n, ...opts, decisionId: decision.id })
+		.returning()
+		.get();
+}
+
+/** The SHA-256 a personal link's token is stored as (card 2675, decision 9). */
+export function linkHashOf(token: string): string {
+	return createHash('sha256').update(token).digest('hex');
+}
+
+/**
+ * A participant row of a decision, with its snapshots: the person's, when one
+ * is given, and made-up ones otherwise; any of them given in `row`, `userId`
+ * and `email` among them. `token` gives it a personal link, stored as its
+ * hash. `hadAccount` also writes the `included { role, hadAccount }` event
+ * opening would, which only a decision that is not a draft may have.
+ */
+export function makeParticipant(
+	decision: Decision,
+	opts: { person?: Person | null; token?: string; hadAccount?: boolean } & Partial<typeof decisionParticipants.$inferInsert> = {}
+): DecisionParticipant {
+	const { person, token, hadAccount, ...row } = opts;
+	const n = next();
+	const participant = db
+		.insert(decisionParticipants)
+		.values({
+			personId: person?.id ?? null,
+			role: 'consulted',
+			name: person?.fullName ?? `Participant ${n}`,
+			email: person?.email ?? `participant${n}@example.test`,
+			jobTitle: person?.jobTitle ?? '',
+			groups: '[]',
+			includedAt: '2026-11-01 09:00:00',
+			userId: person?.userId ?? null,
+			linkTokenHash: token === undefined ? null : linkHashOf(token),
+			linkIssuedAt: token === undefined ? null : '2026-11-01 09:00:00',
+			...row,
+			decisionId: decision.id
+		})
+		.returning()
+		.get();
+	if (hadAccount !== undefined) {
+		appendEvent(
+			{ decisionId: decision.id, kind: 'included', participantId: participant.id, detail: { role: participant.role, hadAccount } },
+			SYSTEM_ACTOR
+		);
+	}
+	return participant;
+}
+
+/**
+ * Move the decision's record-bearing mail events `minutes` back in time, so
+ * that the next re-send, re-publish or re-inclusion is past the throttle
+ * (card 2675, decision 31). A test's own change to the record: nothing in
+ * `src` may make it.
+ */
+export function ageRecordMail(decisionId: number, minutes = 11): void {
+	sqlite
+		.prepare(
+			"UPDATE decision_events SET created_at = strftime('%Y-%m-%d %H:%M:%S', created_at, ?) " +
+				"WHERE decision_id = ? AND kind IN ('invited', 'asked_again', 'told_of_change', 'told_withdrawn', 'told_ruling')"
+		)
+		.run(`-${minutes} minutes`, decisionId);
 }

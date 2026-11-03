@@ -93,7 +93,7 @@ import { KNOWN_BROWSER_SECRET_KEY } from '$lib/server/known-browsers';
 import { REQUEST_FORM_SECRET_KEY, issueFormToken, resetFormSecretCache, verifyFormToken } from '$lib/server/request-tokens';
 import { maskLiveLog, reportInstallation, reportNoSuperadmin } from '$lib/server/startup-checks';
 import { api, routeMethods } from './helpers/api';
-import { makeBoard, makeCard, makeSession, makeUser, resetDb } from './helpers/fixtures';
+import { makeBoard, makeCard, makeDecision, makeParticipant, makeSession, makeUser, resetDb } from './helpers/fixtures';
 import { gate, gateApiRoutes } from './helpers/gate';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 import { afterEachTimestampCheck } from './helpers/timestamps';
@@ -665,6 +665,89 @@ describe('a restore', () => {
 			expect(made[0]).not.toBe(FORM_KEY);
 			resetFormSecretCache();
 			expect(verifyFormToken(signedAfter)).toBe(true);
+		});
+	});
+
+	// Card 2675, decision 13 (R8): a restore ends every personal decision link
+	// and records it on each decision that is not a draft, and never commits a
+	// decision's record in part. The cases are that plan's, section 6.
+	describe('of decisions (card 2675)', () => {
+		const eventsIn = (database: Database.Database) =>
+			database
+				.prepare('SELECT decision_id, participant_id, kind, detail, actor_user_id, actor_name, source FROM decision_events ORDER BY id')
+				.all() as Record<string, unknown>[];
+
+		it('empties every link, drafts’ included, and records link_revoked by DumpFire only on the decision that is not a draft (76)', () => {
+			const open = makeDecision({ status: 'open', closesAt: '2099-01-01 00:00:00' });
+			const holders = [makeParticipant(open, { token: 'first-token' }), makeParticipant(open, { token: 'second-token' })];
+			const without = makeParticipant(open);
+			const draft = makeDecision();
+			const drafted = makeParticipant(draft, { linkTokenHash: 'hand-set-hash-on-a-draft', linkIssuedAt: '2026-11-01 09:00:00' });
+			const live = migratedDb();
+
+			const result = restoreFromBackup(live, opening(Buffer.from(sqlite.serialize())));
+
+			expect(result.errors).toEqual([]);
+			expect(result.restored.decision_participants).toBe(4);
+			expect(result.decisionLinksCleared).toBe(3);
+			expect(column(live, 'SELECT link_token_hash FROM decision_participants WHERE link_token_hash IS NOT NULL OR link_issued_at IS NOT NULL')).toEqual([]);
+			const record = { kind: 'link_revoked', detail: '{"reason":"restore"}', actor_user_id: null, actor_name: 'DumpFire', source: 'system' };
+			expect(eventsIn(live)).toEqual(holders.map((p) => ({ decision_id: open.id, participant_id: p.id, ...record })));
+			// Comment 5599: no event names a draft's participant, nor one with no link.
+			expect(eventsIn(live).map((event) => event.participant_id)).not.toContain(drafted.id);
+			expect(eventsIn(live).map((event) => event.participant_id)).not.toContain(without.id);
+			// The backup was only read: its hashes are as they were.
+			expect(column(sqlite, 'SELECT COUNT(*) FROM decision_participants WHERE link_token_hash IS NOT NULL')).toEqual([3]);
+		});
+
+		it('is refused and rolled back, naming decision_events, when a row of the record cannot be copied, and the database is as it was (77)', () => {
+			const live = migratedDb();
+			live.exec(`
+				INSERT INTO users (id, username, email, password_hash, role) VALUES (9, 'here', 'here@example.test', 'x', 'superadmin');
+				INSERT INTO decisions (id, board_name, title, author_name, status) VALUES (5, 'A board', 'Here before', 'here', 'open');
+				INSERT INTO decision_events (decision_id, kind, actor_name, source) VALUES (5, 'opened', 'here', 'ui');
+			`);
+			const asItIs = () => ({
+				users: column<string>(live, 'SELECT username FROM users ORDER BY id'),
+				decisions: live.prepare('SELECT * FROM decisions ORDER BY id').all(),
+				events: eventsIn(live)
+			});
+			const before = asItIs();
+			// A backup whose events table lets a row with no kind in: the running
+			// database's own NOT NULL refuses it, and the copy leaves it out.
+			const backup = backupWithSignIns();
+			backup.exec(`
+				INSERT INTO decisions (id, board_name, title, author_name, status) VALUES (1, 'From the backup', 'A decision', 'ann', 'open');
+				DROP TABLE decision_events;
+				CREATE TABLE decision_events (id INTEGER PRIMARY KEY, decision_id INTEGER, participant_id INTEGER, kind TEXT,
+					version_number INTEGER, detail TEXT, actor_user_id INTEGER, actor_name TEXT, source TEXT, created_at TEXT);
+				INSERT INTO decision_events (id, decision_id, kind, actor_name, source, created_at) VALUES
+					(1, 1, 'opened', 'ann', 'ui', '2026-11-01 09:00:00'),
+					(2, 1, NULL, 'ann', 'ui', '2026-11-01 09:00:01');
+			`);
+
+			const thrown = (() => {
+				try {
+					restoreFromBackup(live, backup);
+					return null;
+				} catch (caught) {
+					return caught;
+				}
+			})();
+
+			expect(thrown).toBeInstanceOf(RestoreError);
+			expect((thrown as RestoreError).committed).toBe(false);
+			expect((thrown as RestoreError).message).toMatch(
+				/^The restore failed and nothing was changed: decision records could not be copied whole \(decision_events\): a partial record would be a false one \(decision_events row \(id 2\): NOT NULL constraint failed: decision_events\.kind\)$/
+			);
+			expect(asItIs()).toEqual(before);
+			expect(column(live, 'SELECT title FROM decisions')).toEqual(['Here before']);
+			expect(live.pragma('foreign_keys', { simple: true })).toBe(1);
+
+			// F8: a NULL in a record column with a default is not given it, so that row is left out and refused the same way.
+			backup.exec("UPDATE decision_events SET kind = 'opened', created_at = NULL WHERE id = 2");
+			expect(() => restoreFromBackup(live, backup)).toThrow(/decision records could not be copied whole \(decision_events\).*NOT NULL constraint failed: decision_events\.created_at/);
+			expect(asItIs()).toEqual(before);
 		});
 	});
 

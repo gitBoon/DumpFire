@@ -70,7 +70,16 @@ describe('printable', () => {
 		expect(printable(`<${controls.join('')}>`)).toBe(`<${' '.repeat(82)}>`);
 
 		const kept = 'Plain ASCII ~ | é ñ ü \u00a0 — “quoted” 🔥 \u200a \u2010 \u2027 \u202f \u2065 \u206a \ufefe';
-		expect(printable(kept)).toBe(kept);
+		expect(printable(kept)).toBe(kept.replace('\u{206a}', ' ')); // U+206A is a format character: see below.
+	});
+
+	it('puts one space in place of every other format character, \\p{Cf}, the tag characters a flag is spelt with included (card 2675, S6)', () => {
+		const format = [0xad, 0x61c, 0x180e, 0x2060, 0x2061, 0x2062, 0x2063, 0x2064, 0x206a, 0x206f, 0xfff9, 0xfffa, 0xfffb, 0xe0001, 0xe0067, 0xe007f].map((code) =>
+			String.fromCodePoint(code)
+		);
+		expect(printable(`<${format.join('')}>`)).toBe(`<${' '.repeat(format.length)}>`);
+		// A flag spelt with tag characters keeps its black flag, and loses the tags it is spelt with.
+		expect(printable('\u{1f3f4}\u{e0067}\u{e0062}\u{e007f}')).toBe('\u{1f3f4}   ');
 	});
 
 	it('takes what is not text as text, and does not throw', () => {

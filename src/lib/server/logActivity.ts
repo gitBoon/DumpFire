@@ -100,7 +100,17 @@ export const ACTIONS = {
 	milestoneReopened: 'milestone_reopened',
 	milestoneDeleted: 'milestone_deleted',
 	milestoneCardAdded: 'milestone_card_added',
-	milestoneCardRemoved: 'milestone_card_removed'
+	milestoneCardRemoved: 'milestone_card_removed',
+	// A decision's lifecycle (card 2675, decision 21): written only for a
+	// decision that has been opened and whose board still exists, with no card,
+	// and each detail the title and the step, never a count, a name or a
+	// reason. None sends a webhook: decision webhooks are card 2689's.
+	decisionOpened: 'decision_opened',
+	decisionRepublished: 'decision_republished',
+	decisionClosed: 'decision_closed',
+	decisionExtended: 'decision_extended',
+	decisionWithdrawn: 'decision_withdrawn',
+	decisionDeleted: 'decision_deleted'
 } as const;
 
 export interface ActivityEntry {

@@ -100,6 +100,10 @@ const TEST_FILES = [
 	'dashboard-side-pane.svelte.test.ts',
 	'dashboard.test.ts',
 	'database-location.test.ts',
+	// Card 2675: who may do what to a decision, and its permanent record and personal links.
+	'decision-access.test.ts',
+	'decision-record.test.ts',
+	'decision-service.test.ts',
 	'deletes-no-parent-key.test.ts',
 	'deletes.test.ts',
 	'dependency-refusals.test.ts',

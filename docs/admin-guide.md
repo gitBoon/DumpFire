@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.80
+version: 1.81
 status: As-Built
 date: 2026-11-03
 tags:
@@ -249,6 +249,9 @@ The 🗑️ button beside a user in **Admin → User Management** asks for confi
 | Their sessions, so they are signed out everywhere | Their XP, which stays on the dashboard's XP Leaderboard (on every board's header until 26 October 2026) |
 | | Webhooks they set up, **switched off** (card 2168), and then naming nobody |
 | The mail settings, the App URL and the backup destinations still where they set them (card 2397): see [Who May Do What](#who-may-do-what) | Settings somebody else has moved since, settings moved back to where somebody else put them, and settings saved before migration 0059 |
+| | The person linked to the account in the [people directory](#people-directory), **marked Left**, unlinked, and any personal decision link of theirs cancelled (card 2675) |
+
+**The person goes to Left.** Deleting an account marks the person it was linked to as having left, with the date, so a person whose account was taken away on purpose cannot be sent a personal decision link to the same address by accident. The system log has a `PEOPLE` line for it, `Person 12 "Ann Lee" marked left: their account 7 was deleted; 0 decision links cleared (by admin)`, never the address. **Mark active** on their row brings them back, as a deliberate step of yours; a decision that had them with that account still asks you to clear it before they are sent a personal link.
 
 Where settings went, the message after the delete stays until closed and names them ("User deleted. What ann had set was removed: …"), and the system log has a `WARN` line under `SMTP` or `BACKUP` for each kind.
 
@@ -337,15 +340,15 @@ A person is a full name, an email address, a job title (which may be empty), the
 ```mermaid
 stateDiagram-v2
     [*] --> Active: + Add person, or Add from accounts
-    Active --> Left: Mark left (date stamped, decision links cancelled)
+    Active --> Left: Mark left, or their account deleted (date stamped, decision links cancelled)
     Left --> Active: Mark active (date cleared)
-    Active --> Active: Edit; linking an account cancels decision links
-    Left --> Left: Edit; linking an account cancels decision links
+    Active --> Active: Edit; linking, unlinking or a new address cancels decision links
+    Left --> Left: Edit; linking, unlinking or a new address cancels decision links
     Active --> [*]: Delete (cannot be undone)
     Left --> [*]: Delete (cannot be undone)
 ```
 
-Every change is a line in the system log, context `PEOPLE`, level INFO, under the administrator who made it, readable on `/audit`: the person or group by id and name, and what changed, as `Person 12 "Ann Lee" changed: email, groups (by admin)`. A line never holds an address. A change that is refused writes no line, and a save that changes nothing writes none either.
+Every change is a line in the system log, context `PEOPLE`, level INFO, under the administrator who made it, readable on `/audit`: the person or group by id and name, and what changed, as `Person 12 "Ann Lee" changed: email, groups; 0 decision links cleared (by admin)`. A line never holds an address. A change that is refused writes no line, and a save that changes nothing writes none either.
 
 ### People
 
@@ -368,7 +371,7 @@ A person is linked to an account in their form, under **Account**. It offers **N
 
 **An account's address is not verified.** Whoever holds an account sets its address themselves, on My Account, and DumpFire does not confirm it. So an address that matches proves nothing: anyone can set theirs to a colleague's. Before you link an account to a person, check that it is that person's account. The form says so under the field: "An account's address is set by its holder and is not confirmed: check it is this person before linking." This matters more once decisions exist, because a person's account is then how they open and answer the decisions they are on.
 
-**Linking a person to an account, or marking them left, cancels their personal decision links.** Each person on a decision will be able to have a personal link to it. Linking the person to an account (or to a different account) and **Mark left** empty every such link of theirs, on every decision, in the same save, so a link that was forwarded stops working once the person can sign in, or has gone. Delete does the same. Unlinking, a new name, job title or address, and **Mark active** cancel nothing. The system log's line says how many were cancelled, as `Person 12 "Ann Lee" linked to account 7 "ann"; 2 decision links cleared (by admin)`. Until decisions are built there are none, and it says 0.
+**Linking or unlinking a person's account, a new address, or marking them left, cancels their personal decision links** (cards 2674 and 2675). Each person on a decision with no account will be able to have a personal link to it. Linking the person to an account (or to a different account), unlinking them (**None**), changing their address and **Mark left** each empty every such link of theirs, on every decision, in the same save, so a link that was forwarded stops working once the person can sign in, has gone, or is to be reached somewhere else. Delete does the same. Each cancelled link is also recorded on its decision, under your name, with the reason. A new name, job title or groups, and **Mark active**, cancel nothing. The system log's line says how many were cancelled, as `Person 12 "Ann Lee" linked to account 7 "ann"; 2 decision links cleared (by admin)`. Until decisions can be opened there are none, and it says 0.
 
 ### Add from Accounts
 
@@ -412,6 +415,18 @@ Each board can have a Product Owner (card 2673): the account that decides its de
 - A choice not yet saved survives the window reading its list again after another change, unless the stored Product Owner changed meanwhile or the account chosen is no longer listed.
 
 Through the API, it is `productOwnerUserId` on `PUT /api/v1/boards/{boardId}`: see the [API Reference](api-reference.md).
+
+### Decisions (no page yet)
+
+The server side of decisions is built (card 2675), and **there is no page or route for them yet**: nobody can make, open or mail a decision until later cards of milestone 35 add them. What an administrator will be able to do, once a page offers it:
+
+- **View, edit, change the decider and withdraw** any decision, a draft included, and **delete** a draft or a withdrawn one; a decision that is open, closed or ruled cannot be deleted. An administrator cannot open, re-publish, close or extend one: those are its author's and decider's, and each can do them, the decider's ruling included, only while they can edit the decision's board (card 2675's code review). Nobody can make themselves the decider of a decision that is already open.
+- **Attach a participant's account**, when a person on a decision has gained an account since: the participant then signs in to it, and their personal link is cancelled. Or **clear it**, which lets them be reached by a personal link again.
+- **Change a participant's address**, when their address in the directory has changed: it cancels their personal link and sends nothing; sending them the decision again is a separate step. Until then they are not mailed, with an account or without one: a decision's mail goes only to the address it holds, while that is still the person's address in the directory.
+
+Each is recorded on the decision under your name.
+
+**What the directory and a restore do to personal links.** Mark left, linking or unlinking an account, a new address and **Delete** in the people directory each cancel the person's personal decision links ([above](#linking-a-person-to-an-account)), and so does deleting the account a person is linked to, which marks them Left ([Deleting a User](#deleting-a-user)). An **Import Backup** cancels every personal decision link there is ([Restoring from Backup](#restoring-from-backup)). Each cancelled link is recorded on its decision. Until decisions can be opened there are none to cancel.
 
 ---
 
@@ -676,10 +691,11 @@ flowchart TD
 
 **In the application** (Admin → Backup & Restore → **Import Backup**, as the superadmin). No restart is needed.
 
-On a server that still runs, restore this way, not by hand: it keeps this server's secrets, which a file put in place by hand cannot. Six things are true of every import, whichever way it is restored:
+On a server that still runs, restore this way, not by hand: it keeps this server's secrets, which a file put in place by hand cannot. Seven things are true of every import, whichever way it is restored:
 
 - **It signs everybody out, you included.** No session is restored, whatever the backup holds, and the ones there were are cleared with everything else. When the result is dismissed the page reloads at the login page: sign in with an account the backup has, and its password as it was when the backup was made. The result names the backup's superadmin, which is the account that can export, import or reset again. Invites that had not been used stop working, and are sent again from User Management. Every browser remembered for sign-in is forgotten too, since no backup holds the key they are signed with: each is remembered again at its next sign-in.
 - **Every request link mailed before it stops working** (card 2158). Every task request is given a new link, whatever the backup holds, and the result says so: "N request link(s) replaced: a link mailed before this restore no longer works, and its requester can have a new one sent from the page it opens." A requester who opens an old link is asked for the address they made the request with, and the current link is mailed to that address, if mail is set up here with its password. Until it is, the requester is told "New links cannot be sent just now. Please contact the team that sent you the link.", and the reason is a `[WARN] [REQUESTS]` line on the Live Console. The result shows the line about the links on the page too, below the files put back. The key the public request form signs with is not brought in either: a form open during the import fails once, and works when it is reloaded.
+- **Every personal decision link stops working** (card 2675). Each one a decision participant held is cancelled, whatever the backup holds, and recorded on its decision where that decision has been opened; the import's result does not count them yet. A backup that holds a decision's record with a row that cannot be copied is refused, naming the tables, and nothing is changed: half a record would be a false one.
 - **This server's secrets are kept where they are for the same account, from a backup this server made and nobody has changed** (card 2169). A backup holds no mail password, destination credential or webhook secret, so the restore fills each gap from this server, in the same transaction, but only when the backup's seal checks out: every backup carries a check of every row in it, made with a key this server keeps and no backup holds, and the restore makes it again with its own key. A backup made by another server, or changed since it was made in anything a restore brings in (one user added, one card edited, an index added, ANALYZE run on it), has nothing filled and every gap listed. The check leaves out only what a restore never brings in: SQLite's hidden row numbers in a table that does not show them as a column (their order is checked), its AUTOINCREMENT counters, the file's header and its free space; so a change there changes nothing restored. The check covers the file's whole structure, SQLite's own objects and statistics included, and the restore copies each table's rows as stored, the same rows the check was made over. A file that fails SQLite's own integrity check, or holds an object named as SQLite's own that no backup of this server's holds, is treated as changed before the seal is even asked: the restore goes ahead, nothing is filled, and the system log has one `WARN` line naming the check it failed. When the seal checks out, the restore fills:
   - the mail password, when the backup's mail host (spaces and tabs at either end, and capitals A to Z, aside), port, "Allow mail without a checked, encrypted connection" and user name are all this server's, a port not set read as 587 and the box not set as off (card 2189: a backup made before it has no such setting);
   - a destination's credentials, from the one destination here of the same type that is the same in every other field, its name, host, bucket, folder or path included, compared as the destination would use them (the rule a save keeps a masked secret by: see [Configuring Backups](#configuring-backups)). None that matches, or more than one, and nothing is filled: a backup is not trusted to say where this server's credentials are used. A Google Drive token filled in brings this server's record of the scope it was granted, and an SFTP destination takes the host key confirmed here, never the backup's (card 2250): one not filled comes in with no key, to be confirmed with Test;
@@ -1094,6 +1110,7 @@ The board's activity panel and the All Tasks activity panel name each action in 
 | `dependency_added`, `dependency_removed`, `dependencies_bulk_added` | Added dependency, Removed dependency, Added dependencies. A batch through `POST /api/v1/dependencies/bulk` writes one `dependency_added` per link it creates, on the board of the card that waits, naming that card (card 2291); `dependencies_bulk_added`, one entry with no card for the whole batch, was written by older versions only, and keeps its label for those rows |
 | `board_created`, `board_updated`, `milestone_created` | Created board, Updated board, Created milestone |
 | `milestone_updated`, `milestone_closed`, `milestone_reopened`, `milestone_deleted` | Updated milestone, Closed milestone, Reopened milestone, Deleted milestone (card 2289). No card; on the milestone's board, or for one across boards on each board holding its cards, and on a change of board on the boards before and after. `Updated milestone "Launch": name, targetDate` names the fields changed (name, description, targetDate, boardId), not their values; a rename reads by the old name. `Deleted milestone "Launch"; 2 cards on this board released`. A milestone across boards is named `milestone #<id>`, since a reader of one of its boards may not be able to open it; on a board a milestone joins, it is named as it is after the change |
+| `decision_opened`, `decision_republished`, `decision_closed`, `decision_extended`, `decision_withdrawn`, `decision_deleted` | Opened decision, Re-published decision, Closed decision for input, Extended decision, Withdrew decision, Deleted decision (card 2675). Nothing writes them yet, as no page or route reaches decisions. Each will be written on the decision's board with no card, only for a decision that has been opened and whose board is still there, its text the title in quotes and no more, as `"Budget"`, except a re-publish, `"Budget": version 2, everyone asked again` (or `told of a change`), and an extension, `"Budget": closes 2026-12-01 17:00 UTC`. Never a count, a name, a reason or a change note. None sends a webhook |
 | `milestone_card_added`, `milestone_card_removed` | Added card to milestone, Removed card from milestone (card 2289). On the card's board, with its id: `Added "First" to milestone "Launch"`. A card moved from one milestone to another writes one `milestone_card_added` ending `(from milestone "Pilot")`, and **no `milestone_card_removed` for the milestone it left**. Written by every route: the card window's picker, the plan page, the API's single and bulk routes and `milestoneId` on the API's card update (which named `milestoneId` in `card_updated` until card 2289). Not counted as work on the card by the activity report. A card that leaves a milestone because of another change writes `milestone_card_removed` on its board, with why in brackets (card 2381): `… (moved to another board)` on the board it left, `… (milestone deleted)` for each card a milestone delete releases, `… (card deleted)` for a card deleted for good alone, with its column, by **Clear Cards** or by Purge Archived Cards' **Purge All** (with no card id: the card is gone), and `… (milestone deleted with its board)` for a card elsewhere released by a board's delete. A card deleted with its own board writes none, its board's log going with it, and an import writes no milestone entry |
 
 All Tasks marks an action done through the API with its **API** badge; the board's panel does not, and the Audit page's **Source** filter tells them apart. A name with no label, which only an entry older than these names can have, reads as the name in words with a capital first letter, never with `api:`: `time_logged` reads "Time logged". Until 2026-10-15 the board's panel showed the stored name with each word capitalised ("Card Moved In"), and All Tasks had a table of its own that knew 25 names and showed the rest with spaces for underscores and any `api:` left on, so a completion through the API read "api:card completed".

@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.66
+version: 1.67
 status: As-Built
 date: 2026-11-03
 tags:
@@ -24,6 +24,7 @@ tags:
   - components
   - milestone-22
   - options-column
+  - decision-records
 description: "High-level and component-level architecture of the DumpFire Kanban board system, including the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
 ---
 
@@ -1122,7 +1123,7 @@ flowchart LR
     Route --> WA["writeAs(locals, (caller) =><br/>service(caller, at, body, { source: 'ui' }))"]
     WA --> Svc["people.ts: inWrite(), requireAdmin(caller),<br/>the row (404), the fields (400),<br/>the checks (400, 409), the write"]
     Svc --> DB[("people, people_groups,<br/>people_group_members")]
-    Svc -->|"marked left, linked, deleted"| DP[("decision_participants:<br/>link_token_hash, link_issued_at = NULL")]
+    Svc -->|"marked left, linked, unlinked,<br/>new address, deleted: revokeLinks"| DP[("decision_participants:<br/>link_token_hash, link_issued_at = NULL;<br/>decision_events: link_revoked")]
     Svc -->|"afterCommit"| Log["log.info('PEOPLE', …, { userId })<br/>system_logs, /audit"]
     Page -->|"invalidateAll() after each write"| Load["+page.server.ts: readDirectory()"]
 ```
@@ -1140,8 +1141,8 @@ The page (`+page.svelte`) draws the people table with its search (name, email, j
 | Function | Rules |
 |---|---|
 | `createPerson` | `fullName` trimmed, 1 to 200; `email` by `readEmail`, stored lower-cased; `jobTitle` trimmed, up to 200, `''` if not sent; `userId` nullable; `groupIds` up to 500, each once. Then `requireUnusedEmail`, `requireLinkable`, `requireGroups`; the insert with `created_by` the caller, then the memberships |
-| `updatePerson` | Each field as `createPerson` reads it, the stored value its `keep`, and `status` `active` or `left`. Only what changes is written, with `updated_at` stamped; a body that changes nothing writes and logs nothing. `left` stamps `left_at`, `active` clears it; a changed `groupIds` replaces the memberships. Clears the person's links when `status` becomes `left` or `userId` becomes another non-null account |
-| `deletePerson` | `clearLinks`, then the delete: `people_group_members` cascades and `decision_participants.person_id` is SET NULL, every snapshot column kept. Answers `{ linksCleared }` |
+| `updatePerson` | Each field as `createPerson` reads it, the stored value its `keep`, and `status` `active` or `left`. Only what changes is written, with `updated_at` stamped; a body that changes nothing writes and logs nothing. `left` stamps `left_at`, `active` clears it; a changed `groupIds` replaces the memberships. Clears the person's links, once, with the first reason that applies: `status` becomes `left` (`left`), `userId` becomes another non-null account (`linked`), `userId` becomes null (`unlinked`), or the address changes (`address_changed`) (card 2675) |
+| `deletePerson` | `clearLinks` (`person_deleted`), then the delete: `people_group_members` cascades and `decision_participants.person_id` is SET NULL, every snapshot column kept. Answers `{ linksCleared }` |
 | `addFromAccounts` | `userIds` required, 1 to 500, each once; every one an account, or `400` `userId N is not an account` and nothing made. Then, per account: one a person is linked to is skipped (`already linked`); one whose address, lower-cased, is any person's is skipped (`address matches person N; link by hand`); any other is inserted with `full_name` its username, its address lower-cased and `user_id` the account. It never links an existing person (plan decision 13). Answers `{ created, skipped: [{ userId, reason }] }` |
 | `createGroup`, `updateGroup` | `name` trimmed, 1 to 100, unused by another group compared `lower(name)` (a group renamed in other case passes, as `except` is itself); `description` trimmed, up to 1,000. The update keeps the stored values and writes and logs nothing when unchanged |
 | `deleteGroup` | The delete; `people_group_members` cascades, the people stay |
@@ -1162,7 +1163,7 @@ The checks are internal: `requireUnusedEmail(email, except?)` compares `lower(em
 
 Every route is an administrator's alone: `requireAdmin(locals.user)` as the quick refusal before the body, then the service in one `writeAs`, which asks again. There is no `GET`: the page's load reads the directory. Each is an `admin(...)` entry of `tests/access-every-route.test.ts`, and `page /admin/people` is in its page sweep; `tests/gate.test.ts` runs the load with no gate in front.
 
-**How linking clears links** (design S6, plan decision 5). `clearLinks(personId)` runs `UPDATE decision_participants SET link_token_hash = NULL, link_issued_at = NULL WHERE person_id = ? AND link_token_hash IS NOT NULL RETURNING id`, inside the same transaction as the change, for every participant row of the person whatever its decision's status, and changes nothing else on those rows: their snapshots are the record's (S7). It answers the participant ids emptied, sorted, which the log entry carries as `participantIds` for card 2675's decision event. It runs on Mark left, on a link to an account (a first one, or a different one), and before a delete, where it must come first: once the person is gone, `person_id` is SET NULL and the rows can no longer be found by person. Unlinking, a rename, a new job title, a new address and Mark active do not run it (carried to card 2675: code review S2).
+**How the directory clears links** (design S6, plan decision 5; card 2675 decision 12 and comment 5649). `clearLinks(personId, reason, actor, opts)` hands over to `revokeLinks({ personId }, reason, actorFor(actor, opts.source))` in `src/lib/server/decision-links.ts`, inside the same transaction as the change. That is one `UPDATE decision_participants SET link_token_hash = NULL, link_issued_at = NULL … RETURNING` over every participant row of the person holding a link, whatever its decision's status, and then one `link_revoked { reason }` event per row emptied, through `appendEvent`, by the administrator. Nothing else on those rows changes: their snapshots are the record's (S7). It answers the participant ids emptied, sorted, which the log entry carries as `participantIds`. `updatePerson` runs it once, with the first reason that applies of `left` (Mark left), `linked` (a link to an account, a first one or a different one), `unlinked` and `address_changed`; so Mark left with a new address in one change writes `link_revoked { left }` for each row. `deletePerson` runs it with `person_deleted` before the delete, where it must come first: once the person is gone, `person_id` is SET NULL and the rows can no longer be found by person. A rename, a new job title, new groups and Mark active do not run it. The log line gains `; N decision links cleared` whenever it runs, `0` included. `appendEvent` refuses an event naming a draft's participant, which holds here because no link is issued before a decision is opened ([The decision service and its record](#the-decision-service-and-its-record)).
 
 ```mermaid
 sequenceDiagram
@@ -1180,7 +1181,8 @@ sequenceDiagram
     S->>S: inWrite(), requireAdmin(caller), requirePerson (404)
     S->>DB: requireLinkable(7, personId): 400 no account, 409 linked to another
     S->>DB: UPDATE people SET user_id = 7, updated_at
-    S->>DB: clearLinks: UPDATE decision_participants … RETURNING id
+    S->>DB: clearLinks(linked): UPDATE decision_participants … RETURNING id
+    S->>DB: INSERT decision_events link_revoked { reason: 'linked' }, one per row
     S->>Q: log.info('PEOPLE', 'Person 12 "Ann Lee" linked to account 7 "ann"; 2 decision links cleared (by admin)')
     W->>DB: COMMIT
     W->>Q: the log line written
@@ -1189,6 +1191,134 @@ sequenceDiagram
 ```
 
 **The Product Owner in Share Board** (plan 4.4). `GET /api/boards/:id/share` answers `productOwner` (`{ userId, username, emoji }` or `null`, never an address) to every caller it answers, and `productOwnerCandidates` only where `seesAddresses` (the board's owner or an administrator), the same callers `updateBoard` lets change it. The candidates are the board's possible editors alone (its creator, its `board_members`, the members of the teams in `board_teams`, every administrator), each asked `roleOnBoard` with the board row read once and kept where it is `owner`, `editor` or `admin`, so they cannot drift from `canEditBoard`; each is `{ id, username, emoji }` by username. `ShareModal.svelte` draws a select of None and the candidates where `canManage`, with the stored one marked "(cannot edit this board)" where it is no longer a candidate, and **Save** (`aria-disabled` until the choice differs) sends `updateBoard(boardId, { productOwnerUserId })`, that is `PUT /api/boards/:id`; a refusal puts the select back and shows the server's words on the window's error line. An unsaved choice survives a re-read only while the stored owner is unchanged and the choice is still offered. Without `canManage` it shows "Product Owner: *name*" or "None".
+
+### The decision service and its record
+
+Card 2675 (plan `docs/planning/card-2675-decision-service.md` v1.1) is the server side of decision records: the engine cards 2676 (authoring), 2677 (the participant's page and `/decision-link/`), 2679 (ruling) and 2680 (the register) call. It is a set of server modules and one service, and **no route or page reaches it yet**. The tests call each write inside `writeAs({ user } as App.Locals, (caller) => …)`, which `auth.ts` allows under vitest alone. The tables are migration 0061's (card 2673; see [Data Model](data-model.md#decision-records-migration-0061)), and no column was added.
+
+```mermaid
+flowchart LR
+    Routes["Later cards' routes<br/>(2676, 2677, 2680, 2682)"] -->|"writeAs(locals, caller =>"| Svc["decisions.ts<br/>(service: twelve writes)"]
+    Svc --> Guard["route-guards.ts<br/>requireDecision"]
+    Guard --> Acc["decision-access.ts<br/>decisionAccess, DECISION_RULES, mayDo"]
+    Acc --> BA["board-access.ts<br/>getBoardRole"]
+    Svc --> St["decision-status.ts<br/>decisionStatus, awaitingRulingSql,<br/>TRANSITIONS, linkUsable"]
+    Svc --> Rec["decision-record.ts<br/>appendEvent, appendVersion, snapshotOf,<br/>currentRound, liveOptionIds,<br/>accountHistory, lastMailAt"]
+    Svc --> Lk["decision-links.ts<br/>issueLink, revokeLinks,<br/>participantForLink, reachOf, mayHoldLink"]
+    Svc --> Ml["decision-mail.ts<br/>queueRecordMails, decisionLinkBase,<br/>RECORD_MAIL_MIN_MINUTES"]
+    Svc --> Act["logActivity, emit"]
+    Lk --> Rec
+    Ml --> Lk
+    Ml --> Rec
+    Ml -->|"one afterCommit per batch:<br/>each trySendEmail in turn,<br/>then inTransaction"| Out[("decision_events<br/>mail_outcome")]
+    People["people.ts"] -->|"clearLinks"| Lk
+    Restore["db/restore.ts"] -->|"raw SQL in its transaction"| DP[("decision_participants,<br/>decision_events")]
+    Gate["secret-paths.ts<br/>SECRET_IN_PATH"] -.->|"masks /decision-link/ in logs"| Log[("system_logs")]
+```
+
+Only `decisions.ts` is a service: it is on `SERVICES` in `tests/check-at-the-write.test.ts`, `READS` is empty, and every export takes `(caller, at, body, opts)` and starts with `inWrite()`. The four helper modules take no caller and import no `inWrite`, so they are not services, and `decisionAccess` lives apart from the service because the service imports the guards (plan decision 3). `people.ts` calls `decision-links.ts`, and the mail effect calls `decision-record.ts`, outside any service write.
+
+**The lifecycle** (`src/lib/server/decision-status.ts`). A decision is stored as `draft`, `open`, `closed`, `ruled`, `superseded` or `withdrawn` (`STORED_STATUSES`). Readers never show `closed`: `decisionStatus(row, now)` shows a closed decision, and an open one whose `closes_at` has passed, as `awaiting_ruling`, and `awaitingRulingSql(now)` is the same rule as a query condition, which `tests/decision-record.test.ts` holds to agree. `TRANSITIONS` names the stored statuses each action may be taken from, and `requireTransition(row, action)` refuses any other with `409` in the shown status's words, for example `This decision is awaiting a ruling: it cannot be opened`.
+
+```mermaid
+stateDiagram-v2
+    [*] --> draft: createDecision
+    draft --> open: openDecision (v1, included, links, invitations)
+    draft --> withdrawn: withdrawDecision (nobody told)
+    draft --> [*]: deleteDecision
+    open --> open: republishDecision (vN+1, asked again or told)
+    open --> closed: closeDecision
+    closed --> open: extendDecision, or republish asking again
+    open --> ruled: rule (card 2679)
+    closed --> ruled: rule (card 2679)
+    open --> withdrawn: withdrawDecision (told_withdrawn)
+    closed --> withdrawn: withdrawDecision (told_withdrawn)
+    ruled --> superseded: a superseding decision is ruled (card 2679)
+    withdrawn --> [*]: deleteDecision
+```
+
+| Action | Stored statuses allowed (`TRANSITIONS`) |
+|---|---|
+| `edit`, `setDecider`, `withdraw` | draft, open, closed |
+| `open` | draft |
+| `republish`, `extend`, `rule`, `resend`, `participantAccount`, `participantAddress` | open, closed |
+| `close` | open |
+| `delete` | draft, withdrawn |
+| `view`, `record` | any |
+
+**Who may do what** (`src/lib/server/decision-access.ts`). `decisionAccess(user, decision)` reads the caller's roles once: `admin` (`isAdmin`), `author` and `decider` (the decision's two user ids), one board role from `getBoardRole` while `board_id` is set (`owner` gives `boardOwner`, `editor` `boardEditor`, `viewer` `boardReader`), and `participant` from the one live row (`removed_at IS NULL`) holding the caller's account. It carries `canEditBoard` from the same call, false with no board. More than one live row holding the caller's account is a fault (decision 29): no `participant` role, and one WARN line under `DECISIONS` naming the decision id and the count and no person. `mayDo(access, action, decision)` reads `DECISION_RULES` (the table in [Authentication and Security](authentication-security.md#decision-access-and-personal-links)), with two more rules: a draft is viewed only by `DRAFT_VIEWERS` (admin, author, decider, boardOwner), and, while the board exists, a grant resting on `author`, `decider` or `boardOwner` (`NEED_BOARD_EDIT`) is good for anything but `view` only while `canEditBoard` holds: a decider who has lost the board cannot rule or change the decision either (card 2675's code review, S8). `requireDecision(user, decisionId, action)` in `route-guards.ts` answers `401` with no user, `400` `Invalid decision ID` for an id that is not an integer, `404` `Decision not found` both for no row and for a row the caller may not view, and `403` `You cannot <verb> this decision`. The status is each write's to check after its body, so the order is 401, 400, 404, 403, then the body's 400 and the status's 409.
+
+**The record** (`src/lib/server/decision-record.ts`). `decision_versions`, `decision_responses`, `decision_rulings` and `decision_events` are insert-only, in code alone (no trigger). `appendEvent(event, by)` and `appendVersion(version, by)` are the only inserts into the events and versions in `src` but the restore's `RECORD_DECISION_LINKS_ENDED`, and `appendEvent` throws a plain `Error` (a 500) for an event naming a participant on a draft or on a decision that is not there (comment 5599), so a draft's participant rows can be deleted freely. `by` is a `RecordActor` (`actorFor(user, opts.source)`, or `SYSTEM_ACTOR`, `DumpFire` with source `system`). `snapshotOf(personId)` is what a participant row copies from the directory. `currentRound`, `liveOptionIds`, `accountHistory` (whether each row held an account on this decision, from its latest `included`, `re_included`, `account_attached` or `account_cleared` event; a detail that cannot be read counts as true, which issues no link) and `lastMailAt` (each participant's latest record-bearing mail) are the reads. `tests/decision-record.test.ts` scans every file under `src` for a Drizzle `.update(`, `.delete(` or `onConflict…` on the four tables, their names as text outside `db/schema.ts`, `db/expected-schema.ts`, `decision-record.ts` and `db/restore.ts`, SQL `UPDATE`, `DELETE FROM`, `REPLACE INTO`, `INSERT OR REPLACE` or `ON CONFLICT` naming them inside those files, an insert into them outside `decision-record.ts` and `db/restore.ts`, and a delete of `decisions` outside `decisions.ts`. A table is known by its import, renamed or not, a `const` alias, a property or an element of a namespace (`schema['decisionEvents']`), and `sql.identifier` or `sql.raw` of its name. A write to a table named only at run time (`DELETE FROM "${table}"`) is allowed only in the files on the test's `GENERIC_WRITERS`, each with why: `db/timestamps.ts`, `db/migrate.ts`, `db/restore.ts`, the reset route and `deletes.ts`'s `USER_REFERENCES`; a new one fails the scan, and so does one named there that no longer is one (the code review's S5).
+
+**Personal links** (`src/lib/server/decision-links.ts`). A link is `/decision-link/[token]`, the token 32 random bytes in base64url, stored only as its SHA-256 in hex in `link_token_hash` (unique) with `link_issued_at`. `issueLink(participantId, by, replaced, { person, hadAccount })` hands the token back once, for the mail, after asserting `reachOf` answers `link` and `mayHoldLink` holds (a plain `Error` otherwise), and writes `link_issued { replaced }`. The person and `hadAccount` are what its caller has already read, so a mail to N link holders reads `accountHistory` once and not N + 1 times (the code review's F1). Every record-bearing mail to a link holder carries a fresh link, which replaces the last, because only the hash is kept. `revokeLinks({ personId } | { participantId }, reason, by)` empties the hash and moment of each row holding one and writes `link_revoked { reason }` per row. `participantForLink(token, now)` is the one place a link is checked: the hash looked up through the unique index, `unknown` for no live row, `expired` once `linkUsable` refuses the decision, and `unknown` again for a holder `reachOf` would no longer reach by link, asked at use (S3). `linkUsable` bounds a link by `ruled_at` (ruled, superseded), `withdrawn_at` (withdrawn) or `closes_at` (open, closed), usable while `now` is before the bound plus `LINK_DAYS_AFTER_END` (90) days; with no bound it is usable only on an open decision, and a draft, an unknown status or a bound that is no moment is refused. Nothing sweeps expired links.
+
+```mermaid
+stateDiagram-v2
+    [*] --> NoLink: included in a draft
+    NoLink --> Live: opened, added, added again, re-send (issueLink)
+    Live --> Live: a record mail or a re-send (new token, old hash replaced)
+    Live --> NoLink: removed, left (or the account deleted), linked, unlinked, address changed,<br/>person deleted, account attached, participant address, restore (link_revoked)
+    Live --> Expired: 90 days after the ruling, the withdrawal,<br/>or the deadline (worked out on read)
+    Expired --> [*]
+```
+
+`reachOf(participant, person, hadAccount)` is the one rule every mail, re-send and link issue asks (decision 16). A participant whose person is gone is skipped `deleted`, and one whose person is not active `left`. A row with an account is reached through it (`account`) only while the person is still linked to that same account, and skipped `account_not_attached` otherwise, and only while the snapshot address is still the person's, and skipped `address_changed` otherwise (S2). A row with no account is skipped `account_not_attached` when the person has gained one, `account_removed` when the row once held an account on this decision, and `address_changed` when the snapshot address is no longer the person's. Anyone else is reached by link.
+
+**The mails** (`src/lib/server/decision-mail.ts`). `queueRecordMails(decision, mail, opts)` runs inside the write. For each participant who is not removed, with the people and `accountHistory` read once for the batch, it writes `mail_skipped { mail, reason }` for a skip; issues a fresh link for a link holder; writes the mail's own event (`invited`, `asked_again`, `told_of_change`, `told_withdrawn` or `told_ruling`); and puts the mail in a batch held in memory only. Then it queues **one** `afterCommit` effect, which sends the batch in sequence, each `trySendEmail` awaited and its `mail_outcome { of, mail, delivered, problem? }` written by DumpFire in an `inTransaction` of its own before the next starts, so one mail connection is open at a time. An outcome that cannot be written (the decision deleted meanwhile) is a WARN line naming the decision and event ids, and the batch goes on. Just before each send, `stillToSend` asks again (the code review's F2): a mail whose decision is gone is not sent and is a WARN line; one whose row is removed, has another address, no longer holds that mail's link, or is no longer reached through its account is not sent and is recorded `mail_outcome { delivered: false, problem: 'superseded' }`. A failed send's ERROR line names `participant <id> of decision <id>`, never the address (`trySendEmail`'s `recipient`, S7). Links are made on `decisionLinkBase()`, which is `linkBaseUrl()` with no request: the App URL, else `ORIGIN`, never the request's Host and never `opts.baseUrl`. With neither, the writes whose point is the mail refuse `409` `NO_LINK_ADDRESS` before calling, and a withdrawal (and card 2679's ruling) goes ahead, each mail's event written with `mail_outcome { delivered: false, problem: 'no_link_address' }` in the same transaction and nothing queued. See [Notifications and Email](notifications-email.md#decision-record-mails-card-2675).
+
+```mermaid
+sequenceDiagram
+    participant S as decisions.ts (in writeAs)
+    participant L as decision-links
+    participant R as decision-record
+    participant Q as afterCommit (one per batch)
+    participant M as email.ts trySendEmail
+    S->>L: reachOf(participant, person, hadAccount)
+    alt skip
+        S->>R: mail_skipped { mail, reason }
+    else via link
+        S->>L: issueLink(participant) → token (memory only)
+        L->>R: link_issued { replaced }
+        S->>R: invited → eventId
+    else via account
+        S->>R: invited → eventId
+    end
+    S->>Q: one effect holding every message of the batch
+    Note over S,Q: commit
+    loop each message, in order
+        Q->>Q: stillToSend (decision, row, address, link or account)
+        alt decision gone
+            Q->>Q: WARN line; nothing sent or written
+        else superseded
+            Q->>R: inTransaction: mail_outcome { delivered: false, problem: superseded }
+        else still to send
+            Q->>M: await trySendEmail(…, { recipient: participant and decision ids })
+            M-->>Q: MailOutcome
+            Q->>R: inTransaction: mail_outcome { of: eventId, delivered, problem }
+        end
+    end
+```
+
+**The service** (`src/lib/server/decisions.ts`). Each write is `inWrite()`, the guard (`requireDecision`, or `requireBoard(…, 'edit')` for a new draft), the body (400), `requireTransition` and the other checks (409), the writes with `updated_at` stamped, then the events, the activity entry, the live event and the mails.
+
+| Write | Does |
+|---|---|
+| `createDecision` | `title` trimmed, 1 to 200, refusing a control, direction, invisible or other format character (`\p{Cf}`; `UNPRINTABLE` from `logger.ts`). A draft with `board_name` and `author_name`; the decider is the board's Product Owner while that account can edit the board, the author otherwise. Writes `created { decider }`, and no activity, live event or mail |
+| `setDecider` | `deciderUserId`: an account (400) that can edit the board (400); 409 with no board; once open, 403 for naming the caller. Writes `decider_changed` |
+| `setParticipants` | Up to 5,000 `{ personId, role }`, each person once and active (400). A draft: rows inserted with snapshots, re-roled or deleted, with no event naming a participant. Open or closed: added (`included`, an invitation), brought back on the same row (`re_included`), re-roled (`role_changed`) or marked removed (`removed`, `link_revoked { removed }`), never deleted. 409 for a second live row holding one account, and, when anyone is added or brought back, for `NO_LINK_ADDRESS` and for a returning participant mailed in the last 10 minutes |
+| `openDecision` | 409 with nothing written for no decider, no board, a decider who can no longer edit it, no `closes_at` in the future, fewer than two live options, no consulted participant, a participant whose person has left or is gone, no mail host, no link address, or two retaken snapshots holding one account. Then snapshots retaken with `included_at` now, `open`, version 1, options numbered, `published`, `opened`, `included { role, hadAccount }` per participant, the invitations, `decision_opened`, the live event |
+| `republishDecision` | `changeNote` (1 to 2,000) and `askAgain`. 409 once `closes_at` has passed, for telling only while an option would be added or retired, when the new version would hold fewer than two live options (decision 20, the code review's F4), for `NO_LINK_ADDRESS`, and while anyone it would mail was mailed in the last 10 minutes. Version N+1, options numbered or retired, `published`; asking again mails `asked_again` and opens a closed decision, telling only mails `told_of_change`. `decision_republished`, the live event |
+| `closeDecision` | `closed`, `closed_at`, the `closed` event, `decision_closed`, the live event; no mail |
+| `extendDecision` | `closesAt` in the future (400). `open`, `closed_at` emptied, `extended { from, to }`, `decision_extended`, the live event; no mail |
+| `withdrawDecision` | `reason` (1 to 2,000). `withdrawn`, the reason, the `withdrawn` event. Once opened: `told_withdrawn` mails, `decision_withdrawn` (never the reason), the live event. A draft: none of those |
+| `deleteDecision` | Draft and withdrawn only; the cascade removes every row. Once opened: `decision_deleted`, the live event |
+| `resendInvitation` | 404 for a participant not on the decision; 409 for one removed, for each skip reason in its words, for `NO_LINK_ADDRESS`, and within 10 minutes of their last mail. `invited { resend: true }`, a link holder with a new link |
+| `setParticipantAccount` | Administrators. `person`: 409 for a person gone or with no account, or whose account another live row holds; else the account copied, `link_revoked { account_attached }`, `account_attached { userId }`. `none`: 409 when there is nothing to clear; else the account emptied and `account_cleared { userId }`, after which the row may be reached by link again |
+| `changeParticipantAddress` | Administrators. `email`, lower-cased; the same address changes nothing. Else `link_revoked { participant_address }` and `address_changed { from, to }`; no mail |
+
+**Activity and live events.** The six actions `decision_opened`, `decision_republished`, `decision_closed`, `decision_extended`, `decision_withdrawn` and `decision_deleted` are written only for a decision that has been opened and whose board is there, with no card, `actorOf(caller)`, `source: opts.source`, and a detail of the quoted title and the lifecycle words alone: never a count, a name, a reason or a change note. Each call writes its `action: ACTIONS.decisionX` at its own site, as `tests/activity-twins.test.ts` requires; `decisionEntry` builds the rest. There is no `decision_created`, and none of the six sends a webhook (card 2689). On the same six steps and conditions the service sends `emit(boardId, 'decision', { decisionId, status, boardId })`, `status` the shown one: a named event no page listens for yet (card 2680), so no open board re-reads itself ([Real-Time Updates via SSE](#real-time-updates-via-sse)).
+
+**Outside the decision modules.** `people.ts` ends a person's links on Mark left, a link, an unlink, a new address and a delete, through `revokeLinks` ([How the directory clears links](#the-people-directory-page)). `deleteUser` in `deletes.ts` marks every person linked to the account left (`status`, `left_at`) before the account goes, ends their links through the same `revokeLinks` with the reason `left`, by the deleting administrator, and writes one `PEOPLE` line per person with no address, inside the delete's own transaction (the code review's S4). `restoreFromBackup` records `link_revoked { reason: 'restore' }` for each participant holding a link on a decision that is not a draft, empties every hash, counts them into `RestoreResult.decisionLinksCleared`, gives no default to a NULL in a decision table (F8), and fails, rolled back, when any row of `decisions` or a `decision_*` table could not be copied (see [Data Model](data-model.md#decision-records-migration-0061)). `SECRET_IN_PATH` in `secret-paths.ts` holds `{ routeId: '/decision-link/[token]', before: '/decision-link/' }`, so the gate's line, `maskMailText`, `mailStatus().lastFailure`, backups and the start-up sweep write `/decision-link/[token]`.
 
 ### The dashboard
 

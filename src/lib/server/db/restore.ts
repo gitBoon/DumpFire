@@ -17,6 +17,7 @@ import { schedulerSetting } from '../schedulers';
 import { putBackFromTrash, type UploadFile } from '../uploads';
 import { BOARDS_UNDER_DELETED_GROUPINGS, defaultsForNull, orDefault, runBackfills, type Backfill } from './migrate';
 import { normaliseTimestamps, unreadableList, type TimestampNormalisation } from './timestamps';
+import { stamp } from '$lib/timestamps';
 import { KNOWN_BROWSER_SECRET_KEY } from '../known-browsers';
 import { REQUEST_FORM_SECRET_KEY } from '../request-tokens';
 import {
@@ -109,6 +110,15 @@ export type RestoreResult = {
 	 */
 	requestLinksReplaced: number;
 	/**
+	 * Personal decision links emptied inside the restore's transaction: every
+	 * `decision_participants.link_token_hash` there is now, drafts' included
+	 * (card 2675, decision 13). Each one on a decision that is not a draft is
+	 * recorded on it as `link_revoked { reason: 'restore' }`. A link mailed
+	 * before the restore no longer works. The import does not pass it on yet
+	 * (card 2676).
+	 */
+	decisionLinksCleared: number;
+	/**
 	 * The secrets a backup does not hold (card 2169): those kept from this
 	 * server, where they were for the same account, and those to enter again.
 	 * A working copy names only webhooks: its mail settings and destinations
@@ -134,7 +144,7 @@ export type RestoreResult = {
 };
 
 /** What a restore that committed had done, for a `RestoreError` thrown after the commit. */
-export type CommittedRestore = Pick<RestoreResult, 'requestLinksReplaced' | 'secrets' | 'sealVerified' | 'unsealed'>;
+export type CommittedRestore = Pick<RestoreResult, 'requestLinksReplaced' | 'decisionLinksCleared' | 'secrets' | 'sealVerified' | 'unsealed'>;
 
 /**
  * A restore that went wrong in a way the caller has to be told about, as
@@ -204,6 +214,24 @@ const CARRY_CARD_DEPENDENCIES = `
  * backfill and migration 0055 give one: 32 random bytes as 64 hex characters.
  */
 const REPLACE_REQUEST_LINKS = 'UPDATE task_requests SET access_token = lower(hex(randomblob(32)))';
+
+/**
+ * The record of every personal decision link a restore ends (card 2675,
+ * decision 13): one `link_revoked { reason: 'restore' }` by DumpFire for each
+ * participant holding a link on a decision that is not a draft. A draft's
+ * participant is named by no event (comment 5599, R8). The moment is bound.
+ */
+const RECORD_DECISION_LINKS_ENDED = `
+	INSERT INTO decision_events (decision_id, participant_id, kind, detail, actor_name, source, created_at)
+	SELECT p.decision_id, p.id, 'link_revoked', '{"reason":"restore"}', 'DumpFire', 'system', ?
+	FROM decision_participants p JOIN decisions d ON d.id = p.decision_id
+	WHERE p.link_token_hash IS NOT NULL AND d.status <> 'draft'
+	ORDER BY p.id
+`;
+
+/** Every personal decision link emptied, drafts' included (decision 13). */
+const CLEAR_DECISION_LINKS =
+	'UPDATE decision_participants SET link_token_hash = NULL, link_issued_at = NULL WHERE link_token_hash IS NOT NULL';
 
 function messageOf(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
@@ -654,7 +682,8 @@ export function defaultOutside(
  *   NULL is given it, which is the rule the rebuild of that table follows
  *   (`defaultsForNull`, in `migrate.ts`). Without it the row would be refused,
  *   and for `columns` that is a column of a board gone and every card on it
- *   left pointing at nothing.
+ *   left pointing at nothing. A decision's tables are given no default: the
+ *   row is left out, and the restore refused, as below (card 2675's F8).
  *
  * A row that still cannot be copied is left out and reported in `errors`, and
  * the restore goes on, on one condition: nothing depends on that row. Before
@@ -682,6 +711,17 @@ export function defaultOutside(
  * in the database being replaced: a backup of another installation, whose
  * request 5 is somebody else's, would give one requester's link to another
  * person's thread.
+ *
+ * Every personal decision link is ended too (card 2675, decision 13). Inside
+ * the transaction, `link_revoked { reason: 'restore' }` is recorded by
+ * DumpFire for each participant holding a link on a decision that is not a
+ * draft, and then every `link_token_hash` and `link_issued_at` is emptied,
+ * drafts' included. The count is `decisionLinksCleared`. The backup itself is
+ * not changed: a hash is not a credential, and keeping it is what lets the
+ * restore record which links it ended. And a decision's record is never
+ * restored in part: a row of `decisions` or of any `decision_` table that
+ * cannot be copied rolls the restore back and throws, naming the tables,
+ * because a lost event strands no row and the check below would not see it.
  *
  * A backup made since card 2169 holds no mail password, destination
  * credential or webhook secret, and a webhook that had a secret is off in it
@@ -760,6 +800,7 @@ function restoreInOneSnapshot(live: Database.Database, backup: Database.Database
 	const defaulted: RestoreResult['defaulted'] = [];
 	let outside: OutsideSwitchedOff | null = null;
 	let requestLinksReplaced = 0;
+	let decisionLinksCleared = 0;
 	let secrets: SecretsAccount = {
 		kept: { mailPassword: false, destinations: [], webhooks: [] },
 		toEnter: { mailPassword: false, destinations: [], webhooks: [] }
@@ -866,8 +907,12 @@ function restoreInOneSnapshot(live: Database.Database, backup: Database.Database
 					}
 
 					// A NULL headed for a column that is NOT NULL here and has a
-					// default is given the default. See the comment above.
-					const defaults = defaultsForNull(live, table);
+					// default is given the default. See the comment above. Never in
+					// a decision's tables (card 2675's code review, F8): a default
+					// put into a record, `created_at` now for one, would be a false
+					// one, so the row is left out, and the rule below refuses the
+					// restore. By prefix, so that no record table is named as text.
+					const defaults = table === 'decisions' || table.startsWith('decision_') ? new Map<string, string>() : defaultsForNull(live, table);
 					const defaulting = commonCols.filter((c) => defaults.has(c));
 					const values = commonCols
 						.map((c) => (defaults.has(c) ? orDefault('?', defaults.get(c) as string) : '?'))
@@ -931,6 +976,29 @@ function restoreInOneSnapshot(live: Database.Database, backup: Database.Database
 				)
 			) {
 				requestLinksReplaced = live.prepare(REPLACE_REQUEST_LINKS).run().changes;
+			}
+
+			// Every personal decision link ended, and recorded on its decision
+			// (card 2675, decision 13): see above. Not caught, so that a restore
+			// that could not end them is rolled back, and brings in no link a
+			// backup held. The record first, while the hashes say who held one.
+			if (tables.includes('decision_participants') && columnNamesOf(live, 'decision_participants').includes('link_token_hash')) {
+				if (tables.includes('decision_events') && tables.includes('decisions')) {
+					live.prepare(RECORD_DECISION_LINKS_ENDED).run(stamp());
+				}
+				decisionLinksCleared = live.prepare(CLEAR_DECISION_LINKS).run().changes;
+			}
+
+			// Nothing is committed with a decision's record copied in part (card
+			// 2675, decision 13, R8): a partial record would be a false one, and a
+			// lost event strands no row, so strandedBy below would not see it. By
+			// prefix, so that no record table is named here as text (decision 27).
+			const lostRecord = [...leftOut.keys()].filter((t) => t === 'decisions' || t.startsWith('decision_')).sort();
+			if (lostRecord.length > 0) {
+				throw new Error(
+					`decision records could not be copied whole (${lostRecord.join(', ')}): a partial record would be a false one ` +
+						`(${some(lostRecord.flatMap((table) => leftOut.get(table) ?? []))})`
+				);
 			}
 
 			// Nothing is committed that leaves a row pointing at a row this
@@ -1028,7 +1096,7 @@ function restoreInOneSnapshot(live: Database.Database, backup: Database.Database
 			throw new RestoreError(
 				'The backup was restored and committed, but foreign keys could not be switched back on. Restart the ' +
 					'server now: until it restarts, deleting a board, a card or a user leaves behind what belonged to it.',
-				{ errors, committed: true, cause, done: { requestLinksReplaced, secrets, sealVerified, unsealed } }
+				{ errors, committed: true, cause, done: { requestLinksReplaced, decisionLinksCleared, secrets, sealVerified, unsealed } }
 			);
 		}
 		throw new RestoreError(
@@ -1090,5 +1158,5 @@ function restoreInOneSnapshot(live: Database.Database, backup: Database.Database
 		);
 	}
 
-	return { restored, defaulted, errors, backfilled, timestamps, outside, requestLinksReplaced, secrets, sealVerified, unsealed };
+	return { restored, defaulted, errors, backfilled, timestamps, outside, requestLinksReplaced, decisionLinksCleared, secrets, sealVerified, unsealed };
 }

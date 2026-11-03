@@ -1,9 +1,9 @@
 ---
 title: "Management Activity Reporting"
 category: Reporting
-version: 1.12
+version: 1.13
 status: As-Built
-date: 2026-10-27
+date: 2026-11-03
 tags:
   - reporting
   - audit-log
@@ -178,7 +178,11 @@ goal that way is no longer credited with it. The card's `updatedAt` still moves 
 it goes in or out, so the card can still enter the window; only the credit to the
 person changes. A milestone's own entries
 (`milestone_updated`, `milestone_closed`, `milestone_reopened`, `milestone_deleted`)
-name no card and never count.
+name no card and never count. Nor do a decision's (card 2675): `decision_opened`,
+`decision_republished`, `decision_closed`, `decision_extended`, `decision_withdrawn`
+and `decision_deleted`, in either spelling, are written with no card, so the report,
+which joins each entry to its card, never counts them as work. Nothing writes them
+yet: no page or route reaches decisions.
 
 A subtask edited is work on its card, as a subtask ticked is. Since card 2299 an
 untick and a change of a subtask's title, description, priority, colour or due

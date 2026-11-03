@@ -73,14 +73,36 @@ function makePerson(fullName: string, email: string, opts: { userId?: number; gr
 	return id;
 }
 
-/** A decision, written by hand: card 2675 makes them. */
+/**
+ * A decision, written by hand, and open: only an opened decision's rows hold a
+ * link, and the `link_revoked` events a clear writes may not name a draft's
+ * participant (card 2675, decision 12 and the plan review's D3).
+ */
 function makeDecision(): number {
 	return (
 		sqlite
-			.prepare("INSERT INTO decisions (board_name, title, author_name) VALUES ('A board', 'A decision', 'admin') RETURNING id")
+			.prepare("INSERT INTO decisions (board_name, title, author_name, status) VALUES ('A board', 'A decision', 'admin', 'open') RETURNING id")
 			.get() as { id: number }
 	).id;
 }
+
+/** Every event on the record, as stored, in order. */
+const decisionEvents = () =>
+	sqlite
+		.prepare('SELECT decision_id AS decisionId, participant_id AS participantId, kind, detail, actor_user_id AS actorUserId, actor_name AS actorName, source FROM decision_events ORDER BY id')
+		.all() as Row[];
+
+/** The `link_revoked` event card 2675 writes for each row a clear empties, by the administrator through the UI. */
+const revoked = (decisionId: number, participantIds: number[], reason: string) =>
+	participantIds.map((participantId) => ({
+		decisionId,
+		participantId,
+		kind: 'link_revoked',
+		detail: JSON.stringify({ reason }),
+		actorUserId: admin.id,
+		actorName: 'admin',
+		source: 'ui'
+	}));
 
 /** A participant row of the decision for the person, with its snapshots and a personal link. */
 function makeParticipant(decisionId: number, personId: number | null, n: number, link = true): number {
@@ -187,7 +209,8 @@ describe('PUT /api/people/[id]', () => {
 		expect(groupsOf(ann)).toEqual([legal]);
 		const lines = peopleLines();
 		expect(lines).toHaveLength(1);
-		expect(lines[0].message).toBe(`Person ${ann} "Ann Leigh" changed: name, email, job title, groups (by admin)`);
+		// Card 2675: a new address clears the person's decision links, none here.
+		expect(lines[0].message).toBe(`Person ${ann} "Ann Leigh" changed: name, email, job title, groups; 0 decision links cleared (by admin)`);
 		expect(lines[0].userId).toBe(admin.id);
 		// Decision 9 (plan review R10): never an address.
 		for (const text of [lines[0].message, lines[0].meta ?? '']) {
@@ -258,18 +281,20 @@ describe('PUT /api/people/[id]', () => {
 		await expectRefused(() => send('PUT', `/api/people/${ann}`, { userId: 999 }), 400, 'userId 999 is not an account');
 	});
 
-	describe('and the decision links of the person (S6, S7, decision 5)', () => {
+	describe('and the decision links of the person (S6, S7, decision 5; card 2675 decision 12)', () => {
+		let decision: number;
+		let bob: number;
 		let mine: number[];
 		let theirs: number;
 
 		beforeEach(() => {
-			const decision = makeDecision();
-			const bob = makePerson('Bob Hart', 'bob@example.test');
+			decision = makeDecision();
+			bob = makePerson('Bob Hart', 'bob@example.test');
 			mine = [makeParticipant(decision, ann, 1), makeParticipant(decision, ann, 2)];
 			theirs = makeParticipant(decision, bob, 3);
 		});
 
-		it('empties both of their links, and nothing else, when the person is marked left; the other person’s row is untouched (10)', async () => {
+		it('empties both of their links, and nothing else, when the person is marked left, and records each; the other person’s row is untouched (10)', async () => {
 			const before = [...mine, theirs].map(participant);
 
 			const res = await send('PUT', `/api/people/${ann}`, { status: 'left' });
@@ -278,9 +303,11 @@ describe('PUT /api/people/[id]', () => {
 			mine.forEach((id, i) => expect(participant(id)).toEqual({ ...before[i], link_token_hash: null, link_issued_at: null }));
 			expect(participant(theirs)).toEqual(before[2]);
 			expect(peopleLines().at(-1)!.message).toBe(`Person ${ann} "Ann Lee" marked left; 2 decision links cleared (by admin)`);
+			// Card 2675: each emptied row is on the record, by the administrator.
+			expect(decisionEvents()).toEqual(revoked(decision, mine, 'left'));
 		});
 
-		it('empties them when the person is linked to an account (11)', async () => {
+		it('empties them when the person is linked to an account, and records each (11)', async () => {
 			const account = makeUser({ username: 'ann' });
 			const before = [...mine, theirs].map(participant);
 
@@ -289,15 +316,56 @@ describe('PUT /api/people/[id]', () => {
 			expect(res.status, JSON.stringify(res.body)).toBe(200);
 			mine.forEach((id, i) => expect(participant(id)).toEqual({ ...before[i], link_token_hash: null, link_issued_at: null }));
 			expect(participant(theirs)).toEqual(before[2]);
+			expect(decisionEvents()).toEqual(revoked(decision, mine, 'linked'));
 		});
 
-		it('changes no column of any participant row for a new name, address and job title (12)', async () => {
+		it('changes no column of any participant row, and writes no event, for a new name and job title (12)', async () => {
 			const before = [...mine, theirs].map(participant);
 
-			const res = await send('PUT', `/api/people/${ann}`, { fullName: 'Ann Leigh', email: 'ann.leigh@example.test', jobTitle: 'Head of Finance' });
+			const res = await send('PUT', `/api/people/${ann}`, { fullName: 'Ann Leigh', jobTitle: 'Head of Finance' });
 
 			expect(res.status, JSON.stringify(res.body)).toBe(200);
 			expect([...mine, theirs].map(participant)).toEqual(before);
+			expect(decisionEvents()).toEqual([]);
+			expect(peopleLines().at(-1)!.message).toBe(`Person ${ann} "Ann Leigh" changed: name, job title (by admin)`);
+		});
+
+		it('empties both of their links for a new address, and records each; then left and a new address in one change record left alone (74)', async () => {
+			const before = [...mine, theirs].map(participant);
+
+			const res = await send('PUT', `/api/people/${ann}`, { email: 'ann.leigh@example.test' });
+
+			expect(res.status, JSON.stringify(res.body)).toBe(200);
+			mine.forEach((id, i) => expect(participant(id)).toEqual({ ...before[i], link_token_hash: null, link_issued_at: null }));
+			expect(participant(theirs)).toEqual(before[2]);
+			expect(decisionEvents()).toEqual(revoked(decision, mine, 'address_changed'));
+			expect(peopleLines().at(-1)!.message).toBe(`Person ${ann} "Ann Lee" changed: email; 2 decision links cleared (by admin)`);
+
+			// One update that does two of the triggers clears once, with the first reason.
+			const bobs = [theirs, makeParticipant(decision, bob, 4)];
+
+			const both = await send('PUT', `/api/people/${bob}`, { status: 'left', email: 'bob.hart@example.test' });
+
+			expect(both.status, JSON.stringify(both.body)).toBe(200);
+			bobs.forEach((id) => expect(participant(id)).toMatchObject({ link_token_hash: null, link_issued_at: null }));
+			expect(decisionEvents()).toEqual([...revoked(decision, mine, 'address_changed'), ...revoked(decision, bobs, 'left')]);
+			expect(peopleLines().at(-1)!.message).toBe(`Person ${bob} "Bob Hart" changed: email; marked left; 2 decision links cleared (by admin)`);
+		});
+
+		it('empties their links when the person is unlinked from their account, and records each (75)', async () => {
+			const account = makeUser({ username: 'ann' });
+			sqlite.prepare('UPDATE people SET user_id = ? WHERE id = ?').run(account.id, ann);
+			// The hashes set by hand: no link is issued to a person with an account.
+			const before = [...mine, theirs].map(participant);
+
+			const res = await send('PUT', `/api/people/${ann}`, { userId: null });
+
+			expect(res.status, JSON.stringify(res.body)).toBe(200);
+			expect(personRow(ann)!.user_id).toBeNull();
+			mine.forEach((id, i) => expect(participant(id)).toEqual({ ...before[i], link_token_hash: null, link_issued_at: null }));
+			expect(participant(theirs)).toEqual(before[2]);
+			expect(decisionEvents()).toEqual(revoked(decision, mine, 'unlinked'));
+			expect(peopleLines().at(-1)!.message).toBe(`Person ${ann} "Ann Lee" unlinked from account ${account.id}; 2 decision links cleared (by admin)`);
 		});
 	});
 });
@@ -427,7 +495,7 @@ describe('DELETE /api/people-groups/[id]', () => {
 });
 
 describe('DELETE /api/people/[id]', () => {
-	it('empties the person’s links, deletes them and their membership, keeps every snapshot, and frees the address (26)', async () => {
+	it('empties the person’s links, records each, deletes them and their membership, keeps every snapshot, and frees the address (26)', async () => {
 		const group = makeGroup('Finance');
 		const ann = makePerson('Ann Lee', 'ann.lee@example.test', { groupIds: [group] });
 		const bob = makePerson('Bob Hart', 'bob@example.test');
@@ -448,6 +516,8 @@ describe('DELETE /api/people/[id]', () => {
 		expect(participant(noLink)).toEqual({ ...before[2], person_id: null });
 		expect(participant(theirs)).toEqual(before[3]);
 		expect(peopleLines().map((line) => line.message)).toEqual([`Person ${ann} "Ann Lee" deleted; 2 decision links cleared (by admin)`]);
+		// Card 2675: on the record of the rows, which remain to carry it.
+		expect(decisionEvents()).toEqual(revoked(decision, mine, 'person_deleted'));
 
 		const again = await send('POST', '/api/people', { fullName: 'Ann Lee', email: 'ann.lee@example.test' });
 

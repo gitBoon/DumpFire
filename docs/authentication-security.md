@@ -1,9 +1,9 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.69
+version: 1.70
 status: As-Built
-date: 2026-10-22
+date: 2026-11-03
 tags:
   - authentication
   - security
@@ -2332,6 +2332,14 @@ session's expiry moves on every time it is used.
   first use, and a form open during the restore fails once and is reloaded. A backup with no
   links restored by an image from before this change, or put in place by hand as the
   database file, has them filled in by the start's backfill.
+- **A restore ends every personal decision link** (card 2675), inside its transaction, once
+  the rows are copied: `link_revoked { reason: 'restore' }` is recorded by DumpFire for each
+  participant holding one on a decision that is not a draft, and every `link_token_hash` and
+  `link_issued_at` is emptied, drafts' included (`decisionLinksCleared`, which the import's
+  answer does not carry yet: card 2676). A backup keeps the hashes, which are not credentials,
+  so that the restore can record which links it ended. A restore that cannot copy every row of
+  `decisions` and the `decision_*` tables is rolled back and refused, naming the tables. See
+  [Decision Access and Personal Links](#decision-access-and-personal-links).
 - **What a backup still holds that is worth guarding** (card 2169, decision 3). Every user's
   password hash and email, API keys as hashes, the mail server and its user name, each
   backup destination's fields other than its secrets, the system log (masked, above), and
@@ -3348,6 +3356,181 @@ Covered by `tests/access-every-route.test.ts`, `tests/atomic-moves.test.ts`,
 `tests/mentions.test.ts`, `tests/card-completion.test.ts` and `tests/migrations.test.ts`;
 see [Testing](testing.md).
 
+## Decision Access and Personal Links
+
+Card 2675 built the server side of decision records: who may do what to a decision, and the
+personal link that lets a participant with no account see one. **No route or page reaches it
+yet**: the routes, the `/decision-link/[token]` page and its protections (rate limiting of wrong
+tokens, headers) are cards 2676 and 2677's. What is here is already enforced in the modules every
+later route will call, and pinned by `tests/decision-access.test.ts`,
+`tests/decision-record.test.ts`, `tests/decision-service.test.ts` and `tests/gate.test.ts`. The
+design is `docs/planning/card-2625-decision-records.md`, the plan
+`docs/planning/card-2675-decision-service.md`.
+
+### Roles and the rules
+
+`decisionAccess(user, decision)` in `src/lib/server/decision-access.ts` reads the caller's roles
+on one decision. `admin` is `isAdmin`. `author` and `decider` are the decision's two user ids.
+While `board_id` is set, `getBoardRole` is asked once, and gives `boardOwner`, `boardEditor` or
+`boardReader` for `owner`, `editor` or `viewer`, with `canEditBoard` from the same answer. A
+decision whose board was deleted has no board role and `canEditBoard` false. `participant` is the
+one live participant row holding the caller's account. More than one is a fault: no
+`participant` role, and one WARN line naming the decision id and the count and no person. A role
+is held only as itself: `boardOwner` does not imply `boardReader`.
+
+`DECISION_RULES` is the one table every guard asks, through `mayDo`:
+
+| Action | admin | author | decider | boardOwner | boardEditor | boardReader | participant |
+|---|---|---|---|---|---|---|---|
+| view (not a draft) | yes | yes | yes | yes | yes | yes | yes |
+| view (a draft: `DRAFT_VIEWERS`) | yes | yes | yes | yes | no | no | no |
+| edit | yes | yes¹ | yes | yes¹ | no | no | no |
+| setDecider | yes | yes¹ | no | yes¹ | no | no | no |
+| open, republish, close | no | yes¹ | yes¹ | no | no | no | no |
+| extend | no | no | yes¹ | no | no | no | no |
+| withdraw | yes | yes¹ | yes¹ | no | no | no | no |
+| delete | yes | yes¹ | no | no | no | no | no |
+| resend | yes | yes¹ | yes¹ | no | no | no | no |
+| participantAccount, participantAddress | yes | no | no | no | no | no | no |
+| rule (card 2679) | no | no | yes¹ | no | no | no | no |
+| record (card 2680) | yes | no | yes¹ | no | no | no | no |
+
+¹ While the decision's board exists, a grant resting on `author`, `decider` or `boardOwner` is
+good for anything but `view` only if the caller can edit the board at that moment
+(`NEED_BOARD_EDIT`). An author or a decider who has lost edit access keeps `view` and loses every
+write until it is given back, the decider's ruling included (the code review's S8); another role
+they hold, administrator for one, may still grant an action. With no board, the author and the
+decider keep their writes. Once a
+decision is open, `setDecider` may not name the caller, an administrator included (403 `You cannot
+make yourself the decider of a decision that is open`). The decider must be an account that can
+edit the board when named and again at opening.
+
+### No existence oracle
+
+`requireDecision(user, decisionId, action)` in `route-guards.ts` answers `401` with no user and
+`400` `Invalid decision ID` for an id that is not an integer. A decision that is not there and one
+the caller may not view are both `404` `Decision not found`, with the same words, unlike
+`requireCard`'s `403`, because a decision's existence can itself be sensitive and its id says how
+many there are. One the caller may view but may not do the action to is `403` `You cannot <verb>
+this decision`. The status is each write's to check after its body: 401, 400, 404, 403, then the
+body's 400 and the status's 409.
+
+### The personal link
+
+A participant who has no account is reached by `/decision-link/[token]`.
+
+- **Made** as 32 random bytes in base64url (43 characters), as an API key is made.
+- **Stored** as its SHA-256 in hex in `decision_participants.link_token_hash`, unique, with
+  `link_issued_at`. The token is handed back once by `issueLink`, to be put in the mail, and is
+  never stored, logged, put in a subject, or written to an event or to activity. A hash is not a
+  credential, so a backup keeps it.
+- **Checked** in one place, `participantForLink(token)` in `src/lib/server/decision-links.ts`:
+  the token is hashed and looked up through the unique index, so it is compared only as its
+  hash. No live row is `unknown`; a decision whose link has lapsed is `expired`. And `reachOf` is
+  asked again at use (the code review's S3): a holder it would no longer reach by link, a person
+  left, deleted, given an account or a new address by any path that did not end the link, is
+  `unknown` too.
+- **Issued** only to a participant `reachOf` reaches by link: not removed, no account on the row
+  and none ever on this decision (`hadAccount`, read from the record), a person who exists, is
+  active and has no account, and a snapshot address equal to the person's current one.
+  `issueLink` throws a plain `Error` for anyone else: a caller that skipped the rule is a fault.
+  It is handed the person and `hadAccount` its caller has already read, so one mail to N link
+  holders reads the decision's history once (the code review's F1).
+- **Fresh in every mail.** Each record-bearing mail to a link holder carries a new link, and the
+  old hash is replaced, so a forwarded older mail stops working.
+- **Expiry** is worked out when the link is read (`linkUsable`). It is usable until 90 days after
+  `ruled_at` for a ruled or superseded decision, `withdrawn_at` for a withdrawn one, and
+  `closes_at` for an open or closed one. With no such moment it is usable only on an open
+  decision; a draft never has one, and an unknown status or a moment that cannot be read is
+  refused. An extension moves `closes_at`, so a link that lapsed on the old deadline works again.
+  Nothing sweeps expired hashes.
+
+```mermaid
+flowchart TD
+    subgraph Ends["Ends the link: hash and moment emptied, link_revoked { reason }"]
+        R1["Participant removed: removed"]
+        R2["Person marked left, or their account deleted: left"]
+        R3["Person linked to an account: linked"]
+        R4["Person unlinked: unlinked"]
+        R5["Person's directory address changed: address_changed"]
+        R6["Person deleted: person_deleted"]
+        R7["Administrator attaches the account: account_attached"]
+        R8["Administrator changes the participant's address: participant_address"]
+        R9["A restore: restore"]
+    end
+    Ends --> NoLink["No link until a mail or a re-send<br/>reachOf allowing"]
+    Mail["A record mail or a re-send"] -->|"issueLink: new hash replaces old,<br/>link_issued { replaced: true }"| Live["A live link"]
+    Live -->|"read: linkUsable"| Use{"now before the bound + 90 days?"}
+    Use -->|no| Exp["expired"]
+    Use -->|yes| Reach{"reachOf: still by link?"}
+    Reach -->|yes| Ok["participant and decision"]
+    Reach -->|no| Unk["unknown"]
+```
+
+Every one of those triggers is recorded on the decision, by its actor: the administrator for the
+people directory's (`revokeLinks` from `people.ts`) and for an account's delete (`deleteUser` in
+`deletes.ts`, which marks every person linked to the account left first, the code review's S4:
+an account deleted on purpose can never become a link holder by accident, and only Mark active
+brings the person back), DumpFire for a restore. `appendEvent` refuses
+an event naming a participant on a draft; no link is issued before opening, and the restore
+records only links on decisions that are not drafts (while still emptying every hash).
+
+### Who is mailed
+
+One rule, `reachOf`, decides every record-bearing mail, re-send and link. A person who is gone
+(`deleted`) or has left (`left`) is never mailed, whatever their account, because the mailbox of
+someone who has left may have been passed on. A person whose account is deleted is marked left by
+the delete itself. A row with an account is mailed a link to the decision's page, behind a
+sign-in, only while the person is still linked to that same account, otherwise
+`account_not_attached`, and only while the snapshot address is still the person's, otherwise
+`address_changed`: the mail goes to the snapshot address on either route (the code review's S2). A
+row with no account is skipped `account_not_attached` when the
+person has gained one, `account_removed` when the row once held an account on this decision (an
+account deleted on purpose empties the row's `user_id` with no event, and must not turn into a
+bearer link to the old address), and `address_changed` when the snapshot address is no longer the
+person's. So the next mail can never undo an administrator's act that ended a link. Only an
+administrator can reconnect such a participant, through `setParticipantAccount` or
+`changeParticipantAddress`, each recorded.
+
+The rule is asked again just before each mail of a batch is sent (`stillToSend` in
+`decision-mail.ts`, the code review's F2), as the batch goes out after the commit and another write
+may have come between: a mail whose link the row no longer holds, whose participant is removed or
+has a new address, or who is no longer reached through their account is not sent, and is recorded
+`mail_outcome { delivered: false, problem: 'superseded' }`. One whose decision has been deleted is
+not sent either, and a WARN line names the decision and the mail event by id.
+
+### What is never logged
+
+The path `/decision-link/` is in `SECRET_IN_PATH` (`src/lib/server/secret-paths.ts`) as
+`{ routeId: '/decision-link/[token]', before: '/decision-link/' }`, from before its route exists.
+The gate's line, `maskMailText` (a mail server's refusal that quotes the link), `mailStatus()`'s
+last failure, a backup's copy of the log and the start-up sweep all write `/decision-link/[token]`,
+a path under it and an encoded one (`/%64ecision-link/…`) included. `maskMailText` also reads an
+encoded slash back (`%2F`, `&#47;`, `&#x2F;`) before it masks, finds the path in any case, and
+masks every run of 32 or more base64url characters wherever it stands, so a link quoted encoded,
+in capitals or split across two reply lines is masked too (the code review's S1); a piece under
+32 characters left after a split inside the token is the one limit. A mail's `mail_outcome` keeps
+the `MailProblem` code alone, never the server's words. A failed record mail's ERROR line names the
+participant and the decision by id, `Failed to send email to participant <id> of decision <id>`,
+and the address is masked out of the server's words too, so no participant's address reaches the
+log or the mail panel (S7). No subject, event detail, activity entry or log line holds a token or
+a hash. Decision mail builds its links on the App URL or `ORIGIN` alone, never on the request's
+Host, so a forged Host header cannot point a link elsewhere. A title holding a control, direction,
+invisible or other format character (`\p{Cf}`, U+00AD, U+061C, U+180E, U+2060 to U+2064,
+U+FFF9 to U+FFFB and the tag characters among them, S6) is refused (`UNPRINTABLE`, the class the
+logger's `printable` replaces), and the title is escaped before the mail's heading.
+
+### The restore
+
+A restore records `link_revoked { reason: 'restore' }` by DumpFire for each participant holding a
+link on a decision that is not a draft, then empties every `link_token_hash`, drafts' included,
+inside its transaction, and reports the count as `RestoreResult.decisionLinksCleared`. A link
+mailed before a restore stops working. A restore that cannot copy every row of `decisions` and
+the `decision_*` tables is rolled back and refused, as a partial record would be a false one. A
+NULL in a decision table's NOT NULL column is not given the column's default, as it is elsewhere,
+so such a row is left out and the restore refused (the code review's F8). See
+[What a Backup Holds, and What a Restore Brings In](#what-a-backup-holds-and-what-a-restore-brings-in).
+
 ## The Public Request Form
 
 The request form (`/request`, and the API under `/api/requests`) is the one part of
@@ -4171,11 +4354,13 @@ which is what Reset Everything in the admin panel leaves.
 | `src/lib/server/api-errors.ts` | `guardBody()`, which makes a body the caller got wrong a `400` and a body over the size limit a `413`, and `failureAsJson()`, which answers a failure that is not JSON again as JSON |
 | `src/lib/server/body-limits.ts` | How large a request's body may be, route by route and caller by caller; the gate's `413` for a body that declares more, and the count that holds a body with no length to the same limit as it is read |
 | `src/lib/server/client-address.ts` | The caller's address, asked so that it cannot throw, and the `'unknown'` count a request with no readable address is held to; `addressKey()`, what a count by address counts, an IPv6 address by its /64 (card 2195) |
-| `src/lib/server/logger.ts` | The system log: the console, `system_logs` and the live feed, from one `emit()`; `printable()`, which puts a space in place of every control character of a line, so that a name holding a line break cannot split it (card 2214) |
-| `src/lib/server/secret-paths.ts` | The paths that carry a secret, `/invite/[token]`, written to the log masked; `maskSecretsInLog()`, which masks what the log already holds, in a backup's copy and in the running log at start, and `maskFailedSignIn()`, which takes the name typed out of an old failed sign-in line (card 2193) |
+| `src/lib/server/logger.ts` | The system log: the console, `system_logs` and the live feed, from one `emit()`; `printable()`, which puts a space in place of every control character of a line, so that a name holding a line break cannot split it (card 2214), and `UNPRINTABLE`, the class it replaces, every format character (`\p{Cf}`) among it, which a decision's title is refused for holding (card 2675) |
+| `src/lib/server/decision-access.ts` | Who may do what to a decision (card 2675): `decisionAccess()`, `DECISION_RULES`, `DRAFT_VIEWERS` and `mayDo()`, which also asks that a write resting on authorship, the decider's role or board ownership come from someone who can edit the board now; `requireDecision()` in `route-guards.ts` asks it, `404` for a decision the caller may not view |
+| `src/lib/server/decision-links.ts` | A decision's personal links (card 2675): `issueLink()`, `revokeLinks()`, `participantForLink()`, the one place a link is checked, and `reachOf()` and `mayHoldLink()`, who is mailed and who may hold a link |
+| `src/lib/server/secret-paths.ts` | The paths that carry a secret, `/invite/[token]` and `/decision-link/[token]` (card 2675), written to the log masked; `maskSecretsInLog()`, which masks what the log already holds, in a backup's copy and in the running log at start, and `maskFailedSignIn()`, which takes the name typed out of an old failed sign-in line (card 2193) |
 | `src/lib/server/backup.ts` | `generateBackupData()`, the one copy an export and a scheduled backup both send, cleared of sessions, unused invites, the key remembered browsers are signed with, every request's link and the request form's key, and every secret, then sealed (`withoutSecrets()`); `runBackup()` does not try a destination whose credentials are not entered |
 | `src/lib/server/backup-secrets.ts` | What a backup leaves out because it is a secret, and what is done about the gaps (card 2169): `clearSecrets()`, `readSecretsHere()`, `fillSecretGaps()`, `credentialsMissing()`, `secretsToEnter()` and the two sentences; the seal: `backupSealKey()`, `sealOf()`, `sealCopy()`, `sealVerifies()`, `keepSealKey()`, and the checks made before it, `unsealedBecause()`, `backupFailsCheck()`, `strayInternalObjects()`; `fromTableStorage()`, how a table is read for the seal and the restore |
-| `src/lib/server/db/restore.ts` | What a restore brings in and what it never does, the new link it gives every request, and the secrets it keeps from this server (`RestoreResult.secrets`), only for a backup whose seal verifies (`RestoreResult.sealVerified`, and why not, `RestoreResult.unsealed`); `rowsToRestore()`, each table read `NOT INDEXED`; `backupLacksSuperadmin()` |
+| `src/lib/server/db/restore.ts` | What a restore brings in and what it never does, the new link it gives every request, every decision link it ends and records (`RestoreResult.decisionLinksCleared`) and its refusal of a decision record copied in part (card 2675), and the secrets it keeps from this server (`RestoreResult.secrets`), only for a backup whose seal verifies (`RestoreResult.sealVerified`, and why not, `RestoreResult.unsealed`); `rowsToRestore()`, each table read `NOT INDEXED`; `backupLacksSuperadmin()` |
 | `src/lib/server/email.ts` | `linkBaseUrl()`: the address a mailed link begins with, from configuration alone |
 | `src/lib/server/startup-checks.ts` | The eight lines the server writes at start: no superadmin, `ORIGIN` still the image's placeholder, and a board beneath one of its own cards (card 2142), which a restore of a backup that brings one writes at once too, with each control character in a board's name or a card's title printed as a space, so that a name holding a line break cannot split the line and forge one after it (with the logger's `printable()`, card 2214); and three about the database (card 2083): the new-database line (a new, empty database was made at this start, the alarm on an installation that had data, since set-up is then open to whoever comes first), the off-volume line (the database is in the container's own file system), and the other-database line (a database at `/app/dumpfire.db` beside the one in use); and the line that `SIGN_IN_ONE_AT_A_TIME` is off (card 2194), and `reportCspMode()`'s line that `CSP_MODE` is `report-only` or neither mode (card 2162), each to the console whatever `LOG_LEVEL` is; `refuseUserlessBesideAnother()`, which stops the server before it listens when the database in use has no users while another is beside it; and `maskLiveLog()`, which masks the running log's tokens and old failed sign-in names at start |
 | `src/lib/server/rate-limit.ts` | In-memory rate limiter, counting in a fixed window from each key's first attempt (`checkRateLimit`), an amount in the same way (`takeAllowance`, the day's report mail of card 2182), and wrong passwords at one account in an idle window (`signInWait`, `countWrongSignIn`, `forgetWrongSignIns`, card 2177); sign-in's count by address with the account each attempt was at (`countSignInAttempt`, `refundSignInAttempts`, `keepSignInAttemptCounted`, card 2226); and the sign-ins in flight at one key (`enterSignIn`, `leaveSignIn`, card 2194) |

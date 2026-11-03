@@ -38,6 +38,7 @@ import {
 	cards,
 	categories,
 	columns,
+	decisions,
 	labels,
 	subtasks,
 	teamMembers,
@@ -48,12 +49,15 @@ import {
 	type Card,
 	type Category,
 	type Column,
+	type Decision,
 	type Label,
 	type Subtask,
 	type Team,
 	type User
 } from './db/schema';
 import { canEditBoard, canViewBoard, getBoardRole, isAdmin } from './board-access';
+import { decisionAccess, mayDo, type DecisionAccess } from './decision-access';
+import { DECISION_ACTION_WORDS, type DecisionAction } from './decision-status';
 import { boardCategoryRule, categoryRule } from './list-access';
 import { linkTooDeep, tooDeepToLink, wouldLoop } from './sub-boards';
 import type { SessionUser } from './auth';
@@ -177,6 +181,38 @@ export function requireTeamManager(user: SessionUser | null | undefined, teamId:
 		if (membership?.role !== 'owner') error(403, 'Forbidden');
 	}
 	return team;
+}
+
+/**
+ * The decision, and the caller's access to it, if they may do `action` to it
+ * (card 2675, plan 4.3, decisions 4 to 6).
+ *
+ * A decision the caller may not view is answered as one that is not there,
+ * 404 `Decision not found`, unlike `requireCard`'s 403: the answer must not
+ * say that a decision exists. One they may view and may not do `action` to is
+ * a 403 naming the action. Who may do what is `mayDo`'s, in
+ * decision-access.ts, which also asks that a write resting on authorship or
+ * board ownership come from someone who can edit the board now.
+ *
+ * The status is not checked here: each write asks `requireTransition` after
+ * reading its body, so the order is 401, 404, 403, then the body's 400 and
+ * the status's 409.
+ */
+export function requireDecision(
+	user: SessionUser | null | undefined,
+	decisionId: number,
+	action: DecisionAction
+): { decision: Decision; access: DecisionAccess } {
+	const caller = requireUser(user);
+	if (!Number.isInteger(decisionId)) error(400, 'Invalid decision ID');
+
+	const decision = db.select().from(decisions).where(eq(decisions.id, decisionId)).get();
+	if (!decision) error(404, 'Decision not found');
+
+	const access = decisionAccess(caller, decision);
+	if (!mayDo(access, 'view', decision)) error(404, 'Decision not found');
+	if (!mayDo(access, action, decision)) error(403, `You cannot ${DECISION_ACTION_WORDS[action].verb} this decision`);
+	return { decision, access };
 }
 
 /** The column and the board it is on. */

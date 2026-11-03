@@ -67,7 +67,14 @@ export const ACTIVITY_LABELS: Readonly<Record<string, string>> = Object.freeze({
 	milestone_reopened: 'Reopened milestone',
 	milestone_deleted: 'Deleted milestone',
 	milestone_card_added: 'Added card to milestone',
-	milestone_card_removed: 'Removed card from milestone'
+	milestone_card_removed: 'Removed card from milestone',
+	// A decision's lifecycle (card 2675).
+	decision_opened: 'Opened decision',
+	decision_republished: 'Re-published decision',
+	decision_closed: 'Closed decision for input',
+	decision_extended: 'Extended decision',
+	decision_withdrawn: 'Withdrew decision',
+	decision_deleted: 'Deleted decision'
 });
 
 /**

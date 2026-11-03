@@ -59,6 +59,8 @@ import { namingIds } from './auth';
 import { emit } from './events';
 import { ACTIONS, logActivity, type ActivitySource } from './logActivity';
 import { columnRoleOf, isUpstreamColumn } from '$lib/column-role';
+import { revokeLinks } from './decision-links';
+import type { RecordActor } from './decision-record';
 import { createLogger } from './logger';
 import { logCardLeftGoal } from './milestones';
 import { moveToTrash, type UploadFile } from './uploads';
@@ -66,6 +68,8 @@ import { removeSettingsSetBy, type SettingsRemoved } from './setting-setters';
 import { stamp } from '$lib/timestamps';
 
 const log = createLogger('DELETE');
+/** For the line a person marked left by an account's delete writes, as people.ts writes its own. */
+const peopleLog = createLogger('PEOPLE');
 
 /** Who is deleting: the signed-in user. */
 export type DeleteActor = { id: number; username: string; emoji?: string | null };
@@ -921,8 +925,15 @@ export type UserRemoved = {
  * every mail or backup. Each removal is a WARN line under SMTP or BACKUP once
  * committed, and the answer names what went.
  *
+ * Every person in the people directory linked to the account is marked left,
+ * before the account goes (card 2675's code review, S4, `markPeopleLeft`):
+ * the key would only unlink them, and a person with no account can be sent a
+ * personal decision link, so an account deleted on purpose could be turned
+ * into a link holder by accident. An administrator can still mark them
+ * active again, as an act of its own.
+ *
  * Nothing else is written here (card 2007's rule, amended by the statements of
- * cards 2171, 2168 and 2397). What the keys cascade goes with the user:
+ * cards 2171, 2168, 2397 and 2675). What the keys cascade goes with the user:
  * their sessions, API keys, report schedules, comments, memberships and
  * assignments. Their XP is kept: `user_xp` is keyed by name and has no key
  * to a user.
@@ -966,6 +977,10 @@ export function deleteUser(userId: number, actor: DeleteActor): UserRemoved | nu
 		// What they set that sends mail or backups somewhere, while the setter
 		// rows still name them; the key would take only those rows (card 2397).
 		const settingsRemoved = removeSettingsSetBy({ id: userId, username: user.username }, 'deleted', actor);
+		// Every person linked to the account is marked left, and their decision
+		// links ended, while the link still names them (card 2675's code review,
+		// S4). See `markPeopleLeft`.
+		markPeopleLeft(userId, actor);
 		sqlite.prepare('DELETE FROM users WHERE id = ?').run(userId);
 
 		afterCommit(() =>
@@ -980,4 +995,41 @@ export function deleteUser(userId: number, actor: DeleteActor): UserRemoved | nu
 		);
 		return { ...user, referencesCleared, webhooksSwitchedOff, settingsRemoved };
 	});
+}
+
+/**
+ * Mark the person linked to the account `userId` left, as `updatePerson`
+ * marks one (`status` 'left', `left_at` now), and end their personal decision
+ * links, each recorded on its decision as `link_revoked { reason: 'left' }`
+ * by the administrator deleting the account (card 2675's code review, S4).
+ * The links go through `revokeLinks` in decision-links.ts, the path
+ * people.ts's own `clearLinks` takes: people.ts is a service and exports its
+ * writes alone, each handed a caller, and nothing here is (see the module
+ * comment). The account is deleted through the web application's tree, so
+ * the record names it `ui`. A person already left keeps their `left_at`.
+ *
+ * One PEOPLE line for each person, once committed, naming them by id and
+ * name and never by address, as people.ts writes its own.
+ */
+function markPeopleLeft(userId: number, actor: DeleteActor): void {
+	const linked = sqlite.prepare('SELECT id, full_name AS fullName, status FROM people WHERE user_id = ? ORDER BY id').all(userId) as {
+		id: number;
+		fullName: string;
+		status: string;
+	}[];
+	const now = stamp();
+	const by: RecordActor = { userId: actor.id, name: actor.username, source: 'ui' };
+	for (const person of linked) {
+		const marked = person.status !== 'left';
+		if (marked) sqlite.prepare("UPDATE people SET status = 'left', left_at = ?, updated_at = ? WHERE id = ?").run(now, now, person.id);
+		const cleared = revokeLinks({ personId: person.id }, 'left', by);
+		afterCommit(() =>
+			peopleLog.info(
+				`Person ${person.id} "${person.fullName}" ${marked ? 'marked left' : 'left already'}: their account ${userId} was deleted; ` +
+					`${cleared.length} decision links cleared (by ${actor.username})`,
+				{ personId: person.id, userId, participantIds: cleared },
+				{ userId: actor.id }
+			)
+		);
+	}
 }

@@ -1940,7 +1940,14 @@ describe('which action sends which event, and what each move sends (card 2278)',
 			milestone_deleted: null,
 			// A card put in a goal or taken out (card 2343).
 			milestone_card_added: 'milestone.card_added',
-			milestone_card_removed: 'milestone.card_removed'
+			milestone_card_removed: 'milestone.card_removed',
+			// A decision's lifecycle (card 2675, decision 22): no event; decision webhooks are card 2689.
+			decision_opened: null,
+			decision_republished: null,
+			decision_closed: null,
+			decision_extended: null,
+			decision_withdrawn: null,
+			decision_deleted: null
 		});
 	});
 

@@ -1,9 +1,9 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.47
+version: 1.48
 status: As-Built
-date: 2026-10-27
+date: 2026-11-03
 tags:
   - notifications
   - email
@@ -15,6 +15,7 @@ tags:
   - mail-failures
   - ssrf
   - webhook-allow-list
+  - decision-records
 description: "Complete guide to DumpFire's notification pipeline: SMTP email, SSE real-time events, webhooks (where one may send, who may change one, at most 10 a board), and user preferences"
 ---
 
@@ -405,7 +406,9 @@ that answers neither EHLO nor STARTTLS comes back `ECONNECTION` "EHLO failed but
 support required STARTTLS", which nodemailer 10 names so (the review-fix pass's S6). A sign-in
 failure or a timeout says what it says, with no sentence. Every mail's failure, Send Test's
 included, is one `ERROR` line under `EMAIL` written by `deliverMail` (`Failed to send email to
-<to>: <subject>`); the SMTP route's own line for Send Test is gone (card 2196's N2). When it is
+<to>: <subject>`, or, for a decision's record mail, `Failed to send email to participant <id>
+of decision <id>: <subject>`, card 2675's S7); the SMTP route's own line for Send Test is gone
+(card 2196's N2). When it is
 the certificate or STARTTLS, `deliverMail` also writes one `WARN` line under `EMAIL`, `Mail is
 not being sent: <the error, masked>. <the sentence above>`, at most once in ten minutes in a
 process, so the Audit page says why invites and notifications stopped. Send Test does not
@@ -552,9 +555,14 @@ an `Error` as its message and stack. It writes
 ```
 
 where `detail` is `maskMailText(err.message)`: a hyphen encoded as `%2D`, `&#45;` or `&#x2D;`
-(any case) is read back as `-`, which would otherwise break a UUID into runs of 12 or fewer;
-then `maskSecretPaths` (an invite's `/invite/<token>` and a request link's `?token=` become
-`[token]`); then every run of 16 or more hex digits and hyphens, in any case, becomes `[token]`. A refusal can quote the link URL-encoded, in capitals,
+(any case) is read back as `-`, which would otherwise break a UUID into runs of 12 or fewer, and
+a slash encoded as `%2F`, `&#47;` or `&#x2F;` as `/` (card 2675's S1); then `maskSecretPaths`
+in any case (an invite's `/invite/<token>`, a decision's `/decision-link/<token>` and a request
+link's `?token=` become `[token]`); then every run of 32 or more base64url characters (a decision
+link's token is 43) and every run of 16 or more hex digits and hyphens, in any case, becomes
+`[token]`. A decision's record mail also has its recipient's address, wherever the server's words
+quote it, written `[participant <id> of decision <id>]` (`trySendEmail`'s `recipient`, S7); every
+other mail is unchanged. A refusal can quote the link URL-encoded, in capitals,
 with HTML entities, or split across two reply lines after `/invite/`; each leaves the token's own
 characters as they are, which the second rule finds (an invite's token is a UUID, a request's 64
 hex digits). The cost is the odd queue id. The second rule is not in `maskSecretPaths`, which is
@@ -598,6 +606,11 @@ down. The failure shows on the panel and in the log.
 | Conversation Message | Requester/Admin | `email_requests` | `Message on request: {title}` |
 | Request Complete | Requester | `email_request_progress` | `Your request is complete: {title}` |
 | Backup Failed | The backup settings' failure email address(es), one mail a run, naming every destination that failed (card 2415), a copy of the database that could not be made included (card 2416) | — (the backup settings' failure alerts, `notifyOnFailure`) | `⚠️ DumpFire Backup Failed` |
+| Decision Invitation (card 2675) | Each participant of a decision `reachOf` reaches, at the snapshot address: on opening, when added or brought back after opening, and on a re-send. No route sends it yet | — (never read, the master switch included: D22) | `Your view is asked: {title}` (consulted), `For your information: {title}` (informed) |
+| Decision Asked Again (card 2675) | As above, on a re-publish that asks again | — | `Changed, and your view is asked again: {title}` |
+| Decision Changed (card 2675) | As above, on a re-publish that only tells | — | `Changed: {title}` |
+| Decision Withdrawn (card 2675) | As above, on withdrawing a decision that was opened | — | `Withdrawn: {title}` |
+| Decision Ruled (card 2675, sent by card 2679) | As above, on a ruling | — | `Ruled: {title}` |
 
 **The backup failure mail says which kind of run failed** (card 2413, 2026-10-22). Sent by
 `runBackup()` in `src/lib/server/backup.ts`: headed **Scheduled Backup Failed**, "A scheduled
@@ -763,6 +776,111 @@ flowchart LR
 Comments written before are drawn with their chips by the same rule; no mail is sent again
 for them.
 
+### Decision Record Mails (card 2675)
+
+A decision's participants are told of it by five mails that are part of its record: the
+invitation, asked again, told of a change, withdrawn, and the ruling (built here, sent by card
+2679). `queueRecordMails(decision, mail, opts)` in `src/lib/server/decision-mail.ts` writes them
+inside the service write that asks for them, and no route calls that service yet. What each
+mail carries:
+
+| Mail | Event on the record | Body (every value through `escapeHtml`) |
+|---|---|---|
+| Invitation | `invited` (`{ resend: true }` on a re-send) | The question; for a consulted participant what is asked of them and by when (UTC), for an informed one that nothing is asked; who decides; the link |
+| Asked again | `asked_again` | The change note; that an earlier response stays on the record for its version; by when; the link |
+| Told of a change | `told_of_change` | The change note; the link |
+| Withdrawn | `told_withdrawn` | That it is withdrawn, the reason, that the link goes on working for 90 days; the link |
+| Ruled | `told_ruling` | The option chosen, or "None of these", the reason and the conditions; no count and no figure (S4); the link |
+
+The heading is `emailTemplate(escapeHtml(title), body)`: `emailTemplate`, exported from
+`notifications.ts` for this, puts its title in as given. A title cannot hold a control,
+direction, invisible or other format character (`\p{Cf}`; `createDecision` refuses it,
+`UNPRINTABLE` in `logger.ts`), and the subject is plain text that never holds a token. No mail
+names another participant.
+
+**Who is mailed** is one rule, `reachOf` in `src/lib/server/decision-links.ts`, asked for every
+participant who is not removed. A person who is gone or has left is never mailed, whatever their
+account; a person whose account is deleted is marked left by the delete (card 2675's S4). A row
+with an account is mailed a link to `/decisions/{id}`, behind a sign-in, while the person is
+still linked to that same account and the snapshot address is still the person's (S2). A row with
+no account is mailed a **personal link**,
+`/decision-link/[token]`, while the person has no account, the row never held one on this
+decision, and the snapshot address is still the person's. Everyone else gets no mail, and the
+record says why in `mail_skipped { mail, reason }`, the reason the first of `deleted`, `left`,
+`account_not_attached`, `account_removed` and `address_changed`. A re-send to such a participant
+is refused 409 in that reason's words.
+
+**A fresh link in every mail.** Only a link's hash is stored, so a later mail cannot carry the
+link an earlier one did. Each mail to a link holder issues a new link, which replaces the last
+(`link_issued { replaced: true }`), so a forwarded older mail stops working.
+
+**Where the links point.** Every link is made on `decisionLinkBase()`, which is `linkBaseUrl()`
+asked with no request: the App URL, else `ORIGIN`. The request's own Host is never used, even
+under dev, and a service's `opts.baseUrl` is not read. With neither, opening, re-publishing, a
+re-send and adding or bringing back a participant are refused 409 with the `NO_LINK_ADDRESS`
+words and nothing written. A withdrawal goes ahead, each mail it would send recorded with
+`mail_outcome { delivered: false, problem: 'no_link_address' }` in the same transaction, no link
+issued, and nothing sent. Opening is also refused while no mail host is set.
+
+**Delivery is two events, and a batch is sent in sequence.** The mail's event is written in the
+write's transaction. The mails of one call are held in memory, the tokens with them, and handed
+to **one** `afterCommit` effect, which sends them one at a time: each `trySendEmail` awaited and
+its `mail_outcome { of, mail, delivered, problem? }` appended by `DumpFire` (source `system`) in
+an `inTransaction` of its own before the next starts. An opening with 5,000 participants holds
+one mail connection at a time. `problem` is the `MailProblem` code alone; the mail server's own
+words go only to the system log, where `maskMailText` writes `/decision-link/[token]` for the
+token (`SECRET_IN_PATH`). An outcome that cannot be written, for a decision deleted meanwhile, is
+one WARN line naming the decision and event ids and no address, and the batch goes on.
+
+**Asked again before each send** (`stillToSend`, card 2675's F2). Another write can commit while
+the batch is out, so just before each mail is handed over it is checked again: the decision must
+still exist; the row must not be removed and must still hold the mail's address; a link mail's
+row must still hold that mail's link (`link_token_hash` the hash of its token); and an account
+mail's participant must still be reached through their account. A mail whose decision is gone is
+not sent, and is a WARN line, `Decision <id>: mail event <id> was not sent, as the decision is
+gone`. Any other that fails is not sent, and is recorded `mail_outcome { delivered: false,
+problem: 'superseded' }`.
+
+**The throttle.** `RECORD_MAIL_MIN_MINUTES` is 10. A re-send, a re-publish and bringing back a
+removed participant are refused 409 while a participant they would mail was mailed less than 10
+minutes ago, naming the moment, in UTC, from which they may be. Opening, withdrawal and the
+ruling happen once per change of status and are not throttled.
+
+```mermaid
+sequenceDiagram
+    participant S as Service write (in writeAs)
+    participant L as decision-links
+    participant R as decision-record
+    participant Q as afterCommit (one per batch)
+    participant M as trySendEmail
+    loop each participant not removed
+        S->>L: reachOf(row, person, hadAccount)
+        alt skip
+            S->>R: mail_skipped { mail, reason }
+        else link holder
+            S->>L: issueLink → token, in memory only
+            L->>R: link_issued { replaced }
+            S->>R: the mail's event → eventId
+        else account holder
+            S->>R: the mail's event → eventId
+        end
+    end
+    S->>Q: one effect for the batch
+    Note over S,Q: commit
+    loop each mail, in order
+        Q->>Q: stillToSend: decision, row, address, link or account
+        alt decision gone
+            Q->>Q: WARN line, nothing sent or written
+        else superseded
+            Q->>R: inTransaction: mail_outcome { delivered: false, problem: 'superseded' }
+        else still to send
+            Q->>M: await trySendEmail(snapshot address, subject, html, { recipient })
+            M-->>Q: MailOutcome
+            Q->>R: inTransaction: mail_outcome { of, mail, delivered, problem? }
+        end
+    end
+```
+
 ### Text in Mail Is Text
 
 Every text a mail carries is somebody's typing: a board's or grouping's name, a card's
@@ -829,6 +947,12 @@ There is one list of them, `NOTIFICATION_PREFS` in `src/lib/notification-prefs.t
 | Planning | `email_planning` | The mail about a new plan |
 
 Until 2026-10-15 the page, the route and the mail kept three lists. The route's left out `email_request_progress` and `email_mentions`, so it neither answered nor saved them: the page offered Request Progress, whose switch went back on at every reload, and the progress mail was always sent; and the mention mail read `email_mentions`, which nothing offered, so it could be stopped only by switching all mail off. The page now offers **Mentions**, and both keys are saved and answered. No account had either stored, so a requester who switched Request Progress off before then is mailed until they switch it off again. A key not stored, or a preference that cannot be read, is on. A save that is refused, or gets no answer, puts every switch back as it was and says why under them.
+
+**A decision's record mails read no preference** (card 2675, design D22). The invitation, asked
+again, told of a change, withdrawn and ruled mails carry a decision's record to the people asked
+or told, and are sent whatever their account's switches say, **All Email Notifications**
+included: `queueRecordMails` calls neither `shouldNotifyUser` nor `filterRecipientsByPref`. Who is
+mailed is `reachOf`'s rule instead ([Decision Record Mails](#decision-record-mails-card-2675)).
 
 ```mermaid
 flowchart TD
@@ -1213,6 +1337,7 @@ flowchart LR
 | `xp-update` | `{}` | XP was given for a completion |
 | `celebrate` | `{type: 'complete', cardTitle, userName, userEmoji, xpGained}` | A card moved into a Complete column, or created in one (card 2134). One event for a drop of several cards, naming the last |
 | `update` | `{type: 'card', action: 'moved_away', cardTitle, fromColumn, toColumn, userName, userEmoji}` | A card moved to another board, sent to the board it left. `action: 'moved_in'`, with the same fields, goes to the board it joined. Neither names the other board (card 2181) |
+| `decision` | `{decisionId, status, boardId}` | A decision on the board opened, re-published, closed, extended, and, once it had been opened, withdrawn or deleted (card 2675). `status` is the shown one (`open`, `awaiting_ruling`, `withdrawn`, …). Never for a draft, a participant, a mail or a link, nor for a decision whose board is gone. The data carries no title and no name, and `boardId` itself, so the global stream can check it. No page listens for it yet (card 2680), so no open board re-reads itself on it. No route reaches the decision service yet |
 
 The four delete payloads say what kind of change it was and nothing more: no board name,
 card title or user (card 2108). The board of a sub-board's card can be viewed by people who

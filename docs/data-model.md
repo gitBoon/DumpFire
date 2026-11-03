@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.42
+version: 1.43
 status: As-Built
 date: 2026-11-03
 tags:
@@ -560,6 +560,132 @@ erDiagram
     cards ||--o{ decision_card_links : "CASCADE"
 ```
 
+#### How the decision tables are written (card 2675)
+
+The decision service (`src/lib/server/decisions.ts` and its helper modules; see
+[Architecture](architecture.md#the-decision-service-and-its-record)) is the only writer, and
+no route calls it yet. It added no column: everything below lives in 0061's columns or on the
+record.
+
+**`decisions.status`** is stored as one of `draft`, `open`, `closed`, `ruled`, `superseded` or
+`withdrawn` (`STORED_STATUSES` in `src/lib/server/decision-status.ts`). Readers show `closed`,
+and `open` with `closes_at <= now`, as `awaiting_ruling` (`decisionStatus`, and
+`awaitingRulingSql` for a query). Moments are `stamp()` text, so `closes_at <= ?` in SQL agrees
+with `<=` on strings in code. The service stamps every NOT NULL moment with no default itself:
+`decision_participants.included_at`, `decision_versions.published_at`, and (card 2679)
+`decision_rulings.ruled_at`.
+
+```mermaid
+stateDiagram-v2
+    [*] --> draft: createDecision
+    draft --> open: openDecision (opened_at, current_version 1)
+    draft --> withdrawn: withdrawDecision
+    draft --> [*]: deleteDecision (cascade)
+    open --> open: republishDecision (current_version + 1)
+    open --> closed: closeDecision (closed_at)
+    closed --> open: extendDecision (closes_at moved, closed_at NULL),<br/>or republish asking again
+    open --> ruled: card 2679 (ruled_at)
+    closed --> ruled: card 2679 (ruled_at)
+    open --> withdrawn: withdrawDecision (withdrawn_at, withdrawn_reason)
+    closed --> withdrawn: withdrawDecision
+    ruled --> superseded: card 2679
+    withdrawn --> [*]: deleteDecision (cascade)
+```
+
+**Insert-only.** No code in `src` updates or deletes a row of `decision_versions`,
+`decision_responses`, `decision_rulings` or `decision_events`: `appendEvent` and `appendVersion`
+in `src/lib/server/decision-record.ts` are their only inserts outside the restore, and a scan in
+`tests/decision-record.test.ts` holds it (no trigger, design 4.3). The rows change only in these
+ways, none of them written by the service:
+- deleting an account empties `decision_versions.published_by`, `decision_rulings.ruled_by`,
+  `decision_events.actor_user_id` and `decision_participants.user_id` by SET NULL, each with a
+  NOT NULL name beside it, and writes no event;
+- a response's `replaces_id` is SET NULL only when the response it names goes in a decision's
+  cascade;
+- `deleteDecision` removes a draft or withdrawn decision with every row below it, by cascade.
+  SQLite checks the NO ACTION keys after the cascade, so they do not stop it. Nothing else in
+  `src` deletes a `decisions` row, and a ruled or superseded decision cannot be deleted;
+- a restore and the superadmin reset replace the whole database.
+
+`decisions`, `decision_participants` and `decision_options` are ordinary rows and do change.
+
+**Versions and options.** Opening writes version 1 (`asks_again` true) holding the working
+content with the live options' text, sets `current_version` to 1, and gives every live option
+`added_in_version = 1`. Each re-publish writes version N+1: an option added since has
+`added_in_version` NULL and is given N+1; a published, live option whose id is no longer listed
+in the working content's `options` (each entry's `optionId`) is given `retired_in_version =
+N+1`. A working content with no `options` list retires none. Telling of a change without
+asking again is refused while either would happen. `liveOptionIds(decisionId, n)` reads the
+options added by version n and not retired by it.
+
+**Participant rows.** The snapshot columns (`name`, `email` lower-case, `job_title`, `groups` as
+a JSON list of names in order, `user_id`) are copied from the person when they are added to a
+draft and copied again for every draft row at opening, with `included_at` stamped then. After
+opening a snapshot is never refreshed from the directory: only an administrator's
+`changeParticipantAddress` changes `email`, and `setParticipantAccount` changes `user_id`. In a
+draft, a row left out is deleted, since no event names it. After opening, a row left out is
+marked `removed_at` and `removed_by` and kept with its responses, and a person added again comes
+back on the same row. No key stops two live rows of a decision sharing a `user_id`, so the
+service refuses one (409), and `decisionAccess` gives no participant role to an account that two
+live rows hold.
+
+**`hadAccount`**, whether a row held an account on its decision, has no column. It is read from
+the record by `accountHistory`: the latest of the row's `included` and `re_included` (each
+`{ role, hadAccount }`), `account_attached` (true) and `account_cleared` (false) events. A row
+whose account was deleted, its `user_id` emptied by the key with no event, is still read as
+having held one, so it is never mailed a personal link (`account_removed`). `deleteUser()` also
+marks the account's person left (`people.status`, `left_at`) before the account goes (card 2675's
+code review, S4), so such a row is skipped `left` until an administrator marks them active.
+
+**Link columns.** `link_token_hash` holds the SHA-256, in hex, of a personal link's token (32
+random bytes in base64url), unique, with `link_issued_at`. The token is never stored. A link is
+issued only to a participant with no account, now or before, whose person is active, has no
+account and holds the snapshot address. Each record-bearing mail to such a participant replaces
+the hash. Ending a link empties both columns and writes `link_revoked { reason }`; the reasons
+are `removed`, `left`, `linked`, `unlinked`, `address_changed`, `person_deleted`,
+`account_attached`, `participant_address` and `restore`. A link expires when it is read, not by
+a sweep: it is usable until 90 days after `ruled_at` (ruled, superseded), `withdrawn_at`
+(withdrawn) or `closes_at` (open, closed); with no such moment only on an open decision; never
+on a draft.
+
+**`decision_events`.** Each row is one `kind`, with `participant_id` and `version_number` where
+they apply, a JSON `detail`, and its actor (`actor_user_id` while the account lasts, `actor_name`,
+and `source`, one of `ui`, `api`, `link`, `system`). An event naming a participant on a draft is
+refused (comment 5599). A `detail` never holds a token, a hash or a mail server's words.
+
+| `kind` | Names a participant | `detail` |
+|---|---|---|
+| `created` | no | `{ decider: 'product_owner' \| 'author' }` |
+| `decider_changed` | no | `{ fromUserId, fromName, toUserId, toName }` |
+| `published` | no | `{ asksAgain, changeNote }`, with `version_number` |
+| `opened` | no | `{ closesAt }` |
+| `included`, `re_included` | yes | `{ role, hadAccount }` |
+| `role_changed` | yes | `{ from, to }` |
+| `removed` | yes | none |
+| `link_issued` | yes | `{ replaced }` |
+| `link_revoked` | yes | `{ reason }` |
+| `invited` | yes | `{ resend: true }` on a re-send, otherwise none |
+| `asked_again`, `told_of_change` | yes | none, with `version_number` |
+| `told_withdrawn`, `told_ruling` | yes | none |
+| `mail_skipped` | yes | `{ mail, reason }`, reason `deleted`, `left`, `account_not_attached`, `account_removed` or `address_changed` |
+| `mail_outcome` | yes | `{ of, mail, delivered, problem? }`: `of` the mail event's id, `problem` a `MailProblem` code, `no_link_address`, or `superseded` for a mail not sent as it no longer stood when asked again before its send (card 2675's F2) |
+| `closed` | no | none |
+| `extended` | no | `{ from, to }` |
+| `withdrawn` | no | `{ reason }` |
+| `account_attached`, `account_cleared` | yes | `{ userId }` |
+| `address_changed` | yes | `{ from, to }` |
+| `dry_run` | no | card 2676 |
+
+**A restore** (`restoreFromBackup` in `src/lib/server/db/restore.ts`) copies the decision tables
+as it copies every other, then, inside its transaction, writes `link_revoked { reason: 'restore' }`
+by `DumpFire` (source `system`) for each participant holding a link on a decision that is not a
+draft, and empties every `link_token_hash` and `link_issued_at`, drafts' included. The count is
+`RestoreResult.decisionLinksCleared`. A row of `decisions` or of any `decision_*` table that
+cannot be copied fails the restore, which rolls back: a lost event strands no row, so the
+foreign-key check would not stop it, and a partial record would be a false one. A NULL in a NOT
+NULL column of a decision table is never given the column's default, as `defaultsForNull` gives
+it elsewhere: the row is left out, and the restore fails (card 2675's code review, F8).
+
 ## Cascade Behaviour
 
 | Parent | Child | On Delete |
@@ -600,7 +726,7 @@ erDiagram
 | `users` | `cards.committed_by` (migration 0060, milestone 22) | SET NULL: the card keeps `committed_at`, and who committed it reads as not recorded. `deleteUser()` clears nothing of it by hand |
 | `users` | `cards.discarded_by` (migration 0060, milestone 22) | SET NULL, as `committed_by` |
 | `users` | `boards.product_owner_user_id` (migration 0061, card 2673) | SET NULL: the board has no Product Owner until someone sets one |
-| `users` | every user key of the decision records: `people.user_id`, `people.created_by`, `decisions.author_user_id`, `decider_user_id`, `results_released_by`, `decision_versions.published_by`, `decision_participants.included_by`, `removed_by`, `user_id`, `decision_questions.answered_by`, `answer_reviewed_by`, `decision_rulings.ruled_by`, `decision_events.actor_user_id`, `decision_card_links.created_by` (migration 0061) | SET NULL. The name kept beside each (`author_name`, `ruled_by_name` and so on) stays. `decision_participants.user_id` is a snapshot of `people.user_id` taken at inclusion and never made to follow the person; its key only empties it when that account is deleted |
+| `users` | every user key of the decision records: `people.user_id`, `people.created_by`, `decisions.author_user_id`, `decider_user_id`, `results_released_by`, `decision_versions.published_by`, `decision_participants.included_by`, `removed_by`, `user_id`, `decision_questions.answered_by`, `answer_reviewed_by`, `decision_rulings.ruled_by`, `decision_events.actor_user_id`, `decision_card_links.created_by` (migration 0061) | SET NULL. The name kept beside each (`author_name`, `ruled_by_name` and so on) stays. `decision_participants.user_id` is a snapshot of `people.user_id` taken at inclusion and never made to follow the person; its key only empties it when that account is deleted. Before the key empties `people.user_id`, `deleteUser()` marks that person left and ends their personal links (card 2675's S4) |
 | `boards` | `decisions.board_id` (migration 0061) | SET NULL: the decision outlives its board, and keeps its name in `board_name` |
 | `decisions` | `decision_options`, `decision_versions`, `decision_participants`, `decision_responses`, `decision_questions`, `decision_rulings`, `decision_events`, `decision_card_links` (migration 0061) | CASCADE |
 | `decisions` | `decisions.supersedes_id` (migration 0061) | SET NULL |

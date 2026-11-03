@@ -59,6 +59,7 @@ import {
 	rereadSignInsOneAtATime,
 	resetKnownBrowserSecretCache
 } from '$lib/server/known-browsers';
+import { maskSecretPaths } from '$lib/server/secret-paths';
 import { reportSignInsNotOneAtATime } from '$lib/server/startup-checks';
 import { addressKey } from '$lib/server/client-address';
 import { passwordChecks } from '$lib/server/passwords';
@@ -2616,6 +2617,38 @@ describe('what the gate writes to the system log', () => {
 		expect(kept.length).toBeGreaterThan(0);
 		expect(JSON.stringify(kept)).not.toContain(token);
 		expect(JSON.stringify(sqlite.prepare('SELECT message, meta FROM system_logs').all())).not.toContain(token);
+	});
+
+	it('is a decision’s personal link with its token masked, before its route exists (card 2675, decision 9)', async () => {
+		// 32 random bytes in base64url, as a personal link's token is made.
+		const token = 'Qm9vbi1kZWNpc2lvbi1saW5rLXRva2VuLTJfNjc1LXg';
+		const kept: LogEntry[] = [];
+		const unsubscribe = subscribeToLogs((entry) => kept.push(entry));
+
+		let lines: { level: string; message: string; status: number }[];
+		try {
+			lines = await logged(async () => {
+				await gate('GET', `/decision-link/${token}`, { headers: { accept: 'text/html' } });
+				// Encoded, and with more after it: masked as well.
+				await gate('GET', `/%64ecision-link/${token}`, { headers: { accept: 'text/html' } });
+				await gate('GET', `/decision-link/${token}/more`, { headers: { accept: 'text/html' } });
+			});
+		} finally {
+			unsubscribe();
+		}
+
+		expect(lines.map((line) => line.message.replace(/ → .*$/, ''))).toEqual([
+			'GET /decision-link/[token]',
+			'GET /decision-link/[token]',
+			'GET /decision-link/[token]'
+		]);
+		expect(kept.length).toBeGreaterThan(0);
+		expect(JSON.stringify(kept)).not.toContain(token);
+		expect(JSON.stringify(sqlite.prepare('SELECT message, meta FROM system_logs').all())).not.toContain(token);
+		// A line that quotes the link some other way, as a mail server's refusal would.
+		expect(maskSecretPaths(`550 refused: see https://dumpfire.example.test/decision-link/${token} for details`)).toBe(
+			'550 refused: see https://dumpfire.example.test/decision-link/[token] for details'
+		);
 	});
 
 	it('is never a query, so a token sent as ?token= is not written down', async () => {

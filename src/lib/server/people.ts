@@ -21,16 +21,26 @@
  * queued is dropped with the transaction (plan, sections 4.5 and 9, R4).
  *
  * A person's personal decision links (`decision_participants.link_token_hash`)
- * are emptied when the person is marked left, linked to an account, or
- * deleted (design S6, plan decisions 3 and 5). Nothing else on a participant
- * row is touched: its snapshots are the record's (S7).
+ * are emptied when the person is marked left, linked to an account, unlinked
+ * from one, given a new address, or deleted (design S6, comment 5649; card
+ * 2675 decision 12). Each emptied row is recorded on its decision as a
+ * `link_revoked` event with the reason, by the administrator
+ * (`revokeLinks` in decision-links.ts). Nothing else on a participant row is
+ * touched: its snapshots are the record's (S7).
+ *
+ * A person whose account is deleted is marked left, and their links ended
+ * with the reason `left`, by `deleteUser` in deletes.ts, inside the delete's
+ * own transaction and through the same `revokeLinks` (card 2675's code
+ * review, S4): Mark active, here, is the deliberate act that brings them back.
  */
 import { error } from '@sveltejs/kit';
 import { and, eq, inArray, ne, sql } from 'drizzle-orm';
-import { db, sqlite } from './db';
+import { db } from './db';
 import { people, peopleGroupMembers, peopleGroups, users, type PeopleGroup, type Person } from './db/schema';
 import type { SessionUser } from './auth';
 import { afterCommit } from './db/transaction';
+import { revokeLinks, type RevokeReason } from './decision-links';
+import { actorFor } from './decision-record';
 import { createLogger } from './logger';
 import { readChoice, readEmail, readId, readIds, readText, type RequestBody } from './request-body';
 import { requireAdmin } from './route-guards';
@@ -101,9 +111,12 @@ export function createPerson(caller: SessionUser | null, at: Record<string, neve
  * `left`. Only what changes is written, with `updated_at` stamped; a body that
  * changes nothing writes and logs nothing. `left` stamps `left_at` and keeps
  * the account link and the groups; `active` clears it. A changed `groupIds`
- * replaces the memberships. Marking the person left, or linking them to an
- * account, empties their decision links (decision 5); unlinking, a rename and
- * a new address do not.
+ * replaces the memberships. Marking the person left, linking them to an
+ * account, unlinking them and a new address each empty their decision links,
+ * and record a `link_revoked` event for each row emptied (card 2675 decision
+ * 12, comment 5649). An update that does more than one clears once, with the
+ * first reason of left, linked, unlinked, address changed. A rename, a new
+ * job title, new groups and Mark active clear nothing.
  */
 export function updatePerson(caller: SessionUser | null, at: { personId: number }, body: RequestBody, opts: ServiceOptions): PersonAnswer {
 	inWrite();
@@ -161,9 +174,19 @@ export function updatePerson(caller: SessionUser | null, at: { personId: number 
 				.run();
 		}
 	}
-	// Decision 5: once, when the person leaves or gains an account.
-	const clears = (statusChange && status === 'left') || account !== null;
-	const cleared = clears ? clearLinks(person.id) : [];
+	// Card 2675 decision 12: once, with the first reason that applies.
+	const reason: RevokeReason | null =
+		statusChange && status === 'left'
+			? 'left'
+			: account !== null
+				? 'linked'
+				: linkChange
+					? 'unlinked'
+					: updates.email !== undefined
+						? 'address_changed'
+						: null;
+	const clears = reason !== null;
+	const cleared = reason !== null ? clearLinks(person.id, reason, actor, opts) : [];
 
 	const parts: string[] = [];
 	if (changed.length > 0) parts.push(`changed: ${changed.join(', ')}`);
@@ -198,7 +221,7 @@ export function deletePerson(caller: SessionUser | null, at: { personId: number 
 	const actor = requireAdmin(caller);
 	const person = requirePerson(at.personId);
 
-	const cleared = clearLinks(person.id);
+	const cleared = clearLinks(person.id, 'person_deleted', actor, opts);
 	db.delete(people).where(eq(people.id, person.id)).run();
 
 	afterCommit(() =>
@@ -396,17 +419,14 @@ function requireGroup(groupId: number): PeopleGroup {
 
 /**
  * Empty the personal decision links of every participant row of the person,
- * whatever its decision's status (decision 5), and nothing else on them.
- * Answers the rows emptied, for card 2675's event; a row with no link is not
- * one of them (plan, section 9, R7).
+ * and nothing else on them, recording `link_revoked { reason }` on each row's
+ * decision by the administrator (card 2675, `revokeLinks`). Answers the rows
+ * emptied, in order; a row with no link is not one of them (plan, section 9,
+ * R7). Only an opened decision's rows hold a link, so no event names a
+ * draft's participant.
  */
-function clearLinks(personId: number): number[] {
-	const rows = sqlite
-		.prepare(
-			'UPDATE decision_participants SET link_token_hash = NULL, link_issued_at = NULL WHERE person_id = ? AND link_token_hash IS NOT NULL RETURNING id'
-		)
-		.all(personId) as { id: number }[];
-	return rows.map((row) => row.id).sort((a, b) => a - b);
+function clearLinks(personId: number, reason: RevokeReason, actor: SessionUser, opts: ServiceOptions): number[] {
+	return revokeLinks({ personId }, reason, actorFor(actor, opts.source));
 }
 
 /**
