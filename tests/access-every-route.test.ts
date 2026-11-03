@@ -88,6 +88,9 @@ import {
 	categories,
 	inviteTokens,
 	milestones,
+	people,
+	peopleGroupMembers,
+	peopleGroups,
 	reportSchedules,
 	sessions,
 	taskRequests,
@@ -738,6 +741,19 @@ const aCardToGoUnder = (w: World): void => {
 	const third = makeBoard({ owner: w.both, name: 'A third board' });
 	addBoardMember(third.board, w.owner, 'editor');
 	underCard = makeCard(third.cols['To Do'], { title: 'The card board A goes under' });
+};
+
+/**
+ * A person of the people directory in a group of it, for the routes whose
+ * path names one (card 2674). Made by `aPersonInAGroup`, which each test of
+ * those cases runs before its request.
+ */
+let personId: number | undefined;
+let peopleGroupId: number | undefined;
+const aPersonInAGroup = (): void => {
+	personId = db.insert(people).values({ fullName: 'Pat Doe', email: 'pat.doe@example.test' }).returning().get().id;
+	peopleGroupId = db.insert(peopleGroups).values({ name: 'Finance' }).returning().get().id;
+	db.insert(peopleGroupMembers).values({ groupId: peopleGroupId, personId }).run();
 };
 
 /**
@@ -1472,6 +1488,19 @@ const TABLE: Record<string, Case | Case[]> = {
 	// which asks for the one they have: here they are refused, as anyone is
 	// who names their own account.
 	'PUT /api/users/[id]/password': admin((w) => json(`/api/users/${w.owner.id}/password`, { password: 'a long password' })),
+
+	// ── The people directory (card 2674) ──────────────────────────────────
+	// An administrator's alone: it holds names and addresses of people with no account.
+	'POST /api/people': admin(() => json('/api/people', { fullName: 'Ann Lee', email: 'ann.lee@example.test' })),
+	'PUT /api/people/[id]': admin(() => json(`/api/people/${personId}`, { jobTitle: 'Engineer' }), { setup: aPersonInAGroup }),
+	'DELETE /api/people/[id]': admin(() => `/api/people/${personId}`, { setup: aPersonInAGroup }),
+	'POST /api/people/from-accounts': admin((w) => json('/api/people/from-accounts', { userIds: [w.viewer.id] })),
+	'POST /api/people-groups': admin(() => json('/api/people-groups', { name: 'Operations' })),
+	'PUT /api/people-groups/[id]': admin(() => json(`/api/people-groups/${peopleGroupId}`, { name: 'Accounts' }), { setup: aPersonInAGroup }),
+	'DELETE /api/people-groups/[id]': admin(() => `/api/people-groups/${peopleGroupId}`, { setup: aPersonInAGroup }),
+	'PUT /api/people-groups/[id]/members': admin(() => json(`/api/people-groups/${peopleGroupId}/members`, { personIds: [] }), {
+		setup: aPersonInAGroup
+	}),
 
 	// ── The documented API ────────────────────────────────────────────────
 	'GET /api/v1/openapi.json': open(() => '/api/v1/openapi.json'),
@@ -4683,6 +4712,8 @@ describe('every page load, to a caller who cannot open a board (card 2130)', () 
 		'page /': { paths: () => ['/'] },
 		'page /account': { none: "gives the caller's own account" },
 		'page /admin': { paths: () => ['/admin'] },
+		// Every person's and every account's address (card 2674, plan case 25).
+		'page /admin/people': { paths: () => ['/admin/people'] },
 		'page /all': { paths: () => ['/all'] },
 		'page /archived': { paths: () => ['/archived'] },
 		'page /audit': { paths: () => ['/audit'] },

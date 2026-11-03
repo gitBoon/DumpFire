@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.65
+version: 1.66
 status: As-Built
-date: 2026-11-02
+date: 2026-11-03
 tags:
   - architecture
   - sveltekit
@@ -1106,10 +1106,89 @@ The page keeps its props, `isSuperadmin` and `superadminName`, the `{#if isSuper
 | `TeamsPanel.svelte` | every administrator | Teams and their members |
 | `SmtpPanel.svelte` | every administrator (the superadmin until card 2395) | The mail settings and Send Test; reads its own settings when drawn; exports `loadMailStatus`, which the page hands the users panel as a callback; takes `currentUser` |
 | `DangerZonePanel.svelte` | every administrator; Reset Everything inside its own `{#if isSuperadmin}` | Purge Archived Cards, Vacuum, Reset All XP and Reset Everything, each through the page's `confirm`; sets the page's `resetNotice` |
+| `people/PersonDialog.svelte`, `people/GroupDialog.svelte`, `people/FromAccountsDialog.svelte` | every administrator, on `/admin/people` and not on this page | The people directory's three dialogs (card 2674): see [The people directory page](#the-people-directory-page). The admin page itself draws only a "👥 People Directory" section in its markup, after `TeamsPanel`, with a link to `/admin/people` |
 
 `tests/page-failures.test.ts` lists each component as superadmin-only, shown to every administrator, or a part of the scheduled backups panel (card 2395), and follows each of its tags up to the page: a superadmin component's tags must all be inside the page's `{#if isSuperadmin}` and not in its `{:else}`, an administrator's inside no `{#if}` at all, and a part's inside the panel alone and in no `{#if isSuperadmin}`.
 
 **The load** (`src/routes/admin/+page.server.ts`) is seven reads whatever the installation holds (card 2297): every board; each board's columns, cards (archived ones too) and categories, counted for every board at once with one `GROUP BY board_id` each; every user, with three sub-selects counting their keys, webhooks and schedules in the same statement; every team; and every team's members in one query, ordered by team and user, so each team lists its members in the order of their ids, as its own read did. It was three reads a board and one a team. Every write on the page calls `invalidateAll()`, which runs it again (and the root layout's load, which reads nothing); it is not narrowed to keys, since the page has one load and a key would run the same load.
+
+### The people directory page
+
+`/admin/people` (card 2674, plan `docs/planning/card-2674-people-directory.md`) is a page of its own, not a panel of the admin page. It keeps the people directory and its groups, in the tables migration 0061 made (card 2673; see [Data Model](data-model.md)). The gate's `ADMIN_ROUTES` prefix covers it, and its load (`src/routes/admin/people/+page.server.ts`) asks again itself, as `/admin` does, because it hands back every person's and every account's name and address: no user, `303` to `/login`; not an administrator, `303` to `/`. The load is `readDirectory()` in `src/lib/server/people-directory.ts`, four reads (people by name, groups by name, every membership, accounts by username), answering people with `groupIds` and `account: { id, username } | null`, groups with `personIds`, and accounts with `personId | null`. It takes no caller and lives apart from `people.ts` because `tests/check-at-the-write.test.ts` refuses a service's read called from a page load.
+
+```mermaid
+flowchart LR
+    Page["/admin/people<br/>+page.svelte and<br/>components/admin/people/"] -->|"fetch JSON, through sent()"| Route["/api/people…, /api/people-groups…<br/>requireAdmin(locals.user), pathId, readBody"]
+    Route --> WA["writeAs(locals, (caller) =><br/>service(caller, at, body, { source: 'ui' }))"]
+    WA --> Svc["people.ts: inWrite(), requireAdmin(caller),<br/>the row (404), the fields (400),<br/>the checks (400, 409), the write"]
+    Svc --> DB[("people, people_groups,<br/>people_group_members")]
+    Svc -->|"marked left, linked, deleted"| DP[("decision_participants:<br/>link_token_hash, link_issued_at = NULL")]
+    Svc -->|"afterCommit"| Log["log.info('PEOPLE', …, { userId })<br/>system_logs, /audit"]
+    Page -->|"invalidateAll() after each write"| Load["+page.server.ts: readDirectory()"]
+```
+
+The page (`+page.svelte`) draws the people table with its search (name, email, job title and group names) and its Active / Left / All filter (Active first), each row's Edit, Mark left or Mark active (`PUT /api/people/:id` `{ status }`) and Delete, and the groups list with each group's count of active members; both deletes ask in `ConfirmModal`. Every write is sent through `sent()` (`src/lib/admin/send.ts`), so a refusal is the server's words in a toast, and is followed by `invalidateAll()`. The dialogs are in `src/lib/components/admin/people/` and hold the focus with `holdFocus`:
+
+| Dialog | Sends | Notes |
+|---|---|---|
+| `PersonDialog.svelte` | `POST /api/people`, or `PUT /api/people/:id` with every field | The account select offers None, the accounts whose `personId` is null and the person's own; a line under it says account addresses are set by their holders and not confirmed. Group ids no longer in the page's data are dropped before sending |
+| `GroupDialog.svelte` | A new group: `POST /api/people-groups`, then `PUT /api/people-groups/:id/members` if any person is ticked. A group held: `PUT /api/people-groups/:id` only where the name or description changed, then the members only where they changed | A members set refused after a new group was added keeps the dialog open on the group's id, so Save does not add it twice. Person ids no longer in the page's data are dropped before sending |
+| `FromAccountsDialog.svelte` | `POST /api/people/from-accounts` `{ userIds }` | Lists the accounts whose `personId` is null, none ticked (code review S1), under a warning that account addresses are set by their holders and not confirmed. One whose address, lower-cased, is a person's is disabled and shown "matches person *name*: link by hand". A skip's reason is shown with the person's name in place of the server's id; any skip makes the toast a warning that stays |
+
+**The service.** `src/lib/server/people.ts` is under the service rule ([The shape of a service](#the-shape-of-a-service)) and on `SERVICES` in `tests/check-at-the-write.test.ts`. Every export is a write, so `READS` is empty, and each takes `(caller, at, body, opts)`, starts with `inWrite()`, then asks `requireAdmin(caller)` (403), the row in the path (404 `Person not found`, `Group not found`), the fields from the body (400), the checks against other rows (400, 409), and writes. Its system-log line, context `PEOPLE`, INFO, with `{ userId: actor.id }` in the entry and the actor's username in the text, is queued with `afterCommit`, so a write that is refused or rolled back logs nothing; no line holds an address. Only the internal tree calls it so far; card 2681's v1 routes are to call the same functions.
+
+| Function | Rules |
+|---|---|
+| `createPerson` | `fullName` trimmed, 1 to 200; `email` by `readEmail`, stored lower-cased; `jobTitle` trimmed, up to 200, `''` if not sent; `userId` nullable; `groupIds` up to 500, each once. Then `requireUnusedEmail`, `requireLinkable`, `requireGroups`; the insert with `created_by` the caller, then the memberships |
+| `updatePerson` | Each field as `createPerson` reads it, the stored value its `keep`, and `status` `active` or `left`. Only what changes is written, with `updated_at` stamped; a body that changes nothing writes and logs nothing. `left` stamps `left_at`, `active` clears it; a changed `groupIds` replaces the memberships. Clears the person's links when `status` becomes `left` or `userId` becomes another non-null account |
+| `deletePerson` | `clearLinks`, then the delete: `people_group_members` cascades and `decision_participants.person_id` is SET NULL, every snapshot column kept. Answers `{ linksCleared }` |
+| `addFromAccounts` | `userIds` required, 1 to 500, each once; every one an account, or `400` `userId N is not an account` and nothing made. Then, per account: one a person is linked to is skipped (`already linked`); one whose address, lower-cased, is any person's is skipped (`address matches person N; link by hand`); any other is inserted with `full_name` its username, its address lower-cased and `user_id` the account. It never links an existing person (plan decision 13). Answers `{ created, skipped: [{ userId, reason }] }` |
+| `createGroup`, `updateGroup` | `name` trimmed, 1 to 100, unused by another group compared `lower(name)` (a group renamed in other case passes, as `except` is itself); `description` trimmed, up to 1,000. The update keeps the stored values and writes and logs nothing when unchanged |
+| `deleteGroup` | The delete; `people_group_members` cascades, the people stay |
+| `setGroupMembers` | `personIds` required, 0 to 5,000, each once, all people, or `400` and nothing changed; replaces the set |
+
+The checks are internal: `requireUnusedEmail(email, except?)` compares `lower(email)` and refuses `409` `Email already in the directory: <name>`, with ` (linked to account <username>)` where that person is linked (code review S1; the answer is an administrator's alone, and never holds the address); `requireLinkable(userId, except?)` `400` `userId N is not an account`, `409` `That account is already linked to <name>`; `requireUnusedGroupName` `409` `Group name already in use: <name>`; `requireGroups` and `requirePeople` `400` naming the first missing id (`groupId N is not a group`, `personId N is not a person`).
+
+| Route (`src/routes/api/`) | Service | Answer |
+|---|---|---|
+| `POST people` | `createPerson` | `201`, the person with `groupIds` |
+| `PUT people/[id]` | `updatePerson` | `200`, the person with `groupIds` |
+| `DELETE people/[id]` | `deletePerson` | `200` `{ success: true, linksCleared }` |
+| `POST people/from-accounts` | `addFromAccounts` | `200` `{ created, skipped }` |
+| `POST people-groups` | `createGroup` | `201`, the group |
+| `PUT people-groups/[id]` | `updateGroup` | `200`, the group |
+| `DELETE people-groups/[id]` | `deleteGroup` | `200` `{ success: true }` |
+| `PUT people-groups/[id]/members` | `setGroupMembers` | `200`, the group with `personIds` |
+
+Every route is an administrator's alone: `requireAdmin(locals.user)` as the quick refusal before the body, then the service in one `writeAs`, which asks again. There is no `GET`: the page's load reads the directory. Each is an `admin(...)` entry of `tests/access-every-route.test.ts`, and `page /admin/people` is in its page sweep; `tests/gate.test.ts` runs the load with no gate in front.
+
+**How linking clears links** (design S6, plan decision 5). `clearLinks(personId)` runs `UPDATE decision_participants SET link_token_hash = NULL, link_issued_at = NULL WHERE person_id = ? AND link_token_hash IS NOT NULL RETURNING id`, inside the same transaction as the change, for every participant row of the person whatever its decision's status, and changes nothing else on those rows: their snapshots are the record's (S7). It answers the participant ids emptied, sorted, which the log entry carries as `participantIds` for card 2675's decision event. It runs on Mark left, on a link to an account (a first one, or a different one), and before a delete, where it must come first: once the person is gone, `person_id` is SET NULL and the rows can no longer be found by person. Unlinking, a rename, a new job title, a new address and Mark active do not run it (carried to card 2675: code review S2).
+
+```mermaid
+sequenceDiagram
+    participant D as PersonDialog
+    participant R as PUT /api/people/:id
+    participant W as writeAs
+    participant S as updatePerson
+    participant DB as SQLite
+    participant Q as afterCommit queue
+    D->>R: { fullName, email, jobTitle, userId: 7, groupIds }
+    R->>R: requireAdmin(locals.user), pathId, readBody
+    R->>W: writeAs(locals, (caller) => updatePerson(...))
+    W->>DB: BEGIN IMMEDIATE, the caller asked again
+    W->>S: updatePerson(caller, { personId }, body, { source: 'ui' })
+    S->>S: inWrite(), requireAdmin(caller), requirePerson (404)
+    S->>DB: requireLinkable(7, personId): 400 no account, 409 linked to another
+    S->>DB: UPDATE people SET user_id = 7, updated_at
+    S->>DB: clearLinks: UPDATE decision_participants … RETURNING id
+    S->>Q: log.info('PEOPLE', 'Person 12 "Ann Lee" linked to account 7 "ann"; 2 decision links cleared (by admin)')
+    W->>DB: COMMIT
+    W->>Q: the log line written
+    R-->>D: 200, the person
+    D->>D: invalidateAll(), "Person saved"
+```
+
+**The Product Owner in Share Board** (plan 4.4). `GET /api/boards/:id/share` answers `productOwner` (`{ userId, username, emoji }` or `null`, never an address) to every caller it answers, and `productOwnerCandidates` only where `seesAddresses` (the board's owner or an administrator), the same callers `updateBoard` lets change it. The candidates are the board's possible editors alone (its creator, its `board_members`, the members of the teams in `board_teams`, every administrator), each asked `roleOnBoard` with the board row read once and kept where it is `owner`, `editor` or `admin`, so they cannot drift from `canEditBoard`; each is `{ id, username, emoji }` by username. `ShareModal.svelte` draws a select of None and the candidates where `canManage`, with the stored one marked "(cannot edit this board)" where it is no longer a candidate, and **Save** (`aria-disabled` until the choice differs) sends `updateBoard(boardId, { productOwnerUserId })`, that is `PUT /api/boards/:id`; a refusal puts the select back and shows the server's words on the window's error line. An unsaved choice survives a re-read only while the stored owner is unchanged and the choice is still offered. Without `canManage` it shows "Product Owner: *name*" or "None".
 
 ### The dashboard
 

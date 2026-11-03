@@ -1,9 +1,9 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.79
+version: 1.80
 status: As-Built
-date: 2026-10-27
+date: 2026-11-03
 tags:
   - admin
   - operations
@@ -41,6 +41,7 @@ flowchart LR
     Dashboard["Dashboard"] --> Admin["Admin Panel"]
     Admin --> Users["User Management"]
     Admin --> Teams["Team Management"]
+    Admin --> People["People Directory\n(/admin/people)"]
     Admin --> Boards["Board Management"]
     Admin --> Danger["Danger Zone:\npurge, vacuum, XP"]
     Admin --> Settings["Application Settings\n(the App URL)"]
@@ -77,6 +78,7 @@ The superadmin is the account made when DumpFire was set up, and there is one. A
 | Board Management: delete a board, clear its cards or categories | ✅ | ✅ |
 | User Management, within [whose account they may manage](#modifying-users) | ✅ | ✅ |
 | Team Management | ✅ | ✅ |
+| [People Directory](#people-directory) (`/admin/people`, card 2674) | ✅ | ✅ |
 | Danger Zone: Purge Archived Cards, Vacuum Database, Reset All XP | ✅ | ✅ |
 | The system log and the audit trail (`/audit`) | ✅ | ✅ |
 | **Application Settings**: the App URL | ✅ (since card 2395) | ✅ |
@@ -323,6 +325,93 @@ mailed about them: the "Card moved" and "Unblocked" mails go only to the assigne
 open the board the card is on. The same goes for an assignee whose card is moved to a board
 they cannot open. Current members are mailed as before. Unassign someone who should no
 longer be listed on a card.
+
+---
+
+## People Directory
+
+The people directory (card 2674, 2026-11-03) is the list of the people who can be consulted on or told of a decision, with an account or without one, and the groups they are in. Administrators keep it, on a page of its own: **Admin → 👥 People Directory → Open the people directory**, or `/admin/people`. Anyone signed in who is not an administrator is sent from the page to the dashboard, and the routes behind it refuse them with `403` `Forbidden`. Nothing else reads the directory yet; the decisions that will use it come with later cards of milestone 35.
+
+A person is a full name, an email address, a job title (which may be empty), the account they are linked to if they have one, their groups, and whether they are **Active** or have **Left**. A person needs no account: many of the people a decision consults never sign in. A group gives nothing: no board, no access, no mail. It is a name for a set of people, to pick them together.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Active: + Add person, or Add from accounts
+    Active --> Left: Mark left (date stamped, decision links cancelled)
+    Left --> Active: Mark active (date cleared)
+    Active --> Active: Edit; linking an account cancels decision links
+    Left --> Left: Edit; linking an account cancels decision links
+    Active --> [*]: Delete (cannot be undone)
+    Left --> [*]: Delete (cannot be undone)
+```
+
+Every change is a line in the system log, context `PEOPLE`, level INFO, under the administrator who made it, readable on `/audit`: the person or group by id and name, and what changed, as `Person 12 "Ann Lee" changed: email, groups (by admin)`. A line never holds an address. A change that is refused writes no line, and a save that changes nothing writes none either.
+
+### People
+
+The table shows each person's name, email, job title, groups, account and status. It shows the **Active** people at first; **Left** and **All** above it change that, and the search box matches name, email, job title and group names.
+
+- **+ Add person** opens a form: **Full name** (1 to 200 characters), **Email**, **Job title** (up to 200, may be left empty), **Account** (**None**, or an account no other person is linked to: see [Linking a Person to an Account](#linking-a-person-to-an-account)) and the groups to tick. **Edit** on a row opens the same form for that person. Ticking groups here replaces all of the person's groups; a group's own form does the same from the other side ([Groups](#groups)).
+- **The address is unique across the directory.** It is stored in lower case, and no two people may have the same one in any case, people who have left included. A second is refused with `409` "Email already in the directory: Ann Lee". Where the person who has it is linked to an account, the message says which, "Email already in the directory: Ann Lee (linked to account ann)", so you can tell an entry that came from an account from one typed in. Correct or delete the entry that has it first.
+- **Mark left** records a leaver. The row says "Left" with the date and moves from the Active list to Left. Their account link and their groups are kept, and **Mark active** brings them back as they were. Mark left is the way to record that someone has gone; it also cancels their personal decision links ([below](#linking-a-person-to-an-account)).
+- **Delete** removes a person from the directory for good. It is for an entry made by mistake, a duplicate, or someone who must not be listed any more. It asks first, in the app's confirm dialog, and cannot be undone. Their group memberships go with them, their personal decision links stop working, and their address may be used for a new person afterwards. The message after it says how many decision links were cancelled, where there were any.
+
+**What Delete does not erase.** The confirmation says so, and you should know it before you rely on Delete to remove someone:
+
+- **The system log** keeps every `PEOPLE` line that names them, the delete's own among them (`Person 12 "Ann Lee" deleted; 0 decision links cleared (by admin)`).
+- **Decision records** keep what they recorded of them: name, address, job title and groups as they were when the person was included, with only the tie to the directory entry emptied. A record is meant to show who was told what, and Delete does not rewrite it.
+- **Backups** taken before the delete hold the person, and restoring one brings them back.
+
+### Linking a Person to an Account
+
+A person is linked to an account in their form, under **Account**. It offers **None**, the person's own account, and every account no other person is linked to, each with its username and address; one person per account, and the two addresses need not match. An account linked to someone else meanwhile is refused with `409` "That account is already linked to Ann Lee". Choosing **None** unlinks them.
+
+**An account's address is not verified.** Whoever holds an account sets its address themselves, on My Account, and DumpFire does not confirm it. So an address that matches proves nothing: anyone can set theirs to a colleague's. Before you link an account to a person, check that it is that person's account. The form says so under the field: "An account's address is set by its holder and is not confirmed: check it is this person before linking." This matters more once decisions exist, because a person's account is then how they open and answer the decisions they are on.
+
+**Linking a person to an account, or marking them left, cancels their personal decision links.** Each person on a decision will be able to have a personal link to it. Linking the person to an account (or to a different account) and **Mark left** empty every such link of theirs, on every decision, in the same save, so a link that was forwarded stops working once the person can sign in, or has gone. Delete does the same. Unlinking, a new name, job title or address, and **Mark active** cancel nothing. The system log's line says how many were cancelled, as `Person 12 "Ann Lee" linked to account 7 "ann"; 2 decision links cleared (by admin)`. Until decisions are built there are none, and it says 0.
+
+### Add from Accounts
+
+**Add from accounts**, beside **+ Add person**, makes a person of each account you tick: named by the account's username (accounts have no full name, so edit the name afterwards), with the account's address in lower case, and linked to that account.
+
+- **It lists every account no person is linked to, and none is ticked.** Tick each one on purpose; the button says how many will be added ("Add 3 people"). Above the list the dialog warns: "An account's address is set by its holder and is not confirmed: check each is the person you mean before adding them." Adding an account whose holder has set somebody else's address makes that account the directory's entry for the address, and adding the real person later is refused as a duplicate (the `409` then names the account, as above). Delete that entry, or correct its address, before you add the real person.
+- **It never links an existing person.** An account whose address is already a person's, in any case, is shown dimmed and cannot be ticked: "matches person Ann Lee: link by hand". As the account's address is not verified, the match is no proof that the account is theirs. If it is, link it by hand from that person's **Edit**, after checking. The server skips such an account whatever is sent.
+- **An account linked to a person meanwhile is skipped** too ("already linked").
+- **It is all or nothing.** Up to 500 accounts at once; if any id sent is not an account, nothing is added (`400` "userId 12 is not an account").
+- **What it did is said afterwards.** "3 people added from accounts" goes after three seconds. Where any account was skipped, the message names each with why and stays until closed: "2 people added from accounts, 1 skipped: sam (address matches person Sam Lee; link by hand)". The system log has one line for the whole step: `2 people added from accounts, 1 skipped (by admin)`.
+
+```mermaid
+flowchart TD
+    Tick["The accounts you ticked"] --> Real{"Every one an account?"}
+    Real -->|"no"| None["400: nothing added"]
+    Real -->|"yes"| Each["Each account in turn"]
+    Each --> Linked{"Already linked to a person?"}
+    Linked -->|"yes"| Skip1["Skipped: already linked"]
+    Linked -->|"no"| Match{"Its address a person's,<br/>in any case?"}
+    Match -->|"yes"| Skip2["Skipped: link by hand<br/>from that person's Edit"]
+    Match -->|"no"| Make["A new person: the username,<br/>the address lower-cased,<br/>linked to the account"]
+```
+
+### Groups
+
+The groups list shows each group's name, description and how many of its people are active.
+
+- **+ Add group** opens a form: **Name** (1 to 100 characters), **Description** (up to 1,000), and the people to tick, from a list you can search by name or address, active people first and those who left marked "left". **Edit** opens the same form for a group. The people ticked replace the group's people.
+- **A name is used once, in any case.** "finance" beside "Finance" is refused with `409` "Group name already in use: Finance". A group may be renamed to its own name in other capitals.
+- **Adding a group is two steps**, the group and then its people. If the people are refused after the group was added, the group is kept and the form stays open on it; **Save** again sends only the people.
+- **Delete** asks first and cannot be undone. Only the group and its memberships go; its people stay in the directory. Decision records keep the group names they recorded.
+
+### A Board's Product Owner
+
+Each board can have a Product Owner (card 2673): the account that decides its decisions by default, once there are decisions. It is set in the board's **Share Board** window, on the **Product Owner** line under the public switch (card 2674).
+
+- **Only the board's owner or an administrator can change it.** They see a list: **None**, then every account that can edit the board, by username and emoji, never an address: the board's creator, people shared on it as Editor or Owner, members of teams it is shared with as Editor (unless a share of their own as Viewer decides for them), and every administrator. A viewer, and someone who can open the board only because it is public, is not listed. Choose one and press **Save**, which does nothing until the choice differs from the one stored.
+- **Everyone else who opens Share Board** sees "Product Owner: *name*", or "Product Owner: None".
+- **A refusal is said** on the window's error line, in the server's words, and the list goes back to the one stored: `403` "Only the board's owner or an administrator can change its Product Owner", or `400` "productOwnerUserId 7 cannot edit this board: a board's Product Owner must be an account that can edit it" for someone who lost edit access while the window was open.
+- **A Product Owner who has since lost edit access keeps it** until someone changes it. The list then shows them as "*name* (cannot edit this board)".
+- A choice not yet saved survives the window reading its list again after another change, unless the stored Product Owner changed meanwhile or the account chosen is no longer listed.
+
+Through the API, it is `productOwnerUserId` on `PUT /api/v1/boards/{boardId}`: see the [API Reference](api-reference.md).
 
 ---
 

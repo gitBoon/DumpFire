@@ -1,0 +1,491 @@
+/**
+ * The people directory and its groups (card 2674): who can be consulted on or
+ * told of a decision, kept by an administrator through `/api/people` and
+ * `/api/people-groups`, the service `src/lib/server/people.ts`.
+ *
+ * Each route is called as an administrator. That every other caller is
+ * refused, and asked again at the write, is the access table's
+ * (`tests/access-every-route.test.ts`); each body reader's refusals are
+ * `tests/request-body.test.ts`'s. Neither is repeated here.
+ *
+ * The cases are the plan's, `docs/planning/card-2674-people-directory.md`,
+ * section 6, by number.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { sqlite } from '$lib/server/db';
+import type { SessionUser } from '$lib/server/auth';
+import { api, type ApiResult } from './helpers/api';
+import { addBoardMember, makeBoard, makeTeam, makeUser, resetDb, shareBoardWithTeam } from './helpers/fixtures';
+import { expectUnchanged, snapshotDb } from './helpers/snapshot';
+
+type Row = Record<string, unknown>;
+type LogRow = { level: string; context: string; message: string; meta: string | null; userId: number | null };
+
+let admin: SessionUser;
+let level: string | undefined;
+let quiet: ReturnType<typeof vi.spyOn>;
+
+beforeEach(() => {
+	resetDb();
+	admin = makeUser({ username: 'admin', role: 'admin' });
+	// The suite logs errors only; the directory's lines are INFO ones.
+	level = process.env.LOG_LEVEL;
+	process.env.LOG_LEVEL = 'INFO';
+	quiet = vi.spyOn(console, 'log').mockImplementation(() => {});
+});
+
+afterEach(() => {
+	quiet.mockRestore();
+	if (level === undefined) delete process.env.LOG_LEVEL;
+	else process.env.LOG_LEVEL = level;
+});
+
+const send = (method: 'POST' | 'PUT' | 'DELETE', path: string, body?: unknown): Promise<ApiResult> =>
+	api(method, path, { user: admin, body });
+
+const personRow = (id: number) => sqlite.prepare('SELECT * FROM people WHERE id = ?').get(id) as Row | undefined;
+const groupsOf = (personId: number) =>
+	(sqlite.prepare('SELECT group_id AS id FROM people_group_members WHERE person_id = ? ORDER BY group_id').all(personId) as { id: number }[]).map(
+		(row) => row.id
+	);
+const membersOf = (groupId: number) =>
+	(sqlite.prepare('SELECT person_id AS id FROM people_group_members WHERE group_id = ? ORDER BY person_id').all(groupId) as { id: number }[]).map(
+		(row) => row.id
+	);
+const peopleLines = () =>
+	sqlite
+		.prepare("SELECT level, context, message, meta, user_id AS userId FROM system_logs WHERE context = 'PEOPLE' ORDER BY id")
+		.all() as LogRow[];
+
+/** A group, as it is stored. */
+function makeGroup(name: string): number {
+	return (sqlite.prepare('INSERT INTO people_groups (name) VALUES (?) RETURNING id').get(name) as { id: number }).id;
+}
+
+/** A person, as they are stored, in the groups named. */
+function makePerson(fullName: string, email: string, opts: { userId?: number; groupIds?: number[] } = {}): number {
+	const { id } = sqlite
+		.prepare('INSERT INTO people (full_name, email, user_id) VALUES (?, ?, ?) RETURNING id')
+		.get(fullName, email, opts.userId ?? null) as { id: number };
+	for (const groupId of opts.groupIds ?? []) {
+		sqlite.prepare('INSERT INTO people_group_members (group_id, person_id) VALUES (?, ?)').run(groupId, id);
+	}
+	return id;
+}
+
+/** A decision, written by hand: card 2675 makes them. */
+function makeDecision(): number {
+	return (
+		sqlite
+			.prepare("INSERT INTO decisions (board_name, title, author_name) VALUES ('A board', 'A decision', 'admin') RETURNING id")
+			.get() as { id: number }
+	).id;
+}
+
+/** A participant row of the decision for the person, with its snapshots and a personal link. */
+function makeParticipant(decisionId: number, personId: number | null, n: number, link = true): number {
+	return (
+		sqlite
+			.prepare(
+				`INSERT INTO decision_participants
+					(decision_id, person_id, role, name, email, job_title, groups, included_at, user_id, link_token_hash, link_issued_at)
+				 VALUES (?, ?, 'consulted', ?, ?, 'Snapshot title', '["Snapshot group"]', '2026-11-01 09:00:00', NULL, ?, ?)
+				 RETURNING id`
+			)
+			.get(decisionId, personId, `Snapshot ${n}`, `snapshot${n}@example.test`, link ? `hash-${n}` : null, link ? '2026-11-01 09:00:00' : null) as {
+			id: number;
+		}
+	).id;
+}
+
+const participant = (id: number) => sqlite.prepare('SELECT * FROM decision_participants WHERE id = ?').get(id) as Row;
+
+/** The request is answered `status` with `message`, nothing in the database changed, and nothing was logged. */
+async function expectRefused(request: () => Promise<ApiResult>, status: number, message: string | RegExp): Promise<void> {
+	const before = snapshotDb();
+	const lines = peopleLines().length;
+	const res = await request();
+	expect(res.status, JSON.stringify(res.body)).toBe(status);
+	if (typeof message === 'string') expect(res.body).toEqual({ message });
+	else expect(res.body.message).toMatch(message);
+	expectUnchanged(before);
+	expect(peopleLines()).toHaveLength(lines);
+}
+
+describe('POST /api/people', () => {
+	it('adds a person with their address lower-cased, no job title, and two groups, and logs it with the administrator (1)', async () => {
+		const finance = makeGroup('Finance');
+		const legal = makeGroup('Legal');
+
+		const res = await send('POST', '/api/people', { fullName: ' Ann Lee ', email: 'Ann.Lee@Example.test', groupIds: [finance, legal] });
+
+		expect(res.status, JSON.stringify(res.body)).toBe(201);
+		expect(res.body).toMatchObject({ fullName: 'Ann Lee', email: 'ann.lee@example.test', jobTitle: '', groupIds: [finance, legal] });
+		const row = personRow(res.body.id)!;
+		expect(row).toMatchObject({ full_name: 'Ann Lee', email: 'ann.lee@example.test', job_title: '', created_by: admin.id, status: 'active', user_id: null });
+		expect(groupsOf(res.body.id)).toEqual([finance, legal]);
+		const lines = peopleLines();
+		expect(lines).toHaveLength(1);
+		expect(lines[0]).toMatchObject({ level: 'INFO', context: 'PEOPLE', userId: admin.id });
+		expect(lines[0].message).toBe(`Person ${res.body.id} "Ann Lee" added (by admin)`);
+	});
+
+	it('refuses, 409, an address another person has in another case, and logs nothing (2)', async () => {
+		makePerson('Ann Lee', 'ann.lee@example.test');
+
+		await expectRefused(
+			() => send('POST', '/api/people', { fullName: 'Another Ann', email: 'ann.lee@EXAMPLE.test' }),
+			409,
+			'Email already in the directory: Ann Lee'
+		);
+		// Code review S1: a holder linked to an account is said to be, by username, and the address is not.
+		const bob = makeUser({ username: 'bob' });
+		makePerson('Bob Hart', 'bob@example.test', { userId: bob.id });
+		await expectRefused(
+			() => send('POST', '/api/people', { fullName: 'Another Bob', email: 'BOB@example.test' }),
+			409,
+			'Email already in the directory: Bob Hart (linked to account bob)'
+		);
+	});
+
+	it('refuses, 400, a group that does not exist, naming it, and adds nobody (3)', async () => {
+		const finance = makeGroup('Finance');
+
+		await expectRefused(
+			() => send('POST', '/api/people', { fullName: 'Ann Lee', email: 'ann@example.test', groupIds: [finance, 999] }),
+			400,
+			'groupId 999 is not a group'
+		);
+	});
+});
+
+describe('PUT /api/people/[id]', () => {
+	let finance: number;
+	let legal: number;
+	let ann: number;
+
+	beforeEach(() => {
+		finance = makeGroup('Finance');
+		legal = makeGroup('Legal');
+		ann = makePerson('Ann Lee', 'ann.lee@example.test', { groupIds: [finance] });
+		sqlite.prepare("UPDATE people SET job_title = 'Clerk', updated_at = '2026-01-01 00:00:00' WHERE id = ?").run(ann);
+	});
+
+	it('saves a new name, address, job title and groups, moves updated_at, and logs the four fields and no address (4)', async () => {
+		const res = await send('PUT', `/api/people/${ann}`, {
+			fullName: 'Ann Leigh',
+			email: 'Ann.Leigh@Example.test',
+			jobTitle: 'Head of Finance',
+			groupIds: [legal]
+		});
+
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		expect(res.body).toMatchObject({ fullName: 'Ann Leigh', email: 'ann.leigh@example.test', jobTitle: 'Head of Finance', groupIds: [legal] });
+		const row = personRow(ann)!;
+		expect(row).toMatchObject({ full_name: 'Ann Leigh', email: 'ann.leigh@example.test', job_title: 'Head of Finance' });
+		expect(row.updated_at).not.toBe('2026-01-01 00:00:00');
+		expect(groupsOf(ann)).toEqual([legal]);
+		const lines = peopleLines();
+		expect(lines).toHaveLength(1);
+		expect(lines[0].message).toBe(`Person ${ann} "Ann Leigh" changed: name, email, job title, groups (by admin)`);
+		expect(lines[0].userId).toBe(admin.id);
+		// Decision 9 (plan review R10): never an address.
+		for (const text of [lines[0].message, lines[0].meta ?? '']) {
+			expect(text.toLowerCase()).not.toContain('ann.lee@example.test');
+			expect(text.toLowerCase()).not.toContain('ann.leigh@example.test');
+		}
+	});
+
+	it('writes and logs nothing for the stored values sent back (5)', async () => {
+		const before = snapshotDb();
+
+		const res = await send('PUT', `/api/people/${ann}`, {
+			fullName: 'Ann Lee',
+			email: 'ann.lee@example.test',
+			jobTitle: 'Clerk',
+			userId: null,
+			status: 'active',
+			groupIds: [finance]
+		});
+
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		expect(res.body).toMatchObject({ fullName: 'Ann Lee', groupIds: [finance] });
+		expectUnchanged(before);
+		expect(personRow(ann)!.updated_at).toBe('2026-01-01 00:00:00');
+		expect(peopleLines()).toEqual([]);
+	});
+
+	it('stamps left_at for left, keeping the account and the groups, and clears it for active (6)', async () => {
+		const account = makeUser({ username: 'ann' });
+		sqlite.prepare('UPDATE people SET user_id = ? WHERE id = ?').run(account.id, ann);
+
+		const left = await send('PUT', `/api/people/${ann}`, { status: 'left' });
+
+		expect(left.status, JSON.stringify(left.body)).toBe(200);
+		expect(personRow(ann)).toMatchObject({ status: 'left', user_id: account.id, left_at: expect.stringMatching(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/) });
+		expect(groupsOf(ann)).toEqual([finance]);
+		expect(peopleLines().at(-1)!.message).toBe(`Person ${ann} "Ann Lee" marked left; 0 decision links cleared (by admin)`);
+
+		const active = await send('PUT', `/api/people/${ann}`, { status: 'active' });
+
+		expect(active.status, JSON.stringify(active.body)).toBe(200);
+		expect(personRow(ann)).toMatchObject({ status: 'active', left_at: null, user_id: account.id });
+	});
+
+	it('links an account no person has, and unlinks it with null (7)', async () => {
+		const account = makeUser({ username: 'ann' });
+
+		const linked = await send('PUT', `/api/people/${ann}`, { userId: account.id });
+
+		expect(linked.status, JSON.stringify(linked.body)).toBe(200);
+		expect(personRow(ann)!.user_id).toBe(account.id);
+		expect(peopleLines().at(-1)!.message).toBe(`Person ${ann} "Ann Lee" linked to account ${account.id} "ann"; 0 decision links cleared (by admin)`);
+
+		const unlinked = await send('PUT', `/api/people/${ann}`, { userId: null });
+
+		expect(unlinked.status, JSON.stringify(unlinked.body)).toBe(200);
+		expect(personRow(ann)!.user_id).toBeNull();
+	});
+
+	it('refuses, 409, an account linked to another person, naming them (8)', async () => {
+		const account = makeUser({ username: 'bob' });
+		makePerson('Bob Hart', 'bob@example.test', { userId: account.id });
+
+		await expectRefused(() => send('PUT', `/api/people/${ann}`, { userId: account.id }), 409, 'That account is already linked to Bob Hart');
+	});
+
+	it('refuses, 400, a userId that is no account (9)', async () => {
+		await expectRefused(() => send('PUT', `/api/people/${ann}`, { userId: 999 }), 400, 'userId 999 is not an account');
+	});
+
+	describe('and the decision links of the person (S6, S7, decision 5)', () => {
+		let mine: number[];
+		let theirs: number;
+
+		beforeEach(() => {
+			const decision = makeDecision();
+			const bob = makePerson('Bob Hart', 'bob@example.test');
+			mine = [makeParticipant(decision, ann, 1), makeParticipant(decision, ann, 2)];
+			theirs = makeParticipant(decision, bob, 3);
+		});
+
+		it('empties both of their links, and nothing else, when the person is marked left; the other person’s row is untouched (10)', async () => {
+			const before = [...mine, theirs].map(participant);
+
+			const res = await send('PUT', `/api/people/${ann}`, { status: 'left' });
+
+			expect(res.status, JSON.stringify(res.body)).toBe(200);
+			mine.forEach((id, i) => expect(participant(id)).toEqual({ ...before[i], link_token_hash: null, link_issued_at: null }));
+			expect(participant(theirs)).toEqual(before[2]);
+			expect(peopleLines().at(-1)!.message).toBe(`Person ${ann} "Ann Lee" marked left; 2 decision links cleared (by admin)`);
+		});
+
+		it('empties them when the person is linked to an account (11)', async () => {
+			const account = makeUser({ username: 'ann' });
+			const before = [...mine, theirs].map(participant);
+
+			const res = await send('PUT', `/api/people/${ann}`, { userId: account.id });
+
+			expect(res.status, JSON.stringify(res.body)).toBe(200);
+			mine.forEach((id, i) => expect(participant(id)).toEqual({ ...before[i], link_token_hash: null, link_issued_at: null }));
+			expect(participant(theirs)).toEqual(before[2]);
+		});
+
+		it('changes no column of any participant row for a new name, address and job title (12)', async () => {
+			const before = [...mine, theirs].map(participant);
+
+			const res = await send('PUT', `/api/people/${ann}`, { fullName: 'Ann Leigh', email: 'ann.leigh@example.test', jobTitle: 'Head of Finance' });
+
+			expect(res.status, JSON.stringify(res.body)).toBe(200);
+			expect([...mine, theirs].map(participant)).toEqual(before);
+		});
+	});
+});
+
+describe('POST /api/people/from-accounts', () => {
+	let fresh: SessionUser;
+	let matching: SessionUser;
+	let linked: SessionUser;
+	let unlinkedPerson: number;
+	let link: number;
+
+	beforeEach(() => {
+		fresh = makeUser({ username: 'fresh' });
+		sqlite.prepare("UPDATE users SET email = 'Fresh.One@Example.test' WHERE id = ?").run(fresh.id);
+		matching = makeUser({ username: 'matching' });
+		// The person's address in another case from the account's.
+		unlinkedPerson = makePerson('Mat Ching', 'matching@example.test');
+		sqlite.prepare("UPDATE users SET email = 'Matching@Example.test' WHERE id = ?").run(matching.id);
+		link = makeParticipant(makeDecision(), unlinkedPerson, 1);
+		linked = makeUser({ username: 'linked' });
+		makePerson('Lin Ked', 'lin.ked@example.test', { userId: linked.id });
+	});
+
+	it('makes a person of an account with none, and skips one whose address matches a person and one already linked, linking nobody (13)', async () => {
+		const res = await send('POST', '/api/people/from-accounts', { userIds: [fresh.id, matching.id, linked.id] });
+
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		expect(res.body).toEqual({
+			created: 1,
+			skipped: [
+				{ userId: matching.id, reason: `address matches person ${unlinkedPerson}; link by hand` },
+				{ userId: linked.id, reason: 'already linked' }
+			]
+		});
+		const made = sqlite.prepare('SELECT * FROM people WHERE user_id = ?').get(fresh.id) as Row;
+		expect(made).toMatchObject({ full_name: 'fresh', email: 'fresh.one@example.test', user_id: fresh.id, created_by: admin.id });
+		// Decision 13: the person whose address matched is not linked, and keeps their link.
+		expect(personRow(unlinkedPerson)!.user_id).toBeNull();
+		expect(participant(link).link_token_hash).toBe('hash-1');
+		expect(peopleLines().map((line) => line.message)).toEqual(['1 people added from accounts, 2 skipped (by admin)']);
+	});
+
+	it('refuses, 400, a list with one id that is no account, and makes and links nothing (14)', async () => {
+		await expectRefused(
+			() => send('POST', '/api/people/from-accounts', { userIds: [fresh.id, matching.id, 999] }),
+			400,
+			'userId 999 is not an account'
+		);
+	});
+});
+
+describe('POST /api/people-groups', () => {
+	it('adds a group with its name trimmed (15)', async () => {
+		const res = await send('POST', '/api/people-groups', { name: '  Finance ' });
+
+		expect(res.status, JSON.stringify(res.body)).toBe(201);
+		expect(res.body).toMatchObject({ name: 'Finance', description: '' });
+		expect(sqlite.prepare('SELECT name FROM people_groups WHERE id = ?').get(res.body.id)).toEqual({ name: 'Finance' });
+	});
+
+	it('refuses, 409, a name another group has in another case (16)', async () => {
+		makeGroup('Finance');
+
+		await expectRefused(() => send('POST', '/api/people-groups', { name: 'finance' }), 409, 'Group name already in use: Finance');
+	});
+});
+
+describe('PUT /api/people-groups/[id]', () => {
+	it('refuses, 409, a rename onto another group’s name in another case, and renames a group onto its own name in another case (27)', async () => {
+		const finance = makeGroup('Finance');
+		const legal = makeGroup('Legal');
+
+		await expectRefused(() => send('PUT', `/api/people-groups/${legal}`, { name: 'FINANCE' }), 409, 'Group name already in use: Finance');
+
+		// The group being renamed is not counted against itself (`requireUnusedGroupName`'s `except`).
+		const res = await send('PUT', `/api/people-groups/${finance}`, { name: 'FINANCE' });
+
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		expect(res.body).toMatchObject({ id: finance, name: 'FINANCE' });
+		expect(sqlite.prepare('SELECT name FROM people_groups WHERE id = ?').get(finance)).toEqual({ name: 'FINANCE' });
+	});
+});
+
+describe('PUT /api/people-groups/[id]/members', () => {
+	let group: number;
+	let kept: number;
+	let removed: number;
+	let added: number;
+
+	beforeEach(() => {
+		group = makeGroup('Finance');
+		kept = makePerson('Kept', 'kept@example.test', { groupIds: [group] });
+		removed = makePerson('Removed', 'removed@example.test', { groupIds: [group] });
+		added = makePerson('Added', 'added@example.test');
+	});
+
+	it('replaces the set: one kept, one added, one taken out (17)', async () => {
+		const res = await send('PUT', `/api/people-groups/${group}/members`, { personIds: [kept, added] });
+
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		expect(res.body).toMatchObject({ id: group, name: 'Finance', personIds: [kept, added] });
+		expect(membersOf(group)).toEqual([kept, added].sort((a, b) => a - b));
+		expect(personRow(removed)).toBeDefined();
+	});
+
+	it('refuses, 400, a person that does not exist, and leaves the set as it was (18)', async () => {
+		await expectRefused(() => send('PUT', `/api/people-groups/${group}/members`, { personIds: [kept, 999] }), 400, 'personId 999 is not a person');
+		expect(membersOf(group)).toEqual([kept, removed]);
+	});
+});
+
+describe('DELETE /api/people-groups/[id]', () => {
+	it('deletes the group and its memberships, and the people stay (19)', async () => {
+		const group = makeGroup('Finance');
+		const other = makeGroup('Legal');
+		const ann = makePerson('Ann Lee', 'ann@example.test', { groupIds: [group, other] });
+
+		const res = await send('DELETE', `/api/people-groups/${group}`);
+
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		expect(res.body).toEqual({ success: true });
+		expect(sqlite.prepare('SELECT id FROM people_groups ORDER BY id').all()).toEqual([{ id: other }]);
+		expect(membersOf(group)).toEqual([]);
+		expect(groupsOf(ann)).toEqual([other]);
+		expect(personRow(ann)).toBeDefined();
+	});
+});
+
+describe('DELETE /api/people/[id]', () => {
+	it('empties the person’s links, deletes them and their membership, keeps every snapshot, and frees the address (26)', async () => {
+		const group = makeGroup('Finance');
+		const ann = makePerson('Ann Lee', 'ann.lee@example.test', { groupIds: [group] });
+		const bob = makePerson('Bob Hart', 'bob@example.test');
+		const decision = makeDecision();
+		const mine = [makeParticipant(decision, ann, 1), makeParticipant(decision, ann, 2)];
+		// A third row of the person with no link: not counted (plan review R7).
+		const noLink = makeParticipant(decision, ann, 3, false);
+		const theirs = makeParticipant(decision, bob, 4);
+		const before = [...mine, noLink, theirs].map(participant);
+
+		const res = await send('DELETE', `/api/people/${ann}`);
+
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		expect(res.body).toEqual({ success: true, linksCleared: 2 });
+		expect(personRow(ann)).toBeUndefined();
+		expect(membersOf(group)).toEqual([]);
+		mine.forEach((id, i) => expect(participant(id)).toEqual({ ...before[i], person_id: null, link_token_hash: null, link_issued_at: null }));
+		expect(participant(noLink)).toEqual({ ...before[2], person_id: null });
+		expect(participant(theirs)).toEqual(before[3]);
+		expect(peopleLines().map((line) => line.message)).toEqual([`Person ${ann} "Ann Lee" deleted; 2 decision links cleared (by admin)`]);
+
+		const again = await send('POST', '/api/people', { fullName: 'Ann Lee', email: 'ann.lee@example.test' });
+
+		expect(again.status, JSON.stringify(again.body)).toBe(201);
+	});
+});
+
+describe('GET /api/boards/[id]/share and the Product Owner', () => {
+	it('gives the Product Owner to all, and the accounts that can edit the board to its owner alone, with no address (20)', async () => {
+		const owner = makeUser({ username: 'owner' });
+		const editor = makeUser({ username: 'editor' });
+		const teamed = makeUser({ username: 'teamed' });
+		const viewer = makeUser({ username: 'viewer' });
+		// A direct viewer row decides over an editor team (`roleOnBoard`).
+		const both = makeUser({ username: 'both' });
+		// No share at all: on a public board, a reader.
+		makeUser({ username: 'stranger' });
+		const superadmin = makeUser({ username: 'super', role: 'superadmin' });
+		const { board } = makeBoard({ owner, isPublic: true });
+		addBoardMember(board, editor, 'editor');
+		addBoardMember(board, viewer, 'viewer');
+		addBoardMember(board, both, 'viewer');
+		shareBoardWithTeam(board, makeTeam([teamed, both]), 'editor');
+		sqlite.prepare('UPDATE boards SET product_owner_user_id = ? WHERE id = ?').run(editor.id, board.id);
+
+		const asOwner = await api('GET', `/api/boards/${board.id}/share`, { user: owner });
+
+		expect(asOwner.status, JSON.stringify(asOwner.body)).toBe(200);
+		expect(asOwner.body.productOwner).toEqual({ userId: editor.id, username: 'editor', emoji: '👤' });
+		expect(asOwner.body.productOwnerCandidates).toEqual(
+			[admin, editor, owner, superadmin, teamed].map((account) => ({ id: account.id, username: account.username, emoji: '👤' }))
+		);
+		expect(JSON.stringify(asOwner.body.productOwnerCandidates)).not.toContain('@');
+
+		const asEditor = await api('GET', `/api/boards/${board.id}/share`, { user: editor });
+
+		expect(asEditor.status, JSON.stringify(asEditor.body)).toBe(200);
+		expect(asEditor.body.productOwner).toEqual({ userId: editor.id, username: 'editor', emoji: '👤' });
+		expect('productOwnerCandidates' in asEditor.body).toBe(false);
+	});
+});

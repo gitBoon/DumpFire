@@ -153,6 +153,14 @@
 
 		<TeamsPanel {data} {confirm} />
 
+		<!-- The people directory (card 2674): its own page, every administrator's. -->
+		<section class="admin-card glass fade-in-up" style="animation-delay: 300ms">
+			<h2>👥 People Directory</h2>
+			<p class="section-desc" style="margin-bottom: 0">
+				Who can be consulted on or told of a decision, with an account or without one, and their groups. <a href="/admin/people">Open the people directory</a>
+			</p>
+		</section>
+
 		<!-- SMTP Configuration: every administrator's since card 2395. Drawn again with the App URL panel (card 2397). -->
 		{#key mailRead}
 		<SmtpPanel bind:this={smtpPanel} currentUser={data.currentUser} />

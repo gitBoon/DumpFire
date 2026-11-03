@@ -1543,15 +1543,18 @@ describe('an address with a letter percent-encoded', () => {
 });
 
 /**
- * The two page loads the gate was the only guard for. Each is called here as
- * a function, with nothing in front of it: what it does for itself.
+ * The page loads the gate was the only guard for, and the people directory's
+ * (card 2674, plan case 24), which holds every person's address. Each is
+ * called here as a function, with nothing in front of it: what it does for
+ * itself.
  */
 describe.each([
 	{ name: '/admin', file: 'admin' },
-	{ name: '/audit', file: 'audit' }
+	{ name: '/audit', file: 'audit' },
+	{ name: '/admin/people', file: 'admin/people' }
 ])('the page load of $name, asked with no gate in front of it', ({ file }) => {
 	type Load = (event: { locals: { user: SessionUser | null } }) => Promise<Record<string, unknown>>;
-	const loads = import.meta.glob<{ load: Load }>('/src/routes/{admin,audit}/+page.server.ts');
+	const loads = import.meta.glob<{ load: Load }>(['/src/routes/{admin,audit}/+page.server.ts', '/src/routes/admin/people/+page.server.ts']);
 	const load = async (as: SessionUser | null) => {
 		const page = await loads[`/src/routes/${file}/+page.server.ts`]();
 		return page.load({ locals: { user: as } });

@@ -25,8 +25,13 @@
 	 * has drawn it (where the focus is still on Close); Escape closes the
 	 * window, Tab stays inside it, and the focus goes back to what opened
 	 * it. While one of its confirms is up the hold stands aside for it.
+	 *
+	 * The board's Product Owner (card 2674, plan 4.4) is under the public
+	 * switch. The owner and an administrator choose it from the accounts that
+	 * can edit the board, or None, and Save sends it through the board's own
+	 * update (`PUT /api/boards/:id`); anyone else is shown the name alone.
 	 */
-	import { deleteFailure, failureMessage } from '$lib/api';
+	import { deleteFailure, failureMessage, updateBoard } from '$lib/api';
 	import { holdFocus } from '$lib/dialog-focus';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import { tick } from 'svelte';
@@ -38,6 +43,8 @@
 	type ShareTeam = { teamId: number; teamName: string; teamEmoji: string; role: string; stopsWebhooks?: number };
 	type AvailableUser = { id: number; username: string; email?: string; emoji: string; role?: string };
 	type AvailableTeam = { id: number; name: string; emoji: string };
+	type ProductOwner = { userId: number; username: string; emoji: string };
+	type Candidate = { id: number; username: string; emoji: string };
 
 	let {
 		boardId,
@@ -68,6 +75,19 @@
 	/** Why the last load or write failed, shown above the Close button; '' when nothing failed. */
 	let error = $state('');
 	let togglingPublic = $state(false);
+
+	/** The board's Product Owner as stored (card 2674); null for none. */
+	let productOwner = $state<ProductOwner | null>(null);
+	/** The accounts that can edit the board, by username: given to the owner and an administrator alone. */
+	let candidates = $state<Candidate[]>([]);
+	/** The Product Owner chosen in the select and not yet saved, as the select's value: an id, or '' for None. */
+	let chosenOwner = $state('');
+	/** The stored one, as the select's value. */
+	let storedOwner = $derived(productOwner ? String(productOwner.userId) : '');
+	/** Whether a Save is out: a second press meanwhile sends nothing. */
+	let savingOwner = $state(false);
+	/** The Product Owner select's id, which its label names. */
+	const ownerSelectId = $props.id();
 
 	// Add user/team state
 	let addTab = $state<'user' | 'team'>('user');
@@ -112,7 +132,15 @@
 	async function loadData() {
 		const refresh = shownOnce;
 		const read = ++shareReads;
-		let share: { members: ShareMember[]; teams: ShareTeam[]; isPublic?: boolean; heldWebhooks?: unknown; privateStopsWebhooks?: unknown } | null = null;
+		let share: {
+			members: ShareMember[];
+			teams: ShareTeam[];
+			isPublic?: boolean;
+			heldWebhooks?: unknown;
+			privateStopsWebhooks?: unknown;
+			productOwner?: ProductOwner | null;
+			productOwnerCandidates?: Candidate[];
+		} | null = null;
 		let users: AvailableUser[] | null = null;
 		let teams: AvailableTeam[] | null = null;
 		let failure = '';
@@ -147,6 +175,16 @@
 			isPublic = share.isPublic ?? false;
 			heldWebhooks = typeof share.heldWebhooks === 'number' ? share.heldWebhooks : 0;
 			privateStopsWebhooks = typeof share.privateStopsWebhooks === 'number' ? share.privateStopsWebhooks : 0;
+			// A choice not saved is kept through a read after another change, unless the stored one moved
+			// or the choice is no longer a candidate ('' for none always is).
+			const storedBefore = storedOwner;
+			productOwner = share.productOwner ?? null;
+			candidates = share.productOwnerCandidates ?? [];
+			const keepChoice =
+				refresh &&
+				storedOwner === storedBefore &&
+				(chosenOwner === '' || candidates.some((c) => String(c.id) === chosenOwner));
+			if (!keepChoice) chosenOwner = storedOwner;
 		}
 		if (users) allUsers = users;
 		if (teams) allTeams = teams;
@@ -229,6 +267,36 @@
 			error = 'No answer from the server. The board’s visibility may not have been changed.';
 		} finally {
 			togglingPublic = false;
+		}
+	}
+
+	/** The stored Product Owner is not one of the accounts that can edit the board now: it is kept until changed (card 2673, decision 4). */
+	let ownerCannotEdit = $derived(productOwner !== null && !candidates.some((c) => c.id === productOwner?.userId));
+
+	/**
+	 * Save the Product Owner chosen (card 2674), through the board's own
+	 * update, then read the list again. A refusal is said in the server's
+	 * words, on the window's line, and the select goes back to the stored one.
+	 * Save is marked off, not turned off, until the choice differs: off, it
+	 * would drop the focus as it saves.
+	 */
+	async function saveProductOwner() {
+		if (savingOwner || chosenOwner === storedOwner) return;
+		savingOwner = true;
+		error = '';
+		try {
+			const res = await updateBoard(boardId, { productOwnerUserId: chosenOwner === '' ? null : Number(chosenOwner) });
+			if (res.ok) {
+				await loadData();
+			} else {
+				chosenOwner = storedOwner;
+				error = await failureMessage(res, 'The Product Owner was not changed.');
+			}
+		} catch {
+			chosenOwner = storedOwner;
+			error = 'No answer from the server. The Product Owner may not have been changed.';
+		} finally {
+			savingOwner = false;
 		}
 	}
 
@@ -418,6 +486,30 @@
 					<span class="public-badge-desc">Everyone can view this board</span>
 				</div>
 			{/if}
+
+			<!-- The board's Product Owner (card 2674): chosen by the owner and an administrator from the accounts that can edit the board, and shown by name to anyone else. -->
+			<div class="product-owner-row">
+				{#if canManage}
+					<label class="product-owner-label" for={ownerSelectId}>Product Owner</label>
+					<select id={ownerSelectId} class="product-owner-select" bind:value={chosenOwner} aria-busy={savingOwner ? 'true' : undefined}>
+						<option value="">None</option>
+						{#if productOwner && ownerCannotEdit}
+							<option value={String(productOwner.userId)}>{productOwner.emoji} {productOwner.username} (cannot edit this board)</option>
+						{/if}
+						{#each candidates as candidate (candidate.id)}
+							<option value={String(candidate.id)}>{candidate.emoji} {candidate.username}</option>
+						{/each}
+					</select>
+					<button
+						class="btn-primary product-owner-save"
+						onclick={saveProductOwner}
+						aria-disabled={chosenOwner === storedOwner || savingOwner ? 'true' : undefined}
+						aria-busy={savingOwner ? 'true' : undefined}
+					>Save</button>
+				{:else}
+					<span class="product-owner-text">Product Owner: {productOwner ? productOwner.username : 'None'}</span>
+				{/if}
+			</div>
 
 			<!-- Add new access -->
 			{#if canManage}
@@ -732,6 +824,41 @@
 	.public-badge-desc {
 		font-size: 0.72rem;
 		color: var(--text-tertiary);
+	}
+
+	/* The Product Owner (card 2674): one line under the public switch */
+	.product-owner-row {
+		display: flex;
+		align-items: center;
+		gap: var(--space-sm);
+		margin-bottom: var(--space-xl);
+	}
+
+	.product-owner-label {
+		font-size: 0.82rem;
+		font-weight: 600;
+		white-space: nowrap;
+	}
+
+	.product-owner-select {
+		flex: 1;
+		padding: var(--space-sm) var(--space-md);
+		border-radius: var(--radius-sm);
+		border: 1px solid var(--glass-border);
+		background: var(--bg-base);
+		color: var(--text-primary);
+		font-size: 0.82rem;
+		font-family: var(--font-family);
+	}
+
+	.product-owner-save[aria-disabled='true'] {
+		opacity: 0.5;
+		cursor: default;
+	}
+
+	.product-owner-text {
+		font-size: 0.82rem;
+		color: var(--text-secondary);
 	}
 
 	/* Tabs */

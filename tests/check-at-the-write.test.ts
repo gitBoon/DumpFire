@@ -2191,7 +2191,9 @@ const SERVICES = [
 	'src/lib/server/card-categories.ts',
 	'src/lib/server/labels.ts',
 	// Card 2337: the card window's files, the web application's alone.
-	'src/lib/server/card-attachments.ts'
+	'src/lib/server/card-attachments.ts',
+	// Card 2674: the people directory and its groups, an administrator's.
+	'src/lib/server/people.ts'
 ];
 
 /**
@@ -2922,7 +2924,12 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 			'src/lib/server/card-categories.ts': { reads: [], writes: ['createCardCategory', 'updateCardCategory', 'deleteCardCategory'] },
 			'src/lib/server/labels.ts': { reads: ['labelsOfBoard'], writes: ['createLabel', 'updateLabel', 'deleteLabel'] },
 			// Card 2337.
-			'src/lib/server/card-attachments.ts': { reads: [], writes: ['attachFile', 'deleteAttachment'] }
+			'src/lib/server/card-attachments.ts': { reads: [], writes: ['attachFile', 'deleteAttachment'] },
+			// Card 2674.
+			'src/lib/server/people.ts': {
+				reads: [],
+				writes: ['createPerson', 'updatePerson', 'deletePerson', 'addFromAccounts', 'createGroup', 'updateGroup', 'deleteGroup', 'setGroupMembers']
+			}
 		});
 		// The page routes' options a new card's nested writes share with them (the card 2296 review).
 		expect(Object.fromEntries([...services].filter(([, { pageOptions }]) => pageOptions.length > 0).map(([file, { pageOptions }]) => [file, pageOptions]))).toEqual({

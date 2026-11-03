@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.55
+version: 1.56
 status: As-Built
-date: 2026-10-28
+date: 2026-11-03
 tags:
   - features
   - overview
@@ -245,6 +245,8 @@ The share window also tells the board's owner and an administrator about the boa
 
 Making a public board private can stop webhooks too: those set up by someone who can open the board only because it is public (card 2385). The switch then asks first: "Making this board private stops 1 webhook set up by an account that can open it only because it is public: nothing is sent to it until that account can open the board again, or someone takes it over.", with **Make Private** and **Cancel**. Otherwise it switches at once, as before. After the switch, as after any share added, changed or removed, the window reads its list again, so the count of webhooks that send nothing is up to date at once.
 
+**A board's Product Owner** (card 2674, from 3 November 2026) is on a line of its own in the share window, under the public switch: the person who will decide the board's decisions by default. The board's owner and an administrator choose them from the people who can edit the board, or **None**, and press **Save**; everyone else sees "Product Owner: *name*". Someone who has since lost edit access stays Product Owner until it is changed, marked "(cannot edit this board)" in the list the owner chooses from.
+
 ### Assignees
 
 Assign one or more team members to any card. Assignees receive email notifications when their cards are updated.
@@ -475,6 +477,16 @@ Three habits keep the figures honest (the whole feature, with its rules, is in [
 - **Roles**: Superadmin, Admin, and User
 - **Invite via email** — send password-set links to new users
 - **Emoji avatars** — each user chooses their own emoji identity
+
+### People Directory
+
+An administrator's list of the people who can be consulted on or told of a decision (card 2674, from 3 November 2026), on its own page linked from the Admin page.
+
+- **People with or without an account** — each has a name, an email address, a job title and their groups, and may be linked to their DumpFire account
+- **Groups** — named sets of people, such as Finance, to pick together. A group gives no access to anything
+- **Add from accounts** — makes a person of each account an administrator ticks. It never links an account to someone already in the directory, because an account's address is set by its holder and is not checked; that link is made by hand, one person at a time
+- **Mark left or Delete** — Mark left records a leaver and can be undone; Delete removes a mistaken or duplicate entry for good, while decision records keep what they recorded
+- **Every change is logged** — under the administrator who made it, never with an address
 
 ### Automated Backups
 

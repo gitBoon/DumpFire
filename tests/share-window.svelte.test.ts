@@ -46,7 +46,15 @@ let drawn: { component: ReturnType<typeof mount>; target: HTMLElement } | null =
 /** Each request sent, as `METHOD url`, with its body read as JSON where it had one. */
 let sent: { what: string; body: unknown }[] = [];
 /** What the list answers: the window reads it as it opens and after each change. */
-let list: { members: Row[]; teams: Row[]; isPublic: boolean; heldWebhooks?: number; privateStopsWebhooks?: number };
+let list: {
+	members: Row[];
+	teams: Row[];
+	isPublic: boolean;
+	heldWebhooks?: number;
+	privateStopsWebhooks?: number;
+	productOwner?: Row | null;
+	productOwnerCandidates?: Row[];
+};
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
@@ -523,5 +531,71 @@ describe('the Share window takes, holds and gives back the focus (card 2473)', (
 		// The hold is back once the confirm has gone.
 		press('Escape');
 		expect(onClose).toHaveBeenCalledTimes(1);
+	});
+});
+
+// Card 2674: the board's Product Owner, chosen in the Share window by its owner and an
+// administrator, and shown by name to anyone else. Plan cases 21 to 23.
+describe('the Product Owner in the Share window (card 2674)', () => {
+	const ownerSelect = () => document.querySelector<HTMLSelectElement>('.product-owner-select');
+	const puts = () => sent.filter((r) => r.what === 'PUT /api/boards/3').map((r) => r.body);
+	/** The board's update answers `answer`; everything else as the stand-in does. */
+	function updateAnswers(answer: () => Response) {
+		vi.mocked(fetch).mockImplementation(async (url: string | URL | Request, init?: RequestInit) => {
+			const method = init?.method ?? 'GET';
+			sent.push({ what: `${method} ${url}`, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+			if (url === '/api/boards/3' && method === 'PUT') return answer();
+			if (url === '/api/boards/3/share') return json(list);
+			return json([]);
+		});
+	}
+
+	beforeEach(() => {
+		list.productOwner = { userId: 5, username: 'sam', emoji: '🙂' };
+		list.productOwnerCandidates = [
+			{ id: 6, username: 'ana', emoji: '🙂' },
+			{ id: 5, username: 'sam', emoji: '🙂' }
+		];
+	});
+
+	it('lists None and the candidates with the stored one chosen, and Save sends the one chosen to the board (21)', async () => {
+		updateAnswers(() => json({ id: 3 }));
+		await open();
+
+		const select = ownerSelect()!;
+		expect([...select.options].map((o) => o.textContent)).toEqual(['None', '🙂 ana', '🙂 sam']);
+		expect(select.value).toBe('5');
+
+		select.value = '6';
+		select.dispatchEvent(new Event('change'));
+		flushSync();
+		button(drawn!.target, 'Save').click();
+		await settle();
+
+		expect(puts()).toEqual([{ productOwnerUserId: 6 }]);
+	});
+
+	it('says a refusal in the server’s words, and puts the select back on the stored one (22)', async () => {
+		updateAnswers(() => json({ message: "Only the board's owner or an administrator can change its Product Owner" }, 403));
+		await open();
+
+		const select = ownerSelect()!;
+		select.value = '6';
+		select.dispatchEvent(new Event('change'));
+		flushSync();
+		button(drawn!.target, 'Save').click();
+		await settle();
+
+		expect(puts()).toEqual([{ productOwnerUserId: 6 }]);
+		expect(drawn!.target.querySelector('.share-error')?.textContent).toContain("Only the board's owner or an administrator can change its Product Owner");
+		expect(ownerSelect()!.value).toBe('5');
+	});
+
+	it('shows the name alone, with no select, to someone who cannot manage the board (23)', async () => {
+		delete list.productOwnerCandidates;
+		const target = await open({ canManage: false });
+
+		expect(target.querySelector('.product-owner-text')?.textContent).toBe('Product Owner: sam');
+		expect(ownerSelect()).toBeNull();
 	});
 });

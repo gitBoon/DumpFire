@@ -2612,6 +2612,31 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 	'src/routes/api/cards/reorder/+server.ts PUT': [
 		{ service: 'moveCards', args: [code('caller'), {}, code('body'), { source: 'ui', baseUrl: code('baseUrl') }] }
 	],
+	// Card 2674: the people directory and its groups, admin-only.
+	'src/routes/api/people/+server.ts POST': [
+		{ service: 'createPerson', args: [code('caller'), {}, code('body'), { source: 'ui' }] }
+	],
+	'src/routes/api/people/[id]/+server.ts PUT': [
+		{ service: 'updatePerson', args: [code('caller'), { personId: code('id') }, code('body'), { source: 'ui' }] }
+	],
+	'src/routes/api/people/[id]/+server.ts DELETE': [
+		{ service: 'deletePerson', args: [code('caller'), { personId: code('id') }, null, { source: 'ui' }] }
+	],
+	'src/routes/api/people/from-accounts/+server.ts POST': [
+		{ service: 'addFromAccounts', args: [code('caller'), {}, code('body'), { source: 'ui' }] }
+	],
+	'src/routes/api/people-groups/+server.ts POST': [
+		{ service: 'createGroup', args: [code('caller'), {}, code('body'), { source: 'ui' }] }
+	],
+	'src/routes/api/people-groups/[id]/+server.ts PUT': [
+		{ service: 'updateGroup', args: [code('caller'), { groupId: code('id') }, code('body'), { source: 'ui' }] }
+	],
+	'src/routes/api/people-groups/[id]/+server.ts DELETE': [
+		{ service: 'deleteGroup', args: [code('caller'), { groupId: code('id') }, null, { source: 'ui' }] }
+	],
+	'src/routes/api/people-groups/[id]/members/+server.ts PUT': [
+		{ service: 'setGroupMembers', args: [code('caller'), { groupId: code('id') }, code('body'), { source: 'ui' }] }
+	],
 	'src/routes/api/v1/boards/[boardId]/cards/+server.ts POST': [
 		{ service: 'createCard', args: [code('caller'), { boardId: code('boardId') }, code('body'), { source: 'api', baseUrl: code('baseUrl') }] }
 	],

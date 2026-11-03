@@ -139,6 +139,7 @@ const TEST_FILES = [
 	'page-card-window.test.ts',
 	'page-failures.test.ts',
 	'password-checks.test.ts',
+	'people-directory.test.ts',
 	'plan-graph.test.ts',
 	'plan-page.test.ts',
 	'plan-table.test.ts',

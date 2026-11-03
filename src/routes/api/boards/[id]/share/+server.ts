@@ -1,8 +1,8 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
-import { boards, boardMembers, boardTeams, users, teams, teamMembers } from '$lib/server/db/schema';
-import { eq, and } from 'drizzle-orm';
-import { getBoardRole } from '$lib/server/board-access';
+import { boards, boardMembers, boardTeams, users, teams, teamMembers, type Board } from '$lib/server/db/schema';
+import { eq, and, asc, inArray } from 'drizzle-orm';
+import { getBoardRole, roleOnBoard } from '$lib/server/board-access';
 import { notifyBoardShared } from '$lib/server/notifications';
 import { linkBaseUrl } from '$lib/server/email';
 import { pathId, readBody, readBoolean, readChoice, readId } from '$lib/server/request-body';
@@ -61,13 +61,62 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	.all()
 	.map((team) => (notes ? { ...team, stopsWebhooks: notes.byTeam.get(team.teamId) ?? 0 } : team));
 
+	// The board's Product Owner (card 2674, plan 4.4), for everyone the list is
+	// given to: by name and emoji, never an address. One who has lost edit
+	// access since is still given: the value stays (card 2673, decision 4).
+	const owner =
+		board.productOwnerUserId === null
+			? undefined
+			: db.select({ userId: users.id, username: users.username, emoji: users.emoji }).from(users).where(eq(users.id, board.productOwnerUserId)).get();
+	const productOwner = owner ? { ...owner, emoji: owner.emoji || '👤' } : null;
+
 	return json({
 		members,
 		teams: teamAccess,
 		isPublic: board.isPublic,
-		...(notes ? { heldWebhooks: notes.held, privateStopsWebhooks: notes.privateStops } : {})
+		productOwner,
+		...(notes ? { heldWebhooks: notes.held, privateStopsWebhooks: notes.privateStops } : {}),
+		// Who may be made it, for the board's owner and an administrator alone:
+		// they are the ones who may change it (`updateBoard`).
+		...(seesAddresses ? { productOwnerCandidates: productOwnerCandidates(board) } : {})
 	});
 };
+
+/**
+ * Every account that can edit the board, as `{ id, username, emoji }` by
+ * username (card 2674, plan decision 8): the accounts `updateBoard` would take
+ * as its Product Owner. `roleOnBoard` is asked of the board's possible editors
+ * alone (plan review R5): its creator, its members, the members of the teams
+ * it is shared with, and every administrator. Anyone else can at most view
+ * it, as a public board gives, so `roleOnBoard` would not make them one.
+ */
+function productOwnerCandidates(board: Board): { id: number; username: string; emoji: string }[] {
+	const possible = new Set<number>();
+	if (board.createdBy !== null) possible.add(board.createdBy);
+	for (const { userId } of db.select({ userId: boardMembers.userId }).from(boardMembers).where(eq(boardMembers.boardId, board.id)).all()) {
+		possible.add(userId);
+	}
+	const teamIds = db.select({ teamId: boardTeams.teamId }).from(boardTeams).where(eq(boardTeams.boardId, board.id)).all().map((t) => t.teamId);
+	if (teamIds.length > 0) {
+		for (const { userId } of db.select({ userId: teamMembers.userId }).from(teamMembers).where(inArray(teamMembers.teamId, teamIds)).all()) {
+			possible.add(userId);
+		}
+	}
+	for (const { id } of db.select({ id: users.id }).from(users).where(inArray(users.role, ['admin', 'superadmin'])).all()) possible.add(id);
+	if (possible.size === 0) return [];
+
+	return db
+		.select({ id: users.id, username: users.username, emoji: users.emoji, role: users.role })
+		.from(users)
+		.where(inArray(users.id, [...possible]))
+		.orderBy(asc(users.username))
+		.all()
+		.filter((account) => {
+			const role = roleOnBoard(account, board);
+			return role === 'owner' || role === 'editor' || role === 'admin';
+		})
+		.map(({ id, username, emoji }) => ({ id, username, emoji: emoji || '👤' }));
+}
 
 /** Who a board is shared with: one person, or every member of a team. */
 const SHARE_TYPES = ['user', 'team'] as const;
