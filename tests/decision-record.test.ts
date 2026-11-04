@@ -282,8 +282,8 @@ describe('the record is insert-only, by the source (decision 27)', () => {
 		// The scan saw the tree, and the record's own inserts in it.
 		expect(files.length).toBeGreaterThan(200);
 		expect(files.some(({ file }) => file.endsWith('.svelte'))).toBe(true);
-		// The event's, the version's and, card 2677 (D1), the response's.
-		expect(inserts.filter((file) => file === 'src/lib/server/decision-record.ts')).toHaveLength(3);
+		// The event's, the version's, card 2677 (D1), the response's, and card 2679 (decision 7), the ruling's.
+		expect(inserts.filter((file) => file === 'src/lib/server/decision-record.ts')).toHaveLength(4);
 	});
 
 	it('finds each form on made-up source, and passes what is allowed (2)', () => {
@@ -444,7 +444,11 @@ describe('the shown status (E10)', () => {
 			// Card 2677 (decision 12).
 			respond: ['open'],
 			// Card 2697 (decision 5).
-			dryRun: ['draft', 'open', 'closed']
+			dryRun: ['draft', 'open', 'closed'],
+			// Card 2679: from a stored ruling alone (S4, decisions 4 and 5).
+			release: ['ruled'],
+			concern: ['ruled'],
+			supersede: ['ruled']
 		});
 
 		const pastItsDeadline = { status: 'open', closesAt: '2026-11-01 00:00:00' };

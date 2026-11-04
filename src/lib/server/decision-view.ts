@@ -13,7 +13,17 @@
  *
  * The page reads the caller's own participant row and that row's own
  * responses, and nothing of anyone else's: no other participant, no other
- * response, no count and no total, whoever is asking (decision 15).
+ * response, no count and no total, whoever is asking (decision 15), until the
+ * decider releases the results of a ruled decision (card 2679).
+ *
+ * Card 2679 adds the ruling, to everyone who may view a ruled decision, with
+ * no moment, no "against" and no "early"; the released totals and comments,
+ * without names, as `releasedOf` projects them; a participant's own concerns
+ * and whether they may raise one; the decisions it supersedes and that
+ * superseded it, each named only to a viewer who may view it; and, signed in,
+ * whether the caller may read the results and supersede it. The seen stage is
+ * `ruling` on a ruled decision, given to a participant alone, and once the
+ * decision is ruled its closing time is given to nobody (decision 26).
  *
  * Card 2697 adds the preview, `readPreview`, for `/decisions/[id]/preview`:
  * the working copy as a participant of the caller's choosing will see it,
@@ -29,19 +39,30 @@
 import { error } from '@sveltejs/kit';
 import { and, asc, eq } from 'drizzle-orm';
 import { db } from './db';
-import { decisionParticipants, decisionVersions, people, peopleGroupMembers, peopleGroups, type Decision, type DecisionParticipant } from './db/schema';
+import {
+	decisionParticipants,
+	decisionVersions,
+	decisions,
+	people,
+	peopleGroupMembers,
+	peopleGroups,
+	type Decision,
+	type DecisionParticipant
+} from './db/schema';
 import type { SessionUser } from './auth';
-import { mayDo } from './decision-access';
+import { decisionAccess, mayDo } from './decision-access';
 import { participantAnswers, versionContentAnswer, workingViewContent } from './decision-authoring';
 import { listedOptionIds, liveOptionsOf, optionChanges, parseVersionContent, parseWorkingContent, participantsOf } from './decision-content';
 import { participantForLink, reachOf } from './decision-links';
-import { accountHistory, currentRound, lastToldOf, ownResponses } from './decision-record';
-import { decisionStatus } from './decision-status';
+import { accountHistory, concernsOf, currentRound, lastToldOf, ownResponses, rulingOf, supersedingOf } from './decision-record';
+import { releasedOf, versionOptionsOf } from './decision-results';
+import { decisionStatus, linkUsable, TRANSITIONS } from './decision-status';
 import { createLogger } from './logger';
 import { checkRateLimit } from './rate-limit';
 import { readQueryId } from './request-body';
 import { requireDecision } from './route-guards';
 import type { DecisionPageData, ViewAudience, ViewContent, ViewDecision, ViewOption, ViewParticipant } from '$lib/decision-view-types';
+import { CONCERNS_PER_PARTICIPANT } from '$lib/decision-rules';
 import { stamp } from '$lib/timestamps';
 
 const log = createLogger('DECISIONS');
@@ -58,6 +79,11 @@ const WRONG_LINK_WINDOW_MS = 15 * 60 * 1000;
  * other caller who may view, a participant no longer reached among them
  * (D12), is given the published version and its status alone. A draft gives
  * nothing but whether the caller may edit it.
+ *
+ * Card 2679: `mayReadResults`, the caller's `results`, on a decision that is
+ * not a draft; and `maySupersede`, exactly where `supersedeDecision` would
+ * make the draft: a ruled decision whose board is there, with no superseding
+ * decision that is not withdrawn, for a caller `supersede` lets in.
  */
 export function readDecisionPage(user: SessionUser, decisionId: number): DecisionPageData {
 	const { decision, access } = requireDecision(user, decisionId, 'view');
@@ -70,7 +96,15 @@ export function readDecisionPage(user: SessionUser, decisionId: number): Decisio
 			if ('via' in reach && reach.via === 'account') participant = row;
 		}
 	}
-	return pageOf(decision, participant, { via: 'session', mayEdit: mayDo(access, 'edit', decision), signedInAs: null });
+	const page = pageOf(decision, participant, { via: 'session', mayEdit: mayDo(access, 'edit', decision), signedInAs: null, user });
+	const opened = decision.status !== 'draft';
+	page.mayReadResults = opened && mayDo(access, 'results', decision);
+	page.maySupersede =
+		(TRANSITIONS.supersede as readonly string[]).includes(decision.status) &&
+		mayDo(access, 'supersede', decision) &&
+		decision.boardId !== null &&
+		supersedingOf(decision.id) === null;
+	return page;
 }
 
 /**
@@ -82,7 +116,7 @@ export function readDecisionPage(user: SessionUser, decisionId: number): Decisio
 export function readLinkPage(token: string, signedInAs: string | null): DecisionPageData | null {
 	const found = participantForLink(token);
 	if ('refused' in found || found.decision.status === 'draft') return null;
-	return pageOf(found.decision, found.participant, { via: 'link', mayEdit: false, signedInAs });
+	return pageOf(found.decision, found.participant, { via: 'link', mayEdit: false, signedInAs, user: null });
 }
 
 /** Who the preview shows the decision to: one live participant, or a generic one of a role, in a group or none. */
@@ -259,15 +293,61 @@ export function refuseWrongLink(address: string): { limited: boolean; retryAfter
 // ─── Inside the reads ────────────────────────────────────────────────────────
 
 /**
- * Which acknowledgement the page's seen post records at this stored status
- * (decision 14), or null for none. A ruled or superseded decision posts none:
- * this page shows no ruling, and card 2679 adds the `ruling` stage when it
- * shows one (code review C8).
+ * Which acknowledgement a participant's page's seen post records at this
+ * stored status (decision 14): the ruling on a ruled or superseded decision,
+ * which the page shows (card 2679, decision 9), the withdrawal on a withdrawn
+ * one, and the question otherwise.
  */
 function stageOf(status: string): DecisionPageData['stage'] {
-	if (status === 'ruled' || status === 'superseded') return null;
+	if (status === 'ruled' || status === 'superseded') return 'ruling';
 	if (status === 'withdrawn') return 'withdrawal';
 	return 'question';
+}
+
+/** Whether the decision has been ruled on: stored `ruled` or `superseded`. */
+const isRuled = (decision: Pick<Decision, 'status'>) => decision.status === 'ruled' || decision.status === 'superseded';
+
+/** The ruling as every viewer of a ruled decision is given it (card 2679, decision 23): no moment, no "against", no "early". */
+function rulingViewOf(decision: Decision): DecisionPageData['ruling'] {
+	if (!isRuled(decision)) return null;
+	const ruling = rulingOf(decision.id);
+	if (ruling === null) return null;
+	const option = ruling.optionId === null ? undefined : versionOptionsOf(decision.id, ruling.versionNumber).find((candidate) => candidate.optionId === ruling.optionId);
+	return {
+		label: option?.label ?? null,
+		title: option?.title ?? null,
+		noneOfThese: ruling.optionId === null,
+		reason: ruling.reason,
+		conditions: ruling.conditions,
+		ruledByName: ruling.ruledByName
+	};
+}
+
+/**
+ * The decision `other` as `user` may be told of it (card 2679, decision 5,
+ * S8): its id and title to a signed-in viewer who may view it, and nothing to
+ * anyone else, a link holder always among them.
+ */
+function namedFor(user: SessionUser | null, other: Decision): { id?: number; title?: string } {
+	if (user === null || !mayDo(decisionAccess(user, other), 'view', other)) return {};
+	return { id: other.id, title: other.title };
+}
+
+/**
+ * The supersede links of the page (card 2679, decision 5, S8), each only once
+ * the later decision is ruled: while it is a draft, open or closed, neither
+ * page says anything of the other, to anyone.
+ */
+function supersedeLinksOf(decision: Decision, user: SessionUser | null): Pick<DecisionPageData, 'supersedes' | 'laterDecision'> {
+	let supersedes: DecisionPageData['supersedes'] = null;
+	if (decision.supersedesId !== null && isRuled(decision)) {
+		const earlier = db.select().from(decisions).where(eq(decisions.id, decision.supersedesId)).get();
+		if (earlier !== undefined) supersedes = namedFor(user, earlier);
+	}
+	let laterDecision: DecisionPageData['laterDecision'] = null;
+	const later = supersedingOf(decision.id);
+	if (later !== null && isRuled(later)) laterDecision = { superseded: decision.status === 'superseded', ...namedFor(user, later) };
+	return { supersedes, laterDecision };
 }
 
 /** The ids of the groups the person is a member of now, of the groups that are still there (decision 18). */
@@ -282,13 +362,18 @@ function groupsOf(personId: number | null): Set<number> {
 	return new Set(rows.map((row) => row.groupId));
 }
 
-/** The page itself, for either way in, for `participant` (already found reachable) or none. */
+/**
+ * The page itself, for either way in, for `participant` (already found
+ * reachable) or none. `user` is the signed-in caller, null by a personal link:
+ * it decides only whether another decision is named to them (card 2679).
+ */
 function pageOf(
 	decision: Decision,
 	participant: DecisionParticipant | null,
-	how: { via: 'session' | 'link'; mayEdit: boolean; signedInAs: string | null }
+	how: { via: 'session' | 'link'; mayEdit: boolean; signedInAs: string | null; user: SessionUser | null }
 ): DecisionPageData {
-	const shownStatus = decisionStatus(decision, stamp());
+	const now = stamp();
+	const shownStatus = decisionStatus(decision, now);
 	const page: DecisionPageData = {
 		via: how.via,
 		decision: {
@@ -297,7 +382,8 @@ function pageOf(
 			title: decision.title,
 			shownStatus,
 			voteMode: decision.voteMode === 'score' ? 'score' : 'single',
-			closesAt: decision.closesAt,
+			// Card 2679 (decision 26): once ruled, the closing time beside the ruling's arrival would say whether it was early.
+			closesAt: isRuled(decision) ? null : decision.closesAt,
 			deciderName: decision.deciderName,
 			// A link holder may have no account and no tie to the board (R3).
 			boardName: how.via === 'link' ? null : decision.boardName,
@@ -312,11 +398,21 @@ function pageOf(
 		ownResponse: null,
 		earlierResponse: null,
 		mayRespond: false,
-		stage: stageOf(decision.status),
+		// Card 2679 (F7): a participant's alone, given below.
+		stage: null,
 		mayEdit: how.mayEdit,
-		signedInAs: how.signedInAs
+		signedInAs: how.signedInAs,
+		ruling: null,
+		released: null,
+		concerns: [],
+		mayRaiseConcern: false,
+		supersedes: null,
+		laterDecision: null
 	};
 	if (page.draft) return page;
+	page.ruling = rulingViewOf(decision);
+	page.released = releasedOf(decision);
+	Object.assign(page, supersedeLinksOf(decision, how.user));
 
 	const version = db
 		.select()
@@ -341,5 +437,10 @@ function pageOf(
 	page.ownResponse = own.current;
 	page.earlierResponse = own.earlier;
 	page.mayRespond = role === 'consulted' && shownStatus === 'open';
+	page.stage = stageOf(decision.status);
+	// Card 2679 (decision 4): their own concerns, and the window, which is a personal link's own life after the ruling.
+	page.concerns = concernsOf({ participantId: participant.id }).map((row) => ({ comment: row.comment ?? '', createdAt: row.createdAt }));
+	// Code review F9: no form past the fifth, as the write refuses a sixth.
+	page.mayRaiseConcern = decision.status === 'ruled' && linkUsable(decision, now) && page.concerns.length < CONCERNS_PER_PARTICIPANT;
 	return page;
 }

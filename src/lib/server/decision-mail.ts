@@ -2,7 +2,8 @@
  * decision-mail.ts — the mails that carry a decision's record to its
  * participants (card 2675, plan section 4.6 and decisions 10, 16 to 18, 28,
  * 30 and 31): the invitation, asked again, told of a change, withdrawn, and
- * the ruling (which card 2679 calls).
+ * the ruling, which card 2679's `ruleDecision` sends with a line saying a
+ * concern may be raised for 90 days.
  *
  * `queueRecordMails` is called inside a service write's transaction. For each
  * participant who is not removed it asks `reachOf` (decision-links.ts) whether
@@ -185,7 +186,7 @@ export type RecordMailOptions = {
 	reason?: string;
 	/** An invitation sent again (`resendInvitation`): its event says so, `invited { resend: true }`. */
 	resend?: boolean;
-	/** The ruling (card 2679): the option chosen, or none of them, the reason and the conditions. No figure (S4). */
+	/** The ruling (card 2679, `ruleDecision`): the option chosen by label and title, or none of them (null), the reason and the conditions. No figure, no "against" and no cut-off (S4). */
 	ruling?: { optionLabel: string | null; optionTitle: string | null; reason: string; conditions: string | null };
 };
 
@@ -366,6 +367,9 @@ function subjectOf(decision: Decision, mail: RecordMail, role: string): string {
 
 const PARAGRAPH = 'margin: 0 0 12px; font-size: 14px; color: #334155; line-height: 1.5;';
 
+/** The ruling mail's line on concerns (card 2679, decision 3): the window is `LINK_DAYS_AFTER_END` after the ruling. */
+const RULING_CONCERN_LINE = 'You can raise a concern about this ruling from the page for 90 days.';
+
 /** A paragraph of text, escaped; nothing for no text. */
 function paragraph(text: string | null | undefined, label?: string): string {
 	if (!text) return '';
@@ -416,6 +420,8 @@ function bodyOf(
 			parts.push(paragraph(chosen, 'Ruled:'));
 			parts.push(paragraph(ruling?.reason ?? null, 'Why:'));
 			parts.push(paragraph(ruling?.conditions ?? null, 'Conditions:'));
+			// Card 2679 (decision 3): the concern window, with no figure, no "against" and no cut-off (S4).
+			parts.push(paragraph(RULING_CONCERN_LINE));
 			break;
 		}
 	}

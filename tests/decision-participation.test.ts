@@ -31,9 +31,10 @@ import { requireSameOriginJson } from '$lib/server/same-origin';
 import { subscribeToLogs, type LogEntry } from '$lib/server/logger';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { decisions, people, peopleGroupMembers, peopleGroups, type Board, type Decision, type DecisionOption } from '$lib/server/db/schema';
-import { recordSeen, recordSeenByLink, respondByLink, respondToDecision } from '$lib/server/decisions';
+import { recordSeen, recordSeenByLink, releaseResults, respondByLink, respondToDecision } from '$lib/server/decisions';
+import { resultsRevisionFor } from '$lib/server/decision-results';
 import { writeAs, type ServiceOptions } from '$lib/server/write-as';
-import { DEAD_DECISION_LINK, STALE_REVISION, tooManyWrongLinks } from '$lib/decision-words';
+import { DEAD_DECISION_LINK, STALE_REVISION, tooManyWrongLinks, WHO_SEES_STATEMENT_VERSION } from '$lib/decision-words';
 import { stamp } from '$lib/timestamps';
 import { effects, type Effects } from './helpers/effects';
 import {
@@ -44,6 +45,7 @@ import {
 	makeParticipant,
 	makePerson,
 	makeResponse,
+	makeRuling,
 	makeSession,
 	makeSmtp,
 	makeUser,
@@ -673,7 +675,16 @@ describe('readDecisionPage and readLinkPage', () => {
 			mayRespond: true,
 			stage: 'question',
 			mayEdit: false,
-			signedInAs: null
+			signedInAs: null,
+			// Card 2679 (decision 23): nothing ruled, released, raised or superseded; signed in, the results and supersede refused.
+			ruling: null,
+			released: null,
+			concerns: [],
+			mayRaiseConcern: false,
+			supersedes: null,
+			laterDecision: null,
+			mayReadResults: false,
+			maySupersede: false
 		});
 		expect(page.version!.content).not.toHaveProperty('options');
 		expect(page.version!.content).not.toHaveProperty('audiences');
@@ -776,10 +787,11 @@ describe('readDecisionPage and readLinkPage', () => {
 		appendEvent({ decisionId: decision.id, kind: 'mail_skipped', participantId: participant.id, detail: { reason: 'left' } }, SYSTEM_ACTOR);
 		expect(readDecisionPage(account, decision.id).participant, '(c)').toEqual({ role: 'consulted', includedAt: '2026-11-01 09:00:00', told: null });
 
-		// (d) A ruled decision gives no stage to post: no ruling is shown until card 2679 (code review C8).
+		// (d) A ruled decision's participant posts the ruling's stage (card 2679, decision 9), and a board reader none (F7).
 		const ruled = opened({ status: 'ruled', ruledAt: stamp(new Date(Date.now() - DAY)) });
 		const rue = withAccount(ruled.decision, 'consulted', 'rue');
-		expect(readDecisionPage(rue.account, ruled.decision.id).stage, '(d)').toBeNull();
+		expect(readDecisionPage(rue.account, ruled.decision.id).stage, '(d)').toBe('ruling');
+		expect(readDecisionPage(reader, ruled.decision.id).stage, '(d) a reader').toBeNull();
 	});
 
 	it('gives a link holder the same page with no reviewed yes, no board’s name and no edit link, the signed-in name it is handed, and an unknown token nothing (19)', () => {
@@ -813,7 +825,14 @@ describe('readDecisionPage and readLinkPage', () => {
 			mayRespond: true,
 			stage: 'question',
 			mayEdit: false,
-			signedInAs: null
+			signedInAs: null,
+			// Card 2679 (decision 23): as signed in, and no results or supersede flag at all by a link.
+			ruling: null,
+			released: null,
+			concerns: [],
+			mayRaiseConcern: false,
+			supersedes: null,
+			laterDecision: null
 		});
 		expect(keysGiven(page)).toEqual([]);
 		// No decision id anywhere in it (code review C5): an option's own id is the only id a link holder is given.
@@ -825,6 +844,46 @@ describe('readDecisionPage and readLinkPage', () => {
 		expect(JSON.stringify(page)).not.toContain('Rae Viewer');
 		expect(readLinkPage('token-page', 'browser')?.signedInAs).toBe('browser');
 		expect(readLinkPage('token-never', null)).toBeNull();
+	});
+
+	it('gives none of NEVER_GIVEN on a ruled, released and superseded page, nor on the page superseding it, either way in (card 2679, code review F5)', async () => {
+		const old = opened({ status: 'closed', closesAt: '2026-11-02 09:00:00' });
+		const voters = ['vee', 'wes', 'xan'].map((name) => withAccount(old.decision, 'consulted', name));
+		withLink(old.decision, 'token-never-given');
+		voters.forEach((voter, index) => {
+			const row = makeResponse(voter.participant, { kind: 'vote', optionId: old.a.id, comment: `Said by ${index}.` });
+			appendEvent(
+				{ decisionId: old.decision.id, kind: 'responded', participantId: voter.participant.id, versionNumber: 1, detail: { responseId: row.id, statement: WHO_SEES_STATEMENT_VERSION } },
+				SYSTEM_ACTOR
+			);
+		});
+		makeRuling(old.decision, { optionId: old.a.id, ruledAt: stamp() });
+		as(old.decider, (caller) => releaseResults(caller, { decisionId: old.decision.id }, { revision: resultsRevisionFor(old.decision.id) }, UI));
+		const next = opened({ status: 'closed', closesAt: '2026-11-02 09:00:00', supersedesId: old.decision.id, title: 'Again' });
+		const nextsOwn = withAccount(next.decision, 'consulted', 'yul');
+		makeRuling(next.decision, { optionId: next.a.id, ruledAt: stamp() });
+		db.update(decisions).set({ status: 'superseded' }).where(eq(decisions.id, old.decision.id)).run();
+		const reader = makeUser({ username: 'rae' });
+		addBoardMember(board, reader, 'viewer');
+
+		const pages = {
+			'the participant': readDecisionPage(voters[0].account, old.decision.id),
+			'a board reader': readDecisionPage(reader, old.decision.id),
+			'the decider': readDecisionPage(old.decider, old.decision.id),
+			'the link holder': readLinkPage('token-never-given', null),
+			'the page superseding it, a reader': readDecisionPage(reader, next.decision.id),
+			'the page superseding it, its participant': readDecisionPage(nextsOwn.account, next.decision.id)
+		};
+		expect(pages['a board reader'].released, 'released').not.toBeNull();
+		expect(pages['a board reader'].laterDecision, 'superseded').toEqual({ superseded: true, id: next.decision.id, title: 'Again' });
+		expect(pages['the link holder']?.laterDecision, 'superseded, by a link').toEqual({ superseded: true });
+		for (const [who, page] of Object.entries(pages)) {
+			expect(page, who).not.toBeNull();
+			expect(page!.ruling, who).not.toBeNull();
+			expect(keysGiven(page), who).toEqual([]);
+			expect(JSON.stringify(page), who).not.toMatch(ADDRESS);
+		}
+		await sent.settle();
 	});
 });
 

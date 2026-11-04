@@ -23,7 +23,7 @@
 
 import { escapeHtml } from '$lib/escape-html';
 import { MASTER_PREF, type NotificationPref } from '$lib/notification-prefs';
-import { MAIL_PROBLEM_WORDS, sendEmailWithAttachment, isSmtpConfigured, trySendEmail, type MailOutcome } from './email';
+import { MAIL_PROBLEM_WORDS, linkBaseUrl, sendEmailWithAttachment, isSmtpConfigured, trySendEmail, type MailOutcome } from './email';
 import { db } from './db';
 import { afterCommit } from './db/transaction';
 import { users, cards, cardAssignees, boards, teamMembers, boardMembers, boardTeams, taskRequests } from './db/schema';
@@ -124,8 +124,11 @@ export function getUserNotifPrefs(userId: number): NotifPrefs {
  * `type` is a key of the one list in `$lib/notification-prefs`, which the
  * account page draws and its route saves (card 2146): a mail cannot read a
  * preference that nobody can set.
+ *
+ * Exported for the concern write (card 2679, decision 3), which records
+ * `prefs_off` on the record when it says no, inside the write.
  */
-function shouldNotifyUser(userId: number, type: NotificationPref): boolean {
+export function shouldNotifyUser(userId: number, type: NotificationPref): boolean {
 	const prefs = getUserNotifPrefs(userId);
 	// Master toggle
 	if (prefs[MASTER_PREF] === false) return false;
@@ -1097,4 +1100,43 @@ export function notifyMention(
 	sendEmail(mentionedUser.email, `${authorUsername} mentioned you: ${cardTitle}`, html).catch(err =>
 		log.error(`Mention notification failed for ${mentionedUser.email}`, err)
 	);
+}
+
+/**
+ * Tell a decision's decider that a participant raised a concern about its
+ * ruling (card 2679, decision 3), under `email_decisions` and the master
+ * switch: not a record mail (D22). It names neither the participant nor what
+ * they wrote, which stay in the record, and links to the results page, behind
+ * a sign-in. `heldBefore` is how many concerns of the same participant were
+ * not mailed since the last notice about them.
+ *
+ * It takes no `baseUrl`: the link is made on `linkBaseUrl()`, the App URL or
+ * `ORIGIN`, read here, so that no request's Host can reach it (S6). It is the
+ * whole of decision-mail.ts's `decisionLinkBase()`, which this module cannot
+ * import back. The concern write decides whether to call it, and records why
+ * not where it does not; this asks the preference and the address again, as
+ * every mail here does, and sends after the commit.
+ */
+export function notifyDecisionConcern(deciderUserId: number, decisionId: number, title: string, heldBefore: number): void {
+	if (!isSmtpConfigured()) return;
+	const decider = db.select({ id: users.id, email: users.email }).from(users).where(eq(users.id, deciderUserId)).get();
+	if (!decider) return;
+	if (!shouldNotifyUser(decider.id, 'email_decisions')) return;
+	const baseUrl = linkBaseUrl();
+	if (noLinkAddress(baseUrl, 'The notice of a concern about a ruling')) return;
+
+	const resultsUrl = `${baseUrl}/decisions/${decisionId}/results`;
+	const held =
+		heldBefore > 0
+			? `<p style="margin: 0 0 12px; font-size: 13px; color: #475569;">They raised ${heldBefore} more since the last notice about them, which ${heldBefore === 1 ? 'was' : 'were'} not mailed.</p>`
+			: '';
+	const html = emailTemplate('A concern about a ruling', `
+		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #4338ca;">
+			<p style="margin: 0 0 12px; font-size: 13px; color: #334155;">A participant raised a concern about the ruling on <strong>${escapeHtml(title)}</strong>. Open the results to read it.</p>
+			${held}
+			<a href="${escapeHtml(resultsUrl)}" style="display: inline-block; padding: 8px 16px; background: #4338ca; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">Open the results</a>
+		</div>
+	`);
+
+	sendEmail(decider.email, `A concern about the ruling on ${title}`, html).catch(err => log.error(`Concern notice failed for decision ${decisionId}`, err));
 }

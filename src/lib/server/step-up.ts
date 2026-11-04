@@ -139,7 +139,10 @@ export const STEP_UP_ACTIONS = Object.freeze({
 	'POST /api/people/from-accounts': "Adds people linked to accounts, with the accounts' addresses, which decide where decision mail and links go",
 	// Card 2697, B4 (Q9, Q29): a decision's record destroyed, or a decision ended for good with every participant told.
 	'DELETE /api/decisions/[id]': "Once opened: deletes a decision's permanent record, its versions, responses and events, for good",
-	'POST /api/decisions/[id]/withdraw': "Once opened: ends a decision for good and mails every participant the caller's words"
+	'POST /api/decisions/[id]/withdraw': "Once opened: ends a decision for good and mails every participant the caller's words",
+	// Card 2679 (decision 2): a ruling, permanent and mailed to everyone, and the one-way release of its results.
+	'POST /api/decisions/[id]/rule': 'Rules on a decision for good, and mails every participant the ruling and its reason',
+	'POST /api/decisions/[id]/release': "Shows a ruled decision's totals and comments, for good, to everyone who can see it"
 } as const);
 
 /** A key of `STEP_UP_ACTIONS`. */

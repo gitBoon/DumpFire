@@ -856,7 +856,10 @@ const DECISION_KEYS = [
 	'openedAt',
 	'closedAt',
 	'withdrawnAt',
-	'withdrawnReason'
+	'withdrawnReason',
+	// Card 2679 (decision 22).
+	'supersedesId',
+	'resultsReleasedAt'
 ].sort();
 const OPTION_KEYS = ['id', 'label', 'position', 'addedInVersion', 'retiredInVersion'].sort();
 const PARTICIPANT_KEYS = ['id', 'personId', 'role', 'name', 'jobTitle', 'groups', 'includedAt', 'includedByName', 'removedAt', 'reach', 'hasLeft', 'notInDirectory'];
@@ -924,6 +927,8 @@ describe('readEditPage (17)', () => {
 		expect(page.deciderCandidates).toEqual(editorsOf(board));
 		expect(page.deciderCandidates.map((account) => account.username)).toEqual(['author', 'decider', 'owner']);
 		expect(page).toMatchObject({ editable: true, canSetDecider: true, canReview: true, canSetParticipants: true });
+		// Card 2679: a draft has no results, and an author who is not the decider reads none.
+		expect(page.mayReadResults).toBe(false);
 
 		expect(page.revision).toBe(revisionNow(s.draft.id));
 		const row = decisionRow(s.draft.id);

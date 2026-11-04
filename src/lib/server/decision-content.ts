@@ -8,7 +8,9 @@
  * review's C7). Card 2677 adds a published version's content read back
  * (`parseVersionContent`, F1), and shares the markdown field's rule
  * (`readMultiline`) and the closed-object check (`requireClosed`) with a
- * response's comments and keyed objects.
+ * response's comments and keyed objects. Card 2679 adds the results revision
+ * (`resultsRevisionOf`), which the ruling and the release ask, and a
+ * superseding draft's content from the version ruled on (`workingFromVersion`).
  *
  * Plain functions with no caller, called by the service in `decisions.ts`
  * inside its write, and by the authoring reads. Nothing here writes a row of
@@ -45,6 +47,7 @@ import { UNPRINTABLE } from './logger';
 import { asObject, readId, readList, readObjects, readText, type RequestBody } from './request-body';
 import { purposeKey } from './request-tokens';
 import type { AudienceFacts, OpenFacts, WorkingContent } from '$lib/decision-readiness';
+import { DECISION_TITLE_MAX } from '$lib/decision-rules';
 import type { Stamp } from '$lib/timestamps';
 
 export type { WorkingContent } from '$lib/decision-readiness';
@@ -359,7 +362,7 @@ export function readContent(body: RequestBody, stored: WorkingContent): ContentF
 export function readTitle(body: RequestBody): string;
 export function readTitle(body: RequestBody, opts: { required: boolean }): string | undefined;
 export function readTitle(body: RequestBody, opts: { required: boolean } = { required: true }): string | undefined {
-	const title = readText(body, 'title', { required: opts.required, trim: true, min: 1, max: 200 });
+	const title = readText(body, 'title', { required: opts.required, trim: true, min: 1, max: DECISION_TITLE_MAX });
 	if (title !== undefined && UNPRINTABLE.test(title)) error(400, 'title cannot hold control, direction or invisible characters');
 	return title;
 }
@@ -414,8 +417,15 @@ const REVISION_PURPOSE = 'decision-revision';
  * handed in.
  */
 export function revisionOf(decision: Decision, options: DecisionOption[], participants: DecisionParticipant[]): string {
-	const inOrder = <T extends { id: number }>(rows: T[]) => [...rows].sort((a, b) => a.id - b.id);
-	const covered = {
+	return createHmac('sha256', purposeKey(REVISION_PURPOSE)).update(JSON.stringify(coveredBy(decision, options, participants))).digest('hex');
+}
+
+/** Rows in id order, however they are handed in. */
+const inOrder = <T extends { id: number }>(rows: T[]) => [...rows].sort((a, b) => a.id - b.id);
+
+/** What the draft revision covers, and the results revision with it. */
+function coveredBy(decision: Decision, options: DecisionOption[], participants: DecisionParticipant[]) {
+	return {
 		decision: [
 			decision.title,
 			decision.status,
@@ -429,7 +439,76 @@ export function revisionOf(decision: Decision, options: DecisionOption[], partic
 		options: inOrder(options).map((option) => [option.id, option.label, option.position, option.addedInVersion, option.retiredInVersion]),
 		participants: inOrder(participants).map((row) => [row.id, row.personId, row.role, row.userId, row.email, row.removedAt])
 	};
-	return createHmac('sha256', purposeKey(REVISION_PURPOSE)).update(JSON.stringify(covered)).digest('hex');
+}
+
+/** What the results revision's key is derived for (`purposeKey`): no other value is made with it (card 2679, decision 8). */
+const RESULTS_REVISION_PURPOSE = 'decision-results-revision';
+
+/**
+ * The results revision (card 2679, decision 8): HMAC-SHA256, in hex, keyed
+ * with `purposeKey('decision-results-revision')`, over everything the draft
+ * revision covers, every response id `responsesOf` gives (votes, abstentions
+ * and no concerns, never a concern: their table is insert-only, so the set of
+ * ids is the state), and every question's id and the moment it was answered.
+ * So a response, an answered question or a change to a participant between
+ * reading the results and ruling on them moves it; a seen event, a mail
+ * outcome or a concern does not. Keyed, as the draft revision is, so that
+ * holding it lets nobody test guesses offline.
+ */
+export function resultsRevisionOf(of: {
+	decision: Decision;
+	options: DecisionOption[];
+	participants: DecisionParticipant[];
+	responseIds: number[];
+	questions: { id: number; answeredAt: string | null }[];
+}): string {
+	const covered = {
+		...coveredBy(of.decision, of.options, of.participants),
+		responses: [...of.responseIds].sort((a, b) => a - b),
+		questions: inOrder(of.questions).map((question) => [question.id, question.answeredAt])
+	};
+	return createHmac('sha256', purposeKey(RESULTS_REVISION_PURPOSE)).update(JSON.stringify(covered)).digest('hex');
+}
+
+/**
+ * A superseding draft's working content (card 2679, decision 5): the content
+ * of the version the old decision was ruled on, its text sections, options,
+ * audiences and stories, each option under the id of its new row
+ * (`optionIds`, old id to new; an option with no new row is left out), and its
+ * agent flags with each `options.<old>` key renamed to `options.<new>`. No
+ * review stamp is carried: a version holds none with an account id, and
+ * `parseWorkingContent` would drop it anyway. Pure.
+ */
+export function workingFromVersion(content: VersionContent, optionIds: ReadonlyMap<number, number>): WorkingContent {
+	const agentDrafted: WorkingContent['agentDrafted'] = {};
+	for (const key of Object.keys(content.agentDrafted)) {
+		const option = /^options\.(\d+)$/.exec(key);
+		if (option === null) agentDrafted[key] = true;
+		else if (optionIds.has(Number(option[1]))) agentDrafted[`options.${optionIds.get(Number(option[1]))}`] = true;
+	}
+	return {
+		situation: content.situation,
+		question: content.question,
+		ask: content.ask,
+		options: content.options
+			.filter((option) => optionIds.has(option.optionId))
+			.map((option) => ({
+				optionId: optionIds.get(option.optionId)!,
+				title: option.title,
+				summary: option.summary,
+				pros: [...option.pros],
+				cons: [...option.cons],
+				commercial: option.commercial
+			})),
+		audiences: content.audiences.map((audience) => ({ groupId: audience.groupId, heading: audience.heading, body: audience.body })),
+		stories: content.stories.map((story) => ({ title: story.title, body: story.body })),
+		unknowns: content.unknowns,
+		alreadyRuled: content.alreadyRuled,
+		technicalDetail: content.technicalDetail,
+		agentDrafted,
+		reviewed: {},
+		lastLabel: null
+	};
 }
 
 /** Every option row of the decision, retired ones included. */

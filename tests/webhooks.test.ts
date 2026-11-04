@@ -1947,7 +1947,11 @@ describe('which action sends which event, and what each move sends (card 2278)',
 			decision_closed: null,
 			decision_extended: null,
 			decision_withdrawn: null,
-			decision_deleted: null
+			decision_deleted: null,
+			// Card 2679 (decision 17): none yet; card 2689 maps them.
+			decision_ruled: null,
+			decision_superseded: null,
+			decision_results_released: null
 		});
 	});
 

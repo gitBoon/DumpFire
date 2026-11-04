@@ -31,7 +31,9 @@ export const NOTIFICATION_PREFS = [
 	{ key: 'email_requests', label: 'Task Requests', description: 'When someone submits or replies to a request' },
 	{ key: 'email_request_progress', label: 'Request Progress', description: 'Updates on tasks you requested until completion' },
 	{ key: 'email_board_shared', label: 'Board Sharing', description: 'When a board is shared with you' },
-	{ key: 'email_planning', label: 'Planning', description: 'When a new plan is created from cards that depend on each other' }
+	{ key: 'email_planning', label: 'Planning', description: 'When a new plan is created from cards that depend on each other' },
+	// Card 2679 (decision 19): the concern notice to a decision's decider; card 2678's question mails will read it too.
+	{ key: 'email_decisions', label: 'Decisions', description: 'When someone raises a concern on, or asks about, a decision you decide or wrote' }
 ] as const;
 
 /** The key of one kind of mail. */

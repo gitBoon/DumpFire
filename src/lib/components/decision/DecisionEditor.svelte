@@ -40,6 +40,7 @@
 	import { CLOSES_HELP, checkContent, closesField, type AudienceFacts, type ContentAnswer, type Refusal, type Warning } from '$lib/decision-readiness';
 	import { stamp } from '$lib/timestamps';
 	import { STALE_REVISION, STATUS_WORDS, shownMoment } from '$lib/decision-words';
+	import { DECISION_TITLE_MAX } from '$lib/decision-rules';
 	import { failureMessage } from '$lib/api';
 	import ReadinessPanel from './ReadinessPanel.svelte';
 
@@ -416,7 +417,7 @@
 	<div class="top-bar">
 		{#if draft && editable}
 			<label class="visually-hidden" for="{uid}-title">Title</label>
-			<input id="{uid}-title" class="title-input" maxlength="200" bind:value={title} />
+			<input id="{uid}-title" class="title-input" maxlength={DECISION_TITLE_MAX} bind:value={title} />
 		{:else}
 			<h1 class="title-text">{saved.title}</h1>
 		{/if}

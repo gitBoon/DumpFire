@@ -8,25 +8,82 @@
 	 * consulted, who sees their response and the form, which posts to
 	 * `/api/decisions/[id]/responses`. Their first tap, click, key press or
 	 * turn of the mouse wheel on the page posts that they have seen this
-	 * version (decision 14); a caller who is no participant arms no such
-	 * watch, and posts nothing (D7), and a ruled or superseded decision has no
-	 * stage to post until card 2679 shows the ruling. The watch is armed again,
-	 * and the form drawn afresh, when the page is read for another decision or
-	 * version (code review C2). Anyone else who may view it reads the version
-	 * and its status alone. A draft shows that it has not been opened yet.
+	 * version (decision 14), or, on a ruled or superseded decision, the ruling
+	 * (card 2679, decision 9); a caller who is no participant is given no
+	 * stage, arms no such watch, and posts nothing (D7, F7). The watch is
+	 * armed again, and the form drawn afresh, when the page is read for
+	 * another decision or version (code review C2). Anyone else who may view
+	 * it reads the version and its status alone. A draft shows that it has not
+	 * been opened yet.
+	 *
+	 * Card 2679 (decisions 5, 9, 15 and 24): on a ruled decision, the ruling
+	 * in the banner (`RulingBanner`) to everyone who may view it, with the
+	 * later or earlier decision where one applies; the released results
+	 * (`ReleasedResults`) once released; and a participant's concern form
+	 * (`ConcernForm`), posting to `/api/decisions/[id]/concerns`, with their
+	 * own concerns. Above the decision, Results and ruling where the caller
+	 * may read the results, and Supersede… where they may supersede it: a
+	 * title, the old one to start from, posted to
+	 * `/api/decisions/[id]/supersede`, and then the new draft's editor.
 	 */
+	import { tick } from 'svelte';
 	import type { PageData } from './$types';
 	import type { OwnResponse } from '$lib/decision-view-types';
-	import { invalidateAll } from '$app/navigation';
+	import { goto, invalidateAll } from '$app/navigation';
+	import { failureMessage } from '$lib/api';
 	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
 	import ThemeMenuItems from '$lib/components/ThemeMenuItems.svelte';
+	import ConcernForm from '$lib/components/decision/ConcernForm.svelte';
 	import DecisionView from '$lib/components/decision/DecisionView.svelte';
+	import ReleasedResults from '$lib/components/decision/ReleasedResults.svelte';
 	import ResponseForm from '$lib/components/decision/ResponseForm.svelte';
+	import RulingBanner from '$lib/components/decision/RulingBanner.svelte';
+	import { DECISION_TITLE_MAX } from '$lib/decision-rules';
 	import { watchForSeen } from '$lib/decision-seen';
-	import { givenOnWords, responseLines, shownMoment, toldWords, withdrawnWords } from '$lib/decision-words';
+	import { givenOnWords, responseLines, seenNoteWords, shownMoment, toldWords, withdrawnWords } from '$lib/decision-words';
 	import { theme, themeIcon } from '$lib/stores/theme';
 
 	let { data }: { data: PageData } = $props();
+
+	// ─── Supersede (card 2679, decision 5) ───────────────────────────────────
+	let superseding = $state(false);
+	let supersedeTitle = $state('');
+	let supersedeBusy = $state(false);
+	let supersedeRefused = $state('');
+	let supersedeToggle = $state<HTMLButtonElement>();
+	let supersedeField = $state<HTMLInputElement>();
+
+	/** Open the form, the old title to start from and the focus in it; or close it, the focus back on its toggle. */
+	async function toggleSupersede() {
+		superseding = !superseding;
+		supersedeRefused = '';
+		if (superseding) supersedeTitle = data.decision.title;
+		await tick();
+		(superseding ? supersedeField : supersedeToggle)?.focus();
+	}
+
+	async function supersede() {
+		if (supersedeBusy || supersedeTitle.trim() === '') return;
+		supersedeBusy = true;
+		supersedeRefused = '';
+		try {
+			const res = await fetch(`/api/decisions/${data.decision.id}/supersede`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ title: supersedeTitle })
+			});
+			if (res.ok) {
+				const answer = (await res.json()) as { decision: { id: number } };
+				await goto(`/decisions/${answer.decision.id}/edit`);
+				return;
+			}
+			supersedeRefused = await failureMessage(res, 'No superseding draft was made.');
+		} catch {
+			supersedeRefused = 'No answer from the server. It is not known whether a superseding draft was made.';
+		} finally {
+			supersedeBusy = false;
+		}
+	}
 
 	/** Moved on by Reload, which draws the form afresh from the data read again. */
 	let drawing = $state(0);
@@ -54,15 +111,29 @@
 </svelte:head>
 
 {#snippet banner()}
+	{#if data.ruling !== null}
+		<RulingBanner ruling={data.ruling} supersedes={data.supersedes} laterDecision={data.laterDecision} />
+	{/if}
 	{#if data.decision.shownStatus === 'withdrawn'}
 		<p class="banner-line withdrawn">{withdrawnWords(data.decision.withdrawnAt, data.decision.withdrawnReason)}</p>
 	{/if}
 	{#if data.participant !== null}
 		<p class="banner-line">{toldWords(data.participant.role, data.participant.told, data.participant.includedAt)}</p>
 		{#if data.stage !== null}
-			<p class="banner-note">Your first tap, click, key press or turn of the mouse wheel on this page is recorded as your having seen this version.</p>
+			<p class="banner-note" data-note="seen">{seenNoteWords(data.stage)}</p>
 		{/if}
 	{/if}
+{/snippet}
+
+{#snippet releasedResults()}
+	{#if data.released !== null}<ReleasedResults released={data.released} />{/if}
+{/snippet}
+
+{#snippet concern()}
+	<!-- Drawn afresh for another decision, so one decision's concerns are never listed on another's. -->
+	{#key data.decision.id}
+		<ConcernForm url="/api/decisions/{data.decision.id}/concerns" concerns={data.concerns} mayRaise={data.mayRaiseConcern} />
+	{/key}
 {/snippet}
 
 {#snippet givenResponse(heading: string, response: OwnResponse)}
@@ -129,6 +200,50 @@
 	</header>
 
 	<main class="decision-content">
+		{#if data.mayReadResults || data.maySupersede}
+			<!-- Not in the fixed header, which has no room for them at phone width. -->
+			<nav class="page-actions" aria-label="What you can do with this decision">
+				{#if data.mayReadResults}
+					<a class="btn-ghost page-action" href="/decisions/{data.decision.id}/results" data-action="results">Results and ruling</a>
+				{/if}
+				{#if data.maySupersede}
+					<button
+						type="button"
+						class="btn-ghost page-action"
+						data-action="supersede"
+						aria-expanded={superseding}
+						aria-controls={superseding ? 'supersede-panel' : undefined}
+						bind:this={supersedeToggle}
+						onclick={toggleSupersede}>Supersede…</button
+					>
+				{/if}
+			</nav>
+			{#if superseding}
+				<form
+					class="supersede-panel glass"
+					id="supersede-panel"
+					data-panel="supersede"
+					onsubmit={(e) => {
+						e.preventDefault();
+						supersede();
+					}}
+				>
+					<p class="banner-note">
+						A new draft copies the content this decision was ruled on, with no participants, and its decider cannot be changed. This decision is marked
+						superseded once the draft is ruled on by this decision's decider, the board's Product Owner when it was ruled, or an administrator.
+					</p>
+					<label class="small" for="supersede-title">Title of the new decision</label>
+					<input id="supersede-title" class="field" type="text" maxlength={DECISION_TITLE_MAX} bind:value={supersedeTitle} bind:this={supersedeField} />
+					<div class="panel-actions">
+						<button type="button" class="btn-ghost page-action" onclick={toggleSupersede}>Cancel</button>
+						<button type="submit" class="btn-primary page-action" disabled={supersedeBusy || supersedeTitle.trim() === ''} aria-busy={supersedeBusy ? 'true' : undefined}
+							>Make the draft</button
+						>
+					</div>
+					<p class="refused" role="status" data-said="supersede">{supersedeRefused}</p>
+				</form>
+			{/if}
+		{/if}
 		{#if data.draft || data.version === null}
 			<section class="not-opened glass">
 				<h1>{data.decision.title}</h1>
@@ -144,6 +259,8 @@
 				mode="participant"
 				{banner}
 				response={yourResponse}
+				results={data.released !== null ? releasedResults : undefined}
+				concern={data.participant !== null && (data.mayRaiseConcern || data.concerns.length > 0) ? concern : undefined}
 			/>
 		{/if}
 	</main>
@@ -186,4 +303,14 @@
 	.response-line { white-space: pre-wrap; overflow-wrap: anywhere; }
 	.given-on { font-weight: 600; }
 	.noscript { font-weight: 600; }
+	.page-actions { display: flex; flex-wrap: wrap; gap: var(--space-sm); margin-bottom: var(--space-md); }
+	.page-action { min-height: 44px; display: inline-flex; align-items: center; text-decoration: none; font-size: 0.95rem; }
+	.supersede-panel { display: flex; flex-direction: column; gap: var(--space-xs); padding: var(--space-md); border-radius: var(--radius-md); margin-bottom: var(--space-md); }
+	.small { font-size: 0.9rem; color: var(--text-secondary); }
+	.field {
+		font-size: 16px; font-family: var(--font-family); padding: var(--space-sm); width: 100%; box-sizing: border-box;
+		border: 1px solid var(--glass-border); border-radius: var(--radius-sm); background: var(--bg-elevated); color: var(--text-primary);
+	}
+	.panel-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-sm); }
+	.refused { margin: 0; font-size: 0.9rem; color: var(--accent-rose); }
 </style>

@@ -8,23 +8,32 @@
 	 *
 	 * Under the banner it says the address is personal (R4) and, in a browser
 	 * that is signed in, that the account is recorded beside what the link
-	 * does (R8). Both of its writes post the token in the body to fixed paths,
-	 * `/api/decision-by-link/responses` and `/api/decision-by-link/seen`, so no
-	 * further address holds it (decision 4). Having seen this version is posted
-	 * after the person's first tap, click, key press or turn of the mouse wheel
-	 * (decision 14), and not on a ruled or superseded decision until card 2679
-	 * shows the ruling. The page data holds no decision id (code review C5), so
+	 * does (R8). Each of its writes posts the token in the body to a fixed
+	 * path, `/api/decision-by-link/responses`, `/api/decision-by-link/seen`
+	 * and `/api/decision-by-link/concerns`, so no further address holds it
+	 * (decision 4). Having seen this version, or on a ruled or superseded
+	 * decision the ruling (card 2679, decision 9), is posted after the
+	 * person's first tap, click, key press or turn of the mouse wheel
+	 * (decision 14). The page data holds no decision id (code review C5), so
 	 * the link's token stands for the decision: the watch is armed again, and
 	 * the form drawn afresh, for another token or version (code review C2).
+	 *
+	 * Card 2679 (decisions 5, 9 and 24): the same ruling banner, released
+	 * results and concern form as the signed-in page. A link holder is never
+	 * given another decision's title, so the banner says "a later decision" or
+	 * "an earlier decision", with no link (S8).
 	 */
 	import type { PageData } from './$types';
 	import type { OwnResponse } from '$lib/decision-view-types';
 	import { invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
+	import ConcernForm from '$lib/components/decision/ConcernForm.svelte';
 	import DecisionView from '$lib/components/decision/DecisionView.svelte';
+	import ReleasedResults from '$lib/components/decision/ReleasedResults.svelte';
 	import ResponseForm from '$lib/components/decision/ResponseForm.svelte';
+	import RulingBanner from '$lib/components/decision/RulingBanner.svelte';
 	import { watchForSeen } from '$lib/decision-seen';
-	import { givenOnWords, responseLines, shownMoment, toldWords, withdrawnWords } from '$lib/decision-words';
+	import { givenOnWords, responseLines, seenNoteWords, shownMoment, toldWords, withdrawnWords } from '$lib/decision-words';
 
 	let { data }: { data: PageData } = $props();
 
@@ -56,21 +65,39 @@
 </svelte:head>
 
 {#snippet banner()}
+	{#if data.ruling !== null}
+		<RulingBanner ruling={data.ruling} supersedes={data.supersedes} laterDecision={data.laterDecision} />
+	{/if}
 	{#if data.decision.shownStatus === 'withdrawn'}
 		<p class="banner-line withdrawn">{withdrawnWords(data.decision.withdrawnAt, data.decision.withdrawnReason)}</p>
 	{/if}
 	{#if data.participant !== null}
 		<p class="banner-line">{toldWords(data.participant.role, data.participant.told, data.participant.includedAt)}</p>
 		{#if data.stage !== null}
-			<p class="banner-note">Your first tap, click, key press or turn of the mouse wheel on this page is recorded as your having seen this version.</p>
+			<p class="banner-note" data-note="seen">{seenNoteWords(data.stage)}</p>
 		{/if}
 	{/if}
 	<p class="banner-note personal">This address is personal to you: do not share it.</p>
 	{#if data.signedInAs !== null}
 		<p class="banner-note signed-in">
-			You are signed in as {data.signedInAs}; this is recorded with your response and with your having seen this version.
+			{#if data.stage === 'ruling'}
+				You are signed in as {data.signedInAs}; this is recorded with your concern and with your having seen the ruling.
+			{:else}
+				You are signed in as {data.signedInAs}; this is recorded with your response and with your having seen this version.
+			{/if}
 		</p>
 	{/if}
+{/snippet}
+
+{#snippet releasedResults()}
+	{#if data.released !== null}<ReleasedResults released={data.released} />{/if}
+{/snippet}
+
+{#snippet concern()}
+	<!-- Drawn afresh for another link, the token in place of the decision id the page is not given. -->
+	{#key page.params.token}
+		<ConcernForm url="/api/decision-by-link/concerns" extra={{ token: page.params.token }} concerns={data.concerns} mayRaise={data.mayRaiseConcern} />
+	{/key}
 {/snippet}
 
 {#snippet givenResponse(heading: string, response: OwnResponse)}
@@ -138,6 +165,8 @@
 				mode="participant"
 				{banner}
 				response={yourResponse}
+				results={data.released !== null ? releasedResults : undefined}
+				concern={data.participant !== null && (data.mayRaiseConcern || data.concerns.length > 0) ? concern : undefined}
 			/>
 		{/if}
 	</main>

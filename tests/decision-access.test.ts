@@ -16,6 +16,7 @@ import { sqlite } from '$lib/server/db';
 import type { SessionUser } from '$lib/server/auth';
 import type { Board, Decision } from '$lib/server/db/schema';
 import { DECISION_RULES, DRAFT_VIEWERS, decisionAccess, mayDo } from '$lib/server/decision-access';
+import { appendEvent, SYSTEM_ACTOR } from '$lib/server/decision-record';
 import { DECISION_ACTION_WORDS, type DecisionAction } from '$lib/server/decision-status';
 import { requireDecision } from '$lib/server/route-guards';
 import { addBoardMember, makeBoard, makeDecision, makeParticipant, makeUser, resetDb } from './helpers/fixtures';
@@ -185,9 +186,40 @@ describe('DECISION_RULES', () => {
 			// Card 2677 (decision 10).
 			respond: ['participant'],
 			// Card 2697 (decision 5).
-			dryRun: ['author', 'decider']
+			dryRun: ['author', 'decider'],
+			// Card 2679 (decisions 1, 4 and 5, S2).
+			results: ['admin', 'decider'],
+			release: ['decider'],
+			concern: ['participant'],
+			supersede: ['admin', 'decider', 'productOwner']
 		});
 		expect(DRAFT_VIEWERS).toEqual(['admin', 'author', 'decider', 'boardOwner']);
+	});
+
+	it('gives the board’s Product Owner as the ruling recorded them { productOwner }, which lets them supersede it only while they can edit the board (card 2679, decision 5, S1)', () => {
+		const productOwner = makeUser({ username: 'po' });
+		addBoardMember(board, productOwner, 'editor');
+		sqlite.prepare('UPDATE boards SET product_owner_user_id = ? WHERE id = ?').run(productOwner.id, board.id);
+		const ruled = decisionOn({ status: 'ruled', author: makeUser(), decider: makeUser() });
+
+		// Code review S1: the board naming them is not enough; the ruling's record of them is.
+		expect(rolesOf(productOwner, ruled), 'no ruling recorded').toEqual(['boardEditor']);
+		appendEvent({ decisionId: ruled.id, kind: 'ruled', detail: { optionId: null, early: false, againstResponses: false, productOwnerUserId: productOwner.id } }, SYSTEM_ACTOR);
+		expect(rolesOf(productOwner, ruled)).toEqual(['boardEditor', 'productOwner']);
+		// One the board names after the ruling holds nothing, and the one recorded keeps it.
+		const later = makeUser({ username: 'po2' });
+		addBoardMember(board, later, 'editor');
+		sqlite.prepare('UPDATE boards SET product_owner_user_id = ? WHERE id = ?').run(later.id, board.id);
+		expect(rolesOf(later, ruled), 'named after the ruling').toEqual(['boardEditor']);
+		expect(guard(later, ruled.id, 'supersede'), 'named after the ruling').toEqual(refused('supersede'));
+		expect(rolesOf(productOwner, ruled), 'recorded').toEqual(['boardEditor', 'productOwner']);
+		expect(guard(productOwner, ruled.id, 'supersede')).toBe('passed');
+		// The role grants supersede alone.
+		expect(guard(productOwner, ruled.id, 'results')).toEqual(refused('results'));
+
+		sqlite.prepare("UPDATE board_members SET role = 'viewer' WHERE board_id = ? AND user_id = ?").run(board.id, productOwner.id);
+		expect(rolesOf(productOwner, ruled)).toEqual(['boardReader', 'productOwner']);
+		expect(guard(productOwner, ruled.id, 'supersede')).toEqual(refused('supersede'));
 	});
 
 	it('lets an author, a decider or a board owner write only while they can edit the board (19)', () => {

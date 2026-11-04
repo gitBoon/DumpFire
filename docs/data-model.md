@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.49
+version: 1.51
 status: As-Built
 date: 2026-11-04
 tags:
@@ -591,17 +591,19 @@ stateDiagram-v2
     open --> open: republishDecision (current_version + 1)
     open --> closed: closeDecision (closed_at)
     closed --> open: extendDecision (closes_at moved, closed_at NULL),<br/>or republish asking again
-    open --> ruled: card 2679 (ruled_at)
-    closed --> ruled: card 2679 (ruled_at)
+    open --> ruled: ruleDecision (ruled_at; decision_rulings row)
+    closed --> ruled: ruleDecision (ruled_at)
     open --> withdrawn: withdrawDecision (withdrawn_at, withdrawn_reason)
     closed --> withdrawn: withdrawDecision
-    ruled --> superseded: card 2679
+    ruled --> ruled: releaseResults (results_released_at, _by), a concern
+    ruled --> superseded: ruleDecision of the superseding decision, by its old decider, PO or an admin
     withdrawn --> [*]: deleteDecision (cascade)
 ```
 
 **Insert-only.** No code in `src` updates or deletes a row of `decision_versions`,
-`decision_responses`, `decision_rulings` or `decision_events`: `appendEvent`, `appendVersion`
-and (card 2677) `appendResponse` in `src/lib/server/decision-record.ts` are their only inserts
+`decision_responses`, `decision_rulings` or `decision_events`: `appendEvent`, `appendVersion`,
+(card 2677) `appendResponse` and (card 2679) `appendRuling` in
+`src/lib/server/decision-record.ts` are their only inserts
 outside the restore, and a scan in
 `tests/decision-record.test.ts` holds it (no trigger, design 4.3). The rows change only in these
 ways, none of them written by the service:
@@ -663,7 +665,7 @@ refused (comment 5599). A `detail` never holds a token, a hash or a mail server'
 
 | `kind` | Names a participant | `detail` |
 |---|---|---|
-| `created` | no | `{ decider: 'product_owner' \| 'author' }` |
+| `created` | no | `{ decider: 'product_owner' \| 'author' }`; on a superseding draft (card 2679) `{ decider: 'previous_decider' \| 'author', supersedes: <oldId> }` |
 | `decider_changed` | no | `{ fromUserId, fromName, toUserId, toName }` |
 | `published` | no | `{ asksAgain, changeNote }`, with `version_number` |
 | `opened` | no | `{ closesAt }` |
@@ -684,7 +686,12 @@ refused (comment 5599). A `detail` never holds a token, a hash or a mail server'
 | `address_changed` | yes | `{ from, to }` |
 | `dry_run` | no | `{}`: a dry run mailed to its actor alone (card 2697); never names a participant, on a draft too |
 | `seen` (card 2677) | yes | `{ stage }`, `stage` `question`, `ruling` or `withdrawal`, with `version_number`; `signedIn { userId, name }` beside it for a link holder in a signed-in browser |
-| `responded` (card 2677) | yes | `{ responseId }`, with `version_number`; `signedIn` as for `seen` |
+| `responded` (card 2677) | yes | `{ responseId }`, with `version_number`; `signedIn` as for `seen`; since card 2679 `statement`, the who-sees statement's version the page showed (now 2), where the body sent it |
+| `ruled` (card 2679) | no | `{ optionId, early, againstResponses, productOwnerUserId }`, `optionId` null for none of these, `productOwnerUserId` the board's Product Owner at the ruling or null, the one account that holds `productOwner` on the decision from then on (code review S1), and `supersededOld` (boolean) on a decision that supersedes another; with `version_number`. **Decider and administrator only** |
+| `cut_off` (card 2679) | yes | none: a live consulted participant with no response in the round, on an early ruling, written after `ruled`. **Decider and administrator only** |
+| `superseded` (card 2679) | no | `{ byDecisionId }`, on the old decision, when the ruler of the decision superseding it may supersede it |
+| `results_released` (card 2679) | no | `{ upToResponseId, omitted: { responseId, field }[] }`: the highest response id counted, which freezes the release, and each comment left out, `field` `comment` or `option:<id>` |
+| `concern_raised` (card 2679) | yes | `{ responseId, notice }`, `notice` one of `asked`, `held`, `no_decider`, `no_link_address`, `prefs_off`, `no_mail_host` (code review F2); `signedIn` as for `seen`; with `version_number`. **Decider and administrator only** |
 
 **A restore** (`restoreFromBackup` in `src/lib/server/db/restore.ts`) copies the decision tables
 as it copies every other, then, inside its transaction, writes `link_revoked { reason: 'restore' }`
@@ -739,7 +746,7 @@ holds every column a response needs, and an event's `kind` is free text checked 
 |---|---|
 | `version_number` | `current_version`, which the body's `versionNumber` must equal (`409` otherwise) |
 | `round` | `currentRound(decisionId)`: the number of the latest version that asked for views (`asks_again`), so a version that only tells keeps the round |
-| `kind` | `vote`, `abstain` or `no_concerns`; `concern` is card 2679's |
+| `kind` | `vote`, `abstain` or `no_concerns` (`RESPONSE_KINDS`); `concern` is card 2679's ([below](#the-ruling-the-release-concerns-and-supersede-card-2679)) |
 | `option_id` | a single-mode vote alone: an option live in the current version |
 | `scores` | a score-mode vote alone: JSON `{ "<optionId>": 0..5 }` over every live option, built from the live ids, never from the body's keys; stored in ascending option id order (a JavaScript object keeps integer keys in that order, whatever order they were added in) |
 | `comment` | trimmed, up to 4,000, the markdown field's character rule; NULL when empty |
@@ -768,8 +775,8 @@ holds every column a response needs, and an event's `kind` is free text checked 
 - **`seen`** is written once per participant, version and stage (`hasSeen`, read through
   `idx_decision_events_participant_id`): a second post for the same three writes nothing. Only
   the current version is accepted (`400` for any other, an earlier one included). The page
-  sends it after the person's first action, never on load, and sends no `ruling` stage until
-  card 2679 shows the ruling.
+  sends it after the person's first action, never on load: the `ruling` stage on a ruled or
+  superseded decision, which the page shows since card 2679, to a participant alone.
 - **What a response is answered as** is `OwnResponse`, built by `ownResponseOf(row)`: `versionNumber`,
   `round`, `kind`, `optionId`, `scores`, `comment`, `optionComments` and `createdAt`, and no row
   id of its own, its decision, its participant or what it replaced. Stored JSON is read back
@@ -796,6 +803,79 @@ stateDiagram-v2
     Changed --> NextRound: a re-publish asking again, version V (round V)
     First --> NextRound
     NextRound --> [*]: round V's first replaces nothing; R's rows stay
+```
+
+#### The ruling, the release, concerns and supersede (card 2679)
+
+Card 2679 (plan `docs/planning/card-2679-results-ruling.md`) writes the columns 0061 left for
+the ruling, through `ruleDecision`, `releaseResults`, `raiseConcern`, `raiseConcernByLink` and
+`supersedeDecision` in `src/lib/server/decisions.ts`. **It added no column, no table and no
+migration**: every field is a 0061 column, and the new event details are JSON.
+
+| Written | By | What |
+|---|---|---|
+| `decision_rulings` (one row, its key the decision) | `ruleDecision`, through `appendRuling`, the one insert | `option_id` (NULL: none of these), `reason` (1 to 4,000), `conditions` (NULL when empty), `against_responses`, `early`, `version_number`, `ruled_by`, `ruled_by_name`, `ruled_at` stamped. Never updated or deleted |
+| `decisions.status` `ruled`, `ruled_at`, `updated_at` | `ruleDecision` | From stored `open` or `closed` |
+| `decisions.status` `superseded`, `updated_at` | `ruleDecision` of the decision superseding it | Only when that ruler is the old decision's decider, its board's Product Owner or an administrator (each with board edit); otherwise the old one stays `ruled` and nothing is written on it |
+| `decisions.results_released_at`, `results_released_by` | `releaseResults` | Once: a second release is `409`. Nothing else changes, and nothing reverses it |
+| `decision_responses` with `kind 'concern'` | `raiseConcern`, `raiseConcernByLink`, through `appendResponse` | `round` the current, `version_number` the current, `comment` 1 to 4,000, `option_id`, `scores`, `option_comments` and `replaces_id` NULL, `via` `session` or `link`. At most 5 per participant per decision, 10 minutes apart |
+| A new `decisions` row with `supersedes_id` | `supersedeDecision` | A draft on the same board, `closes_at` NULL, no participants, its options new rows labelled from A, its `working_content` the old decision's current version (`workingFromVersion`) |
+
+- **Concerns are never votes.** `RESPONSE_KINDS` (`vote`, `abstain`, `no_concerns`), exported
+  by `decision-record.ts`, is the allow-list every read of a vote, a tally and a results
+  revision asks: `latestResponse`, `responsesInRound`, `ownResponses` and `responsesOf`. A kind a
+  later card adds is left out of every tally until it is added there. `concernsOf` reads
+  `kind = 'concern'` alone.
+- **The results revision** (`resultsRevisionOf`, `decision-content.ts`): HMAC-SHA256 keyed with
+  `purposeKey('decision-results-revision')` over what the editor revision covers, every
+  response id `responsesOf` gives in id order (never a concern) and every question's
+  `[id, answered_at]`. The ruling and the release send it; a different one is `409`.
+- **A release is frozen** at `results_released.upToResponseId`: `releasedOf` reads only
+  responses up to it, the ruling round's latest per live consulted participant. A comment left
+  out is named on the event by response and field; the page names it by a keyed HMAC
+  (`purposeKey('decision-comment-key')`) that cannot be turned back into a response id.
+- **The statement version** is read per response from its `responded` event
+  (`statementsOf`); a release is refused while any released response lacks the current one.
+- **The supersede chain** is walked through `supersedes_id` both ways (`chainOf`), with a
+  visited set; at most one superseding decision that is not withdrawn exists at a time, kept in
+  code (`supersedingOf`), as `schema.ts` says.
+- **The decider-only details.** `DECIDER_ONLY_EVENTS = ['ruled', 'cut_off', 'concern_raised']`
+  in `decision-record.ts`: their `early`, `againstResponses`, the cut-off names and the concern
+  outcomes are shown to the decider and administrators alone (the results page), and cards
+  2680 (the record) and 2689 (webhooks) are bound to keep it so.
+- **The timestamp column count stays 62**: no new column.
+
+```mermaid
+erDiagram
+    decisions ||--o| decision_rulings : "ruled once (appendRuling)"
+    decisions |o--o| decisions : "supersedes_id: one live superseding decision at a time"
+    decisions ||--o{ decision_responses : "votes (RESPONSE_KINDS) and concerns"
+    decisions ||--o{ decision_events : "ruled, cut_off, superseded, results_released, concern_raised"
+    decision_options |o--o{ decision_rulings : "option_id (NULL: none of these)"
+    users |o--o{ decisions : "results_released_by"
+    decision_rulings {
+        int decision_id PK
+        int option_id FK
+        text reason
+        text conditions
+        int against_responses "decider and admin only"
+        int early "decider and admin only"
+        text ruled_at
+    }
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> Ruled: ruleDecision
+    Ruled --> Released: releaseResults (one way; frozen at upToResponseId)
+    Ruled --> Ruled: concern (kind 'concern' row, concern_raised)
+    Released --> Released: concern
+    Ruled --> Superseded: the superseding decision ruled by the old decider, PO or an admin
+    note right of Released
+        results_released_at stays set;
+        a superseded decision can no
+        longer be released
+    end note
 ```
 
 #### The working copy and its revision (card 2676)
@@ -2252,7 +2332,8 @@ of about zero.
   compares; a compare that fails on its worker stays counted. A right one sets it to 0 while
   the row is still there, and a wrong one that leaves it at 3 deletes the session (the code
   review's S1, ruled 2026-11-04: only a compare counts). The Account page's three forms and the
-  twenty-six step-up actions share it (card 2701's eighteen and card 2697's eight). It replaced a count in memory with a 15-minute window, so a
+  twenty-eight step-up actions share it (card 2701's eighteen, card 2697's eight and card
+  2679's two). It replaced a count in memory with a 15-minute window, so a
   restart no longer clears it. `sessions` is not a reconciled table, so the file alone adds the
   column; every existing session reads 0 and no row is changed, so nothing is declared to the
   rehearsal. No backup holds a session row and no restore brings one in, so neither carries a

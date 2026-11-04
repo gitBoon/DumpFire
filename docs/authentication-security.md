@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.78
+version: 1.80
 status: As-Built
 date: 2026-11-04
 tags:
@@ -47,7 +47,7 @@ tags:
   - step-up
   - re-authentication
   - current-password
-description: "Deep-dive into DumpFire's authentication system, the twenty-six destructive actions that ask for the current password again (step-up), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served"
+description: "Deep-dive into DumpFire's authentication system, the twenty-eight destructive actions that ask for the current password again (step-up), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served"
 ---
 
 # Authentication & Security
@@ -146,7 +146,7 @@ no other:
 | `/invite/[token]` | The page an invite links to |
 | `/request`, `/request/[id]/confirm`, `/request/[id]/reply` | The public request form, and the two pages its mails link to |
 | `/api/requests`, `/api/requests/[id]`, `/api/requests/[id]/confirm`, `/api/requests/[id]/link`, `/api/requests/[id]/messages`, `/api/requests/targets` | The form's routes. Each handler asks for itself what it needs: a session, the token the form was given, or a request's link. The new link (card 2158) asks for nothing, answers everyone alike and mails only the request's address, an account's as it is now for a request made signed in (see [The Public Request Form](#the-public-request-form)) |
-| `/decision-link/[token]`, `/api/decision-by-link/responses`, `/api/decision-by-link/seen` | A decision's personal link: its page, and its holder's response and seen, the token in the body (card 2677). Each answers only a token whose hash a participant holds, and signs nobody in (see [The link's page and its routes](#the-links-page-and-its-routes)) |
+| `/decision-link/[token]`, `/api/decision-by-link/responses`, `/api/decision-by-link/seen`, `/api/decision-by-link/concerns` | A decision's personal link: its page, and its holder's response, seen and (card 2679) concern about the ruling, the token in the body (card 2677). Each answers only a token whose hash a participant holds, and signs nobody in (see [The link's page and its routes](#the-links-page-and-its-routes)) |
 | `/api/v1/openapi.json` | The API's description, answered with no key |
 
 `/setup` is the one page there is before there is a user, and is never served once there
@@ -724,11 +724,15 @@ reason, and pinned both ways against the handlers (`tests/step-up.test.ts`, case
 | `POST /api/people/from-accounts` (S1) | admin | Adds people linked to accounts, each with its account's address |
 | `DELETE /api/decisions/[id]`, **once the decision was opened** (card 2697) | its author, or admin | Its permanent record (versions, responses, events), for good |
 | `POST /api/decisions/[id]/withdraw`, **once the decision was opened** (card 2697) | its author, its decider, or admin | Ends it for good and mails every participant the caller's words |
+| `POST /api/decisions/[id]/rule` (card 2679) | its decider | Rules on a decision for good, and mails every participant the ruling and its reason |
+| `POST /api/decisions/[id]/release` (card 2679) | its decider | Shows a ruled decision's totals and comments, for good, to everyone who can see it |
 
-The list is twenty-six: card 2701's eighteen (the import among them, standing as its
-confirmation) and card 2697's eight: the five its plan listed, and the three People writes its
+The list is twenty-eight: card 2701's eighteen (the import among them, standing as its
+confirmation), card 2697's eight: the five its plan listed, and the three People writes its
 code review's part B added on 2026-11-04, S1, so that every People write that sets or ends an
-address or an account asks ([Decision Access and Personal Links](#decision-access-and-personal-links)). The
+address or an account asks ([Decision Access and Personal Links](#decision-access-and-personal-links)),
+and card 2679's two, the ruling and the release, which ask every time
+([Results, the Ruling and the Release](#results-the-ruling-and-the-release-card-2679)). The
 conditional ones test their field with `Object.hasOwn`, as the body readers do
 (`request-body.ts`), or the row: a user change of `username` or `emoji` alone, a backup save of
 the schedule, retention or failure mail alone, an empty column's delete, a People save of name,
@@ -1298,7 +1302,7 @@ Covered by `tests/password-checks.test.ts` and `tests/atomic-accounts.test.ts`.
 Three routes ask a caller who is already signed in for their current password: changing
 your email (`PUT /api/account/email`), changing your password (`PUT /api/account/password`,
 which the admin page's dialog on your own row uses too) and Generate Key
-(`POST /api/account/api-keys`). Since cards 2701 and 2697 (2026-11-04) so do the twenty-six actions of
+(`POST /api/account/api-keys`). Since cards 2701, 2697 and 2679 (2026-11-04) so do the twenty-eight actions of
 [Step-up Before Destructive Actions](#step-up-before-destructive-actions-card-2701). The
 password is what whoever holds a session and not the password (an unlocked machine, a copied
 cookie) would need, and a password found at any of them passes every one of them.
@@ -4042,7 +4046,9 @@ Card 2677's two loads, `readDecisionPage` and `readLinkPage` in
 
 - **Nothing of another participant.** The page reads the caller's own participant row and that
   row's own responses alone. It lists no participant, no other response, no count and no total,
-  to anyone: the decider and administrators included. Results are card 2679's.
+  to anyone: the decider and administrators included. Results, with names, are on the results
+  page alone, the decider's and administrators', and a release shows totals and comments with
+  no name ([below](#results-the-ruling-and-the-release-card-2679)).
 - **No account or row id.** The decider is given by name; no account id, participant's address
   or account, `includedBy`, link moment, `linkTokenHash`, author, group id or reviewer's name is
   given, and no row id of the participant or of a response. A response is given as `OwnResponse`
@@ -4057,7 +4063,16 @@ Card 2677's two loads, `readDecisionPage` and `readLinkPage` in
   now.
 - **Who sees a response, said honestly.** A consulted participant is told: "While this decision
   is open, only <decider>, who decides, sees your response. DumpFire's administrators can also see
-  it in the record. No other participant sees it, or any totals."
+  it in the record. No other participant sees it, or any totals. After the ruling, the decider
+  may show the totals and the comments, without names, to everyone who can see this decision."
+  The last sentence is card 2679's (decision 21, F2): a release is possible, so the promise made
+  when someone answers has to say so. The words are `whoSeesStatement` in
+  `$lib/decision-words.ts`, beside `WHO_SEES_STATEMENT_VERSION` (2; version 1 was the statement
+  without the last sentence), and `ResponseForm` sends that version with every response, which
+  `responded` records. A response given under version 1, or with none, is never released: a
+  release is refused while any released response lacks the current version. Once released,
+  anyone who can see the decision can work out from the totals whether the ruling followed the
+  most chosen option, and the release dialog says so (decision 26).
 - **Responding** (`respondToDecision`, `respondByLink`) needs `respond`, which only
   `participant` holds (`DECISION_RULES`), and then: a consulted participant (`403` "Someone kept
   informed gives no response"); `source: 'ui'` (`403` "Responding is a person's act: it cannot
@@ -4163,21 +4178,23 @@ records only links on decisions that are not drafts (while still emptying every 
 
 ### The link's page and its routes
 
-Card 2677 added the route the invitations link to. Three routes are public, by route id in
+Card 2677 added the route the invitations link to. Four routes are public, by route id in
 `PUBLIC_ROUTES` (`hooks.server.ts`), and each answers only a token whose hash a participant holds:
 
 | Route | What it is |
 |---|---|
 | `GET /decision-link/[token]` | The participant's page, `readLinkPage` |
-| `POST /api/decision-by-link/responses` | `{ token, versionNumber, kind, … }`: `respondByLink` |
+| `POST /api/decision-by-link/responses` | `{ token, versionNumber, statement, kind, … }`: `respondByLink` |
 | `POST /api/decision-by-link/seen` | `{ token, versionNumber, stage }`: `recordSeenByLink` |
+| `POST /api/decision-by-link/concerns` (card 2679) | `{ token, comment }`: `raiseConcernByLink`. A link past 90 days after the ruling is the one `404`, counted against the address like any other dead link |
 
-- **The token in the body, to fixed paths.** The page's own address holds the token; its two
-  writes add no further address that does. Their paths do not contain `/decision-link/`, which
-  `maskSecretPaths` rewrites anywhere in a line, so they are logged as they are. The page takes
-  the token from its address in the browser, and the page data does not carry it.
-- **Same-origin JSON only**, first, on these two and on the signed-in page's two
-  (`/api/decisions/[id]/responses` and `…/seen`): `requireSameOriginJson` in
+- **The token in the body, to fixed paths.** The page's own address holds the token; its three
+  writes (the concern, card 2679's, the third) add no further address that does. Their paths do
+  not contain `/decision-link/`, which `maskSecretPaths` rewrites anywhere in a line, so they are
+  logged as they are. The page takes the token from its address in the browser, and the page
+  data does not carry it.
+- **Same-origin JSON only**, first, on these three and on the signed-in page's three
+  (`/api/decisions/[id]/responses`, `…/seen` and `…/concerns`): `requireSameOriginJson` in
   `src/lib/server/same-origin.ts` answers `403` `Cross-site requests are refused` unless
   `Sec-Fetch-Site` is `same-origin` or, with that header absent, `Origin` is the server's own,
   then `415` `This route takes JSON only` for any `Content-Type` but `application/json`: the
@@ -4222,7 +4239,7 @@ Card 2677 added the route the invitations link to. Three routes are public, by r
   [Deployment](deployment.md#keeping-link-tokens-out-of-the-access-log). Its error log cannot be
   masked and holds tokens after an upstream failure, so it is kept as the links themselves are,
   and any CDN or load balancer in front of it logs the address too.
-- **Headers** by route id (`ROUTE_HEADERS`, [Security Headers](#security-headers)): the three get
+- **Headers** by route id (`ROUTE_HEADERS`, [Security Headers](#security-headers)): the four get
   `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex, nofollow` and `Cache-Control:
   no-store` on every answer, the `404` and the `429` included; the page writes `<meta
   name="robots" content="noindex">` and `<meta name="referrer" content="no-referrer">` too.
@@ -4251,6 +4268,140 @@ sequenceDiagram
         end
     end
     Note over G,P: every answer: no-referrer, noindex, no-store
+```
+
+### Results, the Ruling and the Release (card 2679)
+
+Card 2679 (2026-11-04, plan `docs/planning/card-2679-results-ruling.md`) is the first read of
+other participants' responses, the ruling, and the first time anything of the responses can be
+shown beyond the decider and administrators. Every rule below was ruled under the milestone 35
+standing go-ahead: the most secure option.
+
+**Who sees what.**
+
+| What | Decider | Administrator | Author, board owner, editor, reader | Participant (signed in or link) |
+|---|---|---|---|---|
+| The results page: totals per round, each response with its name and comments, who has not responded, the removed, open questions | yes | yes | no (`403`; `404` where they cannot view) | no |
+| Concerns, with names | yes (results page) | yes | no | their own only |
+| The ruling: option or none of these, reason, conditions, who ruled | yes | yes | yes, once ruled | yes, once ruled |
+| When it was ruled, and the closing time once ruled | yes (results page) | yes | not given | not given |
+| "Against the responses", "early", who was cut off | yes (results page) | yes | not given | not given |
+| Released totals and comments, without names | yes, previewed first | yes | once released | once released |
+
+- **The ruling and the release ask for the decider's password, every time** (`STEP_UP_ACTIONS`,
+  28 keys): each is permanent, the ruling mails every participant the decider's words, and the
+  release shows comments to every board reader and link holder. Both routes ask their guard
+  (`decisionRuleGuard`, `resultsReleaseGuard`, on `READS`) inside `confirmStepUp` before the
+  password, so a refusal costs no guess, and the write asks it again inside
+  `whilePasswordHolds`. Both are the decider's alone: an administrator reads the results and is
+  `403` on either.
+- **A person's act.** Ruling, releasing and raising a concern refuse any `opts.source` but
+  `ui` (`403`), and no v1 route reaches them, which a source scan holds.
+- **The results revision.** A ruling or a release sends the keyed results revision the page was
+  given (`purposeKey('decision-results-revision')`, over the decision, its options, its
+  participants, every response id but concerns, and each question's answer): a response, a
+  participant change or an answered question in between is `409`, so nobody rules on a tally
+  they did not see. Keyed, so holding one lets nobody test guesses offline.
+
+**What a release shows, and what it withholds** (`releasedOf` in `decision-results.ts`):
+
+- **Refused (`409`)**: when fewer than `RELEASE_MIN_RESPONSES` (3) live consulted participants
+  responded in the ruling round; when any released response was given before the page said a
+  release could happen (its `responded` lacks `statement` 2); when another decision in its
+  supersede chain released results from people 1 or 2 apart (by `person_id`; a participant with
+  no person matches nobody); from any status but stored `ruled` (a superseded decision's
+  results can no longer be released); and a second time.
+- **The ruling round alone**, live consulted participants' latest responses alone, never a
+  concern, and **frozen**: `results_released { upToResponseId }` records the highest response id
+  counted, and the release reads none after it, with the participants live then.
+- **No figure that singles someone out.** A withheld figure reads "withheld", with no number
+  (`releasedFigure`, code review S3), as any number would say something of it. A cell of 1 or
+  2 is withheld, and so is one within 2 of everyone who responded; whenever any cell is
+  withheld the number who responded is withheld too, so none can be worked out by
+  subtraction; when one cell holds every response, every cell is withheld. In score mode an
+  option's mean is given only where the scores it was given, counted as cells, one for each
+  score 0 to 5, would have none withheld (`meanOf`, code review S2): {5, 5, 4} gives no mean,
+  and neither does a mean every voter gave alike. No figure per group, ever: the rows
+  `releasedOf` is handed hold no groups (card 2686's group figures can never feed it).
+- **Beside another release in its supersede chain** (code review S4), the number who
+  responded is always withheld, and either no cell is withheld or at least two are: one cell
+  withheld alone is withheld with the smallest other cell that is not 0. So with eight people
+  answering A 3, B 3, C 2 on one decision and A 4, B 4, C 0 on the decision superseding it, the
+  first shows A and C withheld, and 8 − 3 − 3 cannot be worked out from either. A release made
+  first is read with the second from then on: it withholds more, never less.
+- **Comments** with no name, account, version, moment, way in, kind or chosen option, each list
+  sorted by its text so the order says nothing of who answered when. The decider may leave any
+  out: the preview names each by a keyed HMAC (`purposeKey('decision-comment-key')` over the
+  decision, the response and the field), never a response id, and the event records each as
+  `{ responseId, field }`. The released page does not say that one was left out.
+
+```mermaid
+flowchart TD
+    C["A cell: an option's votes,<br/>abstained, or no concerns, of n"] --> One{"one cell holds all n?"}
+    One -- yes --> All["every cell 'withheld',<br/>and the total"]
+    One -- no --> Small{"1 or 2?"}
+    Small -- yes --> W["'withheld'"]
+    Small -- no --> Every{"within 2 of n?"}
+    Every -- yes --> W
+    Every -- no --> Shown["shown"]
+    W --> T["the total 'withheld'"]
+    Shown --> Chain{"another release<br/>in the chain?"}
+    W --> Chain
+    Chain -- yes --> Two["the total 'withheld';<br/>a cell withheld alone<br/>takes the smallest other with it"]
+```
+
+**What can be worked out, said honestly** (decision 26). "Against" and "early" are given to
+nobody but the decider and administrators, and nothing current gives both moments once a
+decision is ruled: the page data holds no `ruledAt` and gives `closesAt` as null, the editor's
+answer gives `closesAt` to an administrator alone, and a board's list gives none. They can be
+worked out all the same: "against" from a release beside the public ruling, and "early" by
+anyone who remembers the closing time and sees when the ruling arrived. The release dialog says:
+"Once released, anyone who can see this decision can work out from the totals whether the
+ruling followed the most chosen option. This cannot be undone." (`RELEASE_INFERENCE`). The
+`ruled` event's `early` and `againstResponses`, the `cut_off` events and `concern_raised` are
+`DECIDER_ONLY_EVENTS`; cards 2680 (the record) and 2689 (webhooks) are bound to show them behind
+`record` alone and never to send them.
+
+**Concerns.** A live participant, consulted or informed, reached by their account or by their
+link, may raise one on a stored `ruled` decision for 90 days after the ruling, at most 5, 10
+minutes apart (`429` sooner, saying from when). An API key is `403`. Signed in, past the window
+is `409`; by link, the link itself stops opening the decision then, so it is the one `404`,
+counted against the address. The concern form says "The decider and DumpFire's administrators
+see your concern with your name. A release of the results never includes concerns." The
+decider's notice names neither the participant nor the text, and its link is made on the App
+URL or `ORIGIN`, never a request's Host
+([Notifications](notifications-email.md#the-ruling-mail-and-the-concern-notice-card-2679)).
+
+**Supersede.** Only a ruled decision's decider, its board's Product Owner as the ruling
+recorded them (`productOwner`, a role held when the `ruled` event's `productOwnerUserId` is the
+caller, code review S1) or an administrator, each while they can edit the board, may make a
+superseding draft. The board's Product Owner now is never asked: a board owner who makes
+themselves Product Owner after a ruling cannot supersede it, nor mark it superseded by ruling a
+decision that supersedes it, and a ruling that recorded none (or a decision ruled before the
+record held it) gives the role to nobody. The draft's decider is the old decision's decider
+while that account can edit the board, and the caller otherwise, never someone the caller
+names, so a board editor cannot overturn a ruling through a draft whose decider they chose;
+and it cannot be changed afterwards: `setDecider` on any decision whose `supersedes_id` is set
+is `409`, as a draft and once open. The old decision is marked superseded only when the new one
+is ruled by one of those three. Each page names the other decision, with a link, only to a signed-in viewer who
+may view it, and only once the later decision is ruled; anyone else, every link holder among
+them, reads "an earlier decision" or "a later decision".
+
+```mermaid
+sequenceDiagram
+    actor D as Decider
+    participant R as POST /api/decisions/[id]/release
+    participant G as resultsReleaseGuard
+    participant S as confirmStepUp
+    participant W as releaseResults
+    D->>R: { revision, omit, currentPassword }
+    R->>S: confirmStepUp(guard)
+    S->>G: 403 not the decider or a key, 409 not ruled,<br/>released, under 3, an old statement, a chain 1 or 2 apart,<br/>409 stale revision, 400 an unknown omit key
+    G-->>S: the comments left out
+    S-->>R: the password checked (400 missing, 403 wrong, counted)
+    R->>W: whilePasswordHolds(writeAs(releaseResults))
+    W->>W: results_released_at, _by; results_released { upToResponseId, omitted }
+    R-->>D: { decision, revision }
 ```
 
 ### Who is mailed
@@ -4688,14 +4839,18 @@ redirects, to a caller who is signed in or not.
 
   | Route id | Headers |
   |---|---|
-  | `/decision-link/[token]`, `/api/decision-by-link/responses`, `/api/decision-by-link/seen` | `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex, nofollow`, `Cache-Control: no-store` |
+  | `/decision-link/[token]`, `/api/decision-by-link/responses`, `/api/decision-by-link/seen`, `/api/decision-by-link/concerns` (card 2679) | `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex, nofollow`, `Cache-Control: no-store` |
   | `/invite/[token]` (card 2698) | `Referrer-Policy: strict-origin`, `X-Robots-Tag: noindex, nofollow`, `Cache-Control: no-store` |
   | `/request/[id]/confirm`, `/request/[id]/reply`, `/api/requests/[id]`, `/api/requests/[id]/messages`, `/api/requests/[id]/confirm` (card 2698) | `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex, nofollow`, `Cache-Control: no-store` |
-  | `/decisions/[id]`, `/api/decisions/[id]/responses`, `/api/decisions/[id]/seen` | `Cache-Control: no-store` |
+  | `/decisions/[id]`, `/api/decisions/[id]/responses`, `/api/decisions/[id]/seen`, `/api/decisions/[id]/concerns` (card 2679) | `Cache-Control: no-store`, `X-Robots-Tag: noindex, nofollow` (the robots header since card 2679) |
+  | `/decisions/[id]/preview`, `/decisions/[id]/edit`, `/board/[id]/decisions` (card 2697); `/decisions/[id]/results`, `/api/decisions/[id]/rule`, `/api/decisions/[id]/release`, `/api/decisions/[id]/supersede` (card 2679) | `Cache-Control: no-store`, `X-Robots-Tag: noindex, nofollow` (`UNPUBLISHED_HEADERS`) |
 
-  The first three hold or take a personal link's token, so nothing they answer names their
-  address to another site, is indexed or is cached; the last three show or answer the caller's
-  own response. The middle six carry a secret (card 2698): an invite's token, which sets its
+  The first four hold or take a personal link's token, so nothing they answer names their
+  address to another site, is indexed or is cached; the four of `/decisions/[id]` show or answer
+  the caller's own response and, once released, other participants' comments without names, so
+  card 2679 keeps them out of search too. The results page names every participant beside their
+  response, the ruling's and the release's answers follow it, and superseding answers a new
+  draft. Card 2679 added six rows in all, one per new route id, and no new header set. The middle six carry a secret (card 2698): an invite's token, which sets its
   account's password, in the path of `/invite/[token]` (its page, its `__data.json` and its
   form's answers alike), and a request link's `?token=` in the query of the request form's
   confirm and reply pages and of the two reads those pages make with it, whose answers hold the

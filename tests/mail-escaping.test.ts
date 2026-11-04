@@ -428,13 +428,23 @@ describe('every mail in notifications.ts', () => {
 			name: 'notifyMention',
 			link: true,
 			send: () => notifications.notifyMention(recipient, MARKER, card.id, MARKER, MARKER, board.id, BASE)
+		},
+		{
+			// Card 2679 (decision 3): the decider's notice of a concern, its link made on the App URL setting alone (S6).
+			name: 'notifyDecisionConcern',
+			link: true,
+			send: () => {
+				db.insert(settings).values({ key: 'app_url', value: BASE }).run();
+				notifications.notifyDecisionConcern(recipient.id, 1, MARKER, 2);
+			}
 		}
 	];
 
 	it('has a case for every mail the module exports', () => {
 		const exported = Object.entries(notifications)
-			// emailTemplate is the wrapper, not a mail: card 2675's decision mails call it with the title escaped.
-			.filter(([name, value]) => typeof value === 'function' && name !== 'getUserNotifPrefs' && name !== 'emailTemplate')
+			// emailTemplate is the wrapper, not a mail: card 2675's decision mails call it with the title escaped. shouldNotifyUser
+			// reads a preference, for card 2679's concern write, and sends nothing.
+			.filter(([name, value]) => typeof value === 'function' && !['getUserNotifPrefs', 'emailTemplate', 'shouldNotifyUser'].includes(name))
 			.map(([name]) => name)
 			.sort();
 		const covered = [...new Set(MAILS.map((mail) => mail.name.split(' ')[0]))].sort();

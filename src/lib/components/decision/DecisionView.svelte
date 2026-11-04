@@ -8,8 +8,12 @@
   (consulted only), the options, how it affects you (the participant's own
   group first and open), the user stories (closed), what is not yet known,
   what is already settled, the technical detail (closed), the `response`
-  snippet (consulted only), and the `questions` and `linkedCards` snippets,
-  which cards 2678 and 2680 fill and which draw nothing until they do.
+  snippet (consulted only), the `results` and `concern` snippets (card 2679,
+  decision 24: the released results and a participant's concern about the
+  ruling, each drawn only when given), and the `questions` and `linkedCards`
+  snippets, which cards 2678 and 2680 fill and which draw nothing until they
+  do. Who sees a response is `whoSeesStatement`'s words, beside the version
+  `ResponseForm` sends (card 2679, decisions 21 and 25).
 
   Its props are `DecisionViewProps` (src/lib/decision-view-types.ts): no
   version number, publication or inclusion moment, so that a preview builds
@@ -19,7 +23,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import type { DecisionViewProps } from '$lib/decision-view-types';
-	import { STATUS_WORDS, shownMoment } from '$lib/decision-words';
+	import { STATUS_WORDS, shownMoment, whoSeesStatement } from '$lib/decision-words';
 	import MarkdownBlock from './MarkdownBlock.svelte';
 
 	let {
@@ -31,9 +35,11 @@
 		mode,
 		banner,
 		response,
+		results,
+		concern,
 		questions,
 		linkedCards
-	}: DecisionViewProps & { banner?: Snippet; response?: Snippet; questions?: Snippet; linkedCards?: Snippet } = $props();
+	}: DecisionViewProps & { banner?: Snippet; response?: Snippet; results?: Snippet; concern?: Snippet; questions?: Snippet; linkedCards?: Snippet } = $props();
 
 	/** Whether the version flags this section as drafted by an agent and not yet reviewed. */
 	const flagged = (key: string) => Object.hasOwn(content.agentDrafted, key);
@@ -81,8 +87,8 @@
 	{#if consulted}
 		<section data-section="who-sees">
 			<h2>Who sees your response</h2>
-			<!-- prettier-ignore -->
-			<p>While this decision is open, only {decider}, who decides, sees your response. DumpFire's administrators can also see it in the record. No other participant sees it, or any totals.</p>
+			<!-- The words and their version are one bundle's, so the version a response sends is the one shown (card 2679, decisions 21 and 25). -->
+			<p>{whoSeesStatement(decider)}</p>
 		</section>
 	{/if}
 
@@ -170,6 +176,20 @@
 		<section data-section="response">
 			<h2>Your response</h2>
 			{@render response()}
+		</section>
+	{/if}
+
+	{#if results}
+		<section data-section="results">
+			<h2>The results</h2>
+			{@render results()}
+		</section>
+	{/if}
+
+	{#if concern}
+		<section data-section="concern">
+			<h2>A concern about the ruling</h2>
+			{@render concern()}
 		</section>
 	{/if}
 

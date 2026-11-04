@@ -260,8 +260,15 @@ const FORM_LINK_HEADERS: readonly [name: string, value: string][] = [
 	['Cache-Control', 'no-store']
 ];
 
-/** What a decision's own page and its participant's routes carry: they show or answer the caller's own response. */
-const OWN_RESPONSE_HEADERS: readonly [name: string, value: string][] = [['Cache-Control', 'no-store']];
+/**
+ * What a decision's own page and its participant's routes carry: they show or
+ * answer the caller's own response, and, once released, the comments of the
+ * others (card 2679, decision 6), so they are cached and indexed nowhere.
+ */
+const OWN_RESPONSE_HEADERS: readonly [name: string, value: string][] = [
+	['Cache-Control', 'no-store'],
+	['X-Robots-Tag', 'noindex, nofollow']
+];
 
 /**
  * What the decision authoring pages carry (card 2697, Q12): each shows what
@@ -284,11 +291,15 @@ const UNPUBLISHED_HEADERS: readonly [name: string, value: string][] = [
  * which `setHeaders` in a load would not reach.
  *
  * `/decision-link/[token]`'s address holds the token, so nothing it answers
- * names its address to another site, is indexed or is cached; its two routes
- * likewise. `/decisions/[id]` and its participant's two routes show or answer
- * the caller's own response, and are cached nowhere. The decision authoring
+ * names its address to another site, is indexed or is cached; its three routes
+ * likewise. `/decisions/[id]` and its participant's three routes show or answer
+ * the caller's own response, and, once released, others' comments, and are
+ * cached and indexed nowhere (card 2679, decision 6). The decision authoring
  * pages, the preview, the editor and a board's list of decisions, show what
- * has not been published, and are cached and indexed nowhere (card 2697, Q12).
+ * has not been published, and are cached and indexed nowhere (card 2697, Q12);
+ * so are superseding's answer, a new draft, the results page, which names
+ * each participant beside their response, and the ruling's and the release's
+ * answers (card 2679).
  *
  * `/invite/[token]`'s address holds an invite, which sets its account's
  * password, so its page, its data and its form's answers are kept out of
@@ -306,6 +317,8 @@ export const ROUTE_HEADERS: ReadonlyMap<string, readonly [name: string, value: s
 	['/decision-link/[token]', PERSONAL_LINK_HEADERS],
 	['/api/decision-by-link/responses', PERSONAL_LINK_HEADERS],
 	['/api/decision-by-link/seen', PERSONAL_LINK_HEADERS],
+	// Card 2679 (decision 6): a link holder's concern about the ruling.
+	['/api/decision-by-link/concerns', PERSONAL_LINK_HEADERS],
 	['/invite/[token]', FORM_LINK_HEADERS],
 	['/request/[id]/confirm', PERSONAL_LINK_HEADERS],
 	['/request/[id]/reply', PERSONAL_LINK_HEADERS],
@@ -315,9 +328,17 @@ export const ROUTE_HEADERS: ReadonlyMap<string, readonly [name: string, value: s
 	['/decisions/[id]', OWN_RESPONSE_HEADERS],
 	['/api/decisions/[id]/responses', OWN_RESPONSE_HEADERS],
 	['/api/decisions/[id]/seen', OWN_RESPONSE_HEADERS],
+	// Card 2679 (decision 6): a participant's own concern about the ruling.
+	['/api/decisions/[id]/concerns', OWN_RESPONSE_HEADERS],
 	['/decisions/[id]/preview', UNPUBLISHED_HEADERS],
 	['/decisions/[id]/edit', UNPUBLISHED_HEADERS],
-	['/board/[id]/decisions', UNPUBLISHED_HEADERS]
+	['/board/[id]/decisions', UNPUBLISHED_HEADERS],
+	// Card 2679 (decision 6): superseding answers a new draft; the results page names every participant beside their
+	// response, and the ruling's and the release's answers follow it.
+	['/api/decisions/[id]/supersede', UNPUBLISHED_HEADERS],
+	['/decisions/[id]/results', UNPUBLISHED_HEADERS],
+	['/api/decisions/[id]/rule', UNPUBLISHED_HEADERS],
+	['/api/decisions/[id]/release', UNPUBLISHED_HEADERS]
 ]);
 
 /**

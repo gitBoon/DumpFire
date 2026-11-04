@@ -29,6 +29,83 @@ export const DEAD_DECISION_LINK =
 export const tooManyWrongLinks = (retryAfterSecs: number) =>
 	`Too many links that do not work were tried from your network. Try again in ${Math.ceil(retryAfterSecs / 60)} minute(s).`;
 
+// ─── The who-sees statement, and its version (card 2679, decisions 21 and 25) ─
+
+/**
+ * The version of the who-sees statement, `whoSeesStatement`'s words. The page
+ * sends it with every response, and `responded` records it, so that a
+ * response given under words that promised no totals is never released (S1).
+ * Version 1 was the statement before card 2679, which said nothing of a
+ * release. Any change to the statement's words moves this version on.
+ */
+export const WHO_SEES_STATEMENT_VERSION = 2;
+
+/** What the participant page tells a consulted participant of who sees their response, `decider` the decider's name. */
+export const whoSeesStatement = (decider: string) =>
+	`While this decision is open, only ${decider}, who decides, sees your response. DumpFire's administrators can also see it in the record. ` +
+	'No other participant sees it, or any totals. ' +
+	'After the ruling, the decider may show the totals and the comments, without names, to everyone who can see this decision.';
+
+// ─── The ruling and its release (card 2679) ──────────────────────────────────
+
+/**
+ * A released figure the server withheld (decision 10; code review S3): a
+ * cell of 1 or 2, one within 2 of everyone, one beside another release in the
+ * supersede chain, a mean whose scores could single someone out, or the
+ * number who responded. It says no number, as any number would say something
+ * of the figure.
+ */
+export const WITHHELD = 'withheld';
+
+/** A released figure as every page shows it (code review F3): the number, or `WITHHELD`. */
+export const releasedFigure = (value: number | null) => (value === null ? WITHHELD : String(value));
+
+/**
+ * What the release dialog says before the decider releases (decision 26, S5):
+ * "against" is shown to nobody else, but can be worked out once the totals are
+ * shown beside the public ruling.
+ */
+export const RELEASE_INFERENCE =
+	'Once released, anyone who can see this decision can work out from the totals whether the ruling followed the most chosen option. This cannot be undone.';
+
+/** The 409 for a concern raised past `ruled_at` plus 90 days, signed in (decision 4). */
+export const CONCERN_WINDOW_ENDED = 'A concern about this ruling could be raised for 90 days after it: that time has ended';
+
+/** The 409 for a concern on a ruling that has been superseded (decision 4). */
+export const CONCERN_SUPERSEDED = 'This ruling has been superseded: raise a concern on the decision that superseded it';
+
+/** What the concern form tells a participant of who sees a concern (decision 4, F5): the release never carries one. */
+export const CONCERN_WHO_SEES = "The decider and DumpFire's administrators see your concern with your name. A release of the results never includes concerns.";
+
+/**
+ * The participant page's note on what its seen watch records (card 2677,
+ * decision 14): the ruling on a ruled or superseded decision (card 2679,
+ * decision 9), this version otherwise.
+ */
+export const seenNoteWords = (stage: 'question' | 'ruling' | 'withdrawal') =>
+	`Your first tap, click, key press or turn of the mouse wheel on this page is recorded as your having seen ${stage === 'ruling' ? 'the ruling' : 'this version'}.`;
+
+/** The ruled banner's first line (decision 9): who ruled, and on what. No moment. */
+export function rulingWords(ruling: { label: string | null; title: string | null; noneOfThese: boolean; ruledByName: string }): string {
+	if (ruling.noneOfThese || ruling.label === null) return `Ruled by ${ruling.ruledByName}: None of these`;
+	return `Ruled by ${ruling.ruledByName}: Option ${ruling.label}${ruling.title ? `: ${ruling.title}` : ''}`;
+}
+
+/**
+ * The line on a decision a later one supersedes, or was ruled on beside it
+ * (decision 5, S8): its title only where the viewer may view it.
+ */
+export function laterDecisionWords(later: { superseded: boolean; title?: string }): string {
+	if (later.superseded) return later.title === undefined ? 'Superseded by a later decision' : `Superseded by ${later.title}`;
+	return later.title === undefined
+		? 'A later decision was ruled on without superseding this one'
+		: `A later decision, ${later.title}, was ruled on without superseding this one`;
+}
+
+/** The line on a decision that supersedes another (decision 5, S8): the earlier one's title only where the viewer may view it. */
+export const earlierDecisionWords = (earlier: { title?: string }) =>
+	earlier.title === undefined ? 'This decision supersedes an earlier decision' : `This decision supersedes ${earlier.title}`;
+
 /** A decision's shown status, as the list and the editor name it. */
 export const STATUS_WORDS: Readonly<Record<string, string>> = {
 	draft: 'Draft',

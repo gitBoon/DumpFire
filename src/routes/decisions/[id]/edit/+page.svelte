@@ -6,7 +6,8 @@
 	 * opened, its delivery to those the server hands it (card 2697, Q13).
 	 * Above the editor, its lifecycle controls (`DecisionActions`, Q14), which
 	 * hold Open, Re-publish and the dry run off while the editor reports edits
-	 * not yet saved.
+	 * not yet saved, and link to the results and ruling for the decider and
+	 * administrators (card 2679, decision 15).
 	 *
 	 * The page holds the revision every write sends (decision 10): each
 	 * write's answer gives the next, and the page's data is read again after
@@ -84,6 +85,7 @@
 			refusals={data.readiness.refusals}
 			warnings={data.readiness.warnings}
 			{dirty}
+			mayReadResults={data.mayReadResults}
 			onSaved={saved}
 		/>
 		{#key drawing}

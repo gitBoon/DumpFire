@@ -2617,7 +2617,9 @@ describe('/api/account/notifications', () => {
 		email_requests: true,
 		email_request_progress: true,
 		email_board_shared: true,
-		email_planning: true
+		email_planning: true,
+		// Card 2679 (decision 19): the concern notice to a decision's decider.
+		email_decisions: true
 	};
 	const storedFor = (user: SessionUser) =>
 		db.select({ prefs: users.notificationPrefs }).from(users).where(eq(users.id, user.id)).get()!.prefs;

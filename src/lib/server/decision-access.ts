@@ -4,19 +4,25 @@
  *
  * `decisionAccess` reads the caller's roles on one decision: `admin`,
  * `author`, `decider`, a board role from `getBoardRole` asked once
- * (`boardOwner`, `boardEditor`, `boardReader`), and `participant`. A role is
- * held only as itself: `boardOwner` does not imply `boardReader`. With no
- * board, a decision whose board was deleted, no board role can arise (E3).
+ * (`boardOwner`, `boardEditor`, `boardReader`), `productOwner` (card 2679:
+ * the caller was the board's Product Owner when the decision was ruled, as
+ * its `ruled` event recorded them, code review S1), and `participant`. A role is held only as itself: `boardOwner` does not
+ * imply `boardReader`. With no board, a decision whose board was deleted, no
+ * board role can arise (E3), and no `productOwner` either.
  *
  * `mayDo` decides an action from `DECISION_RULES`, with two more rules:
  *
  *   - a draft is seen only by `DRAFT_VIEWERS`: its author, its decider, the
  *     board's owners and administrators (decision 5);
  *   - while the decision's board exists, a grant resting on `author`,
- *     `decider` or `boardOwner` is good for anything but `view` only if the
- *     caller can edit the board now (decision 6, R4; the decider since the
- *     code review's S8, `rule` included). Another role the caller holds may
- *     still grant it.
+ *     `decider`, `boardOwner` or `productOwner` is good for anything but
+ *     `view` only if the caller can edit the board now (decision 6, R4; the
+ *     decider since the code review's S8, `rule` included; the Product Owner
+ *     since card 2679, decision 5). Another role the caller holds may still
+ *     grant it.
+ *
+ * `productOwner` is listed by `supersede` alone (card 2679, S2), so it
+ * changes nothing else.
  *
  * `requireDecision` in route-guards.ts asks both, and answers 404 for a
  * decision the caller may not view, as for one that is not there (decision
@@ -27,12 +33,13 @@ import { and, eq, isNull } from 'drizzle-orm';
 import { db } from './db';
 import { decisionParticipants, type Decision } from './db/schema';
 import { getBoardRole, isAdmin, type Actor } from './board-access';
+import { eventsOfKind } from './decision-record';
 import type { DecisionAction } from './decision-status';
 import { createLogger } from './logger';
 
 const log = createLogger('DECISIONS');
 
-export type DecisionRole = 'admin' | 'author' | 'decider' | 'boardOwner' | 'boardEditor' | 'boardReader' | 'participant';
+export type DecisionRole = 'admin' | 'author' | 'decider' | 'boardOwner' | 'boardEditor' | 'boardReader' | 'productOwner' | 'participant';
 
 /**
  * The caller's roles on one decision; the id of their live participant row,
@@ -63,7 +70,14 @@ export const DECISION_RULES: Readonly<Record<DecisionAction, readonly DecisionRo
 	// Card 2677: a participant's response; the write refuses an informed one, and one `reachOf` no longer reaches (decision 10).
 	respond: ['participant'],
 	// Card 2697: a dry run mails the caller, so it is the accountable people's act (decision 5), with the board-edit rule.
-	dryRun: ['author', 'decider']
+	dryRun: ['author', 'decider'],
+	// Card 2679: the results, with names, are the decider's and administrators' (decision 1); releasing them the decider's alone
+	// (design 4.5); a concern a participant's; and superseding a ruling its decider's, the board's Product Owner's or an
+	// administrator's, never any board editor's (S2).
+	results: ['admin', 'decider'],
+	release: ['decider'],
+	concern: ['participant'],
+	supersede: ['admin', 'decider', 'productOwner']
 };
 
 /** Who may view a draft (decision 5). */
@@ -72,9 +86,10 @@ export const DRAFT_VIEWERS: readonly DecisionRole[] = ['admin', 'author', 'decid
 /**
  * The roles whose writes also need edit access to the board now, while it
  * exists (decision 6, R4): a decider who has lost the board cannot rule or
- * change it either (the code review's S8).
+ * change it either (the code review's S8), nor a Product Owner supersede a
+ * ruling (card 2679, decision 5).
  */
-const NEED_BOARD_EDIT: readonly DecisionRole[] = ['author', 'decider', 'boardOwner'];
+const NEED_BOARD_EDIT: readonly DecisionRole[] = ['author', 'decider', 'boardOwner', 'productOwner'];
 
 /**
  * The caller's access to the decision. The participant row is the one live
@@ -95,6 +110,11 @@ export function decisionAccess(user: Actor, decision: Pick<Decision, 'id' | 'boa
 		else if (role === 'editor') roles.add('boardEditor');
 		else if (role === 'viewer') roles.add('boardReader');
 		canEditBoard = role === 'admin' || role === 'owner' || role === 'editor';
+		// Card 2679 (decision 5; code review S1): the board's Product Owner as the ruling recorded them, never as the board names
+		// one now, so that nobody can make themselves Product Owner after a ruling to overturn it. No ruling, or one that
+		// recorded none, gives the role to nobody.
+		const productOwnerUserId = eventsOfKind(decision.id, 'ruled').at(-1)?.detail.productOwnerUserId;
+		if (typeof productOwnerUserId === 'number' && productOwnerUserId === user.id) roles.add('productOwner');
 	}
 
 	const rows = db

@@ -115,6 +115,10 @@ const TEST_FILES = [
 	// Card 2677: the participant page, the response form and the seen watch, in the page.
 	'decision-participation.svelte.test.ts',
 	'decision-record.test.ts',
+	// Card 2679: the results, the ruling, the release of results and superseding, and what the pages read of them.
+	'decision-ruling.test.ts',
+	// Card 2679, slice 2a: the results page, the ruling form and the release, in the page.
+	'decision-ruling.svelte.test.ts',
 	'decision-service.test.ts',
 	'deletes-no-parent-key.test.ts',
 	'deletes.test.ts',

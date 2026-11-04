@@ -1,9 +1,9 @@
 ---
 title: "Management Activity Reporting"
 category: Reporting
-version: 1.13
+version: 1.14
 status: As-Built
-date: 2026-11-03
+date: 2026-11-04
 tags:
   - reporting
   - audit-log
@@ -181,8 +181,18 @@ person changes. A milestone's own entries
 name no card and never count. Nor do a decision's (card 2675): `decision_opened`,
 `decision_republished`, `decision_closed`, `decision_extended`, `decision_withdrawn`
 and `decision_deleted`, in either spelling, are written with no card, so the report,
-which joins each entry to its card, never counts them as work. Nothing writes them
-yet: no page or route reaches decisions.
+which joins each entry to its card, never counts them as work. Card 2697 gave them
+their routes, and card 2679 (2026-11-04) adds three more of the same kind,
+`decision_ruled`, `decision_superseded` and `decision_results_released`, each also
+written with no card and never counted as work. A concern about a ruling, and
+making a superseding draft, write no entry at all.
+
+```mermaid
+flowchart LR
+    Entry["An activity entry"] --> HasCard{"Names a card?"}
+    HasCard -->|"yes: card_moved, subtask_completed, …"| Counted["Joined to its card:<br/>counted as work"]
+    HasCard -->|"no: decision_opened … decision_deleted,<br/>decision_ruled, decision_superseded,<br/>decision_results_released, milestone_*"| Ignored["Never counted"]
+```
 
 A subtask edited is work on its card, as a subtask ticked is. Since card 2299 an
 untick and a change of a subtask's title, description, priority, colour or due

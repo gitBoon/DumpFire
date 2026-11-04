@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.49
+version: 1.51
 status: As-Built
 date: 2026-11-04
 tags:
@@ -610,7 +610,8 @@ down. The failure shows on the panel and in the log.
 | Decision Asked Again (card 2675) | As above, on a re-publish that asks again | — | `Changed, and your view is asked again: {title}` |
 | Decision Changed (card 2675) | As above, on a re-publish that only tells | — | `Changed: {title}` |
 | Decision Withdrawn (card 2675) | As above, on withdrawing a decision that was opened | — | `Withdrawn: {title}` |
-| Decision Ruled (card 2675, sent by card 2679) | As above, on a ruling | — | `Ruled: {title}` |
+| Decision Ruled (card 2675, sent by card 2679) | As above, on a ruling: every live participant, consulted and informed | — | `Ruled: {title}` |
+| Concern About a Ruling (card 2679) | The decision's decider, at their account's address, when a participant raises a concern: a participant's first always, then at most one about them in 24 hours | `email_decisions` | `A concern about the ruling on {title}` |
 
 **The backup failure mail says which kind of run failed** (card 2413, 2026-10-22). Sent by
 `runBackup()` in `src/lib/server/backup.ts`: headed **Scheduled Backup Failed**, "A scheduled
@@ -779,8 +780,8 @@ for them.
 ### Decision Record Mails (card 2675)
 
 A decision's participants are told of it by five mails that are part of its record: the
-invitation, asked again, told of a change, withdrawn, and the ruling (built here, sent by card
-2679). `queueRecordMails(decision, mail, opts)` in `src/lib/server/decision-mail.ts` writes them
+invitation, asked again, told of a change, withdrawn, and the ruling (built here, sent since
+card 2679 by `ruleDecision`, [below](#the-ruling-mail-and-the-concern-notice-card-2679)). `queueRecordMails(decision, mail, opts)` in `src/lib/server/decision-mail.ts` writes them
 inside the service write that asks for them, which card 2697's lifecycle routes call: Open,
 Re-publish, Withdraw and Resend in the decision's editor ([The dry run, and the limits on
 decision mail](#the-dry-run-and-the-limits-on-decision-mail-card-2697)). What each mail carries:
@@ -791,7 +792,7 @@ decision mail](#the-dry-run-and-the-limits-on-decision-mail-card-2697)). What ea
 | Asked again | `asked_again` | The change note; that an earlier response stays on the record for its version; by when; the link |
 | Told of a change | `told_of_change` | The change note; the link |
 | Withdrawn | `told_withdrawn` | That it is withdrawn, the reason, that the link goes on working for 90 days; the link |
-| Ruled | `told_ruling` | The option chosen, or "None of these", the reason and the conditions; no count and no figure (S4); the link |
+| Ruled | `told_ruling` | The option chosen, or "None of these", the reason and the conditions; "You can raise a concern about this ruling from the page for 90 days." (card 2679); no count, no figure, no "against" and no cut-off (S4); the link |
 
 The heading is `emailTemplate(escapeHtml(title), body)`: `emailTemplate`, exported from
 `notifications.ts` for this, puts its title in as given. A title cannot hold a control,
@@ -949,6 +950,82 @@ sequenceDiagram
 
 Covered by `tests/decision-lifecycle.test.ts` (cases 32 to 34, 55 to 57).
 
+### The Ruling Mail and the Concern Notice (card 2679)
+
+Card 2679 (2026-11-04) sends the ruling mail, and adds one mail that is no record mail: the
+notice to a decider that a concern arrived.
+
+**The ruling mail.** `ruleDecision` calls `queueRecordMails(row, 'ruling', { by, ruling })` for
+every live participant, consulted and informed, inside the ruling's transaction: `told_ruling`
+is written for each then, and each send is an `afterCommit`, recorded by its `mail_outcome` as
+every record mail is. It is sent once and each participant must be told, so it is held to no
+rest, no daily cap and no caller cap, and counted against none (card 2697's ruling). With no App
+URL or `ORIGIN` the ruling goes ahead and each mail is recorded as not sent. Its body gains the
+line "You can raise a concern about this ruling from the page for 90 days." It never carries a
+figure, whether the ruling went against the responses, whether it was early, or who was cut
+off. **Releasing the results mails nobody**: the totals belong on the page, not in an inbox.
+**Superseding mails nobody**: it makes a draft, and the new decision's own ruling mail tells its
+participants.
+
+**The concern notice** (`notifyDecisionConcern(deciderUserId, decisionId, title, heldBefore)`
+in `notifications.ts`). A participant's concern about the ruling (consulted or informed,
+signed in or by their link) is recorded whatever the mail does; the decider is told one
+arrived:
+
+- **Under `email_decisions` and the master switch**, the new **Decisions** switch on My Account
+  (design D22: it is not a record mail). To the decider's account address.
+- **It names neither the participant nor what they wrote**: "A participant raised a concern
+  about the ruling on <title>. Open the results to read it.", with **Open the results**, a
+  link to `<App URL>/decisions/<id>/results` behind a sign-in, where the decider reads the
+  concern by name. With concerns held since the last notice about the same participant it adds
+  "They raised <n> more since the last notice about them, which were not mailed."
+- **It takes no `baseUrl`**: the link is made on `linkBaseUrl()` (`email.ts`), the App URL or
+  `ORIGIN`, read inside the notice, so a request's Host can never reach it (S6). It is the
+  whole of `decisionLinkBase()`, which `notifications.ts` cannot import back from
+  `decision-mail.ts` without a cycle. The title is escaped; the subject is plain text.
+- **Its limit is per participant** (S3): a participant's first concern on a decision always
+  notifies; after a notice about them, their next notifies only once that notice is 24 hours
+  (`DAY_MS`) old, and sooner it is recorded as `held`. Another participant's concerns never
+  hold it back. A participant's own concerns are already at most 5 and 10 minutes apart.
+- **The outcome is written on `concern_raised { responseId, notice }`, decided inside the
+  write** (`noticeOf` in `decisions.ts`), in this order:
+
+| `notice` | When | Mail |
+|---|---|---|
+| `no_decider` | The decision's decider account is gone | None |
+| `no_link_address` | No App URL and no `ORIGIN` (`decisionLinkBase()` is null) | None |
+| `prefs_off` | The decider's `email_decisions` or **All Email Notifications** is off (`shouldNotifyUser`, exported for this) | None; not counted |
+| `no_mail_host` | No mail host is set up (`isSmtpConfigured()` is false; code review F2, S5) | None; not counted |
+| `held` | Within 24 hours of the last `asked` notice about this participant | None; counted into the next notice's held number |
+| `asked` | Otherwise | Queued for after the commit |
+
+Only `asked` holds the next notice back: the other outcomes sent nothing. `prefs_off` and
+`no_mail_host` are not counted as held either, so the participant's next concern, once the
+preference is on or a mail host is set up, notifies at once. Mail never refuses a concern. A
+concern writes no activity entry and no live event. `notifyDecisionConcern` still asks the mail
+host, the preference and the address again before it sends, as every mail in
+`notifications.ts` does.
+
+```mermaid
+sequenceDiagram
+    actor P as Participant
+    participant Rt as POST …/concerns
+    participant Sv as concernAs (in writeAs)
+    participant Rc as decision-record
+    participant Nt as notifyDecisionConcern
+    participant D as Decider's inbox
+    P->>Rt: { comment } (or { token, comment })
+    Rt->>Sv: raiseConcern / raiseConcernByLink
+    Sv->>Sv: 400 comment; 409 superseded, not ruled, past 90 days, sixth; 429 within 10 minutes
+    Sv->>Rc: appendResponse kind 'concern'
+    Sv->>Sv: noticeOf: no_decider, no_link_address, prefs_off, no_mail_host, held or asked
+    Sv->>Rc: concern_raised { responseId, notice }; seen { stage: 'ruling' } once
+    Note over Sv,Nt: commit
+    Nt->>D: only for asked: no name, no text, a link to the results
+```
+
+Covered by `tests/decision-ruling.test.ts` (cases 1, 4, 24 to 29) and `tests/mail-escaping.test.ts`.
+
 ### Text in Mail Is Text
 
 Every text a mail carries is somebody's typing: a board's or grouping's name, a card's
@@ -1013,6 +1090,7 @@ There is one list of them, `NOTIFICATION_PREFS` in `src/lib/notification-prefs.t
 | Request Progress | `email_request_progress` | The progress mails of [Requester Progress Notifications](#requester-progress-notifications), Request Complete among them, to a requester who has an account. A requester without one has nothing to switch and is always mailed |
 | Board Sharing | `email_board_shared` | Board Shared |
 | Planning | `email_planning` | The mail about a new plan |
+| Decisions | `email_decisions` | The notice to a decider that a concern about a ruling arrived (card 2679); card 2678's question mails will read it too |
 
 Until 2026-10-15 the page, the route and the mail kept three lists. The route's left out `email_request_progress` and `email_mentions`, so it neither answered nor saved them: the page offered Request Progress, whose switch went back on at every reload, and the progress mail was always sent; and the mention mail read `email_mentions`, which nothing offered, so it could be stopped only by switching all mail off. The page now offers **Mentions**, and both keys are saved and answered. No account had either stored, so a requester who switched Request Progress off before then is mailed until they switch it off again. A key not stored, or a preference that cannot be read, is on. A save that is refused, or gets no answer, puts every switch back as it was and says why under them.
 
@@ -1405,7 +1483,7 @@ flowchart LR
 | `xp-update` | `{}` | XP was given for a completion |
 | `celebrate` | `{type: 'complete', cardTitle, userName, userEmoji, xpGained}` | A card moved into a Complete column, or created in one (card 2134). One event for a drop of several cards, naming the last |
 | `update` | `{type: 'card', action: 'moved_away', cardTitle, fromColumn, toColumn, userName, userEmoji}` | A card moved to another board, sent to the board it left. `action: 'moved_in'`, with the same fields, goes to the board it joined. Neither names the other board (card 2181) |
-| `decision` | `{decisionId, status, boardId}` | A decision on the board opened, re-published, closed, extended, and, once it had been opened, withdrawn or deleted (card 2675). `status` is the shown one (`open`, `awaiting_ruling`, `withdrawn`, …). Never for a draft, a participant, a mail or a link, nor for a decision whose board is gone. The data carries no title and no name, and `boardId` itself, so the global stream can check it. No page listens for it yet (card 2680), so no open board re-reads itself on it. No route reaches the decision service yet |
+| `decision` | `{decisionId, status, boardId}` | A decision on the board opened, re-published, closed, extended, and, once it had been opened, withdrawn or deleted (card 2675); ruled, its results released, and an old decision superseded, on the old one's board (card 2679; never for a concern or a superseding draft). `status` is the shown one (`open`, `awaiting_ruling`, `withdrawn`, …). Never for a draft, a participant, a mail or a link, nor for a decision whose board is gone. The data carries no title and no name, and `boardId` itself, so the global stream can check it. No page listens for it yet (card 2680), so no open board re-reads itself on it. The decision service's routes under `/api/decisions` send it as each write commits |
 
 The four delete payloads say what kind of change it was and nothing more: no board name,
 card title or user (card 2108). The board of a sub-board's card can be viewed by people who

@@ -8,9 +8,12 @@
   every option, in score mode. A comment, and a comment on any option, below;
   each is shown back as text, never as markdown.
 
-  Send posts `{ ...extra, versionNumber, kind, optionId | scores, comment,
-  optionComments }` as JSON to `url`: the signed-in page's route, or the
-  personal link's with the token in `extra`, so that no address holds it. The
+  Send posts `{ ...extra, versionNumber, statement, kind, optionId | scores,
+  comment, optionComments }` as JSON to `url`: the signed-in page's route, or
+  the personal link's with the token in `extra`, so that no address holds it.
+  `statement` is `WHO_SEES_STATEMENT_VERSION`, the version of the who-sees
+  words the page showed, which the response is recorded under (card 2679,
+  decision 25). The
   answer is the response as recorded, which the form shows. A refusal is said
   in the server's words and what was typed is kept; the 409 in
   `STALE_REVISION`'s words alone offers Reload.
@@ -27,7 +30,7 @@
 	import { untrack } from 'svelte';
 	import { failureMessage } from '$lib/api';
 	import type { OwnResponse, ViewOption } from '$lib/decision-view-types';
-	import { STALE_REVISION, givenOnWords, responseLines, shownMoment } from '$lib/decision-words';
+	import { STALE_REVISION, WHO_SEES_STATEMENT_VERSION, givenOnWords, responseLines, shownMoment } from '$lib/decision-words';
 
 	type Kind = OwnResponse['kind'];
 	type Common = {
@@ -87,7 +90,8 @@
 
 	async function send() {
 		if (disabled || url === undefined || versionNumber === undefined || sending || !ready || kind === null) return;
-		const body: Record<string, unknown> = { ...extra, versionNumber, kind };
+		// The version of the who-sees statement this page showed, from the same bundle as its words (card 2679, decision 25).
+		const body: Record<string, unknown> = { ...extra, versionNumber, statement: WHO_SEES_STATEMENT_VERSION, kind };
 		if (kind === 'vote' && voteMode === 'single') body.optionId = optionId;
 		if (kind === 'vote' && voteMode === 'score') body.scores = Object.fromEntries(options.map((option) => [String(option.optionId), scores[String(option.optionId)]]));
 		body.comment = comment;

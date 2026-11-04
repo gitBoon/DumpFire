@@ -86,6 +86,7 @@ import {
 	cards,
 	cardTemplates,
 	categories,
+	decisions,
 	inviteTokens,
 	milestones,
 	people,
@@ -115,6 +116,9 @@ import {
 import { SESSION_COOKIE_NAME, type Credential, type SessionUser } from '$lib/server/auth';
 import { CONFIRMATION_HEADER, STEP_UP_ACTIONS, STEP_UP_FIELD, issueImportConfirmation } from '$lib/server/step-up';
 import { canEditBoard, canViewBoard, getBoardRole } from '$lib/server/board-access';
+import { appendEvent, SYSTEM_ACTOR } from '$lib/server/decision-record';
+import { resultsRevisionFor } from '$lib/server/decision-results';
+import { WHO_SEES_STATEMENT_VERSION } from '$lib/decision-words';
 import { emit } from '$lib/server/events';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { generateCategoryReport } from '$lib/server/reports';
@@ -141,6 +145,7 @@ import {
 	makeParticipant,
 	makePerson,
 	makeResponse,
+	makeRuling,
 	makeSession,
 	makeSmtp,
 	makeSubBoard,
@@ -850,6 +855,80 @@ const anOpenDecisionToRepublish = (w: World): void => {
 	makeOption(decision, { label: 'A', position: 0, addedInVersion: 1 });
 	makeOption(decision, { label: 'B', position: 1, addedInVersion: 1 });
 	decisionId = decision.id;
+};
+/**
+ * Card 2679: a decision of `editor`'s, its author and decider, on board A,
+ * published as version 1 with two options and ruled: what superseding takes.
+ */
+const aRuledDecisionOfEditor = (w: World): void => {
+	const decision = makeDecision({
+		board: w.A.board,
+		author: w.editor,
+		decider: w.editor,
+		title: `${MARK} ruled decision`,
+		status: 'closed',
+		closesAt: '2026-11-02 09:00:00',
+		openedAt: '2026-11-01 09:00:00'
+	});
+	const a = makeOption(decision, { label: 'A', position: 0, addedInVersion: 1 });
+	const b = makeOption(decision, { label: 'B', position: 1, addedInVersion: 1 });
+	makeVersion(decision, { situation: `${MARK} situation`, options: [a, b].map((o) => ({ optionId: o.id, label: o.label, title: `${MARK} ${o.label}` })) }, { number: 1 });
+	makeRuling(decision, { optionId: a.id });
+	decisionId = decision.id;
+};
+/**
+ * Card 2679: a decision of `editor`'s, its author and decider, on board A,
+ * published as version 1 with one option and closed, awaiting a ruling: what
+ * ruling takes, with `resultsRevisionOfTheDecision` in its body.
+ */
+const anAwaitingRulingDecisionOfEditor = (w: World): void => {
+	const decision = makeDecision({
+		board: w.A.board,
+		author: w.editor,
+		decider: w.editor,
+		title: `${MARK} decision awaiting a ruling`,
+		status: 'closed',
+		closesAt: '2026-11-02 09:00:00',
+		openedAt: '2026-11-01 09:00:00'
+	});
+	const a = makeOption(decision, { label: 'A', position: 0, addedInVersion: 1 });
+	makeVersion(decision, { situation: `${MARK} situation`, options: [{ optionId: a.id, label: 'A', title: `${MARK} A` }] }, { number: 1 });
+	decisionId = decision.id;
+};
+/** The decision's results revision as it is now (card 2679, decision 8), what a ruling and a release must send. */
+const resultsRevisionOfTheDecision = (): string => (decisionId === undefined ? '' : resultsRevisionFor(decisionId));
+/**
+ * Card 2679: `anAwaitingRulingDecisionOfEditor`, three consulted participants
+ * having answered under the current who-sees statement, then ruled: what a
+ * release takes.
+ */
+const aReleasableDecisionOfEditor = (w: World): void => {
+	anAwaitingRulingDecisionOfEditor(w);
+	const decision = db.select().from(decisions).where(eq(decisions.id, decisionId!)).get()!;
+	for (const name of ['Rel One', 'Rel Two', 'Rel Three']) {
+		const participant = makeParticipant(decision, { person: makePerson({ fullName: name }), role: 'consulted' });
+		const response = makeResponse(participant, { kind: 'abstain', comment: `${MARK} said by ${name}` });
+		appendEvent(
+			{
+				decisionId: decision.id,
+				kind: 'responded',
+				participantId: participant.id,
+				versionNumber: 1,
+				detail: { responseId: response.id, statement: WHO_SEES_STATEMENT_VERSION }
+			},
+			SYSTEM_ACTOR
+		);
+	}
+	makeRuling(decision, { ruledAt: stamp() });
+};
+/**
+ * Card 2679: a decision on board A ruled just now, `viewer` consulted on it
+ * through their account and a person with no account holding `LINK`: what a
+ * concern takes. Ruled by `makeRuling`, which sends no mail, so `LINK` lives.
+ */
+const aRulingOnAConsultedViewer = (w: World): void => {
+	aConsultedViewer(w);
+	makeRuling(db.select().from(decisions).where(eq(decisions.id, decisionId!)).get()!, { ruledAt: stamp() });
 };
 /** A closing time a month ahead: in the future, and within the year a closing time may be set (Q25). */
 const aMonthAhead = (): string => stamp(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000));
@@ -1756,6 +1835,28 @@ const TABLE: Record<string, Case | Case[]> = {
 		() => json(`/api/decisions/${decisionId}/participants/${decisionParticipantId}/address`, {}),
 		{ setup: aParticipantBehindTheDirectory }
 	),
+	// Card 2679 (decision 5, S2): superseding a ruling is its decider's, the board's Product Owner's (board A has none here)
+	// or an administrator's, never a board owner's or editor's.
+	'POST /api/decisions/[id]/supersede': own(
+		'editor',
+		['owner', 'outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'],
+		() => json(`/api/decisions/${decisionId}/supersede`, { title: `${MARK} superseding decision` }),
+		{ setup: aRuledDecisionOfEditor }
+	),
+	// Card 2679 (decisions 2 and 10): ruling and releasing are the decider's alone, an administrator's neither, each asking
+	// for the password, which `call` adds; the body's results revision is read once the setup has run.
+	'POST /api/decisions/[id]/rule': own(
+		'editor',
+		['owner', 'admin', 'chief', 'outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'],
+		() => json(`/api/decisions/${decisionId}/rule`, { optionId: null, reason: 'None of these will do.', revision: resultsRevisionOfTheDecision() }),
+		{ setup: anAwaitingRulingDecisionOfEditor }
+	),
+	'POST /api/decisions/[id]/release': own(
+		'editor',
+		['owner', 'admin', 'chief', 'outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'],
+		() => json(`/api/decisions/${decisionId}/release`, { revision: resultsRevisionOfTheDecision() }),
+		{ setup: aReleasableDecisionOfEditor }
+	),
 
 	// ── A participant's part (card 2677, decisions 10 to 14, D11) ────────
 	// `own`: `viewer` is consulted on the decision, through their account.
@@ -1781,6 +1882,17 @@ const TABLE: Record<string, Case | Case[]> = {
 	'POST /api/decision-by-link/seen': link(() => sameOrigin('/api/decision-by-link/seen', { versionNumber: 1, stage: 'question' }), {
 		setup: aConsultedViewer,
 		withLink: () => sameOrigin('/api/decision-by-link/seen', { token: LINK, versionNumber: 1, stage: 'question' })
+	}),
+	// Card 2679 (decision 4): a participant's concern about the ruling, signed in and by the link.
+	'POST /api/decisions/[id]/concerns': own(
+		'viewer',
+		['owner', 'admin', 'chief', 'editor', 'outsider', 'guest', 'both', 'editsB', 'editsA'],
+		() => sameOrigin(`/api/decisions/${decisionId}/concerns`, { comment: 'The ruling misses the cost.' }),
+		{ setup: aRulingOnAConsultedViewer }
+	),
+	'POST /api/decision-by-link/concerns': link(() => sameOrigin('/api/decision-by-link/concerns', { comment: 'The ruling misses the cost.' }), {
+		setup: aRulingOnAConsultedViewer,
+		withLink: () => sameOrigin('/api/decision-by-link/concerns', { token: LINK, comment: 'The ruling misses the cost.' })
 	}),
 
 	// ── The documented API ────────────────────────────────────────────────
@@ -5099,6 +5211,8 @@ describe('every page load, to a caller who cannot open a board (card 2130)', () 
 		'page /decisions/[id]/edit': { paths: () => [decisionIds.openA, decisionIds.openB, decisionIds.draftA].map((id) => `/decisions/${id}/edit`) },
 		// A decision previewed as a participant (card 2697, Q4 to Q7): no address to anyone, an administrator too.
 		'page /decisions/[id]/preview': { paths: () => [decisionIds.openA, decisionIds.openB, decisionIds.draftA].map((id) => `/decisions/${id}/preview`) },
+		// A decision's results (card 2679, decision 1): its decider's and administrators' alone, every participant named.
+		'page /decisions/[id]/results': { paths: () => [decisionIds.openA, decisionIds.openB, decisionIds.draftA].map((id) => `/decisions/${id}/results`) },
 		// A decision's page (card 2677): to `viewer`, a participant of open A, their own part and no one else's (Pat Page's `MARK_B`).
 		'page /decisions/[id]': { paths: () => [decisionIds.openA, decisionIds.openB, decisionIds.draftA].map((id) => `/decisions/${id}`) },
 		'page /decision-link/[token]': { none: 'gives one decision, to the holder of its link, whoever is signed in' },
@@ -5168,6 +5282,10 @@ describe('every page load, to a caller who cannot open a board (card 2130)', () 
 		const previewed = JSON.stringify(await pageData(`/decisions/${decisionIds.openA}/preview`, 'admin'));
 		expect(previewed).toContain('Pat Page');
 		expect(previewed).not.toMatch(/@example\.test/);
+		// The results reach the decider, each response by name, and give no address (card 2679, decision 1).
+		const results = JSON.stringify(await pageData(`/decisions/${decisionIds.openA}/results`, 'editor'));
+		expect(results).toContain(`${MARK_B} said by Pat Page`);
+		expect(results).not.toMatch(/@example\.test/);
 	});
 
 	describe('the sub-board, where its card is shown', () => {

@@ -1,0 +1,809 @@
+// @vitest-environment jsdom
+/**
+ * The results page, the ruling form and the release, in the page (card 2679,
+ * slice 2a: the plan's cases 43 to 45), and the participant's screens (slice
+ * 2b: cases 41, 42 and 46 to 48). Each component and page is mounted alone
+ * with Svelte's client runtime, as the decision editor's file mounts them,
+ * `fetch` a stand-in that keeps every request sent and answers what the case
+ * gives it.
+ *
+ *   - `RulingBanner`: the ruling or none of these, the reason and the
+ *     conditions with no moment, and the later and earlier decisions, named
+ *     and linked only where the page was given them (S8).
+ *   - `ReleasedResults`: "withheld", with no number, for what is withheld
+ *     (code review S3), the comments with no name, and the table's headers.
+ *   - `ConcernForm`: a labelled textarea with its count, who sees a concern,
+ *     what it sends each way in, a refusal in the server's words, and the
+ *     concern recorded joining the list.
+ *   - The decision page: the ruling banner, Results and ruling and
+ *     Supersede… only with their flags, and Supersede going to the new
+ *     draft's editor; `DecisionActions`' Results and ruling link.
+ *
+ *   - `RulingForm`: the options in a fieldset with a legend, the warning that
+ *     a choice goes against the responses, named by each radio, the people an
+ *     early ruling cuts off, Rule held back by an open question, the JSON body
+ *     sent with the password, and what a refusal does (F5).
+ *   - The results page's release: the preview, Leave out by each comment and
+ *     the `omit` it sends, the dialog's words and password, and the server's
+ *     words in the status region.
+ *   - `ResultsView`: a header for each column and row of the tally, earlier
+ *     rounds closed, and the tables that stack at phone width.
+ *
+ * What the server answers, and to whom, is in `tests/decision-ruling.test.ts`.
+ * The plan is `docs/planning/card-2679-results-ruling.md`.
+ */
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as Svelte from 'svelte';
+import type { DecisionPageData, ReleasedResults as Released, ResultsData, RoundTally, RulingView } from '$lib/decision-view-types';
+
+const navigation = vi.hoisted(() => ({ invalidateAll: vi.fn(async () => {}), goto: vi.fn(async (_to: string) => {}) }));
+vi.mock('$app/navigation', () => ({
+	goto: navigation.goto,
+	invalidateAll: navigation.invalidateAll,
+	afterNavigate: () => {},
+	onNavigate: () => {},
+	beforeNavigate: () => {}
+}));
+// A bare 'svelte' gives the server's runtime, whose tick and onMount the components cannot use in a browser: the client's, by its path.
+vi.mock('svelte', async () => {
+	const { join } = await import('node:path');
+	const { pathToFileURL } = await import('node:url');
+	return await import(/* @vite-ignore */ pathToFileURL(join(process.cwd(), 'node_modules/svelte/src/index-client.js')).href);
+});
+
+import ConcernForm from '$lib/components/decision/ConcernForm.svelte';
+import DecisionActions from '$lib/components/decision/DecisionActions.svelte';
+import ReleasedResults from '$lib/components/decision/ReleasedResults.svelte';
+import ResultsView from '$lib/components/decision/ResultsView.svelte';
+import RulingBanner from '$lib/components/decision/RulingBanner.svelte';
+import RulingForm from '$lib/components/decision/RulingForm.svelte';
+import { CONCERN_WHO_SEES, RELEASE_INFERENCE } from '$lib/decision-words';
+import DecisionPage from '../src/routes/decisions/[id]/+page.svelte';
+import ResultsPage from '../src/routes/decisions/[id]/results/+page.svelte';
+
+const clientEntry = pathToFileURL(join(process.cwd(), 'node_modules/svelte/src/index-client.js')).href;
+const { flushSync, mount, unmount }: typeof Svelte = await import(/* @vite-ignore */ clientEntry);
+
+let drawn: { component: ReturnType<typeof mount>; target: HTMLElement }[] = [];
+/** Each request sent, as `METHOD url`, with its headers and its body as sent. */
+let sent: { what: string; headers: Record<string, string>; body: unknown }[] = [];
+/** What the next request to each `METHOD url` is answered; anything else is `{}`. */
+let answers: Record<string, { status: number; body: unknown }[]> = {};
+
+const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+const JSON_TYPE = { 'Content-Type': 'application/json' };
+
+beforeEach(() => {
+	sent = [];
+	answers = {};
+	navigation.invalidateAll.mockClear();
+	navigation.goto.mockClear();
+	vi.stubGlobal(
+		'fetch',
+		vi.fn(async (url: string, init?: RequestInit) => {
+			const what = `${init?.method ?? 'GET'} ${url}`;
+			sent.push({ what, headers: { ...(init?.headers as Record<string, string> | undefined) }, body: init?.body });
+			const next = answers[what]?.shift();
+			return next ? json(next.body, next.status) : json({});
+		})
+	);
+});
+
+afterEach(() => {
+	for (const { component, target } of drawn) {
+		unmount(component);
+		target.remove();
+	}
+	drawn = [];
+	document.body.replaceChildren();
+	vi.unstubAllGlobals();
+});
+
+function draw(component: unknown, props: Record<string, unknown>): HTMLElement {
+	const target = document.createElement('div');
+	document.body.appendChild(target);
+	drawn.push({ component: mount(component as never, { target, props: props as never }), target });
+	flushSync();
+	return target;
+}
+
+/** Lets every answer in flight arrive, and draws. */
+async function settle() {
+	for (let i = 0; i < 5; i++) {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		flushSync();
+	}
+}
+
+const textOf = (el: Element) => el.textContent!.replace(/\s+/g, ' ').trim();
+const answer = (what: string, status: number, body: unknown) => (answers[what] ??= []).push({ status, body });
+const dialog = () => document.querySelector<HTMLElement>('.confirm-modal');
+const confirmButton = () => dialog()!.querySelectorAll<HTMLButtonElement>('.confirm-actions button')[1];
+const passwordIn = () => dialog()!.querySelector<HTMLInputElement>('input[type="password"]');
+function typeInto(field: HTMLInputElement | HTMLTextAreaElement, value: string) {
+	field.value = value;
+	field.dispatchEvent(new Event('input', { bubbles: true }));
+	flushSync();
+}
+function choose(radio: HTMLInputElement) {
+	radio.checked = true;
+	radio.dispatchEvent(new Event('change', { bubbles: true }));
+	flushSync();
+}
+
+const OPTIONS = [
+	{ optionId: 11, label: 'A', title: 'Plan A' },
+	{ optionId: 12, label: 'B', title: 'Plan B' }
+];
+const WRONG = { message: 'Password is incorrect. Nothing was changed.', stepUp: 'wrong' };
+
+// ─── RulingForm (case 43) ────────────────────────────────────────────────────
+
+describe('RulingForm (43)', () => {
+	function drawForm(more: Record<string, unknown> = {}) {
+		const onRuled = vi.fn(async () => {});
+		const target = draw(RulingForm, {
+			decisionId: 7,
+			title: 'Which plan?',
+			revision: 'rev-1',
+			options: OPTIONS,
+			mostChosen: [11],
+			voted: 3,
+			early: false,
+			cutOff: [],
+			openQuestions: 0,
+			onRuled,
+			...more
+		});
+		return { target, onRuled };
+	}
+	const radios = (target: HTMLElement) => [...target.querySelectorAll<HTMLInputElement>('input[type="radio"]')];
+	const ruleButton = (target: HTMLElement) => target.querySelector<HTMLButtonElement>('[data-action="rule"]')!;
+	const reasonOf = (target: HTMLElement) => target.querySelector<HTMLTextAreaElement>('textarea')!;
+	const rule = (target: HTMLElement) => {
+		target.querySelector<HTMLFormElement>('[data-form="ruling"]')!.requestSubmit();
+		flushSync();
+	};
+
+	it('draws the options and none of these in a fieldset with a legend, and labelled texts with their counts', () => {
+		const { target } = drawForm();
+		const fieldset = target.querySelector('fieldset')!;
+		expect(textOf(fieldset.querySelector('legend')!)).toBe('The ruling');
+		expect(radios(target).map((radio) => textOf(radio.closest('label')!))).toEqual(['Option A: Plan A', 'Option B: Plan B', 'None of these']);
+		expect(radios(target).every((radio) => fieldset.contains(radio))).toBe(true);
+		for (const area of target.querySelectorAll('textarea')) {
+			expect(target.querySelector(`label[for="${area.id}"]`), area.id).not.toBeNull();
+			expect(area.maxLength).toBe(4000);
+			expect(target.querySelector(`#${area.getAttribute('aria-describedby')}`)?.textContent).toMatch(/^0 of 4,000 characters$/);
+		}
+	});
+
+	it('warns only when the choice is not most chosen, the warning named by every radio', () => {
+		const { target } = drawForm();
+		const warning = () => target.querySelector('[data-note="against"]');
+
+		choose(radios(target)[0]);
+		expect(warning(), 'the most chosen').toBeNull();
+		expect(radios(target)[0].getAttribute('aria-describedby')).toBeNull();
+
+		choose(radios(target)[1]);
+		expect(textOf(warning()!)).toMatch(/^This goes against the responses/);
+		for (const radio of radios(target)) expect(radio.getAttribute('aria-describedby')).toBe(warning()!.id);
+
+		choose(radios(target)[2]);
+		expect(warning(), 'none of these, with votes').not.toBeNull();
+
+		const quiet = drawForm({ voted: 0, mostChosen: [] });
+		choose(radios(quiet.target)[1]);
+		expect(quiet.target.querySelector('[data-note="against"]'), 'no votes').toBeNull();
+	});
+
+	it('names who an early ruling cuts off', () => {
+		const { target } = drawForm({ early: true, cutOff: ['Sil Ent', 'Qui Et'] });
+		const note = target.querySelector('[data-note="early"]')!;
+		expect([...note.querySelectorAll('li')].map(textOf)).toEqual(['Sil Ent', 'Qui Et']);
+		expect(drawForm().target.querySelector('[data-note="early"]')).toBeNull();
+	});
+
+	it('keeps Rule off until a choice, a reason and, with a question open, the box', () => {
+		const { target } = drawForm({ openQuestions: 2 });
+		expect(ruleButton(target).disabled).toBe(true);
+		choose(radios(target)[0]);
+		typeInto(reasonOf(target), 'Plan A is enough.');
+		expect(ruleButton(target).disabled, 'the box unticked').toBe(true);
+		const box = target.querySelector<HTMLInputElement>('[data-check="open-questions"]')!;
+		expect(textOf(box.closest('label')!)).toBe('2 questions are still open: I rule with them open');
+		box.click();
+		flushSync();
+		expect(ruleButton(target).disabled).toBe(false);
+	});
+
+	it('sends the ruling as JSON with the password, and hands up what was done', async () => {
+		const { target, onRuled } = drawForm({ openQuestions: 1 });
+		choose(radios(target)[2]);
+		typeInto(reasonOf(target), 'Neither works.');
+		target.querySelector<HTMLInputElement>('[data-check="open-questions"]')!.click();
+		flushSync();
+		rule(target);
+		expect(passwordIn()).not.toBeNull();
+		typeInto(passwordIn()!, 'my password');
+		answer('POST /api/decisions/7/rule', 200, { decision: {}, revision: 'rev-2' });
+		confirmButton().click();
+		await settle();
+
+		expect(sent).toEqual([
+			{
+				what: 'POST /api/decisions/7/rule',
+				headers: JSON_TYPE,
+				body: JSON.stringify({ optionId: null, reason: 'Neither works.', conditions: '', revision: 'rev-1', openQuestionsConfirmed: true, currentPassword: 'my password' })
+			}
+		]);
+		expect(dialog()).toBeNull();
+		expect(onRuled).toHaveBeenCalledWith('Ruled: every participant is being mailed the ruling.');
+	});
+
+	it('keeps the dialog open on a refused password, and says any other refusal in its status region, the focus back on Rule', async () => {
+		const { target, onRuled } = drawForm();
+		choose(radios(target)[0]);
+		typeInto(reasonOf(target), 'Plan A.');
+		rule(target);
+		typeInto(passwordIn()!, 'a wrong one');
+		answer('POST /api/decisions/7/rule', 403, WRONG);
+		confirmButton().click();
+		await settle();
+		expect(dialog()).not.toBeNull();
+		expect(passwordIn()!.value).toBe('');
+		expect(textOf(dialog()!.querySelector('[role="alert"]')!)).toBe(WRONG.message);
+
+		typeInto(passwordIn()!, 'my password');
+		answer('POST /api/decisions/7/rule', 409, { message: 'Someone has changed this decision since you opened it: reload the page' });
+		confirmButton().click();
+		await settle();
+		expect(dialog()).toBeNull();
+		const region = target.querySelector('[data-said="ruling"]')!;
+		expect(region.getAttribute('role')).toBe('status');
+		expect(textOf(region)).toBe('Someone has changed this decision since you opened it: reload the page');
+		expect(document.activeElement).toBe(ruleButton(target));
+		expect(onRuled).not.toHaveBeenCalled();
+	});
+});
+
+// ─── The results page and its release (cases 44 and 45) ──────────────────────
+
+const tally = (round: number, more: Partial<RoundTally> = {}): RoundTally => ({
+	round,
+	responded: 3,
+	voted: 2,
+	votes: [
+		{ optionId: 11, count: 2 },
+		{ optionId: 12, count: 0 }
+	],
+	scores: [],
+	abstained: 1,
+	noConcerns: 0,
+	rows: [
+		{
+			participantId: 1,
+			name: 'Pat Person',
+			role: 'consulted',
+			groups: ['Ops'],
+			kind: 'vote',
+			optionId: 11,
+			scores: null,
+			comment: 'Plan A is enough.',
+			optionComments: { '12': 'B costs too much.' },
+			versionNumber: 1,
+			createdAt: '2026-11-03 10:00:00',
+			via: 'session',
+			changes: 1
+		}
+	],
+	...more
+});
+
+function results(more: Partial<ResultsData> = {}): ResultsData {
+	return {
+		decision: {
+			id: 7,
+			title: 'Which plan?',
+			shownStatus: 'ruled',
+			voteMode: 'single',
+			closesAt: '2026-11-02 09:00:00',
+			deciderName: 'decider',
+			boardId: 3,
+			boardName: 'The board',
+			currentVersion: 2
+		},
+		revision: 'rev-1',
+		round: 2,
+		options: OPTIONS,
+		current: tally(2),
+		earlierRounds: [tally(1, { responded: 1 })],
+		notResponded: [{ participantId: 4, name: 'Sil Ent', groups: [] }],
+		removed: [],
+		openQuestions: [],
+		concerns: [],
+		ruling: null,
+		released: null,
+		releasePreview: {
+			voteMode: 'single',
+			responded: null,
+			voted: null,
+			abstained: null,
+			noConcerns: 0,
+			options: [
+				{ optionId: 11, label: 'A', title: 'Plan A', votes: null, mean: null, comments: [] },
+				{ optionId: 12, label: 'B', title: 'Plan B', votes: 0, mean: null, comments: [{ text: 'B costs too much.', key: 'key-b' }] }
+			],
+			comments: [
+				{ text: 'A, gladly.', key: 'key-1' },
+				{ text: 'Plan A is enough.', key: 'key-2' }
+			]
+		},
+		mayRule: false,
+		mayRelease: true,
+		releaseRefusal: null,
+		mostChosen: [11],
+		...more
+	};
+}
+
+describe('the release on the results page (44)', () => {
+	const release = (target: HTMLElement) => target.querySelector<HTMLButtonElement>('[data-action="release"]')!;
+	const box = (target: HTMLElement, key: string) => target.querySelector<HTMLInputElement>(`[data-omit="${key}"]`)!;
+
+	it('shows the preview, each comment with Leave out, and sends omit with the ticked keys, the password and the revision', async () => {
+		const target = draw(ResultsPage, { data: results() });
+		const preview = target.querySelector('[data-block="release"]')!;
+		// Drawn by ReleasedResults, as every viewer is shown it (code review F3), each withheld figure "withheld" (S3).
+		expect(preview.querySelector('[data-table="preview"]')).not.toBeNull();
+		expect(textOf(preview.querySelector('caption')!)).toBe('Responded: withheld');
+		expect([...preview.querySelectorAll('tbody tr')].map((row) => [...row.children].map(textOf))).toEqual([
+			['A: Plan A', 'withheld'],
+			['B: Plan B', '0'],
+			['Abstained', 'withheld'],
+			['No concerns', '0']
+		]);
+		expect(['key-1', 'key-2', 'key-b'].map((key) => textOf(box(target, key).closest('label')!))).toEqual(['Leave out', 'Leave out', 'Leave out']);
+		// Code review F4: each box is described by the comment it leaves out.
+		expect(['key-1', 'key-2', 'key-b'].map((key) => textOf(document.getElementById(box(target, key).getAttribute('aria-describedby')!)!))).toEqual([
+			'A, gladly.',
+			'Plan A is enough.',
+			'B costs too much.'
+		]);
+		expect(textOf(preview)).not.toContain('Pat Person');
+
+		box(target, 'key-2').click();
+		box(target, 'key-b').click();
+		flushSync();
+		release(target).click();
+		flushSync();
+		expect(textOf(dialog()!)).toContain(RELEASE_INFERENCE);
+		expect(textOf(dialog()!)).toContain('2 comments are left out.');
+		expect(passwordIn()).not.toBeNull();
+		typeInto(passwordIn()!, 'my password');
+		answer('POST /api/decisions/7/release', 200, { decision: {}, revision: 'rev-2' });
+		confirmButton().click();
+		await settle();
+
+		expect(sent).toEqual([
+			{ what: 'POST /api/decisions/7/release', headers: JSON_TYPE, body: JSON.stringify({ revision: 'rev-1', omit: ['key-2', 'key-b'], currentPassword: 'my password' }) }
+		]);
+		expect(navigation.invalidateAll).toHaveBeenCalled();
+		const region = target.querySelector<HTMLElement>('[data-said="done"]')!;
+		expect(textOf(region)).toMatch(/^Released: everyone who can see this decision/);
+		expect(document.activeElement).toBe(region);
+	});
+
+	it('keeps a wrong password’s refusal in the dialog, and says the server’s other refusal on the page, the focus back on the control', async () => {
+		const target = draw(ResultsPage, { data: results() });
+		release(target).click();
+		flushSync();
+		typeInto(passwordIn()!, 'a wrong one');
+		answer('POST /api/decisions/7/release', 403, WRONG);
+		confirmButton().click();
+		await settle();
+		expect(dialog()).not.toBeNull();
+		expect(textOf(dialog()!.querySelector('[role="alert"]')!)).toBe(WRONG.message);
+
+		const TOO_FEW = 'Fewer than 3 people responded: releasing their comments could show who said what';
+		typeInto(passwordIn()!, 'my password');
+		answer('POST /api/decisions/7/release', 409, { message: TOO_FEW });
+		confirmButton().click();
+		await settle();
+		expect(dialog()).toBeNull();
+		expect(textOf(target.querySelector('[data-said="refused"]')!)).toBe(TOO_FEW);
+		expect(target.querySelector('[data-said="done"]')!.getAttribute('role')).toBe('status');
+		expect(document.activeElement).toBe(release(target));
+	});
+
+	it('offers no release, saying why, where the server gives a refusal, and none once released', () => {
+		const refused = draw(ResultsPage, { data: results({ mayRelease: false, releaseRefusal: 'The results of this decision have already been released' }) });
+		expect(refused.querySelector('[data-action="release"]')).toBeNull();
+		expect(refused.querySelector('[data-omit]')).toBeNull();
+		expect(textOf(refused.querySelector('[data-note="release-refusal"]')!)).toBe('The results of this decision have already been released');
+
+		const done = draw(ResultsPage, { data: results({ releasePreview: null, mayRelease: false, released: { at: '2026-11-04 09:00:00', byName: 'decider', omitted: 1 } }) });
+		expect(done.querySelector('[data-block="release"]')).toBeNull();
+		expect(textOf(done.querySelector('[data-note="released"]')!)).toBe('The results were released on 2026-11-04 09:00 UTC by decider, with 1 comment left out.');
+	});
+});
+
+describe('ResultsView (45)', () => {
+	it('heads each column and row of the tally, keeps earlier rounds closed, and labels every cell of its stacked tables by its column', () => {
+		const target = draw(ResultsView, { results: results() });
+		const [current] = target.querySelectorAll<HTMLTableElement>('[data-table="tally"]');
+		expect([...current.querySelectorAll('thead th')].map((th) => [th.getAttribute('scope'), textOf(th)])).toEqual([
+			['col', 'Option'],
+			['col', 'Votes']
+		]);
+		expect([...current.querySelectorAll('tbody th')].map((th) => [th.getAttribute('scope'), textOf(th)])).toEqual([
+			['row', 'A: Plan A'],
+			['row', 'B: Plan B'],
+			['row', 'Abstained'],
+			['row', 'No concerns']
+		]);
+		expect([...current.querySelectorAll('tbody td')].map((td) => td.getAttribute('data-label'))).toEqual(['Votes', 'Votes', 'Votes', 'Votes']);
+
+		const responses = target.querySelector('[data-table="responses"]')!;
+		expect([...responses.querySelectorAll('thead th')].map((th) => th.getAttribute('scope'))).toEqual(['col', 'col', 'col', 'col']);
+		expect([...responses.querySelector('tbody tr')!.children].map(textOf)).toEqual([
+			'Pat Person (Ops)',
+			'A: Plan A',
+			'Plan A is enough.On B: B costs too much.',
+			'2026-11-03 10:00 UTC, changed 1 time'
+		]);
+
+		const earlier = target.querySelectorAll<HTMLDetailsElement>('details.earlier');
+		expect(earlier).toHaveLength(1);
+		expect(earlier[0].open).toBe(false);
+		expect(textOf(earlier[0].querySelector('summary')!)).toBe('Round 1');
+
+		// Code review F5: what the stacked layout draws at phone width. Its rule hides each table's header row and labels every
+		// cell from its `data-label`, so every table must carry the class, and every cell the header of its own column.
+		const tables = [...target.querySelectorAll('table')];
+		expect(tables.length).toBe(4);
+		for (const table of tables) {
+			expect(table.classList.contains('stacked')).toBe(true);
+			const headers = [...table.querySelectorAll('thead th')].map(textOf);
+			for (const row of table.querySelectorAll('tbody tr')) {
+				const [rowHeader, ...cells] = [...row.children];
+				expect(rowHeader.tagName).toBe('TH');
+				expect(cells.length).toBeLessThanOrEqual(headers.length - 1);
+				cells.forEach((cell, index) => expect(cell.getAttribute('data-label'), `${textOf(rowHeader)}: column ${index + 1}`).toBe(headers[index + 1]));
+			}
+		}
+		expect([...target.querySelectorAll('[data-list="not-responded"] li')].map(textOf)).toEqual(['Sil Ent']);
+	});
+
+	it('gives score mode the totals and means by option, and who voted, abstained and had no concerns as counts in a column of their own (code review F6)', () => {
+		const scored = tally(2, {
+			voted: 2,
+			votes: [],
+			scores: [
+				{ optionId: 11, total: 9, mean: 4.5 },
+				{ optionId: 12, total: 3, mean: 1.5 }
+			],
+			abstained: 1,
+			noConcerns: 0,
+			rows: []
+		});
+		const target = draw(ResultsView, { results: results({ decision: { ...results().decision, voteMode: 'score' }, current: scored, earlierRounds: [] }) });
+		const [byOption] = target.querySelectorAll<HTMLTableElement>('[data-table="tally"]');
+		expect([...byOption.querySelectorAll('thead th')].map(textOf)).toEqual(['Option', 'Total score', 'Mean']);
+		expect([...byOption.querySelectorAll('tbody tr')].map((row) => [...row.children].map(textOf))).toEqual([
+			['A: Plan A', '9', '4.5'],
+			['B: Plan B', '3', '1.5']
+		]);
+		const counts = target.querySelector('[data-table="counts"]')!;
+		expect([...counts.querySelectorAll('thead th')].map(textOf)).toEqual(['Answer', 'Count']);
+		expect([...counts.querySelectorAll('tbody tr')].map((row) => [...row.children].map(textOf))).toEqual([
+			['Voted', '2'],
+			['Abstained', '1'],
+			['No concerns', '0']
+		]);
+		expect(counts.classList.contains('stacked')).toBe(true);
+	});
+
+	it('gives the ruling with "against", "early" and who was cut off', () => {
+		const target = draw(ResultsView, {
+			results: results({
+				ruling: {
+					optionId: 12,
+					label: 'B',
+					title: 'Plan B',
+					reason: 'B anyway.',
+					conditions: null,
+					early: true,
+					againstResponses: true,
+					cutOff: ['Sil Ent'],
+					supersededOld: null,
+					byName: 'decider',
+					at: '2026-11-04 09:00:00'
+				}
+			})
+		});
+		const ruling = textOf(target.querySelector('[data-block="ruling"]')!);
+		expect(ruling).toContain('Ruled on Option B: Plan B');
+		expect(ruling).toContain('Against the responses Yes');
+		expect(ruling).toContain('Early Yes');
+		expect(ruling).toContain('Cut off Sil Ent');
+	});
+});
+
+// ─── The participant's screens (cases 41, 42 and 46 to 48) ───────────────────
+
+const RULING: RulingView = { label: 'B', title: 'Plan B', noneOfThese: false, reason: 'B lasts longer.', conditions: 'Review in a year.', ruledByName: 'Dee Cider' };
+
+describe('RulingBanner (41)', () => {
+	const lines = (target: HTMLElement) => Object.fromEntries([...target.querySelectorAll<HTMLElement>('[data-line]')].map((line) => [line.dataset.line, textOf(line)]));
+
+	it('says the option or none of these, then the reason and the conditions, and no moment', () => {
+		const target = draw(RulingBanner, { ruling: RULING });
+		expect(lines(target)).toEqual({ ruling: 'Ruled by Dee Cider: Option B: Plan B', reason: 'Why: B lasts longer.', conditions: 'Conditions: Review in a year.' });
+		expect(textOf(target)).not.toMatch(/\d{4}-\d{2}-\d{2}|UTC|against|early/i);
+
+		const none = draw(RulingBanner, { ruling: { ...RULING, label: null, title: null, noneOfThese: true, conditions: null } });
+		expect(lines(none)).toEqual({ ruling: 'Ruled by Dee Cider: None of these', reason: 'Why: B lasts longer.' });
+	});
+
+	it('names and links a later decision only where it was given, says one ruled without superseding, and an earlier one by title or not', () => {
+		const linked = draw(RulingBanner, { ruling: RULING, laterDecision: { superseded: true, id: 9, title: 'Plan C' } });
+		const later = linked.querySelector('[data-line="later"]')!;
+		expect(textOf(later)).toBe('Superseded by Plan C');
+		expect(later.querySelector('a')!.getAttribute('href')).toBe('/decisions/9');
+
+		const unnamed = draw(RulingBanner, { ruling: RULING, laterDecision: { superseded: true } });
+		expect(textOf(unnamed.querySelector('[data-line="later"]')!)).toBe('Superseded by a later decision');
+		expect(unnamed.querySelector('a')).toBeNull();
+
+		const beside = draw(RulingBanner, { ruling: RULING, laterDecision: { superseded: false, id: 9, title: 'Plan C' } });
+		expect(textOf(beside.querySelector('[data-line="later"]')!)).toBe('A later decision, Plan C, was ruled on without superseding this one');
+
+		const earlier = draw(RulingBanner, { ruling: RULING, supersedes: { id: 4, title: 'Plan A first' } });
+		expect(textOf(earlier.querySelector('[data-line="earlier"]')!)).toBe('This decision supersedes Plan A first');
+		expect(earlier.querySelector('[data-line="earlier"] a')!.getAttribute('href')).toBe('/decisions/4');
+
+		const earlierUnnamed = draw(RulingBanner, { ruling: RULING, supersedes: {} });
+		expect(textOf(earlierUnnamed.querySelector('[data-line="earlier"]')!)).toBe('This decision supersedes an earlier decision');
+		expect(earlierUnnamed.querySelector('a')).toBeNull();
+	});
+});
+
+const RELEASED: Released = {
+	voteMode: 'single',
+	responded: null,
+	voted: null,
+	abstained: 0,
+	noConcerns: null,
+	options: [
+		{ optionId: 11, label: 'A', title: 'Plan A', votes: 3, mean: null, comments: ['Cheap.'] },
+		{ optionId: 12, label: 'B', title: 'Plan B', votes: null, mean: null, comments: [] }
+	],
+	comments: ['A, gladly.', 'Either works.']
+};
+
+describe('ReleasedResults (42)', () => {
+	it('says "withheld", with no number, for a withheld figure and a withheld total, under a header for each column and row (code review S3)', () => {
+		const target = draw(ReleasedResults, { released: RELEASED });
+		const table = target.querySelector('[data-table="released"]')!;
+		expect(textOf(table.querySelector('caption')!)).toBe('Responded: withheld');
+		expect([...table.querySelectorAll('thead th')].map((th) => [th.getAttribute('scope'), textOf(th)])).toEqual([
+			['col', 'Option'],
+			['col', 'Votes']
+		]);
+		expect([...table.querySelectorAll('tbody tr')].map((row) => [row.querySelector('th')!.getAttribute('scope'), ...[...row.children].map(textOf)])).toEqual([
+			['row', 'A: Plan A', '3'],
+			['row', 'B: Plan B', 'withheld'],
+			['row', 'Abstained', '0'],
+			['row', 'No concerns', 'withheld']
+		]);
+		expect(textOf(target)).not.toMatch(/fewer than|or more/);
+
+		const shown = draw(ReleasedResults, { released: { ...RELEASED, voteMode: 'score', responded: 6, options: [{ ...RELEASED.options[0], votes: null, mean: 3.5 }] } });
+		expect(textOf(shown.querySelector('caption')!)).toBe('Responded: 6');
+		expect(textOf(shown.querySelectorAll('thead th')[1])).toBe('Mean score');
+		expect(textOf(shown.querySelector('tbody td')!)).toBe('3.5');
+	});
+
+	it('gives the comments as given, overall and on each option, with no name beside any', () => {
+		const target = draw(ReleasedResults, { released: RELEASED });
+		expect([...target.querySelectorAll('[data-list="comments"] li')].map(textOf)).toEqual(['A, gladly.', 'Either works.']);
+		expect([...target.querySelectorAll('[data-list="option-11"] li')].map(textOf)).toEqual(['Cheap.']);
+		expect(target.querySelector('[data-list="option-12"]')).toBeNull();
+		expect(textOf(target)).not.toMatch(/Dee Cider|\d{4}-\d{2}-\d{2}/);
+	});
+});
+
+describe('ConcernForm (46)', () => {
+	const area = (target: HTMLElement) => target.querySelector<HTMLTextAreaElement>('textarea')!;
+	const sendButton = (target: HTMLElement) => target.querySelector<HTMLButtonElement>('[data-action="concern"]')!;
+
+	it('labels its textarea with a count, and says who sees a concern and that a release never includes one', () => {
+		const target = draw(ConcernForm, { url: '/api/decisions/5/concerns', mayRaise: true });
+		const field = area(target);
+		expect(textOf(target.querySelector(`label[for="${field.id}"]`)!)).toBe('Your concern about the ruling');
+		expect(field.maxLength).toBe(4000);
+		const count = () => textOf(target.querySelector(`#${field.getAttribute('aria-describedby')}`)!);
+		expect(count()).toBe('0 of 4,000 characters');
+		typeInto(field, 'Too soon.');
+		expect(count()).toBe('9 of 4,000 characters');
+		expect(textOf(target.querySelector('[data-note="concern-who-sees"]')!)).toBe(CONCERN_WHO_SEES);
+		expect(CONCERN_WHO_SEES).toMatch(/decider and DumpFire's administrators see your concern with your name/);
+		expect(CONCERN_WHO_SEES).toMatch(/release of the results never includes concerns/);
+
+		const closed = draw(ConcernForm, { url: '/api/decisions/5/concerns', mayRaise: false, concerns: [{ comment: 'Earlier.', createdAt: '2026-11-03 10:00:00' }] });
+		expect(closed.querySelector('textarea')).toBeNull();
+		expect([...closed.querySelectorAll('[data-list="concerns"] li')].map(textOf)).toEqual(['2026-11-03 10:00 UTC: Earlier.']);
+	});
+
+	it('sends { comment } signed in and { token, comment } by link, as JSON, and lists the concern recorded', async () => {
+		const signedIn = draw(ConcernForm, { url: '/api/decisions/5/concerns', mayRaise: true });
+		expect(sendButton(signedIn).disabled, 'nothing typed').toBe(true);
+		typeInto(area(signedIn), 'Too soon.');
+		answer('POST /api/decisions/5/concerns', 200, { concern: { comment: 'Too soon.', createdAt: '2026-11-04 10:00:00' } });
+		sendButton(signedIn).click();
+		await settle();
+
+		const link = draw(ConcernForm, { url: '/api/decision-by-link/concerns', extra: { token: 'tok-1' }, mayRaise: true });
+		typeInto(area(link), 'Not asked.');
+		answer('POST /api/decision-by-link/concerns', 200, { concern: { comment: 'Not asked.', createdAt: '2026-11-04 10:01:00' } });
+		sendButton(link).click();
+		await settle();
+
+		expect(sent).toEqual([
+			{ what: 'POST /api/decisions/5/concerns', headers: JSON_TYPE, body: JSON.stringify({ comment: 'Too soon.' }) },
+			{ what: 'POST /api/decision-by-link/concerns', headers: JSON_TYPE, body: JSON.stringify({ token: 'tok-1', comment: 'Not asked.' }) }
+		]);
+		expect([...signedIn.querySelectorAll('[data-list="concerns"] li')].map(textOf)).toEqual(['2026-11-04 10:00 UTC: Too soon.']);
+		expect(area(signedIn).value).toBe('');
+		expect(textOf(signedIn.querySelector('[data-said="concern"]')!)).toBe('Your concern was recorded on 2026-11-04 10:00 UTC.');
+		// Code review F9: the page's data is read again after each, whose list and `mayRaise` the form then draws.
+		expect(navigation.invalidateAll).toHaveBeenCalledTimes(2);
+	});
+
+	it('draws the page’s list and offers no form where the page says none may be raised, as after the fifth (code review F9)', () => {
+		const five = Array.from({ length: 5 }, (_, n) => ({ comment: `Concern ${n}.`, createdAt: `2026-11-04 10:0${n}:00` }));
+		const target = draw(ConcernForm, { url: '/api/decisions/5/concerns', mayRaise: false, concerns: five });
+		expect(target.querySelector('textarea')).toBeNull();
+		expect(target.querySelector('[data-action="concern"]')).toBeNull();
+		expect(target.querySelectorAll('[data-list="concerns"] li')).toHaveLength(5);
+	});
+
+	it('says a 429 in the server’s words in its status region, and keeps what was typed', async () => {
+		const target = draw(ConcernForm, { url: '/api/decisions/5/concerns', mayRaise: true });
+		typeInto(area(target), 'Again.');
+		const WAIT = 'You raised a concern a moment ago: you can raise another from 2026-11-04 10:10 UTC';
+		answer('POST /api/decisions/5/concerns', 429, { message: WAIT });
+		sendButton(target).click();
+		await settle();
+		const region = target.querySelector('[data-said="concern"]')!;
+		expect(region.getAttribute('role')).toBe('status');
+		expect(textOf(region)).toBe(WAIT);
+		expect(area(target).value).toBe('Again.');
+		expect(target.querySelector('[data-list="concerns"]')).toBeNull();
+		expect(navigation.invalidateAll).not.toHaveBeenCalled();
+	});
+});
+
+describe('the decision page and DecisionActions (47, 48)', () => {
+	const DECISION = { id: 5, title: 'Pick a plan', shownStatus: 'ruled', voteMode: 'single', closesAt: null, deciderName: 'Dee Cider', boardName: 'Website', withdrawnAt: null, withdrawnReason: null } as const;
+	const CONTENT = { situation: '', question: 'Which plan?', ask: '', unknowns: '', alreadyRuled: '', technicalDetail: '', stories: [], agentDrafted: {} };
+
+	/** A ruled decision's page as a board reader who is no participant is given it. */
+	function pageData(more: Partial<DecisionPageData> = {}): DecisionPageData {
+		return {
+			via: 'session',
+			decision: DECISION,
+			draft: false,
+			version: { number: 1, publishedAt: '2026-11-01 09:00:00', content: CONTENT },
+			options: [],
+			audiences: [],
+			participant: null,
+			ownResponse: null,
+			earlierResponse: null,
+			mayRespond: false,
+			stage: null,
+			mayEdit: false,
+			signedInAs: null,
+			ruling: RULING,
+			released: null,
+			concerns: [],
+			mayRaiseConcern: false,
+			supersedes: null,
+			laterDecision: null,
+			mayReadResults: false,
+			maySupersede: false,
+			...more
+		};
+	}
+	const action = (target: HTMLElement, name: string) => target.querySelector<HTMLElement>(`[data-action="${name}"]`);
+
+	it('47: shows the ruling to a viewer, Results and ruling and Supersede… only with their flags, and the results and the concern form only where given', () => {
+		const reader = draw(DecisionPage, { data: pageData() });
+		expect(textOf(reader.querySelector('[data-line="ruling"]')!)).toBe('Ruled by Dee Cider: Option B: Plan B');
+		expect(action(reader, 'results')).toBeNull();
+		expect(action(reader, 'supersede')).toBeNull();
+		expect(reader.querySelector('[data-section="results"]')).toBeNull();
+		expect(reader.querySelector('[data-section="concern"]')).toBeNull();
+
+		const decider = draw(DecisionPage, {
+			data: pageData({
+				mayReadResults: true,
+				maySupersede: true,
+				released: RELEASED,
+				participant: { role: 'consulted', includedAt: '2026-11-01 09:00:00', told: null },
+				stage: 'ruling',
+				mayRaiseConcern: true
+			})
+		});
+		expect(action(decider, 'results')!.getAttribute('href')).toBe('/decisions/5/results');
+		expect(textOf(action(decider, 'supersede')!)).toBe('Supersede…');
+		expect(decider.querySelector('[data-section="results"] [data-table="released"]')).not.toBeNull();
+		expect(decider.querySelector('[data-section="concern"] [data-action="concern"]')).not.toBeNull();
+	});
+
+	it('47: Supersede… sends the title as JSON and goes to the new draft’s editor; a refusal is said in the server’s words', async () => {
+		const target = draw(DecisionPage, { data: pageData({ maySupersede: true }) });
+		const toggle = action(target, 'supersede') as HTMLButtonElement;
+		// Code review F9: aria-controls names the panel only while it is in the page.
+		expect(toggle.getAttribute('aria-expanded')).toBe('false');
+		expect(toggle.getAttribute('aria-controls')).toBeNull();
+		toggle.click();
+		await settle();
+		expect(toggle.getAttribute('aria-expanded')).toBe('true');
+		expect(document.getElementById(toggle.getAttribute('aria-controls')!)?.dataset.panel).toBe('supersede');
+		const title = target.querySelector<HTMLInputElement>('#supersede-title')!;
+		expect(title.value).toBe('Pick a plan');
+		expect(document.activeElement).toBe(title);
+		typeInto(title, 'Pick a plan, again');
+
+		const submit = () => {
+			target.querySelector<HTMLFormElement>('[data-panel="supersede"]')!.requestSubmit();
+			flushSync();
+		};
+		answer('POST /api/decisions/5/supersede', 409, { message: 'A later decision that supersedes this one already exists' });
+		submit();
+		await settle();
+		expect(textOf(target.querySelector('[data-said="supersede"]')!)).toBe('A later decision that supersedes this one already exists');
+		expect(navigation.goto).not.toHaveBeenCalled();
+
+		answer('POST /api/decisions/5/supersede', 201, { decision: { id: 9 }, revision: 'rev-9' });
+		submit();
+		await settle();
+		expect(sent.map((request) => [request.what, request.headers, request.body])).toEqual([
+			['POST /api/decisions/5/supersede', JSON_TYPE, JSON.stringify({ title: 'Pick a plan, again' })],
+			['POST /api/decisions/5/supersede', JSON_TYPE, JSON.stringify({ title: 'Pick a plan, again' })]
+		]);
+		expect(navigation.goto).toHaveBeenCalledWith('/decisions/9/edit');
+	});
+
+	it('48: DecisionActions links to the results and ruling only with mayReadResults', () => {
+		const NONE = {
+			open: false,
+			republish: false,
+			close: false,
+			extend: false,
+			withdraw: false,
+			delete: false,
+			dryRun: false,
+			resend: false,
+			participantAccount: false,
+			participantAddress: false,
+			withdrawAsks: false,
+			deleteAsks: false
+		};
+		const props = { decisionId: 7, boardId: 3, title: 'Pick a plan', closesAt: null, revision: 'rev-1', actions: NONE, republishSummary: null, refusals: [], warnings: [], dirty: false, onSaved: async () => {} };
+		const without = draw(DecisionActions, props);
+		expect(action(without, 'results')).toBeNull();
+		expect(textOf(without)).toContain('Nothing in its lifecycle can be done by you now.');
+
+		const withResults = draw(DecisionActions, { ...props, mayReadResults: true });
+		const link = action(withResults, 'results')!;
+		expect(textOf(link)).toBe('Results and ruling');
+		expect(link.getAttribute('href')).toBe('/decisions/7/results');
+		expect(textOf(withResults)).not.toContain('Nothing in its lifecycle');
+	});
+});

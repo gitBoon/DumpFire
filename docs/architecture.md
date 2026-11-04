@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.75
+version: 1.77
 status: As-Built
 date: 2026-11-04
 tags:
@@ -1228,7 +1228,7 @@ Card 2675 (plan `docs/planning/card-2675-decision-service.md` v1.1) is the serve
 
 ```mermaid
 flowchart LR
-    Routes["Card 2676's routes, and later cards'<br/>(2697, 2677, 2680, 2682)"] -->|"writeAs(locals, caller =>"| Svc["decisions.ts<br/>(service: nineteen writes,<br/>four guards on READS)"]
+    Routes["Card 2676's routes, and later cards'<br/>(2697, 2677, 2680, 2682)"] -->|"writeAs(locals, caller =>"| Svc["decisions.ts<br/>(service: twenty-four writes,<br/>six guards on READS)"]
     Svc --> Guard["route-guards.ts<br/>requireDecision"]
     Guard --> Acc["decision-access.ts<br/>decisionAccess, DECISION_RULES, mayDo"]
     Acc --> BA["board-access.ts<br/>getBoardRole"]
@@ -1246,7 +1246,7 @@ flowchart LR
     Gate["secret-paths.ts<br/>SECRET_IN_PATH"] -.->|"masks /decision-link/ in logs"| Log[("system_logs")]
 ```
 
-Only `decisions.ts` is a service: it is on `SERVICES` in `tests/check-at-the-write.test.ts`, and every write takes `(caller, at, body, opts)` and starts with `inWrite()`. Its `READS` are card 2697's four guards (`participantAccountGuard`, `participantAddressGuard`, `decisionDeleteGuard`, `decisionWithdrawGuard`): each makes every refusal of its write, writes nothing, and is asked by the route before the caller's password and by the write first, so the refusals exist once. The four helper modules take no caller and import no `inWrite`, so they are not services, and `decisionAccess` lives apart from the service because the service imports the guards (plan decision 3). `people.ts` calls `decision-links.ts`, and the mail effect calls `decision-record.ts`, outside any service write.
+Only `decisions.ts` is a service: it is on `SERVICES` in `tests/check-at-the-write.test.ts`, and every write takes `(caller, at, body, opts)` and starts with `inWrite()`. Its `READS` are card 2697's four guards (`participantAccountGuard`, `participantAddressGuard`, `decisionDeleteGuard`, `decisionWithdrawGuard`) and card 2679's two (`decisionRuleGuard`, `resultsReleaseGuard`, [Results, the ruling and the release](#results-the-ruling-and-the-release)): each makes every refusal of its write, writes nothing, and is asked by the route before the caller's password and by the write first, so the refusals exist once. The four helper modules take no caller and import no `inWrite`, so they are not services, and `decisionAccess` lives apart from the service because the service imports the guards (plan decision 3). `people.ts` calls `decision-links.ts`, and the mail effect calls `decision-record.ts`, outside any service write.
 
 **The lifecycle** (`src/lib/server/decision-status.ts`). A decision is stored as `draft`, `open`, `closed`, `ruled`, `superseded` or `withdrawn` (`STORED_STATUSES`). Readers never show `closed`: `decisionStatus(row, now)` shows a closed decision, and an open one whose `closes_at` has passed, as `awaiting_ruling`, and `awaitingRulingSql(now)` is the same rule as a query condition, which `tests/decision-record.test.ts` holds to agree. `TRANSITIONS` names the stored statuses each action may be taken from, and `requireTransition(row, action)` refuses any other with `409` in the shown status's words, for example `This decision is awaiting a ruling: it cannot be opened`.
 
@@ -1336,7 +1336,7 @@ sequenceDiagram
 | Write | Does |
 |---|---|
 | `createDecision` | `title` trimmed, 1 to 200, refusing a control, direction, invisible or other format character (`\p{Cf}`; `UNPRINTABLE` from `logger.ts`). A draft with `board_name` and `author_name`; the decider is the board's Product Owner while that account can edit the board, the author otherwise. Writes `created { decider }`, and no activity, live event or mail |
-| `setDecider` | `deciderUserId`: an account (400) that can edit the board (400); 409 with no board; once open, 403 for naming the caller. `revision` required (card 2676). A caller who is not an administrator is told an id that is no account in the same words, at the same step, as an account that cannot edit the board (`deciderUserId N cannot edit this board: …`, card 2676's C5); an administrator is told `deciderUserId N is not an account`. Writes `decider_changed` |
+| `setDecider` | `deciderUserId`: an account (400) that can edit the board (400); 409 with no board; once open, 403 for naming the caller. `revision` required (card 2676). A caller who is not an administrator is told an id that is no account in the same words, at the same step, as an account that cannot edit the board (`deciderUserId N cannot edit this board: …`, card 2676's C5); an administrator is told `deciderUserId N is not an account`. Card 2679 (code review S1): `409` for a decision that supersedes another, at any status. Writes `decider_changed` |
 | `setParticipants` | Up to 5,000 `{ personId, role }`, each person once and active (400). A draft: rows inserted with snapshots, re-roled or deleted, with no event naming a participant. Open or closed: added (`included`, an invitation), brought back on the same row (`re_included`), re-roled (`role_changed`) or marked removed (`removed`, `link_revoked { removed }`), never deleted; a live row whose person has been deleted (`person_id` NULL), which no body can name, is marked removed the same way, so its `user_id` no longer gives the participant role (card 2676's C1). 409 for a second live row holding one account, and, when anyone is added or brought back, for `NO_LINK_ADDRESS` and for a returning participant mailed in the last 10 minutes. Card 2676: `revision` required; on a decision that is not a draft, 403 unless the caller also holds `include` (author, decider); a caller who is not an administrator naming someone who has left or an id that is no person is told `personId N cannot be included`, and one of this decision's own participants who has left is named to everyone, `participants: <name> has left: remove before saving` |
 | `updateDraft` (card 2676) | The working copy: `revision` required, and any of `title`, `closesAt`, `voteMode` and `content`. See [Authoring a decision](#authoring-a-decision). No event, activity, live event or mail |
 | `markReviewed` (card 2676) | `sections` (keys or `'all'`) and `revision`; `review` (author, decider), and 403 unless `source` is `ui`. Clears agent flags and stamps `reviewed`. No event |
@@ -1492,7 +1492,7 @@ stateDiagram-v2
     withdrawn --> [*]: Delete (password, the record goes for good)
 ```
 
-**The guards and the password** (card 2701's pattern, as the column delete runs it). The delete and the withdrawal first run `decisionDeleteGuard(caller, at)` or `decisionWithdrawGuard(caller, at, body)` in a `writeAs` of their own: every refusal of the write (404, 403, the reason's 400, the status's 409), writing nothing, and whether the decision was ever opened (`openedAt` set: `holdsRecord`, `wasOpened`). Never opened, the write runs in a transaction with no password that asks the guard again, and refuses `400 STEP_UP_MISSING` if the decision was opened meanwhile. Opened, `confirmStepUp(locals, cookies, body, '<key>', guard)` checks `currentPassword` (400 missing, 403 wrong and counted), and the write runs in `whilePasswordHolds(userId, hash, …)`, refused `409 PASSWORD_CHANGED_MEANWHILE` if the stored hash moved since the check. The administrator's account and address routes run the same way with their own guards and ask always. `STEP_UP_ACTIONS` is twenty-six since card 2697's code review, part B, added the People add, delete and Add from accounts ([Authentication and Security](authentication-security.md#decision-access-and-personal-links)).
+**The guards and the password** (card 2701's pattern, as the column delete runs it). The delete and the withdrawal first run `decisionDeleteGuard(caller, at)` or `decisionWithdrawGuard(caller, at, body)` in a `writeAs` of their own: every refusal of the write (404, 403, the reason's 400, the status's 409), writing nothing, and whether the decision was ever opened (`openedAt` set: `holdsRecord`, `wasOpened`). Never opened, the write runs in a transaction with no password that asks the guard again, and refuses `400 STEP_UP_MISSING` if the decision was opened meanwhile. Opened, `confirmStepUp(locals, cookies, body, '<key>', guard)` checks `currentPassword` (400 missing, 403 wrong and counted), and the write runs in `whilePasswordHolds(userId, hash, …)`, refused `409 PASSWORD_CHANGED_MEANWHILE` if the stored hash moved since the check. The administrator's account and address routes run the same way with their own guards and ask always. `STEP_UP_ACTIONS` was twenty-six once card 2697's code review, part B, added the People add, delete and Add from accounts ([Authentication and Security](authentication-security.md#decision-access-and-personal-links)), and is twenty-eight since card 2679 added the ruling and the release.
 
 ```mermaid
 sequenceDiagram
@@ -1522,7 +1522,7 @@ sequenceDiagram
 
 | Ruling | Where | What |
 |---|---|---|
-| S1 | `people.ts` (`personCreateGuard`, `personDeleteGuard`, `fromAccountsGuard` on `READS`), the three People routes, `/admin/people` and its dialogs | Adding a person, deleting one and Add from accounts ask for the password every time, guard first; 26 actions on `STEP_UP_ACTIONS` |
+| S1 | `people.ts` (`personCreateGuard`, `personDeleteGuard`, `fromAccountsGuard` on `READS`), the three People routes, `/admin/people` and its dialogs | Adding a person, deleting one and Add from accounts ask for the password every time, guard first; 26 actions on `STEP_UP_ACTIONS` then (28 since card 2679) |
 | S2 | `requireRecordMailAllowed` in `decisions.ts`, `recordMailsSince` in `decision-record.ts`, `CALLER_MAIL_DAILY_CAP` (500) in `decision-mail.ts` | The record mail one caller causes in 24 hours, across decisions: opening, re-publishing, Resend, including someone new or again; 429 |
 | S3 | `closesTooFar`, `refusalsOf` (`closes_too_far`) and `checkContent`'s `closes_too_far` warning in `$lib/decision-readiness.ts`; `republishDecision` | Opening and re-publishing refuse a closing time more than 365 days ahead, 409 |
 | S4 | `DecisionActions.svelte` | Withdraw and Delete send whatever password was typed, so a dialog the server told to ask completes |
@@ -1586,7 +1586,7 @@ flowchart LR
 
 - `readDecisionPage(user, decisionId)` guards with `requireDecision(…, 'view')`, so a caller who may not view is `404`, a draft to anyone outside `DRAFT_VIEWERS` included. The caller's participant row (from `decisionAccess`) is used only when `reachOf` still reaches it through the account (D12); a participant who has left, lost the account or changed address is given the page as anyone else who may view it. `mayEdit` is `mayDo(…, 'edit')`.
 - `readLinkPage(token, signedInAs)` asks `participantForLink` and gives `null` for any refusal, and for a draft; the page answers each the same (below).
-- Both build the page in one function, field by field: the decision (`id`, left out for a link holder (code review C5), `title`, shown status, vote mode, `closesAt`, the decider's name, `boardName` (null for a link holder), `withdrawnAt` and `withdrawnReason`), the current version (`number`, `publishedAt` and `versionContentAnswer`'s content), the options and audiences (`viewModelOf`), and for a participant `{ role, includedAt, told }` (`lastToldOf`), `ownResponse` and `earlierResponse` (`ownResponses` for the current round), `mayRespond` (consulted and shown open) and `stage` (`question`, `withdrawal` for withdrawn, and null for ruled and superseded, where the page posts no seen until card 2679 shows the ruling, code review C8). No account id, address, link hash, group id, reviewer's name, author, or row id of a participant or a response is given (decision 16). A draft gives `draft: true` and no version.
+- Both build the page in one function, field by field: the decision (`id`, left out for a link holder (code review C5), `title`, shown status, vote mode, `closesAt`, the decider's name, `boardName` (null for a link holder), `withdrawnAt` and `withdrawnReason`), the current version (`number`, `publishedAt` and `versionContentAnswer`'s content), the options and audiences (`viewModelOf`), and for a participant `{ role, includedAt, told }` (`lastToldOf`), `ownResponse` and `earlierResponse` (`ownResponses` for the current round), `mayRespond` (consulted and shown open) and `stage` (`question`, `withdrawal` for withdrawn, and `ruling` for ruled and superseded since card 2679 shows the ruling; a participant's alone, null for anyone else, card 2679's F7). No account id, address, link hash, group id, reviewer's name, author, or row id of a participant or a response is given (decision 16). A draft gives `draft: true` and no version.
 - `versionContentAnswer(content, via)` (`decision-authoring.ts`) gives the six text sections, the stories and the `agentDrafted` flags; a signed-in caller also gets `reviewed` as `{ <key>: true }`, with no name and no moment. `parseVersionContent` (`decision-content.ts`) reads a version back, keeping each option's `optionId` and `label` and each stamp's `{ byName, at }`, which `parseWorkingContent` drops.
 - `viewModelOf(content, options, ownGroupIds)` builds `ViewOption[]` (label, title, summary, pros, cons, commercial, and its agent flag) and `ViewAudience[]` (`heading`, `body`, `own`, `open`): audiences whose group the person is a member of now come first and open, the rest closed; with none of them the person's, every audience is open. It takes a version's content or the working content alike, so card 2697's preview can reuse it.
 - `refuseWrongLink(address)` counts one wrong link: `checkRateLimit('decision-link:' + address, 20, 15 minutes)`, `addressToCount`'s key, and returns `{ limited, retryAfterSecs }`. One WARN line under `DECISIONS` the first time an address is past the limit in a window, naming the key and no token. In memory: it reads no row and writes none, and is on `OUTSIDE_WRITE` with that reason.
@@ -1682,6 +1682,153 @@ flowchart TD
     F -- yes --> G["{ recorded: false }"]
     F -- no --> H["seen { stage } with version_number"]
     R[A response] --> F
+```
+
+### Results, the ruling and the release
+
+Card 2679 (plan `docs/planning/card-2679-results-ruling.md` v1.2, As-Built) is the decider's
+results page, the ruling behind the password, the one-way release of totals and comments
+without names, a participant's concern about the ruling, and superseding a ruled decision. It
+added no column and no migration.
+
+```mermaid
+flowchart LR
+    subgraph Pages
+        RP["/decisions/[id]/results<br/>ResultsView, RulingForm, the release"]
+        DP["/decisions/[id] and /decision-link/[token]<br/>RulingBanner, ReleasedResults, ConcernForm"]
+    end
+    subgraph Routes
+        RR["POST …/rule (step-up)"]
+        RL["POST …/release (step-up)"]
+        RC["POST …/concerns<br/>POST /api/decision-by-link/concerns"]
+        RS["POST …/supersede"]
+    end
+    RES["decision-results.ts (a read module)<br/>readResults, tallyOf, mostChosenOf, releasedOf,<br/>releaseRowsOf, commentKeyOf, chainOf,<br/>rulingRefusals, releaseRefusals"]
+    SVC["decisions.ts<br/>ruleDecision, releaseResults, raiseConcern(ByLink),<br/>supersedeDecision; decisionRuleGuard and<br/>resultsReleaseGuard on READS"]
+    REC["decision-record.ts<br/>appendRuling, responsesOf, revisionResponseIdsOf,<br/>concernsOf, eventsOfKind, statementsOf,<br/>supersedingOf, RESPONSE_KINDS, DECIDER_ONLY_EVENTS"]
+    RULES["$lib/decision-rules.ts<br/>mostChosenOf, againstOf, the limits"]
+    SVC --> RULES
+    RES --> RULES
+    RP -->|load| RES
+    DP -->|load: pageOf| VIEW["decision-view.ts"] --> RES
+    RR --> SU["confirmStepUp"] --> SVC
+    RL --> SU
+    RC --> SVC
+    RS --> SVC
+    SVC --> RES
+    SVC --> REC
+    SVC --> MAIL["decision-mail.ts: queueRecordMails 'ruling'"]
+    SVC --> NOTE["notifications.ts: notifyDecisionConcern"]
+    RES --> REC
+```
+
+**The service.** Five writes join `decisions.ts`, each `(caller, at, body, opts)` starting with
+`inWrite()`, and two guards join `READS`:
+
+| Function | Who (`DECISION_RULES`) | From (`TRANSITIONS`) | Writes |
+|---|---|---|---|
+| `decisionRuleGuard` (read) | `rule`: the decider, with board edit while the board exists | `open`, `closed` | nothing: 401, 404, 403 (an API key too), 400 for the body, 409 status, then `rulingRefusals`' 409s (a stale results revision, questions open unconfirmed) |
+| `ruleDecision` | as its guard, asked first | as its guard | `appendRuling`; `ruled`, `ruled_at`; `ruled { optionId, early, againstResponses, productOwnerUserId, supersededOld? }`, `productOwnerUserId` the board's Product Owner now, or null (code review S1); `cut_off` per live consulted non-responder when shown open; the ruling mail; `decision_ruled` and the live event; the old decision `superseded` when the ruler may supersede it |
+| `resultsReleaseGuard` (read) | `release`: the decider alone | `ruled` | nothing: 401, 404, 403, 400, 409 status, `releaseRefusals`' 409s, 409 stale revision, 400 an unknown `omit` key |
+| `releaseResults` | as its guard | as its guard | `results_released_at`, `_by`; `results_released { upToResponseId, omitted }`; `decision_results_released` and the live event; no mail |
+| `raiseConcern`, `raiseConcernByLink` (`concernAs`) | `concern`: a live participant, consulted or informed, reached by account or by link | `ruled`, within 90 days of `ruled_at` | a `concern` response; `concern_raised { responseId, notice }`; `seen { stage: 'ruling' }` once; the decider's notice for `asked`. No activity, no live event |
+| `supersedeDecision` | `supersede`: `admin`, `decider`, `productOwner`, each with board edit | `ruled`, the board there, no live superseding decision | a draft, `created { decider, supersedes }`. No activity, no live event, no mail |
+
+- **The `productOwner` role** (`decision-access.ts`) is held when the decision's board exists
+  and the decision's `ruled` event recorded the caller as `productOwnerUserId`: frozen at the
+  ruling, never the board's `product_owner_user_id` now (code review S1), so no decision before
+  its ruling, and no ruling that recorded none, gives it to anyone. It is in
+  `NEED_BOARD_EDIT`, and only `supersede` lists it; `ruleDecision`'s "may the ruler supersede
+  the old one" asks the same role, so the old decision's record decides that too.
+- **A superseding decision's decider is fixed** (code review S1): `setDecider` answers `409`
+  for any decision whose `supersedes_id` is set, as a draft and once open, after
+  `requireTransition` and before the revision. No other write changes a decider.
+- **`results`** (`['admin', 'decider']`) is a read, allowed from every status like `view` and
+  `record`; `readResults` is behind `requireDecision(user, id, 'results')`.
+- **The results revision** (`resultsRevisionOf`, keyed, covering responses, participants and
+  questions) is what a ruling and a release send; the editor revision does not cover responses.
+  Its responses are `revisionResponseIdsOf` (`decision-record.ts`), every response but a
+  concern: it fails closed, so a kind a later card adds moves it before any tally counts it
+  (code review F1). The tallies keep `RESPONSE_KINDS`, an allow-list.
+- **Against and early.** `mostChosenOf(tally, voteMode)` and `againstOf(optionId, voted,
+  mostChosen)`, in `$lib/decision-rules.ts` beside `DECISION_TITLE_MAX`, `DECISION_TEXT_MAX`
+  and `CONCERNS_PER_PARTICIPANT` (code review F8), are the one rule for the form's warning and
+  the write: in single mode the most votes, in score mode the highest total; "against" when
+  there was a vote and the choice is not among them, "none of these" included. `early` when
+  shown `open` at the moment of ruling.
+- **The release's projection** (`projectionOf` in `decision-results.ts`): cells through
+  `shownCells`; each score-mode mean through `meanOf`, its scores counted as cells (code
+  review S2); and, beside another release in the supersede chain (`chainReleased`), the number
+  who responded always withheld and no cell withheld alone (`withheldInTwos`, code review S4).
+- **No API route.** Each write refuses `opts.source !== 'ui'` with 403, and a scan case holds
+  that no file under `src/routes/api/v1/` imports a ruling, release or concern function.
+- **Activity and live events.** `decision_ruled`, `decision_superseded` (on the old decision,
+  only when superseded) and `decision_results_released`, each `"<title>"` alone and only while
+  the board exists, and `emit(boardId, 'decision', …)` beside each. None in the webhook map yet.
+- **The decider-only details** (`DECIDER_ONLY_EVENTS = ['ruled', 'cut_off',
+  'concern_raised']`): "against", "early", the cut-off names and the concern outcomes are shown
+  on the results page alone. **A binding rule on cards 2680 and 2689**: the record shows them
+  behind `record` (`['admin', 'decider']`) alone, and webhooks never carry them.
+- **What can be worked out** (decision 26). Nothing current gives both moments once ruled:
+  `DecisionPageData` holds no `ruledAt` and gives `closesAt` null, `decisionAnswer` gives
+  `closesAt` only to an administrator, and `readBoardDecisions` gives none. "Against" can still
+  be worked out from a release beside the public ruling, which the release dialog says
+  (`RELEASE_INFERENCE`), and "early" by anyone who remembers the closing time.
+
+**The page reads** (`pageOf`). Every viewer of a ruled decision is given `ruling` (label,
+title, `noneOfThese`, reason, conditions, `ruledByName`; no moment), `released` once released
+(`releasedOf`, frozen), and the supersede links, each only once the later decision is ruled and
+each naming the other decision only to a signed-in viewer who may view it. A participant alone
+is given `stage` (`ruling` on a ruled or superseded decision), their own `concerns` and
+`mayRaiseConcern`; a session page adds `mayReadResults` and `maySupersede`. The pages draw
+`RulingBanner` in the banner and `ReleasedResults` and `ConcernForm` through `DecisionView`'s
+`results` and `concern` snippets; `ResponseForm` sends `statement: WHO_SEES_STATEMENT_VERSION`
+beside `whoSeesStatement`, the words `DecisionView` shows.
+
+**The headers.** Six `ROUTE_HEADERS` rows (`gate-answers.ts`): `/decisions/[id]/results`,
+`/api/decisions/[id]/rule`, `…/release` and `…/supersede` carry `UNPUBLISHED_HEADERS`;
+`/api/decisions/[id]/concerns` carries `OWN_RESPONSE_HEADERS`, which gains `X-Robots-Tag:
+noindex, nofollow` for every route on it; `/api/decision-by-link/concerns` carries
+`PERSONAL_LINK_HEADERS` and is on `PUBLIC_ROUTES`.
+
+```mermaid
+sequenceDiagram
+    actor D as Decider
+    participant P as Results page
+    participant R as POST /api/decisions/[id]/rule
+    participant S as confirmStepUp
+    participant G as decisionRuleGuard
+    participant W as ruleDecision
+    participant M as mail (after commit)
+    D->>P: readResults: tally, revision, mostChosen
+    P->>R: { optionId, reason, conditions, revision, openQuestionsConfirmed, currentPassword }
+    R->>S: the guard first, then the password
+    S->>G: 401, 404, 403, 400, 409 status, 409 revision, 409 questions
+    S-->>R: checked hash (400 missing, 403 wrong, counted)
+    R->>W: whilePasswordHolds(writeAs(ruleDecision))
+    W->>G: the same guard, in the transaction
+    W->>W: appendRuling; ruled; cut_off if early; old decision superseded if the ruler may
+    W->>M: queueRecordMails 'ruling' (told_ruling now)
+    W->>W: decision_ruled; live event
+    R-->>P: { decision, revision }
+```
+
+```mermaid
+sequenceDiagram
+    actor D as Decider
+    participant P as Results page
+    participant R as POST /api/decisions/[id]/release
+    participant G as resultsReleaseGuard
+    participant W as releaseResults
+    participant V as Any viewer's page
+    D->>P: releasePreview: the same projection, each comment with its key
+    P->>R: { revision, omit, currentPassword }
+    R->>G: confirmStepUp asks it first
+    Note over G: 403 not the decider, 409 not stored ruled,<br/>409 released, fewer than 3, an old statement,<br/>a chain release 1 or 2 people apart,<br/>409 stale revision, 400 unknown omit key
+    R->>W: whilePasswordHolds(writeAs(releaseResults))
+    W->>W: results_released_at, _by; event { upToResponseId, omitted }; activity; live event
+    R-->>P: { decision, revision }
+    V->>V: pageOf: releasedOf, frozen, cells of 1, 2 or everyone withheld, no names
 ```
 
 ### The dashboard

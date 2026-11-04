@@ -2717,6 +2717,10 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 	'src/routes/api/decisions/[id]/dry-run/+server.ts POST': [
 		{ service: 'dryRunDecision', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'ui' }] }
 	],
+	// Card 2679 (decision 5): a draft superseding a ruled decision.
+	'src/routes/api/decisions/[id]/supersede/+server.ts POST': [
+		{ service: 'supersedeDecision', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'ui' }] }
+	],
 	// Card 2697, slice B2a: an invitation sent again; it reads no body (Q17).
 	'src/routes/api/decisions/[id]/participants/[participantId]/resend/+server.ts POST': [
 		{ service: 'resendInvitation', args: [code('caller'), { decisionId: code('id'), participantId: code('participantId') }, null, { source: 'ui' }] }
@@ -2743,6 +2747,23 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 	],
 	'src/routes/api/decision-by-link/seen/+server.ts POST': [
 		{ service: 'recordSeenByLink', args: [code('caller'), { token: code('token') }, code('body'), { source: 'ui' }] }
+	],
+	// Card 2679 (decision 4): a participant's concern about the ruling, signed in and by a personal link.
+	'src/routes/api/decisions/[id]/concerns/+server.ts POST': [
+		{ service: 'raiseConcern', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'ui' }] }
+	],
+	'src/routes/api/decision-by-link/concerns/+server.ts POST': [
+		{ service: 'raiseConcernByLink', args: [code('caller'), { token: code('token') }, code('body'), { source: 'ui' }] }
+	],
+	// Card 2679 (decision 2): every refusal first, as the step-up's guard, then the write, which asks its guard itself;
+	// each guard handed the write's options last, as its refusal of an API key is its own.
+	'src/routes/api/decisions/[id]/rule/+server.ts POST': [
+		{ service: 'decisionRuleGuard', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'ui' }] },
+		{ service: 'ruleDecision', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'ui' }] }
+	],
+	'src/routes/api/decisions/[id]/release/+server.ts POST': [
+		{ service: 'resultsReleaseGuard', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'ui' }] },
+		{ service: 'releaseResults', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'ui' }] }
 	],
 	'src/routes/api/v1/boards/[boardId]/cards/+server.ts POST': [
 		{ service: 'createCard', args: [code('caller'), { boardId: code('boardId') }, code('body'), { source: 'api', baseUrl: code('baseUrl') }] }

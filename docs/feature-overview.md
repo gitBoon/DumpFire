@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.59
+version: 1.61
 status: As-Built
 date: 2026-11-04
 tags:
@@ -280,7 +280,7 @@ A page left open while DumpFire is updated to a new version says so within about
 
 ### Decisions
 
-A decision record puts a question to the people it affects: what the situation is, what is asked, the options with their pros, cons and commercial notes, and who is consulted and who is only told (card 2676, from 3 November 2026). There is drafting, previewing, a dry run, opening and the other lifecycle controls (card 2697, from 4 November 2026, [below](#opening-a-decision-and-what-follows)), and the page each participant reads and answers a decision on (card 2677, [below](#reading-and-answering-a-decision)).
+A decision record puts a question to the people it affects: what the situation is, what is asked, the options with their pros, cons and commercial notes, and who is consulted and who is only told (card 2676, from 3 November 2026). There is drafting, previewing, a dry run, opening and the other lifecycle controls (card 2697, from 4 November 2026, [below](#opening-a-decision-and-what-follows)), the page each participant reads and answers a decision on (card 2677, [below](#reading-and-answering-a-decision)), and the results, the ruling, releasing the results, concerns and superseding (card 2679, [below](#results-the-ruling-and-what-follows)).
 
 - **Where they are** — on a board, **More → Go to → Decisions** lists the board's decisions, newest first, with each one's status, decider, closing time and last change, in UTC. Anyone who can open the board sees every decision that has been opened; a draft is seen only by its author, its decider, the board's owners and administrators. An opened decision's title opens its page, with **Edit** beside it where you may edit it; a draft's title opens its editor where you may edit it
 - **Making a draft** — **New decision**, for anyone who can edit the board, asks for a title and opens the editor. The decider starts as the board's Product Owner while they can edit the board, and as you otherwise
@@ -343,8 +343,8 @@ Once a decision is opened, each participant reads it on its own page and, if the
 - **What the page shows** — in this order: when you were told of the decision, the situation, the question, what is asked of you and by when (in UTC), who sees your response, the options side by side (stacked on a phone), how it affects you (your own group's part first and open), the user stories, what is not yet known, what is already settled and the technical detail (closed until you open them). A section an agent drafted says so. The page is made for a phone first: one column, large buttons, and text that does not need zooming
 - **Answering** — choose one option, or score each from 0 to 5 when the decision asks for scores, or say "I abstain" or "I have no concerns"; add a comment, and a comment on any option, if you want. **Send my response** records it and shows what was recorded and when. You can change your answer while the decision is open: each change is kept, and the latest counts. Sending the same answer twice records it once. If the decision was changed and you were only told of it, your answer is shown "Given on version N."; sending it again records it for the version you are reading now. Someone kept informed reads the decision and gives no response
 - **If the decision changed** — if it was changed after you opened it, sending says so and offers **Reload**. If it was changed and you were asked again, your earlier answer is shown as for the earlier version, and you answer again. Once the closing time has passed, or the decision is ruled on, superseded or withdrawn, the page says responses are closed and shows your last one, if you gave one
-- **Who sees your answer** — while the decision is open, only the decider, and DumpFire's administrators in the record. No other participant sees it, or any totals, and the page shows nobody else's
-- **What is recorded when you open it** — your first tap, click, key press or turn of the mouse wheel on the page records that you have seen this version; the page says so. Scrolling alone does not, as a mail scanner's script can scroll a page too. Opening the email, or the link being fetched by a mail scanner, records nothing. Sending a response records it too. Once a decision is ruled on, opening it records nothing yet: that comes when the page shows the ruling (a later card)
+- **Who sees your answer** — the page says: "While this decision is open, only <the decider>, who decides, sees your response. DumpFire's administrators can also see it in the record. No other participant sees it, or any totals. After the ruling, the decider may show the totals and the comments, without names, to everyone who can see this decision." The last sentence came with card 2679 (4 November 2026), and each response records which wording it was given under, so that an answer given before the page said so is never shown to anyone else
+- **What is recorded when you open it** — your first tap, click, key press or turn of the mouse wheel on the page records that you have seen this version; the page says so. Scrolling alone does not, as a mail scanner's script can scroll a page too. Opening the email, or the link being fetched by a mail scanner, records nothing. Sending a response records it too. Once a decision is ruled on, the same first action records that you have seen the ruling, and the page says that instead (card 2679)
 - **Signed in on someone else's computer** — if the browser is signed in to DumpFire when a personal link is opened, the page says "You are signed in as <name>; this is recorded with your response and with your having seen this version", and offers no way into the rest of DumpFire
 - **A link that no longer works** — an old, expired or replaced link shows "This link does not open a decision. It may have expired, or a newer email may have replaced it. Ask whoever sent it to you for a new one." Each new email about the decision carries a new link, and the old one stops working. A link works until 90 days after the decision is ruled on, withdrawn or closes
 
@@ -359,6 +359,46 @@ sequenceDiagram
     Pg->>Pg: recorded: you have seen this version
     P->>Pg: Send my response
     Pg-->>P: "Your response was recorded on …"
+```
+
+#### Results, the ruling and what follows
+
+Once people have answered, the decider rules (card 2679, from 4 November 2026).
+
+- **The results** — **Results and ruling**, in the editor and on the decision's page, opens `/decisions/<id>/results` for the decider and DumpFire's administrators, and nobody else: how each option is doing in the current round (earlier rounds kept apart and closed), each response with its person's name and comments, who has not answered yet, anyone removed, open questions, and any concerns raised after the ruling. On a phone each table stacks into labelled rows
+- **Ruling** — on the results page, the decider picks an option or "None of these", says why (required) and adds any conditions, each up to 4,000 characters. If the choice is not the most chosen, the form warns that it goes against the responses, which only the decider and administrators are shown. Ruling before the closing time lists the people who have not answered, who are recorded as cut off. With questions still open, a box must be ticked first. **Rule…** asks for your password, and every participant is then mailed the ruling, its reason and its conditions, with no figures, and told they can raise a concern for 90 days. If the page's figures have changed since you opened it, the ruling is refused and you reload
+- **The ruled banner** — everyone who can see the decision then reads "Ruled by <decider>: Option B: <title>" (or "None of these"), the reason and the conditions at the top of its page. No time is shown, nor whether it went against the responses or was early. The closing time is no longer shown once it is ruled, so nobody can tell from the page whether the ruling came early
+- **Releasing the results** — after ruling, the decider may release the totals and the comments, without names, to everyone who can see the decision. The results page shows exactly what will be shown first, with **Leave out** by each comment. Figures that could single someone out read "withheld", with no number: a count of 1 or 2, a count within 2 of everyone, and a mean score whose scores could single someone out; whenever any is withheld, so is the number who answered. Beside a release of a decision it supersedes, or that supersedes it, the number who answered is always withheld and never one count alone. Comments carry no name or time and are sorted by their text. **Release results…** warns "Once released, anyone who can see this decision can work out from the totals whether the ruling followed the most chosen option. This cannot be undone.", asks for your password, and mails nobody. It is refused when fewer than 3 people answered, when anyone answered before the page said results could be released, when the decision has been superseded, or when a decision it supersedes, or that supersedes it, released results from almost the same people
+- **Raising a concern** — a participant, consulted or informed, signed in or by their link, can raise a concern about the ruling on its page for 90 days, up to 5 of them and at least 10 minutes apart. The form says "The decider and DumpFire's administrators see your concern with your name. A release of the results never includes concerns." and lists your own. The decider is mailed that a concern arrived, with neither your name nor your words, at most once a day about you
+- **Superseding** — the decider, the board's Product Owner at the time of the ruling, or an administrator can **Supersede…** a ruled decision from its page: a new draft opens in the editor with the content that was ruled on and fresh option letters, and no participants, who are picked again. Someone made Product Owner after the ruling cannot. The new draft's decider cannot be changed; to have another decider, withdraw it and supersede again. The old decision is marked superseded only when the new one is ruled by one of those three; the two pages then link to each other, naming the other only to people who can see it ("an earlier decision" or "a later decision" otherwise, and always by a personal link)
+
+```mermaid
+stateDiagram-v2
+    Open --> Ruled: Rule (decider, your password; early cuts off who has not answered)
+    Closed --> Ruled: Rule (decider, your password)
+    Ruled --> Ruled: Release results (decider, your password, one way)
+    Ruled --> Ruled: A participant raises a concern (90 days)
+    Ruled --> Superseded: the superseding draft is ruled by the decider, Product Owner or an administrator
+    note right of Ruled
+        Supersede makes a new draft;
+        nobody is told until it opens
+    end note
+```
+
+```mermaid
+sequenceDiagram
+    actor D as Decider
+    participant R as Results page
+    participant S as DumpFire
+    actor P as Participants and board readers
+    D->>R: read the tally, choose, give a reason
+    R->>S: Rule… with your password
+    S-->>P: the ruling mail; the ruled banner on the page
+    D->>R: preview the release, leave out a comment
+    R->>S: Release results… with your password
+    S-->>P: totals and comments, no names, small figures blurred
+    P->>S: a concern (participants only)
+    S-->>D: "A participant raised a concern" (no name, no text)
 ```
 
 ---

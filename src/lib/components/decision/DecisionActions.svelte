@@ -7,6 +7,9 @@
   server asks again.
 
   - **Preview as a participant** links to `/decisions/<id>/preview`.
+  - **Results and ruling** links to `/decisions/<id>/results`, where
+    `mayReadResults` (card 2679, decision 15): the decider rules there, with
+    the tally in view, and not from this bar.
   - **Send me a dry run** sends `{ revision }`; a 409 or 429 is said in the
     server's words.
   - **Open** is off while the server gives a refusal, which it lists; with
@@ -67,6 +70,7 @@
 		refusals,
 		warnings,
 		dirty,
+		mayReadResults = false,
 		onSaved
 	}: {
 		decisionId: number;
@@ -87,6 +91,8 @@
 		warnings: Warning[];
 		/** Whether the editor holds edits not yet saved. */
 		dirty: boolean;
+		/** Whether the caller may read the results and rule from them (card 2679, decision 15): the decider and administrators. */
+		mayReadResults?: boolean;
 		/** A write was taken: the decision's revision after it. */
 		onSaved: (revision: string) => void | Promise<void>;
 	} = $props();
@@ -310,12 +316,18 @@
 			: `The draft "${title}" is deleted. It was never opened, so it holds no record.`
 	);
 
-	let anyAction = $derived(actions.open || actions.republish || actions.close || actions.extend || actions.withdraw || actions.delete || actions.dryRun);
+	// The results page is where the ruling and the release are made, so its link is a lifecycle control too.
+	let anyAction = $derived(
+		actions.open || actions.republish || actions.close || actions.extend || actions.withdraw || actions.delete || actions.dryRun || mayReadResults
+	);
 </script>
 
 <section class="decision-actions" aria-label="What can be done with this decision" bind:this={section}>
 	<div class="bar">
 		<a class="btn btn-ghost btn-sm" href="/decisions/{decisionId}/preview" data-action="preview">Preview as a participant</a>
+		{#if mayReadResults}
+			<a class="btn btn-ghost btn-sm" href="/decisions/{decisionId}/results" data-action="results">Results and ruling</a>
+		{/if}
 		{#if actions.dryRun}
 			<button type="button" class="btn btn-ghost btn-sm" data-action="dryRun" disabled={dirty || busy} title={dirty ? SAVE_FIRST : undefined} onclick={dryRun}>
 				Send me a dry run

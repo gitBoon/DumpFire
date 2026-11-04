@@ -30,6 +30,13 @@
  * what the caller may do now, by `TRANSITIONS` and `mayDo` as each write asks
  * them, whether the withdrawal and the delete ask for the password, and what
  * a re-publish would do to the options (`republishSummary`).
+ *
+ * Card 2679 (decisions 22 and 26): the one projection gains the decision a
+ * ruling supersedes and when its results were released, and gives the
+ * closing time of a ruled or superseded decision to an administrator alone,
+ * as the board's list gives it to nobody: beside `updatedAt`, the ruling's
+ * moment, it would say whether the ruling was early. The editor says whether
+ * the caller may read the results (`mayReadResults`).
  */
 import { isHttpError } from '@sveltejs/kit';
 import { asc, desc, eq } from 'drizzle-orm';
@@ -103,7 +110,14 @@ export type DecisionAnswer = {
 	closedAt: Stamp | null;
 	withdrawnAt: Stamp | null;
 	withdrawnReason: string | null;
+	/** Card 2679 (decision 22): the decision this one supersedes, by id, or null. */
+	supersedesId: number | null;
+	/** Card 2679 (decision 22): when its results were released, or null. No `ruledAt`: beside `closesAt` it would say whether the ruling was early. */
+	resultsReleasedAt: Stamp | null;
 };
+
+/** Whether a decision is ruled on: stored `ruled` or `superseded` (card 2679). */
+const isRuled = (decision: Pick<Decision, 'status'>) => decision.status === 'ruled' || decision.status === 'superseded';
 
 /** An option row as every answer gives it. Its text is in the content. */
 export type OptionAnswer = { id: number; label: string; position: number; addedInVersion: number | null; retiredInVersion: number | null };
@@ -223,7 +237,13 @@ export function workingViewContent(content: WorkingContent): ViewContent {
 	};
 }
 
-/** A decision as every answer gives it (decision 15), to an administrator (`admin`) with each reviewer's account id besides. */
+/**
+ * A decision as every answer gives it (decision 15), to an administrator
+ * (`admin`) with each reviewer's account id besides. Once it is ruled or
+ * superseded its closing time is given to an administrator alone: beside
+ * `updatedAt`, the ruling's moment, it would tell anyone else whether the
+ * ruling was early (card 2679, decision 26).
+ */
 export function decisionAnswer(decision: Decision, admin: boolean, now: Stamp = stamp()): DecisionAnswer {
 	return {
 		id: decision.id,
@@ -233,7 +253,7 @@ export function decisionAnswer(decision: Decision, admin: boolean, now: Stamp = 
 		status: decision.status,
 		shownStatus: decisionStatus(decision, now),
 		voteMode: decision.voteMode,
-		closesAt: decision.closesAt,
+		closesAt: isRuled(decision) && !admin ? null : decision.closesAt,
 		currentVersion: decision.currentVersion,
 		authorName: decision.authorName,
 		deciderUserId: decision.deciderUserId,
@@ -244,7 +264,9 @@ export function decisionAnswer(decision: Decision, admin: boolean, now: Stamp = 
 		openedAt: decision.openedAt,
 		closedAt: decision.closedAt,
 		withdrawnAt: decision.withdrawnAt,
-		withdrawnReason: decision.withdrawnReason
+		withdrawnReason: decision.withdrawnReason,
+		supersedesId: decision.supersedesId,
+		resultsReleasedAt: decision.resultsReleasedAt
 	};
 }
 
@@ -413,7 +435,8 @@ export function readBoardDecisions(
 			shownStatus: decisionStatus(row, now),
 			authorName: row.authorName,
 			deciderName: row.deciderName,
-			closesAt: row.closesAt,
+			// Card 2679 (decision 26): once ruled, beside `updatedAt` it would say whether the ruling was early.
+			closesAt: isRuled(row) ? null : row.closesAt,
 			updatedAt: row.updatedAt,
 			mayEdit: mayDo(access, 'edit', row)
 		});
@@ -645,6 +668,8 @@ export type EditPage = {
 	 * re-publish now.
 	 */
 	republishSummary: RepublishSummary | null;
+	/** Card 2679: whether the caller may read the results and rule from them (`results`: the decider and administrators). */
+	mayReadResults: boolean;
 };
 
 /** The lifecycle controls the editor offers (card 2697, Q14). */
@@ -778,6 +803,7 @@ export function readEditPage(user: SessionUser, decisionId: number): EditPage {
 				? directoryFacts(decision, participants)
 				: null,
 		actions,
-		republishSummary: actions.republish ? republishSummaryOf(decision) : null
+		republishSummary: actions.republish ? republishSummaryOf(decision) : null,
+		mayReadResults: decision.status !== 'draft' && mayDo(access, 'results', decision)
 	};
 }

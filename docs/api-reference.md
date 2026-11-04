@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.109
+version: 1.110
 status: As-Built
 date: 2026-11-04
 tags:
@@ -337,8 +337,9 @@ either.
 
 **The v1 API and the OpenAPI document (`1.4.0`) are unchanged.** These changes are to the web
 application's own routes under `/api/` outside `/api/v1/`, which DumpFire's pages call with a
-session and which a key cannot reach (cards 2701 and 2697): twenty-six of them now ask for the
-caller's current password, card 2701's eighteen every time and card 2697's eight as listed below.
+session and which a key cannot reach (cards 2701, 2697 and 2679): twenty-eight of them now ask
+for the caller's current password, card 2701's eighteen every time, card 2697's eight and card
+2679's two as listed below.
 See [Step-up Before Destructive Actions](authentication-security.md#step-up-before-destructive-actions-card-2701).
 
 - **`currentPassword` in the JSON body** of `POST /api/admin/reset`,
@@ -397,6 +398,68 @@ See [Step-up Before Destructive Actions](authentication-security.md#step-up-befo
   `DELETE /api/decisions/{id}` and `POST /api/decisions/{id}/withdraw` once the decision was
   ever opened. A draft never opened is deleted with `{}` and withdrawn with `{ reason }`, asking
   nothing; the delete always takes a JSON body.
+- **Card 2679's two**, every time, each with every refusal that needs no password made first:
+  `POST /api/decisions/{id}/rule` and `POST /api/decisions/{id}/release` (below).
+- **The results, the ruling, the release, concerns and supersede are new** (card 2679), all
+  internal, each JSON and same-origin. None is in `/api/v1`, and none can be reached with a key:
+  ruling, releasing and raising a concern are also refused `403` by the service for any source
+  but the web application ("Ruling is a person's act: it cannot be done with an API key", and
+  the same for releasing and a concern). Card 2682 gives the v1 API a read of the results alone.
+  - `POST /api/decisions/{id}/rule`, the decider's alone, while they can edit the board:
+    `{ "optionId": 12 | null, "reason": "…", "conditions": "…", "revision": "…",
+    "openQuestionsConfirmed": true, "currentPassword": "…" }`. `optionId` is one of the
+    current version's options, or `null` for none of these; `reason` 1 to 4,000 characters,
+    `conditions` up to 4,000, neither holding a control character; `revision` the **results
+    revision** the results page was given, which moves with every response, participant and
+    answered question, so a ruling made on a tally that has changed is `409` in the editor's
+    stale words. From stored `open` or `closed` only (`409`); with questions still open,
+    `409` "<n> questions are still open: confirm that you rule with them open" unless
+    `openQuestionsConfirmed`. Answers `200 { decision, revision }`. Every participant is mailed
+    the ruling (option, reason, conditions, and that a concern can be raised for 90 days; no
+    figure, no "against", no cut-off).
+  - `POST /api/decisions/{id}/release`, the decider's alone: `{ "revision": "…", "omit":
+    ["<key>", …], "currentPassword": "…" }`, `omit` optional, the keys of the preview's
+    comments to leave out. From stored `ruled` only (`409`, a superseded decision included).
+    `409` once released ("This decision's results have already been released"), with fewer
+    than 3 consulted people responding in the ruling round ("Fewer than 3 people responded:
+    releasing their comments could show who said what"), while any of those responses was
+    given before the page said results could be released ("<n> of these responses were given
+    before the page said the results could be released: they cannot be released"), and when
+    another release in its supersede chain is from 1 or 2 people apart; `409` for a stale
+    results revision; `400` for an `omit` key the release would not show. Answers
+    `200 { decision, revision }`. It mails nobody, and cannot be undone.
+  - `POST /api/decisions/{id}/concerns`, a live participant's, consulted or informed, reached
+    through their account: `{ "comment": "…" }`, 1 to 4,000 characters. And
+    `POST /api/decision-by-link/concerns`, `{ "token": "…", "comment": "…" }`, public, the
+    token deciding as on the link's other two routes: any link that opens no decision, one past
+    90 days after the ruling among them, is the one `404`, counted against the caller's address
+    (`429` past 20 in 15 minutes). Both answer `200 { "concern": { "comment", "createdAt" } }`,
+    with no id. `409` on a superseded ruling ("This ruling has been superseded: raise a concern
+    on the decision that superseded it"), on any status but `ruled`, past 90 days after the
+    ruling signed in ("A concern about this ruling could be raised for 90 days after it: that
+    time has ended"), and on a sixth concern; `429` within 10 minutes of the participant's
+    last, saying from when, in UTC. A concern is never a vote, and is never released.
+  - `POST /api/decisions/{id}/supersede`, by the decision's decider, the board's Product Owner
+    or an administrator, each while they can edit the board: `{ "title": "…" }`, optional, the
+    old title when not sent. From stored `ruled` only (`409`); `409` when the board is gone, and
+    while another decision superseding it is not withdrawn ("A later decision that supersedes
+    this one already exists"). Answers `201 { decision, revision }` of the new draft, whose
+    decider is the old decision's while that account can edit the board, and the caller
+    otherwise. No password: the draft tells nobody, and its own ruling asks.
+  - `/decisions/{id}/results` is the results page, for the decider and administrators; anyone
+    else who can view the decision is `403`, and anyone who cannot, `404`.
+  - **Changed:** `POST /api/decisions/{id}/responses` and `POST /api/decision-by-link/responses`
+    take an optional `statement`, the version of the who-sees words the page showed (now `2`):
+    any other number is `409` in the stale-page words; the same answer sent again under the
+    current statement, where the last was recorded under none, is recorded anew. Once a
+    decision is ruled, the editor's answer and a board's list give `closesAt: null` (an
+    administrator's editor answer keeps it), and `DecisionAnswer` gains `supersedesId` and
+    `resultsReleasedAt`.
+  - **Headers:** the results page, the rule, release and supersede answers carry
+    `Cache-Control: no-store` and `X-Robots-Tag: noindex, nofollow`; `POST …/concerns` carries
+    the same as the decision page and its other participant routes, which gain `X-Robots-Tag:
+    noindex, nofollow`; the link's concern route carries the personal link's headers
+    (`Referrer-Policy: no-referrer` among them).
 - **The record mail one account causes is capped** (card 2697's code review, part B, S2): 500
   participants mailed in 24 hours across every decision, by opening, re-publishing,
   `POST …/participants/{participantId}/resend` and `PUT …/participants` including someone new

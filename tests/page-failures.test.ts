@@ -1778,6 +1778,8 @@ describe('a 401 that says the page’s session has ended, src/lib/signed-out.ts'
 			// A personal link's routes (card 2677, R7): its holder may have no account to sign in to.
 			['/api/decision-by-link/responses', false],
 			['/api/decision-by-link/seen', false],
+			// Card 2679: its holder's concern about the ruling.
+			['/api/decision-by-link/concerns', false],
 			// Named like them, and not one of them.
 			['/api/decision-by-linkX', true],
 			['/login', false],
@@ -3530,6 +3532,7 @@ describe('every page write says it is JSON, read from the source and failing clo
 			expect.arrayContaining([
 				'src/lib/api.ts › jsonRequest › fetch(url)',
 				"src/lib/components/admin/people/PersonDialog.svelte › save › fetch(start ? `/api/people/${start.id}` : '/api/people')",
+				'src/lib/components/decision/ConcernForm.svelte › send › fetch(url)',
 				'src/lib/components/decision/ResponseForm.svelte › send › fetch(url)',
 				'src/lib/decision-seen.ts › send › fetch(url)'
 			])
@@ -3820,6 +3823,7 @@ function listedSendsIn(file: string, source: string): ListedSend[] {
 const UNREAD_SENDS = [
 	'src/lib/api.ts › jsonRequest › fetch(url)',
 	'src/lib/board/board-state.svelte.ts › (top) › fetch(input)',
+	'src/lib/components/decision/ConcernForm.svelte › send › fetch(url)',
 	'src/lib/components/decision/ResponseForm.svelte › send › fetch(url)',
 	'src/lib/decision-seen.ts › send › fetch(url)',
 	'src/lib/live-stream.ts › streamVerdict › fetch(url)',

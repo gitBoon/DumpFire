@@ -143,6 +143,9 @@ const ALLOWED: Record<string, string> = {
 	'src/routes/api/decision-by-link/seen/+server.ts POST':
 		"A personal link's seen (card 2677, decision 8): the address a wrong link is counted against is read before the body, " +
 		'from the request alone. It reads no row and counts nothing.',
+	'src/routes/api/decision-by-link/concerns/+server.ts POST':
+		"A personal link's concern about the ruling (card 2679, decision 4): the address a wrong link is counted against is read " +
+		'before the body, from the request alone. It reads no row and counts nothing.',
 	'src/routes/api/admin/import/+server.ts POST':
 		'The import settles `outside` and the media type before it reads the upload, and answers either before any of it is read. ' +
 		'Who may import is requireSuperadmin, the session. Then it takes the confirmation of the password (card 2701, decision 8), ' +
@@ -648,7 +651,10 @@ const CURRENT_PASSWORD = [
 	'src/routes/api/people/from-accounts/+server.ts POST',
 	// Card 2697, B4 (Q31): the delete and the withdrawal of a decision that was ever opened.
 	'src/routes/api/decisions/[id]/+server.ts DELETE',
-	'src/routes/api/decisions/[id]/withdraw/+server.ts POST'
+	'src/routes/api/decisions/[id]/withdraw/+server.ts POST',
+	// Card 2679 (decision 2): the ruling and the release of its results.
+	'src/routes/api/decisions/[id]/rule/+server.ts POST',
+	'src/routes/api/decisions/[id]/release/+server.ts POST'
 ];
 
 /**
@@ -3087,7 +3093,8 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 			'src/lib/server/decisions.ts': {
 				// Card 2697 (Q10, Q29): the administrator's participant writes' refusals, and the delete's and the
 				// withdrawal's, read before the password.
-				reads: ['participantAccountGuard', 'participantAddressGuard', 'decisionDeleteGuard', 'decisionWithdrawGuard'],
+				// Card 2679 (decision 2): the ruling's and the release's, which their routes ask before the password.
+				reads: ['participantAccountGuard', 'participantAddressGuard', 'decisionDeleteGuard', 'decisionWithdrawGuard', 'decisionRuleGuard', 'resultsReleaseGuard'],
 				writes: [
 					'createDecision',
 					'setDecider',
@@ -3110,7 +3117,14 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 					'respondToDecision',
 					'respondByLink',
 					'recordSeen',
-					'recordSeenByLink'
+					'recordSeenByLink',
+					// Card 2679: the ruling, the release of results, and a draft superseding a ruled decision.
+					'ruleDecision',
+					'releaseResults',
+					'supersedeDecision',
+					// Card 2679 (decision 4): a participant's concern about the ruling, signed in or by a personal link.
+					'raiseConcern',
+					'raiseConcernByLink'
 				]
 			}
 		});

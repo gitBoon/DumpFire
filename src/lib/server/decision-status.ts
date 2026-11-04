@@ -66,7 +66,15 @@ export type DecisionAction =
 	| 'rule'
 	| 'record'
 	| 'respond'
-	| 'dryRun';
+	| 'dryRun'
+	// Card 2679: the results read, the release of results, a participant's concern and superseding a ruled decision.
+	| 'results'
+	| 'release'
+	| 'concern'
+	| 'supersede';
+
+/** The actions that only read, allowed from every stored status: no transition is asked of them. */
+export type ReadAction = 'view' | 'record' | 'results';
 
 /**
  * Each action in words: `verb` for `You cannot <verb> this decision` (the
@@ -91,7 +99,11 @@ export const DECISION_ACTION_WORDS: Readonly<Record<DecisionAction, { verb: stri
 	rule: { verb: 'rule on', done: 'it cannot be ruled on' },
 	record: { verb: 'read the record of', done: 'its record cannot be read' },
 	respond: { verb: 'respond to', done: 'responses are closed' },
-	dryRun: { verb: 'send a dry run of', done: 'a dry run cannot be sent' }
+	dryRun: { verb: 'send a dry run of', done: 'a dry run cannot be sent' },
+	results: { verb: 'read the results of', done: 'its results cannot be read' },
+	release: { verb: 'release the results of', done: 'its results cannot be released' },
+	concern: { verb: 'raise a concern on', done: 'a concern cannot be raised on it' },
+	supersede: { verb: 'supersede', done: 'it cannot be superseded' }
 };
 
 /** Each shown status in words, for `This decision is <status>`. */
@@ -104,8 +116,8 @@ const STATUS_WORDS: Readonly<Record<ShownStatus, string>> = {
 	withdrawn: 'withdrawn'
 };
 
-/** The stored statuses each action may be taken from. `view` and `record` are allowed from any. */
-export const TRANSITIONS: Readonly<Record<Exclude<DecisionAction, 'view' | 'record'>, readonly StoredStatus[]>> = {
+/** The stored statuses each action may be taken from. `view`, `record` and `results` are allowed from any. */
+export const TRANSITIONS: Readonly<Record<Exclude<DecisionAction, ReadAction>, readonly StoredStatus[]>> = {
 	edit: ['draft', 'open', 'closed'],
 	setDecider: ['draft', 'open', 'closed'],
 	// Card 2676: including people once opened (R3), and marking agent-drafted text reviewed (decision 9).
@@ -124,7 +136,11 @@ export const TRANSITIONS: Readonly<Record<Exclude<DecisionAction, 'view' | 'reco
 	// Card 2677: a participant's response, while the decision is stored open; the write also asks the shown status (decision 12).
 	respond: ['open'],
 	// Card 2697: the invitation as a consulted participant would get it, mailed to the caller alone (decision 19, Q26).
-	dryRun: ['draft', 'open', 'closed']
+	dryRun: ['draft', 'open', 'closed'],
+	// Card 2679: a release from a stored ruling alone, never a superseded one (S4); a concern on the ruling; and superseding it.
+	release: ['ruled'],
+	concern: ['ruled'],
+	supersede: ['ruled']
 };
 
 /**
@@ -134,7 +150,7 @@ export const TRANSITIONS: Readonly<Record<Exclude<DecisionAction, 'view' | 'reco
  */
 export function requireTransition(
 	row: Pick<Decision, 'status' | 'closesAt'>,
-	action: Exclude<DecisionAction, 'view' | 'record'>,
+	action: Exclude<DecisionAction, ReadAction>,
 	now: Stamp = stamp()
 ): void {
 	if ((TRANSITIONS[action] as readonly string[]).includes(row.status)) return;

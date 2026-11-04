@@ -26,6 +26,7 @@ import {
 	decisionOptions,
 	decisionParticipants,
 	decisionResponses,
+	decisionRulings,
 	decisionVersions,
 	decisions,
 	labels,
@@ -47,6 +48,7 @@ import {
 	type DecisionOption,
 	type DecisionParticipant,
 	type DecisionResponse,
+	type DecisionRuling,
 	type DecisionVersion,
 	type Label,
 	type Milestone,
@@ -693,6 +695,50 @@ export function makeResponse(participant: DecisionParticipant, opts: Partial<typ
 		})
 		.returning()
 		.get();
+}
+
+/**
+ * A ruling of the decision (card 2679), as `ruleDecision` leaves one: the
+ * ruling row, on none of these, for its current version, by its decider,
+ * neither early nor against unless told otherwise, and the decision stored
+ * `ruled` with its `ruled_at`; and its `ruled` event, holding the board's
+ * Product Owner as it is now (code review S1). No `cut_off`, no mail. Any
+ * column of the ruling given in `opts`.
+ */
+export function makeRuling(decision: Decision, opts: Partial<typeof decisionRulings.$inferInsert> = {}): DecisionRuling {
+	const row = db.select().from(decisions).where(eq(decisions.id, decision.id)).get()!;
+	const ruledAt = opts.ruledAt ?? '2026-11-02 09:00:00';
+	const ruling = db
+		.insert(decisionRulings)
+		.values({
+			optionId: null,
+			reason: 'A reason.',
+			conditions: null,
+			againstResponses: false,
+			early: false,
+			versionNumber: row.currentVersion,
+			ruledBy: row.deciderUserId,
+			ruledByName: row.deciderName ?? 'A decider',
+			...opts,
+			ruledAt,
+			decisionId: decision.id
+		})
+		.returning()
+		.get();
+	db.update(decisions).set({ status: 'ruled', ruledAt }).where(eq(decisions.id, decision.id)).run();
+	// As `ruleDecision` records it (code review S1): the board's Product Owner now, who alone holds `productOwner` on it from then on.
+	const productOwnerUserId =
+		row.boardId === null ? null : (db.select({ id: boards.productOwnerUserId }).from(boards).where(eq(boards.id, row.boardId)).get()?.id ?? null);
+	appendEvent(
+		{
+			decisionId: decision.id,
+			kind: 'ruled',
+			versionNumber: row.currentVersion,
+			detail: { optionId: ruling.optionId, early: ruling.early, againstResponses: ruling.againstResponses, productOwnerUserId }
+		},
+		SYSTEM_ACTOR
+	);
+	return ruling;
 }
 
 /**

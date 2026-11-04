@@ -110,7 +110,13 @@ export const ACTIONS = {
 	decisionClosed: 'decision_closed',
 	decisionExtended: 'decision_extended',
 	decisionWithdrawn: 'decision_withdrawn',
-	decisionDeleted: 'decision_deleted'
+	decisionDeleted: 'decision_deleted',
+	// Card 2679 (decision 17): the ruling, the old decision superseded, and the
+	// release of results, each detail the title alone: never an option, a
+	// count, "against", a cut-off, a reason or a name.
+	decisionRuled: 'decision_ruled',
+	decisionSuperseded: 'decision_superseded',
+	decisionResultsReleased: 'decision_results_released'
 } as const;
 
 export interface ActivityEntry {

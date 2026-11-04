@@ -74,7 +74,11 @@ export const ACTIVITY_LABELS: Readonly<Record<string, string>> = Object.freeze({
 	decision_closed: 'Closed decision for input',
 	decision_extended: 'Extended decision',
 	decision_withdrawn: 'Withdrew decision',
-	decision_deleted: 'Deleted decision'
+	decision_deleted: 'Deleted decision',
+	// Card 2679.
+	decision_ruled: 'Ruled on decision',
+	decision_superseded: 'Decision superseded',
+	decision_results_released: 'Released decision results'
 });
 
 /**

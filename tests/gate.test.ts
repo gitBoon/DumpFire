@@ -2578,7 +2578,8 @@ describe('the security headers', () => {
 	// carries.
 	it('give a personal link’s routes no referrer, no index and no cache, a decision’s own page and routes no cache, and its authoring pages no cache and no index, replacing the answer’s own (21)', () => {
 		const LINKED = { ...FIVE, 'referrer-policy': 'no-referrer', 'x-robots-tag': 'noindex, nofollow', 'cache-control': 'no-store' };
-		const OWN = { ...FIVE, 'x-robots-tag': null, 'cache-control': 'no-store' };
+		// Card 2679 (decision 6): a decision's own page can show released comments, so it is indexed nowhere too.
+		const OWN = { ...FIVE, 'x-robots-tag': 'noindex, nofollow', 'cache-control': 'no-store' };
 		const UNCHANGED = { ...FIVE, 'x-robots-tag': null, 'cache-control': null };
 		const theseOf = (res: Response) => ({ ...headersOf(res), 'x-robots-tag': res.headers.get('x-robots-tag'), 'cache-control': res.headers.get('cache-control') });
 
@@ -2586,6 +2587,8 @@ describe('the security headers', () => {
 			'/decision-link/[token]',
 			'/api/decision-by-link/responses',
 			'/api/decision-by-link/seen',
+			// Card 2679 (decision 6): its holder's concern about the ruling.
+			'/api/decision-by-link/concerns',
 			// Card 2698: an invite, and the request form's links and the two reads their pages make.
 			'/invite/[token]',
 			'/request/[id]/confirm',
@@ -2609,13 +2612,22 @@ describe('the security headers', () => {
 			);
 			expect(theseOf(cached), `${routeId}, cached`).toEqual(linked);
 		}
-		for (const routeId of ['/decisions/[id]', '/api/decisions/[id]/responses', '/api/decisions/[id]/seen']) {
+		for (const routeId of ['/decisions/[id]', '/api/decisions/[id]/responses', '/api/decisions/[id]/seen', '/api/decisions/[id]/concerns']) {
 			expect(theseOf(secured(new Response('x'), routeId)), routeId).toEqual(OWN);
-			expect(theseOf(secured(new Response('x', { headers: { 'Cache-Control': 'max-age=60' } }), routeId)), `${routeId}, cached`).toEqual(OWN);
+			expect(theseOf(secured(new Response('x', { headers: { 'Cache-Control': 'max-age=60', 'X-Robots-Tag': 'all' } }), routeId)), `${routeId}, cached`).toEqual(OWN);
 		}
 		// Card 2697 (Q12): the authoring pages show what has not been published: cached and indexed nowhere, with no referrer rule of their own.
+		// Card 2679 (decision 6): so do superseding's answer, a new draft, the results page, and the ruling's and the release's answers.
 		const UNPUBLISHED = { ...FIVE, 'x-robots-tag': 'noindex, nofollow', 'cache-control': 'no-store' };
-		for (const routeId of ['/decisions/[id]/preview', '/decisions/[id]/edit', '/board/[id]/decisions']) {
+		for (const routeId of [
+			'/decisions/[id]/preview',
+			'/decisions/[id]/edit',
+			'/board/[id]/decisions',
+			'/api/decisions/[id]/supersede',
+			'/decisions/[id]/results',
+			'/api/decisions/[id]/rule',
+			'/api/decisions/[id]/release'
+		]) {
 			expect(theseOf(secured(new Response('x'), routeId)), routeId).toEqual(UNPUBLISHED);
 			const cached = secured(new Response('x', { headers: { 'Cache-Control': 'max-age=60', 'X-Robots-Tag': 'all' } }), routeId);
 			expect(theseOf(cached), `${routeId}, cached`).toEqual(UNPUBLISHED);
@@ -2753,6 +2765,8 @@ describe('the routes a caller who is not signed in is let through to', () => {
 		'/decision-link/[token]',
 		'/api/decision-by-link/responses',
 		'/api/decision-by-link/seen',
+		// Card 2679 (decision 4): its holder's concern about the ruling.
+		'/api/decision-by-link/concerns',
 		'/api/v1/openapi.json'
 	];
 

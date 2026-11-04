@@ -10,8 +10,15 @@
  * `RECORD_DECISION_LINKS_ENDED` in db/restore.ts, which records
  * `link_revoked { reason: 'restore' }` for each link a restore ends (decision
  * 13). Card 2677 adds the response insert, `appendResponse`, and the reads of
- * a participant's own responses and of what they have seen and been told;
- * card 2679 adds its ruling insert here. Nothing anywhere updates or deletes a row of them,
+ * a participant's own responses and of what they have seen and been told.
+ * Card 2679 adds the ruling's insert, `appendRuling`, the one insert of a
+ * ruling; the reads of every response, of the concerns, of the response ids
+ * the results revision covers (`revisionResponseIdsOf`, which fails closed)
+ * and of the statement version each response was given under; and the
+ * allow-list of the kinds a
+ * response may be counted as (`RESPONSE_KINDS`), which every read of a vote
+ * asks, so that a concern, or a kind a later card adds, is never read as one.
+ * Nothing anywhere updates or deletes a row of them,
  * but the cascade of `deleteDecision`, a restore's wholesale replacement (plan
  * 4.8), and the writers that walk every table by name, which the scan names
  * one by one (`GENERIC_WRITERS`). tests/decision-record.test.ts holds this by
@@ -26,18 +33,21 @@
  * Plain functions with no caller, called inside a service write's
  * transaction, or by the mail effect in a transaction of its own.
  */
-import { and, asc, count, desc, eq, gte, inArray, isNotNull, isNull, gt, lt, lte, max, or } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, inArray, isNotNull, isNull, gt, lt, lte, max, ne, or } from 'drizzle-orm';
 import { db } from './db';
 import {
 	decisionEvents,
 	decisionOptions,
 	decisionResponses,
+	decisionRulings,
 	decisionVersions,
 	decisions,
 	people,
 	peopleGroupMembers,
 	peopleGroups,
+	type Decision,
 	type DecisionResponse,
+	type DecisionRuling,
 	type DecisionVersion,
 	type Person
 } from './db/schema';
@@ -85,10 +95,35 @@ export const EVENT_KINDS = [
 	'dry_run',
 	// Card 2677: a participant recorded as having seen a version at a stage (decision 14), and each response given (decision 13).
 	'seen',
-	'responded'
+	'responded',
+	// Card 2679: the ruling `{ optionId, early, againstResponses, supersededOld? }`; each consulted participant cut off by an early
+	// ruling; superseded `{ byDecisionId }`; the release `{ upToResponseId, omitted }`; and a concern `{ responseId, notice }`.
+	'ruled',
+	'cut_off',
+	'superseded',
+	'results_released',
+	'concern_raised'
 ] as const;
 
 export type EventKind = (typeof EVENT_KINDS)[number];
+
+/**
+ * What a participant's response may be counted as (card 2677, decision 11;
+ * moved here by card 2679, decision 18): every read of a vote, a tally and a
+ * participant's own response reads these kinds alone. An allow-list, so that
+ * a `concern`, and a kind a later card adds, is never read as a vote until it
+ * is named here.
+ */
+export const RESPONSE_KINDS = ['vote', 'abstain', 'no_concerns'] as const;
+
+/**
+ * The events that are the decider's and administrators' alone (card 2679,
+ * decision 26, S10): `ruled`'s `early` and `againstResponses`, the `cut_off`
+ * events and `concern_raised`. A binding rule on the cards that read the
+ * record: card 2680's record shows them behind `record` (`['admin',
+ * 'decider']`) alone, and card 2689's webhooks never carry them.
+ */
+export const DECIDER_ONLY_EVENTS: readonly EventKind[] = ['ruled', 'cut_off', 'concern_raised'];
 
 /** The events a record-bearing mail writes for its participant (decision 31). */
 const MAIL_KINDS: readonly EventKind[] = ['invited', 'asked_again', 'told_of_change', 'told_withdrawn', 'told_ruling'];
@@ -199,6 +234,121 @@ export function appendResponse(r: {
 		})
 		.returning()
 		.get();
+}
+
+/**
+ * Append the decision's ruling (card 2679, decision 7), `ruled_at` stamped,
+ * by `by`: the one insert into the rulings, of which a decision holds at most
+ * one (its key is the decision's). Nothing updates or deletes it.
+ */
+export function appendRuling(
+	ruling: { decisionId: number; optionId: number | null; reason: string; conditions: string | null; againstResponses: boolean; early: boolean; versionNumber: number },
+	by: RecordActor
+): DecisionRuling {
+	return db
+		.insert(decisionRulings)
+		.values({
+			decisionId: ruling.decisionId,
+			optionId: ruling.optionId,
+			reason: ruling.reason,
+			conditions: ruling.conditions,
+			againstResponses: ruling.againstResponses,
+			early: ruling.early,
+			versionNumber: ruling.versionNumber,
+			ruledBy: by.userId,
+			ruledByName: by.name,
+			ruledAt: stamp()
+		})
+		.returning()
+		.get();
+}
+
+/** The decision's ruling, or null before it is ruled (card 2679). */
+export function rulingOf(decisionId: number): DecisionRuling | null {
+	return db.select().from(decisionRulings).where(eq(decisionRulings.decisionId, decisionId)).get() ?? null;
+}
+
+/** Every response of the decision that is a vote, an abstention or no concerns (`RESPONSE_KINDS`), in id order: never a concern (card 2679, decisions 8 and 18). */
+export function responsesOf(decisionId: number): DecisionResponse[] {
+	return db
+		.select()
+		.from(decisionResponses)
+		.where(and(eq(decisionResponses.decisionId, decisionId), inArray(decisionResponses.kind, [...RESPONSE_KINDS])))
+		.orderBy(asc(decisionResponses.id))
+		.all();
+}
+
+/**
+ * The ids of every response of the decision but its concerns, in id order:
+ * what the results revision covers (card 2679, decision 8; code review F1).
+ * Not `RESPONSE_KINDS`, on purpose: the revision fails closed. A kind a later
+ * card adds moves the revision before any tally counts it, so a ruling or a
+ * release asked against a page that did not show it is refused; only a
+ * concern, which is raised after the ruling and is never counted, leaves the
+ * revision be. Every tally keeps the allow-list (`responsesOf`).
+ */
+export function revisionResponseIdsOf(decisionId: number): number[] {
+	return db
+		.select({ id: decisionResponses.id })
+		.from(decisionResponses)
+		.where(and(eq(decisionResponses.decisionId, decisionId), ne(decisionResponses.kind, 'concern')))
+		.orderBy(asc(decisionResponses.id))
+		.all()
+		.map((row) => row.id);
+}
+
+/** The concerns raised on the decision, or by one participant, in id order (card 2679, decision 18): `kind = 'concern'` alone. */
+export function concernsOf(of: { participantId: number } | { decisionId: number }): DecisionResponse[] {
+	const whose = 'participantId' in of ? eq(decisionResponses.participantId, of.participantId) : eq(decisionResponses.decisionId, of.decisionId);
+	return db
+		.select()
+		.from(decisionResponses)
+		.where(and(whose, eq(decisionResponses.kind, 'concern')))
+		.orderBy(asc(decisionResponses.id))
+		.all();
+}
+
+/**
+ * The version of the who-sees statement each response was given under, by
+ * response id, from its `responded` event's `statement` (card 2679, decision
+ * 25); null for a response whose event holds none, given before the version
+ * was recorded. A response with no `responded` event is not in the map.
+ */
+export function statementsOf(decisionId: number): Map<number, number | null> {
+	const statements = new Map<number, number | null>();
+	for (const event of eventsOfKind(decisionId, 'responded')) {
+		if (typeof event.detail.responseId !== 'number') continue;
+		statements.set(event.detail.responseId, typeof event.detail.statement === 'number' ? event.detail.statement : null);
+	}
+	return statements;
+}
+
+/** The decision's events of `kind`, in order, each with its participant, its detail read and its actor's name (card 2679). */
+export function eventsOfKind(decisionId: number, kind: EventKind): { participantId: number | null; detail: Record<string, unknown>; actorName: string; at: Stamp }[] {
+	return db
+		.select({ participantId: decisionEvents.participantId, detail: decisionEvents.detail, actorName: decisionEvents.actorName, at: decisionEvents.createdAt })
+		.from(decisionEvents)
+		.where(and(eq(decisionEvents.decisionId, decisionId), eq(decisionEvents.kind, kind)))
+		.orderBy(asc(decisionEvents.id))
+		.all()
+		.map((event) => ({ ...event, detail: detailOf(event.detail) }));
+}
+
+/**
+ * The decision that supersedes this one and is not withdrawn, the newest, or
+ * null for none (card 2679, decision 5): there is at most one, in code
+ * (`decisions.supersedes_id`).
+ */
+export function supersedingOf(decisionId: number): Decision | null {
+	return (
+		db
+			.select()
+			.from(decisions)
+			.where(and(eq(decisions.supersedesId, decisionId), ne(decisions.status, 'withdrawn')))
+			.orderBy(desc(decisions.id))
+			.limit(1)
+			.get() ?? null
+	);
 }
 
 /**
@@ -537,25 +687,28 @@ export function personOfAccount(userId: number): Person | null {
 
 // ─── A participant's own part (card 2677) ────────────────────────────────────
 
-/** The participant's latest response in `round`, or null for none: what the next one replaces (decision 11). */
+/** A participant's responses that are counted as one (`RESPONSE_KINDS`, card 2679 F3): never a concern. */
+const counted = (participantId: number) => and(eq(decisionResponses.participantId, participantId), inArray(decisionResponses.kind, [...RESPONSE_KINDS]));
+
+/** The participant's latest response in `round`, or null for none: what the next one replaces (decision 11). A concern is none (card 2679, F3). */
 export function latestResponse(participantId: number, round: number): DecisionResponse | null {
 	return (
 		db
 			.select()
 			.from(decisionResponses)
-			.where(and(eq(decisionResponses.participantId, participantId), eq(decisionResponses.round, round)))
+			.where(and(counted(participantId), eq(decisionResponses.round, round)))
 			.orderBy(desc(decisionResponses.id))
 			.limit(1)
 			.get() ?? null
 	);
 }
 
-/** How many responses the participant has given in `round`, for the write's cap (decision 11). */
+/** How many responses the participant has given in `round`, for the write's cap (decision 11). Concerns are not counted (card 2679, F3). */
 export function responsesInRound(participantId: number, round: number): number {
 	const row = db
 		.select({ n: count() })
 		.from(decisionResponses)
-		.where(and(eq(decisionResponses.participantId, participantId), eq(decisionResponses.round, round)))
+		.where(and(counted(participantId), eq(decisionResponses.round, round)))
 		.get();
 	return row?.n ?? 0;
 }
@@ -563,7 +716,8 @@ export function responsesInRound(participantId: number, round: number): number {
 /**
  * The participant's own responses as the page shows them: the latest in
  * `round`, and, when there is none, the latest of an earlier round, which the
- * page shows as for an earlier version (design 4.7).
+ * page shows as for an earlier version (design 4.7). A concern is neither
+ * (card 2679, F3).
  */
 export function ownResponses(participantId: number, round: number): { current: OwnResponse | null; earlier: OwnResponse | null } {
 	const current = latestResponse(participantId, round);
@@ -571,7 +725,7 @@ export function ownResponses(participantId: number, round: number): { current: O
 	const earlier = db
 		.select()
 		.from(decisionResponses)
-		.where(and(eq(decisionResponses.participantId, participantId), lt(decisionResponses.round, round)))
+		.where(and(counted(participantId), lt(decisionResponses.round, round)))
 		.orderBy(desc(decisionResponses.id))
 		.limit(1)
 		.get();

@@ -272,7 +272,7 @@ const linkRevokedReasons = (participantId: number) =>
 // ─── 1 and 2. The list, and the routes that ask ──────────────────────────────
 
 describe('the list of what asks, pinned against the routes (cases 1 and 2)', () => {
-	it("is the twenty-six actions: decision 2's eighteen (the import among them, as its confirmation) and card 2697's eight, each with why it asks", () => {
+	it("is the twenty-eight actions: decision 2's eighteen (the import among them, as its confirmation), card 2697's eight and card 2679's two, each with why it asks", () => {
 		expect(Object.keys(STEP_UP_ACTIONS).sort()).toEqual(
 			[
 				'POST /api/admin/reset',
@@ -303,7 +303,10 @@ describe('the list of what asks, pinned against the routes (cases 1 and 2)', () 
 				'POST /api/people/from-accounts',
 				// Card 2697, B4 (Q9, Q29): a decision's delete and withdrawal, once it has been opened.
 				'DELETE /api/decisions/[id]',
-				'POST /api/decisions/[id]/withdraw'
+				'POST /api/decisions/[id]/withdraw',
+				// Card 2679 (decision 2): a ruling, and the one-way release of its results.
+				'POST /api/decisions/[id]/rule',
+				'POST /api/decisions/[id]/release'
 			].sort()
 		);
 		for (const [action, why] of Object.entries(STEP_UP_ACTIONS)) expect(why.trim().length, action).toBeGreaterThan(20);

@@ -190,6 +190,13 @@ function pageData(more: Partial<DecisionPageData> = {}): DecisionPageData & { us
 		stage: 'question',
 		mayEdit: false,
 		signedInAs: null,
+		// Card 2679 (decision 23): nothing ruled, released, raised or superseded.
+		ruling: null,
+		released: null,
+		concerns: [],
+		mayRaiseConcern: false,
+		supersedes: null,
+		laterDecision: null,
 		user: null,
 		...more
 	};
@@ -263,7 +270,8 @@ describe('DecisionView', () => {
 	it('26: tells a consulted participant who sees their response, the decider and the administrators, and gives them the form; an informed one neither', () => {
 		const consulted = draw(DecisionPage, { data: pageData() });
 		expect(textOf(consulted.querySelector('[data-section="who-sees"]')!)).toBe(
-			"Who sees your response While this decision is open, only Dee Cider, who decides, sees your response. DumpFire's administrators can also see it in the record. No other participant sees it, or any totals."
+			"Who sees your response While this decision is open, only Dee Cider, who decides, sees your response. DumpFire's administrators can also see it in the record. No other participant sees it, or any totals. " +
+				'After the ruling, the decider may show the totals and the comments, without names, to everyone who can see this decision.'
 		);
 		expect(consulted.querySelector('.response-form')).not.toBeNull();
 
@@ -308,7 +316,9 @@ describe('ResponseForm', () => {
 		button(target, 'Send my response').click();
 		await settle();
 
-		expect(requests('POST /api/decisions/5/responses')).toEqual([{ versionNumber: 1, kind: 'vote', optionId: 12, comment: 'Fine by me', optionComments: { '11': 'Too dear' } }]);
+		expect(requests('POST /api/decisions/5/responses')).toEqual([
+			{ versionNumber: 1, statement: 2, kind: 'vote', optionId: 12, comment: 'Fine by me', optionComments: { '11': 'Too dear' } }
+		]);
 		expect(linesOf(target.querySelector('.recorded')!)).toEqual([
 			'Your response was recorded on 2026-11-02 10:00 UTC:',
 			'You chose option B: Buy.',
@@ -321,7 +331,7 @@ describe('ResponseForm', () => {
 		answer('POST /api/decisions/5/responses', { response: response({ kind: 'no_concerns', optionId: null }), unchanged: false });
 		button(target, 'Send my response').click();
 		await settle();
-		expect(requests('POST /api/decisions/5/responses')[1]).toEqual({ versionNumber: 1, kind: 'no_concerns', comment: 'Fine by me', optionComments: { '11': 'Too dear' } });
+		expect(requests('POST /api/decisions/5/responses')[1]).toEqual({ versionNumber: 1, statement: 2, kind: 'no_concerns', comment: 'Fine by me', optionComments: { '11': 'Too dear' } });
 	});
 
 	it('29: in score mode keeps Send disabled until every option is scored, then sends the scores', async () => {
@@ -339,7 +349,7 @@ describe('ResponseForm', () => {
 		answer('POST /api/decisions/5/responses', { response: response({ optionId: null, scores: { '11': 3, '12': 5 } }), unchanged: false });
 		send.click();
 		await settle();
-		expect(requests('POST /api/decisions/5/responses')).toEqual([{ versionNumber: 1, kind: 'vote', scores: { '11': 3, '12': 5 }, comment: '', optionComments: {} }]);
+		expect(requests('POST /api/decisions/5/responses')).toEqual([{ versionNumber: 1, statement: 2, kind: 'vote', scores: { '11': 3, '12': 5 }, comment: '', optionComments: {} }]);
 		expect(linesOf(target.querySelector('.recorded')!)[1]).toBe('Your scores: A 3, B 5.');
 	});
 
@@ -462,7 +472,7 @@ describe('the participant pages', () => {
 		answer('POST /api/decisions/5/responses', { response: response(), unchanged: false });
 		button(account, 'Send my response').click();
 		await settle();
-		expect(requests('POST /api/decisions/5/responses'), '(e) account').toEqual([{ versionNumber: 1, kind: 'vote', optionId: 11, comment: '', optionComments: {} }]);
+		expect(requests('POST /api/decisions/5/responses'), '(e) account').toEqual([{ versionNumber: 1, statement: 2, kind: 'vote', optionId: 11, comment: '', optionComments: {} }]);
 
 		clear();
 		const link = draw(LinkPage, { data: linkData() });
@@ -473,7 +483,7 @@ describe('the participant pages', () => {
 		await settle();
 		const responses = sent.filter((r) => r.what.includes('/responses'));
 		expect(responses, '(e) link').toEqual([
-			{ what: 'POST /api/decision-by-link/responses', body: { token: 'tok-page', versionNumber: 1, kind: 'vote', optionId: 12, comment: '', optionComments: {} } }
+			{ what: 'POST /api/decision-by-link/responses', body: { token: 'tok-page', versionNumber: 1, statement: 2, kind: 'vote', optionId: 12, comment: '', optionComments: {} } }
 		]);
 		expect(responses[0].what).not.toContain('tok-page');
 	});
@@ -592,17 +602,23 @@ describe('the participant pages', () => {
 			expect(target.querySelector('.response-form'), name).toBeNull();
 		}
 
-		// (e) A ruled decision, on either page, says nothing of a first tap and posts no seen: no ruling is shown until card 2679.
-		for (const [page, data] of [
-			[DecisionPage, closed('ruled', {})],
-			[LinkPage, { ...closed('ruled', {}), via: 'link', decision: { ...DECISION, shownStatus: 'ruled', boardName: null, withdrawnAt: null, withdrawnReason: null } }]
+		// (e) A ruled decision, on either page, arms the watch with the ruling stage, says so, and posts it once (card 2679, decision 9).
+		for (const [page, data, seen] of [
+			[DecisionPage, closed('ruled', { stage: 'ruling' }), { what: 'POST /api/decisions/5/seen', body: { versionNumber: 1, stage: 'ruling' } }],
+			[
+				LinkPage,
+				{ ...closed('ruled', { stage: 'ruling' }), via: 'link', decision: { ...DECISION, shownStatus: 'ruled', boardName: null, withdrawnAt: null, withdrawnReason: null } },
+				{ what: 'POST /api/decision-by-link/seen', body: { token: 'tok-page', versionNumber: 1, stage: 'ruling' } }
+			]
 		] as const) {
 			clear();
 			const target = draw(page, { data });
-			expect(textOf(target), '(e)').not.toContain('recorded as your having seen');
+			expect(textOf(target.querySelector('[data-note="seen"]')!), '(e)').toBe(
+				'Your first tap, click, key press or turn of the mouse wheel on this page is recorded as your having seen the ruling.'
+			);
 			for (const kind of ['pointerdown', 'keydown', 'touchstart', 'wheel'] as const) act(kind);
 			await settle();
-			expect(sent, '(e)').toEqual([]);
+			expect(sent, '(e)').toEqual([seen]);
 		}
 	});
 });
