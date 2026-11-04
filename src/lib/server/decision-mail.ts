@@ -51,10 +51,17 @@
  * event; and the volume limits' constants and the one rule of when a
  * participant may be mailed again (`mailRestOf`).
  *
+ * Card 2685 adds the closing-date reminder's mail (`reminderMail`), which
+ * decision-reminders.ts sends. It is not a record mail and not one of D22's
+ * five: for an account holder it follows `email_decisions` and the master
+ * switch. It carries no personal link and no token, and issues none: a link
+ * holder is told to use the link in the latest email they were sent.
+ *
  * Not a service: plain functions with no caller.
  */
 import { and, asc, eq, isNull } from 'drizzle-orm';
 import { escapeHtml } from '$lib/escape-html';
+import { LATEST_LINK_LINE } from '$lib/decision-words';
 import { db } from './db';
 import { decisionParticipants, decisions, decisionVersions, people, type Decision, type DecisionParticipant } from './db/schema';
 import { afterCommit, inTransaction } from './db/transaction';
@@ -131,8 +138,10 @@ export function dailyCapFrom(moments: readonly Stamp[], cap: number, coming = 1)
  * card 2697 Q24), in one rule that the service's refusal and the editor's
  * delivery panel both ask, so the two cannot disagree: null when they may;
  * otherwise the 409's words and the moment, in UTC, from which they may.
- * `lastAt` is their latest record-bearing mail, `recent` the moments of those
- * in the last 24 hours, oldest first. The 10-minute rest is asked first.
+ * `lastAt` is their latest record-bearing mail or closing-date reminder (card
+ * 2685, S6: a reminder starts the rest), `recent` the moments of the
+ * record-bearing mails alone in the last 24 hours, oldest first. The
+ * 10-minute rest is asked first.
  */
 export function mailRestOf(name: string, lastAt: Stamp | undefined, recent: readonly Stamp[], now: Stamp): { words: string; from: Stamp } | null {
 	const rested = lastAt === undefined ? null : later(lastAt, RECORD_MAIL_MIN_MINUTES * 60 * 1000);
@@ -331,6 +340,39 @@ export function queueDryRun(decision: Decision, to: { id: number; username: stri
 	});
 }
 
+/**
+ * The **Open the decision** button of every decision mail built here, its
+ * `href` escaped where it is put (card 2685's code review, F5): one markup
+ * for the record mails and the closing-date reminder alike.
+ */
+function openDecisionButton(href: string): string {
+	return `<a href="${escapeHtml(href)}" style="display: inline-block; padding: 8px 16px; background: #4338ca; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">Open the decision</a>`;
+}
+
+/**
+ * The closing-date reminder (card 2685, decision 10): its subject, plain
+ * text with the title as written and never a token, and its HTML, every
+ * value through `escapeHtml`. The closing time as stored, with `UTC`; who
+ * decides; then an account holder's **Open the decision** button to
+ * `<base>/decisions/<id>`, behind a sign-in, or a link holder's
+ * `LATEST_LINK_LINE` (decision 5: the reminder mints no link, so the one in
+ * their latest record mail stays the only one), in the answer notice's
+ * words. It quotes no question or ask, names no other participant and gives
+ * no figure.
+ */
+export function reminderMail(decision: Pick<Decision, 'id' | 'title' | 'closesAt' | 'deciderName'>, via: 'account' | 'link', base: string): { subject: string; html: string } {
+	const closes = `${decision.closesAt ?? ''} UTC`;
+	const parts = [
+		paragraph(`Your view on this decision is asked by ${closes}, and you have not responded to the current version yet.`),
+		paragraph(decision.deciderName, 'Who decides:'),
+		via === 'account' ? openDecisionButton(`${base}/decisions/${decision.id}`) : paragraph(LATEST_LINK_LINE)
+	];
+	return {
+		subject: `Reminder: your view is asked by ${closes}: ${decision.title}`,
+		html: emailTemplate(escapeHtml(decision.title), parts.filter((part) => part !== '').join('\n'))
+	};
+}
+
 /** The question and the ask of the decision's current published version, '' for either it does not hold. */
 function publishedContent(decision: Decision): Quoted {
 	const version = db
@@ -425,8 +467,6 @@ function bodyOf(
 			break;
 		}
 	}
-	parts.push(
-		`<a href="${escapeHtml(link)}" style="display: inline-block; padding: 8px 16px; background: #4338ca; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">Open the decision</a>`
-	);
+	parts.push(openDecisionButton(link));
 	return parts.filter((part) => part !== '').join('\n');
 }

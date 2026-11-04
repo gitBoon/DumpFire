@@ -10,6 +10,10 @@
  * started beside production's uploads folder, or beside a copy of it, would
  * move to the trash every file its own rows do not name.
  *
+ * So is the decision reminder (card 2685): a copy holding production's open
+ * decisions and mail settings would mail their participants, link holders
+ * included, a reminder before each closing time.
+ *
  * So the schedulers are off under the dev server unless they are asked for, and
  * a rehearsal sets SCHEDULERS=off. A built server runs them unless it is told
  * not to.
@@ -24,6 +28,7 @@
  */
 import { dev } from '$app/environment';
 import { initBackupScheduler } from './backup';
+import { initDecisionReminders } from './decision-reminders';
 import { createLogger } from './logger';
 import { initReportScheduler } from './reports';
 import { initSnapshotScheduler } from './snapshots';
@@ -62,8 +67,8 @@ export function schedulerSetting(value: string | undefined, isDev: boolean): Sch
 }
 
 /**
- * Start the backup, report and snapshot schedulers and the attachment file
- * sweep, or none of them.
+ * Start the backup, report and snapshot schedulers, the decision reminder and
+ * the attachment file sweep, or none of them.
  *
  * Called once, from hooks.server.ts, as the server loads. Importing this module
  * starts nothing.
@@ -86,10 +91,11 @@ export function startSchedulers(
 		initBackupScheduler();
 		initReportScheduler();
 		initSnapshotScheduler();
+		initDecisionReminders();
 		initUploadsSweep();
 	} else {
 		log.warn(
-			`Schedulers are off (${setting.reason}). No scheduled backup, report, snapshot or ` +
+			`Schedulers are off (${setting.reason}). No scheduled backup, report, snapshot, decision reminder or ` +
 				'attachment file sweep will run from this instance. Set SCHEDULERS=on to run them.'
 		);
 	}

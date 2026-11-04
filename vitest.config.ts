@@ -15,8 +15,9 @@ export default defineConfig({
 		env: {
 			DB_PATH: ':memory:',
 			// tests/gate.test.ts loads src/hooks.server.ts, which starts the
-			// backup, report and snapshot schedulers as a server does. Never
-			// from a test, whatever kind of server vitest is taken to be.
+			// backup, report and snapshot schedulers, the decision reminder and
+			// the attachment file sweep as a server does. Never from a test,
+			// whatever kind of server vitest is taken to be.
 			SCHEDULERS: 'off',
 			// Passwords are hashed and checked on the test's own thread, a turn
 			// later, and not on worker threads (card 2191): so a test's

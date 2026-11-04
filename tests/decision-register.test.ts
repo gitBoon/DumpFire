@@ -1225,7 +1225,9 @@ describe('the record view', () => {
 				question_asked: { questionId: 1, notices: [{ userId: 2, outcome: 'sent' }], signedIn },
 				question_answered: { questionId: 1, role: 'decider', agentDrafted: false, notice: 'asked' },
 				answer_published: { questionId: 1, notice: 'asked' },
-				answer_replaced: { questionId: 1, role: 'author', discarded: { text: 'The draft', byName: 'Agent', at: PAST, userId: 6 }, notice: 'asked' }
+				answer_replaced: { questionId: 1, role: 'author', discarded: { text: 'The draft', byName: 'Agent', at: PAST, userId: 6 }, notice: 'asked' },
+				// Card 2685: no detail is written.
+				reminded: null
 			};
 		}
 

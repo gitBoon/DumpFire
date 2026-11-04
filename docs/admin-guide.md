@@ -1,10 +1,11 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.90
+version: 1.91
 status: As-Built
 date: 2026-11-04
 tags:
+  - decision-reminders
   - admin
   - operations
   - step-up
@@ -1096,7 +1097,7 @@ Each user controls their own notification preferences from **My Account**, under
 | **Request Progress** | For a request you raised while signed in: mailed as work goes on on the card made from it (a move, a subtask ticked, a comment), and when it is complete. Someone who raised a request without an account is always mailed |
 | **Board Sharing** | Mailed when a board is shared with you |
 | **Planning** | Mailed when someone else makes a plan from cards that depend on each other, and you are assigned to one of its cards or are an administrator |
-| **Decisions** | "When someone asks about or raises a concern on a decision you decide or wrote, or your question about a decision is answered." Mailed when a participant raises a concern about the ruling of a decision you decide (card 2679), and (card 2678) when a participant asks a question about a decision you decide or wrote and may answer now, never for your own question, and when a question you asked is answered. Each notice names nobody and quotes nothing; the concern and question notices are at most one about the same participant in 24 hours. A decision's record mails (its invitation, ruling and withdrawal) are not under any switch: a participant must be told |
+| **Decisions** | "When someone asks about or raises a concern on a decision you decide or wrote, your question about a decision is answered, or a decision you have not answered is about to close." Mailed when a participant raises a concern about the ruling of a decision you decide (card 2679); (card 2678) when a participant asks a question about a decision you decide or wrote and may answer now, never for your own question, and when a question you asked is answered; and (card 2685) once a round, about a day before the closing time, when your view is asked on a decision and you have not yet responded. Each notice names nobody and quotes nothing; the concern and question notices are at most one about the same participant in 24 hours. A decision's record mails (its invitation, ruling and withdrawal) are not under any switch: a participant must be told. A participant with no account has no switch, and is sent the reminder with no link in it |
 
 The page, the route that saves the switches (`/api/account/notifications`) and the mail that reads them share one list, `src/lib/notification-prefs.ts` (card 2146). Until 2026-10-15 they kept three: **Request Progress** was offered and never saved, so it went back on at every reload and the progress mail was always sent, and **Mentions** was neither offered nor saved, so mention mail could be stopped only by switching all mail off. Nobody had either stored, so anyone who switched Request Progress off before then gets the mail until they switch it off again. A switch that is refused, or gets no answer, goes back to what it was, with the reason under the switches; the switches cannot be pressed while a change is being saved.
 

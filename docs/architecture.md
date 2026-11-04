@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.81
+version: 1.82
 status: As-Built
 date: 2026-11-04
 tags:
+  - decision-reminders
+  - schedulers
   - architecture
   - sveltekit
   - sqlite
@@ -153,6 +155,7 @@ flowchart TB
             Deletes["Shared Delete\ndeletes.ts"]
             Uploads["Uploads + Trash\nuploads.ts"]
             Sweep["Attachment File Sweep\nuploads-sweep.ts"]
+            Reminders["Decision Reminder\ndecision-reminders.ts (card 2685)"]
             ApiErrors["API Failures\napi-errors.ts"]
             V1Json["v1 Answers in ISO 8601\nv1-json.ts"]
             CrossBoard["Cross-Board Cards\ncross-board-cards.ts"]
@@ -194,6 +197,7 @@ flowchart TB
     SSE -.->|"Server-Sent Events"| Client
     ReportEngine -.->|"SMTP"| EmailServer["Email Server"]
     BackupService -.->|"Push"| BackupDest["Backup Destinations"]
+    Reminders -.->|"SMTP, awaited, one at a time"| EmailServer
 ```
 
 All Tasks and All To Do (card 2240) read their cards through one reader,
@@ -1244,7 +1248,12 @@ flowchart LR
     People["people.ts"] -->|"clearLinks"| Lk
     Restore["db/restore.ts"] -->|"raw SQL in its transaction"| DP[("decision_participants,<br/>decision_events")]
     Gate["secret-paths.ts<br/>SECRET_IN_PATH"] -.->|"masks /decision-link/ in logs"| Log[("system_logs")]
+    Job["decision-reminders.ts (card 2685)<br/>a scheduled job, no caller"] -->|"inTransaction: appendEvent reminded,<br/>then the send, awaited"| Rec
+    Job --> Lk
+    Job -->|"reminderMail, mailRestOf"| Ml
 ```
+
+**The closing-date reminder** (card 2685) is a job beside them, `src/lib/server/decision-reminders.ts`, started by `startSchedulers` and never by a route. It is not a service either: it takes no caller, imports no `inWrite`, and writes as DumpFire with `inTransaction`, through `appendEvent` alone. For each due participant it records `reminded`, then sends and awaits the mail and records its `mail_outcome`, so at most one reminder a round is sent ([The Closing-Date Reminder](notifications-email.md#the-closing-date-reminder-card-2685)); migration 0063's partial unique index holds the "once" in the database.
 
 Only `decisions.ts` is a service: it is on `SERVICES` in `tests/check-at-the-write.test.ts`, and every write takes `(caller, at, body, opts)` and starts with `inWrite()`. Its `READS` are card 2697's four guards (`participantAccountGuard`, `participantAddressGuard`, `decisionDeleteGuard`, `decisionWithdrawGuard`) and card 2679's two (`decisionRuleGuard`, `resultsReleaseGuard`, [Results, the ruling and the release](#results-the-ruling-and-the-release)): each makes every refusal of its write, writes nothing, and is asked by the route before the caller's password and by the write first, so the refusals exist once. The four helper modules take no caller and import no `inWrite`, so they are not services, and `decisionAccess` lives apart from the service because the service imports the guards (plan decision 3). `people.ts` calls `decision-links.ts`, and the mail effect calls `decision-record.ts`, outside any service write.
 
@@ -3065,6 +3074,21 @@ stateDiagram-v2
 | Log Maintenance | On startup, then every six hours | Prune `system_logs` past its retention |
 | Uploads Trash | Ten minutes after startup, then every six hours, on the log maintenance timer; never on startup itself | Remove attachment files that have been in the trash for more than 30 days |
 | Attachment File Sweep | 15 minutes after startup, then every six hours; only where the schedulers run (`SCHEDULERS`) | Move attachment files that no row names, unchanged for 24 hours, to the trash (card 2107) |
+| Decision Reminder | 5 minutes after startup, then every 5 minutes; only where the schedulers run (`SCHEDULERS`) | Record, then mail, one closing-date reminder per round to each consulted participant who has not responded, about a day before the closing time; at most 200 and 4 minutes a run (card 2685, `decision-reminders.ts`; [The Closing-Date Reminder](notifications-email.md#the-closing-date-reminder-card-2685)) |
+
+```mermaid
+flowchart LR
+    H["hooks.server.ts"] --> S["schedulers.ts<br/>startSchedulers()"]
+    S -->|"SCHEDULERS on, or a built server with it unset"| B["backup, reports, snapshots"]
+    S -->|"same"| U["uploads-sweep.ts"]
+    S -->|"same"| R["decision-reminders.ts<br/>initDecisionReminders()"]
+    S -->|"off"| W["one WARN line naming all five"]
+    R -->|"every 5 min"| RUN["runDecisionRemindersOnce(now)"]
+    RUN --> DR["decision-record.ts<br/>appendEvent, remindedIn, askingMailsOf,<br/>changedSinceAsked, deliveryOf, lastMailAt"]
+    RUN --> DM["decision-mail.ts<br/>reminderMail, mailRestOf"]
+    RUN --> E["email.ts<br/>trySendEmail, awaited"]
+    DR --> IX[("decision_events<br/>unique (participant_id, version_number)<br/>WHERE kind = 'reminded' (0063)")]
+```
 
 ## Key Design Decisions
 

@@ -1,0 +1,47 @@
+-- One closing-date reminder per participant per round (card 2685, 2026-11-04).
+--
+-- A decision's consulted participants who have not responded are sent one
+-- reminder about a day before its closing time
+-- (src/lib/server/decision-reminders.ts). Each is written to the record as a
+-- `reminded` event, its version_number the round (the latest version that
+-- asked again), before the mail is sent, so a restart never sends it twice.
+-- The job reads the record and writes under the write lock, and keeps two of
+-- its own runs apart; this index is the third guard, held by the database
+-- itself: a second `reminded` for one participant and round is refused,
+-- whatever the code does (decision 3 of the card's plan).
+--
+-- Partial: only `reminded` rows are covered. Every other kind may repeat a
+-- participant and version as it always has (two `invited` for one person,
+-- events with no participant, and so on).
+--
+-- decision_events is not one of the tables the runner rebuilds from the model
+-- (RECONCILED_TABLES in src/lib/server/db/migrate.ts), so this file alone
+-- changes it. One statement: a second would be split from it at a
+-- statement-breakpoint, and there is nothing else to do.
+--
+-- Changes no row: `reminded` is new and nothing has written one, so the
+-- index's WHERE admits no row today and nothing can break it. So nothing is
+-- declared to the rehearsal in tests/rehearsal/one-offs.ts.
+--
+-- What people see: nothing, unless a fault tried to write a second reminder
+-- for one person in one round, which is refused.
+--
+-- Runs once. The runner records this file by name and never runs it again.
+-- Unlike 0053 and 0061 it has no IF NOT EXISTS (card 2685's code review,
+-- S5): an index of this name already in a database, made by hand or left by
+-- a build that was not this one, would be one this file did not make, and
+-- may not hold the rule the model asks for. With IF NOT EXISTS it would be
+-- kept and the file recorded as run; without it the file fails, nothing of it
+-- is recorded, and the start stops and names it, so the index is always the
+-- one written here. A backup made before this file holds no `reminded` event
+-- and is restored as any other.
+--
+-- Going back to an older image keeps the index: the older build's model
+-- check reports "decision_events: index in the database but not in the
+-- model: unique index
+-- idx_decision_events_participant_id_version_number_reminded on
+-- (participant_id, version_number), partial" at every start and does not act
+-- on it, and the older build writes no `reminded`, so the index refuses
+-- nothing. Going forward again, 0063 is already recorded and is not run.
+
+CREATE UNIQUE INDEX `idx_decision_events_participant_id_version_number_reminded` ON `decision_events` (`participant_id`,`version_number`) WHERE kind = 'reminded';

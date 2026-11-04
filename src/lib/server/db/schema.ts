@@ -1146,7 +1146,14 @@ export const decisionEvents = sqliteTable('decision_events', {
 }, (table) => [
 	index('idx_decision_events_decision_id_created_at').on(table.decisionId, table.createdAt),
 	index('idx_decision_events_participant_id').on(table.participantId),
-	index('idx_decision_events_actor_user_id').on(table.actorUserId)
+	index('idx_decision_events_actor_user_id').on(table.actorUserId),
+	// Card 2685 (migration 0063): one closing-date reminder per participant per
+	// round, held by the database whatever the code does. Partial: only
+	// `reminded` rows are covered, so every other kind may repeat a participant
+	// and version as before.
+	uniqueIndex('idx_decision_events_participant_id_version_number_reminded')
+		.on(table.participantId, table.versionNumber)
+		.where(sql`kind = 'reminded'`)
 ]);
 
 export const decisionCardLinks = sqliteTable('decision_card_links', {

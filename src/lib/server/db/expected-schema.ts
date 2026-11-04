@@ -338,6 +338,7 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 	"CREATE INDEX `idx_decision_events_decision_id_created_at` ON `decision_events` (`decision_id`,`created_at`);",
 	"CREATE INDEX `idx_decision_events_participant_id` ON `decision_events` (`participant_id`);",
 	"CREATE INDEX `idx_decision_events_actor_user_id` ON `decision_events` (`actor_user_id`);",
+	"CREATE UNIQUE INDEX `idx_decision_events_participant_id_version_number_reminded` ON `decision_events` (`participant_id`,`version_number`) WHERE kind = 'reminded';",
 	[
 		"CREATE TABLE `decision_options` (",
 		"\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,",

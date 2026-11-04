@@ -30,6 +30,15 @@ export const DEAD_DECISION_LINK =
 export const NO_LONGER_REACHED = 'This decision no longer reaches you as a participant: ask whoever sent it to you';
 
 /**
+ * What a mail that mints no link tells a link holder in its place (card
+ * 2685's code review, F5): the closing-date reminder (`decision-mail.ts`) and
+ * the answer notice (`notifications.ts`, card 2678) alike, so that both say
+ * it in the same words. Neither mints a link, so the one in their latest
+ * record mail stays the only one.
+ */
+export const LATEST_LINK_LINE = 'Open the decision from the personal link in the latest email you were sent about it.';
+
+/**
  * The 429 for an address past its limit of links that open no decision (card
  * 2677, decision 8), on the link's page and on both of its routes alike: the
  * wait, `retryAfterSecs`, in whole minutes.
@@ -351,7 +360,9 @@ export const EVENT_WORDS: Readonly<Record<string, string>> = {
 	question_asked: 'Question asked',
 	question_answered: 'Question answered',
 	answer_published: "Agent's answer published",
-	answer_replaced: "Agent's answer replaced"
+	answer_replaced: "Agent's answer replaced",
+	// Card 2685 (decision 11, S8): claims no delivery, as a person's own record never shows a mail outcome.
+	reminded: 'A reminder was due before closing'
 };
 
 /** An event's kind in words (`EVENT_WORDS`), or its stored name with its underscores as spaces. */

@@ -1,10 +1,11 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.65
+version: 1.67
 status: As-Built
 date: 2026-11-04
 tags:
+  - decision-reminders
   - features
   - overview
   - stakeholder
@@ -320,6 +321,7 @@ Above the editor sit the decision's lifecycle controls (card 2697). Each shows o
 - **How much can be sent** — you can open or re-publish 10 decisions a day; one person is mailed about one decision at most 5 times a day (the withdrawal and the ruling are always sent), and not twice within 10 minutes
 - **Delivery** — once a decision has been opened, its author, decider and administrators see how each participant's latest mail went, any reason they were not mailed, and when their link last ended. **Resend** sends someone their invitation again (a new link with it), or says from when it can
 - **Who is told** — opening, re-publishing, withdrawing and resending mail participants. Close, Extend, Delete, the preview and a dry run tell nobody but you
+- **A reminder before it closes** (card 2685) — about a day before the closing time, DumpFire sends each consulted person who has not yet answered one short reminder: the title, the closing time in UTC, who decides, and how to open it. Only people asked for their view get one, never those only kept informed; only people whose last email from the decision arrived, and whose role, address or account has not changed, and who have not been removed or included again, since they were asked; never in the last hour before closing, and never within a day of their invitation, so a decision opened less than 25 hours before it closes sends none. One a round: a re-publish that asks everyone again starts a new round and a new reminder, one that only tells does not. People with an account can switch it off with their **Decisions** email switch, and are sent none while their saved email settings cannot be read. People without an account are not sent a new personal link: the reminder tells them to use the link in the last email they were sent. A reminder starts the 10-minute pause before the next email to that person (so **Resend** waits for it) and does not count toward the 5 a day. The record shows "A reminder was due before closing" and whether the mail went. It runs only where the scheduled jobs run, never on a development server unless asked
 
 ```mermaid
 stateDiagram-v2
@@ -333,6 +335,15 @@ stateDiagram-v2
     Open --> Withdrawn: Withdraw (your password, everyone told)
     Closed --> Withdrawn: Withdraw (your password, everyone told)
     Withdrawn --> [*]: Delete (your password once opened)
+```
+
+```mermaid
+flowchart TD
+    O["Open: invitations sent"] --> W{"A day before the closing time,<br/>checked every 5 minutes"}
+    W --> Q{"Asked for a view, not answered,<br/>last email arrived, nothing changed,<br/>Decisions switch on, not reminded yet?"}
+    Q -->|"no"| N["No reminder"]
+    Q -->|"yes"| R["One reminder: title, closing time, who decides,<br/>a link to the page (account) or<br/>'use the link in your latest email' (no account)"]
+    R --> Rec["On the record: 'A reminder was due before closing'"]
 ```
 
 #### Reading and answering a decision

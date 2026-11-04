@@ -517,7 +517,7 @@ function deliveryRows(decision: Decision, rows: DecisionParticipant[], now: Stam
 	const statusRefusal = transitionRefusal(decision, now);
 	const linkAddress = decisionLinkBase() !== null;
 	const since = stamp(new Date(Date.now() - DAY_MS));
-	const empty: DeliveryFacts = { lastMail: null, mailMoments: [], lastSkip: null, lastRevoked: null };
+	const empty: DeliveryFacts = { lastMail: null, mailMoments: [], lastRestAt: null, lastSkip: null, lastRevoked: null };
 
 	return rows.map((row) => {
 		const known = facts.get(row.id) ?? empty;
@@ -531,7 +531,9 @@ function deliveryRows(decision: Decision, rows: DecisionParticipant[], now: Stam
 		if (refusal === null && reachNow !== null) refusal = reachNow;
 		if (refusal === null && !linkAddress) refusal = NO_LINK_ADDRESS;
 		if (refusal === null) {
-			const held = mailRestOf(row.name, known.lastMail?.at, known.mailMoments.filter((at) => at >= since), now);
+			// The rest runs from the latest record mail or closing-date reminder (card 2685, S6), as `lastMailAt` reads it for the
+			// write; the cap counts record mails alone.
+			const held = mailRestOf(row.name, known.lastRestAt ?? undefined, known.mailMoments.filter((at) => at >= since), now);
 			if (held !== null) {
 				refusal = held.words;
 				resendFrom = held.from;

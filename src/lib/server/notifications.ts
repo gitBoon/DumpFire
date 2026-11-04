@@ -22,6 +22,7 @@
  */
 
 import { escapeHtml } from '$lib/escape-html';
+import { LATEST_LINK_LINE } from '$lib/decision-words';
 import { MASTER_PREF, type NotificationPref } from '$lib/notification-prefs';
 import { MAIL_PROBLEM_WORDS, linkBaseUrl, sendEmailWithAttachment, isSmtpConfigured, trySendEmail, type MailOutcome } from './email';
 import { db } from './db';
@@ -1197,7 +1198,7 @@ export function notifyQuestionAnswered(to: { userId: number } | { address: strin
 		const html = emailTemplate('Your question was answered', `
 			<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #4338ca;">
 				<p style="margin: 0 0 12px; font-size: 13px; color: #334155;">Your question about <strong>${escapeHtml(title)}</strong> has been answered.</p>
-				<p style="margin: 0; font-size: 13px; color: #475569;">Open the decision from the personal link in the latest email you were sent about it.</p>
+				<p style="margin: 0; font-size: 13px; color: #475569;">${escapeHtml(LATEST_LINK_LINE)}</p>
 			</div>
 		`);
 		sendEmail(to.address, subject, html).catch(err => log.error(`Answer notice failed for decision ${decisionId}`, err));

@@ -55,6 +55,17 @@
  * is shown of their own participation, and `RECORD_DETAIL`, the shown keys of
  * each kind's detail, exhaustive by kind.
  *
+ * Card 2685 adds the closing-date reminder's kind, `reminded`, written by
+ * decision-reminders.ts through `appendEvent` alone (no new insert), and its
+ * reads: the reminders of a round (`remindedIn`, `reminderOf`), each
+ * participant's asking mail of the round (`askingMailsOf`) and whether their
+ * role, address, account or inclusion changed since (`changedSinceAsked`,
+ * `CHANGE_KINDS`; the code review's S1 added `removed` and `re_included`). A reminder
+ * starts the 10-minute rest (`REST_KINDS`: `lastMailAt` and `deliveryOf`'s
+ * `lastRestAt`), and is not counted toward the daily cap, which reads
+ * `MAIL_KINDS` alone. Migration 0063's partial unique index holds one
+ * `reminded` per participant per round.
+ *
  * Plain functions with no caller, called inside a service write's
  * transaction, or by the mail effect in a transaction of its own.
  */
@@ -136,7 +147,11 @@ export const EVENT_KINDS = [
 	'question_asked',
 	'question_answered',
 	'answer_published',
-	'answer_replaced'
+	'answer_replaced',
+	// Card 2685 (decision 11): the one closing-date reminder of a round, naming the participant, `version_number` the round,
+	// `detail` null, by DumpFire; its `mail_outcome { of, mail: 'reminder', delivered, problem? }` follows. Held to one per
+	// participant per round by migration 0063's partial unique index.
+	'reminded'
 ] as const;
 
 export type EventKind = (typeof EVENT_KINDS)[number];
@@ -191,7 +206,10 @@ export const OWN_RECORD_EVENTS: readonly EventKind[] = [
 	'told_withdrawn',
 	'told_ruling',
 	'seen',
-	'responded'
+	'responded',
+	// Card 2685 (decision 11, S8): shown as its kind, moment and round, as `invited` is. Its words claim no delivery, as the
+	// own record never shows a mail outcome.
+	'reminded'
 ];
 
 /**
@@ -272,11 +290,34 @@ export const RECORD_DETAIL: Readonly<Record<EventKind, DetailSpec>> = {
 	question_asked: { signedIn: SIGNED_IN },
 	question_answered: { role: 'value', agentDrafted: 'value' },
 	answer_published: {},
-	answer_replaced: { role: 'value', discarded: { fields: ['text', 'byName', 'at'] } }
+	answer_replaced: { role: 'value', discarded: { fields: ['text', 'byName', 'at'] } },
+	// Card 2685: no detail is written; the round is the event's version.
+	reminded: {}
 };
 
 /** The events a record-bearing mail writes for its participant (decision 31). */
 const MAIL_KINDS: readonly EventKind[] = ['invited', 'asked_again', 'told_of_change', 'told_withdrawn', 'told_ruling'];
+
+/**
+ * The events that start the 10-minute rest before a participant's next
+ * record mail (card 2685, decision 7, S6): the record-bearing mails and the
+ * closing-date reminder. Only the rest reads these: the daily cap
+ * (`mailsSince`, `deliveryOf`'s `mailMoments`) and the delivery panel's last
+ * mail read `MAIL_KINDS` alone, so a reminder takes none of an editor's
+ * Resends.
+ */
+const REST_KINDS: readonly EventKind[] = [...MAIL_KINDS, 'reminded'];
+
+/**
+ * The events that change who a participant is, how they are reached, or
+ * whether they are one at all (card 2685, decision 4 clause 8; code review
+ * S1 added the last two): a reminder reminds only of a mail sent to the same
+ * person, in the same role, by the same route, in the same inclusion. A
+ * removal or a re-inclusion after the asking mail passes them over, read at
+ * the write and again at the send; a re-inclusion's own invitation, written
+ * after it, is the next asking mail.
+ */
+const CHANGE_KINDS: readonly EventKind[] = ['role_changed', 'address_changed', 'account_attached', 'account_cleared', 're_included', 'removed'];
 
 /** The events that say whether a participant's row held an account on this decision (decision 16). */
 const ACCOUNT_KINDS: readonly EventKind[] = ['included', 're_included', 'account_attached', 'account_cleared'];
@@ -1015,7 +1056,14 @@ export function countedInRound(pairs: readonly { participantId: number; round: n
 	return answered;
 }
 
-/** The moment of each participant's latest record-bearing mail event, by participant id; one with none is not in the map (decision 31). */
+/**
+ * The moment of each participant's latest record-bearing mail event or
+ * closing-date reminder, by participant id; one with none is not in the map
+ * (decision 31). The reminder is read too (card 2685, decision 7, S6), so
+ * that no re-send, re-publish or re-inclusion mails a participant within 10
+ * minutes of one: this is the rest's read alone, and the daily cap's,
+ * `mailsSince`, does not count it.
+ */
 export function lastMailAt(participantIds: number[]): Map<number, Stamp> {
 	const latest = new Map<number, Stamp>();
 	for (let from = 0; from < participantIds.length; from += IDS_AT_ONCE) {
@@ -1023,7 +1071,7 @@ export function lastMailAt(participantIds: number[]): Map<number, Stamp> {
 		const rows = db
 			.select({ participantId: decisionEvents.participantId, at: max(decisionEvents.createdAt) })
 			.from(decisionEvents)
-			.where(and(inArray(decisionEvents.participantId, ids), inArray(decisionEvents.kind, [...MAIL_KINDS])))
+			.where(and(inArray(decisionEvents.participantId, ids), inArray(decisionEvents.kind, [...REST_KINDS])))
 			.groupBy(decisionEvents.participantId)
 			.all();
 		for (const row of rows) if (row.participantId !== null && row.at !== null) latest.set(row.participantId, row.at);
@@ -1062,6 +1110,12 @@ export type DeliveryFacts = {
 	lastMail: { eventId: number; kind: EventKind; at: Stamp; resend: boolean; outcome: Record<string, unknown> | null } | null;
 	/** The moment of every record-bearing mail, oldest first: the daily cap counts those of the last 24 hours. */
 	mailMoments: Stamp[];
+	/**
+	 * The moment of their latest record-bearing mail or closing-date reminder
+	 * (card 2685, decision 7, S6), or null for neither: what the 10-minute rest
+	 * runs from, as `lastMailAt` reads it, so that the panel and the write agree.
+	 */
+	lastRestAt: Stamp | null;
 	/** Their latest `mail_skipped`: the mail and the reason, as written. */
 	lastSkip: { mail: string; reason: string; at: Stamp } | null;
 	/** Their latest `link_revoked`: the reason, as written. */
@@ -1071,8 +1125,9 @@ export type DeliveryFacts = {
 /**
  * How each participant of the decision has been mailed, by participant id,
  * in one read of its events (card 2697, Q13): their latest record-bearing
- * mail with its outcome, the moments of all of them, their latest skip and
- * their latest link revocation. A participant with none of these is not in
+ * mail with its outcome, the moments of all of them, the moment the rest runs
+ * from (`lastRestAt`, a closing-date reminder's included, card 2685), their
+ * latest skip and their latest link revocation. A participant with none of these is not in
  * the map. Facts as recorded: the words are the reader's to make. Nothing
  * of a response is read.
  */
@@ -1084,7 +1139,7 @@ export function deliveryOf(decisionId: number): Map<number, DeliveryFacts> {
 			and(
 				eq(decisionEvents.decisionId, decisionId),
 				isNotNull(decisionEvents.participantId),
-				inArray(decisionEvents.kind, [...MAIL_KINDS, 'mail_outcome', 'mail_skipped', 'link_revoked'])
+				inArray(decisionEvents.kind, [...REST_KINDS, 'mail_outcome', 'mail_skipped', 'link_revoked'])
 			)
 		)
 		.orderBy(asc(decisionEvents.id))
@@ -1095,10 +1150,15 @@ export function deliveryOf(decisionId: number): Map<number, DeliveryFacts> {
 		if (event.participantId === null) continue;
 		let mine = facts.get(event.participantId);
 		if (mine === undefined) {
-			mine = { lastMail: null, mailMoments: [], lastSkip: null, lastRevoked: null };
+			mine = { lastMail: null, mailMoments: [], lastRestAt: null, lastSkip: null, lastRevoked: null };
 			facts.set(event.participantId, mine);
 		}
 		const detail = detailOf(event.detail);
+		if ((REST_KINDS as readonly string[]).includes(event.kind) && (mine.lastRestAt === null || event.at > mine.lastRestAt)) mine.lastRestAt = event.at;
+		if (event.kind === 'reminded') {
+			// Card 2685: the rest's moment alone (above); a reminder is no record mail, so not the panel's last mail nor the cap's.
+			continue;
+		}
 		if ((MAIL_KINDS as readonly string[]).includes(event.kind)) {
 			mine.mailMoments.push(event.at);
 			// The latest by moment, as lastMailAt's max(created_at) reads it; the later event on a tie.
@@ -1118,6 +1178,127 @@ export function deliveryOf(decisionId: number): Map<number, DeliveryFacts> {
 		if (mine.lastMail !== null) mine.lastMail.outcome = outcomes.get(mine.lastMail.eventId) ?? null;
 	}
 	return facts;
+}
+
+// ─── What the closing-date reminder reads (card 2685) ────────────────────────
+
+/**
+ * Each participant's `reminded` event ids in round `round`, ascending, by
+ * participant id; one with none is not in the map (card 2685, decisions 3
+ * and 9): empty for a participant who is due, and its first the one a
+ * reminder must be to be sent.
+ */
+export function remindedIn(participantIds: readonly number[], round: number): Map<number, number[]> {
+	const found = new Map<number, number[]>();
+	for (let from = 0; from < participantIds.length; from += IDS_AT_ONCE) {
+		const rows = db
+			.select({ id: decisionEvents.id, participantId: decisionEvents.participantId })
+			.from(decisionEvents)
+			.where(
+				and(
+					inArray(decisionEvents.participantId, participantIds.slice(from, from + IDS_AT_ONCE)),
+					eq(decisionEvents.kind, 'reminded'),
+					eq(decisionEvents.versionNumber, round)
+				)
+			)
+			.orderBy(asc(decisionEvents.id))
+			.all();
+		for (const row of rows) {
+			if (row.participantId === null) continue;
+			const list = found.get(row.participantId) ?? [];
+			list.push(row.id);
+			found.set(row.participantId, list);
+		}
+	}
+	return found;
+}
+
+/** One `reminded` event, or null for none (card 2685, decision 9): what the reminder is for, read again just before it is sent. */
+export function reminderOf(eventId: number): { decisionId: number; participantId: number; round: number } | null {
+	const row = db
+		.select({ decisionId: decisionEvents.decisionId, participantId: decisionEvents.participantId, round: decisionEvents.versionNumber })
+		.from(decisionEvents)
+		.where(and(eq(decisionEvents.id, eventId), eq(decisionEvents.kind, 'reminded')))
+		.get();
+	if (row === undefined || row.participantId === null || row.round === null) return null;
+	return { decisionId: row.decisionId, participantId: row.participantId, round: row.round };
+}
+
+/**
+ * Each participant's asking mail of round `round` on the decision (card
+ * 2685, decision 4 clause 7), by participant id: their latest `invited` or
+ * `asked_again`, by id, at or after the round's version's `published_at` (an
+ * `invited` has no version, so it is read by moment), with whether its own
+ * `mail_outcome` says it was delivered, null while none is written. One with
+ * none, or a round with no version, is not in the map.
+ */
+export function askingMailsOf(
+	decisionId: number,
+	round: number,
+	participantIds: readonly number[]
+): Map<number, { eventId: number; at: Stamp; delivered: boolean | null }> {
+	const found = new Map<number, { eventId: number; at: Stamp; delivered: boolean | null }>();
+	const version = db
+		.select({ publishedAt: decisionVersions.publishedAt })
+		.from(decisionVersions)
+		.where(and(eq(decisionVersions.decisionId, decisionId), eq(decisionVersions.number, round)))
+		.get();
+	if (version === undefined) return found;
+	const delivered = new Map<number, boolean>();
+	for (let from = 0; from < participantIds.length; from += IDS_AT_ONCE) {
+		const ids = participantIds.slice(from, from + IDS_AT_ONCE);
+		const rows = db
+			.select({ id: decisionEvents.id, participantId: decisionEvents.participantId, kind: decisionEvents.kind, at: decisionEvents.createdAt, detail: decisionEvents.detail })
+			.from(decisionEvents)
+			.where(
+				and(
+					eq(decisionEvents.decisionId, decisionId),
+					inArray(decisionEvents.participantId, ids),
+					or(
+						and(inArray(decisionEvents.kind, ['invited', 'asked_again']), gte(decisionEvents.createdAt, version.publishedAt)),
+						eq(decisionEvents.kind, 'mail_outcome')
+					)
+				)
+			)
+			.orderBy(asc(decisionEvents.id))
+			.all();
+		for (const row of rows) {
+			if (row.participantId === null) continue;
+			if (row.kind === 'mail_outcome') {
+				const detail = detailOf(row.detail);
+				if (typeof detail.of === 'number') delivered.set(detail.of, detail.delivered === true);
+			} else {
+				found.set(row.participantId, { eventId: row.id, at: row.at, delivered: null });
+			}
+		}
+	}
+	for (const asking of found.values()) asking.delivered = delivered.get(asking.eventId) ?? null;
+	return found;
+}
+
+/**
+ * The participants with a `role_changed`, `address_changed`,
+ * `account_attached`, `account_cleared`, `re_included` or `removed` event
+ * (`CHANGE_KINDS`) above the event id `after` gives for them (card 2685,
+ * decision 4 clause 8): ids only grow, and moments tie to the second, so the
+ * two are compared by id.
+ */
+export function changedSinceAsked(after: ReadonlyMap<number, number>): Set<number> {
+	const ids = [...after.keys()];
+	const changed = new Set<number>();
+	for (let from = 0; from < ids.length; from += IDS_AT_ONCE) {
+		const rows = db
+			.select({ participantId: decisionEvents.participantId, latest: max(decisionEvents.id) })
+			.from(decisionEvents)
+			.where(and(inArray(decisionEvents.participantId, ids.slice(from, from + IDS_AT_ONCE)), inArray(decisionEvents.kind, [...CHANGE_KINDS])))
+			.groupBy(decisionEvents.participantId)
+			.all();
+		for (const row of rows) {
+			if (row.participantId === null || row.latest === null) continue;
+			if (row.latest > (after.get(row.participantId) ?? Number.MAX_SAFE_INTEGER)) changed.add(row.participantId);
+		}
+	}
+	return changed;
 }
 
 // ─── What one account has asked for, across decisions (card 2697) ────────────

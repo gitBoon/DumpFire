@@ -1,10 +1,11 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.84
+version: 1.86
 status: As-Built
 date: 2026-11-04
 tags:
+  - decision-reminders
   - authentication
   - security
   - sessions
@@ -4144,6 +4145,26 @@ A participant who has no account is reached by `/decision-link/[token]`.
   holders reads the decision's history once (the code review's F1).
 - **Fresh in every mail.** Each record-bearing mail to a link holder carries a new link, and the
   old hash is replaced, so a forwarded older mail stops working.
+- **Never in the closing-date reminder** (card 2685). The reminder, sent by a scheduled job with
+  nobody pressing a button, mints no link, carries no token and revokes nothing: it tells a link
+  holder to "Open the decision from the personal link in the latest email you were sent about
+  it", as the answer notice does. So an unattended job never makes a credential, no new key lands
+  in a mailbox, and a reminder that fails cannot leave anyone without a working link. It goes to
+  a link holder only while the row holds a live link (`link_token_hash` not null, `linkUsable`)
+  and their latest record mail, the one that carried that link, was delivered; at the send it
+  asks again that the row holds the same hash and the same delivered latest mail, else it is
+  recorded `superseded` and not sent. It runs only where `SCHEDULERS` lets the schedulers run, so
+  never on the dev server or a rehearsal unless asked, and a restored copy, whose links a restore
+  ends, sends a link holder none. A reminder starts the 10-minute rest before the next record mail
+  to the same participant, so a Resend, and the fresh link it carries, cannot follow it within 10
+  minutes. Its code review (2026-11-04) made it fail closed where it could fail open: an account
+  holder whose stored notification preferences cannot be read is sent no reminder (other mail
+  reads them as every switch on), with one WARN line per account per process; a removal or a
+  re-inclusion since the asking mail passes the participant over, as a role, address or account
+  change does; migration 0063 has no `IF NOT EXISTS`, so a same-named index it did not make stops
+  the start rather than being kept; and a fault in one decision's step is one ERROR line with ids
+  alone, never an error's own words, which may hold an address. See
+  [The Closing-Date Reminder](notifications-email.md#the-closing-date-reminder-card-2685).
 - **Expiry** is worked out when the link is read (`linkUsable`). It is usable until 90 days after
   `ruled_at` for a ruled or superseded decision, `withdrawn_at` for a withdrawn one, and
   `closes_at` for an open or closed one. With no such moment it is usable only on an open
@@ -4171,6 +4192,17 @@ flowchart TD
     Use -->|yes| Reach{"reachOf: still by link?"}
     Reach -->|yes| Ok["participant and decision"]
     Reach -->|no| Unk["unknown"]
+```
+
+```mermaid
+flowchart TD
+    J["Closing-date reminder (card 2685),<br/>a scheduled job, only where SCHEDULERS runs"] --> H{"Link holder: live hash,<br/>and the latest record mail delivered?"}
+    H -->|"no"| X["Passed over: nothing written;<br/>the editor's Resend gives a link"]
+    H -->|"yes"| W["reminded recorded"]
+    W --> S{"At the send: same hash,<br/>same delivered latest mail?"}
+    S -->|"no"| Sup["Not sent: superseded"]
+    S -->|"yes"| M["Mail with no link and no token:<br/>'use the link in your latest email'"]
+    M -.->|"no issueLink, no revoke"| Live2["The held link stays the only live one"]
 ```
 
 Every one of those triggers is recorded on the decision, by its actor: the administrator for the

@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.55
+version: 1.57
 status: As-Built
 date: 2026-11-04
 tags:
@@ -28,7 +28,9 @@ tags:
   - product-owner
   - migration-0062
   - sessions
-description: "Complete database schema documentation with ER diagram, table descriptions, relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), and how migrations and schema reconciliation bring every database to the model"
+  - migration-0063
+  - decision-reminders
+description: "Complete database schema documentation with ER diagram, table descriptions, relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), and how migrations and schema reconciliation bring every database to the model"
 ---
 
 # DumpFire Data Model
@@ -525,8 +527,9 @@ erDiagram
     decision_events {
         int id PK
         int decision_id FK
-        int participant_id FK "NO ACTION"
+        int participant_id FK "NO ACTION; unique with version_number where kind = reminded (0063)"
         text kind
+        int version_number "the round, on reminded"
         int actor_user_id FK
         text actor_name
         text source
@@ -678,7 +681,7 @@ refused (comment 5599). A `detail` never holds a token, a hash or a mail server'
 | `asked_again`, `told_of_change` | yes | none, with `version_number` |
 | `told_withdrawn`, `told_ruling` | yes | none |
 | `mail_skipped` | yes | `{ mail, reason }`, reason `deleted`, `left`, `account_not_attached`, `account_removed` or `address_changed` |
-| `mail_outcome` | yes | `{ of, mail, delivered, problem? }`: `of` the mail event's id, `problem` a `MailProblem` code, `no_link_address`, or `superseded` for a mail not sent as it no longer stood when asked again before its send (card 2675's F2) |
+| `mail_outcome` | yes | `{ of, mail, delivered, problem? }`: `of` the mail event's id, `problem` a `MailProblem` code, `no_link_address`, or `superseded` for a mail not sent as it no longer stood when asked again before its send (card 2675's F2). `mail` is the record mail's name, or (card 2685) `reminder` for a closing-date reminder's outcome |
 | `closed` | no | none |
 | `extended` | no | `{ from, to }` |
 | `withdrawn` | no | `{ reason }` |
@@ -692,6 +695,7 @@ refused (comment 5599). A `detail` never holds a token, a hash or a mail server'
 | `superseded` (card 2679) | no | `{ byDecisionId }`, on the old decision, when the ruler of the decision superseding it may supersede it |
 | `results_released` (card 2679) | no | `{ upToResponseId, omitted: { responseId, field }[] }`: the highest response id counted, which freezes the release, and each comment left out, `field` `comment` or `option:<id>` |
 | `concern_raised` (card 2679) | yes | `{ responseId, notice }`, `notice` one of `asked`, `held`, `no_decider`, `no_link_address`, `prefs_off`, `no_mail_host` (code review F2); `signedIn` as for `seen`; with `version_number`. **Decider and administrator only** |
+| `reminded` (card 2685) | yes | none: the closing-date reminder, by `DumpFire` (source `system`), with `version_number` the round (`currentRound`), written before the mail is sent; its `mail_outcome { of, mail: 'reminder', delivered, problem? }` follows. At most one per participant per round, held by migration 0063's partial unique index. Shown on a person's own record (`OWN_RECORD_EVENTS`) as "A reminder was due before closing", with no outcome |
 
 **A restore** (`restoreFromBackup` in `src/lib/server/db/restore.ts`) copies the decision tables
 as it copies every other, then, inside its transaction, writes `link_revoked { reason: 'restore' }`
@@ -714,9 +718,10 @@ one module that reads the record tables by name, through the existing index
 |---|---|---|
 | `lastDryRunAt(userId)`, `dryRunsSince(userId, since)` | `dry_run` events by `actor_user_id`, across decisions | the dry run's 10-minute rest and its 20 a day |
 | `publishesSince(userId, since)` | `published` events by `actor_user_id`, across decisions (Open writes one, each re-publish one) | the publish limit, 10 a day |
-| `mailsSince(participantIds, since)` | the record-mail kinds (`invited`, `asked_again`, `told_of_change`, `told_withdrawn`, `told_ruling`) per participant | the record-mail cap, 5 a day per participant |
+| `mailsSince(participantIds, since)` | the record-mail kinds (`invited`, `asked_again`, `told_of_change`, `told_withdrawn`, `told_ruling`) per participant; never `reminded` (card 2685) | the record-mail cap, 5 a day per participant |
+| `lastMailAt(participantIds)` | the latest of the record-mail kinds and (card 2685) `reminded` per participant (`REST_KINDS`) | the 10-minute rest: a reminder starts it, and does not count toward the cap |
 | `personOfAccount(userId)` | the `people` row whose `user_id` is the account | the dry run's address rule |
-| `deliveryOf(decisionId)` | one read of the decision's events: per participant the latest record mail with its own `mail_outcome` (`detail.of`), the latest `mail_skipped` and the latest `link_revoked` | the editor's delivery panel |
+| `deliveryOf(decisionId)` | one read of the decision's events: per participant the latest record mail with its own `mail_outcome` (`detail.of`), the moment the rest runs from (`lastRestAt`, the latest record mail or `reminded`, card 2685), the latest `mail_skipped` and the latest `link_revoked` | the editor's delivery panel |
 
 Each count read returns the moments themselves, so the refusal can say from when the next is
 allowed (the earliest of the window's plus 24 hours). **A deletion takes the counts with it**: a
@@ -766,8 +771,9 @@ holds every column a response needs, and an event's `kind` is free text checked 
   the 51st is `409`.
 - **Rounds.** A re-publish that asks again starts a round; the first response in it replaces
   nothing, and the earlier round's rows stay, shown as for an earlier version. The latest of a
-  round is `latestResponse(participantId, round)`, which card 2679's results and card 2685's
-  reminder read.
+  round is `latestResponse(participantId, round)`, which card 2679's results read. Card 2685's
+  reminder asks whether a participant has responded in the round through `countedInRound`, which
+  is `latestResponse(participantId, round) !== null` for many at once (`RESPONSE_KINDS` alone).
 - **Only while open.** The stored status must be `open` (`TRANSITIONS.respond`) and the shown
   status `open`, as an open decision past `closes_at` is awaiting a ruling.
 - **Each response** also writes `responded { responseId }` and, when the participant has none
@@ -2448,7 +2454,9 @@ of about zero.
     no default), `version_number`, `ruled_by` (SET NULL), `ruled_by_name`, `ruled_at`.
   - `decision_events`: `decision_id` (CASCADE) with `idx_decision_events_decision_id_created_at`
     on (`decision_id`, `created_at`), `participant_id` (NO ACTION), `kind`, `version_number`,
-    `detail` (JSON), `actor_user_id` (SET NULL), `actor_name`, `source`, `created_at`.
+    `detail` (JSON), `actor_user_id` (SET NULL), `actor_name`, `source`, `created_at`. Since
+    migration 0063 (card 2685, below) it also has the partial unique index
+    `idx_decision_events_participant_id_version_number_reminded`.
   - `decision_card_links`: `PRIMARY KEY(decision_id, card_id)`, both CASCADE, `relation`
     (`DEFAULT 'relates'`), `created_by` (SET NULL), `created_at`, and
     `idx_decision_card_links_card_id`. Written since card 2680 by `linkCard` and `unlinkCard`
@@ -2524,6 +2532,36 @@ stateDiagram-v2
         a check refused unchecked (in flight, busy)
         adds none, and a right one sets it to 0
     end note
+```
+
+- **`idx_decision_events_participant_id_version_number_reminded` holds one closing-date
+  reminder per participant per round** (card 2685, migration
+  `0063_add_decision_reminder_once.sql`, 2026-11-04). A partial unique index on
+  `decision_events (participant_id, version_number) WHERE kind = 'reminded'`, declared in
+  `schema.ts` with `uniqueIndex(…).on(…).where(sql\`kind = 'reminded'\`)` so `expected-schema.ts`
+  holds the same statement. One statement, no breakpoint, and **no `IF NOT EXISTS`**, unlike
+  0053 and 0061 (card 2685's code review, S5): an index of this name already in a database, made
+  by hand or left by another build, may not hold the rule, so the file fails, is not recorded,
+  and the start stops and names it, rather than keeping it and recording the file over it.
+  Only `reminded` rows are covered: every other kind may repeat a participant and version as
+  before (two `invited` for one person, several `asked_again`, events with no participant).
+  It is the third guard on "once" beside the write lock and the job's in-flight flag
+  (`src/lib/server/decision-reminders.ts`): a second `reminded` for one participant and round
+  is refused `SQLITE_CONSTRAINT_UNIQUE` whatever the code does, and the job rolls back that
+  participant's step alone. The insert stays `appendEvent`'s plain insert, with no `ON
+  CONFLICT`: the insert-only scan refuses one on any record table. `decision_events` is not a
+  reconciled table, so the file alone adds the index; `reminded` is new, so no row can break it,
+  and nothing is declared to the rehearsal. A backup made before it holds no `reminded` and
+  restores as any other. An older image keeps the index, reports it as a difference at each
+  start (`index in the database but not in the model: unique index … partial`), does not act on
+  it, and writes no `reminded`.
+
+```mermaid
+flowchart LR
+    J["decision-reminders.ts<br/>recordOne, in BEGIN IMMEDIATE"] -->|"appendEvent reminded<br/>(participant, round)"| I{"unique (participant_id, version_number)<br/>WHERE kind = 'reminded'"}
+    I -->|"first of the round"| W[("written; then the send,<br/>then mail_outcome")]
+    I -->|"a second of the round"| R["SQLITE_CONSTRAINT_UNIQUE:<br/>that step rolled back, one WARN,<br/>nothing sent, the run goes on"]
+    O["any other kind"] -->|"not covered"| W2[("written as before")]
 ```
 
 - **No secret is in a backup's copy** (card 2169): no `smtp_pass` row, every secret field of

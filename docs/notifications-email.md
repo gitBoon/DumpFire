@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.53
+version: 1.55
 status: As-Built
 date: 2026-11-04
 tags:
@@ -16,7 +16,8 @@ tags:
   - ssrf
   - webhook-allow-list
   - decision-records
-description: "Complete guide to DumpFire's notification pipeline: SMTP email, SSE real-time events, webhooks (where one may send, who may change one, at most 10 a board), and user preferences"
+  - decision-reminders
+description: "Complete guide to DumpFire's notification pipeline: SMTP email, SSE real-time events, webhooks (where one may send, who may change one, at most 10 a board), user preferences, and the decision closing-date reminder"
 ---
 
 # Notifications & Email System
@@ -614,6 +615,7 @@ down. The failure shows on the panel and in the log.
 | Concern About a Ruling (card 2679) | The decision's decider, at their account's address, when a participant raises a concern: a participant's first always, then at most one about them in 24 hours | `email_decisions` | `A concern about the ruling on {title}` |
 | A Question About a Decision (card 2678) | The decision's author and decider, each who may answer now and is not the asker, at their account's address, when a participant asks a question: a participant's first always, then at most one about them in 24 hours. See [The Question Notices](#the-question-notices-card-2678) | `email_decisions` | `A question about {title}` |
 | Your Question Answered (card 2678) | The asker, when a person answers their question, or publishes or replaces an agent's draft of an answer: an account holder at their account's address, a link holder at the participant's snapshot address, with no link | `email_decisions` (an account holder; a link holder has no switch) | `Your question about {title} has been answered` |
+| Decision Closing Reminder (card 2685) | Each consulted participant who has not responded in the round, once a round, about a day before the closing time, at the snapshot address: an account holder with a link to the page, a link holder with no link. Sent by a scheduled job, only where the schedulers run. See [The Closing-Date Reminder](#the-closing-date-reminder-card-2685) | `email_decisions` (an account holder; a link holder has no switch) | `Reminder: your view is asked by {closes_at} UTC: {title}` |
 
 **The backup failure mail says which kind of run failed** (card 2413, 2026-10-22). Sent by
 `runBackup()` in `src/lib/server/backup.ts`: headed **Scheduled Backup Failed**, "A scheduled
@@ -1106,6 +1108,166 @@ sequenceDiagram
 Covered by `tests/decision-questions.test.ts` (cases 6, 12, 13 to 16, 19 to 21) and
 `tests/mail-escaping.test.ts`.
 
+### The Closing-Date Reminder (card 2685)
+
+A scheduled job, `src/lib/server/decision-reminders.ts`, sends each consulted participant who
+has not responded one short reminder about a day before a decision's closing time. It is started
+by `startSchedulers` with the backup, report and snapshot schedulers and the attachment file
+sweep, and like them it runs only where `SCHEDULERS` lets it: a built server by default, never
+the dev server or a rehearsal unless `SCHEDULERS=on` ([Deployment](deployment.md#environment-variables)).
+Its first run is 5 minutes after the server starts, then one every 5 minutes; nothing runs at
+start-up.
+
+**When.** A participant is reminded at the first run on or after 24 hours before `closes_at`,
+and never in its last hour: a run picks decisions whose `closes_at` is in `(now + 1 h, now +
+24 h]`, soonest closing first. Their asking mail of the current round (the `invited` or
+`asked_again` at or after the round's version was published) must be at least 24 hours old, so a
+decision opened less than 25 hours before it closes sends none, and nobody is reminded within a
+day of being invited or re-sent their invitation. Every comparison is on stored UTC moments.
+
+**Who** (`dueOf`, asked inside the record step's transaction). First, outside any transaction and
+once per decision, a pre-filter of two batched reads (`countedInRound` and `remindedIn` over all
+its consulted participants) leaves out those already answered or reminded in the round, so the
+write lock is taken only for a participant who may be due; the no-mail warning uses the same
+pre-filter. Then, for each one left, every one of these, the clauses asked again at the send
+(1 to 5, 8, 9) in one function, `standsAt`:
+
+1. the decision is stored `open` and its closing time is in the window;
+2. the participant is consulted, not informed, and not removed;
+3. `reachOf` reaches them, through their account or by a personal link;
+4. a link holder holds a live link, and their latest record mail, the one that carried it, was
+   delivered: one whose latest mail was refused, a tell-only re-publish's included, is left to
+   the editor's Resend, which gives them a working link;
+5. they have given no counted response in the round (a concern is none);
+6. they have not been reminded in the round;
+7. their asking mail of the round was delivered and is a day old;
+8. no `role_changed`, `address_changed`, `account_attached`, `account_cleared`, `removed` or
+   `re_included` was recorded for them after that mail (`CHANGE_KINDS`): the reminder reminds of
+   a mail sent to this person, in this role, by this route, in this inclusion (a re-inclusion's
+   own invitation, written after it, is the next asking mail);
+9. an account holder has **Decisions** (`email_decisions`) and **All Email Notifications** on.
+   Preferences that cannot be read (not JSON, or not a JSON object) count as off for this mail,
+   where every other mail reads them as every switch on, and one WARN line per account per
+   process names the account by id;
+10. `mailRestOf` lets them be mailed now.
+
+Anyone who fails one is passed over and nothing is written: no `mail_skipped`, which a run every
+5 minutes would repeat without end. They are asked again at the next run.
+
+**Once a round, at most once.** The round is `currentRound`, the latest version that asked
+again; the `reminded` event's `version_number` is that round. A re-publish that only tells, or a
+later closing time, starts no round and earns no second reminder; one that asks again does,
+24 hours after its delivered `asked_again`. For each participant in turn the job records, then
+sends: one `inTransaction` (`BEGIN IMMEDIATE`) re-reads the decision and the participant on a
+fresh clock, asks `dueOf` and writes `reminded` through `appendEvent`; after the commit the
+reminder is asked again, sent and awaited, and its `mail_outcome { of, mail: 'reminder',
+delivered, problem? }` written; then the next participant. A restart mid-run leaves at most the
+one reminder in hand recorded with no outcome, and it is never sent again. Three guards hold the
+"once": the write lock, the job's in-flight flag (a tick is skipped while the last run is
+going), and migration 0063's partial unique index on `decision_events (participant_id,
+version_number) WHERE kind = 'reminded'`. Should the index refuse a second reminder, that
+participant's step is rolled back, one WARN line says `Decision <id>: participant <id> was
+already reminded in round <n>`, and the run goes on. A busy or locked database rolls back that
+step, is one WARN line naming the decision, and leaves the rest of its participants to the next
+run. Any other fault, in the pre-filter, a record step, the mail's building or a send, is held to
+its decision too: one ERROR line, `Decision <id>: its reminders were left to the next run, as a
+step failed at participant <id>`, with the ids alone (an error's own words may hold an address),
+and the run goes on with the next decision. A reminder recorded before such a fault keeps no
+outcome and is never sent again.
+
+**Just before each send** (`stillStands`), on the clock as it is then: the decision must still be
+there (else one WARN line and nothing recorded), its round the reminder's, and this reminder the
+round's first for the participant; then `standsAt` again on the fresh clock (stored open and
+closing in the window; consulted, not removed, reached; a link holder's live link and delivered
+latest mail; no counted response; no change since the asking mail; an account holder's switches
+on); and, asked only here, the address, the route, the link and the latest mail the ones the
+write found. A reminder that fails one is not sent and is recorded
+`mail_outcome { delivered: false, problem: 'superseded' }`, so a slow run cannot mail inside the
+last hour.
+
+**What it says.** Subject, plain text: `Reminder: your view is asked by <closes_at> UTC:
+<title>`. Body, in `emailTemplate`, every value through `escapeHtml`: "Your view on this decision
+is asked by <closes_at> UTC, and you have not responded to the current version yet.", **Who
+decides:** and the decider's name, then an account holder's **Open the decision** button to
+`<App URL>/decisions/<id>`, behind a sign-in, or a link holder's line, "Open the decision from
+the personal link in the latest email you were sent about it." (`LATEST_LINK_LINE` in
+`$lib/decision-words`, the answer notice's line too, so both say it in the same words; the button
+is `openDecisionButton`, the record mails' too). It quotes
+no question or ask, names no other participant and gives no figure. **It mints no personal link
+and carries no token**: the link a link holder holds stays the only live one, and link rotation
+stays with the five record mails.
+
+**The limits on mail to one participant.** A reminder waits while the 10-minute rest after the
+participant's last record mail runs, and it starts that rest itself: `lastMailAt` and the
+delivery panel's `lastRestAt` read `reminded` too, so a Resend, re-publish or re-inclusion within
+10 minutes of a reminder is refused 409 with the rest's words. It is not counted toward
+`RECORD_MAIL_DAILY_CAP`, which reads the record mails alone, so it takes none of an editor's five
+Resends a day, and the delivery panel's last mail stays the last record mail. The per-caller cap
+does not apply: no account causes it.
+
+**A run's size.** At most `REMINDERS_PER_RUN` (200) are recorded in one run, and no new
+participant is started once `REMINDER_RUN_BUDGET_MS` (4 minutes) has passed; the rest wait for the
+next run. Each send is awaited by the run itself, not by `afterCommit`, so one mail connection is
+open at a time and the in-flight flag covers it.
+
+**When mail cannot go.** With no mail host or no App URL and no `ORIGIN`, nothing is recorded or
+sent, and one WARN line per process, "Decision reminders are due and cannot be sent: …", says
+so only when a reminder is due; a run with nothing due says nothing. The reminder still goes once
+mail is set up, inside its window. A refused send is recorded `delivered: false` with its
+`MailProblem` code alone and is never retried; the ERROR line names `participant <id> of decision
+<id> reminder`, never the address.
+
+| Outcome on the record | When |
+|---|---|
+| `delivered: true` | The mail server accepted it |
+| `delivered: false`, `problem: <MailProblem>` | The mail server refused it, or could not be reached; never retried |
+| `delivered: false`, `problem: 'superseded'` | `stillStands` failed just before the send |
+| no outcome | The server stopped between the commit and the send; never sent again |
+
+```mermaid
+sequenceDiagram
+    participant T as Timer (every 5 min)
+    participant J as runDecisionReminders(now)
+    participant DB as SQLite (BEGIN IMMEDIATE)
+    participant M as Mail server
+    T->>J: tick (skipped while the last run is in flight)
+    J->>J: mail host and link address? (else WARN once if someone is due)
+    J->>DB: open decisions, closes_at in (now+1h, now+24h], soonest first
+    loop each decision, until 200 recorded or 4 minutes gone
+      J->>DB: pre-filter: countedInRound, remindedIn (batched, no transaction)
+      loop each candidate
+        J->>DB: inTransaction: re-read, dueOf(t), appendEvent reminded
+        alt the index refuses a second reminder
+            DB-->>J: rolled back: WARN, next participant
+        else busy or locked
+            DB-->>J: rolled back: WARN, next decision
+        else any other fault
+            DB-->>J: ERROR with ids alone, next decision
+        else not due
+            DB-->>J: nothing written
+        else recorded
+            J->>DB: stillStands(reminded, t')
+            alt still stands
+                J->>M: trySendEmail (no address in the log)
+                M-->>J: outcome, awaited
+                J->>DB: mail_outcome { of, mail: 'reminder', delivered, problem? }
+            else decision gone
+                J->>J: WARN, nothing recorded
+            else superseded
+                J->>DB: mail_outcome { delivered: false, problem: 'superseded' }
+            end
+        end
+      end
+    end
+```
+
+A reminder writes `decision_events` rows alone: no column of the decision or of a participant
+moves, so neither revision changes and a decider who has read the results can still rule on
+them. The record view shows it as "A reminder was due before closing", followed by its **Mail
+outcome**; a person's own record shows it with the same words and no outcome. No activity entry
+and no webhook. Covered by `tests/decision-reminders.test.ts` (cases 1 to 44 and 48 to 50) and
+`tests/uploads-sweep.test.ts` (case 47).
+
 ### Text in Mail Is Text
 
 Every text a mail carries is somebody's typing: a board's or grouping's name, a card's
@@ -1170,7 +1332,7 @@ There is one list of them, `NOTIFICATION_PREFS` in `src/lib/notification-prefs.t
 | Request Progress | `email_request_progress` | The progress mails of [Requester Progress Notifications](#requester-progress-notifications), Request Complete among them, to a requester who has an account. A requester without one has nothing to switch and is always mailed |
 | Board Sharing | `email_board_shared` | Board Shared |
 | Planning | `email_planning` | The mail about a new plan |
-| Decisions | `email_decisions` | "When someone asks about or raises a concern on a decision you decide or wrote, or your question about a decision is answered": the notice to a decider that a concern about a ruling arrived (card 2679), and card 2678's two question notices, to the author and the decider of a new question and to an asker with an account once their question is answered. A link holder has no account and no switch |
+| Decisions | `email_decisions` | "When someone asks about or raises a concern on a decision you decide or wrote, your question about a decision is answered, or a decision you have not answered is about to close": the notice to a decider that a concern about a ruling arrived (card 2679), card 2678's two question notices, to the author and the decider of a new question and to an asker with an account once their question is answered, and card 2685's closing-date reminder to a consulted participant with an account. A link holder has no account and no switch |
 
 Until 2026-10-15 the page, the route and the mail kept three lists. The route's left out `email_request_progress` and `email_mentions`, so it neither answered nor saved them: the page offered Request Progress, whose switch went back on at every reload, and the progress mail was always sent; and the mention mail read `email_mentions`, which nothing offered, so it could be stopped only by switching all mail off. The page now offers **Mentions**, and both keys are saved and answered. No account had either stored, so a requester who switched Request Progress off before then is mailed until they switch it off again. A key not stored, or a preference that cannot be read, is on. A save that is refused, or gets no answer, puts every switch back as it was and says why under them.
 
@@ -1179,6 +1341,8 @@ again, told of a change, withdrawn and ruled mails carry a decision's record to 
 or told, and are sent whatever their account's switches say, **All Email Notifications**
 included: `queueRecordMails` calls neither `shouldNotifyUser` nor `filterRecipientsByPref`. Who is
 mailed is `reachOf`'s rule instead ([Decision Record Mails](#decision-record-mails-card-2675)).
+The closing-date reminder (card 2685) is not one of the five: for an account holder it reads
+`email_decisions` and the master switch, when it is recorded and again just before it is sent.
 
 ```mermaid
 flowchart TD

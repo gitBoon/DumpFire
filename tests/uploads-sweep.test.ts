@@ -28,6 +28,7 @@ import { cardAttachments, type Card } from '$lib/server/db/schema';
 import { inTransaction } from '$lib/server/db/transaction';
 import type { SessionUser } from '$lib/server/auth';
 import { initBackupScheduler } from '$lib/server/backup';
+import { initDecisionReminders } from '$lib/server/decision-reminders';
 import { initReportScheduler } from '$lib/server/reports';
 import { startSchedulers } from '$lib/server/schedulers';
 import { initSnapshotScheduler } from '$lib/server/snapshots';
@@ -48,6 +49,11 @@ vi.mock('$lib/server/reports', async (importOriginal) => ({
 vi.mock('$lib/server/snapshots', async (importOriginal) => ({
 	...(await importOriginal<typeof import('$lib/server/snapshots')>()),
 	initSnapshotScheduler: vi.fn()
+}));
+// Card 2685: the decision reminder's timers would read the database and send mail.
+vi.mock('$lib/server/decision-reminders', async (importOriginal) => ({
+	...(await importOriginal<typeof import('$lib/server/decision-reminders')>()),
+	initDecisionReminders: vi.fn()
 }));
 vi.mock('$lib/server/uploads-sweep', async (importOriginal) => {
 	const actual = await importOriginal<typeof import('$lib/server/uploads-sweep')>();
@@ -415,23 +421,31 @@ describe('when the sweep runs', () => {
 		sweep.mockClear();
 		// The real start is the test above; here only the call is watched.
 		sweep.mockImplementation(() => {});
+		const reminders = vi.mocked(initDecisionReminders);
+		reminders.mockClear();
 		try {
 			logged(() => startSchedulers('off', false));
 			expect(sweep).not.toHaveBeenCalled();
 			expect(initBackupScheduler).not.toHaveBeenCalled();
+			// Card 2685 (case 47): the decision reminder is started with the rest, and only with them.
+			expect(reminders).not.toHaveBeenCalled();
 
 			const { lines } = logged(() => startSchedulers('on', false));
 			expect(sweep).toHaveBeenCalledTimes(1);
 			expect(initBackupScheduler).toHaveBeenCalledTimes(1);
 			expect(initReportScheduler).toHaveBeenCalledTimes(1);
 			expect(initSnapshotScheduler).toHaveBeenCalledTimes(1);
+			expect(reminders).toHaveBeenCalledTimes(1);
 			expect(lines.filter((line) => line.includes('Schedulers are off'))).toEqual([]);
 
 			// Under the dev server, with nothing set, it is off as the rest are.
 			sweep.mockClear();
+			reminders.mockClear();
 			const off = logged(() => startSchedulers(undefined, true));
 			expect(sweep).not.toHaveBeenCalled();
+			expect(reminders).not.toHaveBeenCalled();
 			expect(off.lines).toContainEqual(expect.stringMatching(/attachment file sweep will run from this instance/));
+			expect(off.lines).toContainEqual(expect.stringMatching(/decision reminder/));
 		} finally {
 			sweep.mockReset();
 		}

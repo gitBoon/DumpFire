@@ -123,6 +123,8 @@ const TEST_FILES = [
 	'decision-register.test.ts',
 	// Card 2680, slice 3a: the register, a person's record and the record view, in the page; the Record links; live listening.
 	'decision-register.svelte.test.ts',
+	// Card 2685: the closing-date reminder: who is due, record then send, once a round, the rest it starts, its gating.
+	'decision-reminders.test.ts',
 	// Card 2680, slices 2a and 2b: linking a card to a decision, both sides of the link, deleting a linked decision, and the routes.
 	'decision-card-links.test.ts',
 	// Card 2680, slice 3b: the decision page's linked cards with Link and Unlink, and the card window's decisions, in the page.

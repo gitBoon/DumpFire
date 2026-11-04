@@ -60,12 +60,12 @@ maskLiveLog();
 // $lib/server/startup-checks.ts.
 removeSettingsOfNonAdministrators();
 
-// Start the backup, report and snapshot schedulers, or leave all three off.
-//
-// SCHEDULERS=on or SCHEDULERS=off decides. When it is not set they run in a
-// built server and not under `vite dev`, so that a dev instance holding a copy
-// of production's data does not back up to production's destination or send
-// its reports. See $lib/server/schedulers.ts.
+// Start the backup, report and snapshot schedulers, the decision reminder and
+// the attachment file sweep, or leave all five off. SCHEDULERS=on or =off
+// decides. When it is not set they run in a built server and not under `vite
+// dev`, so that a dev instance holding a copy of production's data does not
+// back up to production's destination, send its reports or remind its
+// decisions' participants. See $lib/server/schedulers.ts.
 startSchedulers();
 
 // Say in the system log, once, what about this installation nothing else
