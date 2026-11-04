@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.87
+version: 1.89
 status: As-Built
 date: 2026-11-04
 tags:
@@ -1597,7 +1597,7 @@ flowchart LR
     R1 & R2 & R3 & R4 --> S["decisions.ts<br/>respondToDecision, respondByLink,<br/>recordSeen, recordSeenByLink"]
     R3 & R4 -.->|"a 404 from the write"| V
     S --> RR2["decision-record.ts<br/>appendResponse, appendEvent, ownResponseOf,<br/>latestResponse, responsesInRound, hasSeen"]
-    UI["DecisionView, ResponseForm,<br/>MarkdownBlock"] -->|"fetch JSON"| Routes
+    UI["DecisionView, ParticipantBanner,<br/>ParticipantResponse, ResponseForm,<br/>MarkdownBlock"] -->|"fetch JSON"| Routes
     W["$lib/decision-seen.ts<br/>watchForSeen"] -->|"fetch JSON"| R2 & R4
     Gate["hooks.server.ts PUBLIC_ROUTES,<br/>gate-answers.ts ROUTE_HEADERS"] -.-> LP & R3 & R4
 ```
@@ -1647,6 +1647,7 @@ The session routes are `requireUser`, `pathId`, `readBody`, then `writeAs(locals
 **The components** (`src/lib/components/decision/`).
 
 - `DecisionView` takes `DecisionViewProps` (`decision`, `content`, `options`, `audiences`, `participant` as `{ role }` or null, `mode: 'participant' | 'preview'`) and the snippets `banner`, `response`, `questions` and `linkedCards`. It holds no version number, publication or inclusion moment, so card 2697's preview can build its props from the working content, and it fetches and posts nothing. Sections in design 4.7's order: title and status, banner, situation, question, what is asked and by when, who sees a response (consulted only), the options (a CSS grid, `repeat(auto-fit, minmax(15rem, 1fr))`, side by side or stacked), how it affects you (`<details>` per audience, open as given), user stories (closed `<details>`), what is not yet known, already settled, technical detail (closed), the `response` snippet (consulted only), then `questions` (card 2678: `QuestionsPanel` and `QuestionForm`, under the `questions` id the question mails link to, its heading `questions-heading` taking the focus after a question is sent; [Clarification questions and answers](#clarification-questions-and-answers)) and `linkedCards` (card 2680: `LinkedCards`, under a `Linked cards` heading, on the signed-in page where there is a card or the caller may link or unlink one), each drawn only when given. A flagged section or option carries `AgentLabel` (card 2712), drawn as a `<p>` with its `data-flag`.
+- `ParticipantBanner` and `ParticipantResponse` (card 2707, plan `docs/planning/card-2707-shared-participant-snippets.md`) are the `banner` and `response` snippets' contents on both pages, so their words and behaviour cannot drift. Each takes only the fields it reads, never the page data, and every prop is required but `ParticipantResponse`'s `extra`, which is optional and defaults to `{}`; its `drawnFor` accepts `undefined`. `ParticipantBanner` (`decision`, `ruling`, `supersedes`, `laterDecision`, `participant`, `stage`, `personalLink`) draws the ruling (`RulingBanner`), the withdrawal, the told line and the seen note, then, only where `personalLink` is set (`{ signedInAs }` on the link page, `null` on the signed-in page, with no default), "This address is personal to you: do not share it." and the signed-in note; with it set, the earlier and later decisions go to `RulingBanner` with no `id` or `title` whatever it is handed, so a link holder is never shown another decision's name or address even if a loader handed the page more (S8). `ParticipantResponse` (`decision`, `version`, `options`, `ownResponse`, `earlierResponse`, `mayRespond`, `url`, `extra`, `drawnFor`) draws the earlier round's response, `ResponseForm` posting to `url` with `extra` (the token, on the link page) and keyed on `drawnFor` (the decision's id, or the token; a key alone), the version and Reload's count, and the closed states; Reload calls `invalidateAll` and draws the form afresh. `releasedResults`, `concern` and `questions` stay in each page, since each is one call to a shared component whose differences between the pages (the route, the token, `QuestionsPanel`'s `decisionId` and `mayAnswer`) are all that is left in it; Edit, the board's name, the page actions and `linkedCards` are the signed-in page's alone.
 - `MarkdownBlock` draws the text itself, escaped, in a `white-space: pre-wrap` block until it is mounted, then `{@html renderMarkdown(text)}`: DOMPurify needs a DOM, and Svelte keeps an `{@html}` the server drew on hydration (F5). It is the page's only `{@html}`. Comments are always shown as text.
 - `ResponseForm` (`voteMode`, `options`, `versionNumber`, `url`, `extra`, `disabled`, `initial`, `onReload`; `versionNumber` and `url` are optional when `disabled` is true, for card 2697's preview, code review C9): radio cards, one per option, then "I abstain" and "I have no concerns"; in score mode a radio group of six buttons, 0 to 5, per option, Send disabled until every option is scored; a comment and a comment per option. Send posts `{ ...extra, versionNumber, kind, optionId | scores, comment, optionComments }` (only the option comments that are not blank) and shows "Your response was recorded on <moment>:" with what was recorded. A refusal shows the server's words and keeps what was typed; only the `409` in `STALE_REVISION`'s words offers **Reload**, which reads the page again and draws the form afresh. `disabled` draws it and sends nothing (the preview). Every tap target is at least 44px, and every input 16px.
 - `watchForSeen(url, body, { trusted })` in `$lib/decision-seen.ts`, armed by both pages, on `/decisions/[id]` only when `participant` is not null (D7), and on neither where `stage` is null, listens on the window, capturing, for `pointerdown`, `keydown`, `touchstart` and `wheel`. Not `scroll`, which is trusted however it was caused, a script's `scrollTo` included (code review C3). The first event that passes the trust test (`event.isTrusted` unless one is given, which only the tests give) while `document.visibilityState` is `visible` stops the watch and posts `{ versionNumber, stage }` (with the token on the link page). With no answer, or a `429` or a `5xx`, the next action posts again; any other answer ends it.
@@ -1717,7 +1718,7 @@ added no column and no migration.
 flowchart LR
     subgraph Pages
         RP["/decisions/[id]/results<br/>ResultsView, RulingForm, the release"]
-        DP["/decisions/[id] and /decision-link/[token]<br/>RulingBanner, ReleasedResults, ConcernForm"]
+        DP["/decisions/[id] and /decision-link/[token]<br/>ParticipantBanner (RulingBanner), ReleasedResults, ConcernForm"]
     end
     subgraph Routes
         RR["POST …/rule (step-up)"]
@@ -1808,7 +1809,7 @@ title, `noneOfThese`, reason, conditions, `ruledByName`; no moment), `released` 
 each naming the other decision only to a signed-in viewer who may view it. A participant alone
 is given `stage` (`ruling` on a ruled or superseded decision), their own `concerns` and
 `mayRaiseConcern`; a session page adds `mayReadResults` and `maySupersede`. The pages draw
-`RulingBanner` in the banner and `ReleasedResults` and `ConcernForm` through `DecisionView`'s
+`RulingBanner` in the banner (through `ParticipantBanner` since card 2707) and `ReleasedResults` and `ConcernForm` through `DecisionView`'s
 `results` and `concern` snippets; `ResponseForm` sends `statement: WHO_SEES_STATEMENT_VERSION`
 beside `whoSeesStatement`, the words `DecisionView` shows.
 

@@ -17,6 +17,13 @@
  *     the page is visible (R2), on `/decisions/[id]` for a participant alone
  *     (D7), and never from a preview.
  *
+ *   - The shared parts (card 2707, plan cases 2707-1 to 2707-3): both pages,
+ *     from the same data, draw the same banner and response, the link page
+ *     adding only its two personal-link lines; handed every signed-in-only
+ *     field, the link page draws none of them; Reload, on either page, reads
+ *     the page again and draws the form afresh. The plan is
+ *     `docs/planning/card-2707-shared-participant-snippets.md`.
+ *
  * jsdom cannot make a trusted event, so the watch's trust test is stood in:
  * `watchForSeen` is the real one, handed a test that trusts the events this
  * file marks. What the server answers, and to whom, is in
@@ -27,7 +34,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as Svelte from 'svelte';
-import type { DecisionPageData, OwnResponse, ViewContent, ViewOption } from '$lib/decision-view-types';
+import type { DecisionPageData, OwnResponse, RulingView, ViewContent, ViewOption } from '$lib/decision-view-types';
 
 const navigation = vi.hoisted(() => ({ invalidateAll: vi.fn(async () => {}) }));
 vi.mock('$app/navigation', () => ({
@@ -622,6 +629,181 @@ describe('the participant pages', () => {
 			for (const kind of ['pointerdown', 'keydown', 'touchstart', 'wheel'] as const) act(kind);
 			await settle();
 			expect(sent, '(e)').toEqual([seen]);
+		}
+	});
+});
+
+// ─── The shared parts (card 2707, plan cases 2707-1 to 2707-3) ──────────────
+
+describe('the parts both participant pages share (card 2707)', () => {
+	const RULING: RulingView = { label: 'B', title: 'Buy', noneOfThese: false, reason: 'It lasts.', conditions: 'Review in a year.', ruledByName: 'Dee Cider' };
+	type DecisionMore = Partial<Pick<DecisionPageData['decision'], 'shownStatus' | 'closesAt' | 'withdrawnAt' | 'withdrawnReason'>>;
+	/** The same data for both pages: the signed-in page's with the decision's id and board, the link page's with neither, as each is given. */
+	const both = (decision: DecisionMore, more: Partial<DecisionPageData>) => ({
+		session: pageData({ ...more, decision: { id: 5, ...DECISION, boardName: 'Website', withdrawnAt: null, withdrawnReason: null, ...decision } }),
+		link: linkData({ ...more, decision: { ...DECISION, boardName: null, withdrawnAt: null, withdrawnReason: null, ...decision } })
+	});
+	/** Each element of a section, as markup; the form's radio group name is drawn from a per-mount id and set aside. */
+	const partsOf = (target: Element, section: string) =>
+		[...(target.querySelector(`[data-section="${section}"]`)?.children ?? [])].map((el) => el.outerHTML.replace(/name="response-[^"]*"/g, 'name="response"'));
+
+	it('2707-1: draw the same banner and response from the same data on either page, the link page adding only its two personal-link lines', () => {
+		const version2 = { number: 2, publishedAt: '2026-11-02 09:00:00', content: CONTENT };
+		const asked = 'You were asked for your view on this decision on 2026-11-01 09:05 UTC, by email.';
+		/**
+		 * Each state, with what both pages must draw for it (code review, 2026-11-04): the banner's opening
+		 * line, and the response section's lines below its heading, all of them where no form is drawn and
+		 * its opening lines where one is, so that a branch of `ParticipantResponse` gone fails here.
+		 */
+		const rows: {
+			name: string;
+			decision: DecisionMore;
+			more: Partial<DecisionPageData>;
+			recorded: string;
+			bannerOpens: string;
+			responseLines: string[];
+			form: boolean;
+		}[] = [
+			{
+				name: '(a) open, an earlier round’s response, the form',
+				decision: {},
+				more: { version: version2, earlierResponse: response({ comment: 'Cheaper' }) },
+				recorded: 'with your response and with your having seen this version.',
+				bannerOpens: asked,
+				responseLines: ['This decision changed on 2026-11-02 09:00 UTC. Your earlier response was for version 1:', 'You chose option A: Rent.', 'Your comment: Cheaper'],
+				form: true
+			},
+			{
+				name: '(b) awaiting the ruling, a response given',
+				decision: { shownStatus: 'awaiting_ruling' },
+				more: { mayRespond: false, ownResponse: response() },
+				recorded: 'with your response and with your having seen this version.',
+				bannerOpens: asked,
+				responseLines: ['Responses closed on 2099-12-01 12:00 UTC.', 'Your response:', 'You chose option A: Rent.'],
+				form: false
+			},
+			{
+				name: '(c) awaiting the ruling, no response given',
+				decision: { shownStatus: 'awaiting_ruling' },
+				more: { mayRespond: false },
+				recorded: 'with your response and with your having seen this version.',
+				bannerOpens: asked,
+				responseLines: ['Responses closed on 2099-12-01 12:00 UTC.', 'You gave no response in this round.'],
+				form: false
+			},
+			{
+				name: '(d) ruled, a response on an older version, the ruling',
+				decision: { shownStatus: 'ruled', closesAt: null },
+				more: { version: version2, mayRespond: false, ownResponse: response(), ruling: RULING, stage: 'ruling' },
+				recorded: 'with your concern and with your having seen the ruling.',
+				bannerOpens: 'Ruled by Dee Cider: Option B: Buy',
+				responseLines: ['Responses are closed.', 'Your last response:', 'You chose option A: Rent.', 'Given on version 1.'],
+				form: false
+			},
+			{
+				name: '(e) withdrawn',
+				decision: { shownStatus: 'withdrawn', withdrawnAt: '2026-11-03 10:00:00', withdrawnReason: 'The budget went.' },
+				more: { mayRespond: false, stage: 'withdrawal' },
+				recorded: 'with your response and with your having seen this version.',
+				bannerOpens: 'This decision was withdrawn on 2026-11-03 10:00 UTC: The budget went.',
+				responseLines: ['Responses are closed.'],
+				form: false
+			}
+		];
+
+		for (const { name, decision, more, recorded, bannerOpens, responseLines, form } of rows) {
+			// The signed-in page is handed the account name too, and still draws no personal-link line.
+			const data = both(decision, { ...more, signedInAs: 'Sam' });
+			clear();
+			const session = draw(DecisionPage, { data: data.session });
+			const link = draw(LinkPage, { data: data.link });
+
+			const sessionBanner = partsOf(session, 'banner');
+			const linkBanner = partsOf(link, 'banner');
+			expect(sessionBanner.length, name).toBeGreaterThan(0);
+			expect(linkBanner.slice(0, -2), name).toEqual(sessionBanner);
+			expect([...link.querySelectorAll('[data-section="banner"] > p')].slice(-2).map(textOf), name).toEqual([
+				'This address is personal to you: do not share it.',
+				`You are signed in as Sam; this is recorded ${recorded}`
+			]);
+			expect(textOf(session.querySelector('[data-section="banner"]')!), name).not.toMatch(/personal to you|signed in as/);
+
+			// Each page, against the words expected rather than only against the other page.
+			for (const [page, target] of [
+				['signed in', session],
+				['link', link]
+			] as const) {
+				expect(textOf(target.querySelector('[data-section="banner"] p')!), `${name}, ${page}`).toBe(bannerOpens);
+				// `linesOf` reads paragraphs alone, so DecisionView's own `<h2>Your response</h2>` is never counted here.
+				const lines = linesOf(target.querySelector('[data-section="response"]')!);
+				expect(form ? lines.slice(0, responseLines.length) : lines, `${name}, ${page}`).toEqual(responseLines);
+				expect(target.querySelector('.response-form') !== null, `${name}, ${page}: the form`).toBe(form);
+			}
+
+			const sessionResponse = partsOf(session, 'response');
+			expect(partsOf(link, 'response'), name).toEqual(sessionResponse);
+		}
+	});
+
+	it('2707-2: handed every field only the signed-in page has, the link page draws none of them, where the signed-in page draws each', () => {
+		const everything: Partial<DecisionPageData> = {
+			decision: { id: 5, ...DECISION, shownStatus: 'ruled', closesAt: null, boardName: 'Website', withdrawnAt: null, withdrawnReason: null },
+			mayRespond: false,
+			stage: 'ruling',
+			ruling: RULING,
+			supersedes: { id: 4, title: 'Plan A first' },
+			laterDecision: { superseded: false, id: 7, title: 'Plan C' },
+			mayEdit: true,
+			mayReadResults: true,
+			maySupersede: true,
+			mayReadRecord: true,
+			mayAnswer: true,
+			linkedCards: [{ id: 21, title: 'Build the site', boardId: 3, boardName: 'Shop', archived: false }],
+			mayLinkCards: true,
+			mayUnlinkCards: true
+		};
+
+		// The signed-in page draws each, so the link page's absences below are not empty checks.
+		const session = draw(DecisionPage, { data: pageData(everything) });
+		expect([...session.querySelectorAll('[data-section="banner"] a')].map((a) => a.getAttribute('href'))).toEqual(['/decisions/7', '/decisions/4']);
+		expect([...session.querySelectorAll<HTMLElement>('.page-actions [data-action]')].map((a) => a.dataset.action)).toEqual(['results', 'record', 'supersede']);
+		expect(session.querySelector('.edit-link')).not.toBeNull();
+		expect(textOf(session.querySelector('.crumb')!)).toBe('Website');
+		expect(session.querySelector('[data-section="linked-cards"]')).not.toBeNull();
+
+		// The same data on the link page, as a loader handing it too much would.
+		clear();
+		const link = draw(LinkPage, { data: { ...pageData(everything), via: 'link' } });
+		expect(link.querySelector('[data-section="banner"]')).not.toBeNull();
+		expect(link.querySelectorAll('[href]')).toHaveLength(0);
+		expect(link.innerHTML).not.toContain('/decisions/');
+		expect(link.querySelector('.page-actions, [data-panel="supersede"], .edit-link, .crumb, [data-section="linked-cards"]')).toBeNull();
+		expect(textOf(link.querySelector('[data-line="later"]')!)).toBe('A later decision was ruled on without superseding this one');
+		expect(textOf(link.querySelector('[data-line="earlier"]')!)).toBe('This decision supersedes an earlier decision');
+		const text = textOf(link);
+		for (const word of ['Plan A first', 'Plan C', 'Website', 'Build the site', 'Shop', 'Results and ruling', 'Record', 'Supersede', 'Edit']) expect(text, word).not.toContain(word);
+	});
+
+	it('2707-3: on either page, Reload after the stale-version 409 reads the page again once and draws the form afresh', async () => {
+		for (const [name, page, data, route] of [
+			['signed in', DecisionPage, pageData(), 'POST /api/decisions/5/responses'],
+			['link', LinkPage, linkData(), 'POST /api/decision-by-link/responses']
+		] as const) {
+			clear();
+			navigation.invalidateAll.mockClear();
+			const target = draw(page, { data });
+			radio(target, 'option-12').click();
+			flushSync();
+			answer(route, { message: STALE_REVISION }, 409);
+			button(target, 'Send my response').click();
+			await settle();
+			expect(textOf(target.querySelector('[role="alert"]')!), name).toBe(STALE_REVISION);
+
+			button(target, 'Reload').click();
+			await settle();
+			expect(navigation.invalidateAll, name).toHaveBeenCalledTimes(1);
+			expect(radio(target, 'option-12').checked, name).toBe(false);
+			expect(target.querySelector('[role="alert"]'), name).toBeNull();
 		}
 	});
 });

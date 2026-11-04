@@ -39,25 +39,29 @@
 	 * boards the caller can open (`LinkedCards`), with Link and a card search
 	 * where `mayLinkCards`, and Unlink where `mayUnlinkCards`; the section is
 	 * drawn where there is a card or the caller may link or unlink one.
+	 *
+	 * Card 2707: the banner and the response section are components shared
+	 * with the link page, `ParticipantBanner` (with no personal link) and
+	 * `ParticipantResponse` (to this page's route, keyed on the decision), so
+	 * the two pages cannot drift. Everything above that only this page has
+	 * stays here, never in them.
 	 */
 	import { tick } from 'svelte';
 	import type { PageData } from './$types';
-	import type { OwnResponse } from '$lib/decision-view-types';
-	import { goto, invalidateAll } from '$app/navigation';
+	import { goto } from '$app/navigation';
 	import { failureMessage } from '$lib/api';
 	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
 	import ThemeMenuItems from '$lib/components/ThemeMenuItems.svelte';
 	import ConcernForm from '$lib/components/decision/ConcernForm.svelte';
 	import DecisionView from '$lib/components/decision/DecisionView.svelte';
 	import LinkedCards from '$lib/components/decision/LinkedCards.svelte';
+	import ParticipantBanner from '$lib/components/decision/ParticipantBanner.svelte';
+	import ParticipantResponse from '$lib/components/decision/ParticipantResponse.svelte';
 	import QuestionForm from '$lib/components/decision/QuestionForm.svelte';
 	import QuestionsPanel from '$lib/components/decision/QuestionsPanel.svelte';
 	import ReleasedResults from '$lib/components/decision/ReleasedResults.svelte';
-	import ResponseForm from '$lib/components/decision/ResponseForm.svelte';
-	import RulingBanner from '$lib/components/decision/RulingBanner.svelte';
 	import { DECISION_TITLE_MAX } from '$lib/decision-rules';
 	import { watchForSeen } from '$lib/decision-seen';
-	import { givenOnWords, responseLines, seenNoteWords, shownMoment, toldWords, withdrawnWords } from '$lib/decision-words';
 	import { theme, themeIcon } from '$lib/stores/theme';
 
 	let { data }: { data: PageData } = $props();
@@ -102,14 +106,6 @@
 		}
 	}
 
-	/** Moved on by Reload, which draws the form afresh from the data read again. */
-	let drawing = $state(0);
-
-	async function reload() {
-		await invalidateAll();
-		drawing += 1;
-	}
-
 	// What the seen watch is armed on, as plain values, so data read again for the same decision, version and stage leaves it be.
 	const seenDecision = $derived(data.decision.id);
 	// A participant only (D7): a board reader, the author, the decider or an administrator who is no participant sends nothing.
@@ -128,18 +124,15 @@
 </svelte:head>
 
 {#snippet banner()}
-	{#if data.ruling !== null}
-		<RulingBanner ruling={data.ruling} supersedes={data.supersedes} laterDecision={data.laterDecision} />
-	{/if}
-	{#if data.decision.shownStatus === 'withdrawn'}
-		<p class="banner-line withdrawn">{withdrawnWords(data.decision.withdrawnAt, data.decision.withdrawnReason)}</p>
-	{/if}
-	{#if data.participant !== null}
-		<p class="banner-line">{toldWords(data.participant.role, data.participant.told, data.participant.includedAt)}</p>
-		{#if data.stage !== null}
-			<p class="banner-note" data-note="seen">{seenNoteWords(data.stage)}</p>
-		{/if}
-	{/if}
+	<ParticipantBanner
+		decision={data.decision}
+		ruling={data.ruling}
+		supersedes={data.supersedes}
+		laterDecision={data.laterDecision}
+		participant={data.participant}
+		stage={data.stage}
+		personalLink={null}
+	/>
 {/snippet}
 
 {#snippet releasedResults()}
@@ -173,47 +166,18 @@
 	{/key}
 {/snippet}
 
-{#snippet givenResponse(heading: string, response: OwnResponse)}
-	{@const givenOn = givenOnWords(response, data.version?.number)}
-	<p>{heading}</p>
-	{#each responseLines(response, data.options) as line, i (i)}<p class="response-line">{line}</p>{/each}
-	{#if givenOn !== null}<p class="given-on">{givenOn}</p>{/if}
-{/snippet}
-
 {#snippet yourResponse()}
-	{#if data.earlierResponse !== null && data.ownResponse === null && data.version !== null}
-		<div class="earlier">
-			<p>This decision changed on {shownMoment(data.version.publishedAt, '')}. Your earlier response was for version {data.earlierResponse.versionNumber}:</p>
-			{#each responseLines(data.earlierResponse, data.options) as line, i (i)}<p class="response-line">{line}</p>{/each}
-		</div>
-	{/if}
-	{#if data.mayRespond && data.version !== null}
-		<noscript><p class="noscript">Responding needs JavaScript, which is off in this browser.</p></noscript>
-		<!-- Drawn afresh for another decision or version, as well as by Reload (code review C2). -->
-		{#key `${data.decision.id}:${data.version?.number}:${drawing}`}
-			<ResponseForm
-				voteMode={data.decision.voteMode}
-				options={data.options}
-				versionNumber={data.version.number}
-				url="/api/decisions/{data.decision.id}/responses"
-				initial={data.ownResponse}
-				onReload={reload}
-			/>
-		{/key}
-	{:else if data.decision.shownStatus === 'awaiting_ruling'}
-		<p>Responses closed on {shownMoment(data.decision.closesAt, 'its closing time')}.</p>
-		{#if data.ownResponse !== null}
-			{@render givenResponse('Your response:', data.ownResponse)}
-		{:else}
-			<p>You gave no response in this round.</p>
-		{/if}
-	{:else if data.decision.shownStatus === 'ruled' || data.decision.shownStatus === 'superseded' || data.decision.shownStatus === 'withdrawn'}
-		<!-- Not an empty section (code review C7). -->
-		<p>Responses are closed.</p>
-		{#if data.ownResponse !== null}
-			{@render givenResponse('Your last response:', data.ownResponse)}
-		{/if}
-	{/if}
+	<!-- Drawn afresh for another decision, as well as for another version and by Reload (code review C2). -->
+	<ParticipantResponse
+		decision={data.decision}
+		version={data.version}
+		options={data.options}
+		ownResponse={data.ownResponse}
+		earlierResponse={data.earlierResponse}
+		mayRespond={data.mayRespond}
+		url="/api/decisions/{data.decision.id}/responses"
+		drawnFor={data.decision.id}
+	/>
 {/snippet}
 
 <div class="decision-page">
@@ -337,14 +301,8 @@
 	}
 	.not-opened { padding: var(--space-xl); border-radius: var(--radius-lg); }
 	.not-opened h1 { font-size: 1.2rem; margin: 0 0 var(--space-sm); }
-	.banner-line { margin: 0 0 var(--space-xs); font-weight: 600; }
-	.banner-line.withdrawn { color: var(--accent-rose); }
+	/* The supersede panel's note; the banner's are `ParticipantBanner`'s (card 2707). */
 	.banner-note { margin: 0; font-size: 0.9rem; color: var(--text-secondary); }
-	.earlier { padding: var(--space-md); border-radius: var(--radius-md); background: var(--bg-elevated); margin-bottom: var(--space-md); }
-	.earlier p { margin: 0 0 var(--space-xs); }
-	.response-line { white-space: pre-wrap; overflow-wrap: anywhere; }
-	.given-on { font-weight: 600; }
-	.noscript { font-weight: 600; }
 	.page-actions { display: flex; flex-wrap: wrap; gap: var(--space-sm); margin-bottom: var(--space-md); }
 	.page-action { min-height: 44px; display: inline-flex; align-items: center; text-decoration: none; font-size: 0.95rem; }
 	.supersede-panel { display: flex; flex-direction: column; gap: var(--space-xs); padding: var(--space-md); border-radius: var(--radius-md); margin-bottom: var(--space-md); }

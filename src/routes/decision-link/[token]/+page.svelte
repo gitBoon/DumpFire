@@ -27,30 +27,26 @@
 	 * Card 2678 (decisions 2, 13 and 21): the same questions panel and
 	 * question form as the signed-in page, the panel with no answer, publish
 	 * or replace control, as a link answers nothing.
+	 *
+	 * Card 2707: the banner and the response section are components shared
+	 * with the signed-in page, `ParticipantBanner` (given the personal link,
+	 * which adds its two lines and keeps the other decisions unnamed and
+	 * unlinked) and `ParticipantResponse` (to the link's route, the token in
+	 * the body, keyed on the token), so the two pages cannot drift. Nothing only
+	 * the signed-in page has is handed to them from here.
 	 */
 	import type { PageData } from './$types';
-	import type { OwnResponse } from '$lib/decision-view-types';
-	import { invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
 	import ConcernForm from '$lib/components/decision/ConcernForm.svelte';
 	import DecisionView from '$lib/components/decision/DecisionView.svelte';
+	import ParticipantBanner from '$lib/components/decision/ParticipantBanner.svelte';
+	import ParticipantResponse from '$lib/components/decision/ParticipantResponse.svelte';
 	import QuestionForm from '$lib/components/decision/QuestionForm.svelte';
 	import QuestionsPanel from '$lib/components/decision/QuestionsPanel.svelte';
 	import ReleasedResults from '$lib/components/decision/ReleasedResults.svelte';
-	import ResponseForm from '$lib/components/decision/ResponseForm.svelte';
-	import RulingBanner from '$lib/components/decision/RulingBanner.svelte';
 	import { watchForSeen } from '$lib/decision-seen';
-	import { givenOnWords, responseLines, seenNoteWords, shownMoment, toldWords, withdrawnWords } from '$lib/decision-words';
 
 	let { data }: { data: PageData } = $props();
-
-	/** Moved on by Reload, which draws the form afresh from the data read again. */
-	let drawing = $state(0);
-
-	async function reload() {
-		await invalidateAll();
-		drawing += 1;
-	}
 
 	// What the seen watch is armed on, as plain values, so data read again for the same link, version and stage leaves it be.
 	const seenToken = $derived(page.params.token);
@@ -72,28 +68,15 @@
 </svelte:head>
 
 {#snippet banner()}
-	{#if data.ruling !== null}
-		<RulingBanner ruling={data.ruling} supersedes={data.supersedes} laterDecision={data.laterDecision} />
-	{/if}
-	{#if data.decision.shownStatus === 'withdrawn'}
-		<p class="banner-line withdrawn">{withdrawnWords(data.decision.withdrawnAt, data.decision.withdrawnReason)}</p>
-	{/if}
-	{#if data.participant !== null}
-		<p class="banner-line">{toldWords(data.participant.role, data.participant.told, data.participant.includedAt)}</p>
-		{#if data.stage !== null}
-			<p class="banner-note" data-note="seen">{seenNoteWords(data.stage)}</p>
-		{/if}
-	{/if}
-	<p class="banner-note personal">This address is personal to you: do not share it.</p>
-	{#if data.signedInAs !== null}
-		<p class="banner-note signed-in">
-			{#if data.stage === 'ruling'}
-				You are signed in as {data.signedInAs}; this is recorded with your concern and with your having seen the ruling.
-			{:else}
-				You are signed in as {data.signedInAs}; this is recorded with your response and with your having seen this version.
-			{/if}
-		</p>
-	{/if}
+	<ParticipantBanner
+		decision={data.decision}
+		ruling={data.ruling}
+		supersedes={data.supersedes}
+		laterDecision={data.laterDecision}
+		participant={data.participant}
+		stage={data.stage}
+		personalLink={{ signedInAs: data.signedInAs }}
+	/>
 {/snippet}
 
 {#snippet releasedResults()}
@@ -123,48 +106,19 @@
 	{/key}
 {/snippet}
 
-{#snippet givenResponse(heading: string, response: OwnResponse)}
-	{@const givenOn = givenOnWords(response, data.version?.number)}
-	<p>{heading}</p>
-	{#each responseLines(response, data.options) as line, i (i)}<p class="response-line">{line}</p>{/each}
-	{#if givenOn !== null}<p class="given-on">{givenOn}</p>{/if}
-{/snippet}
-
 {#snippet yourResponse()}
-	{#if data.earlierResponse !== null && data.ownResponse === null && data.version !== null}
-		<div class="earlier">
-			<p>This decision changed on {shownMoment(data.version.publishedAt, '')}. Your earlier response was for version {data.earlierResponse.versionNumber}:</p>
-			{#each responseLines(data.earlierResponse, data.options) as line, i (i)}<p class="response-line">{line}</p>{/each}
-		</div>
-	{/if}
-	{#if data.mayRespond && data.version !== null}
-		<noscript><p class="noscript">Responding needs JavaScript, which is off in this browser.</p></noscript>
-		<!-- Drawn afresh for another link or version, as well as by Reload (code review C2); the token in place of the decision id the page is not given. -->
-		{#key `${page.params.token}:${data.version?.number}:${drawing}`}
-			<ResponseForm
-				voteMode={data.decision.voteMode}
-				options={data.options}
-				versionNumber={data.version.number}
-				url="/api/decision-by-link/responses"
-				extra={{ token: page.params.token }}
-				initial={data.ownResponse}
-				onReload={reload}
-			/>
-		{/key}
-	{:else if data.decision.shownStatus === 'awaiting_ruling'}
-		<p>Responses closed on {shownMoment(data.decision.closesAt, 'its closing time')}.</p>
-		{#if data.ownResponse !== null}
-			{@render givenResponse('Your response:', data.ownResponse)}
-		{:else}
-			<p>You gave no response in this round.</p>
-		{/if}
-	{:else if data.decision.shownStatus === 'ruled' || data.decision.shownStatus === 'superseded' || data.decision.shownStatus === 'withdrawn'}
-		<!-- Not an empty section (code review C7). -->
-		<p>Responses are closed.</p>
-		{#if data.ownResponse !== null}
-			{@render givenResponse('Your last response:', data.ownResponse)}
-		{/if}
-	{/if}
+	<!-- Drawn afresh for another link, as well as for another version and by Reload (code review C2): the token in place of the decision id the page is not given. -->
+	<ParticipantResponse
+		decision={data.decision}
+		version={data.version}
+		options={data.options}
+		ownResponse={data.ownResponse}
+		earlierResponse={data.earlierResponse}
+		mayRespond={data.mayRespond}
+		url="/api/decision-by-link/responses"
+		extra={{ token: page.params.token }}
+		drawnFor={page.params.token}
+	/>
 {/snippet}
 
 <div class="link-page">
@@ -203,13 +157,4 @@
 	/* One column, phone first (decision 22). No user badge is drawn here (D9). */
 	.link-content { max-width: 46rem; margin: 0 auto; padding: 0 var(--space-md) var(--space-2xl); }
 	.not-opened h1 { font-size: 1.2rem; margin: 0 0 var(--space-sm); }
-	.banner-line { margin: 0 0 var(--space-xs); font-weight: 600; }
-	.banner-line.withdrawn { color: var(--accent-rose); }
-	.banner-note { margin: 0 0 var(--space-xs); font-size: 0.9rem; color: var(--text-secondary); }
-	.banner-note.personal { font-weight: 600; color: var(--text-primary); }
-	.earlier { padding: var(--space-md); border-radius: var(--radius-md); background: var(--bg-elevated); margin-bottom: var(--space-md); }
-	.earlier p { margin: 0 0 var(--space-xs); }
-	.response-line { white-space: pre-wrap; overflow-wrap: anywhere; }
-	.given-on { font-weight: 600; }
-	.noscript { font-weight: 600; }
 </style>

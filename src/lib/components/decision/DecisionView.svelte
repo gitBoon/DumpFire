@@ -21,7 +21,9 @@
   Its props are `DecisionViewProps` (src/lib/decision-view-types.ts): no
   version number, publication or inclusion moment, so that a preview builds
   them from the working content. The pages draw the banner and the form, which
-  need those, in their own snippets. It fetches nothing and posts nothing.
+  need those, in their snippets, through the components they share
+  (`ParticipantBanner` and `ParticipantResponse`, card 2707). It fetches
+  nothing and posts nothing.
 -->
 <script lang="ts">
 	import type { Snippet } from 'svelte';
