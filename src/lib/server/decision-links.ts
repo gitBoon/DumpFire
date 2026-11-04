@@ -49,6 +49,39 @@ export type SkipReason = 'deleted' | 'left' | 'account_not_attached' | 'account_
 export type Reach = { via: 'account' } | { via: 'link' } | { skip: SkipReason };
 
 /**
+ * Why a participant cannot be mailed, in words, for each reason `reachOf`
+ * skips them (card 2675, decision 16): the 409 of a re-send, and the words
+ * the editor's delivery panel shows (card 2697, F3: moved here from
+ * decisions.ts, unchanged, as a service exports its reads and writes alone).
+ */
+export const SKIP_WORDS: Readonly<Record<SkipReason, (name: string) => string>> = {
+	deleted: (name) => `${name} is no longer in the people directory: they cannot be mailed about this decision`,
+	left: (name) => `${name} has left: they cannot be mailed about this decision`,
+	account_not_attached: (name) =>
+		`${name}'s account on this decision is not the one the people directory holds for them: an administrator attaches it before they can be mailed`,
+	account_removed: (name) =>
+		`${name}'s account on this decision has been deleted: an administrator clears it before they can be mailed a personal link`,
+	address_changed: (name) =>
+		`${name}'s address on this decision is not the one the people directory holds for them: an administrator changes it before they can be mailed`
+};
+
+/** Why a removed participant cannot be sent their invitation again: the 409 of a re-send, and the delivery panel's words (card 2697, Q13). */
+export const REMOVED_WORDS = (name: string) => `${name} has been removed from this decision: they cannot be mailed about it`;
+
+/** Why a participant's personal link was ended, in words, for the editor's delivery panel (card 2697, Q13). */
+export const REVOKE_WORDS: Readonly<Record<RevokeReason, string>> = {
+	removed: 'Their link was ended when they were removed from this decision',
+	left: 'Their link was ended when they were marked as having left',
+	linked: 'Their link was ended when an account was linked to them in the people directory',
+	unlinked: 'Their link was ended when their account was unlinked from them in the people directory',
+	address_changed: 'Their link was ended when their address was changed in the people directory',
+	person_deleted: 'Their link was ended when they were deleted from the people directory',
+	account_attached: 'Their link was ended when an administrator attached their account on this decision',
+	participant_address: 'Their link was ended when an administrator changed their address on this decision',
+	restore: 'Their link was ended by a restore from a backup: Resend sends them a new one'
+};
+
+/**
  * The stored form of a token: its SHA-256, in hex, as an API key's is kept.
  * The mail effect asks it too, to see that a link it is about to send is
  * still the one the row holds (the code review's F2).
@@ -86,6 +119,61 @@ export function reachOf(p: DecisionParticipant, person: Person | null, hadAccoun
 	if (hadAccount) return { skip: 'account_removed' };
 	if (p.email !== person.email) return { skip: 'address_changed' };
 	return { via: 'link' }; // mayHoldLink holds here
+}
+
+// ─── The administrator's account and address changes (card 2697, Q10, Q22) ───
+//
+// One rule each, which the write's guard in decisions.ts asks, refusing with
+// the words, and the edit page's delivery panel asks too, offering the action
+// only where it is null (the code review's part B, F2), as `mailRestOf` serves
+// Resend: so the panel cannot offer what the write refuses, nor hide what it
+// allows.
+
+/**
+ * Why Attach account cannot be done for the participant now, in the 409's
+ * words, or the account it would copy: their person is no longer in the
+ * directory or has no account, the row already holds that account, or
+ * another live row of the decision (`rows`) holds it (decision 29).
+ */
+export function attachRefusal(participant: DecisionParticipant, person: Person | undefined, rows: readonly DecisionParticipant[]): { refusal: string } | { accountId: number } {
+	if (!person) return { refusal: `${participant.name} is no longer in the people directory: there is no account to attach` };
+	if (person.userId === null) return { refusal: `${person.fullName} has no account in the people directory: there is no account to attach` };
+	const accountId = person.userId;
+	// The code review's part B (F2): as the address's rule refuses a copy that changes nothing.
+	if (participant.userId === accountId) {
+		return { refusal: `${participant.name} already holds the account the people directory holds for them on this decision: there is nothing to attach` };
+	}
+	if (rows.some((row) => row.id !== participant.id && row.removedAt === null && row.userId === accountId)) {
+		return { refusal: `${person.fullName} cannot be given that account: another participant of this decision holds it` };
+	}
+	return { accountId };
+}
+
+/**
+ * Why Clear account cannot be done for the participant now, in the 409's
+ * words, or null: a row that holds no account and is not read as having held
+ * one (`hadAccount`, decision 16) has nothing to clear. A row whose account
+ * was deleted holds none and had one, and is cleared so that a link may reach
+ * it (`account_removed`).
+ */
+export function clearRefusal(participant: DecisionParticipant, hadAccount: boolean): string | null {
+	return participant.userId === null && !hadAccount ? `${participant.name} holds no account on this decision: there is nothing to clear` : null;
+}
+
+/**
+ * Why Use the directory's address cannot be done for the participant now, in
+ * the 409's words, or the address it would copy, lower-cased: their person is
+ * no longer in the directory, has left, or the row already holds that
+ * address.
+ */
+export function addressRefusal(participant: DecisionParticipant, person: Person | undefined): { refusal: string } | { email: string } {
+	if (!person) return { refusal: `${participant.name} is no longer in the people directory: there is no address to use` };
+	if (person.status !== 'active') return { refusal: `${person.fullName} has left: their address in the people directory is not used` };
+	const email = person.email.toLowerCase();
+	if (email === participant.email.toLowerCase()) {
+		return { refusal: `${participant.name}'s address on this decision is already the one the people directory holds: there is nothing to change` };
+	}
+	return { email };
 }
 
 /**

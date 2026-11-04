@@ -792,6 +792,53 @@ describe('a restore', () => {
 			expect(() => restoreFromBackup(live, backup)).toThrow(/decision records could not be copied whole \(decision_events\).*NOT NULL constraint failed: decision_events\.created_at/);
 			expect(asItIs()).toEqual(before);
 		});
+
+		// Card 2697 (Q15, case 46): the import's answers say how many personal
+		// decision links the restore cancelled, and, above none, that their
+		// holders are sent new ones by Resend.
+		const SENTENCE =
+			"personal decision link(s) cancelled: a link mailed before this restore no longer works, and the decision's " +
+			'author, decider or an administrator can send its holder a new one with Resend.';
+		/** This database, as a backup of it, with `links` live personal links on an open decision. */
+		const withDecisionLinks = (links: number) => {
+			const open = makeDecision({ status: 'open', closesAt: '2099-01-01 00:00:00' });
+			for (let n = 0; n < links; n++) makeParticipant(open, { token: `a-decision-link-${n}` });
+			makeParticipant(open);
+			return opening(Buffer.from(sqlite.serialize()));
+		};
+		const importAnswer = (backup: Database.Database) =>
+			importing(async () => {
+				const res = await api('POST', '/api/admin/import?outside=keep', { user: chief, headers: confirmedImport(), body: backup.serialize() });
+				return { status: res.status, message: res.body.message as string, body: res.body };
+			});
+
+		it.each([
+			['two links cancelled, with its sentence', 2],
+			['none cancelled, with the figure and no sentence', 0]
+		])('says through the route %s (46)', async (_name, links) => {
+			const res = await importAnswer(withDecisionLinks(links));
+
+			expect(res.status, res.message).toBe(200);
+			expect(res.body.decisionLinksCleared).toBe(links);
+			if (links > 0) expect(res.message).toContain(`${links} ${SENTENCE}`);
+			else expect(res.message).not.toContain('personal decision link');
+		});
+
+		it('says it too on a restore that committed and then failed (46)', async () => {
+			const backup = withDecisionLinks(1);
+			// The restore commits, and then the connection's foreign keys do not come back on: a RestoreError that committed.
+			const real = sqlite.pragma.bind(sqlite) as Database.Database['pragma'];
+			vi.spyOn(sqlite, 'pragma').mockImplementation(((source: string, options?: Database.PragmaOptions) =>
+				/^foreign_keys\s*=\s*ON$/i.test(source) ? [] : real(source, options)) as typeof sqlite.pragma);
+
+			const failed = await importAnswer(backup);
+			vi.mocked(sqlite.pragma).mockRestore();
+
+			expect(failed.status, failed.message).toBe(500);
+			expect(failed.body.committed).toBe(true);
+			expect(failed.body.decisionLinksCleared).toBe(1);
+			expect(failed.message).toContain(`1 ${SENTENCE}`);
+		});
 	});
 
 	/** Send `body` to the import route, which writes under a temporary working directory. */

@@ -2,7 +2,11 @@
 	/**
 	 * A decision's editor (card 2676, plan 4.2): the board's crumb, then the
 	 * working copy in `DecisionEditor`, with the participant picker and the
-	 * readability check in its side column.
+	 * readability check in its side column, and, once the decision has been
+	 * opened, its delivery to those the server hands it (card 2697, Q13).
+	 * Above the editor, its lifecycle controls (`DecisionActions`, Q14), which
+	 * hold Open, Re-publish and the dry run off while the editor reports edits
+	 * not yet saved.
 	 *
 	 * The page holds the revision every write sends (decision 10): each
 	 * write's answer gives the next, and the page's data is read again after
@@ -17,6 +21,8 @@
 	import Toast from '$lib/components/Toast.svelte';
 	import DecisionEditor from '$lib/components/decision/DecisionEditor.svelte';
 	import ParticipantPicker from '$lib/components/decision/ParticipantPicker.svelte';
+	import DeliveryPanel from '$lib/components/decision/DeliveryPanel.svelte';
+	import DecisionActions from '$lib/components/decision/DecisionActions.svelte';
 	import { theme, themeIcon } from '$lib/stores/theme';
 
 	let { data }: { data: PageData } = $props();
@@ -24,6 +30,8 @@
 	let revision = $state(untrack(() => data.revision));
 	/** Moved on by Reload, which draws the editor afresh from the data read again. */
 	let drawing = $state(0);
+	/** Whether the editor holds edits not yet saved: Open, Re-publish and the dry run wait for a save (card 2697, Q14). */
+	let dirty = $state(false);
 
 	async function saved(next: string) {
 		revision = next;
@@ -65,6 +73,19 @@
 	</header>
 
 	<main class="decision-content">
+		<DecisionActions
+			decisionId={data.decision.id}
+			boardId={data.decision.boardId}
+			title={data.decision.title}
+			closesAt={data.decision.closesAt}
+			{revision}
+			actions={data.actions}
+			republishSummary={data.republishSummary}
+			refusals={data.readiness.refusals}
+			warnings={data.readiness.warnings}
+			{dirty}
+			onSaved={saved}
+		/>
 		{#key drawing}
 			<DecisionEditor
 				decision={data.decision}
@@ -81,6 +102,7 @@
 				callerId={data.user?.id ?? 0}
 				onSaved={saved}
 				onReload={reload}
+				onDirtyChange={(now) => (dirty = now)}
 			>
 				{#snippet side()}
 					<ParticipantPicker
@@ -95,6 +117,15 @@
 						onSaved={saved}
 						onReload={reload}
 					/>
+					{#if data.delivery !== null}
+						<DeliveryPanel
+							decisionId={data.decision.id}
+							participants={data.participants}
+							delivery={data.delivery}
+							directory={data.directory}
+							onSaved={saved}
+						/>
+					{/if}
 				{/snippet}
 			</DecisionEditor>
 		{/key}

@@ -1,9 +1,9 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.48
+version: 1.49
 status: As-Built
-date: 2026-11-03
+date: 2026-11-04
 tags:
   - notifications
   - email
@@ -781,8 +781,9 @@ for them.
 A decision's participants are told of it by five mails that are part of its record: the
 invitation, asked again, told of a change, withdrawn, and the ruling (built here, sent by card
 2679). `queueRecordMails(decision, mail, opts)` in `src/lib/server/decision-mail.ts` writes them
-inside the service write that asks for them, and no route calls that service yet. What each
-mail carries:
+inside the service write that asks for them, which card 2697's lifecycle routes call: Open,
+Re-publish, Withdraw and Resend in the decision's editor ([The dry run, and the limits on
+decision mail](#the-dry-run-and-the-limits-on-decision-mail-card-2697)). What each mail carries:
 
 | Mail | Event on the record | Body (every value through `escapeHtml`) |
 |---|---|---|
@@ -843,8 +844,13 @@ problem: 'superseded' }`.
 
 **The throttle.** `RECORD_MAIL_MIN_MINUTES` is 10. A re-send, a re-publish and bringing back a
 removed participant are refused 409 while a participant they would mail was mailed less than 10
-minutes ago, naming the moment, in UTC, from which they may be. Opening, withdrawal and the
-ruling happen once per change of status and are not throttled.
+minutes ago, naming the moment, in UTC, from which they may be. Since card 2697 the same writes
+are also refused 409 once a participant has been sent `RECORD_MAIL_DAILY_CAP` (5) record mails
+in 24 hours: "<name> has been mailed about this decision 5 times in the last 24 hours: they can
+be mailed again from <stamp> UTC", the stamp the earliest of the five plus 24 hours, read from
+the record. One `mailRestOf` gives both answers, to the write and to the editor's delivery
+panel. Opening, withdrawal and the ruling happen once per change of status and are not
+throttled.
 
 ```mermaid
 sequenceDiagram
@@ -880,6 +886,68 @@ sequenceDiagram
         end
     end
 ```
+
+### The Dry Run, and the Limits on Decision Mail (card 2697)
+
+Card 2697 (2026-11-04) made the decision mails reachable from the decision's editor, and added
+one mail that is no record mail, the dry run, with limits on everything that mails.
+
+**The dry run** (`dryRunDecision` in `decisions.ts`, `queueDryRun` in `decision-mail.ts`). Send
+me a dry run mails the presser the invitation a consulted participant would get: subject
+`Dry run: ` and the invitation's, body the invitation's, quoting the **working copy's** question
+and what is asked (never a version, so it shows edits not yet published), the closing time and
+decider lines, the line "This dry run was sent at the request of <username>.", and a link to
+`<App URL>/decisions/<id>/preview`. Every value goes through `escapeHtml`. It holds no personal
+link and no participant's address. `subjectOf` and `bodyOf` take a role (`consulted` or
+`informed`) in place of a participant row, so the dry run and the record mails share them.
+
+- **To whom.** Only to the caller's address in the people directory: the person whose account is
+  the caller's, and only when that person's address is the account's own (compared in lower
+  case). Otherwise `409`: "A dry run is sent only to the address the people directory holds for
+  you, and it holds none for your account: an administrator can add you in People", or "…, and it
+  is not your account's address: an administrator can make them agree". An account's address is
+  set by its holder and confirmed by nobody; the directory's is an administrator's.
+- **Refused first, with nothing written, sent or counted:** `revision` missing (`400`) or stale
+  (`409`); no mail host, `409` "Mail is not set up on this server: a dry run cannot be sent"; no
+  App URL or `ORIGIN`, `409` `NO_LINK_ADDRESS`.
+- **The limits, `429`, per caller across every decision:** within `DRY_RUN_MIN_MINUTES` (10) of
+  the last, "Your last dry run was less than 10 minutes ago: the next can be sent from <stamp>
+  UTC"; and `DRY_RUN_DAILY_CAP` (20) in 24 hours, "You have sent 20 dry runs in the last 24
+  hours: the next can be sent from <stamp> UTC", read from the `dry_run` events and then from an
+  in-memory allowance, which a deletion of the decisions (and their events) does not give back.
+- **What it records.** One `dry_run` event with no participant and the detail `{}`, by the
+  caller. No `mail_outcome`, no link, no activity entry, no live event. One `afterCommit` send by
+  `trySendEmail`, `recipient: caller <id> dry run of decision <id>`, so a failed send's log line
+  names no address; a mail server that refuses it gives nothing back.
+
+**The publish limit.** Open and Re-publish each mail every live participant, so each caller may
+do `PUBLISH_DAILY_CAP` (10) of them in 24 hours, across decisions: read from the `published`
+events by `actor_user_id`, then from the in-memory allowance; `429` "You have opened or
+re-published 10 decisions in the last 24 hours: the next can be sent from <stamp> UTC", asked
+after every other refusal, so a refused publish takes nothing.
+
+**The daily cap per participant** is the throttle's second part above: five record mails in 24
+hours, on re-publishing, Resend and including someone again; never the withdrawal or the
+ruling, which each participant must be told.
+
+```mermaid
+sequenceDiagram
+    participant Pg as DecisionActions
+    participant Sv as dryRunDecision (in writeAs)
+    participant Rc as decision-record
+    participant Ml as decision-mail
+    Pg->>Sv: { revision }
+    Sv->>Sv: revision (400, 409), mail host and link address (409)
+    Sv->>Rc: personOfAccount: the directory holds the account's address? (409)
+    Sv->>Rc: lastDryRunAt, dryRunsSince (429)
+    Sv->>Sv: takeAllowance (429), last of all
+    Sv->>Rc: appendEvent dry_run (no participant)
+    Sv->>Ml: queueDryRun(decision, caller, { question, ask })
+    Note over Sv,Ml: commit
+    Ml->>Ml: afterCommit: trySendEmail to the caller's directory address
+```
+
+Covered by `tests/decision-lifecycle.test.ts` (cases 32 to 34, 55 to 57).
 
 ### Text in Mail Is Text
 

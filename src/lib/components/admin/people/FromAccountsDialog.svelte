@@ -12,13 +12,21 @@
 
   Drawn by /admin/people. Sends POST /api/people/from-accounts, and says in a
   toast how many were added and each account skipped, with why.
+
+  Each person made is linked to an account and given its address, which
+  decide where a decision's record mail and personal links go, so the server
+  asks for the caller's own password (card 2697's code review, part B, S1):
+  sent as `currentPassword` from the field here, cleared once sent. A refusal
+  of the password keeps the dialog open, its words beside the field.
 -->
 <script lang="ts">
 	import type { PageData } from '../../../../routes/admin/people/$types';
 	import { invalidateAll } from '$app/navigation';
 	import { answerBody } from '$lib/api';
-	import { sent, showToast } from '$lib/admin/send';
+	import { sentAsking, showToast } from '$lib/admin/send';
+	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
 	import { holdFocus } from '$lib/dialog-focus';
+	import { ASKS_FOR_PASSWORD } from '$lib/step-up-words';
 
 	let {
 		data,
@@ -43,6 +51,11 @@
 	let ticked = $state<number[]>([]);
 	let saving = $state(false);
 
+	/** The caller's own password: held here alone, and cleared once sent. */
+	let currentPassword = $state('');
+	/** The server's refusal of the last password sent, shown beside the field. */
+	let refusal = $state<string | null>(null);
+
 	function toggle(userId: number, on: boolean) {
 		ticked = on ? [...ticked, userId] : ticked.filter((id) => id !== userId);
 	}
@@ -59,18 +72,26 @@
 	}
 
 	async function add() {
-		if (ticked.length === 0 || saving) return;
+		if (ticked.length === 0 || currentPassword === '' || saving) return;
 		saving = true;
+		const password = currentPassword;
+		currentPassword = '';
+		refusal = null;
 		try {
-			const res = await sent(
+			const res = await sentAsking(
 				() =>
 					fetch('/api/people/from-accounts', {
 						method: 'POST',
 						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({ userIds: ticked })
+						body: JSON.stringify({ userIds: ticked, currentPassword: password })
 					}),
 				'No one was added'
 			);
+			if (typeof res === 'string') {
+				// A refusal of the password itself: the dialog stays, the field cleared to type again.
+				refusal = res;
+				return;
+			}
 			if (!res) return;
 			const answer = await answerBody(res);
 			const created = typeof answer?.created === 'number' ? answer.created : 0;
@@ -118,10 +139,15 @@
 					</label>
 				{/each}
 			</div>
+			<!-- The code review's part B, S1: each person made is given an account and its address. -->
+			<p class="dialog-hint">Each account's address decides where that person's decision mail and personal links go. {ASKS_FOR_PASSWORD}</p>
+			<div class="password-row">
+				<CurrentPasswordField bind:value={currentPassword} {refusal} readonly={saving} onEnter={add} />
+			</div>
 		{/if}
 		<div class="modal-actions">
 			<button class="btn-ghost" onclick={onClose}>Cancel</button>
-			<button class="btn-primary" onclick={add} disabled={ticked.length === 0} aria-busy={saving ? 'true' : undefined}>
+			<button class="btn-primary" onclick={add} disabled={ticked.length === 0 || currentPassword === ''} aria-busy={saving ? 'true' : undefined}>
 				Add {ticked.length} {ticked.length === 1 ? 'person' : 'people'}
 			</button>
 		</div>
@@ -139,5 +165,6 @@
 	.account-name { font-weight: 600; }
 	.account-email { color: var(--text-tertiary); font-size: 0.75rem; }
 	.account-match { font-size: 0.75rem; color: var(--accent-amber); }
+	.password-row { margin-bottom: var(--space-xl); }
 	.modal-actions { display: flex; justify-content: flex-end; gap: var(--space-md); }
 </style>

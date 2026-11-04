@@ -26,7 +26,7 @@
  * Plain functions with no caller, called inside a service write's
  * transaction, or by the mail effect in a transaction of its own.
  */
-import { and, asc, count, desc, eq, inArray, isNotNull, isNull, gt, lt, lte, max, or } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, inArray, isNotNull, isNull, gt, lt, lte, max, or } from 'drizzle-orm';
 import { db } from './db';
 import {
 	decisionEvents,
@@ -386,6 +386,153 @@ export function lastMailAt(participantIds: number[]): Map<number, Stamp> {
 		for (const row of rows) if (row.participantId !== null && row.at !== null) latest.set(row.participantId, row.at);
 	}
 	return latest;
+}
+
+/**
+ * The moments of each participant's record-bearing mail events since `since`,
+ * oldest first, by participant id; one with none is not in the map (card
+ * 2697, Q24: the daily cap on record mail to one participant).
+ */
+export function mailsSince(participantIds: number[], since: Stamp): Map<number, Stamp[]> {
+	const moments = new Map<number, Stamp[]>();
+	for (let from = 0; from < participantIds.length; from += IDS_AT_ONCE) {
+		const ids = participantIds.slice(from, from + IDS_AT_ONCE);
+		const rows = db
+			.select({ participantId: decisionEvents.participantId, at: decisionEvents.createdAt })
+			.from(decisionEvents)
+			.where(and(inArray(decisionEvents.participantId, ids), inArray(decisionEvents.kind, [...MAIL_KINDS]), gte(decisionEvents.createdAt, since)))
+			.orderBy(asc(decisionEvents.createdAt), asc(decisionEvents.id))
+			.all();
+		for (const row of rows) {
+			if (row.participantId === null) continue;
+			const list = moments.get(row.participantId) ?? [];
+			list.push(row.at);
+			moments.set(row.participantId, list);
+		}
+	}
+	return moments;
+}
+
+/** What the record says of how one participant has been mailed, for the editor's delivery panel (card 2697, Q13). */
+export type DeliveryFacts = {
+	/** Their latest record-bearing mail, the latest by moment as `lastMailAt` reads it, and that mail's own `mail_outcome` detail (`of` its event), or null for none yet. */
+	lastMail: { eventId: number; kind: EventKind; at: Stamp; resend: boolean; outcome: Record<string, unknown> | null } | null;
+	/** The moment of every record-bearing mail, oldest first: the daily cap counts those of the last 24 hours. */
+	mailMoments: Stamp[];
+	/** Their latest `mail_skipped`: the mail and the reason, as written. */
+	lastSkip: { mail: string; reason: string; at: Stamp } | null;
+	/** Their latest `link_revoked`: the reason, as written. */
+	lastRevoked: { reason: string; at: Stamp } | null;
+};
+
+/**
+ * How each participant of the decision has been mailed, by participant id,
+ * in one read of its events (card 2697, Q13): their latest record-bearing
+ * mail with its outcome, the moments of all of them, their latest skip and
+ * their latest link revocation. A participant with none of these is not in
+ * the map. Facts as recorded: the words are the reader's to make. Nothing
+ * of a response is read.
+ */
+export function deliveryOf(decisionId: number): Map<number, DeliveryFacts> {
+	const events = db
+		.select({ id: decisionEvents.id, participantId: decisionEvents.participantId, kind: decisionEvents.kind, at: decisionEvents.createdAt, detail: decisionEvents.detail })
+		.from(decisionEvents)
+		.where(
+			and(
+				eq(decisionEvents.decisionId, decisionId),
+				isNotNull(decisionEvents.participantId),
+				inArray(decisionEvents.kind, [...MAIL_KINDS, 'mail_outcome', 'mail_skipped', 'link_revoked'])
+			)
+		)
+		.orderBy(asc(decisionEvents.id))
+		.all();
+	const facts = new Map<number, DeliveryFacts>();
+	const outcomes = new Map<number, Record<string, unknown>>();
+	for (const event of events) {
+		if (event.participantId === null) continue;
+		let mine = facts.get(event.participantId);
+		if (mine === undefined) {
+			mine = { lastMail: null, mailMoments: [], lastSkip: null, lastRevoked: null };
+			facts.set(event.participantId, mine);
+		}
+		const detail = detailOf(event.detail);
+		if ((MAIL_KINDS as readonly string[]).includes(event.kind)) {
+			mine.mailMoments.push(event.at);
+			// The latest by moment, as lastMailAt's max(created_at) reads it; the later event on a tie.
+			if (mine.lastMail === null || event.at >= mine.lastMail.at) {
+				mine.lastMail = { eventId: event.id, kind: event.kind as EventKind, at: event.at, resend: detail.resend === true, outcome: null };
+			}
+		} else if (event.kind === 'mail_outcome') {
+			if (typeof detail.of === 'number') outcomes.set(detail.of, detail);
+		} else if (event.kind === 'mail_skipped') {
+			mine.lastSkip = { mail: typeof detail.mail === 'string' ? detail.mail : '', reason: typeof detail.reason === 'string' ? detail.reason : '', at: event.at };
+		} else {
+			mine.lastRevoked = { reason: typeof detail.reason === 'string' ? detail.reason : '', at: event.at };
+		}
+	}
+	for (const mine of facts.values()) {
+		mine.mailMoments.sort();
+		if (mine.lastMail !== null) mine.lastMail.outcome = outcomes.get(mine.lastMail.eventId) ?? null;
+	}
+	return facts;
+}
+
+// ─── What one account has asked for, across decisions (card 2697) ────────────
+
+/**
+ * The moments of the account's events of `kind` since `since`, oldest first,
+ * across every decision, read by `actor_user_id`
+ * (`idx_decision_events_actor_user_id`). A deleted decision takes its events
+ * with it, so the service also holds an allowance in memory (Q2, Q23).
+ */
+function actedSince(userId: number, kinds: readonly EventKind[], since: Stamp): Stamp[] {
+	return db
+		.select({ at: decisionEvents.createdAt })
+		.from(decisionEvents)
+		.where(and(eq(decisionEvents.actorUserId, userId), inArray(decisionEvents.kind, [...kinds]), gte(decisionEvents.createdAt, since)))
+		.orderBy(asc(decisionEvents.createdAt), asc(decisionEvents.id))
+		.all()
+		.map((row) => row.at);
+}
+
+/** The moment of the account's latest dry run on any decision, or null for none (card 2697, decision 19). */
+export function lastDryRunAt(userId: number): Stamp | null {
+	const row = db
+		.select({ at: max(decisionEvents.createdAt) })
+		.from(decisionEvents)
+		.where(and(eq(decisionEvents.actorUserId, userId), eq(decisionEvents.kind, 'dry_run')))
+		.get();
+	return row?.at ?? null;
+}
+
+/** The moments of the account's dry runs since `since`, on any decision, oldest first (card 2697, Q2). */
+export function dryRunsSince(userId: number, since: Stamp): Stamp[] {
+	return actedSince(userId, ['dry_run'], since);
+}
+
+/** The moments of the account's publishes since `since`, opening and re-publishing on any decision, oldest first (card 2697, Q23). */
+export function publishesSince(userId: number, since: Stamp): Stamp[] {
+	return actedSince(userId, ['published'], since);
+}
+
+/**
+ * The moments of the record mails the account has caused since `since`, on
+ * any decision, oldest first, one for each participant mailed (card 2697's
+ * code review, part B, S2): the invitations, asked again and told of a
+ * change, the events a mail writes as it is asked for, by the caller. A
+ * withdrawal and a ruling are not counted: each is sent once, and must be.
+ */
+export function recordMailsSince(userId: number, since: Stamp): Stamp[] {
+	return actedSince(userId, TOLD_KINDS, since);
+}
+
+/**
+ * The person of the people directory whose account is `userId`, or null for
+ * none (`people.user_id` is unique): the one address a dry run may go to
+ * (card 2697, Q26).
+ */
+export function personOfAccount(userId: number): Person | null {
+	return db.select().from(people).where(eq(people.userId, userId)).get() ?? null;
 }
 
 // ─── A participant's own part (card 2677) ────────────────────────────────────

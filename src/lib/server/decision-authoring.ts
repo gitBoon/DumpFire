@@ -22,7 +22,16 @@
  * the decider candidates only to one who may change the decider (C4). The routes
  * call the projection inside their writeAs callback, on the rows the write
  * answered.
+ *
+ * Card 2697 adds the delivery panel's rows (`delivery`, Q13): how each
+ * participant has been mailed, in words made here from the record, and
+ * whether Resend would reach them, by the write's own rules. No address,
+ * response or total is in them. And the lifecycle controls (`actions`, Q14):
+ * what the caller may do now, by `TRANSITIONS` and `mayDo` as each write asks
+ * them, whether the withdrawal and the delete ask for the password, and what
+ * a re-publish would do to the options (`republishSummary`).
  */
+import { isHttpError } from '@sveltejs/kit';
 import { asc, desc, eq } from 'drizzle-orm';
 import { db } from './db';
 import {
@@ -41,16 +50,31 @@ import { mayDo, type DecisionAccess, type DecisionRole } from './decision-access
 import {
 	allOptionsOf,
 	audienceFactsOf,
+	listedOptionIds,
 	liveOptionsOf,
 	openFactsOf,
+	optionChanges,
 	parseWorkingContent,
 	participantsOf,
 	revisionOf,
 	type VersionContent,
 	type WorkingContent
 } from './decision-content';
-import { peopleById } from './decision-record';
-import { decisionStatus, TRANSITIONS, type ShownStatus } from './decision-status';
+import { accountHistory, deliveryOf, peopleById, type DeliveryFacts } from './decision-record';
+import {
+	addressRefusal,
+	attachRefusal,
+	clearRefusal,
+	reachOf,
+	REMOVED_WORDS,
+	REVOKE_WORDS,
+	SKIP_WORDS,
+	type RevokeReason,
+	type SkipReason
+} from './decision-links';
+import { DAY_MS, decisionLinkBase, MAIL_EVENT, mailRestOf, type RecordMail } from './decision-mail';
+import { decisionStatus, requireTransition, TRANSITIONS, type ShownStatus } from './decision-status';
+import { MAIL_PROBLEM_WORDS, NO_LINK_ADDRESS, type MailProblem } from './email';
 import { requireBoard, requireDecision } from './route-guards';
 import { checkContent, refusalsOf, type ContentAnswer, type Refusal, type Warning } from '$lib/decision-readiness';
 import type { ViewContent } from '$lib/decision-view-types';
@@ -175,6 +199,30 @@ export function versionContentAnswer(content: VersionContent, via: 'session' | '
 	return answer;
 }
 
+/**
+ * The working copy as the preview gives it (card 2697, Q4), field by field,
+ * as `versionContentAnswer` gives a version to a signed-in caller: its text
+ * sections, its stories, its agent flags, and `reviewed` as a yes for each
+ * reviewed section, with no reviewer's name, account or moment, and no
+ * `lastLabel`. The options and the audiences are `viewModelOf`'s, in
+ * decision-view.ts, so neither is here, and no group id reaches the page.
+ */
+export function workingViewContent(content: WorkingContent): ViewContent {
+	const reviewed: Record<string, true> = {};
+	for (const key of Object.keys(content.reviewed)) reviewed[key] = true;
+	return {
+		situation: content.situation,
+		question: content.question,
+		ask: content.ask,
+		unknowns: content.unknowns,
+		alreadyRuled: content.alreadyRuled,
+		technicalDetail: content.technicalDetail,
+		stories: content.stories.map((story) => ({ title: story.title, body: story.body })),
+		agentDrafted: { ...content.agentDrafted },
+		reviewed
+	};
+}
+
 /** A decision as every answer gives it (decision 15), to an administrator (`admin`) with each reviewer's account id besides. */
 export function decisionAnswer(decision: Decision, admin: boolean, now: Stamp = stamp()): DecisionAnswer {
 	return {
@@ -276,10 +324,12 @@ export type Readiness = { refusals: Refusal[]; warnings: Warning[] };
 /** `readinessOf`, with the participant rows already read. */
 function readiness(decision: Decision, participants: DecisionParticipant[], now: Stamp): Readiness {
 	const content = parseWorkingContent(decision.workingContent);
+	const draft = decision.status === 'draft';
 	return {
 		// What stops opening asks of a draft alone: nothing else is opened.
-		refusals: decision.status === 'draft' ? refusalsOf(openFactsOf(decision, now)) : [],
-		warnings: checkContent(content, audienceFactsOf(content, participants))
+		refusals: draft ? refusalsOf(openFactsOf(decision, now)) : [],
+		// Once opened, a closing time too far ahead is a warning, as re-publishing refuses it (the code review's part B, S3).
+		warnings: checkContent(content, audienceFactsOf(content, participants), draft ? undefined : { closesAt: decision.closesAt, now })
 	};
 }
 
@@ -371,6 +421,161 @@ export function readBoardDecisions(
 	return { board: { id: board.id, name: board.name }, canCreate: canEditBoard, decisions: listed };
 }
 
+// ─── Delivery (card 2697, decision 21, Q13) ──────────────────────────────────
+
+/** How a participant's latest record mail went: handed to the mail server, refused, not sent as a later write ended it, not sent for no link address, or not known yet. */
+export type DeliveryOutcome = 'sent' | 'failed' | 'superseded' | 'no_link_address' | 'pending';
+
+/**
+ * How one participant has been mailed, and whether Resend would reach them
+ * now, as the editor's delivery panel is given it: the words made here, from
+ * the record. No address, no response and no total.
+ */
+export type DeliveryRow = {
+	participantId: number;
+	/** Their latest record mail: which, when, whether it was a re-send, and its outcome; `problem` the failure's words alone. */
+	lastMail: { mail: RecordMail; at: Stamp; resend: boolean; outcome: DeliveryOutcome; problem: string | null } | null;
+	/** Their latest skip, in `SKIP_WORDS`' words. */
+	lastSkip: { mail: string; at: Stamp; words: string } | null;
+	/** Their link's latest ending, in `REVOKE_WORDS`' words. */
+	lastRevoked: { at: Stamp; words: string } | null;
+	/** Why a record mail would skip them now, in `SKIP_WORDS`' words; null for one it would reach, and for one removed. */
+	reachNow: string | null;
+	/** Whether `resendInvitation` would send them their invitation again now. */
+	resendable: boolean;
+	/** Where the rest or the daily cap holds them back: the moment, in UTC, from which Resend may. */
+	resendFrom: Stamp | null;
+	/** Where they cannot be sent it again, the words `resendInvitation` would refuse with. */
+	refusal: string | null;
+};
+
+/** The mail each record event is: decision-mail.ts's `MAIL_EVENT`, inverted, so the two cannot drift (the code review's part B, F5). */
+const MAIL_OF_EVENT: Readonly<Record<string, RecordMail>> = Object.fromEntries(
+	(Object.entries(MAIL_EVENT) as [RecordMail, string][]).map(([mail, kind]) => [kind, mail])
+);
+
+/** A `mail_outcome` detail as the panel's outcome and the failure's words. */
+function outcomeOf(detail: Record<string, unknown> | null): { outcome: DeliveryOutcome; problem: string | null } {
+	if (detail === null) return { outcome: 'pending', problem: null };
+	if (detail.delivered === true) return { outcome: 'sent', problem: null };
+	if (detail.problem === 'superseded') return { outcome: 'superseded', problem: null };
+	if (detail.problem === 'no_link_address') return { outcome: 'no_link_address', problem: null };
+	const problem = typeof detail.problem === 'string' && Object.hasOwn(MAIL_PROBLEM_WORDS, detail.problem) ? (detail.problem as MailProblem) : 'failed';
+	return { outcome: 'failed', problem: MAIL_PROBLEM_WORDS[problem] };
+}
+
+/**
+ * The words a 409 for the decision's status would carry, or null where it
+ * allows `resend`: `requireTransition` itself is asked, so that the panel's
+ * words cannot drift from the write's.
+ */
+function transitionRefusal(decision: Decision, now: Stamp): string | null {
+	try {
+		requireTransition(decision, 'resend', now);
+		return null;
+	} catch (err) {
+		if (isHttpError(err)) return err.body.message;
+		throw err;
+	}
+}
+
+/**
+ * Each participant's delivery (card 2697, Q13), in row order, from
+ * `deliveryOf`'s one read of the record. `resendable`, `resendFrom` and
+ * `refusal` follow `resendInvitation`'s own order: the status, removed,
+ * `reachOf`, the link address, and the rest and the daily cap
+ * (`mailRestOf`, which the write asks too), so the panel offers Resend
+ * exactly where the write would send.
+ */
+function deliveryRows(decision: Decision, rows: DecisionParticipant[], now: Stamp): DeliveryRow[] {
+	const facts = deliveryOf(decision.id);
+	const persons = peopleById(rows.map((row) => row.personId).filter((id): id is number => id !== null));
+	const history = accountHistory(decision.id);
+	const statusRefusal = transitionRefusal(decision, now);
+	const linkAddress = decisionLinkBase() !== null;
+	const since = stamp(new Date(Date.now() - DAY_MS));
+	const empty: DeliveryFacts = { lastMail: null, mailMoments: [], lastSkip: null, lastRevoked: null };
+
+	return rows.map((row) => {
+		const known = facts.get(row.id) ?? empty;
+		const person = row.personId === null ? null : (persons.get(row.personId) ?? null);
+		const reach = row.removedAt === null ? reachOf(row, person, history.get(row.id) ?? false) : null;
+		const reachNow = reach !== null && 'skip' in reach ? SKIP_WORDS[reach.skip](row.name) : null;
+
+		let refusal: string | null = statusRefusal;
+		let resendFrom: Stamp | null = null;
+		if (refusal === null && row.removedAt !== null) refusal = REMOVED_WORDS(row.name);
+		if (refusal === null && reachNow !== null) refusal = reachNow;
+		if (refusal === null && !linkAddress) refusal = NO_LINK_ADDRESS;
+		if (refusal === null) {
+			const held = mailRestOf(row.name, known.lastMail?.at, known.mailMoments.filter((at) => at >= since), now);
+			if (held !== null) {
+				refusal = held.words;
+				resendFrom = held.from;
+			}
+		}
+
+		const last = known.lastMail;
+		const skipReason = known.lastSkip?.reason;
+		const revokeReason = known.lastRevoked?.reason;
+		return {
+			participantId: row.id,
+			lastMail: last === null ? null : { mail: MAIL_OF_EVENT[last.kind] ?? 'invitation', at: last.at, resend: last.resend, ...outcomeOf(last.outcome) },
+			lastSkip:
+				known.lastSkip === null
+					? null
+					: {
+							mail: known.lastSkip.mail,
+							at: known.lastSkip.at,
+							words: skipReason !== undefined && Object.hasOwn(SKIP_WORDS, skipReason) ? SKIP_WORDS[skipReason as SkipReason](row.name) : 'They were not mailed'
+						},
+			lastRevoked:
+				known.lastRevoked === null
+					? null
+					: {
+							at: known.lastRevoked.at,
+							words: revokeReason !== undefined && Object.hasOwn(REVOKE_WORDS, revokeReason) ? REVOKE_WORDS[revokeReason as RevokeReason] : 'Their link was ended'
+						},
+			reachNow,
+			resendable: refusal === null,
+			resendFrom,
+			refusal
+		};
+	});
+}
+
+/**
+ * Which of the administrator's Attach account, Clear account and Use the
+ * directory's address the delivery panel offers on each participant (card
+ * 2697, B2b, Q22), decided here by the rules the writes' guards ask
+ * (`attachRefusal`, `clearRefusal`, `addressRefusal` in decision-links.ts; the
+ * code review's part B, F2), so the panel copies none of them. Nothing is
+ * offered on a removed row, though the writes would take it: what is
+ * offered is never more than the writes allow. `directoryAddress` is the
+ * address the copy would take, named in its confirmation, and null where it
+ * is not offered. An administrator's alone, beside `delivery`, which holds no
+ * address.
+ */
+export type DirectoryFact = { participantId: number; canAttach: boolean; canClear: boolean; canUseDirectoryAddress: boolean; directoryAddress: string | null };
+
+/** `DirectoryFact` for each row, in row order, from one read of the persons and of the account history. */
+function directoryFacts(decision: Decision, rows: DecisionParticipant[]): DirectoryFact[] {
+	const persons = peopleById(rows.map((row) => row.personId).filter((id): id is number => id !== null));
+	const history = accountHistory(decision.id);
+	return rows.map((row) => {
+		const person = row.personId === null ? undefined : persons.get(row.personId);
+		const live = row.removedAt === null;
+		const address = live ? addressRefusal(row, person) : null;
+		return {
+			participantId: row.id,
+			canAttach: live && !('refusal' in attachRefusal(row, person, rows)),
+			canClear: live && clearRefusal(row, history.get(row.id) ?? false) === null,
+			canUseDirectoryAddress: address !== null && 'email' in address,
+			directoryAddress: address !== null && 'email' in address ? address.email : null
+		};
+	});
+}
+
 // ─── The edit page (decisions 15 to 17) ──────────────────────────────────────
 
 /** A person the picker offers: active, and with no address unless the caller is an administrator. */
@@ -410,7 +615,72 @@ export type EditPage = {
 	groups: PickerGroup[];
 	/** Empty where the caller may not change the decider; the caller left out once the decision is open (decision 17). */
 	deciderCandidates: DeciderCandidate[];
+	/**
+	 * How each participant has been mailed, and whether Resend would reach
+	 * them (card 2697, Q13): only on a decision that has been opened, and
+	 * only to a caller who may send an invitation again (`resend`: its
+	 * author, its decider, an administrator); null otherwise.
+	 */
+	delivery: DeliveryRow[] | null;
+	/**
+	 * Which of the administrator's account and address actions each
+	 * participant is offered (card 2697, B2b), by the writes' own rules (the
+	 * code review's part B, F2): only to an administrator, beside `delivery`,
+	 * and only where the status allows those actions (open or closed); null
+	 * otherwise.
+	 */
+	directory: DirectoryFact[] | null;
+	/**
+	 * What the caller may do to the decision now (card 2697, Q14): each flag
+	 * `TRANSITIONS` holding the stored status and `mayDo`, exactly as each
+	 * write asks them, so the controls cannot offer what the server refuses.
+	 * `withdrawAsks` and `deleteAsks`: whether that action asks for the
+	 * caller's password, as the decision was ever opened (Q9, Q29).
+	 */
+	actions: LifecycleActions;
+	/**
+	 * What re-publishing the working copy would do to the options, by label
+	 * (card 2697, decision 20): `changesOptions` where an option would be added
+	 * or retired, which Tell them only refuses. Null where the caller may not
+	 * re-publish now.
+	 */
+	republishSummary: RepublishSummary | null;
 };
+
+/** The lifecycle controls the editor offers (card 2697, Q14). */
+export const LIFECYCLE_ACTIONS = [
+	'open',
+	'republish',
+	'close',
+	'extend',
+	'withdraw',
+	'delete',
+	'dryRun',
+	'resend',
+	'participantAccount',
+	'participantAddress'
+] as const;
+
+/** Each lifecycle control, and whether withdraw and delete ask for the password. */
+export type LifecycleActions = Record<(typeof LIFECYCLE_ACTIONS)[number], boolean> & { withdrawAsks: boolean; deleteAsks: boolean };
+
+/** What a re-publish would add and retire, by label (card 2697, decision 20). */
+export type RepublishSummary = { changesOptions: boolean; adding: string[]; retiring: string[] };
+
+/** `actions` for a caller of `access` (Q14): `TRANSITIONS` and `mayDo`, as each write asks them. */
+function lifecycleActions(decision: Decision, access: DecisionAccess): LifecycleActions {
+	const flags = Object.fromEntries(
+		LIFECYCLE_ACTIONS.map((action) => [action, (TRANSITIONS[action] as readonly string[]).includes(decision.status) && mayDo(access, action, decision)])
+	) as Record<(typeof LIFECYCLE_ACTIONS)[number], boolean>;
+	const opened = decision.openedAt !== null;
+	return { ...flags, withdrawAsks: opened, deleteAsks: opened };
+}
+
+/** `republishSummary`: `optionChanges` on the working copy, as `republishDecision` works it out. */
+function republishSummaryOf(decision: Decision): RepublishSummary {
+	const { adding, retiring } = optionChanges(liveOptionsOf(decision.id), listedOptionIds(decision.workingContent));
+	return { changesOptions: adding.length + retiring.length > 0, adding: adding.map((option) => option.label), retiring: retiring.map((option) => option.label) };
+}
 
 /**
  * Every group, by name; and, with `members`, every active person, by name,
@@ -480,6 +750,9 @@ export function readEditPage(user: SessionUser, decisionId: number): EditPage {
 	const canReview = allows('review') && mayDo(access, 'review', decision);
 	const canSetParticipants = editable && (decision.status === 'draft' || mayDo(access, 'include', decision));
 
+	const delivery = decision.openedAt !== null && mayDo(access, 'resend', decision) ? deliveryRows(decision, participants, now) : null;
+	const actions = lifecycleActions(decision, access);
+
 	const board = decision.boardId === null ? undefined : db.select().from(boards).where(eq(boards.id, decision.boardId)).get();
 	const picker = editable ? pickerOf(admin, canSetParticipants) : { people: [], groups: [] };
 	const deciderCandidates =
@@ -498,6 +771,13 @@ export function readEditPage(user: SessionUser, decisionId: number): EditPage {
 		productOwnerUserId: board?.productOwnerUserId ?? null,
 		people: picker.people,
 		groups: picker.groups,
-		deciderCandidates
+		deciderCandidates,
+		delivery,
+		directory:
+			delivery !== null && allows('participantAccount') && mayDo(access, 'participantAccount', decision) && mayDo(access, 'participantAddress', decision)
+				? directoryFacts(decision, participants)
+				: null,
+		actions,
+		republishSummary: actions.republish ? republishSummaryOf(decision) : null
 	};
 }

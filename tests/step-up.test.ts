@@ -69,7 +69,7 @@ import { google } from 'googleapis';
 import ts from 'typescript';
 import { DRIVE_FILE_SCOPE } from '$lib/drive-scope';
 import { db, sqlite } from '$lib/server/db';
-import { boards, cards, categories, columns, inviteTokens, sessions, settings, userXp, users } from '$lib/server/db/schema';
+import { boards, cards, categories, columns, decisionParticipants, inviteTokens, people, sessions, settings, userXp, users } from '$lib/server/db/schema';
 import { PASSWORD_CHANGED_MEANWHILE, SESSION_COOKIE_NAME, deleteSession, forgetChecksInFlight } from '$lib/server/auth';
 import { addressKey } from '$lib/server/client-address';
 import { PASSWORDS_BUSY } from '$lib/server/passwords';
@@ -107,6 +107,9 @@ import {
 	makeApiKey,
 	makeBoard,
 	makeCard,
+	makeDecision,
+	makeParticipant,
+	makePerson,
 	makeSession,
 	makeSmtp,
 	makeUser,
@@ -246,10 +249,30 @@ async function connecting(who: Scene['admin'], confirmed: ReturnType<typeof step
 		api('POST', '/api/admin/backup/gdrive/auth', { ...confirmed, credential, body: { code: 'the-code', state, destName: 'G', ...sent } });
 }
 
+/**
+ * Card 2697 (case 60): a person in the people directory, consulted on an open
+ * decision by a personal link, which a change of their address or account
+ * ends.
+ */
+function aLinkHolder() {
+	const person = makePerson({ fullName: 'Pat Doe', email: 'pat.doe@example.test' });
+	const decision = makeDecision({ title: 'Asked of Pat', status: 'open', closesAt: '2099-01-01 12:00:00', currentVersion: 1, openedAt: '2026-11-01 09:00:00' });
+	const row = makeParticipant(decision, { person, token: 'a-live-link-2697' });
+	return { person, decision, row };
+}
+/** The link holder a case's setup made. */
+let linked: ReturnType<typeof aLinkHolder> | undefined;
+
+/** The reasons of the `link_revoked` events recorded on a participant row, in order. */
+const linkRevokedReasons = (participantId: number) =>
+	(sqlite.prepare("SELECT detail FROM decision_events WHERE kind = 'link_revoked' AND participant_id = ? ORDER BY id").all(participantId) as { detail: string }[]).map(
+		(event) => JSON.parse(event.detail).reason
+	);
+
 // ─── 1 and 2. The list, and the routes that ask ──────────────────────────────
 
 describe('the list of what asks, pinned against the routes (cases 1 and 2)', () => {
-	it('is the eighteen actions of decision 2, the import as its confirmation, each with why it asks', () => {
+	it("is the twenty-six actions: decision 2's eighteen (the import among them, as its confirmation) and card 2697's eight, each with why it asks", () => {
 		expect(Object.keys(STEP_UP_ACTIONS).sort()).toEqual(
 			[
 				'POST /api/admin/reset',
@@ -269,7 +292,18 @@ describe('the list of what asks, pinned against the routes (cases 1 and 2)', () 
 				'PUT /api/admin/backup',
 				'POST /api/admin/backup',
 				'POST /api/admin/backup/gdrive/auth',
-				'PUT /api/admin/smtp'
+				'PUT /api/admin/smtp',
+				// Card 2697, B2b (Q9, Q21): a participant's account and address on a decision, and a person's address or account.
+				'PUT /api/decisions/[id]/participants/[participantId]/account',
+				'PUT /api/decisions/[id]/participants/[participantId]/address',
+				'PUT /api/people/[id]',
+				// Card 2697's code review, part B (S1): every other People write that sets or ends an address or an account.
+				'POST /api/people',
+				'DELETE /api/people/[id]',
+				'POST /api/people/from-accounts',
+				// Card 2697, B4 (Q9, Q29): a decision's delete and withdrawal, once it has been opened.
+				'DELETE /api/decisions/[id]',
+				'POST /api/decisions/[id]/withdraw'
 			].sort()
 		);
 		for (const [action, why] of Object.entries(STEP_UP_ACTIONS)) expect(why.trim().length, action).toBeGreaterThan(20);
@@ -533,6 +567,58 @@ describe('each admin action asks for the current password (case 3)', () => {
 				expect(res.body).toEqual({ success: true });
 				expect(db.select().from(settings).where(eq(settings.key, 'smtp_host')).get()?.value).toBe('smtp.example.test');
 			}
+		},
+		// Card 2697, B2b (Q21, case 60 (a)): a person's address, which decides where their decision mail and links go.
+		{
+			action: 'PUT /api/people/[id]',
+			who: 'admin',
+			method: 'PUT',
+			path: () => `/api/people/${linked!.person.id}`,
+			body: () => ({ email: 'moved.person@example.test' }),
+			setup: () => {
+				linked = aLinkHolder();
+			},
+			done: (res) => {
+				expect(res.body).toMatchObject({ id: linked!.person.id, email: 'moved.person@example.test' });
+				expect(db.select({ hash: decisionParticipants.linkTokenHash }).from(decisionParticipants).where(eq(decisionParticipants.id, linked!.row.id)).get()).toEqual({ hash: null });
+				expect(linkRevokedReasons(linked!.row.id)).toEqual(['address_changed']);
+			}
+		},
+		// Card 2697's code review, part B (S1): adding a person, deleting one, and Add from accounts.
+		{
+			action: 'POST /api/people',
+			who: 'admin',
+			path: () => '/api/people',
+			body: () => ({ fullName: 'Ann Lee', email: 'ann.lee@example.test' }),
+			status: 201,
+			done: (res) => {
+				expect(res.body).toMatchObject({ fullName: 'Ann Lee', email: 'ann.lee@example.test' });
+				expect(db.select({ email: people.email }).from(people).all()).toEqual([{ email: 'ann.lee@example.test' }]);
+			}
+		},
+		{
+			action: 'DELETE /api/people/[id]',
+			who: 'admin',
+			method: 'DELETE',
+			path: () => `/api/people/${linked!.person.id}`,
+			setup: () => {
+				linked = aLinkHolder();
+			},
+			done: (res) => {
+				expect(res.body).toEqual({ success: true, linksCleared: 1 });
+				expect(db.select().from(people).where(eq(people.id, linked!.person.id)).get()).toBeUndefined();
+				expect(linkRevokedReasons(linked!.row.id)).toEqual(['person_deleted']);
+			}
+		},
+		{
+			action: 'POST /api/people/from-accounts',
+			who: 'admin',
+			path: () => '/api/people/from-accounts',
+			body: (s) => ({ userIds: [s.member.id] }),
+			done: (res, s) => {
+				expect(res.body).toEqual({ created: 1, skipped: [] });
+				expect(db.select({ userId: people.userId }).from(people).all()).toEqual([{ userId: s.member.id }]);
+			}
 		}
 	];
 
@@ -775,6 +861,114 @@ describe('what asks only when it carries what it guards (case 6)', () => {
 		expect(stub.compared).toBe(0);
 		expect(countOf(token)).toBe(0);
 		expect(backupConfig()).toMatchObject({ retention, destinations: [BUCKET, DRIVE] });
+	});
+
+	// Card 2697, B2b (Q21, case 60 (b) and (c)): a person's account asks, linked or unlinked; a rename asks nothing.
+	it.each([
+		{
+			what: 'PUT /api/people/[id] linking an account with no password is 400, nothing changed',
+			body: (s: Scene) => ({ userId: s.member.id }),
+			linkedToMember: false,
+			answered: () => ({ status: 400, body: MISSING })
+		},
+		{
+			what: 'PUT /api/people/[id] unlinking its account with no password is 400, nothing changed',
+			body: () => ({ userId: null }),
+			linkedToMember: true,
+			answered: () => ({ status: 400, body: MISSING })
+		},
+		{
+			what: 'PUT /api/people/[id] with a name and a job title alone and no password is its success',
+			body: () => ({ fullName: 'Pat Renamed', jobTitle: 'Engineer' }),
+			linkedToMember: false,
+			answered: () => ({ status: 200, body: expect.objectContaining({ fullName: 'Pat Renamed', jobTitle: 'Engineer', email: 'pat.doe@example.test' }) })
+		}
+	])('$what', async ({ body, linkedToMember, answered }) => {
+		const s = scene();
+		const { person, row } = aLinkHolder();
+		if (linkedToMember) db.update(people).set({ userId: s.member.id }).where(eq(people.id, person.id)).run();
+		const token = makeSession(s.admin);
+		const before = snapshotDb();
+
+		const res = await api('PUT', `/api/people/${person.id}`, { user: s.admin, body: body(s), headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` } });
+
+		expect(answer(res)).toEqual(answered());
+		expect(stub.compared).toBe(0);
+		expect(countOf(token)).toBe(0);
+		if (res.status === 200) {
+			expect(db.select({ fullName: people.fullName, jobTitle: people.jobTitle }).from(people).where(eq(people.id, person.id)).get()).toEqual({
+				fullName: 'Pat Renamed',
+				jobTitle: 'Engineer'
+			});
+			// A rename moves no mail: the link stands.
+			expect(linkRevokedReasons(row.id)).toEqual([]);
+		} else {
+			expectUnchanged(before);
+		}
+	});
+
+	// Case 60 (d): a refusal that needs no password is made before one is looked at.
+	it("PUT /api/people/[id] with another person's address and a wrong password is 409 before any password, nothing counted", async () => {
+		const s = scene();
+		const { person } = aLinkHolder();
+		makePerson({ fullName: 'Someone Else', email: 'someone.else@example.test' });
+		const wrong = stepUp(s.admin, { email: 'someone.else@example.test' }, WRONG);
+		const before = snapshotDb();
+
+		const res = await api('PUT', `/api/people/${person.id}`, wrong);
+
+		expect(res.status, JSON.stringify(res.body)).toBe(409);
+		expect(stub.compared).toBe(0);
+		expect(countOf(tokenOf(wrong))).toBe(0);
+		expectUnchanged({ ...before, sessions: snapshotDb().sessions });
+	});
+
+	// The code review's part B (S1): the add, the delete and Add from accounts make their refusals first too.
+	it.each([
+		{
+			what: "POST /api/people with another person's address",
+			send: (s: Scene) => api('POST', '/api/people', stepUp(s.admin, { fullName: 'Another Pat', email: 'pat.doe@example.test' }, WRONG)),
+			refused: { status: 409, body: { message: 'Email already in the directory: Pat Doe' } }
+		},
+		{
+			what: 'DELETE /api/people/[id] of nobody',
+			send: (s: Scene) => api('DELETE', '/api/people/9999', stepUp(s.admin, {}, WRONG)),
+			refused: { status: 404, body: { message: 'Person not found' } }
+		},
+		{
+			what: 'POST /api/people/from-accounts with an id that is no account',
+			send: (s: Scene) => api('POST', '/api/people/from-accounts', stepUp(s.admin, { userIds: [s.member.id, 9999] }, WRONG)),
+			refused: { status: 400, body: { message: 'userId 9999 is not an account' } }
+		}
+	])('$what and a wrong password is refused by the guard, before any password: nothing counted or changed', async ({ send, refused }) => {
+		const s = scene();
+		aLinkHolder();
+		const before = snapshotDb();
+
+		const res = await send(s);
+
+		expect(answer(res)).toEqual(refused);
+		expect(stub.compared).toBe(0);
+		expect(db.select({ count: sessions.wrongPasswordCount }).from(sessions).all()).toEqual([{ count: 0 }]);
+		expectUnchanged({ ...before, sessions: snapshotDb().sessions });
+	});
+
+	// Case 60 (e): the stored hash moved between the check and the write.
+	it('PUT /api/people/[id] with an address, whose stored hash moved after the check, is 409 and changes nothing', async () => {
+		const s = scene();
+		const { person, row } = aLinkHolder();
+		const confirmed = stepUp(s.admin, { email: 'moved.person@example.test' });
+		const release = holdChecks();
+
+		const pending = api('PUT', `/api/people/${person.id}`, confirmed);
+		await vi.waitFor(() => expect(stub.compared).toBe(1));
+		db.update(users).set({ passwordHash: hashSync(FIXTURE_PASSWORD, 4) }).where(eq(users.id, s.admin.id)).run();
+		release();
+		const res = await pending;
+
+		expect(answer(res)).toEqual({ status: 409, body: { message: PASSWORD_CHANGED_MEANWHILE, stepUp: 'changed' } });
+		expect(db.select({ email: people.email }).from(people).where(eq(people.id, person.id)).get()).toEqual({ email: 'pat.doe@example.test' });
+		expect(linkRevokedReasons(row.id)).toEqual([]);
 	});
 });
 

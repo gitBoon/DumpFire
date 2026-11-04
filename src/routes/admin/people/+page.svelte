@@ -7,6 +7,11 @@
 	 * Every change is sent to the admin-only routes under `/api/people` and
 	 * `/api/people-groups`, a refusal is said in the server's words (`sent`),
 	 * and the page's data is read again after each one.
+	 *
+	 * Deleting a person asks for the caller's own password in its confirmation
+	 * (card 2697's code review, part B, S1): it ends their personal decision
+	 * links and frees their address. A refusal of the password keeps the dialog
+	 * open, its words in it and the field cleared (`sentAsking`).
 	 */
 	import type { PageData } from './$types';
 	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
@@ -19,7 +24,8 @@
 	import FromAccountsDialog from '$lib/components/admin/people/FromAccountsDialog.svelte';
 	import { invalidateAll } from '$app/navigation';
 	import { answerBody } from '$lib/api';
-	import { sent, showToast } from '$lib/admin/send';
+	import { sent, sentAsking, showToast } from '$lib/admin/send';
+	import { ASKS_FOR_PASSWORD } from '$lib/step-up-words';
 
 	type Person = PageData['people'][number];
 	type Group = PageData['groups'][number];
@@ -49,8 +55,19 @@
 	let editingGroup = $state<{ group: Group | null } | null>(null);
 	let addingFromAccounts = $state(false);
 
-	/** The confirm open, for a delete. */
-	let confirmAction = $state<{ title: string; message: string; confirmText: string; action: () => Promise<void> } | null>(null);
+	/**
+	 * The confirm open, for a delete: `askPassword` where the server asks for
+	 * the caller's password, and the action handed what was typed. Words given
+	 * back are a refusal of the password, which the dialog shows and stays open
+	 * for.
+	 */
+	let confirmAction = $state<{
+		title: string;
+		message: string;
+		confirmText: string;
+		askPassword?: boolean;
+		action: (password: string) => Promise<string | void>;
+	} | null>(null);
 
 	/** The person whose Mark left or Mark active is out: a second press meanwhile sends nothing. */
 	let marking = $state<number | null>(null);
@@ -80,7 +97,8 @@
 			`Delete ${person.fullName} from the directory? This cannot be undone. ` +
 			'Their group memberships go with them and their personal decision links stop working. ' +
 			'Decision records keep what they recorded of them (name, address, job title and groups), and the system log and backups still hold their name. ' +
-			'Mark left keeps them in the directory and can be undone.'
+			'Mark left keeps them in the directory and can be undone. ' +
+			ASKS_FOR_PASSWORD
 		);
 	}
 
@@ -89,8 +107,20 @@
 			title: 'Delete Person',
 			message: deletePersonMessage(person),
 			confirmText: 'Delete',
-			action: async () => {
-				const res = await sent(() => fetch(`/api/people/${person.id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } }), 'The person was not deleted');
+			askPassword: true,
+			action: async (password) => {
+				const res = await sentAsking(
+					() =>
+						fetch(`/api/people/${person.id}`, {
+							method: 'DELETE',
+							headers: { 'Content-Type': 'application/json' },
+							body: JSON.stringify({ currentPassword: password })
+						}),
+					'The person was not deleted'
+				);
+				// A refusal of the password itself: the dialog stays, its words shown.
+				if (typeof res === 'string') return res;
+				confirmAction = null;
 				if (!res) return;
 				const answer = await answerBody(res);
 				const cleared = typeof answer?.linksCleared === 'number' ? answer.linksCleared : 0;
@@ -108,6 +138,7 @@
 				'Decision records keep the group names they recorded.',
 			confirmText: 'Delete',
 			action: async () => {
+				confirmAction = null;
 				if (!(await sent(() => fetch(`/api/people-groups/${group.id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } }), 'The group was not deleted'))) return;
 				await invalidateAll();
 				showToast(`Group "${group.name}" deleted`);
@@ -247,11 +278,8 @@
 		title={confirmAction.title}
 		message={confirmAction.message}
 		confirmText={confirmAction.confirmText}
-		onConfirm={async () => {
-			const action = confirmAction?.action;
-			confirmAction = null;
-			await action?.();
-		}}
+		askPassword={confirmAction.askPassword ?? false}
+		onConfirm={async (password) => confirmAction?.action(password)}
 		onCancel={() => (confirmAction = null)}
 	/>
 {/if}

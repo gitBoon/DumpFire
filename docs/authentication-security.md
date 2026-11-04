@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.76
+version: 1.78
 status: As-Built
 date: 2026-11-04
 tags:
@@ -47,7 +47,7 @@ tags:
   - step-up
   - re-authentication
   - current-password
-description: "Deep-dive into DumpFire's authentication system, the eighteen destructive admin actions that ask for the current password again (step-up), the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served"
+description: "Deep-dive into DumpFire's authentication system, the twenty-six destructive actions that ask for the current password again (step-up), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served"
 ---
 
 # Authentication & Security
@@ -716,10 +716,24 @@ reason, and pinned both ways against the handlers (`tests/step-up.test.ts`, case
 | `POST /api/admin/backup` (Run Now) | admin | The whole database to every destination, now |
 | `POST /api/admin/backup/gdrive/auth` (Connect) | admin | Binds a destination to a Google account of the caller's choosing |
 | `PUT /api/admin/smtp` | admin | The mail server invites and resets go through, and the App URL their links point at |
+| `PUT /api/decisions/[id]/participants/[participantId]/account` (card 2697) | admin | Which credential answers for a participant on a decision's record: an account, or a personal link mailed in its place |
+| `PUT /api/decisions/[id]/participants/[participantId]/address` (card 2697) | admin | Ends a participant's personal link and moves where their record mail and next link go |
+| `PUT /api/people/[id]`, **with `email` or `userId`** (card 2697) | admin | Where a person's decision mail and personal links go, or which account answers for them |
+| `POST /api/people` (card 2697's code review, part B, S1) | admin | Adds a person with an address, and perhaps an account: `email` is required, so every add asks |
+| `DELETE /api/people/[id]` (S1) | admin | Ends every personal link the person holds, and frees their address for another person |
+| `POST /api/people/from-accounts` (S1) | admin | Adds people linked to accounts, each with its account's address |
+| `DELETE /api/decisions/[id]`, **once the decision was opened** (card 2697) | its author, or admin | Its permanent record (versions, responses, events), for good |
+| `POST /api/decisions/[id]/withdraw`, **once the decision was opened** (card 2697) | its author, its decider, or admin | Ends it for good and mails every participant the caller's words |
 
-The three conditional ones test their field with `Object.hasOwn`, as the body readers do
-(`request-body.ts`): a user change of `username` or `emoji` alone, a backup save of the
-schedule, retention or failure mail alone, and an empty column's delete ask nothing. Left out,
+The list is twenty-six: card 2701's eighteen (the import among them, standing as its
+confirmation) and card 2697's eight: the five its plan listed, and the three People writes its
+code review's part B added on 2026-11-04, S1, so that every People write that sets or ends an
+address or an account asks ([Decision Access and Personal Links](#decision-access-and-personal-links)). The
+conditional ones test their field with `Object.hasOwn`, as the body readers do
+(`request-body.ts`), or the row: a user change of `username` or `emoji` alone, a backup save of
+the schedule, retention or failure mail alone, an empty column's delete, a People save of name,
+job title, groups or status alone, and the delete or the withdrawal of a decision never opened
+ask nothing. Left out,
 each with its reason in the plan: Vacuum, a destination's Test, the mail's Send Test and the GET
 that starts a Connect (no data changed or sent), webhook creation (card 2702), team and sharing
 changes, single deletes, archive and restore, key revoke and webhook delete (they reduce access).
@@ -1284,7 +1298,7 @@ Covered by `tests/password-checks.test.ts` and `tests/atomic-accounts.test.ts`.
 Three routes ask a caller who is already signed in for their current password: changing
 your email (`PUT /api/account/email`), changing your password (`PUT /api/account/password`,
 which the admin page's dialog on your own row uses too) and Generate Key
-(`POST /api/account/api-keys`). Since card 2701 (2026-11-04) so do the eighteen actions of
+(`POST /api/account/api-keys`). Since cards 2701 and 2697 (2026-11-04) so do the twenty-six actions of
 [Step-up Before Destructive Actions](#step-up-before-destructive-actions-card-2701). The
 password is what whoever holds a session and not the password (an unlocked machine, a copied
 cookie) would need, and a password found at any of them passes every one of them.
@@ -3769,7 +3783,9 @@ and pages, for drafting a decision ([What a drafting page is given](#what-a-draf
 Card 2677 added the participant's page, `/decisions/[id]` signed in and `/decision-link/[token]`
 by personal link, and the writes that answer it ([What a participant is given, and who sees a
 response](#what-a-participant-is-given-and-who-sees-a-response), [The link's page and its
-routes](#the-links-page-and-its-routes)). The lifecycle routes are card 2697's. What is here is
+routes](#the-links-page-and-its-routes)). Card 2697 added the lifecycle routes, the dry run, the
+preview and the delivery panel ([The lifecycle, its limits and the
+preview](#the-lifecycle-its-limits-and-the-preview)). What is here is
 enforced in the modules every route calls, and pinned by `tests/decision-access.test.ts`,
 `tests/decision-record.test.ts`, `tests/decision-service.test.ts`,
 `tests/decision-participation.test.ts` and `tests/gate.test.ts`. The design is
@@ -3803,6 +3819,7 @@ is held only as itself: `boardOwner` does not imply `boardReader`.
 | delete | yes | yes¹ | no | no | no | no | no |
 | resend | yes | yes¹ | yes¹ | no | no | no | no |
 | participantAccount, participantAddress | yes | no | no | no | no | no | no |
+| dryRun (card 2697) | no | yes¹ | yes¹ | no | no | no | no |
 | rule (card 2679) | no | no | yes¹ | no | no | no | no |
 | record (card 2680) | yes | no | yes¹ | no | no | no | no |
 | respond (card 2677)² | no | no | no | no | no | no | yes |
@@ -3917,6 +3934,105 @@ one on board B, a draft of board A that its viewer must not see, and a participa
 `example.test` address in the world. `tests/decision-authoring.test.ts` (cases 17 to 21) and
 `tests/decision-authoring.svelte.test.ts` hold the projection's keys, the picker's fields, the
 404 and the words.
+
+### The lifecycle, its limits and the preview
+
+Card 2697 (2026-11-04; the plan's part B, section 12) made opening reachable, so these pages now
+mail people. Its rulings are the most secure option each time (plan Q1 to Q32).
+
+**The password, eight times** ([Step-up Before Destructive
+Actions](#step-up-before-destructive-actions-card-2701)). Its code review's part B (S1) added
+the People add, delete and Add from accounts, which always set or end an address or an account
+(`personCreateGuard`, `personDeleteGuard`, `fromAccountsGuard` run first); the page's Delete
+asks in its confirmation, and both dialogs carry the field. The administrator's **Attach** and
+**Clear account** (`PUT …/participants/[participantId]/account`) and **Use the directory's
+address** (`PUT …/address`) ask always: each decides which credential answers for a participant,
+or where their personal link goes. A People save carrying `email` or `userId`
+(`PUT /api/people/[id]`) asks too, because `openDecision` takes every participant's address and
+account from the directory again as it opens, so the directory decides where the links go; a
+rename, a job title, groups or a status ask nothing, and the People dialog sends the password only
+when the address or the account changed. **Delete** and **Withdraw** ask once the decision was
+ever opened (`openedAt` set): the delete destroys a permanent record, and the withdrawal ends the
+decision for good and mails every participant the caller's words; a draft never opened asks
+nothing. Each runs its guard first (`participantAccountGuard`, `participantAddressGuard`,
+`personUpdateGuard`, `decisionDeleteGuard`, `decisionWithdrawGuard`): every refusal that needs no
+password, so none costs a check, and a board owner who is no administrator sending a wrong
+password is refused `403` by role with the session's count unchanged. The write runs in
+`whilePasswordHolds`, `409 PASSWORD_CHANGED_MEANWHILE` if the stored hash moved since the check.
+The delete and the withdrawal ask the guard again in their transaction with no password and
+refuse `400 STEP_UP_MISSING` if the decision was opened meanwhile. Open, re-publish, close,
+extend, the dry run and Resend ask nothing: they destroy nothing and change no credential, and the
+limits below bound what mails.
+
+```mermaid
+flowchart TD
+    Req["DELETE /api/decisions/[id] or<br/>POST …/withdraw"] --> G{"Guard, in a writeAs of its own:<br/>404, 403, 400 reason, 409 status"}
+    G -->|"refused"| R1["Refused: no password compared or counted"]
+    G -->|"never opened"| NP{"No-password writeAs:<br/>guard again, opened meanwhile?"}
+    NP -->|"yes"| R2["400 STEP_UP_MISSING, nothing written"]
+    NP -->|"no"| W1["Written; a draft tells nobody"]
+    G -->|"ever opened"| SU{"confirmStepUp:<br/>currentPassword"}
+    SU -->|"missing"| R3["400 STEP_UP_MISSING, not counted"]
+    SU -->|"wrong"| R4["403 STEP_UP_WRONG, counted"]
+    SU -->|"right"| WP{"whilePasswordHolds:<br/>hash unchanged?"}
+    WP -->|"moved"| R5["409 PASSWORD_CHANGED_MEANWHILE"]
+    WP -->|"held"| W2["Deleted with its record, or withdrawn and told_withdrawn mailed"]
+```
+
+**Use the directory's address sends no address.** The write copies the address the people
+directory holds for the person now; `409` for a person gone, one who has left, or a row that
+already holds that address. A typed address would make `reachOf` skip the participant for good.
+
+**The volume limits**, so that a session holder cannot mail without bound:
+
+| What | Limit | Answer |
+|---|---|---|
+| Dry runs, per caller across decisions | 10 minutes apart, and 20 in 24 hours, from the `dry_run` events and then an in-memory allowance | `429`, saying from when |
+| Opening and re-publishing, per caller across decisions | 10 in 24 hours, from the `published` events and then an in-memory allowance | `429`, saying from when |
+| Record mail to one participant | 10 minutes apart, and 5 in 24 hours (re-publishing, Resend, including again); never the withdrawal or the ruling | `409` naming them, saying from when |
+| Record mail one caller causes, across decisions (code review part B, S2) | **500 in 24 hours** (`CALLER_MAIL_DAILY_CAP`): each participant opening, re-publishing, Resend, including someone new or including again would mail, counted from the caller's `invited`, `asked_again` and `told_of_change` events by `actor_user_id`, then an in-memory allowance; never the withdrawal or the ruling. A write that would pass it is refused whole, so a decision of more than 500 participants cannot be opened by one account | `429`, saying from when |
+
+Every limit's end is read the one way `mailRestOf` reads it, `now < from` (part B, F7): from
+the moment shown, the next is let through. The allowance survives a deletion of the decisions, whose events go with them; the events survive
+a restart. Both together are cleared only by a deletion and then a restart, which the caller does
+not control, and which is accepted (plan Q27). **The dry run goes only to the caller's address in
+the people directory**: a person whose `user_id` is the caller's account, holding the account's
+own address, else `409`. An account's address is set by its holder and confirmed by nobody; the
+directory's is an administrator's.
+
+**A closing time is at most 365 days ahead** (`CLOSES_WITHIN_DAYS`), on a draft's save and on
+Extend, `400` otherwise: a personal link lasts until the closing time plus 90 days, so the cap
+bounds every link. Opening and re-publishing refuse one stored further out, set before the limit
+or by hand (code review part B, S3): `409`, the readability check's `closes_too_far` refusal on a
+draft, and its `closes_too_far` warning on an opened decision and on a closing time typed and not
+yet saved (`closesTooFar` in `$lib/decision-readiness`).
+
+**The revision is required** on opening, re-publishing and the dry run (`400` missing, `409`
+`STALE_REVISION`): each sends the working copy, so a presser who has not seen a change made since
+they read it does not send it.
+
+**The preview** (`/decisions/[id]/preview`) is `requireDecision(…, 'edit')`, reads the working
+copy and writes nothing: no event, no link, no seen, also for a participant who holds a personal
+link. Its participant select gives names, roles and group names, and no address or account, to an
+administrator too.
+
+**The delivery panel** is given only once the decision was opened, and only to a caller who may
+resend (author, decider, administrator): each participant's latest mail and outcome, skip and
+link ending in words made on the server, and no address, response or total. An administrator is
+also given which of Attach account, Clear account and Use the directory's address each live
+participant is offered, decided on the server by the rules the writes' guards ask
+(`attachRefusal`, `clearRefusal`, `addressRefusal` in `decision-links.ts`; code review part B,
+F2), and the address the copy would take: the panel copies no guard rule.
+
+**The headers.** The preview, the editor and a board's decision list carry `UNPUBLISHED_HEADERS`
+(`Cache-Control: no-store`, `X-Robots-Tag: noindex, nofollow`, `gate-answers.ts`): each shows what
+nobody outside its editors has been shown, and the editor shows an administrator participants'
+addresses.
+
+Pinned by `tests/decision-lifecycle.test.ts` (cases 32 to 41, 44, 48 to 50, 55 to 59, 62),
+`tests/decision-lifecycle.svelte.test.ts`, `tests/step-up.test.ts` (cases 1, 3 and 6),
+`tests/people-directory.svelte.test.ts`, `tests/gate.test.ts` (case 21) and
+`tests/page-failures.test.ts` (card 2701's reader, matching a second path parameter by position).
 
 ### What a participant is given, and who sees a response
 

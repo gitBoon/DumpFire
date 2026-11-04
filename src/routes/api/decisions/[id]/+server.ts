@@ -1,9 +1,11 @@
-import { json } from '@sveltejs/kit';
+import { error, json } from '@sveltejs/kit';
+import { whilePasswordHolds } from '$lib/server/auth';
 import { isAdmin } from '$lib/server/board-access';
 import { decisionAnswer, optionAnswers, readinessOf, revisionFor } from '$lib/server/decision-authoring';
-import { deleteDecision, updateDraft } from '$lib/server/decisions';
+import { decisionDeleteGuard, deleteDecision, updateDraft } from '$lib/server/decisions';
 import { pathId, readBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
+import { STEP_UP_MISSING, confirmStepUp } from '$lib/server/step-up';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
@@ -32,11 +34,43 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
  * DELETE /api/decisions/:id — delete a draft or a withdrawn decision, and
  * every row of it (card 2675, plan 4.9): `deleteDecision`, its author's or an
  * administrator's.
+ *
+ * A decision that was ever opened holds a permanent record (its versions,
+ * responses and events), which the cascade destroys for good, so its delete
+ * asks for the caller's own password again, in `currentPassword` (card 2697,
+ * Q9; step-up.ts). A draft never opened asks for none. Every refusal of the
+ * delete is made first (`decisionDeleteGuard`), with no password checked or
+ * counted, as the column delete does. The body is JSON always: `{}`, or
+ * `{ currentPassword }`.
  */
-export const DELETE: RequestHandler = async ({ params, locals }) => {
+export const DELETE: RequestHandler = async ({ params, request, locals, cookies }) => {
 	requireUser(locals.user);
 	const id = pathId(params.id, 'decision');
+	const body = await readBody(request);
 
-	writeAs(locals, (caller) => deleteDecision(caller, { decisionId: id }, null, { source: 'ui' }));
+	// Every refusal of the delete, read only, and whether the decision holds a
+	// record: the one thing that decides whether a password is asked for.
+	const { holdsRecord } = writeAs(locals, (caller) => decisionDeleteGuard(caller, { decisionId: id }));
+
+	if (!holdsRecord) {
+		// One transaction: the decision is read and the caller checked in the
+		// same one that deletes it (card 2253). A decision opened since, and so
+		// holding a record now, is not deleted without the password: refused, and
+		// nothing written.
+		writeAs(locals, (caller) => {
+			if (decisionDeleteGuard(caller, { decisionId: id }).holdsRecord) error(400, { message: STEP_UP_MISSING, stepUp: 'missing' });
+			deleteDecision(caller, { decisionId: id }, null, { source: 'ui' });
+		});
+		return json({ success: true });
+	}
+
+	// The caller's password, once every refusal that needs none has been made.
+	const { userId, hash } = await confirmStepUp(locals, cookies, body, 'DELETE /api/decisions/[id]', (caller) =>
+		decisionDeleteGuard(caller, { decisionId: id })
+	);
+
+	// One transaction, as above, run only while the caller's stored hash is the
+	// one their password was checked against.
+	await whilePasswordHolds(userId, hash, () => writeAs(locals, (caller) => deleteDecision(caller, { decisionId: id }, null, { source: 'ui' })));
 	return json({ success: true });
 };

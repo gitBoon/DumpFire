@@ -49,8 +49,16 @@ import { inWrite, type ServiceOptions } from './write-as';
 
 const log = createLogger('PEOPLE');
 
-/** The functions here that only read. None: every export but this list is a write, and starts with `inWrite()`. */
-export const READS: readonly string[] = [];
+/**
+ * The functions here that only read: the refusals of a person's change, which
+ * its route asks before the caller's password when the change carries an
+ * address or an account (card 2697, Q21); and of adding a person, deleting
+ * one and adding people from accounts, which always set or end an address or
+ * an account, so that their routes ask for the password every time (card
+ * 2697's code review, part B, S1). Every other export is a write, and starts
+ * with `inWrite()`.
+ */
+export const READS: readonly string[] = ['personUpdateGuard', 'personCreateGuard', 'personDeleteGuard', 'fromAccountsGuard'];
 
 /** A person as the routes answer one: the row, and the ids of their groups. */
 export type PersonAnswer = Person & { groupIds: number[] };
@@ -68,20 +76,13 @@ const MOST_MEMBERS = 5000;
  * the directory, people who left included; `jobTitle` text, trimmed, up to
  * 200, '' if not sent; `userId` an account no other person is linked to, or
  * null; `groupIds` groups that exist, none if not sent.
+ *
+ * Every refusal is `personCreateGuard`'s, asked first. Its internal route asks
+ * for the caller's password between the two (S1).
  */
 export function createPerson(caller: SessionUser | null, at: Record<string, never>, body: RequestBody, opts: ServiceOptions): PersonAnswer {
 	inWrite();
-	const actor = requireAdmin(caller);
-
-	const fullName = readText(body, 'fullName', { required: true, trim: true, min: 1, max: 200 });
-	const email = readEmail(body, 'email', { required: true }).toLowerCase();
-	const jobTitle = readText(body, 'jobTitle', { trim: true, max: 200 }) ?? '';
-	const userId = readId(body, 'userId', { nullable: true }) ?? null;
-	const groupIds = unique(readIds(body, 'groupIds', { max: MOST_GROUPS }) ?? []);
-
-	requireUnusedEmail(email);
-	const account = userId === null ? null : requireLinkable(userId);
-	requireGroups(groupIds);
+	const { actor, fullName, email, jobTitle, userId, groupIds, account } = personCreateGuard(caller, at, body);
 
 	const person = db
 		.insert(people)
@@ -106,6 +107,43 @@ export function createPerson(caller: SessionUser | null, at: Record<string, neve
 }
 
 /**
+ * Every refusal of `createPerson`, in its order, read only (card 2697's code
+ * review, part B, S1): the caller an administrator (403), every field read
+ * (400; `email` is required, so every body that can make a person carries an
+ * address), an address another person holds (409), an account that is not one
+ * or is linked to another person (400, 409), and a group that is not one
+ * (400). `POST /api/people` asks it before the caller's password, so that none
+ * of these costs a check; `createPerson` asks it first, so the rules are one.
+ * Answers what the write inserts.
+ */
+export function personCreateGuard(
+	caller: SessionUser | null,
+	at: Record<string, never>,
+	body: RequestBody
+): {
+	actor: SessionUser;
+	fullName: string;
+	email: string;
+	jobTitle: string;
+	userId: number | null;
+	groupIds: number[];
+	account: { id: number; username: string } | null;
+} {
+	const actor = requireAdmin(caller);
+
+	const fullName = readText(body, 'fullName', { required: true, trim: true, min: 1, max: 200 });
+	const email = readEmail(body, 'email', { required: true }).toLowerCase();
+	const jobTitle = readText(body, 'jobTitle', { trim: true, max: 200 }) ?? '';
+	const userId = readId(body, 'userId', { nullable: true }) ?? null;
+	const groupIds = unique(readIds(body, 'groupIds', { max: MOST_GROUPS }) ?? []);
+
+	requireUnusedEmail(email);
+	const account = userId === null ? null : requireLinkable(userId);
+	requireGroups(groupIds);
+	return { actor, fullName, email, jobTitle, userId, groupIds, account };
+}
+
+/**
  * Change a person (`PUT /api/people/:id`). Each field as `createPerson` reads
  * it, the stored value kept where it is sent back, and `status` `active` or
  * `left`. Only what changes is written, with `updated_at` stamped; a body that
@@ -117,50 +155,14 @@ export function createPerson(caller: SessionUser | null, at: Record<string, neve
  * 12, comment 5649). An update that does more than one clears once, with the
  * first reason of left, linked, unlinked, address changed. A rename, a new
  * job title, new groups and Mark active clear nothing.
+ *
+ * Every refusal is `personUpdateGuard`'s, asked first. Its internal route
+ * asks for the caller's password between the two when the body carries
+ * `email` or `userId` (card 2697, Q21).
  */
 export function updatePerson(caller: SessionUser | null, at: { personId: number }, body: RequestBody, opts: ServiceOptions): PersonAnswer {
 	inWrite();
-	const actor = requireAdmin(caller);
-	const person = requirePerson(at.personId);
-	const heldGroups = groupIdsOf(person.id);
-
-	const fullName = readText(body, 'fullName', { trim: true, min: 1, max: 200, keep: person.fullName });
-	const email = readEmail(body, 'email', { keep: person.email })?.toLowerCase();
-	const jobTitle = readText(body, 'jobTitle', { trim: true, max: 200, keep: person.jobTitle });
-	const userId = readId(body, 'userId', { nullable: true, keep: person.userId });
-	const status = readChoice(body, 'status', { from: ['active', 'left'] as const, keep: person.status });
-	const sentGroups = readIds(body, 'groupIds', { max: MOST_GROUPS, keep: heldGroups });
-	const groupIds = sentGroups === undefined ? undefined : unique(sentGroups);
-
-	const updates: Partial<typeof people.$inferInsert> = {};
-	/** The names of what changed, for the log line. */
-	const changed: string[] = [];
-	if (fullName !== undefined && fullName !== person.fullName) {
-		updates.fullName = fullName;
-		changed.push('name');
-	}
-	if (email !== undefined && email !== person.email) {
-		requireUnusedEmail(email, person.id);
-		updates.email = email;
-		changed.push('email');
-	}
-	if (jobTitle !== undefined && jobTitle !== person.jobTitle) {
-		updates.jobTitle = jobTitle;
-		changed.push('job title');
-	}
-	const groupsChange = groupIds !== undefined && !sameIds(groupIds, heldGroups);
-	if (groupsChange) {
-		requireGroups(groupIds);
-		changed.push('groups');
-	}
-	const linkChange = userId !== undefined && userId !== person.userId;
-	const account = linkChange && userId !== null ? requireLinkable(userId, person.id) : null;
-	if (linkChange) updates.userId = userId;
-	const statusChange = status !== undefined && status !== person.status;
-	if (statusChange) {
-		updates.status = status;
-		updates.leftAt = status === 'left' ? stamp() : null;
-	}
+	const { actor, person, heldGroups, groupIds, groupsChange, updates, changed, account, linkChange, statusChange, status } = personUpdateGuard(caller, at, body);
 
 	if (Object.keys(updates).length === 0 && !groupsChange) return { ...person, groupIds: heldGroups };
 
@@ -210,16 +212,92 @@ export function updatePerson(caller: SessionUser | null, at: { personId: number 
 }
 
 /**
+ * Every refusal of `updatePerson`, in its order, read only (card 2697, Q21):
+ * the caller an administrator (403), the person (404), every field read
+ * (400), a new address another person holds (409), a group that is not one
+ * (400), and an account that is not one or another person is linked to
+ * (400, 409). `PUT /api/people/:id` asks it before the caller's password,
+ * when the body carries `email` or `userId`, so that none of these costs a
+ * check; `updatePerson` asks it first, so the rules are one. Answers what
+ * the write then does: the columns that change, and whether the groups, the
+ * account link and the status do.
+ */
+export function personUpdateGuard(
+	caller: SessionUser | null,
+	at: { personId: number },
+	body: RequestBody
+): {
+	actor: SessionUser;
+	person: Person;
+	heldGroups: number[];
+	groupIds: number[];
+	groupsChange: boolean;
+	updates: Partial<typeof people.$inferInsert>;
+	changed: string[];
+	account: { id: number; username: string } | null;
+	linkChange: boolean;
+	statusChange: boolean;
+	status: string | undefined;
+} {
+	const actor = requireAdmin(caller);
+	const person = requirePerson(at.personId);
+	const heldGroups = groupIdsOf(person.id);
+
+	const fullName = readText(body, 'fullName', { trim: true, min: 1, max: 200, keep: person.fullName });
+	const email = readEmail(body, 'email', { keep: person.email })?.toLowerCase();
+	const jobTitle = readText(body, 'jobTitle', { trim: true, max: 200, keep: person.jobTitle });
+	const userId = readId(body, 'userId', { nullable: true, keep: person.userId });
+	const status = readChoice(body, 'status', { from: ['active', 'left'] as const, keep: person.status });
+	const sentGroups = readIds(body, 'groupIds', { max: MOST_GROUPS, keep: heldGroups });
+	const groupIds = sentGroups === undefined ? undefined : unique(sentGroups);
+
+	const updates: Partial<typeof people.$inferInsert> = {};
+	/** The names of what changed, for the log line. */
+	const changed: string[] = [];
+	if (fullName !== undefined && fullName !== person.fullName) {
+		updates.fullName = fullName;
+		changed.push('name');
+	}
+	if (email !== undefined && email !== person.email) {
+		requireUnusedEmail(email, person.id);
+		updates.email = email;
+		changed.push('email');
+	}
+	if (jobTitle !== undefined && jobTitle !== person.jobTitle) {
+		updates.jobTitle = jobTitle;
+		changed.push('job title');
+	}
+	const groupsChange = groupIds !== undefined && !sameIds(groupIds, heldGroups);
+	if (groupsChange) {
+		requireGroups(groupIds);
+		changed.push('groups');
+	}
+	const linkChange = userId !== undefined && userId !== person.userId;
+	const account = linkChange && userId !== null ? requireLinkable(userId, person.id) : null;
+	if (linkChange) updates.userId = userId;
+	const statusChange = status !== undefined && status !== person.status;
+	if (statusChange) {
+		updates.status = status;
+		updates.leftAt = status === 'left' ? stamp() : null;
+	}
+
+	return { actor, person, heldGroups, groupIds: groupIds ?? heldGroups, groupsChange, updates, changed, account, linkChange, statusChange, status };
+}
+
+/**
  * Delete a person (`DELETE /api/people/:id`, decision 3). Their decision links
  * are emptied first, while the participant rows can still be found by person;
  * then the person goes. Their memberships go with them, and every participant
  * row keeps its snapshots with `person_id` emptied by its key. The address is
  * free again afterwards. Answers how many links were emptied.
+ *
+ * Every refusal is `personDeleteGuard`'s, asked first. Its internal route asks
+ * for the caller's password between the two (S1): the delete ends every
+ * personal link the person holds and frees their address for another.
  */
 export function deletePerson(caller: SessionUser | null, at: { personId: number }, body: null, opts: ServiceOptions): { linksCleared: number } {
 	inWrite();
-	const actor = requireAdmin(caller);
-	const person = requirePerson(at.personId);
+	const { actor, person } = personDeleteGuard(caller, at);
 
 	const cleared = clearLinks(person.id, 'person_deleted', actor, opts);
 	db.delete(people).where(eq(people.id, person.id)).run();
@@ -235,6 +313,17 @@ export function deletePerson(caller: SessionUser | null, at: { personId: number 
 }
 
 /**
+ * Every refusal of `deletePerson`, read only (S1): the caller an
+ * administrator (403) and the person (404). `DELETE /api/people/:id` asks it
+ * before the caller's password; `deletePerson` asks it first.
+ */
+export function personDeleteGuard(caller: SessionUser | null, at: { personId: number }): { actor: SessionUser; person: Person } {
+	const actor = requireAdmin(caller);
+	const person = requirePerson(at.personId);
+	return { actor, person };
+}
+
+/**
  * Add a person for each account named (`POST /api/people/from-accounts`),
  * `userIds` 1 to 500 accounts, in one transaction. Every id must be an
  * account, or it is a 400 and nothing is made. An account already linked to a
@@ -242,19 +331,14 @@ export function deletePerson(caller: SessionUser | null, at: { personId: number 
  * person is linked by hand if wanted, as an account's address is the holder's
  * own and unconfirmed (decision 13). Any other is made a person named by its
  * username, with its address lower-cased and linked to it.
+ *
+ * Every refusal is `fromAccountsGuard`'s, asked first. Its internal route asks
+ * for the caller's password between the two (S1): each person made is linked
+ * to an account and given its address.
  */
 export function addFromAccounts(caller: SessionUser | null, at: Record<string, never>, body: RequestBody, opts: ServiceOptions): FromAccountsAnswer {
 	inWrite();
-	const actor = requireAdmin(caller);
-
-	const userIds = unique(readIds(body, 'userIds', { required: true, min: 1, max: 500 }));
-	const accounts = db
-		.select({ id: users.id, username: users.username, email: users.email })
-		.from(users)
-		.where(inArray(users.id, userIds))
-		.all();
-	const missing = userIds.find((id) => !accounts.some((account) => account.id === id));
-	if (missing !== undefined) error(400, `userId ${missing} is not an account`);
+	const { actor, userIds, accounts } = fromAccountsGuard(caller, at, body);
 
 	let created = 0;
 	const skipped: FromAccountsAnswer['skipped'] = [];
@@ -282,6 +366,31 @@ export function addFromAccounts(caller: SessionUser | null, at: Record<string, n
 		)
 	);
 	return { created, skipped };
+}
+
+/**
+ * Every refusal of `addFromAccounts`, read only (S1): the caller an
+ * administrator (403), `userIds` (400), and an id that is no account (400).
+ * `POST /api/people/from-accounts` asks it before the caller's password;
+ * `addFromAccounts` asks it first. Answers the ids, each once, and their
+ * accounts.
+ */
+export function fromAccountsGuard(
+	caller: SessionUser | null,
+	at: Record<string, never>,
+	body: RequestBody
+): { actor: SessionUser; userIds: number[]; accounts: { id: number; username: string; email: string }[] } {
+	const actor = requireAdmin(caller);
+
+	const userIds = unique(readIds(body, 'userIds', { required: true, min: 1, max: 500 }));
+	const accounts = db
+		.select({ id: users.id, username: users.username, email: users.email })
+		.from(users)
+		.where(inArray(users.id, userIds))
+		.all();
+	const missing = userIds.find((id) => !accounts.some((account) => account.id === id));
+	if (missing !== undefined) error(400, `userId ${missing} is not an account`);
+	return { actor, userIds, accounts };
 }
 
 /**

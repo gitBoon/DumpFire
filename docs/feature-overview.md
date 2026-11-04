@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.58
+version: 1.59
 status: As-Built
-date: 2026-11-03
+date: 2026-11-04
 tags:
   - features
   - overview
@@ -280,12 +280,13 @@ A page left open while DumpFire is updated to a new version says so within about
 
 ### Decisions
 
-A decision record puts a question to the people it affects: what the situation is, what is asked, the options with their pros, cons and commercial notes, and who is consulted and who is only told (card 2676, from 3 November 2026). So far there is drafting, and the page each participant reads and answers a decision on (card 2677, [below](#reading-and-answering-a-decision)). Opening a decision, which mails its participants, comes with a later card, so for now nobody is told anything.
+A decision record puts a question to the people it affects: what the situation is, what is asked, the options with their pros, cons and commercial notes, and who is consulted and who is only told (card 2676, from 3 November 2026). There is drafting, previewing, a dry run, opening and the other lifecycle controls (card 2697, from 4 November 2026, [below](#opening-a-decision-and-what-follows)), and the page each participant reads and answers a decision on (card 2677, [below](#reading-and-answering-a-decision)).
 
 - **Where they are** — on a board, **More → Go to → Decisions** lists the board's decisions, newest first, with each one's status, decider, closing time and last change, in UTC. Anyone who can open the board sees every decision that has been opened; a draft is seen only by its author, its decider, the board's owners and administrators. An opened decision's title opens its page, with **Edit** beside it where you may edit it; a draft's title opens its editor where you may edit it
 - **Making a draft** — **New decision**, for anyone who can edit the board, asks for a title and opens the editor. The decider starts as the board's Product Owner while they can edit the board, and as you otherwise
 - **The editor** — the sections in the order participants will read them: situation, question, what is asked, the options, how it affects each group, user stories, what is not yet known, what is already settled and technical detail. Options are cards you can add, remove and move left or right; each is given a letter (A, B, C…) when it is first saved, and a letter is never used twice on one decision, even for an option removed before anyone saw it. Beside them: the closing time (in UTC), whether people choose one option or score each from 0 to 5, the decider, the participants and the readability check. **Save** sends everything at once, and an "Unsaved changes" marker shows until you do
-- **Once opened** — the title, closing time and vote mode are fixed (the closing time is moved by Extend, later); the text can still be edited, and participants see only what is published
+- **The closing time** — at most a year ahead (365 days), in UTC, as the editor says under the field; a later one is refused
+- **Once opened** — the title, closing time and vote mode are fixed (the closing time is moved by **Extend**); the text can still be edited, and participants see only what is published
 - **Text an agent drafted** — a section written through the API carries "Drafted by an agent and not yet reviewed by a person" until its author or decider presses **Mark reviewed** (or **Mark all reviewed**). Editing it does not remove the label: a person has to say they have read it, and who did and when is kept with the decision
 - **The decider** — chosen from the people who can edit the board, the Product Owner marked "(Product Owner)". The author, the board's owners and administrators can change it; a decider who is none of those sees it without a list
 - **The participants** — search the people directory by name, job title or group, tick a group to tick its active members as Consulted, and switch anyone to Informed. A group with some of its members ticked shows as mixed; one with no active members cannot be ticked. Nobody's email address is shown, except to an administrator. Once a decision is open, saving asks first ("3 people will be mailed now; 1 will be marked removed"), and only its author and decider can include people
@@ -301,12 +302,42 @@ flowchart LR
     Editor --> Save["Save: text, options,<br/>closing time, vote mode"]
     Editor --> People["Participants: Save participants"]
     Editor --> Check["Readability check"]
-    Check -.->|"a later card"| Open["Open: participants are mailed"]
+    Check -->|"nothing stops it"| Open["Open: participants are mailed"]
+```
+
+#### Opening a decision and what follows
+
+Above the editor sit the decision's lifecycle controls (card 2697). Each shows only where you may use it now: opening, re-publishing and closing are the author's and the decider's, extending the decider's, withdrawing theirs and an administrator's, deleting the author's and an administrator's.
+
+- **Preview as a participant** — opens the decision as a participant will see it, with the edits you have saved: as one of its participants (their role and their groups), as a Consulted or Informed person in a group, or as a consulted person in no group. The banner says "Preview: this is what <name> will see. Nothing is recorded.", the response form is shown but does nothing, and nothing is written: no one is told, and no "seen" is recorded
+- **Send me a dry run** — mails you the invitation a consulted participant would get, quoting the saved working copy, with "Dry run:" before its subject, a line saying you asked for it, and a link to the preview. It goes only to your address in the people directory (an administrator adds you in People, at your account's address); nobody else is mailed. One every 10 minutes, and 20 a day, across all your decisions
+- **Open** — off while the readability check lists something that stops it, which it shows. With warnings it asks "Open with 2 warnings"; then every participant is mailed their invitation. Consulted people with no account get a personal link
+- **Re-publish** — publishes the edited text as a new version, with a note saying what changed. **Ask everyone again** mails everyone and asks for their views again; **Tell them only** tells them of the change. Tell them only is off, with the reason, when an option has been added or removed since the last version
+- **Save first** — Open, Re-publish and Send me a dry run each send the saved copy, so they are off ("Save your changes first") while the editor has unsaved changes
+- **Close** — stops taking responses now. **Extend** sets a new closing time, at most a year ahead, in UTC, and opens it again
+- **Withdraw** — ends the decision, with a reason. Once it has been opened, every participant is told your reason, and you are asked for your password first; a draft that was never opened is withdrawn with no password and nobody is told
+- **Delete** — a draft or a withdrawn decision. A draft never opened is deleted straight after you confirm; one that was opened holds a record of who was told what, so deleting it asks for your password and removes that record for good
+- **How much can be sent** — you can open or re-publish 10 decisions a day; one person is mailed about one decision at most 5 times a day (the withdrawal and the ruling are always sent), and not twice within 10 minutes
+- **Delivery** — once a decision has been opened, its author, decider and administrators see how each participant's latest mail went, any reason they were not mailed, and when their link last ended. **Resend** sends someone their invitation again (a new link with it), or says from when it can
+- **Who is told** — opening, re-publishing, withdrawing and resending mail participants. Close, Extend, Delete, the preview and a dry run tell nobody but you
+
+```mermaid
+stateDiagram-v2
+    [*] --> Draft: New decision
+    Draft --> Open: Open (participants mailed)
+    Draft --> Withdrawn: Withdraw (nobody told)
+    Draft --> [*]: Delete
+    Open --> Open: Re-publish (ask again or tell)
+    Open --> Closed: Close, or the closing time passes
+    Closed --> Open: Extend, or Re-publish asking again
+    Open --> Withdrawn: Withdraw (your password, everyone told)
+    Closed --> Withdrawn: Withdraw (your password, everyone told)
+    Withdrawn --> [*]: Delete (your password once opened)
 ```
 
 #### Reading and answering a decision
 
-Once a decision is opened (the control for that comes with a later card), each participant reads it on its own page and, if they are consulted, answers it there (card 2677).
+Once a decision is opened, each participant reads it on its own page and, if they are consulted, answers it there (card 2677).
 
 - **Two ways in** — someone with an account opens `/decisions/<id>`, signed in, from the board's decision list or from their email. Someone without an account opens the personal link in their email, `/decision-link/[token]`, and needs no account and no password: the link is theirs alone, and the page says "This address is personal to you: do not share it." Anyone else who can open the board sees the same page with no form: the published text and its status
 - **What the page shows** — in this order: when you were told of the decision, the situation, the question, what is asked of you and by when (in UTC), who sees your response, the options side by side (stacked on a phone), how it affects you (your own group's part first and open), the user stories, what is not yet known, what is already settled and the technical detail (closed until you open them). A section an agent drafted says so. The page is made for a phone first: one column, large buttons, and text that does not need zooming

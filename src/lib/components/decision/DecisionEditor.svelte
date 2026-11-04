@@ -23,10 +23,22 @@
   gave them, and `checkContent`'s warnings worked out again on edits not yet
   saved (decision 11). `side` is drawn in the side column after the decider:
   the page's participant picker.
+
+  Card 2697: the closing time says it is at most a year ahead, in UTC, from
+  `CLOSES_WITHIN_DAYS` (Q25), and `onDirtyChange` tells the page whether
+  there are edits not yet saved, which holds its Open, Re-publish and dry run
+  off (Q14).
+
+  Its code review's part B: the status, the chip and the closing time follow
+  `decision` as the page reads it again after a lifecycle write, the edits
+  not yet saved kept (F1); a closing time more than a year ahead is warned of
+  (S3); and the help sentence and the field's form are `$lib/decision-readiness`'s,
+  shared with Extend (F5).
 -->
 <script lang="ts">
 	import { untrack, type Snippet } from 'svelte';
-	import { checkContent, type AudienceFacts, type ContentAnswer, type Refusal, type Warning } from '$lib/decision-readiness';
+	import { CLOSES_HELP, checkContent, closesField, type AudienceFacts, type ContentAnswer, type Refusal, type Warning } from '$lib/decision-readiness';
+	import { stamp } from '$lib/timestamps';
 	import { STALE_REVISION, STATUS_WORDS, shownMoment } from '$lib/decision-words';
 	import { failureMessage } from '$lib/api';
 	import ReadinessPanel from './ReadinessPanel.svelte';
@@ -63,6 +75,7 @@
 		callerId,
 		onSaved,
 		onReload,
+		onDirtyChange,
 		side
 	}: {
 		decision: Decision;
@@ -84,6 +97,12 @@
 		onSaved: (revision: string) => void | Promise<void>;
 		/** Read the decision again, as it is now. */
 		onReload: () => void | Promise<void>;
+		/**
+		 * Whether there are edits not yet saved, as that changes (card 2697,
+		 * Q14): the page holds Open, Re-publish and the dry run off meanwhile,
+		 * as each acts on the saved working copy.
+		 */
+		onDirtyChange?: (dirty: boolean) => void;
 		side?: Snippet;
 	} = $props();
 
@@ -156,9 +175,6 @@
 		};
 	}
 
-	/** A stored closing time as the field shows it, to the minute; the field is read as UTC. */
-	const closesField = (closesAt: string | null) => (closesAt === null ? '' : `${closesAt.slice(0, 10)}T${closesAt.slice(11, 16)}`);
-
 	/** What was last saved, as the server answered it. */
 	let saved = $state(untrack(() => ({ ...decision })));
 	let labels = $state(untrack(() => new Map(options.map((option) => [option.id, option.label]))));
@@ -175,6 +191,26 @@
 
 	let draft = $derived(saved.status === 'draft');
 
+	/**
+	 * The status, the shown status and the closing time follow the decision as
+	 * the page reads it again (the code review's part B, F1): Open, Close,
+	 * Extend, Withdraw and Re-publish change them on the server, and the page's
+	 * data is read again after each, while this editor stays drawn. So the chip,
+	 * the fields a draft alone edits and the closing time shown follow the
+	 * server. The edits not yet saved are kept, as Close, Extend and Withdraw
+	 * are allowed while there are some: the content, and a draft's closing time
+	 * typed and not yet saved while it is still a draft.
+	 */
+	$effect(() => {
+		const { status, shownStatus, closesAt } = decision;
+		untrack(() => {
+			if (saved.status === status && saved.shownStatus === shownStatus && saved.closesAt === closesAt) return;
+			const typed = closes !== closesField(saved.closesAt);
+			saved = { ...saved, status, shownStatus, closesAt };
+			if (!typed || status !== 'draft') closes = closesField(closesAt);
+		});
+	});
+
 	/** The closing time a save sends: the stored one, to the second, while the field is as it was. */
 	function closesToSend(): string | null {
 		if (!draft || closes === closesField(saved.closesAt)) return saved.closesAt;
@@ -185,6 +221,12 @@
 		JSON.stringify(contentOf(form)) !== JSON.stringify(contentOf(formOf(saved.content))) ||
 			(draft && (title.trim() !== saved.title || closes !== closesField(saved.closesAt) || voteMode !== saved.voteMode))
 	);
+
+	// The page is told as `dirty` changes, and once as the editor is drawn (card 2697, Q14).
+	$effect(() => {
+		const now = dirty;
+		untrack(() => onDirtyChange?.(now));
+	});
 
 	/** The content as `checkContent` reads it, with the flags and stamps as last saved. */
 	let working = $derived<ContentAnswer>({
@@ -210,8 +252,18 @@
 		return groupId !== null && groupId !== undefined && membersKnown.has(groupId);
 	}
 
+	/**
+	 * The closing time `checkContent` is handed (the code review's part B, S3),
+	 * as the server hands it: an opened decision's, whose refusals are not
+	 * worked out; and a draft's typed and not yet saved, which no refusal has
+	 * judged yet. The field's minutes are read in the stored form.
+	 */
+	let closing = $derived(
+		!draft ? { closesAt: saved.closesAt, now: stamp() } : closes !== closesField(saved.closesAt) && closes !== '' ? { closesAt: `${closes.replace('T', ' ')}:00`, now: stamp() } : undefined
+	);
+
 	/** The server's warnings, until there are edits not yet saved: then `checkContent`'s on them. */
-	let warnings = $derived(editable && dirty ? checkContent(working, audienceFacts).filter(knowable) : readiness.warnings);
+	let warnings = $derived(editable && dirty ? checkContent(working, audienceFacts, closing).filter(knowable) : readiness.warnings);
 
 	const flaggedKey = (k: string) => saved.content.agentDrafted[k] === true;
 	let anyFlagged = $derived(Object.keys(saved.content.agentDrafted).length > 0);
@@ -485,7 +537,8 @@
 			<section class="side-section">
 				<label class="small" for="{uid}-closes">Closes (UTC)</label>
 				{#if draft && editable}
-					<input id="{uid}-closes" class="field" type="datetime-local" bind:value={closes} />
+					<input id="{uid}-closes" class="field" type="datetime-local" aria-describedby="{uid}-closes-help" bind:value={closes} />
+					<p id="{uid}-closes-help" class="help" data-help="closes">{CLOSES_HELP}</p>
 				{:else}
 					<p id="{uid}-closes" class="fixed">{shownMoment(saved.closesAt, 'Not set')}</p>
 				{/if}
@@ -568,6 +621,7 @@
 	.field[readonly] { background: var(--bg-base); }
 	.small { font-size: 0.72rem; color: var(--text-secondary); margin: 0; }
 	.fixed { font-size: 0.82rem; margin: 0; }
+	.help { font-size: 0.7rem; color: var(--text-tertiary); margin: 0; }
 
 	.option-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: var(--space-md); }
 	.option-card, .entry { display: flex; flex-direction: column; gap: var(--space-xs); padding: var(--space-md); border: 1px solid var(--glass-border); border-radius: var(--radius-md); background: var(--bg-base); }

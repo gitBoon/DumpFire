@@ -637,7 +637,18 @@ const CURRENT_PASSWORD = [
 	// Slice 2c: the saves that send the database or the mail elsewhere.
 	'src/routes/api/admin/backup/+server.ts PUT',
 	'src/routes/api/admin/backup/gdrive/auth/+server.ts POST',
-	'src/routes/api/admin/smtp/+server.ts PUT'
+	'src/routes/api/admin/smtp/+server.ts PUT',
+	// Card 2697, B2b (Q31): the administrator's participant actions, and a person's address or account.
+	'src/routes/api/decisions/[id]/participants/[participantId]/account/+server.ts PUT',
+	'src/routes/api/decisions/[id]/participants/[participantId]/address/+server.ts PUT',
+	'src/routes/api/people/[id]/+server.ts PUT',
+	// Card 2697's code review, part B (S1): the add, the delete and Add from accounts of the people directory.
+	'src/routes/api/people/+server.ts POST',
+	'src/routes/api/people/[id]/+server.ts DELETE',
+	'src/routes/api/people/from-accounts/+server.ts POST',
+	// Card 2697, B4 (Q31): the delete and the withdrawal of a decision that was ever opened.
+	'src/routes/api/decisions/[id]/+server.ts DELETE',
+	'src/routes/api/decisions/[id]/withdraw/+server.ts POST'
 ];
 
 /**
@@ -3067,12 +3078,16 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 			'src/lib/server/card-attachments.ts': { reads: [], writes: ['attachFile', 'deleteAttachment'] },
 			// Card 2674.
 			'src/lib/server/people.ts': {
-				reads: [],
+				// Card 2697 (Q21): a person's change's refusals, read before its password is asked for; and (the code
+				// review's part B, S1) the add's, the delete's and Add from accounts'.
+				reads: ['personUpdateGuard', 'personCreateGuard', 'personDeleteGuard', 'fromAccountsGuard'],
 				writes: ['createPerson', 'updatePerson', 'deletePerson', 'addFromAccounts', 'createGroup', 'updateGroup', 'deleteGroup', 'setGroupMembers']
 			},
 			// Card 2675.
 			'src/lib/server/decisions.ts': {
-				reads: [],
+				// Card 2697 (Q10, Q29): the administrator's participant writes' refusals, and the delete's and the
+				// withdrawal's, read before the password.
+				reads: ['participantAccountGuard', 'participantAddressGuard', 'decisionDeleteGuard', 'decisionWithdrawGuard'],
 				writes: [
 					'createDecision',
 					'setDecider',
@@ -3086,6 +3101,8 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 					'extendDecision',
 					'withdrawDecision',
 					'deleteDecision',
+					// Card 2697: a dry run of the working copy, mailed to the caller alone.
+					'dryRunDecision',
 					'resendInvitation',
 					'setParticipantAccount',
 					'changeParticipantAddress',

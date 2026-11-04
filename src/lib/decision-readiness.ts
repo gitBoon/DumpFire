@@ -16,7 +16,7 @@
  *     browser runs, on the edits not yet saved. A warning does not stop
  *     opening.
  */
-import type { Stamp } from '$lib/timestamps';
+import { parseStamp, stamp, type Stamp } from '$lib/timestamps';
 import { NO_LINK_ADDRESS } from '$lib/mail-words';
 
 /**
@@ -77,11 +77,53 @@ export type AudienceFacts = {
 	participantPersonIds: number[];
 };
 
+/**
+ * How far ahead a decision's closing time may be set, in days (card 2697,
+ * Q25): a personal link lasts until the closing time plus 90 days, so a
+ * closing time years out would make a link that does not end. The editor's
+ * closing time and the Extend dialog say so from this number.
+ */
+export const CLOSES_WITHIN_DAYS = 365;
+
+/** The 400 for a closing time past `CLOSES_WITHIN_DAYS` (card 2697, Q25). */
+export const CLOSES_TOO_FAR = `closesAt must be no more than ${CLOSES_WITHIN_DAYS} days from now`;
+
+/** What the editor and the Extend form say beside a closing time (Q25): one sentence, so the two cannot drift (the code review's part B, F5). */
+export const CLOSES_HELP = `At most a year ahead (${CLOSES_WITHIN_DAYS} days), in UTC.`;
+
+/**
+ * A stored moment as a `datetime-local` field shows it, to the minute, read
+ * as UTC: '' for none. No `Date` is made of it. The editor's closing time and
+ * the Extend form share it (F5).
+ */
+export function closesField(at: Stamp | null): string {
+	return at === null ? '' : `${at.slice(0, 10)}T${at.slice(11, 16)}`;
+}
+
+/**
+ * Whether `closesAt` is more than `CLOSES_WITHIN_DAYS` after `now` (the code
+ * review's part B, S3): opening and re-publishing refuse it, as a personal
+ * link lasts until the closing time and 90 days more. Text compared, as the
+ * stored form orders moments; a moment that cannot be read is not too far.
+ */
+export function closesTooFar(closesAt: Stamp | null, now: Stamp): boolean {
+	const from = parseStamp(now);
+	if (closesAt === null || from === null) return false;
+	return closesAt > stamp(new Date(from.getTime() + CLOSES_WITHIN_DAYS * 24 * 60 * 60 * 1000));
+}
+
+/** The 409 for opening a decision whose closing time is too far ahead (S3). */
+export const CLOSES_TOO_FAR_TO_OPEN = `This decision closes more than ${CLOSES_WITHIN_DAYS} days ahead: it cannot be opened until its closing time is nearer`;
+
+/** The 409 for re-publishing one (S3): an open decision's closing time moves by Extend alone. */
+export const CLOSES_TOO_FAR_TO_REPUBLISH = `This decision closes more than ${CLOSES_WITHIN_DAYS} days ahead: it cannot be re-published until it is extended to a nearer closing time`;
+
 export const REFUSAL_CODES = [
 	'no_decider',
 	'no_board',
 	'decider_cannot_edit',
 	'no_closing_time',
+	'closes_too_far',
 	'too_few_options',
 	'no_consulted',
 	'participant_deleted',
@@ -104,7 +146,8 @@ export const WARNING_CODES = [
 	'option_no_commercial',
 	'audience_nobody_ticked',
 	'audience_group_gone',
-	'agent_drafted'
+	'agent_drafted',
+	'closes_too_far'
 ] as const;
 
 export type WarningCode = (typeof WARNING_CODES)[number];
@@ -115,7 +158,8 @@ export type Warning = { code: WarningCode; key?: string; words: string };
 /**
  * Everything that stops the decision opening, in the order `openDecision`
  * meets it (decision 12): the decider, the board, the decider's access, the
- * closing time, the options, a consulted participant, then each participant
+ * closing time (none in the future, or one more than `CLOSES_WITHIN_DAYS`
+ * ahead: the code review's part B, S3), the options, a consulted participant, then each participant
  * row in id order, deleted or left, then mail, the link address, and each
  * pair holding one account. `openDecision` answers the first. Empty: it can
  * be opened. The server alone calls this.
@@ -132,6 +176,7 @@ export function refusalsOf(facts: OpenFacts): Refusal[] {
 		);
 	}
 	if (facts.closesAt === null || facts.closesAt <= facts.now) add('no_closing_time', 'This decision has no closing time in the future: it cannot be opened');
+	else if (closesTooFar(facts.closesAt, facts.now)) add('closes_too_far', CLOSES_TOO_FAR_TO_OPEN);
 	if (facts.liveOptionCount < 2) add('too_few_options', 'This decision has fewer than two options: it cannot be opened');
 	if (facts.consultedCount === 0) add('no_consulted', 'This decision has no consulted participant: it cannot be opened');
 	for (const row of facts.participants) {
@@ -171,8 +216,14 @@ const blank = (text: string) => text.trim() === '';
  * participant belongs to now, or whose group is gone; and each section an
  * agent drafted that no person has marked reviewed. Each names its entry by
  * `key` where there is more than one of its kind.
+ *
+ * With `closing`, a closing time more than `CLOSES_WITHIN_DAYS` ahead too
+ * (the code review's part B, S3), which opening and re-publishing refuse. It
+ * is handed where no refusal already says so: by the server for a decision
+ * that has been opened, whose refusals are not worked out, and by the editor
+ * besides for a draft's closing time changed and not yet saved.
  */
-export function checkContent(content: ContentAnswer, audience: AudienceFacts): Warning[] {
+export function checkContent(content: ContentAnswer, audience: AudienceFacts, closing?: { closesAt: Stamp | null; now: Stamp }): Warning[] {
 	const warnings: Warning[] = [];
 	if (blank(content.situation)) warnings.push({ code: 'empty_situation', words: 'The situation is empty' });
 	if (blank(content.question)) warnings.push({ code: 'empty_question', words: 'The question is empty' });
@@ -206,6 +257,13 @@ export function checkContent(content: ContentAnswer, audience: AudienceFacts): W
 		const index = optionId === null ? -1 : content.options.findIndex((option) => option.optionId === Number(optionId[1]));
 		const section = optionId === null ? (SECTION_NAMES[key] ?? key) : index === -1 ? 'An option' : `Option ${index + 1}`;
 		warnings.push({ code: 'agent_drafted', key, words: `${section} was drafted by an agent and not yet reviewed by a person` });
+	}
+
+	if (closing !== undefined && closesTooFar(closing.closesAt, closing.now)) {
+		warnings.push({
+			code: 'closes_too_far',
+			words: `The closing time is more than ${CLOSES_WITHIN_DAYS} days ahead: it cannot be opened or re-published so (${CLOSES_TOO_FAR})`
+		});
 	}
 	return warnings;
 }

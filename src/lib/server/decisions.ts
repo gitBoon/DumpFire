@@ -4,8 +4,18 @@
  * invitation sent again; and the administrator's changes to a participant's
  * account and address (card 2675, plan section 4.7).
  *
- * No route calls these yet: cards 2676 and 2677 add the routes and pages,
- * each calling a write inside its `writeAs` callback, handed `caller`.
+ * Cards 2676, 2677 and 2697 add the routes and pages, each calling a write
+ * inside its `writeAs` callback, handed `caller`.
+ *
+ * Card 2697 adds the dry run (`dryRunDecision`), requires the revision on
+ * opening and re-publishing, and limits the mail these writes send: per
+ * caller, the dry runs, the publishes and (its code review's part B, S2) the
+ * record mails caused, across decisions, in 24 hours; per participant, the
+ * record mails in 24 hours; and a closing time at most a year ahead. Its
+ * guards (`READS`) make every refusal of the writes whose routes ask for the
+ * caller's password, so that none costs a check: the administrator's
+ * participant account and address, and the delete and the withdrawal of a
+ * decision that was ever opened (Q9, Q10, Q29).
  *
  * Card 2677 adds a participant's own writes: a response
  * (`respondToDecision`, `respondByLink`) and being recorded as having seen a
@@ -70,28 +80,56 @@ import {
 	appendResponse,
 	appendVersion,
 	currentRound,
+	dryRunsSince,
 	hasSeen,
 	IDS_AT_ONCE,
+	lastDryRunAt,
 	lastMailAt,
 	latestResponse,
 	liveOptionIds,
+	mailsSince,
 	ownResponseOf,
 	peopleById,
+	personOfAccount,
+	publishesSince,
+	recordMailsSince,
 	responsesInRound,
 	snapshotOf,
 	type RecordActor
 } from './decision-record';
-import { participantForLink, reachOf, revokeLinks, type Reach, type SkipReason } from './decision-links';
-import { decisionLinkBase, queueRecordMails, RECORD_MAIL_MIN_MINUTES } from './decision-mail';
+import {
+	addressRefusal,
+	attachRefusal,
+	clearRefusal,
+	participantForLink,
+	reachOf,
+	REMOVED_WORDS,
+	revokeLinks,
+	SKIP_WORDS,
+	type Reach
+} from './decision-links';
+import {
+	CALLER_MAIL_DAILY_CAP,
+	DAY_MS,
+	dailyCapFrom,
+	decisionLinkBase,
+	DRY_RUN_DAILY_CAP,
+	DRY_RUN_MIN_MINUTES,
+	later,
+	mailRestOf,
+	PUBLISH_DAILY_CAP,
+	queueDryRun,
+	queueRecordMails
+} from './decision-mail';
 import { DECISION_ACTION_WORDS, decisionStatus, requireTransition } from './decision-status';
-import { NO_LINK_ADDRESS } from './email';
+import { isSmtpConfigured, NO_LINK_ADDRESS } from './email';
 import { emit } from './events';
 import { ACTIONS, actorOf, logActivity } from './logActivity';
+import { takeAllowance } from './rate-limit';
 import {
 	asObject,
 	readBoolean,
 	readChoice,
-	readEmail,
 	readId,
 	readList,
 	readNumber,
@@ -100,15 +138,20 @@ import {
 	readTimestamp,
 	type RequestBody
 } from './request-body';
-import { refusalsOf } from '$lib/decision-readiness';
+import { CLOSES_TOO_FAR, CLOSES_TOO_FAR_TO_REPUBLISH, closesTooFar, refusalsOf } from '$lib/decision-readiness';
 import type { OwnResponse } from '$lib/decision-view-types';
 import { DEAD_DECISION_LINK, STALE_REVISION } from '$lib/decision-words';
 import { requireBoard, requireDecision, requireUser } from './route-guards';
 import { parseStamp, stamp, type Stamp } from '$lib/timestamps';
 import { inWrite, type ServiceOptions } from './write-as';
 
-/** The functions here that only read. None: every export but this list is a write, and starts with `inWrite()`. */
-export const READS: readonly string[] = [];
+/**
+ * The functions here that only read: the guards of the administrator's two
+ * participant writes, and of the delete and the withdrawal, which their
+ * routes ask before the caller's password (card 2697, Q10, Q29). Every other
+ * export is a write, and starts with `inWrite()`.
+ */
+export const READS: readonly string[] = ['participantAccountGuard', 'participantAddressGuard', 'decisionDeleteGuard', 'decisionWithdrawGuard'];
 
 /** A participant's part in a decision. */
 const ROLES = ['consulted', 'informed'] as const;
@@ -139,18 +182,6 @@ const OPTION_COMMENT_MAX = 2000;
 const PERSONS_ACT = "Responding is a person's act: it cannot be done with an API key";
 /** The 403 for a participant `reachOf` no longer reaches (decision 10, D12). */
 const NO_LONGER_REACHED = 'This decision no longer reaches you as a participant: ask whoever sent it to you';
-
-/** Why a participant cannot be sent an invitation again, in words, for each reason `reachOf` skips them (decision 16). */
-const SKIP_WORDS: Readonly<Record<SkipReason, (name: string) => string>> = {
-	deleted: (name) => `${name} is no longer in the people directory: they cannot be mailed about this decision`,
-	left: (name) => `${name} has left: they cannot be mailed about this decision`,
-	account_not_attached: (name) =>
-		`${name}'s account on this decision is not the one the people directory holds for them: an administrator attaches it before they can be mailed`,
-	account_removed: (name) =>
-		`${name}'s account on this decision has been deleted: an administrator clears it before they can be mailed a personal link`,
-	address_changed: (name) =>
-		`${name}'s address on this decision is not the one the people directory holds for them: an administrator changes it before they can be mailed`
-};
 
 /**
  * Make a draft on a board the caller can edit. `title` text, trimmed, 1 to 200
@@ -260,7 +291,9 @@ export function setDecider(caller: SessionUser | null, at: { decisionId: number 
  * no longer holds the participant role (card 2676, the code review's C1,
  * superseding decision 29's "left as it is"). Including anyone is refused, 409, with
  * no address to make a link on (decision 28), and re-including a
- * participant mailed in the last 10 minutes (decision 31).
+ * participant mailed in the last 10 minutes (decision 31); and 429 where
+ * inviting them would take the caller past their record mail limit (the code
+ * review's part B, S2).
  *
  * 409, naming the person, for a row that would hold the same account as
  * another live row of the decision (decision 29).
@@ -366,6 +399,8 @@ export function setParticipants(
 			[...additions.map((a) => ({ name: a.snapshot.name, userId: a.snapshot.userId })), ...returns.map((r) => ({ name: r.row.name, userId: r.row.userId }))],
 			staying.map((row) => row.userId)
 		);
+		// The code review's part B (S2): each one included or brought back is invited, by the caller.
+		requireRecordMailAllowed(user, additions.length + returns.length, now);
 	}
 
 	for (const row of removals) {
@@ -416,9 +451,10 @@ export function setParticipants(
  * null), `voteMode` (`single` or `score`) and `content` (decision 8's shape,
  * closed at every level). Answers the decision and its live options.
  *
- * On a draft each is saved. A changed `closesAt` must be in the future
- * (400); one equal to the stored value is saved even once it has passed, as
- * opening refuses it anyway (D5). Once opened, only `content` changes: a
+ * On a draft each is saved. A changed `closesAt` must be in the future, and
+ * no more than `CLOSES_WITHIN_DAYS` ahead (400, card 2697 Q25); one equal to
+ * the stored value is saved even once it has passed, as opening refuses it
+ * anyway (D5). Once opened, only `content` changes: a
  * `title`, `closesAt` or `voteMode` equal to the stored value changes
  * nothing, and a changed one is a 409. A revision that is not the
  * decision's as it is now is a 409, asked after the status.
@@ -453,6 +489,8 @@ export function updateDraft(
 	const content = Object.hasOwn(body, 'content') ? readContent(body, stored) : undefined;
 	const now = stamp();
 	if (closesAt !== undefined && closesAt !== null && closesAt !== decision.closesAt && closesAt <= now) error(400, 'closesAt must be in the future');
+	// Card 2697, Q25: as the future rule, asked of a changed value alone (D5).
+	if (closesAt !== undefined && closesAt !== null && closesAt !== decision.closesAt && closesTooFar(closesAt, now)) error(400, CLOSES_TOO_FAR);
 	const live = liveOptionsOf(decision.id);
 	if (content) {
 		const liveIds = new Set(live.map((option) => option.id));
@@ -577,7 +615,8 @@ export function markReviewed(caller: SessionUser | null, at: { decisionId: numbe
  * nothing written or sent (decision 20), for no decider; a board that is gone;
  * a decider who can no longer edit it; no `closes_at` in the future; fewer
  * than two live options; no consulted participant; a participant whose person
- * has left or been deleted; no mail host; no address to make a link on (the
+ * has left or been deleted; a closing time more than `CLOSES_WITHIN_DAYS`
+ * ahead (the code review's part B, S3); no mail host; no address to make a link on (the
  * App URL or `ORIGIN`, decision 28); and two participants whose snapshots,
  * taken again now, hold the same account (decision 29).
  *
@@ -592,18 +631,33 @@ export function markReviewed(caller: SessionUser | null, at: { decisionId: numbe
  * `openFactsOf` reads, and the first is answered (card 2676, decision 11):
  * the readability check on the edit page is the same list, so it cannot say
  * a draft opens when this refuses it.
+ *
+ * Card 2697: `revision` is required (Q1): opening mails everyone the working
+ * copy, so a presser who has not seen a change made since they read it must
+ * not send it. A different one is a 409, asked after the status and before
+ * every other 409. Then the caller's record mail limit (the code review's
+ * part B, S2): 429 where inviting every participant would take them past
+ * `CALLER_MAIL_DAILY_CAP` in 24 hours. Last of all, the caller's publish
+ * limit (Q23): 429 once they have opened or re-published `PUBLISH_DAILY_CAP`
+ * decisions in 24 hours.
  */
-export function openDecision(caller: SessionUser | null, at: { decisionId: number }, body: null, opts: ServiceOptions): Decision {
+export function openDecision(caller: SessionUser | null, at: { decisionId: number }, body: RequestBody, opts: ServiceOptions): Decision {
 	inWrite();
 	const user = requireUser(caller);
 	const { decision } = requireDecision(user, at.decisionId, 'open');
 
+	const revision = readText(body, 'revision', { required: true });
+
 	const now = stamp();
 	requireTransition(decision, 'open', now);
+	requireRevision(decision, revision);
 	const [refusal] = refusalsOf(openFactsOf(decision, now));
 	if (refusal !== undefined) error(409, refusal.words);
 	const options = liveOptionsOf(decision.id);
 	const rows = participantsOf(decision.id);
+	// The code review's part B (S2): every participant counted, as each may be invited.
+	requireRecordMailAllowed(user, rows.length, now);
+	requirePublishAllowed(user, now);
 
 	// Decision 19: the snapshots, taken again now, which decision 29 has been asked of above.
 	const snapshots = rows.map((row) => ({ row, snapshot: snapshotOf(row.personId!)! }));
@@ -649,12 +703,19 @@ export function openDecision(caller: SessionUser | null, at: { decisionId: numbe
  * only when an option would be added or retired (E2, decision 24); when the
  * new version would hold fewer than two live options (decision 20); with no
  * address to make a link on (decision 28); and while any participant it
- * would mail was mailed in the last 10 minutes (decision 31).
+ * would mail was mailed in the last 10 minutes (decision 31); and, the code
+ * review's part B (S3), a closing time more than `CLOSES_WITHIN_DAYS` ahead.
  *
  * An option not yet published is added in the new version; a published one
  * still live but no longer in the working content's `options` is retired in
  * it (decision 24). Writes `published`, `decision_republished` and the live
  * event.
+ *
+ * Card 2697: `revision` is required, as on opening (Q1), and asked after the
+ * status and before every other 409; a participant mailed
+ * `RECORD_MAIL_DAILY_CAP` times in 24 hours is refused as one mailed in the
+ * last 10 minutes is (Q24); and, last of all, the caller's publish limit
+ * (Q23).
  */
 export function republishDecision(caller: SessionUser | null, at: { decisionId: number }, body: RequestBody, opts: ServiceOptions): Decision {
 	inWrite();
@@ -663,12 +724,16 @@ export function republishDecision(caller: SessionUser | null, at: { decisionId: 
 
 	const changeNote = readText(body, 'changeNote', { required: true, trim: true, min: 1, max: 2000 });
 	const askAgain = readBoolean(body, 'askAgain', { required: true });
+	const revision = readText(body, 'revision', { required: true });
 
 	const now = stamp();
 	requireTransition(decision, 'republish', now);
+	requireRevision(decision, revision);
 	if (decision.closesAt === null || decision.closesAt <= now) {
 		error(409, "This decision's closing time has passed: it cannot be re-published until it is extended");
 	}
+	// The code review's part B (S3): as opening refuses it, a personal link must not outlast a year and 90 days.
+	if (closesTooFar(decision.closesAt, now)) error(409, CLOSES_TOO_FAR_TO_REPUBLISH);
 	const number = decision.currentVersion + 1;
 	const live = liveOptionsOf(decision.id);
 	const { adding, retiring } = optionChanges(live, listedOptionIds(decision.workingContent));
@@ -680,10 +745,10 @@ export function republishDecision(caller: SessionUser | null, at: { decisionId: 
 	if (decisionLinkBase() === null) error(409, NO_LINK_ADDRESS);
 	const current = participantsOf(decision.id).filter((row) => row.removedAt === null);
 	const reaches = reachesOf(decision.id, current);
-	requireMailRested(
-		current.filter((row) => 'via' in reaches.get(row.id)!),
-		now
-	);
+	const mailed = current.filter((row) => 'via' in reaches.get(row.id)!);
+	requireMailRested(mailed, now);
+	requireRecordMailAllowed(user, mailed.length, now);
+	requirePublishAllowed(user, now);
 
 	const by = actorFor(user, opts.source);
 	for (const option of adding) db.update(decisionOptions).set({ addedInVersion: number }).where(eq(decisionOptions.id, option.id)).run();
@@ -727,9 +792,9 @@ export function closeDecision(caller: SessionUser | null, at: { decisionId: numb
 
 /**
  * Give an open or closed decision a new closing time, `closesAt`, which must
- * be in the future (400). It is open again, `closed_at` emptied; the
- * `extended { from, to }` event, `decision_extended` and the live event. No
- * mail.
+ * be in the future and no more than `CLOSES_WITHIN_DAYS` ahead (400, card
+ * 2697 Q25). It is open again, `closed_at` emptied; the `extended { from, to
+ * }` event, `decision_extended` and the live event. No mail.
  */
 export function extendDecision(caller: SessionUser | null, at: { decisionId: number }, body: RequestBody, opts: ServiceOptions): Decision {
 	inWrite();
@@ -737,6 +802,7 @@ export function extendDecision(caller: SessionUser | null, at: { decisionId: num
 	const { decision } = requireDecision(user, at.decisionId, 'extend');
 
 	const closesAt = readTimestamp(body, 'closesAt', { required: true, future: true });
+	if (closesTooFar(closesAt, stamp())) error(400, CLOSES_TOO_FAR);
 
 	const now = stamp();
 	requireTransition(decision, 'extend', now);
@@ -756,6 +822,29 @@ export function extendDecision(caller: SessionUser | null, at: { decisionId: num
 }
 
 /**
+ * Every refusal of `withdrawDecision`, in its order, read only (card 2697,
+ * Q10, Q29): the decision looked for and the caller checked (`withdraw`: 401,
+ * 404, 403), `reason` (400), and the status (409). Answers whether the
+ * decision was ever opened (`openedAt` set: open or closed now), the one
+ * thing that decides whether the withdraw route asks for the caller's
+ * password: an opened decision's withdrawal is for good and mails every
+ * participant the caller's words, while a draft's tells nobody.
+ */
+export function decisionWithdrawGuard(
+	caller: SessionUser | null,
+	at: { decisionId: number },
+	body: RequestBody
+): { user: SessionUser; decision: Decision; reason: string; wasOpened: boolean } {
+	const user = requireUser(caller);
+	const { decision } = requireDecision(user, at.decisionId, 'withdraw');
+
+	const reason = readText(body, 'reason', { required: true, trim: true, min: 1, max: 2000 });
+
+	requireTransition(decision, 'withdraw');
+	return { user, decision, reason, wasOpened: decision.openedAt !== null };
+}
+
+/**
  * Withdraw a draft, an open or a closed decision: `reason` (text, trimmed, 1
  * to 2,000). `withdrawn`, `withdrawn_at` and the reason saved, and the
  * `withdrawn` event. Once it has been opened, its participants are mailed
@@ -763,16 +852,16 @@ export function extendDecision(caller: SessionUser | null, at: { decisionId: num
  * reason) and the live event are written while its board is there. With no
  * address to make a link on the withdrawal goes ahead, each mail recorded as
  * not sent (decision 17). A draft: nobody was told, so none of those.
+ *
+ * Every refusal is `decisionWithdrawGuard`'s, asked first; its internal route
+ * asks for the caller's password between the two once the decision has been
+ * opened (card 2697, Q29).
  */
 export function withdrawDecision(caller: SessionUser | null, at: { decisionId: number }, body: RequestBody, opts: ServiceOptions): Decision {
 	inWrite();
-	const user = requireUser(caller);
-	const { decision } = requireDecision(user, at.decisionId, 'withdraw');
-
-	const reason = readText(body, 'reason', { required: true, trim: true, min: 1, max: 2000 });
+	const { user, decision, reason } = decisionWithdrawGuard(caller, at, body);
 
 	const now = stamp();
-	requireTransition(decision, 'withdraw', now);
 	const by = actorFor(user, opts.source);
 	const row = db
 		.update(decisions)
@@ -792,22 +881,97 @@ export function withdrawDecision(caller: SessionUser | null, at: { decisionId: n
 }
 
 /**
- * Delete a draft or a withdrawn decision, and by the cascade every row of it
- * (plan 4.9); any other status is 409 (D7). Once it had been opened,
- * `decision_deleted` and the live event, while its board is there.
+ * Every refusal of `deleteDecision`, in its order, read only (card 2697, Q9,
+ * Q10): the decision looked for and the caller checked (`delete`: 401, 404,
+ * 403) and the status (409). Answers whether the decision holds a record
+ * (`openedAt` set: it was opened, and then withdrawn), the one thing that
+ * decides whether the delete route asks for the caller's password: the
+ * cascade destroys its versions, responses and events for good. A draft never
+ * opened holds none.
  */
-export function deleteDecision(caller: SessionUser | null, at: { decisionId: number }, body: null, opts: ServiceOptions): void {
-	inWrite();
+export function decisionDeleteGuard(caller: SessionUser | null, at: { decisionId: number }): { user: SessionUser; decision: Decision; holdsRecord: boolean } {
 	const user = requireUser(caller);
 	const { decision } = requireDecision(user, at.decisionId, 'delete');
 
+	requireTransition(decision, 'delete');
+	return { user, decision, holdsRecord: decision.openedAt !== null };
+}
+
+/**
+ * Delete a draft or a withdrawn decision, and by the cascade every row of it
+ * (plan 4.9); any other status is 409 (D7). Once it had been opened,
+ * `decision_deleted` and the live event, while its board is there.
+ *
+ * Every refusal is `decisionDeleteGuard`'s, asked first; its internal route
+ * asks for the caller's password between the two where the decision holds a
+ * record (card 2697, Q9).
+ */
+export function deleteDecision(caller: SessionUser | null, at: { decisionId: number }, body: null, opts: ServiceOptions): void {
+	inWrite();
+	const { user, decision } = decisionDeleteGuard(caller, at);
+
 	const now = stamp();
-	requireTransition(decision, 'delete', now);
 	db.delete(decisions).where(eq(decisions.id, decision.id)).run();
 
 	if (decision.openedAt === null || decision.boardId === null) return;
 	logActivity({ action: ACTIONS.decisionDeleted, ...decisionEntry(decision.boardId, `"${decision.title}"`, user, opts) });
 	emit(decision.boardId, 'decision', { decisionId: decision.id, status: decisionStatus(decision, now), boardId: decision.boardId });
+}
+
+/**
+ * Mail the caller a dry run of the decision (card 2697, decision 19, Q1 to
+ * Q3, Q8, Q20, Q26): the invitation as a consulted participant would get it,
+ * quoting the working copy, never a version, to the address the people
+ * directory holds for the caller's account, and to nobody else. `revision`
+ * is required (Q1).
+ *
+ * Refused with nothing written, sent or counted: 409 for a stale revision,
+ * after the status; 409 with no mail host, and with no address to make the
+ * preview's link on; 409 when no person of the directory holds the caller's
+ * account, or the one who does holds another address than the account's, as
+ * an account's address is set by its holder and confirmed by nobody (Q26);
+ * 429 within `DRY_RUN_MIN_MINUTES` of the caller's last dry run on any
+ * decision, and once they have sent `DRY_RUN_DAILY_CAP` in 24 hours, read
+ * from the record; and, last of all, 429 once the allowance held in memory
+ * is spent, which a deletion of the decisions, and their events with them,
+ * does not give back (Q2).
+ *
+ * Writes one `dry_run` event, with no participant and the detail `{}`, by the
+ * caller; no `mail_*` event, link, activity entry or live event. The send
+ * goes after the commit; a refused send gives nothing back.
+ */
+export function dryRunDecision(caller: SessionUser | null, at: { decisionId: number }, body: RequestBody, opts: ServiceOptions): void {
+	inWrite();
+	const user = requireUser(caller);
+	const { decision } = requireDecision(user, at.decisionId, 'dryRun');
+
+	const revision = readText(body, 'revision', { required: true });
+
+	const now = stamp();
+	requireTransition(decision, 'dryRun', now);
+	requireRevision(decision, revision);
+	if (!isSmtpConfigured()) error(409, 'Mail is not set up on this server: a dry run cannot be sent');
+	if (decisionLinkBase() === null) error(409, NO_LINK_ADDRESS);
+	const person = personOfAccount(user.id);
+	const asks = 'A dry run is sent only to the address the people directory holds for you';
+	if (person === null) error(409, `${asks}, and it holds none for your account: an administrator can add you in People`);
+	if (person.email.toLowerCase() !== user.email.toLowerCase()) {
+		error(409, `${asks}, and it is not your account's address: an administrator can make them agree`);
+	}
+
+	// The rest and the cap read their ends as `mailRestOf` does, `later` and `now < from` (the code review's part B, F5, F7).
+	const last = lastDryRunAt(user.id);
+	const rested = last === null ? null : later(last, DRY_RUN_MIN_MINUTES * 60 * 1000);
+	if (rested !== null && now < rested) error(429, `Your last dry run was less than ${DRY_RUN_MIN_MINUTES} minutes ago: the next can be sent from ${rested} UTC`);
+	const capped = (from: Stamp) => `You have sent ${DRY_RUN_DAILY_CAP} dry runs in the last 24 hours: the next can be sent from ${from} UTC`;
+	const fromEvents = dailyCapFrom(dryRunsSince(user.id, dayBefore()), DRY_RUN_DAILY_CAP);
+	if (fromEvents !== null && now < fromEvents) error(429, capped(fromEvents));
+	const took = takeAllowance(`decision-dry-run:${user.id}`, 1, DRY_RUN_DAILY_CAP, DAY_MS);
+	if (!took.taken) error(429, capped(stamp(new Date(Date.now() + took.retryAfterSecs * 1000))));
+
+	appendEvent({ decisionId: decision.id, kind: 'dry_run', detail: {} }, actorFor(user, opts.source));
+	const content = parseWorkingContent(decision.workingContent);
+	queueDryRun(decision, { id: user.id, username: user.username, email: person.email }, { question: content.question, ask: content.ask });
 }
 
 /**
@@ -817,7 +981,8 @@ export function deleteDecision(caller: SessionUser | null, at: { decisionId: num
  * participant not on this decision. 409 for one removed; for each reason
  * `reachOf` skips one, in its words (decision 16); with no address to make a
  * link on (decision 28); and for one mailed in the last 10 minutes
- * (decision 31).
+ * (decision 31). 429 past the caller's record mail limit (the code review's
+ * part B, S2).
  */
 export function resendInvitation(
 	caller: SessionUser | null,
@@ -832,11 +997,12 @@ export function resendInvitation(
 
 	const now = stamp();
 	requireTransition(decision, 'resend', now);
-	if (participant.removedAt !== null) error(409, `${participant.name} has been removed from this decision: they cannot be mailed about it`);
+	if (participant.removedAt !== null) error(409, REMOVED_WORDS(participant.name));
 	const reach = reachesOf(decision.id, [participant]).get(participant.id)!;
 	if ('skip' in reach) error(409, SKIP_WORDS[reach.skip](participant.name));
 	if (decisionLinkBase() === null) error(409, NO_LINK_ADDRESS);
 	requireMailRested([participant], now);
+	requireRecordMailAllowed(user, 1, now);
 
 	const after = touch(decision.id, now);
 	queueRecordMails(after, 'invitation', { by: actorFor(user, opts.source), participants: [participant], resend: true });
@@ -844,8 +1010,46 @@ export function resendInvitation(
 }
 
 /**
+ * Every refusal of `setParticipantAccount`, in its order, read only (card
+ * 2697, Q10): the decision looked for and the caller checked
+ * (`participantAccount`: an administrator; 401, 404, 403), the participant on
+ * it (404), `account` (400), the status (409), and then, for `person`, a
+ * person who is gone or has no account, whose account the row already holds
+ * (its code review's part B, F2), or whose account another live row holds
+ * (409), and for `none`, a row that holds no account and is not read as
+ * having held one (409). The account route asks it before the password, so
+ * that none of these costs a check; the write asks it first, so the rules
+ * are one. Answers what the write needs: the account to copy for `person`.
+ */
+export function participantAccountGuard(
+	caller: SessionUser | null,
+	at: { decisionId: number; participantId: number },
+	body: RequestBody
+): { user: SessionUser; decision: Decision; participant: DecisionParticipant; change: { account: 'person'; accountId: number } | { account: 'none' } } {
+	const user = requireUser(caller);
+	const { decision } = requireDecision(user, at.decisionId, 'participantAccount');
+	const participant = participantOn(decision.id, at.participantId);
+
+	const account = readChoice(body, 'account', { required: true, from: ACCOUNT_CHANGES });
+
+	requireTransition(decision, 'participantAccount');
+	// The rules are decision-links.ts's, which the delivery panel's offers ask too (the code review's part B, F2).
+	if (account === 'person') {
+		const person = participant.personId === null ? undefined : peopleById([participant.personId]).get(participant.personId);
+		const attach = attachRefusal(participant, person, participantsOf(decision.id));
+		if ('refusal' in attach) error(409, attach.refusal);
+		return { user, decision, participant, change: { account, accountId: attach.accountId } };
+	}
+	const cleared = clearRefusal(participant, accountHistory(decision.id).get(participant.id) ?? false);
+	if (cleared !== null) error(409, cleared);
+	return { user, decision, participant, change: { account } };
+}
+
+/**
  * An administrator's change to the account a participant is reached by
- * (decision 14): `account`, `person` or `none`.
+ * (decision 14): `account`, `person` or `none`. Every refusal is
+ * `participantAccountGuard`'s, asked first; its internal route asks for the
+ * caller's password between the two (card 2697, Q9).
  *
  * `person` copies the person's account onto the row, ends their link, and
  * writes `account_attached { userId }`. 409 for a person who is gone or has
@@ -864,29 +1068,15 @@ export function setParticipantAccount(
 	opts: ServiceOptions
 ): DecisionParticipant {
 	inWrite();
-	const user = requireUser(caller);
-	const { decision } = requireDecision(user, at.decisionId, 'participantAccount');
-	const participant = participantOn(decision.id, at.participantId);
+	const { user, decision, participant, change } = participantAccountGuard(caller, at, body);
 
-	const account = readChoice(body, 'account', { required: true, from: ACCOUNT_CHANGES });
-
-	requireTransition(decision, 'participantAccount');
 	const by = actorFor(user, opts.source);
 	const now = stamp();
-	if (account === 'person') {
-		const person = participant.personId === null ? undefined : peopleById([participant.personId]).get(participant.personId);
-		if (!person) error(409, `${participant.name} is no longer in the people directory: there is no account to attach`);
-		if (person.userId === null) error(409, `${person.fullName} has no account in the people directory: there is no account to attach`);
-		const accountId = person.userId;
-		if (participantsOf(decision.id).some((row) => row.id !== participant.id && row.removedAt === null && row.userId === accountId)) {
-			error(409, `${person.fullName} cannot be given that account: another participant of this decision holds it`);
-		}
-		db.update(decisionParticipants).set({ userId: accountId }).where(eq(decisionParticipants.id, participant.id)).run();
+	if (change.account === 'person') {
+		db.update(decisionParticipants).set({ userId: change.accountId }).where(eq(decisionParticipants.id, participant.id)).run();
 		revokeLinks({ participantId: participant.id }, 'account_attached', by);
-		appendEvent({ decisionId: decision.id, kind: 'account_attached', participantId: participant.id, detail: { userId: accountId } }, by);
+		appendEvent({ decisionId: decision.id, kind: 'account_attached', participantId: participant.id, detail: { userId: change.accountId } }, by);
 	} else {
-		const hadAccount = accountHistory(decision.id).get(participant.id) ?? false;
-		if (participant.userId === null && !hadAccount) error(409, `${participant.name} holds no account on this decision: there is nothing to clear`);
 		db.update(decisionParticipants).set({ userId: null }).where(eq(decisionParticipants.id, participant.id)).run();
 		appendEvent({ decisionId: decision.id, kind: 'account_cleared', participantId: participant.id, detail: { userId: participant.userId } }, by);
 	}
@@ -895,26 +1085,49 @@ export function setParticipantAccount(
 }
 
 /**
- * An administrator's change to a participant's address on the decision
- * (decision 15, S7): `email`, an address, kept lower-case. Ends their link
- * and writes `address_changed { from, to }`; sends nothing, as a re-send is
- * an act of its own. The address it has changes nothing.
+ * Every refusal of `changeParticipantAddress`, in its order, read only (card
+ * 2697, Q10, Q22): the decision looked for and the caller checked
+ * (`participantAddress`: an administrator; 401, 404, 403), the participant on
+ * it (404), the status (409), and then three 409s, each in plain words: the
+ * person is no longer in the people directory, has left, or the row already
+ * holds the address the directory holds. It reads no body: the address is
+ * the directory's, never one sent. The address route asks it before the
+ * password; the write asks it first. Answers the address to copy.
  */
-export function changeParticipantAddress(
+export function participantAddressGuard(
 	caller: SessionUser | null,
-	at: { decisionId: number; participantId: number },
-	body: RequestBody,
-	opts: ServiceOptions
-): DecisionParticipant {
-	inWrite();
+	at: { decisionId: number; participantId: number }
+): { user: SessionUser; decision: Decision; participant: DecisionParticipant; email: string } {
 	const user = requireUser(caller);
 	const { decision } = requireDecision(user, at.decisionId, 'participantAddress');
 	const participant = participantOn(decision.id, at.participantId);
 
-	const email = readEmail(body, 'email', { required: true }).toLowerCase();
-
 	requireTransition(decision, 'participantAddress');
-	if (email === participant.email) return participant;
+	const person = participant.personId === null ? undefined : peopleById([participant.personId]).get(participant.personId);
+	const address = addressRefusal(participant, person);
+	if ('refusal' in address) error(409, address.refusal);
+	return { user, decision, participant, email: address.email };
+}
+
+/**
+ * An administrator's "Use the directory's address" (card 2697, Q22; decision
+ * 15, S7): the participant's address on the decision becomes the one the
+ * people directory holds for their person now, as attaching an account copies
+ * the person's account. No address is sent: one the directory does not hold
+ * would make `reachOf` skip the participant for good. Ends their link and
+ * writes `address_changed { from, to }`; sends nothing, as a re-send is an act
+ * of its own. Every refusal is `participantAddressGuard`'s, asked first; its
+ * internal route asks for the caller's password between the two (Q9).
+ */
+export function changeParticipantAddress(
+	caller: SessionUser | null,
+	at: { decisionId: number; participantId: number },
+	body: null,
+	opts: ServiceOptions
+): DecisionParticipant {
+	inWrite();
+	const { user, decision, participant, email } = participantAddressGuard(caller, at);
+
 	const by = actorFor(user, opts.source);
 	db.update(decisionParticipants).set({ email }).where(eq(decisionParticipants.id, participant.id)).run();
 	revokeLinks({ participantId: participant.id }, 'participant_address', by);
@@ -1240,21 +1453,69 @@ function requireOneRowPerAccount(coming: { name: string; userId: number | null }
 
 /**
  * A 409 for a participant mailed by the record less than
- * `RECORD_MAIL_MIN_MINUTES` ago, saying from when, in UTC, they may be mailed
- * again (decision 31).
+ * `RECORD_MAIL_MIN_MINUTES` ago, or `RECORD_MAIL_DAILY_CAP` times in the last
+ * 24 hours (card 2697, Q24), saying from when, in UTC, they may be mailed
+ * again (decision 31): `mailRestOf`, the rule the editor's delivery panel
+ * asks too. Read from the record alone: a participant's events go only with
+ * their decision, whose rows can then no longer be mailed.
  */
 function requireMailRested(rows: DecisionParticipant[], now: Stamp): void {
 	if (rows.length === 0) return;
-	const last = lastMailAt(rows.map((row) => row.id));
+	const ids = rows.map((row) => row.id);
+	const last = lastMailAt(ids);
+	const recent = mailsSince(ids, dayBefore());
 	for (const row of rows) {
-		const at = last.get(row.id);
-		const date = at === undefined ? null : parseStamp(at);
-		if (date === null) continue;
-		const from = stamp(new Date(date.getTime() + RECORD_MAIL_MIN_MINUTES * 60 * 1000));
-		if (now < from) {
-			error(409, `${row.name} was mailed about this decision less than ${RECORD_MAIL_MIN_MINUTES} minutes ago: they can be mailed again from ${from} UTC`);
-		}
+		const held = mailRestOf(row.name, last.get(row.id), recent.get(row.id) ?? [], now);
+		if (held !== null) error(409, held.words);
 	}
+}
+
+/**
+ * A 429 once the caller has opened or re-published `PUBLISH_DAILY_CAP`
+ * decisions in the last 24 hours (card 2697, Q23), each of which mails every
+ * participant: read from their `published` events across decisions, and
+ * then, last of all, from an allowance held in memory, which a deletion of
+ * the decisions, and their events with them, does not give back. Asked after
+ * every other refusal, so a refused publish takes nothing.
+ */
+function requirePublishAllowed(user: SessionUser, now: Stamp): void {
+	const words = (from: Stamp) =>
+		`You have opened or re-published ${PUBLISH_DAILY_CAP} decisions in the last 24 hours: the next can be sent from ${from} UTC`;
+	const fromEvents = dailyCapFrom(publishesSince(user.id, dayBefore()), PUBLISH_DAILY_CAP);
+	// As `mailRestOf` compares (the code review's part B, F7): from that moment on, it may.
+	if (fromEvents !== null && now < fromEvents) error(429, words(fromEvents));
+	const took = takeAllowance(`decision-publish:${user.id}`, 1, PUBLISH_DAILY_CAP, DAY_MS);
+	if (!took.taken) error(429, words(stamp(new Date(Date.now() + took.retryAfterSecs * 1000))));
+}
+
+/**
+ * A 429 when `coming` more record mails would take the caller past
+ * `CALLER_MAIL_DAILY_CAP` in the last 24 hours, across every decision (card
+ * 2697's code review, part B, S2), saying from when, in UTC, they would fit:
+ * read from the mail events the caller's writes have recorded, and then from
+ * an allowance held in memory, which a deletion of the decisions, and their
+ * events with them, does not give back. `coming` is the participants the
+ * write would mail. Asked after the write's other refusals, so that a write
+ * they refuse takes nothing; on opening and re-publishing, before the publish
+ * limit, which stays the last thing asked. A publish that limit then refuses
+ * has taken from this allowance: it errs towards less mail.
+ */
+function requireRecordMailAllowed(user: SessionUser, coming: number, now: Stamp): void {
+	if (coming === 0) return;
+	if (coming > CALLER_MAIL_DAILY_CAP) {
+		error(429, `This would mail ${coming} participants: one account may cause at most ${CALLER_MAIL_DAILY_CAP} decision mails in 24 hours`);
+	}
+	const words = (from: Stamp) =>
+		`This would take your decision mail past ${CALLER_MAIL_DAILY_CAP} in the last 24 hours: it can be sent from ${from} UTC`;
+	const fromEvents = dailyCapFrom(recordMailsSince(user.id, dayBefore()), CALLER_MAIL_DAILY_CAP, coming);
+	if (fromEvents !== null && now < fromEvents) error(429, words(fromEvents));
+	const took = takeAllowance(`decision-record-mail:${user.id}`, coming, CALLER_MAIL_DAILY_CAP, DAY_MS);
+	if (!took.taken) error(429, words(stamp(new Date(Date.now() + took.retryAfterSecs * 1000))));
+}
+
+/** The moment 24 hours ago, from which the daily caps count. */
+function dayBefore(): Stamp {
+	return stamp(new Date(Date.now() - DAY_MS));
 }
 
 /** What a version copies of the working content (the code review's C3): these keys, as the content holds them. */

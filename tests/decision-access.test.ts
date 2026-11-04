@@ -183,7 +183,9 @@ describe('DECISION_RULES', () => {
 			rule: ['decider'],
 			record: ['admin', 'decider'],
 			// Card 2677 (decision 10).
-			respond: ['participant']
+			respond: ['participant'],
+			// Card 2697 (decision 5).
+			dryRun: ['author', 'decider']
 		});
 		expect(DRAFT_VIEWERS).toEqual(['admin', 'author', 'decider', 'boardOwner']);
 	});

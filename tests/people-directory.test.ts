@@ -13,9 +13,10 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sqlite } from '$lib/server/db';
-import type { SessionUser } from '$lib/server/auth';
+import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
+import { STEP_UP_FIELD } from '$lib/server/step-up';
 import { api, type ApiResult } from './helpers/api';
-import { addBoardMember, makeBoard, makeTeam, makeUser, resetDb, shareBoardWithTeam } from './helpers/fixtures';
+import { FIXTURE_PASSWORD, addBoardMember, makeBoard, makeSession, makeTeam, makeUser, resetDb, shareBoardWithTeam } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 
 type Row = Record<string, unknown>;
@@ -40,8 +41,25 @@ afterEach(() => {
 	else process.env.LOG_LEVEL = level;
 });
 
-const send = (method: 'POST' | 'PUT' | 'DELETE', path: string, body?: unknown): Promise<ApiResult> =>
-	api(method, path, { user: admin, body });
+/**
+ * A request as the administrator. Every write of a person may carry an
+ * address or an account, which asks for the caller's own password (card 2697,
+ * Q21; its code review's part B, S1, for the add, the delete and Add from
+ * accounts): it is sent from a real session of theirs, made for it and ended
+ * after it, so that the rows it leaves are the handler's alone, with their
+ * password added, as the access table's `call` sends one. The groups' routes
+ * ask for none. The claims are unchanged.
+ */
+async function send(method: 'POST' | 'PUT' | 'DELETE', path: string, body?: unknown): Promise<ApiResult> {
+	const ofPerson = path === '/api/people' || path.startsWith('/api/people/');
+	if (!ofPerson || (body !== undefined && (body === null || typeof body !== 'object'))) return api(method, path, { user: admin, body });
+	const token = makeSession(admin);
+	try {
+		return await api(method, path, { user: admin, body: { [STEP_UP_FIELD]: FIXTURE_PASSWORD, ...(body ?? {}) }, headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` } });
+	} finally {
+		sqlite.prepare('DELETE FROM sessions WHERE id = ?').run(token);
+	}
+}
 
 const personRow = (id: number) => sqlite.prepare('SELECT * FROM people WHERE id = ?').get(id) as Row | undefined;
 const groupsOf = (personId: number) =>

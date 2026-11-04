@@ -2576,7 +2576,7 @@ describe('the security headers', () => {
 	// `handle` calls last; the page's own answers through the gate are case 22
 	// in decision-participation.test.ts. Each is set over whatever the answer
 	// carries.
-	it('give a personal link’s routes no referrer, no index and no cache, and a decision’s own page and routes no cache, replacing the answer’s own (21)', () => {
+	it('give a personal link’s routes no referrer, no index and no cache, a decision’s own page and routes no cache, and its authoring pages no cache and no index, replacing the answer’s own (21)', () => {
 		const LINKED = { ...FIVE, 'referrer-policy': 'no-referrer', 'x-robots-tag': 'noindex, nofollow', 'cache-control': 'no-store' };
 		const OWN = { ...FIVE, 'x-robots-tag': null, 'cache-control': 'no-store' };
 		const UNCHANGED = { ...FIVE, 'x-robots-tag': null, 'cache-control': null };
@@ -2612,6 +2612,13 @@ describe('the security headers', () => {
 		for (const routeId of ['/decisions/[id]', '/api/decisions/[id]/responses', '/api/decisions/[id]/seen']) {
 			expect(theseOf(secured(new Response('x'), routeId)), routeId).toEqual(OWN);
 			expect(theseOf(secured(new Response('x', { headers: { 'Cache-Control': 'max-age=60' } }), routeId)), `${routeId}, cached`).toEqual(OWN);
+		}
+		// Card 2697 (Q12): the authoring pages show what has not been published: cached and indexed nowhere, with no referrer rule of their own.
+		const UNPUBLISHED = { ...FIVE, 'x-robots-tag': 'noindex, nofollow', 'cache-control': 'no-store' };
+		for (const routeId of ['/decisions/[id]/preview', '/decisions/[id]/edit', '/board/[id]/decisions']) {
+			expect(theseOf(secured(new Response('x'), routeId)), routeId).toEqual(UNPUBLISHED);
+			const cached = secured(new Response('x', { headers: { 'Cache-Control': 'max-age=60', 'X-Robots-Tag': 'all' } }), routeId);
+			expect(theseOf(cached), `${routeId}, cached`).toEqual(UNPUBLISHED);
 		}
 		expect(theseOf(secured(new Response('x'), '/board/[id]'))).toEqual(UNCHANGED);
 		expect(theseOf(secured(new Response('x'), null))).toEqual(UNCHANGED);

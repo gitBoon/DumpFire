@@ -70,6 +70,8 @@
 		putBack?: string;
 		/** Request links the import replaced, when there were any (card 2158). */
 		requestLinks?: string;
+		/** Personal decision links the import cancelled, when there were any (card 2697, Q15). */
+		decisionLinks?: string;
 		/** Who the superadmin is now: who can sign in to export, import or reset again. */
 		superadmin?: string;
 		/** Every table restored, with its rows, for whoever wants all of it. */
@@ -96,6 +98,7 @@
 		settingsRemoved?: string;
 		attachmentsPutBack?: number;
 		requestLinksReplaced?: number;
+		decisionLinksCleared?: number;
 		superadmins?: string[];
 	}) {
 		const restored = result.restored ?? {};
@@ -125,6 +128,9 @@
 		// Every request is given a new link by an import (card 2158), so a link
 		// mailed before it no longer works: said beside the files put back.
 		const links = typeof result.requestLinksReplaced === 'number' ? result.requestLinksReplaced : 0;
+		// And every personal decision link is cancelled (card 2697, Q15): its
+		// holder needs a new one, which Resend sends.
+		const decisionLinks = typeof result.decisionLinksCleared === 'number' ? result.decisionLinksCleared : 0;
 		return {
 			detail: parts.length > 0 ? `${from}: ${parts.join(', ')}.` : `${from}. It held no rows.`,
 			workingCopy: result.workingCopy,
@@ -154,6 +160,12 @@
 				links > 0
 					? `${count(links)} request ${links === 1 ? 'link' : 'links'} replaced: a link mailed before this restore no ` +
 						'longer works, and its requester can have a new one sent from the page it opens.'
+					: undefined,
+			decisionLinks:
+				decisionLinks > 0
+					? `${count(decisionLinks)} personal decision ${decisionLinks === 1 ? 'link' : 'links'} cancelled: a link mailed before ` +
+						"this restore no longer works, and the decision's author, decider or an administrator can send its holder a new one " +
+						'with Resend.'
 					: undefined,
 			tables: Object.entries(restored)
 				.filter(([, rows]) => rows > 0)
@@ -496,6 +508,9 @@
 			{/if}
 			{#if importReport.requestLinks}
 				<p class="import-report-detail">{importReport.requestLinks}</p>
+			{/if}
+			{#if importReport.decisionLinks}
+				<p class="import-report-detail">{importReport.decisionLinks}</p>
 			{/if}
 			{#if importReport.workingCopy}
 				<p class="import-report-detail">{importReport.workingCopy}</p>

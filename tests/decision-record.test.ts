@@ -442,7 +442,9 @@ describe('the shown status (E10)', () => {
 			participantAddress: ['open', 'closed'],
 			rule: ['open', 'closed'],
 			// Card 2677 (decision 12).
-			respond: ['open']
+			respond: ['open'],
+			// Card 2697 (decision 5).
+			dryRun: ['draft', 'open', 'closed']
 		});
 
 		const pastItsDeadline = { status: 'open', closesAt: '2026-11-01 00:00:00' };

@@ -93,6 +93,7 @@ import {
 	peopleGroups,
 	reportSchedules,
 	sessions,
+	settings,
 	taskRequests,
 	teamMembers,
 	tokenUsage,
@@ -780,6 +781,8 @@ const aDraftOfEditor = (w: World): void => {
 	decisionId = makeDecision({ board: w.A.board, author: w.editor, decider: w.editor, title: `${MARK} draft decision` }).id;
 	decisionPersonId = makePerson({ fullName: 'Pat Doe' }).id;
 };
+/** The participant of `anOpenDecisionOfEditor`, whose path the participant routes name (card 2697). */
+let decisionParticipantId: number | undefined;
 const anOpenDecisionOfEditor = (w: World): void => {
 	const decision = makeDecision({
 		board: w.A.board,
@@ -792,11 +795,64 @@ const anOpenDecisionOfEditor = (w: World): void => {
 		openedAt: '2026-11-01 09:00:00'
 	});
 	const person = makePerson({ fullName: 'Pat Doe' });
-	makeParticipant(decision, { person, role: 'consulted' });
+	decisionParticipantId = makeParticipant(decision, { person, role: 'consulted' }).id;
 	decisionId = decision.id;
 	decisionPersonId = person.id;
 };
 const revisionOfTheDecision = (): string => (decisionId === undefined ? '' : revisionNow(decisionId));
+/**
+ * Card 2697, B2b: `anOpenDecisionOfEditor`, its participant's person then
+ * given an account and a new address in the people directory, which the row
+ * does not hold: what Attach account and Use the directory's address copy.
+ */
+const aParticipantBehindTheDirectory = (w: World): void => {
+	anOpenDecisionOfEditor(w);
+	const account = makeUser({ username: 'pat-doe-account' });
+	db.update(people).set({ userId: account.id, email: 'pat.doe.moved@example.test' }).where(eq(people.id, decisionPersonId!)).run();
+};
+
+/**
+ * Card 2697: what opening and a dry run need besides a decision of
+ * `editor`'s: mail set up and an App URL to make links on.
+ * `aReadyDraftOfEditor` is a draft that opens, a closing time ahead, two
+ * options and one consulted participant, with `editor` in the people
+ * directory at their account's address, the one a dry run may go to (Q26);
+ * `anOpenDecisionToRepublish` is open as version 1 with two options
+ * published in it. The beforeEach empties the allowances (`resetAllRateLimits`).
+ */
+const withMailAndLinks = (): void => {
+	makeSmtp();
+	db.insert(settings).values({ key: 'app_url', value: 'https://kanban.example.test' }).run();
+};
+const aReadyDraftOfEditor = (w: World): void => {
+	withMailAndLinks();
+	// Within the year opening allows (card 2697's code review, part B, S3).
+	const decision = makeDecision({ board: w.A.board, author: w.editor, decider: w.editor, title: `${MARK} ready decision`, closesAt: aMonthAhead() });
+	makeOption(decision, { label: 'A', position: 0 });
+	makeOption(decision, { label: 'B', position: 1 });
+	makeParticipant(decision, { person: makePerson({ fullName: 'Pat Doe' }), role: 'consulted' });
+	makePerson({ fullName: 'Ed Itor', email: w.editor.email, user: w.editor });
+	decisionId = decision.id;
+};
+const anOpenDecisionToRepublish = (w: World): void => {
+	withMailAndLinks();
+	const decision = makeDecision({
+		board: w.A.board,
+		author: w.editor,
+		decider: w.editor,
+		title: `${MARK} open decision`,
+		status: 'open',
+		// Within the year re-publishing allows (S3).
+		closesAt: aMonthAhead(),
+		currentVersion: 1,
+		openedAt: '2026-11-01 09:00:00'
+	});
+	makeOption(decision, { label: 'A', position: 0, addedInVersion: 1 });
+	makeOption(decision, { label: 'B', position: 1, addedInVersion: 1 });
+	decisionId = decision.id;
+};
+/** A closing time a month ahead: in the future, and within the year a closing time may be set (Q25). */
+const aMonthAhead = (): string => stamp(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000));
 
 /**
  * An open decision on board A, published as version 1 with one option, on
@@ -1634,6 +1690,71 @@ const TABLE: Record<string, Case | Case[]> = {
 		['owner', 'admin', 'chief', 'outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'],
 		() => json(`/api/decisions/${decisionId}/reviewed`, { sections: 'all', revision: revisionOfTheDecision() }),
 		{ setup: aDraftOfEditor }
+	),
+
+	// ── Opening and the lifecycle (card 2697, decision 27) ────────────────
+	// `own`, as above. Opening, re-publishing, closing and the dry run are the
+	// author's and the decider's alone, and extending the decider's: a board
+	// owner and an administrator are refused them. Withdrawing is an
+	// administrator's too, and so a board owner alone is refused it.
+	'POST /api/decisions/[id]/open': own(
+		'editor',
+		['owner', 'admin', 'chief', 'outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'],
+		() => json(`/api/decisions/${decisionId}/open`, { revision: revisionOfTheDecision() }),
+		{ setup: aReadyDraftOfEditor }
+	),
+	'POST /api/decisions/[id]/republish': own(
+		'editor',
+		['owner', 'admin', 'chief', 'outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'],
+		() => json(`/api/decisions/${decisionId}/republish`, { changeNote: 'The dates moved.', askAgain: true, revision: revisionOfTheDecision() }),
+		{ setup: anOpenDecisionToRepublish }
+	),
+	// Close reads no body (Q17).
+	'POST /api/decisions/[id]/close': own(
+		'editor',
+		['owner', 'admin', 'chief', 'outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'],
+		() => `/api/decisions/${decisionId}/close`,
+		{ setup: anOpenDecisionOfEditor }
+	),
+	'POST /api/decisions/[id]/extend': own(
+		'editor',
+		['owner', 'admin', 'chief', 'outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'],
+		() => json(`/api/decisions/${decisionId}/extend`, { closesAt: aMonthAhead() }),
+		{ setup: anOpenDecisionOfEditor }
+	),
+	'POST /api/decisions/[id]/withdraw': own(
+		'editor',
+		['owner', 'outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'],
+		() => json(`/api/decisions/${decisionId}/withdraw`, { reason: 'No longer needed.' }),
+		{ setup: aDraftOfEditor }
+	),
+	'POST /api/decisions/[id]/dry-run': own(
+		'editor',
+		['owner', 'admin', 'chief', 'outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'],
+		() => json(`/api/decisions/${decisionId}/dry-run`, { revision: revisionOfTheDecision() }),
+		{ setup: aReadyDraftOfEditor }
+	),
+	// An invitation sent again is an administrator's too, and reads no body (Q17).
+	'POST /api/decisions/[id]/participants/[participantId]/resend': own(
+		'editor',
+		['owner', 'outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'],
+		() => `/api/decisions/${decisionId}/participants/${decisionParticipantId}/resend`,
+		{
+			setup: (w) => {
+				anOpenDecisionOfEditor(w);
+				withMailAndLinks();
+			}
+		}
+	),
+	// The administrator's own (card 2697, B2b), each asking for the password, which `call` adds.
+	// The participant's person holds an account the row does not, and an address the row does not.
+	'PUT /api/decisions/[id]/participants/[participantId]/account': admin(
+		() => json(`/api/decisions/${decisionId}/participants/${decisionParticipantId}/account`, { account: 'person' }),
+		{ setup: aParticipantBehindTheDirectory }
+	),
+	'PUT /api/decisions/[id]/participants/[participantId]/address': admin(
+		() => json(`/api/decisions/${decisionId}/participants/${decisionParticipantId}/address`, {}),
+		{ setup: aParticipantBehindTheDirectory }
 	),
 
 	// ── A participant's part (card 2677, decisions 10 to 14, D11) ────────
@@ -4976,6 +5097,8 @@ describe('every page load, to a caller who cannot open a board (card 2130)', () 
 		'page /board/[id]/decisions': { paths: (w) => [w.A.board.id, w.B.board.id, hidden.board.id].map((id) => `/board/${id}/decisions`) },
 		'page /burndown': { paths: (w) => ['/burndown', `/burndown?boardCategoryId=${w.groupingOfA.id}`] },
 		'page /decisions/[id]/edit': { paths: () => [decisionIds.openA, decisionIds.openB, decisionIds.draftA].map((id) => `/decisions/${id}/edit`) },
+		// A decision previewed as a participant (card 2697, Q4 to Q7): no address to anyone, an administrator too.
+		'page /decisions/[id]/preview': { paths: () => [decisionIds.openA, decisionIds.openB, decisionIds.draftA].map((id) => `/decisions/${id}/preview`) },
 		// A decision's page (card 2677): to `viewer`, a participant of open A, their own part and no one else's (Pat Page's `MARK_B`).
 		'page /decisions/[id]': { paths: () => [decisionIds.openA, decisionIds.openB, decisionIds.draftA].map((id) => `/decisions/${id}`) },
 		'page /decision-link/[token]': { none: 'gives one decision, to the holder of its link, whoever is signed in' },
@@ -5040,6 +5163,11 @@ describe('every page load, to a caller who cannot open a board (card 2130)', () 
 		expect(listed).not.toContain(MARK_B);
 		expect(JSON.stringify(await pageData(`/board/${w.A.board.id}/decisions`, 'editor'))).toContain(`${MARK_B} draft of board A`);
 		expect(JSON.stringify(await pageData(`/decisions/${decisionIds.openA}/edit`, 'admin'))).toContain('pat.page@example.test');
+		// The preview reaches its author, and gives an administrator no address (card 2697, Q5).
+		expect(JSON.stringify(await pageData(`/decisions/${decisionIds.openA}/preview`, 'editor'))).toContain(`${MARK} open decision`);
+		const previewed = JSON.stringify(await pageData(`/decisions/${decisionIds.openA}/preview`, 'admin'));
+		expect(previewed).toContain('Pat Page');
+		expect(previewed).not.toMatch(/@example\.test/);
 	});
 
 	describe('the sub-board, where its card is shown', () => {

@@ -4,15 +4,28 @@
   linked to, and their groups.
 
   Drawn by /admin/people. Saves through POST /api/people or PUT
-  /api/people/:id, says a refusal in the server's words (`sent`), and reads
-  the page's data again once saved.
+  /api/people/:id, says a refusal in the server's words (`sentAsking`), and
+  reads the page's data again once saved.
+
+  A person's address and account decide where a decision's record mail and
+  personal links go, so the server asks for the caller's own password with a
+  change of either (card 2697, Q21), and with every new person, who is always
+  given an address (the code review's part B, S1). A change sends `email` and
+  `userId` only when they change (the address compared trimmed and in lower
+  case, as it is stored), and with them `currentPassword`, from a field shown
+  only then; a rename, a job title or groups send neither and ask nothing. A
+  new person sends every field and the password. A refusal of the password
+  keeps the dialog open, its words beside the field and the field cleared to
+  type again.
 -->
 <script lang="ts">
 	import type { PageData } from '../../../../routes/admin/people/$types';
 	import { untrack } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
-	import { sent, showToast } from '$lib/admin/send';
+	import { sentAsking, showToast } from '$lib/admin/send';
+	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
 	import { holdFocus } from '$lib/dialog-focus';
+	import { ASKS_FOR_PASSWORD } from '$lib/step-up-words';
 
 	type DirectoryPerson = PageData['people'][number];
 
@@ -41,7 +54,22 @@
 	/** The accounts this person may be linked to: those no other person has, and their own. */
 	let linkable = $derived(data.accounts.filter((account) => account.personId === null || account.personId === start?.id));
 
-	let canSave = $derived(fullName.trim() !== '' && email.trim() !== '');
+	/** The caller's own password, asked for with a change of address or account: held here alone, and cleared once sent. */
+	let currentPassword = $state('');
+	/** The server's refusal of the last password sent, shown beside the field. */
+	let refusal = $state<string | null>(null);
+
+	/** A new person sends every field; a change sends the address and the account only where they change. */
+	let emailChanged = $derived(start === null || email.trim().toLowerCase() !== start.email.toLowerCase());
+	let accountChanged = $derived(start === null || userId !== (start.userId != null ? String(start.userId) : ''));
+	/**
+	 * Whether the server will ask for the password: a new person, who is given
+	 * an address (card 2697's code review, part B, S1), or a change of a
+	 * person's address or account (Q21).
+	 */
+	let asks = $derived(start === null || emailChanged || accountChanged);
+
+	let canSave = $derived(fullName.trim() !== '' && email.trim() !== '' && (!asks || currentPassword !== ''));
 
 	function toggleGroup(groupId: number, on: boolean) {
 		groupIds = on ? [...groupIds, groupId] : groupIds.filter((id) => id !== groupId);
@@ -50,24 +78,32 @@
 	async function save() {
 		if (!canSave || saving) return;
 		saving = true;
+		const password = currentPassword;
+		currentPassword = '';
+		refusal = null;
 		try {
-			const body = {
-				fullName: fullName.trim(),
-				email: email.trim(),
-				jobTitle: jobTitle.trim(),
-				userId: userId === '' ? null : Number(userId),
-				// Only groups still in the page's data: one another administrator deleted is dropped, not sent to be refused.
-				groupIds: groupIds.filter((id) => data.groups.some((g) => g.id === id))
-			};
-			const res = await sent(
+			const res = await sentAsking(
 				() =>
 					fetch(start ? `/api/people/${start.id}` : '/api/people', {
 						method: start ? 'PUT' : 'POST',
 						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify(body)
+						body: JSON.stringify({
+							fullName: fullName.trim(),
+							email: emailChanged ? email.trim() : undefined,
+							jobTitle: jobTitle.trim(),
+							userId: accountChanged ? (userId === '' ? null : Number(userId)) : undefined,
+							// Only groups still in the page's data: one another administrator deleted is dropped, not sent to be refused.
+							groupIds: groupIds.filter((id) => data.groups.some((g) => g.id === id)),
+							currentPassword: asks ? password : undefined
+						})
 					}),
 				start ? 'The person was not saved' : 'The person was not added'
 			);
+			if (typeof res === 'string') {
+				// A refusal of the password itself: the dialog stays, the field cleared to type again.
+				refusal = res;
+				return;
+			}
 			if (!res) return;
 			await invalidateAll();
 			showToast(start ? 'Person saved' : 'Person added');
@@ -122,6 +158,14 @@
 					</div>
 				{/if}
 			</fieldset>
+			{#if asks}
+				<!-- Card 2697 (Q21, and the code review's part B, S1): an address or an account decides where decision mail and personal links go. -->
+				<p class="dialog-hint">
+					{start ? "A new address or account changes where this person's decision mail and personal links go." : "This person's address and account decide where their decision mail and personal links go."}
+					{ASKS_FOR_PASSWORD}
+				</p>
+				<CurrentPasswordField bind:value={currentPassword} {refusal} readonly={saving} onEnter={save} />
+			{/if}
 		</div>
 		<div class="modal-actions">
 			<button class="btn-ghost" onclick={onClose}>Cancel</button>

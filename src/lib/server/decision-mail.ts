@@ -45,6 +45,11 @@
  * in the heading too, as `emailTemplate` puts its title in as given (decision
  * 30). A subject is plain text, and never holds a token.
  *
+ * Card 2697 adds the dry run (`queueDryRun`), which is no record mail: it
+ * goes to the caller alone and records nothing but the service's `dry_run`
+ * event; and the volume limits' constants and the one rule of when a
+ * participant may be mailed again (`mailRestOf`).
+ *
  * Not a service: plain functions with no caller.
  */
 import { and, asc, eq, isNull } from 'drizzle-orm';
@@ -57,6 +62,7 @@ import { hashOf, issueLink, linkUrl, reachOf } from './decision-links';
 import { linkBaseUrl, trySendEmail } from './email';
 import { createLogger } from './logger';
 import { emailTemplate } from './notifications';
+import { parseStamp, stamp, type Stamp } from '$lib/timestamps';
 
 const log = createLogger('DECISIONS');
 
@@ -66,8 +72,84 @@ export type RecordMail = 'invitation' | 'asked_again' | 'told_of_change' | 'with
 /** How long after a record-bearing mail the same participant may be mailed again by a re-send, a re-publish or a re-inclusion (decision 31). */
 export const RECORD_MAIL_MIN_MINUTES = 10;
 
-/** The event each mail writes for its participant. */
-const MAIL_EVENT: Readonly<Record<RecordMail, EventKind>> = {
+/**
+ * The most record-bearing mails one participant is sent about one decision
+ * in 24 hours by a re-send, a re-publish or a re-inclusion (card 2697, Q24):
+ * an invitation, two re-publishes and two re-sends. The withdrawal and the
+ * ruling are not held to it: each is sent once, and must be.
+ */
+export const RECORD_MAIL_DAILY_CAP = 5;
+
+/** How long after one dry run the same account may send the next, on any decision (card 2697, decision 19). */
+export const DRY_RUN_MIN_MINUTES = 10;
+
+/** The most dry runs one account sends in 24 hours, across decisions (card 2697, decision 19, Q2). */
+export const DRY_RUN_DAILY_CAP = 20;
+
+/** The most decisions one account opens or re-publishes in 24 hours, each mailing every participant (card 2697, Q23). */
+export const PUBLISH_DAILY_CAP = 10;
+
+/**
+ * The most record mails one account causes in 24 hours, across every
+ * decision (card 2697's code review, part B, S2): the invitations its opening,
+ * its re-sends and its including or re-including people send, and the mails
+ * its re-publishing sends. `RECORD_MAIL_DAILY_CAP` holds each participant of
+ * one decision; this holds the caller across decisions, so that no account
+ * can mail without end by spreading its mail over many. A write that would
+ * pass it is refused whole, 429, and sends nothing. The withdrawal and the
+ * ruling are not held to it, nor counted: each is sent once, and must be.
+ */
+export const CALLER_MAIL_DAILY_CAP = 500;
+
+/** A day, in milliseconds: the window of each daily cap. */
+export const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** `moment` moved on by `ms`, in the stored form; null when it is not a moment. Every rest and cap here reads its end so (the code review's part B, F5). */
+export function later(moment: Stamp, ms: number): Stamp | null {
+	const date = parseStamp(moment);
+	return date === null ? null : stamp(new Date(date.getTime() + ms));
+}
+
+/**
+ * The moment a daily cap of `cap` lets `coming` more through (one if not
+ * said), given the moments counted against it in the last 24 hours, oldest
+ * first: the moment the oldest that keeps the count with them over the cap is
+ * a day old. Null while they fit. `coming` more than `cap` never fits: the
+ * caller refuses that first. Each caller compares the answer with now as
+ * `mailRestOf` does, `now < from` (the code review's part B, F7), so a moment
+ * exactly a day old no longer counts.
+ */
+export function dailyCapFrom(moments: readonly Stamp[], cap: number, coming = 1): Stamp | null {
+	if (moments.length + coming <= cap) return null;
+	const oldest = moments[Math.max(0, moments.length + coming - cap - 1)];
+	return (oldest === undefined ? null : later(oldest, DAY_MS)) ?? stamp(new Date(Date.now() + DAY_MS));
+}
+
+/**
+ * Whether a participant may be mailed by the record again now (decision 31,
+ * card 2697 Q24), in one rule that the service's refusal and the editor's
+ * delivery panel both ask, so the two cannot disagree: null when they may;
+ * otherwise the 409's words and the moment, in UTC, from which they may.
+ * `lastAt` is their latest record-bearing mail, `recent` the moments of those
+ * in the last 24 hours, oldest first. The 10-minute rest is asked first.
+ */
+export function mailRestOf(name: string, lastAt: Stamp | undefined, recent: readonly Stamp[], now: Stamp): { words: string; from: Stamp } | null {
+	const rested = lastAt === undefined ? null : later(lastAt, RECORD_MAIL_MIN_MINUTES * 60 * 1000);
+	if (rested !== null && now < rested) {
+		return { words: `${name} was mailed about this decision less than ${RECORD_MAIL_MIN_MINUTES} minutes ago: they can be mailed again from ${rested} UTC`, from: rested };
+	}
+	const capped = dailyCapFrom(recent, RECORD_MAIL_DAILY_CAP);
+	if (capped !== null && now < capped) {
+		return {
+			words: `${name} has been mailed about this decision ${RECORD_MAIL_DAILY_CAP} times in the last 24 hours: they can be mailed again from ${capped} UTC`,
+			from: capped
+		};
+	}
+	return null;
+}
+
+/** The event each mail writes for its participant; the delivery panel reads it back (`MAIL_OF_EVENT`, the code review's part B, F5). */
+export const MAIL_EVENT: Readonly<Record<RecordMail, EventKind>> = {
 	invitation: 'invited',
 	asked_again: 'asked_again',
 	told_of_change: 'told_of_change',
@@ -161,8 +243,8 @@ export function queueRecordMails(decision: Decision, mail: RecordMail, opts: Rec
 		const eventId = appendEvent({ decisionId: decision.id, kind, participantId: p.id, versionNumber, detail }, opts.by);
 		batch.push({
 			to: p.email,
-			subject: subjectOf(decision, mail, p),
-			html: emailTemplate(escapeHtml(decision.title), bodyOf(decision, mail, p, link, content, opts)),
+			subject: subjectOf(decision, mail, p.role),
+			html: emailTemplate(escapeHtml(decision.title), bodyOf(decision, mail, p.role, link, content, opts)),
 			eventId,
 			participantId: p.id,
 			linkHash: token === null ? null : hashOf(token)
@@ -218,8 +300,35 @@ function stillToSend(decisionId: number, m: Queued): 'send' | 'superseded' | 'de
 	return 'via' in reach && reach.via === 'account' ? 'send' : 'superseded';
 }
 
-/** What the mail quotes of the published version: its question and what it asks. */
-type Quoted = { question: string; ask: string };
+/** What the mail quotes of the published version, or of the working copy for a dry run: its question and what it asks. */
+export type Quoted = { question: string; ask: string };
+
+/**
+ * A dry run (card 2697, decision 19, Q8, Q20, Q26): the invitation as a
+ * consulted participant would get it, quoting the working copy (`quoted`,
+ * which the service parses: this module imports nothing from
+ * decision-content.ts), mailed to `to`, the caller, alone. Its subject is
+ * `Dry run: ` and the invitation's; its body the invitation's, with a line
+ * naming the account that asked for it, and its link the preview,
+ * `<decisionLinkBase()>/decisions/<id>/preview`, behind a sign-in. It names
+ * no participant, carries no personal link and issues none, and writes
+ * nothing: the service has written the `dry_run` event. One send after the
+ * commit; a failure is logged by `trySendEmail` under the recipient's form,
+ * never the address. A caller with no link address is a fault: the service
+ * refuses one first.
+ */
+export function queueDryRun(decision: Decision, to: { id: number; username: string; email: string }, quoted: Quoted): void {
+	const base = decisionLinkBase();
+	if (base === null) throw new Error(`Decision ${decision.id}: a dry run was asked for with no link address`);
+	const link = `${base}/decisions/${decision.id}/preview`;
+	const subject = `Dry run: ${subjectOf(decision, 'invitation', 'consulted')}`;
+	const asked = paragraph(`This dry run was sent at the request of ${to.username}.`);
+	const html = emailTemplate(escapeHtml(decision.title), `${asked}\n${bodyOf(decision, 'invitation', 'consulted', link, quoted, {})}`);
+	const recipient = `caller ${to.id} dry run of decision ${decision.id}`;
+	afterCommit(async () => {
+		await trySendEmail(to.email, subject, html, { recipient });
+	});
+}
 
 /** The question and the ask of the decision's current published version, '' for either it does not hold. */
 function publishedContent(decision: Decision): Quoted {
@@ -239,11 +348,11 @@ function publishedContent(decision: Decision): Quoted {
 	}
 }
 
-/** The subject: plain text, the title as written, never a token. */
-function subjectOf(decision: Decision, mail: RecordMail, p: DecisionParticipant): string {
+/** The subject: plain text, the title as written, never a token. `role` is the participant's, `consulted` or `informed` (card 2697, Q8). */
+function subjectOf(decision: Decision, mail: RecordMail, role: string): string {
 	switch (mail) {
 		case 'invitation':
-			return p.role === 'informed' ? `For your information: ${decision.title}` : `Your view is asked: ${decision.title}`;
+			return role === 'informed' ? `For your information: ${decision.title}` : `Your view is asked: ${decision.title}`;
 		case 'asked_again':
 			return `Changed, and your view is asked again: ${decision.title}`;
 		case 'told_of_change':
@@ -265,14 +374,22 @@ function paragraph(text: string | null | undefined, label?: string): string {
 
 /**
  * The mail's body, every value through `escapeHtml`. It names no other
- * participant and gives no figure.
+ * participant and gives no figure. `role` is the participant's (card 2697,
+ * Q8), so that a dry run, which has no participant row, is the same mail.
  */
-function bodyOf(decision: Decision, mail: RecordMail, p: DecisionParticipant, link: string, content: Quoted, opts: RecordMailOptions): string {
+function bodyOf(
+	decision: Decision,
+	mail: RecordMail,
+	role: string,
+	link: string,
+	content: Quoted,
+	opts: Pick<RecordMailOptions, 'changeNote' | 'reason' | 'ruling'>
+): string {
 	const parts: string[] = [];
 	switch (mail) {
 		case 'invitation':
 			parts.push(paragraph(content.question));
-			if (p.role === 'informed') {
+			if (role === 'informed') {
 				parts.push(paragraph('You are told of this decision for your information. Nothing is asked of you.'));
 			} else {
 				parts.push(paragraph(content.ask, 'What is asked of you:'));

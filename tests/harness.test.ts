@@ -106,6 +106,10 @@ const TEST_FILES = [
 	'decision-authoring.test.ts',
 	// Card 2676, slice A2: the picker, the editor and the board's decision list, in the page.
 	'decision-authoring.svelte.test.ts',
+	// Card 2697: the dry run, opening and the lifecycle routes, their limits, and delivery.
+	'decision-lifecycle.test.ts',
+	// Card 2697, slices B2a and B2b: the delivery panel, Resend and the administrator's actions, in the page.
+	'decision-lifecycle.svelte.test.ts',
 	// Card 2677: a participant's response and opening, signed in or by a personal link.
 	'decision-participation.test.ts',
 	// Card 2677: the participant page, the response form and the seen watch, in the page.
@@ -152,6 +156,8 @@ const TEST_FILES = [
 	'page-failures.test.ts',
 	'password-checks.test.ts',
 	'people-directory.test.ts',
+	// Card 2697, slice B2b: the people dialog asking for the password with an address or an account.
+	'people-directory.svelte.test.ts',
 	'plan-graph.test.ts',
 	'plan-page.test.ts',
 	'plan-table.test.ts',

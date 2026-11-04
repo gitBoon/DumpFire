@@ -2635,16 +2635,25 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 		{ service: 'moveCards', args: [code('caller'), {}, code('body'), { source: 'ui', baseUrl: code('baseUrl') }] }
 	],
 	// Card 2674: the people directory and its groups, admin-only.
+	// Card 2697's code review, part B (S1): every refusal first, as the step-up's guard, then the write, which
+	// asks its guard itself.
 	'src/routes/api/people/+server.ts POST': [
+		{ service: 'personCreateGuard', args: [code('caller'), {}, code('body')] },
 		{ service: 'createPerson', args: [code('caller'), {}, code('body'), { source: 'ui' }] }
 	],
+	// Card 2697 (Q21): with neither email nor userId, the change as it was; with either, every refusal first
+	// as the step-up's guard, then the change, which asks its guard itself.
 	'src/routes/api/people/[id]/+server.ts PUT': [
+		{ service: 'updatePerson', args: [code('caller'), { personId: code('id') }, code('body'), { source: 'ui' }] },
+		{ service: 'personUpdateGuard', args: [code('caller'), { personId: code('id') }, code('body')] },
 		{ service: 'updatePerson', args: [code('caller'), { personId: code('id') }, code('body'), { source: 'ui' }] }
 	],
 	'src/routes/api/people/[id]/+server.ts DELETE': [
+		{ service: 'personDeleteGuard', args: [code('caller'), { personId: code('id') }] },
 		{ service: 'deletePerson', args: [code('caller'), { personId: code('id') }, null, { source: 'ui' }] }
 	],
 	'src/routes/api/people/from-accounts/+server.ts POST': [
+		{ service: 'fromAccountsGuard', args: [code('caller'), {}, code('body')] },
 		{ service: 'addFromAccounts', args: [code('caller'), {}, code('body'), { source: 'ui' }] }
 	],
 	'src/routes/api/people-groups/+server.ts POST': [
@@ -2666,7 +2675,13 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 	'src/routes/api/decisions/[id]/+server.ts PUT': [
 		{ service: 'updateDraft', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'ui' }] }
 	],
+	// Card 2697, B4 (Q9): every refusal first, read only, and whether the decision holds a record; with none,
+	// asked again in the delete; with one, as the step-up's guard, before the delete. As the column delete's.
 	'src/routes/api/decisions/[id]/+server.ts DELETE': [
+		{ service: 'decisionDeleteGuard', args: [code('caller'), { decisionId: code('id') }] },
+		{ service: 'decisionDeleteGuard', args: [code('caller'), { decisionId: code('id') }] },
+		{ service: 'deleteDecision', args: [code('caller'), { decisionId: code('id') }, null, { source: 'ui' }] },
+		{ service: 'decisionDeleteGuard', args: [code('caller'), { decisionId: code('id') }] },
 		{ service: 'deleteDecision', args: [code('caller'), { decisionId: code('id') }, null, { source: 'ui' }] }
 	],
 	'src/routes/api/decisions/[id]/decider/+server.ts PUT': [
@@ -2677,6 +2692,44 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 	],
 	'src/routes/api/decisions/[id]/reviewed/+server.ts POST': [
 		{ service: 'markReviewed', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'ui' }] }
+	],
+	// Card 2697: opening and the lifecycle, and the dry run; close reads no body (Q17).
+	'src/routes/api/decisions/[id]/open/+server.ts POST': [
+		{ service: 'openDecision', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'ui' }] }
+	],
+	'src/routes/api/decisions/[id]/republish/+server.ts POST': [
+		{ service: 'republishDecision', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'ui' }] }
+	],
+	'src/routes/api/decisions/[id]/close/+server.ts POST': [
+		{ service: 'closeDecision', args: [code('caller'), { decisionId: code('id') }, null, { source: 'ui' }] }
+	],
+	'src/routes/api/decisions/[id]/extend/+server.ts POST': [
+		{ service: 'extendDecision', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'ui' }] }
+	],
+	// Card 2697, B4 (Q29): as the delete, by whether the decision was ever opened.
+	'src/routes/api/decisions/[id]/withdraw/+server.ts POST': [
+		{ service: 'decisionWithdrawGuard', args: [code('caller'), { decisionId: code('id') }, code('body')] },
+		{ service: 'decisionWithdrawGuard', args: [code('caller'), { decisionId: code('id') }, code('body')] },
+		{ service: 'withdrawDecision', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'ui' }] },
+		{ service: 'decisionWithdrawGuard', args: [code('caller'), { decisionId: code('id') }, code('body')] },
+		{ service: 'withdrawDecision', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'ui' }] }
+	],
+	'src/routes/api/decisions/[id]/dry-run/+server.ts POST': [
+		{ service: 'dryRunDecision', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'ui' }] }
+	],
+	// Card 2697, slice B2a: an invitation sent again; it reads no body (Q17).
+	'src/routes/api/decisions/[id]/participants/[participantId]/resend/+server.ts POST': [
+		{ service: 'resendInvitation', args: [code('caller'), { decisionId: code('id'), participantId: code('participantId') }, null, { source: 'ui' }] }
+	],
+	// Card 2697, B2b (Q9, Q10, Q22): every refusal first, as the step-up's guard, then the write; the address's
+	// guard and write handed no body, the address being the directory's.
+	'src/routes/api/decisions/[id]/participants/[participantId]/account/+server.ts PUT': [
+		{ service: 'participantAccountGuard', args: [code('caller'), { decisionId: code('id'), participantId: code('participantId') }, code('body')] },
+		{ service: 'setParticipantAccount', args: [code('caller'), { decisionId: code('id'), participantId: code('participantId') }, code('body'), { source: 'ui' }] }
+	],
+	'src/routes/api/decisions/[id]/participants/[participantId]/address/+server.ts PUT': [
+		{ service: 'participantAddressGuard', args: [code('caller'), { decisionId: code('id'), participantId: code('participantId') }] },
+		{ service: 'changeParticipantAddress', args: [code('caller'), { decisionId: code('id'), participantId: code('participantId') }, null, { source: 'ui' }] }
 	],
 	// Card 2677: a participant's response and seen, signed in, and by a personal link with its token in the body.
 	'src/routes/api/decisions/[id]/responses/+server.ts POST': [

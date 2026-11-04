@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.107
+version: 1.109
 status: As-Built
 date: 2026-11-04
 tags:
@@ -337,8 +337,9 @@ either.
 
 **The v1 API and the OpenAPI document (`1.4.0`) are unchanged.** These changes are to the web
 application's own routes under `/api/` outside `/api/v1/`, which DumpFire's pages call with a
-session and which a key cannot reach (card 2701): eighteen of them now ask for the caller's
-current password, every time. See [Step-up Before Destructive Actions](authentication-security.md#step-up-before-destructive-actions-card-2701).
+session and which a key cannot reach (cards 2701 and 2697): twenty-six of them now ask for the
+caller's current password, card 2701's eighteen every time and card 2697's eight as listed below.
+See [Step-up Before Destructive Actions](authentication-security.md#step-up-before-destructive-actions-card-2701).
 
 - **`currentPassword` in the JSON body** of `POST /api/admin/reset`,
   `POST /api/admin/purge-archived`, `POST /api/admin/boards/{id}/clear-cards` and
@@ -387,6 +388,34 @@ current password, every time. See [Step-up Before Destructive Actions](authentic
   the routes above: the first two wrong ones keep their own words, the third is the signed-out
   `403`. The `429` "Too many wrong passwords. Try again in N minute(s)." and its 15-minute window
   are gone.
+- **Card 2697's eight**, each with every refusal that needs no password made first:
+  `PUT /api/decisions/{id}/participants/{participantId}/account` (`{ account, currentPassword }`)
+  and `PUT …/address`, always; `PUT /api/people/{id}` when the body carries `email` or `userId`
+  (`{ "userId": null }` included); `POST /api/people`, `DELETE /api/people/{id}` (which now
+  takes a JSON body) and `POST /api/people/from-accounts`, always (its code review's part B,
+  S1: `email` is required on an add, so every add sets an address); and
+  `DELETE /api/decisions/{id}` and `POST /api/decisions/{id}/withdraw` once the decision was
+  ever opened. A draft never opened is deleted with `{}` and withdrawn with `{ reason }`, asking
+  nothing; the delete always takes a JSON body.
+- **The record mail one account causes is capped** (card 2697's code review, part B, S2): 500
+  participants mailed in 24 hours across every decision, by opening, re-publishing,
+  `POST …/participants/{participantId}/resend` and `PUT …/participants` including someone new
+  or again, `429` saying from when; the withdrawal and the ruling are not held to it. Opening
+  and re-publishing refuse a decision that closes more than 365 days ahead, `409` (S3).
+- **`PUT /api/decisions/{id}/participants/{participantId}/address` takes no address** (card
+  2697): it copies the address the people directory holds for the person now, and its body is
+  `{ "currentPassword": "…" }` alone. `409` for a person gone from the directory, one who has
+  left, or a row that already holds that address.
+- **The decision lifecycle routes are new** (card 2697), all internal: `POST
+  /api/decisions/{id}/open`, `…/republish`, `…/close` (no body), `…/extend`, `…/withdraw` and
+  `…/dry-run`, and `POST …/participants/{participantId}/resend` (no body). Opening,
+  re-publishing and the dry run require `revision`. Opening and re-publishing are `429` past ten
+  in 24 hours per caller, the dry run past one in 10 minutes or twenty in 24 hours; a participant
+  mailed five times in 24 hours is `409` on re-publishing and Resend. A closing time more than
+  365 days ahead is `400`. None of them is in `/api/v1`; card 2682 will expose decisions there.
+- **The import's answer carries `decisionLinksCleared`** (card 2697), the number of personal
+  decision links the restore cancelled, on the success and on a restore that committed and then
+  failed, with a sentence in the message when it is above 0.
 
 ### Changes on 2026-11-03
 

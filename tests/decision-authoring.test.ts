@@ -48,6 +48,7 @@ import {
 import { audienceFactsOf, openFactsOf, parseWorkingContent, revisionOf } from '$lib/server/decision-content';
 import { appendVersion, SYSTEM_ACTOR } from '$lib/server/decision-record';
 import { markReviewed, openDecision, setDecider, setParticipants, updateDraft } from '$lib/server/decisions';
+import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { purposeKey } from '$lib/server/request-tokens';
 import { checkContent, refusalsOf, WARNING_CODES, type WorkingContent } from '$lib/decision-readiness';
 import { STALE_REVISION } from '$lib/decision-words';
@@ -80,6 +81,8 @@ let board: Board;
 
 beforeEach(() => {
 	resetDb();
+	// Card 2697 (Q32): the publish limit's allowance is in memory, and ids repeat after resetDb.
+	resetAllRateLimits();
 	makeSmtp();
 	db.insert(settings).values({ key: 'app_url', value: 'https://kanban.example.test' }).run();
 	owner = makeUser({ username: 'owner' });
@@ -104,6 +107,13 @@ function outcome(run: () => unknown): 'passed' | { status: number; message: stri
 		throw err;
 	}
 }
+
+/**
+ * A closing time a month ahead, as stored and as sent: a changed closing time
+ * is at most a year ahead (card 2697, Q25), so `FUTURE` is a stored one alone.
+ */
+const SOON = stamp(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000));
+const SOON_SENT = `${SOON.replace(' ', 'T')}Z`;
 
 const decisionRow = (id: number) => db.select().from(decisions).where(eq(decisions.id, id)).get()!;
 const optionRows = (id: number) => db.select().from(decisionOptions).where(eq(decisionOptions.decisionId, id)).orderBy(decisionOptions.id).all();
@@ -165,7 +175,7 @@ describe('updateDraft', () => {
 
 		const answer = save(owner, draft.id, {
 			title: '  Pick a supplier  ',
-			closesAt: '2099-06-01T09:30:00Z',
+			closesAt: SOON_SENT,
 			voteMode: 'score',
 			content: contentOf({ situation: 'We need one.', options: [optionOf({ title: 'Acme' }), optionOf({ title: 'Bolt', pros: ['Cheap', '  '] })] })
 		});
@@ -175,7 +185,7 @@ describe('updateDraft', () => {
 			['A', 0, null, null],
 			['B', 1, null, null]
 		]);
-		expect(decisionRow(draft.id)).toMatchObject({ title: 'Pick a supplier', closesAt: '2099-06-01 09:30:00', voteMode: 'score', status: 'draft' });
+		expect(decisionRow(draft.id)).toMatchObject({ title: 'Pick a supplier', closesAt: SOON, voteMode: 'score', status: 'draft' });
 		const content = stored(draft.id);
 		expect(content.options).toEqual([
 			{ optionId: rows[0].id, title: 'Acme', summary: '', pros: [], cons: [], commercial: '' },
@@ -279,7 +289,7 @@ describe('updateDraft', () => {
 
 		it.each([
 			['a changed title', { title: 'Renamed' }, 'This decision has been opened: its title cannot be changed'],
-			['a changed closesAt', { closesAt: '2099-02-01T00:00:00Z' }, 'This decision has been opened: the closing time of an open decision changes by Extend'],
+			['a changed closesAt', { closesAt: SOON_SENT }, 'This decision has been opened: the closing time of an open decision changes by Extend'],
 			['a changed voteMode', { voteMode: 'score' }, 'This decision has been opened: its vote mode cannot be changed']
 		])('refuses %s, 409, with nothing written', (_case, change, message) => {
 			const before = decisionRow(open.id);
@@ -290,7 +300,7 @@ describe('updateDraft', () => {
 		it('accepts title, closesAt and voteMode sent equal to the stored values, and saves the content', () => {
 			save(owner, open.id, {
 				title: ' Open one ',
-				closesAt: '2099-01-01T12:00:00Z',
+				closesAt: `${FUTURE.replace(' ', 'T')}Z`,
 				voteMode: 'single',
 				content: contentOf({ situation: 'Saved with the whole form.', options: [optionOf({ optionId: a.id }), optionOf({ optionId: b.id })] })
 			});
@@ -623,7 +633,7 @@ describe('agent-drafted flags', () => {
 			const content = stored(r.draft.id);
 			expect(content.reviewed.situation).toMatchObject({ byUserId: r.author.id });
 
-			as(r.author, (caller) => openDecision(caller, { decisionId: r.draft.id }, null, UI));
+			as(r.author, (caller) => openDecision(caller, { decisionId: r.draft.id }, { revision: revisionNow(r.draft.id) }, UI));
 
 			const version = sqlite.prepare('SELECT content FROM decision_versions WHERE decision_id = ? AND number = 1').get(r.draft.id) as { content: string };
 			const published = JSON.parse(version.content);
@@ -759,10 +769,15 @@ describe('checkContent (15)', () => {
 		};
 		const nobody: WorkingContent = { ...complete() };
 
-		const first = checkContent(empty, { groups: { 5: { exists: false, activeMemberIds: [] } }, participantPersonIds: [7] });
+		// Card 2697's code review, part B (S3): a closing time more than a year ahead, handed with the content.
+		const far = { closesAt: '2027-11-04 09:00:01', now: '2026-11-04 09:00:00' };
+		const first = checkContent(empty, { groups: { 5: { exists: false, activeMemberIds: [] } }, participantPersonIds: [7] }, far);
 		const second = checkContent(nobody, { groups: { 6: { exists: true, activeMemberIds: [8] } }, participantPersonIds: [7] });
 
 		expect([...first, ...second].map((warning) => warning.code).sort()).toEqual([...WARNING_CODES].sort());
+		expect(first.find((warning) => warning.code === 'closes_too_far')!.words).toBe(
+			'The closing time is more than 365 days ahead: it cannot be opened or re-published so (closesAt must be no more than 365 days from now)'
+		);
 		expect(first.find((warning) => warning.code === 'agent_drafted')).toEqual({
 			code: 'agent_drafted',
 			key: 'situation',
@@ -775,6 +790,10 @@ describe('checkContent (15)', () => {
 
 	it('answers no warning for a complete input', () => {
 		expect(checkContent(complete(), { groups: { 6: { exists: true, activeMemberIds: [7, 8] } }, participantPersonIds: [7] })).toEqual([]);
+		// S3: a closing time exactly 365 days ahead, or none, is no warning.
+		const groups = { groups: { 6: { exists: true, activeMemberIds: [7, 8] } }, participantPersonIds: [7] };
+		expect(checkContent(complete(), groups, { closesAt: '2027-11-04 09:00:00', now: '2026-11-04 09:00:00' })).toEqual([]);
+		expect(checkContent(complete(), groups, { closesAt: null, now: '2026-11-04 09:00:00' })).toEqual([]);
 	});
 });
 
@@ -786,7 +805,11 @@ describe('the drift guard: the readability refusals are openDecision’s (16)', 
 
 		const codes = withEnvironment(bare, () => refusalsOf(openFactsOf(decisionRow(ready.draft.id), stamp())).map((refusal) => refusal.code));
 		expect(codes).toEqual([code]);
-		expect(withEnvironment(bare, () => outcome(() => as(ready.author, (caller) => openDecision(caller, { decisionId: ready.draft.id }, null, UI))))).toEqual({
+		expect(
+			withEnvironment(bare, () =>
+				outcome(() => as(ready.author, (caller) => openDecision(caller, { decisionId: ready.draft.id }, { revision: revisionNow(ready.draft.id) }, UI)))
+			)
+		).toEqual({
 			status: 409,
 			message: words
 		});
@@ -804,7 +827,7 @@ describe('the drift guard: the readability refusals are openDecision’s (16)', 
 			{ code: 'participant_left', words: 'Holder has left: this decision cannot be opened until they are taken off it' },
 			{ code: 'participant_deleted', words: 'Linky is no longer in the people directory: this decision cannot be opened until they are taken off it' }
 		]);
-		expect(outcome(() => as(ready.author, (caller) => openDecision(caller, { decisionId: ready.draft.id }, null, UI)))).toEqual({
+		expect(outcome(() => as(ready.author, (caller) => openDecision(caller, { decisionId: ready.draft.id }, { revision: revisionNow(ready.draft.id) }, UI)))).toEqual({
 			status: 409,
 			message: 'Holder has left: this decision cannot be opened until they are taken off it'
 		});

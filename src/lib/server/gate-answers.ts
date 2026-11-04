@@ -264,6 +264,18 @@ const FORM_LINK_HEADERS: readonly [name: string, value: string][] = [
 const OWN_RESPONSE_HEADERS: readonly [name: string, value: string][] = [['Cache-Control', 'no-store']];
 
 /**
+ * What the decision authoring pages carry (card 2697, Q12): each shows what
+ * nobody outside its editors has been shown, a draft's working copy or the
+ * edits made since the last version, and the editor shows an administrator
+ * participants' addresses. So they are cached nowhere and indexed by nothing.
+ * No `Referrer-Policy`: their addresses hold no secret.
+ */
+const UNPUBLISHED_HEADERS: readonly [name: string, value: string][] = [
+	['Cache-Control', 'no-store'],
+	['X-Robots-Tag', 'noindex, nofollow']
+];
+
+/**
  * Headers by route id, exactly (card 2677, decision 7, R6), which are always
  * set: each replaces whatever the answer carries, unlike `SECURITY_HEADERS`,
  * which never replaces one. So a handler's own `Cache-Control` cannot keep a
@@ -274,7 +286,9 @@ const OWN_RESPONSE_HEADERS: readonly [name: string, value: string][] = [['Cache-
  * `/decision-link/[token]`'s address holds the token, so nothing it answers
  * names its address to another site, is indexed or is cached; its two routes
  * likewise. `/decisions/[id]` and its participant's two routes show or answer
- * the caller's own response, and are cached nowhere.
+ * the caller's own response, and are cached nowhere. The decision authoring
+ * pages, the preview, the editor and a board's list of decisions, show what
+ * has not been published, and are cached and indexed nowhere (card 2697, Q12).
  *
  * `/invite/[token]`'s address holds an invite, which sets its account's
  * password, so its page, its data and its form's answers are kept out of
@@ -300,7 +314,10 @@ export const ROUTE_HEADERS: ReadonlyMap<string, readonly [name: string, value: s
 	['/api/requests/[id]/confirm', PERSONAL_LINK_HEADERS],
 	['/decisions/[id]', OWN_RESPONSE_HEADERS],
 	['/api/decisions/[id]/responses', OWN_RESPONSE_HEADERS],
-	['/api/decisions/[id]/seen', OWN_RESPONSE_HEADERS]
+	['/api/decisions/[id]/seen', OWN_RESPONSE_HEADERS],
+	['/decisions/[id]/preview', UNPUBLISHED_HEADERS],
+	['/decisions/[id]/edit', UNPUBLISHED_HEADERS],
+	['/board/[id]/decisions', UNPUBLISHED_HEADERS]
 ]);
 
 /**

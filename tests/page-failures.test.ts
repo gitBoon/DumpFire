@@ -1226,6 +1226,33 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 		expect(report).toMatch(/\{#if importReport\.requestLinks\}\s*<p class="import-report-detail">\{importReport\.requestLinks\}<\/p>/);
 	});
 
+	describe('shows how many personal decision links an import cancelled, a line after the request links (card 2697, Q15, case 47)', () => {
+		const accountOf = () => {
+			const js = ts.transpileModule(functionNamed(restore, 'accountOf').getText(), {
+				compilerOptions: { target: ts.ScriptTarget.ES2022 }
+			}).outputText;
+			return new Function('count', `${js}\nreturn accountOf;`)((n: number) => String(n)) as (result: Record<string, unknown>) => Record<string, unknown>;
+		};
+		const SAID = "cancelled: a link mailed before this restore no longer works, and the decision's author, decider or an administrator can send its holder a new one with Resend.";
+
+		it.each([
+			[2, `2 personal decision links ${SAID}`],
+			[1, `1 personal decision link ${SAID}`],
+			[0, undefined],
+			[undefined, undefined]
+		])('for %s cleared', (cleared, said) => {
+			expect(accountOf()({ restored: {}, ...(cleared === undefined ? {} : { decisionLinksCleared: cleared }) }).decisionLinks).toBe(said);
+		});
+
+		it('drawn after the request links line, before the working copy', () => {
+			const report = restoreMarkup.slice(restoreMarkup.indexOf('{#if importReport}')).replace(/\r\n/g, '\n');
+			const lines = ['{#if importReport.requestLinks}', '{#if importReport.decisionLinks}', '{#if importReport.workingCopy}'].map((line) => report.indexOf(line));
+			expect(lines.every((at) => at > -1)).toBe(true);
+			expect([...lines].sort((a, b) => a - b)).toEqual(lines);
+			expect(report).toMatch(/\{#if importReport\.decisionLinks\}\s*<p class="import-report-detail">\{importReport\.decisionLinks\}<\/p>/);
+		});
+	});
+
 	it('says after a change of role that an invite sent earlier no longer works, when the answer says one ended', () => {
 		// The users panel (card 2281, slice C1b).
 		const users = scriptOf('src/lib/components/admin/UsersPanel.svelte');
@@ -3651,14 +3678,17 @@ describe('every page write says it is JSON, read from the source and failing clo
 
 // ─── Card 2701: every page write of a listed action sends the password ───────
 //
-// Eighteen actions ask for the caller's own password again (`STEP_UP_ACTIONS`
+// The listed actions ask for the caller's own password again (`STEP_UP_ACTIONS`
 // in $lib/server/step-up.ts): a page that sent one without it would be refused
 // 400 every time. Every `fetch` and `jsonRequest` of the client's files is read
 // as `METHOD /route` (each `${…}` of a path standing for `[id]`, the query left
-// off), and each that is on the list must send `currentPassword` in a literal
-// body; the import's upload, whose body is the file, its confirmation in the
-// `X-DumpFire-Confirmation` header. One whose address or method cannot be read
-// fails, unless it is one of the named few that are no listed action.
+// off), and each that is on the list, its keys read with every `[param]` as
+// `[id]` (card 2697, Q11), must send `currentPassword` in a literal body, but a
+// send to an action that asks only with named keys whose body holds none of
+// them (`ASKS_ONLY_WITH`, Q21); the import's upload, whose body is the file,
+// its confirmation in the `X-DumpFire-Confirmation` header. One whose address
+// or method cannot be read fails, unless it is one of the named few that are
+// no listed action.
 
 /** What a page sends, read from a `fetch` or `jsonRequest` call: `METHOD /route`, and its body's and headers' keys. */
 type ListedSend = { at: string; action: string | null; bodyKeys: string[] | null; headerKeys: string[] };
@@ -3798,17 +3828,38 @@ const UNREAD_SENDS = [
 	'src/routes/graph/+page.svelte › handleExpand › fetch(url)'
 ];
 
+/**
+ * A listed key as a send is read: every `[param]` of it as `[id]`, as the
+ * reader reads every `${…}` of an address (card 2697, Q11). A listed route
+ * with a second parameter, `…/participants/[participantId]/…`, is then
+ * matched by position, and not missed.
+ */
+const asSent = (key: string) => key.replace(/\[[^\]]+\]/g, '[id]');
+
+/**
+ * The listed actions that ask only when the body carries one of the keys
+ * named (card 2697, Q21): a send whose literal body holds none of them asks
+ * nothing, as the route decides by the body's keys. A body that cannot be
+ * read still fails closed.
+ */
+const ASKS_ONLY_WITH: Readonly<Record<string, readonly string[]>> = {
+	'PUT /api/people/[id]': ['email', 'userId']
+};
+
 /** The sends of a source that would be refused for want of the password or the confirmation, and those that cannot be read. */
 function unaskedIn(sends: ListedSend[]): string[] {
-	const listed = Object.keys(STEP_UP_ACTIONS);
+	const listed = new Map(Object.keys(STEP_UP_ACTIONS).map((key) => [asSent(key), key]));
 	return sends.flatMap((send) => {
 		if (send.action === null) return UNREAD_SENDS.includes(send.at) ? [] : [`${send.at}: cannot be read`];
 		if (send.action === 'GET /api/admin/export') return [`${send.at}: the export is a POST with the password`];
 		if (send.action === 'POST /api/admin/import') {
 			return send.headerKeys.some((key) => key.toLowerCase() === CONFIRMATION_HEADER) ? [] : [`${send.at}: no ${CONFIRMATION_HEADER}`];
 		}
-		if (!listed.includes(send.action)) return [];
-		return send.bodyKeys?.includes(STEP_UP_FIELD) ? [] : [`${send.at}: no ${STEP_UP_FIELD} for ${send.action}`];
+		const key = listed.get(send.action);
+		if (key === undefined) return [];
+		const onlyWith = ASKS_ONLY_WITH[key];
+		if (onlyWith !== undefined && send.bodyKeys !== null && !send.bodyKeys.some((field) => onlyWith.includes(field))) return [];
+		return send.bodyKeys?.includes(STEP_UP_FIELD) ? [] : [`${send.at}: no ${STEP_UP_FIELD} for ${key}`];
 	});
 }
 
@@ -3818,9 +3869,9 @@ describe('every page write of an action that asks for the password sends it, rea
 
 	it('(a) finds none without it, reaches every listed action from a page, and reads every send but the named few', () => {
 		expect(unaskedIn(sends)).toEqual([]);
-		// Every one of the eighteen is sent from a page, each with the password.
+		// Every listed action is sent from a page, each with the password, matched by position (card 2697, Q11).
 		const reached = new Set(sends.map((send) => send.action));
-		expect(Object.keys(STEP_UP_ACTIONS).filter((action) => !reached.has(action))).toEqual([]);
+		expect(Object.keys(STEP_UP_ACTIONS).filter((action) => !reached.has(asSent(action)))).toEqual([]);
 		// The named few are each still there to be named, and no more are let off.
 		expect(sends.filter((send) => send.action === null).map((send) => send.at).sort()).toEqual([...UNREAD_SENDS].sort());
 		// And the export and the import's two steps, as they are sent.
@@ -3834,14 +3885,22 @@ describe('every page write of an action that asks for the password sends it, rea
 			"fetch('/api/admin/purge-archived', { method: 'POST', headers: { 'Content-Type': 'application/json' } });",
 			"fetch(`/api/boards/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });",
 			"fetch(`/api/users/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ role }) });",
-			"jsonRequest(`/api/columns/${colId}`, 'DELETE', { boardId });"
+			"jsonRequest(`/api/columns/${colId}`, 'DELETE', { boardId });",
+			// Card 2697 (Q11): a listed route with a second parameter, matched by position.
+			"fetch(`/api/decisions/${id}/participants/${p}/address`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });",
+			// Card 2697 (Q21): a person's address, which asks; and a body that cannot be read, which fails closed.
+			"fetch(`/api/people/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email }) });",
+			"fetch(`/api/people/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });"
 		].join('\n');
 
 		expect(unaskedIn(listedSendsIn('src/lib/x.ts', source))).toEqual([
 			"src/lib/x.ts › (top) › fetch('/api/admin/purge-archived'): no currentPassword for POST /api/admin/purge-archived",
 			'src/lib/x.ts › (top) › fetch(`/api/boards/${id}`): no currentPassword for DELETE /api/boards/[id]',
 			'src/lib/x.ts › (top) › fetch(`/api/users/${id}`): no currentPassword for PUT /api/users/[id]',
-			'src/lib/x.ts › (top) › jsonRequest(`/api/columns/${colId}`): no currentPassword for DELETE /api/columns/[id]'
+			'src/lib/x.ts › (top) › jsonRequest(`/api/columns/${colId}`): no currentPassword for DELETE /api/columns/[id]',
+			'src/lib/x.ts › (top) › fetch(`/api/decisions/${id}/participants/${p}/address`): no currentPassword for PUT /api/decisions/[id]/participants/[participantId]/address',
+			'src/lib/x.ts › (top) › fetch(`/api/people/${id}`): no currentPassword for PUT /api/people/[id]',
+			'src/lib/x.ts › (top) › fetch(`/api/people/${id}`): no currentPassword for PUT /api/people/[id]'
 		]);
 	});
 
@@ -3871,7 +3930,11 @@ describe('every page write of an action that asks for the password sends it, rea
 			"fetch(`/api/admin/import?outside=${o}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', [CONFIRMATION_HEADER]: c }, body });",
 			"fetch('/api/admin/backup');",
 			"fetch(`/api/users/${id}`);",
-			"jsonRequest(`/api/boards/${boardId}`, 'DELETE', { currentPassword });"
+			"jsonRequest(`/api/boards/${boardId}`, 'DELETE', { currentPassword });",
+			// Card 2697 (Q21): a person's status alone asks nothing; an address sent with the password.
+			"fetch(`/api/people/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) });",
+			"fetch(`/api/people/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, currentPassword }) });",
+			"fetch(`/api/decisions/${d}/participants/${p}/account`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ account, currentPassword }) });"
 		].join('\n');
 
 		expect(unaskedIn(listedSendsIn('src/lib/x.ts', source))).toEqual([]);

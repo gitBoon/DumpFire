@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.73
+version: 1.75
 status: As-Built
 date: 2026-11-04
 tags:
@@ -27,6 +27,9 @@ tags:
   - decision-records
   - decision-authoring
   - participant-page
+  - decision-lifecycle
+  - dry-run
+  - preview
 description: "High-level and component-level architecture of the DumpFire Kanban board system, including the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
 ---
 
@@ -1155,13 +1158,13 @@ flowchart LR
     Page -->|"invalidateAll() after each write"| Load["+page.server.ts: readDirectory()"]
 ```
 
-The page (`+page.svelte`) draws the people table with its search (name, email, job title and group names) and its Active / Left / All filter (Active first), each row's Edit, Mark left or Mark active (`PUT /api/people/:id` `{ status }`) and Delete, and the groups list with each group's count of active members; both deletes ask in `ConfirmModal`. Every write is sent through `sent()` (`src/lib/admin/send.ts`), so a refusal is the server's words in a toast, and is followed by `invalidateAll()`. The dialogs are in `src/lib/components/admin/people/` and hold the focus with `holdFocus`:
+The page (`+page.svelte`) draws the people table with its search (name, email, job title and group names) and its Active / Left / All filter (Active first), each row's Edit, Mark left or Mark active (`PUT /api/people/:id` `{ status }`) and Delete, and the groups list with each group's count of active members; both deletes ask in `ConfirmModal`, a person's with `askPassword`, sending `{ currentPassword }` (S1). Every write is sent through `sent()` (`src/lib/admin/send.ts`), so a refusal is the server's words in a toast, and is followed by `invalidateAll()`. The dialogs are in `src/lib/components/admin/people/` and hold the focus with `holdFocus`:
 
 | Dialog | Sends | Notes |
 |---|---|---|
-| `PersonDialog.svelte` | `POST /api/people`, or `PUT /api/people/:id` with every field | The account select offers None, the accounts whose `personId` is null and the person's own; a line under it says account addresses are set by their holders and not confirmed. Group ids no longer in the page's data are dropped before sending |
+| `PersonDialog.svelte` | `POST /api/people` with every field and `currentPassword` (card 2697's code review, part B, S1), or `PUT /api/people/:id`, with `currentPassword` where the address or account changed | The account select offers None, the accounts whose `personId` is null and the person's own; a line under it says account addresses are set by their holders and not confirmed. Group ids no longer in the page's data are dropped before sending |
 | `GroupDialog.svelte` | A new group: `POST /api/people-groups`, then `PUT /api/people-groups/:id/members` if any person is ticked. A group held: `PUT /api/people-groups/:id` only where the name or description changed, then the members only where they changed | A members set refused after a new group was added keeps the dialog open on the group's id, so Save does not add it twice. Person ids no longer in the page's data are dropped before sending |
-| `FromAccountsDialog.svelte` | `POST /api/people/from-accounts` `{ userIds }` | Lists the accounts whose `personId` is null, none ticked (code review S1), under a warning that account addresses are set by their holders and not confirmed. One whose address, lower-cased, is a person's is disabled and shown "matches person *name*: link by hand". A skip's reason is shown with the person's name in place of the server's id; any skip makes the toast a warning that stays |
+| `FromAccountsDialog.svelte` | `POST /api/people/from-accounts` `{ userIds, currentPassword }` (S1: a **Current password** field, Add off until it is typed, a refusal of it shown beside the field) | Lists the accounts whose `personId` is null, none ticked (code review S1), under a warning that account addresses are set by their holders and not confirmed. One whose address, lower-cased, is a person's is disabled and shown "matches person *name*: link by hand". A skip's reason is shown with the person's name in place of the server's id; any skip makes the toast a warning that stays |
 
 **The service.** `src/lib/server/people.ts` is under the service rule ([The shape of a service](#the-shape-of-a-service)) and on `SERVICES` in `tests/check-at-the-write.test.ts`. Every export is a write, so `READS` is empty, and each takes `(caller, at, body, opts)`, starts with `inWrite()`, then asks `requireAdmin(caller)` (403), the row in the path (404 `Person not found`, `Group not found`), the fields from the body (400), the checks against other rows (400, 409), and writes. Its system-log line, context `PEOPLE`, INFO, with `{ userId: actor.id }` in the entry and the actor's username in the text, is queued with `afterCommit`, so a write that is refused or rolled back logs nothing; no line holds an address. Only the internal tree calls it so far; card 2681's v1 routes are to call the same functions.
 
@@ -1221,17 +1224,17 @@ sequenceDiagram
 
 ### The decision service and its record
 
-Card 2675 (plan `docs/planning/card-2675-decision-service.md` v1.1) is the server side of decision records: the engine cards 2676 (authoring), 2677 (the participant's page and `/decision-link/`), 2679 (ruling) and 2680 (the register) call. It is a set of server modules and one service. Card 2676's routes and pages are the first to reach it ([Authoring a decision](#authoring-a-decision)); the lifecycle routes (open, re-publish, close, extend, withdraw, re-send and the administrator's two) are card 2697's, and no route calls those writes yet. The tests call each write inside `writeAs({ user } as App.Locals, (caller) => …)`, which `auth.ts` allows under vitest alone. The tables are migration 0061's (card 2673; see [Data Model](data-model.md#decision-records-migration-0061)), and no column was added.
+Card 2675 (plan `docs/planning/card-2675-decision-service.md` v1.1) is the server side of decision records: the engine cards 2676 (authoring), 2677 (the participant's page and `/decision-link/`), 2679 (ruling) and 2680 (the register) call. It is a set of server modules and one service. Card 2676's routes and pages are the first to reach it ([Authoring a decision](#authoring-a-decision)); the lifecycle routes (open, re-publish, close, extend, withdraw, the dry run, re-send and the administrator's two) are card 2697's ([Opening a decision and its lifecycle](#opening-a-decision-and-its-lifecycle)). The tests call each write inside `writeAs({ user } as App.Locals, (caller) => …)`, which `auth.ts` allows under vitest alone. The tables are migration 0061's (card 2673; see [Data Model](data-model.md#decision-records-migration-0061)), and no column was added.
 
 ```mermaid
 flowchart LR
-    Routes["Card 2676's routes, and later cards'<br/>(2697, 2677, 2680, 2682)"] -->|"writeAs(locals, caller =>"| Svc["decisions.ts<br/>(service: eighteen writes)"]
+    Routes["Card 2676's routes, and later cards'<br/>(2697, 2677, 2680, 2682)"] -->|"writeAs(locals, caller =>"| Svc["decisions.ts<br/>(service: nineteen writes,<br/>four guards on READS)"]
     Svc --> Guard["route-guards.ts<br/>requireDecision"]
     Guard --> Acc["decision-access.ts<br/>decisionAccess, DECISION_RULES, mayDo"]
     Acc --> BA["board-access.ts<br/>getBoardRole"]
     Svc --> St["decision-status.ts<br/>decisionStatus, awaitingRulingSql,<br/>TRANSITIONS, linkUsable"]
     Svc --> Rec["decision-record.ts<br/>appendEvent, appendVersion, snapshotOf,<br/>currentRound, liveOptionIds,<br/>accountHistory, lastMailAt"]
-    Svc --> Lk["decision-links.ts<br/>issueLink, revokeLinks,<br/>participantForLink, reachOf, mayHoldLink"]
+    Svc --> Lk["decision-links.ts<br/>issueLink, revokeLinks,<br/>participantForLink, reachOf, mayHoldLink,<br/>attachRefusal, clearRefusal, addressRefusal"]
     Svc --> Ml["decision-mail.ts<br/>queueRecordMails, decisionLinkBase,<br/>RECORD_MAIL_MIN_MINUTES"]
     Svc --> Act["logActivity, emit"]
     Lk --> Rec
@@ -1243,7 +1246,7 @@ flowchart LR
     Gate["secret-paths.ts<br/>SECRET_IN_PATH"] -.->|"masks /decision-link/ in logs"| Log[("system_logs")]
 ```
 
-Only `decisions.ts` is a service: it is on `SERVICES` in `tests/check-at-the-write.test.ts`, `READS` is empty, and every export takes `(caller, at, body, opts)` and starts with `inWrite()`. The four helper modules take no caller and import no `inWrite`, so they are not services, and `decisionAccess` lives apart from the service because the service imports the guards (plan decision 3). `people.ts` calls `decision-links.ts`, and the mail effect calls `decision-record.ts`, outside any service write.
+Only `decisions.ts` is a service: it is on `SERVICES` in `tests/check-at-the-write.test.ts`, and every write takes `(caller, at, body, opts)` and starts with `inWrite()`. Its `READS` are card 2697's four guards (`participantAccountGuard`, `participantAddressGuard`, `decisionDeleteGuard`, `decisionWithdrawGuard`): each makes every refusal of its write, writes nothing, and is asked by the route before the caller's password and by the write first, so the refusals exist once. The four helper modules take no caller and import no `inWrite`, so they are not services, and `decisionAccess` lives apart from the service because the service imports the guards (plan decision 3). `people.ts` calls `decision-links.ts`, and the mail effect calls `decision-record.ts`, outside any service write.
 
 **The lifecycle** (`src/lib/server/decision-status.ts`). A decision is stored as `draft`, `open`, `closed`, `ruled`, `superseded` or `withdrawn` (`STORED_STATUSES`). Readers never show `closed`: `decisionStatus(row, now)` shows a closed decision, and an open one whose `closes_at` has passed, as `awaiting_ruling`, and `awaitingRulingSql(now)` is the same rule as a query condition, which `tests/decision-record.test.ts` holds to agree. `TRANSITIONS` names the stored statuses each action may be taken from, and `requireTransition(row, action)` refuses any other with `409` in the shown status's words, for example `This decision is awaiting a ruling: it cannot be opened`.
 
@@ -1337,15 +1340,16 @@ sequenceDiagram
 | `setParticipants` | Up to 5,000 `{ personId, role }`, each person once and active (400). A draft: rows inserted with snapshots, re-roled or deleted, with no event naming a participant. Open or closed: added (`included`, an invitation), brought back on the same row (`re_included`), re-roled (`role_changed`) or marked removed (`removed`, `link_revoked { removed }`), never deleted; a live row whose person has been deleted (`person_id` NULL), which no body can name, is marked removed the same way, so its `user_id` no longer gives the participant role (card 2676's C1). 409 for a second live row holding one account, and, when anyone is added or brought back, for `NO_LINK_ADDRESS` and for a returning participant mailed in the last 10 minutes. Card 2676: `revision` required; on a decision that is not a draft, 403 unless the caller also holds `include` (author, decider); a caller who is not an administrator naming someone who has left or an id that is no person is told `personId N cannot be included`, and one of this decision's own participants who has left is named to everyone, `participants: <name> has left: remove before saving` |
 | `updateDraft` (card 2676) | The working copy: `revision` required, and any of `title`, `closesAt`, `voteMode` and `content`. See [Authoring a decision](#authoring-a-decision). No event, activity, live event or mail |
 | `markReviewed` (card 2676) | `sections` (keys or `'all'`) and `revision`; `review` (author, decider), and 403 unless `source` is `ui`. Clears agent flags and stamps `reviewed`. No event |
-| `openDecision` | 409 with nothing written for no decider, no board, a decider who can no longer edit it, no `closes_at` in the future, fewer than two live options, no consulted participant, a participant whose person has left or is gone, no mail host, no link address, or two retaken snapshots holding one account. Then snapshots retaken with `included_at` now, `open`, version 1, options numbered, `published`, `opened`, `included { role, hadAccount }` per participant, the invitations, `decision_opened`, the live event |
-| `republishDecision` | `changeNote` (1 to 2,000) and `askAgain`. 409 once `closes_at` has passed, for telling only while an option would be added or retired, when the new version would hold fewer than two live options (decision 20, the code review's F4), for `NO_LINK_ADDRESS`, and while anyone it would mail was mailed in the last 10 minutes. Version N+1, options numbered or retired, `published`; asking again mails `asked_again` and opens a closed decision, telling only mails `told_of_change`. `decision_republished`, the live event |
+| `dryRunDecision` (card 2697) | `revision` required. The invitation as a consulted participant would get it, quoting the working copy, mailed to the caller's address in the people directory alone. See [Opening a decision and its lifecycle](#opening-a-decision-and-its-lifecycle). One `dry_run` event; no activity, live event or link |
+| `openDecision` | `revision` required (card 2697, 400 missing, 409 stale). 409 with nothing written for no decider, no board, a decider who can no longer edit it, no `closes_at` in the future, fewer than two live options, no consulted participant, a participant whose person has left or is gone, no mail host, no link address, or two retaken snapshots holding one account; then, last, 429 once the caller has opened or re-published `PUBLISH_DAILY_CAP` (10) decisions in 24 hours. Then snapshots retaken with `included_at` now, `open`, version 1, options numbered, `published`, `opened`, `included { role, hadAccount }` per participant, the invitations, `decision_opened`, the live event |
+| `republishDecision` | `changeNote` (1 to 2,000), `askAgain` and `revision` (card 2697). 409 once `closes_at` has passed, for telling only while an option would be added or retired, when the new version would hold fewer than two live options (decision 20, the code review's F4), for `NO_LINK_ADDRESS`, while anyone it would mail was mailed in the last 10 minutes or five times in 24 hours, and, last, 429 for the caller's publish limit. Version N+1, options numbered or retired, `published`; asking again mails `asked_again` and opens a closed decision, telling only mails `told_of_change`. `decision_republished`, the live event |
 | `closeDecision` | `closed`, `closed_at`, the `closed` event, `decision_closed`, the live event; no mail |
-| `extendDecision` | `closesAt` in the future (400). `open`, `closed_at` emptied, `extended { from, to }`, `decision_extended`, the live event; no mail |
-| `withdrawDecision` | `reason` (1 to 2,000). `withdrawn`, the reason, the `withdrawn` event. Once opened: `told_withdrawn` mails, `decision_withdrawn` (never the reason), the live event. A draft: none of those |
-| `deleteDecision` | Draft and withdrawn only; the cascade removes every row. Once opened: `decision_deleted`, the live event |
-| `resendInvitation` | 404 for a participant not on the decision; 409 for one removed, for each skip reason in its words, for `NO_LINK_ADDRESS`, and within 10 minutes of their last mail. `invited { resend: true }`, a link holder with a new link |
+| `extendDecision` | `closesAt` in the future and no more than `CLOSES_WITHIN_DAYS` (365) days ahead (400, card 2697). `open`, `closed_at` emptied, `extended { from, to }`, `decision_extended`, the live event; no mail |
+| `withdrawDecision` | `reason` (1 to 2,000). `withdrawn`, the reason, the `withdrawn` event. Once opened: `told_withdrawn` mails (never held by the daily cap), `decision_withdrawn` (never the reason), the live event. A draft: none of those. Its refusals are `decisionWithdrawGuard`'s, which also answers `wasOpened`: its route asks for the password once opened (card 2697) |
+| `deleteDecision` | Draft and withdrawn only; the cascade removes every row. Once opened: `decision_deleted`, the live event. Its refusals are `decisionDeleteGuard`'s, which also answers `holdsRecord`: its route asks for the password once opened (card 2697) |
+| `resendInvitation` | 404 for a participant not on the decision; 409 for one removed, for each skip reason in its words, for `NO_LINK_ADDRESS`, within 10 minutes of their last mail, and once they have been mailed five times in 24 hours (card 2697). `invited { resend: true }`, a link holder with a new link |
 | `setParticipantAccount` | Administrators. `person`: 409 for a person gone or with no account, or whose account another live row holds; else the account copied, `link_revoked { account_attached }`, `account_attached { userId }`. `none`: 409 when there is nothing to clear; else the account emptied and `account_cleared { userId }`, after which the row may be reached by link again |
-| `changeParticipantAddress` | Administrators. `email`, lower-cased; the same address changes nothing. Else `link_revoked { participant_address }` and `address_changed { from, to }`; no mail |
+| `changeParticipantAddress` | Administrators. Card 2697: no address is sent; the write copies the address the people directory holds for the person now ("Use the directory's address"), 409 for a person gone, left, or whose address the row already holds. Then `link_revoked { participant_address }` and `address_changed { from, to }`; no mail |
 | `respondToDecision`, `respondByLink` (card 2677) | A participant's response, signed in or by a personal link. See [The participant page](#the-participant-page) |
 | `recordSeen`, `recordSeenByLink` (card 2677) | A participant recorded as having seen a version. See [The participant page](#the-participant-page) |
 
@@ -1355,7 +1359,7 @@ sequenceDiagram
 
 ### Authoring a decision
 
-Card 2676 (plan `docs/planning/card-2676-decision-authoring.md` v1.1) is drafting a decision: two new service writes, the revision every authoring write sends, a closed content shape, the readability check, the one shape every answer is given in, six route-methods, two pages and three components. Opening, re-publishing and the other lifecycle controls, the preview and the dry run are card 2697's; card 2677's participant pages, which it waited on, now exist ([The participant page](#the-participant-page)). Until card 2697 ships nobody is mailed from these pages, except that saving participants on a decision already open includes them, which mails them (no decision can be opened yet, so none is).
+Card 2676 (plan `docs/planning/card-2676-decision-authoring.md` v1.1) is drafting a decision: two new service writes, the revision every authoring write sends, a closed content shape, the readability check, the one shape every answer is given in, six route-methods, two pages and three components. Opening, re-publishing and the other lifecycle controls, the preview and the dry run are card 2697's ([Opening a decision and its lifecycle](#opening-a-decision-and-its-lifecycle)); card 2677's participant pages, which both waited on, exist ([The participant page](#the-participant-page)).
 
 ```mermaid
 flowchart LR
@@ -1432,6 +1436,117 @@ sequenceDiagram
         Pg->>Pg: keep the edits, say the server's words; Reload on a 409
     end
 ```
+
+### Opening a decision and its lifecycle
+
+Card 2697 (plan `docs/planning/card-2676-decision-authoring.md` v1.5, part B, section 12) makes opening reachable, and so makes the decision pages mail people. It adds the lifecycle routes, the dry run, the preview, the delivery panel with Resend and the administrator's participant actions, the lifecycle controls above the editor, volume limits on what mails people, a year's cap on the closing time, and the password asked again before five of its actions (eight since its code review's part B, which added the People add, delete and Add from accounts).
+
+```mermaid
+flowchart LR
+    subgraph Edit["/decisions/[id]/edit"]
+      DA["DecisionActions<br/>(above the editor)"]
+      DE["DecisionEditor<br/>onDirtyChange"]
+      DP["DeliveryPanel<br/>(side column)"]
+    end
+    PV["/decisions/[id]/preview<br/>readPreview (decision-view.ts)"]
+    DA -->|"link"| PV
+    DE -->|"dirty: Open, Re-publish,<br/>dry run off"| DA
+    DA -->|"fetch JSON"| LR["open, republish, close, extend,<br/>withdraw, dry-run, DELETE"]
+    DP -->|"fetch JSON"| PR["…/participants/[participantId]/<br/>resend, account, address"]
+    LR -->|"withdraw, DELETE: guard,<br/>then confirmStepUp"| SU["step-up.ts"]
+    PR -->|"account, address"| SU
+    LR & PR -->|"writeAs"| S["decisions.ts"]
+    S --> M["decision-mail.ts<br/>queueDryRun, queueRecordMails,<br/>the caps"]
+    S --> RC["decision-record.ts<br/>lastDryRunAt, dryRunsSince, publishesSince,<br/>recordMailsSince, mailsSince,<br/>personOfAccount, deliveryOf"]
+    S --> RL["rate-limit.ts<br/>takeAllowance"]
+```
+
+**The routes.** Each is `requireUser`, `pathId`, `readBody` where it takes a body, and the write in `writeAs`, the answer shaped inside the callback through the one projection. Close and Resend read no body, and their page sends the JSON type with none (card 2700's gate wants the type on every internal write).
+
+| Route | Service | Body | Answer | Asks for the password |
+|---|---|---|---|---|
+| `POST /api/decisions/[id]/open` | `openDecision` | `{ revision }` | `{ decision, revision }` | No |
+| `POST /api/decisions/[id]/republish` | `republishDecision` | `{ changeNote, askAgain, revision }` | `{ decision, revision }` | No |
+| `POST /api/decisions/[id]/close` | `closeDecision` | none | `{ decision, revision }` | No |
+| `POST /api/decisions/[id]/extend` | `extendDecision` | `{ closesAt }` | `{ decision, revision }` | No |
+| `POST /api/decisions/[id]/withdraw` | `withdrawDecision` | `{ reason, currentPassword? }` | `{ decision, revision }` | Once opened |
+| `DELETE /api/decisions/[id]` | `deleteDecision` | `{}` or `{ currentPassword }` | `{ success: true }` | Once opened |
+| `POST /api/decisions/[id]/dry-run` | `dryRunDecision` | `{ revision }` | `{ sent: true }` | No |
+| `POST …/participants/[participantId]/resend` | `resendInvitation` | none | `{ participant, revision }` | No |
+| `PUT …/participants/[participantId]/account` | `setParticipantAccount` | `{ account, currentPassword }` | `{ participant, revision }` | Always |
+| `PUT …/participants/[participantId]/address` | `changeParticipantAddress` (handed `null`) | `{ currentPassword }` | `{ participant, revision }` | Always |
+
+**The lifecycle, with what asks.** The states are the service's ([The decision service and its record](#the-decision-service-and-its-record)); card 2697 marks the steps that ask for the caller's password, and the limits on the steps that mail.
+
+```mermaid
+stateDiagram-v2
+    [*] --> draft: createDecision
+    draft --> open: Open (revision, publish limit 429)
+    draft --> withdrawn: Withdraw (no password, nobody told)
+    draft --> [*]: Delete (no password, no record)
+    open --> open: Re-publish (revision, publish limit 429, 5 a day per participant 409)
+    open --> closed: Close
+    closed --> open: Extend (at most 365 days ahead), or Re-publish asking again
+    open --> withdrawn: Withdraw (password, told_withdrawn)
+    closed --> withdrawn: Withdraw (password, told_withdrawn)
+    withdrawn --> [*]: Delete (password, the record goes for good)
+```
+
+**The guards and the password** (card 2701's pattern, as the column delete runs it). The delete and the withdrawal first run `decisionDeleteGuard(caller, at)` or `decisionWithdrawGuard(caller, at, body)` in a `writeAs` of their own: every refusal of the write (404, 403, the reason's 400, the status's 409), writing nothing, and whether the decision was ever opened (`openedAt` set: `holdsRecord`, `wasOpened`). Never opened, the write runs in a transaction with no password that asks the guard again, and refuses `400 STEP_UP_MISSING` if the decision was opened meanwhile. Opened, `confirmStepUp(locals, cookies, body, '<key>', guard)` checks `currentPassword` (400 missing, 403 wrong and counted), and the write runs in `whilePasswordHolds(userId, hash, …)`, refused `409 PASSWORD_CHANGED_MEANWHILE` if the stored hash moved since the check. The administrator's account and address routes run the same way with their own guards and ask always. `STEP_UP_ACTIONS` is twenty-six since card 2697's code review, part B, added the People add, delete and Add from accounts ([Authentication and Security](authentication-security.md#decision-access-and-personal-links)).
+
+```mermaid
+sequenceDiagram
+    participant Pg as DecisionActions
+    participant Rt as DELETE /api/decisions/[id]
+    participant Gd as decisionDeleteGuard
+    participant Su as confirmStepUp
+    participant Wr as deleteDecision
+    Pg->>Rt: {} or { currentPassword } (JSON)
+    Rt->>Gd: writeAs of its own: 404, 403, 409, and holdsRecord
+    alt never opened
+        Rt->>Wr: writeAs: the guard again (400 STEP_UP_MISSING if opened meanwhile), then the delete
+    else opened
+        Rt->>Su: currentPassword (400), the check (403, counted), the guard first
+        Rt->>Wr: whilePasswordHolds → writeAs: the delete (409 if the hash moved)
+    end
+    Rt-->>Pg: { success: true }
+```
+
+**The dry run** (`dryRunDecision`, `queueDryRun`). `revision` required; refused 409 for a stale revision, with no mail host ("Mail is not set up on this server: a dry run cannot be sent"), with no link address (`NO_LINK_ADDRESS`), and unless a person of the people directory holds the caller's account at the account's own address (`personOfAccount`): the account's address is set by its holder and confirmed by nobody. Then 429 within `DRY_RUN_MIN_MINUTES` (10) of the caller's last dry run on any decision, at `DRY_RUN_DAILY_CAP` (20) in 24 hours read from the `dry_run` events, and, last of all, from the in-memory allowance `decision-dry-run:<userId>` (`takeAllowance`), which a deletion of the decisions and their events with them does not give back. A refusal takes nothing. It writes one `dry_run` event (no participant, detail `{}`) and queues one `afterCommit` send of the consulted invitation, subject `Dry run: …`, quoting the working copy, with the line "This dry run was sent at the request of <username>." and a link to the preview. No link is issued, and no activity entry or live event is written.
+
+**The volume limits.** Opening and re-publishing each count against the caller's `PUBLISH_DAILY_CAP` (10 in 24 hours, across decisions): read from the `published` events by `actor_user_id`, then the allowance `decision-publish:<userId>`; 429 "You have opened or re-published 10 decisions in the last 24 hours: the next can be sent from <stamp> UTC". Each participant may be sent `RECORD_MAIL_DAILY_CAP` (5) record mails in 24 hours: `requireMailRested` refuses 409 past it, as it refuses within 10 minutes of the last, on re-publishing, Resend and including someone again; one `mailRestOf` in `decision-mail.ts` gives both words, for the write and for the delivery panel. The withdrawal and the ruling mails are never held back. Both caps are read from the record, which a restart keeps; the per-caller ones also from memory, which a deletion does not clear; a deletion followed by a restart clears both, which is accepted (plan Q27).
+
+**The closing time** is at most `CLOSES_WITHIN_DAYS` (365) days ahead, on the draft's save (a changed value only) and on Extend: 400 `closesAt must be no more than 365 days from now`. A personal link lasts until the closing time plus 90 days, so the cap bounds every link. The constant lives in `$lib/decision-readiness.ts`, and the editor's closing time and the Extend form say "At most a year ahead (365 days), in UTC." from it.
+
+**The code review, part B (2026-11-04).** Each finding's fix, by where it lives:
+
+| Ruling | Where | What |
+|---|---|---|
+| S1 | `people.ts` (`personCreateGuard`, `personDeleteGuard`, `fromAccountsGuard` on `READS`), the three People routes, `/admin/people` and its dialogs | Adding a person, deleting one and Add from accounts ask for the password every time, guard first; 26 actions on `STEP_UP_ACTIONS` |
+| S2 | `requireRecordMailAllowed` in `decisions.ts`, `recordMailsSince` in `decision-record.ts`, `CALLER_MAIL_DAILY_CAP` (500) in `decision-mail.ts` | The record mail one caller causes in 24 hours, across decisions: opening, re-publishing, Resend, including someone new or again; 429 |
+| S3 | `closesTooFar`, `refusalsOf` (`closes_too_far`) and `checkContent`'s `closes_too_far` warning in `$lib/decision-readiness.ts`; `republishDecision` | Opening and re-publishing refuse a closing time more than 365 days ahead, 409 |
+| S4 | `DecisionActions.svelte` | Withdraw and Delete send whatever password was typed, so a dialog the server told to ask completes |
+| F1 | `DecisionEditor.svelte` | The status, chip and closing time follow `decision` as the page reads it again; unsaved edits kept |
+| F2 | `attachRefusal`, `clearRefusal`, `addressRefusal` in `decision-links.ts`, asked by the guards and by `readEditPage`'s `directory` | The delivery panel draws `canAttach`, `canClear`, `canUseDirectoryAddress` and copies no rule |
+| F5 | `closesField`, `CLOSES_HELP` (`$lib/decision-readiness`), `later` and `MAIL_EVENT` (`decision-mail.ts`), the page's `$types` | One copy of each |
+| F6 | `DecisionActions.svelte`, `DeliveryPanel.svelte` | `aria-expanded` and `aria-controls`, focus into a form and back to its toggle, a status region always drawn, a Resend row given the focus when its button goes |
+| F7 | `requirePublishAllowed`, `dryRunDecision` | Each cap's end read as `mailRestOf` reads it, `now < from` |
+
+```mermaid
+flowchart TD
+    W["openDecision, republishDecision,<br/>resendInvitation, setParticipants (adding)"] --> P["requireMailRested:<br/>each participant, 10 minutes and 5 a day (409)"]
+    P --> C["requireRecordMailAllowed:<br/>the caller's mail in 24 hours + coming ≤ 500,<br/>events then allowance (429)"]
+    C --> L["requirePublishAllowed<br/>(open, re-publish): 10 a day (429)"]
+    L --> Q["queueRecordMails"]
+```
+
+**The edit page's lifecycle data** (`readEditPage`). `actions` holds one flag per control (`open`, `republish`, `close`, `extend`, `withdraw`, `delete`, `dryRun`, `resend`, `participantAccount`, `participantAddress`), each `TRANSITIONS` holding the stored status and `mayDo`, exactly as each write asks them, with `withdrawAsks` and `deleteAsks` (ever opened). `republishSummary` (`{ changesOptions, adding, retiring }` by label, from `optionChanges`) is given where Re-publish is offered. `delivery` is each participant's latest record mail and its outcome, latest skip and link ending, in words made on the server, with `resendable`, `resendFrom` and the write's own `refusal` words, given only once opened and to a caller who may resend (author, decider, administrator); `directory`, the people directory's address and account for each participant, goes to an administrator alone, for the account and address actions.
+
+**The components.** `DecisionActions` draws each control only where its flag holds: Preview as a participant (a link), Send me a dry run, Open (off while a refusal is given, which it lists; with warnings it confirms "Open with N warnings"), Re-publish (a change note, and Tell them only off with its reason where the options change), Close, Extend, Withdraw (a reason) and Delete. Open, Re-publish and the dry run are off while `DecisionEditor` reports edits not yet saved through `onDirtyChange` ("Save your changes first"). Close, Extend, Withdraw and Delete go through `ConfirmModal`, with `askPassword` for the withdrawal and the delete of a decision ever opened; a refusal of the password is told by its `stepUp` code (`stepUpRefusal`) and keeps the dialog open. `DeliveryPanel` draws the delivery rows, Resend, and an administrator's Attach account, Clear account and Use the directory's address, each asking for the password.
+
+**The preview** (`/decisions/[id]/preview`, `readPreview` in `decision-view.ts`, beside `viewModelOf`). `requireDecision(…, 'edit')`; it reads the working copy (`workingViewContent`), never a version, and writes nothing: no event, link or seen. `?as=<participantId>` shows a live participant of this decision (any other, or a removed one, 404) with their role and their groups now; `?role=consulted|informed` (else 400) with `group=<id>` (else 400) a generic participant; no query a generic consulted one, every audience open; `as` with `role` or `group` is 400. The options are the next version's. No address or account of anyone is given, to an administrator too. The page draws `DecisionView` in `mode: 'preview'`, a banner saying nothing is recorded, and for a consulted participant a disabled `ResponseForm`; no seen watch is armed. A draft is drawn as an open decision would be.
+
+**The headers.** The preview, the editor and a board's list of decisions carry `UNPUBLISHED_HEADERS` (`Cache-Control: no-store`, `X-Robots-Tag: noindex, nofollow`) by route id in `ROUTE_HEADERS` (`gate-answers.ts`), so their data requests carry them too.
 
 ### The participant page
 

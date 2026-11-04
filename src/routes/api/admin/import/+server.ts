@@ -138,6 +138,19 @@ function requestLinksSentence(count: number): string {
 	);
 }
 
+/**
+ * How many personal decision links the restore cancelled (card 2697, Q15):
+ * every link a backup holds is emptied, so a link mailed before the import
+ * goes nowhere now, and its holder needs a new one. Said only when there were
+ * any.
+ */
+function decisionLinksSentence(count: number): string {
+	return (
+		`${count} personal decision link(s) cancelled: a link mailed before this restore no longer works, and the decision's ` +
+		'author, decider or an administrator can send its holder a new one with Resend.'
+	);
+}
+
 /** How many attachment files an import had back from the uploads trash. */
 function putBackSentence(count: number): string {
 	return `${count} attachment file(s) put back from the trash.`;
@@ -441,11 +454,13 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 			// hold (card 2169): those kept from this server, and those to enter
 			// again, so that a backup made before it reads as it did.
 			const linksReplaced = result.requestLinksReplaced > 0 ? requestLinksSentence(result.requestLinksReplaced) : null;
+			// And the personal decision links it cancelled (card 2697, Q15).
+			const decisionLinks = result.decisionLinksCleared > 0 ? decisionLinksSentence(result.decisionLinksCleared) : null;
 			// What the removal above took is said after them (card 2411).
 			const secretsKept = secretsKeptSentence(secrets.kept);
 			const secretsToEnter = secretsToEnterSentence(secrets.toEnter, false, result.unsealed);
 			const ending = (text: string) =>
-				[linksReplaced, putBack, secretsKept, secretsToEnter, settingsRemoved, workingCopy].reduce<string>(
+				[linksReplaced, decisionLinks, putBack, secretsKept, secretsToEnter, settingsRemoved, workingCopy].reduce<string>(
 					(said, sentence) => (sentence ? endingWith(said, sentence) : said),
 					text
 				);
@@ -462,6 +477,7 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 				sizeBytes: buffer.length,
 				restored: result.restored,
 				requestLinksReplaced: result.requestLinksReplaced,
+				decisionLinksCleared: result.decisionLinksCleared,
 				attachmentsPutBack: files.putBack,
 				workingCopy: workingCopy ?? undefined,
 				secretsKept: secretsKept ?? undefined,
@@ -560,9 +576,11 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 				// figures, with what is to enter at WARN on its own line too.
 				const done = err.committed ? err.done : null;
 				const linksReplaced = done && done.requestLinksReplaced > 0 ? requestLinksSentence(done.requestLinksReplaced) : null;
+				// The personal decision links it cancelled, as a restore that succeeded says them (card 2697, Q15).
+				const decisionLinks = done && done.decisionLinksCleared > 0 ? decisionLinksSentence(done.decisionLinksCleared) : null;
 				const secretsKept = done ? secretsKeptSentence(done.secrets.kept) : null;
 				const secretsToEnter = done ? secretsToEnterSentence(done.secrets.toEnter, false, done.unsealed) : null;
-				const message = [linksReplaced, secretsKept, secretsToEnter].reduce<string>(
+				const message = [linksReplaced, decisionLinks, secretsKept, secretsToEnter].reduce<string>(
 					(said, sentence) => (sentence ? endingWith(said, sentence) : said),
 					err.message
 				);
@@ -575,6 +593,7 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 						errors,
 						committed: err.committed,
 						requestLinksReplaced: done?.requestLinksReplaced,
+						decisionLinksCleared: done?.decisionLinksCleared,
 						secretsKept: secretsKept ?? undefined,
 						secretsToEnter: secretsToEnter ?? undefined
 					},

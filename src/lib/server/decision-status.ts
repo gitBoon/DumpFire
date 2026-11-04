@@ -65,7 +65,8 @@ export type DecisionAction =
 	| 'participantAddress'
 	| 'rule'
 	| 'record'
-	| 'respond';
+	| 'respond'
+	| 'dryRun';
 
 /**
  * Each action in words: `verb` for `You cannot <verb> this decision` (the
@@ -89,7 +90,8 @@ export const DECISION_ACTION_WORDS: Readonly<Record<DecisionAction, { verb: stri
 	participantAddress: { verb: "change a participant's address on", done: "a participant's address cannot be changed" },
 	rule: { verb: 'rule on', done: 'it cannot be ruled on' },
 	record: { verb: 'read the record of', done: 'its record cannot be read' },
-	respond: { verb: 'respond to', done: 'responses are closed' }
+	respond: { verb: 'respond to', done: 'responses are closed' },
+	dryRun: { verb: 'send a dry run of', done: 'a dry run cannot be sent' }
 };
 
 /** Each shown status in words, for `This decision is <status>`. */
@@ -120,7 +122,9 @@ export const TRANSITIONS: Readonly<Record<Exclude<DecisionAction, 'view' | 'reco
 	participantAddress: ['open', 'closed'],
 	rule: ['open', 'closed'],
 	// Card 2677: a participant's response, while the decision is stored open; the write also asks the shown status (decision 12).
-	respond: ['open']
+	respond: ['open'],
+	// Card 2697: the invitation as a consulted participant would get it, mailed to the caller alone (decision 19, Q26).
+	dryRun: ['draft', 'open', 'closed']
 };
 
 /**

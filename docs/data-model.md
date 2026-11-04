@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.47
+version: 1.49
 status: As-Built
 date: 2026-11-04
 tags:
@@ -682,7 +682,7 @@ refused (comment 5599). A `detail` never holds a token, a hash or a mail server'
 | `withdrawn` | no | `{ reason }` |
 | `account_attached`, `account_cleared` | yes | `{ userId }` |
 | `address_changed` | yes | `{ from, to }` |
-| `dry_run` | no | card 2697 (no write makes one yet) |
+| `dry_run` | no | `{}`: a dry run mailed to its actor alone (card 2697); never names a participant, on a draft too |
 | `seen` (card 2677) | yes | `{ stage }`, `stage` `question`, `ruling` or `withdrawal`, with `version_number`; `signedIn { userId, name }` beside it for a link holder in a signed-in browser |
 | `responded` (card 2677) | yes | `{ responseId }`, with `version_number`; `signedIn` as for `seen` |
 
@@ -695,6 +695,37 @@ cannot be copied fails the restore, which rolls back: a lost event strands no ro
 foreign-key check would not stop it, and a partial record would be a false one. A NULL in a NOT
 NULL column of a decision table is never given the column's default, as `defaultsForNull` gives
 it elsewhere: the row is left out, and the restore fails (card 2675's code review, F8).
+
+#### The counts the lifecycle reads (card 2697)
+
+Card 2697 (plan `docs/planning/card-2676-decision-authoring.md`, part B) added no column, no
+table and no migration. Its limits are read from `decision_events` in `decision-record.ts`, the
+one module that reads the record tables by name, through the existing index
+`idx_decision_events_actor_user_id`:
+
+| Read | From | Used by |
+|---|---|---|
+| `lastDryRunAt(userId)`, `dryRunsSince(userId, since)` | `dry_run` events by `actor_user_id`, across decisions | the dry run's 10-minute rest and its 20 a day |
+| `publishesSince(userId, since)` | `published` events by `actor_user_id`, across decisions (Open writes one, each re-publish one) | the publish limit, 10 a day |
+| `mailsSince(participantIds, since)` | the record-mail kinds (`invited`, `asked_again`, `told_of_change`, `told_withdrawn`, `told_ruling`) per participant | the record-mail cap, 5 a day per participant |
+| `personOfAccount(userId)` | the `people` row whose `user_id` is the account | the dry run's address rule |
+| `deliveryOf(decisionId)` | one read of the decision's events: per participant the latest record mail with its own `mail_outcome` (`detail.of`), the latest `mail_skipped` and the latest `link_revoked` | the editor's delivery panel |
+
+Each count read returns the moments themselves, so the refusal can say from when the next is
+allowed (the earliest of the window's plus 24 hours). **A deletion takes the counts with it**: a
+decision's events cascade with it (`decision_events.decision_id`, `onDelete: 'cascade'`), so the
+per-caller limits are also held by an in-memory allowance (`takeAllowance`) that a deletion does
+not give back. A deletion followed by a restart clears both, which is accepted (plan Q27). The
+per-participant cap needs no allowance: a participant's rows go only with their decision, which
+can then no longer be mailed.
+
+```mermaid
+erDiagram
+    decisions ||--o{ decision_events : "cascade on delete"
+    users ||--o{ decision_events : "actor_user_id (dry_run, published counts)"
+    decision_participants ||--o{ decision_events : "participant_id (record-mail cap, delivery)"
+    people ||--o| users : "user_id (personOfAccount)"
+```
 
 #### Responses and opening (card 2677)
 
@@ -2221,7 +2252,7 @@ of about zero.
   compares; a compare that fails on its worker stays counted. A right one sets it to 0 while
   the row is still there, and a wrong one that leaves it at 3 deletes the session (the code
   review's S1, ruled 2026-11-04: only a compare counts). The Account page's three forms and the
-  eighteen step-up actions share it. It replaced a count in memory with a 15-minute window, so a
+  twenty-six step-up actions share it (card 2701's eighteen and card 2697's eight). It replaced a count in memory with a 15-minute window, so a
   restart no longer clears it. `sessions` is not a reconciled table, so the file alone adds the
   column; every existing session reads 0 and no row is changed, so nothing is declared to the
   rehearsal. No backup holds a session row and no restore brings one in, so neither carries a

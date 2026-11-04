@@ -16,10 +16,15 @@ import { db } from '$lib/server/db';
 import { boardMembers, boards, decisionOptions, decisionParticipants, decisions, people, settings, type Board } from '$lib/server/db/schema';
 import { revisionOf } from '$lib/server/decision-content';
 import type { RefusalCode } from '$lib/decision-readiness';
+import { stamp } from '$lib/timestamps';
 import { addBoardMember, makeDecision, makeOption, makeParticipant, makePerson, makeUser } from './fixtures';
 
-/** A closing time ahead of every test. */
-export const FUTURE = '2099-01-01 12:00:00';
+/**
+ * A closing time ahead of every test, and within the year a decision may be
+ * opened or re-published with (card 2697's code review, part B, S3): 90 days
+ * from when the suite's file is loaded, to the whole second.
+ */
+export const FUTURE = stamp(new Date(Date.now() + 90 * 24 * 60 * 60 * 1000));
 
 const decisionRow = (id: number) => db.select().from(decisions).where(eq(decisions.id, id)).get()!;
 
@@ -77,6 +82,13 @@ export const OPEN_FAULTS: [name: string, make: (ready: Ready) => void, words: st
 		(r) => db.update(decisions).set({ closesAt: '2020-01-01 00:00:00' }).where(eq(decisions.id, r.draft.id)).run(),
 		'This decision has no closing time in the future: it cannot be opened',
 		'no_closing_time'
+	],
+	[
+		// Card 2697's code review, part B (S3): a stored closing time set before the year's limit, or by hand.
+		'(c2) closes_at more than 365 days ahead',
+		(r) => db.update(decisions).set({ closesAt: '2099-01-01 12:00:00' }).where(eq(decisions.id, r.draft.id)).run(),
+		'This decision closes more than 365 days ahead: it cannot be opened until its closing time is nearer',
+		'closes_too_far'
 	],
 	[
 		'(d) one live option',

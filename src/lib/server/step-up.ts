@@ -126,7 +126,20 @@ export const STEP_UP_ACTIONS = Object.freeze({
 	'PUT /api/admin/backup': "With destinations: can send every later backup to a destination of the caller's choosing",
 	'POST /api/admin/backup': 'Sends the whole database to every destination now',
 	'POST /api/admin/backup/gdrive/auth': "Binds a backup destination to a Google account of the caller's choosing",
-	'PUT /api/admin/smtp': 'Chooses the mail server invites and resets go through, and the App URL their links point at'
+	'PUT /api/admin/smtp': 'Chooses the mail server invites and resets go through, and the App URL their links point at',
+	// Card 2697 (Q9, Q21): what decides where a decision's record mail and personal links go, and who answers for a participant.
+	'PUT /api/decisions/[id]/participants/[participantId]/account':
+		"Changes which credential answers for a participant on a decision's record: an account, or a personal link mailed in its place",
+	'PUT /api/decisions/[id]/participants/[participantId]/address':
+		"Ends a participant's personal link and moves the address their record mail and next link go to",
+	'PUT /api/people/[id]': "With email or userId: changes where a person's decision mail and personal links go, or which account answers for them",
+	// Card 2697's code review, part B (S1): every other People write that sets or ends an address or an account.
+	'POST /api/people': "Adds a person with an address, and perhaps an account, that decide where a decision's record mail and personal links go",
+	'DELETE /api/people/[id]': "Deletes a person: ends every personal link they hold, and frees their address for another person",
+	'POST /api/people/from-accounts': "Adds people linked to accounts, with the accounts' addresses, which decide where decision mail and links go",
+	// Card 2697, B4 (Q9, Q29): a decision's record destroyed, or a decision ended for good with every participant told.
+	'DELETE /api/decisions/[id]': "Once opened: deletes a decision's permanent record, its versions, responses and events, for good",
+	'POST /api/decisions/[id]/withdraw': "Once opened: ends a decision for good and mails every participant the caller's words"
 } as const);
 
 /** A key of `STEP_UP_ACTIONS`. */

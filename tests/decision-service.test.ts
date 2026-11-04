@@ -55,11 +55,12 @@ import { deleteUser } from '$lib/server/deletes';
 import { mailStatus, NO_LINK_ADDRESS } from '$lib/server/email';
 import { subscribe } from '$lib/server/events';
 import { updatePerson } from '$lib/server/people';
+import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { requireDecision } from '$lib/server/route-guards';
 import { parseStamp, stamp } from '$lib/timestamps';
 import { writeAs } from '$lib/server/write-as';
 import type { ServiceOptions } from '$lib/server/write-as';
-import { OPEN_FAULTS, readyDraft as readyDraftOn, revisionNow } from './helpers/decision-faults';
+import { FUTURE as SHARED_FUTURE, OPEN_FAULTS, readyDraft as readyDraftOn, revisionNow } from './helpers/decision-faults';
 import { effects, type Effects, type OfferedMail } from './helpers/effects';
 import { readBudget } from './helpers/reads';
 import {
@@ -78,7 +79,8 @@ import {
 
 const APP = 'https://kanban.example.test';
 const UI: ServiceOptions = { source: 'ui' };
-const FUTURE = '2099-01-01 12:00:00';
+/** The shared helper's closing time, within the year opening and re-publishing allow (card 2697's code review, part B, S3). */
+const FUTURE = SHARED_FUTURE;
 
 /** An error as nodemailer throws one. */
 const refused = (code: string, message: string, more: Record<string, unknown> = {}) => Object.assign(new Error(message), { code }, more);
@@ -96,6 +98,8 @@ let board: Board;
 
 beforeEach(() => {
 	resetDb();
+	// Card 2697 (Q32): the publish limit's allowance is in memory, and ids repeat after resetDb.
+	resetAllRateLimits();
 	makeSmtp();
 	db.insert(settings).values({ key: 'app_url', value: APP }).run();
 	owner = makeUser({ username: 'owner' });
@@ -478,7 +482,9 @@ describe('setParticipants on an open decision', () => {
 /** A draft that opens, on `board` (`tests/helpers/decision-faults.ts`, moved there by card 2676). */
 const readyDraft = (title = 'Ready') => readyDraftOn({ board }, title);
 
-const open = (user: SessionUser, decision: Decision, opts: ServiceOptions = UI) => as(user, (caller) => openDecision(caller, { decisionId: decision.id }, null, opts));
+// Card 2697 (Q1): opening sends the revision, as the page holds it.
+const open = (user: SessionUser, decision: Decision, opts: ServiceOptions = UI) =>
+	as(user, (caller) => openDecision(caller, { decisionId: decision.id }, { revision: revisionNow(decision.id) }, opts));
 
 describe('openDecision', () => {
 	it('publishes version 1, retakes the snapshots, records each step, invites each participant and tells the board (34)', async () => {
@@ -754,15 +760,18 @@ async function openedDecision(title = 'Ready', age = true) {
 const openByHand = (row: Partial<Parameters<typeof makeDecision>[0]> = {}) =>
 	makeDecision({ board, author: owner, decider: owner, status: 'open', closesAt: FUTURE, currentVersion: 1, openedAt: '2026-11-01 09:00:00', ...row });
 
-const republish = (user: SessionUser, id: number, body: Record<string, unknown>) => as(user, (caller) => republishDecision(caller, { decisionId: id }, body, UI));
+// Card 2697 (Q1): re-publishing sends the revision, as the page holds it.
+const republish = (user: SessionUser, id: number, body: Record<string, unknown>) =>
+	as(user, (caller) => republishDecision(caller, { decisionId: id }, { ...body, revision: revisionNow(id) }, UI));
 const resend = (user: SessionUser, id: number, participantId: number) =>
 	as(user, (caller) => resendInvitation(caller, { decisionId: id, participantId }, null, UI));
 const withdraw = (user: SessionUser, id: number, reason = 'No longer needed.') => as(user, (caller) => withdrawDecision(caller, { decisionId: id }, { reason }, UI));
 const remove = (user: SessionUser, id: number) => as(user, (caller) => deleteDecision(caller, { decisionId: id }, null, UI));
 const setAccount = (user: SessionUser, id: number, participantId: number, account: string) =>
 	as(user, (caller) => setParticipantAccount(caller, { decisionId: id, participantId }, { account }, UI));
-const setAddress = (user: SessionUser, id: number, participantId: number, email: string) =>
-	as(user, (caller) => changeParticipantAddress(caller, { decisionId: id, participantId }, { email }, UI));
+// Card 2697 (Q22): "Use the directory's address" sends no address; the write copies the directory's.
+const setAddress = (user: SessionUser, id: number, participantId: number) =>
+	as(user, (caller) => changeParticipantAddress(caller, { decisionId: id, participantId }, null, UI));
 const versionsOf = (id: number) => sqlite.prepare('SELECT * FROM decision_versions WHERE decision_id = ? ORDER BY number').all(id) as any[];
 
 /** Run `body` with neither an App URL saved nor `ORIGIN` or `APP_URL` set, and put them back. */
@@ -938,17 +947,17 @@ describe('closeDecision and extendDecision', () => {
 		sent.clear();
 		const before = eventsOf(r.id).length;
 
-		const row = as(r.decider, (caller) => extendDecision(caller, { decisionId: r.id }, { closesAt: '2099-06-01T09:30:00Z' }, UI));
+		// Card 2697 (Q25): a new closing time is at most a year ahead, so a month ahead is sent.
+		const soon = stamp(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000));
+		const row = as(r.decider, (caller) => extendDecision(caller, { decisionId: r.id }, { closesAt: `${soon.replace(' ', 'T')}Z` }, UI));
 
-		expect(row).toMatchObject({ status: 'open', closesAt: '2099-06-01 09:30:00', closedAt: null });
-		expect(eventsOf(r.id).slice(before)).toEqual([
-			expect.objectContaining({ kind: 'extended', detail: { from: FUTURE, to: '2099-06-01 09:30:00' }, actorName: 'decider' })
-		]);
+		expect(row).toMatchObject({ status: 'open', closesAt: soon, closedAt: null });
+		expect(eventsOf(r.id).slice(before)).toEqual([expect.objectContaining({ kind: 'extended', detail: { from: FUTURE, to: soon }, actorName: 'decider' })]);
 		expect(activityRows().at(-1)).toEqual({
 			boardId: board.id,
 			cardId: null,
 			action: 'decision_extended',
-			detail: '"Ready": closes 2099-06-01 09:30 UTC',
+			detail: `"Ready": closes ${soon.slice(0, 16)} UTC`,
 			userId: r.decider.id
 		});
 		await sent.settle();
@@ -1115,7 +1124,7 @@ describe('resendInvitation', () => {
 
 		// The directory address changes, and an administrator moves the snapshot to it.
 		db.update(people).set({ email: 'linky.new@example.test' }).where(eq(people.id, r.linkPerson.id)).run();
-		setAddress(makeUser({ role: 'admin' }), r.id, r.linked.id, 'linky.new@example.test');
+		setAddress(makeUser({ role: 'admin' }), r.id, r.linked.id);
 		ageRecordMail(r.id);
 		sent.clear();
 		resend(r.author, r.id, r.linked.id);
@@ -1227,12 +1236,15 @@ describe("the administrator's participant actions", () => {
 		expect(eventsOf(decision.id)).toHaveLength(before + 1);
 	});
 
-	it('changes the address, lower-cased, ends the link, writes address_changed { from, to }, and sends nothing (68)', async () => {
+	it("changes the address to the directory's, lower-cased, ends the link, writes address_changed { from, to }, and sends nothing (68)", async () => {
 		const decision = openByHand();
-		const row = makeParticipant(decision, { person: makePerson({ email: 'old@example.test' }), token: 'a-live-token', hadAccount: false });
+		const person = makePerson({ email: 'old@example.test' });
+		const row = makeParticipant(decision, { person, token: 'a-live-token', hadAccount: false });
 		const before = eventsOf(decision.id).length;
+		// Card 2697 (Q22): the directory's address moves first; the write copies it.
+		db.update(people).set({ email: 'New.Address@Example.Test' }).where(eq(people.id, person.id)).run();
 
-		const after = setAddress(admin, decision.id, row.id, 'New.Address@Example.Test');
+		const after = setAddress(admin, decision.id, row.id);
 
 		expect(after).toMatchObject({ email: 'new.address@example.test', linkTokenHash: null, linkIssuedAt: null });
 		expect(eventsOf(decision.id).slice(before).map((event) => [event.kind, event.participantId, event.detail])).toEqual([
@@ -1362,12 +1374,15 @@ describe('the rules that hold after opening', () => {
 		const decision = openByHand();
 		const first = makeParticipant(decision, { person: makePerson({ fullName: 'First', email: 'first@example.test' }), hadAccount: false });
 		const holder = makeParticipant(decision, { person: makePerson({ fullName: 'Holder', user: makeUser() }), hadAccount: true });
-		const third = makeParticipant(decision, { person: makePerson({ fullName: 'Third', email: 'third@example.test' }), hadAccount: false });
+		const thirdPerson = makePerson({ fullName: 'Third', email: 'third@example.test' });
+		const third = makeParticipant(decision, { person: thirdPerson, hadAccount: false });
 		// While the first mail is out, the second's account is cleared and the third's address changed, which ends its link.
 		refusal = (mail) => {
 			if (mail.to === 'first@example.test') {
 				setAccount(admin, decision.id, holder.id, 'none');
-				setAddress(admin, decision.id, third.id, 'third.new@example.test');
+				// Card 2697 (Q22): the directory's address moves, and the row is made to agree with it.
+				db.update(people).set({ email: 'third.new@example.test' }).where(eq(people.id, thirdPerson.id)).run();
+				setAddress(admin, decision.id, third.id);
 			}
 			return undefined;
 		};

@@ -61,7 +61,9 @@ export const DECISION_RULES: Readonly<Record<DecisionAction, readonly DecisionRo
 	rule: ['decider'],
 	record: ['admin', 'decider'],
 	// Card 2677: a participant's response; the write refuses an informed one, and one `reachOf` no longer reaches (decision 10).
-	respond: ['participant']
+	respond: ['participant'],
+	// Card 2697: a dry run mails the caller, so it is the accountable people's act (decision 5), with the board-edit rule.
+	dryRun: ['author', 'decider']
 };
 
 /** Who may view a draft (decision 5). */
