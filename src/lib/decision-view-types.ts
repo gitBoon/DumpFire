@@ -10,6 +10,7 @@
  * else (decision 16, S4).
  */
 import type { LinkedCardView } from '$lib/decision-register-types';
+import type { ToldMail } from '$lib/decision-words';
 import type { Stamp } from '$lib/timestamps';
 
 /** What every reader shows: `closed`, and `open` past its `closes_at`, are `awaiting_ruling` (moved here from decision-status.ts, which re-exports it). */
@@ -291,7 +292,8 @@ export type DecisionPageData = {
 	participant:
 		| (ViewParticipant & {
 				includedAt: Stamp;
-				told: { kind: 'invited' | 'asked_again' | 'told_of_change'; at: Stamp; delivered: boolean } | null;
+				/** Their latest record mail of the five (card 2708), the ruling's with no `at` key (D3); null for none. */
+				told: ToldMail | null;
 		  })
 		| null;
 	/** The latest in the current round: never a concern (card 2679, F3). */

@@ -262,19 +262,29 @@ export const STATUS_WORDS: Readonly<Record<string, string>> = {
 export const shownMoment = (at: string | null, unset: string) => (at === null ? unset : `${at.slice(0, 16)} UTC`);
 
 /**
+ * A participant's latest record mail, as their banner is told it (card 2677,
+ * decision 19; card 2708): one of the five record mails, its moment, and
+ * whether its own outcome says it was delivered. The ruling's has no `at` key
+ * at all (card 2708, D3): its moment is the ruling's own, which no page is
+ * given (card 2679, decision 26).
+ */
+export type ToldMail =
+	| { kind: 'invited' | 'asked_again' | 'told_of_change' | 'told_withdrawn'; at: string; delivered: boolean }
+	| { kind: 'told_ruling'; delivered: boolean };
+
+/**
  * The participant page's banner (card 2677, decision 19, D8): when the
  * participant was told of the decision, from their latest record mail, and
  * "by email" only when that mail was recorded as delivered. A mail not yet
  * known to be delivered, or none, gives the neutral words, from when they were
- * included.
+ * included. Since card 2708 the latest may be the withdrawal's or the
+ * ruling's, the ruling's named with no moment (D3, D4).
  */
-export function toldWords(
-	role: 'consulted' | 'informed',
-	told: { kind: 'invited' | 'asked_again' | 'told_of_change'; at: string; delivered: boolean } | null,
-	includedAt: string
-): string {
+export function toldWords(role: 'consulted' | 'informed', told: ToldMail | null, includedAt: string): string {
 	if (told === null || !told.delivered) return `You were included in this decision on ${shownMoment(includedAt, '')}.`;
+	if (told.kind === 'told_ruling') return 'You were told of the ruling on this decision by email.';
 	const at = shownMoment(told.at, '');
+	if (told.kind === 'told_withdrawn') return `You were told this decision was withdrawn on ${at}, by email.`;
 	if (told.kind === 'asked_again') return `This decision changed, and you were asked for your view again on ${at}, by email.`;
 	if (told.kind === 'told_of_change') return `You were told of a change to this decision on ${at}, by email.`;
 	if (role === 'informed') return `You were told of this decision on ${at}, by email, to keep you informed.`;

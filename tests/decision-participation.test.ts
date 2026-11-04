@@ -625,6 +625,20 @@ function invite(decision: Decision, participantId: number, delivered: boolean) {
 	appendEvent({ decisionId: decision.id, kind: 'mail_outcome', participantId, detail: { of, mail: 'invitation', delivered } }, SYSTEM_ACTOR);
 }
 
+/**
+ * The participant's ruling or withdrawal mail (card 2708), as `queueRecordMails`
+ * writes it: its event, then, unless `delivered` is undefined (no outcome
+ * yet), its outcome, a refused one with its problem. Answers the event's moment.
+ */
+function mailOf(decision: Decision, participantId: number, mail: 'ruling' | 'withdrawn', delivered?: boolean): string {
+	const of = appendEvent({ decisionId: decision.id, kind: mail === 'ruling' ? 'told_ruling' : 'told_withdrawn', participantId }, SYSTEM_ACTOR);
+	if (delivered !== undefined) {
+		const detail = { of, mail, delivered, ...(delivered ? {} : { problem: 'refused' }) };
+		appendEvent({ decisionId: decision.id, kind: 'mail_outcome', participantId, detail }, SYSTEM_ACTOR);
+	}
+	return (sqlite.prepare('SELECT created_at AS at FROM decision_events WHERE id = ?').get(of) as { at: string }).at;
+}
+
 describe('readDecisionPage and readLinkPage', () => {
 	it('gives a consulted participant the allowlist alone: labelled options, the text with a reviewed yes, the banner’s facts and their latest response (14)', () => {
 		const g = groups();
@@ -856,6 +870,61 @@ describe('readDecisionPage and readLinkPage', () => {
 		expect(JSON.stringify(page)).not.toContain('Rae Viewer');
 		expect(readLinkPage('token-page', 'browser')?.signedInAs).toBe('browser');
 		expect(readLinkPage('token-never', null)).toBeNull();
+	});
+
+	it('names a ruling mail as the latest, with no moment, on both pages; a refused one as not delivered, never the invitation; and another participant’s mail never (card 2708, 2708-1)', () => {
+		const { decision, a } = opened();
+		const { account, participant } = withAccount(decision);
+		const { participant: linked } = withLink(decision, 'token-ruled');
+		const refused = withAccount(decision, 'consulted', 'rex');
+		const other = withAccount(decision, 'consulted', 'olive');
+		for (const p of [participant, linked, refused.participant, other.participant]) invite(decision, p.id, true);
+		const ruling = makeRuling(decision, { optionId: a.id, ruledAt: stamp() });
+		const moments = [mailOf(decision, participant.id, 'ruling', true), mailOf(decision, linked.id, 'ruling', true), ruling.ruledAt];
+		mailOf(decision, refused.participant.id, 'ruling', false);
+		// The latest mail of all is another participant's, and refused: it moves nobody else's line.
+		mailOf(decision, other.participant.id, 'withdrawn', false);
+
+		// The link page read while signed in as another participant, the refused one (card 2708's code
+		// review): the line is still the token's own participant's, never the account's.
+		const pages = {
+			'signed in': readDecisionPage(account, decision.id),
+			'by link': readLinkPage('token-ruled', null),
+			'by link, signed in as the refused participant': readLinkPage('token-ruled', refused.account.username)
+		};
+		expect(pages['by link, signed in as the refused participant']?.signedInAs).toBe('rex');
+		for (const [how, page] of Object.entries(pages)) {
+			expect(page?.participant?.told, `(a) ${how}`).toEqual({ kind: 'told_ruling', delivered: true });
+			// D3: the ruling's moment is in no page's data, and no `at` key either (card 2679, decision 26).
+			expect(page?.participant?.told, `(a) ${how}`).not.toHaveProperty('at');
+			for (const moment of moments) expect(JSON.stringify(page), `(a) ${how}: ${moment}`).not.toContain(moment);
+		}
+		expect(readDecisionPage(refused.account, decision.id).participant?.told, '(b) refused').toEqual({ kind: 'told_ruling', delivered: false });
+	});
+
+	it('names a withdrawal mail as the latest, with its moment, not delivered until its own outcome says so (card 2708, 2708-2)', () => {
+		const { decision } = opened();
+		const { account, participant } = withAccount(decision);
+		invite(decision, participant.id, true);
+		db.update(decisions).set({ status: 'withdrawn', withdrawnAt: stamp(new Date(Date.now() - DAY)), withdrawnReason: 'Overtaken' }).where(eq(decisions.id, decision.id)).run();
+		const at = mailOf(decision, participant.id, 'withdrawn');
+
+		expect(readDecisionPage(account, decision.id).participant?.told, '(a) no outcome yet').toEqual({ kind: 'told_withdrawn', at, delivered: false });
+		const of = (sqlite.prepare("SELECT id FROM decision_events WHERE kind = 'told_withdrawn' AND participant_id = ?").get(participant.id) as { id: number }).id;
+		appendEvent({ decisionId: decision.id, kind: 'mail_outcome', participantId: participant.id, detail: { of, mail: 'withdrawn', delivered: true } }, SYSTEM_ACTOR);
+		expect(readDecisionPage(account, decision.id).participant?.told, '(b) delivered').toEqual({ kind: 'told_withdrawn', at, delivered: true });
+	});
+
+	it('does not count the closing-date reminder, delivered or not, as the latest mail (card 2708, 2708-3)', () => {
+		const { decision } = opened();
+		const { account, participant } = withAccount(decision);
+		invite(decision, participant.id, true);
+		const invited = readDecisionPage(account, decision.id).participant?.told;
+		expect(invited).toEqual({ kind: 'invited', at: expect.stringMatching(STAMPED), delivered: true });
+		const of = appendEvent({ decisionId: decision.id, kind: 'reminded', participantId: participant.id, versionNumber: 1 }, SYSTEM_ACTOR);
+		appendEvent({ decisionId: decision.id, kind: 'mail_outcome', participantId: participant.id, detail: { of, mail: 'reminder', delivered: true } }, SYSTEM_ACTOR);
+
+		expect(readDecisionPage(account, decision.id).participant?.told).toEqual(invited);
 	});
 
 	it('gives none of NEVER_GIVEN on a ruled, released and superseded page, nor on the page superseding it, either way in (card 2679, code review F5)', async () => {

@@ -62,8 +62,8 @@
  * role, address, account or inclusion changed since (`changedSinceAsked`,
  * `CHANGE_KINDS`; the code review's S1 added `removed` and `re_included`). A reminder
  * starts the 10-minute rest (`REST_KINDS`: `lastMailAt` and `deliveryOf`'s
- * `lastRestAt`), and is not counted toward the daily cap, which reads
- * `MAIL_KINDS` alone. Migration 0063's partial unique index holds one
+ * `lastRestAt`), and is not counted toward the per-participant daily cap,
+ * which reads `MAIL_KINDS` alone. Migration 0063's partial unique index holds one
  * `reminded` per participant per round.
  *
  * Plain functions with no caller, called inside a service write's
@@ -92,6 +92,7 @@ import {
 import type { SessionUser } from './auth';
 import type { ActivitySource } from './logActivity';
 import type { OwnResponse } from '$lib/decision-view-types';
+import type { ToldMail } from '$lib/decision-words';
 import { stamp, type Stamp } from '$lib/timestamps';
 
 /** Who an entry on the record is by: an account (its id while it lasts, and its name kept), a link holder, or DumpFire. */
@@ -303,8 +304,31 @@ export const RECORD_DETAIL: Readonly<Record<EventKind, DetailSpec>> = {
 	reminded: {}
 };
 
-/** The events a record-bearing mail writes for its participant (decision 31). */
-const MAIL_KINDS: readonly EventKind[] = ['invited', 'asked_again', 'told_of_change', 'told_withdrawn', 'told_ruling'];
+/**
+ * The events a record-bearing mail writes for its participant (decision 31),
+ * and since card 2708 (D1) the mails a participant's banner tells them of.
+ * The type check holds `MAIL_KINDS` and `ToldMail['kind']` to the same set,
+ * both ways: the `satisfies` here makes every entry an `EventKind` and a
+ * `ToldMail` kind, and `TOLD_KINDS_ARE_MAILS` below makes every `ToldMail`
+ * kind an entry here. Neither can gain or lose a kind alone.
+ */
+const MAIL_KINDS = ['invited', 'asked_again', 'told_of_change', 'told_withdrawn', 'told_ruling'] as const satisfies readonly (EventKind & ToldMail['kind'])[];
+
+/**
+ * The check back from `ToldMail` to `MAIL_KINDS` (card 2708's code review): a
+ * record keyed by every `ToldMail` kind, exhaustive (a kind missing, or one
+ * `ToldMail` does not have, fails the type check), whose value for each must
+ * be an entry of `MAIL_KINDS` (a `ToldMail` kind that is not one has the type
+ * `never` here, which no value meets). Compile time alone: read nowhere.
+ */
+const TOLD_KINDS_ARE_MAILS: { readonly [K in ToldMail['kind']]: K & (typeof MAIL_KINDS)[number] } = {
+	invited: 'invited',
+	asked_again: 'asked_again',
+	told_of_change: 'told_of_change',
+	told_withdrawn: 'told_withdrawn',
+	told_ruling: 'told_ruling'
+};
+void TOLD_KINDS_ARE_MAILS;
 
 /**
  * The events that start the 10-minute rest before a participant's next
@@ -330,8 +354,13 @@ const CHANGE_KINDS: readonly EventKind[] = ['role_changed', 'address_changed', '
 /** The events that say whether a participant's row held an account on this decision (decision 16). */
 const ACCOUNT_KINDS: readonly EventKind[] = ['included', 're_included', 'account_attached', 'account_cleared'];
 
-/** The mail events a participant's banner tells them of (card 2677, decision 19). */
-const TOLD_KINDS = ['invited', 'asked_again', 'told_of_change'] as const;
+/**
+ * The record mails counted against the caller's daily cap (`recordMailsSince`,
+ * card 2697's code review, part B, S2): never the withdrawal or the ruling,
+ * each sent once, and must be. Until card 2708 (F1) the banner read these too;
+ * it reads `MAIL_KINDS` now, so widening its mails cannot widen the cap.
+ */
+const CALLER_CAPPED_KINDS: readonly EventKind[] = ['invited', 'asked_again', 'told_of_change'];
 
 /**
  * Append one event, `created_at` stamped, and answer its id. An event naming
@@ -1361,7 +1390,7 @@ export function publishesSince(userId: number, since: Stamp): Stamp[] {
  * withdrawal and a ruling are not counted: each is sent once, and must be.
  */
 export function recordMailsSince(userId: number, since: Stamp): Stamp[] {
-	return actedSince(userId, TOLD_KINDS, since);
+	return actedSince(userId, CALLER_CAPPED_KINDS, since);
 }
 
 /**
@@ -1440,16 +1469,20 @@ export function hasSeen(participantId: number, versionNumber: number, stage: str
 }
 
 /**
- * The participant's latest record-bearing mail of the three a banner tells
- * of (decision 19), or null for none, every mail skipped among them; and
- * `delivered`, true only when that mail's own `mail_outcome` (`detail.of`
- * its event's id) says it was (D8). No outcome yet is not delivered.
+ * The participant's latest record-bearing mail (decision 19), of the five
+ * since card 2708 (D1): the withdrawal's and the ruling's count, the
+ * closing-date reminder does not. Null for none, a skipped mail writing none
+ * of them. `delivered` is true only when that mail's own `mail_outcome`
+ * (`detail.of` its event's id) says it was (D8); no outcome yet is not
+ * delivered, and an earlier mail is never named in its place (D2). The
+ * ruling's has no `at` (D3): its moment is the ruling's, which no page is
+ * given (card 2679, decision 26). The participant's own events alone are read.
  */
-export function lastToldOf(participantId: number): { kind: (typeof TOLD_KINDS)[number]; at: Stamp; delivered: boolean } | null {
+export function lastToldOf(participantId: number): ToldMail | null {
 	const told = db
 		.select({ id: decisionEvents.id, kind: decisionEvents.kind, at: decisionEvents.createdAt })
 		.from(decisionEvents)
-		.where(and(eq(decisionEvents.participantId, participantId), inArray(decisionEvents.kind, [...TOLD_KINDS])))
+		.where(and(eq(decisionEvents.participantId, participantId), inArray(decisionEvents.kind, [...MAIL_KINDS])))
 		.orderBy(desc(decisionEvents.id))
 		.limit(1)
 		.get();
@@ -1463,7 +1496,8 @@ export function lastToldOf(participantId: number): { kind: (typeof TOLD_KINDS)[n
 			const detail = detailOf(event.detail);
 			return detail.of === told.id && detail.delivered === true;
 		});
-	return { kind: told.kind as (typeof TOLD_KINDS)[number], at: told.at, delivered };
+	const kind = told.kind as ToldMail['kind'];
+	return kind === 'told_ruling' ? { kind, delivered } : { kind, at: told.at, delivered };
 }
 
 /** An event's detail, read; one that cannot be read, or is no object, is empty. */

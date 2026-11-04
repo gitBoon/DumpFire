@@ -89,7 +89,8 @@ import { PASSWORD_CHANGED_MEANWHILE, STEP_UP_MISSING, STEP_UP_WRONG } from '$lib
 import { decisionAnswer, LIFECYCLE_ACTIONS, participantAnswers, readEditPage, revisionFor } from '$lib/server/decision-authoring';
 import { decisionAccess, mayDo } from '$lib/server/decision-access';
 import { STORED_STATUSES, TRANSITIONS } from '$lib/server/decision-status';
-import { appendEvent, SYSTEM_ACTOR } from '$lib/server/decision-record';
+import { appendEvent, recordMailsSince, SYSTEM_ACTOR } from '$lib/server/decision-record';
+import { resultsRevisionFor } from '$lib/server/decision-results';
 import { REVOKE_WORDS, SKIP_WORDS } from '$lib/server/decision-links';
 import { CALLER_MAIL_DAILY_CAP, DRY_RUN_DAILY_CAP, PUBLISH_DAILY_CAP, RECORD_MAIL_DAILY_CAP } from '$lib/server/decision-mail';
 import {
@@ -102,6 +103,7 @@ import {
 	participantAddressGuard,
 	republishDecision,
 	resendInvitation,
+	ruleDecision,
 	setDecider,
 	setParticipantAccount,
 	setParticipants,
@@ -773,6 +775,38 @@ describe('the daily cap on record mail one caller causes, across decisions (S2)'
 			new RegExp(`^This would take your decision mail past ${CALLER_MAIL_DAILY_CAP} in the last 24 hours: it can be sent from ${STAMP} UTC$`)
 		);
 		expect(outcome(() => as(decider, (caller) => resendInvitation(caller, { decisionId: decision.id, participantId: participant.id }, null, UI)))).toBe('passed');
+	});
+
+	// Card 2708's code review (F1): the banner reads all five record mails; the cap still counts its own three alone.
+	it('(e) counts none of the ruling mails nor the withdrawal mails toward it, however many participants they go to (card 2708, F1)', async () => {
+		const decider = editorNamed('decider');
+		const since = fromNow(-DAY);
+		const toRule = makeDecision({ board, author: decider, decider, title: 'To rule', status: 'closed', closesAt: fromNow(-MINUTE), openedAt: '2026-11-01 09:00:00' });
+		const a = makeOption(toRule, { label: 'A', position: 0, addedInVersion: 1 });
+		const b = makeOption(toRule, { label: 'B', position: 1, addedInVersion: 1 });
+		makeVersion(toRule, { situation: 'Money is short.', question: 'Which plan?', options: [a, b].map((o) => ({ optionId: o.id, label: o.label, title: `Plan ${o.label}` })) }, { number: 1 });
+		const toWithdraw = openByHand(decider, decider, 'To withdraw');
+		for (const [decision, names] of [
+			[toRule, ['Pat Doe', 'Quin Roe', 'Ria Poe']],
+			[toWithdraw, ['Sam Doe', 'Tia Roe', 'Uma Poe']]
+		] as const) {
+			for (const fullName of names) makeParticipant(decision, { person: makePerson({ fullName }), role: 'consulted' });
+		}
+		expect(recordMailsSince(decider.id, since), 'nothing counted before').toEqual([]);
+
+		as(decider, (caller) => ruleDecision(caller, { decisionId: toRule.id }, { optionId: a.id, reason: 'A is enough.', revision: resultsRevisionFor(toRule.id) }, UI));
+		as(decider, (caller) => withdrawDecision(caller, { decisionId: toWithdraw.id }, { reason: 'No longer needed.' }, UI));
+		await sent.settle();
+
+		// Every mail was sent and written as the decider's own, so a cap that counted these kinds would see six.
+		expect(eventsOf(toRule.id).filter((event) => event.kind === 'told_ruling').map((event) => event.actorUserId), 'ruling').toEqual([decider.id, decider.id, decider.id]);
+		expect(eventsOf(toWithdraw.id).filter((event) => event.kind === 'told_withdrawn').map((event) => event.actorUserId), 'withdrawal').toEqual([
+			decider.id,
+			decider.id,
+			decider.id
+		]);
+		expect(sent.emails).toHaveLength(6);
+		expect(recordMailsSince(decider.id, since), 'nothing counted after').toEqual([]);
 	});
 });
 

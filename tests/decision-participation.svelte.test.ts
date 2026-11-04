@@ -65,7 +65,7 @@ vi.mock('svelte', async () => {
 import DecisionView from '$lib/components/decision/DecisionView.svelte';
 import MarkdownBlock from '$lib/components/decision/MarkdownBlock.svelte';
 import ResponseForm from '$lib/components/decision/ResponseForm.svelte';
-import { STALE_REVISION } from '$lib/decision-words';
+import { STALE_REVISION, type ToldMail } from '$lib/decision-words';
 import { renderMarkdown } from '$lib/markdown';
 import DecisionPage from '../src/routes/decisions/[id]/+page.svelte';
 import LinkPage from '../src/routes/decision-link/[token]/+page.svelte';
@@ -539,6 +539,55 @@ describe('the participant pages', () => {
 			const banner = [...target.querySelectorAll<HTMLElement>('[data-section="banner"] .banner-line')].map(textOf);
 			expect(banner[0], name).toBe(words);
 			if (name.startsWith('(e)')) expect(textOf(target.querySelector('[data-section="banner"]')!), name).not.toContain('by email');
+		}
+	});
+
+	it('2708-4: on both pages, name the ruling mail with no moment and the withdrawal mail with its own, after the withdrawn line; either undelivered, the neutral words', () => {
+		const ruled: Partial<DecisionPageData> = {
+			decision: { id: 5, ...DECISION, shownStatus: 'ruled', closesAt: null, boardName: 'Website', withdrawnAt: null, withdrawnReason: null },
+			ruling: { label: 'B', title: 'Buy', noneOfThese: false, reason: 'It lasts.', conditions: null, ruledByName: 'Dee Cider' },
+			mayRespond: false,
+			stage: 'ruling'
+		};
+		const withdrawn: Partial<DecisionPageData> = {
+			decision: { id: 5, ...DECISION, shownStatus: 'withdrawn', boardName: 'Website', withdrawnAt: '2026-11-03 10:00:00', withdrawnReason: 'The budget went.' },
+			mayRespond: false,
+			stage: 'withdrawal'
+		};
+		const toldBy = (told: ToldMail, role: 'consulted' | 'informed' = 'informed') => ({ participant: { role, includedAt: '2026-11-01 09:00:00', told } });
+		const WITHDRAWN = 'This decision was withdrawn on 2026-11-03 10:00 UTC: The budget went.';
+		const NEUTRAL = 'You were included in this decision on 2026-11-01 09:00 UTC.';
+		const rows: [string, Partial<DecisionPageData>, string[]][] = [
+			['(a) told of the ruling', { ...ruled, ...toldBy({ kind: 'told_ruling', delivered: true }) }, ['You were told of the ruling on this decision by email.']],
+			['(b) the ruling mail not delivered', { ...ruled, ...toldBy({ kind: 'told_ruling', delivered: false }) }, [NEUTRAL]],
+			[
+				'(c) told of the withdrawal',
+				{ ...withdrawn, ...toldBy({ kind: 'told_withdrawn', at: '2026-11-03 10:05:00', delivered: true }) },
+				[WITHDRAWN, 'You were told this decision was withdrawn on 2026-11-03 10:05 UTC, by email.']
+			],
+			['(d) the withdrawal mail not delivered', { ...withdrawn, ...toldBy({ kind: 'told_withdrawn', at: '2026-11-03 10:05:00', delivered: false }) }, [WITHDRAWN, NEUTRAL]],
+			// D4: the same words for both roles, as both mails go to every participant (card 2708's code review).
+			['(e) told of the ruling, consulted', { ...ruled, ...toldBy({ kind: 'told_ruling', delivered: true }, 'consulted') }, ['You were told of the ruling on this decision by email.']],
+			[
+				'(f) told of the withdrawal, consulted',
+				{ ...withdrawn, ...toldBy({ kind: 'told_withdrawn', at: '2026-11-03 10:05:00', delivered: true }, 'consulted') },
+				[WITHDRAWN, 'You were told this decision was withdrawn on 2026-11-03 10:05 UTC, by email.']
+			]
+		];
+
+		for (const [name, more, lines] of rows) {
+			// The link page's decision as its loader gives it: no id and no board's name (code review C5).
+			const { shownStatus, closesAt, withdrawnAt, withdrawnReason } = more.decision!;
+			for (const [page, component, data] of [
+				['signed in', DecisionPage, pageData(more)],
+				['by link', LinkPage, linkData({ ...more, decision: { ...DECISION, shownStatus, closesAt, boardName: null, withdrawnAt, withdrawnReason } })]
+			] as const) {
+				clear();
+				const target = draw(component, { data });
+				const banner = target.querySelector<HTMLElement>('[data-section="banner"]')!;
+				expect([...banner.querySelectorAll<HTMLElement>('.banner-line')].map(textOf), `${name}, ${page}`).toEqual(lines);
+				if (name.includes('not delivered')) expect(textOf(banner), `${name}, ${page}`).not.toContain('by email');
+			}
 		}
 	});
 
