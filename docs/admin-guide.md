@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.87
+version: 1.88
 status: As-Built
 date: 2026-11-04
 tags:
@@ -478,6 +478,20 @@ Through the API, it is `productOwnerUserId` on `PUT /api/v1/boards/{boardId}`: s
 - **Use the directory's address**, when their address in the people directory has changed: the decision takes the address the directory holds now (the dialog names it; you cannot type another), cancels their personal link and sends nothing; sending them the decision again is **Resend**. Until then they are not mailed: a decision's mail goes only to the address it holds, while that is still the person's address in the directory. It is refused for a person no longer in the directory, one who has left, or a row that already holds the directory's address.
 
 A wrong password keeps the dialog open, the field cleared; three wrong ones sign the session out. Each action is recorded on the decision under your name.
+
+**Clarification questions** (card 2678). On a decision's page (`/decisions/<id>`), under **Questions and answers**, an administrator sees every question with who asked it and when, whether it was asked by an agent through an API key, and every answer an agent drafted that no person has published yet, labelled "Drafted by an agent and not yet reviewed by a person". Participants see none of that: no asker's name (but their own question marked as theirs) and no unpublished draft, which shows to them as an open question. **An administrator cannot answer, publish or replace an answer unless they are the decision's author or decider**: the answers on the record come from the people participants were told are accountable for the decision. On the results page an administrator who cannot answer sees the open questions, an agent's draft marked, and "The author or the decider answers questions on the decision's page", with no link. Asking and answering ask for no password, are never written to the activity log, and need no setting of yours; the two notices they send are under each account holder's **Decisions** switch ([below](#notification-preferences)).
+
+```mermaid
+flowchart LR
+    P["A participant asks"] --> Q["The question"]
+    Q --> A["Author or decider answers<br/>(not an administrator)"]
+    Q --> K["An API key drafts (card 2682)"]
+    K --> D["A draft: author, decider<br/>and administrators see it"]
+    D --> Pub["Published or replaced<br/>by the author or decider"]
+    A --> All["Everyone included sees the answer"]
+    Pub --> All
+    Q -.->|"who asked"| Priv["Author, decider and<br/>administrators only"]
+```
 
 ```mermaid
 flowchart LR
@@ -1062,7 +1076,7 @@ Each user controls their own notification preferences from **My Account**, under
 | **Request Progress** | For a request you raised while signed in: mailed as work goes on on the card made from it (a move, a subtask ticked, a comment), and when it is complete. Someone who raised a request without an account is always mailed |
 | **Board Sharing** | Mailed when a board is shared with you |
 | **Planning** | Mailed when someone else makes a plan from cards that depend on each other, and you are assigned to one of its cards or are an administrator |
-| **Decisions** | Mailed when a participant raises a concern about the ruling of a decision you decide (card 2679): one notice, naming neither the participant nor what they wrote, and at most one about the same participant in 24 hours. Card 2678's question mails will read it too. A decision's record mails (its invitation, ruling and withdrawal) are not under any switch: a participant must be told |
+| **Decisions** | "When someone asks about or raises a concern on a decision you decide or wrote, or your question about a decision is answered." Mailed when a participant raises a concern about the ruling of a decision you decide (card 2679), and (card 2678) when a participant asks a question about a decision you decide or wrote and may answer now, never for your own question, and when a question you asked is answered. Each notice names nobody and quotes nothing; the concern and question notices are at most one about the same participant in 24 hours. A decision's record mails (its invitation, ruling and withdrawal) are not under any switch: a participant must be told |
 
 The page, the route that saves the switches (`/api/account/notifications`) and the mail that reads them share one list, `src/lib/notification-prefs.ts` (card 2146). Until 2026-10-15 they kept three: **Request Progress** was offered and never saved, so it went back on at every reload and the progress mail was always sent, and **Mentions** was neither offered nor saved, so mention mail could be stopped only by switching all mail off. Nobody had either stored, so anyone who switched Request Progress off before then gets the mail until they switch it off again. A switch that is refused, or gets no answer, goes back to what it was, with the reason under the switches; the switches cannot be pressed while a change is being saved.
 

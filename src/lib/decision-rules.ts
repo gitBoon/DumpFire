@@ -23,6 +23,12 @@ export const DECISION_TEXT_MAX = 4000;
 /** The most concerns one participant raises about one ruling (card 2679, decision 4): the write refuses a sixth, and the page offers none. */
 export const CONCERNS_PER_PARTICIPANT = 5;
 
+/** How long a clarification question may be (card 2678, decision 3): 2,000 characters. An answer takes `DECISION_TEXT_MAX`. */
+export const QUESTION_TEXT_MAX = 2000;
+
+/** The most questions one participant asks on one decision (card 2678, decision 4): the write refuses an 11th, and the page offers no form past it. */
+export const QUESTIONS_PER_PARTICIPANT = 10;
+
 /**
  * The option or options most chosen (card 2679, decision 11): in single mode
  * those with the most votes, in score mode those with the highest total

@@ -42,6 +42,7 @@
 	import { STALE_REVISION, STATUS_WORDS, shownMoment } from '$lib/decision-words';
 	import { DECISION_TITLE_MAX } from '$lib/decision-rules';
 	import { failureMessage } from '$lib/api';
+	import AgentLabel from './AgentLabel.svelte';
 	import ReadinessPanel from './ReadinessPanel.svelte';
 
 	type Decision = {
@@ -396,7 +397,7 @@
 
 {#snippet agentLabel(k: string, name: string)}
 	{#if flaggedKey(k)}
-		<span class="agent-label" data-section={k}>Drafted by an agent and not yet reviewed by a person</span>
+		<AgentLabel data-section={k} />
 		{#if canReview}
 			<button type="button" class="btn-ghost btn-xs" aria-label="Mark {name} reviewed" onclick={() => markReviewed([k])}>Mark reviewed</button>
 		{/if}
@@ -610,10 +611,6 @@
 	.editor-section { display: flex; flex-direction: column; gap: var(--space-xs); }
 	.section-head { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-sm); }
 	.section-head label, .section-head h2 { font-size: 0.9rem; font-weight: 700; margin: 0; }
-	.agent-label {
-		font-size: 0.7rem; padding: 1px var(--space-sm); border-radius: 999px;
-		background: rgba(245, 158, 11, 0.15); color: var(--accent-amber);
-	}
 	.field {
 		width: 100%; box-sizing: border-box; padding: var(--space-xs) var(--space-sm);
 		border: 1px solid var(--glass-border); border-radius: var(--radius-sm);

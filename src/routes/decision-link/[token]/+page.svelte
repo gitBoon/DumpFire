@@ -9,8 +9,9 @@
 	 * Under the banner it says the address is personal (R4) and, in a browser
 	 * that is signed in, that the account is recorded beside what the link
 	 * does (R8). Each of its writes posts the token in the body to a fixed
-	 * path, `/api/decision-by-link/responses`, `/api/decision-by-link/seen`
-	 * and `/api/decision-by-link/concerns`, so no further address holds it
+	 * path, `/api/decision-by-link/responses`, `/api/decision-by-link/seen`,
+	 * `/api/decision-by-link/concerns` and, for a clarification question,
+	 * `/api/decision-by-link/questions` (card 2678), so no further address holds it
 	 * (decision 4). Having seen this version, or on a ruled or superseded
 	 * decision the ruling (card 2679, decision 9), is posted after the
 	 * person's first tap, click, key press or turn of the mouse wheel
@@ -22,6 +23,10 @@
 	 * results and concern form as the signed-in page. A link holder is never
 	 * given another decision's title, so the banner says "a later decision" or
 	 * "an earlier decision", with no link (S8).
+	 *
+	 * Card 2678 (decisions 2, 13 and 21): the same questions panel and
+	 * question form as the signed-in page, the panel with no answer, publish
+	 * or replace control, as a link answers nothing.
 	 */
 	import type { PageData } from './$types';
 	import type { OwnResponse } from '$lib/decision-view-types';
@@ -29,6 +34,8 @@
 	import { page } from '$app/state';
 	import ConcernForm from '$lib/components/decision/ConcernForm.svelte';
 	import DecisionView from '$lib/components/decision/DecisionView.svelte';
+	import QuestionForm from '$lib/components/decision/QuestionForm.svelte';
+	import QuestionsPanel from '$lib/components/decision/QuestionsPanel.svelte';
 	import ReleasedResults from '$lib/components/decision/ReleasedResults.svelte';
 	import ResponseForm from '$lib/components/decision/ResponseForm.svelte';
 	import RulingBanner from '$lib/components/decision/RulingBanner.svelte';
@@ -100,6 +107,22 @@
 	{/key}
 {/snippet}
 
+{#snippet questions()}
+	<!-- Drawn afresh for another link. Never given `mayAnswer` or a decision id: a link answers nothing (card 2678, decision 13). -->
+	{#key page.params.token}
+		<QuestionsPanel questions={data.questions} shownVersion={data.version?.number} />
+		{#if data.participant !== null}
+			<QuestionForm
+				url="/api/decision-by-link/questions"
+				extra={{ token: page.params.token }}
+				mayAsk={data.mayAsk}
+				questions={data.questions}
+				shownStatus={data.decision.shownStatus}
+			/>
+		{/if}
+	{/key}
+{/snippet}
+
 {#snippet givenResponse(heading: string, response: OwnResponse)}
 	{@const givenOn = givenOnWords(response, data.version?.number)}
 	<p>{heading}</p>
@@ -167,6 +190,7 @@
 				response={yourResponse}
 				results={data.released !== null ? releasedResults : undefined}
 				concern={data.participant !== null && (data.mayRaiseConcern || data.concerns.length > 0) ? concern : undefined}
+				questions={data.questions.length > 0 || data.mayAsk ? questions : undefined}
 			/>
 		{/if}
 	</main>

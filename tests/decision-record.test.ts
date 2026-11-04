@@ -36,13 +36,50 @@ const RECORD_TABLES: Readonly<Record<string, string>> = {
 	decisionEvents: 'decision_events'
 };
 
-/** Each record table and `decisions` by its SQL name, as the schema exports it: what `sql.identifier('decision_events')` names. */
+/**
+ * The settled-once table (card 2678, decision 7), as SQL names it and as the
+ * schema exports it: inserted once, in the two files that may insert, and
+ * updated only by the record module's three guarded updates, each one's
+ * `.set` keys and `WHERE` guard pinned in `SETTLED_UPDATES`. Never deleted
+ * but by the cascade, the restore and the generic writers, as the four are.
+ */
+const SETTLED_TABLES: Readonly<Record<string, string>> = {
+	decisionQuestions: 'decision_questions'
+};
+
+/** Each record table, the settled-once table and `decisions` by its SQL name, as the schema exports it: what `sql.identifier('decision_events')` names. */
 const SQL_EXPORTS: Readonly<Record<string, string>> = {
-	...Object.fromEntries(Object.entries(RECORD_TABLES).map(([exported, name]) => [name, exported])),
+	...Object.fromEntries(Object.entries({ ...RECORD_TABLES, ...SETTLED_TABLES }).map(([exported, name]) => [name, exported])),
 	decisions: 'decisions'
 };
 
-/** The files that may hold a record table's name as text. */
+/** The one file that may update the settled-once table, by the updates pinned below. */
+const SETTLED_WRITER = 'src/lib/server/decision-record.ts';
+
+/**
+ * The settled-once table's updates, by the function each is in (card 2678,
+ * decision 7, S4): the keys its `.set` writes, a literal boolean value with
+ * its key, and its `WHERE` guard, as written with the white space taken out.
+ * Each changes the row only from the state its guard names, and either
+ * settling of a draft leaves the row outside both draft guards.
+ */
+const SETTLED_UPDATES: Readonly<Record<string, { set: string[]; where: string }>> = {
+	recordAnswer: {
+		set: ['answer', 'answerAgentDrafted', 'answeredAt', 'answeredBy', 'answeredByName'],
+		where: 'and(eq(decisionQuestions.id,questionId),isNull(decisionQuestions.answer))'
+	},
+	recordDraftPublished: {
+		set: ['answerReviewedAt', 'answerReviewedBy'],
+		where:
+			'and(eq(decisionQuestions.id,questionId),isNotNull(decisionQuestions.answer),eq(decisionQuestions.answerAgentDrafted,true),isNull(decisionQuestions.answerReviewedAt))'
+	},
+	recordDraftReplaced: {
+		set: ['answer', 'answerAgentDrafted:false', 'answeredAt', 'answeredBy', 'answeredByName'],
+		where: 'and(eq(decisionQuestions.id,questionId),eq(decisionQuestions.answerAgentDrafted,true),isNull(decisionQuestions.answerReviewedAt))'
+	}
+};
+
+/** The files that may hold a record table's name, or the settled-once table's, as text. */
 const NAMES_ALLOWED = [
 	'src/lib/server/db/schema.ts',
 	'src/lib/server/db/expected-schema.ts',
@@ -56,11 +93,11 @@ const INSERTS_ALLOWED = ['src/lib/server/decision-record.ts', 'src/lib/server/db
 /** The one file that may delete a decision, which cascades through its record. */
 const DECISION_DELETES_ALLOWED = 'src/lib/server/decisions.ts';
 
-/** A record table's name, as text. `idx_decision_events_…` is an index's name, not the table's. */
-const NAMES_A_TABLE = /\bdecision_(?:versions|responses|rulings|events)\b/;
+/** A record table's name, or the settled-once table's, as text. `idx_decision_events_…` is an index's name, not the table's. */
+const NAMES_A_TABLE = /\bdecision_(?:versions|responses|rulings|events|questions)\b/;
 
-/** A record table's name in SQL, quoted or not. */
-const TABLE = '[`"\\[]?decision_(?:versions|responses|rulings|events)[`"\\]]?(?![\\w])';
+/** A record table's name, or the settled-once table's, in SQL, quoted or not: SQL may not update either (card 2678, S4). */
+const TABLE = '[`"\\[]?decision_(?:versions|responses|rulings|events|questions)[`"\\]]?(?![\\w])';
 
 /** What SQL may not do to a record table anywhere, by what the finding calls it. */
 const SQL_WRITES: readonly [string, RegExp][] = [
@@ -104,7 +141,50 @@ const GENERIC_WRITERS: Readonly<Record<string, string>> = {
 };
 
 type ScanFile = { file: string; source: string };
-type Scan = { findings: string[]; inserts: string[]; generic: string[] };
+type Scan = { findings: string[]; inserts: string[]; generic: string[]; settledInserts: string[]; settledUpdates: string[] };
+
+/**
+ * What one `.update(<the settled-once table>)` chain writes (card 2678, S4):
+ * the function it is in, the keys of its `.set`, each literal boolean value
+ * written with its key, sorted, and its `.where`'s guard with the white space
+ * taken out (`<none>` for no `.where`).
+ */
+function settledUpdateOf(update: ts.CallExpression, tree: ts.SourceFile): { fn: string; set: string[]; where: string } {
+	let set: ts.Expression | undefined;
+	let where: ts.Expression | undefined;
+	let link: ts.Node = update;
+	while (ts.isPropertyAccessExpression(link.parent) && ts.isCallExpression(link.parent.parent) && link.parent.parent.expression === link.parent) {
+		const call = link.parent.parent;
+		if (link.parent.name.text === 'set') set = call.arguments[0];
+		if (link.parent.name.text === 'where') where = call.arguments[0];
+		link = call;
+	}
+	let fn = '<top level>';
+	for (let up: ts.Node | undefined = update.parent; up !== undefined; up = up.parent) {
+		if ((ts.isFunctionDeclaration(up) || ts.isFunctionExpression(up)) && up.name) {
+			fn = up.name.text;
+			break;
+		}
+		if ((ts.isArrowFunction(up) || ts.isFunctionExpression(up)) && ts.isVariableDeclaration(up.parent) && ts.isIdentifier(up.parent.name)) {
+			fn = up.parent.name.text;
+			break;
+		}
+	}
+	const keys: string[] = [];
+	if (set === undefined || !ts.isObjectLiteralExpression(set)) {
+		keys.push('<not an object written out>');
+	} else {
+		for (const property of set.properties) {
+			if (ts.isShorthandPropertyAssignment(property)) keys.push(property.name.text);
+			else if (ts.isPropertyAssignment(property)) {
+				const name = property.name.getText(tree);
+				const value = property.initializer.kind;
+				keys.push(value === ts.SyntaxKind.TrueKeyword ? `${name}:true` : value === ts.SyntaxKind.FalseKeyword ? `${name}:false` : name);
+			} else keys.push(`<${property.getText(tree)}>`);
+		}
+	}
+	return { fn, set: keys.sort(), where: where === undefined ? '<none>' : where.getText(tree).replace(/\s+/g, '') };
+}
 
 /**
  * Every way the source could write a record table other than by an insert
@@ -123,6 +203,8 @@ function scanRecordWrites(files: ScanFile[]): Scan {
 	const findings: string[] = [];
 	const inserts: string[] = [];
 	const generic: string[] = [];
+	const settledInserts: string[] = [];
+	const settledUpdates: string[] = [];
 	for (const { file, source } of files) {
 		for (const { code, firstLine } of scriptsOf(file, source)) {
 			const tree = ts.createSourceFile(file, code, ts.ScriptTarget.Latest, true);
@@ -135,10 +217,10 @@ function scanRecordWrites(files: ScanFile[]): Scan {
 				if (!bindings || !ts.isNamedImports(bindings)) continue;
 				for (const element of bindings.elements) {
 					const exported = (element.propertyName ?? element.name).text;
-					if (exported in RECORD_TABLES || exported === 'decisions') aliases.set(element.name.text, exported);
+					if (exported in RECORD_TABLES || exported in SETTLED_TABLES || exported === 'decisions') aliases.set(element.name.text, exported);
 				}
 			}
-			const isExport = (name: string) => name in RECORD_TABLES || name === 'decisions';
+			const isExport = (name: string) => name in RECORD_TABLES || name in SETTLED_TABLES || name === 'decisions';
 			/**
 			 * The schema export an expression names: `decisionEvents`, `schema.decisionEvents`,
 			 * `schema['decisionEvents']`, `sql.identifier('decision_events')` or `sql.raw(…)` of one,
@@ -222,7 +304,7 @@ function scanRecordWrites(files: ScanFile[]): Scan {
 						node.templateSpans
 							.map((span) => {
 								const name = exported(span);
-								return (name === undefined ? '${…}' : (RECORD_TABLES[name] ?? name)) + span.literal.text;
+								return (name === undefined ? '${…}' : (RECORD_TABLES[name] ?? SETTLED_TABLES[name] ?? name)) + span.literal.text;
 							})
 							.join('');
 					checkText(node, literal, withTables);
@@ -237,10 +319,34 @@ function scanRecordWrites(files: ScanFile[]): Scan {
 						if (INSERTS_ALLOWED.includes(file)) inserts.push(file);
 						else findings.push(`${at(node)} .insert(${target})`);
 					}
+					// Card 2678 (decision 7, S4): the settled-once table, inserted where a record table may be, never deleted, and
+					// updated only in the record module, by its pinned updates.
+					if (target !== undefined && target in SETTLED_TABLES) {
+						if (method === 'insert') {
+							if (INSERTS_ALLOWED.includes(file)) settledInserts.push(file);
+							else findings.push(`${at(node)} .insert(${target})`);
+						}
+						if (method === 'delete') findings.push(`${at(node)} .delete(${target})`);
+						if (method === 'update') {
+							if (file !== SETTLED_WRITER) findings.push(`${at(node)} .update(${target})`);
+							else {
+								const update = settledUpdateOf(node, tree);
+								settledUpdates.push(update.fn);
+								const pinned = Object.hasOwn(SETTLED_UPDATES, update.fn) ? SETTLED_UPDATES[update.fn] : undefined;
+								if (pinned === undefined) findings.push(`${at(node)} .update(${target}) in ${update.fn}, which is none of its pinned updates`);
+								else {
+									if (JSON.stringify(update.set) !== JSON.stringify([...pinned.set].sort())) {
+										findings.push(`${at(node)} .update(${target}) in ${update.fn} sets ${update.set.join(', ')}: not its pinned keys`);
+									}
+									if (update.where !== pinned.where) findings.push(`${at(node)} .update(${target}) in ${update.fn} is guarded by ${update.where}: not its pinned guard`);
+								}
+							}
+						}
+					}
 					if (method === 'onConflictDoUpdate' || method === 'onConflictDoNothing') {
 						const insert = insertUnder(node.expression.expression);
 						const into = insert ? named(insert.arguments[0]) : undefined;
-						if (into !== undefined && into in RECORD_TABLES) findings.push(`${at(node)} .${method}() on an insert into ${into}`);
+						if (into !== undefined && (into in RECORD_TABLES || into in SETTLED_TABLES)) findings.push(`${at(node)} .${method}() on an insert into ${into}`);
 					}
 				}
 				ts.forEachChild(node, visit);
@@ -248,7 +354,7 @@ function scanRecordWrites(files: ScanFile[]): Scan {
 			visit(tree);
 		}
 	}
-	return { findings, inserts, generic: [...new Set(generic)].sort() };
+	return { findings, inserts, generic: [...new Set(generic)].sort(), settledInserts, settledUpdates };
 }
 
 /** The TypeScript in a file: all of a `.ts` or `.js` file, and each `<script>` of a `.svelte` file, with the line it starts on. */
@@ -274,9 +380,12 @@ function sourceFiles(): ScanFile[] {
 describe('the record is insert-only, by the source (decision 27)', () => {
 	it('has no update, delete, upsert or stray insert of a record table, and no delete of a decision, anywhere in src (1)', () => {
 		const files = sourceFiles();
-		const { findings, inserts, generic } = scanRecordWrites(files);
+		const { findings, inserts, generic, settledInserts, settledUpdates } = scanRecordWrites(files);
 
 		expect(findings).toEqual([]);
+		// Card 2678 (decision 7, S4): the question's one insert, and its three guarded updates, each to its pin, in the record module.
+		expect(settledInserts).toEqual(['src/lib/server/decision-record.ts']);
+		expect(settledUpdates).toEqual(['recordAnswer', 'recordDraftPublished', 'recordDraftReplaced']);
 		// Every writer of a table named at run time is named with why, and every one named is still one (S5).
 		expect(generic).toEqual(Object.keys(GENERIC_WRITERS).sort());
 		// The scan saw the tree, and the record's own inserts in it.
@@ -343,6 +452,33 @@ describe('the record is insert-only, by the source (decision 27)', () => {
 				'a Svelte page naming a table',
 				{ file: 'src/routes/example/+page.svelte', source: "<p>Hello</p>\n<script lang=\"ts\">\n\tconst t = 'decision_rulings';\n</script>" },
 				'src/routes/example/+page.svelte:3 names a record table as text'
+			],
+			// Card 2678 (decision 7, S4, case 32): the settled-once table.
+			['an update of the questions in another file', { file: SERVICE, source: "db.update(decisionQuestions).set({ answer: 'x' }).run();" }, '.update(decisionQuestions)'],
+			['an insert of a question in another file', { file: SERVICE, source: 'db.insert(decisionQuestions).values(v).run();' }, '.insert(decisionQuestions)'],
+			['a delete of the questions in the record module', { file: RECORD, source: 'db.delete(decisionQuestions).where(eq(decisionQuestions.id, id)).run();' }, '.delete(decisionQuestions)'],
+			['SQL DELETE FROM the questions', { file: RECORD, source: "sqlite.prepare('DELETE FROM decision_questions WHERE id = ?').run(id);" }, 'SQL DELETE FROM'],
+			[
+				'an update in the record module setting a key outside its pinned list',
+				{
+					file: RECORD,
+					source:
+						'export function recordAnswer(questionId, answer, by, agentDrafted) {\n' +
+						'\treturn db.update(decisionQuestions).set({ answer, answeredBy: by.userId, answeredByName: by.name, answeredAt: stamp(), answerAgentDrafted: agentDrafted, question: answer })\n' +
+						'\t\t.where(and(eq(decisionQuestions.id, questionId), isNull(decisionQuestions.answer))).run().changes === 1;\n}'
+				},
+				'not its pinned keys'
+			],
+			[
+				'an update in the record module whose WHERE lacks its guard',
+				{
+					file: RECORD,
+					source:
+						'export function recordDraftPublished(questionId, by) {\n' +
+						'\treturn db.update(decisionQuestions).set({ answerReviewedBy: by.userId, answerReviewedAt: stamp() })\n' +
+						'\t\t.where(and(eq(decisionQuestions.id, questionId), isNotNull(decisionQuestions.answer), eq(decisionQuestions.answerAgentDrafted, true))).run().changes === 1;\n}'
+				},
+				'not its pinned guard'
 			]
 		];
 		for (const [form, file, finding] of caught) {
@@ -361,9 +497,33 @@ describe('the record is insert-only, by the source (decision 27)', () => {
 			{ file: SERVICE, source: "const i = 'idx_decision_events_participant_id';\nsqlite.prepare('UPDATE decision_participants SET link_token_hash = NULL');" },
 			// A writer of tables named at run time on GENERIC_WRITERS, and a const alias of an ordinary table.
 			{ file: 'src/lib/server/db/timestamps.ts', source: 'database.prepare(`UPDATE ${t} SET ${c} = 1`).run();' },
-			{ file: SERVICE, source: 'const t = decisionParticipants;\ndb.update(t).set({}).run();' }
+			{ file: SERVICE, source: 'const t = decisionParticipants;\ndb.update(t).set({}).run();' },
+			// Card 2678 (case 32): the questions' insert and their three updates as written, in the record module.
+			{
+				file: RECORD,
+				source: [
+					'export function appendQuestion(q) { return db.insert(decisionQuestions).values({ ...q, askedAt: stamp() }).returning().get(); }',
+					'export function recordAnswer(questionId, answer, by, agentDrafted) {',
+					'\treturn db.update(decisionQuestions).set({ answer, answeredBy: by.userId, answeredByName: by.name, answeredAt: stamp(), answerAgentDrafted: agentDrafted })',
+					'\t\t.where(and(eq(decisionQuestions.id, questionId), isNull(decisionQuestions.answer))).run().changes === 1;',
+					'}',
+					'export function recordDraftPublished(questionId, by) {',
+					'\treturn db.update(decisionQuestions).set({ answerReviewedBy: by.userId, answerReviewedAt: stamp() })',
+					'\t\t.where(and(eq(decisionQuestions.id, questionId), isNotNull(decisionQuestions.answer), eq(decisionQuestions.answerAgentDrafted, true), isNull(decisionQuestions.answerReviewedAt)))',
+					'\t\t.run().changes === 1;',
+					'}',
+					'export function recordDraftReplaced(questionId, answer, by) {',
+					'\treturn db.update(decisionQuestions).set({ answer, answeredBy: by.userId, answeredByName: by.name, answeredAt: stamp(), answerAgentDrafted: false })',
+					'\t\t.where(and(eq(decisionQuestions.id, questionId), eq(decisionQuestions.answerAgentDrafted, true), isNull(decisionQuestions.answerReviewedAt))).run().changes === 1;',
+					'}'
+				].join('\n')
+			}
 		];
 		for (const file of passed) expect(scanRecordWrites([file]).findings, file.source).toEqual([]);
+		expect(scanRecordWrites([passed.at(-1)!]), 'the questions as written').toMatchObject({
+			settledInserts: [RECORD],
+			settledUpdates: ['recordAnswer', 'recordDraftPublished', 'recordDraftReplaced']
+		});
 		expect(scanRecordWrites([passed[0]]).inserts).toEqual([RECORD]);
 		expect(scanRecordWrites(passed).generic).toEqual(['src/lib/server/db/timestamps.ts']);
 	});
@@ -448,7 +608,10 @@ describe('the shown status (E10)', () => {
 			// Card 2679: from a stored ruling alone (S4, decisions 4 and 5).
 			release: ['ruled'],
 			concern: ['ruled'],
-			supersede: ['ruled']
+			supersede: ['ruled'],
+			// Card 2678 (decision 10): open, and awaiting a ruling.
+			ask: ['open', 'closed'],
+			answer: ['open', 'closed']
 		});
 
 		const pastItsDeadline = { status: 'open', closesAt: '2026-11-01 00:00:00' };

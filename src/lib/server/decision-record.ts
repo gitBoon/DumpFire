@@ -25,6 +25,19 @@
  * a scan of every file under `src`, which also allows the tables' names, as
  * text, only here, in the schema files and in the restore.
  *
+ * Card 2678 adds `decision_questions`, which is not insert-only, and is
+ * settled once instead (migration 0061's header is wrong to call it
+ * insert-only): the answer, its author, its agent flag and its review are
+ * columns of the question row. A question is inserted once
+ * (`appendQuestion`), and its answer settled once by one of three guarded
+ * updates, each of which changes the row only from the state its `WHERE`
+ * names and answers whether it did: a person's or an agent's answer to an
+ * unanswered question (`recordAnswer`), and an agent's unreviewed draft
+ * published (`recordDraftPublished`) or replaced by a person's answer
+ * (`recordDraftReplaced`). Either leaves the row outside both guards. These
+ * are the only writes of the table in `src` but the restore and the cascade;
+ * the same scan pins each update's `.set` keys and `WHERE` guard.
+ *
  * `appendEvent` refuses an event naming a participant on a draft (comment
  * 5599): a draft's participant rows may be deleted freely only because no
  * event names them. An event's `detail` never holds a token, a hash, or a
@@ -38,6 +51,7 @@ import { db } from './db';
 import {
 	decisionEvents,
 	decisionOptions,
+	decisionQuestions,
 	decisionResponses,
 	decisionRulings,
 	decisionVersions,
@@ -46,6 +60,7 @@ import {
 	peopleGroupMembers,
 	peopleGroups,
 	type Decision,
+	type DecisionQuestion,
 	type DecisionResponse,
 	type DecisionRuling,
 	type DecisionVersion,
@@ -102,7 +117,14 @@ export const EVENT_KINDS = [
 	'cut_off',
 	'superseded',
 	'results_released',
-	'concern_raised'
+	'concern_raised',
+	// Card 2678 (decision 14): a question `{ questionId, notices, signedIn? }` naming the participant; its answer `{ questionId,
+	// role, agentDrafted, notice }`; an agent's draft published `{ questionId, notice }`; and one replaced by a person's answer
+	// `{ questionId, role, discarded: { text, byName, at }, notice }`. None of the last three names a participant.
+	'question_asked',
+	'question_answered',
+	'answer_published',
+	'answer_replaced'
 ] as const;
 
 export type EventKind = (typeof EVENT_KINDS)[number];
@@ -119,11 +141,23 @@ export const RESPONSE_KINDS = ['vote', 'abstain', 'no_concerns'] as const;
 /**
  * The events that are the decider's and administrators' alone (card 2679,
  * decision 26, S10): `ruled`'s `early` and `againstResponses`, the `cut_off`
- * events and `concern_raised`. A binding rule on the cards that read the
- * record: card 2680's record shows them behind `record` (`['admin',
- * 'decider']`) alone, and card 2689's webhooks never carry them.
+ * events and `concern_raised`; and card 2678's four question events (decision
+ * 2), whose detail holds whom each notice went to and its outcome, the asker
+ * (`question_asked` names the participant) and a discarded draft. A binding
+ * rule on the cards that read the record: card 2680's record shows them
+ * behind `record` (`['admin', 'decider']`) alone, and card 2689's webhooks
+ * never carry them. A participant's own questions are shown them from the
+ * question rows, never from these events.
  */
-export const DECIDER_ONLY_EVENTS: readonly EventKind[] = ['ruled', 'cut_off', 'concern_raised'];
+export const DECIDER_ONLY_EVENTS: readonly EventKind[] = [
+	'ruled',
+	'cut_off',
+	'concern_raised',
+	'question_asked',
+	'question_answered',
+	'answer_published',
+	'answer_replaced'
+];
 
 /** The events a record-bearing mail writes for its participant (decision 31). */
 const MAIL_KINDS: readonly EventKind[] = ['invited', 'asked_again', 'told_of_change', 'told_withdrawn', 'told_ruling'];
@@ -349,6 +383,110 @@ export function supersedingOf(decisionId: number): Decision | null {
 			.limit(1)
 			.get() ?? null
 	);
+}
+
+// ─── Clarification questions, settled once (card 2678, decision 7) ───────────
+
+/**
+ * Append one question (card 2678), `asked_at` stamped, with no answer: the
+ * one insert into the questions. `askerName` is the participant row's
+ * snapshot name; `via` the way it was asked.
+ */
+export function appendQuestion(q: {
+	decisionId: number;
+	participantId: number;
+	askerName: string;
+	question: string;
+	askedInVersion: number;
+	via: 'session' | 'link' | 'api';
+}): DecisionQuestion {
+	return db
+		.insert(decisionQuestions)
+		.values({
+			decisionId: q.decisionId,
+			participantId: q.participantId,
+			askerName: q.askerName,
+			question: q.question,
+			askedInVersion: q.askedInVersion,
+			via: q.via,
+			askedAt: stamp()
+		})
+		.returning()
+		.get();
+}
+
+/**
+ * Answer a question not yet answered, by `by`, `answered_at` stamped, and
+ * flagged as an agent's draft when `agentDrafted` (decision 8): whether it
+ * changed the row. An answered question, a draft among them, is left as it is.
+ */
+export function recordAnswer(questionId: number, answer: string, by: RecordActor, agentDrafted: boolean): boolean {
+	return (
+		db
+			.update(decisionQuestions)
+			.set({ answer, answeredBy: by.userId, answeredByName: by.name, answeredAt: stamp(), answerAgentDrafted: agentDrafted })
+			.where(and(eq(decisionQuestions.id, questionId), isNull(decisionQuestions.answer)))
+			.run().changes === 1
+	);
+}
+
+/**
+ * Publish an agent's draft answer not yet reviewed, by `by`, `answer_reviewed_at`
+ * stamped (decision 8): whether it changed the row. A person's answer, one
+ * published already and a question unanswered are left as they are.
+ */
+export function recordDraftPublished(questionId: number, by: RecordActor): boolean {
+	return (
+		db
+			.update(decisionQuestions)
+			.set({ answerReviewedBy: by.userId, answerReviewedAt: stamp() })
+			.where(
+				and(
+					eq(decisionQuestions.id, questionId),
+					isNotNull(decisionQuestions.answer),
+					eq(decisionQuestions.answerAgentDrafted, true),
+					isNull(decisionQuestions.answerReviewedAt)
+				)
+			)
+			.run().changes === 1
+	);
+}
+
+/**
+ * Replace an agent's draft answer not yet reviewed with a person's, by `by`,
+ * `answered_at` stamped and the agent flag cleared (decision 8, S1): whether
+ * it changed the row. The service copies the draft into the record first. A
+ * person's answer and a published draft are left as they are.
+ */
+export function recordDraftReplaced(questionId: number, answer: string, by: RecordActor): boolean {
+	return (
+		db
+			.update(decisionQuestions)
+			.set({ answer, answeredBy: by.userId, answeredByName: by.name, answeredAt: stamp(), answerAgentDrafted: false })
+			.where(and(eq(decisionQuestions.id, questionId), eq(decisionQuestions.answerAgentDrafted, true), isNull(decisionQuestions.answerReviewedAt)))
+			.run().changes === 1
+	);
+}
+
+/** The decision's questions, oldest first (card 2678). */
+export function questionsOf(decisionId: number): DecisionQuestion[] {
+	return db.select().from(decisionQuestions).where(eq(decisionQuestions.decisionId, decisionId)).orderBy(asc(decisionQuestions.id)).all();
+}
+
+/** The question `questionId` if it is one of this decision's, or null (card 2678). */
+export function questionOn(decisionId: number, questionId: number): DecisionQuestion | null {
+	return (
+		db
+			.select()
+			.from(decisionQuestions)
+			.where(and(eq(decisionQuestions.id, questionId), eq(decisionQuestions.decisionId, decisionId)))
+			.get() ?? null
+	);
+}
+
+/** The questions one participant has asked, oldest first (card 2678): the per-participant cap and rest read them. */
+export function questionsBy(participantId: number): DecisionQuestion[] {
+	return db.select().from(decisionQuestions).where(eq(decisionQuestions.participantId, participantId)).orderBy(asc(decisionQuestions.id)).all();
 }
 
 /**
@@ -674,6 +812,15 @@ export function publishesSince(userId: number, since: Stamp): Stamp[] {
  */
 export function recordMailsSince(userId: number, since: Stamp): Stamp[] {
 	return actedSince(userId, TOLD_KINDS, since);
+}
+
+/**
+ * The moments of the questions the account has asked since `since`, signed in
+ * or through an API key, on any decision, oldest first (card 2678, decision
+ * 4): the per-caller daily cap's count. A link holder's are by no account.
+ */
+export function questionsAskedSince(userId: number, since: Stamp): Stamp[] {
+	return actedSince(userId, ['question_asked'], since);
 }
 
 /**

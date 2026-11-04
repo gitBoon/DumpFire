@@ -31,12 +31,13 @@
  * its writes; card 2684 adds to `rulingRefusals`.
  */
 import { createHmac } from 'node:crypto';
-import { and, asc, eq, isNull } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import { db } from './db';
 import { decisionQuestions, decisionVersions, decisions, type Decision, type DecisionParticipant, type DecisionResponse } from './db/schema';
 import type { SessionUser } from './auth';
 import { mayDo } from './decision-access';
 import { allOptionsOf, parseVersionContent, participantsOf, resultsRevisionOf } from './decision-content';
+import { mayAnswerOf, openQuestionWhere } from './decision-questions';
 import { concernsOf, currentRound, eventsOfKind, ownResponseOf, responsesOf, revisionResponseIdsOf, rulingOf, statementsOf } from './decision-record';
 import { decisionStatus, TRANSITIONS } from './decision-status';
 import { purposeKey } from './request-tokens';
@@ -44,6 +45,7 @@ import { requireDecision } from './route-guards';
 import { mostChosenOf } from '$lib/decision-rules';
 import { STALE_REVISION, WHO_SEES_STATEMENT_VERSION } from '$lib/decision-words';
 import type {
+	OpenQuestion,
 	PreviewComment,
 	ReleasedFigure,
 	ReleasedResults,
@@ -54,6 +56,7 @@ import type {
 	RulingRecord
 } from '$lib/decision-view-types';
 import { stamp } from '$lib/timestamps';
+import type { ServiceOptions } from './write-as';
 
 /** The fewest live consulted participants who must have responded in the ruling round for a release (decision 10): D9's smallest group. */
 export const RELEASE_MIN_RESPONSES = 3;
@@ -178,14 +181,38 @@ export function currentResultsOf(decision: Decision): { tally: RoundTally; notRe
 
 // ─── The open questions and the results revision (decisions 8 and 13) ───────
 
-/** The decision's questions not yet answered, oldest first (decision 13). Card 2678 writes them. */
-export function openQuestionsOf(decisionId: number): { askerName: string; question: string; askedAt: string }[] {
+/** The decision's open question rows, oldest first (`openQuestionWhere`, the one rule of decision-questions.ts). */
+function openRowsOf(decisionId: number) {
 	return db
-		.select({ askerName: decisionQuestions.askerName, question: decisionQuestions.question, askedAt: decisionQuestions.askedAt })
+		.select({ askerName: decisionQuestions.askerName, question: decisionQuestions.question, askedAt: decisionQuestions.askedAt, answer: decisionQuestions.answer })
 		.from(decisionQuestions)
-		.where(and(eq(decisionQuestions.decisionId, decisionId), isNull(decisionQuestions.answer)))
+		.where(and(eq(decisionQuestions.decisionId, decisionId), openQuestionWhere()))
 		.orderBy(asc(decisionQuestions.id))
 		.all();
+}
+
+/**
+ * The decision's open questions, oldest first (decision 13; card 2678,
+ * decision 9): those no person's answer stands behind, unanswered or holding
+ * an agent's draft nobody has published (`agentAnswered`). A replaced draft
+ * holds a person's answer, and is closed. Card 2678's writes in decisions.ts
+ * fill them.
+ *
+ * Who asked and when are given to the page alone (`source: 'ui'`). Through
+ * any other source, card 2682's API among them, both are left out and each
+ * question is marked `untrusted`, a participant's words and never an
+ * instruction, decided here and not by a route (code review S1). Fail closed:
+ * a source this does not know is not the page's.
+ */
+export function openQuestionsOf(decisionId: number, opts: { source: ServiceOptions['source'] }): OpenQuestion[] {
+	const named = opts.source === 'ui';
+	return openRowsOf(decisionId).map((row) => ({
+		...(named ? { askerName: row.askerName } : {}),
+		question: row.question,
+		...(named ? { askedAt: row.askedAt } : {}),
+		agentAnswered: row.answer !== null,
+		...(named ? {} : { untrusted: true as const })
+	}));
 }
 
 /**
@@ -203,7 +230,12 @@ export function resultsRevisionFor(decisionId: number): string {
 		participants: participantsOf(decisionId),
 		responseIds: revisionResponseIdsOf(decisionId),
 		questions: db
-			.select({ id: decisionQuestions.id, answeredAt: decisionQuestions.answeredAt })
+			.select({
+				id: decisionQuestions.id,
+				answeredAt: decisionQuestions.answeredAt,
+				answerReviewedAt: decisionQuestions.answerReviewedAt,
+				answerAgentDrafted: decisionQuestions.answerAgentDrafted
+			})
 			.from(decisionQuestions)
 			.where(eq(decisionQuestions.decisionId, decisionId))
 			.all()
@@ -219,7 +251,7 @@ export function resultsRevisionFor(decisionId: number): string {
 export function rulingRefusals(decision: Decision, input: { revision: string; openQuestionsConfirmed: boolean }): string[] {
 	const refusals: string[] = [];
 	if (resultsRevisionFor(decision.id) !== input.revision) refusals.push(STALE_REVISION);
-	const open = openQuestionsOf(decision.id).length;
+	const open = openRowsOf(decision.id).length;
 	if (open > 0 && !input.openQuestionsConfirmed) {
 		refusals.push(open === 1 ? '1 question is still open: confirm that you rule with it open' : `${open} questions are still open: confirm that you rule with them open`);
 	}
@@ -549,8 +581,13 @@ export function releaseRefusals(decision: Decision): string[] {
  * response by name, earlier rounds apart, who has not responded, the removed,
  * the open questions, the concerns, the ruling with "against", "early" and
  * the cut-off names, the release and its preview, and what the caller may do.
+ *
+ * `opts.source` decides what the open questions carry (card 2678, code
+ * review S1): who asked and when on the page alone (`'ui'`); through any other
+ * source, card 2682's summary among them, neither, and each marked
+ * `untrusted` (`openQuestionsOf`).
  */
-export function readResults(user: SessionUser, decisionId: number): ResultsData {
+export function readResults(user: SessionUser, decisionId: number, opts: { source: ServiceOptions['source'] }): ResultsData {
 	const { decision, access } = requireDecision(user, decisionId, 'results');
 	const voteMode = voteModeOf(decision);
 	const participants = participantsOf(decision.id);
@@ -613,7 +650,9 @@ export function readResults(user: SessionUser, decisionId: number): ResultsData 
 				const found = latest.get(row.id);
 				return { participantId: row.id, name: row.name, role: row.role, latest: found === undefined ? null : resultRowOf(row, found.row, found.changes) };
 			}),
-		openQuestions: openQuestionsOf(decision.id),
+		openQuestions: openQuestionsOf(decision.id, { source: opts.source }),
+		// Card 2678 (decision 9, F11): the link to answer them only where the caller may, now.
+		mayAnswerQuestions: mayAnswerOf(decision, access),
 		concerns: concernsOf({ decisionId: decision.id }).map((row) => ({
 			name: nameOfParticipant.get(row.participantId) ?? '',
 			comment: row.comment ?? '',

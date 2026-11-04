@@ -291,10 +291,13 @@ const UNPUBLISHED_HEADERS: readonly [name: string, value: string][] = [
  * which `setHeaders` in a load would not reach.
  *
  * `/decision-link/[token]`'s address holds the token, so nothing it answers
- * names its address to another site, is indexed or is cached; its three routes
- * likewise. `/decisions/[id]` and its participant's three routes show or answer
- * the caller's own response, and, once released, others' comments, and are
- * cached and indexed nowhere (card 2679, decision 6). The decision authoring
+ * names its address to another site, is indexed or is cached; its four routes
+ * likewise. `/decisions/[id]` and its participant's four routes show or answer
+ * the caller's own response, concern or question, and, once released, others'
+ * comments, and are cached and indexed nowhere (card 2679, decision 6; card
+ * 2678, decision 12). An answer to a question, a replacement and a publish
+ * answer the question with its asker's name, and are cached and indexed
+ * nowhere either (card 2678). The decision authoring
  * pages, the preview, the editor and a board's list of decisions, show what
  * has not been published, and are cached and indexed nowhere (card 2697, Q12);
  * so are superseding's answer, a new draft, the results page, which names
@@ -319,6 +322,8 @@ export const ROUTE_HEADERS: ReadonlyMap<string, readonly [name: string, value: s
 	['/api/decision-by-link/seen', PERSONAL_LINK_HEADERS],
 	// Card 2679 (decision 6): a link holder's concern about the ruling.
 	['/api/decision-by-link/concerns', PERSONAL_LINK_HEADERS],
+	// Card 2678 (decision 12): a link holder's clarification question.
+	['/api/decision-by-link/questions', PERSONAL_LINK_HEADERS],
 	['/invite/[token]', FORM_LINK_HEADERS],
 	['/request/[id]/confirm', PERSONAL_LINK_HEADERS],
 	['/request/[id]/reply', PERSONAL_LINK_HEADERS],
@@ -330,6 +335,8 @@ export const ROUTE_HEADERS: ReadonlyMap<string, readonly [name: string, value: s
 	['/api/decisions/[id]/seen', OWN_RESPONSE_HEADERS],
 	// Card 2679 (decision 6): a participant's own concern about the ruling.
 	['/api/decisions/[id]/concerns', OWN_RESPONSE_HEADERS],
+	// Card 2678 (decision 12): a participant's own clarification question.
+	['/api/decisions/[id]/questions', OWN_RESPONSE_HEADERS],
 	['/decisions/[id]/preview', UNPUBLISHED_HEADERS],
 	['/decisions/[id]/edit', UNPUBLISHED_HEADERS],
 	['/board/[id]/decisions', UNPUBLISHED_HEADERS],
@@ -338,7 +345,10 @@ export const ROUTE_HEADERS: ReadonlyMap<string, readonly [name: string, value: s
 	['/api/decisions/[id]/supersede', UNPUBLISHED_HEADERS],
 	['/decisions/[id]/results', UNPUBLISHED_HEADERS],
 	['/api/decisions/[id]/rule', UNPUBLISHED_HEADERS],
-	['/api/decisions/[id]/release', UNPUBLISHED_HEADERS]
+	['/api/decisions/[id]/release', UNPUBLISHED_HEADERS],
+	// Card 2678 (decision 12): an answer, a replacement and a publish each answer the question with the asker's name.
+	['/api/decisions/[id]/questions/[questionId]/answer', UNPUBLISHED_HEADERS],
+	['/api/decisions/[id]/questions/[questionId]/publish', UNPUBLISHED_HEADERS]
 ]);
 
 /**

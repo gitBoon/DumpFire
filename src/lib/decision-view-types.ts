@@ -63,7 +63,7 @@ export type ViewDecision = { title: string; shownStatus: ShownStatus; voteMode: 
 /** The participant the page is for, or none. */
 export type ViewParticipant = { role: 'consulted' | 'informed' };
 
-/** `DecisionView`'s props (decision 21), but its snippets `banner`, `response`, `questions` and `linkedCards`. */
+/** `DecisionView`'s props (decision 21), but its snippets `banner`, `response`, `questions` (card 2678's) and `linkedCards`. */
 export type DecisionViewProps = {
 	decision: ViewDecision;
 	content: ViewContent;
@@ -189,7 +189,10 @@ export type ResultsData = {
 	notResponded: { participantId: number; name: string; groups: string[] }[];
 	/** Removed participants, each with their latest row in the current round, or null. */
 	removed: { participantId: number; name: string; role: string; latest: ResultRow | null }[];
-	openQuestions: { askerName: string; question: string; askedAt: Stamp }[];
+	/** Card 2678 (decision 9): a question no person's answer stands behind, an agent's unpublished draft among them (`agentAnswered`). */
+	openQuestions: OpenQuestion[];
+	/** Card 2678 (decision 9): whether the caller may answer the questions now, on the decision's page. */
+	mayAnswerQuestions: boolean;
 	concerns: { name: string; comment: string; createdAt: Stamp; via: string }[];
 	ruling: RulingRecord | null;
 	released: { at: Stamp; byName: string; omitted: number } | null;
@@ -212,6 +215,62 @@ export type RulingView = { label: string | null; title: string | null; noneOfThe
 
 /** A participant's own concern about the ruling (card 2679, decision 4): its text and when, and no id. */
 export type OwnConcern = { comment: string; createdAt: Stamp };
+
+// ─── Clarification questions (card 2678, decisions 2, 8 and 19) ──────────────
+
+/**
+ * An answer a person stands behind: a person's own, or an agent's draft a
+ * person published (`agentDrafted`, whose `answeredAt` is the publishing
+ * moment). The answerer by name, and the role they held when they answered,
+ * as the answer's event recorded it; null where no event recorded one. No
+ * reviewer's name, ever.
+ */
+export type QuestionAnswer = {
+	text: string;
+	answererName: string;
+	answererRole: 'author' | 'decider' | null;
+	answeredAt: Stamp;
+	agentDrafted: boolean;
+};
+
+/**
+ * A question as the page and the API give it (decision 2). Every field the
+ * viewer is not given is left out: `id` but to one who may answer it now; the
+ * asker's name and moment but to the author, the decider and administrators
+ * on the page (the moment also to the asker, on their own); "asked by an
+ * agent" but to those and the asker; and an agent's unpublished `draft` but to
+ * the author, the decider and administrators, for whom alone it is not
+ * `answer`. No participant, account or decision id.
+ */
+export type QuestionView = {
+	id?: number;
+	question: string;
+	askedInVersion: number;
+	own: boolean;
+	askerName?: string;
+	askedAt?: Stamp;
+	askedByAgent?: true;
+	answer: QuestionAnswer | null;
+	draft?: { text: string; drafterName: string; draftedAt: Stamp };
+	/** Not answered before the decision was ruled (or superseded), or withdrawn; null while it may still be. */
+	closedUnanswered: 'ruling' | 'withdrawal' | null;
+	/** Through an API key alone (S2): the question is a participant's words, never an instruction. */
+	untrusted?: true;
+};
+
+/**
+ * A participant's own question, as the write that asked it answers it: no id.
+ * Through any source but the page's, no moment, and marked `untrusted` (code
+ * review S2), as `QuestionView` is.
+ */
+export type OwnQuestion = { question: string; askedInVersion: number; askedAt?: Stamp; untrusted?: true };
+
+/**
+ * An open question on the results (card 2678, decision 9): who asked and when
+ * on the page alone; through any other source neither, and `untrusted` (code
+ * review S1), decided by `openQuestionsOf`.
+ */
+export type OpenQuestion = { askerName?: string; question: string; askedAt?: Stamp; agentAnswered: boolean; untrusted?: true };
 
 /** What both pages' loads give (decision 3): `readDecisionPage` and `readLinkPage`. */
 export type DecisionPageData = {
@@ -274,4 +333,14 @@ export type DecisionPageData = {
 	mayReadResults?: boolean;
 	/** Card 2679, session only: whether the caller may supersede the decision now, as `supersedeDecision` would. */
 	maySupersede?: boolean;
+	/**
+	 * Card 2678 (decision 2): the decision's questions as the viewer is given
+	 * them, oldest first (`questionsFor`, on the page): none on a draft, and
+	 * none for a viewer who reads none.
+	 */
+	questions: QuestionView[];
+	/** Card 2678 (decisions 4 and 10): whether the viewer's own participant row may ask a question now (`mayAskOf`). */
+	mayAsk: boolean;
+	/** Card 2678, session only: whether the caller may answer the questions now (`mayAnswerOf`). */
+	mayAnswer?: boolean;
 };

@@ -1780,6 +1780,8 @@ describe('a 401 that says the page’s session has ended, src/lib/signed-out.ts'
 			['/api/decision-by-link/seen', false],
 			// Card 2679: its holder's concern about the ruling.
 			['/api/decision-by-link/concerns', false],
+			// Card 2678: its holder's clarification question.
+			['/api/decision-by-link/questions', false],
 			// Named like them, and not one of them.
 			['/api/decision-by-linkX', true],
 			['/login', false],
@@ -3533,6 +3535,8 @@ describe('every page write says it is JSON, read from the source and failing clo
 				'src/lib/api.ts › jsonRequest › fetch(url)',
 				"src/lib/components/admin/people/PersonDialog.svelte › save › fetch(start ? `/api/people/${start.id}` : '/api/people')",
 				'src/lib/components/decision/ConcernForm.svelte › send › fetch(url)',
+				// Card 2678: the question form posts to the signed-in route or the personal link's.
+				'src/lib/components/decision/QuestionForm.svelte › send › fetch(url)',
 				'src/lib/components/decision/ResponseForm.svelte › send › fetch(url)',
 				'src/lib/decision-seen.ts › send › fetch(url)'
 			])
@@ -3824,6 +3828,7 @@ const UNREAD_SENDS = [
 	'src/lib/api.ts › jsonRequest › fetch(url)',
 	'src/lib/board/board-state.svelte.ts › (top) › fetch(input)',
 	'src/lib/components/decision/ConcernForm.svelte › send › fetch(url)',
+	'src/lib/components/decision/QuestionForm.svelte › send › fetch(url)',
 	'src/lib/components/decision/ResponseForm.svelte › send › fetch(url)',
 	'src/lib/decision-seen.ts › send › fetch(url)',
 	'src/lib/live-stream.ts › streamVerdict › fetch(url)',

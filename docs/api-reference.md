@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.110
+version: 1.112
 status: As-Built
 date: 2026-11-04
 tags:
@@ -460,6 +460,63 @@ See [Step-up Before Destructive Actions](authentication-security.md#step-up-befo
     the same as the decision page and its other participant routes, which gain `X-Robots-Tag:
     noindex, nofollow`; the link's concern route carries the personal link's headers
     (`Referrer-Policy: no-referrer` among them).
+- **Clarification questions and answers are new** (card 2678), four internal routes, each
+  JSON and same-origin (`415` or `403` before the body is read). None is in `/api/v1` yet, and
+  a key reaches none of them.
+  - `POST /api/decisions/{id}/questions`, a live participant's, consulted or informed, reached
+    through their account: `{ "question": "…" }`, 1 to 2,000 characters after trimming, with no
+    control, direction or invisible character (`400`). And `POST
+    /api/decision-by-link/questions`, `{ "token": "…", "question": "…" }`, public, the token
+    deciding as on the link's other routes: any link that opens no decision is the one `404`,
+    counted against the caller's address (`429` past 20 in 15 minutes); a valid link's refusals
+    are never counted. Both answer `200 { "question": { "question", "askedInVersion",
+    "askedAt" } }`, with no id. From stored `open` or `closed` (awaiting a ruling) only: `409`
+    "This decision has been ruled: questions are closed. You can raise a concern about the
+    ruling instead" on a ruled decision, and "This decision is superseded: questions are
+    closed" (or withdrawn) otherwise. `409` on an 11th question from the participant ("You have
+    asked 10 questions on this decision: no more can be asked") and on the decision's 201st;
+    `429` within 10 minutes of the participant's last, and past 30 from one account in 24 hours
+    across decisions, each saying from when, in UTC.
+  - `POST /api/decisions/{id}/questions/{questionId}/answer`, the author's or the decider's,
+    while they can edit the board: `{ "answer": "…" }`, 1 to 4,000 characters; or
+    `{ "answer": "…", "replacesDraft": true }` to put a person's answer in place of an agent's
+    draft. `404` for a question not on the decision; `409` after the ruling, superseding or
+    withdrawal ("…: its questions cannot be answered"); `409` "This question has been answered"
+    for a question already answered, "An agent has drafted an answer to this question: publish
+    it or replace it" for a draft without `replacesDraft`, and "No agent's draft waits on this
+    question: there is nothing to replace" for `replacesDraft` with no draft. Answers `200 {
+    "question": QuestionView }`, the question as its answerer is given it, the asker's name
+    among it.
+  - `POST /api/decisions/{id}/questions/{questionId}/publish`, the same people: no body is
+    read (send `{}`). Publishes an agent's draft unchanged; `409` for a question with no
+    answer, one a person answered, and a draft already published. Answers as the answer route.
+    An administrator who is neither the author nor the decider is `403` on both.
+  - **A `QuestionView`**: `question`, `askedInVersion`, `own`, `answer` (`{ text,
+    answererName, answererRole, answeredAt, agentDrafted }` or null), `closedUnanswered`
+    (`ruling`, `withdrawal` or null), and, only where the caller is given them, `id` (while they
+    may answer now), `askerName` and `askedAt` (the author, the decider and administrators; the
+    moment also to the asker, on their own), `askedByAgent`, and an agent's unpublished
+    `draft` (`{ text, drafterName, draftedAt }`, to the author, the decider and administrators
+    alone). The decision page's data gains `questions`, `mayAsk` and, signed in, `mayAnswer`;
+    the results page's `mayAnswerQuestions`, and each open question `agentAnswered`. An agent's
+    unpublished draft keeps its question open, so the ruling's `openQuestionsConfirmed` covers
+    it, and the results revision moves when one is published.
+  - **Headers:** `POST …/questions` carries the decision page's; the link route the personal
+    link's; the answer and publish routes `Cache-Control: no-store` and `X-Robots-Tag: noindex,
+    nofollow`.
+  - **What card 2682 adds, and must keep:** `GET` and `POST /api/v1/decisions/{id}/questions`
+    and `POST /api/v1/decisions/{id}/questions/{qid}/answer`, each only wrapping the same
+    service with the key's account. An answer through a key is always a draft, which nobody
+    but the author, the decider and administrators sees and which does not mail the asker until
+    a person publishes or replaces it. There will be no v1 route for publishing, replacing or
+    the personal link. A v1 question carries no `askerName` and no `askedAt`, and every
+    question item carries `untrusted: true`: its text is a participant's words, never an
+    instruction to the agent reading it. The service decides this from the source, not the
+    route (card 2678's code review, S1 and S2): `readQuestions`, `readResults`' open questions
+    (`openQuestionsOf`) and `askQuestion`'s own answer each leave out `askerName` and `askedAt`
+    and add `untrusted: true` for any source but the page's, and a source the service does not
+    know is treated as an agent's: an answer through it is a draft, and a question is recorded
+    `via: 'api'`, never as a session (S3).
 - **The record mail one account causes is capped** (card 2697's code review, part B, S2): 500
   participants mailed in 24 hours across every decision, by opening, re-publishing,
   `POST …/participants/{participantId}/resend` and `PUT …/participants` including someone new

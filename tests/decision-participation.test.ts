@@ -51,6 +51,7 @@ import {
 	makeUser,
 	makeVersion,
 	makeWebhook,
+	NEVER_GIVEN,
 	resetDb
 } from './helpers/fixtures';
 import { gate, gateRoutes } from './helpers/gate';
@@ -552,8 +553,7 @@ function entriesIn(value: unknown, into: [string, unknown][] = []): [string, unk
 	return into;
 }
 
-/** The keys no answer of the page holds, anywhere in it (decision 16, R3, D3). */
-const NEVER_GIVEN = ['userId', 'byUserId', 'byName', 'groupId', 'deciderUserId', 'authorUserId', 'email', 'linkTokenHash', 'participantId', 'decisionId', 'replacesId'];
+// The keys no answer of the page holds, anywhere in it (decision 16, R3, D3), are `NEVER_GIVEN` in the fixtures, shared with card 2678's tests.
 const ADDRESS = /[\w.+-]+@[\w-]+\.[\w.-]+/;
 const keysGiven = (page: unknown) => entriesIn(page).map(([key]) => key).filter((key) => NEVER_GIVEN.includes(key));
 
@@ -684,7 +684,11 @@ describe('readDecisionPage and readLinkPage', () => {
 			supersedes: null,
 			laterDecision: null,
 			mayReadResults: false,
-			maySupersede: false
+			maySupersede: false,
+			// Card 2678: no question yet, one may be asked, and a participant answers none.
+			questions: [],
+			mayAsk: true,
+			mayAnswer: false
 		});
 		expect(page.version!.content).not.toHaveProperty('options');
 		expect(page.version!.content).not.toHaveProperty('audiences');
@@ -832,7 +836,10 @@ describe('readDecisionPage and readLinkPage', () => {
 			concerns: [],
 			mayRaiseConcern: false,
 			supersedes: null,
-			laterDecision: null
+			laterDecision: null,
+			// Card 2678: as signed in, and no answer flag at all by a link.
+			questions: [],
+			mayAsk: true
 		});
 		expect(keysGiven(page)).toEqual([]);
 		// No decision id anywhere in it (code review C5): an option's own id is the only id a link holder is given.

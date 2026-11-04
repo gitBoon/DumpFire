@@ -1140,3 +1140,81 @@ export function notifyDecisionConcern(deciderUserId: number, decisionId: number,
 
 	sendEmail(decider.email, `A concern about the ruling on ${title}`, html).catch(err => log.error(`Concern notice failed for decision ${decisionId}`, err));
 }
+
+/**
+ * Tell a decision's author or decider that a participant asked a question
+ * about it (card 2678, decision 5), under `email_decisions` and the master
+ * switch. It names nobody and quotes nothing: the question stays in the
+ * record and on the decision's page, which it links to, behind a sign-in.
+ * `heldBefore` is how many of the same participant's questions were not
+ * mailed to this recipient since the last notice about them.
+ *
+ * As `notifyDecisionConcern`: no `baseUrl` (the link is made on
+ * `linkBaseUrl()`), the preference and the address asked again here, and the
+ * send after the commit. The question write decides whether to call it.
+ */
+export function notifyDecisionQuestion(recipientUserId: number, decisionId: number, title: string, heldBefore: number): void {
+	if (!isSmtpConfigured()) return;
+	const recipient = db.select({ id: users.id, email: users.email }).from(users).where(eq(users.id, recipientUserId)).get();
+	if (!recipient) return;
+	if (!shouldNotifyUser(recipient.id, 'email_decisions')) return;
+	const baseUrl = linkBaseUrl();
+	if (noLinkAddress(baseUrl, 'The notice of a question about a decision')) return;
+
+	const pageUrl = `${baseUrl}/decisions/${decisionId}#questions`;
+	const held =
+		heldBefore > 0
+			? `<p style="margin: 0 0 12px; font-size: 13px; color: #475569;">They asked ${heldBefore} more since the last notice about them, which ${heldBefore === 1 ? 'was' : 'were'} not mailed.</p>`
+			: '';
+	const html = emailTemplate('A question about a decision', `
+		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #4338ca;">
+			<p style="margin: 0 0 12px; font-size: 13px; color: #334155;">A participant asked a question about <strong>${escapeHtml(title)}</strong>. Open the decision to read and answer it.</p>
+			${held}
+			<a href="${escapeHtml(pageUrl)}" style="display: inline-block; padding: 8px 16px; background: #4338ca; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">Open the decision</a>
+		</div>
+	`);
+
+	sendEmail(recipient.email, `A question about ${title}`, html).catch(err => log.error(`Question notice failed for decision ${decisionId}`, err));
+}
+
+/**
+ * Tell a participant that their question about a decision was answered (card
+ * 2678, decision 5): by a person, or by a person publishing or replacing an
+ * agent's draft. It names nobody and quotes nothing.
+ *
+ * `to` is an account holder's account, under `email_decisions` and the master
+ * switch, mailed a link to the decision's page, behind a sign-in; or a link
+ * holder's snapshot address, which no preference governs, mailed no link at
+ * all: a fresh personal link would end the one in their latest record mail
+ * and put a new key in a mailbox for a notice, so the mail tells them to use
+ * that one. The answer write decides whether to call it; the send is after
+ * the commit.
+ */
+export function notifyQuestionAnswered(to: { userId: number } | { address: string }, decisionId: number, title: string): void {
+	if (!isSmtpConfigured()) return;
+	const subject = `Your question about ${title} has been answered`;
+	if ('address' in to) {
+		const html = emailTemplate('Your question was answered', `
+			<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #4338ca;">
+				<p style="margin: 0 0 12px; font-size: 13px; color: #334155;">Your question about <strong>${escapeHtml(title)}</strong> has been answered.</p>
+				<p style="margin: 0; font-size: 13px; color: #475569;">Open the decision from the personal link in the latest email you were sent about it.</p>
+			</div>
+		`);
+		sendEmail(to.address, subject, html).catch(err => log.error(`Answer notice failed for decision ${decisionId}`, err));
+		return;
+	}
+	const asker = db.select({ id: users.id, email: users.email }).from(users).where(eq(users.id, to.userId)).get();
+	if (!asker) return;
+	if (!shouldNotifyUser(asker.id, 'email_decisions')) return;
+	const baseUrl = linkBaseUrl();
+	if (noLinkAddress(baseUrl, 'The notice of an answer to a question about a decision')) return;
+
+	const pageUrl = `${baseUrl}/decisions/${decisionId}#questions`;
+	const html = emailTemplate('Your question was answered', `
+		<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #4338ca;">
+			<p style="margin: 0 0 12px; font-size: 13px; color: #334155;">Your question about <strong>${escapeHtml(title)}</strong> has been answered.</p>
+			<a href="${escapeHtml(pageUrl)}" style="display: inline-block; padding: 8px 16px; background: #4338ca; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">Open the decision</a>
+		</div>
+	`);
+	sendEmail(asker.email, subject, html).catch(err => log.error(`Answer notice failed for decision ${decisionId}`, err));
+}

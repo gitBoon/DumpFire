@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.61
+version: 1.63
 status: As-Built
 date: 2026-11-04
 tags:
@@ -399,6 +399,27 @@ sequenceDiagram
     S-->>P: totals and comments, no names, small figures blurred
     P->>S: a concern (participants only)
     S-->>D: "A participant raised a concern" (no name, no text)
+```
+
+#### Asking a question, and its answer
+
+Anyone included in a decision can ask a clarifying question about it, and the author or the decider answers it on the same page (card 2678, from 4 November 2026).
+
+- **Asking** — under **Questions and answers** on the decision's page, signed in or from your personal link, while the decision is open or waiting for its ruling. Before you send, the form says: "Everyone included in this decision sees your question and its answer, without your name. The decider, the author and DumpFire's administrators see your name. In a decision with only a few people, others may be able to guess who asked." A question is up to 2,000 characters, shown exactly as typed. **Send my question** says "Your question was sent." and the question joins the list, marked **Your question**. You can ask up to 10 questions on a decision, at least 10 minutes apart; once the decision is ruled, superseded or withdrawn the form says questions are closed (after a ruling, raise a concern instead)
+- **What everyone sees** — every question and every answer a person stands behind, oldest first, with no asker's name. "Asked about version N" shows when a question was asked about an earlier version. An answer says who gave it and in which role: "Answered by Ann, the author" (or "the decider"). A question left unanswered says "Not answered yet", or "Not answered before the ruling" (or "before the withdrawal"), and stays that way
+- **Answering** — the author and the decider see who asked each question and when, and a box named "Answer to question N" under each open one, up to 4,000 characters. **Send answer** saves it, and the page moves to the new answer. An answer cannot be changed afterwards. If someone else answered first (another tab, or the other of you), the page says "This question has been answered", shows their answer, and keeps what you typed beside it so nothing is lost. DumpFire's administrators see the names too, but cannot answer unless they are the author or the decider
+- **Answers an agent drafts** — an answer given through an API key is a draft: only the author, the decider and administrators see it, labelled "Drafted by an agent and not yet reviewed by a person", and everyone else still sees the question as open. **Publish the agent's answer** shows it to everyone as it is, labelled "Drafted by an agent and reviewed by a person"; **Replace the agent's answer** puts your own words in its place, with no label. Until then the asker is not told, and the question counts as open when the decider comes to rule. (The API route that lets an agent draft is card 2682's; until then, nothing on the page creates a draft)
+- **Being told** — the author and the decider are each mailed once when someone asks, naming nobody and quoting nothing, at most once a day about the same person; the asker is mailed once when their question is answered (or a draft is published or replaced), again naming nobody and quoting nothing. Someone without an account gets that mail with no link in it: they open the decision from the personal link in the latest email they were sent about it. Account holders can switch both off under **Decisions** in their email settings
+- **On the results page** — the decider sees each open question with who asked and when, an agent's draft marked, and **Answer on the decision's page**; an administrator who cannot answer is told that the author or the decider answers there. Once the decision is ruled, superseded or withdrawn, the page offers neither and says instead "Not answered before the ruling" (or "before the withdrawal"). If another tab answered a question first, the panel says so and keeps what was typed, read-only, with the focus on it; a question form refused because the decision closed meanwhile reads the page again, so it shows why
+
+```mermaid
+stateDiagram-v2
+    [*] --> Open: a participant asks
+    Open --> Answered: the author or the decider answers (asker mailed)
+    Open --> Drafted: an agent drafts an answer (still open to everyone else)
+    Drafted --> Published: a person publishes it (asker mailed)
+    Drafted --> Answered: a person replaces it (asker mailed)
+    Open --> Closed: ruled, superseded or withdrawn ("Not answered before the ruling")
 ```
 
 ---

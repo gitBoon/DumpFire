@@ -197,6 +197,9 @@ function pageData(more: Partial<DecisionPageData> = {}): DecisionPageData & { us
 		mayRaiseConcern: false,
 		supersedes: null,
 		laterDecision: null,
+		// Card 2678: no question, and none may be asked, so no questions section is drawn (tests/decision-questions.svelte.test.ts, case 31).
+		questions: [],
+		mayAsk: false,
 		user: null,
 		...more
 	};

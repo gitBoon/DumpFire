@@ -10,10 +10,13 @@
   what is already settled, the technical detail (closed), the `response`
   snippet (consulted only), the `results` and `concern` snippets (card 2679,
   decision 24: the released results and a participant's concern about the
-  ruling, each drawn only when given), and the `questions` and `linkedCards`
-  snippets, which cards 2678 and 2680 fill and which draw nothing until they
-  do. Who sees a response is `whoSeesStatement`'s words, beside the version
-  `ResponseForm` sends (card 2679, decisions 21 and 25).
+  ruling, each drawn only when given), the `questions` snippet (card 2678: the
+  questions and answers, and the form to ask one, under the `questions` id the
+  mails link to, drawn only when given) and the `linkedCards` snippet, which
+  card 2680 fills and which draws nothing until it does. Who sees a response
+  is `whoSeesStatement`'s words, beside the version `ResponseForm` sends (card
+  2679, decisions 21 and 25). What an agent drafted and no person has
+  reviewed carries `AgentLabel` (card 2712).
 
   Its props are `DecisionViewProps` (src/lib/decision-view-types.ts): no
   version number, publication or inclusion moment, so that a preview builds
@@ -24,6 +27,7 @@
 	import type { Snippet } from 'svelte';
 	import type { DecisionViewProps } from '$lib/decision-view-types';
 	import { STATUS_WORDS, shownMoment, whoSeesStatement } from '$lib/decision-words';
+	import AgentLabel from './AgentLabel.svelte';
 	import MarkdownBlock from './MarkdownBlock.svelte';
 
 	let {
@@ -49,7 +53,7 @@
 
 {#snippet agentLabel(key: string)}
 	{#if flagged(key)}
-		<p class="agent-label" data-flag={key}>Drafted by an agent and not yet reviewed by a person</p>
+		<AgentLabel tag="p" data-flag={key} />
 	{/if}
 {/snippet}
 
@@ -99,7 +103,7 @@
 				{#each options as option (option.optionId)}
 					<div class="option-card" data-option={option.optionId}>
 						<p class="option-label">Option {option.label}</p>
-						{#if option.agentDrafted}<p class="agent-label" data-flag="options.{option.optionId}">Drafted by an agent and not yet reviewed by a person</p>{/if}
+						{#if option.agentDrafted}<AgentLabel tag="p" data-flag="options.{option.optionId}" />{/if}
 						<h3>{option.title}</h3>
 						{#if option.summary !== ''}<MarkdownBlock text={option.summary} />{/if}
 						{#if option.pros.length > 0}
@@ -194,8 +198,9 @@
 	{/if}
 
 	{#if questions}
-		<section data-section="questions">
-			<h2>Questions and answers</h2>
+		<!-- `questions` is the id the question mails link to (card 2678, decision 5); the heading takes the focus after a question is sent (decision 21). -->
+		<section data-section="questions" id="questions" aria-labelledby="questions-heading">
+			<h2 id="questions-heading" tabindex="-1">Questions and answers</h2>
 			{@render questions()}
 		</section>
 	{/if}
@@ -221,10 +226,6 @@
 	section h4 { font-size: 0.85rem; margin: var(--space-sm) 0 var(--space-xs); color: var(--text-secondary); }
 	.question { font-size: 1.1rem; font-weight: 600; margin: 0; overflow-wrap: anywhere; }
 	.by-when { font-weight: 600; margin: var(--space-sm) 0 0; }
-	.agent-label {
-		display: inline-block; margin: 0 0 var(--space-sm); font-size: 0.8rem; padding: 2px var(--space-sm); border-radius: 999px;
-		background: rgba(245, 158, 11, 0.15); color: var(--accent-amber);
-	}
 	/* Side by side where there is room, stacked on a phone (decision 22). */
 	.option-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: var(--space-md); }
 	.option-card { padding: var(--space-md); border: 1px solid var(--glass-border); border-radius: var(--radius-md); background: var(--bg-elevated); min-width: 0; }

@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.77
+version: 1.79
 status: As-Built
 date: 2026-11-04
 tags:
@@ -1624,7 +1624,7 @@ The session routes are `requireUser`, `pathId`, `readBody`, then `writeAs(locals
 
 **The components** (`src/lib/components/decision/`).
 
-- `DecisionView` takes `DecisionViewProps` (`decision`, `content`, `options`, `audiences`, `participant` as `{ role }` or null, `mode: 'participant' | 'preview'`) and the snippets `banner`, `response`, `questions` and `linkedCards`. It holds no version number, publication or inclusion moment, so card 2697's preview can build its props from the working content, and it fetches and posts nothing. Sections in design 4.7's order: title and status, banner, situation, question, what is asked and by when, who sees a response (consulted only), the options (a CSS grid, `repeat(auto-fit, minmax(15rem, 1fr))`, side by side or stacked), how it affects you (`<details>` per audience, open as given), user stories (closed `<details>`), what is not yet known, already settled, technical detail (closed), the `response` snippet (consulted only), then `questions` (card 2678) and `linkedCards` (card 2680), which draw nothing until given. A flagged section carries "Drafted by an agent and not yet reviewed by a person".
+- `DecisionView` takes `DecisionViewProps` (`decision`, `content`, `options`, `audiences`, `participant` as `{ role }` or null, `mode: 'participant' | 'preview'`) and the snippets `banner`, `response`, `questions` and `linkedCards`. It holds no version number, publication or inclusion moment, so card 2697's preview can build its props from the working content, and it fetches and posts nothing. Sections in design 4.7's order: title and status, banner, situation, question, what is asked and by when, who sees a response (consulted only), the options (a CSS grid, `repeat(auto-fit, minmax(15rem, 1fr))`, side by side or stacked), how it affects you (`<details>` per audience, open as given), user stories (closed `<details>`), what is not yet known, already settled, technical detail (closed), the `response` snippet (consulted only), then `questions` (card 2678: `QuestionsPanel` and `QuestionForm`, under the `questions` id the question mails link to, its heading `questions-heading` taking the focus after a question is sent; [Clarification questions and answers](#clarification-questions-and-answers)) and `linkedCards` (card 2680), each drawn only when given. A flagged section or option carries `AgentLabel` (card 2712), drawn as a `<p>` with its `data-flag`.
 - `MarkdownBlock` draws the text itself, escaped, in a `white-space: pre-wrap` block until it is mounted, then `{@html renderMarkdown(text)}`: DOMPurify needs a DOM, and Svelte keeps an `{@html}` the server drew on hydration (F5). It is the page's only `{@html}`. Comments are always shown as text.
 - `ResponseForm` (`voteMode`, `options`, `versionNumber`, `url`, `extra`, `disabled`, `initial`, `onReload`; `versionNumber` and `url` are optional when `disabled` is true, for card 2697's preview, code review C9): radio cards, one per option, then "I abstain" and "I have no concerns"; in score mode a radio group of six buttons, 0 to 5, per option, Send disabled until every option is scored; a comment and a comment per option. Send posts `{ ...extra, versionNumber, kind, optionId | scores, comment, optionComments }` (only the option comments that are not blank) and shows "Your response was recorded on <moment>:" with what was recorded. A refusal shows the server's words and keeps what was typed; only the `409` in `STALE_REVISION`'s words offers **Reload**, which reads the page again and draws the form afresh. `disabled` draws it and sends nothing (the preview). Every tap target is at least 44px, and every input 16px.
 - `watchForSeen(url, body, { trusted })` in `$lib/decision-seen.ts`, armed by both pages, on `/decisions/[id]` only when `participant` is not null (D7), and on neither where `stage` is null, listens on the window, capturing, for `pointerdown`, `keydown`, `touchstart` and `wheel`. Not `scroll`, which is trusted however it was caused, a script's `scrollTo` included (code review C3). The first event that passes the trust test (`event.isTrusted` unless one is given, which only the tests give) while `document.visibilityState` is `visible` stops the watch and posts `{ versionNumber, stage }` (with the token on the link page). With no answer, or a `429` or a `5xx`, the next action posts again; any other answer ends it.
@@ -1829,6 +1829,183 @@ sequenceDiagram
     W->>W: results_released_at, _by; event { upToResponseId, omitted }; activity; live event
     R-->>P: { decision, revision }
     V->>V: pageOf: releasedOf, frozen, cells of 1, 2 or everyone withheld, no names
+```
+
+### Clarification questions and answers
+
+Card 2678 (plan `docs/planning/card-2678-clarification-questions.md` v1.2, As-Built) lets any
+participant ask a clarification question, signed in or by their personal link, while a
+decision is open or awaiting its ruling; the author or the decider answers it once, on the
+same page. An API key's answer is a **draft** that only the author, the decider and
+administrators see until a person publishes it or replaces it. Card 2712's shared
+agent-drafted label (`AgentLabel`) is folded in. No column and no migration were added: every
+column written is migration 0061's.
+
+```mermaid
+flowchart LR
+    subgraph Pages
+        DP["/decisions/[id]<br/>QuestionsPanel + QuestionForm"]
+        LP["/decision-link/[token]<br/>QuestionsPanel (no controls) + QuestionForm"]
+        RP["/decisions/[id]/results<br/>ResultsView: open questions"]
+        ED["DecisionEditor, DecisionView"]
+        AL["AgentLabel (card 2712)"]
+    end
+    subgraph Routes
+        QA["POST /api/decisions/[id]/questions"]
+        QL["POST /api/decision-by-link/questions<br/>public, token in body"]
+        AN["POST …/questions/[questionId]/answer<br/>answer or replace"]
+        PB["POST …/questions/[questionId]/publish"]
+    end
+    SVC["decisions.ts<br/>askQuestion, askQuestionByLink,<br/>answerQuestion, publishAnswer"]
+    PROJ["decision-questions.ts (a read module)<br/>questionsFor, readQuestions, mayAskOf,<br/>mayAnswerOf, answererRoleOf, reachedParticipantOf"]
+    REC["decision-record.ts<br/>appendQuestion, recordAnswer,<br/>recordDraftPublished, recordDraftReplaced"]
+    RES["decision-results.ts<br/>openQuestionsOf, mayAnswerQuestions"]
+    NOTE["notifications.ts<br/>notifyDecisionQuestion, notifyQuestionAnswered"]
+    TX["afterCommit queue"]
+    DP --> AL
+    RP --> AL
+    ED --> AL
+    DP -->|load: pageOf| PROJ
+    LP -->|load: pageOf| PROJ
+    RP -->|load| RES --> PROJ
+    QA --> SVC
+    QL --> SVC
+    AN --> SVC
+    PB --> SVC
+    SVC --> REC
+    SVC --> PROJ
+    SVC --> NOTE --> TX
+    PROJ --> REC
+```
+
+**The service.** Four writes join `decisions.ts`, each `(caller, at, body, opts)` starting with
+`inWrite()`; none has a step-up guard, so `READS` is unchanged. They share a private
+`questionAs`, `questionNoticesOf` and `answerNoticeOf`.
+
+| Function | Who (`DECISION_RULES`) | From (`TRANSITIONS`) | Writes |
+|---|---|---|---|
+| `askQuestion` | `ask`: a live participant, consulted or informed, reached through the account; an API key for its own participant row (`via: 'api'`) | `ask`: `open`, `closed` | `appendQuestion` (`asker_name` the participant row's snapshot, `asked_in_version` current, `via`); `question_asked { questionId, notices }` naming the participant; the notice to each who may answer now, not the asker |
+| `askQuestionByLink` | the link's participant; 403 unless `source: 'ui'` (S5) | as above, and `linkUsable` | the same, `via: 'link'`, `signedIn` noted for a signed-in browser beside the link |
+| `answerQuestion` | `answer`: the author or the decider, with board edit while the board exists | `answer`: `open`, `closed` | `recordAnswer` (an API key's is a draft, `answer_agent_drafted`), `question_answered { questionId, role, agentDrafted, notice }`; with `replacesDraft: true` (403 through a key), `recordDraftReplaced` and `answer_replaced { questionId, role, discarded, notice }` |
+| `publishAnswer` | as `answer`; 403 unless `source: 'ui'` | as `answer` | `recordDraftPublished`, `answer_published { questionId, notice }`; its body is `null`, and its route reads none |
+
+- **The check order** is one per write (plan decision 17): ask is 401, 404/403
+  (`requireDecision('ask')`, no participant grant, not reached), 400 the question, 409 the
+  status (a ruled decision `QUESTIONS_CLOSED`, which points to a concern; superseded or
+  withdrawn in `requireTransition`'s words), 409 ten per participant then 200 per decision, 429
+  the 10-minute rest, 429 thirty per caller a day (the record's count, then the in-memory
+  allowance `decision-question:<userId>`, taken last). Answer is 401, 404/403, 403
+  `replacesDraft` by key, 404 a question not on the decision, 400 the answer, 409 the status,
+  409 the state (`ANSWERED`, `DRAFT_PENDING`, `NO_DRAFT`). Publish is 401, 404/403, 403 by key,
+  404, 409 the status, 409 the state (`NOTHING_TO_PUBLISH`, `PERSON_ANSWERED`,
+  `ALREADY_PUBLISHED`). Nothing is written before the last check passes.
+- **Settled once.** Each guarded update answers whether it changed one row; on no change the
+  write throws 409 before the event or the notice, and the transaction rolls back.
+- **Notices strictly after the commit.** The notice call is each write's last statement, and
+  both mails go through `sendEmail`, which queues them with `afterCommit`: held to the outermost
+  commit and dropped on any rollback (`db/transaction.ts`).
+- **No activity, no webhook, no live event** for any of the four. An answerer's page reads its
+  data again after each write.
+
+**The reads** (`decision-questions.ts`, imports no `inWrite`, hands no `caller`, so no service).
+`questionsFor(decision, { access, participantId, source })` is the one projection
+(`QuestionView`): every question to a reached participant or link holder, their own marked
+`own` with its `askedAt`; the asker's name and moment only to the privileged (`askers`:
+`admin`, `author`, `decider`) on the page, never with `source: 'api'`; `askedByAgent` to the
+privileged and the asker; an agent's unpublished `draft` to the privileged alone, everyone else
+shown the question as open; a question's `id` only while `mayAnswerOf` holds; the answerer's
+name and the role read from the answer's event (`question_answered` or `answer_replaced`
+detail), never from who decides now; `untrusted: true` on every item through any source but
+`'ui'` (fail closed, code review S3). A board reader who is none of these is given `[]`. The one
+pending-draft rule is exported here, `pendingDraft(row)`, which the writes in `decisions.ts`
+ask, beside `openQuestionWhere()`, the same rule in SQL that `openQuestionsOf` filters by; a
+test holds the two to agree row for row (code review F5). `readQuestions(user, decisionId, { source })`
+adds `requireDecision(user, id, 'questions')` and a 403 `NO_LONGER_REACHED` for a participant
+no longer reached with no other role; card 2682's API only wraps it. `reachedParticipantOf`
+moved here from `decision-view.ts`, so the page and `readQuestions` ask one reach rule.
+
+**The page reads** (`pageOf`). `DecisionPageData` gains `questions`, `mayAsk` (`mayAskOf`: live,
+reached, `TRANSITIONS.ask`, under 10, `linkUsable` by link) and, signed in, `mayAnswer`
+(`mayAnswerOf`). `ResultsData` gains `mayAnswerQuestions`, and each `openQuestions` row
+`agentAnswered`. `readResults(user, decisionId, { source })` and `openQuestionsOf(decisionId,
+{ source })` give who asked and when to the page alone (`'ui'`); through any other source,
+card 2682's summary among them, neither, and each row `untrusted: true`, decided in the read
+and not by a route (code review S1). `askQuestion` answers through a key with no `askedAt` and
+`untrusted: true` too (S2). "Open" now means no answer a person stands behind, `answer IS NULL OR
+(answer_agent_drafted AND answer_reviewed_at IS NULL)`, so a pending draft still needs the
+decider's tick before ruling. The results revision's questions are `[id, answeredAt,
+answerReviewedAt, answerAgentDrafted]`, so a new question, an answer, a publish and a
+replacement each move it.
+
+**The components.**
+
+- `AgentLabel` (card 2712): `reviewed` picks `AGENT_UNREVIEWED` or `AGENT_REVIEWED` from
+  `$lib/decision-words.ts`; `tag` is `span` (the editor's, with `data-section`) or `p`
+  (`DecisionView`'s, with `data-flag`); every other attribute passes through. It owns the
+  `.agent-label` class and style, which `DecisionView` and `DecisionEditor` no longer carry,
+  and the sentence is written in `src` only in `decision-words.ts`.
+- `QuestionsPanel` (`questions`, `decisionId?`, `mayAnswer?`, `shownVersion?`): the one list,
+  oldest first, each question as plain text in a `pre-wrap` block with its own id. Where
+  `mayAnswer` and a question has an `id`: a textarea named "Answer to question N", described
+  by the question's text, with its count (4,000) and Send answer, posting `JSON.stringify({
+  answer })` to `` `/api/decisions/${decisionId}/questions/${questionId}/answer` ``; under a
+  draft, Publish, posting `JSON.stringify({})` to `…/publish`, and Replace, posting
+  `JSON.stringify({ answer, replacesDraft: true })`. One persistent `role="status"` region;
+  after a success the data is read again and the focus moves to the new answer; after any 409
+  the data is read again, text typed for a question now answered stays beside it, read-only,
+  and the focus moves to that kept text, or else to the question's answer or its text
+  (`tabindex="-1"`, code review F1). A publish clears a replacement typed for its draft. The
+  link page never gives it `mayAnswer` or a decision id.
+- `QuestionForm` (`url`, `extra`, `mayAsk`, `questions`, `shownStatus`, `headingId`): always
+  mounted for a participant, `QUESTION_WHO_SEES` before Send, a labelled textarea with its count
+  (2,000), `JSON.stringify({ ...extra, question })` to `url` (a variable address, so on
+  `page-failures`' `UNREAD_SENDS`); with `mayAsk` false no textarea and the closed words it
+  works out itself from the page's questions and shown status (`questionsClosedWords`, its
+  limit sentence `questionsLimitWords`, the server's 409 words too: code review F5), so both
+  pages pass it data alone; after a 409 the data is read again (F6); its status region stays
+  either way. It lists nothing.
+- `ResultsView`'s open questions: who asked and when, the text in `pre-wrap`, `AgentLabel` on
+  `agentAnswered`, and "Answer on the decision's page" linking to `/decisions/<id>#questions`
+  only where `mayAnswerQuestions`; otherwise `RESULTS_ANSWER_ELSEWHERE`, with no link. Once the
+  decision is ruled, superseded or withdrawn, neither: "Not answered before the ruling" (or
+  "…the withdrawal"), from `resultsQuestionsClosedWords` (code review F3).
+
+**The headers and the gate.** Four `ROUTE_HEADERS` rows: `/api/decisions/[id]/questions`
+carries `OWN_RESPONSE_HEADERS`; `/api/decision-by-link/questions` carries
+`PERSONAL_LINK_HEADERS` and joins `PUBLIC_ROUTES`; the answer and publish routes carry
+`UNPUBLISHED_HEADERS`, as their answers name the asker. Every route starts with
+`requireSameOriginJson`, and the link route counts only a 404 against the caller's address.
+
+```mermaid
+sequenceDiagram
+    actor P as Participant (signed in or by link)
+    participant F as QuestionForm
+    participant R as POST …/questions (or by-link)
+    participant W as askQuestion / askQuestionByLink
+    participant T as afterCommit queue
+    P->>F: types a question (1 to 2,000)
+    F->>R: { question } or { token, question }
+    R->>R: requireSameOriginJson; by link, the address to count
+    R->>W: writeAs(caller, { source: 'ui' })
+    Note over W: 401, 404, 403; 400 text; 409 status;<br/>409 caps; 429 rest; 429 per caller
+    W->>W: appendQuestion; question_asked { questionId, notices }
+    W->>T: each who may answer now, not the asker
+    Note over T: sent only after the outermost commit
+    R-->>F: { question: OwnQuestion }
+    F->>F: status region; invalidateAll; focus to the heading
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> Open: asked
+    Open --> Answered: a person answers (asker mailed)
+    Open --> Drafted: an API key answers (still open; not mailed)
+    Drafted --> Published: a person publishes (asker mailed)
+    Drafted --> Answered: a person replaces it (draft kept in answer_replaced)
+    Open --> UnansweredForGood: ruled, superseded or withdrawn
+    Drafted --> DraftForGood: ruled, superseded or withdrawn
+    Answered --> [*]
+    Published --> [*]
 ```
 
 ### The dashboard

@@ -86,6 +86,7 @@ import {
 	cards,
 	cardTemplates,
 	categories,
+	decisionParticipants,
 	decisions,
 	inviteTokens,
 	milestones,
@@ -144,6 +145,7 @@ import {
 	makeOption,
 	makeParticipant,
 	makePerson,
+	makeQuestion,
 	makeResponse,
 	makeRuling,
 	makeSession,
@@ -958,6 +960,25 @@ const aConsultedViewer = (w: World): void => {
 	decisionId = decision.id;
 	participantOptionId = option.id;
 };
+
+/**
+ * Card 2678: `aConsultedViewer`'s decision, of which `editor` is the author
+ * and the decider, with a question `viewer` asked: unanswered
+ * (`aQuestionOnAnOpenDecisionOfEditor`), for answering it, or with an
+ * agent's draft of an answer no person has published
+ * (`anAgentDraftOnAnOpenDecisionOfEditor`), for publishing it. Its id is
+ * `decisionQuestionId`, which the path names.
+ */
+let decisionQuestionId: number | undefined;
+const theViewersQuestion = (w: World, opts: Parameters<typeof makeQuestion>[2]): void => {
+	aConsultedViewer(w);
+	const decision = db.select().from(decisions).where(eq(decisions.id, decisionId!)).get()!;
+	const asker = db.select().from(decisionParticipants).where(eq(decisionParticipants.decisionId, decision.id)).orderBy(decisionParticipants.id).get()!;
+	decisionQuestionId = makeQuestion(decision, asker, { question: `${MARK} what does it cost?`, ...opts }).id;
+};
+const aQuestionOnAnOpenDecisionOfEditor = (w: World): void => theViewersQuestion(w, {});
+const anAgentDraftOnAnOpenDecisionOfEditor = (w: World): void =>
+	theViewersQuestion(w, { answer: `${MARK} an agent's draft`, by: w.editor, role: 'decider', agentDrafted: true });
 
 /**
  * A JSON request as DumpFire's own page sends it, with its `Origin`: a
@@ -1894,6 +1915,30 @@ const TABLE: Record<string, Case | Case[]> = {
 		setup: aRulingOnAConsultedViewer,
 		withLink: () => sameOrigin('/api/decision-by-link/concerns', { token: LINK, comment: 'The ruling misses the cost.' })
 	}),
+	// Card 2678 (decisions 1 and 17): a participant's question, signed in and by the link; the answer, a replacement and
+	// a publish are the author's and the decider's alone, an administrator's neither.
+	'POST /api/decisions/[id]/questions': own(
+		'viewer',
+		['owner', 'admin', 'chief', 'editor', 'outsider', 'guest', 'both', 'editsB', 'editsA'],
+		() => sameOrigin(`/api/decisions/${decisionId}/questions`, { question: 'What does option A cost?' }),
+		{ setup: aConsultedViewer }
+	),
+	'POST /api/decision-by-link/questions': link(() => sameOrigin('/api/decision-by-link/questions', { question: 'What does option A cost?' }), {
+		setup: aConsultedViewer,
+		withLink: () => sameOrigin('/api/decision-by-link/questions', { token: LINK, question: 'What does option A cost?' })
+	}),
+	'POST /api/decisions/[id]/questions/[questionId]/answer': own(
+		'editor',
+		['owner', 'admin', 'chief', 'outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'],
+		() => sameOrigin(`/api/decisions/${decisionId}/questions/${decisionQuestionId}/answer`, { answer: 'About 1,000 a year.' }),
+		{ setup: aQuestionOnAnOpenDecisionOfEditor }
+	),
+	'POST /api/decisions/[id]/questions/[questionId]/publish': own(
+		'editor',
+		['owner', 'admin', 'chief', 'outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'],
+		() => sameOrigin(`/api/decisions/${decisionId}/questions/${decisionQuestionId}/publish`, {}),
+		{ setup: anAgentDraftOnAnOpenDecisionOfEditor }
+	),
 
 	// ── The documented API ────────────────────────────────────────────────
 	'GET /api/v1/openapi.json': open(() => '/api/v1/openapi.json'),

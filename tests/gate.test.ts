@@ -2589,6 +2589,8 @@ describe('the security headers', () => {
 			'/api/decision-by-link/seen',
 			// Card 2679 (decision 6): its holder's concern about the ruling.
 			'/api/decision-by-link/concerns',
+			// Card 2678 (decision 12): its holder's clarification question.
+			'/api/decision-by-link/questions',
 			// Card 2698: an invite, and the request form's links and the two reads their pages make.
 			'/invite/[token]',
 			'/request/[id]/confirm',
@@ -2612,7 +2614,8 @@ describe('the security headers', () => {
 			);
 			expect(theseOf(cached), `${routeId}, cached`).toEqual(linked);
 		}
-		for (const routeId of ['/decisions/[id]', '/api/decisions/[id]/responses', '/api/decisions/[id]/seen', '/api/decisions/[id]/concerns']) {
+		// Card 2678 (decision 12): a participant's own clarification question too.
+		for (const routeId of ['/decisions/[id]', '/api/decisions/[id]/responses', '/api/decisions/[id]/seen', '/api/decisions/[id]/concerns', '/api/decisions/[id]/questions']) {
 			expect(theseOf(secured(new Response('x'), routeId)), routeId).toEqual(OWN);
 			expect(theseOf(secured(new Response('x', { headers: { 'Cache-Control': 'max-age=60', 'X-Robots-Tag': 'all' } }), routeId)), `${routeId}, cached`).toEqual(OWN);
 		}
@@ -2626,7 +2629,10 @@ describe('the security headers', () => {
 			'/api/decisions/[id]/supersede',
 			'/decisions/[id]/results',
 			'/api/decisions/[id]/rule',
-			'/api/decisions/[id]/release'
+			'/api/decisions/[id]/release',
+			// Card 2678 (decision 12): an answer, a replacement and a publish answer the question with its asker's name.
+			'/api/decisions/[id]/questions/[questionId]/answer',
+			'/api/decisions/[id]/questions/[questionId]/publish'
 		]) {
 			expect(theseOf(secured(new Response('x'), routeId)), routeId).toEqual(UNPUBLISHED);
 			const cached = secured(new Response('x', { headers: { 'Cache-Control': 'max-age=60', 'X-Robots-Tag': 'all' } }), routeId);
@@ -2767,6 +2773,8 @@ describe('the routes a caller who is not signed in is let through to', () => {
 		'/api/decision-by-link/seen',
 		// Card 2679 (decision 4): its holder's concern about the ruling.
 		'/api/decision-by-link/concerns',
+		// Card 2678 (decision 12): its holder's clarification question.
+		'/api/decision-by-link/questions',
 		'/api/v1/openapi.json'
 	];
 

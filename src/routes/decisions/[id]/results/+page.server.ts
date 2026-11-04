@@ -8,8 +8,9 @@ import type { PageServerLoad } from './$types';
  * decision is 404 and one who may and is neither is 403, which the page's
  * error page shows. It writes nothing, and the page answers with no-store and
  * noindex (`ROUTE_HEADERS`, decision 6): it names each participant beside
- * their response.
+ * their response. As the page's (`source: 'ui'`), its open questions carry
+ * who asked and when (card 2678, code review S1).
  */
 export const load: PageServerLoad = async ({ params, locals }) => {
-	return readResults(locals.user!, Number(params.id));
+	return readResults(locals.user!, Number(params.id), { source: 'ui' });
 };

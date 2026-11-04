@@ -25,6 +25,7 @@ import {
 	columns,
 	decisionOptions,
 	decisionParticipants,
+	decisionQuestions,
 	decisionResponses,
 	decisionRulings,
 	decisionVersions,
@@ -47,6 +48,7 @@ import {
 	type Decision,
 	type DecisionOption,
 	type DecisionParticipant,
+	type DecisionQuestion,
 	type DecisionResponse,
 	type DecisionRuling,
 	type DecisionVersion,
@@ -739,6 +741,95 @@ export function makeRuling(decision: Decision, opts: Partial<typeof decisionRuli
 		SYSTEM_ACTOR
 	);
 	return ruling;
+}
+
+/**
+ * The keys no answer of a participant page holds, anywhere in it (card 2677,
+ * decision 16, R3, D3). One list for every test that holds a page to it:
+ * tests/decision-participation.test.ts and tests/decision-questions.test.ts
+ * (card 2678, code review F5). It lives here, not in either test file, as
+ * importing a test file runs its tests in the importer too.
+ */
+export const NEVER_GIVEN: readonly string[] = [
+	'userId',
+	'byUserId',
+	'byName',
+	'groupId',
+	'deciderUserId',
+	'authorUserId',
+	'email',
+	'linkTokenHash',
+	'participantId',
+	'decisionId',
+	'replacesId'
+];
+
+/**
+ * A clarification question of the participant (card 2678), as its writes
+ * leave one: asked signed in on version 1, its asker the participant's
+ * snapshot name, unanswered, unless told otherwise. `answer` answers it by
+ * `by` (an account, or a name alone), and writes the `question_answered`
+ * event the answer write would, with its `role` (the decider's unless told
+ * otherwise); `agentDrafted` makes that answer an agent's draft, and
+ * `published` publishes it, by `by` unless another is given. No notice and
+ * no `question_asked` event: a test of those calls the writes.
+ */
+export function makeQuestion(
+	decision: Decision,
+	participant: DecisionParticipant,
+	opts: {
+		question?: string;
+		via?: 'session' | 'link' | 'api';
+		askedInVersion?: number;
+		askedAt?: string;
+		answer?: string;
+		by?: SessionUser | string;
+		role?: 'author' | 'decider';
+		agentDrafted?: boolean;
+		answeredAt?: string;
+		published?: boolean | SessionUser;
+		reviewedAt?: string;
+	} = {}
+): DecisionQuestion {
+	const by = opts.by === undefined ? { id: null, username: 'An answerer' } : typeof opts.by === 'string' ? { id: null, username: opts.by } : opts.by;
+	const answered = opts.answer !== undefined;
+	const publisher = opts.published === undefined || opts.published === false ? null : opts.published === true ? by : opts.published;
+	const question = db
+		.insert(decisionQuestions)
+		.values({
+			decisionId: decision.id,
+			participantId: participant.id,
+			askerName: participant.name,
+			question: opts.question ?? `Question ${next()}?`,
+			askedInVersion: opts.askedInVersion ?? 1,
+			via: opts.via ?? 'session',
+			askedAt: opts.askedAt ?? '2026-11-02 10:00:00',
+			answer: opts.answer ?? null,
+			answeredBy: answered ? by.id : null,
+			answeredByName: answered ? by.username : null,
+			answeredAt: answered ? (opts.answeredAt ?? '2026-11-02 11:00:00') : null,
+			answerAgentDrafted: answered && opts.agentDrafted === true,
+			answerReviewedBy: answered && publisher !== null ? publisher.id : null,
+			answerReviewedAt: answered && publisher !== null ? (opts.reviewedAt ?? '2026-11-02 12:00:00') : null
+		})
+		.returning()
+		.get();
+	if (answered) {
+		appendEvent(
+			{
+				decisionId: decision.id,
+				kind: 'question_answered',
+				detail: {
+					questionId: question.id,
+					role: opts.role ?? 'decider',
+					agentDrafted: opts.agentDrafted === true,
+					notice: opts.agentDrafted === true ? 'awaiting_review' : 'asked'
+				}
+			},
+			{ userId: by.id, name: by.username, source: opts.agentDrafted === true ? 'api' : 'ui' }
+		);
+	}
+	return question;
 }
 
 /**

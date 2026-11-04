@@ -24,6 +24,13 @@
  * `productOwner` is listed by `supersede` alone (card 2679, S2), so it
  * changes nothing else.
  *
+ * Card 2678 adds a participant's clarification questions: `ask` a
+ * participant's, `answer` the author's and the decider's (with the board-edit
+ * rule), `questions` every participant's, the author's, the decider's and
+ * administrators', and `askers`, who sees the asker's name, the author's,
+ * the decider's and administrators' (decisions 1 and 2). A board reader who
+ * is none of these reads no question.
+ *
  * `requireDecision` in route-guards.ts asks both, and answers 404 for a
  * decision the caller may not view, as for one that is not there (decision
  * 4). This module is not the service and does not import it: the service
@@ -77,7 +84,13 @@ export const DECISION_RULES: Readonly<Record<DecisionAction, readonly DecisionRo
 	results: ['admin', 'decider'],
 	release: ['decider'],
 	concern: ['participant'],
-	supersede: ['admin', 'decider', 'productOwner']
+	supersede: ['admin', 'decider', 'productOwner'],
+	// Card 2678 (decisions 1 and 2): a participant asks; the author or the decider answers; every participant, the author, the
+	// decider and administrators read the questions; and only the author, the decider and administrators see who asked.
+	ask: ['participant'],
+	answer: ['author', 'decider'],
+	questions: ['admin', 'author', 'decider', 'participant'],
+	askers: ['admin', 'author', 'decider']
 };
 
 /** Who may view a draft (decision 5). */

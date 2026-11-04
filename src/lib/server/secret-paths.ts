@@ -16,9 +16,10 @@
  * account see a decision and answer it, and a mail server's refusal can quote
  * it, which `maskMailText` in email.ts masks by this list before the line is
  * logged. Its page is card 2677's. The holder's response and seen are sent to
- * `/api/decision-by-link/responses` and `/api/decision-by-link/seen`, and a
+ * `/api/decision-by-link/responses` and `/api/decision-by-link/seen`, a
  * concern about the ruling to `/api/decision-by-link/concerns` (card 2679),
- * the token in the body (card 2677, decision 4): their paths hold no secret, and do not
+ * and a clarification question to `/api/decision-by-link/questions` (card
+ * 2678), the token in the body (card 2677, decision 4): their paths hold no secret, and do not
  * contain `/decision-link/`, which `maskSecretPaths`, matching anywhere in a
  * line, would rewrite (F2).
  *

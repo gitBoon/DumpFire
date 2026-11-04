@@ -71,10 +71,15 @@ export type DecisionAction =
 	| 'results'
 	| 'release'
 	| 'concern'
-	| 'supersede';
+	| 'supersede'
+	// Card 2678: a participant's clarification question and its answer (writes), and reading the questions and who asked them.
+	| 'ask'
+	| 'answer'
+	| 'questions'
+	| 'askers';
 
 /** The actions that only read, allowed from every stored status: no transition is asked of them. */
-export type ReadAction = 'view' | 'record' | 'results';
+export type ReadAction = 'view' | 'record' | 'results' | 'questions' | 'askers';
 
 /**
  * Each action in words: `verb` for `You cannot <verb> this decision` (the
@@ -103,7 +108,11 @@ export const DECISION_ACTION_WORDS: Readonly<Record<DecisionAction, { verb: stri
 	results: { verb: 'read the results of', done: 'its results cannot be read' },
 	release: { verb: 'release the results of', done: 'its results cannot be released' },
 	concern: { verb: 'raise a concern on', done: 'a concern cannot be raised on it' },
-	supersede: { verb: 'supersede', done: 'it cannot be superseded' }
+	supersede: { verb: 'supersede', done: 'it cannot be superseded' },
+	ask: { verb: 'ask a question on', done: 'questions are closed' },
+	answer: { verb: 'answer questions on', done: 'its questions cannot be answered' },
+	questions: { verb: 'read the questions on', done: 'its questions cannot be read' },
+	askers: { verb: 'see who asked questions on', done: 'who asked cannot be seen' }
 };
 
 /** Each shown status in words, for `This decision is <status>`. */
@@ -116,7 +125,7 @@ const STATUS_WORDS: Readonly<Record<ShownStatus, string>> = {
 	withdrawn: 'withdrawn'
 };
 
-/** The stored statuses each action may be taken from. `view`, `record` and `results` are allowed from any. */
+/** The stored statuses each action may be taken from. `view`, `record`, `results`, `questions` and `askers` are allowed from any. */
 export const TRANSITIONS: Readonly<Record<Exclude<DecisionAction, ReadAction>, readonly StoredStatus[]>> = {
 	edit: ['draft', 'open', 'closed'],
 	setDecider: ['draft', 'open', 'closed'],
@@ -140,7 +149,10 @@ export const TRANSITIONS: Readonly<Record<Exclude<DecisionAction, ReadAction>, r
 	// Card 2679: a release from a stored ruling alone, never a superseded one (S4); a concern on the ruling; and superseding it.
 	release: ['ruled'],
 	concern: ['ruled'],
-	supersede: ['ruled']
+	supersede: ['ruled'],
+	// Card 2678 (decision 10): a question asked, and answered (published, replaced), while open or awaiting a ruling alone.
+	ask: ['open', 'closed'],
+	answer: ['open', 'closed']
 };
 
 /**

@@ -10,15 +10,29 @@
   responded, the removed, the open questions, the concerns, and the ruling as
   the record holds it, "against", "early" and the cut-off names among it.
 
+  The open questions (card 2678, decision 9, F11) are those no person's
+  answer stands behind: each with who asked and when, its text as typed
+  (`pre-wrap`), and `AgentLabel` on one an agent's unpublished draft waits
+  on. The link to answer them on the decision's page is drawn only where the
+  viewer may answer now (`mayAnswerQuestions`); anyone else is told, with no
+  link, that the author or the decider answers there. Once the decision is
+  ruled, superseded or withdrawn neither is drawn: it says instead that they
+  were not answered before the ruling or the withdrawal
+  (`resultsQuestionsClosedWords`, code review F3).
+
   At phone width every table stacks each row as a card, each cell labelled
   by its column (`stacked`), so that nothing scrolls sideways (F5). Plain
   text throughout: nothing a participant wrote is read as markup.
 -->
 <script lang="ts">
 	import type { ResultRow, ResultsData, RoundTally } from '$lib/decision-view-types';
-	import { shownMoment } from '$lib/decision-words';
+	import { RESULTS_ANSWER_ELSEWHERE, resultsQuestionsClosedWords, shownMoment } from '$lib/decision-words';
+	import AgentLabel from './AgentLabel.svelte';
 
 	let { results }: { results: ResultsData } = $props();
+
+	/** Once the decision is ruled, superseded or withdrawn, why its open questions take no answer (code review F3); null while they may. */
+	const questionsClosed = $derived(resultsQuestionsClosedWords(results.decision.shownStatus));
 
 	const score = $derived(results.decision.voteMode === 'score');
 	const labelOf = (optionId: number | null) => {
@@ -165,9 +179,23 @@
 	{#if results.openQuestions.length > 0}
 		<ul data-list="questions">
 			{#each results.openQuestions as question, index (index)}
-				<li>{question.askerName}: {question.question}</li>
+				<li data-question={index}>
+					{#if question.askerName !== undefined}
+						<span class="asked-by"><strong>{question.askerName}</strong>{question.askedAt === undefined ? '' : `, ${shownMoment(question.askedAt, '')}`}:</span>
+					{/if}
+					{#if question.agentAnswered}<AgentLabel />{/if}
+					<p class="comment" data-text="question">{question.question}</p>
+				</li>
 			{/each}
 		</ul>
+		{#if questionsClosed !== null}
+			<!-- Ruled, superseded or withdrawn (code review F3): nothing more can be answered, so no link and no pointer to the page. -->
+			<p class="none" data-note="questions-closed">{questionsClosed}</p>
+		{:else if results.mayAnswerQuestions}
+			<p class="answer-link"><a href="/decisions/{results.decision.id}#questions" data-action="answer-questions">Answer on the decision's page</a></p>
+		{:else}
+			<p class="none" data-note="answer-elsewhere">{RESULTS_ANSWER_ELSEWHERE}</p>
+		{/if}
 	{:else}
 		<p class="none">No questions are open.</p>
 	{/if}
@@ -221,6 +249,11 @@
 	.results ul { margin: 0; padding-left: var(--space-lg); font-size: 0.88rem; }
 	.none { margin: 0; font-size: 0.85rem; color: var(--text-tertiary); }
 	.comment { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
+	[data-list='questions'] li { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-xs); margin-bottom: var(--space-xs); min-width: 0; }
+	/* A long name with no break wraps at phone width rather than pushing the page sideways (code review F8). */
+	.asked-by { overflow-wrap: anywhere; min-width: 0; }
+	.answer-link { margin: 0; font-size: 0.88rem; }
+	.answer-link a { display: inline-flex; align-items: center; min-height: 44px; }
 	.results-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; table-layout: auto; }
 	.results-table caption { text-align: left; font-weight: 600; padding-bottom: var(--space-xs); }
 	.results-table th,

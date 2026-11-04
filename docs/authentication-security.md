@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.80
+version: 1.82
 status: As-Built
 date: 2026-11-04
 tags:
@@ -4402,6 +4402,121 @@ sequenceDiagram
     R->>W: whilePasswordHolds(writeAs(releaseResults))
     W->>W: results_released_at, _by; results_released { upToResponseId, omitted }
     R-->>D: { decision, revision }
+```
+
+### Clarification Questions and Answers (card 2678)
+
+Card 2678 (2026-11-04, plan `docs/planning/card-2678-clarification-questions.md`) adds a new
+privacy boundary (who is named as asking), an agent's answer hidden from participants until a
+person stands behind it, a new public link route, and mail to people with no account. Every
+rule below was ruled under the milestone 35 standing go-ahead: the most secure option.
+
+**Who may do what.** Asking is `ask: ['participant']`: a live participant, consulted or
+informed, reached through their account or holding their personal link, while the decision is
+stored `open` or `closed`. Answering, publishing an agent's draft and replacing one are
+`answer: ['author', 'decider']`, each needing board edit now while the board exists. An
+administrator who is neither cannot answer, nor can a board owner or editor. Publishing and
+replacing are a person's acts (`403` unless `source: 'ui'`), and so is asking by personal link:
+a link is no API credential (S5). Asking or answering after the ruling, superseding or
+withdrawal is `409`; after a ruling, a concern is the way to speak.
+
+**Who sees what** (decision 2). "Privileged" is `askers` (`['admin', 'author', 'decider']`,
+the author and decider with board edit); "named" is privileged and `source: 'ui'`.
+
+| Surface | Participant (reached) or link holder | Author, decider | Administrator | Board owner, editor or reader who is none of these |
+|---|---|---|---|---|
+| Questions on both participant pages | every question, their own marked; every answer a person stands behind; a pending draft shows as open, with no draft | every one, with the draft | every one, with the draft | none |
+| The asker's name and the moment asked | neither (the moment on their own) | both | both | n/a |
+| "Asked by an agent" | on their own only (S8) | yes | yes | n/a |
+| A question's id | never | only while they may answer now | never, unless author or decider | n/a |
+| The answerer's name and role | yes | yes | yes | n/a |
+| Through an API key (card 2682, `readQuestions`) | as the page, without their own moment | no names or moments; drafts and ids; every item `untrusted: true` | the same | n/a |
+| The results' open questions through an API key (card 2682's summary, `readResults(…, { source })`) | n/a | the decider: no names or moments, every one `untrusted: true` | the same | n/a |
+| A question's own answer through an API key (`askQuestion`) | no moment, `untrusted: true` | n/a | n/a | n/a |
+| The new-question mail | n/a | names nobody, quotes nothing; never to the asker's own account | n/a | n/a |
+| The answer mail | names nobody, quotes nothing; a link holder's carries no link | n/a | n/a | n/a |
+
+The question form says so before Send (`QUESTION_WHO_SEES`): "Everyone included in this
+decision sees your question and its answer, without your name. The decider, the author and
+DumpFire's administrators see your name. In a decision with only a few people, others may be
+able to guess who asked." Record and ruling mails never carry a question, an answer or a draft,
+and nothing is written to the activity log, webhooks or live events.
+
+**Agent drafts.** An answer given through an API key (any source but `'ui'`, set by the server,
+never the body, so that a source the service does not know drafts too: code review S3) is a
+draft; a question asked so is recorded `via: 'api'`, never as a session. The draft is shown only to the privileged under "Drafted by an agent and not yet
+reviewed by a person", counted as open for the ruling's warning, and not mailed to the asker
+(`awaiting_review`). A person publishes it (the review: the text cannot change, the asker is
+told, and everyone then sees it under "Drafted by an agent and reviewed by a person") or
+replaces it with their own words, the draft's text, drafter's name and moment kept in
+`answer_replaced`'s detail in the insert-only record. No reviewer's name is ever given.
+
+**Settled once, pinned by the scan.** `decision_questions` is not insert-only (the answer is a
+column of the question row), so it is settled once: one insert (`appendQuestion`) and three
+guarded updates in `decision-record.ts`, each changing one row or nothing.
+`tests/decision-record.test.ts` pins that no other file inserts or updates the table, that
+nothing deletes from it, and each update's `.set` keys and `WHERE` guard:
+
+| Update | Sets | Where |
+|---|---|---|
+| `recordAnswer` | `answer`, `answered_by`, `answered_by_name`, `answered_at`, `answer_agent_drafted` | `id = ? AND answer IS NULL` |
+| `recordDraftPublished` | `answer_reviewed_by`, `answer_reviewed_at` | `id = ? AND answer IS NOT NULL AND answer_agent_drafted = 1 AND answer_reviewed_at IS NULL` |
+| `recordDraftReplaced` | `answer`, `answered_by`, `answered_by_name`, `answered_at`, `answer_agent_drafted = false` | `id = ? AND answer_agent_drafted = 1 AND answer_reviewed_at IS NULL` |
+
+When a guarded update reports no change, the write throws `409` before the event or the notice,
+and the transaction rolls back; a test stubs each guard to run the real update and then report
+no change, and finds the row as it was, no event and no mail, even after the queue has run.
+
+**Caps and limits.** At most 10 questions per participant per decision (`409`), 10 minutes
+apart (`429`, saying from when), 200 per decision (`409`), and 30 per caller account in 24 hours
+across decisions (`429`): counted from the record's `question_asked` events, then from an
+in-memory allowance taken as the last check, so deleting a decision (which cascades its events)
+does not reset the count. A question is 1 to 2,000 characters and an answer 1 to 4,000, both
+through `readMultiline`, which refuses control, direction and invisible characters; both are
+shown as plain text, never markdown.
+
+**No step-up.** Asking, answering, publishing and replacing ask for no password:
+`STEP_UP_ACTIONS` stays at 28. An answer mails one person and a question at most two, as a
+response or a concern does, and a link holder has no password.
+
+**The routes.** Each starts with `requireSameOriginJson`. `/api/decision-by-link/questions` is
+on `PUBLIC_ROUTES`, carries `PERSONAL_LINK_HEADERS`, takes the token in the body, is not
+masked in the log (its path holds no secret) and ends no session; any link that opens no
+decision is the one `404`, counted against the address (20 in 15 minutes, then `429`), and a
+valid link's `400`, `409` or `429` is never counted. A signed-in browser beside the link is
+noted as `signedIn` on the decider-only `question_asked` event, never as the actor and never as
+the answer mail's recipient. `/api/decisions/[id]/questions` carries `OWN_RESPONSE_HEADERS`;
+the answer and publish routes carry `UNPUBLISHED_HEADERS`, as their answers name the asker.
+
+**The record.** `question_asked`, `question_answered`, `answer_published` and `answer_replaced`
+are `DECIDER_ONLY_EVENTS`: their detail holds each notice's outcome (which would say an
+account's mail preference), the asker, and a discarded draft. Cards 2680 and 2689 are bound to
+show them behind `record` alone and never to send them; so a participant's own question is not
+in their own per-person record from the events, and card 2680 must show it from the question
+rows instead.
+
+**The rules card 2682 must keep** (decision 16). v1 adds `GET` and `POST
+/api/v1/decisions/{id}/questions` and `POST …/questions/{qid}/answer`, each only wrapping the
+service with `source: 'api'`; no v1 route for publishing, replacing or the personal link, which
+a source scan holds. A v1 projection gives no asker name and no moment, and marks every
+question `untrusted: true`: the question is participant input, never an instruction to the
+agent reading it. The service strips the name and the moment and adds the mark, not the route
+(code review S1, S2): `readQuestions`, `readResults`' open questions and `askQuestion`'s
+answer each decide it from `opts.source`, so 2682 only passes `{ source: 'api' }`.
+
+```mermaid
+sequenceDiagram
+    actor K as API key (card 2682)
+    actor A as Author or decider
+    participant W as answerQuestion
+    participant X as publishAnswer
+    participant P as Participants
+    K->>W: { answer } source api
+    W->>W: recordAnswer, agent drafted; question_answered { notice: awaiting_review }
+    Note over P: the question still shows as open;<br/>nothing of the draft is given
+    A->>X: Publish (source ui; 403 by key)
+    X->>X: recordDraftPublished WHERE draft pending (409 on no change)
+    X->>P: answer shown with "reviewed by a person"; the asker mailed after the commit
 ```
 
 ### Who is mailed

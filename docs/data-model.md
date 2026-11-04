@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.51
+version: 1.53
 status: As-Built
 date: 2026-11-04
 tags:
@@ -829,7 +829,9 @@ migration**: every field is a 0061 column, and the new event details are JSON.
 - **The results revision** (`resultsRevisionOf`, `decision-content.ts`): HMAC-SHA256 keyed with
   `purposeKey('decision-results-revision')` over what the editor revision covers, every
   response id `responsesOf` gives in id order (never a concern) and every question's
-  `[id, answered_at]`. The ruling and the release send it; a different one is `409`.
+  `[id, answered_at]`, which card 2678 widened to `[id, answered_at, answer_reviewed_at,
+  answer_agent_drafted]` ([below](#clarification-questions-settled-once-card-2678)). The
+  ruling and the release send it; a different one is `409`.
 - **A release is frozen** at `results_released.upToResponseId`: `releasedOf` reads only
   responses up to it, the ruling round's latest per live consulted participant. A comment left
   out is named on the event by response and field; the page names it by a keyed HMAC
@@ -839,10 +841,11 @@ migration**: every field is a 0061 column, and the new event details are JSON.
 - **The supersede chain** is walked through `supersedes_id` both ways (`chainOf`), with a
   visited set; at most one superseding decision that is not withdrawn exists at a time, kept in
   code (`supersedingOf`), as `schema.ts` says.
-- **The decider-only details.** `DECIDER_ONLY_EVENTS = ['ruled', 'cut_off', 'concern_raised']`
-  in `decision-record.ts`: their `early`, `againstResponses`, the cut-off names and the concern
-  outcomes are shown to the decider and administrators alone (the results page), and cards
-  2680 (the record) and 2689 (webhooks) are bound to keep it so.
+- **The decider-only details.** `DECIDER_ONLY_EVENTS` in `decision-record.ts`, card 2679's
+  `ruled`, `cut_off` and `concern_raised` and card 2678's four question events: their `early`,
+  `againstResponses`, the cut-off names and the notice outcomes are shown to the decider and
+  administrators alone (the results page), and cards 2680 (the record) and 2689 (webhooks) are
+  bound to keep it so.
 - **The timestamp column count stays 62**: no new column.
 
 ```mermaid
@@ -876,6 +879,98 @@ stateDiagram-v2
         a superseded decision can no
         longer be released
     end note
+```
+
+#### Clarification questions, settled once (card 2678)
+
+Card 2678 (plan `docs/planning/card-2678-clarification-questions.md`) is the first writer of
+`decision_questions`, through `askQuestion`, `askQuestionByLink`, `answerQuestion` and
+`publishAnswer` in `src/lib/server/decisions.ts`. **It added no column, no table and no
+migration**: every field is a 0061 column, the event details are JSON, and the timestamp column
+count stays 62.
+
+**Not insert-only: settled once.** The answer, its author, its agent flag and its review are
+columns of the question row, so answering is an `UPDATE`. The design's insert-only rule names
+four tables (`decision_versions`, `decision_responses`, `decision_rulings`, `decision_events`),
+and the schema and the record module say so. **Migration 0061's header comment is wrong** to
+list `decision_questions` among the tables the application only inserts into; an applied
+migration is not edited, so the correction lives here and in `decision-record.ts`'s header. The
+rule instead: a question row is inserted once, and its answer settled once, through exactly one
+insert and three guarded updates, all in `decision-record.ts`:
+
+| Write | Sets | Guard (`WHERE id = ? AND …`) | Settles |
+|---|---|---|---|
+| `appendQuestion` (insert) | `decision_id`, `participant_id`, `asker_name` (the participant row's snapshot name), `question` (1 to 2,000), `asked_in_version` (current), `via`, `asked_at` (stamped) | n/a | a new open question |
+| `recordAnswer` | `answer` (1 to 4,000), `answered_by`, `answered_by_name`, `answered_at`, `answer_agent_drafted` (true for any source but `'ui'`, an API key's among them, set by the server; false only for the page's) | `answer IS NULL` | a person's answer, or an agent's draft |
+| `recordDraftPublished` | `answer_reviewed_by`, `answer_reviewed_at` (the publishing moment) | `answer IS NOT NULL AND answer_agent_drafted = 1 AND answer_reviewed_at IS NULL` | a draft, published unchanged |
+| `recordDraftReplaced` | `answer`, `answered_by`, `answered_by_name`, `answered_at`, `answer_agent_drafted = false` | `answer_agent_drafted = 1 AND answer_reviewed_at IS NULL` | a draft, replaced by a person's answer |
+
+Each answers whether it changed one row; on no change the service throws `409` and the
+transaction rolls back. A published or replaced draft is outside both draft guards, and a
+person's answer outside all three, so each step happens at most once. Before a replacement
+overwrites the row, the draft's text, drafter's name and moment are copied into
+`answer_replaced`'s detail, in the insert-only record. `tests/decision-record.test.ts` pins it:
+`.insert(decisionQuestions)` only in `decision-record.ts` (one) and `db/restore.ts`; `.update`
+only in `decision-record.ts` (three), each update's `.set` keys and `WHERE` guard as above;
+`.delete`, `onConflict…`, and SQL `UPDATE`, `DELETE FROM`, `REPLACE` or `INSERT OR` naming the
+table nowhere. Deleting a draft or withdrawn decision still cascades its questions.
+
+- **`via`** is free text checked in code: `session`, `link` or, through an API key, `api`. A
+  signed-in question from any source but the page's is recorded `api`, never `session` (card
+  2678's code review, S3: fail closed).
+- **Open** means no answer a person stands behind: `answer IS NULL OR (answer_agent_drafted = 1
+  AND answer_reviewed_at IS NULL)` (`openQuestionWhere`, beside the one `pendingDraft` rule in
+  `decision-questions.ts`, read by `openQuestionsOf` in `decision-results.ts`; a test holds the
+  SQL and the rule to agree row for row), so an agent's pending draft counts as open for the
+  ruling's warning.
+- **The answerer's role** has no column: it is recorded on `question_answered.detail.role` and
+  `answer_replaced.detail.role` at answer time, and read back from there (`questionsFor`), so it
+  cannot drift when the decider changes. An account both author and decider answers as the
+  decider. A published draft keeps its `question_answered` role; an answer whose event records
+  no role is shown with the answerer's name alone.
+- **The reviewer has no name column**, and no page ever names one: publishing shows only as the
+  "reviewed by a person" label.
+- **Four event kinds**, each in `DECIDER_ONLY_EVENTS`:
+
+| Kind | Participant | Detail |
+|---|---|---|
+| `question_asked` | the asker | `{ questionId, notices: { userId, outcome }[], signedIn? }` |
+| `question_answered` | none | `{ questionId, role, agentDrafted, notice }` |
+| `answer_published` | none | `{ questionId, notice }` |
+| `answer_replaced` | none | `{ questionId, role, discarded: { text, byName, at }, notice }` |
+
+- **Caps read from the rows and the record**: `questionsBy(participantId)` (10 per participant),
+  `questionsOf(decisionId)` (200 per decision) and `questionsAskedSince(userId, since)`, through
+  `actedSince` and the `idx_decision_events_actor_user_id` index (30 per caller a day, with an
+  in-memory allowance beside it).
+
+```mermaid
+erDiagram
+    decisions ||--o{ decision_questions : "asked on (CASCADE)"
+    decision_participants |o--o{ decision_questions : "asked by (NO ACTION)"
+    users |o--o{ decision_questions : "answered_by, answer_reviewed_by (SET NULL)"
+    decisions ||--o{ decision_events : "question_asked, question_answered, answer_published, answer_replaced"
+    decision_questions {
+        int id PK
+        text asker_name "snapshot; privileged only"
+        text question "plain text"
+        text via "session, link, api"
+        text answer "settled once"
+        int answer_agent_drafted "server-set; false after a replacement"
+        int answer_reviewed_by FK "the publisher"
+        text answer_reviewed_at "the publishing moment"
+    }
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> Open: appendQuestion
+    Open --> Answered: recordAnswer (a person)
+    Open --> Drafted: recordAnswer (agent drafted)
+    Drafted --> Published: recordDraftPublished
+    Drafted --> Answered: recordDraftReplaced (draft copied into answer_replaced)
+    Answered --> [*]
+    Published --> [*]
 ```
 
 #### The working copy and its revision (card 2676)
@@ -2317,7 +2412,9 @@ of about zero.
   turn a ruling for it into a ruling for none of them, and a deleted participant would orphan
   the record. After a decision opens, participants are only marked removed and options only
   retired. `decision_versions`, `decision_responses`, `decision_rulings` and `decision_events`
-  are insert-only in code alone. 0061 changes no row and declares nothing to the rehearsal;
+  are insert-only in code alone. The migration's header comment also lists
+  `decision_questions` as insert-only, which is wrong: its answer is settled once by guarded
+  updates (card 2678, [above](#clarification-questions-settled-once-card-2678)). 0061 changes no row and declares nothing to the rehearsal;
   a backup from before it restores with the twelve tables empty and every Product Owner NULL.
   Backup, restore, reset and the timestamp upkeep find the tables for themselves.
 - **`sessions.wrong_password_count` is how many current passwords a session has had compared

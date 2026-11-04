@@ -114,6 +114,10 @@ const TEST_FILES = [
 	'decision-participation.test.ts',
 	// Card 2677: the participant page, the response form and the seen watch, in the page.
 	'decision-participation.svelte.test.ts',
+	// Card 2678: clarification questions and answers, agent drafts, their notices and what the pages read of them.
+	'decision-questions.test.ts',
+	// Card 2678, slices 2a and 2b: the shared agent-drafted label (card 2712), the results' open questions, the questions panel and form, in the page.
+	'decision-questions.svelte.test.ts',
 	'decision-record.test.ts',
 	// Card 2679: the results, the ruling, the release of results and superseding, and what the pages read of them.
 	'decision-ruling.test.ts',

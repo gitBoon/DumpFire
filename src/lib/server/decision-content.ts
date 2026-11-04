@@ -449,23 +449,27 @@ const RESULTS_REVISION_PURPOSE = 'decision-results-revision';
  * with `purposeKey('decision-results-revision')`, over everything the draft
  * revision covers, every response id `responsesOf` gives (votes, abstentions
  * and no concerns, never a concern: their table is insert-only, so the set of
- * ids is the state), and every question's id and the moment it was answered.
- * So a response, an answered question or a change to a participant between
- * reading the results and ruling on them moves it; a seen event, a mail
- * outcome or a concern does not. Keyed, as the draft revision is, so that
- * holding it lets nobody test guesses offline.
+ * ids is the state), and every question's id, the moment it was answered,
+ * the moment an agent's draft answer was published and whether its answer is
+ * an agent's (card 2678, decision 11: publishing and replacing change which
+ * questions are open, and the flag moves it for a replacement made in the
+ * same second as the draft). So a response, a question
+ * asked, answered, published or replaced, or a change to a participant
+ * between reading the results and ruling on them moves it; a seen event, a
+ * mail outcome, a notice's outcome or a concern does not. Keyed, as the draft
+ * revision is, so that holding it lets nobody test guesses offline.
  */
 export function resultsRevisionOf(of: {
 	decision: Decision;
 	options: DecisionOption[];
 	participants: DecisionParticipant[];
 	responseIds: number[];
-	questions: { id: number; answeredAt: string | null }[];
+	questions: { id: number; answeredAt: string | null; answerReviewedAt: string | null; answerAgentDrafted: boolean }[];
 }): string {
 	const covered = {
 		...coveredBy(of.decision, of.options, of.participants),
 		responses: [...of.responseIds].sort((a, b) => a - b),
-		questions: inOrder(of.questions).map((question) => [question.id, question.answeredAt])
+		questions: inOrder(of.questions).map((question) => [question.id, question.answeredAt, question.answerReviewedAt, question.answerAgentDrafted])
 	};
 	return createHmac('sha256', purposeKey(RESULTS_REVISION_PURPOSE)).update(JSON.stringify(covered)).digest('hex');
 }

@@ -146,6 +146,9 @@ const ALLOWED: Record<string, string> = {
 	'src/routes/api/decision-by-link/concerns/+server.ts POST':
 		"A personal link's concern about the ruling (card 2679, decision 4): the address a wrong link is counted against is read " +
 		'before the body, from the request alone. It reads no row and counts nothing.',
+	'src/routes/api/decision-by-link/questions/+server.ts POST':
+		"A personal link's clarification question (card 2678, decision 17): the address a wrong link is counted against is read " +
+		'before the body, from the request alone. It reads no row and counts nothing.',
 	'src/routes/api/admin/import/+server.ts POST':
 		'The import settles `outside` and the media type before it reads the upload, and answers either before any of it is read. ' +
 		'Who may import is requireSuperadmin, the session. Then it takes the confirmation of the password (card 2701, decision 8), ' +
@@ -3124,7 +3127,13 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 					'supersedeDecision',
 					// Card 2679 (decision 4): a participant's concern about the ruling, signed in or by a personal link.
 					'raiseConcern',
-					'raiseConcernByLink'
+					'raiseConcernByLink',
+					// Card 2678: a participant's question, signed in, through an API key or by a personal link; its answer, an agent's
+					// draft through a key; and a person publishing that draft.
+					'askQuestion',
+					'askQuestionByLink',
+					'answerQuestion',
+					'publishAnswer'
 				]
 			}
 		});

@@ -25,6 +25,13 @@
 	 * may read the results, and Supersede… where they may supersede it: a
 	 * title, the old one to start from, posted to
 	 * `/api/decisions/[id]/supersede`, and then the new draft's editor.
+	 *
+	 * Card 2678 (decisions 2 and 21): the decision's questions and answers
+	 * (`QuestionsPanel`), as the caller was given them, with the answer,
+	 * publish and replace controls where the caller may answer now; and, for
+	 * a participant, the question form (`QuestionForm`), always mounted,
+	 * posting to `/api/decisions/[id]/questions`. The section is drawn only
+	 * where there is a question or the caller may ask one.
 	 */
 	import { tick } from 'svelte';
 	import type { PageData } from './$types';
@@ -35,6 +42,8 @@
 	import ThemeMenuItems from '$lib/components/ThemeMenuItems.svelte';
 	import ConcernForm from '$lib/components/decision/ConcernForm.svelte';
 	import DecisionView from '$lib/components/decision/DecisionView.svelte';
+	import QuestionForm from '$lib/components/decision/QuestionForm.svelte';
+	import QuestionsPanel from '$lib/components/decision/QuestionsPanel.svelte';
 	import ReleasedResults from '$lib/components/decision/ReleasedResults.svelte';
 	import ResponseForm from '$lib/components/decision/ResponseForm.svelte';
 	import RulingBanner from '$lib/components/decision/RulingBanner.svelte';
@@ -133,6 +142,16 @@
 	<!-- Drawn afresh for another decision, so one decision's concerns are never listed on another's. -->
 	{#key data.decision.id}
 		<ConcernForm url="/api/decisions/{data.decision.id}/concerns" concerns={data.concerns} mayRaise={data.mayRaiseConcern} />
+	{/key}
+{/snippet}
+
+{#snippet questions()}
+	<!-- Drawn afresh for another decision, so one decision's typed answers are never offered on another's. -->
+	{#key data.decision.id}
+		<QuestionsPanel questions={data.questions} decisionId={data.decision.id} mayAnswer={data.mayAnswer ?? false} shownVersion={data.version?.number} />
+		{#if data.participant !== null}
+			<QuestionForm url="/api/decisions/{data.decision.id}/questions" mayAsk={data.mayAsk} questions={data.questions} shownStatus={data.decision.shownStatus} />
+		{/if}
 	{/key}
 {/snippet}
 
@@ -261,6 +280,7 @@
 				response={yourResponse}
 				results={data.released !== null ? releasedResults : undefined}
 				concern={data.participant !== null && (data.mayRaiseConcern || data.concerns.length > 0) ? concern : undefined}
+				questions={data.questions.length > 0 || data.mayAsk ? questions : undefined}
 			/>
 		{/if}
 	</main>

@@ -2755,6 +2755,20 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 	'src/routes/api/decision-by-link/concerns/+server.ts POST': [
 		{ service: 'raiseConcernByLink', args: [code('caller'), { token: code('token') }, code('body'), { source: 'ui' }] }
 	],
+	// Card 2678 (decisions 1 and 17): a participant's question, signed in and by a personal link; the author's or decider's
+	// answer or replacement; and publishing an agent's draft, which reads no body. Card 2682 adds the v1 rows, with 'api'.
+	'src/routes/api/decisions/[id]/questions/+server.ts POST': [
+		{ service: 'askQuestion', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'ui' }] }
+	],
+	'src/routes/api/decision-by-link/questions/+server.ts POST': [
+		{ service: 'askQuestionByLink', args: [code('caller'), { token: code('token') }, code('body'), { source: 'ui' }] }
+	],
+	'src/routes/api/decisions/[id]/questions/[questionId]/answer/+server.ts POST': [
+		{ service: 'answerQuestion', args: [code('caller'), { decisionId: code('decisionId'), questionId: code('questionId') }, code('body'), { source: 'ui' }] }
+	],
+	'src/routes/api/decisions/[id]/questions/[questionId]/publish/+server.ts POST': [
+		{ service: 'publishAnswer', args: [code('caller'), { decisionId: code('decisionId'), questionId: code('questionId') }, null, { source: 'ui' }] }
+	],
 	// Card 2679 (decision 2): every refusal first, as the step-up's guard, then the write, which asks its guard itself;
 	// each guard handed the write's options last, as its refusal of an API key is its own.
 	'src/routes/api/decisions/[id]/rule/+server.ts POST': [

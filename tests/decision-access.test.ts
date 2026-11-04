@@ -191,7 +191,12 @@ describe('DECISION_RULES', () => {
 			results: ['admin', 'decider'],
 			release: ['decider'],
 			concern: ['participant'],
-			supersede: ['admin', 'decider', 'productOwner']
+			supersede: ['admin', 'decider', 'productOwner'],
+			// Card 2678 (decisions 1 and 2).
+			ask: ['participant'],
+			answer: ['author', 'decider'],
+			questions: ['admin', 'author', 'decider', 'participant'],
+			askers: ['admin', 'author', 'decider']
 		});
 		expect(DRAFT_VIEWERS).toEqual(['admin', 'author', 'decider', 'boardOwner']);
 	});

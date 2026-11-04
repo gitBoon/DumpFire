@@ -25,6 +25,15 @@
  * `ruling` on a ruled decision, given to a participant alone, and once the
  * decision is ruled its closing time is given to nobody (decision 26).
  *
+ * Card 2678 adds the decision's clarification questions, through the one
+ * projection `questionsFor` (decision-questions.ts): every question to a
+ * participant, the author, the decider and administrators, the asker named
+ * only to the last three, an agent's unpublished draft only to them, and a
+ * question's id only to one who may answer it now; whether the participant
+ * may ask (`mayAsk`) and, signed in, whether the caller may answer
+ * (`mayAnswer`). The reach test is `reachedParticipantOf`'s, which the
+ * questions read asks too.
+ *
  * Card 2697 adds the preview, `readPreview`, for `/decisions/[id]/preview`:
  * the working copy as a participant of the caller's choosing will see it,
  * built by the same `viewModelOf` and `groupsOf`, so that the preview cannot
@@ -39,22 +48,14 @@
 import { error } from '@sveltejs/kit';
 import { and, asc, eq } from 'drizzle-orm';
 import { db } from './db';
-import {
-	decisionParticipants,
-	decisionVersions,
-	decisions,
-	people,
-	peopleGroupMembers,
-	peopleGroups,
-	type Decision,
-	type DecisionParticipant
-} from './db/schema';
+import { decisionVersions, decisions, peopleGroupMembers, peopleGroups, type Decision, type DecisionParticipant } from './db/schema';
 import type { SessionUser } from './auth';
-import { decisionAccess, mayDo } from './decision-access';
+import { decisionAccess, mayDo, type DecisionAccess } from './decision-access';
 import { participantAnswers, versionContentAnswer, workingViewContent } from './decision-authoring';
 import { listedOptionIds, liveOptionsOf, optionChanges, parseVersionContent, parseWorkingContent, participantsOf } from './decision-content';
-import { participantForLink, reachOf } from './decision-links';
-import { accountHistory, concernsOf, currentRound, lastToldOf, ownResponses, rulingOf, supersedingOf } from './decision-record';
+import { participantForLink } from './decision-links';
+import { mayAnswerOf, mayAskOf, questionsFor, reachedParticipantOf } from './decision-questions';
+import { concernsOf, currentRound, lastToldOf, ownResponses, rulingOf, supersedingOf } from './decision-record';
 import { releasedOf, versionOptionsOf } from './decision-results';
 import { decisionStatus, linkUsable, TRANSITIONS } from './decision-status';
 import { createLogger } from './logger';
@@ -87,16 +88,11 @@ const WRONG_LINK_WINDOW_MS = 15 * 60 * 1000;
  */
 export function readDecisionPage(user: SessionUser, decisionId: number): DecisionPageData {
 	const { decision, access } = requireDecision(user, decisionId, 'view');
-	let participant: DecisionParticipant | null = null;
-	if (access.participantId !== null && decision.status !== 'draft') {
-		const row = db.select().from(decisionParticipants).where(eq(decisionParticipants.id, access.participantId)).get();
-		if (row !== undefined) {
-			const person = row.personId === null ? null : (db.select().from(people).where(eq(people.id, row.personId)).get() ?? null);
-			const reach = reachOf(row, person, accountHistory(decision.id).get(row.id) ?? false);
-			if ('via' in reach && reach.via === 'account') participant = row;
-		}
-	}
-	const page = pageOf(decision, participant, { via: 'session', mayEdit: mayDo(access, 'edit', decision), signedInAs: null, user });
+	// Card 2678 (F2): the reach test the questions read asks too, from one place.
+	const participant = decision.status === 'draft' ? null : reachedParticipantOf(decision, access.participantId);
+	const page = pageOf(decision, participant, { via: 'session', mayEdit: mayDo(access, 'edit', decision), signedInAs: null, user, access });
+	// Card 2678 (decision 15, F9): the answer form where the caller may answer now, as the write asks.
+	page.mayAnswer = mayAnswerOf(decision, access);
 	const opened = decision.status !== 'draft';
 	page.mayReadResults = opened && mayDo(access, 'results', decision);
 	page.maySupersede =
@@ -116,7 +112,7 @@ export function readDecisionPage(user: SessionUser, decisionId: number): Decisio
 export function readLinkPage(token: string, signedInAs: string | null): DecisionPageData | null {
 	const found = participantForLink(token);
 	if ('refused' in found || found.decision.status === 'draft') return null;
-	return pageOf(found.decision, found.participant, { via: 'link', mayEdit: false, signedInAs, user: null });
+	return pageOf(found.decision, found.participant, { via: 'link', mayEdit: false, signedInAs, user: null, access: null });
 }
 
 /** Who the preview shows the decision to: one live participant, or a generic one of a role, in a group or none. */
@@ -366,11 +362,14 @@ function groupsOf(personId: number | null): Set<number> {
  * The page itself, for either way in, for `participant` (already found
  * reachable) or none. `user` is the signed-in caller, null by a personal link:
  * it decides only whether another decision is named to them (card 2679).
+ * `access` is the signed-in caller's, null by a personal link: with the
+ * participant, it decides which questions they are given and how (card 2678,
+ * decision 2), always as the page gives them (`source: 'ui'`).
  */
 function pageOf(
 	decision: Decision,
 	participant: DecisionParticipant | null,
-	how: { via: 'session' | 'link'; mayEdit: boolean; signedInAs: string | null; user: SessionUser | null }
+	how: { via: 'session' | 'link'; mayEdit: boolean; signedInAs: string | null; user: SessionUser | null; access: DecisionAccess | null }
 ): DecisionPageData {
 	const now = stamp();
 	const shownStatus = decisionStatus(decision, now);
@@ -407,12 +406,18 @@ function pageOf(
 		concerns: [],
 		mayRaiseConcern: false,
 		supersedes: null,
-		laterDecision: null
+		laterDecision: null,
+		// Card 2678: given below, but on a draft, which takes no question.
+		questions: [],
+		mayAsk: false
 	};
 	if (page.draft) return page;
 	page.ruling = rulingViewOf(decision);
 	page.released = releasedOf(decision);
 	Object.assign(page, supersedeLinksOf(decision, how.user));
+	// Card 2678 (decisions 2 and 15): every question the viewer reads, as the page gives them, and whether they may ask now.
+	page.questions = questionsFor(decision, { access: how.access, participantId: participant?.id ?? null, source: 'ui' });
+	page.mayAsk = mayAskOf(decision, participant, now);
 
 	const version = db
 		.select()

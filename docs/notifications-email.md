@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.51
+version: 1.52
 status: As-Built
 date: 2026-11-04
 tags:
@@ -612,6 +612,8 @@ down. The failure shows on the panel and in the log.
 | Decision Withdrawn (card 2675) | As above, on withdrawing a decision that was opened | — | `Withdrawn: {title}` |
 | Decision Ruled (card 2675, sent by card 2679) | As above, on a ruling: every live participant, consulted and informed | — | `Ruled: {title}` |
 | Concern About a Ruling (card 2679) | The decision's decider, at their account's address, when a participant raises a concern: a participant's first always, then at most one about them in 24 hours | `email_decisions` | `A concern about the ruling on {title}` |
+| A Question About a Decision (card 2678) | The decision's author and decider, each who may answer now and is not the asker, at their account's address, when a participant asks a question: a participant's first always, then at most one about them in 24 hours. See [The Question Notices](#the-question-notices-card-2678) | `email_decisions` | `A question about {title}` |
+| Your Question Answered (card 2678) | The asker, when a person answers their question, or publishes or replaces an agent's draft of an answer: an account holder at their account's address, a link holder at the participant's snapshot address, with no link | `email_decisions` (an account holder; a link holder has no switch) | `Your question about {title} has been answered` |
 
 **The backup failure mail says which kind of run failed** (card 2413, 2026-10-22). Sent by
 `runBackup()` in `src/lib/server/backup.ts`: headed **Scheduled Backup Failed**, "A scheduled
@@ -1026,6 +1028,84 @@ sequenceDiagram
 
 Covered by `tests/decision-ruling.test.ts` (cases 1, 4, 24 to 29) and `tests/mail-escaping.test.ts`.
 
+### The Question Notices (card 2678)
+
+Card 2678 (2026-11-04) adds two notices, neither a record mail: one to whoever may answer a
+new clarification question, and one to the asker once a person's answer stands. Both are under
+`email_decisions` and **All Email Notifications** for an account holder (design D22), both
+reuse the concern notice's pattern (the outcome decided inside the write and written on the
+event, the mail queued for after the commit), and **mail never refuses a question, an
+answer, a publish or a replacement**.
+
+**The new-question notice** (`notifyDecisionQuestion(recipientUserId, decisionId, title,
+heldBefore)`). Recipients are the decider and the author, once for one account, each only if
+the account is there, `answer` lets it in now (board edit), and it is **not the asker's own
+account** (an author or decider who is also a participant is not told of their own question).
+"A participant asked a question about <title>. Open the decision to read and answer it.", with
+**Open the decision**, a link to `<App URL>/decisions/<id>#questions` behind a sign-in; with
+`heldBefore` above 0 it adds "They asked <n> more since the last notice about them, which were
+not mailed." It names nobody, quotes nothing, and takes no `baseUrl`. For each recipient, in
+order, written on `question_asked { questionId, notices: { userId, outcome }[] }`:
+
+| `outcome` | When | Mail |
+|---|---|---|
+| `no_link_address` | No App URL and no `ORIGIN` | None |
+| `prefs_off` | The recipient's `email_decisions` or **All Email Notifications** is off | None; not counted |
+| `no_mail_host` | No mail host is set up | None; not counted |
+| `held` | Within 24 hours (`DAY_MS`) of the last `asked` notice about this participant to this recipient | None; counted into the next notice's held number |
+| `asked` | Otherwise | Queued for after the commit |
+
+The rest is per participant, so another participant's question never holds back a first
+notice. An empty `notices` list means nobody may answer now.
+
+**The answer notice** (`notifyQuestionAnswered(to, decisionId, title)`, `to` being `{ userId }`
+or `{ address }`). Decided when a person answers, publishes an agent's draft or replaces it,
+and written on `question_answered { questionId, role, agentDrafted, notice }`, `answer_published
+{ questionId, notice }` or `answer_replaced { questionId, role, discarded, notice }`, none of
+which names a participant. "Your question about <title> has been answered." An account
+holder's mail links to `/decisions/<id>#questions`. **A link holder's mail carries no link and
+issues none**: it says "Open the decision from the personal link in the latest email you were
+sent about it." Issuing a fresh link, as record mails do, would end the link in their last
+record mail and put a new key in a mailbox for a notice. It goes to the participant row's
+snapshot address, never to an account a browser beside the link was signed in as.
+
+| `notice` | When | Mail |
+|---|---|---|
+| `awaiting_review` | On `question_answered` only: an API key's answer is a draft, not mailed until a person stands behind it | None |
+| `not_reached` | The participant is removed, has left, or `reachOf` skips them | None |
+| `no_link_address` | An account holder, with no App URL and no `ORIGIN` | None |
+| `prefs_off` | An account holder whose `email_decisions` or master switch is off | None |
+| `no_mail_host` | No mail host is set up (account or link holder) | None |
+| `asked` | Otherwise; a link holder has no preference to ask | Queued for after the commit |
+
+There is no rest on answer notices: each question is answered once, so an asker gets at most
+10 per decision. Neither notice quotes a question or an answer, so participants' words never
+sit in mailboxes outside the record; record and ruling mails never carry a question, an answer
+or a draft either. Both escape the title in the body, and are rows of
+`tests/mail-escaping.test.ts`.
+
+```mermaid
+sequenceDiagram
+    actor P as Participant
+    participant W as askQuestion (in writeAs)
+    participant Q as afterCommit queue
+    actor A as Author and decider
+    actor D as Answerer
+    participant X as answerQuestion / publishAnswer
+    P->>W: a question
+    W->>W: questionNoticesOf: no_link_address, prefs_off, no_mail_host, held or asked
+    W->>Q: notifyDecisionQuestion for each asked (never the asker's own account)
+    Note over Q: commit, then sent; dropped on any rollback
+    Q-->>A: "A participant asked a question about …" (no name, no text)
+    D->>X: an answer, a publish or a replacement
+    X->>X: answerNoticeOf: awaiting_review (a key's draft), not_reached, …, asked
+    X->>Q: notifyQuestionAnswered
+    Q-->>P: "Your question about … has been answered" (a link holder's: no link)
+```
+
+Covered by `tests/decision-questions.test.ts` (cases 6, 12, 13 to 16, 19 to 21) and
+`tests/mail-escaping.test.ts`.
+
 ### Text in Mail Is Text
 
 Every text a mail carries is somebody's typing: a board's or grouping's name, a card's
@@ -1090,7 +1170,7 @@ There is one list of them, `NOTIFICATION_PREFS` in `src/lib/notification-prefs.t
 | Request Progress | `email_request_progress` | The progress mails of [Requester Progress Notifications](#requester-progress-notifications), Request Complete among them, to a requester who has an account. A requester without one has nothing to switch and is always mailed |
 | Board Sharing | `email_board_shared` | Board Shared |
 | Planning | `email_planning` | The mail about a new plan |
-| Decisions | `email_decisions` | The notice to a decider that a concern about a ruling arrived (card 2679); card 2678's question mails will read it too |
+| Decisions | `email_decisions` | "When someone asks about or raises a concern on a decision you decide or wrote, or your question about a decision is answered": the notice to a decider that a concern about a ruling arrived (card 2679), and card 2678's two question notices, to the author and the decider of a new question and to an asker with an account once their question is answered. A link holder has no account and no switch |
 
 Until 2026-10-15 the page, the route and the mail kept three lists. The route's left out `email_request_progress` and `email_mentions`, so it neither answered nor saved them: the page offered Request Progress, whose switch went back on at every reload, and the progress mail was always sent; and the mention mail read `email_mentions`, which nothing offered, so it could be stopped only by switching all mail off. The page now offers **Mentions**, and both keys are saved and answered. No account had either stored, so a requester who switched Request Progress off before then is mailed until they switch it off again. A key not stored, or a preference that cannot be read, is on. A save that is refused, or gets no answer, puts every switch back as it was and says why under them.
 

@@ -457,7 +457,8 @@ describe('ruleDecision', () => {
 				options: allOptionsOf(decision.id),
 				participants: participantsOf(decision.id),
 				responseIds: (sqlite.prepare("SELECT id FROM decision_responses WHERE decision_id = ? AND kind != 'concern'").all(decision.id) as { id: number }[]).map((r) => r.id),
-				questions: [{ id: questionId, answeredAt: PAST }]
+				// Card 2678 (decision 11): the publishing moment of an agent's draft, and its flag, too.
+				questions: [{ id: questionId, answeredAt: PAST, answerReviewedAt: null, answerAgentDrafted: false }]
 			})
 		);
 	});
@@ -834,7 +835,7 @@ describe('releasedOf', () => {
 	it('[1b] shows a board reader after the release exactly what the decider previewed, less its keys and the comments left out (20)', () => {
 		const r = releasable();
 		const reader = boardReader();
-		const preview = readResults(r.decider, r.decision.id).releasePreview!;
+		const preview = readResults(r.decider, r.decision.id, { source: 'ui' }).releasePreview!;
 		const left = preview.options.find((option) => option.optionId === r.b.id)!.comments[0].key;
 
 		release(r.decider, r.decision, { omit: [left] });
@@ -872,9 +873,9 @@ describe('readResults', () => {
 		rule(decider, decisionRow(decision.id), { optionId: c.id, reason: 'C, for the long run.', openQuestionsConfirmed: true });
 		makeResponse(pat.participant, { kind: 'concern', comment: 'I worry about C.', round: 2, versionNumber: 2, createdAt: '2026-11-03 09:00:00' });
 
-		const results = readResults(decider, decision.id);
+		const results = readResults(decider, decision.id, { source: 'ui' });
 
-		expect(readResults(makeUser({ role: 'admin' }), decision.id)).toEqual(results);
+		expect(readResults(makeUser({ role: 'admin' }), decision.id, { source: 'ui' })).toEqual(results);
 		const row = (who: { participant: DecisionParticipant }, more: Record<string, unknown>) => ({
 			participantId: who.participant.id,
 			name: who.participant.name,
@@ -913,7 +914,7 @@ describe('readResults', () => {
 			{ participantId: rem.participant.id, name: rem.participant.name, role: 'consulted', latest: row(rem, { kind: 'vote', optionId: c.id }) }
 		]);
 		expect(remsLast.round).toBe(2);
-		expect(results.openQuestions).toEqual([{ askerName: 'Quin', question: 'Why C?', askedAt: PAST }]);
+		expect(results.openQuestions).toEqual([{ askerName: 'Quin', question: 'Why C?', askedAt: PAST, agentAnswered: false }]);
 		expect(results.concerns).toEqual([{ name: pat.participant.name, comment: 'I worry about C.', createdAt: '2026-11-03 09:00:00', via: 'session' }]);
 		expect(results.ruling).toEqual({
 			optionId: c.id,
@@ -944,7 +945,7 @@ describe('readResults', () => {
 		const { decision } = opened();
 		db.update(decisions).set({ authorUserId: author.id }).where(eq(decisions.id, decision.id)).run();
 
-		expect(outcome(() => readResults(author, decision.id))).toEqual({ status: 403, message: 'You cannot read the results of this decision' });
+		expect(outcome(() => readResults(author, decision.id, { source: 'ui' }))).toEqual({ status: 403, message: 'You cannot read the results of this decision' });
 	});
 
 	it('takes a participant’s latest row in a round past a concern and a kind it does not count, and counts one changed twice once (23)', () => {
@@ -956,7 +957,7 @@ describe('readResults', () => {
 		makeResponse(pat.participant, { kind: 'concern', comment: 'A concern.' });
 		makeResponse(pat.participant, { kind: 'objection', comment: 'A kind not yet counted.' });
 
-		const results = readResults(decider, decision.id);
+		const results = readResults(decider, decision.id, { source: 'ui' });
 
 		expect(results.current.rows.map((row) => [row.kind, row.changes])).toEqual([['abstain', 2]]);
 		expect(results.current).toMatchObject({ responded: 1, voted: 0, abstained: 1 });
@@ -1628,7 +1629,8 @@ describe('the rule and release routes', () => {
 
 describe('the decider-only details, the statement version and the API', () => {
 	it('names the decider-only events, and keeps the record and the results the decider’s and administrators’ (37)', () => {
-		expect(DECIDER_ONLY_EVENTS).toEqual(['ruled', 'cut_off', 'concern_raised']);
+		// Card 2678 (decision 2): the four question events too.
+		expect(DECIDER_ONLY_EVENTS).toEqual(['ruled', 'cut_off', 'concern_raised', 'question_asked', 'question_answered', 'answer_published', 'answer_replaced']);
 		expect(DECISION_RULES.record).toEqual(['admin', 'decider']);
 		expect(DECISION_RULES.results).toEqual(['admin', 'decider']);
 	});

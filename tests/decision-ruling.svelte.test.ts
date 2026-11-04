@@ -324,6 +324,7 @@ function results(more: Partial<ResultsData> = {}): ResultsData {
 		notResponded: [{ participantId: 4, name: 'Sil Ent', groups: [] }],
 		removed: [],
 		openQuestions: [],
+		mayAnswerQuestions: false,
 		concerns: [],
 		ruling: null,
 		released: null,
@@ -716,6 +717,10 @@ describe('the decision page and DecisionActions (47, 48)', () => {
 			laterDecision: null,
 			mayReadResults: false,
 			maySupersede: false,
+			// Card 2678: a board reader who is no participant reads no question, asks none and answers none.
+			questions: [],
+			mayAsk: false,
+			mayAnswer: false,
 			...more
 		};
 	}

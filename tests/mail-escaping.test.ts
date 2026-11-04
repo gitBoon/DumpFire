@@ -437,6 +437,30 @@ describe('every mail in notifications.ts', () => {
 				db.insert(settings).values({ key: 'app_url', value: BASE }).run();
 				notifications.notifyDecisionConcern(recipient.id, 1, MARKER, 2);
 			}
+		},
+		{
+			// Card 2678 (decision 5): the author's or decider's notice of a question, its link made on the App URL setting alone.
+			name: 'notifyDecisionQuestion',
+			link: true,
+			send: () => {
+				db.insert(settings).values({ key: 'app_url', value: BASE }).run();
+				notifications.notifyDecisionQuestion(recipient.id, 1, MARKER, 2);
+			}
+		},
+		{
+			// Card 2678 (decision 5): the asker's notice of an answer, to their account, linking to the decision's page.
+			name: 'notifyQuestionAnswered (account)',
+			link: true,
+			send: () => {
+				db.insert(settings).values({ key: 'app_url', value: BASE }).run();
+				notifications.notifyQuestionAnswered({ userId: recipient.id }, 1, MARKER);
+			}
+		},
+		{
+			// A link holder's: to their snapshot address, with no link at all.
+			name: 'notifyQuestionAnswered (link)',
+			link: false,
+			send: () => notifications.notifyQuestionAnswered({ address: REQUESTER }, 1, MARKER)
 		}
 	];
 
