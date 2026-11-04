@@ -25,20 +25,29 @@
   says it to a key or a paste); ticking the box on is still theirs. A save
   sends the failure mail only where it was changed here, so a panel left open
   neither undoes nor is refused for the superadmin's change since.
+
+  Card 2701: a save sends the destinations only when they differ from the list
+  as last read, and then asks for the caller's own password, through the
+  page's confirm: Add, Save of an edit, Remove and Confirm this key. A save of
+  the schedule, Keep Last or the failure mail sends neither. Run Now asks too.
 -->
 <script lang="ts">
 	import { answerBody, failureMessage } from '$lib/api';
-	import { NO_ANSWER, sent, showToast } from '$lib/admin/send';
+	import { NO_ANSWER, sent, sentAsking, showToast } from '$lib/admin/send';
 	import { destTypeLabels, type BackupHistoryEntry, type DestType } from '$lib/admin/format';
 	import { toasts } from '$lib/stores/toast';
 	import { driveScopeIsNarrow } from '$lib/drive-scope';
+	import { ASKS_FOR_PASSWORD, stepUpRefusal } from '$lib/step-up-words';
 	import BackupHistory from './BackupHistory.svelte';
 	import DestinationForm from './DestinationForm.svelte';
 	import GDriveConnectModal from './GDriveConnectModal.svelte';
 
 	/**
-	 * The page's confirm dialog, which asks before a destination is removed;
-	 * and whether the reader is the superadmin, who alone lowers Keep Last,
+	 * The page's confirm dialog, which asks before a destination is added,
+	 * changed or removed and before Run Now, with `askPassword` for the
+	 * caller's own password, handed to the action; text the action gives back
+	 * is a refusal of the password, shown in the dialog (card 2701). And
+	 * whether the reader is the superadmin, who alone lowers Keep Last,
 	 * removes a destination or switches the schedule off (card 2398), and
 	 * switches the failure mail off or changes who receives it (card 2408). Not
 	 * given, the reader is taken to be an administrator: the server decides
@@ -47,7 +56,15 @@
 	let {
 		confirm,
 		isSuperadmin = false
-	}: { confirm: (title: string, message: string, action: () => Promise<void>) => void; isSuperadmin?: boolean } = $props();
+	}: {
+		confirm: (
+			title: string,
+			message: string,
+			action: (password: string) => Promise<string | null | void>,
+			options?: { askPassword?: boolean }
+		) => void;
+		isSuperadmin?: boolean;
+	} = $props();
 
 	/** What an administrator is told of what is the superadmin's (cards 2398 and 2408), the server's own words. */
 	const SUPERADMIN_RULE =
@@ -80,6 +97,17 @@
 	/** The failure mail as the server holds it: an administrator's change that card 2408 keeps for the superadmin is put back to it. */
 	let storedNotifyOnFailure = $state(false);
 	let storedNotifyEmail = $state('');
+	/**
+	 * The destinations as last read or saved, as JSON: a save sends the list,
+	 * and asks for the caller's password, only when it differs (card 2701,
+	 * decision 17), so a save of the schedule alone asks nothing.
+	 */
+	let storedDestinations = '[]';
+	/**
+	 * The last save's refusal of the caller's own password, for the confirm
+	 * that asked for it to show (card 2701); null after any other end.
+	 */
+	let passwordRefused: string | null = null;
 	let backupHistory = $state<BackupHistoryEntry[]>([]);
 	let showAllHistory = $state(false);
 	let backupLoading = $state(true);
@@ -243,6 +271,7 @@
 				storedSchedule = backupSchedule;
 				storedNotifyOnFailure = backupNotifyOnFailure;
 				storedNotifyEmail = backupNotifyEmail;
+				storedDestinations = JSON.stringify(backupDestinations);
 				read = true;
 			}
 		} catch {}
@@ -265,11 +294,24 @@
 	 * so that Keep Last, the schedule and the rest show what the server holds
 	 * rather than what was refused (the card 2398 review); the toast gives the
 	 * server's reason and says so.
+	 *
+	 * The destinations are sent only when they differ from the list as last
+	 * read or saved, and then with `currentPassword`, the caller's own (card
+	 * 2701, decision 17). A refusal of the password puts the list back with no
+	 * toast and no read, and is kept in `passwordRefused` for the confirm that
+	 * asked for it to show.
 	 */
-	async function saveBackupConfig(putBack?: DestinationUI[]): Promise<boolean> {
+	async function saveBackupConfig(putBack?: DestinationUI[], currentPassword?: string): Promise<boolean> {
 		backupSaving = true;
 		try {
 			const started = toasts.navigation();
+			passwordRefused = null;
+			const destinationsChanged = JSON.stringify(backupDestinations) !== storedDestinations;
+			// The password goes only with destinations, and only one given here:
+			// a refusal of it is the confirm's to show only when one was sent
+			// (the code review's F6). Any other save refused for the password (a
+			// list that drifted since it was read) is said like any refusal.
+			const sentPassword = destinationsChanged && currentPassword !== undefined;
 			let refused: string;
 			try {
 				const res = await fetch('/api/admin/backup', {
@@ -287,10 +329,20 @@
 						// change the superadmin made since, or be refused for it.
 						notifyOnFailure: backupNotifyOnFailure === storedNotifyOnFailure ? undefined : backupNotifyOnFailure,
 						notifyEmail: backupNotifyEmail === storedNotifyEmail ? undefined : backupNotifyEmail,
-						destinations: backupDestinations
+						// Only where they changed here, and then with the caller's own
+						// password: a save of where backups go asks for it (card 2701).
+						destinations: destinationsChanged ? backupDestinations : undefined,
+						currentPassword: sentPassword ? currentPassword : undefined
 					})
 				});
 				if (!res.ok) {
+					const refusal = sentPassword ? await stepUpRefusal(res) : null;
+					if (refusal !== null) {
+						// Said in the confirm, which stays open to type it again.
+						passwordRefused = refusal;
+						if (putBack) backupDestinations = putBack;
+						return false;
+					}
 					refused = await failureMessage(res, 'Failed to save backup settings');
 				} else {
 					showToast('Backup settings saved');
@@ -298,6 +350,7 @@
 					storedSchedule = backupSchedule;
 					storedNotifyOnFailure = backupNotifyOnFailure;
 					storedNotifyEmail = backupNotifyEmail;
+					storedDestinations = JSON.stringify(backupDestinations);
 					return true;
 				}
 			} catch {
@@ -375,15 +428,32 @@
 		saveBackupConfig();
 	}
 
-	async function addDestination() {
-		if (!destName.trim()) { showToast('Destination name is required', 'error'); return; }
-		if (backupDestinations.some(d => d.name === destName.trim())) { showToast('A destination with that name already exists', 'error'); return; }
+	/** Whether the add form's destination may be added, said in a toast where it may not. */
+	function addable(): boolean {
+		if (!destName.trim()) { showToast('Destination name is required', 'error'); return false; }
+		if (backupDestinations.some(d => d.name === destName.trim())) { showToast('A destination with that name already exists', 'error'); return false; }
+		return true;
+	}
+
+	/** The add form's Add: the page's confirm asks for the caller's own password (card 2701), and Confirm adds. */
+	function askAddDestination() {
+		if (!addable()) return;
+		confirm(
+			'Add Destination',
+			`Add "${destName.trim()}" to the backup destinations? Every backup from now on is sent to it. ${ASKS_FOR_PASSWORD}`,
+			(password) => addDestination(password),
+			{ askPassword: true }
+		);
+	}
+
+	async function addDestination(currentPassword: string): Promise<string | void> {
+		if (!addable()) return;
 		const started = toasts.navigation();
 		const was = backupDestinations;
 		const added = buildDestConfig();
 		backupDestinations = [...backupDestinations, added];
 		// Not saved: off the list again (put back to `was`), and still in the form as typed.
-		if (!(await saveBackupConfig(was))) return;
+		if (!(await saveBackupConfig(was, currentPassword))) return passwordRefused ?? undefined;
 		// A box left by a destination of this name removed before is not this one's.
 		forgetHostKeyCheck(added.name);
 		// Emptied and closed only if the add form is still the one open: the
@@ -397,7 +467,18 @@
 		if (!(await loadBackupConfig(true))) showToast(SETTINGS_UNREAD, 'error', started);
 	}
 
-	async function updateDestination() {
+	/** An edit form's Save: the page's confirm asks for the caller's own password (card 2701), and Confirm saves. */
+	function askUpdateDestination() {
+		if (!editingDest || !destName.trim()) return;
+		confirm(
+			'Save Destination',
+			`Save the changes to "${editingDest}"? Every backup from now on is sent as it is saved. ${ASKS_FOR_PASSWORD}`,
+			(password) => updateDestination(password),
+			{ askPassword: true }
+		);
+	}
+
+	async function updateDestination(currentPassword: string): Promise<string | void> {
 		if (!editingDest || !destName.trim()) return;
 		// The destination this form edits, as it was before the save went: the
 		// form open when the answer comes may be another (the card 2305 review).
@@ -409,7 +490,7 @@
 		const updated = [...backupDestinations];
 		updated[idx] = buildDestConfig();
 		backupDestinations = updated;
-		if (!(await saveBackupConfig(was))) return;
+		if (!(await saveBackupConfig(was, currentPassword))) return passwordRefused ?? undefined;
 		// What its last Test said of its host key may no longer hold, under its
 		// old name or its new one.
 		forgetHostKeyCheck(editing);
@@ -423,10 +504,10 @@
 		if (!(await loadBackupConfig(true))) showToast(SETTINGS_UNREAD, 'error', started);
 	}
 
-	async function removeDestination(name: string) {
+	async function removeDestination(name: string, currentPassword: string): Promise<string | void> {
 		const was = backupDestinations;
 		backupDestinations = backupDestinations.filter(d => d.name !== name);
-		if (!(await saveBackupConfig(was))) return;
+		if (!(await saveBackupConfig(was, currentPassword))) return passwordRefused ?? undefined;
 		forgetHostKeyCheck(name);
 	}
 
@@ -503,22 +584,45 @@
 	 * whole list, and only once it is saved is it tested again, now with its
 	 * password or private key. A key added where none was keeps the masked
 	 * password; a refused save puts the list back, with the server's reason.
+	 * A save of a destination asks for the caller's own password (card 2701),
+	 * through the page's confirm (`askConfirmHostKey`).
 	 */
-	async function confirmHostKey(name: string, key: string | null) {
+	async function confirmHostKey(name: string, key: string | null, currentPassword: string): Promise<string | void> {
 		if (!key) return;
 		const idx = backupDestinations.findIndex(d => d.name === name);
 		if (idx === -1) return;
-		const started = toasts.navigation();
 		const was = backupDestinations;
 		const updated = [...backupDestinations];
 		updated[idx] = { ...updated[idx], hostKey: key };
 		backupDestinations = updated;
-		if (!(await saveBackupConfig(was))) return;
-		// Tested as the server now holds it, read again: its secret masked and its
-		// key as stored, which is all a Test keeps a masked secret for (M1, M3).
-		// Where it could not be read back, it is tested as it was sent.
+		if (!(await saveBackupConfig(was, currentPassword))) return passwordRefused ?? undefined;
+		// The confirm closes on this return; the Test runs after it, not awaited
+		// inside it, so that the dialog does not wait on a Test that can take
+		// many seconds (the code review's F2).
+		void testSavedKey(name, updated[idx]);
+	}
+
+	/**
+	 * Test a destination whose host key was just saved, as the server now holds
+	 * it, read again: its secret masked and its key as stored, which is all a
+	 * Test keeps a masked secret for (M1, M3). Where it could not be read back,
+	 * it is tested as it was sent.
+	 */
+	async function testSavedKey(name: string, sentAs: DestinationUI) {
+		const started = toasts.navigation();
 		if (!(await loadBackupConfig(true))) showToast(SETTINGS_UNREAD, 'error', started);
-		await testDestination(backupDestinations.find(d => d.name === name) ?? updated[idx]);
+		await testDestination(backupDestinations.find(d => d.name === name) ?? sentAs);
+	}
+
+	/** ✅ Confirm this key: the page's confirm asks for the caller's own password (card 2701), and Confirm saves the key. */
+	function askConfirmHostKey(name: string, key: string | null) {
+		if (!key) return;
+		confirm(
+			'Confirm Host Key',
+			`Save "${name}" with this host key? Backups are sent only to a server that shows it. ${ASKS_FOR_PASSWORD}`,
+			(password) => confirmHostKey(name, key, password),
+			{ askPassword: true }
+		);
 	}
 
 	/**
@@ -551,21 +655,32 @@
 	/** `text` ending as a sentence does. */
 	const sentence = (text: string) => (/[.!?…]$/.test(text) ? text : `${text}.`);
 
-	async function runManualBackup() {
+	/** ▶ Run Now: the page's confirm asks for the caller's own password (card 2701), and Confirm runs it. */
+	function askRunNow() {
+		confirm(
+			'Run Backup Now',
+			`Send a copy of the whole database to every destination now? ${ASKS_FOR_PASSWORD}`,
+			(password) => runManualBackup(password),
+			{ askPassword: true }
+		);
+	}
+
+	async function runManualBackup(currentPassword: string): Promise<string | void> {
 		backupRunning = true;
 		const started = toasts.navigation();
 		try {
 			// A refusal used to be read as a backup to no destinations, and was
 			// said to be "Backup completed to 0 destinations".
-			const res = await sent(
+			const res = await sentAsking(
 				() =>
 					fetch('/api/admin/backup', {
 						method: 'POST',
 						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({})
+						body: JSON.stringify({ currentPassword })
 					}),
 				'Backup failed'
 			);
+			if (typeof res === 'string') return res;
 			if (!res) return;
 			const result = await answerBody(res);
 			const results = Array.isArray(result?.results) ? result.results : [];
@@ -594,7 +709,7 @@
 		<h2>☁️ Scheduled Backups</h2>
 		<div style="display: flex; gap: var(--space-sm); align-items: center">
 			{#if backupDestinations.length > 0}
-				<button class="btn-primary btn-sm" onclick={runManualBackup} disabled={backupRunning}>
+				<button class="btn-primary btn-sm" onclick={askRunNow} disabled={backupRunning}>
 					{backupRunning ? '⏳ Running...' : '▶ Run Now'}
 				</button>
 			{/if}
@@ -698,7 +813,7 @@
 						<!-- Off while a save is on its way, as + Add Destination is (the card 2305 review). -->
 						<button class="btn-ghost btn-xs" disabled={backupSaving} onclick={() => startEditDestination(dest)}>✏️ Edit</button>
 						<!-- Off while the destinations are being saved: a second removal sent before the first was answered was put back wrongly when the first was refused. The superadmin's alone (card 2398): aria-disabled for an administrator, saying why when pressed. -->
-						<button class="btn-ghost btn-xs danger" disabled={backupSaving} aria-disabled={isSuperadmin ? undefined : 'true'} title={isSuperadmin ? undefined : 'Removing a destination needs the superadmin'} onclick={() => (isSuperadmin ? confirm('Remove Destination', `Remove "${dest.name}" from backup destinations?`, async () => removeDestination(dest.name)) : sayRule())}>🗑️</button>
+						<button class="btn-ghost btn-xs danger" disabled={backupSaving} aria-disabled={isSuperadmin ? undefined : 'true'} title={isSuperadmin ? undefined : 'Removing a destination needs the superadmin'} onclick={() => (isSuperadmin ? confirm('Remove Destination', `Remove "${dest.name}" from backup destinations? ${ASKS_FOR_PASSWORD}`, async (password) => removeDestination(dest.name, password), { askPassword: true }) : sayRule())}>🗑️</button>
 					</div>
 				</div>
 				<div class="dest-card-detail">
@@ -726,7 +841,7 @@
 							<p>Presented: <code>{check.presented}</code></p>
 							<p>Confirm saves this key on the destination and runs the Test again, which then uses its password or private key with this server and no other.</p>
 							<div class="form-row" style="justify-content: flex-end">
-								<button class="btn-primary btn-xs" disabled={backupSaving} onclick={() => confirmHostKey(dest.name, check.presented)}>✅ Confirm this key</button>
+								<button class="btn-primary btn-xs" disabled={backupSaving} onclick={() => askConfirmHostKey(dest.name, check.presented)}>✅ Confirm this key</button>
 							</div>
 						{:else if check.presented}
 							<p>Presented: <code>{check.presented}</code></p>
@@ -747,7 +862,7 @@
 						bind:destServiceAccountJson bind:destFolderId bind:destGdriveAuthMethod bind:destGdriveClientId bind:destGdriveClientSecret {destGdriveRefreshToken}
 						bind:destTenantId bind:destClientId bind:destClientSecret bind:destFolderPath bind:newDestType
 						{isSuperadmin}
-						onSave={updateDestination}
+						onSave={askUpdateDestination}
 						onCancel={() => { editingDest = null; resetDestForm(); }}
 					/>
 				{/if}
@@ -762,7 +877,7 @@
 				bind:destRegion bind:destBucket bind:destAccessKey bind:destSecretKey bind:destPrefix bind:destEndpoint
 				bind:destServiceAccountJson bind:destFolderId bind:destGdriveAuthMethod bind:destGdriveClientId bind:destGdriveClientSecret {destGdriveRefreshToken}
 				bind:destTenantId bind:destClientId bind:destClientSecret bind:destFolderPath bind:newDestType
-				onSave={addDestination}
+				onSave={askAddDestination}
 				onCancel={() => { showAddDestination = false; resetDestForm(); }}
 			/>
 		{/if}

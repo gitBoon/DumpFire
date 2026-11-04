@@ -3,7 +3,7 @@ import { db } from '$lib/server/db';
 import { afterCommit } from '$lib/server/db/transaction';
 import { users } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
-import { SESSION_COOKIE_NAME, checkCurrentPassword, whilePasswordHolds } from '$lib/server/auth';
+import { SESSION_COOKIE_NAME, checkCurrentPassword, refuseWrongPassword, whilePasswordHolds } from '$lib/server/auth';
 import { endUnusedInvites } from '$lib/server/invites';
 import { createLogger } from '$lib/server/logger';
 import { readBody, readEmail, readText } from '$lib/server/request-body';
@@ -54,21 +54,22 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 
 	// Checking a password takes about a quarter of a second, on a worker
 	// thread, and is awaited, which a transaction cannot do, so it is checked
-	// out here first. Ten wrong ones in 15 minutes from this session, and it
-	// is refused.
-	const wrong = () => error(403, 'Password is incorrect');
-	if (!(await checkCurrentPassword(session, user.id, password, user.passwordHash, 'PUT /api/account/email')).matches) {
-		wrong();
-	}
+	// out here first. Counted on this session's row: the third wrong one ends
+	// the session (card 2701).
+	refuseWrongPassword(
+		cookies,
+		await checkCurrentPassword(session, user.id, password, user.passwordHash, 'PUT /api/account/email'),
+		'Password is incorrect'
+	);
 
 	// One transaction: the account is read again, the address checked as free
 	// and written, and the invites ended, together. It runs only while the
 	// stored hash is the one the password was checked against; if the user or
-	// an administrator changed it in between, the password is checked again
-	// against the new one, outside, and not counted again: the same guess. In
+	// an administrator changed it in between, nothing is written and the
+	// answer is 409, with no second compare (card 2701's code review, S2). In
 	// it, the session is asked again, and the account as it is now is changed:
 	// the password check was awaited, and a session can end meanwhile.
-	await whilePasswordHolds(user.id, password, user.passwordHash, (current) =>
+	await whilePasswordHolds(user.id, user.passwordHash, (current) =>
 		writeAs(locals, (caller) => {
 			const userId = requireUser(caller).id;
 
@@ -95,7 +96,7 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 					)
 				);
 			}
-		}), wrong);
+		}));
 
 	return json({ success: true, email });
 };

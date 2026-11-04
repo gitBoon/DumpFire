@@ -39,12 +39,13 @@ import {
 	userXp,
 	type Card
 } from '$lib/server/db/schema';
-import type { SessionUser } from '$lib/server/auth';
+import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { issueFormToken, resetFormSecretCache, verifyFormToken } from '$lib/server/request-tokens';
 import { api, type ApiResult } from './helpers/api';
 import { eachWriteInTurn } from './helpers/each-write';
 import { failingWrite } from './helpers/failing-write';
 import {
+	FIXTURE_PASSWORD,
 	addBoardMember,
 	assignCard,
 	makeAttachment,
@@ -218,7 +219,13 @@ function expectFilesInPlace(e: Everything): void {
 	expect(fileIn('.trash')).toBe(false);
 }
 
-const reset = (e: Everything) => api('POST', '/api/admin/reset', { user: e.admin });
+/** The reset, as the superadmin asks it: with their current password, from their session (card 2701). */
+const reset = (e: Everything) =>
+	api('POST', '/api/admin/reset', {
+		user: e.admin,
+		body: { currentPassword: FIXTURE_PASSWORD },
+		headers: { cookie: `${SESSION_COOKIE_NAME}=session-of-admin` }
+	});
 
 // ─── Reset ──────────────────────────────────────────────────────────────────
 
@@ -247,6 +254,9 @@ describe('POST /api/admin/reset', () => {
 				if (res.status >= 500) expectFilesInPlace(e);
 				return res;
 			},
+			// The current password is counted on the session as it arrives, apart
+			// from the transaction, and the count cleared for the right one (card 2701).
+			apart: ['sessions.wrong_password_count'],
 			afterSuccess: (e, res: ApiResult) => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({
@@ -313,9 +323,15 @@ describe('POST /api/admin/reset', () => {
 			}
 		});
 
-		// One statement for each table, and nothing else: no id counter is
-		// deleted, and neither kept table is written to.
-		expect(run.writes.slice().sort()).toEqual(
+		// First the current password, counted on the session as it arrives and
+		// the count cleared for the right one (card 2701). Then one statement for
+		// each table, and nothing else: no id counter is deleted, and neither
+		// kept table is written to.
+		expect(run.writes.slice(0, 2).map((sql) => sql.split(' ').slice(0, 3).join(' '))).toEqual([
+			'update "sessions" set',
+			'update "sessions" set'
+		]);
+		expect(run.writes.slice(2).sort()).toEqual(
 			cleared()
 				.map((table) => `DELETE FROM "${table}"`)
 				.sort()

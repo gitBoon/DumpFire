@@ -41,6 +41,7 @@ import { eachWriteInTurn } from './helpers/each-write';
 import { failingWrite } from './helpers/failing-write';
 import { effects, type RecordedEffect } from './helpers/effects';
 import {
+	FIXTURE_PASSWORD,
 	addBoardMember,
 	makeAttachment,
 	makeBoard,
@@ -54,6 +55,7 @@ import {
 	makeWebhook,
 	resetDb,
 	shareBoardWithTeam,
+	stepUp,
 	testUploadsDir,
 	type BoardFixture,
 	type SubBoardFixture
@@ -445,6 +447,23 @@ describe.each([
 	{ tree: 'the internal API', api: '/api', prefix: '', source: 'ui' },
 	{ tree: 'the v1 API', api: '/api/v1', prefix: 'api:', source: 'api' }
 ])('deleting for good through $tree', ({ api: root, prefix, source }) => {
+	/**
+	 * How `user` deletes a board, or a column holding a card, through this tree:
+	 * through the internal one with their current password, from a session of
+	 * theirs made for it (card 2701); through v1 as themselves alone.
+	 */
+	const as = (user: SessionUser) => (root === '/api' ? stepUp(user) : { user });
+	/** The world, with how its owner deletes (`as`), and `before` taken again with the session in it. */
+	const owned = () => {
+		const w = world();
+		const confirmed = as(w.owner);
+		return { ...w, confirmed, before: snapshotDb() };
+	};
+	/** The password is counted on the session as it arrives, apart from the transaction. */
+	const APART = ['sessions.wrong_password_count'];
+	/** The writes, but the count on the session, which is written apart from the delete. */
+	const ofTheDelete = (writes: string[]) => shape(writes).filter((write) => write !== 'update sessions set');
+
 	it('a card: with its subtasks, its sub-boards at every depth, their links and their files', async () => {
 		const run = await eachWriteInTurn({
 			build: world,
@@ -503,10 +522,11 @@ describe.each([
 
 	it('a column: with every card in it, and one entry for the column', async () => {
 		const run = await eachWriteInTurn({
-			build: world,
+			build: owned,
 			request: filesStayOnFailure((w) =>
-				api('DELETE', `${root}/columns/${w.A.cols['To Do'].id}`, { user: w.owner })
+				api('DELETE', `${root}/columns/${w.A.cols['To Do'].id}`, w.confirmed)
 			),
+			apart: APART,
 			afterSuccess: (w, res: ApiResult, sent) => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({ success: true });
@@ -530,15 +550,16 @@ describe.each([
 			}
 		});
 
-		expect(shape(run.writes).at(-2)).toBe('delete from columns');
+		expect(ofTheDelete(run.writes).at(-2)).toBe('delete from columns');
 		// No webhook for each card, and none for the column.
 		expect(run.effects.map(name)).toEqual(['event update', 'event update', 'event update']);
 	});
 
 	it('a board: with everything on it, and no activity entry', async () => {
 		const run = await eachWriteInTurn({
-			build: world,
-			request: filesStayOnFailure((w) => api('DELETE', `${root}/boards/${w.A.board.id}`, { user: w.owner })),
+			build: owned,
+			request: filesStayOnFailure((w) => api('DELETE', `${root}/boards/${w.A.board.id}`, w.confirmed)),
+			apart: APART,
 			afterSuccess: (w, res: ApiResult, sent) => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({ success: true });
@@ -555,7 +576,7 @@ describe.each([
 			}
 		});
 
-		expect(shape(run.writes)).toEqual([
+		expect(ofTheDelete(run.writes)).toEqual([
 			'delete from work_dependencies',
 			'update cards set',
 			'delete from report_schedules',
@@ -569,8 +590,9 @@ describe.each([
 
 	it('a sub-board: and the board of the card it hung from is told as well', async () => {
 		const run = await eachWriteInTurn({
-			build: world,
-			request: filesStayOnFailure((w) => api('DELETE', `${root}/boards/${w.S1.board.id}`, { user: w.owner })),
+			build: owned,
+			request: filesStayOnFailure((w) => api('DELETE', `${root}/boards/${w.S1.board.id}`, w.confirmed)),
+			apart: APART,
 			afterSuccess: (w, res: ApiResult, sent) => {
 				expect(res.status).toBe(200);
 				expectLeft(w, treeUnder(w.before, { boards: [w.S1.board.id] }));
@@ -588,13 +610,14 @@ describe.each([
 		const outsider = makeUser({ username: 'outsider' });
 		const before = snapshotDb();
 
-		for (const path of [
-			`${root}/cards/${w.doomed.id}?permanent=true`,
-			`${root}/cards/${w.doomed.id}`,
-			`${root}/columns/${w.A.cols['To Do'].id}`,
-			`${root}/boards/${w.A.board.id}`
-		]) {
-			expect((await api('DELETE', path, { user: outsider })).status, path).toBe(403);
+		for (const [path, body] of [
+			[`${root}/cards/${w.doomed.id}?permanent=true`],
+			[`${root}/cards/${w.doomed.id}`],
+			// With the right password since card 2701, refused before it is looked at.
+			[`${root}/columns/${w.A.cols['To Do'].id}`, { currentPassword: FIXTURE_PASSWORD }],
+			[`${root}/boards/${w.A.board.id}`, { currentPassword: FIXTURE_PASSWORD }]
+		] as const) {
+			expect((await api('DELETE', path, { user: outsider, ...(body ? { body } : {}) })).status, path).toBe(403);
 		}
 
 		expect(diffSnapshots(before, snapshotDb())).toEqual([]);
@@ -639,7 +662,7 @@ describe.each([
 		// The card now sits on the board that hangs from it, in the column deleted.
 		db.update(cards).set({ columnId: own.cols['To Do'].id }).where(eq(cards.id, card.id)).run();
 
-		const res = await api('DELETE', `${root}/columns/${own.cols['To Do'].id}`, { user: owner });
+		const res = await api('DELETE', `${root}/columns/${own.cols['To Do'].id}`, as(owner));
 
 		expect(res.status).toBe(200);
 		expect(db.select({ id: boards.id }).from(boards).all()).toEqual([{ id: A.board.id }]);
@@ -672,7 +695,7 @@ describe.each([
 		db.update(cards).set({ columnId: ofTwo.cols['To Do'].id }).where(eq(cards.id, one.id)).run();
 		db.update(cards).set({ columnId: ofOne.cols['To Do'].id }).where(eq(cards.id, two.id)).run();
 
-		const res = await api('DELETE', `${root}/boards/${ofOne.board.id}`, { user: owner });
+		const res = await api('DELETE', `${root}/boards/${ofOne.board.id}`, as(owner));
 
 		expect(res.status).toBe(200);
 		expect(db.select({ id: boards.id }).from(boards).all()).toEqual([{ id: A.board.id }]);
@@ -692,10 +715,21 @@ describe('deleting for good from the admin panel', () => {
 		return { ...w, before: snapshotDb() };
 	};
 
+	/**
+	 * `w`, with the administrator's current password from a session of theirs
+	 * made for it (card 2701), and `before` taken again with that session in it.
+	 */
+	const confirming = <W extends World>(w: W) => {
+		const confirmed = stepUp(w.admin);
+		return { ...w, confirmed, before: snapshotDb() };
+	};
+
 	it('purge-archived: every archived card, with one entry for each board that had any', async () => {
 		const run = await eachWriteInTurn({
-			build: withArchived,
-			request: filesStayOnFailure((w) => api('POST', '/api/admin/purge-archived', { user: w.admin })),
+			build: () => confirming(withArchived()),
+			request: filesStayOnFailure((w) => api('POST', '/api/admin/purge-archived', w.confirmed)),
+			// The password is counted on the session as it arrives, apart from the transaction.
+			apart: ['sessions.wrong_password_count'],
 			afterSuccess: (w, res: ApiResult, sent) => {
 				expect(res.status).toBe(200);
 				// How many were archived. What was on their sub-boards went too.
@@ -726,11 +760,11 @@ describe('deleting for good from the admin panel', () => {
 	});
 
 	it('purge-archived with nothing archived deletes nothing, writes no entry and tells nobody', async () => {
-		const w = world();
+		const w = confirming(world());
 		const sent = effects();
 
 		try {
-			const res = await api('POST', '/api/admin/purge-archived', { user: w.admin });
+			const res = await api('POST', '/api/admin/purge-archived', w.confirmed);
 			await sent.settle();
 
 			expect(res.body).toEqual({ success: true, purged: 0 });
@@ -744,10 +778,12 @@ describe('deleting for good from the admin panel', () => {
 
 	it('clear-cards: every card on the board, the board and its columns kept, and one entry', async () => {
 		const run = await eachWriteInTurn({
-			build: world,
+			build: () => confirming(world()),
 			request: filesStayOnFailure((w) =>
-				api('POST', `/api/admin/boards/${w.A.board.id}/clear-cards`, { user: w.admin })
+				api('POST', `/api/admin/boards/${w.A.board.id}/clear-cards`, w.confirmed)
 			),
+			// The password is counted on the session as it arrives, apart from the transaction.
+			apart: ['sessions.wrong_password_count'],
 			afterSuccess: (w, res: ApiResult, sent) => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({ success: true });
@@ -795,8 +831,9 @@ describe('deleting for good from the admin panel', () => {
 
 		try {
 			// It was 200 { success: true }, and the admin page said the cards were
-			// cleared from a board deleted in another tab (card 2211).
-			const res = await api('POST', '/api/admin/boards/99999/clear-cards', { user: w.admin });
+			// cleared from a board deleted in another tab (card 2211). Refused
+			// before the password is checked (card 2701).
+			const res = await api('POST', '/api/admin/boards/99999/clear-cards', { user: w.admin, body: { currentPassword: FIXTURE_PASSWORD } });
 			await sent.settle();
 
 			expect(res.status).toBe(404);
@@ -844,6 +881,18 @@ describe('deleting a board', () => {
 		return { ...w, ...named, before: snapshotDb() };
 	};
 
+	/**
+	 * `withNamed`, with how its owner deletes board A through the tree of
+	 * `path`: through the internal one with their current password, from a
+	 * session of theirs made for it (card 2701), and `before` taken again with
+	 * that session in it; through v1 as themselves alone.
+	 */
+	const confirmedThrough = (path: string) => () => {
+		const w = withNamed();
+		const confirmed = path === '/api/boards' ? stepUp(w.owner) : { user: w.owner };
+		return { ...w, confirmed, before: snapshotDb() };
+	};
+
 	it.each([
 		{ tree: 'the internal API', path: '/api/boards' },
 		{ tree: 'the v1 API', path: '/api/v1/boards' }
@@ -851,8 +900,10 @@ describe('deleting a board', () => {
 		'through $tree: its report schedules go, cards elsewhere leave its milestones and its categories, and its categories go',
 		async ({ path }) => {
 			const run = await eachWriteInTurn({
-				build: withNamed,
-				request: filesStayOnFailure((w) => api('DELETE', `${path}/${w.A.board.id}`, { user: w.owner })),
+				build: confirmedThrough(path),
+				request: filesStayOnFailure((w) => api('DELETE', `${path}/${w.A.board.id}`, w.confirmed)),
+				// The password is counted on the session as it arrives, apart from the transaction.
+				apart: ['sessions.wrong_password_count'],
 				afterSuccess: (w, res: ApiResult, sent) => {
 					expect(res.status).toBe(200);
 
@@ -895,12 +946,12 @@ describe('deleting a board', () => {
 
 	it('writes one line to the system log once it is committed, naming the board, who and what went', async () => {
 		process.env.LOG_LEVEL = 'INFO';
-		const w = withNamed();
+		const w = confirmedThrough('/api/boards')();
 
 		// B's webhook is sent the release of its card from A's milestone (card 2381).
 		const sent = effects();
 		try {
-			await api('DELETE', `/api/boards/${w.A.board.id}`, { user: w.owner });
+			await api('DELETE', `/api/boards/${w.A.board.id}`, w.confirmed);
 			await sent.settle();
 		} finally {
 			sent.restore();
@@ -923,13 +974,15 @@ describe('deleting a board', () => {
 
 	it('writes no such line when the delete fails', async () => {
 		process.env.LOG_LEVEL = 'INFO';
-		const w = withNamed();
+		const w = confirmedThrough('/api/boards')();
 		const writes = failingWrite();
 
 		try {
-			// The last write of all: the board itself.
-			writes.failNth(7);
-			await expect(api('DELETE', `/api/boards/${w.A.board.id}`, { user: w.owner })).rejects.toThrow(/made to fail/);
+			// The last write of all: the board itself, after the two to the
+			// session's count of wrong passwords as the password is checked
+			// (card 2701).
+			writes.failNth(9);
+			await expect(api('DELETE', `/api/boards/${w.A.board.id}`, w.confirmed)).rejects.toThrow(/made to fail/);
 			expect(writes.fired).toBe(true);
 		} finally {
 			writes.restore();
@@ -950,8 +1003,10 @@ describe('deleting a board', () => {
 			// The session tree answered an administrator 200 { success: true } for
 			// deleting nothing, and anyone else 403; the v1 tree answered 404
 			// (card 2211). Both answer as v1 did.
+			// The internal tree's with the right password since card 2701, refused before it is looked at.
+			const confirming = path === '/api/boards' ? { body: { currentPassword: FIXTURE_PASSWORD } } : {};
 			for (const user of [w.admin, w.owner]) {
-				const res = await api('DELETE', `${path}/99999`, { user });
+				const res = await api('DELETE', `${path}/99999`, { user, ...confirming });
 				expect(res.status).toBe(404);
 				expect(res.body).toEqual({ message: 'Board not found' });
 			}

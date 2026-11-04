@@ -10,21 +10,15 @@ import { createHash, randomBytes } from 'node:crypto';
 import { db, sqlite } from './db';
 import { afterCommit, inTransaction } from './db/transaction';
 import { users, sessions, apiKeys, webhooks, reportSchedules, type Session, type User } from './db/schema';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { error, type Cookies } from '@sveltejs/kit';
 import { getRequestEvent } from '$app/server';
 import { endUnusedInvites } from './invites';
-import {
-	FIRST_LANE_CHECKS_PER_ACCOUNT,
-	checkRateLimit,
-	enterSignIn,
-	firstLaneChecksAt,
-	leaveSignIn,
-	resetRateLimit
-} from './rate-limit';
+import { FIRST_LANE_CHECKS_PER_ACCOUNT, enterSignIn, firstLaneChecksAt, leaveSignIn } from './rate-limit';
 import { PASSWORDS_BUSY, checkPassword } from './passwords';
 import { createLogger } from './logger';
 import { stamp, toStamp } from '$lib/timestamps';
+import { PASSWORD_CHANGED_MEANWHILE, STEP_UP_IN_FLIGHT, STEP_UP_SIGNED_OUT } from '$lib/step-up-words';
 import { registerStampFunctions } from './db/timestamps';
 import { pathToLog } from './secret-paths';
 
@@ -47,28 +41,37 @@ export type SessionUser = {
 
 // ─── Checking a Current Password ────────────────────────────────────────────
 
-/** How many current passwords one session may try in the window: sign-in's number. */
-const CURRENT_PASSWORD_ATTEMPTS = 10;
-/** Fifteen minutes, as for sign-in. */
-const CURRENT_PASSWORD_WINDOW_MS = 15 * 60 * 1000;
+/**
+ * How many wrong current passwords end the session that sent them (card 2701,
+ * decision 6): the usual bound, sudo's. The real user loses only the session,
+ * and signs in again.
+ */
+export const WRONG_CURRENT_PASSWORDS_SIGN_OUT = 3;
 
 /**
- * Run `check` holding one of the account's places in the first lane of
- * password checks (the review's L1): at most five in flight for an account,
- * its sessions' current passwords and its remembered browsers' sign-ins
- * together. A sixth is answered 429, the server busy, before anything is
- * counted or checked. The first lane goes ahead of every sign-in, invite and
- * set-up, and a right password clears a session's count, so without it one
- * signed-in user could keep checks in flight without end.
+ * The answer to a check from a session that already has one under way (card
+ * 2701, decision 5), and the answer once a session has been ended by its third
+ * wrong current password, or had ended some other way while its check was
+ * made (decision 6). Kept in `$lib/step-up-words`, which the pages read too:
+ * a confirm dialog knows a refusal of the password by its words.
  */
-async function holdingFirstLanePlace<T>(userId: number, check: () => Promise<T>): Promise<T> {
-	const place = firstLaneChecksAt(userId);
-	if (!enterSignIn(place, FIRST_LANE_CHECKS_PER_ACCOUNT)) error(429, PASSWORDS_BUSY);
-	try {
-		return await check();
-	} finally {
-		leaveSignIn(place);
-	}
+export { STEP_UP_IN_FLIGHT, STEP_UP_SIGNED_OUT };
+
+/** What a check answers: whether the password matched, and whether the session is signed out. */
+type Checked = { matches: boolean; signedOut: boolean };
+/** The answer for a session that is signed out (its row gone, or just ended), whatever the password. */
+const signedOut = (): Checked => ({ matches: false, signedOut: true });
+
+/**
+ * The sessions with a current password being checked now. Kept in memory, as
+ * the requests it guards are: a restart ends both. Session tokens only, never
+ * a password.
+ */
+const checksInFlight = new Set<string>();
+
+/** Forget every check under way, as a restart does: for tests, between them. */
+export function forgetChecksInFlight(): void {
+	checksInFlight.clear();
 }
 
 /**
@@ -77,35 +80,58 @@ async function holdingFirstLanePlace<T>(userId: number, check: () => Promise<T>)
  * made with, read from its cookie.
  *
  * The email form, the password form and Generate Key each ask a caller who is
- * already signed in for their current password. It is what whoever holds a
- * session and not the password (an unlocked machine, a copied cookie) would
- * need, to move the email, set a new password or make a key, and each guess
- * used to be answered at once, as often as asked. Now it is sign-in's rule:
- * every attempt is counted, ten in 15 minutes, and the right password clears
- * the count. The eleventh attempt in the window is answered 429 before any
- * password is checked, whatever it carries, the right one included.
+ * already signed in for their current password, and so does every
+ * destructive, privilege-changing or exfiltrating admin action (card 2701,
+ * `confirmStepUp` in step-up.ts). It is what whoever holds a session and not
+ * the password (an unlocked machine, a copied cookie, a script running in a
+ * page) would need, and a password found here passes every one of them.
+ *
+ * So the compares are counted on the session's own row
+ * (`sessions.wrong_password_count`, migration 0062), for the session's whole
+ * life: no window, and a restart does not clear it. Only a right password
+ * sets it back to 0. The third wrong one ends the session (decisions 5 and 6,
+ * as ruled again by the code review's S1 on 2026-11-04: only a check that
+ * compares a password is counted). Steps 1 to 4 run in one turn, with
+ * nothing awaited between them, so that no other check can come between:
+ *
+ *   1. The session's row is read. Gone, the answer is signed out. A count
+ *      already at 3 or more ends the session, answered signed out, with no
+ *      password compared.
+ *   2. One check under way per session: a second is answered 429
+ *      (`STEP_UP_IN_FLIGHT`), not counted, with no password compared. The
+ *      pages send one request per press.
+ *   3. One of the account's five places in the first lane of password checks
+ *      (passwords.ts), its sessions' current passwords and its remembered
+ *      browsers' sign-ins together (the review's L1). None free is answered
+ *      429 (`PASSWORDS_BUSY`), not counted, with no password compared. The
+ *      first lane goes ahead of every sign-in, invite and set-up, so without
+ *      it one signed-in user could keep checks in flight without end.
+ *   4. Counted, in one statement (`UPDATE … RETURNING`), and then compared on
+ *      a worker thread. A compare that fails on the worker stays counted: it
+ *      was made.
+ *   5. The row is read again. Gone (ended by a sign-out, a password change or
+ *      a reset meanwhile), the answer is signed out whatever the check found,
+ *      and a right password clears nothing: an answer given after the end
+ *      never tells a right guess from a wrong one. Otherwise a right password
+ *      sets the count to 0, and a wrong one that leaves it at 3 ends the
+ *      session. With one check at a time, nothing else can count meanwhile.
  *
  * The count is the session's and not the account's. Kept on the account,
  * whoever held one session of it could keep every session of it refused, the
  * owner's included, and so keep the owner from changing the password, which
- * is how the owner ends the other sessions. A session is made only by signing
- * in or with an invite, and each of those asks for the password or sets it, so
- * a count on the session slows the guesser as much. It is kept in memory, as
- * sign-in's is: a restart clears it.
+ * is how the owner ends the other sessions. Sign-in's own counts, by address
+ * and by account, are not touched: a stolen session could otherwise slow or
+ * lock the owner's sign-in from a browser that was never stolen.
  *
  * Each wrong password is a WARN line naming `where` and the user, as each
- * failed sign-in is, and so is the first refusal at the limit in each window,
- * the eleventh attempt; the refusals after it in that window are not logged.
- * The session is never logged: it is what signs its holder in.
+ * failed sign-in is, and each session ended for it another. The session is
+ * never logged: it is what signs its holder in. Nor is the password.
  *
- * Asked once for a request, before its transaction, and awaited: the check
- * is made on a worker thread, in the first lane (passwords.ts), since the
- * caller holds a session, and holds one of the account's five places there
- * (`holdingFirstLanePlace`): a sixth in flight is answered 429 before it is
- * counted. It resolves to `{ matches }` rather than a boolean,
- * so that a missed `await` does not compile. A route whose password was
- * changed in between is checked again by `whilePasswordHolds`, which does not
- * count it: the same guess, not counted twice.
+ * Asked once for a request, before its transaction, and awaited. It resolves
+ * to `{ matches, signedOut }` rather than a boolean, so that a missed `await`
+ * does not compile; `refuseWrongPassword` turns it into the route's answer. A
+ * route whose stored hash moved in between is refused by
+ * `whilePasswordHolds`, which compares nothing again (the code review's S2).
  */
 export async function checkCurrentPassword(
 	session: string,
@@ -113,88 +139,110 @@ export async function checkCurrentPassword(
 	password: string,
 	hash: string,
 	where: string
-): Promise<{ matches: boolean }> {
-	return holdingFirstLanePlace(userId, () => checkCounted(session, userId, password, hash, where));
-}
+): Promise<Checked> {
+	const thisSession = and(eq(sessions.id, session), eq(sessions.userId, userId));
 
-/** `checkCurrentPassword` once it holds its place: the session's count, and the check. */
-async function checkCounted(
-	session: string,
-	userId: number,
-	password: string,
-	hash: string,
-	where: string
-): Promise<{ matches: boolean }> {
-	const key = `current-password:${session}`;
-
-	const { limited, retryAfterSecs, attempts } = checkRateLimit(key, CURRENT_PASSWORD_ATTEMPTS, CURRENT_PASSWORD_WINDOW_MS);
-	if (limited) {
-		const minutes = Math.ceil(retryAfterSecs / 60);
-		// Said once a window, at the first refusal: a script that goes on
-		// asking would otherwise write a line for every one.
-		if (attempts === CURRENT_PASSWORD_ATTEMPTS + 1) {
-			log.warn(
-				`Current password not checked for user ${userId} on ${where}: too many wrong ones from this session`,
-				{ where, retryAfterSecs },
-				{ userId }
-			);
-		}
-		error(429, `Too many wrong passwords. Try again in ${minutes} minute(s).`);
+	// 1. The session as it is.
+	const row = db.select({ count: sessions.wrongPasswordCount }).from(sessions).where(thisSession).get();
+	if (!row) return signedOut();
+	if (row.count >= WRONG_CURRENT_PASSWORDS_SIGN_OUT) {
+		endAfterWrongPasswords(session, userId, where);
+		return signedOut();
 	}
 
-	if ((await checkPassword(password, hash, 'known')).matches) {
-		resetRateLimit(key);
-		return { matches: true };
+	// 2. One check at a time for the session: not counted.
+	if (checksInFlight.has(session)) error(429, { message: STEP_UP_IN_FLIGHT, stepUp: 'in-flight' });
+
+	// 3. A place in the account's first lane: not counted.
+	const place = firstLaneChecksAt(userId);
+	if (!enterSignIn(place, FIRST_LANE_CHECKS_PER_ACCOUNT)) error(429, { message: PASSWORDS_BUSY, stepUp: 'busy' });
+
+	// 4. Counted, with nothing awaited since step 1, and then compared.
+	checksInFlight.add(session);
+	let matches: boolean;
+	try {
+		const counted = db
+			.update(sessions)
+			.set({ wrongPasswordCount: sql`${sessions.wrongPasswordCount} + 1` })
+			.where(thisSession)
+			.returning({ count: sessions.wrongPasswordCount })
+			.get();
+		if (!counted) return signedOut();
+		matches = (await checkPassword(password, hash, 'known')).matches;
+	} finally {
+		checksInFlight.delete(session);
+		leaveSignIn(place);
 	}
 
+	// 5.
+	if (matches) {
+		const cleared = db.update(sessions).set({ wrongPasswordCount: 0 }).where(thisSession).returning({ id: sessions.id }).get();
+		return cleared ? { matches: true, signedOut: false } : signedOut();
+	}
+	const now = db.select({ count: sessions.wrongPasswordCount }).from(sessions).where(thisSession).get();
+	if (!now) return signedOut();
 	log.warn(`Wrong current password for user ${userId} on ${where}`, { where }, { userId });
-	return { matches: false };
+	if (now.count >= WRONG_CURRENT_PASSWORDS_SIGN_OUT) {
+		endAfterWrongPasswords(session, userId, where);
+		return signedOut();
+	}
+	return { matches: false, signedOut: false };
 }
 
-/** What `whilePasswordHolds` answers when the password changed twice while it was trying. */
-export const PASSWORD_CHANGED_MEANWHILE =
-	'Your password was changed while this was being saved. Nothing was changed. Try again.';
+/** End a session for its wrong current passwords, with a WARN line that names the user and the route, never the session. */
+function endAfterWrongPasswords(session: string, userId: number, where: string): void {
+	log.warn(`Session ended after three wrong current passwords for user ${userId} on ${where}`, { where }, { userId });
+	deleteSession(session, 'three wrong current passwords');
+}
+
+/**
+ * The route's answer to a current password that did not pass: nothing when it
+ * matched; for a session signed out, 403 `{ message: STEP_UP_SIGNED_OUT,
+ * signedOut: true, stepUp: 'signed-out' }` with the session cookie cleared;
+ * otherwise 403 in the route's own words, `says`, with `stepUp: 'wrong'`. The
+ * answer never says whether a signed-out session's password was right, and
+ * never echoes the password.
+ */
+export function refuseWrongPassword(cookies: Cookies, checked: Checked, says: string): void {
+	if (checked.signedOut) {
+		clearSessionCookie(cookies);
+		error(403, { message: STEP_UP_SIGNED_OUT, signedOut: true, stepUp: 'signed-out' });
+	}
+	if (!checked.matches) error(403, { message: says, stepUp: 'wrong' });
+}
+
+/**
+ * What `whilePasswordHolds` answers when the stored hash moved between the
+ * check and the write. Kept in `$lib/step-up-words`, which the pages read too.
+ */
+export { PASSWORD_CHANGED_MEANWHILE };
 
 /** `never` for a promise: a transaction's work cannot await (transaction.ts). */
 type NotAPromise<T> = T extends PromiseLike<unknown> ? never : T;
 
 /**
  * Run `write` in one transaction, only while the account's stored hash is
- * still `checkedHash`, the one `password` was checked against before it.
+ * still `checkedHash`, the one the password was checked against before it.
  *
  * The three routes that ask for a current password used to check it again
  * inside their transaction when the stored hash had changed in between: a
  * bcrypt check with the write lock held, which a transaction can no longer
  * make now that a check is awaited. So the stored hash is compared under the
- * lock instead. If it has changed, nothing is written, the transaction ends,
- * the password is checked against the new hash outside it (first lane,
- * holding one of the account's places there, and not counted again: the same
- * guess), and the transaction is run once more;
- * `wrong()` throws the route's own refusal if it does not match. A second
- * change answers 409 with nothing written. Nothing can change the hash between
- * the comparison and the write: better-sqlite3 runs the whole transaction
- * without yielding, under `BEGIN IMMEDIATE`.
+ * lock instead. If it has changed (the password changed or reset meanwhile),
+ * nothing is written and the answer is 409 `PASSWORD_CHANGED_MEANWHILE`, with
+ * `stepUp: 'changed'`: the proof no longer holds. The password is not
+ * compared again against the new hash: that compare would be a guess the
+ * session's count never saw (the code review's S2, 2026-11-04). Nothing can
+ * change the hash between the comparison and the write: better-sqlite3 runs
+ * the whole transaction without yielding, under `BEGIN IMMEDIATE`.
  */
-export async function whilePasswordHolds<T>(
-	userId: number,
-	password: string,
-	checkedHash: string,
-	write: (current: User) => NotAPromise<T>,
-	wrong: () => never
-): Promise<T> {
-	let hash = checkedHash;
-	for (let changes = 0; ; changes++) {
-		const outcome = inTransaction(() => {
-			const current = db.select().from(users).where(eq(users.id, userId)).get();
-			if (!current) throw error(404, 'User not found');
-			if (current.passwordHash !== hash) return { held: false as const, now: current.passwordHash };
-			return { held: true as const, value: write(current) };
-		});
-		if (outcome.held) return outcome.value as T;
-		if (changes >= 1) error(409, PASSWORD_CHANGED_MEANWHILE);
-		if (!(await holdingFirstLanePlace(userId, async () => (await checkPassword(password, outcome.now, 'known')).matches))) wrong();
-		hash = outcome.now;
-	}
+export async function whilePasswordHolds<T>(userId: number, checkedHash: string, write: (current: User) => NotAPromise<T>): Promise<T> {
+	return inTransaction(() => {
+		const current = db.select().from(users).where(eq(users.id, userId)).get();
+		if (!current) throw error(404, 'User not found');
+		if (current.passwordHash !== checkedHash) error(409, { message: PASSWORD_CHANGED_MEANWHILE, stepUp: 'changed' });
+		return write(current);
+	}) as T;
 }
 
 // ─── Session Management ─────────────────────────────────────────────────────

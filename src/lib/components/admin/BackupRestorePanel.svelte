@@ -10,12 +10,29 @@
   it is fixed to the window and not to a card that moves on hover. After an
   import that changed the database the page is loaded again from nothing
   (`dismissImportReport`), on purpose.
+
+  Card 2701: both ask for the caller's own password. Export opens the app's
+  confirm dialog for it and sends it in a POST, the file saved only from the
+  answer. Import Backup opens the file picker first (the code review's F1,
+  2026-11-04): the file chosen is kept and checked here (a .db backup, and
+  readable), and only then does the import dialog open, naming the file, with
+  the two ways to restore and a field for the password. Confirm sends the
+  password alone to `POST /api/admin/import/confirm`, and as soon as that has
+  answered a confirmation the upload is sent, with it in its
+  `X-DumpFire-Confirmation` header: nothing is uploaded before the password
+  is accepted, and the 60 seconds the confirmation is good for never have to
+  cover the picker. A refusal at the confirm sends no upload: it is said in
+  the dialog, which stays open with the field cleared. Cancel or Escape lets
+  the file go.
 -->
 <script lang="ts">
 	import { answerBody, failureMessage, uploadFailure, uploadNoAnswer, uploadNotRead } from '$lib/api';
 	import { showToast } from '$lib/admin/send';
 	import { toasts } from '$lib/stores/toast';
 	import { holdFocus } from '$lib/dialog-focus';
+	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
+	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
+	import { ASKS_FOR_PASSWORD, CONFIRMATION_HEADER, stepUpRefusal } from '$lib/step-up-words';
 
 	/** This instance's default way to restore, from the page's load. */
 	let { importOutsideDefault }: { importOutsideDefault: 'keep' | 'off' } = $props();
@@ -144,11 +161,30 @@
 		};
 	}
 
-	async function exportDatabase() {
+	/** Export pressed: the confirm dialog asks for the caller's own password, and its Confirm exports (card 2701). */
+	let askingToExport = $state(false);
+
+	function askExport() {
+		askingToExport = true;
+	}
+
+	/**
+	 * Export, confirmed: a POST with the caller's own password (card 2701,
+	 * decision 17), and the file saved from the answer. A refusal of the
+	 * password is given back for the dialog to show; anything else closes it.
+	 */
+	async function exportDatabase(currentPassword: string): Promise<string | void> {
 		exporting = true;
 		const started = toasts.navigation();
 		try {
-			const res = await fetch('/api/admin/export');
+			const res = await fetch('/api/admin/export', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ currentPassword })
+			});
+			const refusal = await stepUpRefusal(res);
+			if (refusal !== null) return refusal;
+			askingToExport = false;
 			if (!res.ok) {
 				// A refusal is an answer too, and was once saved as the backup: a
 				// file of a few bytes of JSON, named .db, under "exported successfully".
@@ -166,6 +202,7 @@
 			URL.revokeObjectURL(url);
 			showToast('Database exported successfully');
 		} catch {
+			askingToExport = false;
 			showToast('Export failed', 'error', started);
 		} finally {
 			exporting = false;
@@ -178,72 +215,158 @@
 	/**
 	 * The import dialog, and which of its two ways to restore is chosen: `keep`
 	 * restores everything as the backup has it, `off` restores a working copy.
-	 * The choice outlives the dialog, because the file is picked after it closes.
 	 */
 	let showImportDialog = $state(false);
 	let importOutside = $state<'keep' | 'off'>('keep');
 
-	/** Opens the import dialog with this instance's default selected, whatever was chosen the last time. */
-	function openImportDialog() {
-		importOutside = importOutsideDefault;
-		showImportDialog = true;
+	/**
+	 * The backup chosen in the picker, read and checked here, waiting for the
+	 * dialog's Confirm (the code review's F1): the file, for its name, and its
+	 * bytes, which the upload sends. Let go on Cancel, on Escape and once sent.
+	 */
+	let importFile = $state<{ file: File; body: ArrayBuffer } | null>(null);
+
+	/**
+	 * The import dialog's password, the caller's own (card 2701): held here
+	 * alone, cleared once sent to the confirm, and as the dialog opens or is
+	 * cancelled.
+	 */
+	let importPassword = $state('');
+	/** The confirm's refusal, said in the dialog until the next Confirm. */
+	let importRefusal = $state<string | null>(null);
+	/** The confirm is on its way: Confirm and Cancel are off, so one press sends one request. */
+	let importConfirming = $state(false);
+
+	/**
+	 * A failure that changed nothing, said in the report under the Import
+	 * button. Not in a toast as well: a failure's toast stays until it is
+	 * closed, so it was the same words twice, to be closed twice.
+	 */
+	function notImported(headline: string) {
+		importReport = { headline, problems: [], reload: false, trouble: true };
 	}
 
-	async function importDatabase() {
+	/** Import Backup: the picker, straight from the press, so that no browser takes it for a window nobody asked for. */
+	function pickImportFile() {
 		fileInput?.click();
 	}
 
+	/**
+	 * A file chosen: kept, and checked here before anything is asked or sent.
+	 * Only a .db backup that can be read opens the import dialog, with this
+	 * instance's default way to restore selected, whatever was chosen the last
+	 * time.
+	 */
 	async function handleFileSelected(e: Event) {
-		const file = (e.target as HTMLInputElement).files?.[0];
+		const input = e.target as HTMLInputElement;
+		const file = input.files?.[0];
+		// Picked again, the same file is a change again.
+		input.value = '';
 		if (!file) return;
 
+		// In any case: a backup saved as BACKUP.DB is a .db backup.
+		const named = file.name.toLowerCase();
+		const isDbFile = named.endsWith('.db') || named.endsWith('.sqlite') || named.endsWith('.sqlite3');
+
+		// Only a .db backup is imported. Any other file is refused here, and
+		// nothing is read or sent: the server would refuse it too. The old JSON
+		// export is named, because it is the one file somebody may still have
+		// that once was imported.
+		if (!isDbFile) {
+			notImported(
+				`The file "${file.name}" is not a .db backup. Exports in the old JSON format, which DumpFire wrote only ` +
+					'from 1 to 7 April 2026, are no longer imported. Nothing was sent.'
+			);
+			return;
+		}
+
+		// One of four things has gone wrong when an import is not accepted, and
+		// each is said for what it is: see `uploadFailure` in $lib/api. The
+		// first: the file could not be read here, so nothing was asked or sent.
+		let body: ArrayBuffer;
+		try {
+			body = await file.arrayBuffer();
+		} catch {
+			notImported(uploadNotRead(`The backup "${file.name}"`));
+			return;
+		}
+
+		importFile = { file, body };
+		importOutside = importOutsideDefault;
+		importPassword = '';
+		importRefusal = null;
+		showImportDialog = true;
+	}
+
+	/** The import dialog's Cancel, and Escape: nothing sent, and the file and the password typed go with it. */
+	function cancelImportDialog() {
+		if (importConfirming) return;
+		importPassword = '';
+		importRefusal = null;
+		importFile = null;
+		showImportDialog = false;
+	}
+
+	/**
+	 * The import dialog's Confirm (card 2701, decision 8): the caller's own
+	 * password, alone, to the confirm, which answers a confirmation good for
+	 * one import; and, as soon as it has, the upload of the file already
+	 * chosen. A refusal sends nothing more: it is said in the dialog, the field
+	 * cleared and focused to type again.
+	 */
+	async function confirmImport() {
+		const chosen = importFile;
+		if (!importPassword || importConfirming || !chosen) return;
+		const currentPassword = importPassword;
+		importPassword = '';
+		importRefusal = null;
+		importConfirming = true;
+		try {
+			let res: Response;
+			try {
+				res = await fetch('/api/admin/import/confirm', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ currentPassword })
+				});
+			} catch {
+				importRefusal = 'No answer from the server, so the import was not confirmed. Nothing was sent: try again.';
+				return;
+			}
+			if (!res.ok) {
+				// The password refused, or the session signed out, by its code; any other refusal in the server's words.
+				importRefusal = (await stepUpRefusal(res)) ?? (await failureMessage(res, 'The import was not confirmed. Nothing was sent.'));
+				return;
+			}
+			const confirmation = (await answerBody(res))?.confirmation;
+			if (typeof confirmation !== 'string' || !confirmation) {
+				importRefusal = 'The import was not confirmed: the answer held no confirmation. Nothing was sent.';
+				return;
+			}
+			// Confirmed: the dialog closes, and the backup chosen goes at once.
+			importConfirming = false;
+			importFile = null;
+			showImportDialog = false;
+			await uploadImport(chosen, confirmation);
+		} finally {
+			importConfirming = false;
+		}
+	}
+
+	/** The upload of the backup chosen, with the confirm's confirmation, good for this one upload (card 2701). */
+	async function uploadImport({ file, body }: { file: File; body: ArrayBuffer }, confirmation: string) {
 		importing = true;
 		const started = toasts.navigation();
 		try {
-			// In any case: a backup saved as BACKUP.DB is a .db backup.
-			const named = file.name.toLowerCase();
-			const isDbFile = named.endsWith('.db') || named.endsWith('.sqlite') || named.endsWith('.sqlite3');
 			const what = `The backup "${file.name}"`;
 
-			/**
-			 * A failure that changed nothing, said in the report under the Import
-			 * button. Not in a toast as well: a failure's toast stays until it is
-			 * closed, so it was the same words twice, to be closed twice.
-			 */
-			const notImported = (headline: string) => {
-				importReport = { headline, problems: [], reload: false, trouble: true };
-			};
-
-			// Only a .db backup is imported. Any other file is refused here, and
-			// nothing is read or sent: the server would refuse it too. The old
-			// JSON export is named, because it is the one file somebody may
-			// still have that once was imported.
-			if (!isDbFile) {
-				notImported(
-					`The file "${file.name}" is not a .db backup. Exports in the old JSON format, which DumpFire wrote only ` +
-						'from 1 to 7 April 2026, are no longer imported. Nothing was sent.'
-				);
-				return;
-			}
-
-			// One of four things has gone wrong when an import is not accepted,
-			// and each is said for what it is: see `uploadFailure` in $lib/api.
-			// The first: the file could not be read here, so nothing was sent.
-			let body: ArrayBuffer;
-			try {
-				body = await file.arrayBuffer();
-			} catch {
-				notImported(uploadNotRead(what));
-				return;
-			}
-
-			// The second: no answer. It is not known whether the import ran.
+			// The second of the four: no answer. It is not known whether the import ran.
 			let res: Response;
 			try {
 				res = await fetch(`/api/admin/import?outside=${importOutside}`, {
 					method: 'POST',
-					// The file's bytes, as they are.
-					headers: { 'Content-Type': 'application/octet-stream' },
+					// The file's bytes, as they are, and the confirm's confirmation (card 2701).
+					headers: { 'Content-Type': 'application/octet-stream', [CONFIRMATION_HEADER]: confirmation },
 					body
 				});
 			} catch {
@@ -298,7 +421,6 @@
 			showToast('The answer to the import could not be shown. Reload the page to see what the database holds.', 'error', started);
 		} finally {
 			importing = false;
-			if (fileInput) fileInput.value = '';
 		}
 	}
 
@@ -330,9 +452,9 @@
 			</div>
 			<div class="backup-info">
 				<strong>Export Database</strong>
-				<p>Download the complete database as a .db file — includes all data automatically.</p>
+				<p>Download the complete database as a .db file — includes all data automatically. {ASKS_FOR_PASSWORD}</p>
 			</div>
-			<button class="btn-backup export" onclick={exportDatabase} disabled={exporting}>
+			<button class="btn-backup export" onclick={askExport} disabled={exporting}>
 				{#if exporting}
 					<span class="spinner"></span> Exporting...
 				{:else}
@@ -350,9 +472,9 @@
 			</div>
 			<div class="backup-info">
 				<strong>Import Database</strong>
-				<p>Restore from a backup file. <span class="warning-text">This will replace ALL current data.</span></p>
+				<p>Restore from a backup file. <span class="warning-text">This will replace ALL current data.</span> {ASKS_FOR_PASSWORD}</p>
 			</div>
-			<button class="btn-backup import" onclick={openImportDialog} disabled={importing}>
+			<button class="btn-backup import" onclick={pickImportFile} disabled={importing}>
 				{#if importing}
 					<span class="spinner"></span> Importing...
 				{:else}
@@ -419,13 +541,14 @@
 	<input type="file" accept=".db,.sqlite,.sqlite3" class="hidden-input" bind:this={fileInput} onchange={handleFileSelected} />
 </section>
 
-<!-- Import dialog: the warning, and which of the two ways to restore. Cancel takes the focus, Tab stays in it and Escape is Cancel (card 2362). -->
-{#if showImportDialog}
+<!-- Import dialog, once a backup is chosen: the warning, the file, which of the two ways to restore, and the password. Cancel takes the focus, Tab stays in it and Escape is Cancel (card 2362). -->
+{#if showImportDialog && importFile}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div class="modal-overlay" role="dialog" aria-modal="true" aria-label="Import Database">
 		<!-- svelte-ignore a11y_click_events_have_key_events -->
-		<div class="modal-content confirm-modal" onclick={(e) => e.stopPropagation()} role="document" style="max-width: 520px" use:holdFocus={{ first: '.modal-actions .btn-ghost', onEscape: () => (showImportDialog = false) }}>
+		<div class="modal-content confirm-modal" onclick={(e) => e.stopPropagation()} role="document" style="max-width: 520px" use:holdFocus={{ first: '.modal-actions .btn-ghost', onEscape: cancelImportDialog }}>
 			<h2>Import Database</h2>
+			<p class="import-file">Backup chosen: <strong>{importFile.file.name}</strong></p>
 			<p style="margin-bottom: var(--space-md)">This will REPLACE ALL existing data with the backup — users, teams, boards, cards, comments, labels, task requests, and settings will all be overwritten. Everybody is signed out, you included: no session is restored, whatever the backup holds, so you will sign in again with an account the backup has. Invites that have not been used yet stop working. A backup with users and no superadmin among them is refused.</p>
 			<div class="import-choices" role="radiogroup" aria-label="How to restore the backup">
 				<label class="import-choice" class:selected={importOutside === 'keep'}>
@@ -446,12 +569,33 @@
 					<span class="import-default-note">Working copy is selected because this instance's schedulers are off.</span>
 				{/if}
 			</div>
+			<!-- The caller's own password (card 2701), sent alone to the confirm; the backup is uploaded once it is accepted. -->
+			<CurrentPasswordField bind:value={importPassword} refusal={importRefusal} readonly={importConfirming} onEnter={confirmImport} />
+			<p class="import-default-note">{ASKS_FOR_PASSWORD} Confirm checks it, and then sends the backup.</p>
 			<div class="modal-actions">
-				<button class="btn-ghost" onclick={() => (showImportDialog = false)}>Cancel</button>
-				<button class="btn-danger-solid" onclick={async () => { showImportDialog = false; await importDatabase(); }}>Confirm</button>
+				<button class="btn-ghost" onclick={cancelImportDialog} disabled={importConfirming}>Cancel</button>
+				<button
+					class="btn-danger-solid"
+					onclick={confirmImport}
+					disabled={!importPassword || importConfirming}
+					aria-busy={importConfirming ? 'true' : undefined}
+				>{importConfirming ? 'Working…' : 'Confirm'}</button>
 			</div>
 		</div>
 	</div>
+{/if}
+
+<!-- Export asks for the caller's own password (card 2701): the file holds every account's password hash. -->
+{#if askingToExport}
+	<ConfirmModal
+		title="Export Database"
+		message={`The file holds every account's email address and password hash, and every setting. Keep it where only you can read it. ${ASKS_FOR_PASSWORD}`}
+		confirmText="Export"
+		confirmDanger={false}
+		askPassword
+		onConfirm={exportDatabase}
+		onCancel={() => (askingToExport = false)}
+	/>
 {/if}
 
 <style>
@@ -553,4 +697,6 @@
 	.import-choice strong { font-size: 0.9rem; display: block; margin-bottom: 4px; }
 	.import-choice-desc { font-size: 0.78rem; color: var(--text-tertiary); line-height: 1.4; display: block; }
 	.import-default-note { font-size: 0.78rem; color: var(--text-secondary); line-height: 1.4; }
+	/* The backup chosen, named in the dialog before anything is sent (card 2701) */
+	.import-file { margin-bottom: var(--space-sm); overflow-wrap: anywhere; }
 </style>

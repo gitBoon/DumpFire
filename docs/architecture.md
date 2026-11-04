@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.71
+version: 1.73
 status: As-Built
 date: 2026-11-04
 tags:
@@ -401,7 +401,12 @@ once.
 - **One handler catches what is thrown inside it, and passes SvelteKit's errors on.**
   `POST /api/admin/import` refuses a body that is not sent as a `.db` backup by its media
   type before reading it, and reads the rest as bytes, never as JSON, so the body guard's
-  `400` never reaches it. Its outer `catch` first rethrows an error SvelteKit made, so that a
+  `400` never reaches it. Its password is confirmed first, at `POST /api/admin/import/confirm`
+  (card 2701): the import takes that single-use confirmation from its
+  `X-DumpFire-Confirmation` header and the session cookie, never from the request, before a byte
+  of the upload is read, and is `403` without one this session was issued in the last 60
+  seconds. The page picks the backup first and sends the upload as soon as the confirm answers,
+  so nothing is uploaded before the password is accepted (card 2701's code review, F1). See [Step-up Before Destructive Actions](authentication-security.md#step-up-before-destructive-actions-card-2701). Its outer `catch` first rethrows an error SvelteKit made, so that a
   `.db` backup sent in chunks that runs past the limit stays a `413`. A failure inside the
   restore is answered there: a `RestoreError` is `500` with its own message, a restore that
   would leave no superadmin `422`, and anything else `500` "Restore failed: …".
@@ -1111,7 +1116,7 @@ flowchart LR
 
 ### The admin page
 
-The page keeps its props, `isSuperadmin` and `superadminName`, the `{#if isSuperadmin}` / `{:else}` frame **with the superadmin's panel inside it** (the `{:else}` draws the "🔒 The superadmin's" notice, which names the export, the import and the reset; the App URL, Scheduled Backups and Email / SMTP panels came out of the frame with card 2395 and are drawn for every administrator), the confirm dialog, the reset notice and the invite dialog in their places after `.admin-page`, and the CSS several panels share. `src/lib/admin/send.ts` holds `sent(send, fallback)` (the answer on success; on a refusal the server's words in a toast and `null`; no answer, `NO_ANSWER`), `NO_ANSWER` and `showToast`; `src/lib/admin/format.ts` holds `formatBytes`, `formatDuration`, `formatRelativeTime`, `destTypeLabels` and the `DestType` and `BackupHistoryEntry` types.
+The page keeps its props, `isSuperadmin` and `superadminName`, the `{#if isSuperadmin}` / `{:else}` frame **with the superadmin's panel inside it** (the `{:else}` draws the "🔒 The superadmin's" notice, which names the export, the import and the reset; the App URL, Scheduled Backups and Email / SMTP panels came out of the frame with card 2395 and are drawn for every administrator), the confirm dialog, the reset notice and the invite dialog in their places after `.admin-page`, and the CSS several panels share. `src/lib/admin/send.ts` holds `sent(send, fallback)` (the answer on success; on a refusal the server's words in a toast and `null`; no answer, `NO_ANSWER`), `NO_ANSWER` and `showToast`; `src/lib/admin/sent-asking.ts` holds `sentAsking(send, fallback)`, `sent` for a write that carries the caller's password (card 2701), which gives a refusal of the password back as its words, for the confirm that asked for it to show, and says any other as `sent` does. The page's confirm runs its action with the dialog open and closes once the action gives back no refusal; `src/lib/admin/format.ts` holds `formatBytes`, `formatDuration`, `formatRelativeTime`, `destTypeLabels` and the `DestType` and `BackupHistoryEntry` types.
 
 | Component (`src/lib/components/admin/`) | Drawn for | What it holds |
 |---|---|---|
@@ -1832,7 +1837,7 @@ flowchart LR
 - **At most two threads**, `min(2, max(1, CPUs - 1))`, or `PASSWORD_THREADS` (0 to 8, left unset in a deployment; 0 is the server's own thread a turn later, which the tests use). Each is started from a string of code, not a file of its own, because Vite carries no worker file into the server build; it loads bcryptjs from `node_modules` by an absolute path, so the image did not change.
 - **One line, two lanes.** A caller the server already knows goes first, but never more than three in a row while a check of the second lane waits, and an account's current passwords and remembered sign-ins are held to five in flight, so the second lane is always served; the second lane holds at most 150 checks a thread, and a check that arrives when it is full, or whose caller has gone by the time a thread is free (`req.socket.destroyed`, in the built server), is not made and its route answers `503`.
 - **A thread that stops** is replaced and the check sent once more; one that cannot start at all leaves every check on the server's thread, with one `ERROR` line, rather than keep anybody out.
-- **A transaction cannot await**, so no hash or check is made inside one. A route that needs a current password checked again because the hash changed in between does it outside, through `whilePasswordHolds()` in `auth.ts`, which writes only while the stored hash is still the one checked.
+- **A transaction cannot await**, so no hash or check is made inside one. A route that asks for a current password checks it before its transaction, and writes through `whilePasswordHolds()` in `auth.ts`, which writes only while the stored hash is still the one checked and otherwise refuses `409`, comparing nothing again (card 2701's code review, S2).
 
 The whole rule, with the lanes, the bound, the log lines and what the people using it notice, is in [Password Hashing](authentication-security.md#password-hashing).
 
@@ -1881,7 +1886,7 @@ sequenceDiagram
 | Function | What it does |
 |----------|--------------|
 | `inTransaction(fn)` | Runs `fn` in one transaction on the application's connection and returns what it returns. The outermost call is `BEGIN IMMEDIATE`, which takes the write lock at the start, so nothing `fn` reads can be changed under it before it writes. A call made inside another `inTransaction` is a savepoint: if it throws and the code around it catches the error, only that part is rolled back. A call made while a transaction the helper did not open is open on the connection throws before `fn` is run, so the request is answered 500 and writes nothing. |
-| `writeAs(locals, fn)`, `stillCallerNow(locals)` | In `src/lib/server/write-as.ts` (card 2253): `inTransaction(() => fn(stillAuthenticated(locals)))`, the one way a route writes, and the same question asked in a transaction of its own by the eight handlers whose work cannot run in one (the vacuum, the import, the two report routes, the backup run, the Test, the Google Drive Connect and the test mail). See [Asked Again at the Write](authentication-security.md#asked-again-at-the-write-card-2253) |
+| `writeAs(locals, fn)`, `stillCallerNow(locals)` | In `src/lib/server/write-as.ts` (card 2253): `inTransaction(() => fn(stillAuthenticated(locals)))`, the one way a route writes, and the same question asked in a transaction of its own by the nine handlers whose work cannot run in one (the vacuum, the import, the export since card 2701 made it a `POST`, the two report routes, the backup run, the Test, the Google Drive Connect and the test mail). See [Asked Again at the Write](authentication-security.md#asked-again-at-the-write-card-2253) |
 | `inWrite()` | In `src/lib/server/write-as.ts` (card 2012): the first statement of every write a service exports. It throws a plain error, a `500` if a route reaches it, unless a `writeAs` callback is running: `writeAs` counts its callbacks (`writing`, set after `stillAuthenticated` and taken off in `finally`, so a nested `writeAs` is counted), and nothing else sets the count. A bare `inTransaction`, a job's or a scheduler's, is not a `writeAs`, so a service called from one writes nothing. See [One Service per Action, Both Trees](#one-service-per-action-both-trees) |
 | `afterCommit(effect)` | Queues `effect` until the outermost transaction commits. Called with no transaction open, it runs the effect at once. Whether a transaction is open is read from the connection (`sqlite.inTransaction`), not counted by the helper. |
 

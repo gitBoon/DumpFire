@@ -93,7 +93,10 @@ export async function updateColumn(colId: number, updates: Record<string, unknow
 	return api.updateColumn(colId, { ...updates, boardId });
 }
 
-/** Deletes a column via the API. Returns the answer, for the caller to check. */
-export async function deleteColumn(colId: number, boardId: number): Promise<Response> {
-	return api.deleteColumn(colId, boardId);
+/**
+ * Deletes a column via the API, with the caller's own password where it holds
+ * a card (card 2701, decision 18). Returns the answer, for the caller to check.
+ */
+export async function deleteColumn(colId: number, boardId: number, currentPassword?: string): Promise<Response> {
+	return api.deleteColumn(colId, boardId, currentPassword);
 }

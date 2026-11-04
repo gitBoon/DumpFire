@@ -21,10 +21,10 @@
  * A change of an account's email address or role ends its invites not yet
  * used as well, in the transaction that writes it (`endUnusedInvites`).
  *
- * Wrong current passwords are counted, ten in 15 minutes for one session, as
- * sign-in counts wrong passwords (`checkCurrentPassword`). The count is in
- * memory and outlives `resetDb()`, which numbers the users from 1 again, so
- * it is cleared before each test.
+ * Wrong current passwords are counted on the session's own row as each
+ * arrives, for the session's whole life, and the third ends the session
+ * (`checkCurrentPassword`, card 2701). The count is written apart from the
+ * request's transaction, on purpose, and is compared on its own.
  *
  * Tests of a success use `eachWriteInTurn`, which makes the request once to
  * count its writes and then once more for each of them, with that write
@@ -81,7 +81,7 @@ import { db, sqlite } from '$lib/server/db';
 import { inTransaction } from '$lib/server/db/transaction';
 import { apiKeys, inviteTokens, reportSchedules, sessions, taskRequests, users } from '$lib/server/db/schema';
 import { MASTER_PREF, NOTIFICATION_PREFS } from '$lib/notification-prefs';
-import { PASSWORD_CHANGED_MEANWHILE, sessionStillOpen, SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
+import { PASSWORD_CHANGED_MEANWHILE, sessionStillOpen, SESSION_COOKIE_NAME, STEP_UP_SIGNED_OUT, type SessionUser } from '$lib/server/auth';
 import { PASSWORDS_BUSY, checkPassword, makePasswordHash } from '$lib/server/passwords';
 import { endUnusedInvites, issueInvite } from '$lib/server/invites';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
@@ -94,11 +94,22 @@ import { action, type ActionResult } from './helpers/actions';
 import { api, type ApiResult } from './helpers/api';
 import { eachWriteInTurn } from './helpers/each-write';
 import { effects, type Effects, type RecordedEffect } from './helpers/effects';
-import { addBoardMember, makeApiKey, makeBoard, makeCard, makeSmtp, makeUser, makeWebhook, resetDb } from './helpers/fixtures';
+import {
+	FIXTURE_PASSWORD,
+	FIXTURE_PASSWORD_HASH,
+	addBoardMember,
+	makeApiKey,
+	makeBoard,
+	makeCard,
+	makeSmtp,
+	makeUser,
+	makeWebhook,
+	resetDb
+} from './helpers/fixtures';
 import { FROM_THE_PAGE, gate } from './helpers/gate';
 import { sendAround } from './helpers/held-body';
 import { watchReads } from './helpers/reads';
-import { expectUnchanged, snapshotDb } from './helpers/snapshot';
+import { diffSnapshots, expectUnchanged, snapshotDb } from './helpers/snapshot';
 import { parseStamp, stamp } from '$lib/timestamps';
 
 bcrypt.open = () => sqlite.inTransaction;
@@ -281,6 +292,43 @@ async function expectRefused(request: () => Promise<ApiResult>, status: number):
 	return res;
 }
 
+/** A session's count of wrong current passwords (card 2701), or undefined once the session has gone. */
+const countOf = (session: string) =>
+	db.select({ count: sessions.wrongPasswordCount }).from(sessions).where(eq(sessions.id, session)).get()?.count;
+
+/** What the column a request counts a current password on is called in a snapshot, and in `eachWriteInTurn`'s `apart`. */
+const COUNTED = 'sessions.wrong_password_count';
+
+/**
+ * Make `request`, a wrong current password from `session`, and check that it
+ * was answered `status` with nothing written and nothing sent but the
+ * session's count, which reads one more: counted as it arrives, on purpose,
+ * apart from the request's transaction (card 2701). Returns what it returned.
+ */
+async function expectRefusedAndCounted(request: () => Promise<ApiResult>, status: number, session: string): Promise<ApiResult> {
+	const count = countOf(session)!;
+	const before = snapshotDb();
+	const sent = effects();
+	try {
+		const res = await request();
+		await sent.settle();
+		expect(res.status).toBe(status);
+		expect(countOf(session)).toBe(count + 1);
+		const now = snapshotDb();
+		expectUnchanged({ ...before, sessions: now.sessions });
+		expect(diffSnapshots({ sessions: before.sessions }, { sessions: now.sessions })).toEqual([
+			`sessions: row ${rowOf(session)} changed (wrong_password_count: ${count} became ${count + 1})`
+		]);
+		expect(sent.all).toEqual([]);
+		return res;
+	} finally {
+		sent.restore();
+	}
+}
+
+/** The rowid a session's row has, as a snapshot names it. */
+const rowOf = (session: string) => (sqlite.prepare('SELECT rowid AS n FROM sessions WHERE id = ?').get(session) as { n: number }).n;
+
 // ─── Changing your own password ─────────────────────────────────────────────
 
 type OwnResult = ApiResult & {
@@ -288,6 +336,8 @@ type OwnResult = ApiResult & {
 	cookie?: { value: string; inTransaction: boolean };
 	/** The cookie that remembers the browser (card 2194), with its options. */
 	known?: { name: string; value: string; options: Record<string, unknown> };
+	/** Whether the session cookie was cleared: the session was signed out (card 2701). */
+	cleared?: true;
 };
 
 /**
@@ -309,6 +359,10 @@ async function changeOwn(user: SessionUser | null, body: unknown, session = 'my-
 			set: (cookie: string, value: string, options: Record<string, unknown>) => {
 				if (cookie === SESSION_COOKIE_NAME) result.cookie = { value, inTransaction: sqlite.inTransaction };
 				if (user && cookie === knownBrowserCookie(user.id)) result.known = { name: cookie, value, options };
+			},
+			// A session ended by its third wrong password is told so with its cookie cleared (card 2701).
+			delete: (cookie: string) => {
+				if (cookie === SESSION_COOKIE_NAME) result.cleared = true;
 			}
 		}
 	} as unknown as RequestEvent;
@@ -348,6 +402,7 @@ describe('PUT /api/account/password', () => {
 		const run = await eachWriteInTurn({
 			build: signedInTwice,
 			request: ({ me }) => changeOwn(me, { currentPassword: OLD, newPassword: NEW }),
+			apart: [COUNTED],
 			afterSuccess: async ({ me, other }, res: OwnResult) => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 0 });
@@ -374,7 +429,11 @@ describe('PUT /api/account/password', () => {
 
 		// A failure at the second of these used to leave the new password with
 		// both old sessions still good; at the fourth, with nobody signed in.
+		// The first two count the password as it arrives and clear the count for
+		// the right one, apart from the transaction (card 2701).
 		expect(shape(run.writes)).toEqual([
+			'update sessions set',
+			'update sessions set',
 			'update users set',
 			'delete from sessions',
 			'delete from invite_tokens',
@@ -388,6 +447,7 @@ describe('PUT /api/account/password', () => {
 		const run = await eachWriteInTurn({
 			build: signedInTwice,
 			request: ({ me }) => changeOwn(me, { currentPassword: OLD, newPassword: NEW, endApiKeys: true }),
+			apart: [COUNTED],
 			afterSuccess: async ({ me, other }, res: OwnResult) => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({ success: true, apiKeysEnded: 2, webhooksSwitchedOff: 0 });
@@ -404,6 +464,8 @@ describe('PUT /api/account/password', () => {
 		});
 
 		expect(shape(run.writes)).toEqual([
+			'update sessions set',
+			'update sessions set',
 			'update users set',
 			'delete from sessions',
 			'delete from invite_tokens',
@@ -422,13 +484,15 @@ describe('PUT /api/account/password', () => {
 	it("keeps the superadmin's keys on their own change unless they ask, and nothing else ends them", { timeout: 20_000 }, async () => {
 		const chief = withPassword(makeUser({ username: 'chief', role: 'superadmin' }));
 		const key = makeApiKey(chief, 'the automation');
+		makeSession(chief, 'my-laptop');
 
 		const kept = await changeOwn(chief, { currentPassword: OLD, newPassword: NEW, endApiKeys: false });
 		expect(kept.status).toBe(200);
 		expect(kept.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 0 });
 		expect((await meWithKey(key)).status).toBe(200);
 
-		const ended = await changeOwn(chief, { currentPassword: NEW, newPassword: 'a third password', endApiKeys: true });
+		// From the session the change started: it ended the one it was asked from.
+		const ended = await changeOwn(chief, { currentPassword: NEW, newPassword: 'a third password', endApiKeys: true }, kept.cookie!.value);
 		expect(ended.body).toEqual({ success: true, apiKeysEnded: 1, webhooksSwitchedOff: 0 });
 		expect(keysOf(chief.id)).toEqual([]);
 		const refused = await meWithKey(key);
@@ -468,13 +532,14 @@ describe('PUT /api/account/password', () => {
 		expect(await refused(me, { currentPassword: 'not it', newPassword: 'short' }, 400)).toBe(
 			'New password must be at least 8 characters'
 		);
-		expect(await refused(me, { currentPassword: 'not it', newPassword: NEW }, 403)).toBe(
-			'Current password is incorrect'
-		);
+		// Nothing written but the session's count, which a wrong one adds to (card 2701).
+		const wrong = await expectRefusedAndCounted(() => changeOwn(me, { currentPassword: 'not it', newPassword: NEW }), 403, 'my-laptop');
+		expect(wrong.body.message).toBe('Current password is incorrect');
+		expect((wrong as OwnResult).cookie).toBeUndefined();
 		expect(sessionsOf(me.id)).toEqual(['my-laptop', 'my-phone']);
 	});
 
-	it('refuses when the password was changed elsewhere after it was checked, and leaves that change alone', async () => {
+	it('refuses 409 when the password was changed elsewhere after it was checked, and leaves that change alone', async () => {
 		const { me } = signedInTwice();
 		const elsewhere = await makePasswordHash('changed elsewhere', 'known');
 		const before = snapshotDb();
@@ -486,8 +551,9 @@ describe('PUT /api/account/password', () => {
 		try {
 			const res = await changeOwn(me, { currentPassword: OLD, newPassword: NEW });
 
-			expect(res.status).toBe(403);
-			expect(res.body.message).toBe('Current password is incorrect');
+			// The proof no longer holds, and the password is not compared again (card 2701's code review, S2).
+			expect(res.status).toBe(409);
+			expect(res.body).toEqual({ message: PASSWORD_CHANGED_MEANWHILE, stepUp: 'changed' });
 			expect(res.cookie).toBeUndefined();
 		} finally {
 			reads.restore();
@@ -500,7 +566,7 @@ describe('PUT /api/account/password', () => {
 		expectUnchanged({ ...before, users: snapshotDb().users });
 	});
 
-	it('goes ahead when the stored hash changed and the password it is a hash of did not', async () => {
+	it('refuses 409 when the stored hash changed, even to a hash of the same password, and leaves the change alone', async () => {
 		const { me } = signedInTwice();
 		const rehashed = await makePasswordHash(OLD, 'known');
 		const reads = watchReads('users', (nth) => {
@@ -508,53 +574,60 @@ describe('PUT /api/account/password', () => {
 		});
 
 		try {
-			expect((await changeOwn(me, { currentPassword: OLD, newPassword: NEW })).status).toBe(200);
+			// A second compare would have matched; none is made (card 2701's code review, S2).
+			expect((await changeOwn(me, { currentPassword: OLD, newPassword: NEW })).status).toBe(409);
 		} finally {
 			reads.restore();
 		}
 
-		expect(await matches(NEW, hashOf(me.id))).toBe(true);
+		expect(hashOf(me.id)).toBe(rehashed);
 	});
 
-	// The re-check is made outside the transaction now (card 2191, D8): a
-	// check is awaited, which a transaction cannot do. The transaction writes
-	// only while the stored hash is the one the password was checked against;
-	// changed, the password is checked again against the new one and the
-	// transaction run once more. A second change is answered 409.
-	it('answers 409 with nothing written when the stored hash changes twice while it is being saved, counting one attempt', async () => {
+	// The check is made outside the transaction (card 2191, D8): a check is
+	// awaited, which a transaction cannot do. The transaction writes only while
+	// the stored hash is the one the password was checked against; changed, it
+	// is answered 409 with nothing written. It used to compare the password
+	// again against the new hash, a guess the session's count never saw (card
+	// 2701's code review, S2).
+	it('answers 409 with nothing written when the stored hash changes while it is being saved, comparing once and counting one attempt', async () => {
 		const { me } = signedInTwice();
 		const first = await makePasswordHash(OLD, 'known');
-		const second = await makePasswordHash(OLD, 'known');
 		const before = snapshotDb();
-		// After the first check, and after the re-check: each time the hash of
-		// the same password, as another request setting it again would leave it.
+		// After the check: the hash of the same password, as another request
+		// setting it again would leave it.
 		bcrypt.inTransaction.length = 0;
 		bcrypt.afterCompare = (nth) => {
-			const next = nth === 1 ? first : nth === 2 ? second : null;
-			if (next) db.update(users).set({ passwordHash: next }).where(eq(users.id, me.id)).run();
+			if (nth === 1) db.update(users).set({ passwordHash: first }).where(eq(users.id, me.id)).run();
 		};
 
 		const res = await changeOwn(me, { currentPassword: OLD, newPassword: NEW });
 		bcrypt.afterCompare = undefined;
 
 		expect(res.status).toBe(409);
-		expect(res.body.message).toBe(PASSWORD_CHANGED_MEANWHILE);
+		expect(res.body).toEqual({ message: PASSWORD_CHANGED_MEANWHILE, stepUp: 'changed' });
 		expect(res.cookie).toBeUndefined();
-		// The check, the new password's hash and one re-check, none inside a
-		// transaction: the second change is answered without a third.
-		expect(bcrypt.inTransaction).toEqual([false, false, false]);
-		expect(bcrypt.compared).toBe(2);
-		// The second change stands, and nothing else changed.
-		expect(hashOf(me.id)).toBe(second);
+		// The check and the new password's hash, neither inside a transaction,
+		// and no second compare.
+		expect(bcrypt.inTransaction).toEqual([false, false]);
+		expect(bcrypt.compared).toBe(1);
+		// The change stands, and nothing else changed.
+		expect(hashOf(me.id)).toBe(first);
 		expect(sessionsOf(me.id)).toEqual(['my-laptop', 'my-phone']);
 		expectUnchanged({ ...before, users: snapshotDb().users });
 
-		// The session's count is what one right password leaves, none: ten
-		// wrong ones are answered 403, and the eleventh 429.
-		for (let n = 1; n <= 10; n++) {
+		// The session's count is what one right password leaves, none: two
+		// wrong ones are answered 403, and the third ends the session (card 2701).
+		expect(countOf('my-laptop')).toBe(0);
+		for (let n = 1; n <= 2; n++) {
 			expect((await changeOwn(me, { currentPassword: 'not it', newPassword: NEW })).status).toBe(403);
 		}
-		expect((await changeOwn(me, { currentPassword: 'not it', newPassword: NEW })).status).toBe(429);
+		const third = await changeOwn(me, { currentPassword: 'not it', newPassword: NEW });
+		expect({ status: third.status, body: third.body, cleared: third.cleared }).toEqual({
+			status: 403,
+			body: { message: STEP_UP_SIGNED_OUT, signedOut: true, stepUp: 'signed-out' },
+			cleared: true
+		});
+		expect(sessionsOf(me.id)).toEqual(['my-phone']);
 	});
 });
 
@@ -572,6 +645,7 @@ describe('PUT /api/users/:id/password', () => {
 		const target = withPassword(makeUser({ username: 'target' }));
 		const bystander = makeUser({ username: 'bystander' });
 		makeSession(admin, 'the-admin');
+		makeSession(chief, 'the-chief');
 		makeSession(target, 'target-laptop');
 		makeSession(target, 'target-phone');
 		makeInvite(target, 'target-invite');
@@ -583,13 +657,18 @@ describe('PUT /api/users/:id/password', () => {
 		return { admin, chief, target, bystander, keys };
 	};
 
-	const reset = (by: SessionUser | null, id: number, password: unknown = NEW) =>
-		api('PUT', `/api/users/${id}/password`, { user: by, body: { password } });
+	/**
+	 * The new password set by `by`, with their own current password (card
+	 * 2701), sent from `session`, the administrator's unless told otherwise.
+	 */
+	const reset = (by: SessionUser | null, id: number, password: unknown = NEW, session = 'the-admin') =>
+		api('PUT', `/api/users/${id}/password`, { user: by, body: { password, currentPassword: FIXTURE_PASSWORD }, headers: from(session) });
 
 	it('by an administrator, sets the password and ends that user\'s sessions, invites and API keys, or does none of it', async () => {
 		const run = await eachWriteInTurn({
 			build: scene,
 			request: ({ admin, target }) => reset(admin, target.id),
+			apart: [COUNTED],
 			afterSuccess: async ({ admin, target, bystander }, res: ApiResult) => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({
@@ -613,8 +692,12 @@ describe('PUT /api/users/:id/password', () => {
 
 		// A failure at the second used to leave the password reset and whoever
 		// held the old one still signed in, which a reset is meant to end. The
-		// invite and the keys used to outlive the reset whatever happened.
+		// invite and the keys used to outlive the reset whatever happened. The
+		// first two count the administrator's own password as it arrives and
+		// clear the count for the right one, apart from the transaction (card 2701).
 		expect(shape(run.writes)).toEqual([
+			'update sessions set',
+			'update sessions set',
 			'update users set',
 			'delete from sessions',
 			'delete from invite_tokens',
@@ -630,7 +713,7 @@ describe('PUT /api/users/:id/password', () => {
 	it('by the superadmin, of an administrator, ends that administrator\'s sessions and keys as well', async () => {
 		const s = scene();
 
-		const res = await reset(s.chief, s.admin.id);
+		const res = await reset(s.chief, s.admin.id, NEW, 'the-chief');
 
 		expect(res.status).toBe(200);
 		expect(res.body).toEqual({ success: true, sessionsEnded: 1, apiKeysEnded: 1, webhooksSwitchedOff: 0, reportSchedulesPaused: 0 });
@@ -688,14 +771,20 @@ describe('PUT /api/users/:id/password', () => {
 		expect(await message(() => reset(s.admin, s.target.id, 'short'), 400)).toBe('Password must be at least 8 characters');
 		expect(await message(() => reset(s.admin, 99999), 404)).toBe('User not found');
 		expect(await message(() => reset(s.admin, s.chief.id), 403)).toBe('Only superadmin can reset superadmin password');
-		// None of those was hashed for.
+		// None of those was hashed for, and the administrator's own password,
+		// sent with each, was checked for none (card 2701): each is refused
+		// before it, and nothing is counted.
 		expect(bcrypt.inTransaction).toEqual([]);
+		expect(countOf('the-admin')).toBe(0);
 	});
 
 	it('refuses when the user became a superadmin after they were looked at', async () => {
 		const s = scene();
+		// The third read is the administrator's own hash, read for their password
+		// once the user has been looked at twice (card 2701): the change lands
+		// after both looks, and before the transaction that sets the password.
 		const reads = watchReads('users', (nth) => {
-			if (nth === 1) db.update(users).set({ role: 'superadmin' }).where(eq(users.id, s.target.id)).run();
+			if (nth === 3) db.update(users).set({ role: 'superadmin' }).where(eq(users.id, s.target.id)).run();
 		});
 
 		try {
@@ -707,8 +796,10 @@ describe('PUT /api/users/:id/password', () => {
 			reads.restore();
 		}
 
-		// Looked at before the transaction, and read again inside it.
-		expect(reads.inTransaction).toEqual([false, true]);
+		// Looked at before the password (outside, then read only in a transaction
+		// of its own), the hash read, and read again in the transaction that would
+		// set it: the stored hash held, then the user.
+		expect(reads.inTransaction).toEqual([false, true, false, true, true]);
 		expect(hashOf(s.target.id)).toBe(OLD_HASH);
 		expect(sessionsOf(s.target.id)).toEqual(['target-laptop', 'target-phone']);
 	});
@@ -722,16 +813,25 @@ describe('POST /api/users', () => {
 		const admin = makeUser({ username: 'admin', role: 'admin' });
 		const chief = makeUser({ username: 'chief', role: 'superadmin' });
 		const plain = makeUser({ username: 'plain' });
+		makeSession(admin, 'the-admin');
+		makeSession(chief, 'the-chief');
 		makeSmtp();
 		return { admin, chief, plain };
 	};
 
-	const create = (by: SessionUser | null, body: Record<string, unknown>) => api('POST', '/api/users', { user: by, body });
+	/** The user made by `by`, with their own current password (card 2701), from their session. */
+	const create = (by: SessionUser | null, body: Record<string, unknown>) =>
+		api('POST', '/api/users', {
+			user: by,
+			body: { ...body, currentPassword: FIXTURE_PASSWORD },
+			headers: from(by?.role === 'superadmin' ? 'the-chief' : 'the-admin')
+		});
 
 	it('with no password, makes the user and their invite, or neither, and mails it once they are saved', async () => {
 		const run = await eachWriteInTurn({
 			build: scene,
 			request: ({ admin }) => create(admin, { username: '  newbie ', email: ' Newbie@Example.test ' }),
+			apart: [COUNTED],
 			afterSuccess: (_s, res: ApiResult, sent) => {
 				expect(res.status).toBe(201);
 				expect(res.body).toMatchObject({
@@ -762,8 +862,16 @@ describe('POST /api/users', () => {
 
 		// A failure at the invite used to leave a user whose password nobody
 		// knew and no invite with which to set one. The delete finds nothing:
-		// an invite is issued one way, which ends any earlier one first.
-		expect(shape(run.writes)).toEqual(['insert into users', 'delete from invite_tokens', 'insert into invite_tokens']);
+		// an invite is issued one way, which ends any earlier one first. Before
+		// them, the administrator's own password counted and the count cleared,
+		// apart from the transaction (card 2701).
+		expect(shape(run.writes)).toEqual([
+			'update sessions set',
+			'update sessions set',
+			'insert into users',
+			'delete from invite_tokens',
+			'insert into invite_tokens'
+		]);
 		expect(run.effects.map(name)).toEqual(["email to newbie@example.test: You're invited to DumpFire!"]);
 		expectHashedOutsideTransaction();
 	});
@@ -773,6 +881,7 @@ describe('POST /api/users', () => {
 			build: scene,
 			request: ({ chief }) =>
 				create(chief, { username: 'deputy', email: 'deputy@example.test', password: NEW, role: 'admin' }),
+			apart: [COUNTED],
 			afterSuccess: async (_s, res: ApiResult) => {
 				expect(res.status).toBe(201);
 				expect(res.body).toMatchObject({ username: 'deputy', role: 'admin', invited: false });
@@ -781,7 +890,8 @@ describe('POST /api/users', () => {
 			}
 		});
 
-		expect(shape(run.writes)).toEqual(['insert into users']);
+		// The superadmin's own password counted and the count cleared (card 2701), then the user.
+		expect(shape(run.writes)).toEqual(['update sessions set', 'update sessions set', 'insert into users']);
 		expect(run.effects).toEqual([]);
 	});
 
@@ -802,8 +912,10 @@ describe('POST /api/users', () => {
 		);
 		expect(await message(s.admin, { ...good, username: 'plain' }, 409)).toBe('Username already taken');
 		expect(await message(s.admin, { ...good, email: 'plain@example.test' }, 409)).toBe('Email already in use');
-		// None of those was hashed for.
+		// None of those was hashed for, and the caller's own password, sent with
+		// each, was checked for none (card 2701): nothing is counted.
 		expect(bcrypt.inTransaction).toEqual([]);
+		expect([countOf('the-admin'), countOf('the-chief')]).toEqual([0, 0]);
 	});
 
 	it('with no mail set up, refuses a user with no password before anything else about them', async () => {
@@ -819,10 +931,13 @@ describe('POST /api/users', () => {
 
 	it('refuses a name that was taken after it was looked for', async () => {
 		const s = scene();
-		// The second read is the one that finds the address unused: the name
-		// was looked for by the first.
+		// The name and the address are looked for before the administrator's
+		// own password is asked for (card 2701), read only in a transaction of
+		// their own, by the first two reads. The third is the administrator's
+		// hash, read for their password: the name is taken then, once it has
+		// been looked for and found unused.
 		const reads = watchReads('users', (nth) => {
-			if (nth === 2) makeUser({ username: 'newbie' });
+			if (nth === 3) makeUser({ username: 'newbie' });
 		});
 
 		let res: ApiResult;
@@ -834,8 +949,9 @@ describe('POST /api/users', () => {
 
 		expect(res.status).toBe(409);
 		expect(res.body.message).toBe('Username already taken');
-		// Looked for twice before the transaction, and found by the first read inside it.
-		expect(reads.inTransaction).toEqual([false, false, true]);
+		// Looked for twice, the hash read, and in the transaction that creates the
+		// user, once the stored hash has held, found by the first read of the name.
+		expect(reads.inTransaction).toEqual([true, true, false, true, true]);
 		expect(db.select().from(users).all().filter((u) => u.username === 'newbie')).toHaveLength(1);
 		expect(db.select().from(inviteTokens).all()).toEqual([]);
 	});
@@ -856,11 +972,14 @@ describe('POST /api/users/:id/invite', () => {
 		makeInvite(invitee, 'expired', { expiresIn: -1000 });
 		makeInvite(invitee, 'spent', { used: true });
 		makeInvite(bystander, 'theirs');
+		makeSession(admin, 'the-admin');
 		makeSmtp();
 		return { admin, invitee, bystander };
 	};
 
-	const resend = (by: SessionUser, id: number) => api('POST', `/api/users/${id}/invite`, { user: by });
+	/** The invite sent again by `by`, with their own current password (card 2701), from the administrator's session. */
+	const resend = (by: SessionUser, id: number) =>
+		api('POST', `/api/users/${id}/invite`, { user: by, body: { currentPassword: FIXTURE_PASSWORD }, headers: from('the-admin') });
 
 	/** The token in an invite mail's link. */
 	const tokenIn = (html: string) => html.match(/\/invite\/([\w-]+)/)![1];
@@ -869,6 +988,7 @@ describe('POST /api/users/:id/invite', () => {
 		const run = await eachWriteInTurn({
 			build: scene,
 			request: ({ admin, invitee }) => resend(admin, invitee.id),
+			apart: [COUNTED],
 			afterSuccess: ({ invitee, bystander }, res: ApiResult, sent) => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({
@@ -894,7 +1014,9 @@ describe('POST /api/users/:id/invite', () => {
 			}
 		});
 
-		expect(shape(run.writes)).toEqual(['delete from invite_tokens', 'insert into invite_tokens']);
+		// The administrator's own password counted and the count cleared, apart
+		// from the transaction (card 2701); then the invites.
+		expect(shape(run.writes)).toEqual(['update sessions set', 'update sessions set', 'delete from invite_tokens', 'insert into invite_tokens']);
 		expect(run.effects.map(name)).toEqual(["email to invitee@example.test: You're invited to DumpFire!"]);
 	});
 
@@ -1101,7 +1223,7 @@ describe('the invite page', () => {
 		expect(res.cookies).toEqual({});
 		// Looked at before the transaction, and read again inside it.
 		expect(reads.inTransaction).toEqual([false, true]);
-		expect(hashOf(invitee.id)).toBe('not-a-real-hash');
+		expect(hashOf(invitee.id)).toBe(FIXTURE_PASSWORD_HASH);
 		expect(sessionsOf(invitee.id)).toEqual([]);
 	});
 
@@ -1138,7 +1260,7 @@ describe('the invite page', () => {
 		// None of those was hashed for, and the invite is still good.
 		expect(bcrypt.inTransaction).toEqual([]);
 		expect(invite().used).toBe(false);
-		expect(hashOf(invitee.id)).toBe('not-a-real-hash');
+		expect(hashOf(invitee.id)).toBe(FIXTURE_PASSWORD_HASH);
 	});
 });
 
@@ -1192,11 +1314,14 @@ describe('what taking an account back switches off (card 2168)', () => {
 			alreadyPaused: makeSchedule(target, { enabled: false }),
 			editors: makeSchedule(editor)
 		};
+		makeSession(admin, 'the-admin');
 		return { admin, target, editor, board, hooks, schedules };
 	};
 	type Scene = ReturnType<typeof scene>;
 
-	const reset = (by: SessionUser, id: number) => api('PUT', `/api/users/${id}/password`, { user: by, body: { password: NEW } });
+	/** The password set by `by`, with their own current password (card 2701), from `session`. */
+	const reset = (by: SessionUser, id: number, session = 'the-admin') =>
+		api('PUT', `/api/users/${id}/password`, { user: by, body: { password: NEW, currentPassword: FIXTURE_PASSWORD }, headers: from(session) });
 
 	/** Only the target's webhook that was on, and their schedule that was on, changed. */
 	function expectTakenBack(s: Scene, opts: { schedules: boolean }) {
@@ -1242,6 +1367,7 @@ describe('what taking an account back switches off (card 2168)', () => {
 		const run = await eachWriteInTurn({
 			build: scene,
 			request: ({ admin, target }) => reset(admin, target.id),
+			apart: [COUNTED],
 			afterSuccess: (s, res: ApiResult) => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({
@@ -1256,8 +1382,12 @@ describe('what taking an account back switches off (card 2168)', () => {
 		});
 
 		// Each failure in turn left the webhook on and the schedule enabled,
-		// with nothing sent: `eachWriteInTurn` checks every row each time.
+		// with nothing sent: `eachWriteInTurn` checks every row each time. The
+		// first two count the administrator's own password and clear the count,
+		// apart from the transaction (card 2701).
 		expect(shape(run.writes)).toEqual([
+			'update sessions set',
+			'update sessions set',
 			'update users set',
 			'delete from sessions',
 			'delete from invite_tokens',
@@ -1370,6 +1500,9 @@ describe('what taking an account back switches off (card 2168)', () => {
 	it("on the holder's own change, switches off the webhooks they set only when they end their keys, and pauses no schedule", async () => {
 		await atInfo(async () => {
 			const s = scene();
+			// The session the change is asked from, which counts its current
+			// password (card 2701), and which the change ends.
+			makeSession(s.target, 'my-laptop');
 
 			// A change that keeps the keys keeps their webhooks.
 			const kept = await changeOwn(s.target, { currentPassword: OLD, newPassword: NEW });
@@ -1379,12 +1512,12 @@ describe('what taking an account back switches off (card 2168)', () => {
 
 			// Asked to end the keys, with none to end: the webhook they set is
 			// switched off all the same (R-S5), and the schedule stays on.
-			const ended = await changeOwn(s.target, { currentPassword: NEW, newPassword: 'a third password', endApiKeys: true });
+			const ended = await changeOwn(s.target, { currentPassword: NEW, newPassword: 'a third password', endApiKeys: true }, kept.cookie!.value);
 			expect(ended.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 1 });
 			expectTakenBack(s, { schedules: false });
 
 			expect(authLines('Password changed by user%').map((line) => line.message)).toEqual([
-				'Password changed by user — ended 0 session(s), 0 invite(s) and 0 API key(s), and switched off 0 webhook(s) they set up',
+				'Password changed by user — ended 1 session(s), 0 invite(s) and 0 API key(s), and switched off 0 webhook(s) they set up',
 				// The session the first change started is among those the second ends.
 				`Password changed by user — ended 1 session(s), 0 invite(s) and 0 API key(s), and switched off 1 webhook(s) they set up (id ${s.hooks.theirs})`
 			]);
@@ -1401,6 +1534,7 @@ describe('what taking an account back switches off (card 2168)', () => {
 	it("makes an administrator who re-points somebody else's webhook its setter, so the administrator's reset switches it off", async () => {
 		const s = scene();
 		const chief = makeUser({ username: 'chief', role: 'superadmin' });
+		makeSession(chief, 'the-chief');
 
 		const repointed = await api('PUT', `/api/v1/webhooks/${s.hooks.editors}`, {
 			user: s.admin,
@@ -1408,7 +1542,7 @@ describe('what taking an account back switches off (card 2168)', () => {
 		});
 		expect(repointed.status).toBe(200);
 
-		const res = await reset(chief, s.admin.id);
+		const res = await reset(chief, s.admin.id, 'the-chief');
 		expect(res.body).toMatchObject({ webhooksSwitchedOff: 1, reportSchedulesPaused: 0 });
 		expect(hookRow(s.hooks.editors)).toEqual({ active: 0, setBy: s.admin.id });
 		expect(hookRow(s.hooks.theirs)).toEqual({ active: 1, setBy: s.target.id });
@@ -1536,6 +1670,7 @@ describe('POST /api/account/api-keys', () => {
 		const run = await eachWriteInTurn({
 			build: scene,
 			request: ({ me }) => create(me, { name: 'my script', password: OLD }),
+			apart: [COUNTED],
 			afterSuccess: ({ me }, res: ApiResult) => {
 				expect(res.status).toBe(201);
 				expect(res.body).toMatchObject({ name: 'my script', key: expect.stringMatching(/^df_[0-9a-f]{64}$/) });
@@ -1544,7 +1679,9 @@ describe('POST /api/account/api-keys', () => {
 			}
 		});
 
-		expect(shape(run.writes)).toEqual(['insert into api_keys']);
+		// The password counted as it arrives, and the count cleared for the right
+		// one, apart from the transaction (card 2701); then the key.
+		expect(shape(run.writes)).toEqual(['update sessions set', 'update sessions set', 'insert into api_keys']);
 		expect(run.effects).toEqual([]);
 		// Checked outside a transaction, where a quarter of a second holds nobody up.
 		expectHashedOutsideTransaction();
@@ -1592,11 +1729,14 @@ describe('POST /api/account/api-keys', () => {
 		expect(await message({ password: OLD }, 400)).toBe('Key name is required');
 		expect(bcrypt.inTransaction).toEqual([]);
 
-		expect(await message({ name: 'my script', password: 'not it' }, 403)).toBe('Password is incorrect');
+		// Nothing written but the session's count (card 2701).
+		expect((await expectRefusedAndCounted(() => create(me, { name: 'my script', password: 'not it' }), 403, 'my-laptop')).body.message).toBe(
+			'Password is incorrect'
+		);
 		expect(keysOf(me.id)).toEqual([]);
 	});
 
-	it('refuses when the password was changed elsewhere after it was checked, and makes no key', async () => {
+	it('refuses 409 when the password was changed elsewhere after it was checked, and makes no key', async () => {
 		const { me } = scene();
 		const elsewhere = await makePasswordHash('changed elsewhere', 'known');
 		// The first read is the one the password is checked against.
@@ -1611,8 +1751,9 @@ describe('POST /api/account/api-keys', () => {
 			reads.restore();
 		}
 
-		expect(res.status).toBe(403);
-		expect(res.body.message).toBe('Password is incorrect');
+		// No second compare against the new hash (card 2701's code review, S2).
+		expect(res.status).toBe(409);
+		expect(res.body).toEqual({ message: PASSWORD_CHANGED_MEANWHILE, stepUp: 'changed' });
 		// Looked at before the transaction, and read again inside it.
 		expect(reads.inTransaction).toEqual([false, true]);
 		expect(keysOf(me.id)).toEqual([]);
@@ -1665,6 +1806,9 @@ const withInvites = () => {
 	makeInvite(target, 'spent', { used: true });
 	makeInvite(bystander, 'theirs');
 	makeInvite(otherAdmin, 'for-the-other-admin');
+	// Theirs, which an account change confirms its caller's password from (card 2701).
+	makeSession(chief, 'the-chief');
+	makeSession(admin, 'the-admin');
 	return { chief, admin, otherAdmin, target, bystander };
 };
 
@@ -1675,13 +1819,19 @@ async function expectDeadLink(token: string): Promise<void> {
 }
 
 describe('PUT /api/users/:id', () => {
+	/** The change by `by`, with their own current password (card 2701), from their session. */
 	const change = (by: SessionUser, id: number, body: Record<string, unknown>) =>
-		api('PUT', `/api/users/${id}`, { user: by, body });
+		api('PUT', `/api/users/${id}`, {
+			user: by,
+			body: { ...body, currentPassword: FIXTURE_PASSWORD },
+			headers: from(by.role === 'superadmin' ? 'the-chief' : 'the-admin')
+		});
 
 	it('ends every invite of the account not yet used when the superadmin changes its email, or does neither', async () => {
 		const run = await eachWriteInTurn({
 			build: withInvites,
 			request: ({ chief, target }) => change(chief, target.id, { email: 'Moved@Example.test' }),
+			apart: [COUNTED],
 			afterSuccess: async ({ target, bystander }, res: ApiResult) => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({
@@ -1708,7 +1858,9 @@ describe('PUT /api/users/:id', () => {
 		});
 
 		// The invites end before the account is written, in its transaction.
-		expect(shape(run.writes)).toEqual(['delete from invite_tokens', 'update users set']);
+		// Before it, the superadmin's own password counted and the count
+		// cleared, apart from the transaction (card 2701).
+		expect(shape(run.writes)).toEqual(['update sessions set', 'update sessions set', 'delete from invite_tokens', 'update users set']);
 		expect(run.effects).toEqual([]);
 	});
 
@@ -1796,6 +1948,7 @@ describe('PUT /api/account/email', () => {
 		const run = await eachWriteInTurn({
 			build: withInvites,
 			request: ({ target }) => moveTo(target, ' Moved@Example.test '),
+			apart: [COUNTED],
 			afterSuccess: async ({ target, bystander }, res: ApiResult) => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({ success: true, email: 'moved@example.test' });
@@ -1811,7 +1964,9 @@ describe('PUT /api/account/email', () => {
 		});
 
 		// The address used to be written on its own, with no transaction and nothing else.
-		expect(shape(run.writes)).toEqual(['delete from invite_tokens', 'update users set']);
+		// Before it, the password counted as it arrives and the count cleared for
+		// the right one, apart from the transaction (card 2701).
+		expect(shape(run.writes)).toEqual(['update sessions set', 'update sessions set', 'delete from invite_tokens', 'update users set']);
 		expect(run.effects).toEqual([]);
 		// Checked before the transaction, where a quarter of a second holds nobody up.
 		expectHashedOutsideTransaction();
@@ -1831,11 +1986,14 @@ describe('PUT /api/account/email', () => {
 	it('ends nothing when it refuses: a wrong password, an address in use', async () => {
 		const { target } = withInvites();
 
-		expect((await expectRefused(() => moveTo(target, 'moved@example.test', 'not it'), 403)).body.message).toBe(
-			'Password is incorrect'
-		);
+		// The right password, refused for the address, leaves the session's count
+		// as it found it, none; a wrong one writes nothing but that count (card
+		// 2701), which the right one would then clear: so in this order.
 		expect((await expectRefused(() => moveTo(target, 'Bystander@example.test'), 409)).body.message).toBe(
 			'Email is already in use'
+		);
+		expect((await expectRefusedAndCounted(() => moveTo(target, 'moved@example.test', 'not it'), 403, 'my-laptop')).body.message).toBe(
+			'Password is incorrect'
 		);
 
 		expect(await loadInvite('waiting')).toMatchObject({ valid: true, username: 'target' });
@@ -1871,9 +2029,15 @@ describe('the system log, when an email or a role changes', () => {
 		process.env.LOG_LEVEL = 'INFO';
 		const quiet = vi.spyOn(console, 'log').mockImplementation(() => {});
 		try {
-			expect((await api('PUT', `/api/users/${target.id}`, { user: chief, body: { email: 'moved@example.test', role: 'admin' } })).status).toBe(200);
+			// With the superadmin's own password, from their session (card 2701).
+			const confirmed = (body: Record<string, unknown>) => ({
+				user: chief,
+				body: { ...body, currentPassword: FIXTURE_PASSWORD },
+				headers: from('the-chief')
+			});
+			expect((await api('PUT', `/api/users/${target.id}`, confirmed({ email: 'moved@example.test', role: 'admin' }))).status).toBe(200);
 			// Nothing changes, so nothing is said.
-			expect((await api('PUT', `/api/users/${target.id}`, { user: chief, body: { role: 'admin' } })).status).toBe(200);
+			expect((await api('PUT', `/api/users/${target.id}`, confirmed({ role: 'admin' }))).status).toBe(200);
 			inTransaction(() => issueInvite(target.id));
 			const moved = await api('PUT', '/api/account/email', {
 				user: { ...target, role: 'admin' },
@@ -1954,7 +2118,8 @@ describe('wrong current passwords', () => {
 	const [EMAIL, PASSWORD, KEY] = ASKING;
 	const named = ASKING.map((route) => [`${route.method} ${route.path}`, route] as const);
 
-	const TOO_MANY = 'Too many wrong passwords. Try again in 15 minute(s).';
+	/** What the third wrong password, and anything after it from that session, is answered (card 2701). */
+	const SIGNED_OUT = { message: STEP_UP_SIGNED_OUT, signedOut: true, stepUp: 'signed-out' };
 
 	/** Signed in on two devices, with `OLD` as the password. */
 	const signedIn = () => {
@@ -1972,25 +2137,27 @@ describe('wrong current passwords', () => {
 			headers: session === null ? undefined : from(session)
 		});
 
-	/** `times` wrong passwords, each answered as wrong with nothing written. */
-	async function wrong(route: Asking, me: SessionUser, times: number): Promise<void> {
+	/** `times` wrong passwords from `session`, each answered as wrong with nothing written but the session's count. */
+	async function wrong(route: Asking, me: SessionUser, times: number, session = 'my-laptop'): Promise<void> {
 		for (let n = 1; n <= times; n++) {
-			const res = await expectRefused(() => send(route, me, 'not it'), 403);
+			const res = await expectRefusedAndCounted(() => send(route, me, 'not it', session), 403, session);
 			expect(res.body.message).toBe(route.wrong);
 		}
 	}
 
-	it.each(named)('%s: refuses the eleventh attempt in 15 minutes, the right password included, without checking it', async (_name, route) => {
+	it.each(named)('%s: ends the session at the third wrong password, and answers the right one after it signed out, without checking it', async (_name, route) => {
 		const { me } = signedIn();
-		await wrong(route, me, 10);
+		await wrong(route, me, 2);
+		expect(countOf('my-laptop')).toBe(2);
+
+		const third = await send(route, me, 'not it');
+		expect({ status: third.status, body: third.body }).toEqual({ status: 403, body: SIGNED_OUT });
+		expect(sessionsOf(me.id)).toEqual(['my-phone']);
 		bcrypt.inTransaction.length = 0;
 
-		for (const password of ['not it', OLD]) {
-			const res = await expectRefused(() => send(route, me, password), 429);
-			expect(res.body.message).toBe(TOO_MANY);
-		}
-
-		// Neither was checked, and the password is the one it was.
+		// The same answer for the right one: the session is gone, and nothing is checked.
+		const after = await expectRefused(() => send(route, me, OLD), 403);
+		expect(after.body).toEqual(SIGNED_OUT);
 		expect(bcrypt.inTransaction).toEqual([]);
 		expect(hashOf(me.id)).toBe(OLD_HASH);
 	});
@@ -2000,12 +2167,14 @@ describe('wrong current passwords', () => {
 	// signed-in user could keep checks in flight without end and hold the
 	// second lane. Each check takes a place at the account's first-lane
 	// checks, five in flight, shared with its remembered browsers' sign-ins.
+	// One session has one check in flight at a time (card 2701), so the six
+	// come from six sessions.
 	it.each(named)('%s: refuses a sixth check in flight at the account, from any session, without checking it', async (_name, route) => {
 		const { me } = signedIn();
+		const browsers = Array.from({ length: 6 }, (_, n) => `browser-${n + 1}`);
+		for (const browser of browsers) makeSession(me, browser);
 
-		const six = await Promise.all(
-			Array.from({ length: 6 }, (_, n) => send(route, me, 'not it', n % 2 === 0 ? 'my-laptop' : 'my-phone'))
-		);
+		const six = await Promise.all(browsers.map((browser) => send(route, me, 'not it', browser)));
 
 		expect(six.map((res) => res.status)).toEqual([403, 403, 403, 403, 403, 429]);
 		expect(six[5].body.message).toBe(PASSWORDS_BUSY);
@@ -2016,15 +2185,17 @@ describe('wrong current passwords', () => {
 		expect((await send(route, me, 'not it')).status).toBe(403);
 	});
 
-	it('keeps one count for the three routes, for the session', async () => {
+	it('keeps one count for the three routes, for the session: the third wrong one on any of them ends it', async () => {
 		const { me } = signedIn();
-		await wrong(EMAIL, me, 4);
-		await wrong(PASSWORD, me, 4);
-		await wrong(KEY, me, 2);
+		await wrong(EMAIL, me, 1);
+		await wrong(PASSWORD, me, 1);
 
+		const third = await send(KEY, me, 'not it');
+		expect({ status: third.status, body: third.body }).toEqual({ status: 403, body: SIGNED_OUT });
 		for (const route of ASKING) {
-			expect((await expectRefused(() => send(route, me, OLD), 429)).body.message).toBe(TOO_MANY);
+			expect((await expectRefused(() => send(route, me, OLD), 403)).body).toEqual(SIGNED_OUT);
 		}
+		expect(sessionsOf(me.id)).toEqual(['my-phone']);
 	});
 
 	it("keeps a count for each session: the account's other browser is not held up, and changes the password with the right one", async () => {
@@ -2041,63 +2212,48 @@ describe('wrong current passwords', () => {
 			});
 
 		// Another account's wrong guesses are counted for their session alone.
-		for (let n = 1; n <= 10; n++) expect((await change('their-browser', 'not it')).status).toBe(403);
-		expect((await change('their-browser', OLD)).status).toBe(429);
+		for (let n = 1; n <= 2; n++) expect((await change('their-browser', 'not it')).status).toBe(403);
 
-		for (let n = 1; n <= 10; n++) expect((await change('first-browser', 'not it')).status).toBe(403);
-		const refused = await change('first-browser', OLD);
-		expect(refused.status).toBe(429);
-		expect(await refused.json()).toMatchObject({ message: TOO_MANY });
+		for (let n = 1; n <= 2; n++) expect((await change('first-browser', 'not it')).status).toBe(403);
+		const third = await change('first-browser', 'not it');
+		expect(third.status).toBe(403);
+		expect(await third.json()).toEqual(SIGNED_OUT);
+		// Ended: the gate refuses the next request from it, whatever it carries.
+		expect((await change('first-browser', OLD)).status).toBe(401);
 		expect(hashOf(me.id)).toBe(OLD_HASH);
 
 		// The account's other browser is not held up. Changing the password
-		// there signs the first one out, which is how the owner of an account
+		// there signs every other one out, which is how the owner of an account
 		// takes it back.
 		expect((await change('second-browser', OLD)).status).toBe(200);
 		expect(await matches(NEW, hashOf(me.id))).toBe(true);
 		expect(sessionStillOpen('first-browser')).toBe(false);
 		expect(sessionStillOpen('their-browser')).toBe(true);
+		expect(countOf('their-browser')).toBe(2);
 	});
 
 	it('clears the count on the right password', async () => {
 		const { me } = signedIn();
 
-		await wrong(KEY, me, 9);
+		await wrong(KEY, me, 2);
 		expect((await send(KEY, me, OLD)).status).toBe(201);
-		await wrong(KEY, me, 9);
-		// Nine since the right one, and so not yet ten.
+		expect(countOf('my-laptop')).toBe(0);
+		await wrong(KEY, me, 2);
+		// Two since the right one, and so not yet three.
 		expect((await send(KEY, me, OLD)).status).toBe(201);
 		expect(keysOf(me.id)).toEqual(['my script', 'my script']);
 	});
 
-	it('lets the session try again once the 15 minutes are over', async () => {
+	it('compares a request once when the stored hash moved before its transaction, refusing it 409 (card 2701’s code review, S2)', async () => {
 		const { me } = signedIn();
-		vi.useFakeTimers({ toFake: ['Date'] });
-		try {
-			await wrong(EMAIL, me, 10);
-			expect((await send(EMAIL, me, OLD)).status).toBe(429);
-
-			vi.setSystemTime(Date.now() + 14 * 60 * 1000);
-			const still = await send(EMAIL, me, OLD);
-			expect(still.status).toBe(429);
-			expect(still.body.message).toBe('Too many wrong passwords. Try again in 1 minute(s).');
-
-			vi.setSystemTime(Date.now() + 60 * 1000 + 1);
-			expect((await send(EMAIL, me, OLD)).status).toBe(200);
-		} finally {
-			vi.useRealTimers();
-		}
-	});
-
-	it('counts a request once when its transaction checks the password again', async () => {
-		const { me } = signedIn();
-		await wrong(EMAIL, me, 9);
+		await wrong(EMAIL, me, 1);
 		const elsewhere = await makePasswordHash('changed elsewhere', 'known');
 		// The first read is the one the password is checked against.
 		const reads = watchReads('users', (nth) => {
 			if (nth === 1) db.update(users).set({ passwordHash: elsewhere }).where(eq(users.id, me.id)).run();
 		});
 
+		const bcryptBefore = bcrypt.inTransaction.length;
 		let res: ApiResult;
 		try {
 			res = await send(EMAIL, me, OLD);
@@ -2105,17 +2261,20 @@ describe('wrong current passwords', () => {
 			reads.restore();
 		}
 
-		// Refused by the second check, inside the transaction.
-		expect(res.status).toBe(403);
-		expect(res.body.message).toBe('Password is incorrect');
+		// Refused inside the transaction, with no second compare: a compare the
+		// session's count never saw would be a free guess.
+		expect(res.status).toBe(409);
+		expect(res.body).toEqual({ message: PASSWORD_CHANGED_MEANWHILE, stepUp: 'changed' });
 		expect(reads.inTransaction).toEqual([false, true]);
+		// One bcrypt call in this request, the check, outside a transaction.
+		expect(bcrypt.inTransaction.slice(bcryptBefore)).toEqual([false]);
 		expect(userRow(me.id).email).toBe('me@example.test');
 
-		// The first check was right, and cleared the count; the second is the
-		// same guess and added nothing to it. So ten wrong ones are let through
-		// again before the eleventh is refused.
-		await wrong(EMAIL, me, 10);
-		expect((await send(EMAIL, me, 'not it')).status).toBe(429);
+		// The one check was right, and cleared the count. So two wrong ones are
+		// let through again before the third ends the session.
+		expect(countOf('my-laptop')).toBe(0);
+		await wrong(EMAIL, me, 2);
+		expect((await send(EMAIL, me, 'not it')).body).toEqual(SIGNED_OUT);
 	});
 
 	it.each(named)('%s: refuses a password that is not text with 400, before anything is checked or counted', async (_name, route) => {
@@ -2142,22 +2301,17 @@ describe('wrong current passwords', () => {
 		expect(bcrypt.inTransaction).toEqual([]);
 	});
 
-	it('writes a WARN line for each wrong password and for the first refusal of each window, naming the route and the user, and never the session', async () => {
+	it('writes a WARN line for each wrong password and one for the session it ends, naming the route and the user, and never the session', async () => {
 		const { me } = signedIn();
 		const level = process.env.LOG_LEVEL;
 		process.env.LOG_LEVEL = 'WARN';
 		const quiet = vi.spyOn(console, 'warn').mockImplementation(() => {});
-		vi.useFakeTimers({ toFake: ['Date'] });
 		try {
-			// Three refusals in the window, and one line for them.
-			await wrong(EMAIL, me, 10);
-			for (let n = 1; n <= 3; n++) expect((await send(EMAIL, me, 'not it')).status).toBe(429);
-			// The next window's first refusal is said again.
-			vi.setSystemTime(Date.now() + 15 * 60 * 1000 + 1);
-			await wrong(EMAIL, me, 10);
-			for (let n = 1; n <= 2; n++) expect((await send(EMAIL, me, 'not it')).status).toBe(429);
+			await wrong(EMAIL, me, 2);
+			expect((await send(EMAIL, me, 'not it')).body).toEqual(SIGNED_OUT);
+			// Ended: one more, from the same session, is answered alike and says nothing more.
+			expect((await send(EMAIL, me, 'not it')).body).toEqual(SIGNED_OUT);
 		} finally {
-			vi.useRealTimers();
 			quiet.mockRestore();
 			if (level === undefined) delete process.env.LOG_LEVEL;
 			else process.env.LOG_LEVEL = level;
@@ -2167,18 +2321,11 @@ describe('wrong current passwords', () => {
 			.prepare('SELECT level, context, message, meta, user_id AS userId FROM system_logs ORDER BY id')
 			.all() as { level: string; context: string; message: string; meta: string; userId: number }[];
 		const where = 'PUT /api/account/email';
-		const window = [
-			...Array.from({ length: 10 }, () => ['WARN', 'AUTH', `Wrong current password for user ${me.id} on ${where}`, me.id]),
-			[
-				'WARN',
-				'AUTH',
-				`Current password not checked for user ${me.id} on ${where}: too many wrong ones from this session`,
-				me.id
-			]
-		];
-		expect(lines.map((line) => [line.level, line.context, line.message, line.userId])).toEqual([...window, ...window]);
-		expect(JSON.parse(lines[0].meta)).toEqual({ where });
-		expect(JSON.parse(lines[10].meta)).toEqual({ where, retryAfterSecs: expect.any(Number) });
+		expect(lines.map((line) => [line.level, line.context, line.message, line.userId])).toEqual([
+			...Array.from({ length: 3 }, () => ['WARN', 'AUTH', `Wrong current password for user ${me.id} on ${where}`, me.id]),
+			['WARN', 'AUTH', `Session ended after three wrong current passwords for user ${me.id} on ${where}`, me.id]
+		]);
+		for (const line of lines) expect(JSON.parse(line.meta)).toEqual({ where });
 		// The session signs its holder in, and every administrator reads this log.
 		expect(JSON.stringify(lines)).not.toContain('my-laptop');
 	});
@@ -2441,8 +2588,14 @@ describe('remembered browsers, when a password is set', () => {
 		const admin = makeUser({ username: 'admin', role: 'admin' });
 		const target = withPassword(makeUser({ username: 'target' }));
 		const theirs = rememberedFor(target);
+		// The administrator's own password, from their session (card 2701).
+		makeSession(admin, 'the-admin');
 
-		const res = await api('PUT', `/api/users/${target.id}/password`, { user: admin, body: { password: NEW } });
+		const res = await api('PUT', `/api/users/${target.id}/password`, {
+			user: admin,
+			body: { password: NEW, currentPassword: FIXTURE_PASSWORD },
+			headers: from('the-admin')
+		});
 
 		expect(res.status).toBe(200);
 		expect(res.headers.get('set-cookie')).toBeNull();

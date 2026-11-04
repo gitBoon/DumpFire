@@ -268,11 +268,43 @@ describe('the dashboard, mounted with its parts', () => {
 		expect(confirm).not.toBeNull();
 		expect(confirm.textContent).toContain('Website');
 
+		// Card 2701 (C3): the delete asks for the caller's own password, which it sends, and the dialog closes only once it is done.
+		const field = confirm.querySelector<HTMLInputElement>('input[type="password"]')!;
+		expect(document.activeElement).toBe(field);
+		expect(buttonNamed(confirm, 'Delete Board').disabled).toBe(true);
+		type(field, 'my-own-password');
+		buttonNamed(confirm, 'Delete Board').click();
+		flushSync();
+		expect(target.querySelector('[role="dialog"][aria-label="Delete Board"]')).not.toBeNull();
+		await settle();
+
+		expect(asked('DELETE /api/boards/1').map((request) => request.body)).toEqual([{ currentPassword: 'my-own-password' }]);
+		expect(target.querySelector('[role="dialog"][aria-label="Delete Board"]')).toBeNull();
+		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
+	});
+
+	it('keeps the Delete Board confirm open on a refusal of the password, saying it there, the field cleared and focused, and deletes nothing (card 2701)', async () => {
+		answer = (what) =>
+			what === 'DELETE /api/boards/1' ? Response.json({ message: 'Password is incorrect. Nothing was changed.', stepUp: 'wrong' }, { status: 403 }) : undefined;
+		const target = draw();
+		await settle();
+
+		rightClick(target, 'Website');
+		buttonNamed(target.querySelector('.ctx-menu')!, '🗑️ Delete Board').click();
+		flushSync();
+		const confirm = target.querySelector<HTMLElement>('[role="dialog"][aria-label="Delete Board"]')!;
+		const field = confirm.querySelector<HTMLInputElement>('input[type="password"]')!;
+		type(field, 'a-wrong-one');
 		buttonNamed(confirm, 'Delete Board').click();
 		await settle();
 
-		expect(asked('DELETE /api/boards/1')).toHaveLength(1);
-		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
+		expect(target.querySelector('[role="dialog"][aria-label="Delete Board"]')).toBe(confirm);
+		expect(confirm.querySelector('[role="alert"]')?.textContent).toBe('Password is incorrect. Nothing was changed.');
+		expect(field.value).toBe('');
+		expect(document.activeElement).toBe(field);
+		expect(navigation.invalidateAll).not.toHaveBeenCalled();
+		// Said in the dialog, and not in a toast as well.
+		expect(document.querySelector('.toast-error')).toBeNull();
 	});
 
 	it('shows the new sub-board’s parent opened out in the boards table, once the menu has made it', async () => {

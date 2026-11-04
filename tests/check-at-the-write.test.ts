@@ -145,7 +145,8 @@ const ALLOWED: Record<string, string> = {
 		'from the request alone. It reads no row and counts nothing.',
 	'src/routes/api/admin/import/+server.ts POST':
 		'The import settles `outside` and the media type before it reads the upload, and answers either before any of it is read. ' +
-		'Who may import is requireSuperadmin, the session.'
+		'Who may import is requireSuperadmin, the session. Then it takes the confirmation of the password (card 2701, decision 8), ' +
+		'from the header string and the session cookie, never the request, before the upload: takeImportConfirmation reads no row.'
 };
 
 /**
@@ -489,15 +490,17 @@ describe('the rule itself', () => {
  *     from `locals.user` (before the body a quick check is a call that binds
  *     no name, `requireUser(locals.user);`), no read of `.user` after the
  *     body but on a callback's own parameter, and the locals neither copied
- *     nor handed to anything but `writeAs` and `stillCallerNow`;
+ *     nor handed to anything but `writeAs` and `stillCallerNow`, and
+ *     `confirmStepUp` (card 2701), whose guard is read as a writeAs callback;
  *   - (a) no `inTransaction` in a route file, imported or called;
  *   - (b) `stillCallerNow` only in the handlers on STILL_CALLER_NOW, and each
- *     of them calls it, right after its body;
+ *     of them calls it, right after its body, or after its `confirmStepUp`
+ *     where it asks for the password again (card 2701);
  *   - (c) nothing awaited between each `stillCallerNow` and the call it
  *     guards;
- *   - (d) the three routes that ask for a current password check inside
- *     `whilePasswordHolds`'s write: everything that write does is inside its
- *     `writeAs`.
+ *   - (d) the routes that ask for a current password (CURRENT_PASSWORD)
+ *     check inside `whilePasswordHolds`'s write: everything that write does
+ *     is inside its `writeAs`.
  *
  * What it cannot see: a service the handler calls outside its callback that
  * writes. The review of each route slice looks for that, and the walks of
@@ -539,6 +542,11 @@ const STILL_CALLER_NOW: Record<string, { reason: string; guards: RegExp[] }> = {
 	'src/routes/api/admin/smtp/+server.ts POST': {
 		reason: 'The test mail leaves the process, and the route writes nothing (slice 2253-5, as the review ruled).',
 		guards: [/^sendTestEmail$/]
+	},
+	// Card 2701, decision 17: a POST since it asks for the password, a GET before.
+	'src/routes/api/admin/export/+server.ts POST': {
+		reason: 'VACUUM INTO cannot run in a transaction, and the copy leaves the process: checked after the password, before the copy.',
+		guards: [/^generateBackupData$/]
 	}
 };
 
@@ -585,10 +593,13 @@ const READS_IN: Record<string, string> = {
  * set inside writeAs (slice 2253-5, the reviewer to agree). Anywhere else, a
  * `.user` read after the body is taken for the caller as the gate read it.
  */
-const USER_FIELDS_IN: Record<string, { of: string[]; reason: string }> = {
+const USER_FIELDS_IN: Record<string, { of: string[]; reason: string; in?: string[] }> = {
 	'src/routes/api/admin/smtp/+server.ts PUT': {
 		of: ['existing', 'config'],
-		reason: "`user` there is the mail server's user name (SmtpConfig.user): the stored one kept, and the one sent saved."
+		reason: "`user` there is the mail server's user name (SmtpConfig.user): the stored one kept, and the one sent saved.",
+		// Card 2701: the save's reads, one function asked by the step-up's guard
+		// and again inside the write's writeAs.
+		in: ['readSave']
 	}
 };
 
@@ -607,7 +618,26 @@ const USER_FOR_A_LINE_IN: Record<string, string> = {
 const CURRENT_PASSWORD = [
 	'src/routes/api/account/password/+server.ts PUT',
 	'src/routes/api/account/email/+server.ts PUT',
-	'src/routes/api/account/api-keys/+server.ts POST'
+	'src/routes/api/account/api-keys/+server.ts POST',
+	// Card 2701, slice 1: the admin actions that ask for it again (confirmStepUp).
+	'src/routes/api/admin/reset/+server.ts POST',
+	'src/routes/api/admin/purge-archived/+server.ts POST',
+	'src/routes/api/admin/boards/[id]/clear-cards/+server.ts POST',
+	'src/routes/api/admin/boards/[id]/clear-categories/+server.ts POST',
+	'src/routes/api/admin/reset-xp/+server.ts POST',
+	// Slice 2a: the account routes.
+	'src/routes/api/users/+server.ts POST',
+	'src/routes/api/users/[id]/+server.ts PUT',
+	'src/routes/api/users/[id]/+server.ts DELETE',
+	'src/routes/api/users/[id]/password/+server.ts PUT',
+	'src/routes/api/users/[id]/invite/+server.ts POST',
+	// Slice 2b: the board and column deletes.
+	'src/routes/api/boards/[id]/+server.ts DELETE',
+	'src/routes/api/columns/[id]/+server.ts DELETE',
+	// Slice 2c: the saves that send the database or the mail elsewhere.
+	'src/routes/api/admin/backup/+server.ts PUT',
+	'src/routes/api/admin/backup/gdrive/auth/+server.ts POST',
+	'src/routes/api/admin/smtp/+server.ts PUT'
 ];
 
 /**
@@ -879,9 +909,14 @@ function judgeWrite(file: string, method: string, tree: ts.SourceFile, fn: Handl
 	// whilePasswordHolds's write, which it calls. The same for the checks.
 	const ownCalls = callsIn(body).sort(byStart);
 	const holds = CURRENT_PASSWORD.includes(key) ? callsIn(body, true).find((call) => named(call, 'whilePasswordHolds')) : undefined;
-	const holdsWrite = holds && isCallback(holds.arguments[3]) ? holds.arguments[3] : undefined;
+	// whilePasswordHolds(userId, checkedHash, write): the write is its third (card 2701's code review, S2).
+	const holdsWrite = holds && isCallback(holds.arguments[2]) ? holds.arguments[2] : undefined;
 	const writeAsCalls = [...ownCalls, ...(holdsWrite ? callsIn(holdsWrite.body) : [])].filter((call) => named(call, 'writeAs'));
-	const callbacks = writeAsCalls.map((call) => call.arguments[1]).filter(isCallback);
+	// confirmStepUp(locals, …, guard) (card 2701) runs its guard inside a
+	// writeAs of its own, read only: the guard is read as a writeAs callback,
+	// and the locals are handed to it, as to writeAs, in the open.
+	const stepUps = ownCalls.filter((call) => named(call, 'confirmStepUp'));
+	const callbacks = [...writeAsCalls.map((call) => call.arguments[1]), ...stepUps.map((call) => call.arguments[4])].filter(isCallback);
 	const checks = ownCalls.filter((call) => named(call, 'stillCallerNow'));
 	const insideCallback = (node: ts.Node) => callbacks.find((callback) => within(node, callback));
 	// Where the body has been read: the end of the read, or, for a handler
@@ -1011,6 +1046,37 @@ function judgeWrite(file: string, method: string, tree: ts.SourceFile, fn: Handl
 		}
 	}
 
+	// The step-up's calls (card 2701): given the locals, after the body, and a
+	// guard that is a quick check by name or a function this test can read,
+	// held to what a writeAs callback is held to.
+	for (const call of stepUps) {
+		if (!givenLocals(call)) findings.push(`${at} calls confirmStepUp at line ${line(call)} with something other than the locals it is given`);
+		if (read && call.getStart(tree) < read.getEnd()) findings.push(`${at} calls confirmStepUp at line ${line(call)} before it reads its body`);
+		const guard = call.arguments[4];
+		if (guard !== undefined && ts.isIdentifier(guard) && QUICK_CHECKS.includes(guard.text)) continue;
+		if (!isCallback(guard)) {
+			findings.push(`${at} gives confirmStepUp at line ${line(call)} a guard this test cannot read`);
+			continue;
+		}
+		const [parameter] = guard.parameters;
+		const own = parameter ? boundNames(parameter.name) : [];
+		const usesIt = own.some((name) => {
+			let used = false;
+			const visit = (node: ts.Node): void => {
+				if (used) return;
+				if (ts.isIdentifier(node) && node.text === name && usedAsName(node) && !isDeclaredName(node)) used = true;
+				else ts.forEachChild(node, visit);
+			};
+			visit(guard.body);
+			return used;
+		});
+		if (!usesIt) findings.push(`${at} gives confirmStepUp at line ${line(call)} a guard that never uses its caller${DECIDE}`);
+		if (ts.getModifiers(guard)?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) {
+			findings.push(`${at} gives confirmStepUp at line ${line(call)} an async guard`);
+		}
+		for (const escape of escapesOf(guard, tree)) findings.push(`${at} lets its confirmStepUp guard's caller out at line ${escape.line}: ${escape.how}`);
+	}
+
 	/** Whether `node` is the handler's own event, by the name its parameter gives it. */
 	const ownEvent = (node: ts.Expression) => {
 		const held = bare(node);
@@ -1044,6 +1110,33 @@ function judgeWrite(file: string, method: string, tree: ts.SourceFile, fn: Handl
 		return !assignments.some((assignment) => assignment.left.text === id.text && declarationOf(assignment, id.text) === declaration);
 	};
 
+	// A function of the handler's own that USER_FIELDS_IN names (card 2701), read
+	// as a writeAs callback for its fields named `user`: an arrow or function
+	// declared as a const, used nowhere but in calls inside a writeAs callback or
+	// the step-up's guard.
+	const readsAsCallback: Callback[] = [];
+	for (const name of USER_FIELDS_IN[key]?.in ?? []) {
+		const declaration = declarations.find((d) => ts.isIdentifier(d.name) && d.name.text === name);
+		const fn = declaration?.initializer && bare(declaration.initializer);
+		if (!declaration || !isCallback(fn) || (declaration.parent.flags & ts.NodeFlags.Const) === 0) {
+			findings.push(`${at} names ${name} on USER_FIELDS_IN, which is no const function of its own this test can read`);
+			continue;
+		}
+		const uses: ts.Identifier[] = [];
+		const gatherUses = (node: ts.Node): void => {
+			if (ts.isIdentifier(node) && node.text === name && node !== declaration.name && declarationOf(node, name) === declaration) uses.push(node);
+			ts.forEachChild(node, gatherUses);
+		};
+		gatherUses(body);
+		const calledInside = (use: ts.Identifier) =>
+			ts.isCallExpression(use.parent) && use.parent.expression === use && callbacks.some((callback) => within(use, callback));
+		if (uses.length === 0 || !uses.every(calledInside)) {
+			findings.push(`${at} uses ${name} other than by calling it inside a writeAs callback or the step-up's guard`);
+			continue;
+		}
+		readsAsCallback.push(fn);
+	}
+
 	// Decisions on the caller as the gate read it, anywhere, in source order.
 	const decisions: { node: ts.Node; finding: string }[] = [];
 	for (const [name, binding] of tainted) {
@@ -1064,12 +1157,13 @@ function judgeWrite(file: string, method: string, tree: ts.SourceFile, fn: Handl
 			// that resolves, by scope, to a const or let declared inside this
 			// writeAs callback, from something that is not the locals, and never
 			// assigned again (the slices 5–7 review).
+			const readIn = callback ?? readsAsCallback.find((fn) => within(node, fn));
 			const notAnAccount =
-				callback !== undefined &&
+				readIn !== undefined &&
 				ts.isPropertyAccessExpression(node) &&
 				ts.isIdentifier(node.expression) &&
 				(USER_FIELDS_IN[key]?.of ?? []).includes(node.expression.text) &&
-				declaredHereFromNoLocals(node.expression, callback);
+				declaredHereFromNoLocals(node.expression, readIn);
 			if (notAnAccount || (isLocalsUser(node) && forALine(node))) {
 				// Let stand.
 			} else if (node.getStart(tree) < boundary) {
@@ -1105,7 +1199,13 @@ function judgeWrite(file: string, method: string, tree: ts.SourceFile, fn: Handl
 				finding: `${at} takes locals out of ${node.initializer.getText(tree)} at line ${line(node)}, not the locals the handler is given${DECIDE}`
 			});
 		}
-		if (ts.isCallExpression(node) && !named(node, 'writeAs') && !named(node, 'stillCallerNow') && node.arguments.some((argument) => isTheLocals(argument))) {
+		if (
+			ts.isCallExpression(node) &&
+			!named(node, 'writeAs') &&
+			!named(node, 'stillCallerNow') &&
+			!named(node, 'confirmStepUp') &&
+			node.arguments.some((argument) => isTheLocals(argument))
+		) {
 			decisions.push({ node, finding: `${at} gives the locals to ${calleeOf(node, tree)} at line ${line(node)}${DECIDE}` });
 		}
 		if (ts.isIdentifier(node) && tainted.has(node.text) && !consumed.has(node)) {
@@ -1176,7 +1276,12 @@ function judgeWrite(file: string, method: string, tree: ts.SourceFile, fn: Handl
 	}
 	if (listed && checks.length > 0) {
 		const [first] = checks;
-		const from = read ? read.getEnd() : body.getStart(tree);
+		// A handler that asks for the password again (card 2701) asks right
+		// after the step-up instead: confirmStepUp decides on the caller in a
+		// writeAs of its own, and the check must follow the awaited password
+		// check, with nothing between.
+		const stepUpEnd = stepUps.reduce((end, call) => Math.max(end, call.getEnd()), -1);
+		const from = Math.max(read ? read.getEnd() : body.getStart(tree), stepUpEnd);
 		const between = [...ownCalls, ...awaitsIn(body)].filter(
 			(node) => node.getStart(tree) >= from && node.getEnd() <= first.getStart(tree) && !within(node, first)
 		);
@@ -1344,8 +1449,8 @@ describe('every write handler asks who the caller is at the write (card 2253)', 
 		expect(Object.keys(USER_FIELDS_IN).filter((key) => !writing.includes(key))).toEqual([]);
 		expect(Object.keys(USER_FOR_A_LINE_IN).filter((key) => !writing.includes(key))).toEqual([]);
 		expect(Object.keys(CALLER_LET_OUT_IN).filter((key) => !writing.includes(key))).toEqual([]);
-		// R2's seven, and the test mail (slice 2253-5).
-		expect(Object.keys(STILL_CALLER_NOW)).toHaveLength(8);
+		// R2's seven, the test mail (slice 2253-5), and the export (card 2701).
+		expect(Object.keys(STILL_CALLER_NOW)).toHaveLength(9);
 	});
 
 	it('was looked for in the whole tree, and finds the handlers moved so far keeping it', () => {
@@ -1727,7 +1832,42 @@ describe("card 2253's rule itself", () => {
 			`src/routes/api/example/+server.ts:1 PUT reads other.user at line 9${DECIDE}`,
 			`src/routes/api/example/+server.ts:1 PUT reads saved.user at line 11${DECIDE}`
 		]);
-		expect(judged(code, mail)).toEqual([`${mail}:1 PUT reads other.user at line 9${DECIDE}`, `${mail}:1 PUT reads saved.user at line 11${DECIDE}`]);
+		// The mail save asks for the current password since card 2701, through
+		// its readSave: this one, with neither, is held to that as well.
+		expect(judged(code, mail)).toEqual([
+			`${mail}:1 PUT names readSave on USER_FIELDS_IN, which is no const function of its own this test can read`,
+			`${mail}:1 PUT reads other.user at line 9${DECIDE}`,
+			`${mail}:1 PUT reads saved.user at line 11${DECIDE}`,
+			`${mail}:1 PUT does not call whilePasswordHolds (d)`
+		]);
+	});
+
+	it('reads the mail save’s readSave as a writeAs callback only where it is called inside one or the step-up’s guard (card 2701)', () => {
+		const code = (outside: string) =>
+			[
+				'export const PUT = async ({ request, locals, cookies }) => {',
+				'\tconst body = await readBody(request);',
+				'\tconst readSave = (caller) => {',
+				'\t\trequireAdmin(caller);',
+				'\t\tconst existing = read();',
+				'\t\tconst config = {};',
+				'\t\tconfig.user = existing?.user;',
+				'\t\treturn config;',
+				'\t};',
+				"\tconst { userId, hash } = await confirmStepUp(locals, cookies, body, 'PUT /api/admin/smtp', (caller) => readSave(caller));",
+				'\tawait whilePasswordHolds(userId, hash, () => writeAs(locals, (caller) => save(readSave(caller))));',
+				outside,
+				'};'
+			].join('\n');
+		const mail = 'src/routes/api/admin/smtp/+server.ts';
+		const DECIDE = ': decide inside writeAs with caller';
+
+		expect(judged(code(''), mail)).toEqual([]);
+		expect(judged(code('\treturn json(readSave(null));'), mail)).toEqual([
+			`${mail}:1 PUT uses readSave other than by calling it inside a writeAs callback or the step-up's guard`,
+			`${mail}:1 PUT reads config.user at line 7${DECIDE}`,
+			`${mail}:1 PUT reads existing?.user at line 7${DECIDE}`
+		]);
 	});
 
 	it('lets no field named user stand in the mail save on a name declared outside the callback, reassigned, or taken from the locals (the slices 5–7 review probes)', () => {
@@ -1748,12 +1888,15 @@ describe("card 2253's rule itself", () => {
 		const mail = 'src/routes/api/admin/smtp/+server.ts';
 		const DECIDE = ': decide inside writeAs with caller';
 
+		// The two of card 2701 as well, as in the case above.
 		expect(judged(code, mail)).toEqual([
+			`${mail}:1 PUT names readSave on USER_FIELDS_IN, which is no const function of its own this test can read`,
 			`${mail}:1 PUT assigns the locals to config at line 3${DECIDE}`,
 			`${mail}:1 PUT reads getRequestEvent().locals at line 7, not the locals the handler is given${DECIDE}`,
 			`${mail}:1 PUT reads config.user at line 10${DECIDE}`,
 			`${mail}:1 PUT reads existing.user at line 10${DECIDE}`,
-			`${mail}:1 PUT reads other.user at line 10${DECIDE}`
+			`${mail}:1 PUT reads other.user at line 10${DECIDE}`,
+			`${mail}:1 PUT does not call whilePasswordHolds (d)`
 		]);
 	});
 
@@ -1779,7 +1922,12 @@ describe("card 2253's rule itself", () => {
 			`src/routes/api/example/+server.ts:1 POST uses who, bound from locals.user at line 6, at line 7${DECIDE}`,
 			`src/routes/api/example/+server.ts:1 POST reads locals.user at line 10${DECIDE}`
 		]);
-		expect(judged(code, reset)).toEqual([`${reset}:1 POST reads locals.user at line 10${DECIDE}`]);
+		// The reset asks for the current password since card 2701: this one,
+		// with no whilePasswordHolds, is held to that as well.
+		expect(judged(code, reset)).toEqual([
+			`${reset}:1 POST reads locals.user at line 10${DECIDE}`,
+			`${reset}:1 POST does not call whilePasswordHolds (d)`
+		]);
 	});
 
 	it('finds the locals assigned to a name, and any locals but the handler’s own read, in every handler (the slices 5–7 review)', () => {
@@ -2040,7 +2188,7 @@ describe("card 2253's rule itself", () => {
 			[
 				'export const PUT = async ({ request, locals }) => {',
 				'\tconst body = await readBody(request);',
-				`\tconst done = await whilePasswordHolds(1, body.password, hash, ${write}, wrong);`,
+				`\tconst done = await whilePasswordHolds(1, hash, ${write});`,
 				'\treturn json(done);',
 				'};'
 			].join('\n');
@@ -2106,7 +2254,9 @@ describe("card 2253's rule itself", () => {
  *      inside a writeAs callback, unless it is on OUTSIDE_WRITE with its
  *      reason; what shapes the answer is made inside and returned; and a
  *      service write is handed, first, the caller its own callback was
- *      handed, as it is or through requireUser (the review of A1, 8);
+ *      handed, as it is or through requireUser (the review of A1, 8).
+ *      `confirmStepUp`'s guard (card 2701), which runs in a writeAs of its
+ *      own, is read as a callback for a read, and never for a write;
  *   2. each module on SERVICES has an explicit `READS` export naming its
  *      read functions; every other function it exports is a write, and the
  *      first statement of each is `inWrite();`; it exports nothing else in
@@ -2186,7 +2336,15 @@ const OUTSIDE_WRITE: Record<string, string> = {
 	refuseWrongLink:
 		'A personal link that opened no decision, counted in memory against the address once the write has refused it ' +
 		'(`$lib/server/decision-view`, card 2677, decision 8): it reads no row and writes none, but one WARN line in the log ' +
-		'the first time an address is over the limit in a window.'
+		'the first time an address is over the limit in a window.',
+	confirmStepUp:
+		"The caller's password, asked for again before a delete that cannot be taken back (`$lib/server/step-up`, card " +
+		'2701): it runs its guard in a writeAs of its own, read only, read here as a writeAs callback, and then counts the ' +
+		"check on the session's row; the write it guards is made after, in a writeAs.",
+	whilePasswordHolds:
+		'Runs the write it is given, a writeAs whose callback calls the service, only while the stored hash is the one the ' +
+		"password was checked against (`$lib/server/auth`, card 2701): it reads the caller's account row in its own " +
+		'transaction, and decides nothing else.'
 };
 
 /** The source file a `$lib/server/...` import names, or null for any other import. */
@@ -2708,7 +2866,14 @@ function judgeServiceCalls(file: string, source: string, services: Map<string, {
 		.filter((call) => calleeOf(call, tree) === 'writeAs')
 		.map((call) => call.arguments[1])
 		.filter(isCallback);
-	const insideCallback = (node: ts.Node) => writeAsCallbacks.some((callback) => within(node, callback));
+	// confirmStepUp's guard (card 2701) runs in a writeAs of its own, read only:
+	// a read in it is as one in a writeAs callback, and a write is refused.
+	const stepUpGuards = callsIn(tree, true)
+		.filter((call) => calleeOf(call, tree) === 'confirmStepUp')
+		.map((call) => call.arguments[4])
+		.filter(isCallback);
+	const insideGuard = (node: ts.Node) => stepUpGuards.some((guard) => within(node, guard));
+	const insideCallback = (node: ts.Node) => writeAsCallbacks.some((callback) => within(node, callback)) || insideGuard(node);
 	/** The file's constants that hold a text written out: what a `says` may name. */
 	const texts = new Set<string>();
 	for (const statement of tree.statements) {
@@ -2818,7 +2983,7 @@ function judgeServiceCalls(file: string, source: string, services: Map<string, {
 				const handler = handlers.find(({ fn }) => fn !== undefined && within(node, fn));
 				if (!call) {
 					findings.push(`${file}:${line(node)} uses ${node.text} of ${service.file} other than by calling it`);
-				} else if (service.write && !insideCallback(call)) {
+				} else if (service.write && (!insideCallback(call) || insideGuard(call))) {
 					findings.push(`${file}:${line(call)} calls ${node.text}, a write of ${service.file}, outside a writeAs callback (2)`);
 				} else if (service.write) {
 					judgeWriteCall(call, node.text);
@@ -2894,7 +3059,8 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 			// Slice A4: boards, dashboard groupings, columns, card categories and labels.
 			'src/lib/server/boards.ts': { reads: ['listBoardsFor'], writes: ['createBoard', 'updateBoard', 'convertBoardFor', 'deleteBoardFor'] },
 			'src/lib/server/board-groupings.ts': { reads: [], writes: ['createBoardGrouping', 'updateBoardGrouping', 'deleteBoardGrouping'] },
-			'src/lib/server/columns.ts': { reads: [], writes: ['createColumn', 'updateColumn', 'deleteColumnFor', 'reorderColumns'] },
+			// Card 2701: a column's delete's refusals, read before its password is asked for.
+			'src/lib/server/columns.ts': { reads: ['columnDeleteGuard'], writes: ['createColumn', 'updateColumn', 'deleteColumnFor', 'reorderColumns'] },
 			'src/lib/server/card-categories.ts': { reads: [], writes: ['createCardCategory', 'updateCardCategory', 'deleteCardCategory'] },
 			'src/lib/server/labels.ts': { reads: ['labelsOfBoard'], writes: ['createLabel', 'updateLabel', 'deleteLabel'] },
 			// Card 2337.
@@ -3094,6 +3260,23 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 				'src/routes/api/example/+server.ts:9 calls listThings, a read of src/lib/server/things.ts, outside a GET and outside a writeAs callback (2)',
 				// Before the first writeAs of a handler with no body: (2)'s, not (1)'s.
 				'src/routes/api/example/+server.ts:10 uses makeThing of src/lib/server/things.ts other than by calling it'
+			]);
+		});
+
+		it("reads confirmStepUp's guard as a writeAs callback for a read, and finds a write in it (card 2701)", () => {
+			const code = [
+				...head,
+				"import { confirmStepUp } from '$lib/server/step-up';",
+				'export const DELETE = async ({ request, locals, cookies }) => {',
+				'\tconst body = await readBody(request);',
+				"\tconst { userId } = await confirmStepUp(locals, cookies, body, 'DELETE /api/example', (caller) => listThings(caller));",
+				"\tawait confirmStepUp(locals, cookies, body, 'DELETE /api/example', (caller) => makeThing(caller, 1, null, {}));",
+				'\twriteAs(locals, (caller) => makeThing(caller, userId, null, {}));',
+				'};'
+			].join('\n');
+
+			expect(calls(code)).toEqual([
+				'src/routes/api/example/+server.ts:11 calls makeThing, a write of src/lib/server/things.ts, outside a writeAs callback (2)'
 			]);
 		});
 

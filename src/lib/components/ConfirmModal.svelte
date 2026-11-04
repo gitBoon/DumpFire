@@ -1,11 +1,15 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { keepTab, takeFocus } from '$lib/dialog-focus';
+	import { NO_ANSWER_TRY_AGAIN, STEP_UP_MISSING, STEP_UP_SIGNED_OUT } from '$lib/step-up-words';
+	import CurrentPasswordField from './CurrentPasswordField.svelte';
 
 	let {
 		title = 'Are you sure?',
 		message = '',
 		confirmText = 'Delete',
 		confirmDanger = true,
+		askPassword = false,
 		onConfirm,
 		onCancel
 	}: {
@@ -13,33 +17,110 @@
 		message?: string;
 		confirmText?: string;
 		confirmDanger?: boolean;
-		onConfirm: () => void;
+		/**
+		 * Ask for the caller's own password, for an action that asks for it
+		 * again (card 2701, decision 13): a labelled field, Confirm off until
+		 * something is typed, and Enter in it confirms.
+		 */
+		askPassword?: boolean;
+		/**
+		 * Confirm pressed, handed the password typed ('' with no field). It may
+		 * be awaited (card 2701, D6): while it runs both buttons are off and
+		 * Confirm says it is working, so one press sends one request. Text given
+		 * back is the server's refusal, and the dialog stays open and shows it,
+		 * the field cleared and focused; anything else, and the caller closes the
+		 * dialog. One that throws, or is rejected, is said as no answer.
+		 */
+		onConfirm: (password: string) => void | Promise<string | null | void>;
 		onCancel: () => void;
 	} = $props();
 
 	// The message's id, which the dialog names as what describes it: a screen
 	// reader on Cancel then reads what is being confirmed (card 2353).
 	const messageId = $props.id();
+	const refusalId = `${messageId}-refusal`;
 
 	let dialog: HTMLDivElement;
 	let cancelButton: HTMLButtonElement;
+	let passwordField = $state<ReturnType<typeof CurrentPasswordField>>();
+
+	/**
+	 * The password typed: held here alone, never in a toast or in storage, and
+	 * cleared once sent, on a refusal and as the dialog goes (card 2701,
+	 * decision 12).
+	 */
+	let password = $state('');
+	/**
+	 * The server asked for the password where the dialog showed no field: a
+	 * column whose cards are all archived, which the page cannot see (decision
+	 * 18). The field is shown from then on.
+	 */
+	let toldToAsk = $state(false);
+	let asking = $derived(askPassword || toldToAsk);
+	/** The server's refusal of the last Confirm, shown in the dialog until the next. */
+	let refusal = $state<string | null>(null);
+	/** Confirm's answer is awaited: both buttons are off, so one press sends one request. */
+	let waiting = $state(false);
+	/**
+	 * The session was signed out by the step-up (the code review's F5): nothing
+	 * more can be sent from it, so Confirm is off and no field is left to type
+	 * in, and the page goes to sign in (`$lib/signed-out.ts`).
+	 */
+	let ended = $derived(refusal === STEP_UP_SIGNED_OUT);
 
 	// Cancel takes the focus as the dialog opens, so Enter straight after it
-	// cancels rather than pressing the page's button behind it again. As it
-	// closes, the focus goes back to what had it, after one macrotask and only
-	// if that is still in the page and the focus is then on nothing: a card
-	// window the confirm opened (Cannot Complete's Open Card) focuses its
-	// title in a microtask, and keeps it. An `$effect`, not `onMount`, so any
-	// runtime runs it (card 2353). The rules are `$lib/dialog-focus`'s, which
-	// the admin page's own dialogs share (card 2362).
-	$effect(() => takeFocus(cancelButton));
+	// cancels rather than pressing the page's button behind it again; or the
+	// password field, for a dialog that asks for one, where Enter does nothing
+	// until something is typed. As it closes, the focus goes back to what had
+	// it, after one macrotask and only if that is still in the page and the
+	// focus is then on nothing: a card window the confirm opened (Cannot
+	// Complete's Open Card) focuses its title in a microtask, and keeps it. An
+	// `$effect`, not `onMount`, so any runtime runs it (card 2353). The rules
+	// are `$lib/dialog-focus`'s, which the admin page's own dialogs share (card
+	// 2362).
+	$effect(() => takeFocus(untrack(() => (askPassword ? passwordField?.element() : undefined)) ?? cancelButton));
 
 	function handleKeydown(e: KeyboardEvent) {
-		if (e.key === 'Escape') onCancel();
-		// Tab and Shift+Tab stay on the two buttons; from outside the dialog
-		// (the page behind, after a click on the overlay) Tab comes back to
-		// Cancel. Tab from Cancel to the confirm button is the browser's own.
-		keepTab(e, dialog, cancelButton);
+		if (e.key === 'Escape' && !waiting) onCancel();
+		// Tab and Shift+Tab stay on the dialog's own stops; from outside the
+		// dialog (the page behind, after a click on the overlay) Tab comes back
+		// to Cancel, or to the password field where there is one. Tab between
+		// them is the browser's own.
+		const field = asking && !ended ? passwordField?.element() : undefined;
+		keepTab(e, dialog, field ?? cancelButton);
+	}
+
+	/** Cancel: the password typed goes with the dialog. */
+	function cancel() {
+		password = '';
+		onCancel();
+	}
+
+	/**
+	 * Confirm: the caller's `onConfirm`, handed the password, which is cleared
+	 * here as it goes. A refusal it gives back is shown, and the focus put in
+	 * the field to type again (`CurrentPasswordField`); a 400 asking for a
+	 * password the dialog did not ask for shows the field. An `onConfirm` that
+	 * throws, or whose promise is rejected, is said as no answer (the code
+	 * review's F9), the field focused to try again.
+	 */
+	async function confirm() {
+		if (waiting || ended || (asking && !password)) return;
+		const typed = password;
+		password = '';
+		refusal = null;
+		waiting = true;
+		let answer: string | null | void;
+		try {
+			answer = await onConfirm(typed);
+		} catch {
+			answer = NO_ANSWER_TRY_AGAIN;
+		} finally {
+			waiting = false;
+		}
+		if (typeof answer !== 'string') return;
+		refusal = answer;
+		if (answer === STEP_UP_MISSING) toldToAsk = true;
 	}
 </script>
 
@@ -65,13 +146,21 @@
 		{#if message}
 			<p class="confirm-message" id={messageId}>{message}</p>
 		{/if}
+		{#if asking}
+			<!-- The caller's own password (card 2701), with the server's refusal of it: a password manager may fill it. -->
+			<CurrentPasswordField bind:value={password} bind:this={passwordField} {refusal} readonly={waiting} onEnter={confirm} />
+		{:else if refusal}
+			<p class="confirm-refusal" id={refusalId} role="alert">{refusal}</p>
+		{/if}
 		<div class="confirm-actions">
-			<button class="btn-ghost" onclick={onCancel} bind:this={cancelButton}>Cancel</button>
+			<button class="btn-ghost" onclick={cancel} disabled={waiting} bind:this={cancelButton}>Cancel</button>
 			<button
 				class={confirmDanger ? 'btn-confirm-danger' : 'btn-primary'}
-				onclick={onConfirm}
+				onclick={confirm}
+				disabled={waiting || ended || (asking && !password)}
+				aria-busy={waiting ? 'true' : undefined}
 			>
-				{confirmText}
+				{waiting ? 'Working…' : confirmText}
 			</button>
 		</div>
 	</div>
@@ -116,6 +205,19 @@
 		font-size: 0.875rem;
 		line-height: 1.5;
 		margin-bottom: var(--space-xl);
+	}
+
+	/* A refusal of a Confirm that asked for no password, said in the dialog */
+	.confirm-refusal {
+		margin-top: var(--space-md);
+		padding: var(--space-sm) var(--space-md);
+		border-radius: var(--radius-sm);
+		background: rgba(244, 63, 94, 0.1);
+		border: 1px solid rgba(244, 63, 94, 0.3);
+		color: var(--accent-rose);
+		font-size: 0.8rem;
+		line-height: 1.4;
+		text-align: left;
 	}
 
 	.confirm-actions {

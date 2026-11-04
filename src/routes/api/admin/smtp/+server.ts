@@ -20,7 +20,9 @@ import {
 import { readBody, readBoolean, readEmail, readNumber, readText, readUrl } from '$lib/server/request-body';
 import { requireAdmin } from '$lib/server/route-guards';
 import { mailPlacesNow, recordMailSetters } from '$lib/server/setting-setters';
+import { confirmStepUp } from '$lib/server/step-up';
 import { stillCallerNow, writeAs } from '$lib/server/write-as';
+import { whilePasswordHolds, type SessionUser } from '$lib/server/auth';
 import type { RequestHandler } from './$types';
 import { createLogger } from '$lib/server/logger';
 
@@ -163,17 +165,24 @@ export const GET: RequestHandler = async ({ locals }) => {
  * and the password, which are named alone. Always a WARN, so that it is kept
  * at every LOG_LEVEL that keeps any (card 2396's review). A save that changes
  * nothing, is refused or fails writes none. The way out's own WARN follows it.
+ *
+ * Every save asks for the caller's own password again, in `currentPassword`
+ * (card 2701, step-up.ts): it chooses the mail server invites and password
+ * resets go through, and the App URL their links point at, and the App URL
+ * panel saves through it too. Every refusal above is made first, read only,
+ * so that none costs a check or a guess.
  */
-export const PUT: RequestHandler = async ({ request, locals }) => {
+export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 	requireAdmin(locals.user);
 	const body = await readBody(request);
 
-	// One transaction: the mail settings and the App URL are saved together or
-	// not at all. The password kept for a masked one, and what it is kept
-	// against, are read in the same one. It asks first whether the session is
-	// still open and whether its account is still an administrator (cards 2253
-	// and 2395).
-	const { wayOutChangedTo, setBy, setById, changes } = writeAs(locals, (caller) => {
+	/**
+	 * The save, read only: the caller as their account is now, the settings
+	 * as they are, every field read against them, and every refusal; and what
+	 * would be saved. Asked before the password, and again in the transaction
+	 * that saves it.
+	 */
+	const readSave = (caller: SessionUser | null) => {
 		// Named for the lines below; `user` here is the mail server's.
 		const { username: setBy, id: setById, role: setByRole } = requireAdmin(caller);
 		const before = mailSettingsAsRead();
@@ -212,6 +221,24 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
 		const appUrl = readUrl(body, 'appUrl', { allowEmpty: true, complete: true });
 		if (Object.keys(config).length === 0 && appUrl === undefined) throw error(400, 'No valid fields to update');
 
+		return { setBy, setById, setByRole, before, placesBefore, here, config, allowInsecure, pass, appUrl };
+	};
+
+	// The caller's password, asked for again (card 2701), once every refusal
+	// that needs none has been made.
+	const { userId, hash } = await confirmStepUp(locals, cookies, body, 'PUT /api/admin/smtp', (caller) =>
+		readSave(caller)
+	);
+
+	// One transaction: the mail settings and the App URL are saved together or
+	// not at all. The password kept for a masked one, and what it is kept
+	// against, are read in the same one. It asks first whether the session is
+	// still open and whether its account is still an administrator (cards 2253
+	// and 2395), and runs only while the caller's stored hash is the one their
+	// password was checked against.
+	const { wayOutChangedTo, setBy, setById, changes } = await whilePasswordHolds(userId, hash, () => writeAs(locals, (caller) => {
+		const { setBy, setById, setByRole, before, placesBefore, here, config, allowInsecure, pass, appUrl } = readSave(caller);
+
 		saveSmtpConfig(config);
 
 		// Saved only where, as a link reads it, it differs from the App URL in
@@ -244,7 +271,7 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
 			setById,
 			changes
 		};
-	});
+	}));
 
 	// Every save that changes a setting, filed under who saved it (card 2396):
 	// since card 2395 any administrator can point mail at a server of their

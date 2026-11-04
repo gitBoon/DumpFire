@@ -54,7 +54,11 @@ export const sessions = sqliteTable('sessions', {
 	expiresAt: text('expires_at').notNull(),
 	createdAt: text('created_at')
 		.notNull()
-		.default(sql`(datetime('now'))`)
+		.default(sql`(datetime('now'))`),
+	// The wrong current passwords this session has sent, counted as each
+	// arrives and set back to 0 only by a right one; at three the session is
+	// ended (migration 0062, card 2701; checkCurrentPassword in auth.ts).
+	wrongPasswordCount: integer('wrong_password_count').notNull().default(0)
 }, (table) => [
 	index('idx_sessions_user_id').on(table.userId)
 ]);

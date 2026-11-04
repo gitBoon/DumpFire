@@ -9,6 +9,7 @@ import {
 	createSession,
 	endAccountAccess,
 	namingIds,
+	refuseWrongPassword,
 	setSessionCookie,
 	whilePasswordHolds
 } from '$lib/server/auth';
@@ -55,12 +56,13 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 	const user = db.select().from(users).where(eq(users.id, me.id)).get();
 	if (!user) throw error(404, 'User not found');
 
-	// Verify current password. Ten wrong ones in 15 minutes from this session,
-	// and it is refused.
-	const wrong = () => error(403, 'Current password is incorrect');
-	if (!(await checkCurrentPassword(session, user.id, currentPassword, user.passwordHash, 'PUT /api/account/password')).matches) {
-		wrong();
-	}
+	// Verify current password. Counted on this session's row: the third wrong
+	// one ends the session (card 2701).
+	refuseWrongPassword(
+		cookies,
+		await checkCurrentPassword(session, user.id, currentPassword, user.passwordHash, 'PUT /api/account/password'),
+		'Current password is incorrect'
+	);
 
 	// Checking a password and hashing one each take about a quarter of a
 	// second, on a worker thread, and are awaited, which a transaction cannot
@@ -72,13 +74,13 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 	// new password with the old sessions still good, or with no session at all.
 	// It runs only while the stored hash is the one the password was checked
 	// against; if another request or an administrator changed it in between,
-	// the password is checked again against the new one, outside, and not
-	// counted again: the same guess. In it, the session is asked again, and the
+	// nothing is written and the answer is 409, with no second compare (card
+	// 2701's code review, S2). In it, the session is asked again, and the
 	// account as it is now is changed: the password check and the hash were
 	// awaited, and a session can end meanwhile. Asked before the sessions end
 	// below, the session this request came by among them; nothing in this
 	// request asks it after that, when it has gone.
-	const { accountId, newToken, apiKeysEnded, webhooksSwitchedOff } = await whilePasswordHolds(user.id, currentPassword, user.passwordHash, () =>
+	const { accountId, newToken, apiKeysEnded, webhooksSwitchedOff } = await whilePasswordHolds(user.id, user.passwordHash, () =>
 		writeAs(locals, (caller) => {
 			const userId = requireUser(caller).id;
 
@@ -112,7 +114,7 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 
 			// Create a fresh session so the current user stays logged in
 			return { accountId: userId, newToken: createSession(userId), apiKeysEnded: ended.apiKeys, webhooksSwitchedOff: ended.webhooks };
-		}), wrong);
+		}));
 
 	setSessionCookie(cookies, newToken);
 	// The new hash ended every remembered browser of the account; this one,

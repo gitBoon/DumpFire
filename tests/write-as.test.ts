@@ -103,7 +103,9 @@ import { handle } from '../src/hooks.server';
 import { api } from './helpers/api';
 import { effects } from './helpers/effects';
 import {
+	FIXTURE_PASSWORD,
 	assignCard,
+	importConfirmation,
 	makeApiKey,
 	makeAttachment,
 	makeBoard,
@@ -676,17 +678,28 @@ describe('the cards and what is on them ask at the write (slice 2253-2)', () => 
 		});
 	}
 
-	/** The deletes and the restore, which have no body to hold, and the upload, whose form body `sendAround` cannot hold, in an order each can run in. */
-	const UNHELD = (s: Scene, archived: number, attachment: number): [Method, string][] => [
+	/**
+	 * The deletes and the restore, which have no body to hold, and the upload,
+	 * whose form body `sendAround` cannot hold, in an order each can run in. The
+	 * column's delete carries the caller's current password since card 2701,
+	 * from their session, though an empty column asks for none.
+	 */
+	const UNHELD = (s: Scene, archived: number, attachment: number): [Method, string, boolean?][] => [
 		['DELETE', `/api/cards/${s.card.id}/comments/${s.comment.id}`],
 		['DELETE', `/api/cards/${s.card.id}/attachments/${attachment}`],
 		['DELETE', `/api/subtasks/${s.subtask.id}`],
 		['DELETE', `/api/categories/${s.category.id}`],
-		['DELETE', `/api/columns/${s.cols['On Hold'].id}`],
+		['DELETE', `/api/columns/${s.cols['On Hold'].id}`, true],
 		['POST', `/api/cards/${archived}/restore`],
 		['DELETE', `/api/cards/${s.other.id}?permanent=true`],
 		['DELETE', `/api/cards/${s.card.id}`]
 	];
+	/** The owner by their session, and for a route that asks for the current password again, the password and the session's cookie. */
+	const sentBy = (s: Scene, confirming?: boolean) => ({
+		user: s.owner,
+		credential: { kind: 'session' as const, token: s.session },
+		...(confirming ? { body: { currentPassword: FIXTURE_PASSWORD }, headers: { cookie: `${SESSION_COOKIE_NAME}=${s.session}` } } : {})
+	});
 	const upload = () => {
 		const form = new FormData();
 		form.append('file', new File(['written late'], 'late.txt', { type: 'text/plain' }));
@@ -701,8 +714,8 @@ describe('the cards and what is on them ask at the write (slice 2253-2)', () => 
 		db.delete(sessions).run();
 		const before = snapshotDb();
 
-		for (const [method, path] of UNHELD(s, archived.id, attachment.id)) {
-			const res = await api(method, path, { user: s.owner, credential });
+		for (const [method, path, confirming] of UNHELD(s, archived.id, attachment.id)) {
+			const res = await api(method, path, sentBy(s, confirming));
 			expect({ path, status: res.status, body: res.body }).toEqual({ path, status: 401, body: { message: 'Not authenticated' } });
 		}
 		// The upload asks before it reads the file, as the gate read the
@@ -724,8 +737,8 @@ describe('the cards and what is on them ask at the write (slice 2253-2)', () => 
 
 		const uploaded = await api('POST', `/api/cards/${s.card.id}/attachments`, { user: s.owner, credential, body: upload() });
 		expect(uploaded.status).toBe(200);
-		for (const [method, path] of UNHELD(s, archived.id, attachment.id)) {
-			const res = await api(method, path, { user: s.owner, credential });
+		for (const [method, path, confirming] of UNHELD(s, archived.id, attachment.id)) {
+			const res = await api(method, path, sentBy(s, confirming));
 			expect({ path, status: res.status }).toEqual({ path, status: 200 });
 		}
 	});
@@ -875,25 +888,34 @@ describe('the boards, groupings, teams, goals and templates ask at the write (sl
 		});
 	}
 
-	/** The requests with no body, in an order each can run in: the board last. */
-	const UNHELD = (s: Scene): [Method, string][] => [
+	/**
+	 * The requests with no body, in an order each can run in: the board last.
+	 * The board's delete carries nothing but the caller's current password since
+	 * card 2701, from their session.
+	 */
+	const UNHELD = (s: Scene): [Method, string, boolean?][] => [
 		['POST', `/api/boards/${s.board.id}/favourite`],
 		['DELETE', `/api/teams/${s.team.id}/members/${s.member.id}`],
 		['DELETE', `/api/teams/${s.team.id}`],
 		['DELETE', `/api/board-categories/${s.grouping.id}`],
 		['DELETE', `/api/templates/${s.template.id}`],
 		['DELETE', `/api/milestones/${s.milestone.id}`],
-		['DELETE', `/api/boards/${s.board.id}`]
+		['DELETE', `/api/boards/${s.board.id}`, true]
 	];
+	/** The owner by their session, and for a route that asks for the current password again, the password and the session's cookie. */
+	const sentBy = (s: Scene, confirming?: boolean) => ({
+		user: s.owner,
+		credential: { kind: 'session' as const, token: s.session },
+		...(confirming ? { body: { currentPassword: FIXTURE_PASSWORD }, headers: { cookie: `${SESSION_COOKIE_NAME}=${s.session}` } } : {})
+	});
 
 	it('refuses 401, and changes nothing, a request with no body whose session has ended', async () => {
 		const s = scene();
-		const credential = { kind: 'session' as const, token: s.session };
 		db.delete(sessions).run();
 		const before = snapshotDb();
 
-		for (const [method, path] of UNHELD(s)) {
-			const res = await api(method, path, { user: s.owner, credential });
+		for (const [method, path, confirming] of UNHELD(s)) {
+			const res = await api(method, path, sentBy(s, confirming));
 			expect({ path, status: res.status, body: res.body }).toEqual({ path, status: 401, body: { message: 'Not authenticated' } });
 		}
 
@@ -902,10 +924,9 @@ describe('the boards, groupings, teams, goals and templates ask at the write (sl
 
 	it('lets each of them through when the session is still open', async () => {
 		const s = scene();
-		const credential = { kind: 'session' as const, token: s.session };
 
-		for (const [method, path] of UNHELD(s)) {
-			const res = await api(method, path, { user: s.owner, credential });
+		for (const [method, path, confirming] of UNHELD(s)) {
+			const res = await api(method, path, sentBy(s, confirming));
 			expect({ path, status: res.status }).toEqual({ path, status: 200 });
 		}
 	});
@@ -928,7 +949,8 @@ describe('the boards, groupings, teams, goals and templates ask at the write (sl
 			['PUT', `/api/board-categories/${s.grouping.id}`, { name: 'Taken over' }, 'This category groups boards you cannot edit'],
 			['DELETE', `/api/board-categories/${s.grouping.id}`, undefined, 'This category groups boards you cannot edit'],
 			['DELETE', `/api/templates/${s.template.id}`, undefined, 'You can only delete your own templates'],
-			['DELETE', `/api/boards/${s.board.id}`, undefined, 'Only board owners and admins can delete boards']
+			// Since card 2701 with the right password, refused before it is looked at.
+			['DELETE', `/api/boards/${s.board.id}`, { currentPassword: FIXTURE_PASSWORD }, 'Only board owners and admins can delete boards']
 		];
 		for (const [method, path, body, message] of refusals) {
 			const res = await api(method, path, { user: admin, credential, ...(body === undefined ? {} : { body }) });
@@ -1038,7 +1060,8 @@ describe('the accounts, users, requests and reports ask at the write (slice 2253
 			shape: 'an account made, its hash awaited between two checks (POST /api/users)',
 			method: 'POST',
 			path: () => '/api/users',
-			body: () => ({ username: 'late', email: 'late@example.test', password: NEW_PASSWORD }),
+			// With the administrator's current password (card 2701).
+			body: () => ({ username: 'late', email: 'late@example.test', password: NEW_PASSWORD, currentPassword: FIXTURE_PASSWORD }),
 			who: 'admin',
 			allowed: 201,
 			mails: 0
@@ -1056,7 +1079,7 @@ describe('the accounts, users, requests and reports ask at the write (slice 2253
 			shape: "another account's password set, its hash awaited between two checks (PUT /api/users/:id/password)",
 			method: 'PUT',
 			path: (s) => `/api/users/${s.member.id}/password`,
-			body: () => ({ password: NEW_PASSWORD }),
+			body: () => ({ password: NEW_PASSWORD, currentPassword: FIXTURE_PASSWORD }),
 			who: 'admin',
 			allowed: 200,
 			mails: 0
@@ -1162,14 +1185,25 @@ describe('the accounts, users, requests and reports ask at the write (slice 2253
 		});
 	}
 
-	/** The requests with no body, by whom, in an order each can run in: the member's account last. */
-	const UNHELD = (s: Scene): [Method, string, Who][] => [
+	/**
+	 * The requests with no body, by whom, in an order each can run in: the
+	 * member's account last. The invite and the account's delete carry nothing
+	 * but the caller's current password since card 2701, from their session.
+	 */
+	const UNHELD = (s: Scene): [Method, string, Who, boolean?][] => [
 		['DELETE', `/api/account/api-keys/${keyRow(s.key).id}`, 'owner'],
-		['POST', `/api/users/${s.member.id}/invite`, 'admin'],
+		['POST', `/api/users/${s.member.id}/invite`, 'admin', true],
 		['DELETE', `/api/requests/${s.request.id}`, 'admin'],
-		['DELETE', `/api/users/${s.member.id}`, 'admin']
+		['DELETE', `/api/users/${s.member.id}`, 'admin', true]
 	];
 	const asWho = (s: Scene, who: Who) => ({ user: s[who], credential: { kind: 'session' as const, token: s.sessions[who] } });
+	/** `asWho`, and for a route that asks for the current password again, the password and the session's cookie. */
+	const sentAs = (s: Scene, who: Who, confirming?: boolean) => ({
+		...asWho(s, who),
+		...(confirming
+			? { body: { currentPassword: FIXTURE_PASSWORD }, headers: { cookie: `${SESSION_COOKIE_NAME}=${s.sessions[who]}` } }
+			: {})
+	});
 
 	it('refuses 401, and changes nothing and sends nothing, a request with no body whose session has ended', async () => {
 		const s = scene();
@@ -1179,8 +1213,8 @@ describe('the accounts, users, requests and reports ask at the write (slice 2253
 		const sent = effects();
 		onTestFinished(() => sent.restore());
 
-		for (const [method, path, who] of requests) {
-			const res = await api(method, path, asWho(s, who));
+		for (const [method, path, who, confirming] of requests) {
+			const res = await api(method, path, sentAs(s, who, confirming));
 			expect({ path, status: res.status, body: res.body }).toEqual({ path, status: 401, body: { message: 'Not authenticated' } });
 		}
 		await sent.settle();
@@ -1194,8 +1228,8 @@ describe('the accounts, users, requests and reports ask at the write (slice 2253
 		const sent = effects();
 		onTestFinished(() => sent.restore());
 
-		for (const [method, path, who] of UNHELD(s)) {
-			const res = await api(method, path, asWho(s, who));
+		for (const [method, path, who, confirming] of UNHELD(s)) {
+			const res = await api(method, path, sentAs(s, who, confirming));
 			expect({ path, status: res.status }).toEqual({ path, status: 200 });
 		}
 		await sent.settle();
@@ -1312,16 +1346,17 @@ describe('the accounts, users, requests and reports ask at the write (slice 2253
 			[wasAdmin, 'POST', '/api/users', { username: 'made', email: 'made@example.test', password: NEW_PASSWORD }, 'Forbidden'],
 			[wasAdmin, 'PUT', `/api/users/${s.member.id}`, { emoji: '🦊' }, 'Forbidden'],
 			[wasAdmin, 'PUT', `/api/users/${s.member.id}/password`, { password: NEW_PASSWORD }, 'Forbidden'],
-			[wasAdmin, 'POST', `/api/users/${s.member.id}/invite`, undefined, 'Forbidden'],
-			[wasAdmin, 'DELETE', `/api/users/${s.member.id}`, undefined, 'Forbidden'],
+			// A body since card 2701: the current password, which the refusal comes before.
+			[wasAdmin, 'POST', `/api/users/${s.member.id}/invite`, { currentPassword: FIXTURE_PASSWORD }, 'Forbidden'],
+			[wasAdmin, 'DELETE', `/api/users/${s.member.id}`, { currentPassword: FIXTURE_PASSWORD }, 'Forbidden'],
 			[wasAdmin, 'DELETE', `/api/requests/${s.request.id}`, undefined, 'Admin only'],
 			[wasAdmin, 'POST', '/api/reports', { scope: 'all', ...PERIOD }, ALL],
 			[wasAdmin, 'POST', '/api/reports/email', { scope: 'all', ...PERIOD, recipients: ['a@example.test'] }, ALL],
 			[wasChief, 'POST', '/api/users', { username: 'made', email: 'made@example.test', password: NEW_PASSWORD, role: 'admin' }, 'Only superadmin can create admin users'],
 			[wasChief, 'PUT', `/api/users/${s.colleague.id}`, { emoji: '🦊' }, 'Only superadmin can modify admin users'],
 			[wasChief, 'PUT', `/api/users/${s.colleague.id}/password`, { password: NEW_PASSWORD }, "Only superadmin can reset an admin's password"],
-			[wasChief, 'POST', `/api/users/${s.colleague.id}/invite`, undefined, "Only superadmin can reset an admin's password, which an invite does"],
-			[wasChief, 'DELETE', `/api/users/${s.colleague.id}`, undefined, 'Only superadmin can delete admin users']
+			[wasChief, 'POST', `/api/users/${s.colleague.id}/invite`, { currentPassword: FIXTURE_PASSWORD }, "Only superadmin can reset an admin's password, which an invite does"],
+			[wasChief, 'DELETE', `/api/users/${s.colleague.id}`, { currentPassword: FIXTURE_PASSWORD }, 'Only superadmin can delete admin users']
 		];
 		for (const [who, method, path, body, message] of refusals) {
 			const res = await api(method, path, { ...who, ...(body === undefined ? {} : { body }) });
@@ -1392,6 +1427,16 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 	type Scene = ReturnType<typeof scene>;
 	type Who = 'chief' | 'admin';
 	const asWho = (s: Scene, who: Who) => ({ user: s[who], credential: { kind: 'session' as const, token: s.sessions[who] } });
+	/**
+	 * The same, for a route that asks for the current password again (card
+	 * 2701): with it in the body, and the session's cookie, which a wrong one
+	 * would be counted on.
+	 */
+	const confirmedAs = (s: Scene, who: Who, body: Record<string, unknown> = {}) => ({
+		...asWho(s, who),
+		body: { ...body, currentPassword: FIXTURE_PASSWORD },
+		headers: { cookie: `${SESSION_COOKIE_NAME}=${s.sessions[who]}` }
+	});
 
 	/** Connect's first half, as the page asks it, in this session: the state of the consent address. */
 	const begin = async (s: Scene, token = s.sessions.chief) => {
@@ -1419,20 +1464,22 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 	 * superadmin's until card 2395, every administrator's since), what it answers
 	 * when nothing ends meanwhile, and what it then sends out. A backup run
 	 * makes its destination twice: to upload, and to keep to the retention.
+	 * Run Now, the Connect and the mail save carry the current password, which
+	 * they ask for again (card 2701).
 	 */
 	const HELD: { shape: string; method: 'POST' | 'PUT'; path: string; body: (s: Scene) => unknown; out: Partial<typeof NOTHING_OUT> }[] = [
 		// Keep Last raised from 7: lowering it is the superadmin's alone since card 2398.
 		{ shape: 'the backup settings saved, their lines after the commit (PUT /api/admin/backup)', method: 'PUT', path: '/api/admin/backup', body: () => ({ retention: 9 }), out: {} },
-		{ shape: 'a backup run, which leaves the process (POST /api/admin/backup)', method: 'POST', path: '/api/admin/backup', body: () => ({ destination: 'Bucket' }), out: { uploads: 1, made: 2 } },
+		{ shape: 'a backup run, which leaves the process (POST /api/admin/backup)', method: 'POST', path: '/api/admin/backup', body: () => ({ destination: 'Bucket', currentPassword: FIXTURE_PASSWORD }), out: { uploads: 1, made: 2 } },
 		{ shape: "a destination tested, its secret leaving with it (POST /api/admin/backup/test)", method: 'POST', path: '/api/admin/backup/test', body: () => BUCKET, out: { made: 1 } },
 		{
 			shape: 'a Google Drive Connect, its code sent to Google (POST /api/admin/backup/gdrive/auth)',
 			method: 'POST',
 			path: '/api/admin/backup/gdrive/auth',
-			body: async (s) => ({ code: 'the-code', state: await begin(s), destName: 'G' }),
+			body: async (s) => ({ code: 'the-code', state: await begin(s), destName: 'G', currentPassword: FIXTURE_PASSWORD }),
 			out: { exchanged: 1 }
 		},
-		{ shape: 'the mail settings saved (PUT /api/admin/smtp)', method: 'PUT', path: '/api/admin/smtp', body: () => ({ fromName: 'Late' }), out: {} },
+		{ shape: 'the mail settings saved (PUT /api/admin/smtp)', method: 'PUT', path: '/api/admin/smtp', body: () => ({ fromName: 'Late', currentPassword: FIXTURE_PASSWORD }), out: {} },
 		{ shape: 'a test mail, which leaves the process (POST /api/admin/smtp)', method: 'POST', path: '/api/admin/smtp', body: () => ({ to: 'late@example.test' }), out: { mails: 1 } }
 	];
 
@@ -1473,7 +1520,11 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 		});
 	}
 
-	/** The requests with no body, by whom, in an order each can run in: the reset last. */
+	/**
+	 * The requests with no body but the current password, which all but the
+	 * vacuum ask for (card 2701), by whom, in an order each can run in: the
+	 * reset last.
+	 */
 	const UNHELD = (s: Scene): ['POST', string, Who][] => [
 		['POST', `/api/admin/boards/${s.board.id}/clear-cards`, 'admin'],
 		['POST', `/api/admin/boards/${s.board.id}/clear-categories`, 'admin'],
@@ -1482,15 +1533,17 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 		['POST', '/api/admin/vacuum', 'admin'],
 		['POST', '/api/admin/reset', 'chief']
 	];
+	/** How `who` sends one of UNHELD: with the password, but to the vacuum, which asks for none. */
+	const sending = (s: Scene, who: Who, path: string) => (path === '/api/admin/vacuum' ? asWho(s, who) : confirmedAs(s, who));
 
-	it('refuses 401, and changes nothing, a request with no body whose session has ended', async () => {
+	it('refuses 401, and changes nothing, a request with no body but the password whose session has ended', async () => {
 		const s = scene();
 		const requests = UNHELD(s);
 		db.delete(sessions).run();
 		const before = snapshotDb();
 
 		for (const [method, path, who] of requests) {
-			const res = await api(method, path, asWho(s, who));
+			const res = await api(method, path, sending(s, who, path));
 			expect({ path, status: res.status, body: res.body }).toEqual({ path, status: 401, body: { message: 'Not authenticated' } });
 		}
 
@@ -1508,7 +1561,7 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 				throw new Error('disk I/O error');
 			})) as never);
 
-		const res = await api('POST', '/api/admin/reset', asWho(s, 'chief'));
+		const res = await api('POST', '/api/admin/reset', confirmedAs(s, 'chief'));
 		vi.mocked(sqlite.transaction).mockRestore();
 
 		expect({ status: res.status, body: res.body }).toEqual({ status: 500, body: { message: 'The reset failed and nothing was cleared: disk I/O error' } });
@@ -1522,7 +1575,7 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 		const s = scene();
 
 		for (const [method, path, who] of UNHELD(s)) {
-			const res = await api(method, path, asWho(s, who));
+			const res = await api(method, path, sending(s, who, path));
 			expect({ path, status: res.status }).toEqual({ path, status: 200 });
 		}
 	});
@@ -1542,11 +1595,14 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 		const sent = effects();
 		onTestFinished(() => sent.restore());
 
+		// The routes that ask for the current password again (card 2701) are
+		// sent the right one: the refusal comes before it is checked.
+		const confirming = { currentPassword: FIXTURE_PASSWORD };
 		const refusals: [typeof wasAdmin, 'POST' | 'PUT', string, unknown, string][] = [
-			[wasAdmin, 'POST', `/api/admin/boards/${s.board.id}/clear-cards`, undefined, 'Forbidden'],
-			[wasAdmin, 'POST', `/api/admin/boards/${s.board.id}/clear-categories`, undefined, 'Forbidden'],
-			[wasAdmin, 'POST', '/api/admin/purge-archived', undefined, 'Forbidden'],
-			[wasAdmin, 'POST', '/api/admin/reset-xp', undefined, 'Forbidden'],
+			[wasAdmin, 'POST', `/api/admin/boards/${s.board.id}/clear-cards`, confirming, 'Forbidden'],
+			[wasAdmin, 'POST', `/api/admin/boards/${s.board.id}/clear-categories`, confirming, 'Forbidden'],
+			[wasAdmin, 'POST', '/api/admin/purge-archived', confirming, 'Forbidden'],
+			[wasAdmin, 'POST', '/api/admin/reset-xp', confirming, 'Forbidden'],
 			[wasAdmin, 'POST', '/api/admin/vacuum', undefined, 'Forbidden'],
 			// Every administrator's since card 2395, so asked at the administrator level: the superadmin made an
 			// administrator is let through them (tested below), and an administrator made a user is not.
@@ -1556,7 +1612,7 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 			[wasAdmin, 'POST', '/api/admin/backup/gdrive/auth', { code: 'the-code', state, destName: 'G' }, 'Forbidden'],
 			[wasAdmin, 'PUT', '/api/admin/smtp', { fromName: 'Late' }, 'Forbidden'],
 			[wasAdmin, 'POST', '/api/admin/smtp', { to: 'late@example.test' }, 'Forbidden'],
-			[wasChief, 'POST', '/api/admin/reset', undefined, SUPERADMIN_ONLY]
+			[wasChief, 'POST', '/api/admin/reset', confirming, SUPERADMIN_ONLY]
 		];
 		for (const [who, method, path, body, message] of refusals) {
 			const res = await api(method, path, { ...who, ...(body === undefined ? {} : { body }) });
@@ -1586,7 +1642,7 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 			exchange(() => meanwhile(s));
 			const linesBefore = lines();
 
-			const res = await api('POST', '/api/admin/backup/gdrive/auth', { ...asWho(s, 'chief'), body: { code: 'the-code', state, destName: 'G' } });
+			const res = await api('POST', '/api/admin/backup/gdrive/auth', confirmedAs(s, 'chief', { code: 'the-code', state, destName: 'G' }));
 
 			expect({ status: res.status, body: res.body }).toEqual({ status, body: { message } });
 			expect(getToken).toHaveBeenCalledTimes(1);
@@ -1604,7 +1660,7 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 			const s = scene();
 			const state = await begin(s);
 
-			const res = await api('POST', '/api/admin/backup/gdrive/auth', { ...asWho(s, 'chief'), body: { code: 'the-code', state, destName: 'G' } });
+			const res = await api('POST', '/api/admin/backup/gdrive/auth', confirmedAs(s, 'chief', { code: 'the-code', state, destName: 'G' }));
 
 			expect(res.status).toBe(200);
 			expect(res.body.success).toBe(true);
@@ -1623,8 +1679,13 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 			vi.spyOn(process, 'cwd').mockReturnValue(dir);
 			return dir;
 		};
-		const importing = (who: ReturnType<typeof asWho>, bytes: Uint8Array) =>
-			api('POST', '/api/admin/import', { ...who, headers: { 'content-type': 'application/octet-stream' }, body: bytes });
+		/** The superadmin's import, confirmed first in their session (card 2701). */
+		const importing = (s: Scene, bytes: Uint8Array) =>
+			api('POST', '/api/admin/import', {
+				...asWho(s, 'chief'),
+				headers: { 'content-type': 'application/octet-stream', ...importConfirmation(s.chief, s.sessions.chief) },
+				body: bytes
+			});
 
 		it.each([
 			['its session has ended', (s: Scene) => void db.delete(sessions).run(), 401, 'Not authenticated'],
@@ -1636,7 +1697,7 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 			meanwhile(s);
 			const before = snapshotDb();
 
-			const res = await importing(asWho(s, 'chief'), bytes);
+			const res = await importing(s, bytes);
 
 			expect({ status: res.status, body: res.body }).toEqual({ status, body: { message } });
 			expectUnchanged(before);
@@ -1648,7 +1709,7 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 			const bytes = sqlite.serialize();
 			const dir = workingDirectory();
 
-			const res = await importing(asWho(s, 'chief'), bytes);
+			const res = await importing(s, bytes);
 
 			expect(res.status, JSON.stringify(res.body)).toBe(200);
 			expect(res.body.success).toBe(true);
@@ -1670,10 +1731,13 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 		};
 		/** A request of HELD as the administrator sends it: the Connect's state is one their own session began. */
 		const adminBody = async (c: (typeof HELD)[number], s: Scene) =>
-			c.path === '/api/admin/backup/gdrive/auth' ? { code: 'the-code', state: await beginAs(s, 'admin'), destName: 'G' } : c.body(s);
+			c.path === '/api/admin/backup/gdrive/auth'
+				? { code: 'the-code', state: await beginAs(s, 'admin'), destName: 'G', currentPassword: FIXTURE_PASSWORD }
+				: c.body(s);
 		/** The superadmin's three: what an administrator is still refused. */
 		const SUPERADMIN_ROUTES: { method: 'GET' | 'POST'; path: string; body?: unknown }[] = [
-			{ method: 'GET', path: '/api/admin/export' },
+			// A POST since card 2701, which asks for the superadmin's password.
+			{ method: 'POST', path: '/api/admin/export' },
 			// Not a backup, so the superadmin's is refused for that before it is read, and nothing is replaced.
 			{ method: 'POST', path: '/api/admin/import', body: { notABackup: true } },
 			{ method: 'POST', path: '/api/admin/reset' }
@@ -1763,12 +1827,12 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 			}
 			expectUnchanged(before);
 
-			const exported = await api('GET', '/api/admin/export', asWho(s, 'chief'));
+			const exported = await api('POST', '/api/admin/export', confirmedAs(s, 'chief'));
 			expect(exported.status).toBe(200);
 			// Let past who may import, and refused for what it was sent: not a backup.
 			const imported = await api('POST', '/api/admin/import', { ...asWho(s, 'chief'), body: { notABackup: true } });
 			expect(imported.status).toBe(400);
-			const reset = await api('POST', '/api/admin/reset', asWho(s, 'chief'));
+			const reset = await api('POST', '/api/admin/reset', confirmedAs(s, 'chief'));
 			expect(reset.status, JSON.stringify(reset.body)).toBe(200);
 		});
 
@@ -1786,7 +1850,8 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 
 			// Raised: lowering it is the superadmin's alone (card 2398), and they are an administrator now.
 			expect((await api('PUT', '/api/admin/backup', { ...asLowered, body: { retention: 9 } })).status).toBe(200);
-			expect((await api('PUT', '/api/admin/smtp', { ...asLowered, body: { fromName: 'Lowered' } })).status).toBe(200);
+			// The mail save with their password, from their session (card 2701).
+			expect((await api('PUT', '/api/admin/smtp', { ...confirmedAs(s, 'chief', { fromName: 'Lowered' }), user: asLowered.user })).status).toBe(200);
 			expect((await api('GET', '/api/admin/smtp', asLowered)).body.fromName).toBe('Lowered');
 		});
 
@@ -1827,7 +1892,7 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 			exchange(() => void db.update(users).set({ role: 'user' }).where(eq(users.id, s.admin.id)).run());
 			const linesBefore = lines();
 
-			const res = await api('POST', '/api/admin/backup/gdrive/auth', { ...asWho(s, 'admin'), body: { code: 'the-code', state, destName: 'G' } });
+			const res = await api('POST', '/api/admin/backup/gdrive/auth', confirmedAs(s, 'admin', { code: 'the-code', state, destName: 'G' }));
 
 			expect({ status: res.status, body: res.body }).toEqual({ status: 403, body: { message: 'Forbidden' } });
 			expect(getToken).toHaveBeenCalledTimes(1);

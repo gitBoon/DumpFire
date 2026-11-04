@@ -31,7 +31,7 @@ import { issueFormToken } from '$lib/server/request-tokens';
 import { reportInstallation, reportPlaceholderOrigin } from '$lib/server/startup-checks';
 import { api, type ApiResult } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
-import { addBoardMember, makeBoard, makeCard, makeSmtp, makeUser, resetDb } from './helpers/fixtures';
+import { FIXTURE_PASSWORD, addBoardMember, makeBoard, makeCard, makeSmtp, makeUser, resetDb, stepUp } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 
 vi.mock('$app/environment', () => ({ dev: false, building: false, browser: false, version: 'test' }));
@@ -41,6 +41,15 @@ const FORGED = 'evil.example.test';
 const FORGED_HEADERS = { host: FORGED, 'x-forwarded-host': FORGED, 'x-forwarded-proto': 'https' };
 /** A path on the forged address: what a server with no `ORIGIN` takes a request's address to be. */
 const at = (path: string) => `https://${FORGED}${path}`;
+
+/**
+ * The administrator's request with `body`, sent with the forged headers, and
+ * with their current password from a session of theirs (card 2701).
+ */
+const confirmed = (body: Record<string, unknown> = {}) => {
+	const sent = stepUp(admin, body);
+	return { ...sent, headers: { ...FORGED_HEADERS, ...sent.headers } };
+};
 
 const VARIABLES = ['APP_URL', 'ORIGIN', 'LOG_LEVEL'] as const;
 const environment = Object.fromEntries(VARIABLES.map((name) => [name, process.env[name]]));
@@ -141,18 +150,13 @@ const MAILS: {
 }[] = [
 	{
 		name: 'an invite, when an administrator creates a user with no password',
-		send: () =>
-			api('POST', at('/api/users'), {
-				user: admin,
-				headers: FORGED_HEADERS,
-				body: { username: 'newcomer', email: 'newcomer@example.test' }
-			}),
+		send: () => api('POST', at('/api/users'), confirmed({ username: 'newcomer', email: 'newcomer@example.test' })),
 		to: 'newcomer@example.test',
 		link: /^\/invite\/[0-9a-f-]{36}$/
 	},
 	{
 		name: 'an invite, sent again',
-		send: () => api('POST', at(`/api/users/${member.id}/invite`), { user: admin, headers: FORGED_HEADERS }),
+		send: () => api('POST', at(`/api/users/${member.id}/invite`), confirmed()),
 		to: 'member@example.test',
 		link: /^\/invite\/[0-9a-f-]{36}$/
 	},
@@ -327,6 +331,9 @@ describe('a server with no address configured', () => {
 		vi.spyOn(console, 'warn').mockImplementation(() => {});
 	});
 
+	// The invites are refused before the administrator's password is checked
+	// (card 2701): sent with it, and with no session, so that nothing is made
+	// for them before the snapshot.
 	it.each([
 		{
 			name: 'an invite for a new user, and does not make the user',
@@ -334,12 +341,13 @@ describe('a server with no address configured', () => {
 				api('POST', at('/api/users'), {
 					user: admin,
 					headers: FORGED_HEADERS,
-					body: { username: 'newcomer', email: 'newcomer@example.test' }
+					body: { username: 'newcomer', email: 'newcomer@example.test', currentPassword: FIXTURE_PASSWORD }
 				})
 		},
 		{
 			name: 'an invite sent again, and makes no token',
-			send: () => api('POST', at(`/api/users/${member.id}/invite`), { user: admin, headers: FORGED_HEADERS })
+			send: () =>
+				api('POST', at(`/api/users/${member.id}/invite`), { user: admin, headers: FORGED_HEADERS, body: { currentPassword: FIXTURE_PASSWORD } })
 		},
 		{
 			name: 'a public request, which is nothing without its confirmation link',
@@ -382,11 +390,7 @@ describe('a server with no address configured', () => {
 	});
 
 	it('still creates a user who is given a password: there is no link to make', async () => {
-		const res = await api('POST', at('/api/users'), {
-			user: admin,
-			headers: FORGED_HEADERS,
-			body: { username: 'newcomer', email: 'newcomer@example.test', password: 'a long password' }
-		});
+		const res = await api('POST', at('/api/users'), confirmed({ username: 'newcomer', email: 'newcomer@example.test', password: 'a long password' }));
 
 		expect(res.status).toBe(201);
 		expect(sent.emails).toEqual([]);

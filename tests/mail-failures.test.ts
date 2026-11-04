@@ -39,7 +39,7 @@ import { notifyRequesterConfirm, notifyUserAssigned } from '$lib/server/notifica
 import { load as loadInvitePage } from '../src/routes/invite/[token]/+page.server';
 import { api, type ApiResult } from './helpers/api';
 import { effects, type Effects, type OfferedMail } from './helpers/effects';
-import { makeBoard, makeCard, makeSession, makeSmtp, makeUser, resetDb } from './helpers/fixtures';
+import { FIXTURE_PASSWORD, makeBoard, makeCard, makeSession, makeSmtp, makeUser, resetDb } from './helpers/fixtures';
 import { watchReads } from './helpers/reads';
 
 const APP = 'https://kanban.example.test';
@@ -125,11 +125,12 @@ afterEach(() => {
 	sent = null;
 });
 
+// Each with the caller's current password (card 2701).
 const resend = (by: SessionUser, id: number, headers: Record<string, string> = signedIn(by)) =>
-	api('POST', `/api/users/${id}/invite`, { user: by, headers });
+	api('POST', `/api/users/${id}/invite`, { user: by, body: { currentPassword: FIXTURE_PASSWORD }, headers });
 
 const create = (by: SessionUser, body: Record<string, unknown>) =>
-	api('POST', '/api/users', { user: by, body, headers: signedIn(by) });
+	api('POST', '/api/users', { user: by, body: { ...body, currentPassword: FIXTURE_PASSWORD }, headers: signedIn(by) });
 
 /** A mail server that refuses the sign-in, with what Gmail says. */
 const signInRefused = () =>
@@ -601,15 +602,24 @@ describe('the link of a mail that failed, asked about again before it is given (
 		]);
 	});
 
-	it('gives no link to a request that came with no session', async () => {
+	// A request with no session used to have its invite made and be given no
+	// link. Its caller's password is asked for again since card 2701, which is
+	// checked against a session: so it is refused before the invite is made, and
+	// there is no link, nor any mail. The session ended while the mail is out,
+	// (b) above, is the same rule's other way in.
+	it('gives no link to a request that came with no session: refused 401 before the invite is made', async () => {
 		refusal = signInRefused;
 		const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
 
 		const res = await resend(admin, invitee.id, {});
 		quiet.mockRestore();
 
-		expect(res.body).toMatchObject({ success: true, mailSent: false });
+		expect(res.status).toBe(401);
+		expect(res.body).toEqual({ message: 'Not authenticated' });
 		expect(res.body).not.toHaveProperty('inviteUrl');
+		expect(unusedInvites(invitee.id)).toEqual([]);
+		expect(sent!.refusedMail).toEqual([]);
+		expect(sent!.all.filter((effect) => effect.kind === 'email')).toEqual([]);
 	});
 
 	it('gives the link when the mail host is cleared between the commit and the send, and counts nothing (M14)', async () => {

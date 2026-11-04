@@ -3,7 +3,7 @@ import { db } from '$lib/server/db';
 import { afterCommit } from '$lib/server/db/transaction';
 import { apiKeys, users } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
-import { SESSION_COOKIE_NAME, checkCurrentPassword, generateApiKey, whilePasswordHolds } from '$lib/server/auth';
+import { SESSION_COOKIE_NAME, checkCurrentPassword, generateApiKey, refuseWrongPassword, whilePasswordHolds } from '$lib/server/auth';
 import { createLogger } from '$lib/server/logger';
 import { readBody, readText, readTimestamp } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
@@ -87,14 +87,15 @@ export const POST: RequestHandler = async ({ request, locals, cookies }) => {
 
 	// Checking a password takes about a quarter of a second, on a worker
 	// thread, and is awaited, which a transaction cannot do, so it is checked
-	// out here first. Ten wrong ones in 15 minutes from this session, and it
-	// is refused.
+	// out here first. Counted on this session's row: the third wrong one ends
+	// the session (card 2701).
 	const user = db.select().from(users).where(eq(users.id, me.id)).get();
 	if (!user) throw error(404, 'User not found');
-	const wrong = () => error(403, 'Password is incorrect');
-	if (!(await checkCurrentPassword(session, user.id, password, user.passwordHash, 'POST /api/account/api-keys')).matches) {
-		wrong();
-	}
+	refuseWrongPassword(
+		cookies,
+		await checkCurrentPassword(session, user.id, password, user.passwordHash, 'POST /api/account/api-keys'),
+		'Password is incorrect'
+	);
 
 	const { plaintextKey, keyHash, keyPrefix } = generateApiKey();
 
@@ -102,11 +103,11 @@ export const POST: RequestHandler = async ({ request, locals, cookies }) => {
 	// adds the key, so a key cannot be made with a password a change has just
 	// ended, nor past the limit by two requests at once. It runs only while the
 	// stored hash is the one the password was checked against; if the user or
-	// an administrator changed it in between, the password is checked again
-	// against the new one, outside, and not counted again: the same guess. In
+	// an administrator changed it in between, nothing is written and the
+	// answer is 409, with no second compare (card 2701's code review, S2). In
 	// it, the session is asked again, and the account as it is now adds the
 	// key: the password check was awaited, and a session can end meanwhile.
-	const record = await whilePasswordHolds(user.id, password, user.passwordHash, () =>
+	const record = await whilePasswordHolds(user.id, user.passwordHash, () =>
 		writeAs(locals, (caller) => {
 			const userId = requireUser(caller).id;
 			requireRoom(userId);
@@ -127,7 +128,7 @@ export const POST: RequestHandler = async ({ request, locals, cookies }) => {
 			// holder's, shown on their own Account page.
 			afterCommit(() => log.info(`API key ${row.id} created by user ${userId}`, { keyId: row.id }, { userId }));
 			return row;
-		}), wrong);
+		}));
 
 	return json({
 		id: record.id,

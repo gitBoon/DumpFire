@@ -49,6 +49,7 @@ import {
 	makeUser,
 	makeWebhook,
 	resetDb,
+	stepUp,
 	type BoardFixture
 } from './helpers/fixtures';
 import { readBudget, watchReads } from './helpers/reads';
@@ -623,9 +624,9 @@ describe('a delete that reaches a loop takes every board of it and every board b
 	// What the admin guide warns of. None of these hangs the server; each takes
 	// more than a reader of its button might expect.
 	const DOORS: { door: string; request: (w: ReturnType<typeof world>) => Promise<ApiResult>; gone: string[] }[] = [
-		{ door: 'deleting S', request: (w) => api('DELETE', `/api/boards/${w.S.board.id}`, { user: w.owner }), gone: ['S', 'Z', 'W'] },
-		{ door: 'deleting A, of a loop of two', request: (w) => api('DELETE', `/api/boards/${w.A.board.id}`, { user: w.owner }), gone: ['A', 'B', 'Y'] },
-		{ door: 'deleting Z, below the loop', request: (w) => api('DELETE', `/api/boards/${w.Z.board.id}`, { user: w.owner }), gone: ['Z', 'W'] },
+		{ door: 'deleting S', request: (w) => api('DELETE', `/api/boards/${w.S.board.id}`, stepUp(w.owner)), gone: ['S', 'Z', 'W'] },
+		{ door: 'deleting A, of a loop of two', request: (w) => api('DELETE', `/api/boards/${w.A.board.id}`, stepUp(w.owner)), gone: ['A', 'B', 'Y'] },
+		{ door: 'deleting Z, below the loop', request: (w) => api('DELETE', `/api/boards/${w.Z.board.id}`, stepUp(w.owner)), gone: ['Z', 'W'] },
 		{
 			door: 'deleting the card S hangs from',
 			request: (w) => api('DELETE', `/api/cards/${w.s.id}?permanent=true`, { user: w.owner }),
@@ -633,14 +634,14 @@ describe('a delete that reaches a loop takes every board of it and every board b
 		},
 		{
 			door: 'deleting the column that card is in',
-			request: (w) => api('DELETE', `/api/columns/${w.S.cols['To Do'].id}`, { user: w.owner }),
+			request: (w) => api('DELETE', `/api/columns/${w.S.cols['To Do'].id}`, stepUp(w.owner)),
 			gone: ['S', 'Z', 'W']
 		},
 		{
 			door: 'purging the archive while that card is archived',
 			request: (w) => {
 				db.update(cards).set({ archivedAt: stamp() }).where(eq(cards.id, w.s.id)).run();
-				return api('POST', '/api/admin/purge-archived', { user: w.admin });
+				return api('POST', '/api/admin/purge-archived', stepUp(w.admin));
 			},
 			gone: ['S', 'Z', 'W']
 		},
@@ -648,7 +649,7 @@ describe('a delete that reaches a loop takes every board of it and every board b
 			// Its warning says the board is kept. In a loop the board's own card is
 			// among those cleared, and the board goes with it.
 			door: 'Clear Cards on S',
-			request: (w) => api('POST', `/api/admin/boards/${w.S.board.id}/clear-cards`, { user: w.admin }),
+			request: (w) => api('POST', `/api/admin/boards/${w.S.board.id}/clear-cards`, stepUp(w.admin)),
 			gone: ['S', 'Z', 'W']
 		}
 	];
@@ -695,7 +696,7 @@ describe('a delete that reaches a loop takes every board of it and every board b
 		it('Clear Cards on S: S is told it was deleted, and the system log names it', async () => {
 			const w = world();
 
-			const events = await told(w, () => api('POST', `/api/admin/boards/${w.S.board.id}/clear-cards`, { user: w.admin }));
+			const events = await told(w, () => api('POST', `/api/admin/boards/${w.S.board.id}/clear-cards`, stepUp(w.admin)));
 
 			expect(lines()).toEqual([
 				{
@@ -717,7 +718,7 @@ describe('a delete that reaches a loop takes every board of it and every board b
 			const w = world();
 			db.update(cards).set({ archivedAt: stamp() }).where(eq(cards.id, w.s.id)).run();
 
-			const events = await told(w, () => api('POST', '/api/admin/purge-archived', { user: w.admin }));
+			const events = await told(w, () => api('POST', '/api/admin/purge-archived', stepUp(w.admin)));
 
 			expect(lines()).toEqual([
 				{

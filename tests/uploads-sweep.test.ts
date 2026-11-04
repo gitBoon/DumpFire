@@ -33,7 +33,7 @@ import { startSchedulers } from '$lib/server/schedulers';
 import { initSnapshotScheduler } from '$lib/server/snapshots';
 import { initUploadsSweep, sweepUploads, SWEEP_MARGIN_MS } from '$lib/server/uploads-sweep';
 import { api } from './helpers/api';
-import { makeAttachment, makeBoard, makeCard, makeUser, resetDb, testUploadsDir, type BoardFixture } from './helpers/fixtures';
+import { importConfirmation, makeAttachment, makeBoard, makeCard, makeUser, resetDb, testUploadsDir, type BoardFixture } from './helpers/fixtures';
 
 // The other schedulers would start real timers that read the database and
 // reach for the network. The sweep's own start is watched, and still runs.
@@ -459,7 +459,8 @@ describe('an import after a sweep', () => {
 		elsewhere();
 		const res = await api('POST', '/api/admin/import?outside=keep', {
 			user: admin,
-			headers: { 'content-type': 'application/octet-stream' },
+			// Their password confirmed first (card 2701).
+			headers: { 'content-type': 'application/octet-stream', ...importConfirmation(admin) },
 			body: backup
 		});
 

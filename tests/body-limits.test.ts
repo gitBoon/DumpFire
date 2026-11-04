@@ -47,7 +47,7 @@ import { sqlite } from '$lib/server/db';
 import { subscribeToLogs, type LogEntry } from '$lib/server/logger';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import type { Card } from '$lib/server/db/schema';
-import { addBoardMember, makeApiKey, makeBoard, makeCard, makeSession, makeUser, resetDb } from './helpers/fixtures';
+import { addBoardMember, importConfirmation, makeApiKey, makeBoard, makeCard, makeSession, makeUser, resetDb } from './helpers/fixtures';
 import { bodyOverTheLimit, FROM_THE_PAGE, gate, gateApiRoutes, type GateOptions } from './helpers/gate';
 
 const K = 1024;
@@ -170,6 +170,13 @@ beforeEach(() => {
 	asAdmin = cookie(admin);
 	asChief = cookie(chief);
 });
+
+/**
+ * `asChief`, with a confirmation of the superadmin's password issued for that
+ * session, which an import takes before it reads a byte (card 2701). Good for
+ * one import: made for each.
+ */
+const confirmedChief = () => ({ ...asChief, ...importConfirmation(chief, asChief.cookie.slice(`${SESSION_COOKIE_NAME}=`.length)) });
 
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -361,21 +368,21 @@ describe('the import, POST /api/admin/import', () => {
 	it('accepts up to the limit the server was started with, and no more', async () => {
 		process.env.BODY_SIZE_LIMIT = '2M';
 
-		expect(await importing(asChief, 2 * M)).toMatchObject(NOT_A_BACKUP);
+		expect(await importing(confirmedChief(), 2 * M)).toMatchObject(NOT_A_BACKUP);
 		const over = await importing(asChief, 2 * M + 1);
 		expect({ status: over.status, limitBytes: over.limitBytes }).toEqual({ status: 413, limitBytes: 2 * M });
 		expect(over.message).toBe('The request is larger than this server accepts here: it is 2.0 MB, and the limit is 2 MB');
 	});
 
 	it("accepts what the image sets, 512M, where the dev server was given no limit of its own", async () => {
-		expect(await importing(asChief, 512 * M)).toMatchObject(NOT_A_BACKUP);
+		expect(await importing(confirmedChief(), 512 * M)).toMatchObject(NOT_A_BACKUP);
 		expect((await importing(asChief, 512 * M + 1)).status).toBe(413);
 	});
 
 	it('accepts any length where the limit is Infinity, which is how the adapter is told to have none', async () => {
 		process.env.BODY_SIZE_LIMIT = 'Infinity';
 
-		expect(await importing(asChief, 64 * 1024 * M)).toMatchObject(NOT_A_BACKUP);
+		expect(await importing(confirmedChief(), 64 * 1024 * M)).toMatchObject(NOT_A_BACKUP);
 	});
 
 	it('is the superadmin’s: an administrator and a user are refused before a byte of it is read, and nobody is told to sign in', async () => {
@@ -409,7 +416,7 @@ describe('the import, POST /api/admin/import', () => {
 		expect(read).not.toHaveBeenCalled();
 
 		// The superadmin is given all of it.
-		expect(await importing(asChief, 2 * M)).toMatchObject(NOT_A_BACKUP);
+		expect(await importing(confirmedChief(), 2 * M)).toMatchObject(NOT_A_BACKUP);
 	});
 
 	it('holds a backup sent in chunks, with no length, to the same limits as it is read', async () => {
@@ -421,7 +428,7 @@ describe('the import, POST /api/admin/import', () => {
 			);
 		};
 
-		const chief_ = await send_(asChief);
+		const chief_ = await send_(confirmedChief());
 		expectTooLargeAsRead(chief_.res, 2 * M);
 		// Read to just past the limit, and no further.
 		expect(chief_.pulled * 64 * K).toBeLessThanOrEqual(2 * M + 4 * 64 * K);
@@ -455,7 +462,7 @@ describe('a request that has a body and does not say how long it is', () => {
 		{
 			name: 'the import, sent by the superadmin',
 			path: '/api/admin/import',
-			headers: () => ({ ...asChief, 'content-type': 'application/octet-stream' }),
+			headers: () => ({ ...confirmedChief(), 'content-type': 'application/octet-stream' }),
 			limit: 2 * M
 		},
 		{ name: 'the public request form', path: '/api/requests', headers: () => ({ ...asUser, ...JSON_BODY, accept: '*/*' }), limit: DEFAULT_BODY_LIMIT },

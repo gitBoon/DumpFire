@@ -93,7 +93,19 @@ import { KNOWN_BROWSER_SECRET_KEY } from '$lib/server/known-browsers';
 import { REQUEST_FORM_SECRET_KEY, issueFormToken, resetFormSecretCache, verifyFormToken } from '$lib/server/request-tokens';
 import { maskLiveLog, reportInstallation, reportNoSuperadmin } from '$lib/server/startup-checks';
 import { api, routeMethods } from './helpers/api';
-import { makeBoard, makeCard, makeDecision, makeParticipant, makeSession, makeUser, resetDb } from './helpers/fixtures';
+import {
+	FIXTURE_PASSWORD,
+	FIXTURE_PASSWORD_HASH,
+	importConfirmation,
+	makeBoard,
+	makeCard,
+	makeDecision,
+	makeParticipant,
+	makeSession,
+	makeUser,
+	resetDb,
+	stepUp
+} from './helpers/fixtures';
 import { FROM_THE_PAGE, gate, gateApiRoutes } from './helpers/gate';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 import { afterEachTimestampCheck } from './helpers/timestamps';
@@ -194,6 +206,37 @@ let member: SessionUser;
 let chiefSession: string;
 let memberSession: string;
 
+/**
+ * The headers of an import the superadmin sends from their session, sent as
+ * `contentType`, with their password confirmed first there (card 2701).
+ */
+const confirmedImport = (contentType = 'application/octet-stream') => ({
+	'content-type': contentType,
+	...importConfirmation(chief, chiefSession)
+});
+
+/**
+ * `api()`'s options for the superadmin from their own session, with their
+ * current password (card 2701): what a request that asks for it again sends.
+ * The session is the one each test begins with, so a refused request leaves
+ * every row as it was.
+ */
+const confirmedByChief = (body: Record<string, unknown> = {}) => ({
+	user: chief,
+	body: { ...body, currentPassword: FIXTURE_PASSWORD },
+	headers: { cookie: `${SESSION_COOKIE_NAME}=${chiefSession}` }
+});
+
+/**
+ * The export as the page asks for it, through the gate, from the superadmin's
+ * session: a POST with their current password since card 2701.
+ */
+const exported = () =>
+	gate('POST', '/api/admin/export', {
+		headers: { cookie: `${SESSION_COOKIE_NAME}=${chiefSession}`, ...FROM_THE_PAGE, accept: '*/*' },
+		body: { currentPassword: FIXTURE_PASSWORD }
+	});
+
 beforeEach(() => {
 	resetDb();
 	uploaded.length = 0;
@@ -290,7 +333,7 @@ function expectNoSignIns(bytes: Buffer): void {
 	// user, with the hash a restore needs to sign them in again.
 	expect(has(USED_INVITE)).toBe(true);
 	for (const user of [chief, admin, member]) expect(has(user.email), user.username).toBe(true);
-	expect(has('not-a-real-hash')).toBe(true);
+	expect(has(FIXTURE_PASSWORD_HASH)).toBe(true);
 	expect(has('A card')).toBe(true);
 
 	const backup = opening(bytes);
@@ -315,7 +358,7 @@ describe('a backup', () => {
 		expect(before.sessions).toHaveLength(2);
 		expect(keys).toEqual({ links: [REQUEST_LINK], formKey: [FORM_KEY] });
 
-		const res = await gate('GET', '/api/admin/export', { headers: { cookie: `${SESSION_COOKIE_NAME}=${chiefSession}` } });
+		const res = await exported();
 
 		expect(res.status).toBe(200);
 		expect(res.headers.get('content-type')).toBe('application/x-sqlite3');
@@ -341,7 +384,7 @@ describe('a backup', () => {
 		const keys = requestKeysHere();
 
 		// "Run Backup Now", which is the function the schedule calls.
-		const res = await api('POST', '/api/admin/backup', { user: chief, body: {} });
+		const res = await api('POST', '/api/admin/backup', confirmedByChief());
 
 		expect(res.status).toBe(200);
 		expect(res.body.results).toEqual([expect.objectContaining({ destination: 'Offsite', status: 'success' })]);
@@ -430,7 +473,7 @@ describe('a backup', () => {
 		sqlite.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(KNOWN_BROWSER_SECRET_KEY, key);
 		sqlite.prepare("INSERT INTO settings (key, value) VALUES ('app_url', 'https://kept.example.test')").run();
 
-		const res = await gate('GET', '/api/admin/export', { headers: { cookie: `${SESSION_COOKIE_NAME}=${chiefSession}` } });
+		const res = await exported();
 		expect(res.status).toBe(200);
 		for (const bytes of [Buffer.from(await res.arrayBuffer()), generateBackupData()]) {
 			expect(bytes.includes(Buffer.from(key))).toBe(false);
@@ -466,7 +509,7 @@ describe('a backup', () => {
 		const live = invitesLogged();
 		expect(live).toContain(UNUSED_INVITE);
 
-		const res = await gate('GET', '/api/admin/export', { headers: { cookie: `${SESSION_COOKIE_NAME}=${chiefSession}` } });
+		const res = await exported();
 		const bytes = Buffer.from(await res.arrayBuffer());
 
 		expect(res.status).toBe(200);
@@ -617,7 +660,7 @@ describe('a restore', () => {
 			const res = await importing(async () => {
 				const answer = await api('POST', '/api/admin/import?outside=keep', {
 					user: chief,
-					headers: { 'content-type': 'application/octet-stream' },
+					headers: confirmedImport(),
 					body: backup.serialize()
 				});
 				return { status: answer.status, message: answer.body.message, replaced: answer.body.requestLinksReplaced };
@@ -649,7 +692,7 @@ describe('a restore', () => {
 			const res = await importing(async () => {
 				const answer = await api('POST', '/api/admin/import?outside=keep', {
 					user: chief,
-					headers: { 'content-type': 'application/octet-stream' },
+					headers: confirmedImport(),
 					body: backup.serialize()
 				});
 				return { status: answer.status, message: answer.body.message };
@@ -766,7 +809,8 @@ describe('a restore', () => {
 		importing(async () => {
 			const res = await api('POST', '/api/admin/import?outside=keep', {
 				user: by,
-				headers: { 'content-type': 'application/octet-stream' },
+				// The superadmin's confirmed first (card 2701); anybody else's is refused before it is looked for.
+				headers: by === chief ? confirmedImport() : { 'content-type': 'application/octet-stream' },
 				body: backup.serialize()
 			});
 			return { status: res.status, message: res.body.message };
@@ -787,9 +831,10 @@ describe('a restore', () => {
 		vi.spyOn(process, 'cwd').mockReturnValue(dir);
 		const cookie = `${SESSION_COOKIE_NAME}=${chiefSession}`;
 
-		// Through the gate, as the page sends it, with the superadmin's session.
+		// Through the gate, as the page sends it, with the superadmin's session,
+		// their password confirmed first there (card 2701).
 		const res = await gate('POST', '/api/admin/import?outside=keep', {
-			headers: { cookie, ...FROM_THE_PAGE, 'content-type': 'application/octet-stream', accept: '*/*' },
+			headers: { ...confirmedImport(), cookie, ...FROM_THE_PAGE, accept: '*/*' },
 			body: new Uint8Array(backup.serialize())
 		});
 		const answer = await res.json();
@@ -898,7 +943,7 @@ describe('a restore', () => {
 		const res = await importing(async () => {
 			const sent = await api('POST', '/api/admin/import?outside=keep', {
 				user: chief,
-				headers: { 'content-type': 'Application/Octet-Stream; charset=binary' },
+				headers: confirmedImport('Application/Octet-Stream; charset=binary'),
 				body: backup.serialize()
 			});
 			return { status: sent.status, message: sent.body.message };
@@ -1032,7 +1077,7 @@ describe('a restore', () => {
 		const res = await importing(async () => {
 			const answer = await api('POST', '/api/admin/import?outside=keep', {
 				user: chief,
-				headers: { 'content-type': 'application/octet-stream' },
+				headers: confirmedImport(),
 				body: backupWithSignIns().serialize()
 			});
 			return { status: answer.status, message: answer.body.message, superadmins: answer.body.superadmins };
@@ -1048,7 +1093,7 @@ describe('a restore', () => {
 		const none = await importing(async () => {
 			const answer = await api('POST', '/api/admin/import?outside=keep', {
 				user: chief,
-				headers: { 'content-type': 'application/octet-stream' },
+				headers: confirmedImport(),
 				body: empty.serialize()
 			});
 			return { status: answer.status, message: answer.body.message, superadmins: answer.body.superadmins };
@@ -1557,7 +1602,7 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 		vi.spyOn(console, 'error').mockImplementation(() => {});
 		return api('POST', `/api/admin/import${query}`, {
 			user: chief,
-			headers: { 'content-type': 'application/octet-stream' },
+			headers: confirmedImport(),
 			body: backup.serialize()
 		});
 	};
@@ -1615,7 +1660,7 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 	}
 
 	it('are in none of the file an export downloads, the copy Run Now hands a destination, or generateBackupData()', async () => {
-		const res = await gate('GET', '/api/admin/export', { headers: { cookie: `${SESSION_COOKIE_NAME}=${chiefSession}` } });
+		const res = await exported();
 		expect(res.status).toBe(200);
 		expectNoSecrets(Buffer.from(await res.arrayBuffer()));
 		expectSecretsHere();
@@ -1623,7 +1668,7 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 		// The SFTP destination's host key confirmed, without which a run does not
 		// try it (card 2250). The key is no secret, and the copy keeps it.
 		sqlite.prepare("UPDATE settings SET value = ? WHERE key = 'backup_config'").run(configWith([{ ...NAS, hostKey: HOST_KEY }, BUCKET, DRIVE, ROBOT, ONEDRIVE]));
-		const run = await api('POST', '/api/admin/backup', { user: chief, body: {} });
+		const run = await api('POST', '/api/admin/backup', confirmedByChief());
 		expect(run.status).toBe(200);
 		expect(uploaded.map((u) => u.destination)).toEqual(['NAS', 'Bucket', 'Drive', 'Robot', 'OneDrive']);
 		const clearedWithKey = [{ ...DESTINATIONS_CLEARED[0], hostKey: HOST_KEY }, ...DESTINATIONS_CLEARED.slice(1)];
@@ -1879,7 +1924,7 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 		};
 
 		it('is in the copy, as a setting of its form’s number and 64 hex characters made again from the file it is in', async () => {
-			const res = await gate('GET', '/api/admin/export', { headers: { cookie: `${SESSION_COOKIE_NAME}=${chiefSession}` } });
+			const res = await exported();
 			expect(res.status).toBe(200);
 			for (const bytes of [generateBackupData(), Buffer.from(await res.arrayBuffer())]) {
 				const backup = opening(bytes);
@@ -2570,7 +2615,7 @@ describe('the secrets a backup does not hold (card 2169)', () => {
 		});
 
 		const runNow = async () =>
-			(await api('POST', '/api/admin/backup', { user: chief, body: {} })).body.results as { destination: string; status: string; message: string }[];
+			(await api('POST', '/api/admin/backup', confirmedByChief())).body.results as { destination: string; status: string; message: string }[];
 		const failedRuns = () =>
 			sqlite.prepare("SELECT destination_name AS name, status, error FROM backup_log WHERE status = 'failed' ORDER BY id").all();
 		const configOf = (destinations: unknown[]) =>
@@ -2816,7 +2861,7 @@ describe('the backup settings’ secrets: masked in every answer, kept only for 
 		sqlite.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run('backup_config', configWith(destinations));
 	const storedDestinations = () => JSON.parse(settingsOf(sqlite)['backup_config']).destinations as Record<string, unknown>[];
 	const shown = async () => (await api('GET', '/api/admin/backup', { user: chief })).body.destinations as Record<string, unknown>[];
-	const put = (destinations: unknown[]) => api('PUT', '/api/admin/backup', { user: chief, body: { destinations } });
+	const put = (destinations: unknown[]) => api('PUT', '/api/admin/backup', confirmedByChief({ destinations }));
 	const tested = (destination: unknown) => api('POST', '/api/admin/backup/test', { user: chief, body: destination });
 
 	/** Decision 3's words for a destination with a secret typed again, as R8 names every field still masked. */
@@ -3764,13 +3809,17 @@ describe('Google Drive asks only for the files DumpFire makes (card 2188)', () =
 		expect(res.status, JSON.stringify(res.body)).toBe(200);
 		return { res, address: new URL(res.body.authUrl), state: new URL(res.body.authUrl).searchParams.get('state') };
 	};
-	/** Its second half: the code and the state from the address Google's page leads to (card 2251). */
-	const finish = (state: unknown, opts: { user?: SessionUser; credential?: Credential | null; destName?: string } = {}) =>
-		api('POST', '/api/admin/backup/gdrive/auth', {
-			user: opts.user ?? chief,
-			...('credential' in opts ? { credential: opts.credential } : {}),
-			body: { code: 'the-code', ...(state === undefined ? {} : { state }), destName: opts.destName ?? 'G' }
+	/**
+	 * Its second half: the code and the state from the address Google's page
+	 * leads to (card 2251), with the caller's current password (card 2701).
+	 */
+	const finish = (state: unknown, opts: { user?: SessionUser; credential?: Credential | null; destName?: string } = {}) => {
+		const body = { code: 'the-code', ...(state === undefined ? {} : { state }), destName: opts.destName ?? 'G' };
+		return api('POST', '/api/admin/backup/gdrive/auth', {
+			...(opts.user ? stepUp(opts.user, body) : confirmedByChief(body)),
+			...('credential' in opts ? { credential: opts.credential } : {})
 		});
+	};
 	/** Both halves, as one superadmin in one session. */
 	const connect = async () => finish((await begin()).state);
 
@@ -3900,7 +3949,7 @@ describe('Google Drive asks only for the files DumpFire makes (card 2188)', () =
 		store(G);
 		// A save of the settings lands while Google is answering.
 		exchange({ refresh_token: 'rt-new', scope: DRIVE_FILE_SCOPE }, () =>
-			api('PUT', '/api/admin/backup', { user: chief, body: { destinations: [{ ...G, folderId: 'chosen-meanwhile' }] } })
+			api('PUT', '/api/admin/backup', confirmedByChief({ destinations: [{ ...G, folderId: 'chosen-meanwhile' }] }))
 		);
 
 		const res = await connect();
@@ -4219,7 +4268,7 @@ describe('Google Drive asks only for the files DumpFire makes (card 2188)', () =
 				() => (
 					store(G),
 					exchange({ refresh_token: 'rt-new', scope: DRIVE_FILE_SCOPE }, () =>
-						api('PUT', '/api/admin/backup', { user: chief, body: { destinations: [{ ...G, folderId: 'chosen-meanwhile' }] } })
+						api('PUT', '/api/admin/backup', confirmedByChief({ destinations: [{ ...G, folderId: 'chosen-meanwhile' }] }))
 					),
 					connect()
 				)
@@ -4330,7 +4379,7 @@ describe('Google Drive asks only for the files DumpFire makes (card 2188)', () =
 				store({ ...G, name: NAME });
 				files.delete.mockRejectedValue(new Error('nope'));
 				exchange({ refresh_token: 'rt-new', scope: DRIVE_FILE_SCOPE }, () =>
-					api('PUT', '/api/admin/backup', { user: chief, body: { destinations: [{ ...G, name: NAME, folderId: 'chosen-meanwhile' }] } })
+					api('PUT', '/api/admin/backup', confirmedByChief({ destinations: [{ ...G, name: NAME, folderId: 'chosen-meanwhile' }] }))
 				);
 
 				expect((await connectNamed()).body).toEqual({ success: false, message: CHANGED_MEANWHILE });
@@ -4479,7 +4528,7 @@ describe('the Scheduled Backups panel on the admin page (cards 2188 and 2190, sl
 		// The Test through `sent`, which the page and its panels share (card 2281, slice C1a); the save
 		// reads the server's words itself, to add that the settings were read again (the card 2398 review).
 		expect(read('src/lib/admin/send.ts')).toContain('showToast(await failureMessage(res, fallback), \'error\', started);');
-		expect(scriptOf(panel)).toContain("import { NO_ANSWER, sent, showToast } from '$lib/admin/send';");
+		expect(scriptOf(panel)).toContain("import { NO_ANSWER, sent, sentAsking, showToast } from '$lib/admin/send';");
 		expect(scriptOf(panel)).toContain("refused = await failureMessage(res, 'Failed to save backup settings');");
 		expect(scriptOf(connectBox)).toContain("showToast(said || 'Failed to connect', 'error', started);");
 	});

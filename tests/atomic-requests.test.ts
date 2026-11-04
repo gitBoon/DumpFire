@@ -46,6 +46,7 @@ import {
 	makeUser,
 	makeWebhook,
 	resetDb,
+	stepUp,
 	type BoardFixture
 } from './helpers/fixtures';
 import { watchReads } from './helpers/reads';
@@ -738,8 +739,9 @@ describe('mail to a requester who made the request signed in', () => {
 			.get().id;
 
 	/** The account's email changed by the superadmin, through the route that changes it. */
+	// With the superadmin's current password (card 2701).
 	const changeEmail = async (s: Signed, email: string) =>
-		ok(await api('PUT', `/api/users/${s.requester.id}`, { user: s.root, body: { email } }));
+		ok(await api('PUT', `/api/users/${s.requester.id}`, stepUp(s.root, { email })));
 
 	const accept = (s: Scene, id: number) =>
 		api('PATCH', `/api/requests/${id}`, {
@@ -820,7 +822,7 @@ describe('mail to a requester who made the request signed in', () => {
 		await recording(async (sent) => {
 			const id = await ask(s, s.requester, 'Please add a report');
 			await changeEmail(s, NEW);
-			ok(await api('DELETE', `/api/users/${s.requester.id}`, { user: s.root }));
+			ok(await api('DELETE', `/api/users/${s.requester.id}`, stepUp(s.root)));
 
 			// The key forgets the account; the address it had stays with the request.
 			expect(requestRow(id)).toMatchObject({ requesterUserId: null, requesterEmail: NEW });

@@ -7,6 +7,8 @@ import { eq } from 'drizzle-orm';
 import { readAccountFields, requireAssignableRole, requireUnusedAccountFields } from '$lib/server/account-fields';
 import { pathId, readBody } from '$lib/server/request-body';
 import { requireAdmin, requireManagedAccount } from '$lib/server/route-guards';
+import { whilePasswordHolds, type SessionUser } from '$lib/server/auth';
+import { confirmStepUp } from '$lib/server/step-up';
 import { writeAs } from '$lib/server/write-as';
 import { endUnusedInvites } from '$lib/server/invites';
 import { anyRemoved, removeSettingsSetBy, settingsHeldBy } from '$lib/server/setting-setters';
@@ -59,19 +61,27 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  * settings, the App URL and the backup destinations they last changed (card
  * 2397): the answer then has `settingsRemoved`, `{ mail, appUrl,
  * destinations }`, and an answer that removed nothing has no such field.
+ *
+ * A body that carries `role` or `email` asks for the caller's own password
+ * again, in `currentPassword` (card 2701, step-up.ts): it changes an account's
+ * privileges, or the address its invites and resets go to. Every refusal the
+ * change makes is made first, read only, so that none costs a check or a
+ * guess. A username or emoji alone asks for none.
  */
-export const PUT: RequestHandler = async ({ params, request, locals }) => {
+export const PUT: RequestHandler = async ({ params, request, locals, cookies }) => {
 	requireAdmin(locals.user);
 
 	const userId = pathId(params.id, 'user');
 	const body = await readBody(request);
 
-	// One transaction: the user is read and the caller checked in the one that
-	// changes the account, so the role that was checked is the role of the row
-	// that is changed. Its fields are read after (card 2117, R1). It asks first
-	// whether the session is still open, and who its account is now: the
-	// caller's own role may have been lowered while the body arrived (card 2253).
-	const answer = writeAs(locals, (caller) => {
+	/**
+	 * Every refusal of the change, read only: the caller as their account is
+	 * now, the account, the caller's own email and role, the fields against the
+	 * row, the role and whether the name and address are free; and what would
+	 * change. Asked before the password, and again in the transaction that
+	 * changes the account.
+	 */
+	const refusals = (caller: SessionUser | null) => {
 		const actor = requireAdmin(caller);
 
 		// The superadmin's account is theirs alone, and only the superadmin
@@ -82,10 +92,11 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 			admin: 'Only superadmin can modify admin users'
 		});
 
-		// Nobody changes their own email here, an administrator included. This
-		// route asks for no password, and an email is where an invite to set a
-		// new one is sent. PUT /api/account/email asks for the password they
-		// have. Refused for sending it at all, whatever else came with it.
+		// Nobody changes their own email here, an administrator included: an
+		// email is where an invite to set a new password is sent, and this is
+		// the route for another's account. PUT /api/account/email asks for the
+		// password they have. Refused for sending it at all, whatever else came
+		// with it, before any password is asked for (card 2701).
 		if (target.id === actor.id && body.email !== undefined) {
 			throw error(403, 'Change your own email on the Account page, which asks for your current password');
 		}
@@ -126,56 +137,92 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 		if (fields.email !== undefined) updates.email = fields.email.toLowerCase();
 
 		// What actually changes: an email is compared in lower case, as it is
-		// stored, and a role sent as the one the account has is no change. The
-		// invites end before the account is written.
+		// stored, and a role sent as the one the account has is no change.
 		const changed = [
 			...(updates.email !== undefined && updates.email !== target.email.toLowerCase() ? ['email address'] : []),
 			...(updates.role !== undefined && updates.role !== target.role ? ['role'] : [])
 		];
-		const invitesEnded = changed.length > 0 ? endUnusedInvites(target.id) : 0;
-		if (changed.length > 0) {
-			afterCommit(() =>
-				log.info(
-					`User ${actor.id} changed the ${changed.join(' and ')} of user ${target.id} — ended ${invitesEnded} unused invite(s)`,
-					{ targetUserId: target.id, changed, ...(changed.includes('role') ? { role: updates.role } : {}), invitesEnded },
-					{ userId: actor.id }
-				)
-			);
-		}
 
-		if (Object.keys(updates).length === 0) {
-			// The same columns an update answers, and no others. This used to
-			// answer the row as it was read, password hash included.
-			return {
-				id: target.id,
-				username: target.username,
-				email: target.email,
-				emoji: target.emoji,
-				role: target.role,
-				createdAt: target.createdAt,
-				invitesEnded
-			};
-		}
+		return { actor, target, updates, changed };
+	};
 
-		const row = db.update(users)
-			.set(updates)
-			.where(eq(users.id, userId))
-			.returning({ id: users.id, username: users.username, email: users.email, emoji: users.emoji, role: users.role, createdAt: users.createdAt })
-			.get();
+	// A username or emoji alone changes nothing of the account's access, asks
+	// for no password, and ends no invite. One transaction, as below.
+	if (!Object.hasOwn(body, 'role') && !Object.hasOwn(body, 'email')) {
+		return json(
+			writeAs(locals, (caller) => {
+				const { target, updates } = refusals(caller);
+				if (Object.keys(updates).length === 0) return { ...answered(target), invitesEnded: 0 };
+				return { ...db.update(users).set(updates).where(eq(users.id, userId)).returning(ANSWERED).get(), invitesEnded: 0 };
+			})
+		);
+	}
 
-		// An administrator made a user loses what they set that sends mail or
-		// backups somewhere, in this transaction (card 2397): the mail settings,
-		// the App URL and the destinations they last changed. The answer names
-		// what went, and only then has the field.
-		if (updates.role === 'user' && target.role !== 'user') {
-			const settingsRemoved = removeSettingsSetBy(target, 'demoted', actor);
-			if (anyRemoved(settingsRemoved)) return { ...row, invitesEnded, settingsRemoved };
-		}
-		return { ...row, invitesEnded };
-	});
+	// A role or an email: the caller's password, asked for again (card 2701),
+	// once every refusal that needs none has been made.
+	const { userId: callerId, hash } = await confirmStepUp(locals, cookies, body, 'PUT /api/users/[id]', (caller) =>
+		refusals(caller)
+	);
+
+	// One transaction: the user is read and the caller checked in the one that
+	// changes the account, so the role that was checked is the role of the row
+	// that is changed. Its fields are read after (card 2117, R1). It asks first
+	// whether the session is still open, and who its account is now: the
+	// caller's own role may have been lowered while the body arrived (card
+	// 2253). It runs only while the caller's stored hash is the one their
+	// password was checked against.
+	const answer = await whilePasswordHolds(callerId, hash, () =>
+		writeAs(locals, (caller) => {
+			const { actor, target, updates, changed } = refusals(caller);
+
+			// The invites end before the account is written.
+			const invitesEnded = changed.length > 0 ? endUnusedInvites(target.id) : 0;
+			if (changed.length > 0) {
+				afterCommit(() =>
+					log.info(
+						`User ${actor.id} changed the ${changed.join(' and ')} of user ${target.id} — ended ${invitesEnded} unused invite(s)`,
+						{ targetUserId: target.id, changed, ...(changed.includes('role') ? { role: updates.role } : {}), invitesEnded },
+						{ userId: actor.id }
+					)
+				);
+			}
+
+			if (Object.keys(updates).length === 0) return { ...answered(target), invitesEnded };
+
+			const row = db.update(users).set(updates).where(eq(users.id, userId)).returning(ANSWERED).get();
+
+			// An administrator made a user loses what they set that sends mail or
+			// backups somewhere, in this transaction (card 2397): the mail settings,
+			// the App URL and the destinations they last changed. The answer names
+			// what went, and only then has the field.
+			if (updates.role === 'user' && target.role !== 'user') {
+				const settingsRemoved = removeSettingsSetBy(target, 'demoted', actor);
+				if (anyRemoved(settingsRemoved)) return { ...row, invitesEnded, settingsRemoved };
+			}
+			return { ...row, invitesEnded };
+		}));
 
 	return json(answer);
 };
+
+/** The columns PUT answers of an account, and no others. */
+const ANSWERED = { id: users.id, username: users.username, email: users.email, emoji: users.emoji, role: users.role, createdAt: users.createdAt };
+
+/**
+ * An account as PUT answers it when nothing changed: the columns an update
+ * answers, and no others. This used to answer the row as it was read,
+ * password hash included.
+ */
+function answered(target: User) {
+	return {
+		id: target.id,
+		username: target.username,
+		email: target.email,
+		emoji: target.emoji,
+		role: target.role,
+		createdAt: target.createdAt
+	};
+}
 
 /**
  * The names of the teams `userId` is the only owner of, in name order: an
@@ -206,16 +253,23 @@ function soleOwnerOf(userId: number): string[] {
  * go with it (card 2397, in `deleteUser`): the answer then has
  * `settingsRemoved`, as the role change's has, and is `{ success: true }`
  * where nothing went.
+ *
+ * It asks for the caller's own password again, in `currentPassword` (card
+ * 2701, step-up.ts), after every refusal that needs none.
  */
-export const DELETE: RequestHandler = async ({ params, locals }) => {
+export const DELETE: RequestHandler = async ({ params, request, locals, cookies }) => {
 	requireAdmin(locals.user);
 
 	const userId = pathId(params.id, 'user');
+	const body = await readBody(request);
 
-	// One transaction: the user is read, checked and deleted together, so the
-	// role that was checked is the role of the row that goes. It asks first
-	// whether the session is still open, and who its account is now (card 2253).
-	const removed = writeAs(locals, (caller) => {
+	/**
+	 * Every refusal of the delete, read only: the caller as their account is
+	 * now, their own account, whose account they may delete, and a team's only
+	 * owner. Asked before the password, and again in the transaction that
+	 * deletes the account.
+	 */
+	const refusals = (caller: SessionUser | null) => {
 		const actor = requireAdmin(caller);
 
 		// Can't delete yourself
@@ -238,10 +292,28 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 			throw error(409, `This account is the only owner of: ${owned.join(', ')}. Make someone else an owner or delete ${those} first.`);
 		}
 
-		// What named the user with no key to clear it is cleared first; the
-		// delete used to fail on it. See $lib/server/deletes.ts.
-		return deleteUser(userId, actor);
-	});
+		return actor;
+	};
+
+	// The caller's password, asked for again (card 2701), once every refusal
+	// that needs none has been made.
+	const { userId: callerId, hash } = await confirmStepUp(locals, cookies, body, 'DELETE /api/users/[id]', (caller) =>
+		refusals(caller)
+	);
+
+	// One transaction: the user is read, checked and deleted together, so the
+	// role that was checked is the role of the row that goes. It asks first
+	// whether the session is still open, and who its account is now (card
+	// 2253), and runs only while the caller's stored hash is the one their
+	// password was checked against.
+	const removed = await whilePasswordHolds(callerId, hash, () =>
+		writeAs(locals, (caller) => {
+			const actor = refusals(caller);
+
+			// What named the user with no key to clear it is cleared first; the
+			// delete used to fail on it. See $lib/server/deletes.ts.
+			return deleteUser(userId, actor);
+		}));
 
 	// The mail settings, App URL and destinations the account last changed
 	// went with it (card 2397): named only where something did.

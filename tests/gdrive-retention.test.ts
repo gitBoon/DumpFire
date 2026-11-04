@@ -58,8 +58,23 @@ import type { DestinationConfig } from '$lib/server/backup-destinations';
 import { sqlite } from '$lib/server/db';
 import { api } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
-import { makeSession, makeSmtp, makeUser, resetDb } from './helpers/fixtures';
+import { FIXTURE_PASSWORD, makeSession, makeSmtp, makeUser, resetDb } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
+import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
+
+/**
+ * Run Now's `api()` options as the panel sends it: by `user`, from a session
+ * of theirs, with their current password (card 2701).
+ */
+function confirmedFrom(user: SessionUser) {
+	const token = makeSession(user);
+	return {
+		user,
+		credential: { kind: 'session' as const, token },
+		body: { currentPassword: FIXTURE_PASSWORD },
+		headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` }
+	};
+}
 
 /** A file in the folder, and what the account may do to it. */
 type DriveFile = { id: string; name: string; canDelete: boolean; canTrash: boolean };
@@ -388,7 +403,7 @@ describe('Keep Last counts Run Now copies apart from scheduled ones (card 2405)'
 	async function runNow(): Promise<void> {
 		vi.setSystemTime(Date.now() + 1000);
 		const admin = makeUser({ role: 'admin' });
-		const res = await api('POST', '/api/admin/backup', { user: admin, credential: { kind: 'session', token: makeSession(admin) }, body: {} });
+		const res = await api('POST', '/api/admin/backup', confirmedFrom(admin));
 		expect(res.status, JSON.stringify(res.body)).toBe(200);
 		expect(res.body.results).toEqual([expect.objectContaining({ status: 'success' })]);
 	}
@@ -1033,7 +1048,7 @@ describe('A copy of the database that cannot be made is recorded, answered and t
 		copyFails();
 		const admin = makeUser({ role: 'admin' });
 
-		const res = await api('POST', '/api/admin/backup', { user: admin, credential: { kind: 'session', token: makeSession(admin) }, body: {} });
+		const res = await api('POST', '/api/admin/backup', confirmedFrom(admin));
 
 		// It was a 500, with nothing in Backup History.
 		expect(res.status, JSON.stringify(res.body)).toBe(200);

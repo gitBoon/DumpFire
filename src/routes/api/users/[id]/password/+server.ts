@@ -3,9 +3,10 @@ import { db } from '$lib/server/db';
 import { afterCommit } from '$lib/server/db/transaction';
 import { users } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
-import { endAccountAccess, namingIds, type SessionUser } from '$lib/server/auth';
+import { endAccountAccess, namingIds, whilePasswordHolds, type SessionUser } from '$lib/server/auth';
 import { makePasswordHash } from '$lib/server/passwords';
 import { refuseOwnAccount, requireAdmin, requireManagedAccount, requireUser } from '$lib/server/route-guards';
+import { confirmStepUp } from '$lib/server/step-up';
 import { writeAs } from '$lib/server/write-as';
 import { pathId, readBody, readText } from '$lib/server/request-body';
 import { createLogger } from '$lib/server/logger';
@@ -13,8 +14,12 @@ import type { RequestHandler } from './$types';
 
 const log = createLogger('AUTH');
 
-/** PUT — Reset another user's password (admin only). */
-export const PUT: RequestHandler = async ({ params, request, locals }) => {
+/**
+ * PUT — Reset another user's password (admin only). The new one is
+ * `password`; the caller's own is asked for again in `currentPassword` (card
+ * 2701, step-up.ts), after every refusal that needs none.
+ */
+export const PUT: RequestHandler = async ({ params, request, locals, cookies }) => {
 	requireUser(locals.user);
 
 	const userId = pathId(params.id, 'user');
@@ -56,14 +61,27 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 	requireTarget(writeAs(locals, (caller) => requireUser(caller)));
 	const SHORT = 'Password must be at least 8 characters';
 	const password = readText(body, 'password', { required: true, min: 8, says: { missing: SHORT, empty: SHORT, invalid: SHORT } });
+
+	// The caller's own password, asked for again (card 2701): setting another
+	// account's is a takeover. The account is asked again first, read only, so
+	// that a request that will be refused costs no check and no guess; then the
+	// new password is hashed.
+	const { userId: callerId, hash } = await confirmStepUp(
+		locals,
+		cookies,
+		body,
+		'PUT /api/users/[id]/password',
+		(caller) => requireTarget(caller)
+	);
 	const passwordHash = await makePasswordHash(password, 'known');
 
 	// One transaction: the user is read and checked in the one that changes the
 	// password and ends their sessions. A failure between the two used to leave
 	// a reset password with every old session still signed in. The hash was
 	// awaited, so the session is asked again, and the caller decided again by
-	// the account as it is now (card 2253).
-	const ended = writeAs(locals, (caller) => {
+	// the account as it is now (card 2253). It runs only while the caller's
+	// stored hash is the one their password was checked against.
+	const ended = await whilePasswordHolds(callerId, hash, () => writeAs(locals, (caller) => {
 		const { actor, target } = requireTarget(caller);
 
 		db.update(users).set({ passwordHash }).where(eq(users.id, userId)).run();
@@ -98,7 +116,7 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
 			)
 		);
 		return access;
-	});
+	}));
 
 	return json({
 		success: true,

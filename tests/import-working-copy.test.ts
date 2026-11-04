@@ -43,7 +43,7 @@ import { reportSchedules, webhooks } from '$lib/server/db/schema';
 import { getSmtpConfig, isSmtpConfigured } from '$lib/server/email';
 import { issueFormToken, resetFormSecretCache, verifyFormToken } from '$lib/server/request-tokens';
 import { api, routeMethods } from './helpers/api';
-import { makeUser, resetDb } from './helpers/fixtures';
+import { importConfirmation, makeUser, resetDb } from './helpers/fixtures';
 import { afterEachTimestampCheck } from './helpers/timestamps';
 
 const REAL_MIGRATIONS = join(process.cwd(), 'drizzle');
@@ -815,6 +815,9 @@ describe('through the route', () => {
 		await routeMethods('/api/admin/import');
 		// The superadmin: an import is refused to an administrator.
 		const admin = makeUser({ role: 'superadmin' });
+		// With their password confirmed first (card 2701), before `arrange`
+		// reads what there is: the session it is confirmed on is theirs.
+		const confirmed = importConfirmation(admin);
 		const workingDirectory = mkdtempSync(join(tmpdir(), 'dumpfire-import-'));
 		tempDirs.push(workingDirectory);
 		vi.spyOn(process, 'cwd').mockReturnValue(workingDirectory);
@@ -833,7 +836,7 @@ describe('through the route', () => {
 
 		const response = await api('POST', `/api/admin/import${query}`, {
 			user: admin,
-			headers: { 'content-type': contentType },
+			headers: { 'content-type': contentType, ...confirmed },
 			body
 		});
 

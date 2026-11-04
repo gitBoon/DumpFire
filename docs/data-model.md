@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.45
+version: 1.47
 status: As-Built
-date: 2026-11-03
+date: 2026-11-04
 tags:
   - database
   - schema
@@ -26,7 +26,9 @@ tags:
   - working-content
   - migration-0061
   - product-owner
-description: "Complete database schema documentation with ER diagram, table descriptions, relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), and how migrations and schema reconciliation bring every database to the model"
+  - migration-0062
+  - sessions
+description: "Complete database schema documentation with ER diagram, table descriptions, relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), and how migrations and schema reconciliation bring every database to the model"
 ---
 
 # DumpFire Data Model
@@ -53,6 +55,7 @@ erDiagram
         int user_id FK
         text expires_at
         text created_at
+        int wrong_password_count "0062: NOT NULL DEFAULT 0; 3 ends the session"
     }
 
     teams {
@@ -2206,6 +2209,41 @@ of about zero.
   are insert-only in code alone. 0061 changes no row and declares nothing to the rehearsal;
   a backup from before it restores with the twelve tables empty and every Product Owner NULL.
   Backup, restore, reset and the timestamp upkeep find the tables for themselves.
+- **`sessions.wrong_password_count` is how many current passwords a session has had compared
+  since its last right one** (card 2701, migration `0062_add_session_wrong_password_count.sql`,
+  2026-11-04). `INTEGER NOT NULL DEFAULT 0`, one `ALTER TABLE … ADD`. `checkCurrentPassword`
+  (`src/lib/server/auth.ts`) reads the row first: gone is a session signed out, and 3 or more
+  ends the session with nothing compared. A check refused before any compare (one of the
+  session's own already under way, `429 STEP_UP_IN_FLIGHT`, or the account's five first-lane
+  places all taken, `429 PASSWORDS_BUSY`) is not counted. Only then, with nothing awaited since
+  the read, it adds one in one statement (`UPDATE sessions SET wrong_password_count =
+  wrong_password_count + 1 WHERE id = ? AND user_id = ? RETURNING wrong_password_count`) and
+  compares; a compare that fails on its worker stays counted. A right one sets it to 0 while
+  the row is still there, and a wrong one that leaves it at 3 deletes the session (the code
+  review's S1, ruled 2026-11-04: only a compare counts). The Account page's three forms and the
+  eighteen step-up actions share it. It replaced a count in memory with a 15-minute window, so a
+  restart no longer clears it. `sessions` is not a reconciled table, so the file alone adds the
+  column; every existing session reads 0 and no row is changed, so nothing is declared to the
+  rehearsal. No backup holds a session row and no restore brings one in, so neither carries a
+  count. An older image keeps the column, reports it as a difference at each start and does
+  not act on it.
+
+```mermaid
+stateDiagram-v2
+    [*] --> None: session made (sign-in, set-up, invite, own password change), 0
+    None --> One: a wrong one, 1
+    One --> Two: a wrong one, 2
+    Two --> Ended: a third wrong one, 3
+    One --> None: a right one, 0
+    Two --> None: a right one, 0
+    Ended --> [*]: the row deleted, "three wrong current passwords"
+    note right of One
+        Each compare adds one just before it is made;
+        a check refused unchecked (in flight, busy)
+        adds none, and a right one sets it to 0
+    end note
+```
+
 - **No secret is in a backup's copy** (card 2169): no `smtp_pass` row, every secret field of
   `backup_config`'s destinations `''`, and every `webhooks.secret` `''` with the webhook's
   `active` 0. The `webhook_secrets_left_out` row of `settings` lists, as a JSON array of

@@ -39,14 +39,32 @@
 	 */
 	let superadminName = $derived(data.users.find((u) => u.role === 'superadmin')?.username ?? null);
 
+	/**
+	 * What Confirm runs, handed the password typed ('' where none was asked):
+	 * text it gives back is the server's refusal of the password, which the
+	 * dialog shows, staying open (card 2701, D6).
+	 */
+	type ConfirmedAction = (password: string) => Promise<string | null | void>;
+
 	/** Confirm modal state for destructive admin actions. */
-	let confirmAction = $state<{ show: boolean; title: string; message: string; action: () => Promise<void> }>({
-		show: false, title: '', message: '', action: async () => {}
+	let confirmAction = $state<{ show: boolean; title: string; message: string; action: ConfirmedAction; askPassword: boolean }>({
+		show: false, title: '', message: '', action: async () => {}, askPassword: false
 	});
 
-	/** Opens the confirm modal for a destructive action. */
-	function confirm(title: string, message: string, action: () => Promise<void>) {
-		confirmAction = { show: true, title, message, action };
+	/**
+	 * Opens the confirm modal for a destructive action. `askPassword` asks for
+	 * the caller's own password in it, for an action that asks for it again
+	 * (card 2701, decision 13), and hands it to `action`.
+	 */
+	function confirm(title: string, message: string, action: ConfirmedAction, options: { askPassword?: boolean } = {}) {
+		confirmAction = { show: true, title, message, action, askPassword: options.askPassword === true };
+	}
+
+	/** Confirm pressed: the action runs with the dialog open, which closes once it gives back no refusal. */
+	async function confirmed(password: string): Promise<string | void> {
+		const refusal = await confirmAction.action(password);
+		if (typeof refusal === 'string') return refusal;
+		confirmAction.show = false;
 	}
 
 	/**
@@ -176,7 +194,8 @@
 		title={confirmAction.title}
 		message={confirmAction.message}
 		confirmText="Confirm"
-		onConfirm={async () => { confirmAction.show = false; await confirmAction.action(); }}
+		askPassword={confirmAction.askPassword}
+		onConfirm={confirmed}
 		onCancel={() => (confirmAction.show = false)}
 	/>
 {/if}

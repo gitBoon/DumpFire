@@ -166,6 +166,8 @@ const TEST_FILES = [
 	'setting-setters.test.ts',
 	'sftp-host-key.test.ts',
 	'share-window.svelte.test.ts',
+	// Card 2701: the password asked for again before destructive admin actions.
+	'step-up.test.ts',
 	'sub-board-depth.test.ts',
 	'subtask-order.test.ts',
 	'team-owners.test.ts',

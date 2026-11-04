@@ -45,7 +45,7 @@ import { api, type ApiResult } from './helpers/api';
 import { pageLoad } from './helpers/actions';
 import { readBudget } from './helpers/reads';
 import { effects, type Effects } from './helpers/effects';
-import { addBoardMember, makeBoard, makeCard, makeUser, makeWebhook, resetDb, type BoardFixture } from './helpers/fixtures';
+import { addBoardMember, makeBoard, makeCard, makeUser, makeWebhook, resetDb, stepUp, type BoardFixture } from './helpers/fixtures';
 
 /** When every card here was made, long before anything is done to it. */
 const OLD = '2026-01-05 09:00:00';
@@ -377,11 +377,11 @@ describe('the other paths', () => {
 		cardIn(other.cols['Options'], 'Another option');
 
 		expect((await api('DELETE', `/api/v1/columns/${I.cols['New Ideas'].id}`, { user: owner })).status).toBe(200);
-		expect((await api('POST', '/api/admin/purge-archived', { user: admin })).status).toBe(200);
+		expect((await api('POST', '/api/admin/purge-archived', stepUp(admin))).status).toBe(200);
 		expect(db.select().from(cards).where(eq(cards.id, archivedIdea.id)).get()).toBeUndefined();
-		expect((await api('POST', `/api/admin/boards/${other.board.id}/clear-cards`, { user: admin })).status).toBe(200);
+		expect((await api('POST', `/api/admin/boards/${other.board.id}/clear-cards`, stepUp(admin))).status).toBe(200);
 		cardIn(I.cols['Shaping'], 'Last idea');
-		expect((await api('DELETE', `/api/boards/${I.board.id}`, { user: owner })).status).toBe(200);
+		expect((await api('DELETE', `/api/boards/${I.board.id}`, stepUp(owner))).status).toBe(200);
 		expect((await api('DELETE', `/api/v1/boards/${A.board.id}`, { user: owner })).status).toBe(200);
 
 		expect(db.select().from(activityLog).all().filter((e) => e.action.endsWith('card_discarded'))).toEqual([]);

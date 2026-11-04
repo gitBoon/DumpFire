@@ -18,12 +18,19 @@
  *
  * The plan is `docs/planning/cards-2337-2338-2341-2342-2353-card-window.md`
  * (section 3.1, decisions 1 to 4, tests 3 to 7).
+ *
+ * Card 2701 (cases 26 and 27 of `docs/planning/card-2701-admin-step-up.md`):
+ * with `askPassword` the dialog asks for the caller's own password, hands it
+ * to an awaited `onConfirm`, and stays open on the refusal that gives back,
+ * showing it, the field cleared and focused; a 400 asking for a password the
+ * dialog did not ask for shows the field.
  */
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import type * as Svelte from 'svelte';
 import ConfirmModal from '$lib/components/ConfirmModal.svelte';
+import { NO_ANSWER_TRY_AGAIN, STEP_UP_MISSING, STEP_UP_SIGNED_OUT, STEP_UP_WRONG } from '$lib/step-up-words';
 
 // The browser's `mount`, loaded by its path: a bare 'svelte' gives the server's (see the XP bars' file).
 const clientEntry = pathToFileURL(join(process.cwd(), 'node_modules/svelte/src/index-client.js')).href;
@@ -69,7 +76,8 @@ function close() {
 }
 
 const cancelButton = (target: HTMLElement) => [...target.querySelectorAll('button')].find((b) => b.textContent!.trim() === 'Cancel')!;
-const confirmButton = (target: HTMLElement) => [...target.querySelectorAll('button')].find((b) => b.textContent!.trim() === 'Delete')!;
+/** Confirm: the second of the dialog's two buttons, whose words say "Working…" while its answer is awaited (card 2701, F2). */
+const confirmButton = (target: HTMLElement) => target.querySelectorAll<HTMLButtonElement>('.confirm-actions button')[1];
 
 /** A Tab (or Shift+Tab) pressed where the focus is, bubbling as a real one does; gives back whether its default was taken. */
 function tab(shiftKey = false): boolean {
@@ -165,5 +173,232 @@ describe('the confirm dialog gives the focus back as it closes (card 2353)', () 
 		close();
 		await macrotask();
 		expect(document.activeElement).toBe(document.body);
+	});
+});
+
+/** The dialog's password field, if it shows one. */
+const passwordField = (target: HTMLElement) => target.querySelector<HTMLInputElement>('input[type="password"]');
+
+/** Types `text` into a box, as `bind:value` hears it. */
+function type(box: HTMLInputElement, text: string) {
+	box.value = text;
+	box.dispatchEvent(new Event('input', { bubbles: true }));
+	flushSync();
+}
+
+/** An `onConfirm` whose answer the case gives when it likes: what it was handed, and how to answer. */
+function heldConfirm() {
+	const handed: string[] = [];
+	const answers: Array<{ resolve: (answer: string | null | void) => void; reject: (fault: unknown) => void }> = [];
+	const fn = vi.fn((password: string) => {
+		handed.push(password);
+		return new Promise<string | null | void>((resolve, reject) => answers.push({ resolve, reject }));
+	});
+	return {
+		fn,
+		handed,
+		answer: (said: string | null | void) => answers.shift()!.resolve(said),
+		/** The answer never comes: `onConfirm`'s promise is rejected, as a fetch with no answer rejects. */
+		fail: (fault: unknown) => answers.shift()!.reject(fault)
+	};
+}
+
+describe('the confirm dialog asks for the caller’s password (card 2701, case 26)', () => {
+	it('shows a labelled password field the browser fills as the current password, Confirm off until something is typed, and the focus in it', () => {
+		const target = open({ askPassword: true });
+		const field = passwordField(target)!;
+
+		expect(field).not.toBeNull();
+		expect(field.type).toBe('password');
+		expect(field.getAttribute('autocomplete')).toBe('current-password');
+		// Labelled: a screen reader names it, and a click on its words goes to it.
+		const label = target.querySelector<HTMLLabelElement>(`label[for="${field.id}"]`);
+		expect(label?.textContent?.trim()).toBe('Your password');
+		// The focus is in it as the dialog opens: Enter does nothing until something is typed.
+		expect(document.activeElement).toBe(field);
+		expect(confirmButton(target).disabled).toBe(true);
+		confirmButton(target).click();
+		field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+		flushSync();
+		expect(onConfirm).not.toHaveBeenCalled();
+
+		type(field, 'my-own-password');
+		expect(confirmButton(target).disabled).toBe(false);
+	});
+
+	it('confirms on Enter in the field, handing onConfirm the text typed, which the field no longer holds', async () => {
+		const asked = heldConfirm();
+		const target = open({ askPassword: true, onConfirm: asked.fn });
+		const field = passwordField(target)!;
+		type(field, 'my-own-password');
+		const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+		field.dispatchEvent(enter);
+		flushSync();
+
+		expect(enter.defaultPrevented).toBe(true);
+		expect(asked.handed).toEqual(['my-own-password']);
+		// Cleared once sent: it is held nowhere but the request.
+		expect(field.value).toBe('');
+		asked.answer();
+		await macrotask();
+	});
+
+	it('clears what was typed on Cancel, sending nothing', () => {
+		const target = open({ askPassword: true });
+		type(passwordField(target)!, 'my-own-password');
+		cancelButton(target).click();
+		flushSync();
+
+		expect(onCancel).toHaveBeenCalledTimes(1);
+		expect(onConfirm).not.toHaveBeenCalled();
+		expect(passwordField(target)!.value).toBe('');
+	});
+
+	it('shows no field, and hands onConfirm an empty text, where it is not asked for: the dialogs that ask nothing are as they were', () => {
+		const target = open();
+		expect(passwordField(target)).toBeNull();
+		expect(confirmButton(target).disabled).toBe(false);
+		confirmButton(target).click();
+		flushSync();
+		expect(onConfirm).toHaveBeenCalledTimes(1);
+		expect(onConfirm.mock.calls[0]).toEqual(['']);
+	});
+});
+
+describe('the confirm dialog waits for its answer and keeps a refusal in it (card 2701, case 27, D6)', () => {
+	it('turns both buttons off while onConfirm runs, so one press sends one request, and ignores Escape meanwhile', async () => {
+		const asked = heldConfirm();
+		const target = open({ askPassword: true, onConfirm: asked.fn });
+		type(passwordField(target)!, 'my-own-password');
+		confirmButton(target).click();
+		flushSync();
+
+		expect(confirmButton(target).disabled).toBe(true);
+		expect(cancelButton(target).disabled).toBe(true);
+		// Said to be working, to the eye and to a screen reader (the code review's F2).
+		expect(confirmButton(target).textContent!.trim()).toBe('Working…');
+		expect(confirmButton(target).getAttribute('aria-busy')).toBe('true');
+		type(passwordField(target)!, 'again');
+		confirmButton(target).click();
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+		flushSync();
+		expect(asked.fn).toHaveBeenCalledTimes(1);
+		expect(onCancel).not.toHaveBeenCalled();
+
+		asked.answer();
+		await macrotask();
+		expect(cancelButton(target).disabled).toBe(false);
+		expect(confirmButton(target).textContent!.trim()).toBe('Delete');
+		expect(confirmButton(target).hasAttribute('aria-busy')).toBe(false);
+	});
+
+	it('says no answer in the dialog when onConfirm is rejected, the field cleared and focused to try again (the code review’s F9)', async () => {
+		const asked = heldConfirm();
+		const target = open({ askPassword: true, onConfirm: asked.fn });
+		const field = passwordField(target)!;
+		type(field, 'my-own-password');
+		confirmButton(target).click();
+		flushSync();
+		asked.fail(new TypeError('Failed to fetch'));
+		await macrotask();
+		flushSync();
+
+		expect(target.querySelector('[role="alert"]')?.textContent).toBe(NO_ANSWER_TRY_AGAIN);
+		expect(target.querySelector('[role="dialog"]')).not.toBeNull();
+		expect(field.value).toBe('');
+		expect(document.activeElement).toBe(field);
+		expect(onCancel).not.toHaveBeenCalled();
+	});
+
+	it('takes the field away once the session is signed out: nothing more can be sent from it (the code review’s F5)', async () => {
+		const asked = heldConfirm();
+		const target = open({ askPassword: true, onConfirm: asked.fn });
+		type(passwordField(target)!, 'a-wrong-one');
+		confirmButton(target).click();
+		flushSync();
+		asked.answer(STEP_UP_SIGNED_OUT);
+		await macrotask();
+		flushSync();
+
+		expect(target.querySelector('[role="alert"]')?.textContent).toBe(STEP_UP_SIGNED_OUT);
+		expect(passwordField(target)!.disabled).toBe(true);
+		expect(confirmButton(target).disabled).toBe(true);
+	});
+
+	it('stays open on a refusal, says it in an alert, clears the field and puts the focus in it; the next Confirm sends what is typed then', async () => {
+		const asked = heldConfirm();
+		const target = open({ askPassword: true, onConfirm: asked.fn });
+		const field = passwordField(target)!;
+		type(field, 'a-wrong-one');
+		confirmButton(target).click();
+		flushSync();
+		asked.answer(STEP_UP_WRONG);
+		await macrotask();
+		flushSync();
+
+		const alert = target.querySelector('[role="alert"]');
+		expect(alert?.textContent).toBe(STEP_UP_WRONG);
+		expect(target.querySelector('[role="dialog"]')).not.toBeNull();
+		expect(field.value).toBe('');
+		expect(document.activeElement).toBe(field);
+		expect(field.getAttribute('aria-describedby')).toBe(alert!.id);
+		expect(confirmButton(target).disabled).toBe(true);
+
+		type(field, 'the-right-one');
+		confirmButton(target).click();
+		flushSync();
+		// The last refusal goes as the next Confirm is sent.
+		expect(target.querySelector('[role="alert"]')).toBeNull();
+		expect(asked.handed).toEqual(['a-wrong-one', 'the-right-one']);
+		asked.answer();
+		await macrotask();
+	});
+
+	it('leaves the closing to its caller for an answer that is not a refusal', async () => {
+		const asked = heldConfirm();
+		const closing = vi.fn();
+		const target = open({
+			askPassword: true,
+			onConfirm: async (password: string) => {
+				await asked.fn(password);
+				closing();
+			}
+		});
+		type(passwordField(target)!, 'the-right-one');
+		confirmButton(target).click();
+		asked.answer(null);
+		await macrotask();
+		flushSync();
+
+		expect(closing).toHaveBeenCalledTimes(1);
+		expect(target.querySelector('[role="alert"]')).toBeNull();
+		// The dialog is the caller's to close, as it does by no longer drawing it.
+		close();
+		await macrotask();
+		expect(document.activeElement).toBe(opener);
+	});
+
+	it('shows the field where the server asked for a password the dialog did not ask for (a column of archived cards alone, decision 18)', async () => {
+		const asked = heldConfirm();
+		const target = open({ onConfirm: asked.fn });
+		expect(passwordField(target)).toBeNull();
+		confirmButton(target).click();
+		flushSync();
+		expect(asked.handed).toEqual(['']);
+		asked.answer(STEP_UP_MISSING);
+		await macrotask();
+		flushSync();
+
+		const field = passwordField(target)!;
+		expect(field).not.toBeNull();
+		expect(document.activeElement).toBe(field);
+		expect(target.querySelector('[role="alert"]')?.textContent).toBe(STEP_UP_MISSING);
+		expect(confirmButton(target).disabled).toBe(true);
+		type(field, 'my-own-password');
+		confirmButton(target).click();
+		flushSync();
+		expect(asked.handed).toEqual(['', 'my-own-password']);
+		asked.answer();
+		await macrotask();
 	});
 });

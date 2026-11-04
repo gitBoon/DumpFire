@@ -1,10 +1,12 @@
 import { error, isHttpError, json } from '@sveltejs/kit';
 import { sqlite } from '$lib/server/db';
 import { restorableTables } from '$lib/server/db/restore';
-import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
+import { SESSION_COOKIE_NAME, whilePasswordHolds, type SessionUser } from '$lib/server/auth';
+import { readBody } from '$lib/server/request-body';
 import { resetFormSecretCache } from '$lib/server/request-tokens';
 import { resetKnownBrowserSecretCache } from '$lib/server/known-browsers';
 import { requireSuperadmin } from '$lib/server/route-guards';
+import { confirmStepUp } from '$lib/server/step-up';
 import { moveToTrash, type TrashResult, type UploadFile } from '$lib/server/uploads';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
@@ -44,16 +46,25 @@ const messageOf = (err: unknown) => (err instanceof Error ? err.message : String
  * The superadmin's alone. Whoever resets is signed out with everybody else,
  * and the next person to open the site sets it up and is its superadmin: an
  * administrator who could reset could make themselves that.
+ *
+ * With the superadmin's current password (card 2701): `{ currentPassword }`,
+ * checked before the transaction, which runs only while the stored hash is
+ * the one it was checked against (step-up.ts).
  */
-export const POST: RequestHandler = async ({ locals, cookies }) => {
+export const POST: RequestHandler = async ({ request, locals, cookies }) => {
+	requireSuperadmin(locals.user);
+	const body = await readBody(request);
+
 	let actor: SessionUser | undefined;
 	let cleared: { tables: number; rows: number; files: UploadFile[] };
 	try {
 		// Who resets, as the account is now (card 2253), named for the lines
-		// below, which are written whether the reset commits or fails. The
-		// reset's own writeAs asks again, with nothing between the two.
-		actor = writeAs(locals, (caller) => requireSuperadmin(caller));
-		cleared = writeAs(locals, (caller) => {
+		// below, which are written whether the reset commits or fails: the
+		// step-up's guard asks it, before the password is checked. The reset's
+		// own writeAs asks again.
+		const confirmed = await confirmStepUp(locals, cookies, body, 'POST /api/admin/reset', requireSuperadmin);
+		actor = confirmed.actor;
+		cleared = await whilePasswordHolds(confirmed.userId, confirmed.hash, () => writeAs(locals, (caller) => {
 			requireSuperadmin(caller);
 			// Holds the foreign key checks until the commit, so that the tables can
 			// be cleared in any order, and switches itself off there. `PRAGMA
@@ -84,7 +95,7 @@ export const POST: RequestHandler = async ({ locals, cookies }) => {
 			for (const table of tables) sqlite.prepare(`DELETE FROM "${table}"`).run();
 
 			return { tables: tables.length, rows, files };
-		});
+		}));
 	} catch (e) {
 		// Refused at the write (card 2253): an answer already, and nothing was
 		// cleared or tried, so no line.

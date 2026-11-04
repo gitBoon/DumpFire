@@ -37,7 +37,7 @@ import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
 import { runBackfills } from '$lib/server/db/migrate';
 import { cardLabels, cards, categories, type Card, type Column } from '$lib/server/db/schema';
-import type { SessionUser } from '$lib/server/auth';
+import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { readBoardContents } from '$lib/server/board-contents';
 import { getCardBoardHistory } from '$lib/server/activity-report';
 import { timeInOptions, upstreamFigures } from '$lib/server/upstream';
@@ -55,7 +55,7 @@ import { activityLabel } from '$lib/utils/activity-labels';
 import { api, type ApiResult } from './helpers/api';
 import { pageLoad } from './helpers/actions';
 import { effects, type Effects } from './helpers/effects';
-import { addBoardMember, makeBoard, makeCard, makeLabel, makeMilestone, makeSmtp, makeTeam, makeUser, makeWebhook, resetDb, shareBoardWithTeam, type BoardFixture } from './helpers/fixtures';
+import { FIXTURE_PASSWORD, addBoardMember, makeBoard, makeCard, makeLabel, makeMilestone, makeSession, makeSmtp, makeTeam, makeUser, makeWebhook, resetDb, shareBoardWithTeam, type BoardFixture } from './helpers/fixtures';
 import { readBudget } from './helpers/reads';
 import { sendTargetsFor } from '$lib/server/cards';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
@@ -567,17 +567,24 @@ describe.each([
 
 	it('refuses to delete a column of an ideas board while it holds live ideas, as the Options column (L2), and deletes it with archived ones alone', async () => {
 		const path = columnPath(I.cols['Shaping'].id);
+		// The board page's delete of a column holding a card takes the owner's
+		// current password, from a session made here, before anything is
+		// compared (card 2701).
+		const session = makeSession(owner);
+		const as = pageCreate
+			? { user: owner, body: { currentPassword: FIXTURE_PASSWORD }, headers: { cookie: `${SESSION_COOKIE_NAME}=${session}` } }
+			: { user: owner };
 		cardIn(I.cols['Shaping'], 'One');
-		await expectRefused(() => api('DELETE', path, { user: owner }), 409, 'This column of an ideas board still holds 1 idea: move it out, or archive it to discard it, first.');
+		await expectRefused(() => api('DELETE', path, as), 409, 'This column of an ideas board still holds 1 idea: move it out, or archive it to discard it, first.');
 		cardIn(I.cols['Shaping'], 'Two');
 		cardIn(I.cols['Shaping'], 'Archived', { archivedAt: stamp() });
-		await expectRefused(() => api('DELETE', path, { user: owner }), 409, 'This column of an ideas board still holds 2 ideas: move them out, or archive them to discard them, first.');
+		await expectRefused(() => api('DELETE', path, as), 409, 'This column of an ideas board still holds 2 ideas: move them out, or archive them to discard them, first.');
 
 		sqlite.prepare('UPDATE cards SET archived_at = ? WHERE column_id = ?').run(stamp(), I.cols['Shaping'].id);
-		expect((await api('DELETE', path, { user: owner })).status).toBe(200);
+		expect((await api('DELETE', path, as)).status).toBe(200);
 		// A delivery board's ordinary column goes with its cards, as before (decision M22-9).
 		cardIn(D.cols['In Progress'], 'Work');
-		expect((await api('DELETE', columnPath(D.cols['In Progress'].id), { user: owner })).status).toBe(200);
+		expect((await api('DELETE', columnPath(D.cols['In Progress'].id), as)).status).toBe(200);
 	});
 });
 

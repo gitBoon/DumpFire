@@ -72,6 +72,7 @@ import {
 	cardArchivedMessage,
 	cardArchiveWarning,
 	cardsArchivedMessage,
+	deleteFailure,
 	dependencyEndBody,
 	dependencyRow,
 	failureMessage,
@@ -83,7 +84,7 @@ import {
 	uploadNotRead
 } from '$lib/api';
 import { mayManageAccount } from '$lib/account-rule';
-import { NO_ANSWER as ADMIN_NO_ANSWER, sent, showToast } from '$lib/admin/send';
+import { NO_ANSWER as ADMIN_NO_ANSWER, sent, sentAsking, showToast } from '$lib/admin/send';
 import * as bulkActions from '$lib/board/bulk-actions';
 import * as cardActions from '$lib/board/card-actions';
 import * as dndHandlers from '$lib/board/dnd-handlers';
@@ -100,7 +101,18 @@ import { keepStreamOpen, reconnectDelay, streamVerdict, type StreamEnvironment }
 import { NOTIFICATION_PREFS } from '$lib/notification-prefs';
 import { readTimeZone } from '$lib/server/request-body';
 import { requireManagedAccount } from '$lib/server/route-guards';
+import { STEP_UP_ACTIONS } from '$lib/server/step-up';
 import { endsTheSession, watchForSignOut, type Fetch } from '$lib/signed-out';
+import {
+	CONFIRMATION_HEADER,
+	CONFIRMATION_REFUSED,
+	STEP_UP_FIELD,
+	STEP_UP_MISSING,
+	STEP_UP_SIGNED_OUT,
+	STEP_UP_WRONG,
+	refusalWatch,
+	stepUpRefusal
+} from '$lib/step-up-words';
 import { MOST_FAILURES, TOAST_MS, toasts } from '$lib/stores/toast';
 import type { CardType, ColumnType } from '$lib/types';
 import { isOptionsColumn, isUpstreamColumn } from '$lib/column-role';
@@ -490,7 +502,8 @@ describe('the card window’s own messages and Escape, src/lib/components/CardMo
 		// What it looks for is the confirmation those pages open, which answers Escape itself.
 		const confirmation = readFileSync(join(ROOT, 'src/lib/components/ConfirmModal.svelte'), 'utf8');
 		expect(confirmation).toContain('<div class="confirm-modal"');
-		expect(confirmation).toContain("if (e.key === 'Escape') onCancel();");
+		// Card 2701: not while its Confirm is being answered, when Cancel is off too.
+		expect(confirmation).toContain("if (e.key === 'Escape' && !waiting) onCancel();");
 		for (const file of ['src/routes/all/+page.svelte', 'src/routes/todo/+page.svelte', 'src/routes/board/[id]/+page.svelte']) {
 			const page = readFileSync(join(ROOT, file), 'utf8');
 			expect(page, file).toContain('<CardModal');
@@ -925,8 +938,10 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 	it.each([
 		'<h2>💾 Backup & Restore</h2>',
 		'<strong>Reset Everything</strong>',
-		'onclick={exportDatabase}',
-		'onclick={openImportDialog}',
+		// Card 2701: Export opens a confirm that asks for the password, and its Confirm exports.
+		'onclick={askExport}',
+		// The picker first (card 2701's code review, F1): the dialog opens once a backup is chosen.
+		'onclick={pickImportFile}',
 		'onchange={handleFileSelected}'
 	])('shows %s to the superadmin and to nobody else', (text) => {
 		expect(forSuperadminOnly(text)).toBe(true);
@@ -944,7 +959,8 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 		'<h2>🌐 Application Settings</h2>',
 		'<h2>☁️ Scheduled Backups</h2>',
 		'<h2>📧 Email / SMTP</h2>',
-		'onclick={runManualBackup}'
+		// Card 2701: Run Now opens a confirm that asks for the password, and its Confirm runs it.
+		'onclick={askRunNow}'
 	])('still shows %s to an administrator', (text) => {
 		expect(forSuperadminOnly(text)).toBe(false);
 	});
@@ -1046,9 +1062,12 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 	});
 
 	it('says which of the four things went wrong with an import, and no longer blames the file for all of them', () => {
-		const importing = functionNamed(restore, 'handleFileSelected');
+		// The file is read as it is chosen, before the dialog opens; the upload is sent once the password is accepted (card 2701, F1).
+		const chosen = functionNamed(restore, 'handleFileSelected');
+		const importing = functionNamed(restore, 'uploadImport');
 
-		for (const callee of ['uploadNotRead', 'uploadNoAnswer', 'uploadFailure']) {
+		expect(callsOf(chosen, 'uploadNotRead'), 'uploadNotRead').toHaveLength(1);
+		for (const callee of ['uploadNoAnswer', 'uploadFailure']) {
 			expect(callsOf(importing, callee), callee).toHaveLength(1);
 		}
 		expect(callsOf(importing, 'res.json')).toEqual([]);
@@ -1059,13 +1078,16 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 	});
 
 	it('says an import that failed in the report under the button, and not in a toast as well', () => {
-		const importing = functionNamed(restore, 'handleFileSelected');
+		const importing = functionNamed(restore, 'uploadImport');
 		const failing = callsOf(importing, 'showToast').filter((call) => call.arguments[1]?.getText() === "'error'");
+		// What changed nothing is said by `notImported`, for the file chosen and for the upload alike.
+		expect(callsOf(functionNamed(restore, 'handleFileSelected'), 'showToast')).toEqual([]);
+		expect(assignmentsTo(functionNamed(restore, 'notImported'), 'importReport').map((set) => set.right.getText().includes('trouble: true'))).toEqual([true]);
 
 		// Each failure the report shows is set with no toast beside it: the
 		// toast waits to be closed, and was the same words a second time.
 		const reported = assignmentsTo(importing, 'importReport').filter((set) => set.right.getText().includes('trouble: true'));
-		expect(reported).toHaveLength(4);
+		expect(reported).toHaveLength(3);
 		// One toast is left, for a fault after the answer came, when there is no report to say it in.
 		expect(failing).toHaveLength(1);
 		const caught = ts.findAncestor(failing[0], ts.isCatchClause);
@@ -1077,7 +1099,7 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 
 	it('offers no second removal of a backup destination while the first is being saved', () => {
 		// Two quick removals, the first refused, put the first's list back over the second's.
-		const button = everywhere.split('\n').filter((line) => line.includes('removeDestination(dest.name)'));
+		const button = everywhere.split('\n').filter((line) => line.includes('removeDestination(dest.name, password)'));
 		expect(button).toHaveLength(1);
 		expect(scheduledMarkup).toContain(button[0]);
 		expect(button[0]).toContain('disabled={backupSaving}');
@@ -1411,7 +1433,8 @@ describe('the admin page’s password dialog, src/lib/components/admin/ResetPass
 			'change your password on the <a href="/account">Account page</a>.';
 
 		expect(around(line).at(-1)).toEqual({ condition: 'resettingOwnPassword', inElse: false });
-		expect(bodiesSent(functionNamed(page, 'resetPassword'))).toEqual([['currentPassword', 'newPassword'], ['password']]);
+		// Card 2701 (C2): a reset of another account's asks for the administrator's own password too.
+		expect(bodiesSent(functionNamed(page, 'resetPassword'))).toEqual([['currentPassword', 'newPassword'], ['password', 'currentPassword']]);
 	});
 
 	it('says beforehand how many API keys a reset ends, from the count the page was loaded with', () => {
@@ -1787,6 +1810,24 @@ describe('a 401 that says the page’s session has ended, src/lib/signed-out.ts'
 		}
 
 		expect(sentToLogin).toEqual([]);
+	});
+
+	it('takes a step-up answer that ended the session as a 401, and no other 403, and leaves its body to be read (card 2701, F5)', async () => {
+		const answers = [
+			Response.json({ message: 'Password is incorrect. Nothing was changed.', stepUp: 'wrong' }, { status: 403 }),
+			Response.json({ message: 'Superadmin only' }, { status: 403 }),
+			Response.json({ message: STEP_UP_SIGNED_OUT, signedOut: true, stepUp: 'signed-out' }, { status: 403 })
+		];
+		const sentToLogin: string[] = [];
+		const watched = watchForSignOut(async () => answers.shift()!, { address: () => PAGE, signedIn: () => true, toLogin: () => sentToLogin.push('/login') });
+
+		await watched('/api/admin/purge-archived', { method: 'POST' });
+		await watched('/api/admin/purge-archived', { method: 'POST' });
+		expect(sentToLogin).toEqual([]);
+		const ended = await watched('/api/admin/purge-archived', { method: 'POST' });
+
+		expect(sentToLogin).toEqual(['/login']);
+		expect(await stepUpRefusal(ended)).toBe(STEP_UP_SIGNED_OUT);
 	});
 
 	it('cannot make a request fail that would not have, nor one succeed that would not have', async () => {
@@ -2358,9 +2399,11 @@ function enclosingName(node: ts.Node): string {
 /**
  * The helpers that are handed a request to send and read its answer
  * themselves; the board state's writes among them, which put back the change
- * on a refusal and give back the server's words (card 2280, slice B2b).
+ * on a refusal and give back the server's words (card 2280, slice B2b); and
+ * the admin panels' `sentAsking`, for a write that carries the caller's
+ * password (card 2701).
  */
-const READ_BY = ['sent', 'deleteFailure', 'api.deleteFailure', 'boardState.write', 'boardState.writeCard', 'boardState.writeColumn'];
+const READ_BY = ['sent', 'sentAsking', 'deleteFailure', 'api.deleteFailure', 'boardState.write', 'boardState.writeCard', 'boardState.writeColumn'];
 
 /** Whether the variable `name`, declared by `declared`, is read anywhere in the function it is declared in. */
 function isRead(declared: ts.VariableDeclaration): boolean {
@@ -2462,9 +2505,12 @@ type Write = {
 	 * How a refusal is read and put into words. `write`: through the board
 	 * state's `write`, `writeCard` or `writeColumn`, which shows the change at
 	 * once and puts it back for a refusal or no answer, and gives back the
-	 * words, which the page says (card 2280, slice B2b).
+	 * words, which the page says (card 2280, slice B2b). `sentAsking`: the
+	 * admin panels' `sent` for a write that carries the caller's password
+	 * (card 2701), which says any other refusal as `sent` does and gives a
+	 * refusal of the password back for the confirm that asked for it.
 	 */
-	reads?: 'failureMessage' | 'deleteFailure' | 'sent' | 'write';
+	reads?: 'failureMessage' | 'deleteFailure' | 'sent' | 'sentAsking' | 'write';
 	/** It sends through another function of the page, which is in the table. */
 	via?: string;
 	/** What puts back what was changed before the answer came: each only for a failure. */
@@ -2575,10 +2621,17 @@ const WRITES: Record<string, Write[]> = {
 	],
 	// The admin page's backup half, in components of its own (card 2281, slice C1a).
 	// Card 2401: read again once saved, to show the App URL now in effect and where it comes from.
-	'src/lib/components/admin/AppUrlPanel.svelte': [{ name: 'saveAppUrl', reads: 'sent', done: ["showToast('App URL saved')", 'await loadAppUrl()'] }],
-	// Its one write, the import, is held by the tests of its own above.
-	'src/lib/components/admin/BackupRestorePanel.svelte': [],
-	'src/lib/components/admin/GDriveConnectModal.svelte': [{ name: 'exchangeGDriveCode', reads: 'sent', done: ['await loadBackupConfig()'] }],
+	// Card 2701: each write that asks for the caller's password reads its answer through `sentAsking`.
+	'src/lib/components/admin/AppUrlPanel.svelte': [{ name: 'saveAppUrl', reads: 'sentAsking', done: ["showToast('App URL saved')", 'await loadAppUrl()'] }],
+	// The import's upload is held by the tests of its own above. Card 2701: the
+	// export is a POST with the password now, and the import is confirmed
+	// first, the backup chosen before the dialog opens and uploaded only once
+	// the confirm has answered (the code review's F1).
+	'src/lib/components/admin/BackupRestorePanel.svelte': [
+		{ name: 'exportDatabase', reads: 'failureMessage', done: ['a.click()', "showToast('Database exported successfully')"] },
+		{ name: 'confirmImport', reads: 'failureMessage', done: ['importFile = null', 'showImportDialog = false', 'await uploadImport(chosen, confirmation)'] }
+	],
+	'src/lib/components/admin/GDriveConnectModal.svelte': [{ name: 'exchangeGDriveCode', reads: 'sentAsking', done: ['await loadBackupConfig()'] }],
 	'src/lib/components/admin/ScheduledBackupsPanel.svelte': [
 		// The card 2398 review: a refused save puts the list back to the one each
 		// caller hands it (`was`) and reads the settings again quietly, so the
@@ -2601,32 +2654,35 @@ const WRITES: Record<string, Write[]> = {
 		},
 		{ name: 'removeDestination', via: 'saveBackupConfig', done: ['forgetHostKeyCheck(name)'] },
 		{ name: 'testDestination', reads: 'sent' },
-		// Card 2250: Confirm saves the host key a Test showed, and only once it is saved tests again.
+		// Card 2250: Confirm saves the host key a Test showed, and only once it is saved tests again,
+		// after the confirm has closed, not awaited inside it (card 2701's code review, F2).
 		{
 			name: 'confirmHostKey',
 			via: 'saveBackupConfig',
-			done: ['await testDestination(backupDestinations.find(d => d.name === name) ?? updated[idx])']
+			done: ['void testSavedKey(name, updated[idx])']
 		},
-		{ name: 'runManualBackup', reads: 'sent', done: ['await loadBackupConfig()'] }
+		{ name: 'runManualBackup', reads: 'sentAsking', done: ['await loadBackupConfig()'] }
 	],
 	// The rest of the admin page, each section in a component of its own (card
 	// 2281, slice C1b): the page itself sends no write now.
 	'src/lib/components/admin/BoardManagementPanel.svelte': [
-		{ name: 'deleteBoard', reads: 'sent', done: ["showToast('Board deleted')"] },
-		{ name: 'clearBoardCards', reads: 'sent', done: ["showToast('All cards cleared from board')"] },
-		{ name: 'clearBoardCategories', reads: 'sent', done: ["showToast('All categories cleared from board')"] }
+		{ name: 'deleteBoard', reads: 'sentAsking', done: ["showToast('Board deleted')"] },
+		{ name: 'clearBoardCards', reads: 'sentAsking', done: ["showToast('All cards cleared from board')"] },
+		{ name: 'clearBoardCategories', reads: 'sentAsking', done: ["showToast('All categories cleared from board')"] }
 	],
 	'src/lib/components/admin/DangerZonePanel.svelte': [
 		{ name: 'resetDatabase', reads: 'failureMessage', done: ['window.location.href = redirect'] },
 		{ name: 'vacuumDatabase', reads: 'sent', done: ["showToast('Database vacuumed. Unused space was reclaimed.')"] },
-		{ name: 'resetAllXp', reads: 'sent', done: ["showToast('All XP has been reset to 0')"] },
-		{ name: 'purgeArchivedCards', reads: 'sent', done: ['await invalidateAll()'] }
+		{ name: 'resetAllXp', reads: 'sentAsking', done: ["showToast('All XP has been reset to 0')"] },
+		{ name: 'purgeArchivedCards', reads: 'sentAsking', done: ['await invalidateAll()'] }
 	],
 	'src/lib/components/admin/UsersPanel.svelte': [
-		{ name: 'createUser', reads: 'sent', done: ['showCreateUser = false'] },
+		// A refusal of the password is said in the form beside its field, which is cleared and focused; any
+		// other in a toast, the form kept open (card 2701, the code review's F7).
+		{ name: 'createUser', reads: 'sentAsking', done: ['showCreateUser = false'] },
 		{ name: 'changeUserRole', reads: 'failureMessage', putsBack: ['putBack()'], done: ['await invalidateAll()'] },
-		{ name: 'deleteUser', reads: 'sent', done: ["showToast('User deleted')"] },
-		{ name: 'resendInvite', reads: 'sent' }
+		{ name: 'deleteUser', reads: 'sentAsking', done: ["showToast('User deleted')"] },
+		{ name: 'resendInvite', reads: 'sentAsking' }
 	],
 	'src/lib/components/admin/ResetPasswordDialog.svelte': [
 		{ name: 'resetPassword', reads: 'failureMessage', done: ['resetPasswordUserId = null'] }
@@ -2759,7 +2815,7 @@ const WRITES: Record<string, Write[]> = {
 
 /** Writes in the files above that have tests of their own above, by file. */
 const TESTED_ABOVE: Record<string, string[]> = {
-	'src/lib/components/admin/BackupRestorePanel.svelte': ['handleFileSelected'],
+	'src/lib/components/admin/BackupRestorePanel.svelte': ['uploadImport'],
 	'src/lib/components/card/CardAttachments.svelte': ['uploadFile']
 };
 
@@ -2915,6 +2971,16 @@ describe('every write of the seven pages of card 2109, of the label picker, and 
 			expect(ifFailure[0].thenStatement.getText()).toMatch(/\(failure[,)]|= failure;/);
 		}
 		if (write.reads === 'sent') expect(callsOf(fn, 'sent')).toHaveLength(1);
+		if (write.reads === 'sentAsking') {
+			const asked = callsOf(fn, 'sentAsking');
+			expect(asked).toHaveLength(1);
+			// Its answer kept as `res`, and a refusal of the password taken first, before anything is changed.
+			const kept = ts.findAncestor(asked[0], ts.isVariableDeclaration);
+			expect(kept?.name.getText()).toBe('res');
+			const text = fn.getText();
+			expect(text).toMatch(/if \(typeof res === 'string'\) (return res;|\{)/);
+			expect(text.indexOf("if (typeof res === 'string')")).toBeLessThan(text.indexOf('if (!res) return;'));
+		}
 		if (write.reads === 'write') {
 			const through = ['boardState.write', 'boardState.writeCard', 'boardState.writeColumn'].flatMap((callee) => callsOf(fn, callee));
 			expect(through).toHaveLength(1);
@@ -2956,7 +3022,7 @@ describe('every write of the seven pages of card 2109, of the label picker, and 
 					let helped = false;
 					for (let at: ts.Node | undefined = call; at && at !== fn; at = at.parent) {
 						if (ts.isTryStatement(at.parent) && at.parent.tryBlock === at && at.parent.catchClause) caught = true;
-						if (ts.isCallExpression(at) && ['sent', 'deleteFailure', 'api.deleteFailure'].includes(at.expression.getText())) helped = true;
+						if (ts.isCallExpression(at) && ['sent', 'sentAsking', 'deleteFailure', 'api.deleteFailure'].includes(at.expression.getText())) helped = true;
 					}
 					expect(caught || helped, `${file} ${write.name}`).toBe(true);
 				}
@@ -3452,7 +3518,7 @@ describe('every page write says it is JSON, read from the source and failing clo
 				'pass-through: src/lib/board/board-state.svelte.ts › (top) › fetch(input)',
 				'pass-through: src/lib/live-stream.ts › theBrowser › fetch(input)',
 				'pass-through: src/lib/signed-out.ts › watchForSignOut › fetch(input)',
-				'upload: src/lib/components/admin/BackupRestorePanel.svelte › handleFileSelected › fetch(`/api/admin/import?outside=${importOutside}`)',
+				'upload: src/lib/components/admin/BackupRestorePanel.svelte › uploadImport › fetch(`/api/admin/import?outside=${importOutside}`)',
 				'upload: src/lib/components/card/CardAttachments.svelte › uploadFile › fetch(`/api/cards/${cardId}/attachments`)'
 			].sort()
 		);
@@ -3580,6 +3646,295 @@ describe('every page write says it is JSON, read from the source and failing clo
 		].join('\n');
 
 		expect(pageWritesIn('src/lib/x.ts', source)).toEqual([]);
+	});
+});
+
+// ─── Card 2701: every page write of a listed action sends the password ───────
+//
+// Eighteen actions ask for the caller's own password again (`STEP_UP_ACTIONS`
+// in $lib/server/step-up.ts): a page that sent one without it would be refused
+// 400 every time. Every `fetch` and `jsonRequest` of the client's files is read
+// as `METHOD /route` (each `${…}` of a path standing for `[id]`, the query left
+// off), and each that is on the list must send `currentPassword` in a literal
+// body; the import's upload, whose body is the file, its confirmation in the
+// `X-DumpFire-Confirmation` header. One whose address or method cannot be read
+// fails, unless it is one of the named few that are no listed action.
+
+/** What a page sends, read from a `fetch` or `jsonRequest` call: `METHOD /route`, and its body's and headers' keys. */
+type ListedSend = { at: string; action: string | null; bodyKeys: string[] | null; headerKeys: string[] };
+
+/** The routes an address may be, `${…}` read as `[id]` and the query left off; null where it is not plainly text. */
+function routesOf(input: ts.Expression | undefined): string[] | null {
+	if (input === undefined) return null;
+	const node = bare(input);
+	const path = (text: string) => text.split('?')[0];
+	if (ts.isStringLiteralLike(node)) return [path(node.text)];
+	if (ts.isTemplateExpression(node)) {
+		let text = node.head.text;
+		for (const span of node.templateSpans) text += `[id]${span.literal.text}`;
+		return [path(text)];
+	}
+	if (ts.isConditionalExpression(node)) {
+		const [a, b] = [routesOf(node.whenTrue), routesOf(node.whenFalse)];
+		return a && b ? [...a, ...b] : null;
+	}
+	return null;
+}
+
+/** The methods a method may be: a string literal, or a conditional of two; null for anything else, a shorthand among them. */
+function methodsOf(given: ts.Expression | undefined): string[] | null {
+	if (given === undefined) return null;
+	const node = bare(given);
+	if (ts.isStringLiteralLike(node)) return [node.text];
+	if (ts.isConditionalExpression(node)) {
+		const [a, b] = [methodsOf(node.whenTrue), methodsOf(node.whenFalse)];
+		return a && b ? [...a, ...b] : null;
+	}
+	return null;
+}
+
+/** The keys of an object literal (a shorthand's name, a property's), or null where one cannot be read. */
+function keysOf(given: ts.Expression | undefined): string[] | null {
+	if (given === undefined) return null;
+	const node = bare(given);
+	if (!ts.isObjectLiteralExpression(node)) return null;
+	const keys: string[] = [];
+	for (const property of node.properties) {
+		const key = keyOf(property);
+		if (key === null) return null;
+		keys.push(key);
+	}
+	return keys;
+}
+
+/** The keys of the object a `body: JSON.stringify({ … })` sends, or null where it is not that. */
+function bodyKeysOf(body: ts.Expression | undefined): string[] | null {
+	if (body === undefined) return null;
+	const node = bare(body);
+	if (!ts.isCallExpression(node) || node.expression.getText() !== 'JSON.stringify') return null;
+	return keysOf(node.arguments[0]);
+}
+
+/**
+ * The keys of a `headers` object literal, as `keysOf` reads them, but for a
+ * key worked out from `CONFIRMATION_HEADER` (`[CONFIRMATION_HEADER]: c`),
+ * read as that header: the name the page imports from `$lib/step-up-words`
+ * (the code review's F8). Any other key worked out cannot be read.
+ */
+function headerKeysOf(given: ts.Expression | undefined): string[] | null {
+	if (given === undefined) return null;
+	const node = bare(given);
+	if (!ts.isObjectLiteralExpression(node)) return null;
+	const keys: string[] = [];
+	for (const property of node.properties) {
+		const name = ts.isSpreadAssignment(property) ? undefined : property.name;
+		if (name && ts.isComputedPropertyName(name) && ts.isIdentifier(name.expression) && name.expression.text === 'CONFIRMATION_HEADER') {
+			keys.push(CONFIRMATION_HEADER);
+			continue;
+		}
+		const key = keyOf(property);
+		if (key === null) return null;
+		keys.push(key);
+	}
+	return keys;
+}
+
+/** Every `fetch` and `jsonRequest` of a file, read as `METHOD /route` with what it sends. */
+function listedSendsIn(file: string, source: string): ListedSend[] {
+	const found: ListedSend[] = [];
+	for (const { tree, where } of everyCodeOf(file, source)) {
+		const visit = (node: ts.Node) => {
+			if (ts.isCallExpression(node) && (isFetch(node) || node.expression.getText() === 'jsonRequest')) {
+				const at = `${file} › ${where ?? enclosingName(node)} › ${oneLine(node.expression)}(${oneLine(node.arguments[0])})`;
+				const routes = routesOf(node.arguments[0]);
+				let methods: string[] | null = null;
+				let bodyKeys: string[] | null = null;
+				let headerKeys: string[] = [];
+				if (node.expression.getText() === 'jsonRequest') {
+					methods = methodsOf(node.arguments[1]);
+					bodyKeys = node.arguments[2] === undefined ? [] : keysOf(node.arguments[2]);
+					headerKeys = ['Content-Type'];
+				} else {
+					const init = node.arguments[1] && bare(node.arguments[1]);
+					if (init === undefined) methods = ['GET'];
+					else if (ts.isObjectLiteralExpression(init)) {
+						methods = ['GET'];
+						for (const property of init.properties) {
+							const key = keyOf(property);
+							// A spread, or a key that is worked out, could bring any method.
+							if (key === null) methods = null;
+							const value = ts.isPropertyAssignment(property) ? property.initializer : undefined;
+							if (key === 'method') methods = methodsOf(value);
+							if (key === 'body') bodyKeys = bodyKeysOf(value);
+							if (key === 'headers') headerKeys = headerKeysOf(value) ?? [];
+						}
+					}
+				}
+				if (routes === null || methods === null) found.push({ at, action: null, bodyKeys, headerKeys });
+				else for (const method of methods) for (const route of routes) found.push({ at, action: `${method} ${route}`, bodyKeys, headerKeys });
+			}
+			ts.forEachChild(node, visit);
+		};
+		visit(tree);
+	}
+	return found;
+}
+
+/**
+ * The calls whose address or method this scan cannot read, each no listed
+ * action: `jsonRequest`'s own `fetch`; the pass-throughs and the writes with
+ * an address in a variable that case 9 names; and two reads of an address in
+ * a variable, the live stream's and the graph's, each a `GET` of its own
+ * route.
+ */
+const UNREAD_SENDS = [
+	'src/lib/api.ts › jsonRequest › fetch(url)',
+	'src/lib/board/board-state.svelte.ts › (top) › fetch(input)',
+	'src/lib/components/decision/ResponseForm.svelte › send › fetch(url)',
+	'src/lib/decision-seen.ts › send › fetch(url)',
+	'src/lib/live-stream.ts › streamVerdict › fetch(url)',
+	'src/lib/live-stream.ts › theBrowser › fetch(input)',
+	'src/lib/signed-out.ts › watchForSignOut › fetch(input)',
+	'src/routes/graph/+page.svelte › handleExpand › fetch(url)'
+];
+
+/** The sends of a source that would be refused for want of the password or the confirmation, and those that cannot be read. */
+function unaskedIn(sends: ListedSend[]): string[] {
+	const listed = Object.keys(STEP_UP_ACTIONS);
+	return sends.flatMap((send) => {
+		if (send.action === null) return UNREAD_SENDS.includes(send.at) ? [] : [`${send.at}: cannot be read`];
+		if (send.action === 'GET /api/admin/export') return [`${send.at}: the export is a POST with the password`];
+		if (send.action === 'POST /api/admin/import') {
+			return send.headerKeys.some((key) => key.toLowerCase() === CONFIRMATION_HEADER) ? [] : [`${send.at}: no ${CONFIRMATION_HEADER}`];
+		}
+		if (!listed.includes(send.action)) return [];
+		return send.bodyKeys?.includes(STEP_UP_FIELD) ? [] : [`${send.at}: no ${STEP_UP_FIELD} for ${send.action}`];
+	});
+}
+
+describe('every page write of an action that asks for the password sends it, read from the source and failing closed (card 2701, case 28)', () => {
+	const files = clientFiles();
+	const sends = files.flatMap((file) => listedSendsIn(file, readFileSync(join(ROOT, file), 'utf8')));
+
+	it('(a) finds none without it, reaches every listed action from a page, and reads every send but the named few', () => {
+		expect(unaskedIn(sends)).toEqual([]);
+		// Every one of the eighteen is sent from a page, each with the password.
+		const reached = new Set(sends.map((send) => send.action));
+		expect(Object.keys(STEP_UP_ACTIONS).filter((action) => !reached.has(action))).toEqual([]);
+		// The named few are each still there to be named, and no more are let off.
+		expect(sends.filter((send) => send.action === null).map((send) => send.at).sort()).toEqual([...UNREAD_SENDS].sort());
+		// And the export and the import's two steps, as they are sent.
+		expect(sends.filter((send) => send.action?.startsWith('POST /api/admin/i') || send.action?.endsWith('/api/admin/export')).map((send) => send.action).sort()).toEqual(
+			['POST /api/admin/export', 'POST /api/admin/import', 'POST /api/admin/import/confirm']
+		);
+	});
+
+	it('(b) reports a listed write with no password, with the password left out of a body built elsewhere, and one with no body', () => {
+		const source = [
+			"fetch('/api/admin/purge-archived', { method: 'POST', headers: { 'Content-Type': 'application/json' } });",
+			"fetch(`/api/boards/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });",
+			"fetch(`/api/users/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ role }) });",
+			"jsonRequest(`/api/columns/${colId}`, 'DELETE', { boardId });"
+		].join('\n');
+
+		expect(unaskedIn(listedSendsIn('src/lib/x.ts', source))).toEqual([
+			"src/lib/x.ts › (top) › fetch('/api/admin/purge-archived'): no currentPassword for POST /api/admin/purge-archived",
+			'src/lib/x.ts › (top) › fetch(`/api/boards/${id}`): no currentPassword for DELETE /api/boards/[id]',
+			'src/lib/x.ts › (top) › fetch(`/api/users/${id}`): no currentPassword for PUT /api/users/[id]',
+			'src/lib/x.ts › (top) › jsonRequest(`/api/columns/${colId}`): no currentPassword for DELETE /api/columns/[id]'
+		]);
+	});
+
+	it('(c) reports the export as a GET, an import with no confirmation, and an address or method it cannot read', () => {
+		const source = [
+			"fetch('/api/admin/export');",
+			"fetch(`/api/admin/import?outside=${o}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body });",
+			"fetch(`/api/admin/import?outside=${o}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', [named]: c }, body });",
+			"fetch(where, { method: 'POST', headers: { 'Content-Type': 'application/json' } });",
+			"fetch('/api/admin/reset', { method, headers: { 'Content-Type': 'application/json' } });"
+		].join('\n');
+
+		expect(unaskedIn(listedSendsIn('src/lib/x.ts', source))).toEqual([
+			"src/lib/x.ts › (top) › fetch('/api/admin/export'): the export is a POST with the password",
+			'src/lib/x.ts › (top) › fetch(`/api/admin/import?outside=${o}`): no x-dumpfire-confirmation',
+			'src/lib/x.ts › (top) › fetch(`/api/admin/import?outside=${o}`): no x-dumpfire-confirmation',
+			'src/lib/x.ts › (top) › fetch(where): cannot be read',
+			"src/lib/x.ts › (top) › fetch('/api/admin/reset'): cannot be read"
+		]);
+	});
+
+	it('(d) lets through a listed write with the password, a conditional one, an import with its confirmation, and every read', () => {
+		const source = [
+			"fetch('/api/admin/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword }) });",
+			"fetch('/api/admin/backup', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ destinations: d ? list : undefined, currentPassword: d ? currentPassword : undefined }) });",
+			"fetch(`/api/admin/import?outside=${o}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-DumpFire-Confirmation': c }, body });",
+			"fetch(`/api/admin/import?outside=${o}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', [CONFIRMATION_HEADER]: c }, body });",
+			"fetch('/api/admin/backup');",
+			"fetch(`/api/users/${id}`);",
+			"jsonRequest(`/api/boards/${boardId}`, 'DELETE', { currentPassword });"
+		].join('\n');
+
+		expect(unaskedIn(listedSendsIn('src/lib/x.ts', source))).toEqual([]);
+	});
+});
+
+describe('a refusal of the password, as the pages know it (card 2701)', () => {
+	it('is known by its code, never its words, read from a copy; any other answer is not one', async () => {
+		const refused = Response.json({ message: STEP_UP_WRONG, stepUp: 'wrong' }, { status: 403 });
+		expect(await stepUpRefusal(refused)).toBe(STEP_UP_WRONG);
+		// Read from a copy: the caller can read it too.
+		expect(await failureMessage(refused, 'x')).toBe(STEP_UP_WRONG);
+		expect(await stepUpRefusal(Response.json({ message: STEP_UP_MISSING, stepUp: 'missing' }, { status: 400 }))).toBe(STEP_UP_MISSING);
+		expect(await stepUpRefusal(Response.json({ message: CONFIRMATION_REFUSED, stepUp: 'confirmation' }, { status: 403 }))).toBe(CONFIRMATION_REFUSED);
+		expect(
+			await stepUpRefusal(Response.json({ message: STEP_UP_SIGNED_OUT, signedOut: true, stepUp: 'signed-out' }, { status: 403 }))
+		).toBe(STEP_UP_SIGNED_OUT);
+		// The words shown are the server's; the two that change a dialog are this module's own, by the code.
+		expect(await stepUpRefusal(Response.json({ message: 'Current password is incorrect', stepUp: 'wrong' }, { status: 403 }))).toBe(
+			'Current password is incorrect'
+		);
+		expect(await stepUpRefusal(Response.json({ message: 'reworded', stepUp: 'missing' }, { status: 400 }))).toBe(STEP_UP_MISSING);
+		expect(await stepUpRefusal(Response.json({ message: 'reworded', stepUp: 'signed-out' }, { status: 403 }))).toBe(STEP_UP_SIGNED_OUT);
+		expect(await stepUpRefusal(Response.json({ stepUp: 'busy' }, { status: 429 }))).toMatch(/busy/);
+		// No code, or one that is not the step-up's: not a refusal of the password, whatever the words.
+		expect(await stepUpRefusal(Response.json({ message: STEP_UP_WRONG }, { status: 403 }))).toBeNull();
+		expect(await stepUpRefusal(Response.json({ message: STEP_UP_SIGNED_OUT, signedOut: true }, { status: 403 }))).toBeNull();
+		expect(await stepUpRefusal(Response.json({ message: STEP_UP_WRONG, stepUp: 'toString' }, { status: 403 }))).toBeNull();
+		expect(await stepUpRefusal(Response.json({ message: 'Superadmin only' }, { status: 403 }))).toBeNull();
+		expect(await stepUpRefusal(Response.json({ ok: true }))).toBeNull();
+		expect(await stepUpRefusal(new Response('<html>502</html>', { status: 502 }))).toBeNull();
+	});
+
+	it('is given back by sentAsking with no toast; any other refusal is said as sent says it, and a success handed back', async () => {
+		for (const shown of get(toasts)) toasts.dismiss(shown.id);
+		expect(await sentAsking(async () => Response.json({ message: STEP_UP_WRONG, stepUp: 'wrong' }, { status: 403 }), 'Failed')).toBe(STEP_UP_WRONG);
+		expect(get(toasts)).toEqual([]);
+		// `sent` without the option toasts it like any other refusal.
+		expect(await sent(async () => Response.json({ message: STEP_UP_WRONG, stepUp: 'wrong' }, { status: 403 }), 'Failed')).toBeNull();
+		expect(get(toasts).map((shown) => shown.message)).toEqual([STEP_UP_WRONG]);
+		for (const shown of get(toasts)) toasts.dismiss(shown.id);
+
+		expect(await sentAsking(async () => Response.json({ message: 'Superadmin only' }, { status: 403 }), 'Failed')).toBeNull();
+		expect(get(toasts).map((shown) => shown.message)).toEqual(['Superadmin only']);
+		expect(await sentAsking(async () => { throw new TypeError('Failed to fetch'); }, 'Failed')).toBeNull();
+		expect(get(toasts).map((shown) => shown.message)).toEqual(['Superadmin only', ADMIN_NO_ANSWER]);
+
+		const done = Response.json({ ok: true });
+		expect(await sentAsking(async () => done, 'Failed')).toBe(done);
+		for (const shown of get(toasts)) toasts.dismiss(shown.id);
+	});
+
+	it('is watched through a helper that reads the answer, which is handed on untouched', async () => {
+		const asked = refusalWatch();
+		const said = await deleteFailure(
+			() => asked.watch(Promise.resolve(Response.json({ message: STEP_UP_WRONG, stepUp: 'wrong' }, { status: 403 }))),
+			'board'
+		);
+		expect(said).toBe(STEP_UP_WRONG);
+		expect(asked.refusal()).toBe(STEP_UP_WRONG);
+		// The next answer forgets the last.
+		expect(await deleteFailure(() => asked.watch(Promise.resolve(Response.json({ message: 'Not found' }, { status: 404 }))), 'board')).toBe('Not found');
+		expect(asked.refusal()).toBeNull();
 	});
 });
 
@@ -3761,7 +4116,10 @@ describe('the toast, src/lib/stores/toast.ts and src/lib/components/Toast.svelte
 	it('src/lib/admin/send.ts gives each failure that follows a request the navigation the request was started in', () => {
 		const file = 'src/lib/admin/send.ts';
 		const [{ tree }] = codeOf(file, readFileSync(join(ROOT, file), 'utf8'));
-		const sending = tree.statements.find((statement): statement is ts.FunctionDeclaration => ts.isFunctionDeclaration(statement) && statement.name?.text === 'sent')!;
+		// The one with a body: `sent` has two overloads, with and without `giveBackPasswordRefusal` (card 2701's code review, F8).
+		const sending = tree.statements.find(
+			(statement): statement is ts.FunctionDeclaration => ts.isFunctionDeclaration(statement) && statement.name?.text === 'sent' && statement.body !== undefined
+		)!;
 		const failures = callsOf(sending, 'showToast').filter((call) => call.arguments[1]?.getText() === "'error'");
 
 		expect(failures).toHaveLength(2);
@@ -5384,7 +5742,8 @@ describe('the admin page’s user rows, src/lib/components/admin/UsersPanel.svel
 			'onchange={(e) => chooseUserRole(u.id, e.currentTarget)}',
 			// Asks first where the account's settings would go with its role (card 2397's review).
 			'onclick={() => askChangeUserRole(u.id, u.username)}',
-			'onclick={(e) => resendInvite(u.id, e.currentTarget)}',
+			// Asks first, for the caller's password (card 2701).
+			'onclick={(e) => askResendInvite(u.id, u.username, e.currentTarget)}',
 			// Reads what the account holds, then asks (card 2397's second review).
 			'onclick={() => askDeleteUser(u.id, u.username)}'
 		]) {
@@ -5663,7 +6022,9 @@ describe('the admin page’s invite whose mail was not sent, src/lib/components/
 			.filter((fn) => /\binviteLink\b/.test(fn.getText()))
 			.map((fn) => fn.name!.text)
 			.sort();
-		expect(touching).toEqual(['closeInviteLink', 'copyInviteLink', 'createUser', 'resendInvite']);
+		// Card 2701: 📧's confirm reads it, to ask nothing while a link is shown, and sets it nowhere.
+		expect(touching).toEqual(['askResendInvite', 'closeInviteLink', 'copyInviteLink', 'createUser', 'resendInvite']);
+		expect(linkSet(functionNamed(tree, 'askResendInvite'))).toEqual([]);
 		expect(linkSet(functionNamed(dialogTree, 'closeInviteLink'))).toEqual([]);
 		expect(statementsOf(functionNamed(dialogTree, 'closeInviteLink'), 'inviteLink = null')).toHaveLength(1);
 
@@ -5725,10 +6086,15 @@ describe('the admin page’s invite whose mail was not sent, src/lib/components/
 		expect(statementsOf(functionNamed(tree, 'resendInvite'), 'inviteInFlight = userId')).toHaveLength(1);
 		expect(functionNamed(tree, 'createUser').getText()).toContain("if (!newPassword) inviteInFlight = 'new';");
 
+		// Card 2701: 📧 asks first, for the caller's password, through the page's confirm, and asks nothing while an invite is out.
 		expect(markup).toContain(
-			'<button class="btn-ghost btn-sm" onclick={(e) => resendInvite(u.id, e.currentTarget)} disabled={inviteInFlight !== null || inviteLink !== null} title="Resend invite email">{inviteInFlight === u.id ? \'…\' : \'📧\'}</button>'
+			'<button class="btn-ghost btn-sm" onclick={(e) => askResendInvite(u.id, u.username, e.currentTarget)} disabled={inviteInFlight !== null || inviteLink !== null} title="Resend invite email">{inviteInFlight === u.id ? \'…\' : \'📧\'}</button>'
 		);
-		expect(markup).toContain('onclick={createUser} disabled={creatingUser || inviteInFlight !== null || inviteLink !== null || !newUsername || !newEmail}>');
+		expect(functionNamed(tree, 'askResendInvite').body!.statements[0].getText()).toBe('if (inviteInFlight !== null || inviteLink !== null) return;');
+		// And Create waits for the caller's own password too (card 2701).
+		expect(markup).toContain(
+			'onclick={createUser} disabled={creatingUser || inviteInFlight !== null || inviteLink !== null || !newUsername || !newEmail || !newUserCurrentPassword}>'
+		);
 	});
 
 	it('reads the mail panel again once an invite is answered, so the panel the dialog points to shows the failure (review fixes, item 1)', () => {
@@ -5820,7 +6186,8 @@ describe('the Google Drive Connect’s paste box, src/lib/components/admin/GDriv
 		const fn = exchange();
 		expect(fn.getText()).toContain("const code = address?.searchParams.get('code');");
 		expect(fn.getText()).toContain("const state = address?.searchParams.get('state');");
-		expect(fn.getText()).toContain('body: JSON.stringify({ code, state, destName: gdriveConnecting })');
+		// With the caller's own password (card 2701).
+		expect(fn.getText()).toContain('body: JSON.stringify({ code, state, destName: gdriveConnecting, currentPassword })');
 		// The pasted text is no longer sent as the code when it is not an address.
 		expect(fn.getText()).not.toContain('not a URL, use as-is');
 	});
@@ -5832,7 +6199,7 @@ describe('the Google Drive Connect’s paste box, src/lib/components/admin/GDriv
 	])('says what is wrong with %s and returns before anything is sent (decision 5, R12)', (_case, words) => {
 		const fn = exchange();
 		const said = callsOf(fn, 'showToast').filter((call) => call.getText().includes(words));
-		const sends = callsOf(fn, 'sent');
+		const sends = callsOf(fn, 'sentAsking');
 
 		expect(said, words).toHaveLength(1);
 		expect(sends).toHaveLength(1);
@@ -5869,10 +6236,11 @@ describe('the Google Drive Connect’s paste box, src/lib/components/admin/GDriv
 	 * with the real failureMessage and answerBody, and stand-ins for fetch,
 	 * whose answers the test gives one at a time, window.open and the toast.
 	 * Cancel is what the box's Cancel button does. The exchange (✅ Connect)
-	 * is compiled with them, with `sent` a stand-in whose answers the test
-	 * gives in `posts`. `loadBackupConfig` is the Scheduled Backups panel's,
-	 * handed to the box; connectGDriveOAuth is exported for the panel's 🔗
-	 * Connect, and run here without its `export` (card 2281, slice C1a).
+	 * is compiled with them, with `sentAsking` a stand-in whose answers the
+	 * test gives in `posts` (card 2701: the caller's password goes with it).
+	 * `loadBackupConfig` is the Scheduled Backups panel's, handed to the box;
+	 * connectGDriveOAuth is exported for the panel's 🔗 Connect, and run here
+	 * without its `export` (card 2281, slice C1a).
 	 */
 	function connecting(opened: unknown = {}) {
 		const declared = (name: string) => tree.statements.some((s) => ts.isFunctionDeclaration(s) && s.name?.text === name);
@@ -5882,11 +6250,12 @@ describe('the Google Drive Connect’s paste box, src/lib/components/admin/GDriv
 		}).outputText;
 		const answers: Array<(res: Response) => void> = [];
 		const fetch = vi.fn(() => new Promise<Response>((resolve) => answers.push(resolve)));
-		const posts: Array<(res: Response | null) => void> = [];
-		const sent = vi.fn(() => new Promise<Response | null>((resolve) => posts.push(resolve)));
+		const posts: Array<(res: Response | string | null) => void> = [];
+		const sentAsking = vi.fn(() => new Promise<Response | string | null>((resolve) => posts.push(resolve)));
 		const loadBackupConfig = vi.fn(async () => true);
 		const window = { open: vi.fn(() => opened) };
 		const showToast = vi.fn();
+		const focused = vi.fn();
 		const page = new Function(
 			'fetch',
 			'window',
@@ -5894,9 +6263,13 @@ describe('the Google Drive Connect’s paste box, src/lib/components/admin/GDriv
 			'toasts',
 			'failureMessage',
 			'answerBody',
-			'sent',
+			'sentAsking',
 			'loadBackupConfig',
+			'tick',
+			'focused',
 			"let gdriveConnecting = '', gdriveAuthCode = 'old paste', gdriveAuthUrl = '', gdriveBlocked = false, gdriveAttempt = 0, gdriveExchanging = false;\n" +
+				"let gdrivePassword = '', gdriveRefusal = null;\n" +
+				'const gdrivePasswordField = { focus: focused };\n' +
 				"const PASTE_WHOLE_ADDRESS = 'Paste the whole address.';\n" +
 				`${js}\n` +
 				'return {\n' +
@@ -5904,18 +6277,22 @@ describe('the Google Drive Connect’s paste box, src/lib/components/admin/GDriv
 				"\tcancel: typeof closeGDriveConnect === 'function' ? () => closeGDriveConnect() : () => { gdriveConnecting = ''; gdriveAuthCode = ''; },\n" +
 				'\tstate: () => ({ connecting: gdriveConnecting, code: gdriveAuthCode, authUrl: gdriveAuthUrl, blocked: gdriveBlocked }),\n' +
 				'\tpaste: (text) => { gdriveAuthCode = text; },\n' +
+				'\ttypePassword: (text) => { gdrivePassword = text; },\n' +
+				'\tpassword: () => ({ typed: gdrivePassword, refusal: gdriveRefusal }),\n' +
 				'\texchange: () => exchangeGDriveCode(),\n' +
 				'\texchanging: () => gdriveExchanging\n' +
 				'};'
-		)(fetch, window, showToast, { navigation: () => 7 }, failureMessage, answerBody, sent, loadBackupConfig) as {
+		)(fetch, window, showToast, { navigation: () => 7 }, failureMessage, answerBody, sentAsking, loadBackupConfig, async () => {}, focused) as {
 			connect: (name: string) => Promise<void>;
 			cancel: () => void;
 			state: () => { connecting: string; code: string; authUrl: string; blocked: boolean };
 			paste: (text: string) => void;
+			typePassword: (text: string) => void;
+			password: () => { typed: string; refusal: string | null };
 			exchange: () => Promise<void>;
 			exchanging: () => boolean;
 		};
-		return { ...page, answers, posts, fetch, loadBackupConfig, window, showToast };
+		return { ...page, answers, posts, fetch, sentAsking, loadBackupConfig, window, showToast, focused };
 	}
 
 	it.each([
@@ -6067,6 +6444,7 @@ describe('the Google Drive Connect’s paste box, src/lib/components/admin/GDriv
 		page.answers[at](Response.json({ authUrl }));
 		await done;
 		page.paste(`http://localhost/?state=${state}&code=c-${state}`);
+		page.typePassword('my-own-password');
 	}
 
 	it('ends the exchange at a Cancel, and an exchange answering after a Cancel leaves the next Connect’s box and its GET alone (the card 2266 review)', async () => {
@@ -6114,6 +6492,35 @@ describe('the Google Drive Connect’s paste box, src/lib/components/admin/GDriv
 		expect(page.state()).toEqual({ connecting: '', code: '', authUrl: '', blocked: false });
 	});
 
+	it('sends the caller’s own password with Connect, and a refusal of it keeps the box open with the address, the field emptied and focused (card 2701)', async () => {
+		const page = connecting();
+		await readyToExchange(page, CONSENT, 's1');
+		const refused = page.exchange();
+		// Cleared from the box as it is sent.
+		expect(page.password().typed).toBe('');
+
+		page.posts[0]('Password is incorrect. Nothing was changed.');
+		await refused;
+		expect(page.state()).toEqual({ connecting: 'Drive', code: 'http://localhost/?state=s1&code=c-s1', authUrl: CONSENT, blocked: false });
+		expect(page.password()).toEqual({ typed: '', refusal: 'Password is incorrect. Nothing was changed.' });
+		expect(page.exchanging()).toBe(false);
+		// The focus is put back by the field the refusal is handed to (`CurrentPasswordField`, the code
+		// review's F7), held mounted in tests/confirm-modal.svelte.test.ts; the script does not reach for it.
+		expect(page.focused).not.toHaveBeenCalled();
+		expect(page.showToast).not.toHaveBeenCalled();
+		expect(page.loadBackupConfig).not.toHaveBeenCalled();
+
+		// Typed again, the same address is sent, and connects.
+		page.typePassword('my-own-password');
+		const again = page.exchange();
+		page.posts[1](Response.json({ success: true }));
+		await again;
+		expect(page.sentAsking).toHaveBeenCalledTimes(2);
+		expect(page.showToast.mock.calls).toEqual([['Google Drive connected!']]);
+		expect(page.state()).toEqual({ connecting: '', code: '', authUrl: '', blocked: false });
+		expect(page.password()).toEqual({ typed: '', refusal: null });
+	});
+
 	it('says "Opening Google’s sign-in page…" until the address is known, the blocked sentence only when blocked, and offers the link in both other states (card 2266)', () => {
 		const opening = box.indexOf('{#if !gdriveAuthUrl}');
 		const blocked = box.indexOf('{:else if gdriveBlocked}');
@@ -6138,14 +6545,25 @@ describe('the Google Drive Connect’s paste box, src/lib/components/admin/GDriv
 
 		// The paste box and its Connect wait for the address.
 		expect(box).toMatch(/<input\s+type="text"\s+placeholder="Paste the whole address, starting http:\/\/localhost\/\?state=…"\s+bind:value=\{gdriveAuthCode\}\s+disabled=\{!gdriveAuthUrl\}/);
-		expect(box).toContain('disabled={!gdriveAuthUrl || !gdriveAuthCode.trim() || gdriveExchanging}');
+		// And for the caller's own password (card 2701).
+		expect(box).toContain('disabled={!gdriveAuthUrl || !gdriveAuthCode.trim() || !gdrivePassword || gdriveExchanging}');
 		expect(box).toContain('<button class="btn-ghost" onclick={closeGDriveConnect}>Cancel</button>');
 	});
 
-	it('closes the box in one place, which forgets the address and moves the Connect on (card 2266)', () => {
+	it('closes the box in one place, which forgets the address and the password and moves the Connect on (card 2266)', () => {
 		const close = functionNamed(tree, 'closeGDriveConnect');
 		const said = close.body!.statements.map((statement) => statement.getText());
-		expect(said).toEqual(['gdriveAttempt++;', "gdriveConnecting = '';", "gdriveAuthCode = '';", "gdriveAuthUrl = '';", 'gdriveBlocked = false;', 'gdriveExchanging = false;']);
+		expect(said).toEqual([
+			'gdriveAttempt++;',
+			"gdriveConnecting = '';",
+			"gdriveAuthCode = '';",
+			"gdriveAuthUrl = '';",
+			'gdriveBlocked = false;',
+			'gdriveExchanging = false;',
+			// Card 2701: the caller's password and its refusal go with the box.
+			"gdrivePassword = '';",
+			'gdriveRefusal = null;'
+		]);
 		// Nowhere else is the box closed by hand.
 		expect(statementsOf(tree, "gdriveConnecting = ''")).toHaveLength(1);
 		expect(callsOf(functionNamed(tree, 'exchangeGDriveCode'), 'closeGDriveConnect')).toHaveLength(2);
@@ -6255,13 +6673,15 @@ describe('the SFTP host key on the admin page, src/lib/components/admin/Schedule
 
 		expect(box.slice(0, branches[0])).toContain('{check.message}');
 		expect(unconfirmed).toContain('<code>{check.presented}</code>');
-		expect(unconfirmed).toMatch(/<button class="btn-primary btn-xs" disabled=\{backupSaving\} onclick=\{\(\) => confirmHostKey\(dest\.name, check\.presented\)\}>/);
+		// Card 2701: through the page's confirm, which asks for the caller's password.
+		expect(unconfirmed).toMatch(/<button class="btn-primary btn-xs" disabled=\{backupSaving\} onclick=\{\(\) => askConfirmHostKey\(dest\.name, check\.presented\)\}>/);
 		expect(mismatch).toContain('<code>{check.presented}</code>');
 		expect(mismatch).toContain('<code>{check.confirmed}</code>');
 		expect(typeGone).toContain('<code>{check.confirmed}</code>');
 		expect(typeGone).not.toContain('check.presented');
 		// One Confirm on the page, in the first branch.
-		expect(markup.match(/confirmHostKey\(/g)).toHaveLength(1);
+		expect(markup.match(/[cC]onfirmHostKey\(/g)).toHaveLength(1);
+		expect(functionNamed(tree, 'askConfirmHostKey').getText()).toContain('(password) => confirmHostKey(name, key, password)');
 	});
 
 	it('saves with Confirm exactly the key shown, as the destination’s hostKey, and tests again once it is saved (decision 3)', () => {
@@ -6270,13 +6690,19 @@ describe('the SFTP host key on the admin page, src/lib/components/admin/Schedule
 
 		expect(text).toContain('updated[idx] = { ...updated[idx], hostKey: key };');
 		expect(text).toContain('backupDestinations = updated;');
-		expect(callsOf(fn, 'testDestination')).toHaveLength(1);
+		// With the caller's own password (card 2701); once saved, the Test is
+		// started and not awaited, so the confirm closes first (its code review's F2).
+		expect(text.indexOf('saveBackupConfig(was, currentPassword)')).toBeGreaterThan(-1);
+		expect(text.indexOf('void testSavedKey(name, updated[idx]);')).toBeGreaterThan(text.indexOf('saveBackupConfig(was, currentPassword)'));
+		expect(callsOf(fn, 'testDestination')).toHaveLength(0);
 		// The Test is of the destination as the server now holds it, read again
 		// after the save (the review's M3): its secret masked, its key as stored.
-		const reload = text.indexOf('await loadBackupConfig(true)');
-		expect(reload).toBeGreaterThan(text.indexOf('saveBackupConfig(was)'));
-		expect(text.indexOf('saveBackupConfig(was)')).toBeGreaterThan(-1);
-		expect(text.indexOf('await testDestination(backupDestinations.find(d => d.name === name) ?? updated[idx])')).toBeGreaterThan(reload);
+		const testing = functionNamed(tree, 'testSavedKey');
+		const tested = testing.getText().replace(/\s+/g, ' ');
+		expect(callsOf(testing, 'testDestination')).toHaveLength(1);
+		const reload = tested.indexOf('await loadBackupConfig(true)');
+		expect(reload).toBeGreaterThan(-1);
+		expect(tested.indexOf('await testDestination(backupDestinations.find(d => d.name === name) ?? sentAs)')).toBeGreaterThan(reload);
 	});
 
 	it('has a private key box in the SFTP part of the inline edit form, as the add form has, filled as the password is (the review’s M2)', () => {
@@ -6297,7 +6723,8 @@ describe('the SFTP host key on the admin page, src/lib/components/admin/Schedule
 		const loading = statementsOf(fn, 'backupLoading = true');
 		expect(loading).toHaveLength(1);
 		expect(ts.isIfStatement(loading[0].parent) && loading[0].parent.expression.getText()).toBe('!quiet');
-		for (const name of ['addDestination', 'updateDestination', 'confirmHostKey']) {
+		// Confirm's read is made by the Test it starts once the key is saved (card 2701's code review, F2).
+		for (const name of ['addDestination', 'updateDestination', 'testSavedKey']) {
 			expect(callsOf(functionNamed(tree, name), 'loadBackupConfig'), name).toHaveLength(1);
 		}
 	});
@@ -6320,7 +6747,7 @@ describe('the SFTP host key on the admin page, src/lib/components/admin/Schedule
 
 		// Each save that reads them back says so where it could not.
 		expect(source).toContain("const SETTINGS_UNREAD = 'Saved, but the page could not read the settings back: reload the page before editing again.';");
-		for (const name of ['addDestination', 'updateDestination', 'confirmHostKey']) {
+		for (const name of ['addDestination', 'updateDestination', 'testSavedKey']) {
 			const fn = functionNamed(tree, name);
 			const said = statementsOf(fn, "showToast(SETTINGS_UNREAD, 'error', started)");
 			expect(said, name).toHaveLength(1);
@@ -6328,8 +6755,8 @@ describe('the SFTP host key on the admin page, src/lib/components/admin/Schedule
 			expect(ts.isIfStatement(unread) && unread.expression.getText(), name).toBe('!(await loadBackupConfig(true))');
 		}
 		// Confirm still tests, with the key it saved where the list was not read back.
-		const confirming = functionNamed(tree, 'confirmHostKey').getText().replace(/\s+/g, ' ');
-		expect(confirming.indexOf('await testDestination(backupDestinations.find(d => d.name === name) ?? updated[idx])')).toBeGreaterThan(
+		const confirming = functionNamed(tree, 'testSavedKey').getText().replace(/\s+/g, ' ');
+		expect(confirming.indexOf('await testDestination(backupDestinations.find(d => d.name === name) ?? sentAs)')).toBeGreaterThan(
 			confirming.indexOf("showToast(SETTINGS_UNREAD, 'error', started)")
 		);
 	});

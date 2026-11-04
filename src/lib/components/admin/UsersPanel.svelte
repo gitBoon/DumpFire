@@ -8,10 +8,12 @@
   link of an invite whose mail was not sent is the page's (`inviteLink`,
   bound here): its dialog is drawn by the page where it was, after the
   page's own dialogs. Delete asks first through the page's confirm dialog,
-  and so does a role change to User for an account whose settings would go
-  with it (card 2397's review), each naming those settings as the server
-  says it holds them just then (its second review); after an invite
-  the mail panel is read again through the page.
+  and so does every role change (card 2701: a role change to User for an
+  account whose settings would go with it names them, card 2397's review, as
+  the server says it holds them just then, its second review) and 📧. Each
+  asks in it for the caller's own password too, which it sends, and Add User
+  has a field of its own for it (card 2701). After an invite the mail panel is
+  read again through the page.
 -->
 <script lang="ts">
 	import type { PageData } from '../../../routes/admin/$types';
@@ -19,9 +21,11 @@
 	import { invalidateAll } from '$app/navigation';
 	import { answerBody, failureMessage, userDeleteWarning } from '$lib/api';
 	import { mayManageAccount } from '$lib/account-rule';
-	import { NO_ANSWER, sent, showToast } from '$lib/admin/send';
+	import { NO_ANSWER, sentAsking, showToast } from '$lib/admin/send';
+	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import { toasts } from '$lib/stores/toast';
+	import { ASKS_FOR_PASSWORD, stepUpRefusal } from '$lib/step-up-words';
 	import ResetPasswordDialog from './ResetPasswordDialog.svelte';
 
 	/** The settings an account had set that a role change or a delete removes, or would (card 2397): `SettingsRemoved` on the server. */
@@ -38,8 +42,18 @@
 		/** What the admin page's load gave it, passed on as it is. */
 		data: PageData;
 		isSuperadmin: boolean;
-		/** The page's confirm dialog, which asks before an account is deleted. */
-		confirm: (title: string, message: string, action: () => Promise<void>) => void;
+		/**
+		 * The page's confirm dialog, which asks before an account is deleted, its
+		 * role changed or an invite sent, with `askPassword` for the caller's own
+		 * password, handed to the action. Text the action gives back is a refusal
+		 * of the password, shown in the dialog (card 2701).
+		 */
+		confirm: (
+			title: string,
+			message: string,
+			action: (password: string) => Promise<string | null | void>,
+			options?: { askPassword?: boolean }
+		) => void;
 		/** The mail panel's own read of what mail has done, which the page draws for every administrator (card 2395). */
 		loadMailStatus: () => void;
 		/**
@@ -75,6 +89,13 @@
 	let newPassword = $state('');
 	let newUserRole = $state('user');
 	let newUserEmoji = $state('👤');
+	/**
+	 * The caller's own password, which making an account asks for again (card
+	 * 2701): cleared once sent, and never kept beyond the form.
+	 */
+	let newUserCurrentPassword = $state('');
+	/** The server's refusal of that password, said in the form beside its field until the next Create (card 2701). */
+	let newUserRefusal = $state<string | null>(null);
 	let creatingUser = $state(false);
 
 	/**
@@ -87,7 +108,7 @@
 	let inviteInFlight = $state<number | 'new' | null>(null);
 
 	async function createUser() {
-		if (!newUsername.trim() || !newEmail.trim()) return;
+		if (!newUsername.trim() || !newEmail.trim() || !newUserCurrentPassword) return;
 		// Password required if non-empty, must be 8+ chars
 		if (newPassword && newPassword.length < 8) {
 			showToast('Password must be at least 8 characters', 'error');
@@ -98,25 +119,36 @@
 		creatingUser = true;
 		// With no password an invite is issued, and its mail waited for.
 		if (!newPassword) inviteInFlight = 'new';
+		// The caller's own password goes with the request and no further: a
+		// refusal of it is said in the form, beside its field, and it is typed
+		// again.
+		const currentPassword = newUserCurrentPassword;
+		newUserCurrentPassword = '';
+		newUserRefusal = null;
 		try {
-			const body: Record<string, unknown> = {
-				username: newUsername.trim(),
-				email: newEmail.trim(),
-				emoji: newUserEmoji,
-				role: newUserRole
-			};
-			if (newPassword) body.password = newPassword;
 			// A refusal is read with failureMessage: a proxy's page in place of
 			// one used to make the page's own reading of it throw.
-			const res = await sent(
+			const res = await sentAsking(
 				() =>
 					fetch('/api/users', {
 						method: 'POST',
 						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify(body)
+						body: JSON.stringify({
+							username: newUsername.trim(),
+							email: newEmail.trim(),
+							emoji: newUserEmoji,
+							role: newUserRole,
+							// Left out when blank: an invite is issued.
+							password: newPassword || undefined,
+							currentPassword
+						})
 					}),
 				'Failed to create user'
 			);
+			if (typeof res === 'string') {
+				newUserRefusal = res;
+				return;
+			}
 			if (!res) return;
 			const result = await answerBody(res);
 			showCreateUser = false;
@@ -287,16 +319,20 @@
 	}
 
 	/**
-	 * Change pressed: where the role chosen is User, what the account holds
-	 * is read first (card 2397's second review), and where it holds settings
-	 * that would go with its role, or the read failed, the page's confirm asks
-	 * first, naming them, and Confirm sends the change; otherwise it is sent
-	 * at once, as before.
+	 * Change pressed: the page's confirm asks first, for the caller's own
+	 * password too (card 2701: a change of role asks for it), and Confirm sends
+	 * the change. Where the role chosen is User, what the account holds is read
+	 * first (card 2397's second review), and where it holds settings that
+	 * would go with its role, or the read failed, the confirm names them.
 	 */
 	async function askChangeUserRole(userId: number, username: string) {
 		if (askingAbout.has(userId) || changingRole.has(userId)) return;
-		if (chosenRole.get(userId) !== 'user') {
-			changeUserRole(userId, username);
+		const role = chosenRole.get(userId);
+		if (role === undefined) return;
+		const ask = (said: string) =>
+			confirm('Change Role', said, (password) => changeUserRole(userId, username, password), { askPassword: true });
+		if (role !== 'user') {
+			ask(`Make ${username} ${role === 'admin' ? 'an administrator' : `a ${role}`}? ${ASKS_FOR_PASSWORD}`);
 			return;
 		}
 		markAsking(userId, true);
@@ -307,20 +343,22 @@
 			markAsking(userId, false);
 		}
 		if (held === null) {
-			changeUserRole(userId, username);
+			ask(`Make ${username} a user? ${ASKS_FOR_PASSWORD}`);
 			return;
 		}
 		const said = held === 'unread' ? SETTINGS_UNREAD : `This removes what they set: ${settingsWords(held)}.`;
-		confirm('Change Role', `Make ${username} a user? ${said}`, () => changeUserRole(userId, username));
+		ask(`Make ${username} a user? ${said} ${ASKS_FOR_PASSWORD}`);
 	}
 
 	/**
-	 * Change: saves the role chosen in the row's picker. Refused or not
-	 * answered, the picker shows the role the account has again. Where the
-	 * change removed settings the account had set (card 2397), a warning that
-	 * stays says what, and the page reads the panels that show it again.
+	 * Change: saves the role chosen in the row's picker, with the caller's own
+	 * password (card 2701). Refused or not answered, the picker shows the role
+	 * the account has again; a refusal of the password is given back for the
+	 * confirm to show, and the choice is kept to try again. Where the change
+	 * removed settings the account had set (card 2397), a warning that stays
+	 * says what, and the page reads the panels that show it again.
 	 */
-	async function changeUserRole(userId: number, username: string) {
+	async function changeUserRole(userId: number, username: string, currentPassword: string): Promise<string | void> {
 		const newRole = chosenRole.get(userId);
 		if (changingRole.has(userId) || newRole === undefined) return;
 		if (newRole === storedUserRole(userId)) {
@@ -336,13 +374,15 @@
 				res = await fetch(`/api/users/${userId}`, {
 					method: 'PUT',
 					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ role: newRole })
+					body: JSON.stringify({ role: newRole, currentPassword })
 				});
 			} catch {
 				putBack();
 				showToast(NO_ANSWER, 'error', started);
 				return;
 			}
+			const refusal = await stepUpRefusal(res);
+			if (refusal !== null) return refusal;
 			if (res.ok) {
 				// A change of role ends any invite to the account not yet used: it
 				// was sent to the account as it was. The answer says how many.
@@ -386,10 +426,14 @@
 			.map((team) => team.name);
 	}
 
-	async function deleteUser(userId: number) {
+	async function deleteUser(userId: number, currentPassword: string): Promise<string | void> {
 		const started = toasts.navigation();
 		const username = data.users.find((u) => u.id === userId)?.username ?? 'the account';
-		const res = await sent(() => fetch(`/api/users/${userId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } }), 'Failed to delete user');
+		const res = await sentAsking(
+			() => fetch(`/api/users/${userId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword }) }),
+			'Failed to delete user'
+		);
+		if (typeof res === 'string') return res;
 		if (!res) return;
 		// What it had set, removed with it (card 2397): said in a warning that stays.
 		const gone = settingsNamed((await answerBody(res))?.settingsRemoved);
@@ -407,11 +451,11 @@
 	/** The delete's confirmation: the warning of every delete, then what of the settings the account set would go with it (card 2397's review), as read just now. */
 	function deleteWarning(userId: number, username: string, held: SettingsGone | null | 'unread'): string {
 		const warning = userDeleteWarning(username, soleOwnerOf(userId));
-		if (held === 'unread') return `${warning} ${SETTINGS_UNREAD}`;
-		return held === null ? warning : `${warning} What they set goes too: ${settingsWords(held)}.`;
+		if (held === 'unread') return `${warning} ${SETTINGS_UNREAD} ${ASKS_FOR_PASSWORD}`;
+		return held === null ? `${warning} ${ASKS_FOR_PASSWORD}` : `${warning} What they set goes too: ${settingsWords(held)}. ${ASKS_FOR_PASSWORD}`;
 	}
 
-	/** 🗑️ pressed: what the account holds is read first (the second review), then the page's confirm asks, and Confirm deletes. */
+	/** 🗑️ pressed: what the account holds is read first (the second review), then the page's confirm asks, for the caller's password too (card 2701), and Confirm deletes. */
 	async function askDeleteUser(userId: number, username: string) {
 		if (askingAbout.has(userId)) return;
 		markAsking(userId, true);
@@ -421,23 +465,43 @@
 		} finally {
 			markAsking(userId, false);
 		}
-		confirm('Delete User', deleteWarning(userId, username, held), () => deleteUser(userId));
+		confirm('Delete User', deleteWarning(userId, username, held), (password) => deleteUser(userId, password), { askPassword: true });
 	}
 
 	/**
-	 * 📧: a new invite, which ends the account's earlier one. The server waits
-	 * for its mail and says whether it went (card 2196): sent, the toast; not
-	 * sent, the dialog with the link to pass on, or, where the server could no
-	 * longer show it, the server's words in a toast that stays. "Invite sent"
-	 * only for an answer that says `mailSent: true`. Either way the mail panel
-	 * is read again, so it shows this mail.
+	 * 📧 pressed: the page's confirm asks first, for the caller's own password
+	 * too (card 2701: an invite is a password reset by another way), and
+	 * Confirm sends it.
 	 */
-	async function resendInvite(userId: number, control?: HTMLElement) {
+	function askResendInvite(userId: number, username: string, control?: HTMLElement) {
+		if (inviteInFlight !== null || inviteLink !== null) return;
+		confirm(
+			'Send Invite',
+			`Send ${username} a new invite? Whoever opens its link sets the account's password, and an invite sent earlier stops working. ${ASKS_FOR_PASSWORD}`,
+			(password) => resendInvite(userId, password, control),
+			{ askPassword: true }
+		);
+	}
+
+	/**
+	 * 📧, confirmed: a new invite, which ends the account's earlier one. The
+	 * server waits for its mail and says whether it went (card 2196): sent, the
+	 * toast; not sent, the dialog with the link to pass on, or, where the
+	 * server could no longer show it, the server's words in a toast that
+	 * stays. "Invite sent" only for an answer that says `mailSent: true`. A
+	 * refusal of the password is given back for the confirm to show (card
+	 * 2701). Either way the mail panel is read again, so it shows this mail.
+	 */
+	async function resendInvite(userId: number, currentPassword: string, control?: HTMLElement): Promise<string | void> {
 		if (inviteInFlight !== null || inviteLink !== null) return;
 		const started = toasts.navigation();
 		inviteInFlight = userId;
 		try {
-			const res = await sent(() => fetch(`/api/users/${userId}/invite`, { method: 'POST', headers: { 'Content-Type': 'application/json' } }), 'Failed to send invite');
+			const res = await sentAsking(
+				() => fetch(`/api/users/${userId}/invite`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword }) }),
+				'Failed to send invite'
+			);
+			if (typeof res === 'string') return res;
 			if (!res) return;
 			const result = await answerBody(res);
 			const said = typeof result?.message === 'string' ? result.message : '';
@@ -480,18 +544,21 @@
 			<div class="form-row">
 				<input type="text" placeholder="Username" bind:value={newUsername} class="form-input" />
 				<input type="email" placeholder="Email" bind:value={newEmail} class="form-input" />
-				<input type="password" placeholder="Password (blank = send invite)" bind:value={newPassword} class="form-input" />
+				<input type="password" placeholder="Password (blank = send invite)" bind:value={newPassword} class="form-input" autocomplete="new-password" />
 			</div>
+			<!-- The caller's own, which making an account asks for again (card 2701), with the server's refusal of it. -->
+			<CurrentPasswordField bind:value={newUserCurrentPassword} refusal={newUserRefusal} onEnter={createUser} />
+			<p class="form-hint">{ASKS_FOR_PASSWORD} Making an account asks for yours, so that a browser left signed in cannot.</p>
 			<div class="form-row">
 				<EmojiPicker value={newUserEmoji} onSelect={(e) => (newUserEmoji = e)} />
 				<select bind:value={newUserRole} class="form-input">
 					<option value="user">User</option>
 					{#if isSuperadmin}<option value="admin">Admin</option>{/if}
 				</select>
-				<button class="btn-primary btn-sm" onclick={createUser} disabled={creatingUser || inviteInFlight !== null || inviteLink !== null || !newUsername || !newEmail}>
+				<button class="btn-primary btn-sm" onclick={createUser} disabled={creatingUser || inviteInFlight !== null || inviteLink !== null || !newUsername || !newEmail || !newUserCurrentPassword}>
 					{creatingUser ? 'Creating...' : 'Create'}
 				</button>
-				<button class="btn-ghost btn-sm" onclick={() => (showCreateUser = false)}>Cancel</button>
+				<button class="btn-ghost btn-sm" onclick={() => { showCreateUser = false; newUserCurrentPassword = ''; newUserRefusal = null; }}>Cancel</button>
 			</div>
 		</div>
 	{/if}
@@ -534,7 +601,7 @@
 						{/if}
 						<button class="btn-ghost btn-sm" onclick={() => resetDialog?.openResetDialog(u.id)} title="Reset password">🔑</button>
 						{#if u.id !== data.currentUser.id}
-							<button class="btn-ghost btn-sm" onclick={(e) => resendInvite(u.id, e.currentTarget)} disabled={inviteInFlight !== null || inviteLink !== null} title="Resend invite email">{inviteInFlight === u.id ? '…' : '📧'}</button>
+							<button class="btn-ghost btn-sm" onclick={(e) => askResendInvite(u.id, u.username, e.currentTarget)} disabled={inviteInFlight !== null || inviteLink !== null} title="Resend invite email">{inviteInFlight === u.id ? '…' : '📧'}</button>
 							<button class="btn-ghost btn-sm danger" onclick={() => askDeleteUser(u.id, u.username)} title="Delete user">🗑️</button>
 						{/if}
 					{:else}
@@ -588,4 +655,7 @@
 	}
 
 	.superadmin-lock { font-size: 0.9rem; opacity: 0.5; }
+
+	/* Why Add User asks for the caller's own password (card 2701) */
+	.form-hint { font-size: 0.72rem; color: var(--text-tertiary); margin: 0; }
 </style>

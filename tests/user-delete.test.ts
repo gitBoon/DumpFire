@@ -40,10 +40,11 @@ import {
 } from '$lib/server/db/schema';
 import type { SessionUser } from '$lib/server/auth';
 import { userDeleteWarning } from '$lib/api';
-import { api, type ApiResult } from './helpers/api';
+import { api, type ApiOptions, type ApiResult } from './helpers/api';
 import { eachWriteInTurn } from './helpers/each-write';
 import { failingWrite } from './helpers/failing-write';
 import {
+	FIXTURE_PASSWORD,
 	assignCard,
 	makeAttachment,
 	makeBoard,
@@ -55,6 +56,7 @@ import {
 	makeUser,
 	makeWebhook,
 	resetDb,
+	stepUp,
 	testUploadsDir,
 	type BoardFixture
 } from './helpers/fixtures';
@@ -87,7 +89,28 @@ function scene(): Scene {
 	return { admin, owner, leaver, A, first, second };
 }
 
-const remove = (s: Scene, by: SessionUser = s.admin) => api('DELETE', `/api/users/${s.leaver.id}`, { user: by });
+/**
+ * The leaver deleted by `by`, who confirms it with their password from a
+ * session of theirs (card 2701): made here, or before a snapshot by the test.
+ */
+const remove = (s: Scene, by: SessionUser = s.admin, sent: ApiOptions = stepUp(by)) => api('DELETE', `/api/users/${s.leaver.id}`, sent);
+
+/**
+ * What a delete refused before any password is checked is sent with (card
+ * 2701): a body with the password, which proves the refusal comes first, and
+ * no session, so that nothing is made for it.
+ */
+const refusedFirst = (by: SessionUser) => ({ user: by, body: { currentPassword: FIXTURE_PASSWORD } });
+
+/** The column a current password is counted on, apart from the request's transaction (card 2701). */
+const COUNTED = 'sessions.wrong_password_count';
+
+/** The two writes of that count for a right password: counted as it arrives, and cleared. */
+const COUNTS = [
+	// As the run records it, to 160 characters.
+	'update "sessions" set "wrong_password_count" = "sessions"."wrong_password_count" + 1 where ("sessions"."id" = ? and "sessions"."user_id" = ?) returning "wrong_p',
+	'update "sessions" set "wrong_password_count" = ? where ("sessions"."id" = ? and "sessions"."user_id" = ?) returning "id"'
+];
 
 const userRow = (id: number) => db.select().from(users).where(eq(users.id, id)).get();
 
@@ -279,8 +302,13 @@ function full(): Full {
 describe('DELETE /api/users/:id, for a user with everything', () => {
 	it('clears the five references and deletes the user, or does neither', async () => {
 		const run = await eachWriteInTurn({
-			build: full,
-			request: (s) => remove(s),
+			// The administrator's current password, from a session of theirs (card 2701).
+			build: () => {
+				const s = full();
+				return { ...s, confirmed: stepUp(s.admin) };
+			},
+			request: (s) => remove(s, s.admin, s.confirmed),
+			apart: [COUNTED],
 			afterSuccess: (s, res: ApiResult) => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({ success: true });
@@ -314,8 +342,9 @@ describe('DELETE /api/users/:id, for a user with everything', () => {
 					{ id: s.hooks.nobodys, active: 1, setBy: null }
 				]);
 
-				// Their session, their comments and their assignments go with them too.
-				expect(db.select().from(sessions).all()).toEqual([]);
+				// Their session, their comments and their assignments go with them
+				// too. The administrator's, which confirmed the delete, stays.
+				expect(db.select({ userId: sessions.userId }).from(sessions).all()).toEqual([{ userId: s.admin.id }]);
 				expect(db.select({ content: cardComments.content }).from(cardComments).all()).toEqual([
 					{ content: 'Not mine' }
 				]);
@@ -349,10 +378,13 @@ describe('DELETE /api/users/:id, for a user with everything', () => {
 			}
 		});
 
-		// The five, in the order of the list, the requests' address, the
-		// webhooks they set switched off (card 2168), and then the user. Nothing
-		// else is written: the rest is the keys' doing.
+		// The current password, counted on the session as it arrives and the
+		// count cleared for the right one, apart from the transaction (card
+		// 2701). Then the five, in the order of the list, the requests' address,
+		// the webhooks they set switched off (card 2168), and then the user.
+		// Nothing else is written: the rest is the keys' doing.
 		expect(run.writes).toEqual([
+			...COUNTS,
 			'UPDATE card_attachments SET uploaded_by = NULL WHERE uploaded_by = ?',
 			'UPDATE card_templates SET created_by = NULL WHERE created_by = ?',
 			'UPDATE milestones SET created_by = NULL WHERE created_by = ?',
@@ -388,13 +420,16 @@ describe('DELETE /api/users/:id, for a user with everything', () => {
 	it('writes no such line when the delete fails', async () => {
 		process.env.LOG_LEVEL = 'INFO';
 		const s = full();
+		const confirmed = stepUp(s.admin);
 		const before = snapshotDb();
 		const writes = failingWrite();
 
 		try {
-			// The last write of all: the user.
-			writes.failNth(8);
-			await expect(remove(s)).rejects.toThrow(/made to fail/);
+			// The last write of all: the user, after the two of the session's
+			// count (card 2701), which is back where it was once the right
+			// password has cleared it.
+			writes.failNth(COUNTS.length + 8);
+			await expect(remove(s, s.admin, confirmed)).rejects.toThrow(/made to fail/);
 			expect(writes.fired).toBe(true);
 		} finally {
 			writes.restore();
@@ -431,25 +466,26 @@ describe('DELETE /api/users/:id, refused', () => {
 		const otherAdmin = makeUser({ username: 'admin2', role: 'admin' });
 		const before = snapshotDb();
 
+		// Each refused before any password is checked (card 2701).
 		const refusals: [string, () => Promise<ApiResult>, number, string][] = [
 			['nobody signed in', () => api('DELETE', `/api/users/${s.leaver.id}`), 403, 'Forbidden'],
-			['an ordinary user', () => remove(s, s.owner), 403, 'Forbidden'],
+			['an ordinary user', () => remove(s, s.owner, refusedFirst(s.owner)), 403, 'Forbidden'],
 			[
 				'yourself',
-				() => api('DELETE', `/api/users/${s.admin.id}`, { user: s.admin }),
+				() => api('DELETE', `/api/users/${s.admin.id}`, refusedFirst(s.admin)),
 				400,
 				'Cannot delete your own account'
 			],
-			['a user who is not there', () => api('DELETE', '/api/users/99999', { user: s.admin }), 404, 'User not found'],
+			['a user who is not there', () => api('DELETE', '/api/users/99999', refusedFirst(s.admin)), 404, 'User not found'],
 			[
 				'the superadmin',
-				() => api('DELETE', `/api/users/${superadmin.id}`, { user: s.admin }),
+				() => api('DELETE', `/api/users/${superadmin.id}`, refusedFirst(s.admin)),
 				403,
 				'Cannot delete superadmin account'
 			],
 			[
 				'an admin, by an admin',
-				() => api('DELETE', `/api/users/${otherAdmin.id}`, { user: s.admin }),
+				() => api('DELETE', `/api/users/${otherAdmin.id}`, refusedFirst(s.admin)),
 				403,
 				'Only superadmin can delete admin users'
 			]
@@ -467,7 +503,7 @@ describe('DELETE /api/users/:id, refused', () => {
 		const s = scene();
 		const superadmin = makeUser({ username: 'root', role: 'superadmin' });
 
-		const res = await api('DELETE', `/api/users/${s.admin.id}`, { user: superadmin });
+		const res = await api('DELETE', `/api/users/${s.admin.id}`, stepUp(superadmin));
 
 		expect(res.status).toBe(200);
 		expect(userRow(s.admin.id)).toBeUndefined();
@@ -492,9 +528,11 @@ describe('DELETE /api/users/:id, for the only owner of a team (card 2377)', () =
 		team('Alpha', [s.leaver]);
 		// A team with an owner of its own, which the leaver is only a member of, is not named.
 		team('Gamma', [s.owner, s.leaver]);
+		// Refused before the password is checked: the session's count is not touched (card 2701).
+		const confirmed = stepUp(s.admin);
 		const before = snapshotDb();
 
-		const res = await remove(s);
+		const res = await remove(s, s.admin, confirmed);
 
 		expect(res.status).toBe(409);
 		expect(res.body.message).toBe('This account is the only owner of: Alpha, Beta. Make someone else an owner or delete those teams first.');
@@ -534,7 +572,7 @@ describe('DELETE /api/users/:id, for the only owner of a team (card 2377)', () =
 		team('Admins', [otherAdmin]);
 
 		expect((await remove(s, s.owner)).status).toBe(403);
-		const res = await api('DELETE', `/api/users/${otherAdmin.id}`, { user: s.admin });
+		const res = await api('DELETE', `/api/users/${otherAdmin.id}`, stepUp(s.admin));
 		expect(res.status).toBe(403);
 		expect(res.body.message).toBe('Only superadmin can delete admin users');
 		expect(userRow(s.leaver.id)).toBeDefined();

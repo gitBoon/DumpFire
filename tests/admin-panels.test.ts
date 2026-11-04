@@ -54,6 +54,7 @@ import ArchivePanel from '$lib/components/board/ArchivePanel.svelte';
 import TeamsPage from '../src/routes/teams/+page.svelte';
 import { toasts } from '$lib/stores/toast';
 import Toast from '$lib/components/Toast.svelte';
+import { ASKS_FOR_PASSWORD, CONFIRMATION_HEADER, STEP_UP_SIGNED_OUT } from '$lib/step-up-words';
 
 // The page's data is read again after a write; here it is only counted. The
 // page's Toast listens for navigations, which there are none of here.
@@ -175,11 +176,24 @@ function type(box: HTMLInputElement, text: string) {
 }
 
 const asked = (what: string) => sent.filter((request) => request.what === what);
-const lastPut = () => asked('PUT /api/admin/backup').at(-1)?.body as { destinations: Record<string, unknown>[] };
+const lastPut = () => asked('PUT /api/admin/backup').at(-1)?.body as { destinations: Record<string, unknown>[]; currentPassword?: string };
+
+/** The caller's own password, as typed in a confirm that asks for it (card 2701). */
+const MINE = 'my-own-password';
+
+/**
+ * The page's confirm, its Confirm pressed at once with the caller's password
+ * typed in it, for a case about what the action then does (card 2701). What
+ * each asked is kept, as `vi.fn` keeps it.
+ */
+const confirmedAtOnce = () =>
+	vi.fn((_title: string, _message: string, action: (password: string) => unknown, _options?: { askPassword?: boolean }) => {
+		void action(MINE);
+	});
 
 describe('the Scheduled Backups panel, mounted', () => {
 	it('reads the backup settings once as it opens', async () => {
-		draw(ScheduledBackupsPanel, { confirm: vi.fn() });
+		draw(ScheduledBackupsPanel, { confirm: confirmedAtOnce() });
 		await settle();
 
 		expect(sent.map((request) => request.what)).toEqual(['GET /api/admin/backup']);
@@ -187,7 +201,7 @@ describe('the Scheduled Backups panel, mounted', () => {
 	});
 
 	it('sends what is typed in the inline edit form, bound through the form to the panel', async () => {
-		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn() });
+		const target = draw(ScheduledBackupsPanel, { confirm: confirmedAtOnce() });
 		await settle();
 
 		buttonNamed(target.querySelector('.dest-card')!, '✏️ Edit').click();
@@ -198,12 +212,14 @@ describe('the Scheduled Backups panel, mounted', () => {
 		await settle();
 
 		expect(lastPut().destinations[0]).toMatchObject({ type: 'sftp', name: 'NAS', host: 'nas2.example', hostKey: 'ssh-ed25519 SHA256:abc' });
+		// Card 2701: a change of where backups go asks for the caller's password, and sends it.
+		expect(lastPut().currentPassword).toBe(MINE);
 		// Saved: the form is closed.
 		expect(target.querySelector('.dest-edit-form')).toBeNull();
 	});
 
 	it('sends what is typed in the Add Destination form, bound through the form to the panel', async () => {
-		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn() });
+		const target = draw(ScheduledBackupsPanel, { confirm: confirmedAtOnce() });
 		await settle();
 
 		buttonNamed(target, '+ Add Destination').click();
@@ -216,6 +232,7 @@ describe('the Scheduled Backups panel, mounted', () => {
 
 		expect(lastPut().destinations.map((destination) => destination.name)).toEqual(['NAS', 'Drive', 'Office']);
 		expect(lastPut().destinations[2]).toMatchObject({ type: 'sftp', name: 'Office', host: 'office.example', port: 22, remotePath: '/backups' });
+		expect(lastPut().currentPassword).toBe(MINE);
 		expect(target.querySelector('.dest-add-form')).toBeNull();
 	});
 
@@ -223,7 +240,7 @@ describe('the Scheduled Backups panel, mounted', () => {
 	// time. With both open, a name typed in the add form let the edit form's
 	// Save replace the destination being edited with the new one.
 	it('closes the edit form when + Add Destination opens the add form, and leaves the destination edited as it was saved', async () => {
-		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn() });
+		const target = draw(ScheduledBackupsPanel, { confirm: confirmedAtOnce() });
 		await settle();
 
 		buttonNamed(target.querySelector('.dest-card')!, '✏️ Edit').click();
@@ -256,7 +273,7 @@ describe('the Scheduled Backups panel, mounted', () => {
 	it('keeps ✏️ Edit off while an added destination is being saved, and the answer leaves an edit form opened meanwhile as it is', async () => {
 		const put = held(() => Response.json({ ok: true }));
 		answer = (what) => (what === 'PUT /api/admin/backup' ? put.answered : undefined);
-		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn() });
+		const target = draw(ScheduledBackupsPanel, { confirm: confirmedAtOnce() });
 		await settle();
 
 		buttonNamed(target, '+ Add Destination').click();
@@ -286,7 +303,7 @@ describe('the Scheduled Backups panel, mounted', () => {
 	it('keeps + Add Destination off while an edited destination is being saved, and the answer leaves an add form opened meanwhile as typed', async () => {
 		const put = held(() => Response.json({ ok: true }));
 		answer = (what) => (what === 'PUT /api/admin/backup' ? put.answered : undefined);
-		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn() });
+		const target = draw(ScheduledBackupsPanel, { confirm: confirmedAtOnce() });
 		await settle();
 
 		buttonNamed(target.querySelector('.dest-card')!, '✏️ Edit').click();
@@ -312,7 +329,7 @@ describe('the Scheduled Backups panel, mounted', () => {
 	});
 
 	it('closes the add form when ✏️ Edit opens a destination’s edit form, which shows that destination', async () => {
-		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn() });
+		const target = draw(ScheduledBackupsPanel, { confirm: confirmedAtOnce() });
 		await settle();
 
 		buttonNamed(target, '+ Add Destination').click();
@@ -329,7 +346,7 @@ describe('the Scheduled Backups panel, mounted', () => {
 	});
 
 	it('keeps "Show all" of the history open through the read after Run Now, which draws the history afresh', async () => {
-		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn() });
+		const target = draw(ScheduledBackupsPanel, { confirm: confirmedAtOnce() });
 		await settle();
 		expect(target.querySelectorAll('.history-row')).toHaveLength(5);
 
@@ -348,7 +365,7 @@ describe('the Scheduled Backups panel, mounted', () => {
 	});
 
 	it('opens Google Drive’s Connect box from a destination’s 🔗 Connect, through the box the panel holds', async () => {
-		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn() });
+		const target = draw(ScheduledBackupsPanel, { confirm: confirmedAtOnce() });
 		await settle();
 		expect(target.textContent).not.toContain('Connect Google Drive');
 
@@ -363,7 +380,7 @@ describe('the Scheduled Backups panel, mounted', () => {
 
 	// Card 2362: the box took no focus and answered no Escape.
 	it('gives the Connect box’s Cancel the focus, and closes the box on Escape (card 2362)', async () => {
-		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn() });
+		const target = draw(ScheduledBackupsPanel, { confirm: confirmedAtOnce() });
 		await settle();
 		const opener = buttonNamed(target, '🔗 Connect');
 		opener.focus();
@@ -412,7 +429,7 @@ describe('the Scheduled Backups panel for an administrator and for the superadmi
 	// Card 2405's review: Keep Last keeps two lists, and the panel says so by it and with each Run Now.
 	it('says by Keep Last, to an administrator and to the superadmin, and with a Run Now that succeeds, that the two kinds of copy are counted separately (card 2405)', async () => {
 		const KEEP = 'Keep Last counts scheduled copies and Run Now copies separately: a Run Now removes only older Run Now copies.';
-		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn(), isSuperadmin: false });
+		const target = draw(ScheduledBackupsPanel, { confirm: confirmedAtOnce(), isSuperadmin: false });
 		await settle();
 		expect(target.querySelector('.sched-keep-note')!.textContent).toBe(KEEP);
 
@@ -423,7 +440,7 @@ describe('the Scheduled Backups panel for an administrator and for the superadmi
 
 		unmount(drawn!.component);
 		drawn!.target.remove();
-		const chief = draw(ScheduledBackupsPanel, { confirm: vi.fn(), isSuperadmin: true });
+		const chief = draw(ScheduledBackupsPanel, { confirm: confirmedAtOnce(), isSuperadmin: true });
 		await settle();
 		expect(chief.querySelector('.sched-keep-note')!.textContent).toBe(KEEP);
 	});
@@ -447,7 +464,7 @@ describe('the Scheduled Backups panel for an administrator and for the superadmi
 	});
 
 	it('puts an administrator’s lower Keep Last back, sending nothing, and sends a higher one', async () => {
-		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn(), isSuperadmin: false });
+		const target = draw(ScheduledBackupsPanel, { confirm: confirmedAtOnce(), isSuperadmin: false });
 		await settle();
 		expect(keepLast(target).min).toBe('7');
 
@@ -465,7 +482,7 @@ describe('the Scheduled Backups panel for an administrator and for the superadmi
 	});
 
 	it('marks Disabled for an administrator, puts the schedule back when it is chosen, sending nothing, and sends another schedule', async () => {
-		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn(), isSuperadmin: false });
+		const target = draw(ScheduledBackupsPanel, { confirm: confirmedAtOnce(), isSuperadmin: false });
 		await settle();
 		const off = schedule(target).querySelector<HTMLOptionElement>('option[value="disabled"]')!;
 		expect(off.textContent).toBe('Disabled (superadmin only)');
@@ -480,6 +497,21 @@ describe('the Scheduled Backups panel for an administrator and for the superadmi
 		changeTo(schedule(target), 'weekly');
 		await settle();
 		expect(asked('PUT /api/admin/backup').map((request) => (request.body as { schedule: string }).schedule)).toEqual(['weekly']);
+	});
+
+	it('says in a toast a schedule-only save refused for the password, which it never sent: never silent (card 2701, F6)', async () => {
+		answer = (what) =>
+			what === 'PUT /api/admin/backup'
+				? Response.json({ message: 'Enter your password to confirm this. Nothing was changed.', stepUp: 'missing' }, { status: 400 })
+				: undefined;
+		const target = draw(ScheduledBackupsPanel, { confirm: confirmedAtOnce(), isSuperadmin: false });
+		await settle();
+
+		changeTo(schedule(target), 'weekly');
+		await settle();
+
+		expect(asked('PUT /api/admin/backup').map((request) => request.body)).toEqual([expect.not.objectContaining({ currentPassword: expect.anything() })]);
+		expect(toastsShown()).toEqual([expect.stringContaining('Enter your password to confirm this. Nothing was changed.')]);
 	});
 
 	it('leaves the superadmin’s panel as it was: 🗑️ asks the confirm, Keep Last lowered and Disabled are sent, and no rule is shown', async () => {
@@ -511,6 +543,63 @@ describe('the Scheduled Backups panel for an administrator and for the superadmi
 		expect(toastsShown()).not.toContain(RULE);
 	});
 
+	// Card 2701, case 31 (decision 17): the destinations go, and the password is
+	// asked for, only when the list differs from the one read.
+	it('sends the destinations, and asks for the password, only when the list changed: a save of the schedule alone sends neither (card 2701)', async () => {
+		dismissAll();
+		const confirm = confirmedAtOnce();
+		const target = draw(ScheduledBackupsPanel, { confirm, isSuperadmin: true });
+		await settle();
+
+		changeTo(schedule(target), 'weekly');
+		await settle();
+		expect(confirm).not.toHaveBeenCalled();
+		expect(lastPut()).not.toHaveProperty('destinations');
+		expect(lastPut()).not.toHaveProperty('currentPassword');
+		expect((lastPut() as unknown as { schedule: string }).schedule).toBe('weekly');
+
+		remove(target).click();
+		await settle();
+		expect(confirm.mock.calls.map((call) => call[0])).toEqual(['Remove Destination']);
+		expect(confirm.mock.calls[0][3]).toEqual({ askPassword: true });
+		expect(lastPut().destinations.map((destination) => destination.name)).toEqual(['Drive']);
+		expect(lastPut().currentPassword).toBe(MINE);
+
+		// The list saved is the one compared with now: a save of the schedule after it asks nothing again.
+		changeTo(schedule(target), 'daily');
+		await settle();
+		expect(confirm).toHaveBeenCalledTimes(1);
+		expect(lastPut()).not.toHaveProperty('destinations');
+		expect(lastPut()).not.toHaveProperty('currentPassword');
+	});
+
+	it('gives a refusal of the password back to the confirm, the list put back with no toast and no read, and Run Now asks and sends it too (card 2701)', async () => {
+		dismissAll();
+		answer = (what) =>
+			what === 'PUT /api/admin/backup' || what === 'POST /api/admin/backup'
+				? Response.json({ message: 'Password is incorrect. Nothing was changed.', stepUp: 'wrong' }, { status: 403 })
+				: undefined;
+		const confirm = vi.fn();
+		const target = draw(ScheduledBackupsPanel, { confirm, isSuperadmin: true });
+		await settle();
+
+		remove(target).click();
+		expect(await confirm.mock.calls[0][2]('a-wrong-one')).toBe('Password is incorrect. Nothing was changed.');
+		await settle();
+		expect(lastPut()).toMatchObject({ currentPassword: 'a-wrong-one' });
+		// Put back as it was, with no read and no toast: the dialog says it.
+		expect([...target.querySelectorAll('.dest-card')]).toHaveLength(2);
+		expect(asked('GET /api/admin/backup')).toHaveLength(1);
+		expect(toastsShown()).toEqual([]);
+
+		buttonNamed(target, '▶ Run Now').click();
+		expect(confirm.mock.calls[1][0]).toBe('Run Backup Now');
+		expect(confirm.mock.calls[1][3]).toEqual({ askPassword: true });
+		expect(await confirm.mock.calls[1][2]('a-wrong-one')).toBe('Password is incorrect. Nothing was changed.');
+		expect(asked('POST /api/admin/backup').map((request) => request.body)).toEqual([{ currentPassword: 'a-wrong-one' }]);
+		expect(toastsShown()).toEqual([]);
+	});
+
 	// Card 2408: switching the failure mail off and changing who receives it are the superadmin's too.
 	const notifyBox = (target: HTMLElement) => target.querySelector<HTMLInputElement>('.sched-row input[type="checkbox"]')!;
 	const notifyEmail = (target: HTMLElement) => target.querySelector<HTMLInputElement>('input[placeholder="Notification email"]');
@@ -521,7 +610,7 @@ describe('the Scheduled Backups panel for an administrator and for the superadmi
 
 	it('marks Email on failure and its address for an administrator, ticks it again and puts the address back with the rule, sending nothing (card 2408)', async () => {
 		mailOn();
-		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn(), isSuperadmin: false });
+		const target = draw(ScheduledBackupsPanel, { confirm: confirmedAtOnce(), isSuperadmin: false });
 		await settle();
 		expect(target.querySelector('.sched-note')!.textContent).toBe(`🔒 ${RULE}`);
 		const box = notifyBox(target);
@@ -558,7 +647,7 @@ describe('the Scheduled Backups panel for an administrator and for the superadmi
 
 	it('lets an administrator tick Email on failure on, sending that alone of the failure mail, and marks it once saved (card 2408)', async () => {
 		answer = (what) => (what === 'GET /api/admin/backup' ? Response.json({ ...settings, notifyEmail: 'chief@example.com' }) : undefined);
-		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn(), isSuperadmin: false });
+		const target = draw(ScheduledBackupsPanel, { confirm: confirmedAtOnce(), isSuperadmin: false });
 		await settle();
 		expect(notifyBox(target).hasAttribute('aria-disabled')).toBe(false);
 		expect(notifyEmail(target)).toBeNull();
@@ -575,7 +664,7 @@ describe('the Scheduled Backups panel for an administrator and for the superadmi
 
 	it('leaves the superadmin’s Email on failure and its address as they were: unmarked, and each change sent (card 2408)', async () => {
 		mailOn();
-		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn(), isSuperadmin: true });
+		const target = draw(ScheduledBackupsPanel, { confirm: confirmedAtOnce(), isSuperadmin: true });
 		await settle();
 		expect(notifyBox(target).hasAttribute('aria-disabled')).toBe(false);
 		expect(notifyBox(target).hasAttribute('title')).toBe(false);
@@ -596,7 +685,7 @@ describe('the Scheduled Backups panel for an administrator and for the superadmi
 	// Card 2408's review: the box is read-only for an administrator, so typing or pasting never reached the put-back.
 	it('says the rule when an administrator types, deletes or pastes in the address box, and leaves Tab and the arrows be (card 2408)', async () => {
 		mailOn();
-		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn(), isSuperadmin: false });
+		const target = draw(ScheduledBackupsPanel, { confirm: confirmedAtOnce(), isSuperadmin: false });
 		await settle();
 		const address = notifyEmail(target)!;
 		const key = (name: string, extra: KeyboardEventInit = {}) => {
@@ -632,7 +721,7 @@ describe('the Scheduled Backups panel for an administrator and for the superadmi
 
 	it('leaves the superadmin’s typing and pasting in the address box alone (card 2408)', async () => {
 		mailOn();
-		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn(), isSuperadmin: true });
+		const target = draw(ScheduledBackupsPanel, { confirm: confirmedAtOnce(), isSuperadmin: true });
 		await settle();
 		const address = notifyEmail(target)!;
 		const typed = new KeyboardEvent('keydown', { key: 'a', bubbles: true, cancelable: true });
@@ -648,7 +737,7 @@ describe('the Scheduled Backups panel for an administrator and for the superadmi
 	// Card 2408's review: every save sent the failure mail as last read, so a panel left open was refused for the superadmin's change since.
 	it('sends nothing of the failure mail when an administrator raises Keep Last on a panel read before the superadmin changed the recipients (card 2408)', async () => {
 		mailOn();
-		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn(), isSuperadmin: false });
+		const target = draw(ScheduledBackupsPanel, { confirm: confirmedAtOnce(), isSuperadmin: false });
 		await settle();
 		// Meanwhile the superadmin sends the mail elsewhere: the server holds another address than the panel shows.
 		answer = (what) => {
@@ -672,7 +761,7 @@ describe('the Scheduled Backups panel for an administrator and for the superadmi
 	// The card 2398 review: a refused save left the controls showing what was refused.
 	it('reads the settings again quietly after a refused save, so Keep Last and the list show what the server holds, and says so', async () => {
 		answer = (what) => (what === 'PUT /api/admin/backup' ? Response.json({ message: 'Forbidden' }, { status: 403 }) : undefined);
-		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn(), isSuperadmin: false });
+		const target = draw(ScheduledBackupsPanel, { confirm: confirmedAtOnce(), isSuperadmin: false });
 		await settle();
 
 		changeTo(keepLast(target), '9');
@@ -704,7 +793,7 @@ describe('the Scheduled Backups panel for an administrator and for the superadmi
 			if (what === 'GET /api/admin/backup' && ++reads > 1) return Response.json({ message: 'Server error' }, { status: 500 });
 			return undefined;
 		};
-		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn(), isSuperadmin: true });
+		const target = draw(ScheduledBackupsPanel, { confirm: confirmedAtOnce(), isSuperadmin: true });
 		await settle();
 
 		changeTo(keepLast(target), '9');
@@ -716,7 +805,7 @@ describe('the Scheduled Backups panel for an administrator and for the superadmi
 	// The card 2398 review: a rename is the old destination removed, said under the name before it is tried.
 	it('says under the edit form’s name, to an administrator alone, that renaming needs the superadmin', async () => {
 		const hint = 'Renaming needs the superadmin: a destination renamed is the old one removed.';
-		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn(), isSuperadmin: false });
+		const target = draw(ScheduledBackupsPanel, { confirm: confirmedAtOnce(), isSuperadmin: false });
 		await settle();
 		buttonNamed(target.querySelector('.dest-card')!, '✏️ Edit').click();
 		flushSync();
@@ -724,7 +813,7 @@ describe('the Scheduled Backups panel for an administrator and for the superadmi
 		unmount(drawn!.component);
 		drawn!.target.remove();
 
-		const chief = draw(ScheduledBackupsPanel, { confirm: vi.fn(), isSuperadmin: true });
+		const chief = draw(ScheduledBackupsPanel, { confirm: confirmedAtOnce(), isSuperadmin: true });
 		await settle();
 		buttonNamed(chief.querySelector('.dest-card')!, '✏️ Edit').click();
 		flushSync();
@@ -749,7 +838,7 @@ describe('the Run Now toast names each destination that failed and why (card 241
 	/** Run Now pressed, the server answering `results`. */
 	async function runNow(results: Record<string, unknown>[]) {
 		answer = (what) => (what === 'POST /api/admin/backup' ? Response.json({ results }) : undefined);
-		const target = draw(ScheduledBackupsPanel, { confirm: vi.fn() });
+		const target = draw(ScheduledBackupsPanel, { confirm: confirmedAtOnce() });
 		await settle();
 		buttonNamed(target, '▶ Run Now').click();
 		await settle();
@@ -821,13 +910,31 @@ function escape() {
 
 // Card 2362: the import's warning and choices were a dialog of the panel's own, with no focus and no Escape.
 describe('the Import Database dialog, mounted (card 2362)', () => {
-	it('gives Cancel the focus, keeps Tab on its own stops, closes on Escape opening no file picker, and gives the focus back to Import', async () => {
+	/** The init `fetch` was given for the first request to an address that begins `start`. */
+	const initFor = (start: string) =>
+		(vi.mocked(fetch).mock.calls as unknown as [string, RequestInit | undefined][]).find(([url]) => url.startsWith(start))?.[1];
+
+	/** A backup picked in the hidden file box, as the browser's picker hands it over. */
+	function pick(target: HTMLElement, name = 'backup.db') {
+		const box = target.querySelector<HTMLInputElement>('.hidden-input')!;
+		const file = new File([new Uint8Array([83, 81, 76])], name);
+		Object.defineProperty(file, 'arrayBuffer', { value: async () => new Uint8Array([83, 81, 76]).buffer });
+		Object.defineProperty(box, 'files', { value: [file], configurable: true });
+		box.dispatchEvent(new Event('change', { bubbles: true }));
+	}
+
+	it('gives Cancel the focus, keeps Tab on its own stops, closes on Escape sending nothing, and gives the focus back to Import', async () => {
 		const target = draw(BackupRestorePanel, { importOutsideDefault: 'keep' });
 		const opener = target.querySelector<HTMLButtonElement>('.btn-backup.import')!;
 		const picker = vi.spyOn(target.querySelector<HTMLInputElement>('.hidden-input')!, 'click');
 		opener.focus();
+		// The picker first, from the press itself (card 2701's code review, F1); the dialog once a backup is chosen.
 		opener.click();
 		flushSync();
+		expect(picker).toHaveBeenCalledTimes(1);
+		expect(document.querySelector('.confirm-modal')).toBeNull();
+		pick(target);
+		await settle();
 
 		const dialog = document.querySelector<HTMLElement>('.confirm-modal')!;
 		const cancel = buttonNamed(dialog, 'Cancel');
@@ -835,6 +942,10 @@ describe('the Import Database dialog, mounted (card 2362)', () => {
 		const chosen = dialog.querySelector<HTMLInputElement>('input[type="radio"]:checked')!;
 		expect(chosen.value).toBe('keep');
 		expect(document.activeElement).toBe(cancel);
+		// Card 2701: Confirm waits for the caller's password, and is a stop once it is typed.
+		expect(confirmButton.disabled).toBe(true);
+		type(dialog.querySelector<HTMLInputElement>('input[type="password"]')!, MINE);
+		expect(confirmButton.disabled).toBe(false);
 		// From its last stop round to its first, the chosen way to restore, and back.
 		confirmButton.focus();
 		expect(tab()).toBe(true);
@@ -851,7 +962,183 @@ describe('the Import Database dialog, mounted (card 2362)', () => {
 		expect(document.querySelector('.confirm-modal')).toBeNull();
 		await settle();
 		expect(document.activeElement).toBe(opener);
-		expect(picker).not.toHaveBeenCalled();
+		// Nothing was sent, and the file chosen went with the dialog: the next press starts with the picker again.
+		expect(sent).toEqual([]);
+		expect(picker).toHaveBeenCalledTimes(1);
+	});
+
+	// Card 2701, case 29 (decision 8), as its code review's F1 ruled it: the
+	// backup is chosen first and checked here; the password then goes alone to
+	// the confirm; and the upload goes, with the confirmation it answered, only
+	// once the password has been accepted.
+	it('picks the backup first, then sends the typed password to the confirm, and only then the upload with the confirmation in its header (card 2701)', async () => {
+		answer = (what) =>
+			what === 'POST /api/admin/import/confirm'
+				? Response.json({ confirmation: 'the-confirmation', expiresInSeconds: 60 })
+				: what === 'POST /api/admin/import?outside=keep'
+					? Response.json({ restored: { boards: 2 }, sizeBytes: 4096 })
+					: undefined;
+		const target = draw(BackupRestorePanel, { importOutsideDefault: 'keep' });
+		const picker = vi.spyOn(target.querySelector<HTMLInputElement>('.hidden-input')!, 'click');
+		target.querySelector<HTMLButtonElement>('.btn-backup.import')!.click();
+		flushSync();
+		expect(picker).toHaveBeenCalledTimes(1);
+		pick(target, 'monday.db');
+		await settle();
+
+		// Chosen and read here, and named in the dialog: nothing sent yet.
+		expect(sent).toEqual([]);
+		const dialog = document.querySelector<HTMLElement>('.confirm-modal')!;
+		expect(dialog.querySelector('.import-file')?.textContent).toBe('Backup chosen: monday.db');
+		const field = dialog.querySelector<HTMLInputElement>('input[type="password"]')!;
+		expect(field.getAttribute('autocomplete')).toBe('current-password');
+		expect(dialog.querySelector(`label[for="${field.id}"]`)?.textContent).toBe('Your password');
+		type(field, MINE);
+		buttonNamed(dialog, 'Confirm').click();
+		await settle();
+
+		// The confirm first, with the password alone, and the upload as soon as it answered.
+		expect(asked('POST /api/admin/import/confirm')[0].body).toEqual({ currentPassword: MINE });
+		expect(sent.map((request) => request.what)).toEqual(['POST /api/admin/import/confirm', 'POST /api/admin/import?outside=keep']);
+		expect(document.querySelector('.confirm-modal')).toBeNull();
+		const headers = initFor('/api/admin/import?')!.headers as Record<string, string>;
+		expect(headers[CONFIRMATION_HEADER]).toBe('the-confirmation');
+		expect(headers['Content-Type']).toBe('application/octet-stream');
+		// The password itself went nowhere but the confirm.
+		expect(JSON.stringify(initFor('/api/admin/import?'))).not.toContain(MINE);
+		expect(target.querySelector('.import-report')?.textContent).toContain('Database restored');
+		expect(picker).toHaveBeenCalledTimes(1);
+
+		// Used once: a second backup chosen asks for the password again, and sends nothing until it is confirmed.
+		pick(target);
+		await settle();
+		expect(asked('POST /api/admin/import?outside=keep')).toHaveLength(1);
+		expect(document.querySelector('.confirm-modal input[type="password"]')).not.toBeNull();
+	});
+
+	it('opens no dialog and sends nothing for a file that is not a .db backup, or one that cannot be read', async () => {
+		const target = draw(BackupRestorePanel, { importOutsideDefault: 'keep' });
+		pick(target, 'export.json');
+		await settle();
+		expect(document.querySelector('.confirm-modal')).toBeNull();
+		expect(target.querySelector('.import-report')?.textContent).toContain('is not a .db backup');
+
+		const box = target.querySelector<HTMLInputElement>('.hidden-input')!;
+		const unreadable = new File([new Uint8Array([1])], 'gone.db');
+		Object.defineProperty(unreadable, 'arrayBuffer', { value: async () => Promise.reject(new DOMException('gone', 'NotReadableError')) });
+		Object.defineProperty(box, 'files', { value: [unreadable], configurable: true });
+		box.dispatchEvent(new Event('change', { bubbles: true }));
+		await settle();
+		expect(document.querySelector('.confirm-modal')).toBeNull();
+		expect(target.querySelector('.import-report')?.textContent).toContain('gone.db');
+		expect(sent).toEqual([]);
+	});
+
+	it('sends no upload for a refused confirm: it says the server’s words in the dialog, which stays open with the field cleared and focused (card 2701)', async () => {
+		answer = (what) =>
+			what === 'POST /api/admin/import/confirm' ? Response.json({ message: 'Password is incorrect. Nothing was changed.', stepUp: 'wrong' }, { status: 403 }) : undefined;
+		const target = draw(BackupRestorePanel, { importOutsideDefault: 'keep' });
+		pick(target);
+		await settle();
+		const dialog = document.querySelector<HTMLElement>('.confirm-modal')!;
+		const field = dialog.querySelector<HTMLInputElement>('input[type="password"]')!;
+		type(field, 'a-wrong-one');
+		// Enter in the field is Confirm.
+		field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+		await settle();
+
+		expect(document.querySelector('.confirm-modal')).toBe(dialog);
+		const alert = dialog.querySelector('[role="alert"]');
+		expect(alert?.textContent).toBe('Password is incorrect. Nothing was changed.');
+		expect(field.getAttribute('aria-invalid')).toBe('true');
+		expect(field.getAttribute('aria-describedby')).toBe(alert!.id);
+		expect(field.value).toBe('');
+		expect(document.activeElement).toBe(field);
+		expect(sent.map((request) => request.what)).toEqual(['POST /api/admin/import/confirm']);
+
+		// Cancel takes the words, the field and the file with it.
+		type(field, 'half-typed');
+		buttonNamed(dialog, 'Cancel').click();
+		flushSync();
+		expect(document.querySelector('.confirm-modal')).toBeNull();
+		pick(target);
+		await settle();
+		const again = document.querySelector<HTMLElement>('.confirm-modal')!;
+		expect(again.querySelector<HTMLInputElement>('input[type="password"]')!.value).toBe('');
+		expect(again.querySelector('[role="alert"]')).toBeNull();
+		expect(sent.map((request) => request.what)).toEqual(['POST /api/admin/import/confirm']);
+	});
+
+	it('leaves no field to type in once the confirm says the session is signed out, and sends nothing more (card 2701, F5)', async () => {
+		answer = (what) =>
+			what === 'POST /api/admin/import/confirm'
+				? Response.json({ message: STEP_UP_SIGNED_OUT, signedOut: true, stepUp: 'signed-out' }, { status: 403 })
+				: undefined;
+		const target = draw(BackupRestorePanel, { importOutsideDefault: 'keep' });
+		pick(target);
+		await settle();
+		const dialog = document.querySelector<HTMLElement>('.confirm-modal')!;
+		const field = dialog.querySelector<HTMLInputElement>('input[type="password"]')!;
+		type(field, 'a-wrong-one');
+		buttonNamed(dialog, 'Confirm').click();
+		await settle();
+
+		expect(dialog.querySelector('[role="alert"]')?.textContent).toBe(STEP_UP_SIGNED_OUT);
+		expect(field.disabled).toBe(true);
+		expect(buttonNamed(dialog, 'Confirm').disabled).toBe(true);
+		expect(sent.map((request) => request.what)).toEqual(['POST /api/admin/import/confirm']);
+	});
+});
+
+// Card 2701, case 30 (decision 17): the export is a POST with the password, from a confirm that asks for it.
+describe('the export asks for the password, mounted (card 2701)', () => {
+	let saved: ReturnType<typeof vi.spyOn>;
+	beforeEach(() => {
+		// The browser saves a file from the link the page clicks: here only counted.
+		saved = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+		vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:the-file'), revokeObjectURL: vi.fn() }));
+	});
+	afterEach(() => saved.mockRestore());
+
+	/** The export's confirm, opened from its button, the caller's password typed in it. */
+	function askToExport(target: HTMLElement, password: string) {
+		target.querySelector<HTMLButtonElement>('.btn-backup.export')!.click();
+		flushSync();
+		const dialog = document.querySelector<HTMLElement>('.confirm-modal')!;
+		expect(dialog.querySelector('h3')?.textContent).toBe('Export Database');
+		type(dialog.querySelector<HTMLInputElement>('input[type="password"]')!, password);
+		return dialog;
+	}
+
+	it('asks, sends a POST with the password, and saves the file from the answer', async () => {
+		answer = (what) => (what === 'POST /api/admin/export' ? new Response('SQLite format 3', { headers: { 'content-type': 'application/octet-stream' } }) : undefined);
+		const target = draw(BackupRestorePanel, { importOutsideDefault: 'keep' });
+		// Nothing is sent until the password is confirmed.
+		const dialog = askToExport(target, MINE);
+		expect(sent).toEqual([]);
+		buttonNamed(dialog, 'Export').click();
+		await settle();
+
+		expect(asked('POST /api/admin/export').map((request) => request.body)).toEqual([{ currentPassword: MINE }]);
+		expect(asked('GET /api/admin/export')).toEqual([]);
+		expect(saved).toHaveBeenCalledTimes(1);
+		expect(document.querySelector('.confirm-modal')).toBeNull();
+	});
+
+	it('saves nothing for a refusal of the password, and says the server’s words in the dialog, which stays open', async () => {
+		answer = (what) =>
+			what === 'POST /api/admin/export' ? Response.json({ message: 'Password is incorrect. Nothing was changed.', stepUp: 'wrong' }, { status: 403 }) : undefined;
+		const target = draw(BackupRestorePanel, { importOutsideDefault: 'keep' });
+		const dialog = askToExport(target, 'a-wrong-one');
+		buttonNamed(dialog, 'Export').click();
+		await settle();
+
+		expect(saved).not.toHaveBeenCalled();
+		expect(document.querySelector('.confirm-modal')).toBe(dialog);
+		expect(dialog.querySelector('[role="alert"]')?.textContent).toBe('Password is incorrect. Nothing was changed.');
+		const field = dialog.querySelector<HTMLInputElement>('input[type="password"]')!;
+		expect(field.value).toBe('');
+		expect(document.activeElement).toBe(field);
 	});
 });
 
@@ -886,6 +1173,38 @@ describe('the Archived page’s confirm, mounted (card 2362)', () => {
 		buttonNamed(document.querySelector<HTMLElement>('.confirm-modal')!, 'Delete Forever').click();
 		await settle();
 		expect(asked('DELETE /api/cards/9?permanent=true')).toHaveLength(1);
+		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
+	});
+
+	it('asks Purge All for the caller’s password and sends it; a refusal of it stays in the dialog, purging nothing more (card 2701)', async () => {
+		let refuse = true;
+		answer = (what) =>
+			what === 'POST /api/admin/purge-archived'
+				? refuse
+					? Response.json({ message: 'Password is incorrect. Nothing was changed.', stepUp: 'wrong' }, { status: 403 })
+					: Response.json({ success: true, purged: 1 })
+				: undefined;
+		const target = draw(ArchivedPage, { data: archivedData });
+		buttonNamed(target, '🗑️ Purge All').click();
+		flushSync();
+		const dialog = document.querySelector<HTMLElement>('.confirm-modal')!;
+		const field = dialog.querySelector<HTMLInputElement>('input[type="password"]')!;
+		expect(document.activeElement).toBe(field);
+		type(field, 'a-wrong-one');
+		buttonNamed(dialog, 'Purge All').click();
+		await settle();
+
+		expect(asked('POST /api/admin/purge-archived').map((request) => request.body)).toEqual([{ currentPassword: 'a-wrong-one' }]);
+		expect(document.querySelector('.confirm-modal')).toBe(dialog);
+		expect(dialog.querySelector('[role="alert"]')?.textContent).toBe('Password is incorrect. Nothing was changed.');
+		expect(navigation.invalidateAll).not.toHaveBeenCalled();
+
+		refuse = false;
+		type(field, MINE);
+		buttonNamed(dialog, 'Purge All').click();
+		await settle();
+		expect(asked('POST /api/admin/purge-archived').map((request) => request.body)).toEqual([{ currentPassword: 'a-wrong-one' }, { currentPassword: MINE }]);
+		expect(document.querySelector('.confirm-modal')).toBeNull();
 		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
 	});
 });
@@ -1028,12 +1347,55 @@ describe('the App URL panel, mounted', () => {
 
 		type(field, '');
 		buttonNamed(target, 'Save').click();
+		flushSync();
+		// Card 2701: Save asks for the caller's password first, and sends nothing until it is confirmed.
+		const dialog = document.querySelector<HTMLElement>('.confirm-modal')!;
+		expect(dialog.querySelector('h3')?.textContent).toBe('Save App URL');
+		expect(sent.map((request) => request.what)).toEqual(['GET /api/admin/smtp']);
+		type(dialog.querySelector<HTMLInputElement>('input[type="password"]')!, MINE);
+		buttonNamed(dialog, 'Save').click();
 		await settle();
 
 		expect(sent.map((request) => request.what)).toEqual(['GET /api/admin/smtp', 'PUT /api/admin/smtp', 'GET /api/admin/smtp']);
-		expect(asked('PUT /api/admin/smtp')[0].body).toEqual({ appUrl: '' });
+		expect(asked('PUT /api/admin/smtp')[0].body).toEqual({ appUrl: '', currentPassword: MINE });
+		expect(document.querySelector('.confirm-modal')).toBeNull();
 		expect(field.value).toBe('https://env.example.com');
 		expect(target.querySelector('.app-url-from')?.textContent?.trim()).toBe(FROM.environment);
+	});
+
+	it('keeps the confirm open on a refusal of the password, saying it there and nowhere else, and saves on the next Confirm (card 2701)', async () => {
+		let refuse = true;
+		answer = (what) =>
+			what === 'PUT /api/admin/smtp'
+				? refuse
+					? Response.json({ message: 'Password is incorrect. Nothing was changed.', stepUp: 'wrong' }, { status: 403 })
+					: Response.json({ success: true })
+				: undefined;
+		const target = draw(AppUrlPanel);
+		await settle();
+		buttonNamed(target, 'Save').click();
+		flushSync();
+		const dialog = document.querySelector<HTMLElement>('.confirm-modal')!;
+		const box = dialog.querySelector<HTMLInputElement>('input[type="password"]')!;
+		type(box, 'a-wrong-one');
+		buttonNamed(dialog, 'Save').click();
+		await settle();
+
+		expect(document.querySelector('.confirm-modal')).toBe(dialog);
+		expect(dialog.querySelector('[role="alert"]')?.textContent).toBe('Password is incorrect. Nothing was changed.');
+		let shown: { message: string }[] = [];
+		toasts.subscribe((list) => (shown = list as { message: string }[]))();
+		expect(shown.map((toast) => toast.message)).not.toContain('Password is incorrect. Nothing was changed.');
+		// The panel is not read again for a refusal.
+		expect(asked('GET /api/admin/smtp')).toHaveLength(1);
+
+		refuse = false;
+		type(box, MINE);
+		buttonNamed(dialog, 'Save').click();
+		await settle();
+		expect(asked('PUT /api/admin/smtp').map((request) => (request.body as { currentPassword: string }).currentPassword)).toEqual(['a-wrong-one', MINE]);
+		expect(document.querySelector('.confirm-modal')).toBeNull();
+		expect(asked('GET /api/admin/smtp')).toHaveLength(2);
 	});
 });
 
@@ -1079,10 +1441,21 @@ describe('the users panel, mounted', () => {
 		flushSync();
 		type(target.querySelector<HTMLInputElement>('input[placeholder="Username"]')!, 'carol');
 		type(target.querySelector<HTMLInputElement>('input[placeholder="Email"]')!, 'carol@example.com');
+		// Card 2701: Create waits for the caller's own password, typed in a field of the form's own.
+		expect(buttonNamed(target, 'Create').disabled).toBe(true);
+		const mine = target.querySelector<HTMLInputElement>('input[autocomplete="current-password"]')!;
+		expect(mine.type).toBe('password');
+		expect(mine.getAttribute('autocomplete')).toBe('current-password');
+		type(mine, MINE);
 		buttonNamed(target, 'Create').click();
+		flushSync();
+		// Cleared once sent.
+		expect(mine.value).toBe('');
 		await settle();
 
-		expect(asked('POST /api/users').map((request) => request.body)).toEqual([{ username: 'carol', email: 'carol@example.com', emoji: '👤', role: 'user' }]);
+		expect(asked('POST /api/users').map((request) => request.body)).toEqual([
+			{ username: 'carol', email: 'carol@example.com', emoji: '👤', role: 'user', currentPassword: MINE }
+		]);
 		expect(link.value).toEqual({
 			url: 'http://localhost/invite/t1',
 			username: 'carol',
@@ -1095,6 +1468,33 @@ describe('the users panel, mounted', () => {
 		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
 	});
 
+	it('says a refusal of the caller’s password in Add User beside its field, labelled and focused, with no toast; the form stays (card 2701, F7)', async () => {
+		answer = (what) =>
+			what === 'POST /api/users' ? Response.json({ message: 'Password is incorrect. Nothing was changed.', stepUp: 'wrong' }, { status: 403 }) : undefined;
+		const target = draw(UsersPanel, { data: pageData, isSuperadmin: true, confirm: vi.fn(), loadMailStatus: vi.fn(), inviteLink: null });
+
+		buttonNamed(target, '+ Add User').click();
+		flushSync();
+		type(target.querySelector<HTMLInputElement>('input[placeholder="Username"]')!, 'carol');
+		type(target.querySelector<HTMLInputElement>('input[placeholder="Email"]')!, 'carol@example.com');
+		const mine = target.querySelector<HTMLInputElement>('input[autocomplete="current-password"]')!;
+		expect(target.querySelector(`label[for="${mine.id}"]`)?.textContent).toBe('Your password');
+		type(mine, 'a-wrong-one');
+		buttonNamed(target, 'Create').click();
+		await settle();
+
+		const alert = target.querySelector('[role="alert"]');
+		expect(alert?.textContent).toBe('Password is incorrect. Nothing was changed.');
+		expect(mine.getAttribute('aria-describedby')).toBe(alert!.id);
+		expect(document.activeElement).toBe(mine);
+		expect(mine.value).toBe('');
+		let shown: { message: string }[] = [];
+		toasts.subscribe((list) => (shown = list as { message: string }[]))();
+		expect(shown.map((toast) => toast.message)).not.toContain('Password is incorrect. Nothing was changed.');
+		expect(target.querySelector<HTMLInputElement>('input[placeholder="Username"]')!.value).toBe('carol');
+		expect(navigation.invalidateAll).not.toHaveBeenCalled();
+	});
+
 	it('asks the page’s confirm before a delete, whose action sends it', async () => {
 		const confirm = vi.fn();
 		const target = draw(UsersPanel, { data: pageData, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
@@ -1103,10 +1503,43 @@ describe('the users panel, mounted', () => {
 		await settle();
 		expect(confirm).toHaveBeenCalledTimes(1);
 		expect(confirm.mock.calls[0][0]).toBe('Delete User');
-		await confirm.mock.calls[0][2]();
+		// Card 2701: it asks for the caller's password, which the delete sends.
+		expect(confirm.mock.calls[0][3]).toEqual({ askPassword: true });
+		await confirm.mock.calls[0][2](MINE);
 		await settle();
 
-		expect(asked('DELETE /api/users/2')).toHaveLength(1);
+		expect(asked('DELETE /api/users/2').map((request) => request.body)).toEqual([{ currentPassword: MINE }]);
+	});
+
+	it('gives a refusal of the password back to the confirm, with no toast and nothing changed on the page (card 2701)', async () => {
+		answer = (what) =>
+			what === 'DELETE /api/users/2' || what === 'POST /api/users/2/invite'
+				? Response.json({ message: 'Password is incorrect. Nothing was changed.', stepUp: 'wrong' }, { status: 403 })
+				: undefined;
+		// Every toast gone: an earlier case's may still be up.
+		let before: { id: number }[] = [];
+		toasts.subscribe((list) => (before = list))();
+		for (const toast of before) toasts.dismiss(toast.id);
+		const confirm = vi.fn();
+		const target = draw(UsersPanel, { data: pageData, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
+
+		target.querySelector<HTMLButtonElement>('button[title="Delete user"]')!.click();
+		await settle();
+		expect(await confirm.mock.calls[0][2]('a-wrong-one')).toBe('Password is incorrect. Nothing was changed.');
+		// 📧 asks first too, and its refusal comes back the same way.
+		target.querySelector<HTMLButtonElement>('button[title="Resend invite email"]')!.click();
+		expect(confirm.mock.calls[1][0]).toBe('Send Invite');
+		expect(confirm.mock.calls[1][3]).toEqual({ askPassword: true });
+		expect(await confirm.mock.calls[1][2]('a-wrong-one')).toBe('Password is incorrect. Nothing was changed.');
+		await settle();
+
+		expect(asked('POST /api/users/2/invite').map((request) => request.body)).toEqual([{ currentPassword: 'a-wrong-one' }]);
+		let shown: unknown[] = [];
+		toasts.subscribe((list) => (shown = list))();
+		expect(shown).toEqual([]);
+		expect(navigation.invalidateAll).not.toHaveBeenCalled();
+		// 📧 can be pressed again: the invite is no longer out.
+		expect(target.querySelector<HTMLButtonElement>('button[title="Resend invite email"]')!.disabled).toBe(false);
 	});
 
 	// Card 2380: the delete is refused for an account that alone owns a team (card 2377); the confirmation says so first.
@@ -1130,7 +1563,7 @@ describe('the users panel, mounted', () => {
 		expect(message).toMatch(
 			/^Delete user "bob"\? They are the only owner of: Alpha, Zeta, so the delete will be refused: make someone else an owner or delete those teams first\. Their comments, /
 		);
-		await confirm.mock.calls[0][2]();
+		await confirm.mock.calls[0][2](MINE);
 		await settle();
 		expect(asked('DELETE /api/users/2')).toHaveLength(1);
 	});
@@ -1161,11 +1594,34 @@ describe('the users panel, mounted', () => {
 		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
 		expect(target.textContent).toContain('They have 1 API key, which stops working.');
 		type(target.querySelector<HTMLInputElement>('input[placeholder="New password (min 8 chars)"]')!, 'a-new-password');
+		// Card 2701: a reset waits for the administrator's own password too.
+		expect(buttonNamed(target, 'Reset Password').disabled).toBe(true);
+		type(target.querySelector<HTMLInputElement>('input[autocomplete="current-password"]')!, MINE);
 		buttonNamed(target, 'Reset Password').click();
 		await settle();
 
-		expect(asked('PUT /api/users/2/password').map((request) => request.body)).toEqual([{ password: 'a-new-password' }]);
+		expect(asked('PUT /api/users/2/password').map((request) => request.body)).toEqual([{ password: 'a-new-password', currentPassword: MINE }]);
 		expect(target.textContent).not.toContain('Enter a new password for bob.');
+	});
+
+	it('keeps the password dialog open on a refusal of the administrator’s own password, saying it there, the field cleared and focused (card 2701)', async () => {
+		answer = (what) =>
+			what === 'PUT /api/users/2/password' ? Response.json({ message: 'Password is incorrect. Nothing was changed.', stepUp: 'wrong' }, { status: 403 }) : undefined;
+		const target = draw(UsersPanel, { data: pageData, isSuperadmin: true, confirm: vi.fn(), loadMailStatus: vi.fn(), inviteLink: null });
+		target.querySelectorAll<HTMLButtonElement>('button[title="Reset password"]')[1].click();
+		await settle();
+		type(target.querySelector<HTMLInputElement>('input[placeholder="New password (min 8 chars)"]')!, 'a-new-password');
+		const mine = target.querySelector<HTMLInputElement>('input[autocomplete="current-password"]')!;
+		type(mine, 'a-wrong-one');
+		buttonNamed(target, 'Reset Password').click();
+		await settle();
+
+		expect(target.textContent).toContain('Enter a new password for bob.');
+		expect(target.querySelector('[role="alert"]')?.textContent).toBe('Password is incorrect. Nothing was changed.');
+		expect(mine.value).toBe('');
+		expect(document.activeElement).toBe(mine);
+		// The new password typed is kept, to send again with the right one.
+		expect(target.querySelector<HTMLInputElement>('input[placeholder="New password (min 8 chars)"]')!.value).toBe('a-new-password');
 	});
 });
 
@@ -1207,7 +1663,8 @@ describe('the users panel says what a role change or a delete removed (card 2397
 	it('says what went with bob’s role in a warning that stays, and tells the page what went', async () => {
 		answer = (what) => (what === 'PUT /api/users/2' ? Response.json({ id: 2, role: 'user', invitesEnded: 0, settingsRemoved: REMOVED }) : undefined);
 		const settingsRemoved = vi.fn();
-		const target = draw(UsersPanel, { data: pageData, isSuperadmin: true, confirm: vi.fn(), loadMailStatus: vi.fn(), settingsRemoved, inviteLink: null });
+		// Card 2701: a change of role asks for the caller's password, through the page's confirm.
+		const target = draw(UsersPanel, { data: pageData, isSuperadmin: true, confirm: confirmedAtOnce(), loadMailStatus: vi.fn(), settingsRemoved, inviteLink: null });
 		choose(target, 'admin');
 
 		changeButton(target).click();
@@ -1226,7 +1683,7 @@ describe('the users panel says what a role change or a delete removed (card 2397
 
 		target.querySelector<HTMLButtonElement>('button[title="Delete user"]')!.click();
 		await settle();
-		await confirm.mock.calls[0][2]();
+		await confirm.mock.calls[0][2](MINE);
 		await settle();
 
 		expect(toastsShown()).toEqual([['warning', 'User deleted. What bob had set was removed: the backup destination "Bob\'s".']]);
@@ -1255,21 +1712,24 @@ describe('the users panel says what a role change or a delete removed (card 2397
 		expect(asked('GET /api/users/2')).toHaveLength(1);
 		expect(asked('PUT /api/users/2')).toEqual([]);
 		expect(confirm).toHaveBeenCalledTimes(1);
-		expect(confirm.mock.calls[0].slice(0, 2)).toEqual(['Change Role', `Make bob a user? This removes what they set: ${NAMED}.`]);
-		await confirm.mock.calls[0][2]();
+		expect(confirm.mock.calls[0].slice(0, 2)).toEqual(['Change Role', `Make bob a user? This removes what they set: ${NAMED}. ${ASKS_FOR_PASSWORD}`]);
+		// Card 2701: and for the caller's password, which the change sends.
+		expect(confirm.mock.calls[0][3]).toEqual({ askPassword: true });
+		await confirm.mock.calls[0][2](MINE);
 		await settle();
-		expect(asked('PUT /api/users/2').map((request) => request.body)).toEqual([{ role: 'user' }]);
+		expect(asked('PUT /api/users/2').map((request) => request.body)).toEqual([{ role: 'user', currentPassword: MINE }]);
 	});
 
-	it('sends a role change at once where nothing would go: bob made an administrator, or made a user holding nothing (the controls)', async () => {
+	// Card 2701: every change of role asks for the caller's password; where nothing would go it names nothing (the controls).
+	it('asks only for the password, naming nothing, where nothing would go: bob made an administrator, or made a user holding nothing (the controls)', async () => {
 		answer = (what) => (what === 'PUT /api/users/2' ? Response.json({ id: 2, role: 'admin', invitesEnded: 0 }) : undefined);
-		const confirm = vi.fn();
+		const confirm = confirmedAtOnce();
 		const target = draw(UsersPanel, { data: pageData, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
 		choose(target, 'admin');
 		changeButton(target).click();
 		await settle();
-		expect(confirm).not.toHaveBeenCalled();
-		expect(asked('PUT /api/users/2')).toHaveLength(1);
+		expect(confirm.mock.calls.map((call) => call.slice(0, 2))).toEqual([['Change Role', `Make bob an administrator? ${ASKS_FOR_PASSWORD}`]]);
+		expect(asked('PUT /api/users/2').map((request) => request.body)).toEqual([{ role: 'admin', currentPassword: MINE }]);
 		// Made an administrator: nothing goes, so nothing is read first.
 		expect(asked('GET /api/users/2')).toEqual([]);
 		unmount(drawn!.component);
@@ -1280,7 +1740,7 @@ describe('the users panel says what a role change or a delete removed (card 2397
 		choose(again, 'user');
 		changeButton(again).click();
 		await settle();
-		expect(confirm).not.toHaveBeenCalled();
+		expect(confirm.mock.calls[1].slice(0, 2)).toEqual(['Change Role', `Make bob a user? ${ASKS_FOR_PASSWORD}`]);
 		expect(asked('PUT /api/users/2')).toHaveLength(2);
 		expect(asked('GET /api/users/2')).toHaveLength(1);
 	});
@@ -1294,7 +1754,9 @@ describe('the users panel says what a role change or a delete removed (card 2397
 		await settle();
 
 		expect(confirm.mock.calls[0][1]).toMatch(/^Delete user "bob"\? Their comments, /);
-		expect(confirm.mock.calls[0][1]).toMatch(new RegExp(` Their XP stays on the leaderboard\\. What they set goes too: ${NAMED.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.$`));
+		expect(confirm.mock.calls[0][1]).toMatch(
+			new RegExp(` Their XP stays on the leaderboard\\. What they set goes too: ${NAMED.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\. You will be asked for your password\\.$`)
+		);
 	});
 
 	// The card 2397 second review: the page's data is as old as the page. Another administrator took a
@@ -1313,11 +1775,11 @@ describe('the users panel says what a role change or a delete removed (card 2397
 
 		expect(asked('PUT /api/users/2')).toEqual([]);
 		expect(confirm.mock.calls.map((call) => call[0])).toEqual(['Change Role', 'Delete User']);
-		expect(confirm.mock.calls[0][1]).toBe(`Make bob a user? This removes what they set: ${NAMED}.`);
+		expect(confirm.mock.calls[0][1]).toBe(`Make bob a user? This removes what they set: ${NAMED}. ${ASKS_FOR_PASSWORD}`);
 		expect(confirm.mock.calls[1][1]).toMatch(/ What they set goes too: the mail settings, /);
 	});
 
-	it('sends the role change at once, and names nothing in the delete’s confirmation, where the server says he no longer holds what the page’s data names', async () => {
+	it('names nothing in the role change’s or the delete’s confirmation where the server says he no longer holds what the page’s data names', async () => {
 		const confirm = vi.fn();
 		const target = draw(UsersPanel, { data: holdingData, isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
 		target.querySelector<HTMLButtonElement>('button[title="Delete user"]')!.click();
@@ -1328,8 +1790,11 @@ describe('the users panel says what a role change or a delete removed (card 2397
 		changeButton(target).click();
 		await settle();
 
-		expect(confirm).toHaveBeenCalledTimes(1);
-		expect(asked('PUT /api/users/2').map((request) => request.body)).toEqual([{ role: 'user' }]);
+		// Card 2701: the change asks for the caller's password all the same, naming nothing.
+		expect(confirm.mock.calls[1].slice(0, 2)).toEqual(['Change Role', `Make bob a user? ${ASKS_FOR_PASSWORD}`]);
+		await confirm.mock.calls[1][2](MINE);
+		await settle();
+		expect(asked('PUT /api/users/2').map((request) => request.body)).toEqual([{ role: 'user', currentPassword: MINE }]);
 	});
 
 	it.each([
@@ -1350,12 +1815,12 @@ describe('the users panel says what a role change or a delete removed (card 2397
 		await settle();
 
 		expect(asked('PUT /api/users/2')).toEqual([]);
-		expect(confirm.mock.calls[0].slice(0, 2)).toEqual(['Change Role', `Make bob a user? ${UNREAD}`]);
+		expect(confirm.mock.calls[0].slice(0, 2)).toEqual(['Change Role', `Make bob a user? ${UNREAD} ${ASKS_FOR_PASSWORD}`]);
 		expect(confirm.mock.calls[1][1]).toMatch(/^Delete user "bob"\? Their comments, /);
-		expect(confirm.mock.calls[1][1].endsWith(` ${UNREAD}`)).toBe(true);
-		await confirm.mock.calls[0][2]();
+		expect(confirm.mock.calls[1][1].endsWith(` ${UNREAD} ${ASKS_FOR_PASSWORD}`)).toBe(true);
+		await confirm.mock.calls[0][2](MINE);
 		await settle();
-		expect(asked('PUT /api/users/2').map((request) => request.body)).toEqual([{ role: 'user' }]);
+		expect(asked('PUT /api/users/2').map((request) => request.body)).toEqual([{ role: 'user', currentPassword: MINE }]);
 	});
 
 	it('says only that it was done, and asks nothing of the page, where the answer names nothing removed', async () => {
@@ -1366,7 +1831,7 @@ describe('the users panel says what a role change or a delete removed (card 2397
 
 		target.querySelector<HTMLButtonElement>('button[title="Delete user"]')!.click();
 		await settle();
-		await confirm.mock.calls[0][2]();
+		await confirm.mock.calls[0][2](MINE);
 		await settle();
 
 		expect(toastsShown()).toEqual([['success', 'User deleted']]);
@@ -1382,7 +1847,7 @@ describe('the password dialog, mounted', () => {
 		await (drawn!.component as unknown as { openResetDialog: (userId: number) => Promise<void> }).openResetDialog(1);
 		flushSync();
 		expect([...target.querySelectorAll('h2')].map((heading) => heading.textContent)).toEqual(['🔑 Change Your Password']);
-		type(target.querySelector<HTMLInputElement>('input[placeholder="Current password"]')!, 'the-old-one');
+		type(target.querySelector<HTMLInputElement>('input[autocomplete="current-password"]')!, 'the-old-one');
 		type(target.querySelector<HTMLInputElement>('input[placeholder="New password (min 8 chars)"]')!, 'a-new-password');
 		buttonNamed(target, 'Change Password').click();
 		await settle();
@@ -1880,7 +2345,8 @@ describe('an account’s role on the users panel, saved with Change (card 2376)'
 	it('sends nothing as roles are chosen, saves once with Change, says it is saving, and shows the stored role again when refused', async () => {
 		const release: ((response: Response) => void)[] = [];
 		answer = (what) => (what === 'PUT /api/users/2' ? new Promise<Response>((resolve) => release.push(resolve)) : undefined);
-		const target = draw(UsersPanel, { data: pageData, isSuperadmin: true, confirm: vi.fn(), loadMailStatus: vi.fn(), inviteLink: null });
+		// Card 2701: each Change asks for the caller's password through the page's confirm, confirmed here at once.
+		const target = draw(UsersPanel, { data: pageData, isSuperadmin: true, confirm: confirmedAtOnce(), loadMailStatus: vi.fn(), inviteLink: null });
 		const picker = target.querySelector<HTMLSelectElement>('select[aria-label="bob\'s role"]')!;
 		const change = target.querySelector<HTMLButtonElement>('button[aria-label="Change bob\'s role"]')!;
 		const status = () => target.querySelector('[role="status"]')!.textContent;
@@ -1902,7 +2368,7 @@ describe('an account’s role on the users panel, saved with Change (card 2376)'
 		change.click();
 		change.click();
 		flushSync();
-		expect(asked('PUT /api/users/2').map((request) => request.body)).toEqual([{ role: 'admin' }]);
+		expect(asked('PUT /api/users/2').map((request) => request.body)).toEqual([{ role: 'admin', currentPassword: MINE }]);
 		expect(picker.getAttribute('aria-busy')).toBe('true');
 		expect(change.getAttribute('aria-disabled')).toBe('true');
 		expect(status()).toBe("Saving bob's role…");
@@ -1961,7 +2427,7 @@ describe('an account’s role on the users panel, saved with Change (card 2376)'
 		const confirm = props.confirm as unknown as ReturnType<typeof vi.fn>;
 		target.querySelector<HTMLButtonElement>('button[title="Delete user"]')!.click();
 		await settle();
-		await confirm.mock.calls[0][2]();
+		await confirm.mock.calls[0][2](MINE);
 		await settle();
 		expect(asked('DELETE /api/users/2')).toHaveLength(1);
 		props.data = { ...pageData };
@@ -2024,6 +2490,48 @@ describe('the mail panel, mounted', () => {
 	const answered = (what: string) =>
 		what === 'GET /api/admin/smtp' ? Response.json(mail) : what === 'PUT /api/admin/smtp' || what === 'POST /api/admin/smtp' ? Response.json({ message: 'Test email sent!' }) : undefined;
 
+	/** A button of the panel pressed; Save SMTP asks for the caller's password first (card 2701), typed and confirmed here. */
+	function press(target: HTMLElement, name: string) {
+		buttonNamed(target, name).click();
+		flushSync();
+		if (name !== 'Save SMTP') return;
+		const dialog = document.querySelector<HTMLElement>('.confirm-modal')!;
+		expect(dialog.querySelector('h3')?.textContent).toBe('Save SMTP Settings');
+		// Nothing is sent until it is confirmed.
+		expect(asked('PUT /api/admin/smtp')).toEqual([]);
+		type(dialog.querySelector<HTMLInputElement>('input[type="password"]')!, MINE);
+		buttonNamed(dialog, 'Save').click();
+	}
+
+	it('asks Save SMTP for the caller’s password and sends it with the settings; a refusal of it stays in the dialog, and not below the panel (card 2701)', async () => {
+		let refuse = true;
+		answer = (what) =>
+			what === 'PUT /api/admin/smtp'
+				? refuse
+					? Response.json({ message: 'Password is incorrect. Nothing was changed.', stepUp: 'wrong' }, { status: 403 })
+					: Response.json({ success: true })
+				: answered(what);
+		const target = draw(SmtpPanel, { currentUser: chief });
+		await settle();
+
+		press(target, 'Save SMTP');
+		await settle();
+		expect(asked('PUT /api/admin/smtp').map((request) => request.body)).toEqual([
+			{ host: 'smtp.example.com', port: 587, allowInsecure: false, user: 'mailer', pass: '••••••••', fromAddress: 'kanban@example.com', fromName: 'DumpFire', currentPassword: MINE }
+		]);
+		const dialog = document.querySelector<HTMLElement>('.confirm-modal')!;
+		expect(dialog.querySelector('[role="alert"]')?.textContent).toBe('Password is incorrect. Nothing was changed.');
+		expect(target.querySelector('.smtp-msg.smtp-error')).toBeNull();
+		expect(buttonNamed(target, 'Save SMTP').disabled).toBe(false);
+
+		refuse = false;
+		type(dialog.querySelector<HTMLInputElement>('input[type="password"]')!, MINE);
+		buttonNamed(dialog, 'Save').click();
+		await settle();
+		expect(document.querySelector('.confirm-modal')).toBeNull();
+		expect(target.querySelector('.smtp-success')?.textContent).toBe('SMTP settings saved!');
+	});
+
 	it.each([
 		['Save SMTP', 5000],
 		['🧪 Send Test', 8000]
@@ -2038,7 +2546,7 @@ describe('the mail panel, mounted', () => {
 		const target = draw(SmtpPanel, { currentUser: chief });
 		await settle();
 
-		buttonNamed(target, button).click();
+		press(target, button);
 		await settle();
 		expect(target.querySelector('.smtp-success')).not.toBeNull();
 		const timers = timersOf(timeouts, ms);
@@ -2082,7 +2590,7 @@ describe('the mail panel, mounted', () => {
 		const target = draw(SmtpPanel, { currentUser: chief });
 		await settle();
 
-		buttonNamed(target, 'Save SMTP').click();
+		press(target, 'Save SMTP');
 		await settle();
 		const saved = timersOf(timeouts, 5000);
 		expect(saved).toHaveLength(1);
@@ -2113,10 +2621,12 @@ describe('the danger zone, mounted', () => {
 
 		buttonNamed(target, 'Reset Everything').click();
 		expect(confirm.mock.calls.map((call) => call[0])).toEqual(['Reset Everything']);
-		await confirm.mock.calls[0][2]();
+		// Card 2701: it asks for the caller's password, which the reset sends.
+		expect(confirm.mock.calls[0][3]).toEqual({ askPassword: true });
+		await confirm.mock.calls[0][2](MINE);
 		await settle();
 
-		expect(asked('POST /api/admin/reset')).toHaveLength(1);
+		expect(asked('POST /api/admin/reset').map((request) => request.body)).toEqual([{ currentPassword: MINE }]);
 		expect(notice.value).toEqual({ title: 'Reset failed', message: 'The reset failed and nothing was cleared: disk full', problems: [], redirect: null });
 	});
 });
@@ -2135,6 +2645,19 @@ describe('the admin page, mounted with its panels', () => {
 	const mailReads = () => asked('GET /api/admin/smtp').length;
 	const headings = (target: HTMLElement) => [...target.querySelectorAll('h2')].map((heading) => heading.textContent);
 	const inviteButton = (target: HTMLElement) => target.querySelector<HTMLButtonElement>('button[title="Resend invite email"]')!;
+	/**
+	 * The page's confirm, the caller's password typed in it and Confirm pressed
+	 * (card 2701): 📧, Delete and Reset Everything ask for it, in the dialog the
+	 * page draws, with the focus in the field.
+	 */
+	const confirmWithPassword = () => {
+		flushSync();
+		const dialog = document.querySelector<HTMLElement>('.confirm-modal')!;
+		const field = dialog.querySelector<HTMLInputElement>('input[type="password"]')!;
+		expect(document.activeElement).toBe(field);
+		type(field, MINE);
+		buttonNamed(dialog, 'Confirm').click();
+	};
 
 	it('reads the mail panel again through the page once 📧 is answered, for the superadmin', async () => {
 		answer = (what) => (what === 'POST /api/users/2/invite' ? Response.json({ mailSent: true, message: 'Invite sent to bob@example.com' }) : undefined);
@@ -2145,11 +2668,61 @@ describe('the admin page, mounted with its panels', () => {
 		expect(mailReads()).toBe(2);
 
 		inviteButton(target).click();
+		confirmWithPassword();
 		await settle();
 
-		expect(asked('POST /api/users/2/invite')).toHaveLength(1);
+		expect(asked('POST /api/users/2/invite').map((request) => request.body)).toEqual([{ currentPassword: MINE }]);
+		// The page's confirm closes once the invite is answered with no refusal.
+		expect(document.querySelector('.confirm-modal')).toBeNull();
 		// The users panel's loadMailStatus is the mail panel's, reached by the page through bind:this.
 		expect(mailReads()).toBe(3);
+	});
+
+	// Card 2701 (D6): the page's confirm closed before the action ran, so a refusal had nowhere to be said.
+	it('keeps its confirm open on a refusal of the password, saying it there with the field cleared and focused, and closes it once the action is done', async () => {
+		let refuse = true;
+		answer = (what) =>
+			what === 'POST /api/admin/purge-archived'
+				? refuse
+					? Response.json({ message: 'Password is incorrect. Nothing was changed.', stepUp: 'wrong' }, { status: 403 })
+					: Response.json({ success: true, purged: 3 })
+				: undefined;
+		const target = draw(AdminPage, { data: asSuperadmin });
+		await settle();
+
+		buttonNamed(target, 'Purge All').click();
+		confirmWithPassword();
+		await settle();
+		const dialog = document.querySelector<HTMLElement>('.confirm-modal')!;
+		expect(dialog).not.toBeNull();
+		expect(dialog.querySelector('[role="alert"]')?.textContent).toBe('Password is incorrect. Nothing was changed.');
+		const field = dialog.querySelector<HTMLInputElement>('input[type="password"]')!;
+		expect(field.value).toBe('');
+		expect(document.activeElement).toBe(field);
+		expect(navigation.invalidateAll).not.toHaveBeenCalled();
+
+		refuse = false;
+		type(field, MINE);
+		buttonNamed(dialog, 'Confirm').click();
+		await settle();
+		expect(asked('POST /api/admin/purge-archived').map((request) => request.body)).toEqual([{ currentPassword: MINE }, { currentPassword: MINE }]);
+		expect(document.querySelector('.confirm-modal')).toBeNull();
+		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
+	});
+
+	it('asks no password where the action asks none: Vacuum confirms with no field, and closes', async () => {
+		answer = (what) => (what === 'POST /api/admin/vacuum' ? Response.json({ success: true }) : undefined);
+		const target = draw(AdminPage, { data: asSuperadmin });
+		await settle();
+
+		buttonNamed(target, 'Vacuum').click();
+		flushSync();
+		const dialog = document.querySelector<HTMLElement>('.confirm-modal')!;
+		expect(dialog.querySelector('input[type="password"]')).toBeNull();
+		buttonNamed(dialog, 'Confirm').click();
+		await settle();
+		expect(asked('POST /api/admin/vacuum')).toHaveLength(1);
+		expect(document.querySelector('.confirm-modal')).toBeNull();
 	});
 
 	it('opens the invite link’s dialog from the users panel through the page, and Done clears it there too', async () => {
@@ -2161,6 +2734,7 @@ describe('the admin page, mounted with its panels', () => {
 		await settle();
 
 		inviteButton(target).click();
+		confirmWithPassword();
 		await settle();
 		expect(headings(target)).toContain('📧 The invite mail was not sent');
 		expect(target.querySelector('code')!.textContent).toBe('http://localhost/invite/t2');
@@ -2181,11 +2755,10 @@ describe('the admin page, mounted with its panels', () => {
 		await settle();
 
 		buttonNamed(target, 'Reset Everything').click();
-		flushSync();
-		buttonNamed(target, 'Confirm').click();
+		confirmWithPassword();
 		await settle();
 
-		expect(asked('POST /api/admin/reset')).toHaveLength(1);
+		expect(asked('POST /api/admin/reset').map((request) => request.body)).toEqual([{ currentPassword: MINE }]);
 		const notice = target.querySelector('[role="alertdialog"][aria-label="Reset failed"]');
 		expect(notice).not.toBeNull();
 		expect(notice!.textContent).toContain('The reset failed and nothing was cleared: disk full');
@@ -2203,6 +2776,7 @@ describe('the admin page, mounted with its panels', () => {
 		const target = draw(AdminPage, { data: asSuperadmin });
 		await settle();
 		inviteButton(target).click();
+		confirmWithPassword();
 		await settle();
 
 		const dialog = document.querySelector<HTMLElement>('[role="alertdialog"][aria-label="The invite mail was not sent"]')!;
@@ -2246,6 +2820,7 @@ describe('the admin page, mounted with its panels', () => {
 		flushSync();
 		type(target.querySelector<HTMLInputElement>('input[placeholder="Username"]')!, 'carol');
 		type(target.querySelector<HTMLInputElement>('input[placeholder="Email"]')!, 'carol@example.com');
+		type(target.querySelector<HTMLInputElement>('input[autocomplete="current-password"]')!, MINE);
 		const create = buttonNamed(target, 'Create');
 		create.focus();
 		create.click();
@@ -2260,6 +2835,8 @@ describe('the admin page, mounted with its panels', () => {
 		const mail = inviteButton(target);
 		mail.focus();
 		mail.click();
+		// Card 2701: through the page's confirm, which asks for the password.
+		confirmWithPassword();
 		await settle();
 		expect(document.activeElement).toBe(buttonNamed(dialog()!, '📋 Copy'));
 		buttonNamed(dialog()!, 'Done').click();
@@ -2275,8 +2852,7 @@ describe('the admin page, mounted with its panels', () => {
 		const target = draw(AdminPage, { data: asSuperadmin });
 		await settle();
 		buttonNamed(target, 'Reset Everything').click();
-		flushSync();
-		buttonNamed(document.querySelector<HTMLElement>('.confirm-modal')!, 'Confirm').click();
+		confirmWithPassword();
 		await settle();
 
 		const notice = document.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Reset failed"]')!;
@@ -2298,8 +2874,7 @@ describe('the admin page, mounted with its panels', () => {
 		const target = draw(AdminPage, { data: asSuperadmin });
 		await settle();
 		buttonNamed(target, 'Reset Everything').click();
-		flushSync();
-		buttonNamed(document.querySelector<HTMLElement>('.confirm-modal')!, 'Confirm').click();
+		confirmWithPassword();
 		await settle();
 
 		const notice = document.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Reset done"]')!;
@@ -2362,6 +2937,7 @@ describe('the admin page, mounted with its panels', () => {
 		expect(mailReads()).toBe(2);
 
 		inviteButton(target).click();
+		confirmWithPassword();
 		await settle();
 
 		expect(asked('POST /api/users/2/invite')).toHaveLength(1);
@@ -2402,7 +2978,7 @@ describe('the admin page, mounted with its panels', () => {
 
 		target.querySelector<HTMLButtonElement>('button[title="Delete user"]')!.click();
 		await settle();
-		buttonNamed(document.body, 'Confirm').click();
+		confirmWithPassword();
 		await settle();
 
 		expect(asked('DELETE /api/users/2')).toHaveLength(1);

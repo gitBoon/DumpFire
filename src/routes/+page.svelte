@@ -17,6 +17,7 @@
 	import FailureToast from '$lib/components/Toast.svelte';
 	import { toasts as failureToasts } from '$lib/stores/toast';
 	import { boardDeleteWarning, deleteFailure } from '$lib/api';
+	import { refusalWatch } from '$lib/step-up-words';
 	import CategoryManager from '$lib/components/CategoryManager.svelte';
 	import VelocityModal from '$lib/components/VelocityModal.svelte';
 	import SpendModal from '$lib/components/SpendModal.svelte';
@@ -115,12 +116,23 @@
 		confirmState = { show: true, boardId: id, boardName: name };
 	}
 
-	async function deleteBoard(id: number) {
+	/**
+	 * The confirm's Delete Board, with the caller's own password (card 2701).
+	 * The dialog stays open while it is sent: a refusal of the password is
+	 * given back for it to show, and it closes on any other answer.
+	 */
+	async function deleteBoard(id: number, currentPassword: string): Promise<string | void> {
 		deleting = id;
-		confirmState.show = false;
 		const started = failureToasts.navigation();
 		try {
-			const failure = await deleteFailure(() => fetch(`/api/boards/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } }), 'board');
+			const asked = refusalWatch();
+			const failure = await deleteFailure(
+				() => asked.watch(fetch(`/api/boards/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword }) })),
+				'board'
+			);
+			const refusal = asked.refusal();
+			if (refusal !== null) return refusal;
+			confirmState.show = false;
 			if (failure) {
 				failureToasts.add(failure, 'error', started);
 				return;
@@ -215,7 +227,8 @@
 		title="Delete Board"
 		message={boardDeleteWarning(confirmState.boardName)}
 		confirmText="Delete Board"
-		onConfirm={() => deleteBoard(confirmState.boardId)}
+		askPassword
+		onConfirm={(password) => deleteBoard(confirmState.boardId, password)}
 		onCancel={() => (confirmState.show = false)}
 	/>
 {/if}

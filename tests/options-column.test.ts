@@ -21,17 +21,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sqlite } from '$lib/server/db';
 import type { Column } from '$lib/server/db/schema';
-import type { SessionUser } from '$lib/server/auth';
+import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { readBoardContents } from '$lib/server/board-contents';
 import { OPTION_AGING_DAYS, defaultListColumn, optionsAging, optionsOpenKey, readOptionsOpen, resolveListColumn, writeOptionsOpen } from '$lib/board/board-view';
 import { api, type ApiResult } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
-import { makeBoard, makeCard, makeUser, resetDb, type BoardFixture } from './helpers/fixtures';
+import { FIXTURE_PASSWORD, makeBoard, makeCard, makeSession, makeUser, resetDb, type BoardFixture } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 
 let owner: SessionUser;
 let board: BoardFixture;
 let sent: Effects;
+/** The owner's session, made with the board, which a column delete's password is counted on (card 2701). */
+let session: string;
 
 /** Options -1, then Backlog 0, To Do 1, On Hold 2, In Progress 3, Complete 4. "Backlog" is a title with no role. */
 const COLUMNS = ['Backlog', 'To Do', 'On Hold', 'In Progress', 'Complete'];
@@ -40,6 +42,7 @@ beforeEach(() => {
 	resetDb();
 	owner = makeUser();
 	board = makeBoard({ owner, options: true, columns: COLUMNS });
+	session = makeSession(owner);
 	sent = effects();
 });
 afterEach(() => sent.restore());
@@ -58,7 +61,13 @@ const TREES: Tree[] = [
 		name: 'the board page’s routes',
 		create: (body, user = owner) => api('POST', '/api/columns', { user, body: { boardId: board.board.id, ...body } }),
 		update: (columnId, body, user = owner) => api('PUT', `/api/columns/${columnId}`, { user, body }),
-		remove: (columnId, user = owner) => api('DELETE', `/api/columns/${columnId}`, { user }),
+		// With the owner's current password, from their session (card 2701): a column holding a card asks for it.
+		remove: (columnId, user = owner) =>
+			api('DELETE', `/api/columns/${columnId}`, {
+				user,
+				body: { currentPassword: FIXTURE_PASSWORD },
+				headers: { cookie: `${SESSION_COOKIE_NAME}=${session}` }
+			}),
 		// Straight after the Options column, between it and the next (ruling s).
 		unplaced: -0.5
 	},

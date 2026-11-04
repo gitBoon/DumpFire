@@ -27,6 +27,7 @@ import {
 	makeSubtask,
 	makeUser,
 	resetDb,
+	stepUp,
 	testUploadsDir
 } from './helpers/fixtures';
 
@@ -105,12 +106,12 @@ describe('with no foreign key from a sub-board to its card', () => {
 		},
 		{
 			what: 'a column',
-			call: (s) => api('DELETE', `/api/columns/${s.A.cols['To Do'].id}`, { user: s.owner }),
+			call: (s) => api('DELETE', `/api/columns/${s.A.cols['To Do'].id}`, stepUp(s.owner)),
 			left: (s) => [s.A.board.id, s.B.board.id]
 		},
 		{
 			what: 'a board, through the internal API',
-			call: (s) => api('DELETE', `/api/boards/${s.A.board.id}`, { user: s.owner }),
+			call: (s) => api('DELETE', `/api/boards/${s.A.board.id}`, stepUp(s.owner)),
 			left: (s) => [s.B.board.id]
 		},
 		{
@@ -122,13 +123,13 @@ describe('with no foreign key from a sub-board to its card', () => {
 			what: 'the archived cards',
 			call: (s) => {
 				db.update(cards).set({ archivedAt: '2026-10-01T09:00:00.000Z' }).where(eq(cards.id, s.top.id)).run();
-				return api('POST', '/api/admin/purge-archived', { user: s.admin });
+				return api('POST', '/api/admin/purge-archived', stepUp(s.admin));
 			},
 			left: (s) => [s.A.board.id, s.B.board.id]
 		},
 		{
 			what: 'the cards of a board',
-			call: (s) => api('POST', `/api/admin/boards/${s.A.board.id}/clear-cards`, { user: s.admin }),
+			call: (s) => api('POST', `/api/admin/boards/${s.A.board.id}/clear-cards`, stepUp(s.admin)),
 			left: (s) => [s.A.board.id, s.B.board.id]
 		}
 	])('deleting $what takes every sub-board, at every depth, and what was on it', async ({ call, left }) => {

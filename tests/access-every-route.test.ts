@@ -112,6 +112,7 @@ import {
 	userXp
 } from '$lib/server/db/schema';
 import { SESSION_COOKIE_NAME, type Credential, type SessionUser } from '$lib/server/auth';
+import { CONFIRMATION_HEADER, STEP_UP_ACTIONS, STEP_UP_FIELD, issueImportConfirmation } from '$lib/server/step-up';
 import { canEditBoard, canViewBoard, getBoardRole } from '$lib/server/board-access';
 import { emit } from '$lib/server/events';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
@@ -928,9 +929,12 @@ const TABLE: Record<string, Case | Case[]> = {
 		answers: 400,
 		because: NO_DESTINATION
 	}),
-	'POST /api/admin/backup/gdrive/auth': admin(() => json('/api/admin/backup/gdrive/auth', {}), {
-		answers: 400,
-		because: NO_DESTINATION
+	// A code for a destination that is not there: its fields are read before
+	// the caller is asked again and the password checked (card 2701), and the
+	// destination after, so the walks reach the check.
+	'POST /api/admin/backup/gdrive/auth': admin(() => json('/api/admin/backup/gdrive/auth', { code: 'a-code', destName: 'G' }), {
+		answers: 404,
+		because: 'the destination named is not there: a success would connect to a backup destination'
 	}),
 	'POST /api/admin/backup/test': admin(() => json('/api/admin/backup/test', {}), {
 		answers: 400,
@@ -938,17 +942,27 @@ const TABLE: Record<string, Case | Case[]> = {
 	}),
 	'POST /api/admin/boards/[id]/clear-cards': admin((w) => `/api/admin/boards/${w.A.board.id}/clear-cards`),
 	'POST /api/admin/boards/[id]/clear-categories': admin((w) => `/api/admin/boards/${w.A.board.id}/clear-categories`),
-	// What the file holds, and what it does not, is in tests/backups.test.ts.
-	'GET /api/admin/export': superadmin(() => '/api/admin/export'),
+	// What the file holds, and what it does not, is in tests/backups.test.ts. A
+	// POST with the superadmin's password since card 2701, a GET before:
+	// `currentPassword` is added by `call`.
+	'POST /api/admin/export': superadmin(() => '/api/admin/export', {
+		writesNothing: 'the copy is made in a file of its own and sent, and no row is written'
+	}),
 	'POST /api/admin/import': superadmin(() => json('/api/admin/import', { notABackup: true }), {
 		answers: 400,
 		because: 'the body is JSON and not a .db backup, which is refused before it is read: a success would replace the database',
-		// Sent as a backup is, and read: it is not one, which is found once it is in.
+		// Sent as a backup is, confirmed (card 2701), and read: it is not one,
+		// which is found once it is in.
 		held: () => ({
 			path: '/api/admin/import',
 			body: new TextEncoder().encode('not a SQLite database'),
-			headers: { 'content-type': 'application/octet-stream' }
+			headers: { 'content-type': 'application/octet-stream', [CONFIRMATION_HEADER]: FOR_THE_WALK }
 		})
+	}),
+	// The superadmin's password before an import (card 2701): `currentPassword`
+	// is added by `call`, as for every route on STEP_UP_ACTIONS.
+	'POST /api/admin/import/confirm': superadmin(() => '/api/admin/import/confirm', {
+		writesNothing: 'the confirmation is kept in memory, as its digest, and no row is written'
 	}),
 	'POST /api/admin/purge-archived': admin(() => '/api/admin/purge-archived'),
 	'POST /api/admin/reset-xp': admin(() => '/api/admin/reset-xp', {
@@ -1555,7 +1569,9 @@ const TABLE: Record<string, Case | Case[]> = {
 	),
 	// What a role change to user or a delete would remove now (card 2397's second review).
 	'GET /api/users/[id]': admin((w) => `/api/users/${w.viewer.id}`),
-	'PUT /api/users/[id]': admin((w) => json(`/api/users/${w.viewer.id}`, { emoji: '🦊' })),
+	// An email, which asks for the caller's own password again (card 2701), as
+	// a role does: `call` adds it. An emoji alone asks for none.
+	'PUT /api/users/[id]': admin((w) => json(`/api/users/${w.viewer.id}`, { emoji: '🦊', email: 'viewer.moved@example.test' })),
 	'DELETE /api/users/[id]': admin((w) => `/api/users/${w.viewer.id}`),
 	'POST /api/users/[id]/invite': admin((w) => `/api/users/${w.viewer.id}/invite`, { setup: makeSmtp }),
 	// The path names `owner`. Their own password is changed at /api/account/password,
@@ -2052,10 +2068,40 @@ function expectPathOf(pattern: string, path: string): void {
 	expect(path.split('?')[0], `the request made for ${pattern}`).toMatch(shape);
 }
 
-function call(method: Method, pattern: string, req: Req, who: Who): Promise<ApiResult> {
+/**
+ * The body a request is sent with: for a route on `STEP_UP_ACTIONS` (card
+ * 2701), with the caller's current password added, every user's here being
+ * `PASSWORD`, so that a row states only what differs. A row's own field of the
+ * name is kept; a request with no body is given one.
+ */
+function withPassword(key: string, body: unknown): unknown {
+	if (!(key in STEP_UP_ACTIONS)) return body;
+	if (body === undefined) return { [STEP_UP_FIELD]: PASSWORD };
+	if (typeof body !== 'object' || body === null || body instanceof FormData || body instanceof Uint8Array) return body;
+	return { [STEP_UP_FIELD]: PASSWORD, ...body };
+}
+
+/**
+ * The request sent as `who`. A route that counts wrong current passwords
+ * counts them on the session's own row (card 2701), so a signed-in caller of
+ * one (a route on `STEP_UP_ACTIONS`, or a request `withSession` makes) sends
+ * the cookie of a real session of theirs, made for this request and ended
+ * after it, so that the rows it leaves are the handler's alone.
+ */
+async function call(method: Method, pattern: string, req: Req, who: Who): Promise<ApiResult> {
 	const { path, body, headers } = parts(req);
 	expectPathOf(pattern, path);
-	return api(method, path, { user: who === 'nobody' ? null : w[who], body, headers: asCaller(headers, who) });
+	const key = `${method} ${pattern}`;
+	const sent = withPassword(key, body);
+	if (who === 'nobody' || (headers?.cookie !== CALLERS_COOKIE && !(key in STEP_UP_ACTIONS))) {
+		return api(method, path, { user: who === 'nobody' ? null : w[who], body: sent, headers: asCaller(headers, who) });
+	}
+	const token = makeSession(w[who]);
+	try {
+		return await api(method, path, { user: w[who], body: sent, headers: { ...headers, cookie: `${SESSION_COOKIE_NAME}=${token}` } });
+	} finally {
+		db.delete(sessions).where(eq(sessions.id, token)).run();
+	}
 }
 
 /** Every file in the tests' uploads folder, the trash included. */
@@ -2568,6 +2614,26 @@ function credentialOf(pattern: string, who: Exclude<Who, 'nobody'>): {
 }
 
 /**
+ * What an import held for a walk sends in its confirmation header, for the
+ * walk to issue a real one in its place: a confirmation is good only for the
+ * session it was issued to (card 2701), and the walk makes its own.
+ */
+const FOR_THE_WALK = 'issued for the walk';
+
+/**
+ * Walk's request for `key` as it is sent: with the current password for a
+ * route on `STEP_UP_ACTIONS`, as `call` sends it, and an import's
+ * confirmation issued for the walk's own session.
+ */
+function walkedAs(key: string, req: Exclude<Req, string>, who: Exclude<Who, 'nobody'>, credential: ReturnType<typeof credentialOf>): Exclude<Req, string> {
+	const headers =
+		req.headers?.[CONFIRMATION_HEADER] === FOR_THE_WALK && 'session' in credential.held
+			? { ...req.headers, [CONFIRMATION_HEADER]: issueImportConfirmation(credential.held.session, w[who].id, PASSWORD_HASH) }
+			: req.headers;
+	return { ...req, body: withPassword(key, req.body), headers };
+}
+
+/**
  * The request sent as a walk sends it: with its body held, through the gate,
  * `meanwhile` run once the gate has let it in; or, with no body, `meanwhile`
  * run first and the handler called with the credential and the account as the
@@ -2658,7 +2724,7 @@ describe('asked again at the write (card 2253)', () => {
 					const leftovers = importLeftovers();
 					let before: DbSnapshot | undefined;
 
-					const res = await sendWalked(method, req, who, credential, () => {
+					const res = await sendWalked(method, walkedAs(key, req, who, credential), who, credential, () => {
 						credential.end();
 						before = snapshotDb();
 					});
@@ -2676,7 +2742,8 @@ describe('asked again at the write (card 2253)', () => {
 					c.setup?.(w);
 					const req = walked(c, w);
 					let before: DbSnapshot | undefined;
-					const res = await sendWalked(method, req, who, credentialOf(pattern, who), () => {
+					const credential = credentialOf(pattern, who);
+					const res = await sendWalked(method, walkedAs(key, req, who, credential), who, credential, () => {
 						before = snapshotDb();
 					});
 					await sent.settle();
@@ -2695,7 +2762,7 @@ describe('asked again at the write (card 2253)', () => {
 					const files = uploadedFiles();
 					let before: DbSnapshot | undefined;
 
-					const res = await sendWalked(method, req, lower.who, credential, () => {
+					const res = await sendWalked(method, walkedAs(key, req, lower.who, credential), lower.who, credential, () => {
 						db.update(users).set({ role: lower.to }).where(eq(users.id, w[lower.who].id)).run();
 						before = snapshotDb();
 					});
@@ -2717,7 +2784,8 @@ describe('asked again at the write (card 2253)', () => {
 					c.setup?.(w);
 					const req = parts(c.held?.(w) ?? c.req(w));
 					let before: DbSnapshot | undefined;
-					const res = await sendWalked(method, req, lower.who, credentialOf(pattern, lower.who), () => {
+					const credential = credentialOf(pattern, lower.who);
+					const res = await sendWalked(method, walkedAs(key, req, lower.who, credential), lower.who, credential, () => {
 						db.update(users).set({ role: lower.from }).where(eq(users.id, w[lower.who].id)).run();
 						before = snapshotDb();
 					});
@@ -2807,31 +2875,48 @@ describe('who may manage which account', () => {
 	// their password, and could send anyone an invite, which sets one.
 	let admin2: SessionUser;
 	let chief: SessionUser;
+	/** The session each caller here asks from, which their own password is counted on (card 2701). */
+	let sessionOf: Map<number, string>;
 
 	beforeEach(() => {
 		admin2 = makeUser({ username: 'admin2', role: 'admin' });
+		// The password every caller of the table has.
+		db.update(users).set({ passwordHash: PASSWORD_HASH }).where(eq(users.id, admin2.id)).run();
 		chief = w.chief;
+		sessionOf = new Map([w.admin, admin2, chief, w.owner].map((user) => [user.id, makeSession(user)]));
 		// An invite is mailed, and is refused where there is no mail to send it by.
 		makeSmtp();
+	});
+
+	/**
+	 * `by`'s request with `body`: each of these routes asks for the caller's own
+	 * current password again (card 2701), the account change when it carries a
+	 * role or an email, so it is sent, with the cookie of their session. A
+	 * refusal is made before it is checked, and counts nothing.
+	 */
+	const confirmed = (by: SessionUser, body: Record<string, unknown> = {}) => ({
+		user: by,
+		body: { ...body, [STEP_UP_FIELD]: PASSWORD },
+		headers: (sessionOf.has(by.id) ? { cookie: `${SESSION_COOKIE_NAME}=${sessionOf.get(by.id)}` } : {}) as Record<string, string>
 	});
 
 	const MANAGES: { route: string; send: (by: SessionUser, account: SessionUser) => Promise<ApiResult> }[] = [
 		{
 			route: 'PUT /api/users/[id]/password',
-			send: (by, account) => api('PUT', `/api/users/${account.id}/password`, { user: by, body: { password: 'a long password' } })
+			send: (by, account) => api('PUT', `/api/users/${account.id}/password`, confirmed(by, { password: 'a long password' }))
 		},
 		{
 			route: 'PUT /api/users/[id]',
-			send: (by, account) => api('PUT', `/api/users/${account.id}`, { user: by, body: { emoji: '🦊' } })
+			send: (by, account) => api('PUT', `/api/users/${account.id}`, confirmed(by, { emoji: '🦊' }))
 		},
 		{
 			route: 'DELETE /api/users/[id]',
-			send: (by, account) => api('DELETE', `/api/users/${account.id}`, { user: by })
+			send: (by, account) => api('DELETE', `/api/users/${account.id}`, confirmed(by))
 		},
 		// Whoever holds the invite sets the account's password with it.
 		{
 			route: 'POST /api/users/[id]/invite',
-			send: (by, account) => api('POST', `/api/users/${account.id}/invite`, { user: by })
+			send: (by, account) => api('POST', `/api/users/${account.id}/invite`, confirmed(by))
 		}
 	];
 
@@ -2950,10 +3035,9 @@ describe('who may manage which account', () => {
 	// sent `["superadmin"]` as their own role and was the superadmin.
 
 	const NEWCOMER = { username: 'newcomer', email: 'newcomer@example.test', password: 'a long password' };
-	const create = (by: SessionUser, more: Record<string, unknown>) =>
-		api('POST', '/api/users', { user: by, body: { ...NEWCOMER, ...more } });
-	const change = (by: SessionUser, account: SessionUser, body: unknown) =>
-		api('PUT', `/api/users/${account.id}`, { user: by, body });
+	const create = (by: SessionUser, more: Record<string, unknown>) => api('POST', '/api/users', confirmed(by, { ...NEWCOMER, ...more }));
+	const change = (by: SessionUser, account: SessionUser, body: Record<string, unknown>) =>
+		api('PUT', `/api/users/${account.id}`, confirmed(by, body));
 
 	/** What PUT /api/users/[id] says to whoever sends a role for their own account, whatever it is (card 2117, decision 13). */
 	const OWN_ROLE = {
@@ -3055,7 +3139,8 @@ describe('who may manage which account', () => {
 
 	it('refuses whoever names their own account with an email, and says where an email is changed', async () => {
 		// PUT /api/account/email asks for the password the caller has. This route
-		// asks for none, and an email is where an invite to set a new one is sent.
+		// is for another's account, and an email is where an invite to set a new
+		// password is sent. Refused before the caller's password is checked (card 2701).
 		for (const by of [w.admin, admin2, chief]) {
 			expect(await refused(() => change(by, by, { email: 'elsewhere@example.test' }))).toBe(
 				'Change your own email on the Account page, which asks for your current password'

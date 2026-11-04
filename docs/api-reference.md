@@ -1,9 +1,9 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.105
+version: 1.107
 status: As-Built
-date: 2026-11-03
+date: 2026-11-04
 tags:
   - api
   - rest
@@ -19,7 +19,8 @@ tags:
   - tokens
   - webhooks
   - product-owner
-description: "REST API reference for DumpFire's external v1 API: authentication, how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board), and examples"
+  - step-up
+description: "REST API reference for DumpFire's external v1 API: authentication, how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board), examples, and the changelog, the internal routes that ask for the current password among it"
 ---
 
 # External API Reference
@@ -50,9 +51,11 @@ against the rate limit.
 Keys inherit the permissions of the user who created them. A key is made only there, by the
 account's holder, with the password; the API has no route that makes one, and an account
 has at most ten. A wrong password is refused with `Password is incorrect`, and no key is
-made. After ten wrong passwords in 15 minutes from one signed-in browser, counted with the
-Account page's email and password forms, that browser is refused for up to 15 minutes, the
-right password included: `Too many wrong passwords. Try again in N minute(s).`
+made. The third wrong password from one signed-in browser, counted with the Account page's
+email and password forms and the admin actions that ask for the password (card 2701), ends
+that browser's session: `403` `{ "message": "Nothing was changed. This session has been
+signed out, after three wrong passwords or because it had ended: sign in again.",
+"signedOut": true, "stepUp": "signed-out" }`. Only a right password sets the count back.
 
 ### When a Key Ends
 
@@ -329,6 +332,61 @@ moment as `YYYY-MM-DD HH:MM:SS` in UTC, and the web application's own routes and
 exports answer that form; the API turns it into ISO 8601 as it answers. Until 2026-10-14
 some fields were answered in that form, which names no zone, and the same field could be in
 either.
+
+### Changes on 2026-11-04
+
+**The v1 API and the OpenAPI document (`1.4.0`) are unchanged.** These changes are to the web
+application's own routes under `/api/` outside `/api/v1/`, which DumpFire's pages call with a
+session and which a key cannot reach (card 2701): eighteen of them now ask for the caller's
+current password, every time. See [Step-up Before Destructive Actions](authentication-security.md#step-up-before-destructive-actions-card-2701).
+
+- **`currentPassword` in the JSON body** of `POST /api/admin/reset`,
+  `POST /api/admin/purge-archived`, `POST /api/admin/boards/{id}/clear-cards` and
+  `…/clear-categories`, `POST /api/admin/reset-xp`, `POST /api/users`, `PUT /api/users/{id}`
+  when the body carries `role` or `email`, `DELETE /api/users/{id}`,
+  `PUT /api/users/{id}/password` (beside `password`, the new one), `POST /api/users/{id}/invite`,
+  `DELETE /api/boards/{id}`, `DELETE /api/columns/{id}` when the column holds a card (archived
+  ones included), `PUT /api/admin/backup` when the body carries `destinations`,
+  `POST /api/admin/backup` (Run Now), `POST /api/admin/backup/gdrive/auth` and
+  `PUT /api/admin/smtp`. Every listed request now needs a body: one with none is `400` "The
+  request body is missing or is not valid JSON", where the body-less `POST`s and `DELETE`s were
+  accepted. Every refusal that needs no password comes first, in the route's own words, and
+  costs no guess.
+- **`GET /api/admin/export` is now `POST /api/admin/export`** with `{ "currentPassword": "…" }`,
+  answered with the file and `Cache-Control: no-store`. `GET` is `405`.
+- **`POST /api/admin/import/confirm` is new** (the superadmin's): `{ "currentPassword": "…" }`
+  answers `200` `{ "confirmation": "…", "expiresInSeconds": 60 }`, `no-store`. The import,
+  `POST /api/admin/import`, now needs it in the `X-DumpFire-Confirmation` header, good for one
+  import from the session it was issued to, for 60 seconds. Missing, unknown, used, expired,
+  another session's, or no longer good once the upload is in (the account no longer the
+  superadmin, or its password changed) is `403` "Confirm the import with your password again:
+  the confirmation was not found, was used or has expired. Nothing was changed.", checked
+  before a byte of the upload is read.
+- **The new answers**, the same on every listed route: `400` "Enter your password to confirm
+  this. Nothing was changed." for no `currentPassword`, an empty one or one that is not text
+  (at most 1,024 characters); `403` "Password is incorrect. Nothing was changed." for a wrong
+  one; `403` "This account has no password to confirm with, so this cannot be done from it.
+  Nothing was changed." for an account with no usable hash; `429` "Your password is already
+  being checked for this session. Wait for that answer and try again. Nothing was changed."
+  for a second check from a session whose first is in flight, not counted; `429` "The server
+  is very busy checking passwords right now. Wait a minute and try again." when the account
+  already has five checks in flight, not counted either; and `403`
+  `{ "message": "Nothing was changed. This session has been signed out, after three wrong
+  passwords or because it had ended: sign in again.", "signedOut": true }`, with the session
+  cookie cleared, once the session has been ended. Only a password that is compared counts
+  toward the three (card 2701's code review, S1). The export and Run Now answer `403` "Your
+  password was changed while this was being saved. Nothing was changed. Try again." if the
+  password changed between the check and the copy, and every other listed route, and the three
+  Account routes, `409` in the same words if it changed between the check and the write, with
+  the password not compared again (S2).
+- **Every one of these refusals carries a code** beside its message (card 2701's code review,
+  F3): `"stepUp"`, one of `missing`, `wrong`, `no-password`, `in-flight`, `busy`, `signed-out`,
+  `confirmation` and `changed`. DumpFire's pages act on the code and not the words.
+- **The Account routes sign out at the third wrong password.** `PUT /api/account/email`,
+  `PUT /api/account/password` and `POST /api/account/api-keys` share the session's count with
+  the routes above: the first two wrong ones keep their own words, the third is the signed-out
+  `403`. The `429` "Too many wrong passwords. Try again in N minute(s)." and its 15-minute window
+  are gone.
 
 ### Changes on 2026-11-03
 

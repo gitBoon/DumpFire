@@ -45,10 +45,10 @@ import { settingSetters, settings, users } from '$lib/server/db/schema';
 import { settingsHeldBy } from '$lib/server/setting-setters';
 import { removeSettingsOfNonAdministrators } from '$lib/server/startup-checks';
 import { load as loadAdminPage } from '../src/routes/admin/+page.server';
-import type { SessionUser } from '$lib/server/auth';
+import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { api } from './helpers/api';
 import { sendAround } from './helpers/held-body';
-import { makeSession, makeUser, resetDb } from './helpers/fixtures';
+import { FIXTURE_PASSWORD, importConfirmation, makeSession, makeUser, resetDb } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb, type DbSnapshot } from './helpers/snapshot';
 
 /** The three destinations of the scene: chief's, ann's and one saved before 0059. */
@@ -76,6 +76,20 @@ const RENAMED = '(a destination renamed, or saved as another type, is the old on
 
 type Who = { user: SessionUser; credential: { kind: 'session'; token: string } };
 const as = (user: SessionUser): Who => ({ user, credential: { kind: 'session', token: makeSession(user) } });
+
+/**
+ * `as(user)` asking an account route that asks for the current password
+ * again (card 2701): with `body`, the password added, and the cookie of that
+ * session, which the password is counted on.
+ */
+const confirmedAs = (user: SessionUser, body: Record<string, unknown> = {}) => confirmed(as(user), body);
+
+/** `who`, made already, asking a route that asks for the current password again (card 2701), as `confirmedAs`. */
+const confirmed = (who: Who, body: Record<string, unknown> = {}) => ({
+	...who,
+	body: { ...body, currentPassword: FIXTURE_PASSWORD },
+	headers: { cookie: `${SESSION_COOKIE_NAME}=${who.credential.token}` }
+});
 
 /**
  * Whose each setting is now, as a demotion would read it (`settingsHeldBy`):
@@ -167,7 +181,7 @@ describe('lowering Keep Last, removing a destination and switching the schedule 
 
 	it.each(REFUSED)('lets the superadmin make the same save: $name', async ({ body }) => {
 		const who = as(chief);
-		const res = await api('PUT', '/api/admin/backup', { ...who, body: body(await shown(who)) });
+		const res = await api('PUT', '/api/admin/backup', confirmed(who, body(await shown(who)) as Record<string, unknown>));
 
 		expect(res.status, JSON.stringify(res.body)).toBe(200);
 	});
@@ -179,10 +193,10 @@ describe('lowering Keep Last, removing a destination and switching the schedule 
 		expect((await api('PUT', '/api/admin/backup', { ...who, body: { schedule: 'hourly' } })).status).toBe(200);
 		expect((await api('PUT', '/api/admin/backup', { ...who, body: { schedule: 'weekly', scheduleDay: 3 } })).status).toBe(200);
 		const dests = await shown(who);
-		expect((await api('PUT', '/api/admin/backup', { ...who, body: { destinations: [...dests, ANNS] } })).status).toBe(200);
+		expect((await api('PUT', '/api/admin/backup', confirmed(who, { destinations: [...dests, ANNS] }))).status).toBe(200);
 		// Edited in place, pointed at another bucket with its secret typed again: still an administrator's.
 		const edited = (await shown(who)).map((d) => (d.name === 'Old' ? { ...d, bucket: 'moved-bucket', secretAccessKey: 'typed-again' } : d));
-		const res = await api('PUT', '/api/admin/backup', { ...who, body: { destinations: edited } });
+		const res = await api('PUT', '/api/admin/backup', confirmed(who, { destinations: edited }));
 
 		expect(res.status, JSON.stringify(res.body)).toBe(200);
 		expect(stored()).toMatchObject({ retention: 9, schedule: 'weekly', scheduleDay: 3 });
@@ -295,7 +309,7 @@ describe('switching the failure mail off and changing who receives it are the su
 		const who = as(ann);
 
 		// Switched on, the recipients sent back as the GET gave them: as the panel's checkbox sends it.
-		const on = await api('PUT', '/api/admin/backup', { ...who, body: { ...CONFIG, notifyOnFailure: true, notifyEmail: RECIPIENTS, destinations: await shown(who) } });
+		const on = await api('PUT', '/api/admin/backup', confirmed(who, { ...CONFIG, notifyOnFailure: true, notifyEmail: RECIPIENTS, destinations: await shown(who) }));
 		expect(on.status, JSON.stringify(on.body)).toBe(200);
 		expect(stored()).toMatchObject({ notifyOnFailure: true, notifyEmail: RECIPIENTS });
 
@@ -314,7 +328,7 @@ describe('switching the failure mail off and changing who receives it are the su
 		const who = as(ann);
 		const { notifyOnFailure: _on, notifyEmail: _to, ...rest } = CONFIG;
 
-		const res = await api('PUT', '/api/admin/backup', { ...who, body: { ...rest, retention: 9, destinations: await shown(who) } });
+		const res = await api('PUT', '/api/admin/backup', confirmed(who, { ...rest, retention: 9, destinations: await shown(who) }));
 
 		expect(res.status, JSON.stringify(res.body)).toBe(200);
 		expect(stored()).toMatchObject({ retention: 9, notifyOnFailure: true, notifyEmail: 'boss@example.com' });
@@ -356,11 +370,11 @@ describe('switching the failure mail off and changing who receives it are the su
 
 describe('who last changed each setting is recorded (card 2397)', () => {
 	it('makes whoever moves the mail the mail settings’ setter, and whoever sets the App URL to an address its own', async () => {
-		expect((await api('PUT', '/api/admin/smtp', { ...as(ann), body: { host: 'smtp.ann.example', fromAddress: 'a@example.test' } })).status).toBe(200);
+		expect((await api('PUT', '/api/admin/smtp', confirmedAs(ann, { host: 'smtp.ann.example', fromAddress: 'a@example.test' }))).status).toBe(200);
 		expect(setters()).toEqual([{ setting: 'mail', userId: ann.id }]);
 
 		// The App URL alone: its own row, and the mail settings stay ann's.
-		expect((await api('PUT', '/api/admin/smtp', { ...as(bob), body: { appUrl: 'https://bob.example' } })).status).toBe(200);
+		expect((await api('PUT', '/api/admin/smtp', confirmedAs(bob, { appUrl: 'https://bob.example' }))).status).toBe(200);
 		expect(setters()).toEqual([
 			{ setting: 'app_url', userId: bob.id },
 			{ setting: 'mail', userId: ann.id }
@@ -375,7 +389,7 @@ describe('who last changed each setting is recorded (card 2397)', () => {
 			[chief, { host: 'smtp.chief.example' }]
 		];
 		for (const [who, move] of moves) {
-			const res = await api('PUT', '/api/admin/smtp', { ...as(who), body: { ...move, pass: `typed-by-${who.username}` } });
+			const res = await api('PUT', '/api/admin/smtp', confirmedAs(who, { ...move, pass: `typed-by-${who.username}` }));
 			expect(res.status, JSON.stringify(res.body)).toBe(200);
 			expect(setters()).toEqual([
 				{ setting: 'app_url', userId: bob.id },
@@ -386,11 +400,11 @@ describe('who last changed each setting is recorded (card 2397)', () => {
 
 	// The card 2397 review: an administrator who corrected one field of the superadmin's mail became its setter.
 	it('makes nobody the setter by a sender’s name or address, or a password typed again alone', async () => {
-		await api('PUT', '/api/admin/smtp', { ...as(chief), body: { host: 'smtp.chief.example', pass: 'chief-secret' } });
+		await api('PUT', '/api/admin/smtp', confirmedAs(chief, { host: 'smtp.chief.example', pass: 'chief-secret' }));
 		expect(setters()).toEqual([{ setting: 'mail', userId: chief.id }]);
 
 		for (const body of [{ fromName: 'Ann was here' }, { fromAddress: 'ann@example.test' }, { pass: 'typed-by-ann' }]) {
-			const res = await api('PUT', '/api/admin/smtp', { ...as(ann), body });
+			const res = await api('PUT', '/api/admin/smtp', confirmedAs(ann, body));
 			expect(res.status, JSON.stringify(res.body)).toBe(200);
 		}
 
@@ -400,9 +414,9 @@ describe('who last changed each setting is recorded (card 2397)', () => {
 	});
 
 	it('makes nobody the App URL’s setter by clearing it', async () => {
-		await api('PUT', '/api/admin/smtp', { ...as(bob), body: { appUrl: 'https://bob.example' } });
+		await api('PUT', '/api/admin/smtp', confirmedAs(bob, { appUrl: 'https://bob.example' }));
 
-		const res = await api('PUT', '/api/admin/smtp', { ...as(ann), body: { appUrl: '' } });
+		const res = await api('PUT', '/api/admin/smtp', confirmedAs(ann, { appUrl: '' }));
 
 		expect(res.status).toBe(200);
 		expect(setting('app_url')).toBe('');
@@ -412,9 +426,9 @@ describe('who last changed each setting is recorded (card 2397)', () => {
 	});
 
 	it('records nothing for a save that changes nothing, as a mail reads it', async () => {
-		await api('PUT', '/api/admin/smtp', { ...as(ann), body: { host: 'smtp.ann.example', appUrl: 'https://ann.example' } });
+		await api('PUT', '/api/admin/smtp', confirmedAs(ann, { host: 'smtp.ann.example', appUrl: 'https://ann.example' }));
 
-		const res = await api('PUT', '/api/admin/smtp', { ...as(bob), body: { host: 'smtp.ann.example', port: 587, appUrl: 'https://ann.example' } });
+		const res = await api('PUT', '/api/admin/smtp', confirmedAs(bob, { host: 'smtp.ann.example', port: 587, appUrl: 'https://ann.example' }));
 
 		expect(res.status).toBe(200);
 		expect(setters()).toEqual([
@@ -424,7 +438,7 @@ describe('who last changed each setting is recorded (card 2397)', () => {
 	});
 
 	it('makes whoever adds or changes a destination its setter, drops the row of one removed, and records none for one left as it was', async () => {
-		const added = await api('PUT', '/api/admin/backup', { ...as(ann), body: { destinations: [...(await shown(as(ann))), ANNS] } });
+		const added = await api('PUT', '/api/admin/backup', confirmedAs(ann, { destinations: [...(await shown(as(ann))), ANNS] }));
 		expect(added.status).toBe(200);
 		// "Old" was saved before 0059 and is sent back unchanged: nobody's still.
 		expect(setters()).toEqual([{ setting: "backup_destination:Ann's", userId: ann.id }]);
@@ -432,7 +446,7 @@ describe('who last changed each setting is recorded (card 2397)', () => {
 		const dests = await shown(as(bob));
 		// Another prefix is another place: its secret is typed again (card 2190).
 		const changed = dests.map((d) => (d.name === 'Old' ? { ...d, prefix: 'elsewhere/', secretAccessKey: 'typed-again' } : d));
-		expect((await api('PUT', '/api/admin/backup', { ...as(bob), body: { destinations: [...changed, BOBS] } })).status).toBe(200);
+		expect((await api('PUT', '/api/admin/backup', confirmedAs(bob, { destinations: [...changed, BOBS] }))).status).toBe(200);
 		expect(setters()).toEqual([
 			{ setting: "backup_destination:Ann's", userId: ann.id },
 			{ setting: "backup_destination:Bob's", userId: bob.id },
@@ -442,7 +456,7 @@ describe('who last changed each setting is recorded (card 2397)', () => {
 		// The superadmin removes ann's and renames bob's: the old names' rows go, the new name is chief's.
 		const now = await shown(as(chief));
 		const kept = now.filter((d) => d.name !== "Ann's").map((d) => (d.name === "Bob's" ? { ...d, name: 'Renamed', secretAccessKey: 'typed-again' } : d));
-		expect((await api('PUT', '/api/admin/backup', { ...as(chief), body: { destinations: kept } })).status).toBe(200);
+		expect((await api('PUT', '/api/admin/backup', confirmedAs(chief, { destinations: kept }))).status).toBe(200);
 		expect(setters()).toEqual([
 			{ setting: 'backup_destination:Old', userId: bob.id },
 			{ setting: 'backup_destination:Renamed', userId: chief.id }
@@ -452,7 +466,7 @@ describe('who last changed each setting is recorded (card 2397)', () => {
 	// The card 2397 review: a secret typed again, or a host key confirmed, made an administrator the setter.
 	it('makes nobody a destination’s setter by a secret typed again for the same place or an SFTP host key confirmed, and whoever points it elsewhere its setter', async () => {
 		const BOX = { type: 'sftp', name: 'Box', host: 'box.example.test', port: 22, username: 'backup', password: 'box-secret', remotePath: '/backups' };
-		const added = await api('PUT', '/api/admin/backup', { ...as(chief), body: { destinations: [...(await shown(as(chief))), ANNS, BOX] } });
+		const added = await api('PUT', '/api/admin/backup', confirmedAs(chief, { destinations: [...(await shown(as(chief))), ANNS, BOX] }));
 		expect(added.status, JSON.stringify(added.body)).toBe(200);
 		const chiefs = [
 			{ setting: "backup_destination:Ann's", userId: chief.id },
@@ -464,7 +478,7 @@ describe('who last changed each setting is recorded (card 2397)', () => {
 		const same = (await shown(as(ann))).map((d) =>
 			d.name === "Ann's" ? { ...d, secretAccessKey: 'typed-by-ann' } : d.name === 'Box' ? { ...d, hostKey: HOST_KEY } : d
 		);
-		const kept = await api('PUT', '/api/admin/backup', { ...as(ann), body: { destinations: same } });
+		const kept = await api('PUT', '/api/admin/backup', confirmedAs(ann, { destinations: same }));
 		expect(kept.status, JSON.stringify(kept.body)).toBe(200);
 		expect(stored().destinations.find((d) => d.name === "Ann's")!.secretAccessKey).toBe('typed-by-ann');
 		expect(stored().destinations.find((d) => d.name === 'Box')!.hostKey).toBe(HOST_KEY);
@@ -472,7 +486,7 @@ describe('who last changed each setting is recorded (card 2397)', () => {
 
 		// Bob points the S3 destination at another bucket: his.
 		const moved = (await shown(as(bob))).map((d) => (d.name === "Ann's" ? { ...d, bucket: 'bob-bucket', secretAccessKey: 'typed-by-bob' } : d));
-		expect((await api('PUT', '/api/admin/backup', { ...as(bob), body: { destinations: moved } })).status).toBe(200);
+		expect((await api('PUT', '/api/admin/backup', confirmedAs(bob, { destinations: moved }))).status).toBe(200);
 		expect(setters()).toEqual([
 			{ setting: "backup_destination:Ann's", userId: bob.id },
 			{ setting: 'backup_destination:Box', userId: chief.id }
@@ -499,13 +513,14 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 	 * is nobody's. Through the routes, as the panels save them.
 	 */
 	async function annsSettings(): Promise<void> {
-		const mail = await api('PUT', '/api/admin/smtp', {
-			...as(ann),
-			body: { host: 'smtp.ann.example', port: 2525, user: 'ann-mailer', pass: 'ann-mail-secret', fromAddress: 'a@example.test', appUrl: 'https://ann.example' }
-		});
+		const mail = await api(
+			'PUT',
+			'/api/admin/smtp',
+			confirmedAs(ann, { host: 'smtp.ann.example', port: 2525, user: 'ann-mailer', pass: 'ann-mail-secret', fromAddress: 'a@example.test', appUrl: 'https://ann.example' })
+		);
 		expect(mail.status).toBe(200);
-		expect((await api('PUT', '/api/admin/backup', { ...as(ann), body: { destinations: [...(await shown(as(ann))), ANNS] } })).status).toBe(200);
-		expect((await api('PUT', '/api/admin/backup', { ...as(bob), body: { destinations: [...(await shown(as(bob))), BOBS] } })).status).toBe(200);
+		expect((await api('PUT', '/api/admin/backup', confirmedAs(ann, { destinations: [...(await shown(as(ann))), ANNS] }))).status).toBe(200);
+		expect((await api('PUT', '/api/admin/backup', confirmedAs(bob, { destinations: [...(await shown(as(bob))), BOBS] }))).status).toBe(200);
 		expect(setters()).toEqual([
 			{ setting: 'app_url', userId: ann.id },
 			{ setting: "backup_destination:Ann's", userId: ann.id },
@@ -551,7 +566,7 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 		await annsSettings();
 		const linesBefore = lines().length;
 
-		const res = await api('PUT', `/api/users/${ann.id}`, { ...as(chief), body: { role: 'user' } });
+		const res = await api('PUT', `/api/users/${ann.id}`, confirmedAs(chief, { role: 'user' }));
 
 		expect(res.status, JSON.stringify(res.body)).toBe(200);
 		expect(res.body).toMatchObject({ id: ann.id, role: 'user', settingsRemoved: { mail: true, appUrl: true, destinations: ["Ann's"] } });
@@ -566,7 +581,7 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 		await annsSettings();
 		const linesBefore = lines().length;
 
-		const res = await api('DELETE', `/api/users/${ann.id}`, as(chief));
+		const res = await api('DELETE', `/api/users/${ann.id}`, confirmedAs(chief));
 
 		expect(res.status, JSON.stringify(res.body)).toBe(200);
 		expect(res.body).toEqual({ success: true, settingsRemoved: { mail: true, appUrl: true, destinations: ["Ann's"] } });
@@ -580,7 +595,7 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 		const before = { smtp: SMTP_ROWS(), app: setting('app_url'), dests: names(), setters: setters() };
 		const linesBefore = lines().length;
 
-		const demoted = await api('PUT', `/api/users/${bob.id}`, { ...as(chief), body: { role: 'user' } });
+		const demoted = await api('PUT', `/api/users/${bob.id}`, confirmedAs(chief, { role: 'user' }));
 		expect(demoted.status).toBe(200);
 		expect(demoted.body).toMatchObject({ settingsRemoved: { mail: false, appUrl: false, destinations: ["Bob's"] } });
 		expect(SMTP_ROWS()).toEqual(before.smtp);
@@ -588,10 +603,10 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 		expect(names()).toEqual(['Old', "Ann's"]);
 
 		const carol = makeUser({ username: 'carol', role: 'admin' });
-		const plainDemotion = await api('PUT', `/api/users/${carol.id}`, { ...as(chief), body: { role: 'user' } });
+		const plainDemotion = await api('PUT', `/api/users/${carol.id}`, confirmedAs(chief, { role: 'user' }));
 		expect(plainDemotion.status).toBe(200);
 		expect(plainDemotion.body).not.toHaveProperty('settingsRemoved');
-		const deleted = await api('DELETE', `/api/users/${carol.id}`, as(chief));
+		const deleted = await api('DELETE', `/api/users/${carol.id}`, confirmedAs(chief));
 		expect(deleted.body).toEqual({ success: true });
 		expect(lines().slice(linesBefore).map((l) => l.context)).toEqual(['BACKUP']);
 	});
@@ -606,7 +621,7 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 			.run();
 		const before = snapshotDb();
 
-		const res = await api('PUT', `/api/users/${ann.id}`, { ...as(chief), body: { role: 'user' } });
+		const res = await api('PUT', `/api/users/${ann.id}`, confirmedAs(chief, { role: 'user' }));
 
 		expect(res.status).toBe(200);
 		expect(res.body).not.toHaveProperty('settingsRemoved');
@@ -621,12 +636,13 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 	// The card 2397 review's probe: demoting an administrator deleted the superadmin's own settings and secrets.
 	it('keeps the superadmin’s mail, App URL and destination through an administrator’s small edits and that administrator’s demotion', async () => {
 		const CHIEFS = s3("Chief's", 'chief-bucket');
-		const mail = await api('PUT', '/api/admin/smtp', {
-			...as(chief),
-			body: { host: 'smtp.chief.example', port: 465, user: 'chief-mailer', pass: 'chief-secret', fromAddress: 'c@example.test', appUrl: 'https://chief.example' }
-		});
+		const mail = await api(
+			'PUT',
+			'/api/admin/smtp',
+			confirmedAs(chief, { host: 'smtp.chief.example', port: 465, user: 'chief-mailer', pass: 'chief-secret', fromAddress: 'c@example.test', appUrl: 'https://chief.example' })
+		);
 		expect(mail.status).toBe(200);
-		expect((await api('PUT', '/api/admin/backup', { ...as(chief), body: { destinations: [...(await shown(as(chief))), CHIEFS] } })).status).toBe(200);
+		expect((await api('PUT', '/api/admin/backup', confirmedAs(chief, { destinations: [...(await shown(as(chief))), CHIEFS] }))).status).toBe(200);
 		const chiefs = setters();
 		expect(chiefs).toEqual([
 			{ setting: 'app_url', userId: chief.id },
@@ -635,14 +651,14 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 		]);
 
 		// Ann corrects the sender's name, types the mail password again, and types the destination's secret again.
-		expect((await api('PUT', '/api/admin/smtp', { ...as(ann), body: { fromName: 'Ann was here' } })).status).toBe(200);
-		expect((await api('PUT', '/api/admin/smtp', { ...as(ann), body: { pass: 'typed-by-ann' } })).status).toBe(200);
+		expect((await api('PUT', '/api/admin/smtp', confirmedAs(ann, { fromName: 'Ann was here' }))).status).toBe(200);
+		expect((await api('PUT', '/api/admin/smtp', confirmedAs(ann, { pass: 'typed-by-ann' }))).status).toBe(200);
 		const retyped = (await shown(as(ann))).map((d) => (d.name === "Chief's" ? { ...d, secretAccessKey: 'typed-by-ann' } : d));
-		expect((await api('PUT', '/api/admin/backup', { ...as(ann), body: { destinations: retyped } })).status).toBe(200);
+		expect((await api('PUT', '/api/admin/backup', confirmedAs(ann, { destinations: retyped }))).status).toBe(200);
 		expect(setters()).toEqual(chiefs);
 		const linesBefore = lines().length;
 
-		const res = await api('PUT', `/api/users/${ann.id}`, { ...as(chief), body: { role: 'user' } });
+		const res = await api('PUT', `/api/users/${ann.id}`, confirmedAs(chief, { role: 'user' }));
 
 		expect(res.status, JSON.stringify(res.body)).toBe(200);
 		expect(res.body).not.toHaveProperty('settingsRemoved');
@@ -661,12 +677,13 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 		const KEYLESS = { type: 's3', name: 'Keyless', region: 'eu-west-2', bucket: 'chief-bucket', prefix: 'a/' };
 		/** The superadmin's passwordless relay, keyless S3 destination and App URL; each move of ann's is one save. */
 		async function chiefsAndAnnsMoves(moves: { port: number; prefix: string; appUrl: string }[]): Promise<void> {
-			const mail = await api('PUT', '/api/admin/smtp', {
-				...as(chief),
-				body: { host: 'relay.chief.example', port: 25, fromAddress: 'c@example.test', appUrl: 'https://chief.example' }
-			});
+			const mail = await api(
+				'PUT',
+				'/api/admin/smtp',
+				confirmedAs(chief, { host: 'relay.chief.example', port: 25, fromAddress: 'c@example.test', appUrl: 'https://chief.example' })
+			);
 			expect(mail.status, JSON.stringify(mail.body)).toBe(200);
-			const added = await api('PUT', '/api/admin/backup', { ...as(chief), body: { destinations: [...(await shown(as(chief))), KEYLESS] } });
+			const added = await api('PUT', '/api/admin/backup', confirmedAs(chief, { destinations: [...(await shown(as(chief))), KEYLESS] }));
 			expect(added.status, JSON.stringify(added.body)).toBe(200);
 			expect(setters()).toEqual([
 				{ setting: 'app_url', userId: chief.id },
@@ -674,10 +691,10 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 				{ setting: 'mail', userId: chief.id }
 			]);
 			for (const { port, prefix, appUrl } of moves) {
-				const moved = await api('PUT', '/api/admin/smtp', { ...as(ann), body: { port, appUrl } });
+				const moved = await api('PUT', '/api/admin/smtp', confirmedAs(ann, { port, appUrl }));
 				expect(moved.status, JSON.stringify(moved.body)).toBe(200);
 				const dests = (await shown(as(ann))).map((d) => (d.name === 'Keyless' ? { ...d, prefix } : d));
-				const saved = await api('PUT', '/api/admin/backup', { ...as(ann), body: { destinations: dests } });
+				const saved = await api('PUT', '/api/admin/backup', confirmedAs(ann, { destinations: dests }));
 				expect(saved.status, JSON.stringify(saved.body)).toBe(200);
 			}
 		}
@@ -694,7 +711,7 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 			]);
 			const linesBefore = lines().length;
 
-			const res = await api('PUT', `/api/users/${ann.id}`, { ...as(chief), body: { role: 'user' } });
+			const res = await api('PUT', `/api/users/${ann.id}`, confirmedAs(chief, { role: 'user' }));
 
 			expect(res.status, JSON.stringify(res.body)).toBe(200);
 			expect(res.body).not.toHaveProperty('settingsRemoved');
@@ -719,7 +736,7 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 				{ setting: 'mail', userId: ann.id }
 			]);
 
-			const res = await api('PUT', `/api/users/${ann.id}`, { ...as(chief), body: { role: 'user' } });
+			const res = await api('PUT', `/api/users/${ann.id}`, confirmedAs(chief, { role: 'user' }));
 
 			expect(res.status, JSON.stringify(res.body)).toBe(200);
 			expect(res.body).toMatchObject({ settingsRemoved: { mail: true, appUrl: true, destinations: ['Keyless'] } });
@@ -733,10 +750,10 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 		it('gives a setting moved back to where somebody else put it to them: ann’s move undone by bob is the superadmin’s again', async () => {
 			await chiefsAndAnnsMoves([{ port: 26, prefix: 'b/', appUrl: 'https://ann.example' }]);
 
-			expect((await api('PUT', '/api/admin/smtp', { ...as(bob), body: { port: 25 } })).status).toBe(200);
+			expect((await api('PUT', '/api/admin/smtp', confirmedAs(bob, { port: 25 }))).status).toBe(200);
 
 			expect(setters().filter((s) => s.setting === 'mail')).toEqual([{ setting: 'mail', userId: chief.id }]);
-			const demoted = await api('PUT', `/api/users/${ann.id}`, { ...as(chief), body: { role: 'user' } });
+			const demoted = await api('PUT', `/api/users/${ann.id}`, confirmedAs(chief, { role: 'user' }));
 			expect(demoted.body).toMatchObject({ settingsRemoved: { mail: false, appUrl: true, destinations: ['Keyless'] } });
 			expect(setting('smtp_host')).toBe('relay.chief.example');
 		});
@@ -745,12 +762,12 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 	// The card 2397 review: an App URL cleared since its setter saved it was reported, and logged, as
 	// removed. Its second review: the cleared row is not at the place bob set, so it is not his and stays.
 	it('leaves an App URL cleared since its setter saved it, and drops the setter’s row: no field in the answer, no line', async () => {
-		await api('PUT', '/api/admin/smtp', { ...as(bob), body: { appUrl: 'https://bob.example' } });
-		await api('PUT', '/api/admin/smtp', { ...as(ann), body: { appUrl: '' } });
+		await api('PUT', '/api/admin/smtp', confirmedAs(bob, { appUrl: 'https://bob.example' }));
+		await api('PUT', '/api/admin/smtp', confirmedAs(ann, { appUrl: '' }));
 		expect(rows()).toEqual([{ setting: 'app_url', userId: bob.id }]);
 		const linesBefore = lines().length;
 
-		const res = await api('PUT', `/api/users/${bob.id}`, { ...as(chief), body: { role: 'user' } });
+		const res = await api('PUT', `/api/users/${bob.id}`, confirmedAs(chief, { role: 'user' }));
 
 		expect(res.status).toBe(200);
 		expect(res.body).not.toHaveProperty('settingsRemoved');
@@ -786,8 +803,8 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 	// superadmin later moved the setting there; the table grew with every save; and a setting saved
 	// before 0059 changed and changed back became the administrator's.
 	describe('places visited first, the size of the table, and settings saved before 0059 (the third code review)', () => {
-		const smtp = (who: SessionUser, body: Record<string, unknown>) => api('PUT', '/api/admin/smtp', { ...as(who), body });
-		const demoteAnn = () => api('PUT', `/api/users/${ann.id}`, { ...as(chief), body: { role: 'user' } });
+		const smtp = (who: SessionUser, body: Record<string, unknown>) => api('PUT', '/api/admin/smtp', confirmedAs(who, body));
+		const demoteAnn = () => api('PUT', `/api/users/${ann.id}`, confirmedAs(chief, { role: 'user' }));
 		const mailSetter = () => setters().filter((s) => s.setting === 'mail');
 
 		it('the reviewer’s mail probe: ann claims port 465 first with a garbage password and goes back; the superadmin’s later move there with the real password is his', async () => {
@@ -807,10 +824,10 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 
 		it('the reviewer’s destination probe: ann points the superadmin’s destination at a bucket first with a garbage secret and goes back; his later move there with the real secret is his', async () => {
 			const CHIEFS = s3("Chief's", 'chief-bucket');
-			expect((await api('PUT', '/api/admin/backup', { ...as(chief), body: { destinations: [...(await shown(as(chief))), CHIEFS] } })).status).toBe(200);
+			expect((await api('PUT', '/api/admin/backup', confirmedAs(chief, { destinations: [...(await shown(as(chief))), CHIEFS] }))).status).toBe(200);
 			const moveTo = async (who: SessionUser, bucket: string, secret: string) => {
 				const dests = (await shown(as(who))).map((d) => (d.name === "Chief's" ? { ...d, bucket, secretAccessKey: secret } : d));
-				const res = await api('PUT', '/api/admin/backup', { ...as(who), body: { destinations: dests } });
+				const res = await api('PUT', '/api/admin/backup', confirmedAs(who, { destinations: dests }));
 				expect(res.status, JSON.stringify(res.body)).toBe(200);
 			};
 			await moveTo(ann, 'ann-bucket', 'garbage');
@@ -867,7 +884,7 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 				.run();
 			const prefixed = async (prefix: string) => {
 				const dests = (await shown(as(ann))).map((d) => (d.name === 'Keyless' ? { ...d, prefix } : d));
-				expect((await api('PUT', '/api/admin/backup', { ...as(ann), body: { destinations: dests } })).status).toBe(200);
+				expect((await api('PUT', '/api/admin/backup', confirmedAs(ann, { destinations: dests }))).status).toBe(200);
 			};
 			expect((await smtp(ann, { port: 26, appUrl: 'https://ann.example' })).status).toBe(200);
 			await prefixed('b/');
@@ -900,7 +917,7 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 		expect(await held(chief, ann)).toEqual({ id: ann.id, settingsSet: { mail: true, appUrl: true, destinations: ["Ann's"] } });
 		expect(await held(chief, bob)).toEqual({ id: bob.id, settingsSet: { mail: false, appUrl: false, destinations: ["Bob's"] } });
 		// Bob takes the mail over: read again, it is his now, and no longer ann's.
-		expect((await api('PUT', '/api/admin/smtp', { ...as(bob), body: { port: 2626, pass: 'typed-by-bob' } })).status).toBe(200);
+		expect((await api('PUT', '/api/admin/smtp', confirmedAs(bob, { port: 2626, pass: 'typed-by-bob' }))).status).toBe(200);
 		expect(await held(chief, ann)).toEqual({ id: ann.id, settingsSet: { mail: false, appUrl: true, destinations: ["Ann's"] } });
 		expect(await held(chief, bob)).toEqual({ id: bob.id, settingsSet: { mail: true, appUrl: false, destinations: ["Bob's"] } });
 		// The caller's own, and an account the caller may not manage, name nothing.
@@ -916,8 +933,8 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 		await annsSettings();
 		const kept = setters();
 
-		expect((await api('PUT', `/api/users/${ann.id}`, { ...as(chief), body: { email: 'ann2@example.test' } })).status).toBe(200);
-		expect((await api('PUT', `/api/users/${ann.id}`, { ...as(chief), body: { role: 'admin' } })).status).toBe(200);
+		expect((await api('PUT', `/api/users/${ann.id}`, confirmedAs(chief, { email: 'ann2@example.test' }))).status).toBe(200);
+		expect((await api('PUT', `/api/users/${ann.id}`, confirmedAs(chief, { role: 'admin' }))).status).toBe(200);
 
 		expect(setters()).toEqual(kept);
 		expect(names()).toEqual(['Old', "Ann's", "Bob's"]);
@@ -1102,7 +1119,8 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 			try {
 				const res = await api('POST', `/api/admin/import?outside=${outside}`, {
 					user: chief,
-					headers: { 'content-type': 'application/octet-stream' },
+					// Their password confirmed first (card 2701).
+					headers: { 'content-type': 'application/octet-stream', ...importConfirmation(chief) },
 					body: backup
 				});
 				expect(res.status, JSON.stringify(res.body)).toBe(200);
@@ -1269,12 +1287,14 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 			await annsSettings();
 			// A write of the removal after the settings have gone: the setter rows.
 			sqlite.exec("CREATE TEMP TRIGGER refuse_2397 BEFORE DELETE ON setting_setters BEGIN SELECT RAISE(ABORT, 'refused for the test'); END");
-			const who = as(chief);
+			// The session's count of wrong passwords is back where it was once the
+			// right one has cleared it (card 2701).
+			const who = confirmedAs(chief, { role: 'user' });
 			const before = snapshotDb();
 			const linesBefore = lines().length;
 
 			// Thrown out of the handler: the gate would answer it 500.
-			await expect(api('PUT', `/api/users/${ann.id}`, { ...who, body: { role: 'user' } })).rejects.toThrow('refused for the test');
+			await expect(api('PUT', `/api/users/${ann.id}`, who)).rejects.toThrow('refused for the test');
 
 			expectUnchanged(before);
 			expect(roleOf(ann)).toBe('admin');
@@ -1284,7 +1304,7 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 		it('rolls every removal back with the delete when the delete fails', async () => {
 			await annsSettings();
 			sqlite.exec("CREATE TEMP TRIGGER refuse_2397 BEFORE DELETE ON users BEGIN SELECT RAISE(ABORT, 'refused for the test'); END");
-			const who = as(chief);
+			const who = confirmedAs(chief);
 			const before = snapshotDb();
 			const linesBefore = lines().length;
 

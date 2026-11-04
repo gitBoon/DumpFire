@@ -328,7 +328,7 @@ export function findSubBoardName(boardId: number, columns: ColumnType[]): string
 	return 'this sub-board';
 }
 
-/** Deletes a sub-board via the API. Returns the answer, for the caller to check. */
-export async function deleteSubBoard(boardId: number): Promise<Response> {
-	return api.deleteBoardApi(boardId);
+/** Deletes a sub-board via the API, with the caller's own password (card 2701). Returns the answer, for the caller to check. */
+export async function deleteSubBoard(boardId: number, currentPassword: string): Promise<Response> {
+	return api.deleteBoardApi(boardId, currentPassword);
 }

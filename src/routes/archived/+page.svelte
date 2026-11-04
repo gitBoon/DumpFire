@@ -14,6 +14,7 @@
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import { toasts } from '$lib/stores/toast';
 	import { PURGE_WARNING, cardDeleteWarning, deleteFailure, failureMessage } from '$lib/api';
+	import { stepUpRefusal } from '$lib/step-up-words';
 	import { parseStamp } from '$lib/timestamps';
 
 	let { data }: { data: PageData } = $props();
@@ -25,13 +26,18 @@
 	let boardFilter = $state('all');
 	let purging = $state(false);
 
-	// Confirmation modal
-	let confirmState = $state<{ show: boolean; title: string; message: string; confirmText: string; onConfirm: () => void }>({
-		show: false, title: '', message: '', confirmText: '', onConfirm: () => {}
+	// Confirmation modal. `askPassword`: it asks for the caller's own password,
+	// handed to `onConfirm`, which gives back a refusal of it for the dialog to
+	// show (card 2701: Purge All).
+	let confirmState = $state<{
+		show: boolean; title: string; message: string; confirmText: string;
+		onConfirm: (password: string) => void | Promise<string | null | void>; askPassword: boolean;
+	}>({
+		show: false, title: '', message: '', confirmText: '', onConfirm: () => {}, askPassword: false
 	});
 
-	function showConfirm(title: string, message: string, confirmText: string, onConfirm: () => void) {
-		confirmState = { show: true, title, message, confirmText, onConfirm };
+	function showConfirm(title: string, message: string, confirmText: string, onConfirm: (password: string) => void | Promise<string | null | void>, askPassword = false) {
+		confirmState = { show: true, title, message, confirmText, onConfirm, askPassword };
 	}
 
 	const priorityEmoji: Record<string, string> = { critical: '🔴', high: '🟠', medium: '🟡', low: '🟢' };
@@ -111,18 +117,26 @@
 			'Purge All Archived Cards',
 			PURGE_WARNING,
 			'Purge All',
-			async () => {
+			async (currentPassword) => {
 				purging = true;
-				confirmState.show = false;
 				const started = toasts.navigation();
 				try {
 					let res: Response;
 					try {
-						res = await fetch('/api/admin/purge-archived', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+						res = await fetch('/api/admin/purge-archived', {
+							method: 'POST',
+							headers: { 'Content-Type': 'application/json' },
+							body: JSON.stringify({ currentPassword })
+						});
 					} catch {
+						confirmState.show = false;
 						toasts.add('No answer from the server. The archived cards may not have been purged.', 'error', started);
 						return;
 					}
+					// The password refused (card 2701): said in the dialog, which stays open to type it again.
+					const refusal = await stepUpRefusal(res);
+					if (refusal !== null) return refusal;
+					confirmState.show = false;
 					if (!res.ok) {
 						toasts.add(await failureMessage(res, 'The archived cards were not purged.'), 'error', started);
 						return;
@@ -131,7 +145,8 @@
 				} finally {
 					purging = false;
 				}
-			}
+			},
+			true
 		);
 	}
 </script>
@@ -235,6 +250,7 @@
 		title={confirmState.title}
 		message={confirmState.message}
 		confirmText={confirmState.confirmText}
+		askPassword={confirmState.askPassword}
 		onConfirm={confirmState.onConfirm}
 		onCancel={() => (confirmState.show = false)}
 	/>

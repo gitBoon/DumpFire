@@ -1,7 +1,7 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { users } from '$lib/server/db/schema';
-import type { SessionUser } from '$lib/server/auth';
+import { whilePasswordHolds, type SessionUser } from '$lib/server/auth';
 import { makePasswordHash } from '$lib/server/passwords';
 import { issueInvite } from '$lib/server/invites';
 import { inviteMailAnswer } from '$lib/server/invite-link';
@@ -11,6 +11,7 @@ import { listUsersFor } from '$lib/server/list-access';
 import { MAIL_PROBLEM_WORDS, NO_LINK_ADDRESS, isSmtpConfigured, linkBaseUrl, smtpPasswordMissing } from '$lib/server/email';
 import { sendInviteEmail } from '$lib/server/notifications';
 import { requireAdmin, requireUser } from '$lib/server/route-guards';
+import { confirmStepUp } from '$lib/server/step-up';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
@@ -38,6 +39,9 @@ const NO_MAIL_PASSWORD = `Password must be at least 8 characters (${MAIL_PROBLEM
  * and `inviteUrl`, the link for the caller to pass on by hand, left out when
  * the checks of invite-link.ts no longer hold. `invited` used to be the whole
  * answer, and the page said "invite email sent!" whether or not it went.
+ *
+ * It asks for the caller's own password again, in `currentPassword` (card
+ * 2701, step-up.ts), after every refusal that needs none.
  */
 export const POST: RequestHandler = async ({ request, locals, url, cookies }) => {
 	requireAdmin(locals.user);
@@ -69,26 +73,31 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 	// A role is exactly `user` or `admin`, and only the superadmin makes an
 	// administrator. What passes is what is written: it used to be compared as
 	// it was sent and then bound, and `["superadmin"]` is bound as `superadmin`.
-	// Asked of the caller as their account is now: here, as a quick refusal
-	// before the hash, and again in the transaction that creates the user,
-	// which decides (card 2253).
+	// Asked of the caller as their account is now: before the password, and
+	// again in the transaction that creates the user, which decides (card 2253).
 	const roleFor = (caller: SessionUser | null) =>
 		requireAssignableRole(requireAdmin(caller), body, {
 			superadmin: 'Cannot create additional superadmin accounts',
 			promote: 'Only superadmin can create admin users'
 		}) ?? 'user';
-	roleFor(writeAs(locals, (caller) => requireAdmin(caller)));
 
 	// Check uniqueness: one rule, shared with PUT /api/users/[id].
 	const requireUnused = () => requireUnusedAccountFields({ username, email });
 
+	// The caller's password, asked for again (card 2701): an account is a
+	// credential that outlives the session that made it. The role, the name and
+	// address, and an invite's link address are asked first, read only, so that
+	// a request that will be refused costs no check and no guess, and is not
+	// hashed for. Each is read again in the transaction.
+	const { userId, hash } = await confirmStepUp(locals, cookies, body, 'POST /api/users', (caller) => {
+		roleFor(caller);
+		requireUnused();
+		if (!password && linkBaseUrl(url) === null) throw error(503, NO_LINK_ADDRESS);
+	});
+
 	// Hashing takes about a quarter of a second, on a worker thread, and is
 	// awaited, which a transaction cannot do, so the hash is made out here,
-	// before it, in the first lane: the caller holds a session. The
-	// name and address are looked at first so that a request that will be
-	// refused is not hashed for, and are read again in the transaction.
-	requireUnused();
-
+	// before it, in the first lane: the caller holds a session.
 	// If password provided, hash and create fully. Otherwise create with placeholder and invite.
 	const passwordHash = password
 		? await makePasswordHash(password, 'known')
@@ -99,8 +108,9 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 	// A failure between the two used to leave a user with a password nobody
 	// knows and no invite to set one. The mail is sent once it is committed.
 	// The hash was awaited, so the session is asked again, and the role
-	// decided again by the account as it is now (card 2253).
-	const created = writeAs(locals, (caller) => {
+	// decided again by the account as it is now (card 2253). It runs only while
+	// the caller's stored hash is the one their password was checked against.
+	const created = await whilePasswordHolds(userId, hash, () => writeAs(locals, (caller) => {
 		const finalRole = roleFor(caller);
 		const actorId = requireUser(caller).id;
 		requireUnused();
@@ -140,7 +150,7 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 		const invite = inviteFrom !== null ? { token: issueInvite(account.id), baseUrl: inviteFrom } : null;
 
 		return { account, invite, actorId };
-	});
+	}));
 
 	const { account, invite, actorId } = created;
 	if (invite === null) return json({ ...account, invited: false }, { status: 201 });

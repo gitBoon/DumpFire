@@ -5,6 +5,7 @@
  * boilerplate (headers, JSON.stringify, method) from component code.
  * Each function returns the fetch Response or parsed JSON as appropriate.
  */
+import { ASKS_FOR_PASSWORD } from './step-up-words';
 
 // ─── Internal Helpers ────────────────────────────────────────────────────────
 
@@ -152,14 +153,18 @@ export function cardDeleteWarning(title: string): string {
 	return `Permanently delete "${title}"? Its subtasks, comments and dependency links go with it, and so does every sub-board under it with everything on it. ${TRASH_SENTENCE}`;
 }
 
-/** What goes with a column: every card in it, deleted for good and not archived. */
-export function columnDeleteWarning(title: string): string {
-	return `Delete "${title}" and every card in it? The cards are deleted for good, not archived, each with its subtasks, comments and dependency links and with every sub-board under it. ${TRASH_SENTENCE}`;
+/**
+ * What goes with a column: every card in it, deleted for good and not
+ * archived. `asks`: it holds a card the page can see, so the delete asks for
+ * the password (card 2701, decision 18), and says so.
+ */
+export function columnDeleteWarning(title: string, asks = false): string {
+	return `Delete "${title}" and every card in it? The cards are deleted for good, not archived, each with its subtasks, comments and dependency links and with every sub-board under it. ${TRASH_SENTENCE}${asks ? ` ${ASKS_FOR_PASSWORD}` : ''}`;
 }
 
-/** What goes with a board or a sub-board, and what stays. */
+/** What goes with a board or a sub-board, and what stays. Its delete asks for the password (card 2701). */
 export function boardDeleteWarning(name: string): string {
-	return `Permanently delete "${name}"? Everything on it goes: its columns and cards, every sub-board under it, and any report schedules for it. Cards on other boards that were in one of its milestones stay, in no milestone. Its card categories stay, with no board. ${TRASH_SENTENCE}`;
+	return `Permanently delete "${name}"? Everything on it goes: its columns and cards, every sub-board under it, and any report schedules for it. Cards on other boards that were in one of its milestones stay, in no milestone. Its card categories stay, with no board. ${TRASH_SENTENCE} ${ASKS_FOR_PASSWORD}`;
 }
 
 /**
@@ -200,15 +205,15 @@ export function leftMilestoneNotice(body: Record<string, unknown> | null): strin
 
 const PURGE_TAKES = `Each goes with its subtasks, comments and dependency links, and with every sub-board under it and everything on it. ${TRASH_SENTENCE}`;
 
-/** What goes when every archived card is purged. */
-export const PURGE_WARNING = `Permanently delete every archived card on every board? ${PURGE_TAKES}`;
+/** What goes when every archived card is purged. The purge asks for the password (card 2701). */
+export const PURGE_WARNING = `Permanently delete every archived card on every board? ${PURGE_TAKES} ${ASKS_FOR_PASSWORD}`;
 
 /** The same, as the description beside the button. */
-export const PURGE_DESCRIPTION = `Permanently deletes every archived card on every board. ${PURGE_TAKES}`;
+export const PURGE_DESCRIPTION = `Permanently deletes every archived card on every board. ${PURGE_TAKES} ${ASKS_FOR_PASSWORD}`;
 
-/** What goes when a board's cards are cleared, and what stays. */
+/** What goes when a board's cards are cleared, and what stays. The clear asks for the password (card 2701). */
 export function clearCardsWarning(boardName: string): string {
-	return `Permanently delete every card on "${boardName}", archived ones included? Each goes with its subtasks, comments and dependency links, and with every sub-board under it and everything on it. The board, its columns and its categories are kept. ${TRASH_SENTENCE}`;
+	return `Permanently delete every card on "${boardName}", archived ones included? Each goes with its subtasks, comments and dependency links, and with every sub-board under it and everything on it. The board, its columns and its categories are kept. ${TRASH_SENTENCE} ${ASKS_FOR_PASSWORD}`;
 }
 
 /**
@@ -244,7 +249,7 @@ export function userDeleteWarning(username: string, soleOwnerOf: string[] = []):
 }
 
 /** What a reset clears and what it keeps (`api/admin/reset`). */
-export const RESET_WARNING = `This clears everything: every board, card, user, team and setting. Only the system log and the backup history are kept. ${TRASH_SENTENCE} Ids are not reused, so new boards and cards are numbered on from the old ones. You will be signed out and will set DumpFire up from scratch.`;
+export const RESET_WARNING = `This clears everything: every board, card, user, team and setting. Only the system log and the backup history are kept. ${TRASH_SENTENCE} Ids are not reused, so new boards and cards are numbered on from the old ones. You will be signed out and will set DumpFire up from scratch. ${ASKS_FOR_PASSWORD}`;
 
 // ─── Cards ───────────────────────────────────────────────────────────────────
 
@@ -374,10 +379,12 @@ export async function updateColumn(colId: number, updates: Record<string, unknow
 }
 
 /**
- * Deletes a column and all its cards.
+ * Deletes a column and all its cards. A column that holds a card, archived
+ * ones included, asks for the caller's own password, `currentPassword` (card
+ * 2701, decision 18); an empty one asks none, and it is left out.
  */
-export async function deleteColumn(colId: number, boardId: number): Promise<Response> {
-	return jsonRequest(`/api/columns/${colId}`, 'DELETE', { boardId });
+export async function deleteColumn(colId: number, boardId: number, currentPassword?: string): Promise<Response> {
+	return jsonRequest(`/api/columns/${colId}`, 'DELETE', { boardId, currentPassword: currentPassword || undefined });
 }
 
 /**
@@ -537,10 +544,11 @@ export function deliveryBoardWarning(name: string, columns: readonly string[]): 
 }
 
 /**
- * Deletes a board and all its columns/cards/subtasks.
+ * Deletes a board and all its columns/cards/subtasks. Asks for the caller's
+ * own password, `currentPassword` (card 2701).
  */
-export async function deleteBoardApi(boardId: number): Promise<Response> {
-	return jsonRequest(`/api/boards/${boardId}`, 'DELETE');
+export async function deleteBoardApi(boardId: number, currentPassword: string): Promise<Response> {
+	return jsonRequest(`/api/boards/${boardId}`, 'DELETE', { currentPassword });
 }
 
 // ─── Categories ──────────────────────────────────────────────────────────────

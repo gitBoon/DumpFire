@@ -8,12 +8,18 @@
   opens. `loadMailStatus` is
   exported: the page reaches it with `bind:this` for the users panel, which
   has it read again once an invite is answered.
+
+  Card 2701: Save asks for the caller's own password, in the app's confirm
+  dialog: it chooses the mail server invites and password resets go through.
+  Send Test asks for none.
 -->
 <script lang="ts">
 	import type { PageData } from '../../../routes/admin/$types';
 	import { onDestroy } from 'svelte';
 	import { answerBody, failureMessage } from '$lib/api';
 	import { NO_ANSWER } from '$lib/admin/send';
+	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
+	import { ASKS_FOR_PASSWORD, stepUpRefusal } from '$lib/step-up-words';
 
 	/** Who is signed in: Send Test goes to their address when no other is typed. */
 	let { currentUser }: { currentUser: PageData['currentUser'] } = $props();
@@ -125,7 +131,15 @@
 		smtpLoading = false;
 	}
 
-	async function saveSmtp() {
+	/** Save pressed: the confirm dialog asks for the caller's own password, and its Confirm saves (card 2701). */
+	let askingToSave = $state(false);
+
+	/**
+	 * Save, confirmed: the mail settings with the caller's own password. A
+	 * refusal of the password is given back for the dialog to show; anything
+	 * else closes it, and is said below the panel as before.
+	 */
+	async function saveSmtp(currentPassword: string): Promise<string | void> {
 		smtpSaving = true;
 		stopMessageTimer();
 		smtpMessage = '';
@@ -138,13 +152,20 @@
 					// the server's 400 says so, and is shown below the panel.
 					host: smtpHost, port: smtpPort, allowInsecure: smtpAllowInsecure,
 					user: smtpUser, pass: smtpPass,
-					fromAddress: smtpFromAddress, fromName: smtpFromName
+					fromAddress: smtpFromAddress, fromName: smtpFromName,
+					currentPassword
 				})
 			});
 			if (res.ok) {
 				smtpMessage = 'SMTP settings saved!';
 				smtpIsError = false;
 			} else {
+				// The caller's own password refused: said in the dialog, which stays open.
+				const refusal = await stepUpRefusal(res);
+				if (refusal !== null) {
+					smtpSaving = false;
+					return refusal;
+				}
 				// The server's reason, which used to be "Failed to save" for all of them.
 				smtpMessage = await failureMessage(res, 'Failed to save SMTP settings');
 				smtpIsError = true;
@@ -153,6 +174,7 @@
 			smtpMessage = NO_ANSWER;
 			smtpIsError = true;
 		}
+		askingToSave = false;
 		smtpSaving = false;
 		await loadMailStatus();
 		if (!smtpIsError) clearMessageLater(5000);
@@ -214,7 +236,7 @@
 					<input type="checkbox" bind:checked={smtpAllowInsecure} /> Allow mail without a checked, encrypted connection
 				</label>
 				<div style="flex: 1"></div>
-				<button class="btn-primary btn-sm" onclick={saveSmtp} disabled={!smtpHost || smtpSaving}>{smtpSaving ? 'Saving...' : 'Save SMTP'}</button>
+				<button class="btn-primary btn-sm" onclick={() => (askingToSave = true)} disabled={!smtpHost || smtpSaving}>{smtpSaving ? 'Saving...' : 'Save SMTP'}</button>
 			</div>
 			{#if smtpAllowInsecure}
 				<p class="smtp-msg smtp-warning">⚠️ Mail, and the mail password, can then be read and changed by anyone on the network between this server and the mail server. Use it only for a relay on this server's own network that cannot use TLS. For a mail server whose certificate comes from a private authority, set NODE_EXTRA_CA_CERTS instead: see docs/deployment.md, Mail Server Certificates.</p>
@@ -242,6 +264,19 @@
 		</div>
 	{/if}
 </section>
+
+<!-- Save asks for the caller's own password (card 2701). After the section: fixed to the window, not to a card that moves on hover. -->
+{#if askingToSave}
+	<ConfirmModal
+		title="Save SMTP Settings"
+		message={`Invites and password resets are sent through this mail server. ${ASKS_FOR_PASSWORD}`}
+		confirmText="Save"
+		confirmDanger={false}
+		askPassword
+		onConfirm={saveSmtp}
+		onCancel={() => (askingToSave = false)}
+	/>
+{/if}
 
 <style>
 	/* SMTP */

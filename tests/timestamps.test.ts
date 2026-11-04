@@ -42,12 +42,14 @@ import { effects } from './helpers/effects';
 import { pdfText } from './helpers/pdf';
 import {
 	assignCard,
+	importConfirmation,
 	makeApiKey,
 	makeBoard,
 	makeCard,
 	makeComment,
 	makeDependency,
 	makeMilestone,
+	makeSession,
 	makeSmtp,
 	makeUser,
 	makeWebhook,
@@ -409,7 +411,8 @@ describe('a restore of a backup holding the other form', () => {
 
 		const res = await api('POST', '/api/admin/import?outside=keep', {
 			user: chief,
-			headers: { 'content-type': 'application/octet-stream' },
+			// Their password confirmed first (card 2701).
+			headers: { 'content-type': 'application/octet-stream', ...importConfirmation(chief) },
 			body: backup.serialize()
 		});
 
@@ -1076,7 +1079,6 @@ describe('a timestamp a caller sends that cannot be read is a 400 that names it 
 });
 
 describe('null, text and anything else, for archivedAt and expiresAt (R7)', () => {
-	const SESSION = { cookie: `${SESSION_COOKIE_NAME}=a-session` };
 	const REFUSED = 'archivedAt may only be null, which restores the card. Archive a card with DELETE /cards/{cardId}';
 
 	it('archivedAt: the stamp held, sent back in either form, changes nothing; null restores; true and a number are refused, naming it', async () => {
@@ -1100,8 +1102,10 @@ describe('null, text and anything else, for archivedAt and expiresAt (R7)', () =
 	it('expiresAt: null is no expiry, text is read into the stored form, true and a number are refused, naming it', async () => {
 		const owner = makeUser();
 		db.update(users).set({ passwordHash: await makePasswordHash('the password', 'known') }).where(eq(users.id, owner.id)).run();
+		// A session of the owner's, which the password is counted on (card 2701).
+		const session = { cookie: `${SESSION_COOKIE_NAME}=${makeSession(owner)}` };
 		const make = (expiresAt: unknown) =>
-			api('POST', '/api/account/api-keys', { user: owner, body: { name: 'my script', password: 'the password', expiresAt }, headers: SESSION });
+			api('POST', '/api/account/api-keys', { user: owner, body: { name: 'my script', password: 'the password', expiresAt }, headers: session });
 
 		const never = await make(null);
 		expect([never.status, never.body.expiresAt]).toEqual([201, null]);

@@ -34,14 +34,16 @@ import {
 	users,
 	type Card
 } from '$lib/server/db/schema';
-import type { SessionUser } from '$lib/server/auth';
+import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { api, type ApiResult } from './helpers/api';
 import { eachWriteInTurn } from './helpers/each-write';
 import { effects, type RecordedEffect } from './helpers/effects';
 import {
+	FIXTURE_PASSWORD,
 	addBoardMember,
 	makeBoard,
 	makeCard,
+	makeSession,
 	makeSmtp,
 	makeSubtask,
 	makeTeam,
@@ -49,6 +51,7 @@ import {
 	makeWebhook,
 	resetDb,
 	shareBoardWithTeam,
+	stepUp,
 	type BoardFixture
 } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
@@ -667,6 +670,8 @@ describe('PUT /api/admin/smtp', () => {
 	const withMail = () => {
 		const s = scene();
 		const chief = makeUser({ username: 'chief', role: 'superadmin' });
+		// A session of theirs, which a save asks the current password from (card 2701).
+		const chiefSession = makeSession(chief);
 		db.update(settings).set({ value: ' SMTP.New.Example.TEST ' }).where(eq(settings.key, 'smtp_host')).run();
 		db.insert(settings)
 			.values([
@@ -677,8 +682,15 @@ describe('PUT /api/admin/smtp', () => {
 				{ key: 'app_url', value: 'https://old.example.test' }
 			])
 			.run();
-		return { ...s, chief };
+		return { ...s, chief, chiefSession };
 	};
+
+	/** `api()`'s options for a save by the superadmin, from their session, with their current password (card 2701). */
+	const asChief = ({ chief, chiefSession }: ReturnType<typeof withMail>, body: Record<string, unknown>) => ({
+		user: chief,
+		body: { ...body, currentPassword: FIXTURE_PASSWORD },
+		headers: { cookie: `${SESSION_COOKIE_NAME}=${chiefSession}` }
+	});
 
 	const stored = () =>
 		Object.fromEntries(
@@ -703,7 +715,10 @@ describe('PUT /api/admin/smtp', () => {
 	it('saves every mail setting and the App URL, or none of them', async () => {
 		const run = await eachWriteInTurn({
 			build: withMail,
-			request: ({ chief }) => api('PUT', '/api/admin/smtp', { user: chief, body: NEW }),
+			request: (s) => api('PUT', '/api/admin/smtp', asChief(s, NEW)),
+			// The current password is counted on the session as it arrives, apart
+			// from the transaction, and the count cleared for the right one (card 2701).
+			apart: ['sessions.wrong_password_count'],
 			afterSuccess: (_s, res: ApiResult) => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({ success: true });
@@ -733,7 +748,10 @@ describe('PUT /api/admin/smtp', () => {
 		// sender's name and address move nothing (its review). The App URL's: the
 		// address it leaves, saved before anyone was recorded, as nobody's; the
 		// saver's other App URL rows dropped; the saver's row (the third review).
+		// Before them, the current password counted and the count cleared (card 2701).
 		expect(shape(run.writes)).toEqual([
+			'update sessions set',
+			'update sessions set',
 			'update settings set',
 			'update settings set',
 			'update settings set',
@@ -753,7 +771,7 @@ describe('PUT /api/admin/smtp', () => {
 		const s = withMail();
 		const { appUrl: _appUrl, ...mailOnly } = NEW;
 
-		const res = await api('PUT', '/api/admin/smtp', { user: s.chief, body: { ...mailOnly, pass: 'a-new-secret' } });
+		const res = await api('PUT', '/api/admin/smtp', asChief(s, { ...mailOnly, pass: 'a-new-secret' }));
 
 		expect(res.status).toBe(200);
 		expect(stored()).toMatchObject({
@@ -773,6 +791,6 @@ describe('PUT /api/admin/smtp', () => {
 		// them 401 first.
 		await expectRefused(() => api('PUT', '/api/admin/smtp', { user: s.owner, body: NEW }), 403);
 		await expectRefused(() => api('PUT', '/api/admin/smtp', { body: NEW }), 403);
-		expect((await api('PUT', '/api/admin/smtp', { user: s.admin, body: NEW })).status).toBe(200);
+		expect((await api('PUT', '/api/admin/smtp', stepUp(s.admin, NEW))).status).toBe(200);
 	});
 });

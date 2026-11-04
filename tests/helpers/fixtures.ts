@@ -56,7 +56,8 @@ import {
 	type Team,
 	type WorkDependency
 } from '$lib/server/db/schema';
-import { createSession, generateApiKey, type SessionUser } from '$lib/server/auth';
+import { SESSION_COOKIE_NAME, createSession, forgetChecksInFlight, generateApiKey, type SessionUser } from '$lib/server/auth';
+import { CONFIRMATION_HEADER, STEP_UP_FIELD, forgetImportConfirmations, issueImportConfirmation } from '$lib/server/step-up';
 import { appendEvent, SYSTEM_ACTOR } from '$lib/server/decision-record';
 import { resetMailStatus } from '$lib/server/email';
 import { forgetConnects } from '$lib/server/gdrive-connect';
@@ -125,9 +126,27 @@ export function resetDb(): void {
 	forgetDeliveries();
 	// And the Google Drive Connects under way, which a restart ends (card 2251).
 	forgetConnects();
+	// And the import confirmations not yet taken, and the password checks
+	// under way, which a restart ends too (card 2701).
+	forgetImportConfirmations();
+	forgetChecksInFlight();
 }
 
 export type Role = 'user' | 'admin' | 'superadmin';
+
+/**
+ * Every fixture user's password (card 2701, decision 14): the actions that
+ * ask for it again are checked against a real hash, so that a test of one
+ * proves the password, and a wrong one is refused.
+ */
+export const FIXTURE_PASSWORD = 'the fixture password';
+
+/**
+ * `FIXTURE_PASSWORD`, hashed at bcrypt's lowest cost, written out so that no
+ * test pays for hashing it: a check takes about a millisecond, where the
+ * application's cost takes about a quarter of a second.
+ */
+export const FIXTURE_PASSWORD_HASH = '$2b$04$CoE84DzftN3VpDu24jdcXOhbB.z0eq1mRNo34GFDHvQlfr18dC7bu';
 
 /** A user row, returned in the shape `locals.user` carries. */
 export function makeUser(opts: { role?: Role; username?: string } = {}): SessionUser {
@@ -138,8 +157,7 @@ export function makeUser(opts: { role?: Role; username?: string } = {}): Session
 		.values({
 			username,
 			email: `${username}@example.test`,
-			// Never verified in these tests; a real bcrypt hash costs ~250ms each.
-			passwordHash: 'not-a-real-hash',
+			passwordHash: FIXTURE_PASSWORD_HASH,
 			role: opts.role ?? 'user'
 		})
 		.returning()
@@ -178,6 +196,40 @@ export function makeApiKey(user: SessionUser, name?: string): string {
  */
 export function makeSession(user: SessionUser): string {
 	return createSession(user.id);
+}
+
+/**
+ * The `api()` options of a request that asks for the current password again
+ * (card 2701, `STEP_UP_ACTIONS`): `user` calling, `body` with
+ * `currentPassword` added, and the cookie of a session of that user, made for
+ * it, which the wrong passwords are counted on. `password` is the fixture's
+ * unless a test sends another, a wrong one through the same helper.
+ */
+export function stepUp(
+	user: SessionUser,
+	body: Record<string, unknown> = {},
+	password: string = FIXTURE_PASSWORD
+): { user: SessionUser; body: Record<string, unknown>; headers: Record<string, string> } {
+	return {
+		user,
+		body: { ...body, [STEP_UP_FIELD]: password },
+		headers: { cookie: `${SESSION_COOKIE_NAME}=${makeSession(user)}` }
+	};
+}
+
+/**
+ * The headers of an import confirmed as `POST /api/admin/import/confirm`
+ * confirms one (card 2701, decision 8): the session cookie, of `token` or of
+ * a session made for it, and the confirmation, issued for that session and
+ * the user's password hash as it is now with the issuer the route uses.
+ */
+export function importConfirmation(user: SessionUser, token?: string): Record<string, string> {
+	const session = token ?? makeSession(user);
+	const hash = db.select({ passwordHash: users.passwordHash }).from(users).where(eq(users.id, user.id)).get()!.passwordHash;
+	return {
+		cookie: `${SESSION_COOKIE_NAME}=${session}`,
+		[CONFIRMATION_HEADER]: issueImportConfirmation(session, user.id, hash)
+	};
 }
 
 export type BoardFixture = {

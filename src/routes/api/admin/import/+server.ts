@@ -28,6 +28,14 @@
  * was. A restore committed with foreign keys left off says the same, and the
  * request links it replaced, as one that succeeded does (O8).
  *
+ * With a confirmation of the superadmin's current password (card 2701): the
+ * page sends `{ currentPassword }` to `/api/admin/import/confirm` first, and
+ * the confirmation it is answered in this request's `X-DumpFire-Confirmation`
+ * header. It is taken after the two refusals above and before the upload is
+ * read, good once, for this session, for 60 seconds; once the upload is in it
+ * must still be the superadmin's as they are now, with the password checked
+ * still theirs (step-up.ts).
+ *
  * The superadmin's alone. A backup that has users and no superadmin among
  * them is refused before anything is written, and a restore whose rows would
  * leave users and no superadmin, because the superadmin's row could not be
@@ -54,7 +62,7 @@
  * to enter again.
  */
 
-import { isHttpError, json } from '@sveltejs/kit';
+import { error, isHttpError, json } from '@sveltejs/kit';
 import { SESSION_COOKIE_NAME } from '$lib/server/auth';
 import { sqlite } from '$lib/server/db';
 import { convertedList, totalConverted } from '$lib/server/db/timestamps';
@@ -83,6 +91,12 @@ import { KNOWN_BROWSER_SECRET_KEY, resetKnownBrowserSecretCache } from '$lib/ser
 import { requireSuperadmin } from '$lib/server/route-guards';
 import { reportBoardLoops } from '$lib/server/startup-checks';
 import { anyRemoved, removeSettingsOfFormerAdministrators, type SettingsRemoved } from '$lib/server/setting-setters';
+import {
+	CONFIRMATION_HEADER,
+	CONFIRMATION_REFUSED,
+	requirePasswordUnchanged,
+	takeImportConfirmation
+} from '$lib/server/step-up';
 import { stillCallerNow } from '$lib/server/write-as';
 import {
 	failedCheckSentence,
@@ -227,6 +241,14 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 		return json({ message: NOT_A_DB_BACKUP }, { status: 400 });
 	}
 
+	// The superadmin's password, confirmed first at /api/admin/import/confirm
+	// (card 2701, decision 8): the upload is the body, and cannot carry it. The
+	// confirmation is taken here, from its header and the session cookie, and
+	// never from the request itself, before any of the upload is read. Missing,
+	// unknown, used, expired or another session's, it is refused 403 and
+	// nothing is read.
+	const confirmed = takeImportConfirmation(request.headers.get(CONFIRMATION_HEADER), cookies.get(SESSION_COOKIE_NAME));
+
 	try {
 		const buffer = Buffer.from(await request.arrayBuffer());
 		// Asked again once the upload is in, before anything is written (card
@@ -236,7 +258,12 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 		// transaction, and after it the database to ask is the backup's, not the
 		// one the caller was let in by. Nothing is awaited from here to the
 		// restore.
-		requireSuperadmin(stillCallerNow(locals));
+		const caller = requireSuperadmin(stillCallerNow(locals));
+		// The confirmation holds only for the account it was issued to, as that
+		// account is now, and only while its password is the one checked: one
+		// changed while the upload arrived is no proof (card 2701, D2 and D9).
+		if (caller.id !== confirmed.userId) error(403, { message: CONFIRMATION_REFUSED, stepUp: 'confirmation' });
+		requirePasswordUnchanged(confirmed.userId, confirmed.hash, 'confirmation');
 
 		// Validate it's a SQLite file (magic header: "SQLite format 3\0")
 		const header = buffer.slice(0, 16).toString('ascii');

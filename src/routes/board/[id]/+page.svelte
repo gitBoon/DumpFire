@@ -63,6 +63,8 @@
 	import { copyColumns, insertColumn, moveCards, patchCard, removeColumn, reorderColumns, undoDrag, withCurrentCards } from '$lib/board/board-patches';
 	import { BULK_HOLD_MS, type Release } from '$lib/board/refresh-schedule';
 	import type { BoardContentsData } from '$lib/board/contents-answer';
+	// A delete that asks for the caller's own password, watched for its refusal of it (card 2701).
+	import { refusalWatch } from '$lib/step-up-words';
 	import { NARROW_WIDTH, OPTION_AGING_DAYS, openingView, optionsAging, readBoardView, readOptionsOpen, resolveListColumn, scrollPastFoldedStrip, viewFromUrl, withViewParams, writeBoardView, writeOptionsOpen, type BoardViewChoice } from '$lib/board/board-view';
 
 	// Components
@@ -884,16 +886,24 @@
 			toasts.add(refused, 'error');
 			return;
 		}
+		// A column holding a card asks for the caller's own password (card 2701,
+		// decision 18), and the server decides it: one holding a card this page
+		// shows asks at once; one whose cards are all archived, which the page
+		// does not hold, is sent without, and the server's 400 asking for it
+		// shows the field in the same dialog, to send again.
+		const holds = (boardState.columns.find((c) => c.id === colId)?.cards.length ?? 0) > 0;
 		showConfirm(
 			'Delete Column',
-			api.columnDeleteWarning(colTitle),
+			api.columnDeleteWarning(colTitle, holds),
 			'Delete Column',
-			async () => {
+			async (password: string) => {
 				const started = toasts.navigation();
 				const release = boardState.hold();
 				try {
-					const failure = await api.deleteFailure(() => boardActions.deleteColumn(colId, data.board.id), 'column');
-					confirmState.show = false;
+					const asked = refusalWatch();
+					const failure = await api.deleteFailure(() => asked.watch(boardActions.deleteColumn(colId, data.board.id, password)), 'column');
+					const refusal = asked.refusal();
+					if (refusal !== null) return refusal;
 					if (failure) {
 						toasts.add(failure, 'error', started);
 						return;
@@ -903,7 +913,9 @@
 				} finally {
 					release();
 				}
-			}
+			},
+			true,
+			holds ? 'always' : 'when-told'
 		);
 	}
 
@@ -949,14 +961,37 @@
 
 	// ─── Confirm Modal ───────────────────────────────────────────────────────
 
+	/**
+	 * Whether the confirm asks for the caller's own password (card 2701):
+	 * `never`; `always`, for a delete that asks for it (a board or sub-board,
+	 * a column holding a card this page shows); or `when-told`, for a column
+	 * whose cards may all be archived, which the page does not hold, so the
+	 * server says whether it asks (decision 18). For the two that send it, the
+	 * dialog stays open while the delete is sent and closes once it gives back
+	 * no refusal of the password.
+	 */
+	type Asks = 'never' | 'always' | 'when-told';
+
 	let confirmState = $state<{
 		show: boolean; title: string; message: string;
-		confirmText: string; onConfirm: () => void; danger: boolean;
-	}>({ show: false, title: '', message: '', confirmText: '', onConfirm: () => {}, danger: true });
+		confirmText: string; onConfirm: (password: string) => unknown; danger: boolean; asks: Asks;
+	}>({ show: false, title: '', message: '', confirmText: '', onConfirm: () => {}, danger: true, asks: 'never' });
 
 	/** `danger` false for a question whose yes deletes nothing (the Options conversion). */
-	function showConfirm(title: string, message: string, confirmText: string, onConfirm: () => void, danger = true) {
-		confirmState = { show: true, title, message, confirmText, onConfirm, danger };
+	function showConfirm(title: string, message: string, confirmText: string, onConfirm: (password: string) => unknown, danger = true, asks: Asks = 'never') {
+		confirmState = { show: true, title, message, confirmText, onConfirm, danger, asks };
+	}
+
+	/** Confirm pressed: as `asks` says, closed first, or once the delete gives back no refusal of the password. */
+	async function confirmed(password: string): Promise<string | void> {
+		if (confirmState.asks === 'never') {
+			confirmState.show = false;
+			confirmState.onConfirm(password);
+			return;
+		}
+		const refusal = await confirmState.onConfirm(password);
+		if (typeof refusal === 'string') return refusal;
+		confirmState.show = false;
 	}
 
 	/**
@@ -1123,15 +1158,19 @@
 			'Delete Sub-board',
 			api.boardDeleteWarning(sbName),
 			'Delete',
-			async () => {
+			async (password: string) => {
 				const started = toasts.navigation();
 				const release = boardState.hold();
+				const asked = refusalWatch();
 				let failure: string | null;
 				try {
-					failure = await api.deleteFailure(() => cardActions.deleteSubBoard(boardId), 'sub-board');
+					failure = await api.deleteFailure(() => asked.watch(cardActions.deleteSubBoard(boardId, password)), 'sub-board');
 				} finally {
 					release();
 				}
+				// The password refused (card 2701): said in the dialog, which stays open.
+				const refusal = asked.refusal();
+				if (refusal !== null) return refusal;
 				if (failure) {
 					toasts.add(failure, 'error', started);
 					return;
@@ -1140,7 +1179,9 @@
 				// the card's window shows the card as this read draws it.
 				await boardState.refreshNow();
 				toasts.add('Sub-board deleted');
-			}
+			},
+			true,
+			'always'
 		);
 	}
 
@@ -1151,12 +1192,16 @@
 	 * (slice B3), which closes itself and then calls this.
 	 */
 	function confirmDeleteThisSubBoard() {
-		showConfirm('Delete Sub-board', api.boardDeleteWarning(boardName), 'Delete', async () => {
+		showConfirm('Delete Sub-board', api.boardDeleteWarning(boardName), 'Delete', async (password: string) => {
 			const parentHref = boardState.breadcrumbs[boardState.breadcrumbs.length - 1]?.href || '/';
 			const started = toasts.navigation();
 			const release = boardState.hold();
 			try {
-				const failure = await api.deleteFailure(() => api.deleteBoardApi(data.board.id), 'sub-board');
+				const asked = refusalWatch();
+				const failure = await api.deleteFailure(() => asked.watch(api.deleteBoardApi(data.board.id, password)), 'sub-board');
+				// The password refused (card 2701): said in the dialog, which stays open.
+				const refusal = asked.refusal();
+				if (refusal !== null) return refusal;
 				if (failure) {
 					toasts.add(failure, 'error', started);
 					return;
@@ -1165,7 +1210,7 @@
 			} finally {
 				release();
 			}
-		});
+		}, true, 'always');
 	}
 
 	// ─── Column Sort ─────────────────────────────────────────────────────────
@@ -2177,7 +2222,8 @@
 		message={confirmState.message}
 		confirmText={confirmState.confirmText}
 		confirmDanger={confirmState.danger}
-		onConfirm={() => { confirmState.show = false; confirmState.onConfirm(); }}
+		askPassword={confirmState.asks === 'always'}
+		onConfirm={confirmed}
 		onCancel={() => (confirmState.show = false)}
 	/>
 {/if}

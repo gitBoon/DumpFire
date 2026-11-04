@@ -1,0 +1,46 @@
+-- How many wrong current passwords each session has sent (card 2701, 2026-11-04).
+--
+-- sessions.wrong_password_count counts the current passwords a session has
+-- been asked for and got wrong: on the Account page's email form, password
+-- form and Generate Key, and before every destructive, privilege-changing or
+-- exfiltrating admin action, which now ask for the password again
+-- (src/lib/server/step-up.ts). Each attempt is counted as it arrives, before
+-- its password is checked, and only a right password sets the count back to
+-- 0. At three the session is ended, so a stolen session gets three guesses
+-- and no more (src/lib/server/auth.ts, checkCurrentPassword).
+--
+-- The count used to be kept in memory, ten in 15 minutes for one session, so
+-- a restart cleared it and the window started again: about 960 guesses a day
+-- from one copied cookie, and the password it found passed every check. On
+-- the session's own row it lasts as long as the session, a restart included,
+-- and has no window. It is the session's and not the account's: kept on the
+-- account, one stolen session could keep every session of the account
+-- refused, the owner's included.
+--
+-- sessions is not one of the tables the runner rebuilds from the model
+-- (RECONCILED_TABLES in src/lib/server/db/migrate.ts), so this file alone
+-- changes it. One statement: a second would be split from it at a
+-- statement-breakpoint, and there is nothing else to do.
+--
+-- Changes no value a row held: ADD COLUMN with a constant default gives every
+-- existing session the new column at 0, which is what a session that has
+-- sent no wrong password has. So nothing is declared to the rehearsal in
+-- tests/rehearsal/one-offs.ts.
+--
+-- What people see: nothing, until they get a current password wrong three
+-- times in one session, which now signs that session out.
+--
+-- Runs once. The runner records this file by name and never runs it again,
+-- and it would not survive a second run: "duplicate column" is tolerated only
+-- in a fixed list of older files, and this is not one of them. A backup made
+-- before this file is restored as any other: no backup holds a session, and a
+-- restore brings none in, so the column changes nothing either way.
+--
+-- Going back to an older image keeps the column: the older build runs no
+-- migration that drops it, its model check reports it at every start as a
+-- difference it does not act on, and it neither reads nor writes it, so the
+-- older build counts wrong passwords in memory as it did. Going forward again,
+-- 0062 is already recorded and is not run, and each session's count is where
+-- it was left.
+
+ALTER TABLE `sessions` ADD COLUMN `wrong_password_count` integer DEFAULT 0 NOT NULL;

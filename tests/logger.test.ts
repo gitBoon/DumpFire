@@ -21,7 +21,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sqlite } from '$lib/server/db';
 import { createLogger, getRecentLogs, printable, subscribeToLogs, type LogEntry } from '$lib/server/logger';
 import { api } from './helpers/api';
-import { makeBoard, makeUser, resetDb } from './helpers/fixtures';
+import { makeBoard, makeUser, resetDb, stepUp } from './helpers/fixtures';
 
 beforeEach(resetDb);
 afterEach(() => {
@@ -172,7 +172,7 @@ describe('a stored name in a line written by a route', () => {
 		vi.spyOn(console, 'log').mockImplementation((line: string) => {
 			printed.push(line);
 		});
-		const res = await api('DELETE', `/api/boards/${doomed.board.id}`, { user: owner });
+		const res = await api('DELETE', `/api/boards/${doomed.board.id}`, stepUp(owner));
 
 		expect(res.status).toBe(200);
 		const said = printed.filter((line) => line.includes('[DELETE]'));

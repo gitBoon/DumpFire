@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.74
+version: 1.76
 status: As-Built
 date: 2026-11-04
 tags:
@@ -44,7 +44,10 @@ tags:
   - csrf
   - same-origin
   - sec-fetch-site
-description: "Deep-dive into DumpFire's authentication system, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served"
+  - step-up
+  - re-authentication
+  - current-password
+description: "Deep-dive into DumpFire's authentication system, the eighteen destructive admin actions that ask for the current password again (step-up), the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served"
 ---
 
 # Authentication & Security
@@ -518,11 +521,11 @@ sequenceDiagram
   the hash, and `POST /api/admin/reset` before it ends every session, so that its failure line
   can name who reset. What they look at in between stays outside a transaction, as before.
 - **The current-password routes** write inside
-  `whilePasswordHolds(…, () => writeAs(locals, (caller) => …), wrong)`: the credential check
-  and the write commit or roll back with the password check (a nested transaction is a
-  savepoint). `whilePasswordHolds` may run its transaction twice, its one retry when the
-  stored hash changed between the check and the write; the first run returns before it calls
-  the write, so the `writeAs` runs once a request. The password change asks twice, both before
+  `whilePasswordHolds(userId, hash, () => writeAs(locals, (caller) => …))`: the credential
+  check and the write commit or roll back with the password check (a nested transaction is a
+  savepoint). `whilePasswordHolds` runs its transaction once: if the stored hash changed
+  between the check and the write it refuses `409` before it calls the write, comparing
+  nothing again (card 2701's code review, S2), so the `writeAs` runs at most once a request. The password change asks twice, both before
   it rotates its own session; nothing asks after the rotation, which would meet the rotated
   session and be refused.
 - **Effects stay after the write.** `emit`, `logActivity` and the notify functions may be
@@ -684,6 +687,227 @@ is, so it is held twice:
   the commit needs, never the account. `CALLER_LET_OUT_IN`, the handlers allowed to with their
   reasons, is empty.
 
+### Step-up Before Destructive Actions (Card 2701)
+
+Card 2700 stopped a forged request from another site reaching DumpFire's writes. Card 2701
+(2026-11-04) asks a real session to prove itself again before the writes that cannot be taken
+back: whoever holds a signed-in browser (an unlocked machine, a copied cookie) or runs script in
+a DumpFire page could otherwise do each of them with the session alone. The rule: an action asks
+for the caller's **current password**, every time, when it destroys data in bulk or for good,
+makes, removes or changes an account's credentials, role or address, or sends the database, or
+the mail invites and resets go through, somewhere the caller chooses. The list is
+`STEP_UP_ACTIONS` in `src/lib/server/step-up.ts`, keyed `METHOD /route/id`, each with its
+reason, and pinned both ways against the handlers (`tests/step-up.test.ts`, cases 1 and 2).
+
+| Action | Who | Why it asks |
+|--------|-----|-------------|
+| `POST /api/admin/reset` | superadmin | Empties every table but the log and the backup history |
+| `POST /api/admin/import/confirm`, standing for `POST /api/admin/import` | superadmin | Replaces every row and every account with the backup's |
+| `POST /api/admin/export` (was `GET`) | superadmin | Hands out every account's password hash and email address |
+| `POST /api/admin/purge-archived` | admin | Every archived card on every board, for good |
+| `POST /api/admin/boards/[id]/clear-cards`, `…/clear-categories` | admin, with edit on the board | Every card, or every category, of a board |
+| `POST /api/admin/reset-xp` | admin | Everyone's XP to 0 |
+| `POST /api/users` | admin | Makes an account: a credential that outlives the session |
+| `PUT /api/users/[id]`, **with `role` or `email`** | admin | An account's privileges, or the address its invites and resets go to |
+| `DELETE /api/users/[id]`, `PUT /api/users/[id]/password`, `POST /api/users/[id]/invite` | admin | Removes an account, sets its password, or a reset by another way |
+| `DELETE /api/boards/[id]` | the board's owner, or admin | A board and every sub-board under it, for good: boards have no archive |
+| `DELETE /api/columns/[id]`, **with a card in it, archived ones included** | editor of the board | Every card in the column, with their sub-boards and files |
+| `PUT /api/admin/backup`, **with `destinations`** | admin | Where every later backup is sent |
+| `POST /api/admin/backup` (Run Now) | admin | The whole database to every destination, now |
+| `POST /api/admin/backup/gdrive/auth` (Connect) | admin | Binds a destination to a Google account of the caller's choosing |
+| `PUT /api/admin/smtp` | admin | The mail server invites and resets go through, and the App URL their links point at |
+
+The three conditional ones test their field with `Object.hasOwn`, as the body readers do
+(`request-body.ts`): a user change of `username` or `emoji` alone, a backup save of the
+schedule, retention or failure mail alone, and an empty column's delete ask nothing. Left out,
+each with its reason in the plan: Vacuum, a destination's Test, the mail's Send Test and the GET
+that starts a Connect (no data changed or sent), webhook creation (card 2702), team and sharing
+changes, single deletes, archive and restore, key revoke and webhook delete (they reduce access).
+**API v1 is unchanged**: a key has no password to step up with, and minting one already asks
+for it, so a stolen session cannot reach v1; `DELETE /api/v1/boards/{id}` and
+`DELETE /api/v1/columns/{id}` with a key ask nothing, pinned by case 24, and key scopes are card
+2703.
+
+**The order, per route** (decisions 3 and 4). The quick role refusal on `locals.user` and the
+path id; `readBody` (a body is now required, so a listed request with none is `400` from
+`guardBody`); the fields read with no row; then `confirmStepUp(locals, cookies, body, action,
+guard)`:
+
+1. `guard` in a `writeAs` that writes nothing: the session still open, the role as it is now,
+   and **every refusal the write would make that needs no password** (ownership, the
+   managed-account rules, the fields read against the row, uniqueness, the mail checks), so
+   that none of them costs a check or a guess;
+2. `currentPassword`, text of 1 to 1,024 characters, or `400` "Enter your password to confirm
+   this. Nothing was changed." (`STEP_UP_MISSING`), nothing counted. Not `password`, which two
+   listed routes use for the new password;
+3. the account's hash, a bcrypt hash, or `403` "This account has no password to confirm with,
+   so this cannot be done from it. Nothing was changed." with a `WARN` line, nothing counted
+   (none exists today: every account has one);
+4. `checkCurrentPassword`, one at a time for the session, each compare counted on the session's
+   row, the third wrong one ending the session ([Guessing a Current
+   Password](#guessing-a-current-password)): `403` "Password is incorrect. Nothing was
+   changed.", `403` signed out, or `429` (in flight or busy, not counted);
+5. an `INFO` line, "Password confirmed by *name* (ID: *n*) for *action*".
+
+**Every refusal carries its code** (card 2701's code review, F3). Each refusal of the password
+by `confirmStepUp`, `checkCurrentPassword`, `refuseWrongPassword`, `whilePasswordHolds`,
+`requirePasswordUnchanged` and the import's confirmation has `stepUp` in its body beside
+`message` (`App.Error.stepUp` in `src/app.d.ts`): `missing`, `wrong`, `no-password`,
+`in-flight`, `busy`, `signed-out`, `confirmation` or `changed`. A page knows a refusal of the
+password by that code alone (`stepUpRefusal` in `src/lib/step-up-words.ts`); the message is for
+display. `signed-out` is taken by the sign-out watch as a `401` (`src/lib/signed-out.ts`, F5):
+the page goes to sign in, and the dialog leaves no password field to type in.
+
+The write then runs in `whilePasswordHolds(userId, hash, write)`, so it commits only while the
+stored hash is the one checked, with the caller decided again inside; a hash that moved is `409`
+`{ message: PASSWORD_CHANGED_MEANWHILE, stepUp: 'changed' }`, and the password is never compared
+a second time (S2). The three that cannot run in one transaction (the import's restore, the
+export's `VACUUM INTO`, Run Now's awaited upload) ask `stillCallerNow` and then
+`requirePasswordUnchanged(userId, hash, 'changed' | 'confirmation')`, synchronous, with nothing
+awaited before the effect starts: `403` `PASSWORD_CHANGED_MEANWHILE`, or for the import
+`CONFIRMATION_REFUSED`, if the hash moved.
+The services (`deleteBoardFor`, `deleteColumnFor`, `purgeArchivedCards`, …) take `caller` as
+before and are never handed the password. Drive Connect checks the password before it takes
+the Connect's state or asks Google, so a wrong one leaves the Connect usable and sends no code.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor A as Administrator's page
+    participant G as Gate (hooks.server.ts)
+    participant R as Listed route
+    participant S as confirmStepUp (step-up.ts)
+    participant P as checkCurrentPassword (auth.ts)
+    participant W as Worker thread (bcrypt)
+    participant D as SQLite
+
+    A->>G: POST / PUT / DELETE, JSON { …fields, currentPassword }
+    G->>G: session, same-origin JSON (card 2700), 512 KB
+    G->>R: handed on, locals.user
+    R->>R: quick role refusal, path id, readBody, fields with no row (400s)
+    R->>S: locals, cookies, body, action, full guard
+    S->>D: writeAs(guard), read only: role now, ownership, row fields (403 / 404 / 409 / 400)
+    S->>S: currentPassword is text, else 400, nothing counted
+    S->>D: the account's hash: a bcrypt hash, else 403, nothing counted
+    S->>P: session, user, password, hash, action
+    P->>D: the session's row (gone: signed out)
+    alt count already 3
+        P->>D: deleteSession (WARN)
+        P-->>A: 403 signedOut, cookie cleared, no compare
+    else another check of this session in flight
+        P-->>A: 429 in-flight, not counted, no compare
+    else the account's five first-lane places taken
+        P-->>A: 429 busy, not counted, no compare
+    end
+    P->>D: wrong_password_count + 1 (same turn, nothing awaited)
+    P->>W: compare, in the first lane
+    W-->>P: matches?
+    P->>D: the session's row still there?
+    alt gone, right or wrong, or wrong with the count at 3
+        P-->>A: 403 signedOut, cookie cleared
+    else wrong
+        P-->>A: 403 Password is incorrect. Nothing was changed. (WARN)
+    else right
+        P->>D: wrong_password_count = 0
+        S->>D: INFO Password confirmed by … for …
+        R->>D: whilePasswordHolds: hash unchanged (else 409 changed, no compare)? then writeAs(guard again, the write)
+        R-->>A: the route's own success
+    end
+```
+
+**The import confirms first** (decision 8; the page's order as its code review's F1 ruled it).
+The page opens the file picker first and checks the file it is given (a `.db` backup that can
+be read); only then does its dialog open, naming the file and asking for the password, and as
+soon as the confirm answers, the upload is sent. Nothing is uploaded before the password is
+accepted, and the 60 seconds never have to cover the picker. The import's body is the upload, so the password
+cannot be in it, and it is proved before a byte of the file is read.
+`POST /api/admin/import/confirm` takes `{ currentPassword }`, runs `confirmStepUp`, asks again
+that the caller is the superadmin whose password was checked, and answers `200`
+`{ confirmation, expiresInSeconds: 60 }` with `Cache-Control: no-store`. The confirmation is 32
+random bytes, base64url; the server keeps only its SHA-256, beside the SHA-256 of the session's
+token, the user id, the hash the password was checked against and when it ends, in memory. One
+per session (a new one replaces the last), swept of the expired at each issue and held to
+1,000. The import sends it in `X-DumpFire-Confirmation` (hyphens: a proxy that drops
+underscored headers keeps it). After its two `400`s (`outside`, the media type) and before the
+upload is read, `takeImportConfirmation(header, session)` removes it and matches it on the
+session alone; it is handed the header's text and the cookie, never the request, so it reads no
+body. Missing, unknown, used, expired or another session's is `403` "Confirm the import with
+your password again: the confirmation was not found, was used or has expired. Nothing was
+changed." (`CONFIRMATION_REFUSED`). Once the upload is in, the caller is asked again
+(`stillCallerNow`, still the superadmin), the confirmation's user must be that caller, and
+`requirePasswordUnchanged` must hold, each else the same `403`, with nothing awaited before the
+restore. It is not a window: one request, one action, one session, 60 seconds.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor S as Superadmin's page
+    participant C as POST /api/admin/import/confirm
+    participant M as Confirmations (memory)
+    participant I as POST /api/admin/import
+    participant D as SQLite
+
+    S->>C: { currentPassword }
+    C->>C: confirmStepUp, then the caller asked again
+    C->>M: sha256(confirmation): session's digest, user, hash, ends in 60 s
+    C-->>S: 200 { confirmation, expiresInSeconds: 60 }, no-store
+    S->>I: the file, X-DumpFire-Confirmation
+    I->>I: superadmin? outside? media type? (400s first)
+    I->>M: takeImportConfirmation(header, session): removed, this session's, not expired
+    alt missing, used, expired, another session's
+        I-->>S: 403 CONFIRMATION_REFUSED, nothing read
+    end
+    I->>I: the upload read
+    I->>D: stillCallerNow: still the superadmin, and the confirmation's user
+    I->>D: the stored hash still the one checked? else 403
+    I->>D: restoreFromBackup (its own transaction)
+    I-->>S: 200, everybody signed out
+```
+
+**The export is a `POST`** (decision 17). The page has always fetched the file and saved the
+blob, never navigated to it, so its request can carry `{ currentPassword }`, and one request
+needs no confirmation. `GET` is gone (`405`); the answer is `Cache-Control: no-store`; the copy
+is held by `requirePasswordUnchanged(…, PASSWORD_CHANGED_MEANWHILE)`, `403`, since `VACUUM INTO`
+cannot run in a transaction.
+
+**The column delete decides by what the column holds** (decision 18). `columnDeleteGuard` in
+`columns.ts`, read only and in its `READS`, makes every refusal of the delete (the column, the
+edit right, the Options column's `409`, an ideas board's live cards' `409`) and counts the
+cards held, archived ones included; `deleteColumnFor` calls it first, so the rule is one. With a
+card held the route asks; with none it deletes as before, and the write refuses `400`
+`STEP_UP_MISSING` if a card arrived in between, so a race deletes no card without the password.
+
+**On the pages** (decision 13). `ConfirmModal` has an `askPassword` field ("Your password",
+`type="password"`, `autocomplete="current-password"`, the focus in it, Confirm off until
+something is typed, Enter confirms) and an awaited `onConfirm(password)`: both buttons are off
+while it runs, Confirm reading "Working…" with `aria-busy="true"`, and text it gives back is
+the server's refusal, which the dialog shows in an alert, clearing the field and putting the
+focus in it; an `onConfirm` that is rejected (no answer) is said as "No answer from the server.
+Try again." the same way. A refusal of the password is known by its code, `stepUp` (card 2701's
+code review, F3), read by `stepUpRefusal` in `src/lib/step-up-words.ts`, never by its words; any
+other refusal is said as the page said it before, and the dialog closes. A `400` `missing` to a
+dialog that showed no field (a column of archived cards alone) shows it. The admin page's
+confirm and the dashboard's board delete closed before the request; each now closes only once
+the action gives back no refusal. **One field** (F7): `src/lib/components/CurrentPasswordField.svelte`
+is the field in `ConfirmModal`, the import dialog, the Drive Connect box, Add User and the
+password dialog alike: a visible label, `autocomplete="current-password"`, the refusal in a
+`role="alert"` it names with `aria-describedby` and marks with `aria-invalid`, and the focus put
+back in it as a refusal comes. A signed-out answer (`stepUp: 'signed-out'`) switches the field
+off and Confirm with it, and `$lib/signed-out.ts` takes it as a `401` and goes to sign-in (F5).
+The admin panels send a write that asks through `sentAsking` in `src/lib/admin/send.ts`, which
+is `sent` with `{ giveBackPasswordRefusal: true }` (F8): one implementation. A scan (`tests/page-failures.test.ts`, case 28) reads every
+`fetch` and `jsonRequest` of the client's files as `METHOD /route` and fails, closed, on a
+listed one with no `currentPassword` in a literal body, an import with no confirmation header, or
+a `GET` of the export.
+
+**The password in transit and at rest.** It is never logged (no body reader logs a body, and the
+lines name the user and the action), never echoed (every refusal is fixed text), held to the
+512 KB body limit and to 1,024 characters by its reader (bcrypt reads 72 bytes), and kept in a
+request's local variables alone: the confirmation map holds digests, and the in-flight set
+session ids. Strings cannot be wiped in JavaScript. On the page it is in the dialog's state
+while it is open, and cleared on Cancel, as it is sent and on a refusal; it is never put in a
+toast or in storage. Case 17 searches every log row and answer of a run for it.
+
 ## Session Management
 
 | Property | Value |
@@ -692,6 +916,7 @@ is, so it is held twice:
 | Token format | `crypto.randomUUID()` |
 | Duration | 30 days sliding window |
 | Storage | `sessions` table in SQLite |
+| Wrong current passwords | `sessions.wrong_password_count` (migration 0062, card 2701): one added for each password compared (a check refused unchecked, in flight or busy, adds none), set to 0 by a right one, and the third wrong one ends the session. See [Guessing a Current Password](#guessing-a-current-password) |
 | Flags | `httpOnly`, `sameSite: lax`, `secure` in production |
 
 ### Sliding Window
@@ -952,7 +1177,7 @@ flowchart LR
 
 | Lane | Who | Where |
 |------|-----|-------|
-| First (`known`) | A caller the server already knows | The current-password check of the email, password and key routes, and its re-check (`checkCurrentPassword`, `whilePasswordHolds`); the hash of your own change, an administrator's reset and a new user (`POST /api/users`, the placeholder of an invited one included); a sign-in from a browser remembered for the account |
+| First (`known`) | A caller the server already knows | The current-password check of the email, password and key routes and of the step-up actions (`checkCurrentPassword`; `whilePasswordHolds` no longer checks again, card 2701's code review S2); the hash of your own change, an administrator's reset and a new user (`POST /api/users`, the placeholder of an invited one included); a sign-in from a browser remembered for the account |
 | Second (`other`) | Everyone else | A sign-in from a browser not remembered, a name that is no account included; the hash of an invite's use and of set-up |
 
 - **The second lane is bounded: 150 checks waiting for each thread**, 300 with two: about
@@ -1034,17 +1259,15 @@ flowchart LR
 **The re-check of a current password, outside the transaction.** The email, password and key
 routes check the current password before their transaction, and a password changed in
 between used to be checked again inside it: a bcrypt check with the write lock held, which a
-transaction cannot make now that a check is awaited. `whilePasswordHolds(userId, password,
-checkedHash, write, wrong)` in `auth.ts` runs the route's write in one transaction only while
-the stored hash is still the one the password was checked against. If it has changed,
-nothing is written, the transaction ends, the password is checked against the new hash
-outside it (first lane, holding one of the account's five places, and not counted again:
-the same guess), and the transaction runs
-once more; the route's own `403` if it does not match. A second change in between answers
-`409` "Your password was changed while this was being saved. Nothing was changed. Try
-again." (`PASSWORD_CHANGED_MEANWHILE`). Nothing can change the hash between the comparison
-and the write: better-sqlite3 runs the whole transaction without yielding, under
-`BEGIN IMMEDIATE`.
+transaction cannot make now that a check is awaited. `whilePasswordHolds(userId, checkedHash,
+write)` in `auth.ts` runs the route's write in one transaction only while the stored hash is
+still the one the password was checked against. If it has changed, nothing is written and the
+answer is `409` "Your password was changed while this was being saved. Nothing was changed. Try
+again." (`PASSWORD_CHANGED_MEANWHILE`, with `stepUp: 'changed'`). Until card 2701's code review
+(S2, ruled 2026-11-04) it then checked the password again against the new hash, outside the
+transaction, and did not count that check: a free guess against a hash the session's count
+never saw. It compares nothing now. Nothing can change the hash between the comparison and the
+write: better-sqlite3 runs the whole transaction without yielding, under `BEGIN IMMEDIATE`.
 
 **What the people using it notice:** nothing, until a burst of sign-in attempts. Then a
 sign-in from a browser the server does not know waits its turn, about a tenth of a second
@@ -1061,64 +1284,97 @@ Covered by `tests/password-checks.test.ts` and `tests/atomic-accounts.test.ts`.
 Three routes ask a caller who is already signed in for their current password: changing
 your email (`PUT /api/account/email`), changing your password (`PUT /api/account/password`,
 which the admin page's dialog on your own row uses too) and Generate Key
-(`POST /api/account/api-keys`). The password is what whoever holds a session and not the
-password (an unlocked machine, a copied cookie) would need to move the email, set a new
-password or make a key, and each guess used to be answered at once, as often as asked.
+(`POST /api/account/api-keys`). Since card 2701 (2026-11-04) so do the eighteen actions of
+[Step-up Before Destructive Actions](#step-up-before-destructive-actions-card-2701). The
+password is what whoever holds a session and not the password (an unlocked machine, a copied
+cookie) would need, and a password found at any of them passes every one of them.
 
-They now follow sign-in's rule, counted on the **signed-in browser**: the session the
-request was sent with. Ten attempts in 15 minutes, the three routes counted together, and the
-right password clears the count. The eleventh attempt in the window is answered `429` "Too
-many wrong passwords. Try again in N minute(s)." before any password is checked, whatever it
-carries, the right one included, and nothing is written.
+**The count is on the session's row, for the session's whole life** (card 2701, decisions 5
+and 6, as its code review's S1 ruled them again on 2026-11-04: only a compare counts). Every
+check that compares a password adds one to `sessions.wrong_password_count` (migration 0062)
+just before it compares, all of these routes counted together; a check refused before any
+compare (one of the session's own in flight, or the account busy) adds none. A right password
+sets it back to 0, and nothing else does: no window, and a restart does not clear it. **The
+third wrong one ends the session.** Steps 1 to 4 below run in one turn, with nothing awaited
+between them, so no other check can come between the read, the refusals and the count. Until card 2701 the count was ten in 15 minutes, in memory: the window
+started again every 15 minutes and at every restart, about 960 guesses a day from one stolen
+cookie, answered `429` "Too many wrong passwords. Try again in N minute(s)." That answer, its
+window and its `current-password:<session>` key are gone.
 
 ```mermaid
 flowchart TD
-    Ask["PUT /api/account/email, PUT /api/account/password<br/>or POST /api/account/api-keys"] --> Text{"A password that is text?"}
-    Text -->|"no"| Bad["400, in the route's own words:<br/>nothing checked, nothing counted"]
-    Text -->|"yes"| Place{"Fewer than 5 of the account's<br/>first-lane checks in flight?"}
-    Place -->|"no"| Busy["429 The server is very busy<br/>checking passwords right now.<br/>Nothing counted, nothing checked"]
-    Place -->|"yes"| Count["Counted against this session"]
-    Count --> Over{"More than ten in 15 minutes?"}
-    Over -->|"yes"| Refused["429 Too many wrong passwords.<br/>Try again in N minute(s).<br/>One WARN line, for the first in the window"]
-    Over -->|"no"| Check{"The right password?"}
-    Check -->|"yes"| Clear["The count is cleared,<br/>and the request goes on"]
-    Check -->|"no"| Wrong["403, and one WARN line naming<br/>the route and the user"]
+    Ask["An Account route, or a step-up action"] --> Text{"Its fields, and a password that is text?<br/>(and, for a step-up, every refusal<br/>that needs no password)"}
+    Text -->|"no"| Bad["400, 403, 404 or 409 in the route's own words:<br/>nothing checked, nothing counted"]
+    Text -->|"yes"| Row{"1. The session's row:<br/>there, and its count under 3?"}
+    Row -->|"gone"| Out["Session ended, cookie cleared:<br/>403 signedOut, no compare"]
+    Row -->|"3 or more"| Out
+    Row -->|"yes"| Flight{"2. Another check of this session in flight?"}
+    Flight -->|"yes"| R429["429 STEP_UP_IN_FLIGHT, in-flight:<br/>not counted, no compare"]
+    Flight -->|"no"| Place{"3. Fewer than 5 of the account's<br/>first-lane checks in flight?"}
+    Place -->|"no"| Busy["429 The server is very busy<br/>checking passwords right now, busy:<br/>not counted, no compare"]
+    Place -->|"yes"| Count["4. sessions.wrong_password_count + 1<br/>(same turn, nothing awaited)"]
+    Count --> Check{"The right password?"}
+    Check --> Again{"The session's row still there?"}
+    Again -->|"no"| Out
+    Again -->|"yes, right"| Clear["Count set to 0,<br/>and the request goes on"]
+    Again -->|"yes, wrong, count 3"| Out
+    Again -->|"yes, wrong, count 1 or 2"| Wrong["403 in the route's own words,<br/>and one WARN line naming the route and the user"]
 ```
+
+- **Its answers.** A wrong one is `403` in the route's words: "Password is incorrect" (email
+  and Generate Key), "Current password is incorrect" (password), and "Password is incorrect.
+  Nothing was changed." on a step-up action. Once the session has been ended, by the third
+  wrong one or by anything else while the check was made (a sign-out, a password change or a
+  reset), every route answers the same `403` `{ message: "Nothing was changed. This session
+  has been signed out, after three wrong passwords or because it had ended: sign in again.",
+  signedOut: true, stepUp: "signed-out" }` with the session cookie cleared, **whether the
+  password was right or wrong**: the row is read again after the compare, so an answer given
+  after the end never tells a right guess from a wrong one. The page's sign-out watch takes it
+  as a `401` and goes to sign-in at once, and the dialog leaves no password field (card 2701's
+  code review, F5); the session's next request would be `401` at the gate anyway.
+  `refuseWrongPassword(cookies, checked, says)` in `auth.ts` gives either answer, the wrong one
+  with `stepUp: "wrong"`, so each route keeps its own words for the first two.
+- **One check in flight per session.** Five checks may be in flight for an account, so without
+  this one session could race several guesses past a count of three. A second check from a
+  session that has one under way is answered `429` "Your password is already being checked
+  for this session. Wait for that answer and try again. Nothing was changed." (`stepUp:
+  "in-flight"`) with no password compared and **nothing counted**: it compared nothing (S1).
+  With one check at a time, nothing else can add to the count between a check's own count and
+  its answer, so the third wrong one is always the one that ends the session. The set of
+  sessions with a check under way is in memory, as the requests it guards are. The pages send
+  one request per press and turn their buttons off while it is answered, so a person does not
+  meet it.
 
 - **Why the session and not the account.** Counted on the account, whoever held one session
   of it could keep every session of it refused, the owner's included, and so keep the owner
   from changing the password, which is how an owner ends the other sessions. A session is
   only made by signing in or with an invite, each of which needs the password or sets it, so
-  a count on the session slows the guesser as much. Signing in again, or another browser
-  already signed in, is not held up.
-- **Five in flight for the account.** The right password clears the session's count, so the
-  count does not bound how many checks a signed-in user keeps going at once, and they go in
-  the first lane, ahead of every sign-in. Each check holds one of the account's five places
-  in the first lane, shared with its remembered browsers' sign-ins, from before it is counted
-  to its answer; the sixth at once is answered `429` "The server is very busy checking
-  passwords right now. Wait a minute and try again." with nothing counted and nothing
-  checked. Nobody using the pages one at a time meets it. See
+  a count on the session holds the guesser as well: three guesses, then sign in again, which
+  needs the password. Another browser of the account is untouched, and sign-in's own counts,
+  by address and by account, are not touched either: a stolen session could otherwise slow
+  or lock the owner's sign-in from a browser that was never stolen.
+- **Five in flight for the account.** Each check holds one of the account's five places in
+  the first lane, shared with its remembered browsers' sign-ins, from before it is counted to
+  its answer; the sixth at once is answered `429` "The server is very busy checking
+  passwords right now. Wait a minute and try again." (`stepUp: "busy"`) with nothing checked
+  and **nothing counted**, so busy answers, however many, never end a session (S1). Nobody
+  using the pages one at a time meets it. See
   [Off the Server's Thread](#off-the-servers-thread-card-2191).
 - **One function.** `checkCurrentPassword(session, userId, password, hash, where)` in
-  `src/lib/server/auth.ts` (named `currentPasswordMatches` until card 2191) counts the
-  attempt, answers the `429`, checks the password on a worker thread in the first lane, and
-  clears the count when it matches. It is async and resolves to `{ matches }`, so a missed
-  `await` does not compile. The session comes from the session cookie the gate checked; a
-  request that reaches one of these routes without one is answered `401`. A route whose
-  password was changed in between is checked again by `whilePasswordHolds` (see
-  [Password Hashing](#password-hashing)), which does not count it again: it is the same
-  guess. Two changes in between answer `409`.
-- **A fixed window, not a sliding one.** The 15 minutes start at the session's first attempt,
-  and when they end the count starts again from nothing, however many attempts were refused
-  in them (`src/lib/server/rate-limit.ts`, sign-in's limiter too). So a guesser who times it
-  can make about 20 attempts back to back across the end of a window (nine at the end of one,
-  ten at the start of the next), and one who keeps asking makes about 40 an hour for each
-  session: ten in every window.
+  `src/lib/server/auth.ts` (named `currentPasswordMatches` until card 2191) reads the row and
+  ends the session at three, refuses a second check in flight and a sixth for the account,
+  then counts the attempt and checks the password on a worker thread in the first lane, all
+  but the check in one turn; then it reads the row again and clears the count when it matches.
+  A check that fails on its worker stays counted. It is async and resolves to `{ matches,
+  signedOut }`, so a missed `await` does not compile. The session comes from the session
+  cookie the gate checked; a request that reaches one of these routes without one is answered
+  `401`. A route whose stored hash moved in between is refused `409` by `whilePasswordHolds`
+  (see [Password Hashing](#password-hashing)), which compares nothing again (S2).
 - **The system log.** Each wrong password is a `WARN` line under `AUTH`, "Wrong current
-  password for user N on {route}", and the first refusal at the limit in each window one
-  more, "Current password not checked for user N on {route}: too many wrong ones from this
-  session". The refusals after it in the same window are not logged, so a script that goes
-  on asking does not fill the log. The session is never logged.
+  password for user N on {route}", and each session ended for them one more, "Session ended
+  after three wrong current passwords for user N on {route}", beside `deleteSession`'s own
+  `INFO` line, "Session deleted (three wrong current passwords)". The session is never
+  logged, nor the password.
 - **A password that is not text** (a number, `true`, a list) is answered `400` before
   anything is counted: "Password is required" on the email and key routes, "Current password
   is required" on the password route. It used to reach bcrypt and be answered `500`. So did
@@ -1126,9 +1382,11 @@ flowchart TD
   the password route, and `password must be text` on an administrator's reset
   (`PUT /api/users/:id/password`), which looks for the account and checks the caller before
   it reads the password (card 2117).
-- **In memory**, as sign-in's count is: a restart clears it.
+- **On the row, not in memory.** The count survives a restart; only the one-in-flight set is
+  in memory, and a restart ends the requests it guards. A backup holds no session rows and a
+  restore copies none, so neither carries a count.
 
-Covered by `tests/atomic-accounts.test.ts`.
+Covered by `tests/atomic-accounts.test.ts` and `tests/step-up.test.ts` (cases 9 to 16).
 
 ### Guessing a Password at Sign-in
 
@@ -1791,9 +2049,9 @@ flowchart TD
 - **Both routes.** `PUT /api/users/:id` (an administrator, for an ordinary user; the
   superadmin, for an administrator too, and the only one who makes an account an
   administrator) and `PUT /api/account/email` (the account's holder, with their current
-  password). The email route is now one transaction: the account read again, the password
-  checked again if it changed meanwhile, the address checked as free, written, and the
-  invites ended.
+  password). The email route is now one transaction: the account read again, refused `409`
+  if its password changed meanwhile (card 2701's code review, S2: it was checked again), the
+  address checked as free, written, and the invites ended.
 - **What is said.** `PUT /api/users/:id` answers `invitesEnded` beside the account's columns.
   When it is above 0 the admin page's toast after a role change reads "Role updated. The
   invite sent to this account earlier no longer works: send a new one with 📧." The Account
@@ -1916,7 +2174,7 @@ named them; they are every administrator's now (the next section).
 
 | Route | What an administrator could do with it |
 |-------|----------------------------------------|
-| `GET /api/admin/export` | Download every password hash and email and every webhook's address. It held every session id and unused invite token too, and until card 2169 the mail password, every backup destination's credentials and every webhook's signing secret. It carries a seal made with a key no backup holds, so that only this server fills its secrets back into it, unchanged |
+| `POST /api/admin/export` (a `GET` until card 2701, which made it ask for the superadmin's current password) | Download every password hash and email and every webhook's address. It held every session id and unused invite token too, and until card 2169 the mail password, every backup destination's credentials and every webhook's signing secret. It carries a seal made with a key no backup holds, so that only this server fills its secrets back into it, unchanged |
 | `POST /api/admin/import` | Replace every account with accounts of their own |
 | `POST /api/admin/reset` | Clear every account, and be the superadmin of the installation they then set up |
 
@@ -1926,7 +2184,8 @@ flowchart TD
     Signed -->|"no"| R401["401 Not authenticated\n(the gate has answered a script 401,\nor sent a browser to /login, before this)"]
     Signed -->|"yes"| Role{"role is superadmin?"}
     Role -->|"no: a user, or an administrator"| R403["403 This belongs to the superadmin...\nNothing is read and nothing is written"]
-    Role -->|"yes"| Does["The route does what it does"]
+    Role -->|"yes"| Password["Each asks for the current password too (card 2701):<br/>the import at its confirmation first"]
+    Password --> Does["The route does what it does"]
 ```
 
 ### The Mail and Backup Settings: Every Administrator's (Card 2395)
@@ -2811,7 +3070,7 @@ sequenceDiagram
 
 - **An invite cannot be used twice.** The second of two submissions of one link finds it used and is refused, with no password changed and no session made.
 - **Set-up cannot create two superadmins.** The second of two submissions of the set-up form finds a user, creates nothing, gets no session and is redirected to `/`.
-- **A password change is checked against the row as it is.** The transaction writes only while the stored hash is still the one the current password was checked against. If the password was changed by another request in between, nothing is written, the current password is checked again against the new hash outside the transaction (a check is awaited, on a worker thread, and a transaction cannot await), and the transaction is run once more; a second change in between answers `409` with nothing written (`whilePasswordHolds()`, see [Password Hashing](#password-hashing)). Making an API key and changing your email, which ask for the password too, are checked the same way, so a key cannot be made, nor an address moved, with a password a change has just ended. The email route also looks for the address being taken inside the transaction that writes it.
+- **A password change is checked against the row as it is.** The transaction writes only while the stored hash is still the one the current password was checked against. If the password was changed by another request in between, nothing is written and the answer is `409` (`whilePasswordHolds()`, see [Password Hashing](#password-hashing)); the current password is not checked again against the new hash, which until card 2701's code review (S2) it was, outside the transaction and uncounted. Making an API key and changing your email, which ask for the password too, are checked the same way, so a key cannot be made, nor an address moved, with a password a change has just ended. The email route also looks for the address being taken inside the transaction that writes it.
 - **Two submissions at once each hash.** The hash of an invite's or set-up's password is awaited, so the second submission passes its first look at the invite before the first commits, and each hashes (card 2191); the one transaction still lets exactly one in.
 
 Covered by `tests/atomic-accounts.test.ts`.
@@ -2862,8 +3121,8 @@ flowchart LR
 **Why a key asks for the password.** A key works until it is revoked, and the holder's own
 password change keeps it unless they ask. A key made on a session alone let whoever held
 that session for a moment (an unlocked machine, a copied cookie) keep the account after the
-password was changed. The password is checked before the transaction and checked again
-inside it if the stored hash has changed meanwhile; the ten-key limit is counted in the
+password was changed. The password is checked before the transaction, and the transaction
+refuses `409` if the stored hash has changed meanwhile; the ten-key limit is counted in the
 same transaction as the insert.
 
 | `POST /api/account/api-keys` sent | Answer, in this order |
@@ -2874,7 +3133,8 @@ same transaction as the insert.
 | An `expiresAt` that is not `null` and not a timestamp in the future | `400` `expiresAt must be a timestamp, such as 2027-01-01T09:00:00Z`, `expiresAt must be in the future`. Until card 2117 any text was stored, and `"banana"` never expired |
 | The account already has ten keys | `400` `Maximum of 10 API keys per user` |
 | The account has gone | `404` `User not found` |
-| The eleventh attempt from this browser in 15 minutes, at any of the three routes that ask for the current password, right or wrong | `429` `Too many wrong passwords. Try again in N minute(s).` See [Guessing a Current Password](#guessing-a-current-password) |
+| The third wrong current password from this browser, at any of the three routes that ask for it or a step-up action (card 2701; it was the eleventh attempt in 15 minutes, answered `429`) | `403` `{ message: "Nothing was changed. This session has been signed out, after three wrong passwords or because it had ended: sign in again.", signedOut: true, stepUp: "signed-out" }`, the session ended. See [Guessing a Current Password](#guessing-a-current-password) |
+| A second current-password check from a browser whose first is still being checked | `429` `Your password is already being checked for this session. Wait for that answer and try again. Nothing was changed.` |
 | A wrong password | `403` `Password is incorrect` |
 | All of it right | `201` with the key, shown once |
 
@@ -4771,8 +5031,11 @@ which is what Reset Everything in the admin panel leaves.
 
 | File | Purpose |
 |------|---------|
-| `src/lib/server/auth.ts` | Session CRUD, API key generation and validation; `endAccountAccess()`, what setting a password ends; `stillAuthenticated()`, the key or session asked again inside a write's transaction, which answers the account as it is now and sets `locals.user` to it (`null` for a public route with nobody signed in; `401` and an ERROR line for a handler reached with no credential recorded, outside vitest); `checkCurrentPassword()`, the count of current-password guesses for a session, and `whilePasswordHolds()`, its write only while the hash checked is still stored; `secureCookies()`, the `Secure` rule of the session cookie and the remembered browser's; `openSessionUser()`, which each open live stream asks at each heartbeat, and `sessionStillOpen()`, the same question without the account |
-| `src/lib/server/write-as.ts` | Who the caller is, asked again at the write (card 2253): `writeAs(locals, (caller) => …)`, the one transaction every write handler writes in, beginning with `stillAuthenticated()`; `stillCallerNow(locals)`, the same question in a transaction of its own, for the eight handlers whose work cannot run in one; `inWrite()`, the first statement of every service write, refused unless a `writeAs` callback is running, and `ServiceOptions`, what every service write is handed beside the caller (card 2012). See [Asked Again at the Write](#asked-again-at-the-write-card-2253) |
+| `src/lib/server/auth.ts` | Session CRUD, API key generation and validation; `endAccountAccess()`, what setting a password ends; `stillAuthenticated()`, the key or session asked again inside a write's transaction, which answers the account as it is now and sets `locals.user` to it (`null` for a public route with nobody signed in; `401` and an ERROR line for a handler reached with no credential recorded, outside vitest); `checkCurrentPassword()`, the count of current-password guesses on the session's row, one check in flight per session and the sign-out at the third (card 2701), `refuseWrongPassword()`, the route's answer to one, and `whilePasswordHolds()`, its write only while the hash checked is still stored; `secureCookies()`, the `Secure` rule of the session cookie and the remembered browser's; `openSessionUser()`, which each open live stream asks at each heartbeat, and `sessionStillOpen()`, the same question without the account |
+| `src/lib/server/step-up.ts` | The current password asked again before a destructive action (card 2701): `STEP_UP_ACTIONS`, `confirmStepUp()`, `requirePasswordUnchanged()`, and the import's confirmation, `issueImportConfirmation()` and `takeImportConfirmation()`. See [Step-up Before Destructive Actions](#step-up-before-destructive-actions-card-2701) |
+| `src/lib/step-up-words.ts` | The step-up's words and codes, which the server answers with and the pages read: `STEP_UP_FIELD`, the refusals, `PASSWORD_CHANGED_MEANWHILE`, `CONFIRMATION_HEADER`, `StepUpCode`, and `stepUpRefusal()`, `refusalWatch()` and `isStepUpSignOut()`, which tell a refusal of the password from any other by its `stepUp` code |
+| `src/lib/components/CurrentPasswordField.svelte` | The one field for the caller's own password, asked again (card 2701's code review, F7): label, `autocomplete="current-password"`, the refusal in an alert, `aria-invalid` and `aria-describedby`, the focus on a refusal, and no field to type in once the session is signed out |
+| `src/lib/server/write-as.ts` | Who the caller is, asked again at the write (card 2253): `writeAs(locals, (caller) => …)`, the one transaction every write handler writes in, beginning with `stillAuthenticated()`; `stillCallerNow(locals)`, the same question in a transaction of its own, for the nine handlers whose work cannot run in one (the export the ninth, card 2701); `inWrite()`, the first statement of every service write, refused unless a `writeAs` callback is running, and `ServiceOptions`, what every service write is handed beside the caller (card 2012). See [Asked Again at the Write](#asked-again-at-the-write-card-2253) |
 | `src/lib/server/passwords.ts` | Every bcrypt hash and check, on worker threads in two lanes (card 2191): `checkPassword()`, `makePasswordHash()`, `CheckNotMade`, `callerHasGone()`, `passwordChecks()`, `BCRYPT_ROUNDS` and `DUMMY_HASH`. The only importer of bcryptjs |
 | `src/lib/server/known-browsers.ts` | Browsers that have signed in before (card 2194): `rememberBrowser()`, `rememberedNonce()`, the key in `settings` and `resetKnownBrowserSecretCache()`, and `signInsOneAtATime()`, which reads `SIGN_IN_ONE_AT_A_TIME` |
 | `src/lib/server/invites.ts` | `issueInvite()`, the one way an invite is issued, which ends the account's earlier invites; `endUnusedInvites()`, which ends them when a password is set and when an account's email or role changes; `INVITE_LIFETIME_MS` |

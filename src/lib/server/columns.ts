@@ -49,8 +49,8 @@ import { inWrite, type ServiceOptions } from './write-as';
 import { COLUMN_ROLES, OPTIONS_TITLE, columnRole, isOptionsColumn, isOptionsTitle } from '$lib/column-role';
 import { boardKinds } from './upstream';
 
-/** The functions here that only read. None: every export but this list is a write, and starts with `inWrite()`. */
-export const READS: readonly string[] = [];
+/** The functions here that only read. Every export but this list is a write, and starts with `inWrite()`. */
+export const READS: readonly string[] = ['columnDeleteGuard'];
 
 /**
  * The 400 for a role that is not one, quoting what was sent (milestone 22,
@@ -449,10 +449,27 @@ export function updateColumn(caller: SessionUser | null, at: { columnId: number 
  * is refused too (card 2463; the S5a review's L2), every column of which is
  * upstream: deleting it would silently delete the ideas, which are archived
  * (discarded, card 2461) or moved instead. Its archived cards go with it, as
- * any column's do.
+ * any column's do. Every refusal is `columnDeleteGuard`'s, asked first.
  */
 export function deleteColumnFor(caller: SessionUser | null, at: { columnId: number }, body: null, opts: ServiceOptions): void {
 	inWrite();
+	const user = requireUser(caller);
+	const { boardId } = columnDeleteGuard(user, at);
+
+	deleteColumn(at.columnId, user, opts.source);
+	emit(boardId, 'update', { type: 'column' });
+}
+
+/**
+ * Every refusal of a column's delete, read only, and how many cards it would
+ * take with it, archived ones included (card 2701, decision 18): the column
+ * looked for and the caller checked (404, then 403), a delivery board's
+ * Options column (409), and a column of an ideas board holding live ideas
+ * (409). `deleteColumnFor` asks it first, so the rules are one; the page's
+ * route asks it before the delete, to refuse what needs no password before
+ * asking for one, and to ask for one only when the column holds a card.
+ */
+export function columnDeleteGuard(caller: SessionUser | null, at: { columnId: number }): { column: Column; boardId: number; held: number } {
 	const user = requireUser(caller);
 	const { column, boardId } = requireColumn(user, at.columnId, 'edit');
 
@@ -460,9 +477,9 @@ export function deleteColumnFor(caller: SessionUser | null, at: { columnId: numb
 	if (isOptionsColumn(column) && kind !== 'ideas') {
 		throw error(409, 'Every delivery board keeps its Options column. Fold it away with the arrow on its strip instead.');
 	}
+	const { total, archived } = cardsHeld(column.id);
 	// A column of an ideas board (the S5a review's L2), every one of which is upstream.
 	if (kind === 'ideas') {
-		const { total, archived } = cardsHeld(column.id);
 		const live = total - archived;
 		if (live > 0) {
 			throw error(
@@ -471,9 +488,7 @@ export function deleteColumnFor(caller: SessionUser | null, at: { columnId: numb
 			);
 		}
 	}
-
-	deleteColumn(at.columnId, user, opts.source);
-	emit(boardId, 'update', { type: 'column' });
+	return { column, boardId, held: total };
 }
 
 /**

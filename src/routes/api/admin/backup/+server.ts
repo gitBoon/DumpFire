@@ -25,6 +25,7 @@
  */
 
 import { error, json } from '@sveltejs/kit';
+import { whilePasswordHolds, type SessionUser } from '$lib/server/auth';
 import {
 	BACKUP_SCHEDULES,
 	getBackupConfig,
@@ -59,6 +60,7 @@ import {
 } from '$lib/server/request-body';
 import { requireAdmin } from '$lib/server/route-guards';
 import { recordDestinationSetters } from '$lib/server/setting-setters';
+import { confirmStepUp, requirePasswordUnchanged } from '$lib/server/step-up';
 import { stillCallerNow, writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
@@ -240,17 +242,24 @@ export const GET: RequestHandler = async ({ locals }) => {
  * changes, clears or removes with its destination is one WARN line after it
  * (card 2267), so a key confirmed and later put back leaves both changes on
  * record. A save that changes nothing, is refused or fails writes none.
+ *
+ * A save that carries `destinations` asks for the caller's own password
+ * again, in `currentPassword` (card 2701, step-up.ts): it can send every later
+ * backup to a destination of the caller's choosing. Every refusal above is
+ * made first, read only, so that none costs a check or a guess. A save
+ * without them (the schedule, Keep Last, the failure mail) asks for none.
  */
-export const PUT: RequestHandler = async ({ request, locals }) => {
+export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 	requireAdmin(locals.user);
 	const body = await readBody(request);
 
-	// One transaction: the settings are read and written in it, so what is
-	// kept is what is there when the change is written. It asks first whether
-	// the session is still open and whether its account is still an
-	// administrator (cards 2253 and 2395), and the lines are filed under that
-	// account.
-	writeAs(locals, (caller) => {
+	/**
+	 * The save, read only: the caller as their account is now, every field
+	 * read against the settings as they are, and every refusal, the
+	 * superadmin's included; and what would be saved. Asked before the
+	 * password, and again in the transaction that saves it.
+	 */
+	const readSave = (caller: SessionUser | null) => {
 		const user = requireAdmin(caller);
 		const existing = getBackupConfig();
 		const config: BackupConfig = { ...existing };
@@ -301,6 +310,16 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
 		const refusal = user.role === 'superadmin' ? null : superadminOnly(existing, config, changed);
 		if (refusal !== null) throw error(403, refusal);
 
+		return { user, existing, config, destinations, changed };
+	};
+
+	/**
+	 * The save, written: read again by `readSave` in the transaction that
+	 * writes it, so what is kept is what is there when the change is written.
+	 */
+	const save = (caller: SessionUser | null) => {
+		const { user, existing, config, destinations, changed } = readSave(caller);
+
 		// After the commit, not here: the logger writes a row logged inside a
 		// transaction whichever way it ends, and a save that fails would leave
 		// a line for a change it never saved (cards 2267 and 2270). The line for
@@ -331,13 +350,39 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
 			id: user.id,
 			superadmin: user.role === 'superadmin'
 		});
-	});
+	};
+
+	// No destinations: nothing of where the copies go changes, and no password
+	// is asked for. One transaction: the settings are read and written in it.
+	// It asks first whether the session is still open and whether its account
+	// is still an administrator (cards 2253 and 2395), and the lines are filed
+	// under that account.
+	if (!Object.hasOwn(body, 'destinations')) {
+		writeAs(locals, (caller) => save(caller));
+		return json({ success: true });
+	}
+
+	// Destinations: the caller's password, asked for again (card 2701), once
+	// every refusal that needs none has been made. The same transaction, run
+	// only while the caller's stored hash is the one it was checked against.
+	const { userId, hash } = await confirmStepUp(locals, cookies, body, 'PUT /api/admin/backup', (caller) =>
+		readSave(caller)
+	);
+	await whilePasswordHolds(userId, hash, () => writeAs(locals, (caller) => save(caller)));
 
 	return json({ success: true });
 };
 
-/** POST — Trigger an immediate manual backup. */
-export const POST: RequestHandler = async ({ request, locals }) => {
+/**
+ * POST — Trigger an immediate manual backup.
+ *
+ * With the caller's current password, `{ currentPassword }` (card 2701,
+ * step-up.ts): it sends the whole database to every destination now. The run
+ * starts only while the stored hash is the one the password was checked
+ * against (`requirePasswordUnchanged`, with nothing awaited between: a run
+ * cannot be held in a transaction).
+ */
+export const POST: RequestHandler = async ({ request, locals, cookies }) => {
 	requireAdmin(locals.user);
 
 	// A body that is missing, is not JSON or is not an object is a 400, and one
@@ -345,11 +390,18 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	// and ran a backup to every destination (card 2117, decision 19). The page
 	// sends `{}`, which backs up to every destination; `destination` names one.
 	const body = await readBody(request);
-	// Asked again once the body is in, with nothing awaited before the backup
-	// starts (card 2253): a session that has ended, or an account that is no
-	// longer an administrator, sends the database nowhere.
-	requireAdmin(stillCallerNow(locals));
 	const targetDestination = readText(body, 'destination', {});
+
+	// The caller's password, asked for again, after every refusal that needs
+	// none (step-up.ts).
+	const { userId, hash } = await confirmStepUp(locals, cookies, body, 'POST /api/admin/backup', requireAdmin);
+
+	// Asked again once the password is checked, with nothing awaited before the
+	// backup starts (card 2253): a session that has ended, or an account that
+	// is no longer an administrator, sends the database nowhere; nor does one
+	// whose password changed while it was being checked.
+	requireAdmin(stillCallerNow(locals));
+	requirePasswordUnchanged(userId, hash, 'changed');
 
 	// A manual run removes only older Run Now copies, never a scheduled one
 	// (card 2405): pressed Keep Last times it pushed every older copy out.

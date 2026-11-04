@@ -40,6 +40,7 @@ import { eachWriteInTurn } from './helpers/each-write';
 import { effects } from './helpers/effects';
 import { failingWrite } from './helpers/failing-write';
 import {
+	importConfirmation,
 	makeAttachment,
 	makeBoard,
 	makeCard,
@@ -495,7 +496,8 @@ describe('an import', () => {
 	const importDb = (backup: Uint8Array, admin: SessionUser) =>
 		api('POST', '/api/admin/import?outside=keep', {
 			user: admin,
-			headers: { 'content-type': 'application/octet-stream' },
+			// Their password confirmed first (card 2701).
+			headers: { 'content-type': 'application/octet-stream', ...importConfirmation(admin) },
 			body: backup
 		});
 

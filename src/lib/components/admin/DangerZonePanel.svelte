@@ -4,14 +4,17 @@
   (card 2281, slice C1b: moved from src/routes/admin/+page.svelte).
 
   Shown to every administrator, Reset Everything to the superadmin alone.
-  Each action asks first through the page's own confirm dialog. What a reset
-  has to say is the page's (`resetNotice`, bound here): its notice is drawn
-  by the page where it was, after the page's confirm dialog.
+  Each action asks first through the page's own confirm dialog, and Purge,
+  Reset XP and Reset Everything ask in it for the caller's own password, which
+  they send (card 2701). What a reset has to say is the page's (`resetNotice`,
+  bound here): its notice is drawn by the page where it was, after the page's
+  confirm dialog.
 -->
 <script lang="ts">
 	import { invalidateAll } from '$app/navigation';
 	import { PURGE_DESCRIPTION, PURGE_WARNING, RESET_WARNING, failureMessage } from '$lib/api';
-	import { sent, showToast } from '$lib/admin/send';
+	import { sent, sentAsking, showToast } from '$lib/admin/send';
+	import { ASKS_FOR_PASSWORD, stepUpRefusal } from '$lib/step-up-words';
 
 	let {
 		isSuperadmin,
@@ -19,16 +22,29 @@
 		resetNotice = $bindable()
 	}: {
 		isSuperadmin: boolean;
-		/** The page's confirm dialog, which asks before each action. */
-		confirm: (title: string, message: string, action: () => Promise<void>) => void;
+		/**
+		 * The page's confirm dialog, which asks before each action, and with
+		 * `askPassword` for the caller's own password, handed to the action. Text
+		 * the action gives back is a refusal of the password, shown in the dialog.
+		 */
+		confirm: (
+			title: string,
+			message: string,
+			action: (password: string) => Promise<string | null | void>,
+			options?: { askPassword?: boolean }
+		) => void;
 		/** The page's: what a reset has to say that must be read, shown in its notice. */
 		resetNotice: { title: string; message: string; problems: string[]; redirect: string | null } | null;
 	} = $props();
 
-	async function resetDatabase() {
+	async function resetDatabase(currentPassword: string): Promise<string | void> {
 		let res: Response;
 		try {
-			res = await fetch('/api/admin/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+			res = await fetch('/api/admin/reset', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ currentPassword })
+			});
 		} catch {
 			resetNotice = {
 				title: 'Reset not confirmed',
@@ -39,6 +55,9 @@
 			return;
 		}
 		if (!res.ok) {
+			// The password refused: said in the confirm dialog, which stays open to type it again.
+			const refusal = await stepUpRefusal(res);
+			if (refusal !== null) return refusal;
 			// 500 with "The reset failed and nothing was cleared: …", or a refusal.
 			resetNotice = {
 				title: 'Reset failed',
@@ -71,17 +90,26 @@
 		showToast('Database vacuumed. Unused space was reclaimed.');
 	}
 
-	async function resetAllXp() {
-		if (!(await sent(() => fetch('/api/admin/reset-xp', { method: 'POST', headers: { 'Content-Type': 'application/json' } }), 'Failed to reset XP'))) return;
+	async function resetAllXp(currentPassword: string): Promise<string | void> {
+		const res = await sentAsking(
+			() => fetch('/api/admin/reset-xp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword }) }),
+			'Failed to reset XP'
+		);
+		if (typeof res === 'string') return res;
+		if (!res) return;
 		showToast('All XP has been reset to 0');
 	}
 
 	let purgingArchived = $state(false);
 
-	async function purgeArchivedCards() {
+	async function purgeArchivedCards(currentPassword: string): Promise<string | void> {
 		purgingArchived = true;
 		try {
-			const res = await sent(() => fetch('/api/admin/purge-archived', { method: 'POST', headers: { 'Content-Type': 'application/json' } }), 'Failed to purge archived cards');
+			const res = await sentAsking(
+				() => fetch('/api/admin/purge-archived', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword }) }),
+				'Failed to purge archived cards'
+			);
+			if (typeof res === 'string') return res;
 			if (!res) return;
 			const result = await res.json().catch(() => null);
 			showToast(
@@ -107,7 +135,7 @@
 				<strong>Purge Archived Cards</strong>
 				<p>{PURGE_DESCRIPTION}</p>
 			</div>
-			<button class="btn-outline" onclick={() => confirm('Purge Archived Cards', PURGE_WARNING, purgeArchivedCards)} disabled={purgingArchived}>
+			<button class="btn-outline" onclick={() => confirm('Purge Archived Cards', PURGE_WARNING, purgeArchivedCards, { askPassword: true })} disabled={purgingArchived}>
 				{purgingArchived ? 'Purging...' : 'Purge All'}
 			</button>
 		</div>
@@ -123,9 +151,9 @@
 		<div class="danger-item">
 			<div>
 				<strong>Reset All XP</strong>
-				<p>Resets everyone's XP back to 0. Leaderboard will be cleared. This cannot be undone.</p>
+				<p>Resets everyone's XP back to 0. Leaderboard will be cleared. This cannot be undone. {ASKS_FOR_PASSWORD}</p>
 			</div>
-			<button class="btn-outline" onclick={() => confirm('Reset All XP', 'This will set every user\'s XP to 0. The leaderboard will be completely cleared. Are you sure?', resetAllXp)}>
+			<button class="btn-outline" onclick={() => confirm('Reset All XP', `This will set every user's XP to 0. The leaderboard will be completely cleared. Are you sure? ${ASKS_FOR_PASSWORD}`, resetAllXp, { askPassword: true })}>
 				Reset XP
 			</button>
 		</div>
@@ -134,9 +162,9 @@
 		<div class="danger-item">
 			<div>
 				<strong>Reset Everything</strong>
-				<p>Deletes ALL data including boards, users, teams, and sessions. The system log and the backup history are kept. You will be redirected to initial setup.</p>
+				<p>Deletes ALL data including boards, users, teams, and sessions. The system log and the backup history are kept. You will be redirected to initial setup. {ASKS_FOR_PASSWORD}</p>
 			</div>
-			<button class="btn-danger-solid" onclick={() => confirm('Reset Everything', RESET_WARNING, resetDatabase)}>
+			<button class="btn-danger-solid" onclick={() => confirm('Reset Everything', RESET_WARNING, resetDatabase, { askPassword: true })}>
 				Reset Everything
 			</button>
 		</div>

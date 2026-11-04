@@ -32,13 +32,13 @@ import nodemailer from 'nodemailer';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { SessionUser } from '$lib/server/auth';
+import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { db, sqlite } from '$lib/server/db';
 import { settings } from '$lib/server/db/schema';
 import { TLS_FAULT_HINT, appUrlAsRead, sendEmail, sendEmailWithAttachment, sendTestEmail } from '$lib/server/email';
 import { eq } from 'drizzle-orm';
 import { api } from './helpers/api';
-import { makeUser, resetDb } from './helpers/fixtures';
+import { FIXTURE_PASSWORD, makeSession, makeUser, resetDb, stepUp } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 
 const MASK = '••••••••';
@@ -77,13 +77,21 @@ const TLS_HINT =
 	`network that cannot use TLS, tick ${WAY_OUT} and type the password again.`;
 
 let chief: SessionUser;
+/** The superadmin's session, which a save asks their current password from (card 2701). */
+let chiefSession: string;
 
 const stored = () => Object.fromEntries(db.select().from(settings).all().map((row) => [row.key, row.value]));
-const save = (body: Record<string, unknown>) => api('PUT', '/api/admin/smtp', { user: chief, body });
+const save = (body: Record<string, unknown>) =>
+	api('PUT', '/api/admin/smtp', {
+		user: chief,
+		body: { ...body, currentPassword: FIXTURE_PASSWORD },
+		headers: { cookie: `${SESSION_COOKIE_NAME}=${chiefSession}` }
+	});
 
 beforeEach(() => {
 	resetDb();
 	chief = makeUser({ username: 'chief', role: 'superadmin' });
+	chiefSession = makeSession(chief);
 	db.insert(settings).values(Object.entries(STORED).map(([key, value]) => ({ key, value }))).run();
 });
 
@@ -400,7 +408,7 @@ describe('the line a save of the mail settings writes (card 2396)', () => {
 		['appUrl', { appUrl: 'https://kanban.example.test' }, 'WARN', 'appUrl from "" to "https://kanban.example.test"', { field: 'appUrl', from: '', to: 'https://kanban.example.test' }]
 	] as const)('logs %s changed, naming the administrator who saved it', async (_field, change, lineLevel, words, meta) => {
 		const deputy = makeUser({ username: 'deputy', role: 'admin' });
-		const res = await api('PUT', '/api/admin/smtp', { user: deputy, body: { ...PANEL, ...change } });
+		const res = await api('PUT', '/api/admin/smtp', stepUp(deputy, { ...PANEL, ...change }));
 
 		expect(res.status, JSON.stringify(res.body)).toBe(200);
 		expect(mailLines()).toEqual([
@@ -425,7 +433,7 @@ describe('the line a save of the mail settings writes (card 2396)', () => {
 
 	it('quotes the name of the administrator who saved it, as it quotes the values', async () => {
 		const odd = makeUser({ username: 'odd"one\\2396', role: 'admin' });
-		const res = await api('PUT', '/api/admin/smtp', { user: odd, body: { ...PANEL, fromName: 'Board' } });
+		const res = await api('PUT', '/api/admin/smtp', stepUp(odd, { ...PANEL, fromName: 'Board' }));
 
 		expect(res.status, JSON.stringify(res.body)).toBe(200);
 		expect(mailLines().map((line) => line.message)).toEqual(['Mail settings changed: fromName from "The Board" to "Board" (set by "odd\\"one\\\\2396")']);

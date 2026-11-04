@@ -74,6 +74,7 @@ import { expectUnchanged, snapshotDb, type DbSnapshot } from './helpers/snapshot
 import { handlersOf } from './helpers/source-scan';
 import { failingWrite, type FailingWrite } from './helpers/failing-write';
 import {
+	importConfirmation,
 	makeApiKey,
 	makeAttachment,
 	makeBoard,
@@ -85,7 +86,8 @@ import {
 	makeSession,
 	makeUser,
 	makeVersion,
-	resetDb
+	resetDb,
+	stepUp
 } from './helpers/fixtures';
 import { bodyOverTheLimit, fakeEvent, FROM_THE_PAGE, gate, gateApiRoutes, gateRoutes, type FakeEventOptions, type GateOptions } from './helpers/gate';
 
@@ -1114,7 +1116,8 @@ describe('a browser that has signed in here before', () => {
 		await rememberedAt();
 		const [before] = keys();
 		expect(before.value).not.toBe(made.value);
-		expect((await api('POST', '/api/admin/reset', { user: chief })).status).toBe(200);
+		// With the superadmin's current password (card 2701).
+		expect((await api('POST', '/api/admin/reset', stepUp(chief))).status).toBe(200);
 		expect(keys()).toEqual([]);
 		const owner = makeUser({ role: 'superadmin' });
 		sqlite.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashSync('right', 4), owner.id);
@@ -2262,7 +2265,8 @@ describe('a body over the size limit', () => {
 		{
 			name: 'the import of a .db backup, read as bytes',
 			path: () => '/api/admin/import',
-			caller: () => ({ ...asChief, accept: '*/*' }),
+			// Confirmed first in the superadmin's session (card 2701): it is read once it is taken.
+			caller: () => ({ ...asChief, ...importConfirmation(chief, asChief.cookie.slice(`${SESSION_COOKIE_NAME}=`.length)), accept: '*/*' }),
 			type: 'application/octet-stream'
 		}
 	])('is answered 413 on $name', async ({ path, caller, type }) => {

@@ -1,7 +1,9 @@
 import { json } from '@sveltejs/kit';
+import { whilePasswordHolds } from '$lib/server/auth';
 import { deleteBoardFor, updateBoard } from '$lib/server/boards';
 import { pathId, readBody } from '$lib/server/request-body';
-import { requireUser } from '$lib/server/route-guards';
+import { requireBoardOwner, requireUser } from '$lib/server/route-guards';
+import { confirmStepUp } from '$lib/server/step-up';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
@@ -36,15 +38,31 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
  * everyone, before who is asking is looked at, as `DELETE
  * /api/v1/boards/{id}` answers it (card 2211): an administrator was answered
  * 200 for deleting nothing, and anyone else 403.
+ *
+ * It asks for the caller's own password again, in `currentPassword` (card
+ * 2701, step-up.ts): boards cannot be archived, so the delete is for good.
+ * A sub-board made by an editor of the board above is that editor's, and is
+ * asked for each time too. A board that is not there, or one the caller does
+ * not own, is refused first, with no password checked or counted. `DELETE
+ * /api/v1/boards/{id}` asks for none: a key has no password (card 2703).
  */
-export const DELETE: RequestHandler = async ({ params, locals }) => {
+export const DELETE: RequestHandler = async ({ params, request, locals, cookies }) => {
 	requireUser(locals.user);
 
 	const id = pathId(params.id, 'board');
+	const body = await readBody(request);
+
+	// The caller's password, once the board is known to be there and theirs to
+	// delete: the owner check `deleteBoardFor` makes, asked read only first.
+	const { userId, hash } = await confirmStepUp(locals, cookies, body, 'DELETE /api/boards/[id]', (caller) =>
+		requireBoardOwner(caller, id, 'Only board owners and admins can delete boards')
+	);
 
 	// One transaction: the caller is checked in the same one that deletes the
 	// board. It asks first whether the session is still open, and who its
-	// account is now (card 2253).
-	writeAs(locals, (caller) => deleteBoardFor(caller, { boardId: id }, null, { source: 'ui' }));
+	// account is now (card 2253). It runs only while the caller's stored hash
+	// is the one their password was checked against.
+	await whilePasswordHolds(userId, hash, () =>
+		writeAs(locals, (caller) => deleteBoardFor(caller, { boardId: id }, null, { source: 'ui' })));
 	return json({ success: true });
 };

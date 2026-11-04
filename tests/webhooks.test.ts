@@ -57,7 +57,7 @@ import { addressRefusal, insideReason, parseAllowInside, readWebhookUrl } from '
 import { reportWebhookAllowInside, reportWebhooksOverCap, reportWebhooksRefused } from '$lib/server/startup-checks';
 import { api, type ApiResult } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
-import { addBoardMember, makeBoard, makeCard, makeMilestone, makeTeam, makeUser, makeWebhook, resetDb, shareBoardWithTeam } from './helpers/fixtures';
+import { addBoardMember, makeBoard, makeCard, makeMilestone, makeTeam, makeUser, makeWebhook, resetDb, shareBoardWithTeam, stepUp } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 
 beforeEach(resetDb);
@@ -2316,7 +2316,7 @@ describe('a webhook whose setter can no longer open the board (card 2325)', () =
 		// While an administrator, sent: the role is read at each event, not when the webhook was made.
 		expect(await event(s)).toEqual([theirs.url, others.url]);
 
-		const res = await api('PUT', `/api/users/${s.admin.id}`, { user: s.chief, body: { role: 'user' } });
+		const res = await api('PUT', `/api/users/${s.admin.id}`, stepUp(s.chief, { role: 'user' }));
 		expect(res.status).toBe(200);
 
 		expect(await event(s)).toEqual([others.url]);
@@ -2805,14 +2805,14 @@ describe('a card that leaves a goal because of another change (card 2381)', () =
 		],
 		[
 			"an administrator's clear of the board's cards",
-			(s) => api('POST', `/api/admin/boards/${s.A.board.id}/clear-cards`, { user: s.admin }),
+			(s) => api('POST', `/api/admin/boards/${s.A.board.id}/clear-cards`, stepUp(s.admin)),
 			(s) => [removed(s, s.plan, 'ui', 'card deleted', 'admin'), removed(s, s.ship, 'ui', 'card deleted', 'admin')]
 		],
 		[
 			'a purge of archived cards, the archived one alone',
 			(s) => {
 				sqlite.prepare('UPDATE cards SET archived_at = ? WHERE id = ?').run('2026-10-01 09:00:00', s.plan.id);
-				return api('POST', '/api/admin/purge-archived', { user: s.admin });
+				return api('POST', '/api/admin/purge-archived', stepUp(s.admin));
 			},
 			(s) => [removed(s, s.plan, 'ui', 'card deleted', 'admin')]
 		]

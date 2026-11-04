@@ -3,8 +3,10 @@ import { issueInvite } from '$lib/server/invites';
 import { inviteMailAnswer } from '$lib/server/invite-link';
 import { MAIL_PROBLEM_WORDS, NO_LINK_ADDRESS, isSmtpConfigured, linkBaseUrl, smtpPasswordMissing } from '$lib/server/email';
 import { sendInviteEmail } from '$lib/server/notifications';
+import { whilePasswordHolds, type SessionUser } from '$lib/server/auth';
 import { requireAdmin, requireManagedAccount } from '$lib/server/route-guards';
-import { pathId } from '$lib/server/request-body';
+import { pathId, readBody } from '$lib/server/request-body';
+import { confirmStepUp } from '$lib/server/step-up';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
@@ -31,17 +33,24 @@ import type { RequestHandler } from './$types';
  * It used to queue the mail and answer "Invite sent" without waiting, whether
  * or not the mail then went. With no mail host, or a mail user with no
  * password, it is refused before the invite is made: `400`.
+ *
+ * It asks for the caller's own password again, in `currentPassword` (card
+ * 2701, step-up.ts), after every refusal that needs none, the mail's
+ * included: so the request has a body.
  */
-export const POST: RequestHandler = async ({ params, locals, url, cookies }) => {
+export const POST: RequestHandler = async ({ params, request, locals, url, cookies }) => {
 	requireAdmin(locals.user);
 
 	const userId = pathId(params.id, 'user');
+	const body = await readBody(request);
 
-	// One transaction: the user is read and the caller checked in the one that
-	// writes the token, so the role that was checked is the role of the account
-	// the token is for. The mail is sent once it is committed. It asks first
-	// whether the session is still open, and who its account is now (card 2253).
-	const issued = writeAs(locals, (caller) => {
+	/**
+	 * Every refusal of the invite, read only: the caller as their account is
+	 * now, their own account, whose account they may invite, the mail host and
+	 * its password, and the link's address. Asked before the password, and
+	 * again in the transaction that writes the token.
+	 */
+	const refusals = (caller: SessionUser | null) => {
 		const actor = requireAdmin(caller);
 
 		// Nobody invites themselves, an administrator included: the link would set
@@ -84,14 +93,33 @@ export const POST: RequestHandler = async ({ params, locals, url, cookies }) => 
 			throw error(503, NO_LINK_ADDRESS);
 		}
 
-		// A new invite, and every earlier one that has not been used deleted with
-		// it: an account has one invite that works, the one in this mail. The
-		// earlier ones used to stay good until they expired, so a leaked mail
-		// set the password even after a newer one had been sent and used.
-		const token = issueInvite(target.id);
+		return { actor, target, baseUrl };
+	};
 
-		return { target, token, baseUrl, actorId: actor.id };
-	});
+	// The caller's password, asked for again (card 2701): an invite sets the
+	// account's password. Every refusal that needs none is made first.
+	const { userId: callerId, hash } = await confirmStepUp(locals, cookies, body, 'POST /api/users/[id]/invite', (caller) =>
+		refusals(caller)
+	);
+
+	// One transaction: the user is read and the caller checked in the one that
+	// writes the token, so the role that was checked is the role of the account
+	// the token is for. The mail is sent once it is committed. It asks first
+	// whether the session is still open, and who its account is now (card
+	// 2253), and runs only while the caller's stored hash is the one their
+	// password was checked against.
+	const issued = await whilePasswordHolds(callerId, hash, () =>
+		writeAs(locals, (caller) => {
+			const { actor, target, baseUrl } = refusals(caller);
+
+			// A new invite, and every earlier one that has not been used deleted with
+			// it: an account has one invite that works, the one in this mail. The
+			// earlier ones used to stay good until they expired, so a leaked mail
+			// set the password even after a newer one had been sent and used.
+			const token = issueInvite(target.id);
+
+			return { target, token, baseUrl, actorId: actor.id };
+		}));
 
 	// After the commit, and awaited: an effect never starts inside a
 	// transaction, and the answer says whether the mail went.

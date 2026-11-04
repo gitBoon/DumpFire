@@ -37,7 +37,7 @@ import { columnForCopy } from '$lib/board/card-actions';
 import type { ColumnType } from '$lib/types';
 import { api, type ApiResult } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
-import { makeApiKey, makeBoard, makeCard, makeSession, makeUser, makeWebhook, resetDb, type BoardFixture } from './helpers/fixtures';
+import { FIXTURE_PASSWORD, makeApiKey, makeBoard, makeCard, makeSession, makeUser, makeWebhook, resetDb, stepUp, type BoardFixture } from './helpers/fixtures';
 import { FROM_THE_PAGE, gate } from './helpers/gate';
 import { compare, stateOf, type Findings } from './rehearsal/compare';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
@@ -157,11 +157,13 @@ const TREES: Tree[] = [
 		subBoard: (_cardId, columnId) => api('POST', '/api/cards', { user: owner, body: { columnId, title: 'With a plan', subBoards: [{ name: 'Its plan' }] } }),
 		create: (boardId, body) => api('POST', '/api/columns', { user: owner, body: { boardId, ...body } }),
 		update: (columnId, body) => api('PUT', `/api/columns/${columnId}`, { user: owner, body }),
-		remove: (columnId) => api('DELETE', `/api/columns/${columnId}`, { user: owner }),
+		// With the owner's current password (card 2701): the Options column is refused before it is looked at.
+		remove: (columnId) => api('DELETE', `/api/columns/${columnId}`, { user: owner, body: { currentPassword: FIXTURE_PASSWORD } }),
 		createCard: (boardId, columnId, title) => api('POST', '/api/cards', { user: owner, body: { boardId, columnId, title } }),
 		move: (cardId, columnId) => api('PUT', `/api/cards/${cardId}`, { user: owner, body: { columnId } }),
 		send: (cardId, body) => api('POST', `/api/cards/${cardId}/send`, { user: owner, body }),
-		deleteBoard: (boardId) => api('DELETE', `/api/boards/${boardId}`, { user: owner }),
+		// With the owner's current password, from a session made for it (card 2701).
+		deleteBoard: (boardId) => api('DELETE', `/api/boards/${boardId}`, stepUp(owner)),
 		prefix: ''
 	},
 	{

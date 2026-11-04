@@ -34,7 +34,7 @@ import { sqlite } from '$lib/server/db';
 import { effects, type RecordedEffect } from './effects';
 import { failingWrite, InjectedWriteFailure } from './failing-write';
 import { resetDb } from './fixtures';
-import { expectUnchanged, snapshotDb } from './snapshot';
+import { expectUnchanged, snapshotDb, type DbSnapshot } from './snapshot';
 
 export type EachWriteOptions<F, R> = {
 	/** Build the fixture. Called on an empty database, once for each run. */
@@ -53,7 +53,33 @@ export type EachWriteOptions<F, R> = {
 	 * left it. For assertions about what a success wrote.
 	 */
 	afterSuccess?: (fixture: F, result: R, effects: RecordedEffect[]) => void | Promise<void>;
+	/**
+	 * Columns the request writes on purpose apart from its transaction, as
+	 * `table.column`, whose values stand whatever happens after: a current
+	 * password is counted on its session's row as it arrives, and a right one
+	 * sets the count back (`sessions.wrong_password_count`, card 2701). Their
+	 * writes are failed in turn as every other is; only their values are left
+	 * out of the comparison. Every other column of every row is compared.
+	 */
+	apart?: string[];
 };
+
+/** `before`, with the columns `apart` names taken as they are now, row by row. */
+function withApart(before: DbSnapshot, apart: string[]): DbSnapshot {
+	const now = snapshotDb();
+	const kept: DbSnapshot = { ...before };
+	for (const name of apart) {
+		const [table, column] = name.split('.');
+		if (!kept[table] || !now[table]) continue;
+		kept[table] = Object.fromEntries(
+			Object.entries(kept[table]).map(([rowid, row]) => [
+				rowid,
+				now[table][rowid] && column in row ? { ...row, [column]: now[table][rowid][column] } : row
+			])
+		);
+	}
+	return kept;
+}
 
 export type EachWriteRun<R> = {
 	/** The SQL of each write of the untouched run, in order. Its length is N. */
@@ -137,7 +163,7 @@ export async function eachWriteInTurn<F, R>(opts: EachWriteOptions<F, R>): Promi
 			}
 
 			if (sqlite.inTransaction) throw new Error(`${when}: a transaction was left open`);
-			expectUnchanged(before, when);
+			expectUnchanged(opts.apart ? withApart(before, opts.apart) : before, when);
 			if (sent.all.length > 0) {
 				throw new Error(
 					`${when}: nothing was saved, but ${sent.all.length} effect(s) were sent: ` +

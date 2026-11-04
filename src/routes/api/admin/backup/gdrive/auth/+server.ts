@@ -31,6 +31,7 @@
 import { error, isHttpError, json } from '@sveltejs/kit';
 import { google, type Auth, type drive_v3 } from 'googleapis';
 import { DRIVE_FILE_SCOPE, driveScopeIsNarrow } from '$lib/drive-scope';
+import { whilePasswordHolds } from '$lib/server/auth';
 import { getBackupConfig, saveBackupConfig } from '$lib/server/backup';
 import { makeDumpfireFolder, reachFolder } from '$lib/server/backup-destinations';
 import { quotedName } from '$lib/server/backup-secrets';
@@ -39,6 +40,7 @@ import { startConnect, takeConnect } from '$lib/server/gdrive-connect';
 import { requireAdmin } from '$lib/server/route-guards';
 import { readBody, readText } from '$lib/server/request-body';
 import { recordDestinationSetter } from '$lib/server/setting-setters';
+import { confirmStepUp } from '$lib/server/step-up';
 import { stillCallerNow, writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 import { createLogger } from '$lib/server/logger';
@@ -111,6 +113,21 @@ function connectLine(saved: ConnectSaved): string {
 }
 
 /**
+ * The Google Drive destination named `destName` as the settings hold it now,
+ * with its client id and secret: 404 where there is none, 400 where either is
+ * missing. Read only: asked before the password is (card 2701), and again
+ * once the state is taken.
+ */
+function connectable(destName: string) {
+	const config = getBackupConfig();
+	const dest = config.destinations.find(d => d.name === destName && d.type === 'gdrive') as any;
+	if (!dest) throw error(404, 'Google Drive destination not found');
+	const { clientId, clientSecret } = dest;
+	if (!clientId || !clientSecret) throw error(400, 'Client ID and Secret required');
+	return { dest, clientId, clientSecret };
+}
+
+/**
  * GET — Generate the Google OAuth consent URL, with a new state and PKCE
  * challenge bound to this session (card 2251). Not to be kept by anything on
  * the way: the state is this session's alone.
@@ -169,21 +186,38 @@ export const GET: RequestHandler = async ({ locals, url }) => {
  * destination's first connection, a `WARN` for one that replaces a connection
  * it had, since that can send every later backup to another Google account,
  * which the server cannot see. A Connect refused, or not saved, writes none.
+ *
+ * With the caller's current password, `{ currentPassword }` (card 2701,
+ * step-up.ts): a Connect binds a destination to a Google account of the
+ * caller's choosing. It is checked after the fields, the destination and its
+ * client id and secret, and before the state is taken, so that a wrong one
+ * leaves the Connect usable and sends no code to Google; the save after
+ * Google's answers is written only while the caller's stored hash is the one
+ * it was checked against.
  */
-export const POST: RequestHandler = async ({ request, locals }) => {
+export const POST: RequestHandler = async ({ request, locals, cookies }) => {
 	requireAdmin(locals.user);
 
 	// Each text: `code` that was not was handed to Google as it was sent.
 	const body = await readBody(request);
-	// Asked again once the body is in, with nothing awaited before the code
-	// goes to Google (card 2253): a session that has ended, or an account that
-	// is no longer an administrator, takes no state and sends no code. The
-	// write after Google's answers asks again.
-	const caller = requireAdmin(stillCallerNow(locals));
 	const MISSING = 'Missing code or destName';
 	const code = readText(body, 'code', { required: true, min: 1, says: { missing: MISSING, empty: MISSING } });
 	const destName = readText(body, 'destName', { required: true, min: 1, says: { missing: MISSING, empty: MISSING } });
 	const state = readText(body, 'state', {});
+
+	// The caller's password, asked for again (card 2701), once every refusal
+	// that needs none has been made: the caller as their account is now, and
+	// the destination with its client id and secret.
+	const { userId, hash } = await confirmStepUp(locals, cookies, body, 'POST /api/admin/backup/gdrive/auth', (who) => {
+		requireAdmin(who);
+		return connectable(destName);
+	});
+
+	// Asked again once the password is checked, with nothing awaited before
+	// the code goes to Google (card 2253): a session that has ended, or an
+	// account that is no longer an administrator, takes no state and sends no
+	// code. The write after Google's answers asks again.
+	const caller = requireAdmin(stillCallerNow(locals));
 
 	const started = state ? takeConnect(state, { userId: caller.id, credential: locals.credential }, destName) : null;
 	if (!started) {
@@ -198,13 +232,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		throw error(400, NOT_STARTED_HERE);
 	}
 
-	const config = getBackupConfig();
-	const destIndex = config.destinations.findIndex(d => d.name === destName && d.type === 'gdrive');
-	if (destIndex === -1) throw error(404, 'Google Drive destination not found');
-
-	const dest = config.destinations[destIndex] as any;
-	const { clientId, clientSecret } = dest;
-	if (!clientId || !clientSecret) throw error(400, 'Client ID and Secret required');
+	const { dest, clientId, clientSecret } = connectable(destName);
 	const folderId: string = dest.folderId || '';
 	const connectedBefore = !!dest.refreshToken;
 
@@ -259,7 +287,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		const refreshToken = tokens.refresh_token;
 		const grantedScope = typeof tokens.scope === 'string' && tokens.scope.trim() !== '' ? tokens.scope : null;
 		const madeNow = made;
-		const written = writeAs(locals, (callerNow) => {
+		// Run only while the caller's stored hash is the one their password was
+		// checked against (card 2701).
+		const written = await whilePasswordHolds(userId, hash, () => writeAs(locals, (callerNow) => {
 			const connector = requireAdmin(callerNow);
 			const current = getBackupConfig();
 			const index = current.destinations.findIndex(d => d.name === destName && d.type === 'gdrive');
@@ -282,7 +312,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			// (card 2397): made a user, or deleted, they take it away.
 			recordDestinationSetter(connected, connector.id);
 			return true;
-		});
+		}));
 		if (!written) {
 			await removeMade();
 			return json({ success: false, message: CHANGED_MEANWHILE });

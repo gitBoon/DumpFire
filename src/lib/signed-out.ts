@@ -26,6 +26,12 @@
  *   - and the page has a signed-in user. The login page, set-up and the public
  *     request pages have none.
  *
+ * A 403 that says the step-up ended the session (`stepUp: 'signed-out'`: its
+ * third wrong current password, or a session that had ended while its
+ * password was checked, card 2701) is taken as such a 401 (the code review's
+ * F5, 2026-11-04): the session is gone, and a password field left open in a
+ * dialog could only be refused. It is read from a copy, and only for a 403.
+ *
  * And once: the first such 401 starts the way to the login page, and the
  * rest, which a page with several requests in flight will have, are left.
  * The answer itself is handed back untouched, to the code that asked.
@@ -33,6 +39,8 @@
  * This file is given what it needs and reaches for nothing in the browser,
  * so that the tests, which have no browser, can call it.
  */
+
+import { isStepUpSignOut } from '$lib/step-up-words';
 
 /** `fetch`, as this file calls it and hands it back. */
 export type Fetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -83,9 +91,14 @@ export function watchForSignOut(fetch: Fetch, page: WatchedPage): Fetch {
 	return async (input, init) => {
 		const response = await fetch(input, init);
 		try {
-			if (!sent && response.status === 401 && endsTheSession(input, page.address()) && page.signedIn()) {
-				sent = true;
-				page.toLogin();
+			const mayHaveEnded = response.status === 401 || response.status === 403;
+			if (!sent && mayHaveEnded && endsTheSession(input, page.address()) && page.signedIn()) {
+				// A 403 is read, from a copy, only once it is known to be one of ours.
+				const ended = response.status === 401 || (await isStepUpSignOut(response));
+				if (ended && !sent) {
+					sent = true;
+					page.toLogin();
+				}
 			}
 		} catch {
 			// The watch is not the request. Whatever went wrong in it, the

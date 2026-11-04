@@ -96,10 +96,12 @@ import {
 	makeLabel,
 	makeMilestone,
 	makeSubtask,
+	makeSession,
 	makeTeam,
 	makeUser,
 	makeWebhook,
-	resetDb
+	resetDb,
+	stepUp
 } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 import {
@@ -3066,10 +3068,11 @@ describe('the accounts, administration, teams, reports and requests that card 21
 		const page = await api('GET', '/api/admin/backup', { user: w.chief });
 		const shown = page.body.destinations[0];
 		expect(shown.password).toBe('••••••••');
-		const saved = await api('PUT', '/api/admin/backup', {
-			user: w.chief,
-			body: { scheduleTime: '', destinations: [{ ...shown, host: ' BOX.example.test ', port: '22', extra: 'not kept' }] }
-		});
+		const saved = await api(
+			'PUT',
+			'/api/admin/backup',
+			stepUp(w.chief, { scheduleTime: '', destinations: [{ ...shown, host: ' BOX.example.test ', port: '22', extra: 'not kept' }] })
+		);
 		expect(saved.status, JSON.stringify(saved.body)).toBe(200);
 		expect(config()).toEqual({
 			...stored,
@@ -3090,10 +3093,11 @@ describe('the accounts, administration, teams, reports and requests that card 21
 		]).run();
 		const stored = () => Object.fromEntries(db.select().from(settings).all().map((row) => [row.key, row.value]));
 
-		const res = await api('PUT', '/api/admin/smtp', {
-			user: w.chief,
-			body: { host: 'smtp.example.test', port: '587', allowInsecure: false, fromAddress: 'board', fromName: 'The Board', evil: 'x', appUrl: 'https://kanban.example.test/' }
-		});
+		const res = await api(
+			'PUT',
+			'/api/admin/smtp',
+			stepUp(w.chief, { host: 'smtp.example.test', port: '587', allowInsecure: false, fromAddress: 'board', fromName: 'The Board', evil: 'x', appUrl: 'https://kanban.example.test/' })
+		);
 
 		expect(res.status, JSON.stringify(res.body)).toBe(200);
 		expect(stored()).toEqual({
@@ -3112,10 +3116,11 @@ describe('the accounts, administration, teams, reports and requests that card 21
 		const w = world();
 		db.update(users).set({ passwordHash: await makePasswordHash('the password', 'known') }).where(eq(users.id, w.owner.id)).run();
 
+		// From a session of the owner's, which the password is counted on (card 2701).
 		const res = await api('POST', '/api/account/api-keys', {
 			user: w.owner,
 			body: key({ expiresAt: '2099-01-01T09:30:00+02:00' }),
-			headers: SESSION
+			headers: { cookie: `${SESSION_COOKIE_NAME}=${makeSession(w.owner)}` }
 		});
 
 		expect(res.status, JSON.stringify(res.body)).toBe(201);
@@ -3136,8 +3141,10 @@ describe('the accounts, administration, teams, reports and requests that card 21
 		expect(inUse.body).toEqual({ message: 'Email already in use' });
 		expectUnchanged(before);
 
-		// Trimmed, where it was stored with its spaces; the account's own name is no clash.
-		const renamed = await change({ username: '  Owner Two  ', email: ' Owner@Example.test ' });
+		// Trimmed, where it was stored with its spaces; the account's own name is
+		// no clash. An email asks for the administrator's current password (card
+		// 2701), which the two above were refused before.
+		const renamed = await api('PUT', ofOwner(w), stepUp(w.admin, { username: '  Owner Two  ', email: ' Owner@Example.test ' }));
 		expect(renamed.status, JSON.stringify(renamed.body)).toBe(200);
 		expect(renamed.body).toMatchObject({ username: 'Owner Two', email: 'owner@example.test' });
 		expect((await change({ username: 'Owner Two' })).status).toBe(200);
@@ -3383,7 +3390,7 @@ describe('the review fixes to card 2117’s slices 2 to 5 (version 1.7)', () => 
 			expect({ body, status: res.status, answer: res.body }).toEqual({ body, status: 400, answer: { message: 'No valid fields to update' } });
 		}
 		expectUnchanged(before);
-		expect((await api('PUT', '/api/admin/smtp', { user: w.chief, body: { appUrl: '' } })).status).toBe(200);
+		expect((await api('PUT', '/api/admin/smtp', stepUp(w.chief, { appUrl: '' }))).status).toBe(200);
 	});
 
 	it('refuses a report whose period ends before it starts, and reads a bare date as the whole day', async () => {
@@ -3438,7 +3445,7 @@ describe('the review fixes to card 2117’s slices 2 to 5 (version 1.7)', () => 
 		expectUnchanged(before);
 
 		// A pasted key, longer than 2,048, is kept: one of 4,096 bits is about 3,300 characters.
-		const key = await api('PUT', '/api/admin/backup', { user: w.chief, body: box({ host: 'box.example.test', privateKey: long(3300) }) });
+		const key = await api('PUT', '/api/admin/backup', stepUp(w.chief, box({ host: 'box.example.test', privateKey: long(3300) })));
 		expect(key.status, JSON.stringify(key.body)).toBe(200);
 	});
 
@@ -3633,13 +3640,13 @@ describe('the second fix pass to card 2117’s slices 2 to 5 (version 1.8)', () 
 		const read = getAppUrl();
 		expect(read).toBe('http://kanban.example.test');
 
-		const typed = await api('PUT', '/api/admin/smtp', { user: w.chief, body: { appUrl: 'kanban.example.test' } });
+		const typed = await api('PUT', '/api/admin/smtp', stepUp(w.chief, { appUrl: 'kanban.example.test' }));
 		expect(typed.status, JSON.stringify(typed.body)).toBe(200);
 		// The same App URL as a link reads it: nothing is stored (card 2401), and
 		// the row, as it was, reads the same.
 		expect(setting('app_url')).toBe('kanban.example.test');
 		expect(getAppUrl()).toBe(read);
-		expect((await api('PUT', '/api/admin/smtp', { user: w.chief, body: { appUrl: ' localhost:3000/ ' } })).status).toBe(200);
+		expect((await api('PUT', '/api/admin/smtp', stepUp(w.chief, { appUrl: ' localhost:3000/ ' }))).status).toBe(200);
 		expect(setting('app_url')).toBe('http://localhost:3000');
 
 		const before = snapshotDb();
@@ -3655,7 +3662,7 @@ describe('the second fix pass to card 2117’s slices 2 to 5 (version 1.8)', () 
 	it('takes an SFTP destination’s port cleared, null, as the default, 22, and still refuses the mail settings’ port cleared', async () => {
 		const w = world();
 		const box = { type: 'sftp', name: 'Box', host: 'box.example.test', port: null, username: 'backup', remotePath: '/b' };
-		const res = await api('PUT', '/api/admin/backup', { user: w.chief, body: { destinations: [box] } });
+		const res = await api('PUT', '/api/admin/backup', stepUp(w.chief, { destinations: [box] }));
 		expect(res.status, JSON.stringify(res.body)).toBe(200);
 		const stored = JSON.parse(setting('backup_config')!).destinations[0];
 		expect(stored.port).toBeNull();
@@ -3671,7 +3678,7 @@ describe('the second fix pass to card 2117’s slices 2 to 5 (version 1.8)', () 
 		const w = world();
 		const box = { type: 'sftp', name: 'Box', host: 'box.example.test', port: 22, username: 'backup', remotePath: '/b' };
 		const savedAs = async (hostKey: unknown) => {
-			const res = await api('PUT', '/api/admin/backup', { user: w.chief, body: { destinations: [{ ...box, hostKey }] } });
+			const res = await api('PUT', '/api/admin/backup', stepUp(w.chief, { destinations: [{ ...box, hostKey }] }));
 			expect(res.status, JSON.stringify(res.body)).toBe(200);
 			return JSON.parse(setting('backup_config')!).destinations[0].hostKey;
 		};

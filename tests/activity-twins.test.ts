@@ -58,6 +58,7 @@ import { eachWriteInTurn } from './helpers/each-write';
 import { effects, type RecordedEffect } from './helpers/effects';
 import { failingWrite } from './helpers/failing-write';
 import {
+	FIXTURE_PASSWORD,
 	addBoardMember,
 	assignCard,
 	makeBoard,
@@ -71,6 +72,7 @@ import {
 	makeUser,
 	makeWebhook,
 	resetDb,
+	stepUp,
 	type BoardFixture
 } from './helpers/fixtures';
 import { diffSnapshots, expectUnchanged, snapshotDb, type DbSnapshot } from './helpers/snapshot';
@@ -446,6 +448,22 @@ function boardScene(): Scene {
 	makeLabel(s.A.board, 'Urgent');
 	return s;
 }
+
+/** The owner's confirmed request of each scene `withSession` built. */
+const confirmedOf = new WeakMap<Scene, ReturnType<typeof stepUp>>();
+
+/**
+ * As `build`, with a session of the owner's to confirm a delete with: the
+ * page's board and column deletes ask for the current password (card 2701),
+ * and the session is made with the scene, before the rows are compared, so
+ * that the two trees write the same. `confirmed(s)` is the `api()` options.
+ */
+const withSession = (build: () => Scene) => () => {
+	const s = build();
+	confirmedOf.set(s, stepUp(s.owner));
+	return s;
+};
+const confirmed = (s: Scene) => confirmedOf.get(s)!;
 
 /**
  * As `cardScene`, with an Options column "Ideas" at the far left of board A
@@ -1299,8 +1317,8 @@ const SERVICE_TWINS: ServiceTwin[] = [
 	{
 		row: 25,
 		what: 'deleting a board',
-		build: boardScene,
-		internal: (s) => api('DELETE', `/api/boards/${s.S.board.id}`, { user: s.owner }),
+		build: withSession(boardScene),
+		internal: (s) => api('DELETE', `/api/boards/${s.S.board.id}`, confirmed(s)),
 		v1: (s) => api('DELETE', `/api/v1/boards/${s.S.board.id}`, { user: s.owner }),
 		status: { internal: 200, v1: 200 },
 		sources: { internal: [], v1: [] },
@@ -1383,8 +1401,8 @@ const SERVICE_TWINS: ServiceTwin[] = [
 	{
 		row: 27,
 		what: 'deleting a column, and the card in it',
-		build: boardScene,
-		internal: (s) => api('DELETE', `/api/columns/${s.A.cols['To Do'].id}`, { user: s.owner }),
+		build: withSession(boardScene),
+		internal: (s) => api('DELETE', `/api/columns/${s.A.cols['To Do'].id}`, confirmed(s)),
 		v1: (s) => api('DELETE', `/api/v1/columns/${s.A.cols['To Do'].id}`, { user: s.owner }),
 		status: { internal: 200, v1: 200 },
 		sources: { internal: ['column_deleted ui'], v1: ['api:column_deleted api'] }
@@ -1393,8 +1411,8 @@ const SERVICE_TWINS: ServiceTwin[] = [
 	{
 		row: 27,
 		what: 'deleting a column, and the card in it, which was in a milestone',
-		build: () => goalScene(true),
-		internal: (s) => api('DELETE', `/api/columns/${s.A.cols['To Do'].id}`, { user: s.owner }),
+		build: withSession(() => goalScene(true)),
+		internal: (s) => api('DELETE', `/api/columns/${s.A.cols['To Do'].id}`, confirmed(s)),
 		v1: (s) => api('DELETE', `/api/v1/columns/${s.A.cols['To Do'].id}`, { user: s.owner }),
 		status: { internal: 200, v1: 200 },
 		sources: {
@@ -2203,7 +2221,9 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 			await ask('v1 board change', api('PUT', `/api/v1/boards/${A}`, { ...viewer, body: { name: 'No' } }));
 			await ask('internal board made public by an editor', api('PUT', `/api/boards/${A}`, { ...helper, body: { name: 'No', isPublic: true } }));
 			await ask('v1 board made public by an editor', api('PUT', `/api/v1/boards/${A}`, { ...helper, body: { name: 'No', isPublic: true } }));
-			await ask('internal board delete by an editor', api('DELETE', `/api/boards/${A}`, helper));
+			// The page's deletes take a body (card 2701): the right password, refused before it is looked at.
+			const confirming = { body: { currentPassword: FIXTURE_PASSWORD } };
+			await ask('internal board delete by an editor', api('DELETE', `/api/boards/${A}`, { ...helper, ...confirming }));
 			await ask('v1 board delete by an editor', api('DELETE', `/api/v1/boards/${A}`, helper));
 			await ask('internal grouping change', api('PUT', '/api/board-categories/1', { ...viewer, body: { name: 'No' } }));
 			await ask('v1 grouping change', api('PUT', '/api/v1/board-categories/1', { ...viewer, body: { name: 'No' } }));
@@ -2213,7 +2233,7 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 			await ask('v1 column', api('POST', `/api/v1/boards/${A}/columns`, { ...viewer, body: { title: 'No' } }));
 			await ask('internal column change', api('PUT', `/api/columns/${column}`, { ...viewer, body: { title: 'No' } }));
 			await ask('v1 column change', api('PUT', `/api/v1/columns/${column}`, { ...viewer, body: { title: 'No' } }));
-			await ask('internal column delete', api('DELETE', `/api/columns/${column}`, viewer));
+			await ask('internal column delete', api('DELETE', `/api/columns/${column}`, { ...viewer, ...confirming }));
 			await ask('v1 column delete', api('DELETE', `/api/v1/columns/${column}`, viewer));
 			await ask('internal column reorder', api('PUT', '/api/columns/reorder', { ...viewer, body: { updates: [{ id: column, position: 9 }] } }));
 			await ask('internal category', api('POST', '/api/categories', { ...viewer, body: { boardId: A, name: 'No' } }));
@@ -2301,7 +2321,9 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 		// and refuses one other than the board's own where it ignored it.
 		await ask('v1 board change, under a card', api('PUT', `/api/v1/boards/${A}`, { ...as, body: { name: 'No', parentCardId: s.first.id } }));
 		await ask('v1 board change, a parent card that is no id', api('PUT', `/api/v1/boards/${A}`, { ...as, body: { name: 'No', parentCardId: 'abc' } }));
-		await ask('internal board delete, no board', api('DELETE', '/api/boards/999', as));
+		// The page's deletes take a body (card 2701): the right password, refused before it is looked at.
+		const confirming = { ...as, body: { currentPassword: FIXTURE_PASSWORD } };
+		await ask('internal board delete, no board', api('DELETE', '/api/boards/999', confirming));
 		await ask('v1 board delete, no board', api('DELETE', '/api/v1/boards/999', as));
 		await ask('internal grouping, no name', api('POST', '/api/board-categories', { ...as, body: { color: '#123456' } }));
 		await ask('v1 grouping, no name', api('POST', '/api/v1/board-categories', { ...as, body: { color: '#123456' } }));
@@ -2332,7 +2354,7 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 		await ask('v1 column change, empty title', api('PUT', `/api/v1/columns/${column}`, { ...as, body: { title: '' } }));
 		await ask('internal column change, Complete with a card', api('PUT', `/api/columns/${s.A.cols['To Do'].id}`, { ...as, body: { title: 'Complete' } }));
 		await ask('v1 column change, Complete with a card', api('PUT', `/api/v1/columns/${s.A.cols['To Do'].id}`, { ...as, body: { title: 'Complete' } }));
-		await ask('internal column delete, none', api('DELETE', '/api/columns/999', as));
+		await ask('internal column delete, none', api('DELETE', '/api/columns/999', confirming));
 		await ask('v1 column delete, none', api('DELETE', '/api/v1/columns/999', as));
 		await ask('internal column reorder, no updates', api('PUT', '/api/columns/reorder', { ...as, body: {} }));
 		await ask('internal column reorder, no column', api('PUT', '/api/columns/reorder', { ...as, body: { updates: [{ id: 999, position: 1 }] } }));
@@ -2965,7 +2987,15 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 	'src/routes/api/v1/columns/[columnId]/+server.ts PUT': [
 		{ service: 'updateColumn', args: [code('caller'), { columnId: code('columnId') }, code('body'), { source: 'api' }] }
 	],
-	'src/routes/api/columns/[id]/+server.ts DELETE': [{ service: 'deleteColumnFor', args: [code('caller'), { columnId: code('id') }, null, { source: 'ui' }] }],
+	// Card 2701, decision 18: every refusal first, read only, and whether the column holds a card;
+	// with none, asked again in the delete; with one, as the step-up's guard, before the delete.
+	'src/routes/api/columns/[id]/+server.ts DELETE': [
+		{ service: 'columnDeleteGuard', args: [code('caller'), { columnId: code('id') }] },
+		{ service: 'columnDeleteGuard', args: [code('caller'), { columnId: code('id') }] },
+		{ service: 'deleteColumnFor', args: [code('caller'), { columnId: code('id') }, null, { source: 'ui' }] },
+		{ service: 'columnDeleteGuard', args: [code('caller'), { columnId: code('id') }] },
+		{ service: 'deleteColumnFor', args: [code('caller'), { columnId: code('id') }, null, { source: 'ui' }] }
+	],
 	'src/routes/api/v1/columns/[columnId]/+server.ts DELETE': [
 		{ service: 'deleteColumnFor', args: [code('caller'), { columnId: code('columnId') }, null, { source: 'api' }] }
 	],

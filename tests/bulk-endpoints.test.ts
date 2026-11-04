@@ -30,6 +30,7 @@ import { api, type ApiResult } from './helpers/api';
 import { eachWriteInTurn } from './helpers/each-write';
 import { effects, type RecordedEffect } from './helpers/effects';
 import {
+	FIXTURE_PASSWORD,
 	addBoardMember,
 	assignCard,
 	makeBoard,
@@ -41,6 +42,7 @@ import {
 	makeUser,
 	makeWebhook,
 	resetDb,
+	stepUp,
 	type BoardFixture
 } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
@@ -807,8 +809,13 @@ describe('POST /api/admin/boards/:id/clear-categories', () => {
 
 	it('removes every category of the board and takes each off its cards, or does neither', async () => {
 		const run = await eachWriteInTurn({
-			build: withCategories,
-			request: (s) => api('POST', `/api/admin/boards/${s.A.board.id}/clear-categories`, { user: s.admin }),
+			// The administrator's current password, from a session of theirs (card 2701).
+			build: () => {
+				const s = withCategories();
+				return { ...s, confirmed: stepUp(s.admin) };
+			},
+			request: (s) => api('POST', `/api/admin/boards/${s.A.board.id}/clear-categories`, s.confirmed),
+			apart: ['sessions.wrong_password_count'],
 			afterSuccess: (s, res: ApiResult) => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({ success: true });
@@ -820,7 +827,8 @@ describe('POST /api/admin/boards/:id/clear-categories', () => {
 			}
 		});
 
-		expect(shape(run.writes)).toEqual(['delete from categories']);
+		// The password counted as it arrives and the count cleared, apart from the transaction (card 2701).
+		expect(shape(run.writes)).toEqual(['update sessions set', 'update sessions set', 'delete from categories']);
 		expect(run.effects).toEqual([]);
 	});
 
@@ -838,9 +846,10 @@ describe('POST /api/admin/boards/:id/clear-categories', () => {
 	it('answers 404 for a board that is not there, and clears nothing', async () => {
 		const s = withCategories();
 
-		// It was 200 { success: true }, for clearing nothing (card 2211).
+		// It was 200 { success: true }, for clearing nothing (card 2211). Refused
+		// before the password is checked (card 2701).
 		const res = await expectRefused(
-			() => api('POST', '/api/admin/boards/99999/clear-categories', { user: s.admin }),
+			() => api('POST', '/api/admin/boards/99999/clear-categories', { user: s.admin, body: { currentPassword: FIXTURE_PASSWORD } }),
 			404
 		);
 		expect(res.body).toEqual({ message: 'Board not found' });
@@ -862,8 +871,13 @@ describe('POST /api/admin/reset-xp', () => {
 
 	it('sets everybody\'s XP to nothing and keeps the rows, or changes nobody\'s', async () => {
 		const run = await eachWriteInTurn({
-			build: withXp,
-			request: (s) => api('POST', '/api/admin/reset-xp', { user: s.admin }),
+			// The administrator's current password, from a session of theirs (card 2701).
+			build: () => {
+				const s = withXp();
+				return { ...s, confirmed: stepUp(s.admin) };
+			},
+			request: (s) => api('POST', '/api/admin/reset-xp', s.confirmed),
+			apart: ['sessions.wrong_password_count'],
 			afterSuccess: (_s, res: ApiResult) => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({ success: true });
@@ -875,7 +889,8 @@ describe('POST /api/admin/reset-xp', () => {
 			}
 		});
 
-		expect(shape(run.writes)).toEqual(['update user_xp set']);
+		// The password counted as it arrives and the count cleared, apart from the transaction (card 2701).
+		expect(shape(run.writes)).toEqual(['update sessions set', 'update sessions set', 'update user_xp set']);
 		expect(run.effects).toEqual([]);
 	});
 

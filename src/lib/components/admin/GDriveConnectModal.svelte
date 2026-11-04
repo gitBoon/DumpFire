@@ -8,12 +8,20 @@
   destination's 🔗 Connect calls `connectGDriveOAuth` on it; once Google has
   given a token, the panel's backup settings are read again with
   `loadBackupConfig`, the panel's own.
+
+  Card 2701: Connect asks for the caller's own password, typed in the box and
+  sent with the address: it binds the destination to a Google account of the
+  caller's choosing. A refusal of it is said in the box, which stays open with
+  the field cleared and focused; the server checks it before it takes the
+  Connect's state or asks Google, so the address pasted still works.
 -->
 <script lang="ts">
 	import { answerBody, failureMessage } from '$lib/api';
-	import { sent, showToast } from '$lib/admin/send';
+	import { sentAsking, showToast } from '$lib/admin/send';
+	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
 	import { toasts } from '$lib/stores/toast';
 	import { holdFocus } from '$lib/dialog-focus';
+	import { ASKS_FOR_PASSWORD } from '$lib/step-up-words';
 
 	/** The Scheduled Backups panel's: its settings read again, once a destination is connected. */
 	let { loadBackupConfig }: { loadBackupConfig: () => Promise<boolean> } = $props();
@@ -32,6 +40,10 @@
 	let gdriveBlocked = $state(false);
 	/** Each Connect's number, moved on whenever the box closes: an answer that comes back after a Cancel or a later Connect says and opens nothing (card 2266). */
 	let gdriveAttempt = 0;
+	/** The caller's own password, which Connect asks for (card 2701): cleared once sent, and as the box closes. */
+	let gdrivePassword = $state('');
+	/** The server's refusal of that password, said in the box until the next Connect pressed, its field focused again. */
+	let gdriveRefusal = $state<string | null>(null);
 
 	/** Close the Connect box, and end the Connect it was for, with any exchange it had on its way. */
 	function closeGDriveConnect() {
@@ -41,6 +53,8 @@
 		gdriveAuthUrl = '';
 		gdriveBlocked = false;
 		gdriveExchanging = false;
+		gdrivePassword = '';
+		gdriveRefusal = null;
 	}
 
 	/**
@@ -64,6 +78,8 @@
 		gdriveAuthCode = '';
 		gdriveAuthUrl = '';
 		gdriveBlocked = false;
+		gdrivePassword = '';
+		gdriveRefusal = null;
 		const started = toasts.navigation();
 		// Still this Connect: not cancelled, and no later one started. The
 		// server has replaced an older Connect's state with the newer one's, so
@@ -102,7 +118,7 @@
 		"Paste the whole address from the browser's address bar: it holds the code and the check that this connection was started here.";
 
 	async function exchangeGDriveCode() {
-		if (!gdriveAuthCode.trim() || !gdriveConnecting) return;
+		if (!gdriveAuthCode.trim() || !gdriveConnecting || !gdrivePassword) return;
 		// The Connect this exchange is for: a Cancel, or a later Connect, moves
 		// it on, and the box is then no longer this exchange's to close.
 		const attempt = gdriveAttempt;
@@ -137,16 +153,29 @@
 		}
 
 		gdriveExchanging = true;
+		// Sent, and cleared from the box: typed again after a refusal.
+		const currentPassword = gdrivePassword;
+		gdrivePassword = '';
+		gdriveRefusal = null;
+		/** The password was refused: the box stays open, for it to be typed again. */
+		let refused = false;
 		try {
-			const res = await sent(
+			const res = await sentAsking(
 				() =>
 					fetch('/api/admin/backup/gdrive/auth', {
 						method: 'POST',
 						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({ code, state, destName: gdriveConnecting })
+						body: JSON.stringify({ code, state, destName: gdriveConnecting, currentPassword })
 					}),
 				'Failed to exchange authorization code'
 			);
+			if (typeof res === 'string') {
+				refused = true;
+				if (attempt !== gdriveAttempt) return;
+				gdriveRefusal = res;
+				gdriveExchanging = false;
+				return;
+			}
 			if (!res) return;
 			// Answered: whether Google gave a token to keep is in the answer.
 			const result = await answerBody(res);
@@ -161,7 +190,8 @@
 			// Its toast and reload above stand either way (it did or did not
 			// connect the destination), but a box opened since is left alone,
 			// with its GET and any exchange of its own (the card 2266 review).
-			if (attempt === gdriveAttempt) closeGDriveConnect();
+			// A refused password leaves it open, to type again (card 2701).
+			if (!refused && attempt === gdriveAttempt) closeGDriveConnect();
 		}
 	}
 </script>
@@ -194,9 +224,12 @@
 				class="form-input"
 				style="width: 100%; font-family: monospace; font-size: 0.78rem; margin-bottom: var(--space-md)"
 			/>
+			<!-- The caller's own password, which Connect asks for (card 2701), with the server's refusal of it. -->
+			<CurrentPasswordField bind:value={gdrivePassword} refusal={gdriveRefusal} disabled={!gdriveAuthUrl} onEnter={exchangeGDriveCode} />
+			<p style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: var(--space-md)">{ASKS_FOR_PASSWORD} Connecting chooses the Google account every backup to this destination goes to.</p>
 			<div class="modal-actions">
 				<button class="btn-ghost" onclick={closeGDriveConnect}>Cancel</button>
-				<button class="btn-primary" onclick={exchangeGDriveCode} disabled={!gdriveAuthUrl || !gdriveAuthCode.trim() || gdriveExchanging}>
+				<button class="btn-primary" onclick={exchangeGDriveCode} disabled={!gdriveAuthUrl || !gdriveAuthCode.trim() || !gdrivePassword || gdriveExchanging}>
 					{gdriveExchanging ? '⏳ Connecting...' : '✅ Connect'}
 				</button>
 			</div>

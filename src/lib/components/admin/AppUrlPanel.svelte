@@ -17,9 +17,15 @@
   field. The line says what clearing a saved App URL goes back to (APP_URL, or
   ORIGIN where it is not set), and is shown only while the field holds what
   was read.
+
+  Card 2701: Save asks for the caller's own password, in the app's confirm
+  dialog: it decides where the links in invites point, and it is saved
+  through the mail settings' route, which asks for it.
 -->
 <script lang="ts">
-	import { sent, showToast } from '$lib/admin/send';
+	import { sentAsking, showToast } from '$lib/admin/send';
+	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
+	import { ASKS_FOR_PASSWORD } from '$lib/step-up-words';
 
 	// ─── Application Settings ────────────────────────────────────────────
 
@@ -60,18 +66,28 @@
 		appUrlUnread = from === null;
 	}
 
-	async function saveAppUrl() {
+	/** Save pressed: the confirm dialog asks for the caller's own password, and its Confirm saves (card 2701). */
+	let askingToSave = $state(false);
+
+	/**
+	 * Save, confirmed: the App URL with the caller's own password. A refusal of
+	 * the password is given back for the dialog to show; anything else closes
+	 * it, a refusal of the App URL said in a toast as before.
+	 */
+	async function saveAppUrl(currentPassword: string): Promise<string | void> {
 		appUrlSaving = true;
 		try {
-			const res = await sent(
+			const res = await sentAsking(
 				() =>
 					fetch('/api/admin/smtp', {
 						method: 'PUT',
 						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({ appUrl })
+						body: JSON.stringify({ appUrl, currentPassword })
 					}),
 				'Failed to save App URL'
 			);
+			if (typeof res === 'string') return res;
+			askingToSave = false;
 			if (!res) return;
 			showToast('App URL saved');
 			// Read again, so that the field and the line under it show the App URL
@@ -92,7 +108,7 @@
 			<label style="font-size: 0.72rem; font-weight: 600; color: var(--text-secondary)">Application URL</label>
 			<input type="url" placeholder="https://kanban.example.com" bind:value={appUrl} class="form-input" />
 		</div>
-		<button class="btn-primary btn-sm" onclick={saveAppUrl} disabled={appUrlSaving || appUrlFrom === null} style="flex: none">
+		<button class="btn-primary btn-sm" onclick={() => (askingToSave = true)} disabled={appUrlSaving || appUrlFrom === null} style="flex: none">
 			{appUrlSaving ? 'Saving...' : 'Save'}
 		</button>
 	</div>
@@ -123,3 +139,16 @@
 		</p>
 	{/if}
 </section>
+
+<!-- Save asks for the caller's own password (card 2701). After the section: fixed to the window, not to a card that moves on hover. -->
+{#if askingToSave}
+	<ConfirmModal
+		title="Save App URL"
+		message={`Every link in an invite and a password reset begins with the App URL. ${ASKS_FOR_PASSWORD}`}
+		confirmText="Save"
+		confirmDanger={false}
+		askPassword
+		onConfirm={saveAppUrl}
+		onCancel={() => (askingToSave = false)}
+	/>
+{/if}
