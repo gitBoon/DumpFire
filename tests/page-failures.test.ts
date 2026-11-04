@@ -64,7 +64,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import ts from 'typescript';
-import { compile } from 'svelte/compiler';
+import { compile, parse as parseSvelte } from 'svelte/compiler';
 import { get } from 'svelte/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -3032,6 +3032,554 @@ describe('no page throws away the answer to a write', () => {
 		expect(writes).not.toContain('loadActivities');
 		expect(writes).not.toContain('fetchXp');
 		expect(writes).not.toContain('deleteFailure');
+	});
+});
+
+/**
+ * Every file a browser may run (card 2700, decision 14), by a glob and not a
+ * list: every `.svelte`, `.ts` and `.js` under `src`, but `src/lib/server/`
+ * and the files SvelteKit keeps to the server, `+server.*`, `+page.server.*`,
+ * `+layout.server.*` and `hooks.server.*`.
+ */
+function clientFiles(): string[] {
+	const serverOnly = /(^|\/)(\+server|\+page\.server|\+layout\.server|hooks\.server)\.[^/]+$/;
+	return (readdirSync(join(ROOT, 'src'), { recursive: true }) as string[])
+		.map((file) => `src/${file.split('\\').join('/')}`)
+		.filter((file) => /\.(svelte|ts|js)$/.test(file) && !file.startsWith('src/lib/server/') && !serverOnly.test(file))
+		.sort();
+}
+
+/**
+ * Svelte's own nodes of a component's markup, which hold code and are not
+ * code (`svelte/compiler`'s modern AST). Any other node with a place in the
+ * source is an expression, a pattern or a declaration, and is read as code;
+ * a node Svelte adds later that is not listed here is read as code too, and
+ * fails as code that cannot be read.
+ */
+const TEMPLATE_NODES = new Set([
+	'Root', 'Fragment', 'Text', 'Comment', 'ExpressionTag', 'HtmlTag', 'ConstTag', 'DebugTag', 'RenderTag', 'AttachTag',
+	'IfBlock', 'EachBlock', 'AwaitBlock', 'KeyBlock', 'SnippetBlock', 'RegularElement', 'Component', 'TitleElement', 'SlotElement',
+	'SvelteElement', 'SvelteComponent', 'SvelteSelf', 'SvelteBody', 'SvelteDocument', 'SvelteWindow', 'SvelteHead', 'SvelteFragment',
+	'SvelteBoundary', 'SvelteOptions', 'Attribute', 'SpreadAttribute', 'AnimateDirective', 'BindDirective', 'ClassDirective',
+	'LetDirective', 'OnDirective', 'StyleDirective', 'TransitionDirective', 'UseDirective', 'Script', 'StyleSheet'
+]);
+
+/** What a markup node is called in a finding, `markup onclick`, `markup use:enhance`, `markup {#await}`; or what it is in. */
+function markupName(node: Record<string, unknown>, key: string, inherited: string): string {
+	const name = String(node.name);
+	switch (node.type) {
+		case 'Attribute': return `markup ${name}`;
+		case 'SpreadAttribute': return 'markup {...}';
+		case 'OnDirective': return `markup on:${name}`;
+		case 'BindDirective': return `markup bind:${name}`;
+		case 'UseDirective': return `markup use:${name}`;
+		case 'ClassDirective': return `markup class:${name}`;
+		case 'StyleDirective': return `markup style:${name}`;
+		case 'AnimateDirective': return `markup animate:${name}`;
+		case 'LetDirective': return `markup let:${name}`;
+		case 'TransitionDirective': return `markup ${node.intro && node.outro ? 'transition' : node.intro ? 'in' : 'out'}:${name}`;
+		// An attribute's value is named for the attribute.
+		case 'ExpressionTag': return key === 'value' ? inherited : 'markup {…}';
+		case 'IfBlock': return 'markup {#if}';
+		case 'EachBlock': return 'markup {#each}';
+		case 'AwaitBlock': return 'markup {#await}';
+		case 'KeyBlock': return 'markup {#key}';
+		case 'SnippetBlock': return 'markup {#snippet}';
+		case 'ConstTag': return 'markup {@const}';
+		case 'HtmlTag': return 'markup {@html}';
+		case 'RenderTag': return 'markup {@render}';
+		case 'DebugTag': return 'markup {@debug}';
+		case 'AttachTag': return 'markup {@attach}';
+		case 'SvelteElement': return 'markup <svelte:element>';
+		case 'SvelteComponent': return 'markup <svelte:component>';
+		default: return inherited;
+	}
+}
+
+/** Code read from a file, and the markup it is in, if it is in markup. */
+type ReadCode = { tree: ts.SourceFile; where?: string };
+
+/** Whether TypeScript's parser found a fault in it: it was not read as written, so what it does is not known. */
+const unreadable = (tree: ts.SourceFile) => (tree as unknown as { parseDiagnostics: readonly ts.Diagnostic[] }).parseDiagnostics.length > 0;
+
+/**
+ * Every piece of code in a file, parsed: a module whole (`codeOf`), and a
+ * `.svelte` file through Svelte's own parser, `svelte/compiler`'s `parse`: its
+ * `<script>`s, and every expression, pattern and declaration of its markup,
+ * wherever it is written: an attribute's value, `on:`, `use:`, `bind:` and
+ * every other directive, `{…}`, `{#if}`, `{#each}`, `{#await}`, `{#key}`,
+ * `{#snippet}`, `{@const}`, `{@html}`, `{@render}` and the rest. `where`
+ * names the markup it is in, as `codeOf` does an event handler.
+ */
+function everyCodeOf(file: string, source: string): ReadCode[] {
+	if (!file.endsWith('.svelte')) return codeOf(file, source);
+	const parse = (code: string) => ts.createSourceFile(file, code, ts.ScriptTarget.Latest, true);
+	const root = parseSvelte(source, { modern: true }) as unknown as Record<string, unknown>;
+	const found: ReadCode[] = [];
+	for (const script of [root.module, root.instance] as ({ content: { start: number; end: number } } | null)[]) {
+		if (script) found.push({ tree: parse(source.slice(script.content.start, script.content.end)) });
+	}
+	const SKIP = new Set(['metadata', 'parent', 'loc', 'name_loc']);
+	const walk = (value: unknown, where: string, owner: string | undefined, key: string): void => {
+		if (Array.isArray(value)) {
+			for (const item of value) walk(item, where, owner, key);
+			return;
+		}
+		if (value === null || typeof value !== 'object') return;
+		const node = value as Record<string, unknown>;
+		const type = typeof node.type === 'string' ? node.type : undefined;
+		if (type !== undefined && !TEMPLATE_NODES.has(type) && typeof node.start === 'number' && typeof node.end === 'number') {
+			const text = source.slice(node.start, node.end);
+			// What binds a name is read as a parameter, where a default may be written.
+			const binds =
+				(owner === 'EachBlock' && key === 'context') ||
+				(owner === 'AwaitBlock' && (key === 'value' || key === 'error')) ||
+				(owner === 'SnippetBlock' && key === 'parameters');
+			found.push({ tree: parse(type === 'VariableDeclaration' ? `${text};` : binds ? `(function (${text}) {});` : `(${text});`), where });
+			return;
+		}
+		const here = type === undefined ? where : markupName(node, key, where);
+		for (const [field, child] of Object.entries(node)) if (!SKIP.has(field)) walk(child, here, type ?? owner, field);
+	};
+	walk(root.options, 'markup <svelte:options>', undefined, 'options');
+	walk(root.fragment, 'markup', 'Root', 'fragment');
+	return found;
+}
+
+/**
+ * The two writes that send a body other than JSON, the gate's `UPLOADS`: by
+ * file and the text of the address each sends to.
+ */
+const PAGE_UPLOADS = [
+	{ file: 'src/lib/components/card/CardAttachments.svelte', url: '`/api/cards/${cardId}/attachments`' },
+	{ file: 'src/lib/components/admin/BackupRestorePanel.svelte', url: '`/api/admin/import?outside=${importOutside}`' }
+];
+
+/** The three that hand on a caller's own `init`, written `fetch(input, init)`: by file. */
+const PASS_THROUGHS = ['src/lib/board/board-state.svelte.ts', 'src/lib/live-stream.ts', 'src/lib/signed-out.ts'];
+
+/**
+ * The references to `fetch` that are not a call of it, each let off by file,
+ * place and text: how the pass-throughs are put in place and handed on. The
+ * client hook hands `window.fetch` to signed-out.ts's `watchForSignOut` and
+ * puts what it gives back in its place; the board state keeps the `fetch` it
+ * is given, or its pass-through, and hands it to `askForContents`, which
+ * calls it with a literal address; the live stream hands its own to
+ * `streamVerdict`, which calls it as a read. Any other is a `fetch` this scan
+ * cannot follow, and fails.
+ */
+const HANDED_ON = [
+	'src/hooks.client.ts › init › window.fetch (assigned to)',
+	'src/hooks.client.ts › init › window.fetch (object of .bind)',
+	'src/lib/board/board-state.svelte.ts › (top) › options.fetch (value)',
+	'src/lib/board/board-state.svelte.ts › (top) › this.#fetch (assigned to)',
+	'src/lib/board/board-state.svelte.ts › (top) › this.#fetch (argument of askForContents)',
+	'src/lib/live-stream.ts › ask › env.fetch (argument of streamVerdict)'
+];
+
+/** An expression without the parentheses, `as`, `satisfies` and `!` around it. */
+function bare(node: ts.Expression): ts.Expression {
+	while (ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isSatisfiesExpression(node) || ts.isNonNullExpression(node)) node = node.expression;
+	return node;
+}
+
+/** A property's key as written, or null for a computed one, which could be any. */
+function keyOf(property: ts.ObjectLiteralElementLike): string | null {
+	if (ts.isSpreadAssignment(property)) return null;
+	const name = property.name;
+	return ts.isIdentifier(name) || ts.isStringLiteralLike(name) || ts.isNumericLiteral(name) ? name.text : null;
+}
+
+/**
+ * `fetch` by name: the identifier, shadowed or not, or a property named
+ * `fetch` (`window.fetch`, `this.#fetch`, `window['fetch']`).
+ */
+function namesFetch(node: ts.Node): boolean {
+	if (ts.isIdentifier(node)) return node.text === 'fetch';
+	if (ts.isPropertyAccessExpression(node)) return node.name.text === 'fetch' || node.name.text === '#fetch';
+	if (ts.isElementAccessExpression(node)) return ts.isStringLiteralLike(node.argumentExpression) && node.argumentExpression.text === 'fetch';
+	return false;
+}
+
+/** A call of `fetch` (`namesFetch`). */
+function isFetch(call: ts.CallExpression): boolean {
+	return namesFetch(bare(call.expression));
+}
+
+/** The node with the parentheses, `as`, `satisfies` and `!` around it: what its parent sees. */
+function outermost(node: ts.Node): ts.Node {
+	let at = node;
+	while (ts.isParenthesizedExpression(at.parent) || ts.isAsExpression(at.parent) || ts.isSatisfiesExpression(at.parent) || ts.isNonNullExpression(at.parent)) at = at.parent;
+	return at;
+}
+
+/**
+ * How `fetch` is used where it is named and not called: `(assigned to)`,
+ * `(argument of g)`, `(object of .call)` for `fetch.call`, `fetch.apply` or
+ * `fetch.bind`, `(taken out as f)` for `const { fetch: f } = window`, or
+ * `(value)`: an alias, a shorthand `{ fetch }`, a default. Null where it is
+ * not such a reference: the callee of a call (read as a call), a name being
+ * declared (a parameter, a variable, a property's key or a member), the name
+ * of `window.fetch` (read as the whole), or a type (`typeof fetch`).
+ */
+function fetchReference(node: ts.Node): string | null {
+	if (!namesFetch(node)) return null;
+	const parent = node.parent;
+	if (ts.isIdentifier(node)) {
+		if (ts.isPropertyAccessExpression(parent) && parent.name === node) return null;
+		if (ts.isBindingElement(parent) && parent.propertyName === node) {
+			return ts.isIdentifier(parent.name) && parent.name.text === 'fetch' ? null : `taken out as ${parent.name.getText()}`;
+		}
+		const declared =
+			(ts.isParameter(parent) || ts.isVariableDeclaration(parent) || ts.isBindingElement(parent) || ts.isFunctionDeclaration(parent)) &&
+			parent.name === node;
+		const keyed =
+			(ts.isPropertyAssignment(parent) ||
+				ts.isPropertySignature(parent) ||
+				ts.isPropertyDeclaration(parent) ||
+				ts.isMethodDeclaration(parent) ||
+				ts.isMethodSignature(parent)) &&
+			parent.name === node;
+		if (declared || keyed || ts.isImportSpecifier(parent) || ts.isImportClause(parent) || ts.isNamespaceImport(parent)) return null;
+	}
+	if (ts.findAncestor(node, ts.isTypeNode)) return null;
+	const at = outermost(node);
+	const user = at.parent;
+	if (ts.isCallExpression(user) && user.expression === at) return null;
+	if (ts.isBinaryExpression(user) && user.left === at && user.operatorToken.kind === ts.SyntaxKind.EqualsToken) return 'assigned to';
+	if ((ts.isCallExpression(user) || ts.isNewExpression(user)) && user.arguments?.includes(at as ts.Expression)) {
+		return `argument of ${user.expression.getText().replace(/\s+/g, ' ')}`;
+	}
+	if (ts.isPropertyAccessExpression(user) && user.expression === at) return `object of .${user.name.text}`;
+	return 'value';
+}
+
+/** `new Request(...)`: a request built whole, method, headers and all, that a `fetch` of it sends as built. */
+function isNewRequest(node: ts.Node): node is ts.NewExpression {
+	if (!ts.isNewExpression(node)) return false;
+	const made = bare(node.expression);
+	return (ts.isIdentifier(made) && made.text === 'Request') || (ts.isPropertyAccessExpression(made) && made.name.text === 'Request');
+}
+
+/**
+ * Whether an address is plainly text, so a `fetch` of it with no method is a
+ * `GET`: a string or template literal, a `+` with one, or a conditional of
+ * two. Anything else could be a `Request`, which carries its own method.
+ */
+function isLiteralAddress(input: ts.Expression | undefined): boolean {
+	if (input === undefined) return false;
+	const node = bare(input);
+	if (ts.isStringLiteralLike(node) || ts.isTemplateExpression(node)) return true;
+	if (ts.isConditionalExpression(node)) return isLiteralAddress(node.whenTrue) && isLiteralAddress(node.whenFalse);
+	if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) return isLiteralAddress(node.left) || isLiteralAddress(node.right);
+	return false;
+}
+
+/**
+ * What an init says of the method: `read` for an object literal whose
+ * method, as the last word on it, is `'GET'` or `'HEAD'`; `unnamed` for none,
+ * or an object literal that names no method and spreads nothing; `write` for
+ * anything else: another method, a shorthand, a conditional, a variable, a
+ * spread, or an init that cannot be read.
+ */
+function methodOf(init: ts.Expression | undefined): 'read' | 'unnamed' | 'write' {
+	if (init === undefined) return 'unnamed';
+	const object = bare(init);
+	if (!ts.isObjectLiteralExpression(object)) return 'write';
+	let method: 'read' | 'unnamed' | 'write' = 'unnamed';
+	for (const property of object.properties) {
+		const key = keyOf(property);
+		if (key === null) method = 'write';
+		else if (key === 'method') {
+			const value = ts.isPropertyAssignment(property) ? bare(property.initializer) : null;
+			method = value !== null && ts.isStringLiteralLike(value) && (value.text === 'GET' || value.text === 'HEAD') ? 'read' : 'write';
+		}
+	}
+	return method;
+}
+
+/**
+ * Whether a call of `fetch` is plainly a read: its init says `GET` or `HEAD`,
+ * or names no method and its address is plainly text (`isLiteralAddress`).
+ * Anything else is a write, or one that cannot be read, which is held to the
+ * same rule: `fetch(request)` and `fetch(request, { signal })` send the
+ * method a `Request` was built with.
+ */
+function readsOnly(call: ts.CallExpression): boolean {
+	if (call.arguments.some(ts.isSpreadElement)) return false;
+	const [input, init] = call.arguments;
+	const method = methodOf(init);
+	return method === 'read' || (method === 'unnamed' && isLiteralAddress(input));
+}
+
+/** Whether a spread in an init could bring `headers` with it: unless it is plainly an object without them. */
+function mayBringHeaders(spread: ts.Expression): boolean {
+	const node = bare(spread);
+	if (ts.isConditionalExpression(node)) return mayBringHeaders(node.whenTrue) || mayBringHeaders(node.whenFalse);
+	if (!ts.isObjectLiteralExpression(node)) return true;
+	return node.properties.some((property) => (ts.isSpreadAssignment(property) ? mayBringHeaders(property.expression) : keyOf(property) === null || keyOf(property) === 'headers'));
+}
+
+/**
+ * Whether an init sends a literal `Content-Type: application/json`: its last
+ * `headers` is an object literal whose last `Content-Type` key (any case) is
+ * a string literal of that media type, with no spread after it, and nothing
+ * spread into the init after it that could bring other headers.
+ */
+function saysJsonLiterally(init: ts.Expression | undefined): boolean {
+	if (init === undefined) return false;
+	const object = bare(init);
+	if (!ts.isObjectLiteralExpression(object)) return false;
+	let json = false;
+	for (const property of object.properties) {
+		if (ts.isSpreadAssignment(property)) {
+			if (mayBringHeaders(property.expression)) json = false;
+			continue;
+		}
+		const key = keyOf(property);
+		if (key === null) json = false;
+		else if (key === 'headers') json = ts.isPropertyAssignment(property) && headersSayJson(property.initializer);
+	}
+	return json;
+}
+
+function headersSayJson(given: ts.Expression): boolean {
+	const headers = bare(given);
+	if (!ts.isObjectLiteralExpression(headers)) return false;
+	let json = false;
+	for (const property of headers.properties) {
+		const key = keyOf(property);
+		if (key === null) json = false;
+		else if (key.toLowerCase() === 'content-type') {
+			const value = ts.isPropertyAssignment(property) ? bare(property.initializer) : null;
+			json = value !== null && ts.isStringLiteralLike(value) && value.text.split(';')[0].trim().toLowerCase() === 'application/json';
+		}
+	}
+	return json;
+}
+
+/**
+ * A write a page sends, as `file › where › fetch(address)`, or what could
+ * send one unseen: a `fetch` named and not called, `file › where › text
+ * (how)`; a `new Request(...)`; code that cannot be read, `file › where ›
+ * cannot be read`. With what lets it through, or null.
+ */
+type PageWrite = { at: string; passes: 'json' | 'upload' | 'pass-through' | null };
+
+/** A node's text on one line. */
+const oneLine = (node: ts.Node | undefined) => (node?.getText() ?? '').replace(/\s+/g, ' ');
+
+/**
+ * Every `fetch` in a file that is not plainly a read (`readsOnly`), and why it
+ * may be sent: a literal JSON type, one of the two uploads, or one of the
+ * three pass-throughs. The address is not read for the rule. And everything
+ * that would send a request this cannot see, each failing unless it is a
+ * pass-through's own (`HANDED_ON`): `fetch` named and not called, a
+ * `new Request(...)`, and code TypeScript could not read as written. Every
+ * piece of code is read, a Svelte file's markup whole (`everyCodeOf`).
+ */
+function pageWritesIn(file: string, source: string): PageWrite[] {
+	const found: PageWrite[] = [];
+	for (const { tree, where } of everyCodeOf(file, source)) {
+		if (unreadable(tree)) found.push({ at: `${file} › ${where ?? 'script'} › cannot be read`, passes: null });
+		const visit = (node: ts.Node) => {
+			const reference = fetchReference(node);
+			if (reference !== null) {
+				const at = `${file} › ${where ?? enclosingName(node)} › ${oneLine(node)} (${reference})`;
+				found.push({ at, passes: HANDED_ON.includes(at) ? 'pass-through' : null });
+			}
+			if (isNewRequest(node)) found.push({ at: `${file} › ${where ?? enclosingName(node)} › new Request(${oneLine(node.arguments?.[0])})`, passes: null });
+			if (ts.isCallExpression(node) && isFetch(node)) {
+				const [input, init] = node.arguments;
+				if (!readsOnly(node)) {
+					const at = `${file} › ${where ?? enclosingName(node)} › fetch(${oneLine(input)})`;
+					const passes =
+						PASS_THROUGHS.includes(file) && node.getText() === 'fetch(input, init)'
+							? 'pass-through'
+							: PAGE_UPLOADS.some((upload) => upload.file === file && input?.getText() === upload.url)
+								? 'upload'
+								: saysJsonLiterally(init)
+									? 'json'
+									: null;
+					found.push({ at, passes });
+				}
+			}
+			ts.forEachChild(node, visit);
+		};
+		visit(tree);
+	}
+	return found;
+}
+
+/** The writes of a source that nothing lets through, and what could send one unseen. */
+const unsaidIn = (file: string, source: string) => pageWritesIn(file, source).filter((write) => write.passes === null).map((write) => write.at);
+
+describe('every page write says it is JSON, read from the source and failing closed (card 2700, case 9)', () => {
+	// The gate answers 415 to a write to an internal route that does not say it
+	// is JSON, body or not, but for the two uploads (`UPLOADS` in
+	// $lib/server/same-origin.ts). A page call that left the type out would be
+	// refused in the browser; this finds it first.
+	it('(a) finds none in the tree, reads more than 100 writes, and lets off the two uploads and the pass-throughs alone', () => {
+		const files = clientFiles();
+		const writes = files.flatMap((file) => pageWritesIn(file, readFileSync(join(ROOT, file), 'utf8')));
+		const accepted = writes.filter((write) => write.passes === 'json').map((write) => write.at);
+
+		// The glob: the client's own files in, the server's out.
+		expect(files).toEqual(
+			expect.arrayContaining(['src/hooks.client.ts', 'src/lib/api.ts', 'src/routes/+layout.svelte', 'src/lib/board/board-state.svelte.ts'])
+		);
+		expect(files.filter((file) => /^src\/lib\/server\/|\/\+(server|page\.server|layout\.server)\.|(^|\/)hooks\.server\./.test(file))).toEqual([]);
+		expect(writes.filter((write) => write.passes === null).map((write) => write.at)).toEqual([]);
+		expect(writes.length).toBeGreaterThan(100);
+		// The forms that have to be read: the `method,` shorthand and a variable
+		// address, a conditional address and method, and variable addresses.
+		expect(accepted).toEqual(
+			expect.arrayContaining([
+				'src/lib/api.ts › jsonRequest › fetch(url)',
+				"src/lib/components/admin/people/PersonDialog.svelte › save › fetch(start ? `/api/people/${start.id}` : '/api/people')",
+				'src/lib/components/decision/ResponseForm.svelte › send › fetch(url)',
+				'src/lib/decision-seen.ts › send › fetch(url)'
+			])
+		);
+		expect(
+			writes
+				.filter((write) => write.passes === 'upload' || write.passes === 'pass-through')
+				.map((write) => `${write.passes}: ${write.at}`)
+				.sort()
+		).toEqual(
+			[
+				...HANDED_ON.map((at) => `pass-through: ${at}`),
+				'pass-through: src/lib/board/board-state.svelte.ts › (top) › fetch(input)',
+				'pass-through: src/lib/live-stream.ts › theBrowser › fetch(input)',
+				'pass-through: src/lib/signed-out.ts › watchForSignOut › fetch(input)',
+				'upload: src/lib/components/admin/BackupRestorePanel.svelte › handleFileSelected › fetch(`/api/admin/import?outside=${importOutside}`)',
+				'upload: src/lib/components/card/CardAttachments.svelte › uploadFile › fetch(`/api/cards/${cardId}/attachments`)'
+			].sort()
+		);
+	});
+
+	it('(b) reports a write with no headers', () => {
+		expect(unsaidIn('src/lib/x.ts', "fetch('/api/x', { method: 'POST' });")).toEqual(["src/lib/x.ts › (top) › fetch('/api/x')"]);
+	});
+
+	it('(c) reports the `method,` shorthand with no type', () => {
+		expect(unsaidIn('src/lib/x.ts', 'fetch(url, { method, body });')).toEqual(['src/lib/x.ts › (top) › fetch(url)']);
+	});
+
+	it('(d) reports a conditional method with no type', () => {
+		expect(unsaidIn('src/lib/x.ts', "fetch(u, { method: c ? 'PUT' : 'DELETE' });")).toEqual(['src/lib/x.ts › (top) › fetch(u)']);
+	});
+
+	it('(e) reports an init that cannot be read, outside the named pass-throughs', () => {
+		expect(unsaidIn('src/lib/x.ts', 'fetch(u, init);\nfetch(input, init);')).toEqual(['src/lib/x.ts › (top) › fetch(u)', 'src/lib/x.ts › (top) › fetch(input)']);
+		// A named pass-through's file lets off `fetch(input, init)` alone.
+		expect(unsaidIn('src/lib/live-stream.ts', 'fetch(u, init);')).toEqual(['src/lib/live-stream.ts › (top) › fetch(u)']);
+	});
+
+	it('(f) reports a type that is not a literal, and headers that are not an object literal', () => {
+		const source = ["fetch(u, { method: 'POST', headers: { 'Content-Type': type } });", "fetch(v, { method: 'POST', headers: h });"].join('\n');
+
+		expect(unsaidIn('src/lib/x.ts', source)).toEqual(['src/lib/x.ts › (top) › fetch(u)', 'src/lib/x.ts › (top) › fetch(v)']);
+	});
+
+	it('(g) reports a spread after the type', () => {
+		const source = [
+			"fetch(u, { method: 'POST', headers: { 'Content-Type': 'application/json', ...more } });",
+			"fetch(v, { method: 'POST', headers: { 'Content-Type': 'application/json' }, ...rest });"
+		].join('\n');
+
+		expect(unsaidIn('src/lib/x.ts', source)).toEqual(['src/lib/x.ts › (top) › fetch(u)', 'src/lib/x.ts › (top) › fetch(v)']);
+	});
+
+	it('(h) reports a write in a .svelte file’s markup', () => {
+		const page = ['<script lang="ts">', '\tlet n = 1;', '</script>', "<button onclick={() => fetch('/api/x', { method: 'DELETE' })}>x</button>"].join('\n');
+
+		expect(unsaidIn('src/routes/x/+page.svelte', page)).toEqual(["src/routes/x/+page.svelte › markup onclick › fetch('/api/x')"]);
+	});
+
+	it('(i) does not report a read, or a write that says it is JSON whatever its address', () => {
+		const source = [
+			"fetch('/api/x');",
+			"fetch('/api/x', { method: 'GET' });",
+			"fetch('/api/x', { method: 'HEAD' });",
+			"fetch(c ? a : b, { method: 'POST', headers: { 'content-type': 'application/json' } });"
+		].join('\n');
+
+		expect(unsaidIn('src/lib/x.ts', source)).toEqual([]);
+		expect(pageWritesIn('src/lib/x.ts', source).map((write) => write.at)).toEqual(['src/lib/x.ts › (top) › fetch(c ? a : b)']);
+	});
+
+	// Svelte's own parser reads every expression of the markup, wherever it is.
+	it.each([
+		{ form: '{#await}', markup: "{#await fetch('/api/x', { method: 'POST' })}{/await}", where: 'markup {#await}' },
+		{ form: '{@const}', markup: "{#if shown}{@const sent = fetch('/api/x', { method: 'POST' })}{/if}", where: 'markup {@const}' },
+		{ form: 'use:', markup: "<div use:act={() => fetch('/api/x', { method: 'POST' })}></div>", where: 'markup use:act' },
+		{ form: 'bind:', markup: "<input bind:value={() => fetch('/api/x', { method: 'POST' }), (v) => v} />", where: 'markup bind:value' },
+		{ form: 'an attribute', markup: "<div title={fetch('/api/x', { method: 'POST' })}></div>", where: 'markup title' },
+		{ form: 'legacy on:', markup: "<button on:click={() => fetch('/api/x', { method: 'POST' })}>x</button>", where: 'markup on:click' },
+		{ form: 'a tag in text', markup: "<p>{fetch('/api/x', { method: 'POST' })}</p>", where: 'markup {…}' }
+	])('(j) reports a write in the markup’s $form', ({ markup, where }) => {
+		expect(unsaidIn('src/routes/x/+page.svelte', markup)).toEqual([`src/routes/x/+page.svelte › ${where} › fetch('/api/x')`]);
+	});
+
+	it('(k) reports a new Request(...), and a fetch of one', () => {
+		expect(unsaidIn('src/lib/x.ts', "const made = new Request('/api/x', { method: 'POST' });")).toEqual(["src/lib/x.ts › (top) › new Request('/api/x')"]);
+		expect(unsaidIn('src/lib/x.ts', "fetch(new window.Request('/api/x', { method: 'POST' }));")).toEqual([
+			"src/lib/x.ts › (top) › fetch(new window.Request('/api/x', { method: 'POST' }))",
+			"src/lib/x.ts › (top) › new Request('/api/x')"
+		]);
+	});
+
+	it('(l) reports fetch named and not called: an alias, call, apply, an argument, a shorthand, taken out, assigned', () => {
+		const source = [
+			'const f = fetch;',
+			"fetch.call(null, '/api/x', { method: 'POST' });",
+			"fetch.apply(null, ['/api/x']);",
+			'send(fetch);',
+			'const held = { fetch };',
+			'const { fetch: g } = window;',
+			'window.fetch = f;',
+			// A pass-through's own, outside its file.
+			'window.fetch = watch(window.fetch.bind(window));'
+		].join('\n');
+
+		expect(unsaidIn('src/lib/x.ts', source)).toEqual([
+			'src/lib/x.ts › (top) › fetch (value)',
+			'src/lib/x.ts › (top) › fetch (object of .call)',
+			'src/lib/x.ts › (top) › fetch (object of .apply)',
+			'src/lib/x.ts › (top) › fetch (argument of send)',
+			'src/lib/x.ts › (top) › fetch (value)',
+			'src/lib/x.ts › (top) › fetch (taken out as g)',
+			'src/lib/x.ts › (top) › window.fetch (assigned to)',
+			'src/lib/x.ts › (top) › window.fetch (assigned to)',
+			'src/lib/x.ts › (top) › window.fetch (object of .bind)'
+		]);
+	});
+
+	it('(m) reports a fetch whose address is not plainly text and whose init names no method', () => {
+		expect(unsaidIn('src/lib/x.ts', ['fetch(req);', 'fetch(req, { signal });', 'fetch();'].join('\n'))).toEqual([
+			'src/lib/x.ts › (top) › fetch(req)',
+			'src/lib/x.ts › (top) › fetch(req)',
+			'src/lib/x.ts › (top) › fetch()'
+		]);
+	});
+
+	it('(n) reports code it cannot read as written', () => {
+		expect(unsaidIn('src/lib/x.ts', "fetch('/api/x', { method: 'POST' ")).toContain('src/lib/x.ts › script › cannot be read');
+	});
+
+	it('(o) does not report a name declared, a type, a key, or a read of a text address', () => {
+		const source = [
+			'export async function load({ fetch }) { return fetch(`/api/x/${id}`); }',
+			'function ask(fetch: F) { return fetch(url, { method: "GET" }); }',
+			'type F = typeof fetch;',
+			'interface E { fetch: F }',
+			'const env = { fetch: (input, init) => go(input, init) };',
+			"fetch('/api/' + id);",
+			"fetch(ok ? '/api/a' : `/api/b/${id}`);"
+		].join('\n');
+
+		expect(pageWritesIn('src/lib/x.ts', source)).toEqual([]);
 	});
 });
 

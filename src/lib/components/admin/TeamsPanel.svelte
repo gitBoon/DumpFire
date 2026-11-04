@@ -49,7 +49,7 @@
 	}
 
 	async function deleteTeam(teamId: number) {
-		if (!(await sent(() => fetch(`/api/teams/${teamId}`, { method: 'DELETE' }), 'Failed to delete team'))) return;
+		if (!(await sent(() => fetch(`/api/teams/${teamId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } }), 'Failed to delete team'))) return;
 		await invalidateAll();
 		showToast('Team deleted');
 	}
@@ -237,7 +237,7 @@
 
 	async function removeTeamMember(teamId: number, userId: number) {
 		// It used to say "Member removed" whatever the answer.
-		if (!(await sent(() => fetch(`/api/teams/${teamId}/members/${userId}`, { method: 'DELETE' }), 'Failed to remove member'))) return;
+		if (!(await sent(() => fetch(`/api/teams/${teamId}/members/${userId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } }), 'Failed to remove member'))) return;
 		// A role chosen for them and not saved goes with them (the card 2376 review).
 		setChosen(`${teamId}:${userId}`, null);
 		await invalidateAll();

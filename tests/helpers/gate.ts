@@ -30,7 +30,7 @@
  * breaks it fails there, by name, and not as forty failures that look like
  * the gate's.
  */
-import type { Server, SSRManifest } from '@sveltejs/kit';
+import type { RequestEvent, Server, SSRManifest } from '@sveltejs/kit';
 
 /** SvelteKit's source, as a path Vite resolves from the repository root. */
 const KIT = '/node_modules/@sveltejs/kit/src';
@@ -172,6 +172,84 @@ export async function gateApiRoutes(): Promise<string[]> {
 export async function gateRoutes(): Promise<GateRoute[]> {
 	const { routes } = await theServer();
 	return [...routes].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
+/**
+ * What a DumpFire page's `fetch` carries in a current browser: the browser's
+ * word that the request comes from the page's own origin. The gate refuses
+ * every write outside /api/v1/ that does not say so, or send this server's
+ * own `Origin` in its place (card 2700). A test of a write the page makes
+ * sends it; `gate()` never adds it itself, so that a test that sends neither
+ * is refused, as a forged request is.
+ */
+export const FROM_THE_PAGE: Readonly<Record<string, string>> = { 'sec-fetch-site': 'same-origin' };
+
+export type FakeEventOptions = {
+	/** What SvelteKit sets for a request a load makes with its own `fetch`. */
+	isSubRequest?: boolean;
+	body?: string;
+	/**
+	 * Headers handed to the gate as they are read, which no `Headers` would
+	 * hold: a line break, a character past U+00FF. `request.headers.get` answers
+	 * these first, by lower-case name.
+	 */
+	raw?: Record<string, string>;
+};
+
+/**
+ * An event for calling `handle` itself, as SvelteKit makes one, with no
+ * server: at `http://localhost`, the address `127.0.0.1`, and a cookie jar
+ * read from the `cookie` header that keeps nothing set. Sent with exactly the
+ * headers given, as `gate()` is: a caller that means "from the page" adds
+ * `FROM_THE_PAGE` itself.
+ */
+export function fakeEvent(
+	method: string,
+	path: string,
+	routeId: string | null,
+	headers: Record<string, string>,
+	{ isSubRequest = false, body, raw = {} }: FakeEventOptions = {}
+): RequestEvent {
+	const url = new URL(path, 'http://localhost');
+	const jar = new Map<string, string>();
+	for (const pair of (headers.cookie ?? '').split(';')) {
+		const at = pair.indexOf('=');
+		if (at > 0) jar.set(pair.slice(0, at).trim(), pair.slice(at + 1).trim());
+	}
+	const request = new Request(url, { method, headers, body });
+	if (Object.keys(raw).length > 0) {
+		const real = request.headers;
+		const read = (name: string) => raw[name.toLowerCase()] ?? real.get(name);
+		Object.defineProperty(request, 'headers', {
+			value: new Proxy(real, {
+				get: (target, key) => {
+					if (key === 'get') return read;
+					const value = Reflect.get(target, key, target);
+					return typeof value === 'function' ? value.bind(target) : value;
+				}
+			})
+		});
+	}
+	return {
+		request,
+		url,
+		params: {},
+		route: { id: routeId },
+		locals: {},
+		cookies: {
+			get: (name: string) => jar.get(name),
+			getAll: () => [...jar].map(([name, value]) => ({ name, value })),
+			set: () => {},
+			delete: () => {},
+			serialize: () => ''
+		},
+		getClientAddress: () => '127.0.0.1',
+		setHeaders: () => {},
+		platform: undefined,
+		isDataRequest: false,
+		isSubRequest,
+		isRemoteRequest: false
+	} as unknown as RequestEvent;
 }
 
 export type GateOptions = {

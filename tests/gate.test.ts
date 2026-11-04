@@ -33,12 +33,16 @@
  *     in, and outside `/api/v1/` SvelteKit still chooses between JSON and a
  *     page by the `Accept` header.
  */
-import { readdirSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { isHttpError, isRedirect, type RequestEvent } from '@sveltejs/kit';
+import { isHttpError, isRedirect, json, type RequestEvent } from '@sveltejs/kit';
 import { hashSync } from 'bcryptjs';
+import ts from 'typescript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sqlite } from '$lib/server/db';
+import type { Card, Column, Milestone } from '$lib/server/db/schema';
+import { SUPERADMIN_ONLY } from '$lib/server/route-guards';
+import { CROSS_SITE_REFUSED, JSON_ONLY, SUB_REQUEST_REFUSED, UPLOADS } from '$lib/server/same-origin';
 import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { failureAsJson, guardBody, isJsonAnswer, jsonInPlaceOf } from '$lib/server/api-errors';
 import { FRAMEABLE_ROUTES, SECURITY_HEADERS, preferredType, secured } from '$lib/server/gate-answers';
@@ -63,8 +67,11 @@ import { maskSecretPaths } from '$lib/server/secret-paths';
 import { reportSignInsNotOneAtATime } from '$lib/server/startup-checks';
 import { addressKey } from '$lib/server/client-address';
 import { passwordChecks } from '$lib/server/passwords';
-import { handleError } from '../src/hooks.server';
+import { handle, handleError } from '../src/hooks.server';
 import { api, routeMethods, routePatterns } from './helpers/api';
+import { effects, type Effects } from './helpers/effects';
+import { expectUnchanged, snapshotDb, type DbSnapshot } from './helpers/snapshot';
+import { handlersOf } from './helpers/source-scan';
 import { failingWrite, type FailingWrite } from './helpers/failing-write';
 import {
 	makeApiKey,
@@ -72,6 +79,7 @@ import {
 	makeBoard,
 	makeCard,
 	makeDecision,
+	makeMilestone,
 	makeParticipant,
 	makePerson,
 	makeSession,
@@ -79,7 +87,7 @@ import {
 	makeVersion,
 	resetDb
 } from './helpers/fixtures';
-import { bodyOverTheLimit, gate, gateApiRoutes, gateRoutes, type GateOptions } from './helpers/gate';
+import { bodyOverTheLimit, fakeEvent, FROM_THE_PAGE, gate, gateApiRoutes, gateRoutes, type FakeEventOptions, type GateOptions } from './helpers/gate';
 
 /** SvelteKit's source, as a path Vite resolves from the repository root, as ./helpers/gate.ts loads it. */
 const KIT = '/node_modules/@sveltejs/kit/src';
@@ -141,9 +149,11 @@ beforeEach(() => {
 	admin = makeUser({ role: 'admin' });
 	chief = makeUser({ role: 'superadmin' });
 	withKey = { authorization: `Bearer ${makeApiKey(user)}` };
-	asUser = { cookie: `${SESSION_COOKIE_NAME}=${makeSession(user)}` };
-	asAdmin = { cookie: `${SESSION_COOKIE_NAME}=${makeSession(admin)}` };
-	asChief = { cookie: `${SESSION_COOKIE_NAME}=${makeSession(chief)}` };
+	// And what the page's `fetch` says of where it comes from (card 2700): a
+	// refusal of a write from elsewhere builds its headers from the cookie alone.
+	asUser = { cookie: `${SESSION_COOKIE_NAME}=${makeSession(user)}`, ...FROM_THE_PAGE };
+	asAdmin = { cookie: `${SESSION_COOKIE_NAME}=${makeSession(admin)}`, ...FROM_THE_PAGE };
+	asChief = { cookie: `${SESSION_COOKIE_NAME}=${makeSession(chief)}`, ...FROM_THE_PAGE };
 });
 
 afterEach(() => {
@@ -1196,11 +1206,15 @@ describe('a request whose address cannot be read, to a handler that counts by ad
 		expect(targets.status).toBe(200);
 
 		// Refused for what it holds, which is the handler's own answer.
-		const submitted = await send('POST', '/api/requests', { headers: { ...formToken, ...JSON_BODY }, body: { title: '' }, ip: null });
+		const submitted = await send('POST', '/api/requests', { headers: { ...formToken, ...FROM_THE_PAGE, ...JSON_BODY }, body: { title: '' }, ip: null });
 		expect(submitted).toMatchObject({ status: 400 });
 		expect(JSON.parse(submitted.text)).toEqual({ message: 'Title is required' });
 
-		const confirmed = await send('POST', '/api/requests/999999/confirm', { headers: { ...JSON_BODY, accept: '*/*' }, body: { token: 'x' }, ip: null });
+		const confirmed = await send('POST', '/api/requests/999999/confirm', {
+			headers: { ...FROM_THE_PAGE, ...JSON_BODY, accept: '*/*' },
+			body: { token: 'x' },
+			ip: null
+		});
 		expect(confirmed.status).toBe(404);
 	});
 });
@@ -1285,7 +1299,7 @@ describe('counting an address', () => {
 
 	it('holds one IPv6 network to the public request form’s five', async () => {
 		const { issueFormToken } = await import('$lib/server/request-tokens');
-		const headers = { 'x-form-token': issueFormToken(), accept: '*/*', ...JSON_BODY };
+		const headers = { 'x-form-token': issueFormToken(), accept: '*/*', ...FROM_THE_PAGE, ...JSON_BODY };
 		const submit = (ip: string) => send('POST', '/api/requests', { headers, body: { title: '' }, ip });
 
 		for (let n = 1; n <= 5; n++) expect((await submit(`2001:db8:7:8::${n}`)).status, `request ${n}`).toBe(400);
@@ -1650,13 +1664,20 @@ describe.each([
 		expectJson(await post('[{"name":"x","title":"x","columnId":1}]'), 400, NOT_AN_OBJECT);
 	});
 
-	it('is answered 400 whatever Content-Type it is sent with', async () => {
-		// The guard is on the read, not on what the request says its body is.
+	it('is answered 415 on an internal route, and 400 on v1, whatever other Content-Type it is sent with', async () => {
+		// On v1 the guard is on the read, not on what the request says its body
+		// is. On an internal route the gate refuses a write that does not say it
+		// is JSON before anything is read (card 2700).
 		const xml = await send('POST', path, { headers: { ...caller(), 'content-type': 'application/xml' }, body: '<a/>' });
 		const none = await send('POST', path, { headers: { ...caller(), 'content-type': 'application/xml' }, body: 'null' });
 
-		expectJson(xml, 400, NOT_JSON);
-		expectJson(none, 400, NOT_AN_OBJECT);
+		if (path.startsWith('/api/v1/')) {
+			expectJson(xml, 400, NOT_JSON);
+			expectJson(none, 400, NOT_AN_OBJECT);
+		} else {
+			expectJson(xml, 415, { message: 'This route takes JSON only' });
+			expectJson(none, 415, { message: 'This route takes JSON only' });
+		}
 	});
 
 	it('changes nothing', async () => {
@@ -1748,22 +1769,472 @@ describe('a body that is not a form, sent where a form is read', () => {
 
 /**
  * The real servers pass no body on when a request has no Content-Type, and
- * `gate()` does as they do. So a body sent without one is a body that is
- * missing, however good it was.
+ * `gate()` does as they do. So on v1 a body sent without one is a body that
+ * is missing, however good it was. On an internal route the gate refuses a
+ * write that does not say it is JSON before that (card 2700): 415.
  */
 describe('a body sent with no Content-Type', () => {
 	it.each([
-		{ name: 'a v1 route', path: '/api/v1/boards', caller: () => withKey },
-		{ name: 'an internal route', path: '/api/boards', caller: () => ({ ...asUser, accept: '*/*' }) }
-	])('is answered 400 as a body that is missing, on $name, though it was valid JSON', async ({ path, caller }) => {
+		{ name: 'a v1 route', path: '/api/v1/boards', caller: () => withKey, status: 400, answer: NOT_JSON },
+		{
+			name: 'an internal route',
+			path: '/api/boards',
+			caller: () => ({ ...asUser, accept: '*/*' }),
+			status: 415,
+			answer: { message: 'This route takes JSON only' }
+		}
+	])('is answered $status on $name, though it was valid JSON', async ({ path, caller, status, answer }) => {
 		const good = '{"name":"A board"}';
 
-		expectJson(await send('POST', path, { headers: caller(), body: good }), 400, NOT_JSON);
+		expectJson(await send('POST', path, { headers: caller(), body: good }), status, answer);
 		expect(count('boards')).toBe(0);
 
-		// The same body with the header is the request it was meant to be.
+		// The same body with the header is the request it was meant to be
+		// (`asUser` is from the page: FROM_THE_PAGE).
 		expect((await send('POST', path, { headers: { ...caller(), ...JSON_BODY }, body: good })).status).toBeLessThan(300);
 		expect(count('boards')).toBe(1);
+	});
+});
+
+/**
+ * Writes from DumpFire's own pages alone (card 2700). Of every method but GET
+ * and HEAD, outside /api/v1/, form actions included, the gate refuses: a
+ * request the server makes of itself, 403; one the
+ * browser does not say comes from this origin (`Sec-Fetch-Site: same-origin`,
+ * or, with none sent, an `Origin` that is the server's own), 403; under /api/,
+ * but for the two uploads, one that does not say it is JSON, body or not, 415.
+ * Before the session cookie is read, so that a refused request slides no
+ * session and touches no row.
+ *
+ * Each refusal row builds its headers from the session cookie alone, never
+ * from `asUser`, `asAdmin` or `asChief`, which carry `FROM_THE_PAGE`. The
+ * cases are the plan's, docs/planning/card-2700-json-csrf.md section 6, by
+ * number.
+ */
+describe('a write that is not from DumpFire’s own page', () => {
+	const REFUSED = { message: CROSS_SITE_REFUSED };
+	const NOT_SAID_JSON = { message: JSON_ONLY };
+	/** Every session's expiry, set where a slide would move it from. */
+	const HELD = '2099-01-01 00:00:00';
+
+	let sent: Effects;
+	let userToken: string;
+	let chiefToken: string;
+	let column: Column;
+	let card: Card;
+	let milestone: Milestone;
+	let boardId: number;
+
+	beforeEach(() => {
+		sent = effects();
+		userToken = makeSession(user);
+		chiefToken = makeSession(chief);
+		sqlite.prepare('UPDATE sessions SET expires_at = ?').run(HELD);
+		const made = makeBoard({ owner: user });
+		boardId = made.board.id;
+		column = made.cols['To Do'];
+		card = makeCard(column);
+		milestone = makeMilestone({ board: made.board, createdBy: user });
+	});
+
+	afterEach(() => {
+		sent.restore();
+	});
+
+	/** A session's cookie, and no other header. */
+	const cookieOf = (token: string) => ({ cookie: `${SESSION_COOKIE_NAME}=${token}` });
+	const expiryOf = (token: string) => (sqlite.prepare('SELECT expires_at AS at FROM sessions WHERE id = ?').get(token) as { at: string }).at;
+
+	/** The refusal, exactly, with its security header; nothing changed, no session slid and nothing sent. */
+	function expectRefusal(res: Answer, status: number, body: unknown, before: DbSnapshot, token?: string): void {
+		expectJson(res, status, body);
+		expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+		expectUnchanged(before);
+		if (token !== undefined) expect(expiryOf(token)).toBe(HELD);
+		expect(sent.all).toEqual([]);
+	}
+
+	/** Each WARN line the gate writes while `requests` runs: its meta, and the user the line names. */
+	async function warned(requests: () => Promise<unknown>): Promise<{ meta: Record<string, unknown>; userId: number | null }[]> {
+		const lines: LogEntry[] = [];
+		const level = process.env.LOG_LEVEL;
+		const unsubscribe = subscribeToLogs((entry) => {
+			if (entry.context === 'HTTP' && entry.level === 'WARN') lines.push(entry);
+		});
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+		process.env.LOG_LEVEL = 'WARN';
+		try {
+			await requests();
+		} finally {
+			if (level === undefined) delete process.env.LOG_LEVEL;
+			else process.env.LOG_LEVEL = level;
+			unsubscribe();
+		}
+		return lines.map((line) => ({ meta: JSON.parse(line.meta ?? '{}'), userId: line.userId }));
+	}
+
+	/**
+	 * `handle` itself, given an event from `fakeEvent` (./helpers/gate.ts, as
+	 * tests/write-as.test.ts builds one), and a resolve that records whether it
+	 * was called. `raw` are headers handed to the gate as they are read, which
+	 * no `Headers` would hold: a line break, a character past U+00FF.
+	 */
+	async function handled(
+		method: string,
+		path: string,
+		routeId: string | null,
+		headers: Record<string, string>,
+		options: FakeEventOptions = {}
+	): Promise<{ res: Answer; resolved: boolean }> {
+		let resolved = false;
+		const response = await handle({
+			event: fakeEvent(method, path, routeId, headers, options),
+			resolve: async () => {
+				resolved = true;
+				return json({});
+			}
+		});
+		return {
+			res: { status: response.status, type: response.headers.get('content-type'), text: await response.text(), headers: response.headers },
+			resolved
+		};
+	}
+
+	describe('(1) refused 403 when Sec-Fetch-Site is sent and is not same-origin', () => {
+		it.each([
+			{ row: '(a)', method: 'POST', path: () => '/api/cards', body: () => ({ columnId: column.id, title: 'From a sibling host' }) },
+			{ row: '(b)', method: 'PUT', path: () => `/api/cards/${card.id}`, body: () => ({ title: 'From a sibling host' }) },
+			{ row: '(c)', method: 'PATCH', path: () => `/api/milestones/${milestone.id}`, body: () => ({ name: 'From a sibling host' }) },
+			{ row: '(d)', method: 'DELETE', path: () => `/api/cards/${card.id}`, body: () => undefined }
+		])('$row $method, as JSON from a sibling host, with an Origin that matches: Sec-Fetch-Site decides alone', async ({ method, path, body }) => {
+			const before = snapshotDb();
+
+			const res = await send(method, path(), {
+				headers: { ...cookieOf(userToken), ...JSON_BODY, 'sec-fetch-site': 'same-site', origin: 'http://localhost' },
+				body: body()
+			});
+
+			expectRefusal(res, 403, REFUSED, before, userToken);
+		});
+
+		it.each([
+			// The attacker's page's own Origin, as the browser sends it; a request
+			// no page started (`none`) carries none.
+			{ row: '(e)', site: 'same-site', origin: 'https://sibling.elecfron.com' },
+			{ row: '(f)', site: 'cross-site', origin: 'https://attacker.example.test' },
+			{ row: '(g)', site: 'none', origin: null }
+		])('$row the real attack: a body-less POST /api/admin/reset from the superadmin’s session, Sec-Fetch-Site: $site', async ({ site, origin }) => {
+			const before = snapshotDb();
+			let res!: Answer;
+
+			const metas = await warned(async () => {
+				res = await send('POST', '/api/admin/reset', {
+					headers: { ...cookieOf(chiefToken), 'sec-fetch-site': site, ...(origin === null ? {} : { origin }) }
+				});
+			});
+
+			// The session's expiry is as it was (`expectRefusal`): the line names
+			// its user by a read that slides nothing.
+			expectRefusal(res, 403, REFUSED, before, chiefToken);
+			// Every table still holds its rows.
+			expect({ users: count('users'), boards: count('boards'), cards: count('cards'), milestones: count('milestones') }).toEqual({
+				users: 3,
+				boards: 1,
+				cards: 1,
+				milestones: 1
+			});
+			expect(metas).toEqual([
+				{
+					meta: expect.objectContaining({ method: 'POST', path: '/api/admin/reset', status: 403, secFetchSite: site, origin }),
+					userId: chief.id
+				}
+			]);
+		});
+
+		it('(h) writes each header to the log line as its first 100 characters, made printable', async () => {
+			const site = 'same-site\n\x1b\u202e' + 'x'.repeat(288);
+			const origin = 'https://a.example\n\x1b\u202e' + 'y'.repeat(280);
+			expect([site.length, origin.length]).toEqual([300, 300]);
+			const before = snapshotDb();
+			let res!: Answer;
+
+			const metas = await warned(async () => {
+				({ res } = await handled('POST', '/api/admin/reset', '/api/admin/reset', cookieOf(chiefToken), {
+					raw: { 'sec-fetch-site': site, origin }
+				}));
+			});
+
+			expectRefusal(res, 403, REFUSED, before, chiefToken);
+			expect(metas.map(({ meta }) => meta)).toEqual([
+				expect.objectContaining({
+					status: 403,
+					secFetchSite: 'same-site   ' + 'x'.repeat(88),
+					origin: 'https://a.example   ' + 'y'.repeat(80)
+				})
+			]);
+		});
+	});
+
+	describe('(2) refused 403 with no Sec-Fetch-Site', () => {
+		it('(a) with an Origin of another site, and (b) with neither header', async () => {
+			for (const headers of [{ origin: 'https://elsewhere.example.test' }, {}] as Record<string, string>[]) {
+				const before = snapshotDb();
+
+				const res = await send('POST', '/api/cards', {
+					headers: { ...cookieOf(userToken), ...JSON_BODY, ...headers },
+					body: { columnId: column.id, title: 'From elsewhere' }
+				});
+
+				expectRefusal(res, 403, REFUSED, before, userToken);
+			}
+		});
+
+		it('(c) the real attack: the body-less POST /api/admin/reset with Origin: null', async () => {
+			const before = snapshotDb();
+
+			const res = await send('POST', '/api/admin/reset', { headers: { ...cookieOf(chiefToken), origin: 'null' } });
+
+			expectRefusal(res, 403, REFUSED, before, chiefToken);
+			expect(count('users')).toBe(3);
+		});
+	});
+
+	it('(3) lets through a write that says it comes from this origin: (a) by Sec-Fetch-Site, (b) by Origin', async () => {
+		for (const headers of [{ 'sec-fetch-site': 'same-origin' }, { origin: 'http://localhost' }] as Record<string, string>[]) {
+			const res = await send('POST', '/api/cards', {
+				headers: { ...cookieOf(userToken), ...JSON_BODY, ...headers },
+				body: { columnId: column.id, title: 'From the page' }
+			});
+			expect(res.status, res.text).toBe(201);
+		}
+		expect(count('cards')).toBe(3);
+	});
+
+	it.each([
+		{ row: '(a)', method: 'POST', path: () => `/api/boards/${boardId}/favourite` },
+		{ row: '(b)', method: 'PUT', path: () => `/api/cards/${card.id}` },
+		{ row: '(c)', method: 'PATCH', path: () => `/api/milestones/${milestone.id}` },
+		{ row: '(d)', method: 'DELETE', path: () => `/api/cards/${card.id}` }
+	])('(4) $row refuses $method 415 from the page with no Content-Type and no body', async ({ method, path }) => {
+		const before = snapshotDb();
+
+		const res = await send(method, path(), { headers: { ...cookieOf(userToken), ...FROM_THE_PAGE } });
+
+		expectRefusal(res, 415, NOT_SAID_JSON, before, userToken);
+	});
+
+	it('(5) takes the JSON type, body or not: (a) a body-less DELETE, (b) a POST with a charset', async () => {
+		const removed = await send('DELETE', `/api/cards/${card.id}`, { headers: { ...asUser, ...JSON_BODY } });
+		expectJson(removed, 200, { success: true });
+
+		const made = await send('POST', '/api/cards', {
+			headers: { ...asUser, 'content-type': 'application/json; charset=utf-8' },
+			body: JSON.stringify({ columnId: column.id, title: 'With a charset' })
+		});
+		expect(made.status, made.text).toBe(201);
+	});
+
+	describe('(6) the two uploads', () => {
+		it('(a) takes an attachment sent as a form from the page', async () => {
+			const form = new FormData();
+			form.append('file', new File(['hello'], 'hello.txt', { type: 'text/plain' }));
+
+			// With the page's Origin too, as a browser sends it: SvelteKit refuses a form without one first.
+			const res = await send('POST', `/api/cards/${card.id}/attachments`, {
+				headers: { ...asUser, origin: 'http://localhost', accept: '*/*' },
+				body: form
+			});
+
+			expect(res.status, res.text).toBe(200);
+			expect(count('card_attachments')).toBe(1);
+		});
+
+		it('(b) hands the import, sent as application/octet-stream from the page, on to its handler', async () => {
+			const res = await send('POST', '/api/admin/import', {
+				headers: { ...asAdmin, 'content-type': 'application/octet-stream', accept: '*/*' },
+				body: new Uint8Array([1, 2, 3])
+			});
+
+			expectJson(res, 403, { message: SUPERADMIN_ONLY });
+		});
+
+		it('(c) refuses the attachment upload from a sibling host, with an Origin that matches', async () => {
+			const form = new FormData();
+			form.append('file', new File(['hello'], 'hello.txt', { type: 'text/plain' }));
+			const before = snapshotDb();
+
+			const res = await send('POST', `/api/cards/${card.id}/attachments`, {
+				headers: { ...cookieOf(userToken), origin: 'http://localhost', 'sec-fetch-site': 'same-site', accept: '*/*' },
+				body: form
+			});
+
+			expectRefusal(res, 403, REFUSED, before, userToken);
+			expect(count('card_attachments')).toBe(0);
+		});
+	});
+
+	describe('(7) what the rules leave alone, and what they do not', () => {
+		it('(a) leaves a GET alone, from anywhere', async () => {
+			const res = await send('GET', '/api/cards/search?q=x', { headers: { ...cookieOf(userToken), 'sec-fetch-site': 'cross-site' } });
+
+			expect(res.status, res.text).toBe(200);
+		});
+
+		it('(b) leaves /api/v1/ alone: a key, and neither header', async () => {
+			const res = await send('POST', '/api/v1/boards', { headers: withKey, body: { name: 'By key' } });
+
+			expect(res.status, res.text).toBe(201);
+		});
+
+		it('(c) includes a public route: POST /api/requests from a sibling host, with no session', async () => {
+			const before = snapshotDb();
+
+			const res = await send('POST', '/api/requests', {
+				headers: { ...JSON_BODY, 'sec-fetch-site': 'same-site', accept: '*/*' },
+				body: { title: 'From a sibling host' }
+			});
+
+			expectRefusal(res, 403, REFUSED, before);
+			expect(count('task_requests')).toBe(0);
+		});
+
+		it('(d) includes a form action: the right name and password posted to /login from a sibling host', async () => {
+			sqlite.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashSync('right', 4), user.id);
+			const before = snapshotDb();
+
+			const res = await send('POST', '/login', {
+				headers: {
+					'content-type': 'application/x-www-form-urlencoded',
+					// So that SvelteKit's own check lets it by, as it does any Origin that matches.
+					origin: 'http://localhost',
+					'sec-fetch-site': 'same-site',
+					accept: 'text/html'
+				},
+				body: `identity=${encodeURIComponent(user.username)}&password=right`
+			});
+
+			expectRefusal(res, 403, REFUSED, before);
+			expect(res.headers.get('set-cookie')).toBeNull();
+
+			// A wrong password, the same way. Let through, it would be counted
+			// and kept (a right one is given back on success, so its count tells
+			// nothing): refused, no attempt was counted at the address, and the
+			// next is its first.
+			const wrong = await send('POST', '/login', {
+				headers: {
+					'content-type': 'application/x-www-form-urlencoded',
+					origin: 'http://localhost',
+					'sec-fetch-site': 'same-site',
+					accept: 'text/html'
+				},
+				body: `identity=${encodeURIComponent(user.username)}&password=wrong`
+			});
+			expectRefusal(wrong, 403, REFUSED, before);
+			expect(countSignInAttempt(addressKey('127.0.0.1'), 'user:probe').attempts).toBe(1);
+		});
+
+		it('(e) refuses a write the server makes of itself, and hands its GET on', async () => {
+			const asSubRequest = { ...cookieOf(userToken), ...JSON_BODY, origin: 'http://localhost' };
+			const before = snapshotDb();
+
+			const write = await handled('POST', '/api/cards', '/api/cards', asSubRequest, {
+				isSubRequest: true,
+				body: JSON.stringify({ columnId: column.id, title: 'From a load' })
+			});
+
+			expectRefusal(write.res, 403, { message: SUB_REQUEST_REFUSED }, before, userToken);
+			expect(write.resolved).toBe(false);
+
+			const read = await handled('GET', '/api/cards', '/api/cards', asSubRequest, { isSubRequest: true });
+			expect(read.resolved).toBe(true);
+		});
+
+		it('(e2) refuses a write the server makes of itself to a form action, as to any route outside /api/v1/', async () => {
+			sqlite.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashSync('right', 4), user.id);
+			const before = snapshotDb();
+
+			const write = await handled(
+				'POST',
+				'/login',
+				'/login',
+				{ 'content-type': 'application/x-www-form-urlencoded', origin: 'http://localhost', accept: 'text/html' },
+				{ isSubRequest: true, body: `identity=${encodeURIComponent(user.username)}&password=right` }
+			);
+
+			expectRefusal(write.res, 403, { message: SUB_REQUEST_REFUSED }, before);
+			expect(write.resolved).toBe(false);
+		});
+	});
+
+	// (8) An allowlist pin, read from the source and failing closed: a new
+	// route that reads a body other than as JSON fails here until it is listed
+	// in UPLOADS, with its reason.
+	it('(8) leaves the type to exactly the internal handlers that read a body other than as JSON', async () => {
+		expect(Object.keys(UPLOADS).sort()).toEqual(['POST /api/admin/import', 'POST /api/cards/[id]/attachments']);
+		for (const key of Object.keys(UPLOADS)) {
+			const [method, id] = key.split(' ');
+			expect(await routeMethods(id), key).toContain(method);
+		}
+
+		const READERS = new Set(['formData', 'arrayBuffer', 'text', 'blob', 'bytes']);
+		const ofTheRequest = /(^|\.)request(\.clone\(\))?$/;
+		const root = join(process.cwd(), 'src/routes/api');
+		const files = (readdirSync(root, { recursive: true }) as string[])
+			.map((file) => file.split('\\').join('/'))
+			.filter((file) => (file === '+server.ts' || file.endsWith('/+server.ts')) && !file.startsWith('v1/'));
+		const found: string[] = [];
+		const unread: string[] = [];
+		let handlers = 0;
+		for (const file of files) {
+			const id = file === '+server.ts' ? '/api' : `/api/${file.slice(0, -'/+server.ts'.length)}`;
+			const tree = ts.createSourceFile(file, readFileSync(join(root, file), 'utf8'), ts.ScriptTarget.Latest, true);
+			// The request under another name: `{ request: req }`, in a handler's
+			// parameter or taken out of the event, or `const req = event.request`.
+			const aliases = new Set<string>();
+			const named = (node: ts.Node) => {
+				if (ts.isBindingElement(node) && node.propertyName && ts.isIdentifier(node.propertyName) && node.propertyName.text === 'request' && ts.isIdentifier(node.name)) {
+					aliases.add(node.name.text);
+				}
+				if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && ofTheRequest.test(node.initializer.getText(tree))) {
+					aliases.add(node.name.text);
+				}
+				ts.forEachChild(node, named);
+			};
+			named(tree);
+			const isTheRequest = (text: string) => ofTheRequest.test(text) || aliases.has(text.replace(/\.clone\(\)$/, ''));
+			const readsTheBody = (node: ts.Node) =>
+				ts.isCallExpression(node) &&
+				ts.isPropertyAccessExpression(node.expression) &&
+				READERS.has(node.expression.name.text) &&
+				isTheRequest(node.expression.expression.getText(tree));
+			const fns = new Map<ts.Node, string[]>();
+			const reads = (node: ts.Node, into: string[], as: string) => {
+				if (readsTheBody(node)) into.push(as);
+				ts.forEachChild(node, (child) => reads(child, into, as));
+			};
+			// Each handler as ./helpers/source-scan.ts finds it, `export { handler as POST }` too.
+			for (const { method, fn } of handlersOf(tree)) {
+				handlers++;
+				// A handler that is not a function written out here cannot be read: it fails.
+				if (!fn) {
+					unread.push(`${method} ${id}`);
+					continue;
+				}
+				fns.set(fn, [...(fns.get(fn) ?? []), `${method} ${id}`]);
+			}
+			for (const [fn, as] of fns) for (const one of as) reads(fn, found, one);
+			// A read of the request anywhere else in the file cannot be put to a method: it fails too.
+			const outside = (node: ts.Node) => {
+				if (fns.has(node)) return;
+				if (readsTheBody(node)) unread.push(`${id}, outside its handlers`);
+				ts.forEachChild(node, outside);
+			};
+			outside(tree);
+		}
+
+		expect(unread).toEqual([]);
+		expect(handlers).toBeGreaterThan(100);
+		expect([...new Set(found)].sort()).toEqual(Object.keys(UPLOADS).sort());
 	});
 });
 
@@ -1940,7 +2411,7 @@ describe('what the gate leaves as it was', () => {
 		expect(page.type).toBe('text/html; charset=utf-8');
 		expect(page.text).toContain('Card not found');
 
-		const wrong = await send('PATCH', '/api/boards', { headers: asUser });
+		const wrong = await send('PATCH', '/api/boards', { headers: { ...asUser, ...JSON_BODY } });
 		expect(wrong.status).toBe(405);
 		expect(wrong.type).toBeNull();
 		expect(wrong.text).toBe('PATCH method not allowed');
@@ -2190,7 +2661,12 @@ describe('the routes a caller who is not signed in is let through to', () => {
 				const method = ['PATCH', 'PUT', 'DELETE', 'POST', ...(route.endpoint ? ['OPTIONS'] : [])].find((m) => !has.includes(m as never));
 				if (!method) throw new Error(`${route.id} has every method: choose another way to tell`);
 
-				const res = await gate(method, path);
+				// Sent as from the page outside /api/v1/, and as JSON under /api/,
+				// so that the gate's refusal of a write from elsewhere (card 2700)
+				// is not what answers it: a 405 still means it let nobody through.
+				const fromThePage = route.id.startsWith('/api/v1/') ? {} : FROM_THE_PAGE;
+				const asJson = route.id.startsWith('/api/') && !route.id.startsWith('/api/v1/') ? JSON_BODY : {};
+				const res = await gate(method, path, { headers: { ...fromThePage, ...asJson } });
 				if (res.status === 405) letThrough.push(route.id);
 				await res.body?.cancel();
 			}
@@ -2287,8 +2763,9 @@ describe('an internal route asked with no session', () => {
 		expectJson(await send('GET', '/api/events', { headers: { accept: 'text/event-stream' } }), 401, NOT_SIGNED_IN);
 		// A cookie that names no session is no session.
 		expectJson(await send('GET', '/api/boards', { headers: { cookie: `${SESSION_COOKIE_NAME}=gone`, accept: '*/*' } }), 401, NOT_SIGNED_IN);
-		// A write is answered before its body is looked at.
-		expectJson(await send('POST', '/api/cards', { headers: JSON_BODY, body: '{not json' }), 401, NOT_SIGNED_IN);
+		// A write is answered before its body is looked at. From the page, so
+		// that it is not refused as from elsewhere first (card 2700).
+		expectJson(await send('POST', '/api/cards', { headers: { ...FROM_THE_PAGE, ...JSON_BODY }, body: '{not json' }), 401, NOT_SIGNED_IN);
 		expect(count('cards')).toBe(0);
 		// `/api/v1` with nothing after it is under /api/ and not under /api/v1/:
 		// no route, and an internal path to the gate, key or no key.

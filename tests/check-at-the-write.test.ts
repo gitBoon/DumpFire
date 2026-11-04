@@ -78,6 +78,7 @@ import {
 	type BoardFixture
 } from './helpers/fixtures';
 import { watchReads } from './helpers/reads';
+import { handlersOf as exportedHandlers, type HandlerFunction } from './helpers/source-scan';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 
 beforeEach(resetDb);
@@ -199,55 +200,14 @@ function calleeOf(call: ts.CallExpression, tree: ts.SourceFile): string {
 	return call.expression.getText(tree).replace(/\s+/g, '');
 }
 
-/** A function a handler can be written as. */
-type HandlerFunction = ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression;
-
 /**
- * The function an exported handler is: `export const PUT = async (...) => {}`,
- * `export async function PUT(...)`, or a function of the file exported by name
- * (`export { handler as PUT }`). One exported by name from another file, or as
- * anything but a function written here, has no function (`fn` undefined), and
- * is reported as one this test cannot read.
+ * The function each exported handler of `METHODS` is (`handlersOf` in
+ * ./helpers/source-scan.ts, shared with tests/gate.test.ts): one that is not a
+ * function written here has no function (`fn` undefined), and is reported as
+ * one this test cannot read.
  */
 function handlersOf(tree: ts.SourceFile): { method: string; fn: HandlerFunction | undefined; at: ts.Node }[] {
-	const found: { method: string; fn: HandlerFunction | undefined; at: ts.Node }[] = [];
-	/** The function written in this file under a name, if it is one. */
-	const local = (name: string): HandlerFunction | undefined => {
-		for (const statement of tree.statements) {
-			if (ts.isFunctionDeclaration(statement) && statement.name?.text === name) return statement;
-			if (!ts.isVariableStatement(statement)) continue;
-			for (const declared of statement.declarationList.declarations) {
-				if (!ts.isIdentifier(declared.name) || declared.name.text !== name) continue;
-				const value = declared.initializer && bare(declared.initializer);
-				return value && (ts.isArrowFunction(value) || ts.isFunctionExpression(value)) ? value : undefined;
-			}
-		}
-		return undefined;
-	};
-	for (const statement of tree.statements) {
-		if (ts.isExportDeclaration(statement) && !statement.isTypeOnly && statement.exportClause && ts.isNamedExports(statement.exportClause)) {
-			for (const element of statement.exportClause.elements) {
-				if (!METHODS.includes(element.name.text)) continue;
-				const fn = statement.moduleSpecifier ? undefined : local((element.propertyName ?? element.name).text);
-				found.push({ method: element.name.text, fn, at: element });
-			}
-			continue;
-		}
-		const exported = ts.canHaveModifiers(statement) && ts.getModifiers(statement)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
-		if (!exported) continue;
-		if (ts.isFunctionDeclaration(statement) && statement.name && METHODS.includes(statement.name.text)) {
-			found.push({ method: statement.name.text, fn: statement, at: statement });
-		}
-		if (ts.isVariableStatement(statement)) {
-			for (const declared of statement.declarationList.declarations) {
-				if (!ts.isIdentifier(declared.name) || !METHODS.includes(declared.name.text)) continue;
-				const value = declared.initializer && bare(declared.initializer);
-				const fn = value && (ts.isArrowFunction(value) || ts.isFunctionExpression(value)) ? value : undefined;
-				found.push({ method: declared.name.text, fn, at: declared });
-			}
-		}
-	}
-	return found;
+	return exportedHandlers(tree, METHODS);
 }
 
 /**

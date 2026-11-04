@@ -1,9 +1,9 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.72
+version: 1.73
 status: As-Built
-date: 2026-11-03
+date: 2026-11-04
 tags:
   - authentication
   - security
@@ -41,7 +41,10 @@ tags:
   - ssrf
   - write-as
   - decision-authoring
-description: "Deep-dive into DumpFire's authentication system, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served"
+  - csrf
+  - same-origin
+  - sec-fetch-site
+description: "Deep-dive into DumpFire's authentication system, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served"
 ---
 
 # Authentication & Security
@@ -56,7 +59,11 @@ flowchart TD
     Request --> PathCheck{"Path, as the router sees it,\nstarts with /api/v1/ ?"}
 
     PathCheck -->|"Yes"| OpenApi{"/api/v1/openapi.json ?"}
-    PathCheck -->|"No"| CookieAuth["Read session cookie\ndumpfire_session"]
+    PathCheck -->|"No"| WriteCheck{"GET or HEAD ?"}
+    WriteCheck -->|"Yes"| CookieAuth["Read session cookie\ndumpfire_session"]
+    WriteCheck -->|"No: a write"| OwnPage{"From DumpFire's own page?\nsee Writes From DumpFire's Own Pages Alone"}
+    OwnPage -->|"No"| R403x["403 or 415 JSON message\nno session read"]
+    OwnPage -->|"Yes"| CookieAuth
 
     OpenApi -->|"Yes"| PublicDoc["Answered with no key\nand no rate limit"]
     OpenApi -->|"No"| APIAuth["Extract Bearer token\nfrom Authorization header"]
@@ -269,6 +276,142 @@ flowchart LR
 The limits are in `src/lib/server/body-limits.ts`, and the proxy's own are in
 [Upload Size Limits](deployment.md#upload-size-limits). Covered by
 `tests/body-limits.test.ts`.
+
+### Writes From DumpFire's Own Pages Alone (Card 2700)
+
+Every write outside `/api/v1/` is taken from DumpFire's own pages alone. A write is any
+method but `GET` and `HEAD`: `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS` or any other.
+
+**The threat.** The session cookie is `SameSite=Lax`, so a browser sends it with a request
+from any page of the same site, and a site is the scheme and the registrable domain, ports
+aside: a page on any other `https://*.elecfron.com` host is same-site to DumpFire. SvelteKit's
+own origin check refuses a cross-site write only when its `Content-Type` is a form's
+(urlencoded, multipart, `text/plain`), and not at all under `vite dev`. So a page on a sibling
+host that ran someone else's script could send a signed-in visitor's browser to post, with
+`mode: 'no-cors'` and no `Content-Type`, to any handler that reads no body, and it ran. Nine
+`POST`s read none: `/api/admin/reset` (which empties every table), `/api/admin/vacuum`,
+`/api/admin/reset-xp`, `/api/admin/purge-archived`, `/api/admin/boards/[id]/clear-cards`,
+`/api/admin/boards/[id]/clear-categories`, `/api/users/[id]/invite`,
+`/api/boards/[id]/favourite` and `/api/cards/[id]/restore`. A JSON body did not get through:
+with no `Content-Type` the node adapter passes no body on, and a `Content-Type` of
+`application/json` is not one a page may send to another origin without asking first (a
+preflight), which DumpFire never answers. For the same reason only a `POST` was reachable;
+`PUT`, `PATCH` and `DELETE` need a preflight too. The rule covers every method all the same.
+
+**The three rules, in order.** `refuseCrossSiteWrite()` in `src/lib/server/same-origin.ts`,
+called by the gate in `handleRequest` right after the `/api/v1/` branch and before the session
+cookie is read. For a write:
+
+1. **Outside `/api/v1/`, a request the server makes of itself is refused**, `403`
+   `{ "message": "A write may not be made by the server of itself" }`, pages and form actions
+   included. A load's `fetch` sets `Origin` to the server's own and forwards the caller's
+   cookie, so it would pass the next rule. No load makes a write; one that did would have to
+   become a call from the page.
+2. **Outside `/api/v1/`, a request the browser does not say comes from this origin is
+   refused**, `403` `{ "message": "Cross-site requests are refused" }`. Pages and the four
+   form actions (`/login`, `/logout`, `/setup`, `/invite/[token]`) are included, and so are the
+   public routes (`/api/requests*`, `/api/decision-by-link/*`), whose pages call them with
+   relative addresses.
+3. **Under `/api/` (not `/api/v1/`), a request that does not say it is JSON is refused**, body
+   or not, `415` `{ "message": "This route takes JSON only" }`, but for the two uploads below.
+   `application/json` is read before any `;`, trimmed and in any case, so a `charset` is fine.
+
+```mermaid
+flowchart TD
+    In["A request reaches handleRequest<br/>(the 400, the remote-call 404 and the 413 have run;<br/>static files never reach it)"] --> V1{"Routed path under /api/v1/ ?"}
+    V1 -->|"Yes"| Key["The v1 branch: a Bearer key, unchanged"]
+    V1 -->|"No"| Safe{"GET or HEAD ?"}
+    Safe -->|"Yes"| Session["Read the session cookie;<br/>the rules above, unchanged"]
+    Safe -->|"No"| Sub{"event.isSubRequest ?"}
+    Sub -->|"Yes"| R403s["403 A write may not be made<br/>by the server of itself"]
+    Sub -->|"No"| Site{"Sec-Fetch-Site sent?"}
+    Site -->|"Yes"| Same{"same-origin ?"}
+    Same -->|"No: same-site, cross-site,<br/>none, anything else"| R403["403 Cross-site requests are refused"]
+    Site -->|"No"| Origin{"Origin equals url.origin<br/>(ORIGIN behind the proxy) ?"}
+    Origin -->|"No, null or absent"| R403
+    Same -->|"Yes"| Api{"Under /api/ ?"}
+    Origin -->|"Yes"| Api
+    Api -->|"No: a page or a form action"| Session
+    Api -->|"Yes"| Upload{"In UPLOADS?"}
+    Upload -->|"Yes: its handler checks its own type"| Session
+    Upload -->|"No"| Json{"Content-Type, before any ';',<br/>is application/json ?"}
+    Json -->|"No, or none"| R415["415 This route takes JSON only"]
+    Json -->|"Yes, body or not"| Session
+    R403s --> Log["Logged at WARN with secFetchSite and origin,<br/>then secured(); no session read or slid"]
+    R403 --> Log
+    R415 --> Log
+```
+
+- **`Sec-Fetch-Site` decides alone when it is sent**, and only `same-origin` passes.
+  `same-site` is exactly the sibling-host threat; `cross-site` is another site; `none` is a
+  navigation the user started from the address bar or a bookmark, which a write never is.
+  `Origin` is not asked.
+- **Where it is not sent, `Origin` must be exactly the server's own** (`url.origin`), which
+  behind the proxy is `ORIGIN` (see [Deployment](deployment.md#environment-variables)).
+  `Origin: null`, from a sandboxed frame or a privacy redirect, is refused, and so is a request
+  with neither header, which is what a program sends. No program calls an internal write or a
+  form action; one that writes uses an API key and `/api/v1/`.
+- **Who sends no `Sec-Fetch-Site`.** Browsers send it only to a trustworthy origin: HTTPS, or
+  `localhost`. An installation reached over plain HTTP at any other address, and a browser older
+  than Chrome 76, Firefox 90 or Safari 16.4, relies on `Origin` equalling `ORIGIN`, sign-in
+  included. A wrong `ORIGIN` already broke sign-in there; it now refuses every write there too.
+- **Before the session is read.** Reading a session slides its expiry, which is a write, so a
+  refused request touches no row, and is answered the same whoever is or is not signed in.
+- **What still comes first**, unchanged: SvelteKit's own `403` for a cross-site form (a built
+  server), the gate's `400` `Malformed URI`, its `404` for a remote call, and its `413` for a
+  body declared too large. Each reads headers only.
+- **A path that is no route** is held to the same rules on its decoded address, so a forged
+  write to one is the `403` (or `415`) before its `404`, which tells nothing.
+- **The two uploads** are the only writes under `/api/` that take a body other than JSON,
+  listed by route id and method in `UPLOADS`: `POST /api/cards/[id]/attachments`
+  (`multipart/form-data`) and `POST /api/admin/import` (`application/octet-stream` or
+  `application/x-sqlite3`). Each is still held to rules 1 and 2. The gate does not check their
+  type: each handler does, before it reads the body, with its own `400`.
+- **Left alone:** `GET` and `HEAD`, which change nothing stored (the live-update streams are
+  `GET`), and everything under `/api/v1/`, where a key is sent in a header and no cookie is
+  read.
+- **The dev server.** SvelteKit's own form check is off under `vite dev`; the gate's is not,
+  so a form posted to an action from another `localhost` port is refused there as in a built
+  server. A page of the dev server calls it at its own origin and passes.
+- **Frames.** The request form's three pages are the only ones that may be framed. Framed on
+  another site's page, each still posts from its own DumpFire document, which is same-origin,
+  and works. A framing page that sandboxes the frame without `allow-same-origin` gives it an
+  opaque origin, and its post is refused. No such embedding is known.
+- **The answers** are JSON `{ message }` whatever the `Accept` header, returned and not
+  thrown, so the gate logs each at `WARN` (`POST /api/admin/reset → 403`) and puts the
+  security headers on it. The log line's meta carries two more fields for these three answers
+  alone, `secFetchSite` and `origin`: each header as it was sent, cut to its first 100
+  characters and passed through `printable()`, or `null` when it was absent, so a forged
+  value can neither make the line long nor break it. The line names the user whose session
+  cookie came with the request, read by `openSessionUser()`, which writes nothing and slides
+  no expiry, so an investigation sees whose session a forged write rode on.
+- **The pages say they are JSON.** Every page write sends `Content-Type: application/json`,
+  the 28 that sent none (body-less `DELETE`s and `POST`s) included; `jsonRequest` in
+  `src/lib/api.ts` always did. The request form spreads its own headers before the type, so
+  nothing can replace it. Only the two uploads send another type.
+
+Card 2677's `requireSameOriginJson` (see [The link's page and its routes](#the-links-page-and-its-routes))
+is the same two predicates, `fromThisOrigin()` and `saysJson()`, in the same order.
+
+Covered by `tests/gate.test.ts` ("a write that is not from DumpFire’s own page", cases 1 to 8:
+each `Sec-Fetch-Site` that is not `same-origin` and each `Origin` that is not the server's,
+the body-less `POST /api/admin/reset` among them with nothing changed and no session slid, the
+attacker's `Origin` and the session's user on its log line, the log line's two fields, the
+`415` for each method, the two uploads, a `GET`, v1, a public route, `/login` with a right and
+a wrong password, a sub-request to an API route and to a form action, and `UPLOADS` held to
+exactly the handlers that read a body other than as JSON, `export { handler as POST }` and
+`{ request: req }` included), and by `tests/page-failures.test.ts` (case 9). Case 9 reads
+every `.svelte`, `.ts` and `.js` file under `src` but `src/lib/server/`, `+server.*`,
+`+page.server.*`, `+layout.server.*` and `hooks.server.*`, found by a walk of the folder and
+not a list: a module whole, and a Svelte file through Svelte's own parser, its `<script>`s and
+every expression of its markup (attributes, every directive, `{…}`, every block and tag). Every
+`fetch` there that is not plainly a `GET` or `HEAD` (an init that says so, or one that names no
+method with an address that is plainly text, since a `Request` carries its own method) must
+send a literal `Content-Type: application/json`, be one of the two uploads, or be one of the
+three that hand on a caller's own `init`, in `board-state.svelte.ts`, `live-stream.ts` and
+`signed-out.ts`. It fails on `new Request(...)`, on `fetch` named and not called (an alias,
+`fetch.call`, `fetch.apply`, `fetch` handed on as an argument), but for the six places named
+that put those pass-throughs in place (`HANDED_ON`), and on code it cannot read.
 
 ### Asked Again at the Write (card 2253)
 
@@ -3659,13 +3802,17 @@ Card 2677 added the route the invitations link to. Three routes are public, by r
   the token from its address in the browser, and the page data does not carry it.
 - **Same-origin JSON only**, first, on these two and on the signed-in page's two
   (`/api/decisions/[id]/responses` and `…/seen`): `requireSameOriginJson` in
-  `src/lib/server/same-origin.ts` answers `415` `This route takes JSON only` for any
-  `Content-Type` but `application/json`, then `403` `Cross-site requests are refused` unless
-  `Sec-Fetch-Site` is `same-origin` or, with that header absent, `Origin` is the server's own. A
-  request with neither is refused. SvelteKit's origin check covers form content types alone, and
-  `SameSite=Lax` does not cover a sibling subdomain, and the link routes have no cookie to lean
-  on. A refused request reads no body, no row and no wrong-link count. The gate does not yet do
-  this for every other JSON route; that is its own card.
+  `src/lib/server/same-origin.ts` answers `403` `Cross-site requests are refused` unless
+  `Sec-Fetch-Site` is `same-origin` or, with that header absent, `Origin` is the server's own,
+  then `415` `This route takes JSON only` for any `Content-Type` but `application/json`: the
+  gate's order, so a request that fails both is `403` from either. A request with neither header
+  is refused. SvelteKit's origin check covers form content types alone, and `SameSite=Lax` does
+  not cover a sibling subdomain, and the link routes have no cookie to lean on. A refused request
+  reads no body, no row and no wrong-link count. Since card 2700 the gate does the same for every
+  write outside `/api/v1/` (see
+  [Writes From DumpFire's Own Pages Alone](#writes-from-dumpfires-own-pages-alone-card-2700)),
+  so through the gate the four calls never fire; each route keeps its own, where a personal link
+  is the only credential.
 - **One answer for every link that opens no decision.** Unknown, expired, revoked and no longer
   reaching its holder (`participantForLink`'s refusals, a token that is not text among them) are
   all `404` in the same words, on the page and on both routes: "This link does not open a
@@ -3712,8 +3859,9 @@ sequenceDiagram
     participant K as participantForLink
     participant B as refuseWrongLink
     P->>G: GET /decision-link/[token], or POST /api/decision-by-link/* { token }
-    G->>G: POST only: requireSameOriginJson (415, 403)
+    G->>G: POST only: refuseCrossSiteWrite (403, then 415)
     G->>L: public route
+    L->>L: POST only: requireSameOriginJson again (403, then 415)
     L->>K: the token's hash
     alt a link that works
         K-->>L: participant and decision (never counted)
@@ -4629,6 +4777,7 @@ which is what Reset Everything in the admin panel leaves.
 | `src/hooks.client.ts`, `src/lib/signed-out.ts` | In the browser: the watch on `fetch` that sends a signed-in page to `/login` on the first `401` that says its session has ended |
 | `src/lib/live-stream.ts` | In the browser: the live-update streams, opened again after a failure with a growing wait, and not at all after a `401`, `403` or `404` |
 | `src/lib/server/api-errors.ts` | `guardBody()`, which makes a body the caller got wrong a `400` and a body over the size limit a `413`, and `failureAsJson()`, which answers a failure that is not JSON again as JSON |
+| `src/lib/server/same-origin.ts` | Writes from DumpFire's own pages alone (card 2700): `refuseCrossSiteWrite()`, the gate's three rules for every write outside `/api/v1/`; `fromThisOrigin()`, `saysJson()`, `UPLOADS`, `refusalSeen()` for the log line, and card 2677's `requireSameOriginJson()` over the same predicates. See [Writes From DumpFire's Own Pages Alone](#writes-from-dumpfires-own-pages-alone-card-2700) |
 | `src/lib/server/body-limits.ts` | How large a request's body may be, route by route and caller by caller; the gate's `413` for a body that declares more, and the count that holds a body with no length to the same limit as it is read |
 | `src/lib/server/client-address.ts` | The caller's address, asked so that it cannot throw, and the `'unknown'` count a request with no readable address is held to; `addressKey()`, what a count by address counts, an IPv6 address by its /64 (card 2195) |
 | `src/lib/server/logger.ts` | The system log: the console, `system_logs` and the live feed, from one `emit()`; `printable()`, which puts a space in place of every control character of a line, so that a name holding a line break cannot split it (card 2214), and `UNPRINTABLE`, the class it replaces, every format character (`\p{Cf}`) among it, which a decision's title is refused for holding (card 2675) |

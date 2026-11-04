@@ -94,7 +94,7 @@ import { REQUEST_FORM_SECRET_KEY, issueFormToken, resetFormSecretCache, verifyFo
 import { maskLiveLog, reportInstallation, reportNoSuperadmin } from '$lib/server/startup-checks';
 import { api, routeMethods } from './helpers/api';
 import { makeBoard, makeCard, makeDecision, makeParticipant, makeSession, makeUser, resetDb } from './helpers/fixtures';
-import { gate, gateApiRoutes } from './helpers/gate';
+import { FROM_THE_PAGE, gate, gateApiRoutes } from './helpers/gate';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 import { afterEachTimestampCheck } from './helpers/timestamps';
 
@@ -789,7 +789,7 @@ describe('a restore', () => {
 
 		// Through the gate, as the page sends it, with the superadmin's session.
 		const res = await gate('POST', '/api/admin/import?outside=keep', {
-			headers: { cookie, 'content-type': 'application/octet-stream', accept: '*/*' },
+			headers: { cookie, ...FROM_THE_PAGE, 'content-type': 'application/octet-stream', accept: '*/*' },
 			body: new Uint8Array(backup.serialize())
 		});
 		const answer = await res.json();

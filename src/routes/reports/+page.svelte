@@ -461,7 +461,7 @@
 
 	async function deleteSchedule(scheduleId: number) {
 		const started = toasts.navigation();
-		const failure = await deleteFailure(() => fetch(`/api/report-schedules/${scheduleId}`, { method: 'DELETE' }), 'schedule');
+		const failure = await deleteFailure(() => fetch(`/api/report-schedules/${scheduleId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } }), 'schedule');
 		if (failure) {
 			toasts.add(failure, 'error', started);
 			return;

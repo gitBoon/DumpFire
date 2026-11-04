@@ -95,7 +95,7 @@ import { api, type ApiResult } from './helpers/api';
 import { eachWriteInTurn } from './helpers/each-write';
 import { effects, type Effects, type RecordedEffect } from './helpers/effects';
 import { addBoardMember, makeApiKey, makeBoard, makeCard, makeSmtp, makeUser, makeWebhook, resetDb } from './helpers/fixtures';
-import { gate } from './helpers/gate';
+import { FROM_THE_PAGE, gate } from './helpers/gate';
 import { sendAround } from './helpers/held-body';
 import { watchReads } from './helpers/reads';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
@@ -2036,7 +2036,7 @@ describe('wrong current passwords', () => {
 		// Through the gate, which finds the account from the session cookie.
 		const change = (session: string, currentPassword: string) =>
 			gate('PUT', '/api/account/password', {
-				headers: { ...from(session), accept: 'application/json' },
+				headers: { ...from(session), ...FROM_THE_PAGE, accept: 'application/json' },
 				body: { currentPassword, newPassword: NEW }
 			});
 

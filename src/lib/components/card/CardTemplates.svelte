@@ -98,7 +98,7 @@
 
 	async function deleteTemplate(id: number) {
 		templateError = '';
-		const failure = await deleteFailure(() => fetch(`/api/templates/${id}`, { method: 'DELETE' }), 'template');
+		const failure = await deleteFailure(() => fetch(`/api/templates/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } }), 'template');
 		if (failure) {
 			// It stays in the list: somebody else's template is refused.
 			templateError = failure;

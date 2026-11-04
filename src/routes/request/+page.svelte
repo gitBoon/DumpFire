@@ -65,7 +65,7 @@
 
 		const res = await fetch('/api/requests', {
 			method: 'POST',
-			headers: { 'Content-Type': 'application/json', ...formHeaders },
+			headers: { ...formHeaders, 'Content-Type': 'application/json' },
 			body: JSON.stringify({
 				targetType: type,
 				targetId,

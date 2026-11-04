@@ -67,7 +67,7 @@
 	async function restoreArchivedCard(cardId: number) {
 		// The card leaves the list only when the server says it is restored.
 		const started = toasts.navigation();
-		const failure = await deleteFailure(() => fetch(`/api/cards/${cardId}/restore`, { method: 'POST' }), 'card', 'restored');
+		const failure = await deleteFailure(() => fetch(`/api/cards/${cardId}/restore`, { method: 'POST', headers: { 'Content-Type': 'application/json' } }), 'card', 'restored');
 		if (failure) {
 			toasts.add(failure, 'error', started);
 			return;

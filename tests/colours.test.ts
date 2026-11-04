@@ -34,7 +34,7 @@ import { saveCard } from '$lib/board/card-actions';
 import { drawnColour, isHexColour, isSafeColour, NEUTRAL_COLOUR } from '$lib/colours';
 import type { ColumnType } from '$lib/types';
 import { api, type ApiResult } from './helpers/api';
-import { gate } from './helpers/gate';
+import { FROM_THE_PAGE, gate } from './helpers/gate';
 import { makeApiKey, makeBoard, makeCard, makeLabel, makeSession, makeSubtask, makeUser, resetDb } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 
@@ -250,7 +250,7 @@ describe('one refusal through the gate in each tree', () => {
 		expect(await byKey.json()).toEqual({ message: COLOUR });
 
 		// As a page's fetch sends it: `*/*`, which SvelteKit answers with JSON.
-		const asPage = { cookie: `${SESSION_COOKIE_NAME}=${makeSession(w.owner)}`, accept: '*/*' };
+		const asPage = { cookie: `${SESSION_COOKIE_NAME}=${makeSession(w.owner)}`, ...FROM_THE_PAGE, accept: '*/*' };
 		const before = snapshotDb();
 		const bySession = await gate('POST', '/api/columns', {
 			headers: asPage,

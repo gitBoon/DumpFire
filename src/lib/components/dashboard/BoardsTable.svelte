@@ -151,7 +151,7 @@
 		showStar(boardId, !was);
 		const started = failureToasts.navigation();
 		try {
-			const res = await fetch(`/api/boards/${boardId}/favourite`, { method: 'POST' });
+			const res = await fetch(`/api/boards/${boardId}/favourite`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
 			if (res.ok) {
 				showStar(boardId, (await res.json()).favourited === true);
 			} else {

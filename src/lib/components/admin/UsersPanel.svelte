@@ -389,7 +389,7 @@
 	async function deleteUser(userId: number) {
 		const started = toasts.navigation();
 		const username = data.users.find((u) => u.id === userId)?.username ?? 'the account';
-		const res = await sent(() => fetch(`/api/users/${userId}`, { method: 'DELETE' }), 'Failed to delete user');
+		const res = await sent(() => fetch(`/api/users/${userId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } }), 'Failed to delete user');
 		if (!res) return;
 		// What it had set, removed with it (card 2397): said in a warning that stays.
 		const gone = settingsNamed((await answerBody(res))?.settingsRemoved);
@@ -437,7 +437,7 @@
 		const started = toasts.navigation();
 		inviteInFlight = userId;
 		try {
-			const res = await sent(() => fetch(`/api/users/${userId}/invite`, { method: 'POST' }), 'Failed to send invite');
+			const res = await sent(() => fetch(`/api/users/${userId}/invite`, { method: 'POST', headers: { 'Content-Type': 'application/json' } }), 'Failed to send invite');
 			if (!res) return;
 			const result = await answerBody(res);
 			const said = typeof result?.message === 'string' ? result.message : '';

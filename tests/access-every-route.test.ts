@@ -2438,7 +2438,10 @@ for (const [key, entry] of Object.entries(TABLE)) {
 
 				// Sent as from DumpFire's own page (Origin), as a browser sends
 				// it: a form from anywhere else is SvelteKit's 403 before the gate.
-				const res = await gate(method, path, { body, headers: { origin: 'http://localhost', ...headers } });
+				// A request with no body says it is JSON, as the page's does: the
+				// gate refuses one that does not, 415 (card 2700).
+				const asJson: Record<string, string> = body === undefined ? { 'content-type': 'application/json' } : {};
+				const res = await gate(method, path, { body, headers: { origin: 'http://localhost', ...asJson, ...headers } });
 				const text = await res.text();
 
 				if (pattern.startsWith('/api/v1/')) {

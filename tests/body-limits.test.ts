@@ -48,7 +48,7 @@ import { subscribeToLogs, type LogEntry } from '$lib/server/logger';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import type { Card } from '$lib/server/db/schema';
 import { addBoardMember, makeApiKey, makeBoard, makeCard, makeSession, makeUser, resetDb } from './helpers/fixtures';
-import { bodyOverTheLimit, gate, gateApiRoutes, type GateOptions } from './helpers/gate';
+import { bodyOverTheLimit, FROM_THE_PAGE, gate, gateApiRoutes, type GateOptions } from './helpers/gate';
 
 const K = 1024;
 const M = 1024 * K;
@@ -253,7 +253,7 @@ describe('a request that declares a body larger than its route accepts', () => {
 
 		// No session on an internal route: a small body is answered 401, and one
 		// over the limit is refused for its size first.
-		expect((await send('POST', '/api/cards', { headers: JSON_BODY, body: '{}' })).status).toBe(401);
+		expect((await send('POST', '/api/cards', { headers: { ...FROM_THE_PAGE, ...JSON_BODY }, body: '{}' })).status).toBe(401);
 		expectTooLarge(await send('POST', '/api/cards', { headers: { ...JSON_BODY, ...declared }, body: '{}' }), DEFAULT_BODY_LIMIT);
 		// No key on a v1 route.
 		expectTooLarge(await send('POST', '/api/v1/boards', { headers: { ...JSON_BODY, ...declared }, body: '{}' }), DEFAULT_BODY_LIMIT);
@@ -387,7 +387,7 @@ describe('the import, POST /api/admin/import', () => {
 			expect(res.status).toBe(403);
 			expect(res.message).toContain('belongs to the superadmin');
 		}
-		expect(await importing({}, 2 * M)).toMatchObject({ status: 401, message: 'Not authenticated', location: null });
+		expect(await importing({ ...FROM_THE_PAGE }, 2 * M)).toMatchObject({ status: 401, message: 'Not authenticated', location: null });
 		expect(read).not.toHaveBeenCalled();
 
 		// Over the limit, it is the size that is refused, whoever sends it.
@@ -463,7 +463,7 @@ describe('a request that has a body and does not say how long it is', () => {
 		{
 			name: 'the confirmation of a public request',
 			path: '/api/requests/1/confirm',
-			headers: () => ({ ...JSON_BODY, accept: '*/*' }),
+			headers: () => ({ ...FROM_THE_PAGE, ...JSON_BODY, accept: '*/*' }),
 			limit: DEFAULT_BODY_LIMIT
 		}
 	])('is read on $name until it passes the route’s limit, and answered 413 there, with the limit', async ({ path, headers, limit }) => {
@@ -560,16 +560,22 @@ describe('a request with no body, or an empty one', () => {
 		expect((await send('GET', '/api/boards', { headers: asUser })).status).toBe(200);
 		expect((await send('GET', '/login', { headers: { accept: 'text/html' } })).status).toBe(200);
 
-		// No body, with and without a Content-Type: the card is looked for.
+		// No body: without a Content-Type it is refused, 415, as is every write
+		// under /api/ that does not say it is JSON (card 2700); with one, the
+		// card is looked for.
 		expect(await send('DELETE', '/api/cards/999999', { headers: asUser })).toMatchObject({
+			status: 415,
+			body: { message: 'This route takes JSON only' }
+		});
+		expect(await send('DELETE', '/api/cards/999999', { headers: { ...asUser, ...JSON_BODY } })).toMatchObject({
 			status: 404,
 			body: { message: 'Card not found' }
 		});
-		expect((await send('DELETE', '/api/cards/999999', { headers: { ...asUser, ...JSON_BODY } })).status).toBe(404);
 		expect((await send('DELETE', '/api/v1/cards/999999', { headers: withKey })).status).toBe(404);
 
-		// A POST with no body at all, as a button that sends nothing does.
-		expect((await send('POST', '/api/admin/vacuum', { headers: asAdmin })).status).toBe(200);
+		// A POST with no body at all, as a button that sends nothing does: it
+		// says it is JSON, as the page's does.
+		expect((await send('POST', '/api/admin/vacuum', { headers: { ...asAdmin, ...JSON_BODY } })).status).toBe(200);
 		// And one whose body is empty: it is the handler that says it is not JSON.
 		expect(await send('POST', '/api/cards', { headers: { ...asUser, ...JSON_BODY }, body: '' })).toMatchObject({
 			status: 400,

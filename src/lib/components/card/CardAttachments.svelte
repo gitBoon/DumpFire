@@ -120,7 +120,7 @@
 		if (!card) return;
 		const cardId = card.id;
 		windowError = '';
-		const failure = await deleteFailure(() => fetch(`/api/cards/${cardId}/attachments/${id}`, { method: 'DELETE' }), 'attachment');
+		const failure = await deleteFailure(() => fetch(`/api/cards/${cardId}/attachments/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } }), 'attachment');
 		if (failure) {
 			windowError = failure;
 			// And the list is read again, as when the tab was opened: a file

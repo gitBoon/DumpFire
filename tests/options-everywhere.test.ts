@@ -38,7 +38,7 @@ import type { ColumnType } from '$lib/types';
 import { api, type ApiResult } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
 import { makeApiKey, makeBoard, makeCard, makeSession, makeUser, makeWebhook, resetDb, type BoardFixture } from './helpers/fixtures';
-import { gate } from './helpers/gate';
+import { FROM_THE_PAGE, gate } from './helpers/gate';
 import { compare, stateOf, type Findings } from './rehearsal/compare';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 
@@ -673,7 +673,7 @@ describe('new work never goes into the Options column (R5)', () => {
 describe('the column conversion routes are gone (ruling O6)', () => {
 	it('answers 404 to POST /api/v1/columns/:columnId/convert, as JSON, and to the page’s POST /api/columns/:id/convert', async () => {
 		const withKey = { authorization: `Bearer ${makeApiKey(owner)}`, 'content-type': 'application/json' };
-		const asOwner = { cookie: `${SESSION_COOKIE_NAME}=${makeSession(owner)}`, 'content-type': 'application/json' };
+		const asOwner = { cookie: `${SESSION_COOKIE_NAME}=${makeSession(owner)}`, ...FROM_THE_PAGE, 'content-type': 'application/json' };
 		const column = board.cols['In Progress'].id;
 
 		const v1 = await gate('POST', `/api/v1/columns/${column}/convert`, { headers: withKey, body: { role: 'options', cards: 0 } });

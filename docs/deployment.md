@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.104
+version: 1.105
 status: As-Built
-date: 2026-11-03
+date: 2026-11-04
 tags:
   - docker
   - deployment
@@ -195,7 +195,7 @@ On the Docker host itself there is usually no Node to run the suite with outside
 |----------|---------|----------|-------------|
 | `NODE_ENV` | `production` | No | Node.js environment mode |
 | `PORT` | `3000` | No | HTTP port the server listens on |
-| `ORIGIN` | `http://localhost:3000` | **Yes** | Public URL — must match your domain exactly. Incorrect value causes CSRF failures. It is also the address every link in a mail begins with, unless an App URL is set: see [Where a Mailed Link's Address Comes From](#where-a-mailed-links-address-comes-from) |
+| `ORIGIN` | `http://localhost:3000` | **Yes** | Public URL — must match your domain exactly. Incorrect value causes CSRF failures. It must be the public origin: where a browser sends no `Sec-Fetch-Site` (over plain HTTP at any address but `localhost`, or an old browser), every write from the web application, sign-in included, is refused `403` unless its `Origin` is exactly `ORIGIN` (card 2700; see [Writes From DumpFire's Own Pages Alone](authentication-security.md#writes-from-dumpfires-own-pages-alone-card-2700)). It is also the address every link in a mail begins with, unless an App URL is set: see [Where a Mailed Link's Address Comes From](#where-a-mailed-links-address-comes-from) |
 | `APP_URL` | not set | No | The address links in mail begin with, when it should not be `ORIGIN`. The App URL on the admin page, under Application Settings, does the same and is read first |
 | `PROTOCOL_HEADER` | `X-Forwarded-Proto` | No | Header from reverse proxy indicating HTTPS. Read only when `ORIGIN` is not set |
 | `HOST_HEADER` | `X-Forwarded-Host` | No | Header from reverse proxy with original hostname. Read only when `ORIGIN` is not set, and never for a link in a mail |

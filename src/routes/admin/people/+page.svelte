@@ -90,7 +90,7 @@
 			message: deletePersonMessage(person),
 			confirmText: 'Delete',
 			action: async () => {
-				const res = await sent(() => fetch(`/api/people/${person.id}`, { method: 'DELETE' }), 'The person was not deleted');
+				const res = await sent(() => fetch(`/api/people/${person.id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } }), 'The person was not deleted');
 				if (!res) return;
 				const answer = await answerBody(res);
 				const cleared = typeof answer?.linksCleared === 'number' ? answer.linksCleared : 0;
@@ -108,7 +108,7 @@
 				'Decision records keep the group names they recorded.',
 			confirmText: 'Delete',
 			action: async () => {
-				if (!(await sent(() => fetch(`/api/people-groups/${group.id}`, { method: 'DELETE' }), 'The group was not deleted'))) return;
+				if (!(await sent(() => fetch(`/api/people-groups/${group.id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } }), 'The group was not deleted'))) return;
 				await invalidateAll();
 				showToast(`Group "${group.name}" deleted`);
 			}

@@ -54,7 +54,7 @@
 		}
 
 		try {
-			const res = await fetch(url);
+			const res = await fetch(url, { method: 'GET' });
 			if (!res.ok) return;
 			const data: GraphData = await res.json();
 

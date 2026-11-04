@@ -20,7 +20,7 @@
  * tests of the same window were written (the review of card 2168, S1).
  */
 import { SESSION_COOKIE_NAME } from '$lib/server/auth';
-import { gate } from './gate';
+import { FROM_THE_PAGE, gate } from './gate';
 
 /**
  * A body the test lets go of: bytes as they are, anything else as JSON.
@@ -63,7 +63,8 @@ export type HeldCredential = { key: string } | { session: string };
  * boundary in the header, and with the page's own `Origin`, without which
  * SvelteKit refuses a form before the gate. Bytes (a `Uint8Array`) are sent
  * as they are, for a route that takes an upload as its body (the import):
- * say what they are with a `content-type` in `headers`. `headers` are added
+ * say what they are with a `content-type` in `headers`. A session's request
+ * carries `FROM_THE_PAGE`, as the page's own `fetch` does. `headers` are added
  * to the request's own, and may replace its `content-type`, never its key or
  * session.
  */
@@ -85,9 +86,19 @@ export async function sendAround(
 		asForm.origin = 'http://localhost';
 	}
 	const held = heldBody(content);
+	// A session's request is the page's own, and says so as a current browser
+	// does (`FROM_THE_PAGE`): the gate refuses a write outside /api/v1/ that
+	// does not (card 2700). A key's is sent as an API client sends it.
+	const fromThePage = 'session' in credential ? FROM_THE_PAGE : {};
 	// Asked for as a page's script asks: SvelteKit answers a refusal to a
 	// request that asks for nothing in particular with its error page.
-	const headers: Record<string, string> = { 'content-type': contentType, accept: 'application/json', ...asForm, ...extra.headers };
+	const headers: Record<string, string> = {
+		'content-type': contentType,
+		accept: 'application/json',
+		...fromThePage,
+		...asForm,
+		...extra.headers
+	};
 	if ('key' in credential) headers.authorization = `Bearer ${credential.key}`;
 	else headers.cookie = `${SESSION_COOKIE_NAME}=${credential.session}`;
 	const sent = gate(method, path, { headers, body: held.body });

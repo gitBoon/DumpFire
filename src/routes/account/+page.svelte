@@ -334,7 +334,7 @@
 		deletingKeyId = id;
 		apiKeyError = '';
 		try {
-			const res = await fetch(`/api/account/api-keys/${id}`, { method: 'DELETE' });
+			const res = await fetch(`/api/account/api-keys/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } });
 			if (res.ok) {
 				apiKeys = apiKeys.filter(k => k.id !== id);
 			} else {

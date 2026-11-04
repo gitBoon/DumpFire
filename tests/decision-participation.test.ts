@@ -27,6 +27,7 @@ import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { addressToCount } from '$lib/server/client-address';
 import { appendEvent, SYSTEM_ACTOR } from '$lib/server/decision-record';
 import { readDecisionPage, readLinkPage, refuseWrongLink } from '$lib/server/decision-view';
+import { requireSameOriginJson } from '$lib/server/same-origin';
 import { subscribeToLogs, type LogEntry } from '$lib/server/logger';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { decisions, people, peopleGroupMembers, peopleGroups, type Board, type Decision, type DecisionOption } from '$lib/server/db/schema';
@@ -862,13 +863,23 @@ describe('the four routes, through the gate', () => {
 				['(a) text/plain', { origin: ORIGIN, 'content-type': 'text/plain' }, 415, 'This route takes JSON only'],
 				['(b) no Content-Type', { origin: ORIGIN }, 415, 'This route takes JSON only'],
 				['(c) Sec-Fetch-Site: cross-site', { ...JSON_TYPE, origin: ORIGIN, 'sec-fetch-site': 'cross-site' }, 403, 'Cross-site requests are refused'],
-				['(d) no Sec-Fetch-Site, another Origin', { ...JSON_TYPE, origin: 'https://elsewhere.example.test' }, 403, 'Cross-site requests are refused']
+				['(d) no Sec-Fetch-Site, another Origin', { ...JSON_TYPE, origin: 'https://elsewhere.example.test' }, 403, 'Cross-site requests are refused'],
+				// Fails both: the origin is asked first, by the gate and by the guard alike (card 2700, D8).
+				['(f) text/plain and Sec-Fetch-Site: cross-site', { origin: ORIGIN, 'content-type': 'text/plain', 'sec-fetch-site': 'cross-site' }, 403, 'Cross-site requests are refused']
 			];
 			for (const [name, headers, status, message] of rows) {
 				const res = await gate('POST', route.path, { headers: { ...ACCEPT, ...route.session, ...headers }, body: raw });
 				expect({ status: res.status, body: await res.json() }, `${route.path} ${name}`).toEqual({ status, body: { message } });
 			}
 		}
+		// (f), handed to the guard itself: the same answer, in the same order.
+		const url = new URL(routes[0].path, ORIGIN);
+		const both = new Request(url, {
+			method: 'POST',
+			headers: { origin: ORIGIN, 'content-type': 'text/plain', 'sec-fetch-site': 'cross-site' },
+			body: JSON.stringify(routes[0].body)
+		});
+		expect(outcome(() => requireSameOriginJson({ request: both, url }))).toEqual({ status: 403, message: 'Cross-site requests are refused' });
 		expect(written()).toEqual({ responses: 0, events: 0 });
 		// None of them was counted: the next wrong link is the 20th, and still the one 404.
 		const wrong = await gate('POST', '/api/decision-by-link/seen', {

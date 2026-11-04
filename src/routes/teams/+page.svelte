@@ -86,7 +86,7 @@
 			onConfirm: async () => {
 				confirmAction.show = false;
 				const started = toasts.navigation();
-				const failure = await deleteFailure(() => fetch(`/api/teams/${teamId}`, { method: 'DELETE' }), 'team');
+				const failure = await deleteFailure(() => fetch(`/api/teams/${teamId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } }), 'team');
 				if (failure) {
 					showToast(failure, 'error', started);
 					return;
@@ -289,7 +289,7 @@
 
 	async function removeTeamMember(teamId: number, userId: number) {
 		const started = toasts.navigation();
-		const failure = await deleteFailure(() => fetch(`/api/teams/${teamId}/members/${userId}`, { method: 'DELETE' }), 'member', 'removed');
+		const failure = await deleteFailure(() => fetch(`/api/teams/${teamId}/members/${userId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } }), 'member', 'removed');
 		if (failure) {
 			showToast(failure, 'error', started);
 			return;

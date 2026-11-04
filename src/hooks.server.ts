@@ -5,7 +5,8 @@ import {
 	hasAnyUsers,
 	cleanExpiredSessions,
 	findApiKey,
-	markApiKeyUsed
+	markApiKeyUsed,
+	openSessionUser
 } from '$lib/server/auth';
 import { startSchedulers } from '$lib/server/schedulers';
 import { json, text, type Handle, type HandleServerError, type RequestEvent } from '@sveltejs/kit';
@@ -15,6 +16,7 @@ import { failureAsJson, guardBody } from '$lib/server/api-errors';
 import { bodyLimit, heldToLimit, refuseBody, type Caller } from '$lib/server/body-limits';
 import { addressKey, addressOf, UNKNOWN_ADDRESS } from '$lib/server/client-address';
 import { isNavigation, notSignedIn, secured, sendTo, whereSent } from '$lib/server/gate-answers';
+import { refusalSeen, refuseCrossSiteWrite } from '$lib/server/same-origin';
 import { pathToLog } from '$lib/server/secret-paths';
 import { maskLiveLog, refuseUserlessBesideAnother, removeSettingsOfNonAdministrators, reportInstallation } from '$lib/server/startup-checks';
 
@@ -325,7 +327,17 @@ async function handleRequest(event: RequestEvent, resolve: ResolveFn, path: stri
 		return response;
 	}
 
-	// ── 1b. Read session cookie and attach user to locals ─────────────
+	// ── 1b. Writes from DumpFire's own pages alone (card 2700) ─────────
+	// Every method but GET and HEAD, outside /api/v1/, form actions included:
+	// a request the server makes of itself is refused, 403; one the browser
+	// does not say comes from this origin, 403; under
+	// /api/, one that does not say it is JSON, but the two uploads, 415. Before
+	// the session cookie is read, because reading it slides the session: a
+	// refused request touches no row. See $lib/server/same-origin.ts.
+	const crossSite = refuseCrossSiteWrite(event, path);
+	if (crossSite) return crossSite;
+
+	// ── 1c. Read session cookie and attach user to locals ─────────────
 	const token = event.cookies.get(SESSION_COOKIE_NAME);
 	if (token) {
 		event.locals.user = validateSession(token);
@@ -520,8 +532,15 @@ export const handle: Handle = async ({ event, resolve }) => {
 	// logged out. A page's script is sent on with a 200 that says where, and
 	// is written down as the 200 it was sent, with where.
 	const location = whereSent(response);
-	const fields = { userId: event.locals.user?.id ?? null, ip };
-	const meta = location === null ? { method, path: sent, status, durationMs } : { method, path: sent, status, location, durationMs };
+	// A refusal of a write that is not from DumpFire's own page carries the two
+	// headers it was decided on, cut and made printable (card 2700, R4). It is
+	// made before the session is read, so the line names the session's user by
+	// a read that writes nothing and slides no expiry (`openSessionUser`):
+	// whose session a forged write rode on is what an investigation asks.
+	const seen = refusalSeen(response);
+	const userId = seen === undefined ? (event.locals.user?.id ?? null) : (openSessionUser(event.cookies.get(SESSION_COOKIE_NAME))?.id ?? null);
+	const fields = { userId, ip };
+	const meta = { method, path: sent, status, ...(location === null ? {} : { location }), durationMs, ...seen };
 	const line = `${method} ${sent} → ${status}${location === null ? '' : ` redirect to ${location}`} (${durationMs}ms)`;
 
 	if (status >= 500) log.error(line, meta, fields);

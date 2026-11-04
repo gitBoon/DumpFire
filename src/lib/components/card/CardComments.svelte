@@ -143,7 +143,7 @@
 		if (!card) return;
 		const cardId = card.id;
 		windowError = '';
-		const failure = await deleteFailure(() => fetch(`/api/cards/${cardId}/comments/${commentId}`, { method: 'DELETE' }), 'comment');
+		const failure = await deleteFailure(() => fetch(`/api/cards/${cardId}/comments/${commentId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } }), 'comment');
 		if (failure) {
 			windowError = failure;
 			return;

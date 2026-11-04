@@ -120,6 +120,7 @@ import {
 	makeWebhook,
 	resetDb
 } from './helpers/fixtures';
+import { fakeEvent, FROM_THE_PAGE } from './helpers/gate';
 import { sendAround } from './helpers/held-body';
 import { expectUnchanged, snapshotDb, type DbSnapshot } from './helpers/snapshot';
 
@@ -2600,37 +2601,17 @@ describe('the gate records a credential, or null, on every request it hands on',
 	 * for what it hands on to, which records `locals.credential`. Every branch
 	 * that hands a request on, for each method: none may leave it undefined,
 	 * which `stillAuthenticated` refuses outside the tests.
+	 *
+	 * Each is sent as DumpFire's own page sends it, `FROM_THE_PAGE` and the
+	 * JSON type, under the headers a test gives: the gate refuses a write
+	 * outside /api/v1/ that is not (card 2700), and each is to be handed on for
+	 * every method.
 	 */
 	const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
+	const AS_THE_PAGE = { ...FROM_THE_PAGE, 'content-type': 'application/json' };
 
-	function eventFor(method: string, path: string, routeId: string | null, headers: Record<string, string> = {}): RequestEvent {
-		const url = new URL(path, 'http://localhost');
-		const jar = new Map<string, string>();
-		for (const pair of (headers.cookie ?? '').split(';')) {
-			const at = pair.indexOf('=');
-			if (at > 0) jar.set(pair.slice(0, at).trim(), pair.slice(at + 1).trim());
-		}
-		return {
-			request: new Request(url, { method, headers }),
-			url,
-			params: {},
-			route: { id: routeId },
-			locals: {},
-			cookies: {
-				get: (name: string) => jar.get(name),
-				getAll: () => [...jar].map(([name, value]) => ({ name, value })),
-				set: () => {},
-				delete: () => {},
-				serialize: () => ''
-			},
-			getClientAddress: () => '127.0.0.1',
-			setHeaders: () => {},
-			platform: undefined,
-			isDataRequest: false,
-			isSubRequest: false,
-			isRemoteRequest: false
-		} as unknown as RequestEvent;
-	}
+	const eventFor = (method: string, path: string, routeId: string | null, given: Record<string, string> = {}): RequestEvent =>
+		fakeEvent(method, path, routeId, { ...AS_THE_PAGE, ...given });
 
 	/** What each request handed on carried, as `[method, credential]`, or `'not handed on'`. */
 	async function handedOn(path: string, routeId: string | null, headers: Record<string, string> = {}) {

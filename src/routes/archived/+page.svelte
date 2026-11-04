@@ -71,7 +71,7 @@
 		// A refusal is said, and the card stays in the list: it used to go
 		// quietly, as if it had been restored.
 		const started = toasts.navigation();
-		const failure = await deleteFailure(() => fetch(`/api/cards/${cardId}/restore`, { method: 'POST' }), 'card', 'restored');
+		const failure = await deleteFailure(() => fetch(`/api/cards/${cardId}/restore`, { method: 'POST', headers: { 'Content-Type': 'application/json' } }), 'card', 'restored');
 		if (failure) {
 			toasts.add(failure, 'error', started);
 			return;
@@ -118,7 +118,7 @@
 				try {
 					let res: Response;
 					try {
-						res = await fetch('/api/admin/purge-archived', { method: 'POST' });
+						res = await fetch('/api/admin/purge-archived', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
 					} catch {
 						toasts.add('No answer from the server. The archived cards may not have been purged.', 'error', started);
 						return;

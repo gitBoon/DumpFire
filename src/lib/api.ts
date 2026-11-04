@@ -540,7 +540,7 @@ export function deliveryBoardWarning(name: string, columns: readonly string[]): 
  * Deletes a board and all its columns/cards/subtasks.
  */
 export async function deleteBoardApi(boardId: number): Promise<Response> {
-	return fetch(`/api/boards/${boardId}`, { method: 'DELETE' });
+	return jsonRequest(`/api/boards/${boardId}`, 'DELETE');
 }
 
 // ─── Categories ──────────────────────────────────────────────────────────────
@@ -560,7 +560,7 @@ export async function createCategory(data: {
  * Deletes a category. Cards using it will have their categoryId set to null.
  */
 export async function deleteCategoryApi(categoryId: number): Promise<Response> {
-	return fetch(`/api/categories/${categoryId}`, { method: 'DELETE' });
+	return jsonRequest(`/api/categories/${categoryId}`, 'DELETE');
 }
 
 // ─── Subtasks ────────────────────────────────────────────────────────────────

@@ -120,7 +120,7 @@
 		confirmState.show = false;
 		const started = failureToasts.navigation();
 		try {
-			const failure = await deleteFailure(() => fetch(`/api/boards/${id}`, { method: 'DELETE' }), 'board');
+			const failure = await deleteFailure(() => fetch(`/api/boards/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } }), 'board');
 			if (failure) {
 				failureToasts.add(failure, 'error', started);
 				return;

@@ -25,19 +25,19 @@
 	// ─── Board Management ─────────────────────────────────────────────────
 
 	async function deleteBoard(id: number) {
-		if (!(await sent(() => fetch(`/api/boards/${id}`, { method: 'DELETE' }), 'Failed to delete board'))) return;
+		if (!(await sent(() => fetch(`/api/boards/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } }), 'Failed to delete board'))) return;
 		await invalidateAll();
 		showToast('Board deleted');
 	}
 
 	async function clearBoardCards(id: number) {
-		if (!(await sent(() => fetch(`/api/admin/boards/${id}/clear-cards`, { method: 'POST' }), 'Failed to clear cards'))) return;
+		if (!(await sent(() => fetch(`/api/admin/boards/${id}/clear-cards`, { method: 'POST', headers: { 'Content-Type': 'application/json' } }), 'Failed to clear cards'))) return;
 		await invalidateAll();
 		showToast('All cards cleared from board');
 	}
 
 	async function clearBoardCategories(id: number) {
-		if (!(await sent(() => fetch(`/api/admin/boards/${id}/clear-categories`, { method: 'POST' }), 'Failed to clear categories'))) return;
+		if (!(await sent(() => fetch(`/api/admin/boards/${id}/clear-categories`, { method: 'POST', headers: { 'Content-Type': 'application/json' } }), 'Failed to clear categories'))) return;
 		await invalidateAll();
 		showToast('All categories cleared from board');
 	}

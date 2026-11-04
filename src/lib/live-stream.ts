@@ -70,7 +70,7 @@ export function reconnectDelay(failures: number): number {
 export async function streamVerdict(url: string, fetch: Fetch): Promise<'open' | 'later' | 'never'> {
 	const done = new AbortController();
 	try {
-		const res = await fetch(url, { signal: done.signal, headers: { accept: 'text/event-stream' }, cache: 'no-store' });
+		const res = await fetch(url, { method: 'GET', signal: done.signal, headers: { accept: 'text/event-stream' }, cache: 'no-store' });
 		if (res.ok) return 'open';
 		if (res.status === 401 || res.status === 403 || res.status === 404) return 'never';
 		return 'later';

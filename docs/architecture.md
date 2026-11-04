@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.69
+version: 1.70
 status: As-Built
-date: 2026-11-03
+date: 2026-11-04
 tags:
   - architecture
   - sveltekit
@@ -255,7 +255,11 @@ flowchart TD
     Route -->|"Yes: no such route"| E404["404 message: Not found"]
     Route -->|"No"| Resolve["failureAsJson(resolve)"]
 
-    V1 -->|"No"| Session["Read the session cookie,<br/>attach the user or null"]
+    V1 -->|"No"| CrossSite{"refuseCrossSiteWrite(): a write<br/>not from DumpFire's own page?"}
+    CrossSite -->|"Made by the server of itself"| E403s["403 message"]
+    CrossSite -->|"Not same-origin by Sec-Fetch-Site,<br/>or by Origin where it is absent"| E403["403 message"]
+    CrossSite -->|"Under /api/, not JSON,<br/>and not one of the two uploads"| E415["415 message"]
+    CrossSite -->|"No, or GET or HEAD"| Session["Read the session cookie,<br/>attach the user or null"]
     Session --> Setup{"Any user in the database?"}
     Setup -->|"No, and /setup"| SetupResolve["resolve"]
     Setup -->|"No, a script asking<br/>an internal route"| E401b["401 Not authenticated"]
@@ -272,6 +276,9 @@ flowchart TD
 
     Log["Step 5: log the status that is sent:<br/>500 and above ERROR, 400 and above WARN, the rest INFO,<br/>a redirect with where it sends the caller,<br/>an invite's address as /invite/[token]"]
     E404r --> Log
+    E403s --> Log
+    E403 --> Log
+    E415 --> Log
     E404 --> Log
     Resolve --> Log
     E401 --> Log
@@ -298,7 +305,7 @@ flowchart TD
 | 1 | A remote call | A call to a remote function, `/_app/remote/<id>`, is answered `404` `{ "message": "Not found" }`, to anybody. SvelteKit sets its `event.url` and route from the `x-sveltekit-pathname` header, which the caller writes, so no rule below can be decided on it. A header that names a path that cannot be decoded is answered `400` `Malformed URI` before this step, as SvelteKit 2.60 also answered it. DumpFire has no remote functions |
 | 2 | Body size | `refuseBody()` asks every request whose body declares a length in `Content-Length` whether that is more than its route gives anybody: `413` with the limit if it is. A body with no length is let through to be counted (see `handOn`, below). The answer is kept, not thrown. See [Authentication & Security](authentication-security.md#how-large-a-request-may-be) |
 | 3 | Static assets | `/_app/` and `/favicon.ico`, exactly, are handed on at once and not logged, unless step 2 refused the body, which is logged like any other answer. Every other path that begins `/_app`, but a remote call, is answered `404` by SvelteKit before the gate is called |
-| 4 | `handleRequest()` | The `/api/v1/` branch, or the session branch for everything else. Each is set out below. Every refusal and every redirect in it is an answer that is returned: none is thrown. Every request it lets through is handed on by `handOn` |
+| 4 | `handleRequest()` | The `/api/v1/` branch, or, for everything else, first the check that a write comes from DumpFire's own page (`refuseCrossSiteWrite()` in `src/lib/server/same-origin.ts`, card 2700: a `403` or `415` for any method but `GET` and `HEAD`, before the session cookie is read), then the session branch. Each is set out below. Every refusal and every redirect in it is an answer that is returned: none is thrown. Every request it lets through is handed on by `handOn` |
 | 5 | The request log | One line under the `HTTP` context with the method, the address as it was sent, the status that is sent and the time taken: `ERROR` for 500 and above, `WARN` for 400 and above, `INFO` for the rest. A redirect is logged with where it sends the caller. An invite's address is written `/invite/[token]`, and a remote call at the address it was sent to (`pathToLog()` in `src/lib/server/secret-paths.ts`). A fault in the gate itself, thrown, is logged at `ERROR` with its reason, once, and thrown on for SvelteKit to answer `500` |
 | 6 | The security headers | `secured()` sets each of the five headers the answer does not already carry, `X-Frame-Options` but on the public request form's three pages. A page also carries a sixth, the `Content-Security-Policy` SvelteKit sets from `kit.csp` in `svelte.config.js` with a new nonce each time (card 2162); `secured()` never replaces it and gives no other answer one, and while `CSP_MODE=report-only` it moves a page's, unchanged, to `Content-Security-Policy-Report-Only`. See [Authentication & Security](authentication-security.md#the-content-security-policy) |
 
@@ -579,6 +586,16 @@ included, set in step 6 like every other answer's.
 Outside `/api/v1/` the gate decides who the caller is and where they may go, and leaves the
 answer as SvelteKit made it.
 
+- **A write is taken from DumpFire's own pages alone (card 2700)**, before the session cookie is
+  read, so a refused request slides no session. For any method but `GET` and `HEAD`,
+  `refuseCrossSiteWrite()` answers, in this order, anywhere outside `/api/v1/`, pages and form
+  actions included: a request the server makes of itself (`event.isSubRequest`) `403`; one
+  whose `Sec-Fetch-Site` is not `same-origin`, or, with that header absent, whose
+  `Origin` is not `url.origin`, `403`; under `/api/`, one whose `Content-Type` is not
+  `application/json`, body or not, `415`, but for the two uploads (`UPLOADS`). Each is JSON
+  `{ message }`, logged at `WARN` with the request's `secFetchSite` and `origin` in its meta
+  (`refusalSeen()`). See
+  [Authentication & Security](authentication-security.md#writes-from-dumpfires-own-pages-alone-card-2700).
 - **The body guard still applies** to the internal routes under `/api/`.
 - **A failure is JSON or a page by the `Accept` header.** A page's own `fetch` asks for
   anything and is answered `{ message }`. A browser that opens an internal route's address
@@ -624,7 +641,10 @@ headers (see [The path a rule is decided on](#the-path-a-rule-is-decided-on)).
 | A path that begins `/_app` and is no file the server has, but a call to a remote function, which the gate answers itself | `404` `Not found`, plain text |
 
 The first is SvelteKit's protection against cross-site form posts (`csrf.checkOrigin`),
-which the configuration leaves on.
+which the configuration leaves on. It looks at form types alone. The gate's own check (card
+2700, step 4) covers every other write outside `/api/v1/`, and the form actions too, under
+`vite dev` as in a built server; in a built server SvelteKit's check runs first, so a form
+whose `Origin` is not the server's is its `403` and never reaches the gate.
 
 ## Authentication and Authorisation
 

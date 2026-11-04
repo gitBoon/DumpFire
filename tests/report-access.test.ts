@@ -52,7 +52,7 @@ import {
 	resetDb,
 	type BoardFixture
 } from './helpers/fixtures';
-import { gate } from './helpers/gate';
+import { FROM_THE_PAGE, gate } from './helpers/gate';
 import { pdfText } from './helpers/pdf';
 
 const PERIOD_START = '2026-01-01';
@@ -123,7 +123,7 @@ type Scope = { scope: 'board' | 'category'; scopeId: number };
 /** The PDF a download answers, through the gate with the reader's session. */
 async function downloaded(reader: SessionUser, { scope, scopeId }: Scope): Promise<Buffer> {
 	const res = await gate('POST', '/api/reports', {
-		headers: { cookie: `${SESSION_COOKIE_NAME}=${makeSession(reader)}`, accept: '*/*' },
+		headers: { cookie: `${SESSION_COOKIE_NAME}=${makeSession(reader)}`, ...FROM_THE_PAGE, accept: '*/*' },
 		body: { scope, scopeId, periodStart: PERIOD_START, periodEnd: periodEnd() }
 	});
 	expect(res.status).toBe(200);

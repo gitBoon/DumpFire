@@ -150,7 +150,7 @@
 		loading = true;
 		error = '';
 		try {
-			const failure = await deleteFailure(() => fetch(`/api/board-categories/${id}`, { method: 'DELETE' }), 'category');
+			const failure = await deleteFailure(() => fetch(`/api/board-categories/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' } }), 'category');
 			if (failure) {
 				error = failure;
 				return;

@@ -28,7 +28,7 @@
 	async function resetDatabase() {
 		let res: Response;
 		try {
-			res = await fetch('/api/admin/reset', { method: 'POST' });
+			res = await fetch('/api/admin/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
 		} catch {
 			resetNotice = {
 				title: 'Reset not confirmed',
@@ -67,12 +67,12 @@
 	}
 
 	async function vacuumDatabase() {
-		if (!(await sent(() => fetch('/api/admin/vacuum', { method: 'POST' }), 'Failed to vacuum the database'))) return;
+		if (!(await sent(() => fetch('/api/admin/vacuum', { method: 'POST', headers: { 'Content-Type': 'application/json' } }), 'Failed to vacuum the database'))) return;
 		showToast('Database vacuumed. Unused space was reclaimed.');
 	}
 
 	async function resetAllXp() {
-		if (!(await sent(() => fetch('/api/admin/reset-xp', { method: 'POST' }), 'Failed to reset XP'))) return;
+		if (!(await sent(() => fetch('/api/admin/reset-xp', { method: 'POST', headers: { 'Content-Type': 'application/json' } }), 'Failed to reset XP'))) return;
 		showToast('All XP has been reset to 0');
 	}
 
@@ -81,7 +81,7 @@
 	async function purgeArchivedCards() {
 		purgingArchived = true;
 		try {
-			const res = await sent(() => fetch('/api/admin/purge-archived', { method: 'POST' }), 'Failed to purge archived cards');
+			const res = await sent(() => fetch('/api/admin/purge-archived', { method: 'POST', headers: { 'Content-Type': 'application/json' } }), 'Failed to purge archived cards');
 			if (!res) return;
 			const result = await res.json().catch(() => null);
 			showToast(
