@@ -2468,7 +2468,8 @@ describe('the security headers', () => {
 			for (const path of ['/login', '/invite/no-such-token', '/docs']) {
 				const res = await send('GET', path, { headers: HTML });
 				expect({ path, status: res.status }).toEqual({ path, status: 200 });
-				expect(headersOf(res), path).toEqual(FIVE);
+				// An invite's address holds its token: only its origin is named (card 2698, decision 2).
+				expect(headersOf(res), path).toEqual(path.startsWith('/invite/') ? { ...FIVE, 'referrer-policy': 'strict-origin' } : FIVE);
 			}
 		},
 		60_000
@@ -2577,11 +2578,32 @@ describe('the security headers', () => {
 		const UNCHANGED = { ...FIVE, 'x-robots-tag': null, 'cache-control': null };
 		const theseOf = (res: Response) => ({ ...headersOf(res), 'x-robots-tag': res.headers.get('x-robots-tag'), 'cache-control': res.headers.get('cache-control') });
 
-		for (const routeId of ['/decision-link/[token]', '/api/decision-by-link/responses', '/api/decision-by-link/seen']) {
-			expect(theseOf(secured(new Response('x'), routeId)), routeId).toEqual(LINKED);
+		for (const routeId of [
+			'/decision-link/[token]',
+			'/api/decision-by-link/responses',
+			'/api/decision-by-link/seen',
+			// Card 2698: an invite, and the request form's links and the two reads their pages make.
+			'/invite/[token]',
+			'/request/[id]/confirm',
+			'/request/[id]/reply',
+			'/api/requests/[id]',
+			'/api/requests/[id]/messages',
+			'/api/requests/[id]/confirm'
+		]) {
+			// The request form's two pages may still be framed. The invite's page has a
+			// form action, which names its origin alone (card 2698, decision 2).
+			const linked = FRAMEABLE_ROUTES.has(routeId)
+				? { ...LINKED, 'x-frame-options': null }
+				: routeId === '/invite/[token]'
+					? { ...LINKED, 'referrer-policy': 'strict-origin' }
+					: LINKED;
+			expect(theseOf(secured(new Response('x'), routeId)), routeId).toEqual(linked);
 			// An answer that carries its own leaves with the route's.
-			const cached = secured(new Response('x', { headers: { 'Cache-Control': 'max-age=60', 'Referrer-Policy': 'unsafe-url' } }), routeId);
-			expect(theseOf(cached), `${routeId}, cached`).toEqual(LINKED);
+			const cached = secured(
+				new Response('x', { headers: { 'Cache-Control': 'max-age=60', 'Referrer-Policy': 'unsafe-url', 'X-Robots-Tag': 'all' } }),
+				routeId
+			);
+			expect(theseOf(cached), `${routeId}, cached`).toEqual(linked);
 		}
 		for (const routeId of ['/decisions/[id]', '/api/decisions/[id]/responses', '/api/decisions/[id]/seen']) {
 			expect(theseOf(secured(new Response('x'), routeId)), routeId).toEqual(OWN);
@@ -2590,6 +2612,88 @@ describe('the security headers', () => {
 		expect(theseOf(secured(new Response('x'), '/board/[id]'))).toEqual(UNCHANGED);
 		expect(theseOf(secured(new Response('x'), null))).toEqual(UNCHANGED);
 	});
+
+	// Card 2698, plan case 1: each route whose address holds a secret, one row
+	// each, through the gate: its page and the page's data, the invite's form
+	// action, and the two reads the request links' pages make with the token.
+	it(
+		'give an invite’s and a request link’s answers no index, no cache and no address in a Referer, on the page and its data (2698)',
+		async () => {
+			const token = 'invite-token-for-the-headers-2698';
+			sqlite
+				.prepare('INSERT INTO invite_tokens (token, user_id, expires_at, used) VALUES (?, ?, ?, 0)')
+				.run(token, user.id, '2099-01-01 00:00:00');
+			const LINKED = { ...FIVE, 'referrer-policy': 'no-referrer', 'x-robots-tag': 'noindex, nofollow', 'cache-control': 'no-store' };
+			// The invite's page has a form action: its origin alone is named (decision 2).
+			const FORM_LINKED = { ...LINKED, 'referrer-policy': 'strict-origin' };
+			const theseOf = (res: Answer) => ({ ...headersOf(res), 'x-robots-tag': res.headers.get('x-robots-tag'), 'cache-control': res.headers.get('cache-control') });
+			// A form posted from the page, to a link that does not work: answered 400,
+			// which the page's script is sent as a 200 that says so.
+			const form = { 'content-type': 'application/x-www-form-urlencoded', origin: 'http://localhost', ...FROM_THE_PAGE };
+			const posted = 'password=long-enough-1&confirmPassword=long-enough-1';
+			// What a browser sends with the form posted natively, before the page's
+			// scripts have loaded or without them, from a page sent `strict-origin`:
+			// the page's own `Origin`, and here no `Sec-Fetch-Site`, as an older
+			// browser sends. Under `no-referrer` it would say `Origin: null`, refused 403.
+			const native = { 'content-type': 'application/x-www-form-urlencoded', origin: 'http://localhost', ...HTML };
+
+			const rows: [route: string, expected: Record<string, string | null>, answers: [string, () => Promise<Answer>, number][]][] = [
+				[
+					'/invite/[token]',
+					FORM_LINKED,
+					[
+						['the page', () => send('GET', `/invite/${token}`, { headers: HTML }), 200],
+						['its data', () => send('GET', `/invite/${token}/__data.json`), 200],
+						['its form, from the script', () => send('POST', '/invite/no-such-invite', { headers: { ...form, accept: 'application/json' }, body: posted }), 200],
+						['its form, as a page', () => send('POST', '/invite/no-such-invite', { headers: { ...form, ...HTML }, body: posted }), 400],
+						// Accepted: the password is set and the browser sent on to `/`.
+						['its form, posted natively', () => send('POST', `/invite/${token}`, { headers: native, body: posted }), 303]
+					]
+				],
+				[
+					'/request/[id]/confirm',
+					{ ...LINKED, 'x-frame-options': null },
+					[
+						['the page', () => send('GET', '/request/1/confirm?token=not-the-token', { headers: HTML }), 200],
+						['its data', () => send('GET', '/request/1/confirm/__data.json?token=not-the-token'), 200]
+					]
+				],
+				[
+					'/request/[id]/reply',
+					{ ...LINKED, 'x-frame-options': null },
+					[
+						['the page', () => send('GET', '/request/1/reply?token=not-the-token', { headers: HTML }), 200],
+						['its data', () => send('GET', '/request/1/reply/__data.json?token=not-the-token'), 200]
+					]
+				],
+				['/api/requests/[id]', LINKED, [['a read with a wrong token', () => send('GET', '/api/requests/999999?token=not-the-token'), 404]]],
+				['/api/requests/[id]/messages', LINKED, [['a read with a wrong token', () => send('GET', '/api/requests/999999/messages?token=not-the-token'), 404]]],
+				// The confirm page's POST, whose answer's `replyUrl` holds the access token.
+				[
+					'/api/requests/[id]/confirm',
+					LINKED,
+					[
+						[
+							'a confirmation with a wrong token',
+							() => send('POST', '/api/requests/999999/confirm', { headers: { ...FROM_THE_PAGE, ...JSON_BODY, accept: '*/*' }, body: { token: 'not-the-token' } }),
+							404
+						]
+					]
+				]
+			];
+
+			for (const [route, expected, answers] of rows) {
+				for (const [what, answer, status] of answers) {
+					const res = await answer();
+					expect({ route, what, status: res.status }).toEqual({ route, what, status });
+					expect(theseOf(res), `${route}: ${what}`).toEqual(expected);
+				}
+			}
+			// The native post was let through to the action, which used the invite.
+			expect(sqlite.prepare('SELECT used FROM invite_tokens WHERE token = ?').get(token)).toEqual({ used: 1 });
+		},
+		60_000
+	);
 
 	it(
 		'are on the request form’s three pages but the refusal to be framed, for anybody',
@@ -2600,7 +2704,8 @@ describe('the security headers', () => {
 				for (const [who, headers] of [['nobody', HTML], ['a user', { ...asUser, ...HTML }]] as const) {
 					const res = await send('GET', path, { headers });
 					expect({ path, who, status: res.status }).toEqual({ path, who, status: 200 });
-					expect(headersOf(res), `${path} for ${who}`).toEqual(FRAMEABLE);
+					// A request link's address holds its token, and is named to nobody (card 2698).
+					expect(headersOf(res), `${path} for ${who}`).toEqual(path === '/request' ? FRAMEABLE : { ...FRAMEABLE, 'referrer-policy': 'no-referrer' });
 				}
 			}
 			// The form's own data, which its script asks for, likewise.

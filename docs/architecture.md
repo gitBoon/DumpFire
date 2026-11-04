@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.70
+version: 1.71
 status: As-Built
 date: 2026-11-04
 tags:
@@ -1500,7 +1500,7 @@ The session routes are `requireUser`, `pathId`, `readBody`, then `writeAs(locals
 - On both pages the seen watch is armed in an `$effect` on the decision (the token, on the link page), the version and the stage, held as `$derived` plain values, and its stopper is returned; the form is keyed on the decision (the token), the version and Reload's count. Data read again for another decision or version arms a fresh watch and draws the form afresh; the same data read again leaves both be (code review C2). An own response given on an older version, as after a re-publish that only tells, is labelled "Given on version N." (C1). On a ruled, superseded or withdrawn decision the response section says "Responses are closed." and gives the last response, labelled, where there is one (C7).
 - Neither load writes anything: mail scanners follow links. A banner says when the participant was told, from `lastToldOf`, and "by email" only for a mail whose `mail_outcome` says delivered (D8); otherwise "You were included in this decision on <includedAt>." (`toldWords` in `$lib/decision-words.ts`). A withdrawn decision's banner gives the moment and the reason (`withdrawnWords`).
 
-**Headers by route** (`ROUTE_HEADERS` in `gate-answers.ts`, applied by `secured()` on every answer, errors and `429`s included, overwriting what the answer carries, then the global set where missing): the link page and its two routes get `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex, nofollow` and `Cache-Control: no-store`; `/decisions/[id]` and its two routes `Cache-Control: no-store`. No link route sets a cookie or makes a session.
+**Headers by route** (`ROUTE_HEADERS` in `gate-answers.ts`, applied by `secured()` on every answer, errors and `429`s included, overwriting what the answer carries, then the global set where missing): the link page and its two routes get `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex, nofollow` and `Cache-Control: no-store`; `/decisions/[id]` and its two routes `Cache-Control: no-store`. No link route sets a cookie or makes a session. Card 2698 adds the other routes whose address holds a secret: `/invite/[token]` gets `Referrer-Policy: strict-origin`, `X-Robots-Tag: noindex, nofollow` and `Cache-Control: no-store`, since its page has a form action and a form posted natively from a `no-referrer` page says `Origin: null`, which SvelteKit refuses `403` (`strict-origin` names the origin alone, never the token); the request form's confirm and reply pages (`/request/[id]/confirm`, `/request/[id]/reply`, their token in `?token=`) and the two reads they make with it (`/api/requests/[id]`, `/api/requests/[id]/messages`) post only through `fetch` and get the link's three, `no-referrer` included, as does the confirm page's `POST` (`/api/requests/[id]/confirm`), whose answer's `replyUrl` holds the access token.
 
 **The components** (`src/lib/components/decision/`).
 

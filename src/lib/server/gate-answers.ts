@@ -234,9 +234,28 @@ export function cspMode(value: string | undefined = process.env.CSP_MODE): CspMo
  */
 export const FRAMEABLE_ROUTES: ReadonlySet<string> = new Set(['/request', '/request/[id]/confirm', '/request/[id]/reply']);
 
-/** What a personal link's routes carry: no address of theirs passed on, kept out of search, and kept in no cache. */
+/**
+ * What a personal link's routes carry, and every route whose address holds a
+ * secret and whose page posts only by `fetch`: no address of theirs passed on,
+ * kept out of search, and kept in no cache.
+ */
 const PERSONAL_LINK_HEADERS: readonly [name: string, value: string][] = [
 	['Referrer-Policy', 'no-referrer'],
+	['X-Robots-Tag', 'noindex, nofollow'],
+	['Cache-Control', 'no-store']
+];
+
+/**
+ * What a route whose address holds a secret carries when its page has a form
+ * action, which a browser may post natively (card 2698, decision 2): the same,
+ * but `strict-origin`, which names the origin alone, never the path, so the
+ * secret stays out of every Referer while a form posted natively still says
+ * its own `Origin`. Under `no-referrer` it says `Origin: null`, which
+ * SvelteKit's own origin check refuses, 403; the gate refuses it too, but
+ * only for a browser that sends no `Sec-Fetch-Site`.
+ */
+const FORM_LINK_HEADERS: readonly [name: string, value: string][] = [
+	['Referrer-Policy', 'strict-origin'],
 	['X-Robots-Tag', 'noindex, nofollow'],
 	['Cache-Control', 'no-store']
 ];
@@ -256,11 +275,29 @@ const OWN_RESPONSE_HEADERS: readonly [name: string, value: string][] = [['Cache-
  * names its address to another site, is indexed or is cached; its two routes
  * likewise. `/decisions/[id]` and its participant's two routes show or answer
  * the caller's own response, and are cached nowhere.
+ *
+ * `/invite/[token]`'s address holds an invite, which sets its account's
+ * password, so its page, its data and its form's answers are kept out of
+ * search and of every cache, and name only the origin (card 2698): its page
+ * has a form action, posted by `use:enhance` or, before its scripts have
+ * loaded or without them, natively, and `FORM_LINK_HEADERS` keeps that working.
+ * The request form's two links, whose token is in the query (`?token=`), and
+ * the two reads their pages make with it carry `PERSONAL_LINK_HEADERS`: every
+ * Referer the page sent named the full address, the reads' answers hold the
+ * request and its messages, and the pages post only by `fetch`, as
+ * `/decision-link/[token]`'s does. So does the confirm page's `POST`, whose
+ * answer's `replyUrl` holds the request's access token.
  */
 export const ROUTE_HEADERS: ReadonlyMap<string, readonly [name: string, value: string][]> = new Map([
 	['/decision-link/[token]', PERSONAL_LINK_HEADERS],
 	['/api/decision-by-link/responses', PERSONAL_LINK_HEADERS],
 	['/api/decision-by-link/seen', PERSONAL_LINK_HEADERS],
+	['/invite/[token]', FORM_LINK_HEADERS],
+	['/request/[id]/confirm', PERSONAL_LINK_HEADERS],
+	['/request/[id]/reply', PERSONAL_LINK_HEADERS],
+	['/api/requests/[id]', PERSONAL_LINK_HEADERS],
+	['/api/requests/[id]/messages', PERSONAL_LINK_HEADERS],
+	['/api/requests/[id]/confirm', PERSONAL_LINK_HEADERS],
 	['/decisions/[id]', OWN_RESPONSE_HEADERS],
 	['/api/decisions/[id]/responses', OWN_RESPONSE_HEADERS],
 	['/api/decisions/[id]/seen', OWN_RESPONSE_HEADERS]

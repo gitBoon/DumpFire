@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.73
+version: 1.74
 status: As-Built
 date: 2026-11-04
 tags:
@@ -4313,12 +4313,33 @@ redirects, to a caller who is signed in or not.
   | Route id | Headers |
   |---|---|
   | `/decision-link/[token]`, `/api/decision-by-link/responses`, `/api/decision-by-link/seen` | `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex, nofollow`, `Cache-Control: no-store` |
+  | `/invite/[token]` (card 2698) | `Referrer-Policy: strict-origin`, `X-Robots-Tag: noindex, nofollow`, `Cache-Control: no-store` |
+  | `/request/[id]/confirm`, `/request/[id]/reply`, `/api/requests/[id]`, `/api/requests/[id]/messages`, `/api/requests/[id]/confirm` (card 2698) | `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex, nofollow`, `Cache-Control: no-store` |
   | `/decisions/[id]`, `/api/decisions/[id]/responses`, `/api/decisions/[id]/seen` | `Cache-Control: no-store` |
 
   The first three hold or take a personal link's token, so nothing they answer names their
-  address to another site, is indexed or is cached; the other three show or answer the caller's
-  own response. `/invite/[token]` is a credential page too and carries the global set alone: its
-  own card.
+  address to another site, is indexed or is cached; the last three show or answer the caller's
+  own response. The middle six carry a secret (card 2698): an invite's token, which sets its
+  account's password, in the path of `/invite/[token]` (its page, its `__data.json` and its
+  form's answers alike), and a request link's `?token=` in the query of the request form's
+  confirm and reply pages and of the two reads those pages make with it, whose answers hold the
+  request and its messages, and in the answer to the confirm page's `POST`, whose `replyUrl`
+  holds the access token. Before, each carried the global set alone: no
+  `Cache-Control`, nothing against indexing, and `strict-origin-when-cross-origin`, which sends
+  another site the origin alone but sends DumpFire itself, and the reverse proxy's access log,
+  the full address in the `Referer` of every `/_app/` script, style and font the page loads. The
+  confirm and reply pages may still be framed.
+
+  **`strict-origin` where the page has a form action** (ruled 2026-11-04). A form posted
+  *natively* from a `no-referrer` page is sent with `Origin: null`, which SvelteKit's own origin
+  check refuses `403` before the gate; the gate's cross-site check refuses it too (card 2700),
+  but only for a browser that sends no `Sec-Fetch-Site`. The
+  invite page has a form action: it posts with `use:enhance`, but a submit made before its
+  scripts have loaded, or with scripts off, is a native post. So `/invite/[token]` carries
+  `strict-origin`, which sends the origin alone, never the path, so the token stays out of every
+  `Referer` while the native post still says the page's own `Origin` and is accepted. The request
+  form's confirm and reply pages and `/decision-link/[token]` post only through `fetch`, which
+  sends the real `Origin` whatever the policy, and they keep `no-referrer`.
 - **The public request form may be framed by another site.** `/request`,
   `/request/[id]/confirm` and `/request/[id]/reply`, by route id, exactly, carry every header
   but `X-Frame-Options`, in case the form is embedded in an intranet page. Every other page,
