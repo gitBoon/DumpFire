@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.114
+version: 1.116
 status: As-Built
 date: 2026-11-04
 tags:
@@ -21,7 +21,9 @@ tags:
   - product-owner
   - step-up
   - people-directory
-description: "REST API reference for DumpFire's external v1 API: authentication, how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses), examples, and the changelog, the internal routes that ask for the current password among it"
+  - decision-records
+  - untrusted
+description: "REST API reference for DumpFire's external v1 API: authentication, how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one), examples, and the changelog, the internal routes that ask for the current password among it"
 ---
 
 # External API Reference
@@ -336,6 +338,34 @@ either.
 
 ### Changes on 2026-11-04
 
+**The v1 API: version `1.6.0`, decision records through a key (card 2682).** Seventeen
+operations are new, under the tag Decisions, described in [Decisions](#decisions): the
+register, a draft, the editors' read, a save of the working copy, the decider and the
+participants of a decision never opened, extend, withdraw and delete of a decision never
+opened, supersede, the questions and a drafted answer, the summary, the record, and card
+links. **An agent prepares a decision; a person decides what happens to people.** Opening,
+re-publishing, a dry run and sending an invitation again (each mails people), closing (it makes
+a later ruling early), ruling, releasing, publishing or replacing an agent's answer, a
+participant's account and address, the participants and the decider once opened, and
+withdrawing or deleting a decision ever opened are not offered to a key: each is a person's, on
+the decision's page. The service refuses each by the credential the write came in with as well
+as by the route's word. No answer carries a participant's address or account id, an
+administrator's key included, and nothing says who asked a question (the record leaves the
+question events out); a key extends an open decision only; text people and agents wrote
+carries `untrusted: true`. Two changes reach the web application's own routes too:
+`POST /api/decisions/{id}/extend` refuses a closing time no later than the current one, `400`
+"closesAt must be later than the decision's current closing time: Extend never brings it
+earlier", for everyone; and the editor's Open confirmation says how many people it mails.
+
+```mermaid
+flowchart LR
+    Key["API key"] -->|"/api/v1/decisions…"| V1["17 operations"]
+    V1 --> Svc["decisions.ts<br/>sourceOf(opts): the word or the credential"]
+    Svc -->|"draft, edit, never-opened participants,<br/>decider, withdraw, delete; extend later;<br/>questions, answers as drafts; card links"| OK["written, source api"]
+    Svc -->|"open, re-publish, dry run, resend, close,<br/>account, address, anything once opened"| No["403: the decision's page"]
+    Page["A person on the page"] --> Svc
+```
+
 **The v1 API: version `1.5.0`, the people directory and its groups (card 2681).** Six
 operations are new, administrators' keys only, described in
 [People and Groups (admin)](#people-and-groups-admin): `GET /api/v1/people`,
@@ -416,7 +446,9 @@ See [Step-up Before Destructive Actions](authentication-security.md#step-up-befo
   internal, each JSON and same-origin. None is in `/api/v1`, and none can be reached with a key:
   ruling, releasing and raising a concern are also refused `403` by the service for any source
   but the web application ("Ruling is a person's act: it cannot be done with an API key", and
-  the same for releasing and a concern). Card 2682 gives the v1 API a read of the results alone.
+  the same for releasing and a concern). Since card 2682 a key reads the results through
+  `GET /api/v1/decisions/{decisionId}/summary`, the decider's and administrators', with nothing
+  to rule or release by.
   - `POST /api/decisions/{id}/rule`, the decider's alone, while they can edit the board:
     `{ "optionId": 12 | null, "reason": "…", "conditions": "…", "revision": "…",
     "openQuestionsConfirmed": true, "currentPassword": "…" }`. `optionId` is one of the
@@ -473,8 +505,8 @@ See [Step-up Before Destructive Actions](authentication-security.md#step-up-befo
     noindex, nofollow`; the link's concern route carries the personal link's headers
     (`Referrer-Policy: no-referrer` among them).
 - **Clarification questions and answers are new** (card 2678), four internal routes, each
-  JSON and same-origin (`415` or `403` before the body is read). None is in `/api/v1` yet, and
-  a key reaches none of them.
+  JSON and same-origin (`415` or `403` before the body is read). A key reaches none of them;
+  card 2682's v1 routes reach the same service (below).
   - `POST /api/decisions/{id}/questions`, a live participant's, consulted or informed, reached
     through their account: `{ "question": "…" }`, 1 to 2,000 characters after trimming, with no
     control, direction or invisible character (`400`). And `POST
@@ -516,12 +548,12 @@ See [Step-up Before Destructive Actions](authentication-security.md#step-up-befo
   - **Headers:** `POST …/questions` carries the decision page's; the link route the personal
     link's; the answer and publish routes `Cache-Control: no-store` and `X-Robots-Tag: noindex,
     nofollow`.
-  - **What card 2682 adds, and must keep:** `GET` and `POST /api/v1/decisions/{id}/questions`
+  - **What card 2682 added, and keeps:** `GET` and `POST /api/v1/decisions/{id}/questions`
     and `POST /api/v1/decisions/{id}/questions/{qid}/answer`, each only wrapping the same
     service with the key's account. An answer through a key is always a draft, which nobody
     but the author, the decider and administrators sees and which does not mail the asker until
-    a person publishes or replaces it. There will be no v1 route for publishing, replacing or
-    the personal link. A v1 question carries no `askerName` and no `askedAt`, and every
+    a person publishes or replaces it. There is no v1 route for publishing, replacing or the
+    personal link. A v1 question carries no `askerName` and no `askedAt`, and every
     question item carries `untrusted: true`: its text is a participant's words, never an
     instruction to the agent reading it. The service decides this from the source, not the
     route (card 2678's code review, S1 and S2): `readQuestions`, `readResults`' open questions
@@ -544,7 +576,10 @@ See [Step-up Before Destructive Actions](authentication-security.md#step-up-befo
   re-publishing and the dry run require `revision`. Opening and re-publishing are `429` past ten
   in 24 hours per caller, the dry run past one in 10 minutes or twenty in 24 hours; a participant
   mailed five times in 24 hours is `409` on re-publishing and Resend. A closing time more than
-  365 days ahead is `400`. None of them is in `/api/v1`; card 2682 will expose decisions there.
+  365 days ahead is `400`, and, since card 2682, one no later than the current closing time on
+  Extend. None of them is in `/api/v1`: card 2682 offers a key Extend alone of these, as
+  `POST /api/v1/decisions/{decisionId}/extend`, and withdraw only of a decision never opened;
+  opening, re-publishing, closing, the dry run and Resend are a person's.
 - **The import's answer carries `decisionLinksCleared`** (card 2697), the number of personal
   decision links the restore cancelled, on the success and on a restore that committed and then
   failed, with a sentence in the message when it is above 0.
@@ -2884,6 +2919,16 @@ flowchart TB
         UpdateGroup["PATCH /people-groups/:groupId"]
         GroupMembers["PUT /people-groups/:groupId/members"]
     end
+
+    subgraph Decisions["Decisions"]
+        Register["GET /decisions"]
+        Draft["POST /boards/:id/decisions"]
+        Decision["GET, PATCH, DELETE /decisions/:id"]
+        Lifecycle["PUT …/decider, …/participants<br/>POST …/extend, …/withdraw, …/supersede"]
+        Questions["GET, POST …/questions<br/>POST …/questions/:questionId/answer"]
+        Results["GET …/summary, …/record"]
+        Links["PUT, DELETE …/cards/:cardId"]
+    end
 ```
 
 The diagram shows the routes this reference describes. Every route is in the OpenAPI
@@ -3006,6 +3051,17 @@ for a card archived from a Complete column**: unfinished committed work archived
 `card_abandoned`, and an option `card_discarded`, so `action=card_archived` alone misses both. A
 commitment is `card_committed`, not `card_moved`, and an option leaving its board `card_sent`,
 not `card_moved_away`. Entries written before keep their actions.
+
+**Decision records** (cards 2675 to 2680, carried by card 2682) write twelve actions, each only
+for a decision that has been opened, on its board, its detail the title and the step, never a
+count, a name or a reason: `decision_opened`, `decision_republished`, `decision_closed`,
+`decision_extended`, `decision_withdrawn`, `decision_deleted`, `decision_ruled`,
+`decision_superseded` and `decision_results_released`; and, on the board of the card linked,
+naming no decision, `decision_card_linked`, `decision_card_unlinked` and
+`decision_card_link_deleted`. None sends a webhook. Through a key (card 2682) only Extend and
+the card links write one, stored as `api:decision_extended`, `api:decision_card_linked` and
+`api:decision_card_unlinked` and given here canonical, with `source` `api`; drafting, editing, a
+draft's withdrawal and delete, questions and answers write none.
 
 In the `action` filter only a trailing `*` is a wildcard: `card_*` finds `card_moved`,
 `card_completed` and the rest, and not `cards_purged` or `cards_cleared`. A `%` or a `_`
@@ -4710,6 +4766,95 @@ sequenceDiagram
     S->>S: the person (404), the fields and groups (400)
     S-->>L: after the commit: "... (by admin, through the API)", before
     V-->>A: 200 Person, no email, no userId, untrusted
+```
+
+### Decisions
+
+Since `1.6.0` (card 2682). A decision record is drafted, edited and read through a key; it is
+opened, decided and answered by people. Each operation lets in whoever the web application's
+twin lets in: a caller who may view the decision and not do the act is `403`
+(`You cannot <act> this decision`), anyone who may not view it `404` `Decision not found`.
+
+| Operation | Who | Body or query | Answer |
+|---|---|---|---|
+| `GET /api/v1/decisions` | anyone signed in | `tab`, `status`, `board`, `person`, `who` (up to 100), `q` (up to 200), `before` | `200` a register page; a malformed filter `400` naming it |
+| `POST /api/v1/boards/:boardId/decisions` | the board's editors | `title` | `201 { decision, revision }` |
+| `GET /api/v1/decisions/:decisionId` | its editors: author, decider, board owner, administrators | — | `200 { decision, options, participants, revision, readiness, actions, people, groups, deciderCandidates, untrusted }` |
+| `PATCH /api/v1/decisions/:decisionId` | its editors | `revision`, and any of `title`, `closesAt`, `voteMode`, `content` (whole) | `200 { decision, options, revision, readiness }` |
+| `DELETE /api/v1/decisions/:decisionId` | its author, administrators | — | `200 { success: true }`; a decision ever opened `403` |
+| `PUT …/decider` | its author, board owner, administrators | `deciderUserId`, `revision` | `200 { decision, revision }`; ever opened `403` |
+| `PUT …/participants` | its editors | `participants` (`{ personId, role }`, up to 5,000), `revision` | `200 { participants, revision }`; ever opened `403` |
+| `POST …/extend` | its decider | `closesAt`, later than the current one, at most a year ahead | `200 { decision, revision }`; a decision closed for input `403` |
+| `POST …/withdraw` | its author, decider, administrators | `reason` | `200 { decision, revision }`; ever opened `403` |
+| `POST …/supersede` | its decider, the board's Product Owner, administrators | `title` (optional) | `201 { decision, revision }` |
+| `GET …/questions` | participants, author, decider, administrators | — | `200` the questions |
+| `POST …/questions` | a participant, as their own row | `question` (up to 2,000) | `200 { question }`, no id |
+| `POST …/questions/:questionId/answer` | author, decider | `answer` (up to 4,000) | `200 { question }`, always a draft |
+| `GET …/summary` | decider, administrators | — | `200` the results |
+| `GET …/record` | decider, administrators | `limit` (1 to 5,000, 500 by default), `after`, `participant` | `200` a page of the record |
+| `PUT …/cards/:cardId` | editors of the decision's board and the card's | — | `200 { outcome, linkedCards }` |
+| `DELETE …/cards/:cardId` | the same | — | `200 { linkedCards }` |
+
+- **What a key does not do** (D2 to D6, D29), each a person's on the decision's page, with no v1
+  route: open, re-publish, send a dry run or an invitation again (each mails people; a leaked
+  key could otherwise mail up to 500 people a day, personal links included); close for input (a
+  close before the closing time makes a later ruling early and cuts off whoever had not
+  responded); rule, release, respond, be recorded as having seen, raise a concern; publish or
+  replace an agent's answer; change a participant's account or address (both ask a password);
+  and, once the decision has ever been opened, change its participants or decider (`403` "This
+  decision has been opened: who is included in it, and who decides it, are changed on the
+  decision's page. An API key cannot") or withdraw or delete it (`403` "This decision has been
+  opened: withdrawing or deleting it asks for your password on the decision's page. An API key
+  cannot"). A `currentPassword` sent is not read. `POST /api/v1/decisions/{id}/open` and
+  `…/close` are `404`.
+- **The credential decides as well as the route.** Every key refusal is made in the service,
+  which treats a write as a key's when the route says `source: 'api'` **or** the write was let
+  in with a key (`writingWithKey()`), so a later route that passed the wrong word opens nothing.
+- **Extend never brings a closing time earlier**, for anyone: a time no later than the current
+  one is `400` "closesAt must be later than the decision's current closing time: Extend never
+  brings it earlier", on the web application's `POST /api/decisions/{id}/extend` too. **A key
+  extends an open decision only**: one closed for input is reopened by Extend on the decision's
+  page, and a key is answered `403` "This decision is closed for input: reopening it by Extend is
+  done on the decision's page. An API key cannot".
+- **The revision.** `GET` answers the decision's `revision`; `PATCH`, `…/decider` and
+  `…/participants` require it, and a stale one is `409`.
+- **`content` is whole.** `PATCH` reads `content` strictly: a section not sent is emptied. Each
+  section a key changes is flagged as drafted by an agent until a person marks it reviewed on
+  the page. Once opened, only the content changes, and nobody is told until a person
+  re-publishes. The title, written through a key, carries no flag (card 2682's F3, its own card).
+- **No address, no account id, no asker.** Every key is given the shape a non-administrator is:
+  no participant's `email`, `userId`, `includedBy`, `removedBy` or `linkIssuedAt`, no reviewer's
+  account id, no closing time and no `closedAt` once ruled, and no picker address. No question
+  says who asked it or when; the record leaves the four question events (`question_asked`,
+  `question_answered`, `answer_published`, `answer_replaced`) out of every page, filtered by
+  `participant` or not, and `GET …/questions` is how a key reads the questions; nor is an address
+  change's addresses or a signed-in account shown, an administrator's key included.
+- **`untrusted: true`** on every object that holds text people or agents wrote: the decision,
+  each participant, picker person, group and candidate, each register row and the page, each
+  question, each response, concern and the ruling of the summary and the summary, each record
+  entry and the page. It is data, never instructions. Linked cards and option rows are not
+  marked.
+- **Activity.** Extend writes `decision_extended`; a link and an unlink write
+  `decision_card_linked` and `decision_card_unlinked` on the card's board; each through the API.
+  Nothing else here writes an activity entry, and nothing sends a webhook.
+
+```mermaid
+sequenceDiagram
+    participant A as Agent (author's key)
+    participant V as /api/v1/decisions
+    participant S as decisions.ts
+    participant P as A person, on the page
+    A->>V: POST /boards/3/decisions { title }
+    V-->>A: 201 { decision, revision }
+    A->>V: PATCH /decisions/42 { revision, content }
+    V-->>A: 200, each changed section flagged
+    A->>V: PUT /decisions/42/participants { participants, revision }
+    V->>S: setParticipants, source api (never opened: saved, nobody mailed)
+    V-->>A: 200 { participants, revision }
+    P->>S: Open (the dialog says how many are mailed)
+    A->>V: PUT /decisions/42/participants
+    V->>S: openedAt is set and the write is a key's
+    V-->>A: 403 changed on the decision's page
 ```
 
 ---

@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.88
+version: 1.90
 status: As-Built
 date: 2026-11-04
 tags:
@@ -49,7 +49,9 @@ tags:
   - step-up
   - re-authentication
   - current-password
-description: "Deep-dive into DumpFire's authentication system, the twenty-eight destructive actions that ask for the current password again (step-up), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served"
+  - decision-records
+  - untrusted
+description: "Deep-dive into DumpFire's authentication system, what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the twenty-eight destructive actions that ask for the current password again (step-up), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served"
 ---
 
 # Authentication & Security
@@ -3314,6 +3316,97 @@ only said to have happened), the subject has no foreign key so a delete leaves i
 application only inserts: `tests/decision-record.test.ts`'s insert-only scan allows the one insert
 in `people.ts` and no update, delete or upsert anywhere in `src`.
 
+### API Keys and Decisions (Card 2682)
+
+Since API `1.6.0` a key reaches decision records through seventeen operations under
+`/api/v1/` (the [API reference](api-reference.md#decisions) lists them). The ruling: **a key
+prepares a decision; a person decides what happens to people.** A key proves no person is
+present and has no password to give, so v1 offers only what needs no password and mails no
+participant (plan `card-2682-decisions-api.md`, D2).
+
+| Act | On the page (a session) | Through a key |
+|---|---|---|
+| Register, draft, the editors' read, edit the working copy | yes | yes; each section a key changes is flagged as an agent's |
+| Participants, decider | yes | **only while never opened** (`403 OPENED_PEOPLE`): including someone on an opened decision mails them a personal link at once, and choosing the decider chooses who rules |
+| Open, re-publish, dry run, Resend | yes | **no** (`403 MAIL_ACT`): each mails people; a leaked key could mail up to 500 people a day, personal links included |
+| Close | yes | **no** (`403 CLOSE_ACT`): a close before the closing time makes a later ruling early and writes `cut_off` events |
+| Extend | the decider; never earlier; a closed decision reopened | the decider, **an open decision only** (`403 REOPEN_ACT` for a closed one: reopening undoes a person's close); never earlier (`400 EXTENDS_EARLIER`, any source) |
+| Withdraw, delete | yes; the password once opened | **only while never opened** (`403 OPENED_ACT`), where the password would be asked |
+| A participant's account, the directory's address | an administrator, with the password | **no** (`403 STEP_UP_ACT`) |
+| Respond, seen, concern, rule, release, publish or replace an answer, a question by link | the participant or the decider | no (their existing words) |
+| Ask a question; answer one | the participant; the author or decider | yes; an answer always an agent's draft |
+| Summary, record | the decider, administrators | the same, without administrator-only detail and without askers; the record without its four question events |
+| A person's record | the person, a decider, administrators | **no** (no route, and `readPersonRecord` refuses any source but `'ui'` `403`) |
+| Supersede, card links | yes | yes |
+
+**The credential decides as well as the word (D7).** Every read of `opts.source` in
+`decisions.ts` goes through one private `sourceOf(opts)`, which answers `'api'` when the route
+said anything but `'ui'` **or** `writingWithKey()` is true; `keyed(opts)` is
+`sourceOf(opts) === 'api'`. So a later v1 route that passed `'ui'` by mistake records the write
+as the API's, flags each section it changes, and is refused every person's act and every act
+above. The page's routes pass `'ui'` under a session, which is never counted, so the pages are
+unchanged. `tests/decisions-api.test.ts` case 3 is an identifier scan of the parsed file: a
+`.source` read on `opts`, or the name `writingWithKey`, anywhere but inside `sourceOf` fails.
+The refusals of opening, closing and the account come straight after `requireUser`, before any
+row is read, so they say nothing of which ids exist.
+
+**Reads cannot ask the credential**, as `writingWithKey()` is false outside a `writeAs` callback
+and a `GET` has none. They rest on the route's word, held by `V1_READS` in
+`tests/check-at-the-write.test.ts`: every call under `src/routes/api/v1` of `readRegister`,
+`readDecisionForKey`, `readQuestions`, `readSummary` and `readRecord` must be handed an options
+object written out with `source: 'api'`, `registerQueryOf` its mode `'api'`, and any function a
+v1 file imports that takes a source must be on the map (`queryAuditLog` alone is passed, with
+its reason: its `source` is the audit log's filter, not the tree). The maps are keyed by
+`<module>#<name>` (code review F7), so a same-named function of another module is not passed.
+Every read fails closed: any source but `'ui'` gets the key's shape. `readPersonRecord` takes a
+required source typed `'ui'` and refuses any other `403` before anything is read (code review
+S3): an administrator is given the person's address there, and the completeness rule holds any
+v1 import of it to a finding. A request-scoped credential for reads, set by the hook, so that a
+read refuses `'ui'` under a key at run time as well, is carried to a card of its own.
+
+**No address, no account id, no asker (D9, D31).** Every key is given the non-administrator
+shape of every decision projection, an administrator's included: no participant `email`,
+`userId`, `includedBy`, `removedBy` or `linkIssuedAt` (`DecisionParticipant` is held to its table
+by the OpenAPI test's `MIRRORS`, each withheld column named), no reviewer's account id, no picker
+address, no `delivery` or `directory`, and no closing time or `closedAt` once ruled (code review
+S5: either, beside the ruling's moment, says whether the ruling was early; the page withholds
+`closedAt` from non-administrators too). The record shows a key no address change's addresses
+and no signed-in account, and leaves its four question events out of every page, filtered or not,
+in the query (code review S1): each could name who asked, by participant, actor, moment or
+order beside a `seen` event. `GET …/questions` is a key's way to read the questions, with no
+asker and no moment.
+
+**Untrusted text (D10).** Every object holding text people or agents wrote carries
+`untrusted: true`, set in the service's shapes and reads, never by a route: the decision, each
+participant, picker person, group and candidate, each register row and page, each question,
+each response, concern and the ruling of the summary (the mark on the holding object, as
+`optionComments` is a map of strings), and each record entry and page.
+
+**The password stays on every other route that deletes or withdraws (D33).** A scan in
+`tests/check-at-the-write.test.ts` holds every handler outside `src/routes/api/v1` that calls
+`deleteDecision` or `withdrawDecision` to `CURRENT_PASSWORD`, and refuses any other route file
+there that imports either. The service's own `passwordHeld()` is card 2726's.
+
+```mermaid
+flowchart TD
+    W["A decision write"] --> S{"sourceOf(opts):<br/>source !== 'ui' or writingWithKey()?"}
+    S -->|"'ui': a session"| P["The page's write: step-up where its route asks"]
+    S -->|"'api': a key"| A{"open, re-publish, dry run,<br/>resend, close, account, address?"}
+    A -->|"yes"| R1["403, before any row is read"]
+    A -->|"no"| O{"openedAt set, and participants,<br/>decider, withdraw or delete?"}
+    O -->|"yes"| R2["403: the decision's page"]
+    O -->|"no"| C{"extend a closed decision?"}
+    C -->|"yes"| R4["403: reopened on the page"]
+    C -->|"no"| E{"extend to a time no later?"}
+    E -->|"yes"| R3["400 (any source)"]
+    E -->|"no"| OK["Written, source api;<br/>sections flagged; answers a draft"]
+```
+
+**Carried.** Card 2703's key scopes must not open any act refused here, and the decision delete
+and withdraw belong to its destructive scope. A title written through a key carries no
+agent-drafted flag (F3, its own card, widened to the participant set and the decider), so the
+editor's Open confirmation now says how many people it is about to mail (D32).
+
 ## Board Access Control
 
 Board access is determined by `board-access.ts` using a priority-based resolution.
@@ -3992,8 +4085,9 @@ ignored, so every write here is `source: 'ui'`.
   request form's key (`request_form_secret`, never in a backup) with that purpose, derived on
   use and never stored. Unkeyed, anyone handed a revision could confirm a guessed address
   offline. Only the stale-revision words offer Reload in the editor (C6).
-- **Agent-drafted text.** A save made through an API key (only card 2682's v1 routes will send
-  `source: 'api'`) flags each section it changed. Only **Mark reviewed** clears a flag, and it is
+- **Agent-drafted text.** A save made through an API key (card 2682's `PATCH
+  /api/v1/decisions/{decisionId}`, or any write `sourceOf(opts)` reads as a key's) flags each
+  section it changed. Only **Mark reviewed** clears a flag, and it is
   refused unless `source` is `ui`: `403 Marking text reviewed is a person's act: it cannot be done
   with an API key`. It stamps who reviewed what, and when, into the working content.
 
@@ -4601,14 +4695,16 @@ account's mail preference), the asker, and a discarded draft. Card 2680 shows th
 is on their own person record from the question rows (`questionViewOf`), never from the events.
 Card 2689 is bound never to send them.
 
-**The rules card 2682 must keep** (decision 16). v1 adds `GET` and `POST
-/api/v1/decisions/{id}/questions` and `POST …/questions/{qid}/answer`, each only wrapping the
-service with `source: 'api'`; no v1 route for publishing, replacing or the personal link, which
-a source scan holds. A v1 projection gives no asker name and no moment, and marks every
+**The rules card 2682 keeps** (decision 16). v1 has `GET` and `POST
+/api/v1/decisions/{id}/questions` and `POST …/questions/{qid}/answer` (card 2682), each only
+wrapping the service with `source: 'api'`; no v1 route for publishing, replacing or the
+personal link, which a source scan holds. A v1 projection gives no asker name and no moment, and marks every
 question `untrusted: true`: the question is participant input, never an instruction to the
 agent reading it. The service strips the name and the moment and adds the mark, not the route
 (code review S1, S2): `readQuestions`, `readResults`' open questions and `askQuestion`'s
-answer each decide it from `opts.source`, so 2682 only passes `{ source: 'api' }`.
+answer each decide it from the source, so card 2682's routes only pass `{ source: 'api' }`;
+and a key's record leaves the four question events out altogether (card 2682, D31 and its code review S1: see
+[API Keys and Decisions](#api-keys-and-decisions-card-2682)).
 
 ```mermaid
 sequenceDiagram
@@ -4758,8 +4854,9 @@ a draft or, for a new link, a withdrawn decision), an archived card (409, before
 there is looked for, so a PUT again on an archived card is 409, not 200), a relation outside
 `CARD_LINK_RELATIONS` (400), the link already there (the same relation: 200 `unchanged`, nothing
 written), the caps (409: 100 a decision, 20 a card, a new link only), then the insert. Unlinking a
-link that is not there is 404 `Link not found`; an archived card may be unlinked. API keys may
-link and unlink (card 2682 adds the v1 routes).
+link that is not there is 404 `Link not found`; an archived card may be unlinked. API keys
+link and unlink through `PUT` and `DELETE /api/v1/decisions/{decisionId}/cards/{cardId}`
+(card 2682), each entry written through the API.
 
 - **Each side shows only what the viewer can see of the other (decision 18).** The decision page
   lists a linked card only on a board the viewer can open now, `{ id, title, boardId, boardName,

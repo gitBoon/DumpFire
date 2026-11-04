@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.93
+version: 1.95
 status: As-Built
 date: 2026-11-04
 tags:
@@ -30,7 +30,7 @@ tags:
   - options-column
   - ideas-board
   - milestone-22
-description: "Administration guide covering who may do what on the admin page, the twenty-eight actions that ask for your password again and the sign-out after three wrong ones, the Options column every delivery board has, ideas boards and when to use options, user management and what a password reset ends, switches off and pauses, SMTP setup, team configuration, what a backup holds and what a restore does, archive management, what each delete removes and who it tells, Reset and Vacuum, attachments, each user's mail switches, what the activity log records and the words its panels use, the Audit page's filters, a board beneath one of its own cards and how to put it right, the people directory and what an administrator's API key may change in it, and system settings"
+description: "Administration guide covering what an API key, an administrator's included, may and may not do with a decision (card 2682), who may do what on the admin page, the twenty-eight actions that ask for your password again and the sign-out after three wrong ones, the Options column every delivery board has, ideas boards and when to use options, user management and what a password reset ends, switches off and pauses, SMTP setup, team configuration, what a backup holds and what a restore does, archive management, what each delete removes and who it tells, Reset and Vacuum, attachments, each user's mail switches, what the activity log records and the words its panels use, the Audit page's filters, a board beneath one of its own cards and how to put it right, the people directory and what an administrator's API key may change in it, and system settings"
 ---
 
 # Admin Operations Guide
@@ -515,12 +515,37 @@ A wrong password keeps the dialog open, the field cleared; three wrong ones sign
 flowchart LR
     P["A participant asks"] --> Q["The question"]
     Q --> A["Author or decider answers<br/>(not an administrator)"]
-    Q --> K["An API key drafts (card 2682)"]
+    Q --> K["An API key drafts an answer<br/>(POST /api/v1/…/answer)"]
     K --> D["A draft: author, decider<br/>and administrators see it"]
     D --> Pub["Published or replaced<br/>by the author or decider"]
     A --> All["Everyone included sees the answer"]
     Pub --> All
     Q -.->|"who asked"| Priv["Author, decider and<br/>administrators only"]
+```
+
+**API keys and decisions** (card 2682, API `1.6.0`). A key, your own included, can read the
+register, draft a decision and edit its text, name its participants and decider while it has
+never been opened, extend one it decides (to a later time only), withdraw or delete a draft
+never opened, supersede, ask a question and draft an answer, read the results and the record
+(the decider's and administrators'), and link cards. **What no key can do, an administrator's
+included:** open, re-publish, send a dry run or an invitation again (each mails people), close a
+decision for input (closing early makes a later ruling early), rule or release, publish or
+replace an agent's answer, attach or clear a participant's account or use the directory's
+address, or, once a decision has been opened, change its participants or decider, withdraw it or
+delete it. Each of those is done on the decision's page, where the password is asked where it
+always was. The server refuses them by how the request came in, so no route can open one to a
+key. A key is never given an email address or a participant's account id, an administrator's
+key included, nor who asked a question; and on the record it sees no address change's addresses,
+no signed-in account and no question event. Extend, on the page or through a key, never brings a
+closing time earlier, and a key extends only an open decision: reopening a closed one is done on
+the decision's page. Through a key, an extend and a card link or unlink are in the activity log as done
+through the API.
+
+```mermaid
+flowchart LR
+    K["Any API key,<br/>an administrator's too"] --> Y["draft, edit, participants and decider<br/>(never opened), extend later,<br/>questions, results, record, card links"]
+    K -.->|"refused"| N["open, re-publish, dry run, resend, close,<br/>rule, release, publish an answer,<br/>account, address, anything once opened"]
+    N --> P["The decision's page,<br/>a person, the password where asked"]
 ```
 
 ```mermaid

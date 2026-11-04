@@ -69,7 +69,7 @@
  * Plain functions with no caller, called inside a service write's
  * transaction, or by the mail effect in a transaction of its own.
  */
-import { and, asc, count, desc, eq, gte, inArray, isNotNull, isNull, gt, lt, lte, max, ne, or, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, inArray, isNotNull, isNull, gt, lt, lte, max, ne, notInArray, or, sql } from 'drizzle-orm';
 import { db } from './db';
 import {
 	decisionEvents,
@@ -185,6 +185,14 @@ export const DECIDER_ONLY_EVENTS: readonly EventKind[] = [
 	'answer_published',
 	'answer_replaced'
 ];
+
+/**
+ * Card 2678's four question events (card 2682, D31): an API key reading the
+ * record is given each with no participant, no actor's name and no moment,
+ * which together could name who asked; and a key's page filtered by a
+ * participant leaves them out, as `question_asked` names its asker.
+ */
+export const QUESTION_EVENTS: readonly EventKind[] = ['question_asked', 'question_answered', 'answer_published', 'answer_replaced'];
 
 /**
  * The events a person is shown of their own participation on their own
@@ -845,10 +853,15 @@ const recordEventColumns = {
 /**
  * The decision's events in id order, oldest first (card 2680, decision 16):
  * those naming `participantId` alone when it is given, those after `afterId`
- * when it is given, and at most `limit`. Read by
- * `idx_decision_events_decision_id_created_at`, or `_participant_id`.
+ * when it is given, none of the kinds `withoutKinds` names (card 2682, D31:
+ * in the query, so that `limit` and the page's `next` stay exact), and at
+ * most `limit`. Read by `idx_decision_events_decision_id_created_at`, or
+ * `_participant_id`.
  */
-export function recordEventsOf(decisionId: number, opts: { participantId?: number; afterId?: number; limit: number }): RecordEventRow[] {
+export function recordEventsOf(
+	decisionId: number,
+	opts: { participantId?: number; afterId?: number; withoutKinds?: readonly EventKind[]; limit: number }
+): RecordEventRow[] {
 	return db
 		.select(recordEventColumns)
 		.from(decisionEvents)
@@ -856,7 +869,8 @@ export function recordEventsOf(decisionId: number, opts: { participantId?: numbe
 			and(
 				eq(decisionEvents.decisionId, decisionId),
 				opts.participantId === undefined ? undefined : eq(decisionEvents.participantId, opts.participantId),
-				opts.afterId === undefined ? undefined : gt(decisionEvents.id, opts.afterId)
+				opts.afterId === undefined ? undefined : gt(decisionEvents.id, opts.afterId),
+				opts.withoutKinds === undefined || opts.withoutKinds.length === 0 ? undefined : notInArray(decisionEvents.kind, [...opts.withoutKinds])
 			)
 		)
 		.orderBy(asc(decisionEvents.id))

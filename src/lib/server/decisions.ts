@@ -60,6 +60,20 @@
  * reaches, and none writes an activity entry, a live event, a webhook or a
  * mail (design S3).
  *
+ * Card 2682 adds the API v1 routes (`src/routes/api/v1/decisions`), which
+ * call `createDecision`, `updateDraft`, `setDecider`, `setParticipants`,
+ * `extendDecision`, `withdrawDecision`, `deleteDecision`,
+ * `supersedeDecision`, `askQuestion`, `answerQuestion`, `linkCard` and
+ * `unlinkCard` with `source: 'api'`. A write is an API key's by the route's
+ * word or by the credential it was let in with (`sourceOf`, D7), either
+ * alone, so that a later route handing `'ui'` by mistake opens nothing. A key
+ * is refused what mails people (opening, re-publishing, a dry run, Resend:
+ * D3), closing (D29), a participant's account and address (D6), participants
+ * and the decider of a decision ever opened (D4), and withdrawing or deleting
+ * one (D5), and reopening a closed one by Extend (code review S2): each is a
+ * person's act on the decision's page. Extend never brings a closing time
+ * earlier, for anyone (D30).
+ *
  * Each write has the one shape of a service (`ServiceOptions` in
  * `write-as.ts`): `inWrite()` first, then the guard (`requireDecision`, or
  * `requireBoard` for a new draft: 401, 404, 403), every field read from the
@@ -191,7 +205,7 @@ import {
 import { DECISION_ACTION_WORDS, decisionStatus, linkUsable, requireTransition } from './decision-status';
 import { isSmtpConfigured, NO_LINK_ADDRESS } from './email';
 import { emit } from './events';
-import { ACTIONS, actorOf, logActivity } from './logActivity';
+import { ACTIONS, actorOf, logActivity, type ActivitySource } from './logActivity';
 import { notifyDecisionConcern, notifyDecisionQuestion, notifyQuestionAnswered, shouldNotifyUser } from './notifications';
 import { takeAllowance } from './rate-limit';
 import {
@@ -229,7 +243,7 @@ import { CARD_LINK_RELATIONS, cardLinkCountOf, LINKS_PER_CARD, LINKS_PER_DECISIO
 import type { LinkOutcome } from '$lib/decision-register-types';
 import { requireBoard, requireCard, requireDecision, requireUser } from './route-guards';
 import { parseStamp, stamp, type Stamp } from '$lib/timestamps';
-import { inWrite, type ServiceOptions } from './write-as';
+import { inWrite, writingWithKey, type ServiceOptions } from './write-as';
 
 /**
  * The functions here that only read: the guards of the administrator's two
@@ -277,6 +291,53 @@ const PERSONS_ACT = "Responding is a person's act: it cannot be done with an API
 const SUPERSEDING_DECIDER_FIXED =
 	"This decision supersedes a ruled one: its decider was set when it was made and cannot be changed. Withdraw it and supersede the ruling again for another decider";
 
+// ─── What an API key may not do (card 2682, D3 to D6, D29, D30) ──────────────
+// Module constants, not exported (D20): a service module exports its functions alone.
+
+/** The 403 for opening, re-publishing, a dry run and Resend through an API key (card 2682, D3): each mails people. */
+const MAIL_ACT =
+	"Opening, re-publishing, a dry run and sending an invitation again mail people: a person does them on the decision's page. An API key cannot";
+
+/** The 403 for a participant's account or address through an API key (card 2682, D6): both ask the password on the page. */
+const STEP_UP_ACT = "Changing a participant's account or address asks for your password on the decision's page. An API key cannot";
+
+/** The 403 for participants or the decider of a decision ever opened, through an API key (card 2682, D4). */
+const OPENED_PEOPLE =
+	"This decision has been opened: who is included in it, and who decides it, are changed on the decision's page. An API key cannot";
+
+/** The 403 for withdrawing or deleting a decision ever opened, through an API key (card 2682, D5): the page asks the password. */
+const OPENED_ACT = "This decision has been opened: withdrawing or deleting it asks for your password on the decision's page. An API key cannot";
+
+/** The 403 for closing a decision through an API key (card 2682, D29): an early close makes a later ruling early. */
+const CLOSE_ACT =
+	"Closing a decision for input before its closing time is done on the decision's page: it makes a later ruling early. An API key cannot";
+
+/**
+ * The 403 for extending a closed decision through an API key (card 2682, code review S2): Extend on a closed decision
+ * reopens it, undoing a person's close, so a key extends only an open one.
+ */
+const REOPEN_ACT = "This decision is closed for input: reopening it by Extend is done on the decision's page. An API key cannot";
+
+/** The 400 for an Extend that would not move the closing time later, for every source (card 2682, D30). */
+const EXTENDS_EARLIER = "closesAt must be later than the decision's current closing time: Extend never brings it earlier";
+
+/**
+ * The source a write is recorded and judged by (card 2682, D7): `'api'` when
+ * the route said so, or when the write was let in with an API key, whatever
+ * the route said (`writingWithKey()`). The one place this module reads the
+ * route's word, so that a later route handing `'ui'` by mistake opens no
+ * person's act to a key and records no agent's write as a person's
+ * (`tests/decisions-api.test.ts` case 3).
+ */
+function sourceOf(opts: ServiceOptions): ActivitySource {
+	return opts.source !== 'ui' || writingWithKey() ? 'api' : 'ui';
+}
+
+/** Whether the write is an API key's, by the route's word or by the credential (card 2682, D7). */
+function keyed(opts: ServiceOptions): boolean {
+	return sourceOf(opts) === 'api';
+}
+
 /**
  * Make a draft on a board the caller can edit. `title` text, trimmed, 1 to 200
  * characters, holding no control, direction or invisible character (decision
@@ -314,7 +375,7 @@ export function createDecision(caller: SessionUser | null, at: { boardId: number
 		})
 		.returning()
 		.get();
-	appendEvent({ decisionId: decision.id, kind: 'created', detail: { decider: productOwner ? 'product_owner' : 'author' } }, actorFor(user, opts.source));
+	appendEvent({ decisionId: decision.id, kind: 'created', detail: { decider: productOwner ? 'product_owner' : 'author' } }, actorFor(user, sourceOf(opts)));
 	return decision;
 }
 
@@ -334,6 +395,8 @@ export function setDecider(caller: SessionUser | null, at: { decisionId: number 
 	inWrite();
 	const user = requireUser(caller);
 	const { decision } = requireDecision(user, at.decisionId, 'setDecider');
+	// Card 2682, D4: choosing the decider of a decision ever opened is a person's act on the page.
+	if (decision.openedAt !== null && keyed(opts)) error(403, OPENED_PEOPLE);
 
 	const deciderUserId = readId(body, 'deciderUserId', { required: true });
 	const revision = readText(body, 'revision', { required: true });
@@ -365,7 +428,7 @@ export function setDecider(caller: SessionUser | null, at: { decisionId: number 
 			kind: 'decider_changed',
 			detail: { fromUserId: decision.deciderUserId, fromName: decision.deciderName, toUserId: account.id, toName: account.username }
 		},
-		actorFor(user, opts.source)
+		actorFor(user, sourceOf(opts))
 	);
 	return row;
 }
@@ -414,6 +477,8 @@ export function setParticipants(
 	const user = requireUser(caller);
 	const { decision, access } = requireDecision(user, at.decisionId, 'edit');
 	if (decision.status !== 'draft' && !mayDo(access, 'include', decision)) error(403, `You cannot ${DECISION_ACTION_WORDS.include.verb} this decision`);
+	// Card 2682, D4: once ever opened, saving the set mails whoever it includes; before the body is read.
+	if (decision.openedAt !== null && keyed(opts)) error(403, OPENED_PEOPLE);
 
 	const entries = readObjects(body, 'participants', { required: true, max: MOST_PARTICIPANTS });
 	const wanted = entries.map((entry) => ({
@@ -441,7 +506,7 @@ export function setParticipants(
 
 	requireTransition(decision, 'edit');
 	requireRevision(decision, revision);
-	const by = actorFor(user, opts.source);
+	const by = actorFor(user, sourceOf(opts));
 	const now = stamp();
 
 	if (decision.status === 'draft') {
@@ -631,7 +696,7 @@ export function updateDraft(
 		const after = { ...content, options: listed };
 		const agentDrafted = { ...stored.agentDrafted };
 		const reviewed = { ...stored.reviewed };
-		if (opts.source === 'api') {
+		if (keyed(opts)) {
 			for (const key of changedSections(stored, after)) {
 				agentDrafted[key] = true;
 				delete reviewed[key];
@@ -674,7 +739,7 @@ export function markReviewed(caller: SessionUser | null, at: { decisionId: numbe
 	inWrite();
 	const user = requireUser(caller);
 	const { decision } = requireDecision(user, at.decisionId, 'review');
-	if (opts.source !== 'ui') error(403, "Marking text reviewed is a person's act: it cannot be done with an API key");
+	if (keyed(opts)) error(403, "Marking text reviewed is a person's act: it cannot be done with an API key");
 
 	const working = parseWorkingContent(decision.workingContent);
 	const known = new Set(sectionKeysOf(working));
@@ -742,6 +807,8 @@ export function markReviewed(caller: SessionUser | null, at: { decisionId: numbe
 export function openDecision(caller: SessionUser | null, at: { decisionId: number }, body: RequestBody, opts: ServiceOptions): Decision {
 	inWrite();
 	const user = requireUser(caller);
+	// Card 2682, D3: before any row is read, so the refusal says nothing about which ids exist.
+	if (keyed(opts)) error(403, MAIL_ACT);
 	const { decision } = requireDecision(user, at.decisionId, 'open');
 
 	const revision = readText(body, 'revision', { required: true });
@@ -760,7 +827,7 @@ export function openDecision(caller: SessionUser | null, at: { decisionId: numbe
 	// Decision 19: the snapshots, taken again now, which decision 29 has been asked of above.
 	const snapshots = rows.map((row) => ({ row, snapshot: snapshotOf(row.personId!)! }));
 
-	const by = actorFor(user, opts.source);
+	const by = actorFor(user, sourceOf(opts));
 	for (const { row, snapshot } of snapshots) {
 		db.update(decisionParticipants)
 			.set({ ...snapshotColumns(snapshot), includedAt: now })
@@ -818,6 +885,7 @@ export function openDecision(caller: SessionUser | null, at: { decisionId: numbe
 export function republishDecision(caller: SessionUser | null, at: { decisionId: number }, body: RequestBody, opts: ServiceOptions): Decision {
 	inWrite();
 	const user = requireUser(caller);
+	if (keyed(opts)) error(403, MAIL_ACT);
 	const { decision } = requireDecision(user, at.decisionId, 'republish');
 
 	const changeNote = readText(body, 'changeNote', { required: true, trim: true, min: 1, max: 2000 });
@@ -848,7 +916,7 @@ export function republishDecision(caller: SessionUser | null, at: { decisionId: 
 	requireRecordMailAllowed(user, mailed.length, now);
 	requirePublishAllowed(user, now);
 
-	const by = actorFor(user, opts.source);
+	const by = actorFor(user, sourceOf(opts));
 	for (const option of adding) db.update(decisionOptions).set({ addedInVersion: number }).where(eq(decisionOptions.id, option.id)).run();
 	for (const option of retiring) db.update(decisionOptions).set({ retiredInVersion: number }).where(eq(decisionOptions.id, option.id)).run();
 	const reopens = askAgain && decision.status === 'closed';
@@ -874,12 +942,14 @@ export function republishDecision(caller: SessionUser | null, at: { decisionId: 
 export function closeDecision(caller: SessionUser | null, at: { decisionId: number }, body: null, opts: ServiceOptions): Decision {
 	inWrite();
 	const user = requireUser(caller);
+	// Card 2682, D29: a close before the closing time makes a later ruling early; before any row is read.
+	if (keyed(opts)) error(403, CLOSE_ACT);
 	const { decision } = requireDecision(user, at.decisionId, 'close');
 
 	const now = stamp();
 	requireTransition(decision, 'close', now);
 	const row = db.update(decisions).set({ status: 'closed', closedAt: now, updatedAt: now }).where(eq(decisions.id, decision.id)).returning().get();
-	appendEvent({ decisionId: decision.id, kind: 'closed' }, actorFor(user, opts.source));
+	appendEvent({ decisionId: decision.id, kind: 'closed' }, actorFor(user, sourceOf(opts)));
 
 	if (row.boardId !== null) {
 		logActivity({ action: ACTIONS.decisionClosed, ...decisionEntry(row.boardId, `"${row.title}"`, user, opts) });
@@ -891,16 +961,25 @@ export function closeDecision(caller: SessionUser | null, at: { decisionId: numb
 /**
  * Give an open or closed decision a new closing time, `closesAt`, which must
  * be in the future and no more than `CLOSES_WITHIN_DAYS` ahead (400, card
- * 2697 Q25). It is open again, `closed_at` emptied; the `extended { from, to
- * }` event, `decision_extended` and the live event. No mail.
+ * 2697 Q25), and later than the decision's current closing time, for every
+ * source (400, card 2682 D30): an Extend that brought it earlier would be a
+ * close by another name. It is open again, `closed_at` emptied; the
+ * `extended { from, to }` event, `decision_extended` and the live event. No
+ * mail. Through an API key only a decision whose stored status is open is
+ * extended (403 otherwise, code review S2): reopening a closed one undoes a
+ * person's close, and is done on the decision's page.
  */
 export function extendDecision(caller: SessionUser | null, at: { decisionId: number }, body: RequestBody, opts: ServiceOptions): Decision {
 	inWrite();
 	const user = requireUser(caller);
 	const { decision } = requireDecision(user, at.decisionId, 'extend');
+	// Card 2682, code review S2: a key extends an open decision alone; before the body is read.
+	if (keyed(opts) && decision.status === 'closed') error(403, REOPEN_ACT);
 
 	const closesAt = readTimestamp(body, 'closesAt', { required: true, future: true });
 	if (closesTooFar(closesAt, stamp())) error(400, CLOSES_TOO_FAR);
+	// Card 2682, D30: never earlier, for every source; both are stamps in one format, so the text compares as the time.
+	if (decision.closesAt !== null && closesAt <= decision.closesAt) error(400, EXTENDS_EARLIER);
 
 	const now = stamp();
 	requireTransition(decision, 'extend', now);
@@ -910,7 +989,7 @@ export function extendDecision(caller: SessionUser | null, at: { decisionId: num
 		.where(eq(decisions.id, decision.id))
 		.returning()
 		.get();
-	appendEvent({ decisionId: decision.id, kind: 'extended', detail: { from: decision.closesAt, to: closesAt } }, actorFor(user, opts.source));
+	appendEvent({ decisionId: decision.id, kind: 'extended', detail: { from: decision.closesAt, to: closesAt } }, actorFor(user, sourceOf(opts)));
 
 	if (row.boardId !== null) {
 		logActivity({ action: ACTIONS.decisionExtended, ...decisionEntry(row.boardId, `"${row.title}": closes ${closesAt.slice(0, 16)} UTC`, user, opts) });
@@ -957,10 +1036,12 @@ export function decisionWithdrawGuard(
  */
 export function withdrawDecision(caller: SessionUser | null, at: { decisionId: number }, body: RequestBody, opts: ServiceOptions): Decision {
 	inWrite();
-	const { user, decision, reason } = decisionWithdrawGuard(caller, at, body);
+	const { user, decision, reason, wasOpened } = decisionWithdrawGuard(caller, at, body);
+	// Card 2682, D5: where the page would ask the password, after every refusal the guard makes; no password is read.
+	if (wasOpened && keyed(opts)) error(403, OPENED_ACT);
 
 	const now = stamp();
-	const by = actorFor(user, opts.source);
+	const by = actorFor(user, sourceOf(opts));
 	const row = db
 		.update(decisions)
 		.set({ status: 'withdrawn', withdrawnAt: now, withdrawnReason: reason, updatedAt: now })
@@ -1006,7 +1087,9 @@ export function decisionDeleteGuard(caller: SessionUser | null, at: { decisionId
  */
 export function deleteDecision(caller: SessionUser | null, at: { decisionId: number }, body: null, opts: ServiceOptions): void {
 	inWrite();
-	const { user, decision } = decisionDeleteGuard(caller, at);
+	const { user, decision, holdsRecord } = decisionDeleteGuard(caller, at);
+	// Card 2682, D5: as the withdrawal.
+	if (holdsRecord && keyed(opts)) error(403, OPENED_ACT);
 
 	const now = stamp();
 	// Card 2680 (decision 19, S7): each linked card keeps a trace on its own board, written before the delete cascades the
@@ -1128,6 +1211,7 @@ export function unlinkCard(caller: SessionUser | null, at: { decisionId: number;
 export function dryRunDecision(caller: SessionUser | null, at: { decisionId: number }, body: RequestBody, opts: ServiceOptions): void {
 	inWrite();
 	const user = requireUser(caller);
+	if (keyed(opts)) error(403, MAIL_ACT);
 	const { decision } = requireDecision(user, at.decisionId, 'dryRun');
 
 	const revision = readText(body, 'revision', { required: true });
@@ -1154,7 +1238,7 @@ export function dryRunDecision(caller: SessionUser | null, at: { decisionId: num
 	const took = takeAllowance(`decision-dry-run:${user.id}`, 1, DRY_RUN_DAILY_CAP, DAY_MS);
 	if (!took.taken) error(429, capped(stamp(new Date(Date.now() + took.retryAfterSecs * 1000))));
 
-	appendEvent({ decisionId: decision.id, kind: 'dry_run', detail: {} }, actorFor(user, opts.source));
+	appendEvent({ decisionId: decision.id, kind: 'dry_run', detail: {} }, actorFor(user, sourceOf(opts)));
 	const content = parseWorkingContent(decision.workingContent);
 	queueDryRun(decision, { id: user.id, username: user.username, email: person.email }, { question: content.question, ask: content.ask });
 }
@@ -1177,6 +1261,7 @@ export function resendInvitation(
 ): DecisionParticipant {
 	inWrite();
 	const user = requireUser(caller);
+	if (keyed(opts)) error(403, MAIL_ACT);
 	const { decision } = requireDecision(user, at.decisionId, 'resend');
 	const participant = participantOn(decision.id, at.participantId);
 
@@ -1190,7 +1275,7 @@ export function resendInvitation(
 	requireRecordMailAllowed(user, 1, now);
 
 	const after = touch(decision.id, now);
-	queueRecordMails(after, 'invitation', { by: actorFor(user, opts.source), participants: [participant], resend: true });
+	queueRecordMails(after, 'invitation', { by: actorFor(user, sourceOf(opts)), participants: [participant], resend: true });
 	return participantOn(decision.id, participant.id);
 }
 
@@ -1253,9 +1338,12 @@ export function setParticipantAccount(
 	opts: ServiceOptions
 ): DecisionParticipant {
 	inWrite();
+	requireUser(caller);
+	// Card 2682, D6: the page asks the password for it; before any row is read.
+	if (keyed(opts)) error(403, STEP_UP_ACT);
 	const { user, decision, participant, change } = participantAccountGuard(caller, at, body);
 
-	const by = actorFor(user, opts.source);
+	const by = actorFor(user, sourceOf(opts));
 	const now = stamp();
 	if (change.account === 'person') {
 		db.update(decisionParticipants).set({ userId: change.accountId }).where(eq(decisionParticipants.id, participant.id)).run();
@@ -1311,9 +1399,11 @@ export function changeParticipantAddress(
 	opts: ServiceOptions
 ): DecisionParticipant {
 	inWrite();
+	requireUser(caller);
+	if (keyed(opts)) error(403, STEP_UP_ACT);
 	const { user, decision, participant, email } = participantAddressGuard(caller, at);
 
-	const by = actorFor(user, opts.source);
+	const by = actorFor(user, sourceOf(opts));
 	db.update(decisionParticipants).set({ email }).where(eq(decisionParticipants.id, participant.id)).run();
 	revokeLinks({ participantId: participant.id }, 'participant_address', by);
 	appendEvent({ decisionId: decision.id, kind: 'address_changed', participantId: participant.id, detail: { from: participant.email, to: email } }, by);
@@ -1337,19 +1427,19 @@ export function respondToDecision(
 	inWrite();
 	const user = requireUser(caller);
 	const { decision, access } = requireDecision(user, at.decisionId, 'respond');
-	if (opts.source !== 'ui') error(403, PERSONS_ACT);
+	if (keyed(opts)) error(403, PERSONS_ACT);
 	const participant = ownParticipant(decision, access.participantId);
 	if (participant.role !== 'consulted') error(403, 'Someone kept informed gives no response');
 	requireReachedByAccount(decision.id, participant);
 
-	return respondAs(decision, participant, body, actorFor(user, opts.source), 'session', null);
+	return respondAs(decision, participant, body, actorFor(user, sourceOf(opts)), 'session', null);
 }
 
 /**
  * A link holder's response (card 2677, decisions 4, 9 and 10): the token
  * decides, through `participantForLink`, and any link that does not open a
  * decision is the one 404 (decision 6). Recorded `via: 'link'` with source
- * `link`, whatever `opts.source` says; a signed-in browser's account is noted
+ * `link`, whatever source the route gives; a signed-in browser's account is noted
  * in the event's detail as `signedIn`, never as the actor (R8). Otherwise as
  * `respondToDecision`.
  */
@@ -1361,7 +1451,7 @@ export function respondByLink(
 ): { response: OwnResponse; unchanged: boolean } {
 	inWrite();
 	const { decision, participant } = requireLink(at.token);
-	if (opts.source !== 'ui') error(403, PERSONS_ACT);
+	if (keyed(opts)) error(403, PERSONS_ACT);
 	if (participant.role !== 'consulted') error(403, 'Someone kept informed gives no response');
 
 	return respondAs(decision, participant, body, linkActor(participant), 'link', signedInOf(caller));
@@ -1377,19 +1467,19 @@ export function recordSeen(caller: SessionUser | null, at: { decisionId: number 
 	inWrite();
 	const user = requireUser(caller);
 	const { decision, access } = requireDecision(user, at.decisionId, 'view');
-	if (opts.source !== 'ui') error(403, "Being recorded as having seen a decision is a person's act: it cannot be done with an API key");
+	if (keyed(opts)) error(403, "Being recorded as having seen a decision is a person's act: it cannot be done with an API key");
 	if (access.participantId === null) error(403, 'Only a participant of this decision is recorded as having seen it');
 	const participant = ownParticipant(decision, access.participantId);
 	requireReachedByAccount(decision.id, participant);
 
-	return seenAs(decision, participant, body, actorFor(user, opts.source), null);
+	return seenAs(decision, participant, body, actorFor(user, sourceOf(opts)), null);
 }
 
 /** Record that a link holder has seen a version (card 2677, decisions 9 and 14): as `recordSeen`, decided by the token, with the link's source. */
 export function recordSeenByLink(caller: SessionUser | null, at: { token: string }, body: RequestBody, opts: ServiceOptions): { recorded: boolean } {
 	inWrite();
 	const { decision, participant } = requireLink(at.token);
-	if (opts.source !== 'ui') error(403, "Being recorded as having seen a decision is a person's act: it cannot be done with an API key");
+	if (keyed(opts)) error(403, "Being recorded as having seen a decision is a person's act: it cannot be done with an API key");
 
 	return seenAs(decision, participant, body, linkActor(participant), signedInOf(caller));
 }
@@ -1423,7 +1513,7 @@ export function decisionRuleGuard(
 ): { user: SessionUser; decision: Decision; ruling: { optionId: number | null; reason: string; conditions: string | null } } {
 	const user = requireUser(caller);
 	const { decision } = requireDecision(user, at.decisionId, 'rule');
-	if (opts.source !== 'ui') error(403, "Ruling is a person's act: it cannot be done with an API key");
+	if (keyed(opts)) error(403, "Ruling is a person's act: it cannot be done with an API key");
 
 	const optionId = readId(body, 'optionId', { required: true, nullable: true });
 	if (optionId !== null && !liveOptionIds(decision.id, decision.currentVersion).includes(optionId)) {
@@ -1469,7 +1559,7 @@ export function ruleDecision(caller: SessionUser | null, at: { decisionId: numbe
 	const { user, decision, ruling } = decisionRuleGuard(caller, at, body, opts);
 
 	const now = stamp();
-	const by = actorFor(user, opts.source);
+	const by = actorFor(user, sourceOf(opts));
 	const voteMode = decision.voteMode === 'score' ? 'score' : 'single';
 	const { tally, notResponded } = currentResultsOf(decision);
 	const early = decisionStatus(decision, now) === 'open';
@@ -1550,7 +1640,7 @@ export function resultsReleaseGuard(
 ): { user: SessionUser; decision: Decision; omitted: { responseId: number; field: string }[] } {
 	const user = requireUser(caller);
 	const { decision } = requireDecision(user, at.decisionId, 'release');
-	if (opts.source !== 'ui') error(403, "Releasing results is a person's act: it cannot be done with an API key");
+	if (keyed(opts)) error(403, "Releasing results is a person's act: it cannot be done with an API key");
 
 	const revision = readText(body, 'revision', { required: true });
 	const omit = readList(body, 'omit', { max: MOST_OMITTED }) ?? [];
@@ -1594,7 +1684,7 @@ export function releaseResults(caller: SessionUser | null, at: { decisionId: num
 		.where(eq(decisions.id, decision.id))
 		.returning()
 		.get();
-	appendEvent({ decisionId: decision.id, kind: 'results_released', detail: { upToResponseId, omitted } }, actorFor(user, opts.source));
+	appendEvent({ decisionId: decision.id, kind: 'results_released', detail: { upToResponseId, omitted } }, actorFor(user, sourceOf(opts)));
 
 	if (row.boardId !== null) {
 		logActivity({ action: ACTIONS.decisionResultsReleased, ...decisionEntry(row.boardId, `"${row.title}"`, user, opts) });
@@ -1677,7 +1767,7 @@ export function supersedeDecision(caller: SessionUser | null, at: { decisionId: 
 		.get();
 	appendEvent(
 		{ decisionId: draft.id, kind: 'created', detail: { decider: decider !== null ? 'previous_decider' : 'author', supersedes: decision.id } },
-		actorFor(user, opts.source)
+		actorFor(user, sourceOf(opts))
 	);
 	return row;
 }
@@ -1701,12 +1791,12 @@ export function raiseConcern(caller: SessionUser | null, at: { decisionId: numbe
 	inWrite();
 	const user = requireUser(caller);
 	const { decision, access } = requireDecision(user, at.decisionId, 'concern');
-	if (opts.source !== 'ui') error(403, CONCERN_ACT);
+	if (keyed(opts)) error(403, CONCERN_ACT);
 	if (access.participantId === null) error(403, `You cannot ${DECISION_ACTION_WORDS.concern.verb} this decision`);
 	const participant = participantOn(decision.id, access.participantId);
 	requireReachedByAccount(decision.id, participant);
 
-	return concernAs(decision, participant, body, actorFor(user, opts.source), 'session', null);
+	return concernAs(decision, participant, body, actorFor(user, sourceOf(opts)), 'session', null);
 }
 
 /**
@@ -1714,13 +1804,13 @@ export function raiseConcern(caller: SessionUser | null, at: { decisionId: numbe
  * decides, through `participantForLink`, and any link that opens no decision
  * is the one 404, a link past its 90 days after the ruling among them
  * (`linkUsable`). Recorded `via: 'link'` with source `link`, whatever
- * `opts.source` says; a signed-in browser's account is noted as `signedIn`.
+ * source the route gives; a signed-in browser's account is noted as `signedIn`.
  * Otherwise as `raiseConcern`.
  */
 export function raiseConcernByLink(caller: SessionUser | null, at: { token: string }, body: RequestBody, opts: ServiceOptions): { concern: OwnConcern } {
 	inWrite();
 	const { decision, participant } = requireLink(at.token);
-	if (opts.source !== 'ui') error(403, CONCERN_ACT);
+	if (keyed(opts)) error(403, CONCERN_ACT);
 
 	return concernAs(decision, participant, body, linkActor(participant), 'link', signedInOf(caller));
 }
@@ -1762,7 +1852,7 @@ export function askQuestion(caller: SessionUser | null, at: { decisionId: number
 	requireReachedByAccount(decision.id, participant);
 
 	// Fail closed (code review S3): only the page's own source is recorded as a session.
-	return questionAs(decision, participant, body, actorFor(user, opts.source), opts.source === 'ui' ? 'session' : 'api', null, user, opts.source);
+	return questionAs(decision, participant, body, actorFor(user, sourceOf(opts)), keyed(opts) ? 'api' : 'session', null, user, sourceOf(opts));
 }
 
 /**
@@ -1776,9 +1866,9 @@ export function askQuestion(caller: SessionUser | null, at: { decisionId: number
 export function askQuestionByLink(caller: SessionUser | null, at: { token: string }, body: RequestBody, opts: ServiceOptions): { question: OwnQuestion } {
 	inWrite();
 	const { decision, participant } = requireLink(at.token);
-	if (opts.source !== 'ui') error(403, LINK_QUESTION_ACT);
+	if (keyed(opts)) error(403, LINK_QUESTION_ACT);
 
-	return questionAs(decision, participant, body, linkActor(participant), 'link', signedInOf(caller), null, opts.source);
+	return questionAs(decision, participant, body, linkActor(participant), 'link', signedInOf(caller), null, sourceOf(opts));
 }
 
 /**
@@ -1810,7 +1900,7 @@ export function answerQuestion(
 	const user = requireUser(caller);
 	const { decision, access } = requireDecision(user, at.decisionId, 'answer');
 	// A key may only draft (decision 8): putting a person's answer in place of an agent's is a person's act.
-	if (opts.source !== 'ui' && body.replacesDraft !== undefined && body.replacesDraft !== false) error(403, REPLACE_ACT);
+	if (keyed(opts) && body.replacesDraft !== undefined && body.replacesDraft !== false) error(403, REPLACE_ACT);
 	const row = requireQuestion(decision, at.questionId);
 	const answer = readMultiline(body.answer, 'answer', DECISION_TEXT_MAX, { trim: true });
 	if (answer === '') error(400, 'answer is required');
@@ -1821,25 +1911,25 @@ export function answerQuestion(
 	if (replacesDraft && !drafted) error(409, NO_DRAFT);
 	if (!replacesDraft && row.answer !== null) error(409, drafted ? DRAFT_PENDING : ANSWERED);
 
-	const by = actorFor(user, opts.source);
+	const by = actorFor(user, sourceOf(opts));
 	const role = answererRoleOf(access);
 	if (replacesDraft) {
 		const discarded = { text: row.answer, byName: row.answeredByName, at: row.answeredAt };
 		if (!recordDraftReplaced(row.id, answer, by)) error(409, NO_DRAFT);
 		const notice = answerNoticeOf(decision, row);
 		appendEvent({ decisionId: decision.id, kind: 'answer_replaced', detail: { questionId: row.id, role, discarded, notice: notice.outcome } }, by);
-		const replaced = answererViewOf(decision, access, row.id, opts.source);
+		const replaced = answererViewOf(decision, access, row.id, sourceOf(opts));
 		if (notice.outcome === 'asked') notifyQuestionAnswered(notice.to, decision.id, decision.title);
 		return { question: replaced };
 	}
 
 	// Fail closed (code review S3): any source but the page's drafts, and a person must stand behind it.
-	const agentDrafted = opts.source !== 'ui';
+	const agentDrafted = keyed(opts);
 	if (!recordAnswer(row.id, answer, by, agentDrafted)) error(409, ANSWERED);
 	// Decision 8: an agent's draft is not mailed until a person stands behind it.
 	const notice = agentDrafted ? { outcome: 'awaiting_review' as const } : answerNoticeOf(decision, row);
 	appendEvent({ decisionId: decision.id, kind: 'question_answered', detail: { questionId: row.id, role, agentDrafted, notice: notice.outcome } }, by);
-	const answered = answererViewOf(decision, access, row.id, opts.source);
+	const answered = answererViewOf(decision, access, row.id, sourceOf(opts));
 	if (notice.outcome === 'asked') notifyQuestionAnswered(notice.to, decision.id, decision.title);
 	return { question: answered };
 }
@@ -1862,7 +1952,7 @@ export function publishAnswer(
 	inWrite();
 	const user = requireUser(caller);
 	const { decision, access } = requireDecision(user, at.decisionId, 'answer');
-	if (opts.source !== 'ui') error(403, PUBLISH_ACT);
+	if (keyed(opts)) error(403, PUBLISH_ACT);
 	const row = requireQuestion(decision, at.questionId);
 
 	requireTransition(decision, 'answer', stamp());
@@ -1870,11 +1960,11 @@ export function publishAnswer(
 	if (!row.answerAgentDrafted) error(409, PERSON_ANSWERED);
 	if (row.answerReviewedAt !== null) error(409, ALREADY_PUBLISHED);
 
-	const by = actorFor(user, opts.source);
+	const by = actorFor(user, sourceOf(opts));
 	if (!recordDraftPublished(row.id, by)) error(409, ALREADY_PUBLISHED);
 	const notice = answerNoticeOf(decision, row);
 	appendEvent({ decisionId: decision.id, kind: 'answer_published', detail: { questionId: row.id, notice: notice.outcome } }, by);
-	const published = answererViewOf(decision, access, row.id, opts.source);
+	const published = answererViewOf(decision, access, row.id, sourceOf(opts));
 	if (notice.outcome === 'asked') notifyQuestionAnswered(notice.to, decision.id, decision.title);
 	return { question: published };
 }
@@ -2563,5 +2653,5 @@ function versionContent(decision: Decision, options: DecisionOption[]): string {
  * link's entry names its card, on the card's board.
  */
 function decisionEntry(boardId: number, detail: string, user: SessionUser, opts: ServiceOptions, cardId: number | null = null) {
-	return { boardId, cardId, detail, source: opts.source, ...actorOf(user) };
+	return { boardId, cardId, detail, source: sourceOf(opts), ...actorOf(user) };
 }

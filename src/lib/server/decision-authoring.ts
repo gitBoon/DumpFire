@@ -37,6 +37,12 @@
  * as the board's list gives it to nobody: beside `updatedAt`, the ruling's
  * moment, it would say whether the ruling was early. The editor says whether
  * the caller may read the results (`mayReadResults`).
+ *
+ * Card 2682 (D9 to D11) adds what an API key is given: `keyDecisionAnswer`
+ * and `keyParticipantAnswers`, the shapes a caller who is no administrator is
+ * given, to every key, an administrator's included, each marked `untrusted`;
+ * and `readDecisionForKey`, the editors' read for v1, with what a key may do
+ * now and the picker with no address, and no delivery or directory facts.
  */
 import { isHttpError } from '@sveltejs/kit';
 import { asc, desc, eq } from 'drizzle-orm';
@@ -240,8 +246,9 @@ export function workingViewContent(content: WorkingContent): ViewContent {
 /**
  * A decision as every answer gives it (decision 15), to an administrator
  * (`admin`) with each reviewer's account id besides. Once it is ruled or
- * superseded its closing time is given to an administrator alone: beside
- * `updatedAt`, the ruling's moment, it would tell anyone else whether the
+ * superseded its closing time, and the moment it was closed for input (card
+ * 2682, code review S5), are given to an administrator alone: beside
+ * `updatedAt`, the ruling's moment, either would tell anyone else whether the
  * ruling was early (card 2679, decision 26).
  */
 export function decisionAnswer(decision: Decision, admin: boolean, now: Stamp = stamp()): DecisionAnswer {
@@ -262,7 +269,8 @@ export function decisionAnswer(decision: Decision, admin: boolean, now: Stamp = 
 		createdAt: decision.createdAt,
 		updatedAt: decision.updatedAt,
 		openedAt: decision.openedAt,
-		closedAt: decision.closedAt,
+		// Card 2682, code review S5: as closesAt, for the same reason: beside the ruling's moment it says whether the ruling was early.
+		closedAt: isRuled(decision) && !admin ? null : decision.closedAt,
 		withdrawnAt: decision.withdrawnAt,
 		withdrawnReason: decision.withdrawnReason,
 		supersedesId: decision.supersedesId,
@@ -810,5 +818,138 @@ export function readEditPage(user: SessionUser, decisionId: number): EditPage {
 		republishSummary: actions.republish ? republishSummaryOf(decision) : null,
 		mayReadResults: decision.status !== 'draft' && mayDo(access, 'results', decision),
 		mayReadRecord: mayDo(access, 'record', decision)
+	};
+}
+
+// ─── What an API key is given (card 2682, D9 to D11) ─────────────────────────
+
+/** A decision as an API key is given it (card 2682, D9, D10): the shape a caller who is no administrator is given, its text marked as data. */
+export type KeyDecisionAnswer = DecisionAnswer & { untrusted: true };
+
+/** A participant as an API key is given it (card 2682, D9, D10): never an address, an account or who included or removed them. */
+export type KeyParticipantAnswer = ParticipantAnswer & { untrusted: true };
+
+/**
+ * A decision as every API key is given it, an administrator's included (card
+ * 2682, D9): `decisionAnswer(…, false)`, so no reviewer's account id and no
+ * closing time once ruled, with `untrusted: true`, as its title, content and
+ * reasons are people's and agents' words (D10).
+ */
+export function keyDecisionAnswer(decision: Decision, now: Stamp = stamp()): KeyDecisionAnswer {
+	return { ...decisionAnswer(decision, false, now), untrusted: true };
+}
+
+/** What a v1 write on a decision answers (card 2682, code review F9): the OpenAPI document's `DecisionSaved`, the decision in the key's shape and the revision the next write must send. */
+export type KeyDecisionSaved = { decision: KeyDecisionAnswer; revision: string };
+
+/**
+ * `DecisionSaved` for the five v1 routes that answer it (create, decider,
+ * extend, withdraw, supersede: card 2682, code review F9), so that its shape
+ * is written once. Called inside the route's `writeAs`, after the write.
+ */
+export function keyDecisionSaved(decision: Decision): KeyDecisionSaved {
+	return { decision: keyDecisionAnswer(decision), revision: revisionFor(decision.id) };
+}
+
+/** Participant rows as every API key is given them (card 2682, D9, D10): `participantAnswers(…, false)`, each marked `untrusted`. */
+export function keyParticipantAnswers(rows: DecisionParticipant[]): KeyParticipantAnswer[] {
+	return participantAnswers(rows, false).map((participant) => ({ ...participant, untrusted: true as const }));
+}
+
+/**
+ * What an API key may do to the decision now (card 2682, D11), by the rules
+ * the writes ask of a key: the status (`TRANSITIONS`), `mayDo`, and, for the
+ * participants, the decider, the withdrawal and the delete, a decision never
+ * opened (D4, D5), and for Extend an open one (code review S2). Nothing a key
+ * is refused is here: no open, re-publish, dry run, Resend, close or
+ * administrator's action.
+ */
+export type KeyActions = {
+	edit: boolean;
+	setDecider: boolean;
+	setParticipants: boolean;
+	extend: boolean;
+	withdraw: boolean;
+	delete: boolean;
+	supersede: boolean;
+};
+
+/** A person the key's picker offers (card 2682, D11): the page's picker fields, never an address, marked as data. */
+export type KeyPickerPerson = { id: number; fullName: string; jobTitle: string; groupIds: number[]; untrusted: true };
+
+/** A group the key's picker offers: its members only where the key may save the participants (`SOMETIMES_ABSENT`). */
+export type KeyPickerGroup = { id: number; name: string; activeMemberIds?: number[]; untrusted: true };
+
+/** An account the key may name as decider. */
+export type KeyDeciderCandidate = DeciderCandidate & { untrusted: true };
+
+/** The editors' read of a decision through an API key (card 2682, D11). */
+export type KeyDecisionView = {
+	decision: KeyDecisionAnswer;
+	options: OptionAnswer[];
+	participants: KeyParticipantAnswer[];
+	revision: string;
+	readiness: Readiness;
+	actions: KeyActions;
+	/** Empty unless `actions.setParticipants`. */
+	people: KeyPickerPerson[];
+	/** Every group by name where the decision can be edited; members only with `actions.setParticipants`. */
+	groups: KeyPickerGroup[];
+	/** Empty unless `actions.setDecider`. */
+	deciderCandidates: KeyDeciderCandidate[];
+	untrusted: true;
+};
+
+/**
+ * The editors' read of a decision for `GET /api/v1/decisions/{decisionId}`
+ * (card 2682, D11): for a caller who may edit it (`requireDecision(…,
+ * 'edit')`: 404, then 403, as the edit page). The decision, its live options
+ * and every participant row in the shape every key is given (D9), the
+ * revision the next write must send (D28), the readability check, what a key
+ * may do now, and the picker: the page's narrower picker fields, not
+ * `keyPerson`'s, and never an address, an administrator's key included (the
+ * picker is `pickerOf(false, …)`). No `delivery`, `directory` or
+ * `republishSummary`: a key can send nothing and change no address. Every
+ * object holding people's or agents' words is marked `untrusted` (D10).
+ */
+export function readDecisionForKey(user: SessionUser, decisionId: number, opts: { source: 'api' }): KeyDecisionView {
+	const { decision, access } = requireDecision(user, decisionId, 'edit');
+	const now = stamp();
+	const participants = participantsOf(decision.id);
+
+	const allows = (action: keyof typeof TRANSITIONS) => (TRANSITIONS[action] as readonly string[]).includes(decision.status);
+	const neverOpened = decision.openedAt === null;
+	const editable = allows('edit');
+	const actions: KeyActions = {
+		edit: editable && mayDo(access, 'edit', decision),
+		setDecider: neverOpened && allows('setDecider') && mayDo(access, 'setDecider', decision),
+		setParticipants: neverOpened && editable,
+		// Code review S2: a key extends an open decision alone; reopening a closed one is the page's.
+		extend: decision.status === 'open' && allows('extend') && mayDo(access, 'extend', decision),
+		withdraw: neverOpened && allows('withdraw') && mayDo(access, 'withdraw', decision),
+		delete: neverOpened && allows('delete') && mayDo(access, 'delete', decision),
+		supersede: allows('supersede') && mayDo(access, 'supersede', decision)
+	};
+
+	const board = decision.boardId === null ? undefined : db.select().from(boards).where(eq(boards.id, decision.boardId)).get();
+	const picker = editable ? pickerOf(false, actions.setParticipants) : { people: [], groups: [] };
+	const candidates = actions.setDecider && board ? editorsOf(board) : [];
+
+	return {
+		decision: keyDecisionAnswer(decision, now),
+		options: optionAnswers(liveOptionsOf(decision.id)),
+		participants: keyParticipantAnswers(participants),
+		revision: revisionOf(decision, allOptionsOf(decision.id), participants),
+		readiness: readiness(decision, participants, now),
+		actions,
+		people: picker.people.map((person) => ({ id: person.id, fullName: person.fullName, jobTitle: person.jobTitle, groupIds: person.groupIds, untrusted: true as const })),
+		groups: picker.groups.map((group) => ({
+			id: group.id,
+			name: group.name,
+			...(group.activeMemberIds === undefined ? {} : { activeMemberIds: group.activeMemberIds }),
+			untrusted: true as const
+		})),
+		deciderCandidates: candidates.map((account) => ({ id: account.id, username: account.username, emoji: account.emoji, untrusted: true as const })),
+		untrusted: true
 	};
 }

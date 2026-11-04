@@ -947,8 +947,9 @@ describe('closeDecision and extendDecision', () => {
 		sent.clear();
 		const before = eventsOf(r.id).length;
 
-		// Card 2697 (Q25): a new closing time is at most a year ahead, so a month ahead is sent.
-		const soon = stamp(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000));
+		// Card 2697 (Q25): a new closing time is at most a year ahead; card 2682 (D30): and later than the current one,
+		// `FUTURE`, 90 days ahead, so 120 days ahead is sent.
+		const soon = stamp(new Date(Date.now() + 120 * 24 * 60 * 60 * 1000));
 		const row = as(r.decider, (caller) => extendDecision(caller, { decisionId: r.id }, { closesAt: `${soon.replace(' ', 'T')}Z` }, UI));
 
 		expect(row).toMatchObject({ status: 'open', closesAt: soon, closedAt: null });

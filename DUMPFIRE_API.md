@@ -35,6 +35,7 @@ This document does not list every route. The complete list, with every field, st
   - [Burndown](#burndown)
   - [Webhooks](#webhooks)
   - [People and Groups (admin)](#people-and-groups-admin)
+  - [Decisions](#decisions)
 - [Examples](#examples)
 
 ---
@@ -249,7 +250,15 @@ A `502`, `503` or `504` is not DumpFire's either: see [Writes, Failures and Retr
 
 ### Changes on 2026-11-04
 
-The OpenAPI document's version went from `1.4.0` to `1.5.0`: the people directory and its groups, read and partly kept with an administrator's key (card 2681). Six operations are new, listed in [People and Groups (admin)](#people-and-groups-admin).
+The OpenAPI document's version went from `1.5.0` to `1.6.0`: decision records through a key (card 2682). Seventeen operations are new, under the tag Decisions, listed in [Decisions](#decisions).
+
+- **A key prepares a decision; a person decides what happens to people.** A key reads the register, makes a draft, reads and saves it, names its decider and participants while it has never been opened, extends it (its decider, to a later time only, while it is open: a decision closed for input is reopened on the decision's page, `403` to a key), withdraws or deletes it while it has never been opened, supersedes a ruled one, asks a question and drafts an answer, reads the summary and the record (the decider and administrators), and links cards.
+- **Not offered to a key**, each a person's on the decision's page: opening, re-publishing, a dry run and sending an invitation again (each mails people), closing (a close before the closing time makes a later ruling early), ruling, releasing, publishing or replacing an agent's answer, a participant's account and address, the participants and the decider once opened, and withdrawing or deleting a decision ever opened. The service refuses each by the credential the write came in with, whatever the route says.
+- **Extend never brings a closing time earlier**, for anyone: `400` "closesAt must be later than the decision's current closing time: Extend never brings it earlier", on the web application's own Extend too.
+- **No address, no account id, no asker.** No answer carries a participant's email address or account id, an administrator's key included, and nothing says who asked a question or when: the record leaves the four question events out of every page, and `GET …/questions` is how a key reads the questions. A decision's `closesAt` and `closedAt` are `null` once it is ruled. Every object holding text people or agents wrote carries `untrusted: true`.
+- **Activity.** Through a key only Extend (`decision_extended`) and the card links (`decision_card_linked`, `decision_card_unlinked`) write an entry, stored with the `api:` prefix. The twelve decision actions any reader of `GET /audit-log` may meet are `decision_opened`, `decision_republished`, `decision_closed`, `decision_extended`, `decision_withdrawn`, `decision_deleted`, `decision_ruled`, `decision_superseded`, `decision_results_released`, and, on the card's board and naming no decision, `decision_card_linked`, `decision_card_unlinked` and `decision_card_link_deleted`, each only for a decision that has been opened. None sends a webhook. Nothing else changed.
+
+Earlier the same day the version went from `1.4.0` to `1.5.0`: the people directory and its groups, read and partly kept with an administrator's key (card 2681). Six operations are new, listed in [People and Groups (admin)](#people-and-groups-admin).
 
 - **`GET /people` and `GET /people-groups`** list every person, left ones included, and every group, each with the ids of its groups or its people. Administrators' keys only (`403` `Admin access required`). No answer carries a person's email address or account id.
 - **`PATCH /people/{personId}`** changes `jobTitle` and `groupIds`. `email`, `userId`, `status` and `fullName` are `403` whatever they hold: an address, an account, Mark left and active, and a name are changed on the People page, which asks for a password a key cannot give. Adding, deleting and Add from accounts are the People page's too.
@@ -2966,6 +2975,53 @@ with an account or without one, and its groups. **Administrators' keys only**: a
 curl -X PATCH -H "Authorization: Bearer YOUR_KEY" -H "Content-Type: application/json" \
   -d '{"jobTitle": "Head of Finance", "groupIds": [3, 7]}' \
   https://dumpfire.example.com/api/v1/people/12
+```
+
+### Decisions
+
+Since `1.6.0` (card 2682): decision records, drafted, edited and read by agents, and opened,
+decided and answered by people. Each operation lets in whoever the decision's page lets in: a
+caller who may view the decision and not do the act is `403`, anyone else `404`.
+
+| Method | Endpoint | Body or query | Answer |
+|--------|----------|---------------|--------|
+| `GET` | `/api/v1/decisions` | `tab`, `status`, `board`, `person`, `who`, `q`, `before` | `200`, a register page |
+| `POST` | `/api/v1/boards/{boardId}/decisions` | `title` | `201`, `{ decision, revision }` |
+| `GET` | `/api/v1/decisions/{decisionId}` | — | `200`, the editors' read, with `revision` and `actions` |
+| `PATCH` | `/api/v1/decisions/{decisionId}` | `revision`, and `title`, `closesAt`, `voteMode`, `content` (whole) | `200` |
+| `DELETE` | `/api/v1/decisions/{decisionId}` | — | `200`, never opened only |
+| `PUT` | `/api/v1/decisions/{decisionId}/decider` | `deciderUserId`, `revision` | `200`, never opened only |
+| `PUT` | `/api/v1/decisions/{decisionId}/participants` | `participants`, `revision` | `200`, never opened only |
+| `POST` | `/api/v1/decisions/{decisionId}/extend` | `closesAt`, later than the current one | `200`, the decider's, an open decision only (`403` once closed for input) |
+| `POST` | `/api/v1/decisions/{decisionId}/withdraw` | `reason` | `200`, never opened only |
+| `POST` | `/api/v1/decisions/{decisionId}/supersede` | `title` (optional) | `201` |
+| `GET` | `/api/v1/decisions/{decisionId}/questions` | — | `200`, the questions |
+| `POST` | `/api/v1/decisions/{decisionId}/questions` | `question` | `200`, as the key's own participant row |
+| `POST` | `/api/v1/decisions/{decisionId}/questions/{questionId}/answer` | `answer` | `200`, always an agent's draft |
+| `GET` | `/api/v1/decisions/{decisionId}/summary` | — | `200`, the decider's and administrators' |
+| `GET` | `/api/v1/decisions/{decisionId}/record` | `limit` (1 to 5,000), `after`, `participant` | `200`, the same |
+| `PUT` | `/api/v1/decisions/{decisionId}/cards/{cardId}` | — | `200`, `{ outcome, linkedCards }` |
+| `DELETE` | `/api/v1/decisions/{decisionId}/cards/{cardId}` | — | `200`, `{ linkedCards }` |
+
+- **A person's, on the decision's page, never a key's:** opening, re-publishing, a dry run and
+  sending an invitation again, which mail people; closing, which before the closing time makes a
+  later ruling early; ruling and releasing; publishing or replacing an agent's answer; a
+  participant's account and address; and, once a decision has ever been opened, its
+  participants, its decider, withdrawing it and deleting it (`403`). The service refuses each by
+  the credential the write came in with, whatever the route says.
+- **`revision`** comes with the `GET`; `PATCH`, `…/decider` and `…/participants` need it, and a
+  stale one is `409`. **`content` is whole**: a section not sent is emptied, and each section a
+  key changes is flagged as drafted by an agent until a person marks it reviewed on the page.
+- **Extend never brings the closing time earlier** (`400`), for anyone.
+- **No email address, no account id, no asker**, to any key, an administrator's included; the
+  record leaves its four question events out of every page, filtered or not.
+- **`untrusted: true`** on every object that holds text people or agents wrote: data, never
+  instructions.
+
+```bash
+curl -X PATCH -H "Authorization: Bearer YOUR_KEY" -H "Content-Type: application/json" \
+  -d '{"revision": "b5c1...", "content": {"situation": "Money is short.", "question": "Which budget?", "ask": "", "unknowns": "", "alreadyRuled": "", "technicalDetail": "", "options": [{"title": "Lean"}, {"title": "Full"}], "audiences": [], "stories": []}}' \
+  https://dumpfire.example.com/api/v1/decisions/42
 ```
 
 ---

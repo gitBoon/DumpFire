@@ -17,7 +17,9 @@
   - **Send me a dry run** sends `{ revision }`; a 409 or 429 is said in the
     server's words.
   - **Open** is off while the server gives a refusal, which it lists; with
-    warnings it confirms "Open with N warnings". It sends `{ revision }`.
+    warnings it confirms "Open with N warnings". Its confirmation says how
+    many people are mailed (`mailCount`, card 2682 D32). It sends
+    `{ revision }`.
   - **Re-publish** asks for a change note and Ask everyone again or Tell them
     only, which is off, with its reason, where the working copy adds or
     retires an option (`republishSummary`). It sends
@@ -73,6 +75,7 @@
 		republishSummary,
 		refusals,
 		warnings,
+		mailCount,
 		dirty,
 		mayReadResults = false,
 		mayReadRecord = false,
@@ -94,6 +97,8 @@
 		refusals: Refusal[];
 		/** The saved working copy's warnings, as the server gave them. */
 		warnings: Warning[];
+		/** How many live participants the saved set holds: whom Open mails (card 2682, D32). */
+		mailCount: number;
 		/** Whether the editor holds edits not yet saved. */
 		dirty: boolean;
 		/** Whether the caller may read the results and rule from them (card 2679, decision 15): the decider and administrators. */
@@ -310,10 +315,10 @@
 		];
 		return `Tell them only is off: this version ${changes.join(' and ')}, so everyone is asked again.`;
 	}
+	// Card 2682 (D32): how many people the mail-out reaches, said before it goes.
+	const mailed = $derived(`Every participant of "${title}" is mailed now: ${mailCount === 1 ? '1 person' : `${mailCount} people`}.`);
 	const openMessage = $derived(
-		warnings.length === 0
-			? `Every participant of "${title}" is mailed now.`
-			: `Every participant of "${title}" is mailed now. Still to look at: ${warnings.map((warning) => warning.words).join('; ')}.`
+		warnings.length === 0 ? mailed : `${mailed} Still to look at: ${warnings.map((warning) => warning.words).join('; ')}.`
 	);
 	const withdrawMessage = $derived(
 		actions.withdrawAsks

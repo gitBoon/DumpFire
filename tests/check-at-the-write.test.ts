@@ -3102,6 +3102,144 @@ function judgeV1Sources(
 }
 
 /**
+ * Card 2682 (D7, plan review fit D5): the reads under src/routes/api/v1 that
+ * take the tree a request came through, each by the index of its options
+ * argument. `writingWithKey()` is false outside a `writeAs` callback, so a
+ * read cannot ask the credential: it rests on the route's word, which must be
+ * the literal `'api'`, as a write's must (`judgeV1Sources`). Keyed by
+ * `<module>#<name>` (code review F7), so that a function of the same name in
+ * another module is not passed by this one's entry.
+ */
+const V1_READS: Record<string, number> = {
+	'src/lib/server/decision-register.ts#readRegister': 2,
+	'src/lib/server/decision-authoring.ts#readDecisionForKey': 2,
+	'src/lib/server/decision-questions.ts#readQuestions': 2,
+	'src/lib/server/decision-results.ts#readSummary': 2,
+	'src/lib/server/decision-register.ts#readRecord': 3
+};
+
+/** The reads whose argument at the index is a mode written out, `'api'` under v1 (card 2680's `registerQueryOf`), by `<module>#<name>`. */
+const V1_MODES: Record<string, number> = { 'src/lib/server/decision-register.ts#registerQueryOf': 1 };
+
+/**
+ * The functions a v1 route imports whose parameter holds a `source` that is
+ * not the tree the request came through, by `<module>#<name>`, with why: the
+ * completeness rule of `judgeV1Reads` passes them, and nothing else.
+ */
+const V1_SOURCE_NOT_THE_TREE: Record<string, string> = {
+	'src/lib/server/audit-log.ts#queryAuditLog':
+		"Its `params.source` is the audit log's filter of entries by the tree they were written through (`?source=`), " +
+		'which the caller chooses; the read gives the same entries to every tree.'
+};
+
+/** The key the three maps above are read by: the module's file and the function's exported name (code review F7). */
+const v1Key = (from: { file: string; name: string }) => `${from.file}#${from.name}`;
+
+/**
+ * Whether an exported function of `tree` named `name` has a parameter typed
+ * with a `source` property: an object type literal holding one, or
+ * `ServiceOptions`, read through the file's own type aliases, intersections,
+ * unions and the type arguments of a generic (`Pick<…>`, `Readonly<…>`).
+ * Every declaration counts, an overload's among them.
+ */
+function takesASource(tree: ts.SourceFile, name: string): boolean {
+	const aliases = new Map<string, ts.TypeNode>();
+	for (const statement of tree.statements) if (ts.isTypeAliasDeclaration(statement)) aliases.set(statement.name.text, statement.type);
+	const holds = (type: ts.TypeNode | undefined, seen: ReadonlySet<string>): boolean => {
+		if (type === undefined) return false;
+		if (ts.isTypeLiteralNode(type)) return type.members.some((member) => member.name !== undefined && member.name.getText(tree).replace(/['"]/g, '') === 'source');
+		if (ts.isIntersectionTypeNode(type) || ts.isUnionTypeNode(type)) return type.types.some((inner) => holds(inner, seen));
+		if (ts.isParenthesizedTypeNode(type)) return holds(type.type, seen);
+		if (ts.isTypeReferenceNode(type)) {
+			const named = type.typeName.getText(tree);
+			if (named === 'ServiceOptions') return true;
+			const alias = aliases.get(named);
+			if (alias !== undefined && !seen.has(named)) return holds(alias, new Set([...seen, named]));
+			return (type.typeArguments ?? []).some((inner) => holds(inner, seen));
+		}
+		return false;
+	};
+	const exported = (node: ts.Node) => ts.canHaveModifiers(node) && (ts.getModifiers(node) ?? []).some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
+	const signatures: ts.SignatureDeclaration[] = [];
+	for (const statement of tree.statements) {
+		if (ts.isFunctionDeclaration(statement) && statement.name?.text === name && exported(statement)) signatures.push(statement);
+		if (ts.isVariableStatement(statement) && exported(statement)) {
+			for (const declared of statement.declarationList.declarations) {
+				const value = declared.initializer && bare(declared.initializer);
+				if (ts.isIdentifier(declared.name) && declared.name.text === name && value && (ts.isArrowFunction(value) || ts.isFunctionExpression(value))) signatures.push(value);
+			}
+		}
+	}
+	return signatures.some((fn) => fn.parameters.some((parameter) => holds(parameter.type, new Set())));
+}
+
+/**
+ * D7 for the reads of one v1 route file: each call of a read on `V1_READS`
+ * hands, at its index, an object written out at the call whose `source` is
+ * the literal `'api'`, with no spread; each call of one on `V1_MODES` hands
+ * the literal `'api'` at its index; neither is used but by calling it. And
+ * the completeness rule: a function the file imports from src/lib/server
+ * that takes a source (`takesASource`) and is not a write of a module on
+ * SERVICES must be on `V1_READS`. `signatureOf(file, name)` answers whether
+ * the module's export takes a source. Answers the findings and how many read
+ * and mode calls were read.
+ */
+function judgeV1Reads(
+	file: string,
+	source: string,
+	services: Map<string, { reads: string[]; writes: string[] }>,
+	signatureOf: (module: string, name: string) => boolean
+): { findings: string[]; reads: number; modes: number } {
+	const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+	const line = (node: ts.Node) => tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1;
+	const { names } = serverImportsOf(tree, file);
+	const findings: string[] = [];
+	let reads = 0;
+	let modes = 0;
+
+	for (const [local, from] of names) {
+		if (services.get(from.file)?.writes.includes(from.name)) continue;
+		const key = v1Key(from);
+		if (Object.hasOwn(V1_READS, key) || Object.hasOwn(V1_MODES, key) || Object.hasOwn(V1_SOURCE_NOT_THE_TREE, key)) continue;
+		if (signatureOf(from.file, from.name)) findings.push(`${file} imports ${local} from ${from.file}, which takes a source: name it on V1_READS`);
+	}
+
+	const visit = (node: ts.Node): void => {
+		if (ts.isIdentifier(node) && usedAsName(node) && !isDeclaredName(node) && !ts.isImportSpecifier(node.parent) && !ts.isImportClause(node.parent)) {
+			const from = names.get(node.text);
+			const key = from === undefined ? undefined : v1Key(from);
+			const index = key === undefined ? undefined : Object.hasOwn(V1_READS, key) ? V1_READS[key] : Object.hasOwn(V1_MODES, key) ? V1_MODES[key] : undefined;
+			if (from !== undefined && key !== undefined && index !== undefined) {
+				const call = ts.isCallExpression(node.parent) && node.parent.expression === node ? node.parent : undefined;
+				const where = `${file}:${line(node)} ${node.text}`;
+				const argument = call?.arguments[index] && bare(call.arguments[index]);
+				if (!call) {
+					findings.push(`${where} is used other than by calling it`);
+				} else if (Object.hasOwn(V1_MODES, key)) {
+					modes++;
+					if (!argument || !ts.isStringLiteral(argument) || argument.text !== 'api') findings.push(`${where} is handed the mode ${argument ? argument.getText(tree) : 'nothing'}, not 'api'`);
+				} else {
+					reads++;
+					if (!argument || !ts.isObjectLiteralExpression(argument)) {
+						findings.push(`${where} is not handed its options as an object written out at the call`);
+					} else {
+						if (argument.properties.some((p) => ts.isSpreadAssignment(p))) findings.push(`${where} is handed options with a spread: write source out`);
+						const said = argument.properties.find((p) => p.name !== undefined && p.name.getText(tree) === 'source');
+						if (!said) findings.push(`${where} is handed no source`);
+						else if (!ts.isPropertyAssignment(said) || !ts.isStringLiteral(said.initializer) || said.initializer.text !== 'api') {
+							findings.push(`${where} is handed source ${said.getText(tree)}, not 'api'`);
+						}
+					}
+				}
+			}
+		}
+		ts.forEachChild(node, visit);
+	};
+	visit(tree);
+	return { findings, reads, modes };
+}
+
+/**
  * Card 2681 (the code review's S2): a route file imports a module of
  * src/lib/server only as `$lib/server/<path>`, with no `.js` or `.ts` on the
  * end and no `.` or `..` in it, by `import`, `export … from` and `import()`
@@ -3129,6 +3267,47 @@ function judgeServerImportForms(file: string, source: string): string[] {
 		ts.forEachChild(node, visit);
 	};
 	visit(tree);
+	return findings;
+}
+
+/**
+ * Card 2682 (D33, plan review S8): the writes of `decisions.ts` that the page
+ * asks the caller's password for once the decision was ever opened. The
+ * service cannot tell a confirmed session from one that is not (card 2726's
+ * `passwordHeld()` will), so every route outside src/routes/api/v1 that calls
+ * either must be a handler on CURRENT_PASSWORD; v1 is refused by the
+ * credential in the service (D5).
+ */
+const PASSWORD_WRITES = ['deleteDecision', 'withdrawDecision'];
+
+/**
+ * D33 for one file under src/routes outside v1: each handler that calls a
+ * write of `PASSWORD_WRITES` (as the imported function, by any local name) is
+ * on `listed`; a call outside every handler, a namespace import of
+ * decisions.ts, and any import of one by a file that is no `+server.ts` (a
+ * page's server file, a helper) are findings outright.
+ */
+function judgePasswordWrites(file: string, source: string, listed: readonly string[]): string[] {
+	const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+	const line = (node: ts.Node) => tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1;
+	const { names, namespaces } = serverImportsOf(tree, file);
+	const findings: string[] = [];
+	for (const namespace of namespaces) {
+		if (namespace.file === 'src/lib/server/decisions.ts') findings.push(`${file}:${namespace.line} imports src/lib/server/decisions.ts as a namespace (D33)`);
+	}
+	const locals = new Map([...names].filter(([, from]) => from.file === 'src/lib/server/decisions.ts' && PASSWORD_WRITES.includes(from.name)).map(([local, from]) => [local, from.name]));
+	if (locals.size === 0) return findings;
+	if (!file.endsWith('/+server.ts')) {
+		return [...findings, ...[...locals.values()].map((name) => `${file} imports ${name}, which only a handler on CURRENT_PASSWORD may call (D33)`)];
+	}
+	const handlers = handlersOf(tree);
+	for (const call of callsIn(tree, true)) {
+		if (!ts.isIdentifier(call.expression) || !locals.has(call.expression.text)) continue;
+		const name = locals.get(call.expression.text)!;
+		const handler = handlers.find(({ fn }) => fn !== undefined && within(call, fn));
+		if (!handler) findings.push(`${file}:${line(call)} calls ${name} outside every handler (D33)`);
+		else if (!listed.includes(`${file} ${handler.method}`)) findings.push(`${file}:${line(call)} ${handler.method} calls ${name} and is not on CURRENT_PASSWORD (D33)`);
+	}
 	return findings;
 }
 
@@ -3331,8 +3510,8 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 
 		expect(read.flatMap(({ findings }) => findings)).toEqual([]);
 		// 44 calls of a service write before card 2681 (the 45th `source:` of the plan's count is a logActivity
-		// entry, no service's), and its four writes.
-		expect(read.reduce((sum, { calls }) => sum + calls, 0)).toBeGreaterThanOrEqual(48);
+		// entry, no service's), its four writes, and card 2682's eight of slice 2a and four of slice 2b.
+		expect(read.reduce((sum, { calls }) => sum + calls, 0)).toBeGreaterThanOrEqual(60);
 		expect(v1.length).toBeGreaterThan(40);
 
 		// Against made-up source: 'ui', a variable, a spread, none, no options at all, and the one written out.
@@ -3372,6 +3551,97 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 		});
 	});
 
+	it("hands every read under src/routes/api/v1 that takes a source the literal 'api', names each such read on V1_READS, and the rule finds one that is not (card 2682, D7)", () => {
+		const v1 = routes.filter((file) => file.startsWith('src/routes/api/v1/'));
+		const trees = new Map<string, ts.SourceFile>();
+		const signatureOf = (module: string, name: string) => {
+			let tree = trees.get(module);
+			if (tree === undefined) {
+				let text = '';
+				try {
+					text = readFileSync(join(ROOT, module), 'utf8');
+				} catch {
+					// A module that is not there takes nothing.
+				}
+				tree = ts.createSourceFile(module, text, ts.ScriptTarget.Latest, true);
+				trees.set(module, tree);
+			}
+			return takesASource(tree, name);
+		};
+		const read = v1.map((file) => judgeV1Reads(file, readFileSync(join(ROOT, file), 'utf8'), services, signatureOf));
+
+		expect(read.flatMap(({ findings }) => findings)).toEqual([]);
+		// Slice 2a: the register and the editors' read, and the register's mode; slice 2b: the questions, the summary and the record.
+		expect(read.reduce((sum, { reads }) => sum + reads, 0)).toBeGreaterThanOrEqual(5);
+		expect(read.reduce((sum, { modes }) => sum + modes, 0)).toBeGreaterThanOrEqual(1);
+		// Each mapped read, by its module and name (code review F7), takes a source, so its options are where V1_READS says.
+		expect(Object.keys(V1_READS).sort()).toEqual(
+			[
+				'src/lib/server/decision-authoring.ts#readDecisionForKey',
+				'src/lib/server/decision-questions.ts#readQuestions',
+				'src/lib/server/decision-register.ts#readRecord',
+				'src/lib/server/decision-register.ts#readRegister',
+				'src/lib/server/decision-results.ts#readSummary'
+			].sort()
+		);
+		for (const key of Object.keys(V1_READS)) {
+			const [module, name] = key.split('#');
+			expect(signatureOf(module, name), key).toBe(true);
+		}
+		// Each function passed as taking a source that is not the tree still takes one, and is still imported under v1.
+		expect(Object.keys(V1_SOURCE_NOT_THE_TREE)).toEqual(['src/lib/server/audit-log.ts#queryAuditLog']);
+		expect(signatureOf('src/lib/server/audit-log.ts', 'queryAuditLog')).toBe(true);
+		expect(v1.some((file) => readFileSync(join(ROOT, file), 'utf8').includes('queryAuditLog('))).toBe(true);
+		// Code review S3: a person's record takes a required source, so the completeness rule holds any v1 import of it to a
+		// finding; it is on no map, as it refuses every source but the page's.
+		expect(signatureOf('src/lib/server/decision-register.ts', 'readPersonRecord')).toBe(true);
+		for (const map of [V1_READS, V1_MODES, V1_SOURCE_NOT_THE_TREE]) expect(Object.hasOwn(map, 'src/lib/server/decision-register.ts#readPersonRecord')).toBe(false);
+
+		// Against made-up source: the options at index 2 and at 3 handed 'ui', a spread, a variable, a mode 'page', a read
+		// used but not called, an unmapped import that takes { source }, and the ones written out.
+		const SERVICE = new Map([['src/lib/server/things.ts', { reads: [], writes: ['makeThing'] }]]);
+		const module = [
+			'export function makeThing(caller, at, body, opts: ServiceOptions) {}',
+			"export function peekThing(user, id: number, opts: { source: 'ui' | 'api' }) {}",
+			'type Opts = { limit: number } & { source: string };',
+			'export const countThings = (user, opts: Opts) => 0;',
+			'export function plainThing(user, opts: { says?: string }) {}',
+			"export function readRecord(user, id: number, query, opts: { source: 'ui' | 'api' }) {}"
+		].join('\n');
+		const moduleTree = ts.createSourceFile('src/lib/server/things.ts', module, ts.ScriptTarget.Latest, true);
+		const signatures = (_file: string, name: string) => takesASource(moduleTree, name);
+		// Also a read named as a mapped one from another module (F7: not passed by the name alone), and a person's record (S3).
+		const code = [
+			"import { makeThing, peekThing, countThings, plainThing, readRecord as thingRecord } from '$lib/server/things';",
+			"import { readRegister, readRecord, registerQueryOf, readPersonRecord } from '$lib/server/decision-register';",
+			'export const GET = async ({ locals, url }) => {',
+			"\treadRegister(locals.user, registerQueryOf(url.searchParams, 'page'), { source: 'ui' });",
+			"\treadRecord(locals.user, 1, {}, { source: 'ui', limit: 1 });",
+			"\treadRecord(locals.user, 1, {}, { ...OPTIONS, source: 'api' });",
+			'\treadRegister(locals.user, query, OPTIONS);',
+			'\tconst later = readRecord;',
+			"\treadRegister(locals.user, registerQueryOf(url.searchParams, 'api'), { source: 'api' });",
+			'};'
+		].join('\n');
+		const EXAMPLE = 'src/routes/api/v1/example/+server.ts';
+		expect(judgeV1Reads(EXAMPLE, code, SERVICE, (file, name) => (file === 'src/lib/server/things.ts' ? signatures(file, name) : signatureOf(file, name)))).toEqual({
+			findings: [
+				'src/routes/api/v1/example/+server.ts imports peekThing from src/lib/server/things.ts, which takes a source: name it on V1_READS',
+				'src/routes/api/v1/example/+server.ts imports countThings from src/lib/server/things.ts, which takes a source: name it on V1_READS',
+				'src/routes/api/v1/example/+server.ts imports thingRecord from src/lib/server/things.ts, which takes a source: name it on V1_READS',
+				'src/routes/api/v1/example/+server.ts imports readPersonRecord from src/lib/server/decision-register.ts, which takes a source: name it on V1_READS',
+				"src/routes/api/v1/example/+server.ts:4 readRegister is handed source source: 'ui', not 'api'",
+				"src/routes/api/v1/example/+server.ts:4 registerQueryOf is handed the mode 'page', not 'api'",
+				"src/routes/api/v1/example/+server.ts:5 readRecord is handed source source: 'ui', not 'api'",
+				'src/routes/api/v1/example/+server.ts:6 readRecord is handed options with a spread: write source out',
+				'src/routes/api/v1/example/+server.ts:7 readRegister is not handed its options as an object written out at the call',
+				'src/routes/api/v1/example/+server.ts:8 readRecord is used other than by calling it'
+			],
+			reads: 5,
+			modes: 2
+		});
+	});
+
 	it('imports src/lib/server in every route file only as $lib/server/<path>, and the rule finds a relative path, a .js, a .ts and a .. (card 2681, the code review S2)', () => {
 		expect(routes.flatMap((file) => judgeServerImportForms(file, readFileSync(join(ROOT, file), 'utf8')))).toEqual([]);
 
@@ -3392,6 +3662,40 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 			"src/routes/api/v1/example/+server.ts:4 imports src/lib/server/things.ts as '$lib/server/things.ts': import src/lib/server only as $lib/server/<path>, with no extension (S2)",
 			"src/routes/api/v1/example/+server.ts:5 imports src/lib/server/shapes.ts as '$lib/server/../server/shapes': import src/lib/server only as $lib/server/<path>, with no extension (S2)",
 			"src/routes/api/v1/example/+server.ts:8 imports src/lib/server/things.ts as '../../../../lib/server/things': import src/lib/server only as $lib/server/<path>, with no extension (S2)"
+		]);
+	});
+
+	it('lets deleteDecision and withdrawDecision be called outside src/routes/api/v1 only by a handler on CURRENT_PASSWORD, and the rule finds one that is not (card 2682, D33)', () => {
+		const outside = filesUnder('src/routes', (path) => path.endsWith('.ts') && !path.startsWith('src/routes/api/v1/'));
+		expect(outside.flatMap((file) => judgePasswordWrites(file, readFileSync(join(ROOT, file), 'utf8'), CURRENT_PASSWORD))).toEqual([]);
+		// Today the two internal routes call them, each listed.
+		const calling = outside.filter((file) => /\b(deleteDecision|withdrawDecision)\(/.test(readFileSync(join(ROOT, file), 'utf8')));
+		expect(calling).toEqual(['src/routes/api/decisions/[id]/+server.ts', 'src/routes/api/decisions/[id]/withdraw/+server.ts']);
+
+		// Against made-up source: a listed handler passes; one not listed, a call outside every handler, a page's server
+		// file and a namespace import are found.
+		const LISTED = ['src/routes/api/example/+server.ts DELETE'];
+		const handler = [
+			"import { deleteDecision, withdrawDecision as withdraw } from '$lib/server/decisions';",
+			'export const DELETE = async ({ locals }) => {',
+			"\twriteAs(locals, (caller) => deleteDecision(caller, { decisionId: 1 }, null, { source: 'ui' }));",
+			'};',
+			'export const POST = async ({ locals }) => {',
+			"\twriteAs(locals, (caller) => withdraw(caller, { decisionId: 1 }, {}, { source: 'ui' }));",
+			'};',
+			"const helper = (caller) => deleteDecision(caller, { decisionId: 1 }, null, { source: 'ui' });"
+		].join('\n');
+		expect(judgePasswordWrites('src/routes/api/example/+server.ts', handler, LISTED)).toEqual([
+			'src/routes/api/example/+server.ts:6 POST calls withdrawDecision and is not on CURRENT_PASSWORD (D33)',
+			'src/routes/api/example/+server.ts:8 calls deleteDecision outside every handler (D33)'
+		]);
+		const page = "import { withdrawDecision } from '$lib/server/decisions';\nexport const load = () => ({});";
+		expect(judgePasswordWrites('src/routes/decisions/[id]/+page.server.ts', page, LISTED)).toEqual([
+			'src/routes/decisions/[id]/+page.server.ts imports withdrawDecision, which only a handler on CURRENT_PASSWORD may call (D33)'
+		]);
+		const namespace = "import * as decisions from '$lib/server/decisions';";
+		expect(judgePasswordWrites('src/routes/api/example/+server.ts', namespace, LISTED)).toEqual([
+			'src/routes/api/example/+server.ts:1 imports src/lib/server/decisions.ts as a namespace (D33)'
 		]);
 	});
 

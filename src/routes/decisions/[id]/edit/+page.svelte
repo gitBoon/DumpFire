@@ -84,6 +84,7 @@
 			republishSummary={data.republishSummary}
 			refusals={data.readiness.refusals}
 			warnings={data.readiness.warnings}
+			mailCount={data.participants.filter((participant) => participant.removedAt === null).length}
 			{dirty}
 			mayReadResults={data.mayReadResults}
 			mayReadRecord={data.mayReadRecord}

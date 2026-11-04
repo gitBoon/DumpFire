@@ -62,6 +62,7 @@ import {
 	OWN_RECORD_EVENTS,
 	ownResponseOf,
 	personOfAccount,
+	QUESTION_EVENTS,
 	RECORD_DETAIL,
 	recordEventsOf,
 	responsesOfParticipants,
@@ -77,6 +78,8 @@ import { requireDecision, requireUser } from './route-guards';
 import {
 	REGISTER_TABS,
 	SHOWN_STATUSES,
+	type KeyRecordEntry,
+	type KeyRecordPage,
 	type ListedBoard,
 	type OwnRecordEvent,
 	type Participation,
@@ -125,6 +128,9 @@ const PERSON_SEARCH_MAX = 100;
 
 /** The one answer for a person who is not there, deleted, or outside the caller's scope (S5). */
 const PERSON_NOT_FOUND = 'Person not found';
+
+/** The 403 for a person record read through any source but the page's (card 2682, code review S3): it is read on the page alone. */
+const PERSON_RECORD_PAGE_ONLY = "A person's record is read on the decisions page: an API key cannot";
 
 // ─── The query (decision 7) ──────────────────────────────────────────────────
 
@@ -502,9 +508,9 @@ function registerRowOf(
  * person for "My record". The default tab is Waiting for my response where
  * its count is above 0, else Open. Writes nothing.
  *
- * `opts.source` is read by nothing here yet, and kept (code review F9):
- * decision 30 has every read take its tree, required, and card 2682's v1
- * register passes `'api'` through it (its carry, plan section 4.7).
+ * `opts.source` decides the marking (card 2682, D16): through any source but
+ * the page's, card 2682's v1 register among them, each row and the page carry
+ * `untrusted: true`, as titles and names are people's and agents' words.
  */
 export function readRegister(user: SessionUser, query: RegisterQuery, opts: { source: 'ui' | 'api' }): RegisterPage {
 	const caller = requireUser(user);
@@ -558,16 +564,20 @@ export function readRegister(user: SessionUser, query: RegisterQuery, opts: { so
 	// Code review F1: the caller's own person, for the "My record" link; the person record lets them in as `self` for it.
 	const own = personOfAccount(caller.id);
 
+	const rows = read.map((row) => registerRowOf(row, caller, scope, { roles, waiting, now }));
+	// Card 2682 (D10, D16): through any source but the page's, each row and the page are marked as data. Fail closed.
+	const marked = opts.source !== 'ui';
 	return {
 		tab,
 		query,
-		rows: read.map((row) => registerRowOf(row, caller, scope, { roles, waiting, now })),
+		rows: marked ? rows.map((row) => ({ ...row, untrusted: true as const })) : rows,
 		next,
 		counts: { waitingResponse: owed.length, waitingRuling },
 		capped,
 		boards: boardSelectOf(caller, scope),
 		people: personSelectOf(caller, scope, query, own),
-		myPersonId: own?.id ?? null
+		myPersonId: own?.id ?? null,
+		...(marked ? { untrusted: true as const } : {})
 	};
 }
 
@@ -685,8 +695,15 @@ const REMOVED_EVENTS: readonly EventKind[] = ['included', 're_included', 'remove
  * this person on a decision they decide with `record`, which is the list's
  * own predicate. The person row is read only on a hit. Anything else is the
  * same 404, with the same words.
+ *
+ * The page's alone (card 2682, D19, code review S3): `opts.source` is
+ * required, so that the v1 read scan (`V1_READS`'s completeness rule) holds
+ * any v1 import of it to a finding, and any source but `'ui'` is refused
+ * before anything is read: an administrator is given the person's address
+ * here, which no key is ever given (D9).
  */
-export function readPersonRecord(user: SessionUser, personId: number, query: { before: number | null }, opts: { source: 'ui' | 'api' }): PersonRecord {
+export function readPersonRecord(user: SessionUser, personId: number, query: { before: number | null }, opts: { source: 'ui' }): PersonRecord {
+	if (opts.source !== 'ui') error(403, PERSON_RECORD_PAGE_ONLY);
 	const caller = requireUser(user);
 	if (!Number.isSafeInteger(personId) || personId < 1) error(404, PERSON_NOT_FOUND);
 	const scope = scopeOf(caller);
@@ -821,7 +838,7 @@ export function readPersonRecord(user: SessionUser, personId: number, query: { b
 		const labels = labelsByDecision.get(decision.id) ?? new Map<number, string>();
 		const all = responsesBy.get(participant.id) ?? [];
 		const named = events.get(participant.id) ?? [];
-		const ctx: RecordContext = { user: caller, labels, participants: new Map([[participant.id, participant.name]]) };
+		const ctx = { user: caller, labels, participants: new Map([[participant.id, participant.name]]), source: 'ui' as const };
 		return {
 			kind: 'full',
 			id: participant.id,
@@ -870,12 +887,16 @@ export function readPersonRecord(user: SessionUser, personId: number, query: { b
  * `namedFor`, and whether they are an administrator, which `recordEntryOf`
  * works out from the account itself so that no caller can hand it a wrong
  * flag: code review S5), the decision's option labels by id, and its
- * participants' snapshot names by participant id.
+ * participants' snapshot names by participant id. `source` is the tree the
+ * read came through (card 2682, D9, D31): administrator-only detail is
+ * shown on the page alone, and an API key is given the question events with
+ * no asker.
  */
 export type RecordContext = {
 	user: SessionUser;
 	labels: ReadonlyMap<number, string>;
 	participants: ReadonlyMap<number, string>;
+	source: 'ui' | 'api';
 };
 
 /** A key that names an id, which is never shown, at any depth (S3). */
@@ -943,16 +964,26 @@ function detailOf(kind: string, stored: Record<string, unknown>, ctx: RecordCont
  * name and tree, and its detail through `RECORD_DETAIL` alone. Exported for
  * card 2688's PDF. Whether the reader is an administrator is asked of their
  * account here, `isAdmin(ctx.user)`, never taken from the caller (S5).
+ *
+ * Card 2682: through any source but the page's (D9, D31; fail closed), no
+ * administrator-only detail is shown, an administrator's key included, and
+ * each entry is marked `untrusted` (D10). Card 2678's four question events
+ * (`QUESTION_EVENTS`) are never given to a key: `readRecord` leaves them out
+ * in the query (code review S1), and one handed here under any source but the
+ * page's is a caller's fault, thrown, never shown. `GET …/questions` is the
+ * asker-free way a key reads questions. The page's callers are typed as before.
  */
-export function recordEntryOf(event: RecordEventRow, ctx: RecordContext): RecordEntry {
-	return {
-		kind: event.kind,
-		at: event.at,
-		versionNumber: event.versionNumber,
-		participant: event.participantId === null ? null : (ctx.participants.get(event.participantId) ?? null),
-		actor: { name: event.actorName, source: event.source },
-		detail: detailOf(event.kind, event.detail, ctx, isAdmin(ctx.user))
-	};
+export function recordEntryOf(event: RecordEventRow, ctx: RecordContext & { source: 'ui' }): RecordEntry;
+export function recordEntryOf(event: RecordEventRow, ctx: RecordContext & { source: 'api' }): KeyRecordEntry;
+export function recordEntryOf(event: RecordEventRow, ctx: RecordContext): RecordEntry | KeyRecordEntry {
+	const page = ctx.source === 'ui';
+	if (!page && (QUESTION_EVENTS as readonly string[]).includes(event.kind)) {
+		throw new Error(`recordEntryOf: ${event.kind} names who asked, and is never given to an API key`);
+	}
+	const detail = detailOf(event.kind, event.detail, ctx, page && isAdmin(ctx.user));
+	const participant = event.participantId === null ? null : (ctx.participants.get(event.participantId) ?? null);
+	const entry = { kind: event.kind, at: event.at, versionNumber: event.versionNumber, participant, actor: { name: event.actorName, source: event.source }, detail };
+	return page ? entry : { ...entry, untrusted: true };
 }
 
 /**
@@ -962,15 +993,32 @@ export function recordEntryOf(event: RecordEventRow, ctx: RecordContext): Record
  * alone where it is given, which must be one of this decision's participant
  * rows (else 404). `requireDecision(…, 'record')`: administrators and the
  * decider, with board edit while the board exists; 403 for anyone else who
- * may view it, 404 for anyone else. `opts.source` is kept for card 2682's v1
- * record, as `readRegister`'s is (code review F9).
+ * may view it, 404 for anyone else.
+ *
+ * `opts.source` decides what is shown (card 2682, D9, D15, D31): through any
+ * source but the page's, card 2682's v1 record among them, each entry is
+ * `recordEntryOf`'s key shape and the page is marked `untrusted`; and the
+ * four question events are left out, in the query, filtered or not (code
+ * review S1), as each could name who asked.
  */
 export function readRecord(
 	user: SessionUser,
 	decisionId: number,
 	query: { participant: number | null; after: number | null },
+	opts: { source: 'ui'; limit: number }
+): RecordPage;
+export function readRecord(
+	user: SessionUser,
+	decisionId: number,
+	query: { participant: number | null; after: number | null },
+	opts: { source: 'api'; limit: number }
+): KeyRecordPage;
+export function readRecord(
+	user: SessionUser,
+	decisionId: number,
+	query: { participant: number | null; after: number | null },
 	opts: { source: 'ui' | 'api'; limit: number }
-): RecordPage {
+): RecordPage | KeyRecordPage {
 	if (!Number.isSafeInteger(opts.limit) || opts.limit < 1 || opts.limit > RECORD_READ_MAX) {
 		throw new Error(`readRecord: limit must be a whole number from 1 to ${RECORD_READ_MAX}, and it is ${opts.limit}`);
 	}
@@ -994,22 +1042,31 @@ export function readRecord(
 		...(opened && row.personId !== null ? { personId: row.personId } : {})
 	}));
 
+	// Card 2682 (D31): fail closed, any source but the page's.
+	const page = opts.source === 'ui';
 	const rows = recordEventsOf(decision.id, {
 		...(query.participant === null ? {} : { participantId: query.participant }),
 		...(query.after === null ? {} : { afterId: query.after }),
+		...(page ? {} : { withoutKinds: QUESTION_EVENTS }),
 		limit: opts.limit + 1
 	});
 	const shown = rows.slice(0, opts.limit);
-	const ctx: RecordContext = {
+	const ctx = {
 		user: caller,
 		labels: labelsOf(decision.id),
 		participants: new Map(participants.map((row) => [row.id, row.name]))
 	};
+	const heading = { id: decision.id, title: decision.title, shownStatus: decisionStatus(decision) };
+	const next = rows.length > opts.limit ? shown[shown.length - 1].id : null;
+	if (page) {
+		return { decision: heading, entries: shown.map((event) => recordEntryOf(event, { ...ctx, source: 'ui' })), participants, participant: query.participant, next };
+	}
 	return {
-		decision: { id: decision.id, title: decision.title, shownStatus: decisionStatus(decision) },
-		entries: shown.map((event) => recordEntryOf(event, ctx)),
+		decision: heading,
+		entries: shown.map((event) => recordEntryOf(event, { ...ctx, source: 'api' })),
 		participants,
 		participant: query.participant,
-		next: rows.length > opts.limit ? shown[shown.length - 1].id : null
+		next,
+		untrusted: true
 	};
 }

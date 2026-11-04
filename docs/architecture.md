@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.84
+version: 1.86
 status: As-Built
 date: 2026-11-04
 tags:
@@ -33,7 +33,8 @@ tags:
   - decision-lifecycle
   - dry-run
   - preview
-description: "High-level and component-level architecture of the DumpFire Kanban board system, including the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
+  - decisions-api
+description: "High-level and component-level architecture of the DumpFire Kanban board system, including decisions through API v1 and how the credential refuses a key what is a person's (card 2682), the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
 ---
 
 # DumpFire Architecture Overview
@@ -1177,7 +1178,7 @@ The page (`+page.svelte`) draws the people table with its search (name, email, j
 
 **The service.** `src/lib/server/people.ts` is under the service rule ([The shape of a service](#the-shape-of-a-service)) and on `SERVICES` in `tests/check-at-the-write.test.ts`. Its `READS` are six: card 2697's four guards (`personUpdateGuard`, `personCreateGuard`, `personDeleteGuard`, `fromAccountsGuard`), asked by their routes before the caller's password, and card 2681's two reads (`listPeople`, `listPeopleGroups`). Every other export is a write, takes `(caller, at, body, opts)`, starts with `inWrite()`, then asks `requireAdmin(caller, opts.says)` (403), the row in the path (404 `Person not found`, `Group not found`), the fields from the body (400), the checks against other rows (400, 409), and writes. Its system-log line, context `PEOPLE`, INFO, with `{ userId: actor.id }` in the entry and the actor's username in the text, is queued with `afterCommit`, so a write that is refused or rolled back logs nothing; no line holds an address. A rename, by either tree, puts `renamed: { from, to }` in the entry (card 2681, D17). Because the log is pruned, every write also appends one row to `people_changes` (migration 0064, card 2681's code review, S1) through `recordChange`, the table's one insert, inside the write's transaction: the actor and their name, `source` (`api` whenever the write is a key's), the person or group, the kind (`created`, `updated`, `deleted`, `members_set`) and the changed fields' values before and after as JSON, never an address or an account id ([Data Model](data-model.md)). `deleteGroup` is the People page's alone too (S3): it refuses a key through `pageOnly`, and its row keeps the group's name, description and member set.
 
-**The two callers** (card 2681). The internal routes call every function with `source: 'ui'`, under a session. Six v1 routes call six of them under an administrator's key, with `{ source: 'api', says: 'Admin access required' }`: `listPeople`, `listPeopleGroups`, `updatePerson`, `createGroup`, `updateGroup` and `setGroupMembers`. A write is "under a key" when `opts.source !== 'ui'` **or** `writingWithKey()` (`write-as.ts`) says a `writeAs` let in with an API key is running, so a v1 route that passed the wrong word is still refused. Under a key: `createPerson`, `deletePerson`, `addFromAccounts` and `deleteGroup` refuse `403` straight after `inWrite()` (`pageOnly`); `updatePerson` refuses a body with `email`, `userId`, `status` or `fullName`, and `updateGroup` one with `name`, before the row is read (`refuseKeyFields`, `refuseKeyRename`); every answer is `keyPerson` or `keyGroup`, built field by field with no `email` and no `userId`, with their ids sorted, and with `untrusted: true`, a no-change answer included; and the PEOPLE line ends `, through the API` with `source: 'api'`, `credential: 'api key'` and `before` (the values replaced; `setGroupMembers` reads the set before its delete) in the entry, whatever word the route passed. `keyPerson`, `keyGroup` and their types live in `src/lib/server/people-shape.ts`, which reads and writes nothing and is no service, so card 2682's decisions API shapes a person the same way. The refusals' words are constants of the module, not exported, as a service exports its functions and `READS` alone.
+**The two callers** (card 2681). The internal routes call every function with `source: 'ui'`, under a session. Six v1 routes call six of them under an administrator's key, with `{ source: 'api', says: 'Admin access required' }`: `listPeople`, `listPeopleGroups`, `updatePerson`, `createGroup`, `updateGroup` and `setGroupMembers`. A write is "under a key" when `opts.source !== 'ui'` **or** `writingWithKey()` (`write-as.ts`) says a `writeAs` let in with an API key is running, so a v1 route that passed the wrong word is still refused. Under a key: `createPerson`, `deletePerson`, `addFromAccounts` and `deleteGroup` refuse `403` straight after `inWrite()` (`pageOnly`); `updatePerson` refuses a body with `email`, `userId`, `status` or `fullName`, and `updateGroup` one with `name`, before the row is read (`refuseKeyFields`, `refuseKeyRename`); every answer is `keyPerson` or `keyGroup`, built field by field with no `email` and no `userId`, with their ids sorted, and with `untrusted: true`, a no-change answer included; and the PEOPLE line ends `, through the API` with `source: 'api'`, `credential: 'api key'` and `before` (the values replaced; `setGroupMembers` reads the set before its delete) in the entry, whatever word the route passed. `keyPerson`, `keyGroup` and their types live in `src/lib/server/people-shape.ts`, which reads and writes nothing and is no service. Card 2682's decisions API does not use them: its picker keeps the page's narrower fields, plus `untrusted` (its D11). The refusals' words are constants of the module, not exported, as a service exports its functions and `READS` alone.
 
 | Read | Rules |
 |---|---|
@@ -1301,7 +1302,7 @@ stateDiagram-v2
 
 **Who may do what** (`src/lib/server/decision-access.ts`). `decisionAccess(user, decision)` reads the caller's roles once: `admin` (`isAdmin`), `author` and `decider` (the decision's two user ids), one board role from `getBoardRole` while `board_id` is set (`owner` gives `boardOwner`, `editor` `boardEditor`, `viewer` `boardReader`), and `participant` from the one live row (`removed_at IS NULL`) holding the caller's account. It carries `canEditBoard` from the same call, false with no board. More than one live row holding the caller's account is a fault (decision 29): no `participant` role, and one WARN line under `DECISIONS` naming the decision id and the count and no person. `mayDo(access, action, decision)` reads `DECISION_RULES` (the table in [Authentication and Security](authentication-security.md#decision-access-and-personal-links)), with two more rules: a draft is viewed only by `DRAFT_VIEWERS` (admin, author, decider, boardOwner), and, while the board exists, a grant resting on `author`, `decider` or `boardOwner` (`NEED_BOARD_EDIT`) is good for anything but `view` only while `canEditBoard` holds: a decider who has lost the board cannot rule or change the decision either (card 2675's code review, S8). `requireDecision(user, decisionId, action)` in `route-guards.ts` answers `401` with no user, `400` `Invalid decision ID` for an id that is not an integer, `404` `Decision not found` both for no row and for a row the caller may not view, and `403` `You cannot <verb> this decision`. The status is each write's to check after its body, so the order is 401, 400, 404, 403, then the body's 400 and the status's 409.
 
-**The record** (`src/lib/server/decision-record.ts`). `decision_versions`, `decision_responses`, `decision_rulings` and `decision_events` are insert-only, in code alone (no trigger). `appendEvent(event, by)` and `appendVersion(version, by)` are the only inserts into the events and versions in `src` but the restore's `RECORD_DECISION_LINKS_ENDED`, and `appendEvent` throws a plain `Error` (a 500) for an event naming a participant on a draft or on a decision that is not there (comment 5599), so a draft's participant rows can be deleted freely. `by` is a `RecordActor` (`actorFor(user, opts.source)`, or `SYSTEM_ACTOR`, `DumpFire` with source `system`). `snapshotOf(personId)` is what a participant row copies from the directory. `currentRound`, `liveOptionIds`, `accountHistory` (whether each row held an account on this decision, from its latest `included`, `re_included`, `account_attached` or `account_cleared` event; a detail that cannot be read counts as true, which issues no link) and `lastMailAt` (each participant's latest record-bearing mail) are the reads. `tests/decision-record.test.ts` scans every file under `src` for a Drizzle `.update(`, `.delete(` or `onConflict…` on the four tables, their names as text outside `db/schema.ts`, `db/expected-schema.ts`, `decision-record.ts` and `db/restore.ts`, SQL `UPDATE`, `DELETE FROM`, `REPLACE INTO`, `INSERT OR REPLACE` or `ON CONFLICT` naming them inside those files, an insert into them outside `decision-record.ts` and `db/restore.ts`, and a delete of `decisions` outside `decisions.ts`. A table is known by its import, renamed or not, a `const` alias, a property or an element of a namespace (`schema['decisionEvents']`), and `sql.identifier` or `sql.raw` of its name. A write to a table named only at run time (`DELETE FROM "${table}"`) is allowed only in the files on the test's `GENERIC_WRITERS`, each with why: `db/timestamps.ts`, `db/migrate.ts`, `db/restore.ts`, the reset route and `deletes.ts`'s `USER_REFERENCES`; a new one fails the scan, and so does one named there that no longer is one (the code review's S5).
+**The record** (`src/lib/server/decision-record.ts`). `decision_versions`, `decision_responses`, `decision_rulings` and `decision_events` are insert-only, in code alone (no trigger). `appendEvent(event, by)` and `appendVersion(version, by)` are the only inserts into the events and versions in `src` but the restore's `RECORD_DECISION_LINKS_ENDED`, and `appendEvent` throws a plain `Error` (a 500) for an event naming a participant on a draft or on a decision that is not there (comment 5599), so a draft's participant rows can be deleted freely. `by` is a `RecordActor` (`actorFor(user, sourceOf(opts))` in `decisions.ts`, the source by the route's word or the credential, card 2682's D7; or `SYSTEM_ACTOR`, `DumpFire` with source `system`). `snapshotOf(personId)` is what a participant row copies from the directory. `currentRound`, `liveOptionIds`, `accountHistory` (whether each row held an account on this decision, from its latest `included`, `re_included`, `account_attached` or `account_cleared` event; a detail that cannot be read counts as true, which issues no link) and `lastMailAt` (each participant's latest record-bearing mail) are the reads. `tests/decision-record.test.ts` scans every file under `src` for a Drizzle `.update(`, `.delete(` or `onConflict…` on the four tables, their names as text outside `db/schema.ts`, `db/expected-schema.ts`, `decision-record.ts` and `db/restore.ts`, SQL `UPDATE`, `DELETE FROM`, `REPLACE INTO`, `INSERT OR REPLACE` or `ON CONFLICT` naming them inside those files, an insert into them outside `decision-record.ts` and `db/restore.ts`, and a delete of `decisions` outside `decisions.ts`. A table is known by its import, renamed or not, a `const` alias, a property or an element of a namespace (`schema['decisionEvents']`), and `sql.identifier` or `sql.raw` of its name. A write to a table named only at run time (`DELETE FROM "${table}"`) is allowed only in the files on the test's `GENERIC_WRITERS`, each with why: `db/timestamps.ts`, `db/migrate.ts`, `db/restore.ts`, the reset route and `deletes.ts`'s `USER_REFERENCES`; a new one fails the scan, and so does one named there that no longer is one (the code review's S5).
 
 **Personal links** (`src/lib/server/decision-links.ts`). A link is `/decision-link/[token]`, the token 32 random bytes in base64url, stored only as its SHA-256 in hex in `link_token_hash` (unique) with `link_issued_at`. `issueLink(participantId, by, replaced, { person, hadAccount })` hands the token back once, for the mail, after asserting `reachOf` answers `link` and `mayHoldLink` holds (a plain `Error` otherwise), and writes `link_issued { replaced }`. The person and `hadAccount` are what its caller has already read, so a mail to N link holders reads `accountHistory` once and not N + 1 times (the code review's F1). Every record-bearing mail to a link holder carries a fresh link, which replaces the last, because only the hash is kept. `revokeLinks({ personId } | { participantId }, reason, by)` empties the hash and moment of each row holding one and writes `link_revoked { reason }` per row. `participantForLink(token, now)` is the one place a link is checked: the hash looked up through the unique index, `unknown` for no live row, `expired` once `linkUsable` refuses the decision, and `unknown` again for a holder `reachOf` would no longer reach by link, asked at use (S3). `linkUsable` bounds a link by `ruled_at` (ruled, superseded), `withdrawn_at` (withdrawn) or `closes_at` (open, closed), usable while `now` is before the bound plus `LINK_DAYS_AFTER_END` (90) days; with no bound it is usable only on an open decision, and a draft, an unknown status or a bound that is no moment is refused. Nothing sweeps expired links.
 
@@ -1365,7 +1366,7 @@ sequenceDiagram
 | `openDecision` | `revision` required (card 2697, 400 missing, 409 stale). 409 with nothing written for no decider, no board, a decider who can no longer edit it, no `closes_at` in the future, fewer than two live options, no consulted participant, a participant whose person has left or is gone, no mail host, no link address, or two retaken snapshots holding one account; then, last, 429 once the caller has opened or re-published `PUBLISH_DAILY_CAP` (10) decisions in 24 hours. Then snapshots retaken with `included_at` now, `open`, version 1, options numbered, `published`, `opened`, `included { role, hadAccount }` per participant, the invitations, `decision_opened`, the live event |
 | `republishDecision` | `changeNote` (1 to 2,000), `askAgain` and `revision` (card 2697). 409 once `closes_at` has passed, for telling only while an option would be added or retired, when the new version would hold fewer than two live options (decision 20, the code review's F4), for `NO_LINK_ADDRESS`, while anyone it would mail was mailed in the last 10 minutes or five times in 24 hours, and, last, 429 for the caller's publish limit. Version N+1, options numbered or retired, `published`; asking again mails `asked_again` and opens a closed decision, telling only mails `told_of_change`. `decision_republished`, the live event |
 | `closeDecision` | `closed`, `closed_at`, the `closed` event, `decision_closed`, the live event; no mail |
-| `extendDecision` | `closesAt` in the future and no more than `CLOSES_WITHIN_DAYS` (365) days ahead (400, card 2697). `open`, `closed_at` emptied, `extended { from, to }`, `decision_extended`, the live event; no mail |
+| `extendDecision` | `closesAt` in the future and no more than `CLOSES_WITHIN_DAYS` (365) days ahead (400, card 2697), and later than the current closing time, for every source (400 `EXTENDS_EARLIER`, card 2682: Extend never brings it earlier). `open`, `closed_at` emptied, `extended { from, to }`, `decision_extended`, the live event; no mail |
 | `withdrawDecision` | `reason` (1 to 2,000). `withdrawn`, the reason, the `withdrawn` event. Once opened: `told_withdrawn` mails (never held by the daily cap), `decision_withdrawn` (never the reason), the live event. A draft: none of those. Its refusals are `decisionWithdrawGuard`'s, which also answers `wasOpened`: its route asks for the password once opened (card 2697) |
 | `deleteDecision` | Draft and withdrawn only; the cascade removes every row. Once opened: `decision_deleted`, the live event. Its refusals are `decisionDeleteGuard`'s, which also answers `holdsRecord`: its route asks for the password once opened (card 2697) |
 | `resendInvitation` | 404 for a participant not on the decision; 409 for one removed, for each skip reason in its words, for `NO_LINK_ADDRESS`, within 10 minutes of their last mail, and once they have been mailed five times in 24 hours (card 2697). `invited { resend: true }`, a link holder with a new link |
@@ -1374,7 +1375,7 @@ sequenceDiagram
 | `respondToDecision`, `respondByLink` (card 2677) | A participant's response, signed in or by a personal link. See [The participant page](#the-participant-page) |
 | `recordSeen`, `recordSeenByLink` (card 2677) | A participant recorded as having seen a version. See [The participant page](#the-participant-page) |
 
-**Activity and live events.** The six actions `decision_opened`, `decision_republished`, `decision_closed`, `decision_extended`, `decision_withdrawn` and `decision_deleted` are written only for a decision that has been opened and whose board is there, with no card, `actorOf(caller)`, `source: opts.source`, and a detail of the quoted title and the lifecycle words alone: never a count, a name, a reason or a change note. Each call writes its `action: ACTIONS.decisionX` at its own site, as `tests/activity-twins.test.ts` requires; `decisionEntry` builds the rest. There is no `decision_created`, and none of the six sends a webhook (card 2689). On the same six steps and conditions the service sends `emit(boardId, 'decision', { decisionId, status, boardId })`, `status` the shown one: a named event that the register and a board's list of decisions listen for (card 2680), each re-reading through the one 250 ms debounce; the board itself does not ([Real-Time Updates via SSE](#real-time-updates-via-sse), [The register, records and card links](#the-register-records-and-card-links)). Card 2680 adds three actions, each written on the **card's** board with its `cardId` through `decisionEntry`'s optional last argument: `decision_card_linked` and `decision_card_unlinked` (detail "a decision") and `decision_card_link_deleted` (detail "a linked decision was deleted", one per linked card, written by `deleteDecision` before the delete cascades the links). None names the decision's id or title, which the card's board's readers may not be allowed to view; none has a live event, a mail or a webhook.
+**Activity and live events.** The six actions `decision_opened`, `decision_republished`, `decision_closed`, `decision_extended`, `decision_withdrawn` and `decision_deleted` are written only for a decision that has been opened and whose board is there, with no card, `actorOf(caller)`, `source: sourceOf(opts)` (the route's word or the credential, card 2682's D7), and a detail of the quoted title and the lifecycle words alone: never a count, a name, a reason or a change note. Each call writes its `action: ACTIONS.decisionX` at its own site, as `tests/activity-twins.test.ts` requires; `decisionEntry` builds the rest. There is no `decision_created`, and none of the six sends a webhook (card 2689). On the same six steps and conditions the service sends `emit(boardId, 'decision', { decisionId, status, boardId })`, `status` the shown one: a named event that the register and a board's list of decisions listen for (card 2680), each re-reading through the one 250 ms debounce; the board itself does not ([Real-Time Updates via SSE](#real-time-updates-via-sse), [The register, records and card links](#the-register-records-and-card-links)). Card 2680 adds three actions, each written on the **card's** board with its `cardId` through `decisionEntry`'s optional last argument: `decision_card_linked` and `decision_card_unlinked` (detail "a decision") and `decision_card_link_deleted` (detail "a linked decision was deleted", one per linked card, written by `deleteDecision` before the delete cascades the links). None names the decision's id or title, which the card's board's readers may not be allowed to view; none has a live event, a mail or a webhook.
 
 **Outside the decision modules.** `people.ts` ends a person's links on Mark left, a link, an unlink, a new address and a delete, through `revokeLinks` ([How the directory clears links](#the-people-directory-page)). `deleteUser` in `deletes.ts` marks every person linked to the account left (`status`, `left_at`) before the account goes, ends their links through the same `revokeLinks` with the reason `left`, by the deleting administrator, and writes one `PEOPLE` line per person with no address, inside the delete's own transaction (the code review's S4). `restoreFromBackup` records `link_revoked { reason: 'restore' }` for each participant holding a link on a decision that is not a draft, empties every hash, counts them into `RestoreResult.decisionLinksCleared`, gives no default to a NULL in a decision table (F8), and fails, rolled back, when any row of `decisions` or a `decision_*` table could not be copied (see [Data Model](data-model.md#decision-records-migration-0061)). `SECRET_IN_PATH` in `secret-paths.ts` holds `{ routeId: '/decision-link/[token]', before: '/decision-link/' }`, so the gate's line, `maskMailText`, `mailStatus().lastFailure`, backups and the start-up sweep write `/decision-link/[token]`.
 
@@ -1421,7 +1422,7 @@ flowchart LR
 
 **The revision** (`revisionOf` in `decision-content.ts`) is HMAC-SHA256 in hex, keyed with `purposeKey('decision-revision')` from `request-tokens.ts` (HMAC-SHA256 of the request form's key, `request_form_secret`, with that purpose; derived on use and never stored), so that a caller holding a revision cannot test guesses at the addresses and accounts it covers offline (card 2676's C2). A Reset or an import replaces that key, after which every revision is new and an open editor's next save is the 409 below. It covers the decision's `title`, `status`, `closes_at`, `vote_mode`, `working_content`, `current_version`, `decider_user_id` and `updated_at`, every option row (retired ones too) by `id`, `label`, `position`, `added_in_version` and `retired_in_version`, and every participant row (removed ones too) by `id`, `person_id`, `role`, `user_id`, `email` and `removed_at`, rows in id order. It is worked out on read, not stored. `updateDraft`, `setDecider`, `setParticipants` and `markReviewed` require it: missing is 400 `revision is required`, different is 409 `This decision was changed since you opened it: reload it to see the change`, asked after `requireTransition` and before any other 409. Every page load and every authoring answer gives the next one.
 
-**`updateDraft`** reads `revision`, `title` (`readTitle`, the rule `createDecision` uses too), `closesAt` (a timestamp or null, without `future`), `voteMode` (`single` or `score`) and `content` (`readContent`). A changed `closesAt` at or before now is 400 `closesAt must be in the future`; one equal to the stored value is accepted even after it has passed. On a draft each is saved. Once open or closed only `content` changes: a `title`, `closesAt` or `voteMode` equal to the stored value is accepted, and a changed one is 409 (for `closesAt`, "the closing time of an open decision changes by Extend"). The option rows are kept in step with `content.options`: an entry with no `optionId` gets a row and a label from `nextLabel`, every entry's position is its index, an `optionId` must be a live option of this decision (400), and a row left out is deleted while it was never published and otherwise stays live, to be retired at the next publish. Through an API key (`source: 'api'`, which only card 2682's v1 routes will send) each changed section is flagged `agentDrafted` and its `reviewed` stamp removed; a person's save clears no flag. No event, activity entry, live event or mail.
+**`updateDraft`** reads `revision`, `title` (`readTitle`, the rule `createDecision` uses too), `closesAt` (a timestamp or null, without `future`), `voteMode` (`single` or `score`) and `content` (`readContent`). A changed `closesAt` at or before now is 400 `closesAt must be in the future`; one equal to the stored value is accepted even after it has passed. On a draft each is saved. Once open or closed only `content` changes: a `title`, `closesAt` or `voteMode` equal to the stored value is accepted, and a changed one is 409 (for `closesAt`, "the closing time of an open decision changes by Extend"). The option rows are kept in step with `content.options`: an entry with no `optionId` gets a row and a label from `nextLabel`, every entry's position is its index, an `optionId` must be a live option of this decision (400), and a row left out is deleted while it was never published and otherwise stays live, to be retired at the next publish. Through an API key (card 2682's `PATCH /api/v1/decisions/{decisionId}`, or any write `sourceOf(opts)` reads as a key's) each changed section is flagged `agentDrafted` and its `reviewed` stamp removed; a person's save clears no flag. No event, activity entry, live event or mail.
 
 **`markReviewed`** needs `review` (author, decider) and is 403 `Marking text reviewed is a person's act: it cannot be done with an API key` unless `source` is `ui`. `sections` is a list of keys of this content (400 for any other) or `'all'`; each flagged one is unflagged and stamped `reviewed[key] = { byUserId, byName, at }`. The next version carries the flags, and each stamp as `{ byName, at }`, as they are then, which is the record of who reviewed what. `versionContent` copies an allowlist alone: the six text sections, `audiences` (`groupId`, `heading`, `body`), `stories` (`title`, `body`), the live options (`title`, `summary`, `pros`, `cons`, `commercial`, with `optionId` and `label`), `agentDrafted` and `reviewed`; never `lastLabel`, a reviewer's account id, or any other key the stored content holds (card 2676's C3). No event.
 
@@ -1781,7 +1782,8 @@ flowchart LR
   `shownCells`; each score-mode mean through `meanOf`, its scores counted as cells (code
   review S2); and, beside another release in the supersede chain (`chainReleased`), the number
   who responded always withheld and no cell withheld alone (`withheldInTwos`, code review S4).
-- **No API route.** Each write refuses `opts.source !== 'ui'` with 403, and a scan case holds
+- **No API route.** Each write refuses `keyed(opts)` (the route said anything but `'ui'`, or
+  `writingWithKey()`: card 2682's D7) with 403, and a scan case holds
   that no file under `src/routes/api/v1/` imports a ruling, release or concern function.
 - **Activity and live events.** `decision_ruled`, `decision_superseded` (on the old decision,
   only when superseded) and `decision_results_released`, each `"<title>"` alone and only while
@@ -1943,7 +1945,7 @@ pending-draft rule is exported here, `pendingDraft(row)`, which the writes in `d
 ask, beside `openQuestionWhere()`, the same rule in SQL that `openQuestionsOf` filters by; a
 test holds the two to agree row for row (code review F5). `readQuestions(user, decisionId, { source })`
 adds `requireDecision(user, id, 'questions')` and a 403 `NO_LONGER_REACHED` for a participant
-no longer reached with no other role; card 2682's API only wraps it. `reachedParticipantOf`
+no longer reached with no other role; card 2682's `GET /api/v1/decisions/{decisionId}/questions` only wraps it. `reachedParticipantOf`
 moved here from `decision-view.ts`, so the page and `readQuestions` ask one reach rule.
 
 **The page reads** (`pageOf`). `DecisionPageData` gains `questions`, `mayAsk` (`mayAskOf`: live,
@@ -2130,7 +2132,9 @@ key ending in `Id` at any depth, a nested object or array at a key the spec does
 dropped, another decision named only through `namedFor`, the option by its label, and the
 addresses of `address_changed` and every `signedIn` to an administrator alone, which
 `recordEntryOf` asks of the account (`isAdmin(ctx.user)`), never of a flag its caller hands it
-(code review S5). The page names each detail key in words (`DETAIL_WORDS` in
+(code review S5), and only on the page: since card 2682, `ctx.source` is asked as well, and
+through any source but `'ui'` no reader gets them, and the question events are left out (see
+[Decisions through API v1](#decisions-through-api-v1-card-2682)). The page names each detail key in words (`DETAIL_WORDS` in
 `decision-words.ts`), never its stored camelCase name. Each participant carries `personId`, for a
 link to their person record, where they are a person of the directory and the decision has been
 opened; the register gives `myPersonId` for its **My record** link (code review F1).
@@ -2216,6 +2220,97 @@ any boardless decision are current on navigation, a return to the tab, or a reco
 no-store`, `X-Robots-Tag: noindex, nofollow`): `/decisions`, `/decisions/people/[personId]`,
 `/decisions/[id]/record`, `/api/cards/[id]/decisions` and `/api/decisions/[id]/cards/[cardId]`. The
 three pages also carry `<meta name="robots" content="noindex">`.
+
+### Decisions through API v1 (card 2682)
+
+Card 2682 (plan `docs/planning/card-2682-decisions-api.md` v1.3) gives API keys seventeen
+operations on decisions under `/api/v1/` in thirteen route files, OpenAPI `1.6.0`, tag
+`Decisions`. No migration and no new service: each route calls the functions the pages call,
+with `{ source: 'api' }` written out, inside `writeAs` for a write. **A key prepares a decision;
+a person decides what happens to people**: opening, re-publishing, the dry run, Resend, closing,
+a participant's account and address, and the participants, decider, withdraw and delete of a
+decision ever opened have no v1 route, and the service refuses them under a key besides.
+
+```mermaid
+flowchart LR
+    subgraph V1["src/routes/api/v1"]
+        R1["decisions, boards/[boardId]/decisions"]
+        R2["decisions/[decisionId]: GET, PATCH, DELETE"]
+        R3["…/decider, …/participants, …/extend,<br/>…/withdraw, …/supersede"]
+        R4["…/questions, …/questions/[questionId]/answer"]
+        R5["…/summary, …/record"]
+        R6["…/cards/[cardId]"]
+    end
+    R1 --> Reg["decision-register.ts<br/>readRegister, registerQueryOf(…, 'api')"]
+    R2 --> Auth["decision-authoring.ts<br/>readDecisionForKey, keyDecisionAnswer,<br/>keyDecisionSaved"]
+    R3 --> Auth
+    R2 & R3 & R6 --> Svc["decisions.ts<br/>sourceOf(opts), keyed(opts)"]
+    R4 --> Svc
+    R4 --> Q["decision-questions.ts<br/>readQuestions"]
+    R5 --> Res["decision-results.ts<br/>readSummary"]
+    R5 --> Reg2["decision-register.ts<br/>readRecord (KeyRecordPage)"]
+    Svc --> WA["write-as.ts<br/>writingWithKey()"]
+```
+
+**`decisions.ts`.** A private `sourceOf(opts)` answers `'api'` when `opts.source !== 'ui'` or
+`writingWithKey()`; `keyed(opts)` is `sourceOf(opts) === 'api'`. Every read of `opts.source` in
+the file goes through it: the `actorFor` calls, `decisionEntry`, every existing refusal and flag
+(`markReviewed`, the person's acts, `publishAnswer`, the `replacesDraft` refusal,
+`askQuestionByLink`), `questionAs`' via and source, and `answererViewOf`. The new refusals, each
+a module constant, not exported:
+
+| Function | Under a key |
+|---|---|
+| `openDecision`, `republishDecision`, `dryRunDecision`, `resendInvitation` | `403 MAIL_ACT`, straight after `requireUser` |
+| `closeDecision` | `403 CLOSE_ACT`, straight after `requireUser` |
+| `setParticipantAccount`, `changeParticipantAddress` | `403 STEP_UP_ACT`, straight after `requireUser` |
+| `setParticipants` (after the `include` check), `setDecider` (after `requireDecision`) | `403 OPENED_PEOPLE` when `openedAt` is set |
+| `withdrawDecision`, `deleteDecision` | `403 OPENED_ACT` after every refusal the guard makes, when the guard says opened |
+| `extendDecision` | `403 REOPEN_ACT` after `requireDecision` when the stored status is `closed` (code review S2: a key extends only an open decision; reopening undoes a person's close); and for **every** source, `400 EXTENDS_EARLIER` for a `closesAt` no later than the current one, after `closesTooFar` |
+
+**The key shapes** (`decision-authoring.ts`): `keyDecisionAnswer(decision)` is
+`decisionAnswer(decision, false)` plus `untrusted`, and `keyParticipantAnswers(rows)`
+`participantAnswers(rows, false)`, each plus `untrusted`, so every key, an administrator's
+included, gets the non-administrator shape: no address, account id, `includedBy`, `removedBy`,
+`linkIssuedAt` or reviewer id, and no closing time or `closedAt` once ruled (code review S5:
+`decisionAnswer` withholds `closedAt` from every non-administrator once ruled, on the page too,
+as it does `closesAt`). `keyDecisionSaved(decision)` is `{ decision: keyDecisionAnswer(decision),
+revision: revisionFor(decision.id) }`, the OpenAPI document's `DecisionSaved`, which the create,
+decider, extend, withdraw and supersede routes answer (code review F9). `readDecisionForKey(user,
+id, { source: 'api' })` asks `requireDecision(…, 'edit')` and answers `{ decision, options,
+participants, revision, readiness, actions, people, groups, deciderCandidates, untrusted }`:
+`actions` what a key may do now by the writes' own rules (`edit`, `setDecider`,
+`setParticipants`, `extend` (an open decision alone), `withdraw`, `delete`, `supersede`; no `open`
+or `close`), the picker through `pickerOf(false, …)` with the picker's narrow fields, not
+`keyPerson`'s, and no `delivery` or `directory`.
+
+**The reads by source.** `readRegister` marks each row and the page `untrusted` for any source
+but `'ui'`. `readSummary(user, id, { source: 'api' })` (`decision-results.ts`) calls
+`readResults` with the key's source and rebuilds an allow-list field by field: no `revision`,
+`releasePreview`, `mayRule`, `mayRelease`, `releaseRefusal` or `mayAnswerQuestions`; each
+response, concern and the ruling a new object with `untrusted: true`. `readRecord` and
+`recordEntryOf` are overloaded by source: `'ui'` answers `RecordPage` as before, `'api'`
+`KeyRecordPage` of `KeyRecordEntry` (`RecordEntry & { untrusted: true }`), with no
+administrator-only detail for anyone and none of the four `QUESTION_EVENTS`
+(`decision-record.ts`): every key page, filtered or not, is read through `recordEventsOf(…, {
+withoutKinds: QUESTION_EVENTS })`, a `NOT IN` in the query so that the page size and `next` stay
+exact (code review S1; `GET …/questions` is a key's asker-free read of the questions), and
+`recordEntryOf` handed a question event for a key throws rather than show it.
+`readPersonRecord(…, { source: 'ui' })` takes a required source typed `'ui'` and refuses any
+other `403` before anything is read (code review S3), so the v1 read scan's completeness rule
+holds any v1 import of it to a finding.
+
+**The routes.** Each reads its ids with `pathId`, its body with `readBody`, and answers through
+`v1-json`. `GET …/record` reads and bounds `limit` (1 to `RECORD_READ_MAX`, 500 when not sent:
+`400 limit must be a whole number from 1 to 5000`), `participant` and `after` (`readQueryId`)
+before `readRecord`. `PUT` and `DELETE …/cards/[cardId]` answer `linkedCardsFor` as the internal
+twins do. No route reads `currentPassword` or calls `confirmStepUp`, and
+`tests/decisions-api.test.ts` case 20 holds that no v1 file names a refused write, a guard, the
+page's reads or the administrator shapes.
+
+**On the page** (D32): `DecisionActions.svelte` takes `mailCount`, the live participants of the
+saved set, from the edit page, and the Open confirmation reads `Every participant of "<title>"
+is mailed now: N people.`
 
 ### The dashboard
 

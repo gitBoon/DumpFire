@@ -537,7 +537,8 @@ describe('the lifecycle routes, through the gate (36)', () => {
 		['open', (editor) => readyOf(editor), (id) => ({ revision: revisionNow(id) })],
 		['republish', (editor) => openByHand(editor), (id) => ({ changeNote: 'The dates moved.', askAgain: true, revision: revisionNow(id) })],
 		['close', (editor) => openByHand(editor), () => undefined],
-		['extend', (editor) => openByHand(editor), () => ({ closesAt: sentAs(fromNow(30 * DAY)) })],
+		// Card 2682 (D30): later than `FUTURE`, 90 days ahead, as Extend never brings the closing time earlier.
+		['extend', (editor) => openByHand(editor), () => ({ closesAt: sentAs(fromNow(120 * DAY)) })],
 		// An opened decision's withdrawal asks for the password (B4, Q29): the page sends it.
 		['withdraw', (editor) => openByHand(editor), () => ({ reason: 'No longer needed.', currentPassword: FIXTURE_PASSWORD })]
 	];

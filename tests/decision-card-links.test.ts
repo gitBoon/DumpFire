@@ -518,11 +518,12 @@ describe('the card’s linked decisions', () => {
 		// The match catches an import under another name, which a call pattern would miss.
 		expect(mentions.test("import { decisionLinksOfCardsUnchecked as links } from '$lib/server/decision-cards';\nlinks([1]);")).toBe(true);
 		expect(/\bdecisionLinksOfCardsUnchecked\s*\(/.test("import { decisionLinksOfCardsUnchecked as links } from '$lib/server/decision-cards';\nlinks([1]);")).toBe(false);
-		// Something was read: linkedCardsFor is found the same way, in the page's read too.
+		// Something was read: linkedCardsFor is found the same way, in the page's read too, and in card 2682's v1 twin of the routes.
 		expect(files.filter((file) => /\blinkedCardsFor\s*\(/.test(readFileSync(join(ROOT, 'src', file), 'utf8'))).sort()).toEqual([
 			'lib/server/decision-cards.ts',
 			'lib/server/decision-view.ts',
-			'routes/api/decisions/[id]/cards/[cardId]/+server.ts'
+			'routes/api/decisions/[id]/cards/[cardId]/+server.ts',
+			'routes/api/v1/decisions/[decisionId]/cards/[cardId]/+server.ts'
 		]);
 	});
 });

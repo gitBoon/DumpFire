@@ -441,6 +441,7 @@ describe('DecisionActions (51 to 54)', () => {
 			republishSummary: null,
 			refusals: [],
 			warnings: [],
+			mailCount: 2,
 			dirty: false,
 			onSaved,
 			...more
@@ -484,6 +485,8 @@ describe('DecisionActions (51 to 54)', () => {
 			control(target, 'open')!.click();
 			flushSync();
 			expect(textOf(confirmButton())).toBe('Open with 2 warnings');
+			// Card 2682 (D32): the confirmation says how many people are mailed, before the warnings.
+			expect(textOf(dialog()!.querySelector('.confirm-message')!)).toContain('Every participant of "Pick a budget" is mailed now: 2 people.');
 			expect(textOf(dialog()!.querySelector('.confirm-message')!)).toContain('What is not yet known is empty; Already settled is empty');
 			confirmButton().click();
 			await settle();
@@ -491,6 +494,14 @@ describe('DecisionActions (51 to 54)', () => {
 			expect(sent).toEqual([{ what: 'POST /api/decisions/7/open', headers: JSON_TYPE, body: JSON.stringify({ revision: 'rev-1' }) }]);
 			expect(onSaved).toHaveBeenCalledWith('rev-2');
 			expect(dialog()).toBeNull();
+		});
+
+		it('says "1 person" where the saved set holds one live participant (card 2682, D32)', () => {
+			const { target } = drawActions({ mailCount: 1 }, { open: true });
+
+			control(target, 'open')!.click();
+			flushSync();
+			expect(textOf(dialog()!.querySelector('.confirm-message')!)).toBe('Every participant of "Pick a budget" is mailed now: 1 person.');
 		});
 
 		it('is off, with Re-publish and the dry run, while the editor holds edits not yet saved; the editor says when it does', () => {

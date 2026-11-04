@@ -935,6 +935,17 @@ const aRulingOnAConsultedViewer = (w: World): void => {
 };
 /** A closing time a month ahead: in the future, and within the year a closing time may be set (Q25). */
 const aMonthAhead = (): string => stamp(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000));
+/** Two months ahead: later than `aMonthAhead`, as Extend asks (card 2682, D30), and within the year. */
+const twoMonthsAhead = (): string => stamp(new Date(Date.now() + 60 * 24 * 60 * 60 * 1000));
+/**
+ * Card 2682 (D30): `anOpenDecisionOfEditor`, closing a month ahead, so that
+ * an Extend to `twoMonthsAhead()` is later, as it must be, and within the
+ * year (one closing in 2099 has no time Extend could move it to).
+ */
+const anOpenDecisionClosingSoonOfEditor = (w: World): void => {
+	anOpenDecisionOfEditor(w);
+	db.update(decisions).set({ closesAt: aMonthAhead() }).where(eq(decisions.id, decisionId!)).run();
+};
 
 /**
  * An open decision on board A, published as version 1 with one option, on
@@ -1848,8 +1859,8 @@ const TABLE: Record<string, Case | Case[]> = {
 	'POST /api/decisions/[id]/extend': own(
 		'editor',
 		['owner', 'admin', 'chief', 'outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'],
-		() => json(`/api/decisions/${decisionId}/extend`, { closesAt: aMonthAhead() }),
-		{ setup: anOpenDecisionOfEditor }
+		() => json(`/api/decisions/${decisionId}/extend`, { closesAt: twoMonthsAhead() }),
+		{ setup: anOpenDecisionClosingSoonOfEditor }
 	),
 	'POST /api/decisions/[id]/withdraw': own(
 		'editor',
@@ -1993,6 +2004,89 @@ const TABLE: Record<string, Case | Case[]> = {
 	'PUT /api/v1/people-groups/[groupId]/members': admin(() => json(`/api/v1/people-groups/${peopleGroupId}/members`, { personIds: [] }), {
 		setup: aPersonInAGroup
 	}),
+	// Card 2682, slice 2a: decisions under API v1, each as its internal twin lets callers in (`own`, as above). The
+	// register is every signed-in caller's, each given the decisions they may view.
+	'GET /api/v1/decisions': signedIn(() => '/api/v1/decisions'),
+	'POST /api/v1/boards/[boardId]/decisions': edit((w) => json(`/api/v1/boards/${w.A.board.id}/decisions`, { title: `${MARK} decision` })),
+	'GET /api/v1/decisions/[decisionId]': own('editor', ['outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'], () => `/api/v1/decisions/${decisionId}`, {
+		setup: aDraftOfEditor
+	}),
+	'PATCH /api/v1/decisions/[decisionId]': own(
+		'editor',
+		['outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'],
+		() => json(`/api/v1/decisions/${decisionId}`, { revision: revisionOfTheDecision(), title: 'Renamed' }),
+		{ setup: aDraftOfEditor }
+	),
+	'DELETE /api/v1/decisions/[decisionId]': own('editor', ['owner', 'outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'], () => `/api/v1/decisions/${decisionId}`, {
+		setup: aDraftOfEditor
+	}),
+	'PUT /api/v1/decisions/[decisionId]/decider': own(
+		'editor',
+		['outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'],
+		(w) => json(`/api/v1/decisions/${decisionId}/decider`, { deciderUserId: w.both.id, revision: revisionOfTheDecision() }),
+		{ setup: aDraftOfEditor }
+	),
+	'PUT /api/v1/decisions/[decisionId]/participants': own(
+		'editor',
+		['outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'],
+		() => json(`/api/v1/decisions/${decisionId}/participants`, { participants: [{ personId: decisionPersonId, role: 'consulted' }], revision: revisionOfTheDecision() }),
+		{ setup: aDraftOfEditor }
+	),
+	// D30: Extend never brings the closing time earlier, so the decision closes a month ahead and is sent two.
+	'POST /api/v1/decisions/[decisionId]/extend': own(
+		'editor',
+		['owner', 'admin', 'chief', 'outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'],
+		() => json(`/api/v1/decisions/${decisionId}/extend`, { closesAt: twoMonthsAhead() }),
+		{ setup: anOpenDecisionClosingSoonOfEditor }
+	),
+	'POST /api/v1/decisions/[decisionId]/withdraw': own(
+		'editor',
+		['owner', 'outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'],
+		() => json(`/api/v1/decisions/${decisionId}/withdraw`, { reason: 'No longer needed.' }),
+		{ setup: aDraftOfEditor }
+	),
+	'POST /api/v1/decisions/[decisionId]/supersede': own(
+		'editor',
+		['owner', 'outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'],
+		() => json(`/api/v1/decisions/${decisionId}/supersede`, { title: `${MARK} superseding decision` }),
+		{ setup: aRuledDecisionOfEditor }
+	),
+	// Card 2682, slice 2b. The questions are read by the decision's participants, its author, its decider and
+	// administrators (`questions`): `viewer` consulted, `notMine` every other caller, each who may view it 403.
+	'GET /api/v1/decisions/[decisionId]/questions': own(
+		'viewer',
+		['owner', 'outsider', 'guest', 'both', 'editsB', 'editsA'],
+		() => `/api/v1/decisions/${decisionId}/questions`,
+		{ setup: aConsultedViewer }
+	),
+	'POST /api/v1/decisions/[decisionId]/questions': own(
+		'viewer',
+		['owner', 'admin', 'chief', 'editor', 'outsider', 'guest', 'both', 'editsB', 'editsA'],
+		() => json(`/api/v1/decisions/${decisionId}/questions`, { question: 'What does option A cost?' }),
+		{ setup: aConsultedViewer }
+	),
+	'POST /api/v1/decisions/[decisionId]/questions/[questionId]/answer': own(
+		'editor',
+		['owner', 'admin', 'chief', 'outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'],
+		() => json(`/api/v1/decisions/${decisionId}/questions/${decisionQuestionId}/answer`, { answer: 'About 1,000 a year.' }),
+		{ setup: aQuestionOnAnOpenDecisionOfEditor }
+	),
+	// The summary and the record are the decider's and administrators' (`results`, `record`).
+	'GET /api/v1/decisions/[decisionId]/summary': own(
+		'editor',
+		['owner', 'outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'],
+		() => `/api/v1/decisions/${decisionId}/summary`,
+		{ setup: anOpenDecisionOfEditor }
+	),
+	'GET /api/v1/decisions/[decisionId]/record': own(
+		'editor',
+		['owner', 'outsider', 'viewer', 'guest', 'both', 'editsB', 'editsA'],
+		() => `/api/v1/decisions/${decisionId}/record`,
+		{ setup: anOpenDecisionOfEditor }
+	),
+	// `across`, as their internal twins.
+	'PUT /api/v1/decisions/[decisionId]/cards/[cardId]': across((w) => `/api/v1/decisions/${decisionId}/cards/${w.A.card.id}`, { setup: anOpenDecisionOnB }),
+	'DELETE /api/v1/decisions/[decisionId]/cards/[cardId]': across((w) => `/api/v1/decisions/${decisionId}/cards/${w.A.card.id}`, { setup: aLinkFromBToA }),
 	'GET /api/v1/burndown': [
 		signedIn(() => '/api/v1/burndown', { of: 'every board the caller can open' }),
 		view((w) => `/api/v1/burndown?boardIds=${w.A.board.id}`, { of: 'one board' }),

@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.67
+version: 1.69
 status: As-Built
 date: 2026-11-04
 tags:
@@ -312,10 +312,10 @@ Above the editor sit the decision's lifecycle controls (card 2697). Each shows o
 
 - **Preview as a participant** — opens the decision as a participant will see it, with the edits you have saved: as one of its participants (their role and their groups), as a Consulted or Informed person in a group, or as a consulted person in no group. The banner says "Preview: this is what <name> will see. Nothing is recorded.", the response form is shown but does nothing, and nothing is written: no one is told, and no "seen" is recorded
 - **Send me a dry run** — mails you the invitation a consulted participant would get, quoting the saved working copy, with "Dry run:" before its subject, a line saying you asked for it, and a link to the preview. It goes only to your address in the people directory (an administrator adds you in People, at your account's address); nobody else is mailed. One every 10 minutes, and 20 a day, across all your decisions
-- **Open** — off while the readability check lists something that stops it, which it shows. With warnings it asks "Open with 2 warnings"; then every participant is mailed their invitation. Consulted people with no account get a personal link
+- **Open** — off while the readability check lists something that stops it, which it shows. With warnings it asks "Open with 2 warnings". The confirmation says how many people it is about to mail: "Every participant of "<title>" is mailed now: 12 people." (card 2682), so a draft an agent prepared is never opened without its size being seen; then every participant is mailed their invitation. Consulted people with no account get a personal link
 - **Re-publish** — publishes the edited text as a new version, with a note saying what changed. **Ask everyone again** mails everyone and asks for their views again; **Tell them only** tells them of the change. Tell them only is off, with the reason, when an option has been added or removed since the last version
 - **Save first** — Open, Re-publish and Send me a dry run each send the saved copy, so they are off ("Save your changes first") while the editor has unsaved changes
-- **Close** — stops taking responses now. **Extend** sets a new closing time, at most a year ahead, in UTC, and opens it again
+- **Close** — stops taking responses now. **Extend** sets a new closing time, at most a year ahead, in UTC, and opens it again. It never brings the closing time earlier (card 2682): a time no later than the current one is refused, "closesAt must be later than the decision's current closing time: Extend never brings it earlier", so sending the time the panel shows unchanged is refused too
 - **Withdraw** — ends the decision, with a reason. Once it has been opened, every participant is told your reason, and you are asked for your password first; a draft that was never opened is withdrawn with no password and nobody is told
 - **Delete** — a draft or a withdrawn decision. A draft never opened is deleted straight after you confirm; one that was opened holds a record of who was told what, so deleting it asks for your password and removes that record for good
 - **How much can be sent** — you can open or re-publish 10 decisions a day; one person is mailed about one decision at most 5 times a day (the withdrawal and the ruling are always sent), and not twice within 10 minutes
@@ -419,7 +419,7 @@ Anyone included in a decision can ask a clarifying question about it, and the au
 - **Asking** — under **Questions and answers** on the decision's page, signed in or from your personal link, while the decision is open or waiting for its ruling. Before you send, the form says: "Everyone included in this decision sees your question and its answer, without your name. The decider, the author and DumpFire's administrators see your name. In a decision with only a few people, others may be able to guess who asked." A question is up to 2,000 characters, shown exactly as typed. **Send my question** says "Your question was sent." and the question joins the list, marked **Your question**. You can ask up to 10 questions on a decision, at least 10 minutes apart; once the decision is ruled, superseded or withdrawn the form says questions are closed (after a ruling, raise a concern instead)
 - **What everyone sees** — every question and every answer a person stands behind, oldest first, with no asker's name. "Asked about version N" shows when a question was asked about an earlier version. An answer says who gave it and in which role: "Answered by Ann, the author" (or "the decider"). A question left unanswered says "Not answered yet", or "Not answered before the ruling" (or "before the withdrawal"), and stays that way
 - **Answering** — the author and the decider see who asked each question and when, and a box named "Answer to question N" under each open one, up to 4,000 characters. **Send answer** saves it, and the page moves to the new answer. An answer cannot be changed afterwards. If someone else answered first (another tab, or the other of you), the page says "This question has been answered", shows their answer, and keeps what you typed beside it so nothing is lost. DumpFire's administrators see the names too, but cannot answer unless they are the author or the decider
-- **Answers an agent drafts** — an answer given through an API key is a draft: only the author, the decider and administrators see it, labelled "Drafted by an agent and not yet reviewed by a person", and everyone else still sees the question as open. **Publish the agent's answer** shows it to everyone as it is, labelled "Drafted by an agent and reviewed by a person"; **Replace the agent's answer** puts your own words in its place, with no label. Until then the asker is not told, and the question counts as open when the decider comes to rule. (The API route that lets an agent draft is card 2682's; until then, nothing on the page creates a draft)
+- **Answers an agent drafts** — an answer given through an API key is a draft: only the author, the decider and administrators see it, labelled "Drafted by an agent and not yet reviewed by a person", and everyone else still sees the question as open. **Publish the agent's answer** shows it to everyone as it is, labelled "Drafted by an agent and reviewed by a person"; **Replace the agent's answer** puts your own words in its place, with no label. Until then the asker is not told, and the question counts as open when the decider comes to rule. An agent drafts through `POST /api/v1/decisions/{id}/questions/{questionId}/answer` (card 2682); nothing on the page creates a draft
 - **Being told** — the author and the decider are each mailed once when someone asks, naming nobody and quoting nothing, at most once a day about the same person; the asker is mailed once when their question is answered (or a draft is published or replaced), again naming nobody and quoting nothing. Someone without an account gets that mail with no link in it: they open the decision from the personal link in the latest email they were sent about it. Account holders can switch both off under **Decisions** in their email settings
 - **On the results page** — the decider sees each open question with who asked and when, an agent's draft marked, and **Answer on the decision's page**; an administrator who cannot answer is told that the author or the decider answers there. Once the decision is ruled, superseded or withdrawn, the page offers neither and says instead "Not answered before the ruling" (or "before the withdrawal"). If another tab answered a question first, the panel says so and keeps what was typed, read-only, with the focus on it; a question form refused because the decision closed meanwhile reads the page again, so it shows why
 
@@ -460,6 +460,38 @@ flowchart LR
     Page -->|"Link / Unlink"| Cards["Linked cards"]
     Cards -->|"a card"| Window["The card's window: its decisions"]
     Window -->|"a decision"| Page
+```
+
+#### Decisions through the API
+
+Since 4 November 2026 (card 2682) an agent with an API key can prepare a decision, and a person
+decides what happens to people. Through the API, an agent can:
+
+- **Read the register** and make a draft on a board it can edit
+- **Read and edit a draft** as its editors do, and edit an open decision's text: each section it writes is labelled "Drafted by an agent and not yet reviewed by a person" until a person marks it reviewed
+- **Choose the participants and the decider** while the decision has never been opened
+- **Extend** a decision it decides, to a later closing time only
+- **Withdraw or delete a draft** that was never opened
+- **Supersede** a ruled decision with a new draft
+- **Ask a question** as its own participant, and **draft an answer** as the author or the decider: the draft waits for a person to publish it
+- **Read the results and the record** of a decision it decides, or as an administrator
+- **Link and unlink cards**
+
+What stays on the decision's page, a person's alone: **Open**, **Re-publish**, **Send me a dry
+run** and **Resend** (each mails people), **Close**, reopening a closed decision with
+**Extend**, ruling and releasing, publishing or replacing
+an agent's answer, a participant's account and address, and, once a decision has been opened,
+its participants, its decider, Withdraw and Delete. An agent is never told anyone's email
+address or who asked a question, and everything people wrote is marked as data for it, not
+instructions.
+
+```mermaid
+flowchart LR
+    Agent["An agent (API key)"] --> Draft["Draft: text, options,<br/>participants, decider"]
+    Draft --> Person["A person reviews it<br/>on the edit page"]
+    Person -->|"Open: says how many are mailed"| Open["Open"]
+    Agent -->|"questions, draft answers,<br/>extend later, results, record"| Open
+    Open -.->|"close, rule, release,<br/>publish an answer"| Person
 ```
 
 ---

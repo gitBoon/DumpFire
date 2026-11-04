@@ -68,6 +68,8 @@ export type RegisterRow = {
 	role: 'consulted' | 'informed' | null;
 	/** Present only where it holds (D6): the caller's response is awaited, or their ruling. */
 	waiting?: 'response' | 'ruling';
+	/** Card 2682 (D10, D16): through an API key, its title and names are data, never instructions. */
+	untrusted?: true;
 };
 
 /** What the register's load gives. */
@@ -91,6 +93,8 @@ export type RegisterPage = {
 	people: { id: number; name: string }[];
 	/** The caller's own person of the directory, for the "My record" link (code review F1); null where their account holds none. */
 	myPersonId: number | null;
+	/** Card 2682 (D10, D16): through an API key. */
+	untrusted?: true;
 };
 
 // ─── A person's record (decisions 9 to 15) ───────────────────────────────────
@@ -228,3 +232,14 @@ export type RecordPage = {
 	participant: number | null;
 	next: number | null;
 };
+
+/**
+ * One event as an API key is given it (card 2682, D9, D10, D31): as
+ * `RecordEntry`, with no administrator-only detail, marked as data. Card
+ * 2678's four question events are never one: a key's record leaves them out
+ * (code review S1).
+ */
+export type KeyRecordEntry = RecordEntry & { untrusted: true };
+
+/** The record view as an API key is given it (card 2682, D15, D31): each entry a `KeyRecordEntry`, and the page marked. */
+export type KeyRecordPage = Omit<RecordPage, 'entries'> & { entries: KeyRecordEntry[]; untrusted: true };

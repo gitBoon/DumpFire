@@ -2801,6 +2801,46 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 	'src/routes/api/decisions/[id]/cards/[cardId]/+server.ts DELETE': [
 		{ service: 'unlinkCard', args: [code('caller'), { decisionId: code('id'), cardId: code('cardId') }, null, { source: 'ui' }] }
 	],
+	// Card 2682, slice 2a: decisions under API v1, each write handed `source: 'api'` written out. The withdraw and the delete
+	// call no guard first and ask no password: the service refuses a key once the decision was ever opened (D5).
+	'src/routes/api/v1/boards/[boardId]/decisions/+server.ts POST': [
+		{ service: 'createDecision', args: [code('caller'), { boardId: code('boardId') }, code('body'), { source: 'api' }] }
+	],
+	'src/routes/api/v1/decisions/[decisionId]/+server.ts PATCH': [
+		{ service: 'updateDraft', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'api' }] }
+	],
+	'src/routes/api/v1/decisions/[decisionId]/+server.ts DELETE': [
+		{ service: 'deleteDecision', args: [code('caller'), { decisionId: code('id') }, null, { source: 'api' }] }
+	],
+	'src/routes/api/v1/decisions/[decisionId]/decider/+server.ts PUT': [
+		{ service: 'setDecider', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'api' }] }
+	],
+	'src/routes/api/v1/decisions/[decisionId]/participants/+server.ts PUT': [
+		{ service: 'setParticipants', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'api' }] }
+	],
+	'src/routes/api/v1/decisions/[decisionId]/extend/+server.ts POST': [
+		{ service: 'extendDecision', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'api' }] }
+	],
+	'src/routes/api/v1/decisions/[decisionId]/withdraw/+server.ts POST': [
+		{ service: 'withdrawDecision', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'api' }] }
+	],
+	'src/routes/api/v1/decisions/[decisionId]/supersede/+server.ts POST': [
+		{ service: 'supersedeDecision', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'api' }] }
+	],
+	// Card 2682, slice 2b: a question asked as the key's own participant row, an answer that is always an agent's draft
+	// (card 2678, decision 8), and a card linked and unlinked, neither reading a body.
+	'src/routes/api/v1/decisions/[decisionId]/questions/+server.ts POST': [
+		{ service: 'askQuestion', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'api' }] }
+	],
+	'src/routes/api/v1/decisions/[decisionId]/questions/[questionId]/answer/+server.ts POST': [
+		{ service: 'answerQuestion', args: [code('caller'), { decisionId: code('decisionId'), questionId: code('questionId') }, code('body'), { source: 'api' }] }
+	],
+	'src/routes/api/v1/decisions/[decisionId]/cards/[cardId]/+server.ts PUT': [
+		{ service: 'linkCard', args: [code('caller'), { decisionId: code('id'), cardId: code('cardId'), relation: 'relates' }, null, { source: 'api' }] }
+	],
+	'src/routes/api/v1/decisions/[decisionId]/cards/[cardId]/+server.ts DELETE': [
+		{ service: 'unlinkCard', args: [code('caller'), { decisionId: code('id'), cardId: code('cardId') }, null, { source: 'api' }] }
+	],
 	'src/routes/api/v1/boards/[boardId]/cards/+server.ts POST': [
 		{ service: 'createCard', args: [code('caller'), { boardId: code('boardId') }, code('body'), { source: 'api', baseUrl: code('baseUrl') }] }
 	],

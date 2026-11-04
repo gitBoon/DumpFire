@@ -59,6 +59,7 @@ import {
 	cards,
 	categories,
 	columns,
+	decisionParticipants,
 	labels,
 	milestones,
 	people,
@@ -77,10 +78,15 @@ import {
 	makeBoard,
 	makeCard,
 	makeComment,
+	makeDecision,
 	makeDependency,
 	makeLabel,
 	makeMilestone,
+	makeParticipant,
+	makePerson,
+	makeRuling,
 	makeSubtask,
+	makeVersion,
 	makeUser,
 	resetDb
 } from './helpers/fixtures';
@@ -103,9 +109,13 @@ const V1_JSON = '$lib/server/v1-json';
  * has lost some, fails. Adding operations to the document means changing it,
  * knowingly. Card 2527 took one away, POST /api/v1/columns/{columnId}/convert,
  * before it was released. Card 2681 added six: the people directory and its
- * groups.
+ * groups. Card 2682's slice 2a added ten: the decision register, a draft, the
+ * editors' read and save, the delete, the decider, the participants, extend,
+ * withdraw and supersede; and its slice 2b seven: the questions read and
+ * asked, an answer drafted, the summary, the record, and a card linked and
+ * unlinked.
  */
-const OPERATIONS = 90;
+const OPERATIONS = 107;
 
 // ─── The document ────────────────────────────────────────────────────────────
 
@@ -394,7 +404,7 @@ function reading(file: string, name: string, known: Known = {}): Reading {
  * Operations whose query parameters are read somewhere the reading above
  * cannot follow, as `'METHOD /path': { where they are read, and why }`.
  *
- * Two entries. An entry is not a pass: the names are read from the function it
+ * Three entries. An entry is not a pass: the names are read from the function it
  * points at, and compared with the document like any other.
  */
 const QUERY_READ_ELSEWHERE: Record<string, { file: string; fn: string; params: string; why: string }> = {
@@ -415,6 +425,15 @@ const QUERY_READ_ELSEWHERE: Record<string, { file: string; fn: string; params: s
 			'own helpers (idList(params, "boardIds"), dayParam(params, "from")). The name is then an argument of a ' +
 			'helper and not of searchParams.get, so it is read here as: any text that follows `params` in a call, ' +
 			'and any text given to params.get().'
+	},
+	'GET /api/v1/decisions': {
+		file: 'src/lib/server/decision-register.ts',
+		fn: 'registerQueryOf',
+		params: 'params',
+		why:
+			'The handler hands url.searchParams whole to registerQueryOf, the reader it shares with the register page (card 2680), ' +
+			'which reads each name through its own helpers (choiceOf(params, "tab"), idOf(params, "board"), needleOf(params, "who")) in the api mode, ' +
+			'where a malformed one is 400 (card 2682, D16).'
 	}
 };
 
@@ -919,6 +938,22 @@ const SOMETIMES_ABSENT: Record<string, Record<string, string>> = {
 		subtaskTitles: 'and this one'
 	},
 	ActivityReportCard: { comments: 'buildActivityReport attaches it only with include=comments' },
+	// Card 2682 (plan review, fit D6).
+	DecisionContentOption: {
+		optionId: 'one schema serves the PATCH body, where a new option has none, and the answer, where contentAnswer gives every option its row\'s id'
+	},
+	DecisionWarning: { key: 'checkContent names the section a warning is about, and a warning about no section (closes_too_far) has none' },
+	DecisionPickerGroup: { activeMemberIds: 'readDecisionForKey gives a group\'s members only where the key may set the participants (D11)' },
+	DecisionRegisterRow: { waiting: 'registerRowOf sets it only where the key\'s user\'s response or ruling is awaited (card 2680, D6)' },
+	// Card 2682, slice 2b: questionViewOf leaves out each field its viewer is not given (card 2678, decision 2).
+	DecisionQuestion: {
+		id: 'only to a viewer who may answer it now (mayAnswerOf): its author or decider, while the decision is open or awaiting a ruling',
+		askedByAgent: 'only for a question asked through a key, and then to the author, the decider, administrators and whoever asked it',
+		draft: "only to the author, the decider and administrators, and only while an agent's draft waits on it"
+	},
+	'DecisionRecord.participants[]': {
+		personId: "readRecord gives a participant's person only once the decision has been opened, and while the person is in the directory (card 2680, code review F1; D15)"
+	},
 	'ActivityReportCard.subtasks': { items: 'only with include=subtasks, and only on a card that has subtasks' },
 	BurndownResult: { options: 'getBurndown attaches it only with options=true' }
 };
@@ -1186,6 +1221,26 @@ const MIRRORS: Record<string, Mirror> = {
 			personIds: 'keyGroup answers the ids of the people in the group',
 			untrusted: 'and marks every group answered to a key as data, never instructions (card 2681, D6)'
 		}
+	},
+	// Card 2682 (D9, D24; plan review, fit D6): a participant as every key is given one, an administrator's included.
+	DecisionParticipant: {
+		table: decisionParticipants,
+		adds: {
+			reach: 'participantAnswers says how they would be told, through their account or by a personal link, from the account their snapshot holds',
+			hasLeft: 'and whether their person is marked left in the directory now',
+			notInDirectory: 'and whether their person is no longer in the directory',
+			untrusted: 'and keyParticipantAnswers marks every participant answered to a key as data, never instructions (card 2682, D10)'
+		},
+		withholds: {
+			decisionId: 'the decision is the one the path names',
+			email: 'never answered to a key, an administrator\'s included: the address decides where decision mail and personal links go (card 2682, D9)',
+			userId: 'never answered to a key: the account decides whose sign-in answers for the participant on the record (D9)',
+			includedBy: 'an account id, never answered to a key; includedByName names who included them (D9)',
+			removedBy: 'an account id, never answered to a key (D9)',
+			linkTokenHash: 'the hash of a personal link, answered to nobody (card 2676, decision 15)',
+			linkIssuedAt: 'when a personal link was issued, an administrator\'s on the page alone and never a key\'s (D9)'
+		},
+		retyped: { groups: 'stored as JSON text, and answered by participantAnswers as the list of group names it holds' }
 	},
 	TokenEntry: {
 		table: tokenUsage,
@@ -2688,14 +2743,14 @@ describe('what a route answers, against the schema the document gives for it', (
 
 	// ─── The document itself ─────────────────────────────────────────────────
 
-	it('GET /openapi.json: answered to a caller with no key, as version 1.5.0, and listing itself', async () => {
+	it('GET /openapi.json: answered to a caller with no key, as version 1.6.0, and listing itself', async () => {
 		const name = 'GET /api/v1/openapi.json';
 
 		// No user: the one route under /api/v1/ that is reached without a key.
 		const res = await api('GET', '/api/v1/openapi.json');
 
 		expect(res.status).toBe(200);
-		expect(res.body.info.version).toBe('1.5.0');
+		expect(res.body.info.version).toBe('1.6.0');
 		const schema = answerSchema(name, 200);
 		expect(keysOf(res.body)).toEqual(propertiesOf(schema));
 		expect(keysOf(res.body.info)).toEqual(propertiesOf(schema.properties.info));
@@ -2854,7 +2909,7 @@ describe('what a route answers, against the schema the document gives for it', (
 		const start = note.indexOf('**Changed on 2026-10-27 (version 1.3.1).**');
 		expect(start).toBeGreaterThan(0);
 		expect(start).toBeLessThan(note.indexOf('**Changed on 2026-10-26 (version 1.3.0).**'));
-		// Third of the dated notes since 1.5.0 (card 2681) and 1.4.0 (card 2673), which come first.
+		// Fourth of the dated notes since 1.6.0 (card 2682), 1.5.0 (card 2681) and 1.4.0 (card 2673), which come first.
 		expect(start).toBeGreaterThan(note.indexOf('**Changed on 2026-11-03 (version 1.4.0).**'));
 		expect(note.indexOf('**Changed on 2026-11-03 (version 1.4.0).**')).toBeGreaterThan(note.indexOf('**Changed on 2026-11-04 (version 1.5.0).**'));
 		const changes = note.slice(start, note.indexOf('**Changed on 2026-10-26'));
@@ -2864,12 +2919,48 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(spec.components.schemas.ActivityReportCard.properties.bucket.description).toContain("one raised before 2026-10-01 is also still in the board's first column");
 	});
 
-	it('is version 1.5.0, and its newest dated note, first of them all, announces the people and groups operations, the refused keys and no addresses (card 2681)', () => {
+	it('is version 1.6.0, and its newest dated note, first of them all, announces the decisions operations and what a key does not do with a decision (card 2682)', () => {
 		const note = spec.info.description as string;
-		expect(spec.info.version).toBe('1.5.0');
-		const start = note.indexOf('**Changed on 2026-11-04 (version 1.5.0).**');
+		expect(spec.info.version).toBe('1.6.0');
+		const start = note.indexOf('**Changed on 2026-11-04 (version 1.6.0).**');
 		expect(start).toBeGreaterThan(0);
 		expect(note.indexOf('**Changed on')).toBe(start);
+		const changes = note.slice(start, note.indexOf('**Changed on 2026-11-04 (version 1.5.0).**'));
+		const numbers = [...changes.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]));
+		expect(numbers).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+		expect(changes).toContain('Seventeen operations are new, under the tag Decisions');
+		for (const op of ['GET /api/v1/decisions', 'POST /api/v1/boards/{boardId}/decisions', 'PUT …/participants', 'GET …/summary', 'GET …/record', '…/cards/{cardId}']) {
+			expect(changes, op).toContain(op);
+		}
+		// What a key does not do, each a person's act on the decision's page (D3 to D6, D29).
+		for (const words of ['opening, re-publishing, a dry run and sending an invitation again mail people', 'closing for input before the closing time', "a participant's account and address", 'withdrawing or deleting a decision ever opened', 'publishing or replacing an agent\'s answer']) {
+			expect(changes, words).toContain(words);
+		}
+		expect(changes).toContain('None of these is offered to a key');
+		expect(changes).toContain('refuses each of them by the credential');
+		expect(changes).toContain('Extend never brings a closing time earlier, for anyone');
+		expect(changes).toContain("no answer carries a participant's email address or account id, an administrator's key included");
+		expect(changes).toContain('untrusted: true');
+		expect(changes).toContain("an agent's draft");
+		expect(changes).toContain('(8) nothing else changed');
+		// And the Decisions tag, under which /docs lists the seventeen, and no close or open among them.
+		const decisions = OPS.filter((op) => (op.entry.tags ?? []).includes('Decisions')).map((op) => op.name);
+		expect(decisions).toHaveLength(17);
+		expect(decisions.filter((name) => /\/(open|close|republish|dry-run|resend|rule|release|publish)$/.test(name))).toEqual([]);
+
+		// The 1.5.0 note (card 2681) is second.
+		const second = note.indexOf('**Changed on 2026-11-04 (version 1.5.0).**');
+		expect(second).toBeGreaterThan(start);
+		expect(note.indexOf('**Changed on', start + 1)).toBe(second);
+	});
+
+	it('announces the people and groups operations, the refused keys and no addresses in the 1.5.0 note, second of the dated notes (card 2681)', () => {
+		const note = spec.info.description as string;
+		const start = note.indexOf('**Changed on 2026-11-04 (version 1.5.0).**');
+		expect(start).toBeGreaterThan(0);
+		// After the 1.6.0 note (card 2682) alone.
+		expect(note.indexOf('**Changed on')).toBe(note.indexOf('**Changed on 2026-11-04 (version 1.6.0).**'));
+		expect(note.indexOf('**Changed on', note.indexOf('**Changed on') + 1)).toBe(start);
 		const changes = note.slice(start, note.indexOf('**Changed on 2026-11-03'));
 		expect(changes).toContain('GET /api/v1/people and GET /api/v1/people-groups');
 		expect(changes).toContain("No answer carries a person's email address or account id");
@@ -3052,6 +3143,64 @@ describe('what a route answers, against the schema the document gives for it', (
 		const operations = await ok('POST', '/api/v1/people-groups', { name: 'Operations' });
 		expect((await ok('PATCH', `/api/v1/people-groups/${groupId}`, { description: 'Month end' })).personIds).toEqual([personId]);
 		expect((await ok('PUT', `/api/v1/people-groups/${operations.id}/members`, { personIds: [personId] })).personIds).toEqual([personId]);
+
+		// Card 2682, slice 2a: a draft made, read, saved, its decider and participants set, withdrawn and deleted; an open
+		// decision extended, a ruled one superseded, and the register read.
+		const drafted = await ok('POST', `/api/v1/boards/${board.id}/decisions`, { title: 'Which budget?' });
+		const decisionId = drafted.decision.id;
+		const read = await ok('GET', `/api/v1/decisions/${decisionId}`);
+		expect(read.groups[0].activeMemberIds).toEqual([personId]);
+		const saved = await ok('PATCH', `/api/v1/decisions/${decisionId}`, {
+			revision: read.revision,
+			content: { situation: 'Money is short.', options: [{ title: 'Lean' }, { title: 'Full' }] }
+		});
+		expect(saved.decision.content.agentDrafted).toMatchObject({ situation: true });
+		const decided = await ok('PUT', `/api/v1/decisions/${decisionId}/decider`, { deciderUserId: admin.id, revision: saved.revision });
+		const included = await ok('PUT', `/api/v1/decisions/${decisionId}/participants`, {
+			participants: [{ personId, role: 'consulted' }],
+			revision: decided.revision
+		});
+		expect(included.participants).toHaveLength(1);
+		expect((await ok('GET', `/api/v1/decisions/${decisionId}`)).participants).toHaveLength(1);
+		expect((await ok('POST', `/api/v1/decisions/${decisionId}/withdraw`, { reason: 'Not needed.' })).decision.status).toBe('withdrawn');
+		await ok('DELETE', `/api/v1/decisions/${decisionId}`);
+		const open = makeDecision({
+			board,
+			author: admin,
+			decider: admin,
+			title: 'Open',
+			status: 'open',
+			closesAt: stamp(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)),
+			currentVersion: 1,
+			openedAt: '2026-11-01 09:00:00'
+		});
+		const later = stamp(new Date(Date.now() + 60 * 24 * 60 * 60 * 1000));
+		expect((await ok('POST', `/api/v1/decisions/${open.id}/extend`, { closesAt: `${later.replace(' ', 'T')}Z` })).decision.status).toBe('open');
+		const ruled = makeDecision({ board, author: admin, decider: admin, title: 'Ruled', status: 'closed', closesAt: '2026-11-02 09:00:00', openedAt: '2026-11-01 09:00:00' });
+		makeVersion(ruled, { situation: 'Ruled on.', options: [] }, { number: 1 });
+		makeRuling(ruled);
+		expect((await ok('POST', `/api/v1/decisions/${ruled.id}/supersede`, {})).decision.supersedesId).toBe(ruled.id);
+		expect((await ok('GET', '/api/v1/decisions?tab=all')).rows.length).toBeGreaterThanOrEqual(2);
+
+		// Card 2682, slice 2b: on the open decision, published as version 1, a participant's question asked through
+		// their own key, an agent's draft of its answer by the author's, the questions, the summary and the record read,
+		// and a card linked and unlinked.
+		makeVersion(open, { situation: 'Money is short.', options: [] }, { number: 1 });
+		const asker = makeUser({ username: 'asker' });
+		makeParticipant(open, { person: makePerson({ fullName: 'Ann Asker', user: asker }), role: 'consulted' });
+		const asked = await api('POST', `/api/v1/decisions/${open.id}/questions`, { user: asker, body: { question: 'What does it cost?' } });
+		expect(asked.status).toBe(200);
+		expect(asked.body.question).toMatchObject({ question: 'What does it cost?', untrusted: true });
+		const [question] = await ok('GET', `/api/v1/decisions/${open.id}/questions`);
+		const drafted2b = await ok('POST', `/api/v1/decisions/${open.id}/questions/${question.id}/answer`, { answer: 'About 1,000 a year.' });
+		expect(drafted2b.question.draft.text).toBe('About 1,000 a year.');
+		const summary = await ok('GET', `/api/v1/decisions/${open.id}/summary`);
+		expect(summary.openQuestions).toEqual([{ question: 'What does it cost?', agentAnswered: true, untrusted: true }]);
+		const record = await ok('GET', `/api/v1/decisions/${open.id}/record?limit=1`);
+		expect(record.entries).toHaveLength(1);
+		expect(record.participants[0].personId).toEqual(expect.any(Number));
+		expect((await ok('PUT', `/api/v1/decisions/${open.id}/cards/${first.id}`)).outcome).toBe('linked');
+		expect((await ok('DELETE', `/api/v1/decisions/${open.id}/cards/${first.id}`)).linkedCards).toEqual([]);
 
 		await ok('DELETE', `/api/v1/cards/${second.id}`);
 		await ok('DELETE', `/api/v1/boards/${board.id}`);

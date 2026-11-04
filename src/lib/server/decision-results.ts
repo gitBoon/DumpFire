@@ -29,6 +29,11 @@
  * may call it (tests/check-at-the-write.test.ts, rule 4). The service in
  * decisions.ts asks its refusals (`rulingRefusals`, `releaseRefusals`) inside
  * its writes; card 2684 adds to `rulingRefusals`.
+ *
+ * Card 2682 (D14) adds `readSummary`, what an API key is given of the
+ * results: `readResults` under the key's source, allowed field by field, with
+ * nothing to rule or release by, and every response, concern and the ruling
+ * marked `untrusted` on the object that holds the words (D10).
  */
 import { createHmac } from 'node:crypto';
 import { and, asc, eq } from 'drizzle-orm';
@@ -55,7 +60,7 @@ import type {
 	RoundTally,
 	RulingRecord
 } from '$lib/decision-view-types';
-import { stamp } from '$lib/timestamps';
+import { stamp, type Stamp } from '$lib/timestamps';
 import type { ServiceOptions } from './write-as';
 
 /** The fewest live consulted participants who must have responded in the ruling round for a release (decision 10): D9's smallest group. */
@@ -667,5 +672,120 @@ export function readResults(user: SessionUser, decisionId: number, opts: { sourc
 		mayRelease: releasable && mayDo(access, 'release', decision) && releaseRefusal === null,
 		releaseRefusal,
 		mostChosen: mostChosenOf(current, voteMode)
+	};
+}
+
+// ─── The summary an API key reads (card 2682, D14) ───────────────────────────
+
+/** A response as the summary gives it: the row, its people's words marked as data (card 2682, D10, plan review S7). */
+export type SummaryRow = ResultRow & { untrusted: true };
+
+/** A round's tally as the summary gives it, each row marked. */
+export type SummaryTally = Omit<RoundTally, 'rows'> & { rows: SummaryRow[] };
+
+/**
+ * The results summary `GET /api/v1/decisions/{decisionId}/summary` answers
+ * (card 2682, D14): `readResults`'s fields, allowed one by one, with nothing a
+ * key cannot act on: no `revision` (it exists to rule), no release preview
+ * and no `mayRule`, `mayRelease`, `releaseRefusal` or `mayAnswerQuestions`.
+ * Every object holding a person's words is marked `untrusted` on itself, as
+ * `optionComments` is a map with no room for a mark per entry (D10).
+ */
+export type DecisionSummary = {
+	decision: ResultsData['decision'];
+	round: number;
+	options: ResultsData['options'];
+	current: SummaryTally;
+	earlierRounds: SummaryTally[];
+	notResponded: ResultsData['notResponded'];
+	removed: { participantId: number; name: string; role: string; latest: SummaryRow | null }[];
+	openQuestions: OpenQuestion[];
+	concerns: { name: string; comment: string; createdAt: Stamp; via: string; untrusted: true }[];
+	ruling: (RulingRecord & { untrusted: true }) | null;
+	released: ResultsData['released'];
+	mostChosen: ResultsData['mostChosen'];
+	untrusted: true;
+};
+
+/** A result row, field by field, marked. */
+function summaryRowOf(row: ResultRow): SummaryRow {
+	return {
+		participantId: row.participantId,
+		name: row.name,
+		role: row.role,
+		groups: row.groups,
+		kind: row.kind,
+		optionId: row.optionId,
+		scores: row.scores,
+		comment: row.comment,
+		optionComments: row.optionComments,
+		versionNumber: row.versionNumber,
+		createdAt: row.createdAt,
+		via: row.via,
+		changes: row.changes,
+		untrusted: true
+	};
+}
+
+/** A tally, field by field, each row marked. */
+function summaryTallyOf(tally: RoundTally): SummaryTally {
+	return {
+		round: tally.round,
+		responded: tally.responded,
+		voted: tally.voted,
+		votes: tally.votes,
+		scores: tally.scores,
+		abstained: tally.abstained,
+		noConcerns: tally.noConcerns,
+		rows: tally.rows.map(summaryRowOf)
+	};
+}
+
+/**
+ * The results summary for an API key (card 2682, D14): `readResults` (its
+ * decider and administrators, `results`: 404, then 403), handed the key's
+ * source so that the open questions carry no asker and no moment and are
+ * marked, rebuilt field by field. The ruling keeps `early`,
+ * `againstResponses` and `cutOff`, the decider's and administrators' alone
+ * (card 2679, decision 26), as is every reader of this.
+ */
+export function readSummary(user: SessionUser, decisionId: number, opts: { source: 'api' }): DecisionSummary {
+	const results = readResults(user, decisionId, { source: opts.source });
+	const ruling = results.ruling;
+	return {
+		decision: results.decision,
+		round: results.round,
+		options: results.options,
+		current: summaryTallyOf(results.current),
+		earlierRounds: results.earlierRounds.map(summaryTallyOf),
+		notResponded: results.notResponded,
+		removed: results.removed.map((row) => ({
+			participantId: row.participantId,
+			name: row.name,
+			role: row.role,
+			latest: row.latest === null ? null : summaryRowOf(row.latest)
+		})),
+		openQuestions: results.openQuestions,
+		concerns: results.concerns.map((concern) => ({ name: concern.name, comment: concern.comment, createdAt: concern.createdAt, via: concern.via, untrusted: true as const })),
+		ruling:
+			ruling === null
+				? null
+				: {
+						optionId: ruling.optionId,
+						label: ruling.label,
+						title: ruling.title,
+						reason: ruling.reason,
+						conditions: ruling.conditions,
+						early: ruling.early,
+						againstResponses: ruling.againstResponses,
+						cutOff: ruling.cutOff,
+						supersededOld: ruling.supersededOld,
+						byName: ruling.byName,
+						at: ruling.at,
+						untrusted: true
+					},
+		released: results.released,
+		mostChosen: results.mostChosen,
+		untrusted: true
 	};
 }
