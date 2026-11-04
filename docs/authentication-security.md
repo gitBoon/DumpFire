@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.86
+version: 1.88
 status: As-Built
 date: 2026-11-04
 tags:
@@ -28,6 +28,7 @@ tags:
   - live-streams
   - list-access
   - sub-boards
+  - people-directory
   - sign-in
   - report-mail
   - worker-threads
@@ -48,7 +49,7 @@ tags:
   - step-up
   - re-authentication
   - current-password
-description: "Deep-dive into DumpFire's authentication system, the twenty-eight destructive actions that ask for the current password again (step-up), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served"
+description: "Deep-dive into DumpFire's authentication system, the twenty-eight destructive actions that ask for the current password again (step-up), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served"
 ---
 
 # Authentication & Security
@@ -3245,6 +3246,73 @@ sequenceDiagram
 How the gate does this, rule by rule, is in [Architecture](architecture.md#the-gate). What a
 caller should make of each status is in the
 [External API Reference](api-reference.md#error-format). Covered by `tests/gate.test.ts`.
+
+### API Keys and the People Directory (Card 2681)
+
+Since API `1.5.0` an administrator's key reads the people directory and its groups and changes
+part of them (`GET /api/v1/people`, `PATCH /api/v1/people/{personId}`,
+`GET`/`POST /api/v1/people-groups`, `PATCH /api/v1/people-groups/{groupId}`,
+`PUT /api/v1/people-groups/{groupId}/members`). A key of anyone else is refused
+`403` `Admin access required`, the words `GET /api/v1/audit-log` uses.
+
+**What a key may never change, and why.** Opening a decision takes every participant's address
+and account from the directory again, and a personal link is mailed only while the snapshot
+address is the directory's. Card 2697 made every People write that sets or ends an address or an
+account ask for the administrator's current password, so a stolen session cannot point a
+person's link at the thief. A key has no password to give, so for a key those writes are not
+offered at all:
+
+| Write | Through a key |
+|---|---|
+| Add a person, delete one, Add from accounts | Not offered: no route under `/api/v1/` (`POST /api/v1/people` is `405`) |
+| A person's `email` or `userId` | `403`, whatever the body holds, the stored value and `null` among them |
+| A person's `status` (Mark left and Mark active) | `403`: marking left ends every personal link the person holds, on every open decision |
+| A person's `fullName`, a group's `name` | `403`: a name is how an author ticks a person or a group, and a rename could have the wrong one ticked; a key names a group only as it makes it |
+| Delete a group | Not offered (no route), and `deleteGroup` refuses a key `403` by the credential too: it drops a member set nothing else holds (card 2681's code review, S3) |
+| A job title, groups, a group's description and members | Allowed; logged with the values replaced, and kept in `people_changes` |
+
+**Refused by the credential, not only by the route's word.** `writeAs` counts, beside every
+running write, those let in with an API key (`locals.credential.kind === 'api key'`), and
+`writingWithKey()` in `src/lib/server/write-as.ts` answers whether one is running. The people
+service refuses a page-only write when the route said it came through the API
+(`opts.source !== 'ui'`) **or** when `writingWithKey()` is true, so a later v1 route that passed
+`source: 'ui'` by mistake opens none of them. A session is never counted, so the People page is
+unchanged. `tests/check-at-the-write.test.ts` also holds every v1 service call to
+`source: 'api'` written out, and `tests/people-api.test.ts` that no v1 file names the add, the
+delete or Add from accounts. The scan reads a route's imports through `moduleFileOf`, so a
+service imported by a relative path or with `.js` on the end is seen as one, and a further rule
+holds every route file to importing `src/lib/server` only as `$lib/server/<path>`, with no
+extension and no `..` (card 2681's code review, S2). A write let in with a key is recorded as the
+API's, `source: 'api'` and `credential: 'api key'`, whatever word its route passed (F2).
+
+```mermaid
+flowchart TD
+    W["A people write"] --> S{"opts.source !== 'ui'?"}
+    S -->|"yes"| K["A key's write"]
+    S -->|"no"| C{"writingWithKey()?"}
+    C -->|"yes"| K
+    C -->|"no"| P["The People page's write: as before,<br/>with confirmStepUp on its route"]
+    K --> F{"add, delete, Add from accounts;<br/>email, userId, status, fullName;<br/>a group's name; a group delete?"}
+    F -->|"yes"| R["403, nothing read or written"]
+    F -->|"no"| A["Written; people_changes row (api),<br/>and the PEOPLE line says<br/>through the API, with before"]
+```
+
+**No address and no account id to a key**, an administrator's included: every person a key is
+answered is built field by field (`keyPerson`), so neither can be spread in, a change that
+changes nothing included. There is no `email` filter, which would answer whether an address is
+in the directory. Every person and group carries `untrusted: true`: a name may be copied from a
+username its holder chose, and job titles and descriptions are free text, so an agent reads
+them as data and never as instructions. The key's 60 requests a minute and the existing size
+limits hold; every write is restorable from its `before`.
+
+**A record that outlives the log.** The system log is pruned by age and count, so a change made
+through a stolen key could outlive the only line saying what it replaced. Every people and group
+write, by a key or the People page, therefore appends one row to `people_changes` (migration
+0064) in its own transaction: the actor, `ui` or `api`, the subject, the kind, and the changed
+fields before and after. No address or account id is ever written there (a change of either is
+only said to have happened), the subject has no foreign key so a delete leaves its rows, and the
+application only inserts: `tests/decision-record.test.ts`'s insert-only scan allows the one insert
+in `people.ts` and no update, delete or upsert anywhere in `src`.
 
 ## Board Access Control
 

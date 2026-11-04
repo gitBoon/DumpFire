@@ -1981,6 +1981,18 @@ const TABLE: Record<string, Case | Case[]> = {
 	// recentActivity (card 2126): see "recent activity" below the table.
 	'GET /api/v1/me/stats': signedIn(() => '/api/v1/me/stats'),
 	'GET /api/v1/audit-log': admin(() => '/api/v1/audit-log'),
+	// Card 2681: the people directory and its groups, an administrator's key's alone (D5). A key never
+	// sends a name to the group's PATCH (D17), so its row changes the description.
+	'GET /api/v1/people': admin(() => '/api/v1/people'),
+	'PATCH /api/v1/people/[personId]': admin(() => json(`/api/v1/people/${personId}`, { jobTitle: 'Engineer' }), { setup: aPersonInAGroup }),
+	'GET /api/v1/people-groups': admin(() => '/api/v1/people-groups'),
+	'POST /api/v1/people-groups': admin(() => json('/api/v1/people-groups', { name: 'Operations' })),
+	'PATCH /api/v1/people-groups/[groupId]': admin(() => json(`/api/v1/people-groups/${peopleGroupId}`, { description: 'Month end' }), {
+		setup: aPersonInAGroup
+	}),
+	'PUT /api/v1/people-groups/[groupId]/members': admin(() => json(`/api/v1/people-groups/${peopleGroupId}/members`, { personIds: [] }), {
+		setup: aPersonInAGroup
+	}),
 	'GET /api/v1/burndown': [
 		signedIn(() => '/api/v1/burndown', { of: 'every board the caller can open' }),
 		view((w) => `/api/v1/burndown?boardIds=${w.A.board.id}`, { of: 'one board' }),

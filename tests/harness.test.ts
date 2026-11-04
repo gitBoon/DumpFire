@@ -173,6 +173,8 @@ const TEST_FILES = [
 	'page-card-window.test.ts',
 	'page-failures.test.ts',
 	'password-checks.test.ts',
+	// Card 2681: the people directory and its groups under API v1, and what a key may never change.
+	'people-api.test.ts',
 	'people-directory.test.ts',
 	// Card 2697, slice B2b: the people dialog asking for the password with an address or an account.
 	'people-directory.svelte.test.ts',

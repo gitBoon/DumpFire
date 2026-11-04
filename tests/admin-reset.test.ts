@@ -196,6 +196,11 @@ function everything(): Everything {
 		INSERT INTO decision_events (decision_id, participant_id, kind, actor_user_id, actor_name, source) VALUES (1, 1, 'responded', ${member.id}, 'member', 'ui');
 		INSERT INTO decision_card_links (decision_id, card_id, created_by) VALUES (1, ${first.id}, ${owner.id});
 	`);
+	// The record of every change to the people directory (card 2681, migration 0064): cleared with the directory it
+	// records, as the decision record is with its decisions.
+	sqlite
+		.prepare("INSERT INTO people_changes (actor_user_id, actor_name, source, subject, subject_id, kind, before, after) VALUES (?, 'owner', 'ui', 'person', 1, 'created', NULL, ?)")
+		.run(owner.id, JSON.stringify({ fullName: 'Member', jobTitle: '', status: 'active', leftAt: null, groupIds: [1] }));
 
 	// The two tables a reset keeps.
 	db.insert(backupLog)

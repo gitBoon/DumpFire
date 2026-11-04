@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.57
+version: 1.58
 status: As-Built
 date: 2026-11-04
 tags:
@@ -30,7 +30,9 @@ tags:
   - sessions
   - migration-0063
   - decision-reminders
-description: "Complete database schema documentation with ER diagram, table descriptions, relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), and how migrations and schema reconciliation bring every database to the model"
+  - migration-0064
+  - people-changes
+description: "Complete database schema documentation with ER diagram, table descriptions, relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), and how migrations and schema reconciliation bring every database to the model"
 ---
 
 # DumpFire Data Model
@@ -451,6 +453,18 @@ erDiagram
         int group_id PK_FK
         int person_id PK_FK
     }
+    people_changes {
+        int id PK
+        text created_at
+        int actor_user_id FK "SET NULL (0064)"
+        text actor_name
+        text source "ui or api"
+        text subject "person or group"
+        int subject_id "no key: outlives its subject"
+        text kind "created, updated, deleted, members_set"
+        text before "JSON, no address or account id"
+        text after "JSON, no address or account id"
+    }
     decisions {
         int id PK
         int board_id FK "SET NULL"
@@ -547,6 +561,9 @@ erDiagram
     users |o--o| people : "user_id (SET NULL)"
     people ||--o{ people_group_members : "CASCADE"
     people_groups ||--o{ people_group_members : "CASCADE"
+    users |o--o{ people_changes : "actor_user_id (SET NULL)"
+    people |o..o{ people_changes : "subject_id, person (no key)"
+    people_groups |o..o{ people_changes : "subject_id, group (no key)"
     boards |o--o{ decisions : "board_id (SET NULL)"
     decisions |o--o{ decisions : "supersedes_id (SET NULL)"
     decisions ||--o{ decision_options : "CASCADE"
@@ -2423,6 +2440,10 @@ of about zero.
   - `people_groups`: `name` (`people_groups_name_unique`), `description` (`DEFAULT ''`),
     `created_at`. `people_group_members`: `PRIMARY KEY(group_id, person_id)`, both CASCADE,
     `idx_people_group_members_person_id`.
+  - `people_changes` (migration 0064, card 2681, below): `created_at`, `actor_user_id` (SET
+    NULL, `idx_people_changes_actor_user_id`) and `actor_name`, `source` (`ui` or `api`),
+    `subject` (`person` or `group`) and `subject_id` (a plain integer, no key;
+    `idx_people_changes_subject_subject_id`), `kind`, `before` and `after` (JSON or NULL).
   - `decisions`: `board_id` (SET NULL), `board_name`, `title`, `status` (`DEFAULT 'draft'`),
     `vote_mode` (`DEFAULT 'single'`), `working_content` (JSON, `DEFAULT '{}'`),
     `current_version` (`DEFAULT 0`), `author_user_id` and `author_name`, `decider_user_id` and
@@ -2562,6 +2583,40 @@ flowchart LR
     I -->|"first of the round"| W[("written; then the send,<br/>then mail_outcome")]
     I -->|"a second of the round"| R["SQLITE_CONSTRAINT_UNIQUE:<br/>that step rolled back, one WARN,<br/>nothing sent, the run goes on"]
     O["any other kind"] -->|"not covered"| W2[("written as before")]
+```
+
+- **`people_changes` keeps every change to the people directory for good** (card 2681's code
+  review, S1, migration `0064_add_people_changes.sql`, 2026-11-04). Each write of
+  `src/lib/server/people.ts`, by the People page or an administrator's API key, appends one row
+  in its own transaction through `recordChange`, the table's one insert: `createPerson`,
+  `updatePerson`, `deletePerson`, `createGroup`, `updateGroup`, `deleteGroup` and
+  `setGroupMembers` one each, `addFromAccounts` one for each person it adds; a write that
+  changes nothing, or is refused, appends none. `before` and `after` hold what the changed
+  fields held and now hold: a person's `fullName`, `jobTitle`, `status` with `leftAt`, and
+  `groupIds`; a group's `name`, `description` and `personIds`, sorted. **Never an email address
+  or an account id**: a new address is `addressChanged: true`, a link or unlink
+  `account: 'linked' | 'unlinked'`. A creation's `before` and a delete's `after` are NULL; a
+  delete's `before` is the whole person or group, its groups or people read before the delete.
+  `source` is `api` whenever the write is a key's, by the route's word or the credential
+  (`writingWithKey()`). `subject_id` has no key, so a person's or a group's delete leaves its
+  rows; `actor_user_id` is SET NULL with `actor_name` beside it, as the decision record's are.
+  **Retention:** the application only inserts; nothing updates, deletes or prunes a row
+  (`tests/decision-record.test.ts`'s insert-only scan covers the table: one insert, in
+  `people.ts`, and no update, delete or upsert anywhere in `src`). The system log's PEOPLE line
+  is still written beside it, but the log is pruned by age and count (`logger.ts`), which is
+  why the record is a table. Only the superadmin's reset (with the directory it records, as
+  the decision record goes with its decisions) and a restore (copied whole from the backup)
+  empty it. No `IF NOT EXISTS`, as 0063: a table or index of these names already in a database
+  fails the file. Not a reconciled table; nothing to backfill or declare to the rehearsal. An
+  older image keeps the table, reports it at each start, and neither reads nor writes it.
+
+```mermaid
+flowchart LR
+    P["People page (session)"] --> S["people.ts write<br/>inside writeAs"]
+    K["API key (/api/v1/)"] --> S
+    S -->|"same transaction"| C[("people_changes<br/>insert only, never pruned")]
+    S -->|"after commit"| L[("system_logs PEOPLE line<br/>pruned by age and count")]
+    C -.->|"before / after"| A["an administrator<br/>puts a change back"]
 ```
 
 - **No secret is in a backup's copy** (card 2169): no `smtp_pass` row, every secret field of

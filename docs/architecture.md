@@ -1,10 +1,11 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.82
+version: 1.84
 status: As-Built
 date: 2026-11-04
 tags:
+  - people-directory
   - decision-reminders
   - schedulers
   - architecture
@@ -1157,9 +1158,13 @@ flowchart LR
     Route --> WA["writeAs(locals, (caller) =><br/>service(caller, at, body, { source: 'ui' }))"]
     WA --> Svc["people.ts: inWrite(), requireAdmin(caller),<br/>the row (404), the fields (400),<br/>the checks (400, 409), the write"]
     Svc --> DB[("people, people_groups,<br/>people_group_members")]
+    Svc -->|"recordChange, same transaction"| PC[("people_changes (0064):<br/>insert only, before and after")]
     Svc -->|"marked left, linked, unlinked,<br/>new address, deleted: revokeLinks"| DP[("decision_participants:<br/>link_token_hash, link_issued_at = NULL;<br/>decision_events: link_revoked")]
     Svc -->|"afterCommit"| Log["log.info('PEOPLE', …, { userId })<br/>system_logs, /audit"]
     Page -->|"invalidateAll() after each write"| Load["+page.server.ts: readDirectory()"]
+    Agent["An administrator's API key<br/>(card 2681)"] -->|"Bearer, /api/v1/people…"| V1["/api/v1/people…, /api/v1/people-groups…<br/>requireAdmin(…, 'Admin access required')"]
+    V1 --> WAK["writeAs: credential 'api key',<br/>keyWriting++ (writingWithKey())"]
+    WAK --> Svc
 ```
 
 The page (`+page.svelte`) draws the people table with its search (name, email, job title and group names) and its Active / Left / All filter (Active first), each row's Edit, Mark left or Mark active (`PUT /api/people/:id` `{ status }`) and Delete, and the groups list with each group's count of active members; both deletes ask in `ConfirmModal`, a person's with `askPassword`, sending `{ currentPassword }` (S1). Every write is sent through `sent()` (`src/lib/admin/send.ts`), so a refusal is the server's words in a toast, and is followed by `invalidateAll()`. The dialogs are in `src/lib/components/admin/people/` and hold the focus with `holdFocus`:
@@ -1170,7 +1175,14 @@ The page (`+page.svelte`) draws the people table with its search (name, email, j
 | `GroupDialog.svelte` | A new group: `POST /api/people-groups`, then `PUT /api/people-groups/:id/members` if any person is ticked. A group held: `PUT /api/people-groups/:id` only where the name or description changed, then the members only where they changed | A members set refused after a new group was added keeps the dialog open on the group's id, so Save does not add it twice. Person ids no longer in the page's data are dropped before sending |
 | `FromAccountsDialog.svelte` | `POST /api/people/from-accounts` `{ userIds, currentPassword }` (S1: a **Current password** field, Add off until it is typed, a refusal of it shown beside the field) | Lists the accounts whose `personId` is null, none ticked (code review S1), under a warning that account addresses are set by their holders and not confirmed. One whose address, lower-cased, is a person's is disabled and shown "matches person *name*: link by hand". A skip's reason is shown with the person's name in place of the server's id; any skip makes the toast a warning that stays |
 
-**The service.** `src/lib/server/people.ts` is under the service rule ([The shape of a service](#the-shape-of-a-service)) and on `SERVICES` in `tests/check-at-the-write.test.ts`. Every export is a write, so `READS` is empty, and each takes `(caller, at, body, opts)`, starts with `inWrite()`, then asks `requireAdmin(caller)` (403), the row in the path (404 `Person not found`, `Group not found`), the fields from the body (400), the checks against other rows (400, 409), and writes. Its system-log line, context `PEOPLE`, INFO, with `{ userId: actor.id }` in the entry and the actor's username in the text, is queued with `afterCommit`, so a write that is refused or rolled back logs nothing; no line holds an address. Only the internal tree calls it so far; card 2681's v1 routes are to call the same functions.
+**The service.** `src/lib/server/people.ts` is under the service rule ([The shape of a service](#the-shape-of-a-service)) and on `SERVICES` in `tests/check-at-the-write.test.ts`. Its `READS` are six: card 2697's four guards (`personUpdateGuard`, `personCreateGuard`, `personDeleteGuard`, `fromAccountsGuard`), asked by their routes before the caller's password, and card 2681's two reads (`listPeople`, `listPeopleGroups`). Every other export is a write, takes `(caller, at, body, opts)`, starts with `inWrite()`, then asks `requireAdmin(caller, opts.says)` (403), the row in the path (404 `Person not found`, `Group not found`), the fields from the body (400), the checks against other rows (400, 409), and writes. Its system-log line, context `PEOPLE`, INFO, with `{ userId: actor.id }` in the entry and the actor's username in the text, is queued with `afterCommit`, so a write that is refused or rolled back logs nothing; no line holds an address. A rename, by either tree, puts `renamed: { from, to }` in the entry (card 2681, D17). Because the log is pruned, every write also appends one row to `people_changes` (migration 0064, card 2681's code review, S1) through `recordChange`, the table's one insert, inside the write's transaction: the actor and their name, `source` (`api` whenever the write is a key's), the person or group, the kind (`created`, `updated`, `deleted`, `members_set`) and the changed fields' values before and after as JSON, never an address or an account id ([Data Model](data-model.md)). `deleteGroup` is the People page's alone too (S3): it refuses a key through `pageOnly`, and its row keeps the group's name, description and member set.
+
+**The two callers** (card 2681). The internal routes call every function with `source: 'ui'`, under a session. Six v1 routes call six of them under an administrator's key, with `{ source: 'api', says: 'Admin access required' }`: `listPeople`, `listPeopleGroups`, `updatePerson`, `createGroup`, `updateGroup` and `setGroupMembers`. A write is "under a key" when `opts.source !== 'ui'` **or** `writingWithKey()` (`write-as.ts`) says a `writeAs` let in with an API key is running, so a v1 route that passed the wrong word is still refused. Under a key: `createPerson`, `deletePerson`, `addFromAccounts` and `deleteGroup` refuse `403` straight after `inWrite()` (`pageOnly`); `updatePerson` refuses a body with `email`, `userId`, `status` or `fullName`, and `updateGroup` one with `name`, before the row is read (`refuseKeyFields`, `refuseKeyRename`); every answer is `keyPerson` or `keyGroup`, built field by field with no `email` and no `userId`, with their ids sorted, and with `untrusted: true`, a no-change answer included; and the PEOPLE line ends `, through the API` with `source: 'api'`, `credential: 'api key'` and `before` (the values replaced; `setGroupMembers` reads the set before its delete) in the entry, whatever word the route passed. `keyPerson`, `keyGroup` and their types live in `src/lib/server/people-shape.ts`, which reads and writes nothing and is no service, so card 2682's decisions API shapes a person the same way. The refusals' words are constants of the module, not exported, as a service exports its functions and `READS` alone.
+
+| Read | Rules |
+|---|---|
+| `listPeople(user, {}, { says })` | `requireAdmin(user, says)`; every person by `full_name`, then `id`, left ones included, each `keyPerson` with its `groupIds`: one read of `people`, one of `people_group_members` |
+| `listPeopleGroups(user, {}, { says })` | `requireAdmin(user, says)`; every group by `name`, then `id`, each `keyGroup` with its `personIds`, left people included |
 
 | Function | Rules |
 |---|---|
@@ -2524,6 +2536,7 @@ sequenceDiagram
 | `inTransaction(fn)` | Runs `fn` in one transaction on the application's connection and returns what it returns. The outermost call is `BEGIN IMMEDIATE`, which takes the write lock at the start, so nothing `fn` reads can be changed under it before it writes. A call made inside another `inTransaction` is a savepoint: if it throws and the code around it catches the error, only that part is rolled back. A call made while a transaction the helper did not open is open on the connection throws before `fn` is run, so the request is answered 500 and writes nothing. |
 | `writeAs(locals, fn)`, `stillCallerNow(locals)` | In `src/lib/server/write-as.ts` (card 2253): `inTransaction(() => fn(stillAuthenticated(locals)))`, the one way a route writes, and the same question asked in a transaction of its own by the nine handlers whose work cannot run in one (the vacuum, the import, the export since card 2701 made it a `POST`, the two report routes, the backup run, the Test, the Google Drive Connect and the test mail). See [Asked Again at the Write](authentication-security.md#asked-again-at-the-write-card-2253) |
 | `inWrite()` | In `src/lib/server/write-as.ts` (card 2012): the first statement of every write a service exports. It throws a plain error, a `500` if a route reaches it, unless a `writeAs` callback is running: `writeAs` counts its callbacks (`writing`, set after `stillAuthenticated` and taken off in `finally`, so a nested `writeAs` is counted), and nothing else sets the count. A bare `inTransaction`, a job's or a scheduler's, is not a `writeAs`, so a service called from one writes nothing. See [One Service per Action, Both Trees](#one-service-per-action-both-trees) |
+| `writingWithKey()` | In `src/lib/server/write-as.ts` (card 2681, D18): true while a `writeAs` callback runs that was let in with an API key. `writeAs` counts those beside `writing` (`keyWriting`, read from `locals.credential` after `stillAuthenticated`, taken off in `finally`, so a nested `writeAs` keeps the outer's key). A service asks it, as it asks `inWrite()`, to refuse what a key may never do whatever `source` the route passed: the people directory's page-only writes. A session is never counted |
 | `afterCommit(effect)` | Queues `effect` until the outermost transaction commits. Called with no transaction open, it runs the effect at once. Whether a transaction is open is read from the connection (`sqlite.inTransaction`), not counted by the helper. |
 
 How the queue behaves:

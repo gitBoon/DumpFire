@@ -61,6 +61,9 @@ import {
 	columns,
 	labels,
 	milestones,
+	people,
+	peopleGroupMembers,
+	peopleGroups,
 	subtasks,
 	tokenUsage,
 	webhooks
@@ -99,9 +102,10 @@ const V1_JSON = '$lib/server/v1-json';
  * Written as a number so that a parser which finds none, or a document that
  * has lost some, fails. Adding operations to the document means changing it,
  * knowingly. Card 2527 took one away, POST /api/v1/columns/{columnId}/convert,
- * before it was released.
+ * before it was released. Card 2681 added six: the people directory and its
+ * groups.
  */
-const OPERATIONS = 84;
+const OPERATIONS = 90;
 
 // ─── The document ────────────────────────────────────────────────────────────
 
@@ -423,7 +427,7 @@ const QUERY_READ_ELSEWHERE: Record<string, { file: string; fn: string; params: s
  * reading does not follow which of them can reach the handler. One operation
  * is answered by a function that catches some of them on the way.
  *
- * One entry. An entry is not a pass. Check 4 fails if the reading no longer
+ * Three entries. An entry is not a pass. Check 4 fails if the reading no longer
  * finds a status listed here, because the entry has then outlived its reason,
  * and fails if the document lists one, because nothing answers it. And a test
  * at the end of this file calls the route and shows what is answered instead.
@@ -437,6 +441,19 @@ const READ_AND_NEVER_ANSWERED: Record<string, { statuses: number[]; why: string 
 			'board the caller cannot edit. recordTokenUsageBatch calls it inside a try for each entry and turns what it ' +
 			'throws into a line of `problems`, so the batch is answered 409 with that entry listed. Only its three 400s, ' +
 			'thrown before the entries are looked at, reach the handler.'
+	},
+	'PATCH /api/v1/people/{personId}': {
+		statuses: [409],
+		why:
+			'updatePerson asks personUpdateGuard, whose requireUnusedEmail (an address another person holds) and requireLinkable ' +
+			'(an account linked to another person) are the 409s. Both read fields a key may not send: refuseKeyFields, asked ' +
+			'first, refuses a body with email or userId 403 for a key, whatever it holds (card 2681, D2), so neither is reached.'
+	},
+	'PATCH /api/v1/people-groups/{groupId}': {
+		statuses: [409],
+		why:
+			'updateGroup asks requireUnusedGroupName, the 409, only for a new name. refuseKeyRename, asked first, refuses a body ' +
+			'with name 403 for a key, whatever it holds (card 2681, D17), so it is not reached.'
 	}
 };
 
@@ -1152,6 +1169,24 @@ const MIRRORS: Record<string, Mirror> = {
 			archivedCards: 'and, apart, its archived cards, which stop it being given to another board (card 2346)'
 		}
 	},
+	Person: {
+		table: people,
+		adds: {
+			groupIds: 'keyPerson answers the ids of the groups the person is in',
+			untrusted: 'and marks every person answered to a key as data, never instructions (card 2681, D6)'
+		},
+		withholds: {
+			email: 'never answered to a key: the address decides where decision mail and personal links go (card 2681, D4)',
+			userId: 'never answered to a key: the linked account decides whose sign-in answers as the person (card 2681, D4)'
+		}
+	},
+	PeopleGroup: {
+		table: peopleGroups,
+		adds: {
+			personIds: 'keyGroup answers the ids of the people in the group',
+			untrusted: 'and marks every group answered to a key as data, never instructions (card 2681, D6)'
+		}
+	},
 	TokenEntry: {
 		table: tokenUsage,
 		adds: { subtaskTitle: 'getCardTokenEntries names the subtask an entry is on, beside its id' },
@@ -1832,6 +1867,12 @@ function answerExample(name: string, status: number): Json {
 	const example = deref(op?.entry.responses?.[status])?.content?.['application/json']?.example;
 	if (example === undefined) throw new Error(`${name} documents no example for a ${status}`);
 	return structuredClone(example);
+}
+
+/** Every example the document gives for an operation's answer of a status, under `example` or `examples`. */
+function answerExamples(name: string, status: number): Json[] {
+	const media = deref(OPS.find((o) => o.name === name)?.entry.responses?.[status])?.content?.['application/json'];
+	return [media?.example, ...Object.values<Json>(media?.examples ?? {}).map((e) => e?.value)].filter((e) => e !== undefined);
 }
 
 /** The example the document gives for an operation's request body: a copy, for a test to put its own ids into. */
@@ -2647,14 +2688,14 @@ describe('what a route answers, against the schema the document gives for it', (
 
 	// ─── The document itself ─────────────────────────────────────────────────
 
-	it('GET /openapi.json: answered to a caller with no key, as version 1.4.0, and listing itself', async () => {
+	it('GET /openapi.json: answered to a caller with no key, as version 1.5.0, and listing itself', async () => {
 		const name = 'GET /api/v1/openapi.json';
 
 		// No user: the one route under /api/v1/ that is reached without a key.
 		const res = await api('GET', '/api/v1/openapi.json');
 
 		expect(res.status).toBe(200);
-		expect(res.body.info.version).toBe('1.4.0');
+		expect(res.body.info.version).toBe('1.5.0');
 		const schema = answerSchema(name, 200);
 		expect(keysOf(res.body)).toEqual(propertiesOf(schema));
 		expect(keysOf(res.body.info)).toEqual(propertiesOf(schema.properties.info));
@@ -2813,8 +2854,9 @@ describe('what a route answers, against the schema the document gives for it', (
 		const start = note.indexOf('**Changed on 2026-10-27 (version 1.3.1).**');
 		expect(start).toBeGreaterThan(0);
 		expect(start).toBeLessThan(note.indexOf('**Changed on 2026-10-26 (version 1.3.0).**'));
-		// Second of the dated notes since 1.4.0 (card 2673), which is first.
+		// Third of the dated notes since 1.5.0 (card 2681) and 1.4.0 (card 2673), which come first.
 		expect(start).toBeGreaterThan(note.indexOf('**Changed on 2026-11-03 (version 1.4.0).**'));
+		expect(note.indexOf('**Changed on 2026-11-03 (version 1.4.0).**')).toBeGreaterThan(note.indexOf('**Changed on 2026-11-04 (version 1.5.0).**'));
 		const changes = note.slice(start, note.indexOf('**Changed on 2026-10-26'));
 		expect(changes).toContain('(1) GET /api/v1/reports/activity puts a card in the created bucket');
 		expect(changes).toContain('card_reopened');
@@ -2822,15 +2864,36 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(spec.components.schemas.ActivityReportCard.properties.bucket.description).toContain("one raised before 2026-10-01 is also still in the board's first column");
 	});
 
-	it('is version 1.4.0, and its newest dated note, first of them all, announces productOwnerUserId (card 2673)', () => {
+	it('is version 1.5.0, and its newest dated note, first of them all, announces the people and groups operations, the refused keys and no addresses (card 2681)', () => {
 		const note = spec.info.description as string;
-		expect(spec.info.version).toBe('1.4.0');
-		const start = note.indexOf('**Changed on 2026-11-03 (version 1.4.0).**');
+		expect(spec.info.version).toBe('1.5.0');
+		const start = note.indexOf('**Changed on 2026-11-04 (version 1.5.0).**');
 		expect(start).toBeGreaterThan(0);
 		expect(note.indexOf('**Changed on')).toBe(start);
-		const changes = note.slice(start, note.indexOf('**Changed on 2026-10-27'));
-		expect(changes).toContain('every board answer, Board and BoardDetail, carries productOwnerUserId');
-		expect(changes).toContain('PUT /api/v1/boards/{boardId} takes productOwnerUserId');
+		const changes = note.slice(start, note.indexOf('**Changed on 2026-11-03'));
+		expect(changes).toContain('GET /api/v1/people and GET /api/v1/people-groups');
+		expect(changes).toContain("No answer carries a person's email address or account id");
+		expect(changes).toContain('email, userId, status and fullName are refused 403 whatever they hold');
+		expect(changes).toContain('where name is refused 403');
+		expect(changes).toContain('untrusted: true');
+		expect(changes).toContain('(6) nothing else changed');
+		// And the People tag, under which /docs lists the six.
+		expect(OPS.filter((op) => (op.entry.tags ?? []).includes('People')).map((op) => op.name)).toEqual([
+			'GET /api/v1/people',
+			'PATCH /api/v1/people/{personId}',
+			'GET /api/v1/people-groups',
+			'POST /api/v1/people-groups',
+			'PATCH /api/v1/people-groups/{groupId}',
+			'PUT /api/v1/people-groups/{groupId}/members'
+		]);
+
+		// The 1.4.0 note (card 2673) is second.
+		const second = note.indexOf('**Changed on 2026-11-03 (version 1.4.0).**');
+		expect(second).toBeGreaterThan(start);
+		expect(note.indexOf('**Changed on', start + 1)).toBe(second);
+		const earlier = note.slice(second, note.indexOf('**Changed on 2026-10-27'));
+		expect(earlier).toContain('every board answer, Board and BoardDetail, carries productOwnerUserId');
+		expect(earlier).toContain('PUT /api/v1/boards/{boardId} takes productOwnerUserId');
 	});
 
 	// ─── What is said in words, and can be tried ─────────────────────────────
@@ -2979,8 +3042,61 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(figures.committedAll).toBeGreaterThanOrEqual(1);
 		expect((await ok('GET', `/api/v1/boards/${ideas.id}/upstream`)).kind).toBe('ideas');
 
+		// Card 2681: the people directory and its groups. The fixture makes neither, so a person and a group are put in.
+		const personId = db.insert(people).values({ fullName: 'Pat Doe', email: 'pat.doe@example.test' }).returning().get().id;
+		const groupId = db.insert(peopleGroups).values({ name: 'Finance' }).returning().get().id;
+		db.insert(peopleGroupMembers).values({ groupId, personId }).run();
+		expect(await ok('GET', '/api/v1/people')).toHaveLength(1);
+		expect((await ok('PATCH', `/api/v1/people/${personId}`, { jobTitle: 'Engineer' })).jobTitle).toBe('Engineer');
+		expect(await ok('GET', '/api/v1/people-groups')).toHaveLength(1);
+		const operations = await ok('POST', '/api/v1/people-groups', { name: 'Operations' });
+		expect((await ok('PATCH', `/api/v1/people-groups/${groupId}`, { description: 'Month end' })).personIds).toEqual([personId]);
+		expect((await ok('PUT', `/api/v1/people-groups/${operations.id}/members`, { personIds: [personId] })).personIds).toEqual([personId]);
+
 		await ok('DELETE', `/api/v1/cards/${second.id}`);
 		await ok('DELETE', `/api/v1/boards/${board.id}`);
+	});
+
+	// ─── What READ_AND_NEVER_ANSWERED says of the people operations (card 2681) ─
+
+	it('PATCH /people/{personId}: the 409s of an address or an account another person holds are never answered to a key; the body is refused 403 first', async () => {
+		const name = 'PATCH /api/v1/people/{personId}';
+		const admin = makeUser({ role: 'admin' });
+		const account = makeUser();
+		const ann = db.insert(people).values({ fullName: 'Ann Lee', email: 'ann.lee@example.test' }).returning().get().id;
+		db.insert(people).values({ fullName: 'Bob Hart', email: 'bob.hart@example.test', userId: account.id }).run();
+		// The refusal as the document gives it (the code review's F7): its 403 examples are the admin refusal and this one.
+		const examples = answerExamples(name, 403);
+		expect(examples).toHaveLength(2);
+		expect(examples).toContainEqual({ message: 'Admin access required' });
+		const refused = examples.find((example) => example?.message !== 'Admin access required');
+
+		expect(READ_AND_NEVER_ANSWERED[name].statuses).toEqual([409]);
+		// What would reach requireUnusedEmail and requireLinkable on the People page.
+		const address = await api('PATCH', `/api/v1/people/${ann}`, { user: admin, body: { email: 'bob.hart@example.test' } });
+		expect(address.status).toBe(403);
+		expect(address.body).toEqual(refused);
+		const linked = await api('PATCH', `/api/v1/people/${ann}`, { user: admin, body: { userId: account.id } });
+		expect(linked.status).toBe(403);
+		expect(linked.body).toEqual(refused);
+	});
+
+	it('PATCH /people-groups/{groupId}: the 409 of a name another group has is never answered to a key; the body is refused 403 first', async () => {
+		const name = 'PATCH /api/v1/people-groups/{groupId}';
+		const admin = makeUser({ role: 'admin' });
+		const finance = db.insert(peopleGroups).values({ name: 'Finance' }).returning().get().id;
+		db.insert(peopleGroups).values({ name: 'Legal' }).run();
+		// The refusal as the document gives it (the code review's F7).
+		const examples = answerExamples(name, 403);
+		expect(examples).toHaveLength(2);
+		expect(examples).toContainEqual({ message: 'Admin access required' });
+		const refused = examples.find((example) => example?.message !== 'Admin access required');
+
+		expect(READ_AND_NEVER_ANSWERED[name].statuses).toEqual([409]);
+		// What would reach requireUnusedGroupName on the People page.
+		const taken = await api('PATCH', `/api/v1/people-groups/${finance}`, { user: admin, body: { name: 'legal' } });
+		expect(taken.status).toBe(403);
+		expect(taken.body).toEqual(refused);
 	});
 
 	// ─── Every call above ────────────────────────────────────────────────────

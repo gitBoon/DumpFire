@@ -2382,14 +2382,22 @@ function serverFileOf(specifier: string): string | null {
 	return `src/lib/server${rest}.ts`;
 }
 
-/** A module's imports from `$lib/server/**`: each local name, with the file and the name it is exported under. */
-function serverImportsOf(tree: ts.SourceFile): { names: Map<string, { file: string; name: string }>; namespaces: { file: string; line: number }[] } {
+/**
+ * A module's imports from src/lib/server: each local name, with the file and the name it is exported under. By
+ * `$lib/server/…` or any other specifier that names a file there, a relative one or one ending `.js` among them
+ * (`moduleFileOf`; card 2681, the code review's S2).
+ */
+function serverImportsOf(
+	tree: ts.SourceFile,
+	from: string
+): { names: Map<string, { file: string; name: string }>; namespaces: { file: string; line: number }[] } {
 	const names = new Map<string, { file: string; name: string }>();
 	const namespaces: { file: string; line: number }[] = [];
 	for (const statement of tree.statements) {
 		if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
 		const clause = statement.importClause;
-		const file = serverFileOf(statement.moduleSpecifier.text);
+		const target = moduleFileOf(from, statement.moduleSpecifier.text);
+		const file = target !== null && (target.startsWith('src/lib/server/') || target === 'src/lib/server.ts') ? target : null;
 		if (!file || !clause || clause.isTypeOnly) continue;
 		if (clause.name) names.set(clause.name.text, { file, name: 'default' });
 		const bindings = clause.namedBindings;
@@ -2535,13 +2543,19 @@ function typeMembers(type: string, aliases: ReadonlyMap<string, string>, seen = 
 	return members;
 }
 
-/** The file a module specifier names, from the file that names it: `$lib/server/…`, `$lib/…`, or a relative path. */
+/**
+ * The file a module specifier names, from the file that names it: `$lib/server/…`, `$lib/…`, or a relative path.
+ * A `.js` or `.ts` written on the end names the same module, and a `..` is followed, so that a scan that reads
+ * imports by this sees `'../../lib/server/people'` and `'$lib/server/people.js'` as `src/lib/server/people.ts`
+ * (card 2681, the code review's S2).
+ */
 function moduleFileOf(from: string, specifier: string): string | null {
-	if (specifier === '$lib/server' || specifier.startsWith('$lib/server/')) return serverFileOf(specifier);
+	const named = specifier.replace(/\.(?:js|ts)$/, '');
 	let base: string;
-	if (specifier.startsWith('$lib/')) base = `src/lib/${specifier.slice('$lib/'.length)}`;
-	else if (specifier.startsWith('.')) base = posix.join(posix.dirname(from), specifier);
+	if (named === '$lib' || named.startsWith('$lib/')) base = posix.normalize(`src/lib/${named.slice('$lib/'.length)}`).replace(/\/$/, '');
+	else if (named.startsWith('.')) base = posix.join(posix.dirname(from), named);
 	else return null;
+	if (base === 'src/lib/server' || base.startsWith('src/lib/server/')) return serverFileOf(`$lib/server${base.slice('src/lib/server'.length)}`);
 	for (const candidate of [`${base}.ts`, `${base}/index.ts`]) {
 		try {
 			readFileSync(join(ROOT, candidate));
@@ -2862,7 +2876,7 @@ function judgeServiceCalls(file: string, source: string, services: Map<string, {
 	const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
 	const line = (node: ts.Node) => tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1;
 	const findings: string[] = [];
-	const { names, namespaces } = serverImportsOf(tree);
+	const { names, namespaces } = serverImportsOf(tree, file);
 	for (const namespace of namespaces) {
 		if (services.has(namespace.file)) findings.push(`${file}:${namespace.line} imports ${namespace.file} as a namespace: import its functions by name`);
 	}
@@ -3048,6 +3062,76 @@ function judgeServiceCalls(file: string, source: string, services: Map<string, {
 	return [...new Set(findings)];
 }
 
+/**
+ * Card 2681 (S1 of its plan review): every call, in a v1 route file, of a
+ * write of a module on SERVICES hands as its fourth argument an object written
+ * out at the call whose `source` is the literal `'api'`. The people service
+ * refuses a key by the credential as well (`writingWithKey()`), but a v1 route
+ * that passed `'ui'` would have its activity and its refusals recorded as the
+ * page's. Answers the findings and how many calls were read.
+ */
+function judgeV1Sources(
+	file: string,
+	source: string,
+	services: Map<string, { reads: string[]; writes: string[] }>
+): { findings: string[]; calls: number } {
+	const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+	const line = (node: ts.Node) => tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1;
+	const { names } = serverImportsOf(tree, file);
+	const findings: string[] = [];
+	let calls = 0;
+	for (const call of callsIn(tree, true)) {
+		if (!ts.isIdentifier(call.expression)) continue;
+		const from = names.get(call.expression.text);
+		if (!from || !services.get(from.file)?.writes.includes(from.name)) continue;
+		calls++;
+		const where = `${file}:${line(call)} ${call.expression.text}`;
+		const options = call.arguments[3] && bare(call.arguments[3]);
+		if (!options || !ts.isObjectLiteralExpression(options)) {
+			findings.push(`${where} is not handed its options as an object written out at the call`);
+			continue;
+		}
+		if (options.properties.some((p) => ts.isSpreadAssignment(p))) findings.push(`${where} is handed options with a spread: write source out`);
+		const said = options.properties.find((p) => p.name !== undefined && p.name.getText(tree) === 'source');
+		if (!said) findings.push(`${where} is handed no source`);
+		else if (!ts.isPropertyAssignment(said) || !ts.isStringLiteral(said.initializer) || said.initializer.text !== 'api') {
+			findings.push(`${where} is handed source ${said.getText(tree)}, not 'api'`);
+		}
+	}
+	return { findings, calls };
+}
+
+/**
+ * Card 2681 (the code review's S2): a route file imports a module of
+ * src/lib/server only as `$lib/server/<path>`, with no `.js` or `.ts` on the
+ * end and no `.` or `..` in it, by `import`, `export … from` and `import()`
+ * alike. The scans read imports through `moduleFileOf`, which sees through the
+ * other forms; this keeps every route written the one way the tests and a
+ * reader search for.
+ */
+function judgeServerImportForms(file: string, source: string): string[] {
+	const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+	const line = (node: ts.Node) => tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1;
+	const findings: string[] = [];
+	const judge = (specifier: ts.StringLiteralLike) => {
+		const text = specifier.text;
+		const target = moduleFileOf(file, text);
+		if (target === null || !(target.startsWith('src/lib/server/') || target === 'src/lib/server.ts')) return;
+		const parts = text.split('/');
+		const written = (text === '$lib/server' || text.startsWith('$lib/server/')) && !/\.(?:js|ts)$/.test(text) && !parts.includes('..') && !parts.includes('.');
+		if (!written) findings.push(`${file}:${line(specifier)} imports ${target} as '${text}': import src/lib/server only as $lib/server/<path>, with no extension (S2)`);
+	};
+	const visit = (node: ts.Node): void => {
+		if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) judge(node.moduleSpecifier);
+		if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword && node.arguments[0] && ts.isStringLiteralLike(node.arguments[0])) {
+			judge(node.arguments[0]);
+		}
+		ts.forEachChild(node, visit);
+	};
+	visit(tree);
+	return findings;
+}
+
 describe('one service per action, written only inside writeAs (card 2012)', () => {
 	const services = new Map(SERVICES.map((file) => [file, judgeService(file, readFileSync(join(ROOT, file), 'utf8'))] as const));
 	const routes = filesUnder('src/routes', (path) => /\/\+(server|page\.server|layout\.server)\.ts$/.test(path));
@@ -3088,8 +3172,9 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 			// Card 2674.
 			'src/lib/server/people.ts': {
 				// Card 2697 (Q21): a person's change's refusals, read before its password is asked for; and (the code
-				// review's part B, S1) the add's, the delete's and Add from accounts'.
-				reads: ['personUpdateGuard', 'personCreateGuard', 'personDeleteGuard', 'fromAccountsGuard'],
+				// review's part B, S1) the add's, the delete's and Add from accounts'. Card 2681: the directory and its groups
+				// as an administrator's API key reads them.
+				reads: ['personUpdateGuard', 'personCreateGuard', 'personDeleteGuard', 'fromAccountsGuard', 'listPeople', 'listPeopleGroups'],
 				writes: ['createPerson', 'updatePerson', 'deletePerson', 'addFromAccounts', 'createGroup', 'updateGroup', 'deleteGroup', 'setGroupMembers']
 			},
 			// Card 2675.
@@ -3240,6 +3325,76 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 		]);
 	});
 
+	it("hands every service write under src/routes/api/v1 a source written out as 'api', and the rule finds one that is not (card 2681, S1)", () => {
+		const v1 = routes.filter((file) => file.startsWith('src/routes/api/v1/'));
+		const read = v1.map((file) => judgeV1Sources(file, readFileSync(join(ROOT, file), 'utf8'), services));
+
+		expect(read.flatMap(({ findings }) => findings)).toEqual([]);
+		// 44 calls of a service write before card 2681 (the 45th `source:` of the plan's count is a logActivity
+		// entry, no service's), and its four writes.
+		expect(read.reduce((sum, { calls }) => sum + calls, 0)).toBeGreaterThanOrEqual(48);
+		expect(v1.length).toBeGreaterThan(40);
+
+		// Against made-up source: 'ui', a variable, a spread, none, no options at all, and the one written out.
+		const SERVICE = new Map([['src/lib/server/things.ts', { reads: ['listThings'], writes: ['makeThing'] }]]);
+		const code = [
+			"import { listThings, makeThing } from '$lib/server/things';",
+			"import { makeThing as made } from '$lib/server/things';",
+			'export const POST = async ({ locals }) => {',
+			"\tmakeThing(caller, {}, body, { source: 'ui' });",
+			'\tmakeThing(caller, {}, body, { source: SOURCE });',
+			"\tmakeThing(caller, {}, body, { ...OPTIONS, source: 'api' });",
+			"\tmakeThing(caller, {}, body, { says: 'No' });",
+			'\tmade(caller, {}, body);',
+			'\tmakeThing(caller, {}, body, { source });',
+			"\tmakeThing(caller, {}, body, { source: 'api', says: 'No' });",
+			"\tlistThings(locals.user, {}, { source: 'ui' });",
+			// The code review's S2: a write imported by a relative path, and by `.js`, is seen all the same.
+			"\trelative(caller, {}, body, { source: 'ui' });",
+			"\twithJs(caller, {}, body, { source: 'ui' });",
+			'};',
+			"import { makeThing as relative } from '../../../../lib/server/things';",
+			"import { makeThing as withJs } from '$lib/server/things.js';"
+		].join('\n');
+		const EXAMPLE = 'src/routes/api/v1/example/+server.ts';
+		expect(judgeV1Sources(EXAMPLE, code, SERVICE)).toEqual({
+			findings: [
+				"src/routes/api/v1/example/+server.ts:4 makeThing is handed source source: 'ui', not 'api'",
+				"src/routes/api/v1/example/+server.ts:5 makeThing is handed source source: SOURCE, not 'api'",
+				"src/routes/api/v1/example/+server.ts:6 makeThing is handed options with a spread: write source out",
+				'src/routes/api/v1/example/+server.ts:7 makeThing is handed no source',
+				'src/routes/api/v1/example/+server.ts:8 made is not handed its options as an object written out at the call',
+				"src/routes/api/v1/example/+server.ts:9 makeThing is handed source source, not 'api'",
+				"src/routes/api/v1/example/+server.ts:12 relative is handed source source: 'ui', not 'api'",
+				"src/routes/api/v1/example/+server.ts:13 withJs is handed source source: 'ui', not 'api'"
+			],
+			calls: 9
+		});
+	});
+
+	it('imports src/lib/server in every route file only as $lib/server/<path>, and the rule finds a relative path, a .js, a .ts and a .. (card 2681, the code review S2)', () => {
+		expect(routes.flatMap((file) => judgeServerImportForms(file, readFileSync(join(ROOT, file), 'utf8')))).toEqual([]);
+
+		const EXAMPLE = 'src/routes/api/v1/example/+server.ts';
+		const code = [
+			"import { json } from '$lib/server/v1-json';",
+			"import { makeThing } from '../../../../lib/server/things';",
+			"import { listThings } from '$lib/server/things.js';",
+			"export { makeThing as made } from '$lib/server/things.ts';",
+			"import { shape } from '$lib/server/../server/shapes';",
+			"import type { RequestHandler } from './$types';",
+			"import { stamp } from '$lib/timestamps';",
+			"const later = () => import('../../../../lib/server/things');"
+		].join('\n');
+		expect(judgeServerImportForms(EXAMPLE, code)).toEqual([
+			"src/routes/api/v1/example/+server.ts:2 imports src/lib/server/things.ts as '../../../../lib/server/things': import src/lib/server only as $lib/server/<path>, with no extension (S2)",
+			"src/routes/api/v1/example/+server.ts:3 imports src/lib/server/things.ts as '$lib/server/things.js': import src/lib/server only as $lib/server/<path>, with no extension (S2)",
+			"src/routes/api/v1/example/+server.ts:4 imports src/lib/server/things.ts as '$lib/server/things.ts': import src/lib/server only as $lib/server/<path>, with no extension (S2)",
+			"src/routes/api/v1/example/+server.ts:5 imports src/lib/server/shapes.ts as '$lib/server/../server/shapes': import src/lib/server only as $lib/server/<path>, with no extension (S2)",
+			"src/routes/api/v1/example/+server.ts:8 imports src/lib/server/things.ts as '../../../../lib/server/things': import src/lib/server only as $lib/server/<path>, with no extension (S2)"
+		]);
+	});
+
 	describe('the rule itself (5)', () => {
 		const SERVICE = new Map([['src/lib/server/things.ts', { reads: ['listThings'], writes: ['makeThing'] }]]);
 		const calls = (code: string) => judgeServiceCalls('src/routes/api/example/+server.ts', code, SERVICE);
@@ -3303,6 +3458,24 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 				'src/routes/api/example/+server.ts:9 calls listThings, a read of src/lib/server/things.ts, outside a GET and outside a writeAs callback (2)',
 				// Before the first writeAs of a handler with no body: (2)'s, not (1)'s.
 				'src/routes/api/example/+server.ts:10 uses makeThing of src/lib/server/things.ts other than by calling it'
+			]);
+		});
+
+		it('sees a service imported by a relative path or with .js, and finds its write outside a writeAs callback (card 2681, the code review S2)', () => {
+			const code = [
+				...head,
+				"import { makeThing as relative } from '../../../lib/server/things';",
+				"import { makeThing as withJs } from '$lib/server/things.js';",
+				'export const DELETE = async ({ locals }) => {',
+				'\trelative(locals.user, 1, null, {});',
+				'\twithJs(locals.user, 1, null, {});',
+				'\twriteAs(locals, (caller) => caller);',
+				'};'
+			].join('\n');
+
+			expect(calls(code)).toEqual([
+				'src/routes/api/example/+server.ts:10 calls relative, a write of src/lib/server/things.ts, outside a writeAs callback (2)',
+				'src/routes/api/example/+server.ts:11 calls withJs, a write of src/lib/server/things.ts, outside a writeAs callback (2)'
 			]);
 		});
 

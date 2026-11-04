@@ -950,6 +950,37 @@ export const peopleGroupMembers = sqliteTable('people_group_members', {
 	index('idx_people_group_members_person_id').on(table.personId)
 ]);
 
+/**
+ * Every change to the people directory and its groups, one row a change, by
+ * the People page or an API key (card 2681, migration 0064): what it was and
+ * what it became, so that an administrator can put a change back. Insert-only
+ * in code (`recordChange` in people.ts, the one insert), and never pruned:
+ * the system log's PEOPLE line beside it is pruned with the log. `subject_id`
+ * is a plain integer with no foreign key, so that a person's or a group's
+ * delete leaves its rows. `before` and `after` are JSON of names, job titles,
+ * descriptions, statuses and ids of groups or people; never an email address
+ * or an account id.
+ */
+export const peopleChanges = sqliteTable('people_changes', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	createdAt: text('created_at')
+		.notNull()
+		.default(sql`(datetime('now'))`),
+	actorUserId: integer('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+	actorName: text('actor_name').notNull(),
+	source: text('source').notNull(), // 'ui' | 'api'
+	subject: text('subject').notNull(), // 'person' | 'group'
+	subjectId: integer('subject_id').notNull(),
+	kind: text('kind').notNull(), // 'created' | 'updated' | 'deleted' | 'members_set'
+	/** JSON, or null for a creation. */
+	before: text('before'),
+	/** JSON, or null for a delete. */
+	after: text('after')
+}, (table) => [
+	index('idx_people_changes_actor_user_id').on(table.actorUserId),
+	index('idx_people_changes_subject_subject_id').on(table.subject, table.subjectId)
+]);
+
 export const decisions = sqliteTable('decisions', {
 	id: integer('id').primaryKey({ autoIncrement: true }),
 	/** SET NULL: a decision outlives its board, and keeps its name in `boardName`. */
@@ -1179,6 +1210,7 @@ export type NewPerson = typeof people.$inferInsert;
 export type PeopleGroup = typeof peopleGroups.$inferSelect;
 export type NewPeopleGroup = typeof peopleGroups.$inferInsert;
 export type PeopleGroupMember = typeof peopleGroupMembers.$inferSelect;
+export type PeopleChange = typeof peopleChanges.$inferSelect;
 export type Decision = typeof decisions.$inferSelect;
 export type NewDecision = typeof decisions.$inferInsert;
 export type DecisionOption = typeof decisionOptions.$inferSelect;

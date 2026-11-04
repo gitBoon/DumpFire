@@ -2668,6 +2668,21 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 	'src/routes/api/people-groups/[id]/members/+server.ts PUT': [
 		{ service: 'setGroupMembers', args: [code('caller'), { groupId: code('id') }, code('body'), { source: 'ui' }] }
 	],
+	// Card 2681: the people directory under v1, an administrator's key's alone, refused in v1's words (D19).
+	'src/routes/api/v1/people/+server.ts GET': [{ service: 'listPeople', args: [code('locals.user'), {}, { says: 'Admin access required' }] }],
+	'src/routes/api/v1/people/[personId]/+server.ts PATCH': [
+		{ service: 'updatePerson', args: [code('caller'), { personId: code('id') }, code('body'), { source: 'api', says: 'Admin access required' }] }
+	],
+	'src/routes/api/v1/people-groups/+server.ts GET': [{ service: 'listPeopleGroups', args: [code('locals.user'), {}, { says: 'Admin access required' }] }],
+	'src/routes/api/v1/people-groups/+server.ts POST': [
+		{ service: 'createGroup', args: [code('caller'), {}, code('body'), { source: 'api', says: 'Admin access required' }] }
+	],
+	'src/routes/api/v1/people-groups/[groupId]/+server.ts PATCH': [
+		{ service: 'updateGroup', args: [code('caller'), { groupId: code('id') }, code('body'), { source: 'api', says: 'Admin access required' }] }
+	],
+	'src/routes/api/v1/people-groups/[groupId]/members/+server.ts PUT': [
+		{ service: 'setGroupMembers', args: [code('caller'), { groupId: code('id') }, code('body'), { source: 'api', says: 'Admin access required' }] }
+	],
 	// Card 2676: drafting a decision, the web application's alone until card 2682's v1.
 	'src/routes/api/boards/[id]/decisions/+server.ts POST': [
 		{ service: 'createDecision', args: [code('caller'), { boardId: code('boardId') }, code('body'), { source: 'ui' }] }

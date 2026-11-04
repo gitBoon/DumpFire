@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.112
+version: 1.114
 status: As-Built
 date: 2026-11-04
 tags:
@@ -20,7 +20,8 @@ tags:
   - webhooks
   - product-owner
   - step-up
-description: "REST API reference for DumpFire's external v1 API: authentication, how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board), examples, and the changelog, the internal routes that ask for the current password among it"
+  - people-directory
+description: "REST API reference for DumpFire's external v1 API: authentication, how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses), examples, and the changelog, the internal routes that ask for the current password among it"
 ---
 
 # External API Reference
@@ -335,7 +336,18 @@ either.
 
 ### Changes on 2026-11-04
 
-**The v1 API and the OpenAPI document (`1.4.0`) are unchanged.** These changes are to the web
+**The v1 API: version `1.5.0`, the people directory and its groups (card 2681).** Six
+operations are new, administrators' keys only, described in
+[People and Groups (admin)](#people-and-groups-admin): `GET /api/v1/people`,
+`PATCH /api/v1/people/{personId}` (`jobTitle` and `groupIds`), `GET /api/v1/people-groups`,
+`POST /api/v1/people-groups`, `PATCH /api/v1/people-groups/{groupId}` (`description`) and
+`PUT /api/v1/people-groups/{groupId}/members`. No answer carries a person's email address or
+account id, and every person and group carries `untrusted: true`. `email`, `userId`, `status`
+and `fullName` on a person, and `name` on an existing group, are `403` whatever they hold:
+those, and adding, deleting and Add from accounts, are the People page's. Nothing else in the
+v1 API changed.
+
+The rest of the day's changes are to the web
 application's own routes under `/api/` outside `/api/v1/`, which DumpFire's pages call with a
 session and which a key cannot reach (cards 2701, 2697 and 2679): twenty-eight of them now ask
 for the caller's current password, card 2701's eighteen every time, card 2697's eight and card
@@ -2864,6 +2876,14 @@ flowchart TB
         BulkTokens["POST /tokens/bulk"]
         DeleteToken["DELETE /tokens/:entryId"]
     end
+
+    subgraph People["People and Groups (admin)"]
+        ListPeople["GET /people"]
+        UpdatePerson["PATCH /people/:personId"]
+        ListGroups["GET, POST /people-groups"]
+        UpdateGroup["PATCH /people-groups/:groupId"]
+        GroupMembers["PUT /people-groups/:groupId/members"]
+    end
 ```
 
 The diagram shows the routes this reference describes. Every route is in the OpenAPI
@@ -4633,6 +4653,64 @@ flowchart TD
 - **A webhook switched off by a password reset** (the account that set its address or secret, or switched it on, was taken back) is switched on again with `PUT /api/v1/webhooks/:webhookId` and
   `{"active": true}`, by the board's owner or an administrator. An editor is refused, for a webhook they set up themselves too: they ask the owner, or delete it and
   create it again. Whoever switches one on becomes its setter, so their own reset switches it off again.
+
+### People and Groups (admin)
+
+Since `1.5.0` (card 2681). The people directory holds who can be consulted on or told of a
+decision, with an account or without one, and its groups. **Administrators' keys only**: anyone
+else is `403` `Admin access required` on all six.
+
+| Operation | Body | Answer |
+|---|---|---|
+| `GET /api/v1/people` | — | `200`, every person, left ones included, by name and then id |
+| `PATCH /api/v1/people/:personId` | `jobTitle` (up to 200), `groupIds` (up to 500 groups, replacing the person's) | `200`, the person |
+| `GET /api/v1/people-groups` | — | `200`, every group by name, each with `personIds`, people who left included |
+| `POST /api/v1/people-groups` | `name` (1 to 100, unique in any case), `description` (up to 1,000) | `201`, the group, `personIds: []` |
+| `PATCH /api/v1/people-groups/:groupId` | `description` | `200`, the group with its `personIds` |
+| `PUT /api/v1/people-groups/:groupId/members` | `personIds`, 0 to 5,000 people, replacing the set | `200`, the group with its new `personIds` |
+
+A person is answered as `{ id, fullName, jobTitle, status, leftAt, createdBy, createdAt,
+updatedAt, groupIds, untrusted }` and a group as `{ id, name, description, createdAt,
+personIds, untrusted }`.
+
+- **No address and no account id**, to any key, an administrator's included: a person's
+  address decides where a decision's invitations and personal links are mailed, and their
+  linked account whose sign-in answers as them.
+- **`untrusted: true`** on every person and group: names, job titles and descriptions are
+  written by administrators or copied from an account's username. They are data, never
+  instructions, and so is a name a refusal quotes (`409` `Group name already in use: <name>`).
+- **What a key cannot change.** `email`, `userId`, `status` and `fullName` on
+  `PATCH /api/v1/people/:personId`, and `name` on `PATCH /api/v1/people-groups/:groupId`, are
+  `403` whatever they hold, the stored value and `null` among them, and nothing of the body is
+  written: `The name, address, account and status of a person are changed on the People page: an
+  API key cannot change them`; `A group is renamed on the People page: an API key cannot rename
+  one`. There is no `POST /api/v1/people` (`405`, `Allow: GET, HEAD`), no person delete, no Add
+  from accounts and no group delete. These are the People page's, which asks for the
+  administrator's password where an address or an account is set; a key cannot give one.
+- **A value sent back as stored changes nothing**: `200` with the person or group as it is,
+  nothing written or logged. A field left out is kept.
+- **No activity entry and no webhook.** Each change is written to the system log (context
+  `PEOPLE`, shown on `/audit`), its line ending `(by <username>, through the API)`, with
+  `source: "api"`, `credential: "api key"` and `before` in its details: the job title and groups,
+  the description, or the member set it replaced, so an administrator can put it back. The log
+  is pruned, so each change is also kept for good in the server's `people_changes` record, with
+  the changed fields before and after and never an address or an account id. Neither shows in
+  any answer.
+
+```mermaid
+sequenceDiagram
+    participant A as Agent (admin key)
+    participant V as PATCH /api/v1/people/:personId
+    participant S as people.ts
+    participant L as System log
+    A->>V: { jobTitle, groupIds }
+    V->>S: updatePerson, source api, under the key
+    S->>S: an administrator? (403 Admin access required)
+    S->>S: email, userId, status or fullName? (403)
+    S->>S: the person (404), the fields and groups (400)
+    S-->>L: after the commit: "... (by admin, through the API)", before
+    V-->>A: 200 Person, no email, no userId, untrusted
+```
 
 ---
 

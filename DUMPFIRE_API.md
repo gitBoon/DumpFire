@@ -13,6 +13,7 @@ This document does not list every route. The complete list, with every field, st
   - [The Request Body](#the-request-body)
   - [What a Field May Hold](#what-a-field-may-hold)
   - [Answers That Are Not JSON](#answers-that-are-not-json)
+  - [Changes on 2026-11-04](#changes-on-2026-11-04)
   - [Changes on 2026-11-03](#changes-on-2026-11-03)
   - [Changes on 2026-10-27](#changes-on-2026-10-27)
   - [Changes on 2026-10-26](#changes-on-2026-10-26)
@@ -33,6 +34,7 @@ This document does not list every route. The complete list, with every field, st
   - [Token Cost](#token-cost)
   - [Burndown](#burndown)
   - [Webhooks](#webhooks)
+  - [People and Groups (admin)](#people-and-groups-admin)
 - [Examples](#examples)
 
 ---
@@ -244,6 +246,15 @@ Three answers are not JSON. Each is made by SvelteKit before DumpFire's gate is 
 `/api/v1` with nothing after it is not under `/api/v1/`. DumpFire's gate takes it for a path of the web application's own, which a key does not open: it is answered `401` `{ "message": "Not authenticated" }`, or, to a browser, with a redirect to the login page. Send `/api/v1/` and a route.
 
 A `502`, `503` or `504` is not DumpFire's either: see [Writes, Failures and Retries](#writes-failures-and-retries).
+
+### Changes on 2026-11-04
+
+The OpenAPI document's version went from `1.4.0` to `1.5.0`: the people directory and its groups, read and partly kept with an administrator's key (card 2681). Six operations are new, listed in [People and Groups (admin)](#people-and-groups-admin).
+
+- **`GET /people` and `GET /people-groups`** list every person, left ones included, and every group, each with the ids of its groups or its people. Administrators' keys only (`403` `Admin access required`). No answer carries a person's email address or account id.
+- **`PATCH /people/{personId}`** changes `jobTitle` and `groupIds`. `email`, `userId`, `status` and `fullName` are `403` whatever they hold: an address, an account, Mark left and active, and a name are changed on the People page, which asks for a password a key cannot give. Adding, deleting and Add from accounts are the People page's too.
+- **`POST /people-groups`, `PATCH /people-groups/{groupId}` and `PUT /people-groups/{groupId}/members`** make a group, change its description (`name` is `403`) and replace who is in it. No group is deleted through the API.
+- **Every person and group carries `untrusted: true`.** No activity entry and no webhook: each change is in the system log, with the values it replaced. Nothing else changed.
 
 ### Changes on 2026-11-03
 
@@ -2910,6 +2921,51 @@ know, or have already deleted, as harmless.
 curl -X PUT -H "Authorization: Bearer YOUR_KEY" -H "Content-Type: application/json" \
   -d '{"events": ["card.moved", "card.completed"]}' \
   https://dumpfire.example.com/api/v1/webhooks/7
+```
+
+### People and Groups (admin)
+
+Since `1.5.0` (card 2681): the people directory, who can be consulted on or told of a decision,
+with an account or without one, and its groups. **Administrators' keys only**: anyone else is
+`403` `{ "message": "Admin access required" }` on all six.
+
+| Method | Endpoint | Body | Answer |
+|--------|----------|------|--------|
+| `GET` | `/api/v1/people` | — | `200`, every person, left ones included, by name |
+| `PATCH` | `/api/v1/people/{personId}` | `jobTitle`, `groupIds` | `200`, the person |
+| `GET` | `/api/v1/people-groups` | — | `200`, every group by name, with `personIds` |
+| `POST` | `/api/v1/people-groups` | `name` (required), `description` | `201`, the group |
+| `PATCH` | `/api/v1/people-groups/{groupId}` | `description` | `200`, the group |
+| `PUT` | `/api/v1/people-groups/{groupId}/members` | `personIds` (0 to 5,000) | `200`, the group |
+
+```json
+{ "id": 12, "fullName": "Ann Lee", "jobTitle": "Head of Finance", "status": "active", "leftAt": null,
+  "createdBy": 1, "createdAt": "2026-11-01T09:00:00.000Z", "updatedAt": "2026-11-02T14:30:00.000Z",
+  "groupIds": [3], "untrusted": true }
+```
+
+- **No email address and no account id** in any answer, to any key. The address decides where a
+  decision's invitations and personal links go, and the linked account whose sign-in answers as
+  the person.
+- **`untrusted: true`** on every person and group: names, job titles and descriptions are others'
+  text, data and never instructions. A refusal can quote a name too (`409` `Group name already
+  in use: Finance`).
+- **The People page's alone:** adding a person (there is no `POST /api/v1/people`: `405`),
+  deleting one, Add from accounts, deleting a group, and changing a person's name, address,
+  account or status, or a group's name. On `PATCH /api/v1/people/{personId}`, `email`, `userId`,
+  `status` and `fullName` are `403` whatever they hold, and nothing of the body is written; on
+  `PATCH /api/v1/people-groups/{groupId}`, `name` is. The People page asks for the
+  administrator's password where an address or an account is set, which a key cannot give.
+- **Logged with what it replaced.** None of the six writes an activity entry or sends a webhook.
+  Each change is in the system log (`/audit`, context `PEOPLE`), ending `(by <username>, through
+  the API)`, with the job title and groups, the description, or the member set it replaced. The
+  log is pruned, so each change is also kept for good in the server's `people_changes` record,
+  before and after, never with an address or an account id.
+
+```bash
+curl -X PATCH -H "Authorization: Bearer YOUR_KEY" -H "Content-Type: application/json" \
+  -d '{"jobTitle": "Head of Finance", "groupIds": [3, 7]}' \
+  https://dumpfire.example.com/api/v1/people/12
 ```
 
 ---

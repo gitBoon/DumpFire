@@ -42,6 +42,14 @@
  * running, so that a service called outside one, or from a job's bare
  * `inTransaction`, writes nothing. `tests/check-at-the-write.test.ts` reads
  * the routes and the services for the same rule.
+ *
+ * A service that must refuse what an API key may never do, whatever word
+ * for its tree the route hands it, asks `writingWithKey()` as well (card
+ * 2681, D18): true while a `writeAs` callback runs that was let in with an
+ * API key. The people directory's page-only writes (adding, deleting, Add
+ * from accounts, an address, an account, a status and a name) are refused
+ * by it, so that a later v1 route that passed `source: 'ui'` by mistake
+ * opens none of them.
  */
 import type { SessionUser } from './auth';
 import { stillAuthenticated } from './auth';
@@ -83,6 +91,15 @@ type NotAPromise<T> = T extends PromiseLike<unknown> ? never : T;
 let writing = 0;
 
 /**
+ * How many of the running `writeAs` callbacks were let in with an API key
+ * (`locals.credential.kind === 'api key'`), read after the caller has been
+ * asked for. A count for the same reason `writing` is one: a nested
+ * `writeAs` is a savepoint of the outer, and the outer is still under its
+ * key when the inner returns (card 2681, D18). A session is never counted.
+ */
+let keyWriting = 0;
+
+/**
  * Run `write` in one transaction, handed the caller as their account is now,
  * and answer what it answers.
  *
@@ -100,13 +117,26 @@ let writing = 0;
 export function writeAs<T>(locals: App.Locals, write: (caller: SessionUser | null) => NotAPromise<T>): T {
 	return inTransaction<T>(() => {
 		const caller = stillAuthenticated(locals);
+		const byKey = locals.credential?.kind === 'api key';
 		writing++;
+		if (byKey) keyWriting++;
 		try {
 			return write(caller);
 		} finally {
 			writing--;
+			if (byKey) keyWriting--;
 		}
 	});
+}
+
+/**
+ * Whether a `writeAs` callback is running that was let in with an API key.
+ * A service asks it, as it asks `inWrite()`, to refuse what a key may never
+ * do whatever the route passed as its `source` (card 2681, D18): the route's
+ * word and the credential each refuse on their own.
+ */
+export function writingWithKey(): boolean {
+	return keyWriting > 0;
 }
 
 /**

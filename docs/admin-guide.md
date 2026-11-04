@@ -1,10 +1,12 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.91
+version: 1.93
 status: As-Built
 date: 2026-11-04
 tags:
+  - people-directory
+  - api-keys
   - decision-reminders
   - admin
   - operations
@@ -28,7 +30,7 @@ tags:
   - options-column
   - ideas-board
   - milestone-22
-description: "Administration guide covering who may do what on the admin page, the twenty-eight actions that ask for your password again and the sign-out after three wrong ones, the Options column every delivery board has, ideas boards and when to use options, user management and what a password reset ends, switches off and pauses, SMTP setup, team configuration, what a backup holds and what a restore does, archive management, what each delete removes and who it tells, Reset and Vacuum, attachments, each user's mail switches, what the activity log records and the words its panels use, the Audit page's filters, a board beneath one of its own cards and how to put it right, and system settings"
+description: "Administration guide covering who may do what on the admin page, the twenty-eight actions that ask for your password again and the sign-out after three wrong ones, the Options column every delivery board has, ideas boards and when to use options, user management and what a password reset ends, switches off and pauses, SMTP setup, team configuration, what a backup holds and what a restore does, archive management, what each delete removes and who it tells, Reset and Vacuum, attachments, each user's mail switches, what the activity log records and the words its panels use, the Audit page's filters, a board beneath one of its own cards and how to put it right, the people directory and what an administrator's API key may change in it, and system settings"
 ---
 
 # Admin Operations Guide
@@ -446,6 +448,33 @@ The groups list shows each group's name, description and how many of its people 
 - **A name is used once, in any case.** "finance" beside "Finance" is refused with `409` "Group name already in use: Finance". A group may be renamed to its own name in other capitals.
 - **Adding a group is two steps**, the group and then its people. If the people are refused after the group was added, the group is kept and the form stays open on it; **Save** again sends only the people.
 - **Delete** asks first and cannot be undone. Only the group and its memberships go; its people stay in the directory. Decision records keep the group names they recorded.
+
+A rename, of a person or of a group, puts the old and the new name in its log line's details as `renamed: { from, to }` (card 2681), so `/audit` shows what a person or a group was called before.
+
+### Through the API
+
+An administrator's API key can read the directory and keep part of it in step (card 2681, API `1.5.0`): an agent or a script that syncs job titles and groups from elsewhere needs no browser. A key of anyone who is not an administrator is refused `403` `Admin access required`. The six operations are in the [API Reference](api-reference.md#people-and-groups-admin); the wrapper's actions are `people`, `people-groups`, `update-person`, `create-people-group`, `update-people-group` and `set-people-group-members`.
+
+| A key can | A key cannot (the People page only) |
+|---|---|
+| List every person and every group | See anyone's email address or account id |
+| Change a person's job title and groups | Add a person, delete one, or Add from accounts |
+| Make a group, change its description, set who is in it | Rename a person or a group, or delete a group |
+| | Change an address or an account, or Mark left and Mark active |
+
+**Why a key cannot do the rest.** A key cannot give a password, and the People page asks for yours whenever an address or an account is set or ended, because they decide where a decision's invitations and personal links are mailed. A stolen key that could change an address would have the person's next personal link sent to the thief. Marking someone left ends every link they hold, and a name is how an author ticks a person or a group on a decision. So the server refuses those fields `403` from a key, whatever they hold, and refuses by the key itself as well as by the route, so a later route cannot open them by mistake. The answers never carry an address or an account id, and mark every person and group `untrusted: true`: names and job titles are text others wrote.
+
+**Putting a change back.** A key's change writes no activity entry and sends no webhook. Its `PEOPLE` line on `/audit` ends `(by <username>, through the API)` and its details hold `source: "api"`, `credential: "api key"` and `before`: the job title and groups it replaced, the description, or the whole member set it replaced. The system log is pruned by age and count, so every change, by a key or on the People page, is also kept for good in the `people_changes` table (migration 0064, card 2681's code review): who made it, `ui` or `api`, the person or group, and what the changed fields held before and after, never an address or an account id. A deleted person or group keeps its rows there, the group's member set and the person's groups among them, so either can be made again. To undo a change, read its `before` (from the `/audit` line while it lasts, or from `people_changes` in the database or a backup) and set those values again on the People page (or through the API). The wrapper also asks a person to type `yes` before it empties a group, takes anyone out of one, or takes a person out of any of their groups, and refuses each through a request file.
+
+```mermaid
+flowchart LR
+    Key["Administrator's API key"] -->|"read, no addresses"| Dir[("People directory")]
+    Key -->|"job title, groups,<br/>group create, description, members"| Dir
+    Key -.->|"403: name, address, account,<br/>status, group name, group delete; 405: add"| Page["People page<br/>(asks for your password)"]
+    Page --> Dir
+    Dir --> Rec[("people_changes:<br/>before and after, kept for good")]
+    Dir --> Log["/audit: PEOPLE line,<br/>through the API, before (pruned)"]
+```
 
 ### A Board's Product Owner
 

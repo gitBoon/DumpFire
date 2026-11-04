@@ -565,6 +565,23 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 	"CREATE UNIQUE INDEX `idx_people_user_id` ON `people` (`user_id`);",
 	"CREATE INDEX `idx_people_created_by` ON `people` (`created_by`);",
 	[
+		"CREATE TABLE `people_changes` (",
+		"\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,",
+		"\t`created_at` text DEFAULT (datetime('now')) NOT NULL,",
+		"\t`actor_user_id` integer,",
+		"\t`actor_name` text NOT NULL,",
+		"\t`source` text NOT NULL,",
+		"\t`subject` text NOT NULL,",
+		"\t`subject_id` integer NOT NULL,",
+		"\t`kind` text NOT NULL,",
+		"\t`before` text,",
+		"\t`after` text,",
+		"\tFOREIGN KEY (`actor_user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE set null",
+		");"
+	].join('\n'),
+	"CREATE INDEX `idx_people_changes_actor_user_id` ON `people_changes` (`actor_user_id`);",
+	"CREATE INDEX `idx_people_changes_subject_subject_id` ON `people_changes` (`subject`,`subject_id`);",
+	[
 		"CREATE TABLE `people_group_members` (",
 		"\t`group_id` integer NOT NULL,",
 		"\t`person_id` integer NOT NULL,",

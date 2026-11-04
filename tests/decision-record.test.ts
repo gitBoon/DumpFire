@@ -28,13 +28,21 @@ beforeEach(resetDb);
 
 // ─── The insert-only scan (decision 27, R6) ──────────────────────────────────
 
-/** The four insert-only tables, as SQL names them and as the schema exports them. */
+/**
+ * The insert-only tables, as SQL names them and as the schema exports them:
+ * the decision record's four, and `people_changes`, the record of every change
+ * to the people directory (card 2681, migration 0064, the code review's S1).
+ */
 const RECORD_TABLES: Readonly<Record<string, string>> = {
 	decisionVersions: 'decision_versions',
 	decisionResponses: 'decision_responses',
 	decisionRulings: 'decision_rulings',
-	decisionEvents: 'decision_events'
+	decisionEvents: 'decision_events',
+	peopleChanges: 'people_changes'
 };
+
+/** The people directory's record (card 2681): the one table of RECORD_TABLES that is not the decision record's. */
+const PEOPLE_RECORD = 'people_changes';
 
 /**
  * The settled-once table (card 2678, decision 7), as SQL names it and as the
@@ -79,7 +87,7 @@ const SETTLED_UPDATES: Readonly<Record<string, { set: string[]; where: string }>
 	}
 };
 
-/** The files that may hold a record table's name, or the settled-once table's, as text. */
+/** The files that may hold a decision record table's name, or the settled-once table's, as text. */
 const NAMES_ALLOWED = [
 	'src/lib/server/db/schema.ts',
 	'src/lib/server/db/expected-schema.ts',
@@ -87,17 +95,27 @@ const NAMES_ALLOWED = [
 	'src/lib/server/db/restore.ts'
 ];
 
-/** The files that may insert into a record table. */
+/** The files that may hold `people_changes` as text: the model and its export alone (card 2681). */
+const PEOPLE_NAMES_ALLOWED = ['src/lib/server/db/schema.ts', 'src/lib/server/db/expected-schema.ts'];
+
+/** The files that may insert into a decision record table. */
 const INSERTS_ALLOWED = ['src/lib/server/decision-record.ts', 'src/lib/server/db/restore.ts'];
+
+/** The one file that may insert into `people_changes`, by its one insert, `recordChange` (card 2681, the code review's S1). */
+const PEOPLE_INSERTS_ALLOWED = ['src/lib/server/people.ts'];
+
+/** The files that may hold a record table's name as text, and that may insert into it, by its SQL name. */
+const namesAllowedFor = (sqlName: string) => (sqlName === PEOPLE_RECORD ? PEOPLE_NAMES_ALLOWED : NAMES_ALLOWED);
+const insertsAllowedFor = (sqlName: string) => (sqlName === PEOPLE_RECORD ? PEOPLE_INSERTS_ALLOWED : INSERTS_ALLOWED);
 
 /** The one file that may delete a decision, which cascades through its record. */
 const DECISION_DELETES_ALLOWED = 'src/lib/server/decisions.ts';
 
-/** A record table's name, or the settled-once table's, as text. `idx_decision_events_…` is an index's name, not the table's. */
-const NAMES_A_TABLE = /\bdecision_(?:versions|responses|rulings|events|questions)\b/;
+/** A record table's name, or the settled-once table's, as text. `idx_decision_events_…` and `idx_people_changes_…` are indexes' names, not the tables'. */
+const NAMES_A_TABLE = /\b(decision_(?:versions|responses|rulings|events|questions)|people_changes)\b/g;
 
 /** A record table's name, or the settled-once table's, in SQL, quoted or not: SQL may not update either (card 2678, S4). */
-const TABLE = '[`"\\[]?decision_(?:versions|responses|rulings|events|questions)[`"\\]]?(?![\\w])';
+const TABLE = '[`"\\[]?(decision_(?:versions|responses|rulings|events|questions)|people_changes)[`"\\]]?(?![\\w])';
 
 /** What SQL may not do to a record table anywhere, by what the finding calls it. */
 const SQL_WRITES: readonly [string, RegExp][] = [
@@ -108,8 +126,8 @@ const SQL_WRITES: readonly [string, RegExp][] = [
 	['SQL ON CONFLICT', new RegExp(`\\bINSERT\\s+(?:OR\\s+\\w+\\s+)?INTO\\s+${TABLE}[\\s\\S]*\\bON\\s+CONFLICT\\b`, 'i')]
 ];
 
-/** An SQL insert into a record table. */
-const SQL_INSERT = new RegExp(`\\bINSERT\\s+(?:OR\\s+\\w+\\s+)?INTO\\s+${TABLE}`, 'i');
+/** An SQL insert into a record table, the table's name its first group. Global: read with `matchAll`. */
+const SQL_INSERT = new RegExp(`\\bINSERT\\s+(?:OR\\s+\\w+\\s+)?INTO\\s+${TABLE}`, 'gi');
 
 /** An SQL delete of decisions. */
 const SQL_DELETE_DECISIONS = /\bDELETE\s+FROM\s+[`"[]?decisions[`"\]]?(?![\w])/i;
@@ -135,7 +153,9 @@ const GENERIC_WRITERS: Readonly<Record<string, string>> = {
 	'src/lib/server/db/migrate.ts':
 		"A migration's rebuild of a table, every row copied to the new shape and back as it was, and its probes of a column on a scratch table.",
 	'src/lib/server/db/restore.ts': "The restore's wholesale replacement (plan 4.8): every table cleared and copied whole from the backup, or nothing committed.",
-	'src/routes/api/admin/reset/+server.ts': "The superadmin's reset, which empties every table but the system log and the backup log: the record goes whole, with its decisions.",
+	'src/routes/api/admin/reset/+server.ts':
+		"The superadmin's reset, which empties every table but the system log and the backup log: the record goes whole, with its decisions, " +
+		'and people_changes with the directory it records (card 2681).',
 	'src/lib/server/deletes.ts':
 		"USER_REFERENCES, a list written out whose names the scan reads as text (a record table's name there is a finding): it names none."
 };
@@ -279,10 +299,13 @@ function scanRecordWrites(files: ScanFile[]): Scan {
 				}
 			};
 			const checkText = (node: ts.Node, literal: string, withTables: string) => {
-				if (NAMES_A_TABLE.test(literal) && !NAMES_ALLOWED.includes(file)) findings.push(`${at(node)} names a record table as text`);
+				// Each table by its own list (card 2681): people_changes' name and inserts are allowed in fewer files.
+				for (const [, sqlName] of literal.matchAll(NAMES_A_TABLE)) {
+					if (!namesAllowedFor(sqlName).includes(file)) findings.push(`${at(node)} names a record table as text`);
+				}
 				for (const [what, pattern] of SQL_WRITES) if (pattern.test(withTables)) findings.push(`${at(node)} ${what} on a record table`);
-				if (SQL_INSERT.test(withTables)) {
-					if (INSERTS_ALLOWED.includes(file)) inserts.push(file);
+				for (const [, sqlName] of withTables.matchAll(SQL_INSERT)) {
+					if (insertsAllowedFor(sqlName.toLowerCase()).includes(file)) inserts.push(file);
 					else findings.push(`${at(node)} SQL INSERT into a record table`);
 				}
 				if (SQL_DELETE_DECISIONS.test(withTables) && file !== DECISION_DELETES_ALLOWED) findings.push(`${at(node)} SQL DELETE FROM decisions`);
@@ -316,7 +339,7 @@ function scanRecordWrites(files: ScanFile[]): Scan {
 					}
 					if (method === 'delete' && target === 'decisions' && file !== DECISION_DELETES_ALLOWED) findings.push(`${at(node)} .delete(decisions)`);
 					if (method === 'insert' && target !== undefined && target in RECORD_TABLES) {
-						if (INSERTS_ALLOWED.includes(file)) inserts.push(file);
+						if (insertsAllowedFor(RECORD_TABLES[target]).includes(file)) inserts.push(file);
 						else findings.push(`${at(node)} .insert(${target})`);
 					}
 					// Card 2678 (decision 7, S4): the settled-once table, inserted where a record table may be, never deleted, and
@@ -393,11 +416,14 @@ describe('the record is insert-only, by the source (decision 27)', () => {
 		expect(files.some(({ file }) => file.endsWith('.svelte'))).toBe(true);
 		// The event's, the version's, card 2677 (D1), the response's, and card 2679 (decision 7), the ruling's.
 		expect(inserts.filter((file) => file === 'src/lib/server/decision-record.ts')).toHaveLength(4);
+		// Card 2681 (the code review's S1): people_changes' one insert, recordChange's.
+		expect(inserts.filter((file) => file === 'src/lib/server/people.ts')).toHaveLength(1);
 	});
 
 	it('finds each form on made-up source, and passes what is allowed (2)', () => {
 		const SERVICE = 'src/lib/server/example.ts';
 		const RECORD = 'src/lib/server/decision-record.ts';
+		const PEOPLE = 'src/lib/server/people.ts';
 		const caught: [string, ScanFile, string][] = [
 			['a Drizzle update', { file: SERVICE, source: "db.update(decisionEvents).set({ kind: 'x' }).run();" }, '.update(decisionEvents)'],
 			['a Drizzle delete', { file: RECORD, source: 'db.delete(decisionVersions).run();' }, '.delete(decisionVersions)'],
@@ -453,6 +479,18 @@ describe('the record is insert-only, by the source (decision 27)', () => {
 				{ file: 'src/routes/example/+page.svelte', source: "<p>Hello</p>\n<script lang=\"ts\">\n\tconst t = 'decision_rulings';\n</script>" },
 				'src/routes/example/+page.svelte:3 names a record table as text'
 			],
+			// Card 2681 (the code review's S1): people_changes, inserted by people.ts alone, never updated or deleted.
+			['an update of people_changes in the people service', { file: PEOPLE, source: "db.update(peopleChanges).set({ kind: 'x' }).run();" }, '.update(peopleChanges)'],
+			['a delete of people_changes in the people service', { file: PEOPLE, source: 'db.delete(peopleChanges).run();' }, '.delete(peopleChanges)'],
+			['an insert of people_changes in the record module', { file: RECORD, source: 'db.insert(peopleChanges).values(v).run();' }, '.insert(peopleChanges)'],
+			['an insert of people_changes in the restore', { file: 'src/lib/server/db/restore.ts', source: 'db.insert(peopleChanges).values(v).run();' }, '.insert(peopleChanges)'],
+			['an insert of a decision event in the people service', { file: PEOPLE, source: 'db.insert(decisionEvents).values(v).run();' }, '.insert(decisionEvents)'],
+			['SQL DELETE FROM people_changes', { file: PEOPLE, source: "sqlite.prepare('DELETE FROM people_changes WHERE id = ?').run(id);" }, 'SQL DELETE FROM'],
+			['SQL UPDATE of people_changes, quoted', { file: PEOPLE, source: 'sqlite.prepare(\'UPDATE "people_changes" SET kind = ?\').run(k);' }, 'SQL UPDATE'],
+			['an SQL insert into people_changes in the people service', { file: PEOPLE, source: "sqlite.prepare('INSERT INTO people_changes (kind) VALUES (?)').run(k);" }, 'names a record table as text'],
+			['people_changes named as text in the record module', { file: RECORD, source: "const t = 'people_changes';" }, 'names a record table as text'],
+			['an SQL insert into people_changes in the record module', { file: RECORD, source: "sqlite.prepare('INSERT INTO people_changes (kind) VALUES (?)').run(k);" }, 'SQL INSERT into a record table'],
+			['a Drizzle delete of people_changes through a const alias', { file: PEOPLE, source: 'const t = schema.peopleChanges;\ndb.delete(t).run();' }, '.delete(peopleChanges)'],
 			// Card 2678 (decision 7, S4, case 32): the settled-once table.
 			['an update of the questions in another file', { file: SERVICE, source: "db.update(decisionQuestions).set({ answer: 'x' }).run();" }, '.update(decisionQuestions)'],
 			['an insert of a question in another file', { file: SERVICE, source: 'db.insert(decisionQuestions).values(v).run();' }, '.insert(decisionQuestions)'],
@@ -495,6 +533,9 @@ describe('the record is insert-only, by the source (decision 27)', () => {
 			{ file: 'src/lib/server/decisions.ts', source: 'db.delete(decisions).where(eq(decisions.id, id)).run();' },
 			// An index's name, and an update of an ordinary decision table.
 			{ file: SERVICE, source: "const i = 'idx_decision_events_participant_id';\nsqlite.prepare('UPDATE decision_participants SET link_token_hash = NULL');" },
+			// Card 2681: people_changes' one insert, in the people service, and its indexes' names.
+			{ file: PEOPLE, source: 'db.insert(peopleChanges).values(v).run();\ndb.select().from(peopleChanges).all();' },
+			{ file: SERVICE, source: "const i = 'idx_people_changes_actor_user_id';" },
 			// A writer of tables named at run time on GENERIC_WRITERS, and a const alias of an ordinary table.
 			{ file: 'src/lib/server/db/timestamps.ts', source: 'database.prepare(`UPDATE ${t} SET ${c} = 1`).run();' },
 			{ file: SERVICE, source: 'const t = decisionParticipants;\ndb.update(t).set({}).run();' },

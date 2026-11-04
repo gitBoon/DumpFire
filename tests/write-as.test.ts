@@ -97,7 +97,7 @@ import { inTransaction } from '$lib/server/db/transaction';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { issueFormToken, newRequestToken } from '$lib/server/request-tokens';
 import { cardDir } from '$lib/server/uploads';
-import { inWrite, stillCallerNow, writeAs } from '$lib/server/write-as';
+import { inWrite, stillCallerNow, writeAs, writingWithKey } from '$lib/server/write-as';
 import { stamp } from '$lib/timestamps';
 import { handle } from '../src/hooks.server';
 import { api } from './helpers/api';
@@ -452,6 +452,35 @@ describe('inWrite', () => {
 		db.delete(sessions).where(eq(sessions.id, token)).run();
 		expect(outcome(() => writeAs(locals, () => inWrite()))).toEqual({ status: 401, message: 'Not authenticated' });
 		expect(() => inTransaction(() => inWrite())).toThrow(OUTSIDE);
+	});
+
+	it('writingWithKey is true only while a writeAs let in with an API key runs, a nested one included, and is taken off when it returns or throws (card 2681, D18)', () => {
+		const user = makeUser({ role: 'admin' });
+		const byKey = keyLocals(user, makeApiKey(user));
+		const bySession = sessionLocals(user, makeSession(user));
+
+		// (a) Outside any writeAs.
+		expect(writingWithKey()).toBe(false);
+		// (b) Inside one let in with a key; (c) not inside one let in with a session.
+		expect(writeAs(byKey, () => writingWithKey())).toBe(true);
+		expect(writeAs(bySession, () => writingWithKey())).toBe(false);
+		// (d) Off again after the key's callback returns, and after it throws.
+		expect(writingWithKey()).toBe(false);
+		expect(() =>
+			writeAs(byKey, () => {
+				throw new Error('thrown under the key');
+			})
+		).toThrow('thrown under the key');
+		expect(writingWithKey()).toBe(false);
+		// (e) A writeAs nested in a key's (a savepoint) is under the key, a session's among them, and so is the
+		// outer after the inner returns.
+		const seen = writeAs(byKey, () => {
+			const inner = writeAs(byKey, () => writingWithKey());
+			const session = writeAs(bySession, () => writingWithKey());
+			return [inner, session, writingWithKey()];
+		});
+		expect(seen).toEqual([true, true, true]);
+		expect(writingWithKey()).toBe(false);
 	});
 
 	it('a session ended while the body arrived, naming in its body an id that is not there, is answered 401, not 404 (S2)', async () => {
