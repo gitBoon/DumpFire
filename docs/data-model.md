@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.58
+version: 1.60
 status: As-Built
 date: 2026-11-04
 tags:
@@ -850,8 +850,9 @@ migration**: every field is a 0061 column, and the new event details are JSON.
   later card adds is left out of every tally until it is added there. `concernsOf` reads
   `kind = 'concern'` alone.
 - **The results revision** (`resultsRevisionOf`, `decision-content.ts`): HMAC-SHA256 keyed with
-  `purposeKey('decision-results-revision')` over what the editor revision covers, every
-  response id `responsesOf` gives in id order (never a concern) and every question's
+  `purposeKey('decision-results-revision')` over what the editor revision covers (and the
+  decision's `updated_at` and each participant's `user_id` and `email`, which card 2706 took out
+  of the editor revision and kept here, its value unchanged), every response id `responsesOf` gives in id order (never a concern) and every question's
   `[id, answered_at]`, which card 2678 widened to `[id, answered_at, answer_reviewed_at,
   answer_agent_drafted]` ([below](#clarification-questions-settled-once-card-2678)). The
   ruling and the release send it; a different one is `409`.
@@ -1143,12 +1144,30 @@ alone.
 **The revision** has no column. `revisionOf` is HMAC-SHA256 in hex, keyed with a key derived
 for that purpose alone from the server's request form key (`purposeKey('decision-revision')`,
 never stored; card 2676's C2), over the decision's `title`,
-`status`, `closes_at`, `vote_mode`, `working_content`, `current_version`, `decider_user_id` and
-`updated_at`, every option row by `id`, `label`, `position`, `added_in_version` and
-`retired_in_version`, and every participant row by `id`, `person_id`, `role`, `user_id`, `email`
-and `removed_at`, retired and removed rows included, in id order. Every column any write changes
-is in it, so `updateDraft`, `setDecider`, `setParticipants` and `markReviewed`, which require it,
-cannot land over a change made since the caller read the decision (409).
+`status`, `closes_at`, `vote_mode`, `working_content`, `current_version` and `decider_user_id`,
+every option row by `id`, `label`, `position`, `added_in_version` and `retired_in_version`, and
+every participant row by `id`, `person_id`, `role` and `removed_at`, retired and removed rows
+included, in id order. Every column the editor's writes change is in it, so `updateDraft` (the
+editor and v1's `PATCH`), `setDecider`, `setParticipants`, `markReviewed`, `openDecision`,
+`republishDecision` and `dryRunDecision`, which require it, cannot land over a change made since
+the caller read the decision (409).
+
+Card 2706 took the delivery columns out of it: `decision_participants.user_id` and `email`, which
+a participant's insert sets and opening rewrites from the directory (`snapshotColumns`), and which,
+after opening, only an administrator's account and address changes (and an account's deletion)
+write, and
+`decisions.updated_at`, which a Resend and those two changes stamp alone. None is read by a write
+that asks the revision as its caller saw it, so none refuses an author mid-edit any more.
+`updated_at` is still stamped by all three, for the board's decision list and every answer that
+shows it; every other write that stamps it changes a covered column. The results revision still
+covers all three, unchanged.
+
+| Column | Editor revision | Results revision |
+|---|---|---|
+| `decisions.updated_at` | No (card 2706) | Yes |
+| `decision_participants.user_id`, `email` | No (card 2706) | Yes |
+| `decision_participants.link_token_hash`, `link_issued_at` | No | No |
+| Every other column listed above | Yes | Yes |
 
 ```mermaid
 flowchart TD

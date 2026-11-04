@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.90
+version: 1.91
 status: As-Built
 date: 2026-11-04
 tags:
@@ -4077,14 +4077,20 @@ ignored, so every write here is `source: 'ui'`.
   the decider's, each while they can edit the board. An administrator or a board owner who is
   neither is `403 You cannot include people in this decision`.
 - **A revision on every authoring write.** `updateDraft`, `setDecider`, `setParticipants` and
-  `markReviewed` require the decision's revision (an HMAC-SHA256 over every column any write
-  changes; see [Data Model](data-model.md#the-working-copy-and-its-revision-card-2676)): missing
+  `markReviewed` (and, since card 2697, opening, re-publishing and the dry run) require the
+  decision's revision (an HMAC-SHA256 over every column the editor's writes change; see
+  [Data Model](data-model.md#the-working-copy-and-its-revision-card-2676)): missing
   is `400`, stale is `409`, so two editors, or a save over another write's change, cannot
-  overwrite without anyone knowing. It covers participants' addresses and account ids, so it is
-  keyed (C2): `purposeKey('decision-revision')` in `request-tokens.ts`, HMAC-SHA256 of the
-  request form's key (`request_form_secret`, never in a backup) with that purpose, derived on
-  use and never stored. Unkeyed, anyone handed a revision could confirm a guessed address
-  offline. Only the stale-revision words offer Reload in the editor (C6).
+  overwrite without anyone knowing. It is keyed (C2): `purposeKey('decision-revision')` in
+  `request-tokens.ts`, HMAC-SHA256 of the request form's key (`request_form_secret`, never in a
+  backup) with that purpose, derived on use and never stored, so that nobody handed a revision
+  can test guesses at what it covers offline. Only the stale-revision words offer Reload in the
+  editor (C6). Card 2706 took the delivery columns out of it (a participant's address and
+  account id, and the decision's `updated_at`): a Resend or an administrator's account or
+  address change no longer refuses an editor mid-edit, an administrator's included, as no
+  revision-guarded write acts on those as its caller saw them (each is read again at the write,
+  and the account and address writes ask the password and re-check the row). The results
+  revision, which a ruling and a release send, still covers them.
 - **Agent-drafted text.** A save made through an API key (card 2682's `PATCH
   /api/v1/decisions/{decisionId}`, or any write `sourceOf(opts)` reads as a key's) flags each
   section it changed. Only **Mark reviewed** clears a flag, and it is

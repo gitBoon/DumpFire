@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.116
+version: 1.117
 status: As-Built
 date: 2026-11-04
 tags:
@@ -4817,7 +4817,10 @@ twin lets in: a caller who may view the decision and not do the act is `403`
   page, and a key is answered `403` "This decision is closed for input: reopening it by Extend is
   done on the decision's page. An API key cannot".
 - **The revision.** `GET` answers the decision's `revision`; `PATCH`, `…/decider` and
-  `…/participants` require it, and a stale one is `409`.
+  `…/participants` require it, and a stale one is `409`. It moves with a change to what an
+  editor writes (the title, closing time, vote mode, content, options, decider, participants and
+  their roles, the status and version), and not with a Resend or an administrator's change to a
+  participant's account or address, which `updatedAt` still shows (card 2706).
 - **`content` is whole.** `PATCH` reads `content` strictly: a section not sent is emptied. Each
   section a key changes is flagged as drafted by an agent until a person marks it reviewed on
   the page. Once opened, only the content changes, and nobody is told until a person

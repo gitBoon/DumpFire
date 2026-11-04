@@ -455,9 +455,10 @@ describe('the draft revision', () => {
 		expect(decisionRow(draft.id)).toEqual(before.row);
 		expect(participantRows(draft.id)).toEqual(before.participants);
 
-		// Read, and then changed by another write before this one lands.
+		// Read, and then changed by another write before this one lands: another editor's title (card 2706, N2: no longer
+		// `updated_at` alone, which the editor revision does not cover).
 		const read = revisionNow(draft.id);
-		db.update(decisions).set({ updatedAt: '2026-11-03 10:00:00' }).where(eq(decisions.id, draft.id)).run();
+		db.update(decisions).set({ title: 'Changed by another editor', updatedAt: '2026-11-03 10:00:00' }).where(eq(decisions.id, draft.id)).run();
 		const changed = decisionRow(draft.id);
 		expect(outcome(() => write(draft, read))).toEqual({ status: 409, message: STALE });
 		expect(decisionRow(draft.id)).toEqual(changed);
@@ -471,9 +472,9 @@ describe('the draft revision', () => {
 		const participants = [makeParticipant(decision, { person: makePerson(), userId: owner.id })];
 		const row = decisionRow(decision.id);
 		const covered = JSON.stringify({
-			decision: [row.title, row.status, row.closesAt, row.voteMode, row.workingContent, row.currentVersion, row.deciderUserId, row.updatedAt],
+			decision: [row.title, row.status, row.closesAt, row.voteMode, row.workingContent, row.currentVersion, row.deciderUserId],
 			options: options.map((o) => [o.id, o.label, o.position, o.addedInVersion, o.retiredInVersion]),
-			participants: participants.map((p) => [p.id, p.personId, p.role, p.userId, p.email, p.removedAt])
+			participants: participants.map((p) => [p.id, p.personId, p.role, p.removedAt])
 		});
 
 		const revision = revisionOf(row, options, participants);
@@ -486,7 +487,7 @@ describe('the draft revision', () => {
 		expect(STALE_REVISION).toBe(STALE);
 	});
 
-	describe('covers every column a write changes (9)', () => {
+	describe("covers every column the editor's writes change (9)", () => {
 		let decision: Decision;
 		let option: DecisionOption;
 		let participant: DecisionParticipant;
@@ -505,7 +506,6 @@ describe('the draft revision', () => {
 			["the decision's working_content", (d, o, p) => [{ ...d, workingContent: '{"situation":"x"}' }, [o], [p]]],
 			["the decision's current_version", (d, o, p) => [{ ...d, currentVersion: 1 }, [o], [p]]],
 			["the decision's decider_user_id", (d, o, p) => [{ ...d, deciderUserId: null }, [o], [p]]],
-			["the decision's updated_at", (d, o, p) => [{ ...d, updatedAt: '2026-11-03 10:00:01' }, [o], [p]]],
 			['an option added', (d, o, p) => [d, [o, { ...o, id: o.id + 100, label: 'B' }], [p]]],
 			["an option's label", (d, o, p) => [d, [{ ...o, label: 'C' }], [p]]],
 			["an option's position", (d, o, p) => [d, [{ ...o, position: 5 }], [p]]],
@@ -513,15 +513,31 @@ describe('the draft revision', () => {
 			["an option's retired_in_version", (d, o, p) => [d, [{ ...o, retiredInVersion: 2 }], [p]]],
 			["a participant's person_id", (d, o, p) => [d, [o], [{ ...p, personId: null }]]],
 			["a participant's role", (d, o, p) => [d, [o], [{ ...p, role: 'informed' }]]],
-			["a participant's user_id", (d, o, p) => [d, [o], [{ ...p, userId: owner.id }]]],
-			["a participant's email", (d, o, p) => [d, [o], [{ ...p, email: 'moved@example.test' }]]],
-			["a participant's removed_at", (d, o, p) => [d, [o], [{ ...p, removedAt: '2026-11-03 10:00:00' }]]]
+			["a participant's removed_at", (d, o, p) => [d, [o], [{ ...p, removedAt: '2026-11-03 10:00:00' }]]],
+			['a participant added', (d, o, p) => [d, [o], [p, { ...p, id: p.id + 100 }]]]
 		];
 
 		it.each(changes)('changes with %s alone', (_case, change) => {
 			const base = of(decision, [option], [participant]);
 			expect(of(decision, [{ ...option }], [{ ...participant }])).toBe(base);
 			expect(of(...change(decision, option, participant))).not.toBe(base);
+		});
+
+		// Card 2706 (D2, D4): a Resend and an administrator's account and address writes change these alone, and no write
+		// that asks the revision reads them as its caller saw them; the results revision still covers the first three.
+		// The last two rows are regression guards: `link_token_hash` and `link_issued_at` were never covered, before card
+		// 2706 or since, and the rows pin that no later change adds them.
+		const unchanged: [string, (d: Decision, o: DecisionOption, p: DecisionParticipant) => [Decision, DecisionOption[], DecisionParticipant[]]][] = [
+			["the decision's updated_at", (d, o, p) => [{ ...d, updatedAt: '2026-11-03 10:00:01' }, [o], [p]]],
+			["a participant's user_id", (d, o, p) => [d, [o], [{ ...p, userId: owner.id }]]],
+			["a participant's email", (d, o, p) => [d, [o], [{ ...p, email: 'moved@example.test' }]]],
+			["a participant's link_token_hash (a regression guard: never covered)", (d, o, p) => [d, [o], [{ ...p, linkTokenHash: 'a-new-link' }]]],
+			["a participant's link_issued_at (a regression guard: never covered)", (d, o, p) => [d, [o], [{ ...p, linkIssuedAt: '2026-11-03 10:00:00' }]]]
+		];
+
+		it.each(unchanged)('does not change with %s (card 2706)', (_case, change) => {
+			const base = of(decision, [option], [participant]);
+			expect(of(...change(decision, option, participant))).toBe(base);
 		});
 	});
 });

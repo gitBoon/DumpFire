@@ -28,7 +28,8 @@ import ts from 'typescript';
 import { isHttpError } from '@sveltejs/kit';
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
-import { apiKeys, decisions, settings, type Board, type Column, type Decision } from '$lib/server/db/schema';
+import { apiKeys, decisions, people, settings, type Board, type Column, type Decision } from '$lib/server/db/schema';
+import { STALE_REVISION } from '$lib/decision-words';
 import type { Credential, SessionUser } from '$lib/server/auth';
 import { decisionAnswer, readDecisionForKey, revisionFor } from '$lib/server/decision-authoring';
 import { appendEvent, SYSTEM_ACTOR } from '$lib/server/decision-record';
@@ -953,6 +954,26 @@ describe('PATCH /api/v1/decisions/{decisionId} (11)', () => {
 		expect(eventsOf(decision.id)).toEqual(events);
 		await sent.settle();
 		expect(sent.emails).toEqual([]);
+	});
+
+	it("(c) is not refused over an address changed on the page since the key's read, and is over a content save there (card 2706)", async () => {
+		const { decision, author } = opened();
+		const admin = makeUser({ username: 'admin', role: 'admin' });
+		const person = makePerson({ fullName: 'Pat Doe', email: 'pat.old@example.test' });
+		const pat = makeParticipant(decision, { person, role: 'consulted' });
+		db.update(people).set({ email: 'pat.new@example.test' }).where(eq(people.id, person.id)).run();
+		const read = (await withKey(author, 'GET', `/api/v1/decisions/${decision.id}`)).body.revision as string;
+
+		asSession(admin, (caller) => changeParticipantAddress(caller, { decisionId: decision.id, participantId: pat.id }, null, UI));
+		const res = await withKey(author, 'PATCH', `/api/v1/decisions/${decision.id}`, { revision: read, content: { situation: 'Changed by an agent.' } });
+
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		const next = res.body.revision as string;
+		asSession(author, (caller) => updateDraft(caller, { decisionId: decision.id }, { revision: next, content: { situation: 'Changed on the page.' } }, UI));
+		const stale = await withKey(author, 'PATCH', `/api/v1/decisions/${decision.id}`, { revision: next, content: { situation: 'Changed by an agent again.' } });
+
+		expect({ status: stale.status, message: stale.body.message }).toEqual({ status: 409, message: STALE_REVISION });
+		expect(JSON.parse(decisionRow(decision.id).workingContent).situation).toBe('Changed on the page.');
 	});
 });
 

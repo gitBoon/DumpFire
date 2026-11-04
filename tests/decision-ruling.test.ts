@@ -14,6 +14,7 @@
  * neither is repeated. The cases are the plan's,
  * `docs/planning/card-2679-results-ruling.md`, section 7.1, by number.
  */
+import { createHash, createHmac } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { isHttpError } from '@sveltejs/kit';
@@ -52,10 +53,11 @@ import {
 } from '$lib/server/decision-results';
 import { raiseConcern, raiseConcernByLink, releaseResults, respondToDecision, ruleDecision, setDecider, supersedeDecision } from '$lib/server/decisions';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
+import { purposeKey } from '$lib/server/request-tokens';
 import { writeAs, type ServiceOptions } from '$lib/server/write-as';
 import { CONCERN_SUPERSEDED, CONCERN_WINDOW_ENDED, DEAD_DECISION_LINK, STALE_REVISION, tooManyWrongLinks, WHO_SEES_STATEMENT_VERSION } from '$lib/decision-words';
 import type { ReleasedResults } from '$lib/decision-view-types';
-import { decisionAnswer, readBoardDecisions, readEditPage } from '$lib/server/decision-authoring';
+import { decisionAnswer, readBoardDecisions, readEditPage, revisionFor } from '$lib/server/decision-authoring';
 import { readDecisionPage, readLinkPage, refuseWrongLink } from '$lib/server/decision-view';
 import { parseStamp, stamp } from '$lib/timestamps';
 import { pageLoad } from './helpers/actions';
@@ -438,6 +440,14 @@ describe('ruleDecision', () => {
 
 		expect(moves(() => answer(pat.participant, { optionId: a.id })), 'a response').toBe(true);
 		expect(moves(() => db.update(decisionParticipants).set({ role: 'informed' }).where(eq(decisionParticipants.id, pat.participant.id)).run()), 'a participant').toBe(true);
+		// Card 2706 (D1): the editor revision no longer covers a participant's account or address; this one still does.
+		const editorRevision = revisionFor(decision.id);
+		expect(moves(() => db.update(decisionParticipants).set({ userId: null }).where(eq(decisionParticipants.id, pat.participant.id)).run()), 'an account').toBe(true);
+		expect(
+			moves(() => db.update(decisionParticipants).set({ email: 'pat.moved@example.test' }).where(eq(decisionParticipants.id, pat.participant.id)).run()),
+			'an address'
+		).toBe(true);
+		expect(revisionFor(decision.id), 'the editor revision').toBe(editorRevision);
 		expect(moves(() => sqlite.prepare("UPDATE decision_questions SET answer = 'Cost.', answered_at = ? WHERE id = ?").run(PAST, questionId)), 'an answer').toBe(true);
 		expect(
 			moves(() => appendEvent({ decisionId: decision.id, kind: 'seen', participantId: pat.participant.id, versionNumber: 1, detail: { stage: 'question' } }, SYSTEM_ACTOR)),
@@ -461,6 +471,47 @@ describe('ruleDecision', () => {
 				questions: [{ id: questionId, answeredAt: PAST, answerReviewedAt: null, answerAgentDrafted: false }]
 			})
 		);
+	});
+
+	it("is the keyed HMAC of what it covered before card 2706, its JSON built by hand: the decision with updated_at last, the options, each participant's account and address, the responses and the questions (card 2706, D1)", () => {
+		const { decision, a, b, c } = opened();
+		const pat = withAccount(decision, 'pat');
+		const linky = withLink(decision, 'linky-token');
+		const gone = makeParticipant(decision, { person: makePerson({ fullName: 'Gone Person' }), role: 'informed', removedAt: PAST });
+		const vote = answer(pat.participant, { optionId: a.id });
+		const abstain = answer(linky.participant, { kind: 'abstain', optionId: null });
+		makeResponse(pat.participant, { kind: 'concern', comment: 'Never covered.' });
+		const askAt = (question: string) =>
+			Number(
+				sqlite
+					.prepare("INSERT INTO decision_questions (decision_id, asker_name, question, asked_in_version, via, asked_at) VALUES (?, 'Pat', ?, 1, 'session', ?)")
+					.run(decision.id, question, PAST).lastInsertRowid
+			);
+		const open = askAt('Why A?');
+		const drafted = askAt('Why not B?');
+		sqlite
+			.prepare("UPDATE decision_questions SET answer = 'Cost.', answered_at = ?, answer_reviewed_at = ?, answer_agent_drafted = 1 WHERE id = ?")
+			.run(PAST, '2026-11-02 10:00:00', drafted);
+		const row = decisionRow(decision.id);
+		expect(pat.participant.userId, 'an account to cover').toBe(pat.account.id);
+
+		const covered = JSON.stringify({
+			decision: [row.title, row.status, row.closesAt, row.voteMode, row.workingContent, row.currentVersion, row.deciderUserId, row.updatedAt],
+			options: [a, b, c].map((o) => [o.id, o.label, o.position, o.addedInVersion, o.retiredInVersion]),
+			participants: [pat.participant, linky.participant, gone].map((p) => [p.id, p.personId, p.role, p.userId, p.email, p.removedAt]),
+			responses: [vote.id, abstain.id],
+			questions: [
+				[open, null, null, false],
+				[drafted, PAST, '2026-11-02 10:00:00', true]
+			]
+		});
+
+		const revision = resultsRevisionFor(decision.id);
+
+		expect(revision).toMatch(/^[0-9a-f]{64}$/);
+		expect(revision).not.toBe(createHash('sha256').update(covered).digest('hex'));
+		expect(revision).not.toBe(createHmac('sha256', purposeKey('decision-revision')).update(covered).digest('hex'));
+		expect(revision).toBe(createHmac('sha256', purposeKey('decision-results-revision')).update(covered).digest('hex'));
 	});
 
 	it('marks the old decision superseded when its decider rules the one superseding it, and not when someone else does (8)', async () => {

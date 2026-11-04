@@ -404,17 +404,26 @@ export function sectionKeysOf(content: WorkingContent): string[] {
 const REVISION_PURPOSE = 'decision-revision';
 
 /**
- * The draft revision (decision 10, R1): HMAC-SHA256, in hex, over every
- * column any write changes, keyed with `purposeKey('decision-revision')`, a
- * key derived from the server's own and never stored (the code review's C2).
- * Unkeyed, a caller who holds the revision could test guesses at the
- * participants' addresses and accounts it covers offline. The decision's
- * title, status, closing time, vote mode, working content, current version,
- * decider and `updated_at`; every option row, retired ones too, by its id,
- * label, position and the versions it was added and retired in; and every
- * participant row, removed ones too, by its id, person, role, account,
- * address and `removed_at`. Rows are taken in id order, however they are
- * handed in.
+ * The draft revision (decision 10, R1): HMAC-SHA256, in hex, over what the
+ * editor's writes change, keyed with `purposeKey('decision-revision')`, a key
+ * derived from the server's own and never stored (the code review's C2), so
+ * that holding it lets nobody test guesses at what it covers offline. The
+ * decision's title, status, closing time, vote mode, working content, current
+ * version and decider; every option row, retired ones too, by its id, label,
+ * position and the versions it was added and retired in; and every
+ * participant row, removed ones too, by its id, person, role and
+ * `removed_at`. Rows are taken in id order, however they are handed in.
+ *
+ * Card 2706: never a delivery column, a participant's account or address, nor
+ * the decision's `updated_at`. A Resend and an administrator's account or
+ * address change write those alone, and no write that asks this revision
+ * reads them as its caller saw them: each is read again at the write (the
+ * mail at its send, `reachOf`; one live row per account; the account and
+ * address writes' own guards). So they no longer refuse an editor's save over
+ * nothing it edits, an administrator's included (D3). `updated_at` is still
+ * stamped by them, for the board's list and every answer that shows it; every
+ * other write that stamps it changes a column covered here. The results
+ * revision still covers all three (`resultsRevisionOf`).
  */
 export function revisionOf(decision: Decision, options: DecisionOption[], participants: DecisionParticipant[]): string {
 	return createHmac('sha256', purposeKey(REVISION_PURPOSE)).update(JSON.stringify(coveredBy(decision, options, participants))).digest('hex');
@@ -423,21 +432,27 @@ export function revisionOf(decision: Decision, options: DecisionOption[], partic
 /** Rows in id order, however they are handed in. */
 const inOrder = <T extends { id: number }>(rows: T[]) => [...rows].sort((a, b) => a.id - b.id);
 
-/** What the draft revision covers, and the results revision with it. */
+/** The decision columns both revisions cover. */
+const decisionColumns = (decision: Decision) => [
+	decision.title,
+	decision.status,
+	decision.closesAt,
+	decision.voteMode,
+	decision.workingContent,
+	decision.currentVersion,
+	decision.deciderUserId
+];
+
+/** The option rows both revisions cover. */
+const optionColumns = (options: DecisionOption[]) =>
+	inOrder(options).map((option) => [option.id, option.label, option.position, option.addedInVersion, option.retiredInVersion]);
+
+/** What the draft revision covers (card 2706: no delivery column, and not `updated_at`). */
 function coveredBy(decision: Decision, options: DecisionOption[], participants: DecisionParticipant[]) {
 	return {
-		decision: [
-			decision.title,
-			decision.status,
-			decision.closesAt,
-			decision.voteMode,
-			decision.workingContent,
-			decision.currentVersion,
-			decision.deciderUserId,
-			decision.updatedAt
-		],
-		options: inOrder(options).map((option) => [option.id, option.label, option.position, option.addedInVersion, option.retiredInVersion]),
-		participants: inOrder(participants).map((row) => [row.id, row.personId, row.role, row.userId, row.email, row.removedAt])
+		decision: decisionColumns(decision),
+		options: optionColumns(options),
+		participants: inOrder(participants).map((row) => [row.id, row.personId, row.role, row.removedAt])
 	};
 }
 
@@ -447,7 +462,10 @@ const RESULTS_REVISION_PURPOSE = 'decision-results-revision';
 /**
  * The results revision (card 2679, decision 8): HMAC-SHA256, in hex, keyed
  * with `purposeKey('decision-results-revision')`, over everything the draft
- * revision covers, every response id `responsesOf` gives (votes, abstentions
+ * revision covers and, as before card 2706, the decision's `updated_at` and
+ * each participant's account and address (so that no ruling or release is
+ * made against a participant change its caller has not seen; its value is
+ * what it was), every response id `responsesOf` gives (votes, abstentions
  * and no concerns, never a concern: their table is insert-only, so the set of
  * ids is the state), and every question's id, the moment it was answered,
  * the moment an agent's draft answer was published and whether its answer is
@@ -466,8 +484,11 @@ export function resultsRevisionOf(of: {
 	responseIds: number[];
 	questions: { id: number; answeredAt: string | null; answerReviewedAt: string | null; answerAgentDrafted: boolean }[];
 }): string {
+	// Built in place, in the order and shape it had before card 2706, so that its value did not change.
 	const covered = {
-		...coveredBy(of.decision, of.options, of.participants),
+		decision: [...decisionColumns(of.decision), of.decision.updatedAt],
+		options: optionColumns(of.options),
+		participants: inOrder(of.participants).map((row) => [row.id, row.personId, row.role, row.userId, row.email, row.removedAt]),
 		responses: [...of.responseIds].sort((a, b) => a - b),
 		questions: inOrder(of.questions).map((question) => [question.id, question.answeredAt, question.answerReviewedAt, question.answerAgentDrafted])
 	};

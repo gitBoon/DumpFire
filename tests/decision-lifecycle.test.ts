@@ -13,7 +13,9 @@
  * time more than a year ahead refused on opening and re-publishing (S3), the
  * record mail one caller causes capped across decisions (S2), each cap's end
  * read as `mailRestOf` reads it (F7), and the administrator's offers decided
- * by the writes' own rules (F2).
+ * by the writes' own rules (F2). Card 2706: a Resend and the administrator's
+ * account and address changes leave an open editor's revision, so each write
+ * that asks it still passes, and a real content change still refuses each.
  *
  * Each write is called as a route will call it, inside `writeAs` and handed
  * its `caller`, with `effects()` installed so that no mail leaves, mail set
@@ -91,13 +93,17 @@ import { appendEvent, SYSTEM_ACTOR } from '$lib/server/decision-record';
 import { REVOKE_WORDS, SKIP_WORDS } from '$lib/server/decision-links';
 import { CALLER_MAIL_DAILY_CAP, DRY_RUN_DAILY_CAP, PUBLISH_DAILY_CAP, RECORD_MAIL_DAILY_CAP } from '$lib/server/decision-mail';
 import {
+	changeParticipantAddress,
 	dryRunDecision,
 	extendDecision,
+	markReviewed,
 	openDecision,
 	participantAccountGuard,
 	participantAddressGuard,
 	republishDecision,
 	resendInvitation,
+	setDecider,
+	setParticipantAccount,
 	setParticipants,
 	updateDraft,
 	withdrawDecision
@@ -1022,6 +1028,161 @@ describe('POST …/resend (41)', () => {
 		else expect(text).not.toContain('@example.test');
 		await sent.settle();
 		expect(sent.emails.map((mail) => mail.to)).toEqual(['pat.doe@example.test']);
+	});
+});
+
+// ─── Card 2706: a delivery change leaves an open editor's revision ───────────
+
+describe("a delivery change leaves an open editor's revision, and a real change still refuses it (card 2706)", () => {
+	/**
+	 * An open decision of `author`'s, A and B published in version 1 and listed in
+	 * the working copy, its situation flagged as an agent's and its `updated_at`
+	 * in the past; Sam, consulted by a link at the address the directory holds;
+	 * Pat, consulted by a live link at the address they had, whose person now
+	 * holds an account and another address; a board editor to name as decider;
+	 * an administrator; and the author in the directory, as a dry run asks.
+	 */
+	function world() {
+		const author = editorNamed('author');
+		const deputy = editorNamed('deputy');
+		const admin = makeUser({ username: 'admin', role: 'admin' });
+		inDirectory(author);
+		const made = makeDecision({ board, author, decider: author, title: 'Which plan?', status: 'open', closesAt: FUTURE, currentVersion: 1, openedAt: '2026-11-01 09:00:00' });
+		const a = makeOption(made, { label: 'A', position: 0, addedInVersion: 1 });
+		const b = makeOption(made, { label: 'B', position: 1, addedInVersion: 1 });
+		makeVersion(decisionRow(made.id), { question: 'Which one?' }, { number: 1 });
+		const sam = makeParticipant(made, { person: makePerson({ fullName: 'Sam Roe' }), role: 'consulted' });
+		const person = makePerson({ fullName: 'Pat Doe', email: 'pat.old@example.test' });
+		const pat = makeParticipant(made, { person, role: 'consulted', token: 'a-live-link-of-pat', hadAccount: false });
+		const account = makeUser({ username: 'pat-account' });
+		db.update(people).set({ userId: account.id, email: 'pat.new@example.test' }).where(eq(people.id, person.id)).run();
+		const w = { author, deputy, admin, decision: decisionRow(made.id), a, b, sam, pat };
+		db.update(decisions)
+			.set({ workingContent: JSON.stringify({ ...contentOf(w, 'An agent wrote this.'), agentDrafted: { situation: true } }), updatedAt: '2026-11-01 09:00:00' })
+			.where(eq(decisions.id, made.id))
+			.run();
+		return { ...w, decision: decisionRow(made.id) };
+	}
+	type World = ReturnType<typeof world>;
+
+	/** The working copy's content as a save sends it, with `situation`. */
+	const contentOf = (w: { a: { id: number }; b: { id: number } }, situation: string) => ({
+		situation,
+		question: 'Which one, now?',
+		options: [w.a.id, w.b.id].map((optionId) => ({ optionId, title: 'An option', summary: '', pros: [], cons: [], commercial: '' }))
+	});
+
+	const at = (w: World) => ({ decisionId: w.decision.id });
+	const of = (w: World, p: DecisionParticipant) => ({ decisionId: w.decision.id, participantId: p.id });
+
+	/** Each change that writes delivery columns alone, made in another tab while the author's editor is open. */
+	const changes: [string, (w: World) => void][] = [
+		['a Resend', (w) => void as(w.author, (caller) => resendInvitation(caller, of(w, w.sam), null, UI))],
+		["an administrator's Attach account", (w) => void as(w.admin, (caller) => setParticipantAccount(caller, of(w, w.pat), { account: 'person' }, UI))],
+		["an administrator's Use the directory's address", (w) => void as(w.admin, (caller) => changeParticipantAddress(caller, of(w, w.pat), null, UI))]
+	];
+
+	/** All three changes, one after another, and then past the 10-minute mail rest, which would refuse re-publishing for a reason of its own. */
+	const allChanges = (w: World) => {
+		for (const [, change] of changes) change(w);
+		ageRecordMail(w.decision.id);
+	};
+
+	/** Each write that asks the revision, as the author's open editor or its controls send it. */
+	const paths: [string, (w: World, revision: string) => unknown][] = [
+		['the editor save', (w, revision) => as(w.author, (caller) => updateDraft(caller, at(w), { revision, content: contentOf(w, 'Edited by the author.') }, UI))],
+		['Mark reviewed', (w, revision) => as(w.author, (caller) => markReviewed(caller, at(w), { sections: 'all', revision }, UI))],
+		[
+			'the participant save',
+			(w, revision) =>
+				as(w.author, (caller) =>
+					setParticipants(caller, at(w), { participants: [{ personId: w.sam.personId!, role: 'consulted' }, { personId: w.pat.personId!, role: 'informed' }], revision }, UI)
+				)
+		],
+		['the decider named', (w, revision) => as(w.author, (caller) => setDecider(caller, at(w), { deciderUserId: w.deputy.id, revision }, UI))],
+		['re-publishing', (w, revision) => as(w.author, (caller) => republishDecision(caller, at(w), { changeNote: 'The dates moved.', askAgain: false, revision }, UI))],
+		['a dry run', (w, revision) => dryRun(w.author, w.decision.id, { revision })]
+	];
+
+	it.each(changes)('%s leaves the revision as the open editor read it, and still moves updated_at', async (_change, change) => {
+		const w = world();
+		const read = readEditPage(w.author, w.decision.id).revision;
+
+		change(w);
+
+		expect(decisionRow(w.decision.id).updatedAt).not.toBe('2026-11-01 09:00:00');
+		expect(revisionFor(w.decision.id)).toBe(read);
+		await sent.settle();
+	});
+
+	it.each(paths)('%s passes with the revision read before all three changes', async (_path, write) => {
+		const w = world();
+		const read = readEditPage(w.author, w.decision.id).revision;
+
+		allChanges(w);
+
+		expect(decisionRow(w.decision.id).updatedAt).not.toBe('2026-11-01 09:00:00');
+		expect(revisionFor(w.decision.id)).toBe(read);
+		expect(outcome(() => write(w, read))).toBe('passed');
+		await sent.settle();
+	});
+
+	it('re-publishing after a Resend is held by the 10-minute mail rest alone, never the revision, and passes with the same revision once past it', async () => {
+		const w = world();
+		const read = readEditPage(w.author, w.decision.id).revision;
+		const republish = () => as(w.author, (caller) => republishDecision(caller, at(w), { changeNote: 'The dates moved.', askAgain: false, revision: read }, UI));
+
+		as(w.author, (caller) => resendInvitation(caller, of(w, w.sam), null, UI));
+		await sent.settle();
+		const before = written();
+
+		const held = outcome(republish);
+		expect(held).toMatchObject({ status: 409, message: expect.stringMatching(/^Sam Roe was mailed about this decision less than 10 minutes ago/) });
+		expect(held).not.toEqual({ status: 409, message: STALE_REVISION });
+		expect(written()).toEqual(before);
+
+		ageRecordMail(w.decision.id);
+		expect(outcome(republish)).toBe('passed');
+		await sent.settle();
+	});
+
+	it.each(paths)("%s still refuses 409 once another editor's save changed the content, nothing written", async (_path, write) => {
+		const w = world();
+		const read = readEditPage(w.author, w.decision.id).revision;
+		as(w.admin, (caller) => updateDraft(caller, at(w), { revision: read, content: contentOf(w, 'Changed by someone else.') }, UI));
+		const before = written();
+
+		expect(outcome(() => write(w, read))).toEqual({ status: 409, message: STALE_REVISION });
+		expect(written()).toEqual(before);
+		await sent.settle();
+		expect(sent.all).toEqual([]);
+	});
+
+	it("opening a draft still refuses 409 once another editor's save changed it, nothing written", () => {
+		const author = editorNamed('author');
+		const admin = makeUser({ username: 'admin', role: 'admin' });
+		const draft = readyOf(author);
+		const read = readEditPage(author, draft.id).revision;
+		as(admin, (caller) => updateDraft(caller, { decisionId: draft.id }, { revision: read, title: 'Renamed elsewhere' }, UI));
+		const before = written();
+
+		expect(outcome(() => as(author, (caller) => openDecision(caller, { decisionId: draft.id }, { revision: read }, UI)))).toEqual({ status: 409, message: STALE_REVISION });
+		expect(written()).toEqual(before);
+	});
+
+	it("an administrator's editor, which shows the address, is not refused over another administrator's change to it (D3)", () => {
+		const w = world();
+		const other = makeUser({ username: 'other-admin', role: 'admin' });
+		const page = readEditPage(w.admin, w.decision.id);
+		expect(page.participants.find((p) => p.id === w.pat.id)).toMatchObject({ email: 'pat.old@example.test', userId: null });
+
+		as(other, (caller) => changeParticipantAddress(caller, of(w, w.pat), null, UI));
+		as(other, (caller) => setParticipantAccount(caller, of(w, w.pat), { account: 'person' }, UI));
+
+		expect(outcome(() => as(w.admin, (caller) => updateDraft(caller, at(w), { revision: page.revision, content: contentOf(w, 'Edited by an administrator.') }, UI)))).toBe(
+			'passed'
+		);
+		expect(readEditPage(w.admin, w.decision.id).participants.find((p) => p.id === w.pat.id)).toMatchObject({ email: 'pat.new@example.test', reach: 'account' });
 	});
 });
 
