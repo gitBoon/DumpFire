@@ -17,6 +17,13 @@
  * with the role they held when they answered, as the answer's event recorded
  * it, never as who the author or decider is now (S7).
  *
+ * Card 2680 (decision 12) extracts the projection of one row,
+ * `questionViewOf`, so that a person record shows a participant's questions
+ * by the same rule: `questionsOfParticipations`, `'own'` as the participant
+ * page gives them their own, and `'privileged'` as the author, the decider
+ * and administrators are given them, for a whole page of participations in
+ * two reads (its code review's F2).
+ *
  * The participant page's reach test lives here (`reachedParticipantOf`), so
  * that the page and `readQuestions`, which card 2682's API wraps, ask the
  * same rule (F2).
@@ -33,7 +40,7 @@ import { decisionParticipants, decisionQuestions, people, type Decision, type De
 import type { SessionUser } from './auth';
 import { mayDo, type DecisionAccess } from './decision-access';
 import { reachOf } from './decision-links';
-import { accountHistory, eventsOfKind, questionsBy, questionsOf } from './decision-record';
+import { accountHistory, eventsOfKindsOn, questionsBy, questionsByParticipants, questionsOf } from './decision-record';
 import { linkUsable, TRANSITIONS } from './decision-status';
 import { requireDecision } from './route-guards';
 import { QUESTIONS_PER_PARTICIPANT } from '$lib/decision-rules';
@@ -109,9 +116,21 @@ export function answererRoleOf(access: DecisionAccess): 'author' | 'decider' {
  * published draft keeps its `question_answered` role.
  */
 function rolesOf(decisionId: number): Map<number, 'author' | 'decider'> {
+	return rolesOfDecisions([decisionId]);
+}
+
+/**
+ * `rolesOf` for many decisions in one read (card 2680 code review, F2), by
+ * question id, which no two decisions share: every `question_answered` first,
+ * then every `answer_replaced`, each in id order, so that a replacement's
+ * role stands over the answer it replaced.
+ */
+function rolesOfDecisions(decisionIds: readonly number[]): Map<number, 'author' | 'decider'> {
 	const roles = new Map<number, 'author' | 'decider'>();
+	const events = eventsOfKindsOn(decisionIds, ['question_answered', 'answer_replaced']);
 	for (const kind of ['question_answered', 'answer_replaced'] as const) {
-		for (const event of eventsOfKind(decisionId, kind)) {
+		for (const event of events) {
+			if (event.kind !== kind) continue;
 			const { questionId, role } = event.detail;
 			if (typeof questionId === 'number' && (role === 'author' || role === 'decider')) roles.set(questionId, role);
 		}
@@ -168,38 +187,124 @@ export function questionsFor(decision: Decision, viewer: QuestionViewer): Questi
 	}
 	if (!privileged && own === null) return [];
 
-	const named = privileged && viewer.source === 'ui';
-	const ids = mayAnswerOf(decision, viewer.access);
-	const roles = rolesOf(decision.id);
-	const closedBy = decision.status === 'ruled' || decision.status === 'superseded' ? 'ruling' : decision.status === 'withdrawn' ? 'withdrawal' : null;
+	const ctx: QuestionViewContext = {
+		own,
+		privileged,
+		ids: mayAnswerOf(decision, viewer.access),
+		roles: rolesOf(decision.id),
+		closedBy: closedByOf(decision),
+		source: viewer.source
+	};
+	return questionsOf(decision.id).map((row) => questionViewOf(row, ctx));
+}
 
-	return questionsOf(decision.id).map((row): QuestionView => {
-		const mine = own !== null && row.participantId === own;
-		const answer: QuestionAnswer | null = standsBehind(row)
+/**
+ * What `questionViewOf` projects a question row for (card 2680, decision 12):
+ * the viewer's own participant row, or null; whether they see who asked and
+ * the drafts (`askers`); whether they are given its id (they may answer it
+ * now); the role each answer was given in; what closed the questions, if
+ * anything; and the tree. `upTo`, where it is given, shows an answer only
+ * when it was given at or before that moment.
+ */
+export type QuestionViewContext = {
+	own: number | null;
+	privileged: boolean;
+	ids: boolean;
+	roles: ReadonlyMap<number, 'author' | 'decider'>;
+	closedBy: QuestionView['closedUnanswered'];
+	source: 'ui' | 'api';
+	upTo?: Stamp;
+};
+
+/** What closed a decision's questions unanswered: its ruling (or supersession), its withdrawal, or nothing yet. */
+function closedByOf(decision: Pick<Decision, 'status'>): QuestionView['closedUnanswered'] {
+	return decision.status === 'ruled' || decision.status === 'superseded' ? 'ruling' : decision.status === 'withdrawn' ? 'withdrawal' : null;
+}
+
+/**
+ * The one projection of a question row (card 2678, decision 2; extracted
+ * unchanged from `questionsFor` by card 2680, decision 12): every field the
+ * viewer is not given is left out. `questionsFor` and
+ * `questionsOfParticipations` call it.
+ */
+export function questionViewOf(row: DecisionQuestion, ctx: QuestionViewContext): QuestionView {
+	const mine = ctx.own !== null && row.participantId === ctx.own;
+	const named = ctx.privileged && ctx.source === 'ui';
+	// A published draft's moment is its publishing (decision 8).
+	const answeredAt = (row.answerAgentDrafted ? row.answerReviewedAt : row.answeredAt) ?? '';
+	const inTime = ctx.upTo === undefined || (answeredAt !== '' && answeredAt <= ctx.upTo);
+	const answer: QuestionAnswer | null =
+		standsBehind(row) && inTime
 			? {
 					text: row.answer!,
 					answererName: row.answeredByName ?? '',
-					answererRole: roles.get(row.id) ?? null,
-					// A published draft's moment is its publishing (decision 8).
-					answeredAt: (row.answerAgentDrafted ? row.answerReviewedAt : row.answeredAt) ?? '',
+					answererRole: ctx.roles.get(row.id) ?? null,
+					answeredAt,
 					agentDrafted: row.answerAgentDrafted
 				}
 			: null;
-		return {
-			...(ids ? { id: row.id } : {}),
-			question: row.question,
-			askedInVersion: row.askedInVersion,
-			own: mine,
-			...(named ? { askerName: row.askerName } : {}),
-			...(named || (mine && viewer.source === 'ui') ? { askedAt: row.askedAt } : {}),
-			...(row.via === 'api' && (privileged || mine) ? { askedByAgent: true as const } : {}),
-			answer,
-			...(privileged && pendingDraft(row) ? { draft: { text: row.answer!, drafterName: row.answeredByName ?? '', draftedAt: row.answeredAt ?? '' } } : {}),
-			closedUnanswered: answer === null ? closedBy : null,
-			// Fail closed (code review S3): any source but the page's marks the text as a participant's words.
-			...(viewer.source !== 'ui' ? { untrusted: true as const } : {})
-		};
-	});
+	return {
+		...(ctx.ids ? { id: row.id } : {}),
+		question: row.question,
+		askedInVersion: row.askedInVersion,
+		own: mine,
+		...(named ? { askerName: row.askerName } : {}),
+		...(named || (mine && ctx.source === 'ui') ? { askedAt: row.askedAt } : {}),
+		...(row.via === 'api' && (ctx.privileged || mine) ? { askedByAgent: true as const } : {}),
+		answer,
+		...(ctx.privileged && pendingDraft(row) ? { draft: { text: row.answer!, drafterName: row.answeredByName ?? '', draftedAt: row.answeredAt ?? '' } } : {}),
+		closedUnanswered: answer === null ? ctx.closedBy : null,
+		// Fail closed (code review S3): any source but the page's marks the text as a participant's words.
+		...(ctx.source !== 'ui' ? { untrusted: true as const } : {})
+	};
+}
+
+/**
+ * The questions each participation's participant asked, by participant id,
+ * for a page of a person record at once (card 2680, decisions 9, 12 and 14;
+ * batched by its code review's F2): the questions in one read, and the role
+ * each answer was given in in one read, however many participations the page
+ * holds.
+ *
+ *   - `'own'`: as the participant page gives them their own (decision 12):
+ *     `own: true`, no privilege, no id, no asker's name, no draft; the answer
+ *     only where a person stands behind it. With `upTo`, the moment the
+ *     participant was removed from a decision they may no longer view
+ *     (decision 14, S2), an answer only where it was given at or before it,
+ *     and nothing of what closed the questions, which would say what became
+ *     of the decision.
+ *   - `'privileged'`: as the author, the decider and administrators are given
+ *     them (decision 9): who asked and when on the page, and an agent's draft;
+ *     never an id, which only the decision's page gives, to one who may
+ *     answer it now.
+ */
+export function questionsOfParticipations(
+	rows: readonly { decision: Decision; participantId: number; upTo?: Stamp }[],
+	audience: 'own' | 'privileged',
+	source: 'ui' | 'api'
+): Map<number, QuestionView[]> {
+	const roles = rolesOfDecisions(rows.map((row) => row.decision.id));
+	const asked = questionsByParticipants(rows.map((row) => row.participantId));
+	const found = new Map<number, QuestionView[]>();
+	for (const { decision, participantId, upTo } of rows) {
+		const ctx: QuestionViewContext =
+			audience === 'own'
+				? {
+						own: participantId,
+						privileged: false,
+						ids: false,
+						roles,
+						closedBy: upTo === undefined ? closedByOf(decision) : null,
+						source,
+						...(upTo === undefined ? {} : { upTo })
+					}
+				: { own: null, privileged: true, ids: false, roles, closedBy: closedByOf(decision), source };
+		found.set(
+			participantId,
+			(asked.get(participantId) ?? []).map((row) => questionViewOf(row, ctx))
+		);
+	}
+	return found;
 }
 
 /**

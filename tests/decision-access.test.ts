@@ -196,7 +196,10 @@ describe('DECISION_RULES', () => {
 			ask: ['participant'],
 			answer: ['author', 'decider'],
 			questions: ['admin', 'author', 'decider', 'participant'],
-			askers: ['admin', 'author', 'decider']
+			askers: ['admin', 'author', 'decider'],
+			// Card 2680 (decision 17): edit access to the decision's home board.
+			linkCard: ['admin', 'boardOwner', 'boardEditor'],
+			unlinkCard: ['admin', 'boardOwner', 'boardEditor']
 		});
 		expect(DRAFT_VIEWERS).toEqual(['admin', 'author', 'decider', 'boardOwner']);
 	});

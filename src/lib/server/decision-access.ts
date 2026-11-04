@@ -31,6 +31,11 @@
  * the decider's and administrators' (decisions 1 and 2). A board reader who
  * is none of these reads no question.
  *
+ * Card 2680 adds linking a card to a decision and unlinking it (`linkCard`,
+ * `unlinkCard`): an editor's or owner of the decision's board, or an
+ * administrator; with no board, an administrator alone. The author and the
+ * decider are not listed: a link is board work, not the decision's.
+ *
  * `requireDecision` in route-guards.ts asks both, and answers 404 for a
  * decision the caller may not view, as for one that is not there (decision
  * 4). This module is not the service and does not import it: the service
@@ -90,7 +95,11 @@ export const DECISION_RULES: Readonly<Record<DecisionAction, readonly DecisionRo
 	ask: ['participant'],
 	answer: ['author', 'decider'],
 	questions: ['admin', 'author', 'decider', 'participant'],
-	askers: ['admin', 'author', 'decider']
+	askers: ['admin', 'author', 'decider'],
+	// Card 2680 (decision 17): edit access to the decision's home board; with no board, an administrator alone (design 6.1 E3).
+	// The write also asks edit access to the card's board (`requireCard(…, 'edit')`).
+	linkCard: ['admin', 'boardOwner', 'boardEditor'],
+	unlinkCard: ['admin', 'boardOwner', 'boardEditor']
 };
 
 /** Who may view a draft (decision 5). */

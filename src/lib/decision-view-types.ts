@@ -9,6 +9,7 @@
  * reviewer's name, and a response carries no row id of its own or of anything
  * else (decision 16, S4).
  */
+import type { LinkedCardView } from '$lib/decision-register-types';
 import type { Stamp } from '$lib/timestamps';
 
 /** What every reader shows: `closed`, and `open` past its `closes_at`, are `awaiting_ruling` (moved here from decision-status.ts, which re-exports it). */
@@ -343,4 +344,20 @@ export type DecisionPageData = {
 	mayAsk: boolean;
 	/** Card 2678, session only: whether the caller may answer the questions now (`mayAnswerOf`). */
 	mayAnswer?: boolean;
+	/** Card 2680 (decision 29), session only: whether the caller may read the record view (`record`), a draft's too. */
+	mayReadRecord?: boolean;
+	/**
+	 * Card 2680 (decision 18), session only: the linked cards on boards the
+	 * caller can open now, with no count of the rest; none on a draft, which is
+	 * never linked.
+	 */
+	linkedCards?: LinkedCardView[];
+	/** Card 2680 (decision 17), session only: whether the caller may link a card now, below the cap, as `linkCard` asks. */
+	mayLinkCards?: boolean;
+	/**
+	 * Card 2680 (decision 17, slice 3b), session only: whether the caller may
+	 * unlink a card now, as `unlinkCard` asks: also at the cap and on a
+	 * withdrawn decision, where `mayLinkCards` is false.
+	 */
+	mayUnlinkCards?: boolean;
 };

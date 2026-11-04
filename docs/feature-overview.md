@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.63
+version: 1.65
 status: As-Built
 date: 2026-11-04
 tags:
@@ -420,6 +420,35 @@ stateDiagram-v2
     Drafted --> Published: a person publishes it (asker mailed)
     Drafted --> Answered: a person replaces it (asker mailed)
     Open --> Closed: ruled, superseded or withdrawn ("Not answered before the ruling")
+```
+
+#### Every decision in one place, each person's record, and linked cards
+
+Decisions can be found across boards, each person's part in them read back, a decision's full record read by its decider, and cards linked to the decisions they relate to (card 2680, from 4 November 2026).
+
+- **The register** — **Views → Decisions** on the dashboard, or **All decisions** on a board's decision list, opens `/decisions`: every decision you can see, across boards. Its tabs are **Waiting for my response** (decisions you are consulted on, still open, that you have not answered in this round; with its count), **Waiting on me** (decisions you decide that are waiting for your ruling and you can still rule on; with its count), **Open**, **Ruled** and **All**. It opens on Waiting for my response when something is waiting, otherwise on Open. You can filter by board, by person, by title, and on All by status. Each row shows the title, its status, its board, the decider, the author (unless you are only a participant) and, until it is ruled, its closing time, in UTC. Open, Ruled and All show 50 at a time, newest first, with **Older decisions** and **Back to newest**; the two waiting tabs show up to 200 and say so when there are more. On a phone each row stacks with its labels
+- **What the register shows you** — exactly the decisions you can open: an administrator every one; a decision that has been opened to anyone who can open its board, its author, its decider and its participants; a draft only to its author, its decider and the board's owners. A board you cannot open is named as it was when the decision was made, with no link, and is not offered in the board filter; filtering by a board you cannot open shows nothing, as for a board that does not exist. Nobody else's response, name or count is shown
+- **Filtering by person** — shows only what that person's record would show you (below): an administrator anyone's participations, a decider those on the decisions they decide, and you your own. For anyone else the filter shows nothing. The person box is a search: type part of a name and pick from up to 25 matches. A decider is offered each person by the name they were included under on the decider's own decisions
+- **A person's record** — `/decisions/people/<id>`: what a person was asked and what they said. **My record**, in the register's header, opens your own (where your account is linked to a person of the directory); a decision's record view lists **People's records** for its decider and administrators; and any record opens by its address. An administrator sees anyone's, with their job title, groups, address and whether they have left; a decider sees it only for the decisions they decide; and you see your own. Each decision lists your role, when you were included and removed, every response you gave (replaced ones too), your questions and the answers, your concerns, and what happened to you on it (invited, told, seen, responded). Your own record never shows who did what or anything only the decider sees, and does not include anything you answered through a personal link before your account was linked to you. A decision you were removed from and can no longer open is shown as "A decision you were removed from": when you were included and removed, and your own words, with no title or board; one you are still on but cannot open is shown the same way as "A decision you can no longer open". Anyone who may not see a person's record, and a person who is not there, get the same "Person not found"
+- **The record view** — **Record**, on the decision's page and in its editor, for the decider (while they can edit its board) and administrators, opens `/decisions/<id>/record`: everything that happened on the decision, oldest first, 500 at a time, which can be narrowed to one participant. Each entry says what happened, when, to whom and by whom; addresses, and the account a personal link was opened while signed in as, are shown to administrators alone
+- **Linking a card** — on a decision's page, **Linked cards** lists the cards linked to it on boards you can open, each linking to the card, with its board and "Archived" where it is. If you can edit the decision's board, **Find a card to link** searches by #id or title, and **Link** links one you can edit (one on a board you can only read is refused, and the page says why); **Unlink** takes one off. A decision can be linked to at most 100 cards and a card to at most 20 decisions (at its limit a card says only that it has reached it, not how many it holds). Linking a card already linked does nothing. An archived card cannot be linked, but can be unlinked. Drafts cannot be linked, and a withdrawn decision gains no new links
+- **On the card** — a card's window lists the decisions linked to it that you can see, under its subtasks, each with its status and, until it is ruled, its closing time, and each opening the decision. The card's board's activity says "Linked card to decision" or "Unlinked card from decision", naming the card but not the decision, as someone who can read the board may not be able to see it. Deleting a linked decision leaves "Linked decision deleted" on each linked card's board. Linking is not counted as work on the card in the management report
+- **Staying current** — the register re-reads itself when a decision on a board you can open changes; a board's decision list when one of its own does. A decision with no board, or one you take part in on a board you cannot open, is brought up to date when you next open or return to the page
+
+```mermaid
+flowchart LR
+    Dash["Dashboard: Views → Decisions"] --> Reg["/decisions: the register"]
+    BoardList["A board: All decisions"] --> Reg
+    Reg -->|"a title"| Page["The decision's page"]
+    Page -->|"Record (decider, admin)"| Rec["/decisions/id/record"]
+    Rec -->|"filter: one participant"| Rec
+    Reg -->|"My record"| Person["/decisions/people/id"]
+    Rec -->|"People's records (decider, admin)"| Person
+    Addr["By its address"] --> Person
+    Person -->|"Record, per decision (decider, admin)"| Rec
+    Page -->|"Link / Unlink"| Cards["Linked cards"]
+    Cards -->|"a card"| Window["The card's window: its decisions"]
+    Window -->|"a decision"| Page
 ```
 
 ---

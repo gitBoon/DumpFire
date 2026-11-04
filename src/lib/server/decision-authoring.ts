@@ -670,6 +670,8 @@ export type EditPage = {
 	republishSummary: RepublishSummary | null;
 	/** Card 2679: whether the caller may read the results and rule from them (`results`: the decider and administrators). */
 	mayReadResults: boolean;
+	/** Card 2680 (decision 29): whether the caller may read the record view (`record`: the decider with board edit, and administrators), a draft's too. */
+	mayReadRecord: boolean;
 };
 
 /** The lifecycle controls the editor offers (card 2697, Q14). */
@@ -804,6 +806,7 @@ export function readEditPage(user: SessionUser, decisionId: number): EditPage {
 				: null,
 		actions,
 		republishSummary: actions.republish ? republishSummaryOf(decision) : null,
-		mayReadResults: decision.status !== 'draft' && mayDo(access, 'results', decision)
+		mayReadResults: decision.status !== 'draft' && mayDo(access, 'results', decision),
+		mayReadRecord: mayDo(access, 'record', decision)
 	};
 }

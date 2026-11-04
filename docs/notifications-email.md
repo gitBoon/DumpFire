@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.52
+version: 1.53
 status: As-Built
 date: 2026-11-04
 tags:
@@ -1563,7 +1563,7 @@ flowchart LR
 | `xp-update` | `{}` | XP was given for a completion |
 | `celebrate` | `{type: 'complete', cardTitle, userName, userEmoji, xpGained}` | A card moved into a Complete column, or created in one (card 2134). One event for a drop of several cards, naming the last |
 | `update` | `{type: 'card', action: 'moved_away', cardTitle, fromColumn, toColumn, userName, userEmoji}` | A card moved to another board, sent to the board it left. `action: 'moved_in'`, with the same fields, goes to the board it joined. Neither names the other board (card 2181) |
-| `decision` | `{decisionId, status, boardId}` | A decision on the board opened, re-published, closed, extended, and, once it had been opened, withdrawn or deleted (card 2675); ruled, its results released, and an old decision superseded, on the old one's board (card 2679; never for a concern or a superseding draft). `status` is the shown one (`open`, `awaiting_ruling`, `withdrawn`, …). Never for a draft, a participant, a mail or a link, nor for a decision whose board is gone. The data carries no title and no name, and `boardId` itself, so the global stream can check it. No page listens for it yet (card 2680), so no open board re-reads itself on it. The decision service's routes under `/api/decisions` send it as each write commits |
+| `decision` | `{decisionId, status, boardId}` | A decision on the board opened, re-published, closed, extended, and, once it had been opened, withdrawn or deleted (card 2675); ruled, its results released, and an old decision superseded, on the old one's board (card 2679; never for a concern or a superseding draft). `status` is the shown one (`open`, `awaiting_ruling`, `withdrawn`, …). Never for a draft, a participant, a mail or a link, nor for a decision whose board is gone. The data carries no title and no name, and `boardId` itself, so the global stream can check it. Two pages listen for it (card 2680, `connectLiveRefresh`'s `events` option): the register (`/decisions`, every `decision` event the caller is sent) and a board's list of decisions (`/board/[id]/decisions`, its own board's alone, by the payload's `boardId`), each re-reading through the one 250 ms debounce; the board itself and the decision editor do not. It reaches board viewers only: a participant who cannot open the board, and any decision with no board, are current on navigation, a return to the tab, or a reconnect. Linking or unlinking a card sends no live event. The decision service's routes under `/api/decisions` send it as each write commits |
 
 The four delete payloads say what kind of change it was and nothing more: no board name,
 card title or user (card 2108). The board of a sub-board's card can be viewed by people who
@@ -1577,6 +1577,23 @@ The two events of a move between boards carried the other board's name, `toBoard
 of its board, on the board stream and the global one, and some of them cannot open the other
 board; nothing on any page read either field, which only makes the page read its board
 again. The move's two activity entries name neither board for the same reason.
+
+**Who listens for `decision` (card 2680).** `connectLiveRefresh(onRefresh, onEvent?, options)`
+takes `{ events?, boardId? }`: `events` replaces the default `['update', 'xp-update']` (every
+caller from before passes nothing and is unchanged), and with `boardId` a `decision` event
+re-reads only when its payload's `boardId` is that board. Every event goes through the one
+250 ms debounce, on the one `keepStreamOpen`.
+
+```mermaid
+flowchart LR
+    W["A decision's lifecycle write<br/>(board not null)"] -->|"emit(boardId, 'decision', {decisionId, status, boardId})"| E["/api/events"]
+    E -->|"only to a caller who can open boardId"| R["/decisions<br/>events: ['decision']"]
+    E -->|"only to a caller who can open boardId"| L["/board/[id]/decisions<br/>events: ['decision'], boardId"]
+    L -->|"payload boardId is not this board"| X["ignored"]
+    R --> D["250 ms debounce, invalidateAll()"]
+    L --> D
+    N["A boardless decision,<br/>a participant-only caller"] -.->|"no event"| C["current on navigation,<br/>a return to the tab, or a reconnect"]
+```
 
 ### Connection Lifecycle
 

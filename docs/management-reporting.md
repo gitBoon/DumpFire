@@ -1,7 +1,7 @@
 ---
 title: "Management Activity Reporting"
 category: Reporting
-version: 1.14
+version: 1.15
 status: As-Built
 date: 2026-11-04
 tags:
@@ -185,13 +185,19 @@ which joins each entry to its card, never counts them as work. Card 2697 gave th
 their routes, and card 2679 (2026-11-04) adds three more of the same kind,
 `decision_ruled`, `decision_superseded` and `decision_results_released`, each also
 written with no card and never counted as work. A concern about a ruling, and
-making a superseding draft, write no entry at all.
+making a superseding draft, write no entry at all. Card 2680 (2026-11-04) adds three
+entries that **do** name a card, on the card's board: `decision_card_linked`,
+`decision_card_unlinked` and `decision_card_link_deleted`. Linking a card to a
+decision is planning, as a dependency or a goal is, so the three are on
+`NOT_WORK_ON_THE_CARD` (`src/lib/server/activity-report.ts`) in both spellings
+and never put a card in the window or down to whoever linked it.
 
 ```mermaid
 flowchart LR
     Entry["An activity entry"] --> HasCard{"Names a card?"}
     HasCard -->|"yes: card_moved, subtask_completed, …"| Counted["Joined to its card:<br/>counted as work"]
     HasCard -->|"no: decision_opened … decision_deleted,<br/>decision_ruled, decision_superseded,<br/>decision_results_released, milestone_*"| Ignored["Never counted"]
+    HasCard -->|"yes, but planning: dependency_*, milestone_card_*,<br/>decision_card_linked, decision_card_unlinked,<br/>decision_card_link_deleted"| Ignored
 ```
 
 A subtask edited is work on its card, as a subtask ticked is. Since card 2299 an

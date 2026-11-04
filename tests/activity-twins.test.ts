@@ -2779,6 +2779,13 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 		{ service: 'resultsReleaseGuard', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'ui' }] },
 		{ service: 'releaseResults', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'ui' }] }
 	],
+	// Card 2680 (decisions 17 and 21): linking and unlinking a card read no body; the relation is `relates` until card 2687.
+	'src/routes/api/decisions/[id]/cards/[cardId]/+server.ts PUT': [
+		{ service: 'linkCard', args: [code('caller'), { decisionId: code('id'), cardId: code('cardId'), relation: 'relates' }, null, { source: 'ui' }] }
+	],
+	'src/routes/api/decisions/[id]/cards/[cardId]/+server.ts DELETE': [
+		{ service: 'unlinkCard', args: [code('caller'), { decisionId: code('id'), cardId: code('cardId') }, null, { source: 'ui' }] }
+	],
 	'src/routes/api/v1/boards/[boardId]/cards/+server.ts POST': [
 		{ service: 'createCard', args: [code('caller'), { boardId: code('boardId') }, code('body'), { source: 'api', baseUrl: code('baseUrl') }] }
 	],

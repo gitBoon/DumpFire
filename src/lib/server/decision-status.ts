@@ -47,6 +47,36 @@ export function awaitingRulingSql(now: Stamp): SQL {
 	return sql`(${decisions.status} = 'closed' OR (${decisions.status} = 'open' AND ${decisions.closesAt} IS NOT NULL AND ${decisions.closesAt} <= ${now}))`;
 }
 
+/**
+ * The rows `decisionStatus` shows as `status` at `now`, as a condition on
+ * `decisions` (card 2680, decision 5): every shown status beside
+ * `awaitingRulingSql`, held to `decisionStatus` by
+ * tests/decision-register.test.ts, case 11. A stored status that is none of
+ * the six matches none of them.
+ */
+export function shownStatusSql(status: ShownStatus, now: Stamp): SQL {
+	switch (status) {
+		case 'awaiting_ruling':
+			return awaitingRulingSql(now);
+		case 'open':
+			return sql`(${decisions.status} = 'open' AND (${decisions.closesAt} IS NULL OR ${decisions.closesAt} > ${now}))`;
+		default:
+			return sql`${decisions.status} = ${status}`;
+	}
+}
+
+/**
+ * The one projection of status and closing time for every list (card 2680,
+ * decision 32, S4): the register, the person record and the card links. The
+ * closing time is null once ruled or superseded, as the board's list and the
+ * page give it (card 2679, decision 26): beside the ruling it would say
+ * whether the ruling was early.
+ */
+export function listedStatusOf(row: Pick<Decision, 'status' | 'closesAt'>, now: Stamp = stamp()): { shownStatus: ShownStatus; closesAt: Stamp | null } {
+	const ruled = row.status === 'ruled' || row.status === 'superseded';
+	return { shownStatus: decisionStatus(row, now), closesAt: ruled ? null : row.closesAt };
+}
+
 /** What a guard, a rule and a transition name. */
 export type DecisionAction =
 	| 'view'
@@ -76,7 +106,10 @@ export type DecisionAction =
 	| 'ask'
 	| 'answer'
 	| 'questions'
-	| 'askers';
+	| 'askers'
+	// Card 2680: a card linked to a decision, and unlinked from it.
+	| 'linkCard'
+	| 'unlinkCard';
 
 /** The actions that only read, allowed from every stored status: no transition is asked of them. */
 export type ReadAction = 'view' | 'record' | 'results' | 'questions' | 'askers';
@@ -112,7 +145,9 @@ export const DECISION_ACTION_WORDS: Readonly<Record<DecisionAction, { verb: stri
 	ask: { verb: 'ask a question on', done: 'questions are closed' },
 	answer: { verb: 'answer questions on', done: 'its questions cannot be answered' },
 	questions: { verb: 'read the questions on', done: 'its questions cannot be read' },
-	askers: { verb: 'see who asked questions on', done: 'who asked cannot be seen' }
+	askers: { verb: 'see who asked questions on', done: 'who asked cannot be seen' },
+	linkCard: { verb: 'link a card to', done: 'a card cannot be linked to it' },
+	unlinkCard: { verb: 'unlink a card from', done: 'a card cannot be unlinked from it' }
 };
 
 /** Each shown status in words, for `This decision is <status>`. */
@@ -152,7 +187,11 @@ export const TRANSITIONS: Readonly<Record<Exclude<DecisionAction, ReadAction>, r
 	supersede: ['ruled'],
 	// Card 2678 (decision 10): a question asked, and answered (published, replaced), while open or awaiting a ruling alone.
 	ask: ['open', 'closed'],
-	answer: ['open', 'closed']
+	answer: ['open', 'closed'],
+	// Card 2680 (decision 17): never on a draft, which is nobody's business but its viewers', nor linked once withdrawn; a wrong
+	// link may be taken off from any status but a draft, which holds none.
+	linkCard: ['open', 'closed', 'ruled', 'superseded'],
+	unlinkCard: ['open', 'closed', 'ruled', 'superseded', 'withdrawn']
 };
 
 /**

@@ -137,6 +137,7 @@ import {
 	makeAttachment,
 	makeBoard,
 	makeCard,
+	makeCardLink,
 	makeComment,
 	makeDecision,
 	makeDependency,
@@ -981,6 +982,32 @@ const anAgentDraftOnAnOpenDecisionOfEditor = (w: World): void =>
 	theViewersQuestion(w, { answer: `${MARK} an agent's draft`, by: w.editor, role: 'decider', agentDrafted: true });
 
 /**
+ * Card 2680 (decisions 17 and 18): an open decision on board B, nobody's in
+ * particular, which an editor of board B may link a card to; with
+ * `aLinkFromBToA`, board A's card linked to it, what unlinking takes.
+ * `twoLinkedDecisionsOfA`: board A's card linked to a decision on each board,
+ * so that a viewer of board A is listed the one and not the other.
+ */
+const anOpenDecisionOnB = (w: World): void => {
+	decisionId = makeDecision({
+		board: w.B.board,
+		title: `${MARK_B} open decision`,
+		status: 'open',
+		closesAt: '2099-01-01 12:00:00',
+		currentVersion: 1,
+		openedAt: '2026-11-01 09:00:00'
+	}).id;
+};
+const aLinkFromBToA = (w: World): void => {
+	anOpenDecisionOnB(w);
+	makeCardLink(db.select().from(decisions).where(eq(decisions.id, decisionId!)).get()!, w.A.card);
+};
+const twoLinkedDecisionsOfA = (w: World): void => {
+	aLinkFromBToA(w);
+	makeCardLink(makeDecision({ board: w.A.board, title: `${MARK} linked decision`, status: 'open', closesAt: '2099-01-01 12:00:00', openedAt: '2026-11-01 09:00:00' }), w.A.card);
+};
+
+/**
  * A JSON request as DumpFire's own page sends it, with its `Origin`: a
  * participant's four routes take same-origin JSON alone (card 2677, decision
  * 24), and `api()` sends no `Origin` of its own.
@@ -1288,6 +1315,8 @@ const TABLE: Record<string, Case | Case[]> = {
 	// categories are those of the boards the caller can open and the shared
 	// ones (card 2128): board B's is not in it for `viewer`.
 	'GET /api/cards/[id]/context': view((w) => `/api/cards/${w.A.card.id}/context`),
+	// Card 2680 (decision 18): the card's linked decisions, those the caller may view: board B's is not listed to `viewer`.
+	'GET /api/cards/[id]/decisions': view((w) => `/api/cards/${w.A.card.id}/decisions`, { setup: twoLinkedDecisionsOfA }),
 	// The card waits on a card of board B: it is listed withheld to a caller who
 	// cannot open board B (card 2129), and the same in every answer below.
 	'GET /api/cards/[id]/dependencies': view((w) => `/api/cards/${w.A.card.id}/dependencies`),
@@ -1878,6 +1907,11 @@ const TABLE: Record<string, Case | Case[]> = {
 		() => json(`/api/decisions/${decisionId}/release`, { revision: resultsRevisionOfTheDecision() }),
 		{ setup: aReleasableDecisionOfEditor }
 	),
+
+	// ── Card links (card 2680, decision 17) ──────────────────────────────
+	// `across`: edit access to the decision's board, B, and to the card's, A. Neither reads a body.
+	'PUT /api/decisions/[id]/cards/[cardId]': across((w) => `/api/decisions/${decisionId}/cards/${w.A.card.id}`, { setup: anOpenDecisionOnB }),
+	'DELETE /api/decisions/[id]/cards/[cardId]': across((w) => `/api/decisions/${decisionId}/cards/${w.A.card.id}`, { setup: aLinkFromBToA }),
 
 	// ── A participant's part (card 2677, decisions 10 to 14, D11) ────────
 	// `own`: `viewer` is consulted on the decision, through their account.
@@ -5207,6 +5241,8 @@ describe('every page load, to a caller who cannot open a board (card 2130)', () 
 	 * A, is caught if it is shown to them.
 	 */
 	let decisionIds: { openA: number; openB: number; draftA: number };
+	/** The people of two of open A's participants, whose records the person page is asked of (card 2680). */
+	let personIds: { viEwer: number; patPage: number };
 
 	beforeEach(() => {
 		hidden = makeSubBoard(w.A.card, { owner: w.outsider, name: `${MARK_B} sub-board of board A's card` });
@@ -5216,13 +5252,15 @@ describe('every page load, to a caller who cannot open a board (card 2130)', () 
 		// Card 2677: the participant page's world. `viewer` is consulted on it through their account, a person with no
 		// account holds `LINK`, and Pat Page's response holds `MARK_B`, which no other caller of the page is given (D9).
 		makeVersion(openA, { situation: `${MARK} situation` }, { number: 1 });
-		makeParticipant(openA, { person: makePerson({ fullName: 'Vi Ewer', email: w.viewer.email, user: w.viewer }), role: 'consulted' });
+		const viEwer = makePerson({ fullName: 'Vi Ewer', email: w.viewer.email, user: w.viewer });
+		makeParticipant(openA, { person: viEwer, role: 'consulted' });
 		makeParticipant(openA, { person: makePerson({ fullName: 'Lin Holder' }), role: 'consulted', token: LINK });
 		makeResponse(pat, { comment: `${MARK_B} said by Pat Page` });
 		const openB = makeDecision({ board: w.B.board, author: w.outsider, decider: w.outsider, title: `${MARK_B} open decision`, ...opened });
 		makeVersion(openB, { situation: `${MARK_B} situation` }, { number: 1 });
 		const draftA = makeDecision({ board: w.A.board, author: w.editor, decider: w.editor, title: `${MARK_B} draft of board A` });
 		decisionIds = { openA: openA.id, openB: openB.id, draftA: draftA.id };
+		personIds = { viEwer: viEwer.id, patPage: pat.personId! };
 		db.update(cards).set({ title: `${MARK_B} card on the sub-board` }).where(eq(cards.id, hidden.cards[0].id)).run();
 		db.insert(tokenUsage).values({ cardId: hidden.cards[0].id, tokens: 7000, model: 'claude-opus-5-5', reportedByUserId: w.outsider.id }).run();
 		// The card of board A that is still assigned to `outsider`, due next
@@ -5260,6 +5298,11 @@ describe('every page load, to a caller who cannot open a board (card 2130)', () 
 		'page /decisions/[id]/results': { paths: () => [decisionIds.openA, decisionIds.openB, decisionIds.draftA].map((id) => `/decisions/${id}/results`) },
 		// A decision's page (card 2677): to `viewer`, a participant of open A, their own part and no one else's (Pat Page's `MARK_B`).
 		'page /decisions/[id]': { paths: () => [decisionIds.openA, decisionIds.openB, decisionIds.draftA].map((id) => `/decisions/${id}`) },
+		// Card 2680: the register, across boards, its board filter naming board B; a person's record, Vi Ewer's (`viewer`'s
+		// own) and Pat Page's, whose response holds `MARK_B`; and a decision's record, its decider's and administrators' alone.
+		'page /decisions': { paths: (w) => ['/decisions', '/decisions?tab=all', `/decisions?board=${w.B.board.id}`] },
+		'page /decisions/people/[personId]': { paths: () => [personIds.viEwer, personIds.patPage].map((id) => `/decisions/people/${id}`) },
+		'page /decisions/[id]/record': { paths: () => [decisionIds.openA, decisionIds.openB, decisionIds.draftA].map((id) => `/decisions/${id}/record`) },
 		'page /decision-link/[token]': { none: 'gives one decision, to the holder of its link, whoever is signed in' },
 		'page /graph': { none: "gives the caller's own account: the graph is drawn from GET /api/graph, which the table asks" },
 		'page /inbox': { paths: () => ['/inbox'] },
@@ -5331,6 +5374,12 @@ describe('every page load, to a caller who cannot open a board (card 2130)', () 
 		const results = JSON.stringify(await pageData(`/decisions/${decisionIds.openA}/results`, 'editor'));
 		expect(results).toContain(`${MARK_B} said by Pat Page`);
 		expect(results).not.toMatch(/@example\.test/);
+		// The register, a person's own record and a decision's record reach whom they are for (card 2680).
+		expect(JSON.stringify(await pageData('/decisions?tab=all', 'viewer'))).toContain(`${MARK} open decision`);
+		expect(JSON.stringify(await pageData(`/decisions/people/${personIds.viEwer}`, 'viewer'))).toContain(`${MARK} open decision`);
+		const record = JSON.stringify(await pageData(`/decisions/${decisionIds.openA}/record`, 'editor'));
+		expect(record).toContain('Pat Page');
+		expect(record).not.toMatch(/@example\.test/);
 	});
 
 	describe('the sub-board, where its card is shown', () => {

@@ -14,6 +14,8 @@
 	 * when it opens, and which dropdown or dialog is open. Each section is
 	 * handed those as props, bound where it changes them, and sends its own
 	 * writes, saying a refusal in the window's message box (`windowError`).
+	 * The card's linked decisions (card 2680) are one of those lists, drawn
+	 * read only by `CardDecisions`.
 	 */
 	import SubtaskModal from './SubtaskModal.svelte';
 	import LabelPicker from './LabelPicker.svelte';
@@ -25,6 +27,7 @@
 	import CardComments, { type CommentItem } from './card/CardComments.svelte';
 	import CardAttachments, { type AttachmentItem } from './card/CardAttachments.svelte';
 	import CardDependencies from './card/CardDependencies.svelte';
+	import CardDecisions from './card/CardDecisions.svelte';
 	import CardSubBoards from './card/CardSubBoards.svelte';
 	import CardCoverPicker from './card/CardCoverPicker.svelte';
 	import CardTemplates, { type TemplateItem } from './card/CardTemplates.svelte';
@@ -39,6 +42,7 @@
 	import { windowFields, type WindowEdits, type WindowField, type WindowFields } from '$lib/board/card-window.svelte';
 	import { onMount, untrack } from 'svelte';
 	import type { CardType, CategoryType, LabelType, SubtaskType, DependencyRefType, MilestoneType } from '$lib/types';
+	import type { LinkedDecisionView } from '$lib/decision-register-types';
 
 	let {
 		card = null,
@@ -646,8 +650,29 @@
 		if (card) {
 			loadComments();
 			loadDependencies();
+			loadDecisions(card.id);
 		}
 	});
+
+	// ─── Linked decisions (card 2680, decision 23) ──────────────────────────
+	//
+	// Read once, when the window opens, and kept while another tab is shown;
+	// drawn read only by CardDecisions. Supplementary: a failed read says so in
+	// that section and never blocks the card.
+
+	let linkedDecisions = $state<LinkedDecisionView[]>([]);
+	let decisionsFailed = $state(false);
+
+	async function loadDecisions(cardId: number) {
+		try {
+			const res = await fetch(`/api/cards/${cardId}/decisions`);
+			const body = res.ok ? await res.json() : null;
+			if (Array.isArray(body)) linkedDecisions = body;
+			else decisionsFailed = true;
+		} catch {
+			decisionsFailed = true;
+		}
+	}
 
 	// ─── Dependencies & milestone ────────────────────────────────────────────
 	//
@@ -1127,6 +1152,11 @@
 			{removePendingSubtask}
 			onWrote={wroteHere}
 		/>
+
+		<!-- A saved card's linked decisions, under the subtasks (card 2680, decision 23): read when the window opens. Never on a new card. -->
+		{#if card}
+			<CardDecisions cardId={card.id} decisions={linkedDecisions} failed={decisionsFailed} />
+		{/if}
 
 		{/if} <!-- end details tab / new card -->
 

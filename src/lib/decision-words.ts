@@ -310,3 +310,110 @@ export function responseLines(
 	for (const [id, text] of Object.entries(response.optionComments)) lines.push(`On option ${labelOf(Number(id)) ?? 'no longer offered'}: ${text}`);
 	return lines;
 }
+
+/**
+ * Each kind of event on a decision's record, as the record view and a
+ * person's record name it (card 2680, decision 16). A kind not named here is
+ * shown by its stored name, its underscores as spaces.
+ */
+export const EVENT_WORDS: Readonly<Record<string, string>> = {
+	created: 'Created',
+	decider_changed: 'Decider changed',
+	published: 'Published',
+	opened: 'Opened',
+	included: 'Included',
+	re_included: 'Included again',
+	role_changed: 'Role changed',
+	removed: 'Removed',
+	link_issued: 'Personal link issued',
+	link_revoked: 'Personal link revoked',
+	invited: 'Invited',
+	asked_again: 'Asked again',
+	told_of_change: 'Told of a change',
+	told_withdrawn: 'Told of the withdrawal',
+	told_ruling: 'Told of the ruling',
+	mail_skipped: 'Mail not sent',
+	mail_outcome: 'Mail outcome',
+	closed: 'Closed for input',
+	extended: 'Closing time extended',
+	withdrawn: 'Withdrawn',
+	account_attached: 'Account attached',
+	account_cleared: 'Account cleared',
+	address_changed: 'Address changed',
+	dry_run: 'Dry run sent',
+	seen: 'Seen',
+	responded: 'Responded',
+	ruled: 'Ruled',
+	cut_off: 'Cut off by an early ruling',
+	superseded: 'Superseded',
+	results_released: 'Results released',
+	concern_raised: 'Concern raised',
+	question_asked: 'Question asked',
+	question_answered: 'Question answered',
+	answer_published: "Agent's answer published",
+	answer_replaced: "Agent's answer replaced"
+};
+
+/** An event's kind in words (`EVENT_WORDS`), or its stored name with its underscores as spaces. */
+export const eventWords = (kind: string) => EVENT_WORDS[kind] ?? kind.replaceAll('_', ' ');
+
+/**
+ * Each key of an event's shown detail, as the record view and a person's
+ * record name it (card 2680 code review, F8): every key `RECORD_DETAIL` shows,
+ * every field it names of a nested object or list, and the `id` and `title`
+ * another decision is named by. tests/decision-register.test.ts holds that
+ * every shown key and field has its words here.
+ */
+export const DETAIL_WORDS: Readonly<Record<string, string>> = {
+	decider: 'Decider',
+	supersedes: 'Supersedes',
+	fromName: 'From',
+	toName: 'To',
+	asksAgain: 'Asks for views again',
+	changeNote: 'Note of the change',
+	closesAt: 'Closes',
+	role: 'Role',
+	hadAccount: 'Had an account',
+	from: 'From',
+	to: 'To',
+	replaced: 'Replaced an earlier link',
+	reason: 'Reason',
+	resend: 'Sent again',
+	mail: 'Mail',
+	delivered: 'Delivered',
+	problem: 'Problem',
+	stage: 'Stage',
+	signedIn: 'Signed in as',
+	statement: 'Who-sees statement version',
+	option: 'Option',
+	early: 'Early',
+	againstResponses: 'Against the responses',
+	supersededOld: 'Superseded the earlier ruling',
+	by: 'Superseded by',
+	omitted: 'Left out of the release',
+	notice: 'Notice',
+	agentDrafted: 'Drafted by an agent',
+	discarded: 'Discarded answer',
+	name: 'Name',
+	field: 'Field',
+	text: 'Text',
+	byName: 'By',
+	at: 'At',
+	id: 'Decision',
+	title: 'Title'
+};
+
+/** A detail key in words (`DETAIL_WORDS`), or, for a key not named there, its stored name split into lower-case words: never camelCase. */
+export const detailWords = (key: string) =>
+	DETAIL_WORDS[key] ??
+	key
+		.replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+		.replaceAll('_', ' ')
+		.toLowerCase()
+		.replace(/^./, (first) => first.toUpperCase());
+
+/** A participation's role, as the register and a person's record name it (code review F6). */
+export const PARTICIPATION_ROLE_WORDS: Readonly<Record<'consulted' | 'informed', string>> = {
+	consulted: 'Consulted',
+	informed: 'Informed'
+};

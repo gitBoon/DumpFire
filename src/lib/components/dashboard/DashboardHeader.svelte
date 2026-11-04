@@ -6,6 +6,8 @@
   Card 2466 tidied the bar: All Tasks, Inbox, Planning and New Board stay in
   view; All To Do, Reports, Burndown and Graph are in Views, and the theme
   in More. Under 640 px All Tasks, Inbox and Planning fold into Views too.
+  Card 2680 (decision 28) added Decisions to Views, after All To Do: the
+  register of every decision the caller may view, across boards.
 
   The inbox count is the page's, which the request toasts keep current and
   this only shows. New Board opens the page's create window (`showCreate`,
@@ -40,7 +42,9 @@
 	function readWidth() {
 		narrow = typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia(NARROW).matches;
 	}
-	const viewsTitle = $derived(narrow ? 'All Tasks, Inbox, Planning, All To Do, Reports, Burndown and Graph' : 'All To Do, Reports, Burndown and Graph');
+	const viewsTitle = $derived(
+		narrow ? 'All Tasks, Inbox, Planning, All To Do, Decisions, Reports, Burndown and Graph' : 'All To Do, Decisions, Reports, Burndown and Graph'
+	);
 	onMount(() => {
 		readWidth();
 		if (typeof window.matchMedia !== 'function') return;
@@ -194,6 +198,12 @@
 					<path d="M4.8 6.2l1.2 1.2 2-2.2M9.6 6.4h2M4.8 10.2h6.8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
 				</svg>
 				All To Do
+			</a>
+			<a href="/decisions" class="hm-item" role="menuitem" tabindex="-1" id="decisions-link">
+				<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+					<path d="M8 2v12M3 5h10M3 5l-1.5 4h3L3 5zM13 5l-1.5 4h3L13 5zM5.5 14h5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+				</svg>
+				Decisions
 			</a>
 			<a href="/reports" class="hm-item" role="menuitem" tabindex="-1" id="reports-link">
 				<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">

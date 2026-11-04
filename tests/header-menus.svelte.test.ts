@@ -7,7 +7,7 @@
  * `src/lib/components/HeaderMenu.svelte`.
  *
  *   - The dashboard (`DashboardHeader.svelte`): All Tasks, Inbox, Planning and
- *     New Board in view; All To Do, Reports, Burndown and Graph in Views; the
+ *     New Board in view; All To Do, Decisions (card 2680), Reports, Burndown and Graph in Views; the
  *     theme in More. Under 640 px All Tasks, Inbox and Planning are listed in
  *     Views too.
  *   - Your Boards (`BoardsTable.svelte`): the done-board and done-sub switches
@@ -352,7 +352,7 @@ describe('the dashboard header (card 2466)', () => {
 		expect(props.showCreate).toBe(true);
 	});
 
-	it('has All To Do, Reports, Burndown and Graph in Views, each its link with its id, and a pick closes it', async () => {
+	it('has All To Do, Decisions, Reports, Burndown and Graph in Views, each its link with its id, and a pick closes it', async () => {
 		const { target } = drawDashboardHeader();
 		const button = target.querySelector<HTMLButtonElement>('#nav-views-btn')!;
 		expect(button.getAttribute('aria-haspopup')).toBe('menu');
@@ -362,6 +362,8 @@ describe('the dashboard header (card 2466)', () => {
 		expect(button.getAttribute('aria-controls')).toBe(menu.id);
 		expect(itemsOf(menu).map((item) => [textOf(item), item.getAttribute('href'), item.id])).toEqual([
 			['All To Do', '/todo', 'todo-link'],
+			// Card 2680 (decision 28): the register.
+			['Decisions', '/decisions', 'decisions-link'],
 			['Reports', '/reports', 'reports-link'],
 			['Burndown', '/burndown', 'burndown-link'],
 			['Graph', '/graph', 'graph-link']
@@ -377,7 +379,7 @@ describe('the dashboard header (card 2466)', () => {
 		const { target } = drawDashboardHeader(2);
 		expect(read('src/lib/components/dashboard/DashboardHeader.svelte')).toContain("const NARROW = '(max-width: 640px)';");
 		const button = target.querySelector<HTMLButtonElement>('#nav-views-btn')!;
-		expect(button.title).toBe('All Tasks, Inbox, Planning, All To Do, Reports, Burndown and Graph');
+		expect(button.title).toBe('All Tasks, Inbox, Planning, All To Do, Decisions, Reports, Burndown and Graph');
 		// Its count rides on the Views button where the Inbox pill is hidden.
 		expect(target.querySelector('#nav-views-btn .inbox-count-badge.narrow-only')!.textContent).toBe('2');
 
@@ -387,16 +389,17 @@ describe('the dashboard header (card 2466)', () => {
 			['Inbox 2', '/inbox'],
 			['Planning', '/plan'],
 			['All To Do', '/todo'],
+			['Decisions', '/decisions'],
 			['Reports', '/reports'],
 			['Burndown', '/burndown'],
 			['Graph', '/graph']
 		]);
 	});
 
-	it('titles Views with its own four on a wide screen, and opens its panel from the button’s left edge', async () => {
+	it('titles Views with its own five on a wide screen, and opens its panel from the button’s left edge', async () => {
 		const { target } = drawDashboardHeader();
 		const button = target.querySelector<HTMLButtonElement>('#nav-views-btn')!;
-		expect(button.title).toBe('All To Do, Reports, Burndown and Graph');
+		expect(button.title).toBe('All To Do, Decisions, Reports, Burndown and Graph');
 		const menu = await openByClick(button, 'Views');
 		expect(menu.classList.contains('hm-start')).toBe(true);
 	});

@@ -6,9 +6,14 @@
 	 * to its editor where the caller may edit it, and is plain text otherwise.
 	 * New decision, for those who can edit the board,
 	 * asks for a title, makes the draft and goes to its editor.
+	 *
+	 * Card 2680 (decisions 26 and 28): All decisions goes to the register,
+	 * filtered to this board; and the list re-reads on a `decision` event of
+	 * this board alone, through the one 250 ms debounce.
 	 */
 	import type { PageData } from './$types';
-	import { goto } from '$app/navigation';
+	import { goto, invalidateAll } from '$app/navigation';
+	import { connectLiveRefresh } from '$lib/live-refresh';
 	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
 	import ThemeMenuItems from '$lib/components/ThemeMenuItems.svelte';
 	import Toast from '$lib/components/Toast.svelte';
@@ -61,6 +66,10 @@
 	function keydown(e: KeyboardEvent) {
 		if (creating && e.key === 'Escape') creating = false;
 	}
+
+	// Listened again only when the page is read for another board: a re-read of this one gives the same id.
+	const listenedBoard = $derived(data.board.id);
+	$effect(() => connectLiveRefresh(() => invalidateAll(), undefined, { events: ['decision'], boardId: listenedBoard }));
 </script>
 
 <svelte:window onkeydown={keydown} />
@@ -90,9 +99,12 @@
 		<section class="decisions-card glass">
 			<div class="section-header">
 				<h1>Decisions on {data.board.name}</h1>
-				{#if data.canCreate}
-					<button type="button" class="btn-primary btn-sm" onclick={openNew}>New decision</button>
-				{/if}
+				<div class="section-actions">
+					<a class="btn-ghost btn-sm all-link" href="/decisions?board={data.board.id}" data-action="all">All decisions</a>
+					{#if data.canCreate}
+						<button type="button" class="btn-primary btn-sm" onclick={openNew}>New decision</button>
+					{/if}
+				</div>
 			</div>
 
 			{#if data.decisions.length === 0}
@@ -195,6 +207,8 @@
 	.decisions-card { padding: var(--space-xl); border-radius: var(--radius-lg); }
 	.section-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-md); margin-bottom: var(--space-lg); }
 	.section-header h1 { font-size: 1.05rem; margin: 0; }
+	.section-actions { display: flex; flex-wrap: wrap; gap: var(--space-sm); align-items: center; }
+	.all-link { min-height: 44px; display: inline-flex; align-items: center; text-decoration: none; }
 	.empty-msg { font-size: 0.85rem; color: var(--text-tertiary); text-align: center; padding: var(--space-xl); }
 
 	.table-wrap { overflow-x: auto; }

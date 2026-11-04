@@ -592,6 +592,19 @@ describe('the activity report does not count a dependency, or a milestone, added
 		expect(reported(s, s.owner.id)).toEqual([]);
 	});
 
+	// Card 2680 (slice 4, found in the build): a card linked to a decision, unlinked, or left by a linked decision's
+	// deletion names the card, on its board; it is planning, as a goal is, and not work on the card.
+	it('a card linked to a decision, unlinked, or left by a linked decision deleted is not work on the card, in either spelling (card 2680)', async () => {
+		const s = scene();
+		db.update(cards).set({ createdAt: '2020-01-01 00:00:00', updatedAt: '2020-01-01 00:00:00' }).run();
+		for (const action of ['decision_card_linked', 'decision_card_unlinked', 'decision_card_link_deleted']) {
+			for (const spelt of [action, `api:${action}`]) logActivity({ boardId: s.A.board.id, cardId: s.first.id, userId: s.owner.id, action: spelt, detail: 'a decision' });
+		}
+
+		expect(reported(s)).toEqual([]);
+		expect(reported(s, s.owner.id)).toEqual([]);
+	});
+
 	// Card 2299: a subtask edit is now recorded, as `subtask_updated`, and it
 	// is work on the card, as a tick (`subtask_completed`) is. So a card whose
 	// only activity in the window is an edit to one of its subtasks now enters

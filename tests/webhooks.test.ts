@@ -1951,7 +1951,11 @@ describe('which action sends which event, and what each move sends (card 2278)',
 			// Card 2679 (decision 17): none yet; card 2689 maps them.
 			decision_ruled: null,
 			decision_superseded: null,
-			decision_results_released: null
+			decision_results_released: null,
+			// Card 2680 (decision 22): none; decision webhooks are card 2689's.
+			decision_card_linked: null,
+			decision_card_unlinked: null,
+			decision_card_link_deleted: null
 		});
 	});
 

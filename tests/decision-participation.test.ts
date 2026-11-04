@@ -688,7 +688,12 @@ describe('readDecisionPage and readLinkPage', () => {
 			// Card 2678: no question yet, one may be asked, and a participant answers none.
 			questions: [],
 			mayAsk: true,
-			mayAnswer: false
+			mayAnswer: false,
+			// Card 2680 (decision 29): a participant reads no record; (decisions 17 and 18) no card is linked, and they link none.
+			mayReadRecord: false,
+			linkedCards: [],
+			mayLinkCards: false,
+			mayUnlinkCards: false
 		});
 		expect(page.version!.content).not.toHaveProperty('options');
 		expect(page.version!.content).not.toHaveProperty('audiences');

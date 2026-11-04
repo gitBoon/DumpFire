@@ -2632,7 +2632,14 @@ describe('the security headers', () => {
 			'/api/decisions/[id]/release',
 			// Card 2678 (decision 12): an answer, a replacement and a publish answer the question with its asker's name.
 			'/api/decisions/[id]/questions/[questionId]/answer',
-			'/api/decisions/[id]/questions/[questionId]/publish'
+			'/api/decisions/[id]/questions/[questionId]/publish',
+			// Card 2680 (decision 24): a card's linked decisions, and a link's answer.
+			'/api/cards/[id]/decisions',
+			'/api/decisions/[id]/cards/[cardId]',
+			// Card 2680 (decision 24): the register, a person's record and a decision's record, each page and its data.
+			'/decisions',
+			'/decisions/people/[personId]',
+			'/decisions/[id]/record'
 		]) {
 			expect(theseOf(secured(new Response('x'), routeId)), routeId).toEqual(UNPUBLISHED);
 			const cached = secured(new Response('x', { headers: { 'Cache-Control': 'max-age=60', 'X-Robots-Tag': 'all' } }), routeId);

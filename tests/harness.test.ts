@@ -119,6 +119,14 @@ const TEST_FILES = [
 	// Card 2678, slices 2a and 2b: the shared agent-drafted label (card 2712), the results' open questions, the questions panel and form, in the page.
 	'decision-questions.svelte.test.ts',
 	'decision-record.test.ts',
+	// Card 2680, slice 1: the register, each person's record, the record view and what the decision page gains.
+	'decision-register.test.ts',
+	// Card 2680, slice 3a: the register, a person's record and the record view, in the page; the Record links; live listening.
+	'decision-register.svelte.test.ts',
+	// Card 2680, slices 2a and 2b: linking a card to a decision, both sides of the link, deleting a linked decision, and the routes.
+	'decision-card-links.test.ts',
+	// Card 2680, slice 3b: the decision page's linked cards with Link and Unlink, and the card window's decisions, in the page.
+	'decision-card-links.svelte.test.ts',
 	// Card 2679: the results, the ruling, the release of results and superseding, and what the pages read of them.
 	'decision-ruling.test.ts',
 	// Card 2679, slice 2a: the results page, the ruling form and the release, in the page.

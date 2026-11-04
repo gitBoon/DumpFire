@@ -215,6 +215,25 @@ export function editableBoardIds(user: Actor): Set<number> | null {
 }
 
 /**
+ * The ids of every board `user` owns (card 2680, decision 1): `null` for an
+ * administrator. `roleOnBoard`'s `owner`, decided in two reads: a board the
+ * caller created, or one where their own member row is `owner`. A team share
+ * gives at most `editor`, so is never read. What `DRAFT_VIEWERS`'
+ * `boardOwner` asks of a draft, for every board at once.
+ */
+export function ownedBoardIds(user: Actor): Set<number> | null {
+	if (isAdmin(user)) return null;
+	const ids = new Set(db.select({ id: boards.id }).from(boards).where(eq(boards.createdBy, user.id)).all().map((b) => b.id));
+	const owned = db
+		.select({ boardId: boardMembers.boardId })
+		.from(boardMembers)
+		.where(and(eq(boardMembers.userId, user.id), eq(boardMembers.role, 'owner')))
+		.all();
+	for (const { boardId } of owned) ids.add(boardId);
+	return ids;
+}
+
+/**
  * Every account that can edit the board, as `{ id, username, emoji }` by
  * username (card 2674, plan decision 8): the accounts `updateBoard` would take
  * as its Product Owner, and the accounts `setDecider` would take as a

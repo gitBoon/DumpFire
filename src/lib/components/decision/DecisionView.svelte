@@ -12,8 +12,8 @@
   decision 24: the released results and a participant's concern about the
   ruling, each drawn only when given), the `questions` snippet (card 2678: the
   questions and answers, and the form to ask one, under the `questions` id the
-  mails link to, drawn only when given) and the `linkedCards` snippet, which
-  card 2680 fills and which draws nothing until it does. Who sees a response
+  mails link to, drawn only when given) and the `linkedCards` snippet (card
+  2680: the signed-in page's `LinkedCards`, drawn only when given). Who sees a response
   is `whoSeesStatement`'s words, beside the version `ResponseForm` sends (card
   2679, decisions 21 and 25). What an agent drafted and no person has
   reviewed carries `AgentLabel` (card 2712).
@@ -206,8 +206,8 @@
 	{/if}
 
 	{#if linkedCards}
-		<section data-section="linked-cards">
-			<h2>Linked cards</h2>
+		<section data-section="linked-cards" aria-labelledby="linked-cards-heading">
+			<h2 id="linked-cards-heading">Linked cards</h2>
 			{@render linkedCards()}
 		</section>
 	{/if}

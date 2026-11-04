@@ -235,6 +235,9 @@ interface CardRow {
  * bulk entry names no card and so never matched, and is listed so that it
  * never does. A card put in a goal or taken out is planning too, as a link is
  * (card 2289, decision 12); a goal's own entries name no card and never match.
+ * A card linked to a decision, unlinked, or left by a linked decision's
+ * deletion is planning as well (card 2680): each entry names the card, and
+ * counted it would put the card in the window, put down to whoever linked it.
  * Each in both spellings (`storedActions`). Fixed text, made here, so it is
  * written into the query and not bound.
  */
@@ -243,7 +246,10 @@ const NOT_WORK_ON_THE_CARD = storedActions(
 	ACTIONS.dependencyRemoved,
 	'dependencies_bulk_added',
 	ACTIONS.milestoneCardAdded,
-	ACTIONS.milestoneCardRemoved
+	ACTIONS.milestoneCardRemoved,
+	ACTIONS.decisionCardLinked,
+	ACTIONS.decisionCardUnlinked,
+	ACTIONS.decisionCardLinkDeleted
 )
 	.map((action) => `'${action}'`)
 	.join(', ');

@@ -86,6 +86,7 @@
 			warnings={data.readiness.warnings}
 			{dirty}
 			mayReadResults={data.mayReadResults}
+			mayReadRecord={data.mayReadRecord}
 			onSaved={saved}
 		/>
 		{#key drawing}

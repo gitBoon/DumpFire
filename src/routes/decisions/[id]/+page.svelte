@@ -32,6 +32,13 @@
 	 * a participant, the question form (`QuestionForm`), always mounted,
 	 * posting to `/api/decisions/[id]/questions`. The section is drawn only
 	 * where there is a question or the caller may ask one.
+	 *
+	 * Card 2680 (decision 29): Record, to the decision's record view, where
+	 * `mayReadRecord`: the decider with board edit while the board exists, and
+	 * administrators. And (decisions 18 and 23, slice 3b) the linked cards on
+	 * boards the caller can open (`LinkedCards`), with Link and a card search
+	 * where `mayLinkCards`, and Unlink where `mayUnlinkCards`; the section is
+	 * drawn where there is a card or the caller may link or unlink one.
 	 */
 	import { tick } from 'svelte';
 	import type { PageData } from './$types';
@@ -42,6 +49,7 @@
 	import ThemeMenuItems from '$lib/components/ThemeMenuItems.svelte';
 	import ConcernForm from '$lib/components/decision/ConcernForm.svelte';
 	import DecisionView from '$lib/components/decision/DecisionView.svelte';
+	import LinkedCards from '$lib/components/decision/LinkedCards.svelte';
 	import QuestionForm from '$lib/components/decision/QuestionForm.svelte';
 	import QuestionsPanel from '$lib/components/decision/QuestionsPanel.svelte';
 	import ReleasedResults from '$lib/components/decision/ReleasedResults.svelte';
@@ -145,6 +153,16 @@
 	{/key}
 {/snippet}
 
+{#snippet linkedCards()}
+	<!-- Drawn afresh for another decision, so one decision's search and words are never shown on another's. -->
+	<!-- The signed-in page's decision always carries its id; only the personal link's leaves it out. -->
+	{#if data.decision.id !== undefined}
+		{#key data.decision.id}
+			<LinkedCards decisionId={data.decision.id} cards={data.linkedCards ?? []} mayLink={data.mayLinkCards ?? false} mayUnlink={data.mayUnlinkCards ?? false} />
+		{/key}
+	{/if}
+{/snippet}
+
 {#snippet questions()}
 	<!-- Drawn afresh for another decision, so one decision's typed answers are never offered on another's. -->
 	{#key data.decision.id}
@@ -219,11 +237,14 @@
 	</header>
 
 	<main class="decision-content">
-		{#if data.mayReadResults || data.maySupersede}
+		{#if data.mayReadResults || data.maySupersede || data.mayReadRecord}
 			<!-- Not in the fixed header, which has no room for them at phone width. -->
 			<nav class="page-actions" aria-label="What you can do with this decision">
 				{#if data.mayReadResults}
 					<a class="btn-ghost page-action" href="/decisions/{data.decision.id}/results" data-action="results">Results and ruling</a>
+				{/if}
+				{#if data.mayReadRecord}
+					<a class="btn-ghost page-action" href="/decisions/{data.decision.id}/record" data-action="record">Record</a>
 				{/if}
 				{#if data.maySupersede}
 					<button
@@ -281,6 +302,7 @@
 				results={data.released !== null ? releasedResults : undefined}
 				concern={data.participant !== null && (data.mayRaiseConcern || data.concerns.length > 0) ? concern : undefined}
 				questions={data.questions.length > 0 || data.mayAsk ? questions : undefined}
+				linkedCards={(data.linkedCards ?? []).length > 0 || data.mayLinkCards || data.mayUnlinkCards ? linkedCards : undefined}
 			/>
 		{/if}
 	</main>

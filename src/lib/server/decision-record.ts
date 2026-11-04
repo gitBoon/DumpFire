@@ -43,10 +43,22 @@
  * event names them. An event's `detail` never holds a token, a hash, or a
  * mail server's words.
  *
+ * Card 2680 adds the reads of the register, the person record and the record
+ * view, each a read alone: a decision's events page by page
+ * (`recordEventsOf`), each participant's events (`eventsOfParticipants`,
+ * bounded in SQL), responses, concerns and questions, a page's participants
+ * at once (`responsesOfParticipants`, `concernsOfParticipants`,
+ * `questionsByParticipants`, its code review's F2), the events of some kinds
+ * on many decisions (`eventsOfKindsOn`), and the rounds and counted responses
+ * of many decisions at once (`roundsOf`, `countedInRound`); and the two
+ * allow-lists of what is shown of an event: `OWN_RECORD_EVENTS`, what a person
+ * is shown of their own participation, and `RECORD_DETAIL`, the shown keys of
+ * each kind's detail, exhaustive by kind.
+ *
  * Plain functions with no caller, called inside a service write's
  * transaction, or by the mail effect in a transaction of its own.
  */
-import { and, asc, count, desc, eq, gte, inArray, isNotNull, isNull, gt, lt, lte, max, ne, or } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, inArray, isNotNull, isNull, gt, lt, lte, max, ne, or, sql } from 'drizzle-orm';
 import { db } from './db';
 import {
 	decisionEvents,
@@ -158,6 +170,110 @@ export const DECIDER_ONLY_EVENTS: readonly EventKind[] = [
 	'answer_published',
 	'answer_replaced'
 ];
+
+/**
+ * The events a person is shown of their own participation on their own
+ * record (card 2680, decision 13): each as its kind, moment and version, and
+ * `seen` with its stage, and nothing else of it. An allow-list, so that a
+ * kind a later card adds is shown to nobody on their own record until it is
+ * named here. Never `cut_off`, a question event, a mail outcome or skip, or an
+ * account or address event; disjoint from `DECIDER_ONLY_EVENTS`
+ * (tests/decision-register.test.ts, case 66).
+ */
+export const OWN_RECORD_EVENTS: readonly EventKind[] = [
+	'included',
+	're_included',
+	'role_changed',
+	'removed',
+	'invited',
+	'asked_again',
+	'told_of_change',
+	'told_withdrawn',
+	'told_ruling',
+	'seen',
+	'responded'
+];
+
+/**
+ * How one key of an event's stored detail is shown on the record (card 2680,
+ * decision 16, S3):
+ *
+ *   - `'value'`: a string, number, boolean or null, as stored; an object or
+ *     an array found there is dropped;
+ *   - `'admin'`: as `'value'`, to an administrator alone;
+ *   - `{ decision }`: the id of another decision, stored under that key, shown
+ *     under this one through `namedFor` (its id and title to a viewer who may
+ *     view it, nothing to anyone else);
+ *   - `'option'`: the stored `optionId`, shown as the option's label, or null;
+ *   - `{ fields, admin? }`: a nested object, only these primitive fields of
+ *     it, and with `admin` to an administrator alone;
+ *   - `{ each }`: an array of objects, each with only these primitive fields.
+ */
+export type DetailRule =
+	| 'value'
+	| 'admin'
+	| { decision: string }
+	| 'option'
+	| { fields: readonly string[]; admin?: true }
+	| { each: readonly string[] };
+
+/** What is shown of one kind's detail: every shown key and its rule. A key not named is dropped. */
+export type DetailSpec = Readonly<Record<string, DetailRule>>;
+
+/** The signed-in account a link holder's browser was signed in as: its name, to an administrator alone (card 2680, S3). */
+const SIGNED_IN: DetailRule = { fields: ['name'], admin: true };
+
+/**
+ * What the record view shows of each kind's detail (card 2680, decision 16,
+ * S3), read from every writer of each kind: exhaustive, so that a kind added
+ * to `EVENT_KINDS` with no entry here fails `npm run check`. No shown key,
+ * and no field named, ends in `Id`: the ids the details hold (`fromUserId`,
+ * `toUserId`, `userId`, `of`, `questionId`, `responseId`, `upToResponseId`,
+ * `optionId`, `productOwnerUserId`, `byDecisionId`, `supersedes`, and those
+ * nested in `notices[]`, `omitted[]` and `signedIn`) are never shown as they
+ * are stored: another decision is named through `namedFor`, an option by its
+ * label, and the rest dropped. `recordEntryOf` (decision-register.ts) builds
+ * a new object from this alone.
+ */
+export const RECORD_DETAIL: Readonly<Record<EventKind, DetailSpec>> = {
+	created: { decider: 'value', supersedes: { decision: 'supersedes' } },
+	decider_changed: { fromName: 'value', toName: 'value' },
+	published: { asksAgain: 'value', changeNote: 'value' },
+	opened: { closesAt: 'value' },
+	included: { role: 'value', hadAccount: 'value' },
+	re_included: { role: 'value', hadAccount: 'value' },
+	role_changed: { from: 'value', to: 'value' },
+	removed: {},
+	link_issued: { replaced: 'value' },
+	link_revoked: { reason: 'value' },
+	invited: { resend: 'value' },
+	asked_again: { resend: 'value' },
+	told_of_change: { resend: 'value' },
+	told_withdrawn: { resend: 'value' },
+	told_ruling: { resend: 'value' },
+	mail_skipped: { mail: 'value', reason: 'value' },
+	mail_outcome: { mail: 'value', delivered: 'value', problem: 'value' },
+	closed: {},
+	extended: { from: 'value', to: 'value' },
+	withdrawn: { reason: 'value' },
+	account_attached: {},
+	account_cleared: {},
+	// Addresses are administrators' everywhere else (card 2680, section 8: not the decider's, as 2675 had it).
+	address_changed: { from: 'admin', to: 'admin' },
+	dry_run: {},
+	seen: { stage: 'value', signedIn: SIGNED_IN },
+	responded: { statement: 'value', signedIn: SIGNED_IN },
+	ruled: { option: 'option', early: 'value', againstResponses: 'value', supersededOld: 'value' },
+	cut_off: {},
+	superseded: { by: { decision: 'byDecisionId' } },
+	results_released: { omitted: { each: ['field'] } },
+	concern_raised: { notice: 'value', signedIn: SIGNED_IN },
+	// Whom each notice went to, and its outcome, are dropped (`notices`).
+	question_asked: { signedIn: SIGNED_IN },
+	question_answered: { role: 'value', agentDrafted: 'value' },
+	answer_published: {},
+	answer_replaced: { role: 'value', discarded: { fields: ['text', 'byName', 'at'] } }
+};
 
 /** The events a record-bearing mail writes for its participant (decision 31). */
 const MAIL_KINDS: readonly EventKind[] = ['invited', 'asked_again', 'told_of_change', 'told_withdrawn', 'told_ruling'];
@@ -658,6 +774,245 @@ export function peopleById(ids: readonly number[]): Map<number, Person> {
 		for (const person of db.select().from(people).where(inArray(people.id, unique.slice(from, from + IDS_AT_ONCE))).all()) found.set(person.id, person);
 	}
 	return found;
+}
+
+// ─── What the register, the person record and the record view read (card 2680) ─
+
+/** One event of the record as it is read for showing: its detail parsed, nothing projected yet. */
+export type RecordEventRow = {
+	id: number;
+	kind: string;
+	participantId: number | null;
+	versionNumber: number | null;
+	detail: Record<string, unknown>;
+	actorName: string;
+	source: string;
+	at: Stamp;
+};
+
+const recordEventColumns = {
+	id: decisionEvents.id,
+	kind: decisionEvents.kind,
+	participantId: decisionEvents.participantId,
+	versionNumber: decisionEvents.versionNumber,
+	detail: decisionEvents.detail,
+	actorName: decisionEvents.actorName,
+	source: decisionEvents.source,
+	at: decisionEvents.createdAt
+};
+
+/**
+ * The decision's events in id order, oldest first (card 2680, decision 16):
+ * those naming `participantId` alone when it is given, those after `afterId`
+ * when it is given, and at most `limit`. Read by
+ * `idx_decision_events_decision_id_created_at`, or `_participant_id`.
+ */
+export function recordEventsOf(decisionId: number, opts: { participantId?: number; afterId?: number; limit: number }): RecordEventRow[] {
+	return db
+		.select(recordEventColumns)
+		.from(decisionEvents)
+		.where(
+			and(
+				eq(decisionEvents.decisionId, decisionId),
+				opts.participantId === undefined ? undefined : eq(decisionEvents.participantId, opts.participantId),
+				opts.afterId === undefined ? undefined : gt(decisionEvents.id, opts.afterId)
+			)
+		)
+		.orderBy(asc(decisionEvents.id))
+		.limit(opts.limit)
+		.all()
+		.map((event) => ({ ...event, detail: detailOf(event.detail) }));
+}
+
+/** Rows grouped by a key, each group in the order the rows came. */
+function groupedBy<T>(rows: readonly T[], keyOf: (row: T) => number | null): Map<number, T[]> {
+	const found = new Map<number, T[]>();
+	for (const row of rows) {
+		const key = keyOf(row);
+		if (key === null) continue;
+		const list = found.get(key) ?? [];
+		list.push(row);
+		found.set(key, list);
+	}
+	return found;
+}
+
+/**
+ * The first `opts.perParticipant` events naming each participant, oldest
+ * first, by participant id, of `opts.kinds` alone when they are given (card
+ * 2680, decisions 9, 13 and 15). Bounded in SQL, by each participant's
+ * `row_number()` (code review F2): a participant named by tens of thousands of
+ * events costs no more than the bound, and the page asks one more than it
+ * shows to know there are more. Read in as few queries as `IDS_AT_ONCE`
+ * allows. A participant named by none is not in the map.
+ */
+export function eventsOfParticipants(
+	participantIds: readonly number[],
+	opts: { kinds?: readonly EventKind[]; perParticipant: number }
+): Map<number, RecordEventRow[]> {
+	if (!Number.isSafeInteger(opts.perParticipant) || opts.perParticipant < 1) {
+		throw new Error(`eventsOfParticipants: perParticipant must be a whole number above 0, and it is ${opts.perParticipant}`);
+	}
+	const found = new Map<number, RecordEventRow[]>();
+	if (opts.kinds !== undefined && opts.kinds.length === 0) return found;
+	const unique = [...new Set(participantIds)];
+	for (let from = 0; from < unique.length; from += IDS_AT_ONCE) {
+		const ranked = db
+			.select({
+				...recordEventColumns,
+				rank: sql<number>`row_number() over (partition by ${decisionEvents.participantId} order by ${decisionEvents.id})`.as('rank')
+			})
+			.from(decisionEvents)
+			.where(
+				and(
+					inArray(decisionEvents.participantId, unique.slice(from, from + IDS_AT_ONCE)),
+					opts.kinds === undefined ? undefined : inArray(decisionEvents.kind, [...opts.kinds])
+				)
+			)
+			.as('ranked');
+		const rows = db
+			.select({
+				id: ranked.id,
+				kind: ranked.kind,
+				participantId: ranked.participantId,
+				versionNumber: ranked.versionNumber,
+				detail: ranked.detail,
+				actorName: ranked.actorName,
+				source: ranked.source,
+				at: ranked.at
+			})
+			.from(ranked)
+			.where(lte(ranked.rank, opts.perParticipant))
+			.orderBy(asc(ranked.id))
+			.all();
+		for (const [participantId, list] of groupedBy(rows, (row) => row.participantId)) {
+			found.set(
+				participantId,
+				list.map((row) => ({ ...row, detail: detailOf(row.detail) }))
+			);
+		}
+	}
+	return found;
+}
+
+/**
+ * Every response of each participant that is counted as one
+ * (`RESPONSE_KINDS`), replaced ones too, in id order, by participant id (card
+ * 2680, decision 9; batched by code review F2): never a concern, which
+ * `concernsOfParticipants` reads. One with none is not in the map.
+ */
+export function responsesOfParticipants(participantIds: readonly number[]): Map<number, DecisionResponse[]> {
+	const unique = [...new Set(participantIds)];
+	const rows: DecisionResponse[] = [];
+	for (let from = 0; from < unique.length; from += IDS_AT_ONCE) {
+		rows.push(
+			...db
+				.select()
+				.from(decisionResponses)
+				.where(and(inArray(decisionResponses.participantId, unique.slice(from, from + IDS_AT_ONCE)), inArray(decisionResponses.kind, [...RESPONSE_KINDS])))
+				.orderBy(asc(decisionResponses.id))
+				.all()
+		);
+	}
+	return groupedBy(rows, (row) => row.participantId);
+}
+
+/** The concerns each participant raised, in id order, by participant id (`concernsOf` for many, code review F2). One with none is not in the map. */
+export function concernsOfParticipants(participantIds: readonly number[]): Map<number, DecisionResponse[]> {
+	const unique = [...new Set(participantIds)];
+	const rows: DecisionResponse[] = [];
+	for (let from = 0; from < unique.length; from += IDS_AT_ONCE) {
+		rows.push(
+			...db
+				.select()
+				.from(decisionResponses)
+				.where(and(inArray(decisionResponses.participantId, unique.slice(from, from + IDS_AT_ONCE)), eq(decisionResponses.kind, 'concern')))
+				.orderBy(asc(decisionResponses.id))
+				.all()
+		);
+	}
+	return groupedBy(rows, (row) => row.participantId);
+}
+
+/** The questions each participant asked, oldest first, by participant id (`questionsBy` for many, code review F2). One with none is not in the map. */
+export function questionsByParticipants(participantIds: readonly number[]): Map<number, DecisionQuestion[]> {
+	const unique = [...new Set(participantIds)];
+	const rows: DecisionQuestion[] = [];
+	for (let from = 0; from < unique.length; from += IDS_AT_ONCE) {
+		rows.push(
+			...db
+				.select()
+				.from(decisionQuestions)
+				.where(inArray(decisionQuestions.participantId, unique.slice(from, from + IDS_AT_ONCE)))
+				.orderBy(asc(decisionQuestions.id))
+				.all()
+		);
+	}
+	return groupedBy(rows, (row) => row.participantId);
+}
+
+/**
+ * The events of `kinds` on each of the decisions, in id order, each with its
+ * kind and its detail read (`eventsOfKind` for many decisions and kinds, code
+ * review F2), in as few queries as `IDS_AT_ONCE` allows.
+ */
+export function eventsOfKindsOn(decisionIds: readonly number[], kinds: readonly EventKind[]): { decisionId: number; kind: string; detail: Record<string, unknown> }[] {
+	const unique = [...new Set(decisionIds)];
+	const found: { decisionId: number; kind: string; detail: Record<string, unknown> }[] = [];
+	if (kinds.length === 0) return found;
+	for (let from = 0; from < unique.length; from += IDS_AT_ONCE) {
+		const rows = db
+			.select({ decisionId: decisionEvents.decisionId, kind: decisionEvents.kind, detail: decisionEvents.detail })
+			.from(decisionEvents)
+			.where(and(inArray(decisionEvents.decisionId, unique.slice(from, from + IDS_AT_ONCE)), inArray(decisionEvents.kind, [...kinds])))
+			.orderBy(asc(decisionEvents.id))
+			.all();
+		for (const row of rows) found.push({ ...row, detail: detailOf(row.detail) });
+	}
+	return found;
+}
+
+/**
+ * The round a response is given now on each decision, by decision id: the
+ * number of its latest version that asked again, or 0 (card 2680, decision
+ * 3). `currentRound` for many decisions, in one grouped read per
+ * `IDS_AT_ONCE`.
+ */
+export function roundsOf(decisionIds: readonly number[]): Map<number, number> {
+	const unique = [...new Set(decisionIds)];
+	const rounds = new Map<number, number>(unique.map((id) => [id, 0]));
+	for (let from = 0; from < unique.length; from += IDS_AT_ONCE) {
+		const rows = db
+			.select({ decisionId: decisionVersions.decisionId, round: max(decisionVersions.number) })
+			.from(decisionVersions)
+			.where(and(inArray(decisionVersions.decisionId, unique.slice(from, from + IDS_AT_ONCE)), eq(decisionVersions.asksAgain, true)))
+			.groupBy(decisionVersions.decisionId)
+			.all();
+		for (const row of rows) rounds.set(row.decisionId, row.round ?? 0);
+	}
+	return rounds;
+}
+
+/**
+ * The participants among `pairs` who have given a counted response
+ * (`RESPONSE_KINDS`) in their pair's round (card 2680, decision 3): what
+ * `latestResponse(participantId, round) !== null` says of one, for many, in
+ * one grouped read per `IDS_AT_ONCE`. A concern is none.
+ */
+export function countedInRound(pairs: readonly { participantId: number; round: number }[]): Set<number> {
+	const roundOf = new Map(pairs.map((pair) => [pair.participantId, pair.round]));
+	const ids = [...roundOf.keys()];
+	const answered = new Set<number>();
+	for (let from = 0; from < ids.length; from += IDS_AT_ONCE) {
+		const rows = db
+			.select({ participantId: decisionResponses.participantId, round: decisionResponses.round })
+			.from(decisionResponses)
+			.where(and(inArray(decisionResponses.participantId, ids.slice(from, from + IDS_AT_ONCE)), inArray(decisionResponses.kind, [...RESPONSE_KINDS])))
+			.groupBy(decisionResponses.participantId, decisionResponses.round)
+			.all();
+		for (const row of rows) if (roundOf.get(row.participantId) === row.round) answered.add(row.participantId);
+	}
+	return answered;
 }
 
 /** The moment of each participant's latest record-bearing mail event, by participant id; one with none is not in the map (decision 31). */

@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.53
+version: 1.55
 status: As-Built
 date: 2026-11-04
 tags:
@@ -844,9 +844,54 @@ migration**: every field is a 0061 column, and the new event details are JSON.
 - **The decider-only details.** `DECIDER_ONLY_EVENTS` in `decision-record.ts`, card 2679's
   `ruled`, `cut_off` and `concern_raised` and card 2678's four question events: their `early`,
   `againstResponses`, the cut-off names and the notice outcomes are shown to the decider and
-  administrators alone (the results page), and cards 2680 (the record) and 2689 (webhooks) are
-  bound to keep it so.
+  administrators alone (the results page) and, since card 2680, on the record view
+  (`/decisions/[id]/record`), which only administrators and the decider (with board edit while
+  the board exists) may read; card 2689 (webhooks) is bound to keep it so.
 - **The timestamp column count stays 62**: no new column.
+
+**The record as card 2680 reads it.** The record view lists every `decision_events` row of a
+decision, oldest first, by `after` (500 a page; `readRecord`'s `limit` is required and at most
+`RECORD_READ_MAX`, 5,000), optionally one participant's. Each row's stored `detail` is never
+shown as stored: `recordEntryOf` builds a new object from `RECORD_DETAIL[kind]`
+(`decision-record.ts`), an exhaustive per-kind allow-list. No key ending in `Id` is shown at any
+depth (`fromUserId`, `toUserId`, `userId`, `of`, `questionId`, `responseId`, `upToResponseId`,
+`optionId`, `productOwnerUserId`, `byDecisionId`, `supersedes`, and those nested in `notices[]`,
+`omitted[]` and `signedIn`); a nested object or array at a key the spec does not name is dropped.
+By kind: `created` shows `decider` and `supersedes` (as the other decision, through `namedFor`);
+`decider_changed` `fromName` and `toName`; `published` `asksAgain` and `changeNote`; `opened`
+`closesAt`; `included` and `re_included` `role` and `hadAccount`; `role_changed` and `extended`
+`from` and `to`; `link_issued` `replaced`; `link_revoked` and `withdrawn` `reason`; the five mail
+kinds `resend`; `mail_skipped` `mail` and `reason`; `mail_outcome` `mail`, `delivered` and
+`problem`; `address_changed` `from` and `to` to an administrator alone; `seen` `stage`;
+`responded` `statement`; `ruled` `option` (its label), `early`, `againstResponses` and
+`supersededOld`; `superseded` `by` (through `namedFor`); `results_released` `omitted[]` with
+`field` alone; `concern_raised` `notice`; `question_answered` `role` and `agentDrafted`;
+`answer_replaced` `role` and `discarded` (`text`, `byName`, `at`); and `signedIn` (its `name`
+alone) on `seen`, `responded`, `concern_raised` and `question_asked`, to an administrator alone.
+`removed`, `closed`, `account_attached`, `account_cleared`, `dry_run`, `cut_off` and
+`answer_published` show nothing. The pages name each shown key in words (`DETAIL_WORDS` in
+`decision-words.ts`), never the stored camelCase name. A person record shows at most 200 events a
+participation, and reads one more to say there are more, bounded in SQL by `row_number() over
+(partition by participant_id)`. The
+person's own record shows only `OWN_RECORD_EVENTS`
+(`included`, `re_included`, `role_changed`, `removed`, the five mail kinds, `seen`, `responded`),
+each as kind, moment and version (and `seen`'s stage), with no actor; its questions come from the
+`decision_questions` rows, never from the question events.
+
+```mermaid
+flowchart LR
+    S["decision_events.detail (stored)"] --> K{"key named in RECORD_DETAIL[kind]?"}
+    K -->|no| X["dropped"]
+    K -->|"'value'"| P{"primitive?"}
+    P -->|yes| O["shown"]
+    P -->|"object or array"| X
+    K -->|"'admin'"| A{"administrator?"}
+    A -->|yes| P
+    A -->|no| X
+    K -->|"{ decision }"| N["namedFor(user, other): id and title, or nothing"]
+    K -->|"'option'"| L["the option's label"]
+    K -->|"{ fields } / { each }"| F["the named primitive fields only"]
+```
 
 ```mermaid
 erDiagram
@@ -2406,7 +2451,35 @@ of about zero.
     `detail` (JSON), `actor_user_id` (SET NULL), `actor_name`, `source`, `created_at`.
   - `decision_card_links`: `PRIMARY KEY(decision_id, card_id)`, both CASCADE, `relation`
     (`DEFAULT 'relates'`), `created_by` (SET NULL), `created_at`, and
-    `idx_decision_card_links_card_id`.
+    `idx_decision_card_links_card_id`. Written since card 2680 by `linkCard` and `unlinkCard`
+    in `decisions.ts` alone (`PUT` and `DELETE /api/decisions/[id]/cards/[cardId]`): an editor
+    of the decision's board (an administrator where it has none) who can edit the card's. A
+    link is made on an open, closed, ruled or superseded decision, never on a draft or a
+    withdrawn one, nor for an archived card; it may be taken off on any status but a draft.
+    At most 100 links a decision and 20 a card (`LINKS_PER_DECISION`, `LINKS_PER_CARD`), each
+    counted in SQL with `count()` (`linkCountOf`, `cardLinkCountOf`), a 409 beyond; the card's
+    409 states no count. Linking a card already linked with the same relation writes nothing;
+    with another relation it updates `relation` on the row (no new row, the caps not asked),
+    for card 2687's `waits`, and writes a `decision_card_linked` entry for now (card 2687
+    gives the change its own action, `decision_card_relation_changed`). `CARD_LINK_RELATIONS` is `['relates']` alone today, and a stored
+    relation outside it is read back as `relates`. Neither write touches the `decisions` row,
+    so neither revision moves, and neither is on `decision_events`. Each writes one activity
+    entry on the **card's** board with its `card_id`: `decision_card_linked` or
+    `decision_card_unlinked`, detail "a decision", never the decision's id or title. A card
+    deleted takes its links with it, with no entry beyond its own; a decision deleted (a
+    withdrawn one: a draft is never linked) first writes one `decision_card_link_deleted`
+    ("a linked decision was deleted") on each linked card's board, then the links cascade; a
+    decision's board deleted leaves its links. A card archived or moved keeps its links; who
+    sees one follows the card's board now.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Linked: linkCard (open, closed, ruled, superseded; card not archived; below the caps)
+    Linked --> Linked: linkCard again (same relation: nothing; another: relation updated)
+    Linked --> [*]: unlinkCard (any status but draft; archived card too)
+    Linked --> [*]: card deleted (cascade, no extra entry)
+    Linked --> [*]: decision deleted (decision_card_link_deleted on the card's board, then cascade)
+```
 
   The six NO ACTION keys are decision 2 of the card's plan: a deleted option would otherwise
   turn a ruling for it into a ruling for none of them, and a deleted participant would orphan

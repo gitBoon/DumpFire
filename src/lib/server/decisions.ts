@@ -43,6 +43,12 @@
  * settling of an answer is a guarded update that a 409 ends when it changes
  * nothing. No activity entry, live event or webhook (design S3).
  *
+ * Card 2680 adds linking a card to a decision and unlinking it (`linkCard`,
+ * `unlinkCard`), by an editor of the decision's board who can edit the card's;
+ * each writes its activity entry on the card's board, naming the card and no
+ * decision, and touches no decision row, so that no revision moves. Deleting
+ * a linked decision leaves an entry on each linked card's board.
+ *
  * Card 2677 adds a participant's own writes: a response
  * (`respondToDecision`, `respondByLink`) and being recorded as having seen a
  * version (`recordSeen`, `recordSeenByLink`), signed in or by a personal
@@ -79,6 +85,9 @@ import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { db } from './db';
 import {
 	boards,
+	cards,
+	columns,
+	decisionCardLinks,
 	decisionOptions,
 	decisionParticipants,
 	decisionVersions,
@@ -216,7 +225,9 @@ import {
 	STALE_REVISION,
 	WHO_SEES_STATEMENT_VERSION
 } from '$lib/decision-words';
-import { requireBoard, requireDecision, requireUser } from './route-guards';
+import { CARD_LINK_RELATIONS, cardLinkCountOf, LINKS_PER_CARD, LINKS_PER_DECISION, linkCountOf, type CardLinkRelation } from './decision-cards';
+import type { LinkOutcome } from '$lib/decision-register-types';
+import { requireBoard, requireCard, requireDecision, requireUser } from './route-guards';
 import { parseStamp, stamp, type Stamp } from '$lib/timestamps';
 import { inWrite, type ServiceOptions } from './write-as';
 
@@ -998,11 +1009,98 @@ export function deleteDecision(caller: SessionUser | null, at: { decisionId: num
 	const { user, decision } = decisionDeleteGuard(caller, at);
 
 	const now = stamp();
+	// Card 2680 (decision 19, S7): each linked card keeps a trace on its own board, written before the delete cascades the
+	// links away and before the early return below; "a linked decision was deleted", naming no decision.
+	const links = db
+		.select({ cardId: decisionCardLinks.cardId, boardId: columns.boardId })
+		.from(decisionCardLinks)
+		.innerJoin(cards, eq(cards.id, decisionCardLinks.cardId))
+		.innerJoin(columns, eq(columns.id, cards.columnId))
+		.where(eq(decisionCardLinks.decisionId, decision.id))
+		.all();
+	for (const link of links) {
+		logActivity({ action: ACTIONS.decisionCardLinkDeleted, ...decisionEntry(link.boardId, 'a linked decision was deleted', user, opts, link.cardId) });
+	}
 	db.delete(decisions).where(eq(decisions.id, decision.id)).run();
 
 	if (decision.openedAt === null || decision.boardId === null) return;
 	logActivity({ action: ACTIONS.decisionDeleted, ...decisionEntry(decision.boardId, `"${decision.title}"`, user, opts) });
 	emit(decision.boardId, 'decision', { decisionId: decision.id, status: decisionStatus(decision, now), boardId: decision.boardId });
+}
+
+/**
+ * Link a card to the decision (card 2680, decisions 17, 20 to 22). The order
+ * of refusals (D11): the decision (`linkCard`: 404, 403), the card
+ * (`requireCard(…, 'edit')`: 404, 403), the status (409), the card archived
+ * (409, before the link already there is looked for, so that linking an
+ * archived card again is refused, not answered as nothing to do), the link
+ * already there (the same relation: `unchanged`, nothing written; another:
+ * the relation changed, `relation_changed`, the caps not asked), the caps
+ * (409, a new link alone), then the link.
+ *
+ * Neither the link nor the change touches the decision's row, so neither of
+ * its revisions moves (decision 20), and neither is on the decision's record.
+ * One `decision_card_linked` on the **card's** board with its card, detail "a
+ * decision" (S7): no id and no title, which the card's board's readers may
+ * not view. No live event, no mail, no webhook.
+ */
+export function linkCard(
+	caller: SessionUser | null,
+	at: { decisionId: number; cardId: number; relation: CardLinkRelation },
+	body: null,
+	opts: ServiceOptions
+): { outcome: LinkOutcome } {
+	inWrite();
+	const user = requireUser(caller);
+	const { decision } = requireDecision(user, at.decisionId, 'linkCard');
+	const { card, boardId } = requireCard(user, at.cardId, 'edit');
+
+	const now = stamp();
+	requireTransition(decision, 'linkCard', now);
+	if (card.archivedAt !== null) error(409, 'This card is archived: it cannot be linked to a decision');
+	if (!(CARD_LINK_RELATIONS as readonly string[]).includes(at.relation)) error(400, `relation must be one of: ${CARD_LINK_RELATIONS.join(', ')}`);
+
+	const where = and(eq(decisionCardLinks.decisionId, decision.id), eq(decisionCardLinks.cardId, card.id));
+	const existing = db.select({ relation: decisionCardLinks.relation }).from(decisionCardLinks).where(where).get();
+	if (existing !== undefined) {
+		if (existing.relation === at.relation) return { outcome: 'unchanged' };
+		db.update(decisionCardLinks).set({ relation: at.relation }).where(where).run();
+		logActivity({ action: ACTIONS.decisionCardLinked, ...decisionEntry(boardId, 'a decision', user, opts, card.id) });
+		return { outcome: 'relation_changed' };
+	}
+
+	// S8: the decision's cap says a count, to an editor of the decision's board alone, and only at the cap.
+	if (linkCountOf(decision.id) >= LINKS_PER_DECISION) error(409, `This decision is linked to ${LINKS_PER_DECISION} cards, the most it may be`);
+	// Code review S3: the card's cap says no count. The card's links may be to decisions the caller cannot view, and a
+	// count would tell them how many there are.
+	if (cardLinkCountOf(card.id) >= LINKS_PER_CARD) error(409, 'This card has reached its limit of linked decisions');
+
+	db.insert(decisionCardLinks).values({ decisionId: decision.id, cardId: card.id, relation: at.relation, createdBy: user.id, createdAt: now }).run();
+	logActivity({ action: ACTIONS.decisionCardLinked, ...decisionEntry(boardId, 'a decision', user, opts, card.id) });
+	return { outcome: 'linked' };
+}
+
+/**
+ * Unlink a card from the decision (card 2680, decisions 17 and 20): the
+ * decision (`unlinkCard`: 404, 403), the card (`requireCard(…, 'edit')`: 404,
+ * 403), the status (409: every status but a draft, which holds none), and a
+ * link that is not there (404). An archived card may be unlinked. One
+ * `decision_card_unlinked` on the card's board with its card, detail "a
+ * decision". The decision's row is not touched.
+ */
+export function unlinkCard(caller: SessionUser | null, at: { decisionId: number; cardId: number }, body: null, opts: ServiceOptions): void {
+	inWrite();
+	const user = requireUser(caller);
+	const { decision } = requireDecision(user, at.decisionId, 'unlinkCard');
+	const { card, boardId } = requireCard(user, at.cardId, 'edit');
+
+	requireTransition(decision, 'unlinkCard', stamp());
+	const removed = db
+		.delete(decisionCardLinks)
+		.where(and(eq(decisionCardLinks.decisionId, decision.id), eq(decisionCardLinks.cardId, card.id)))
+		.run();
+	if (removed.changes === 0) error(404, 'Link not found');
+	logActivity({ action: ACTIONS.decisionCardUnlinked, ...decisionEntry(boardId, 'a decision', user, opts, card.id) });
 }
 
 /**
@@ -2461,8 +2559,9 @@ function versionContent(decision: Decision, options: DecisionOption[]): string {
 /**
  * What a decision's activity entry holds but its action (decision 21, 4.10):
  * its board, no card, the actor and the tree. The action is written at each
- * call, as `activity-twins.test.ts` requires.
+ * call, as `activity-twins.test.ts` requires. Card 2680 (decision 22): a
+ * link's entry names its card, on the card's board.
  */
-function decisionEntry(boardId: number, detail: string, user: SessionUser, opts: ServiceOptions) {
-	return { boardId, cardId: null, detail, source: opts.source, ...actorOf(user) };
+function decisionEntry(boardId: number, detail: string, user: SessionUser, opts: ServiceOptions, cardId: number | null = null) {
+	return { boardId, cardId, detail, source: opts.source, ...actorOf(user) };
 }

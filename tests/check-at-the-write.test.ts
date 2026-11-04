@@ -3111,6 +3111,9 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 					'extendDecision',
 					'withdrawDecision',
 					'deleteDecision',
+					// Card 2680: a card linked to a decision, and unlinked from it.
+					'linkCard',
+					'unlinkCard',
 					// Card 2697: a dry run of the working copy, mailed to the caller alone.
 					'dryRunDecision',
 					'resendInvitation',

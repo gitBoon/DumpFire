@@ -116,7 +116,13 @@ export const ACTIONS = {
 	// count, "against", a cut-off, a reason or a name.
 	decisionRuled: 'decision_ruled',
 	decisionSuperseded: 'decision_superseded',
-	decisionResultsReleased: 'decision_results_released'
+	decisionResultsReleased: 'decision_results_released',
+	// Card 2680 (decisions 19 and 22, S7): a card linked to a decision, unlinked, and a linked decision deleted, each on the
+	// card's board with its card, and each detail "a decision" or "a linked decision was deleted": never the decision's id or
+	// title, which the card's board's readers may not view. None sends a webhook.
+	decisionCardLinked: 'decision_card_linked',
+	decisionCardUnlinked: 'decision_card_unlinked',
+	decisionCardLinkDeleted: 'decision_card_link_deleted'
 } as const;
 
 export interface ActivityEntry {

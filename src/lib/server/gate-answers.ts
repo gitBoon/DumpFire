@@ -348,7 +348,14 @@ export const ROUTE_HEADERS: ReadonlyMap<string, readonly [name: string, value: s
 	['/api/decisions/[id]/release', UNPUBLISHED_HEADERS],
 	// Card 2678 (decision 12): an answer, a replacement and a publish each answer the question with the asker's name.
 	['/api/decisions/[id]/questions/[questionId]/answer', UNPUBLISHED_HEADERS],
-	['/api/decisions/[id]/questions/[questionId]/publish', UNPUBLISHED_HEADERS]
+	['/api/decisions/[id]/questions/[questionId]/publish', UNPUBLISHED_HEADERS],
+	// Card 2680 (decision 24): a card's linked decisions, and a link's answer, the cards linked as the caller may see them.
+	['/api/cards/[id]/decisions', UNPUBLISHED_HEADERS],
+	['/api/decisions/[id]/cards/[cardId]', UNPUBLISHED_HEADERS],
+	// Card 2680 (decision 24): the register, a person's record of what they were asked and said, and a decision's record.
+	['/decisions', UNPUBLISHED_HEADERS],
+	['/decisions/people/[personId]', UNPUBLISHED_HEADERS],
+	['/decisions/[id]/record', UNPUBLISHED_HEADERS]
 ]);
 
 /**

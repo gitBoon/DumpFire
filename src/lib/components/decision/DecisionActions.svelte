@@ -10,6 +10,10 @@
   - **Results and ruling** links to `/decisions/<id>/results`, where
     `mayReadResults` (card 2679, decision 15): the decider rules there, with
     the tally in view, and not from this bar.
+  - **Record** links to `/decisions/<id>/record`, where `mayReadRecord`
+    (card 2680, decision 29): every event of the decision, for the decider
+    and administrators. It is a read, so it is not counted as a lifecycle
+    control.
   - **Send me a dry run** sends `{ revision }`; a 409 or 429 is said in the
     server's words.
   - **Open** is off while the server gives a refusal, which it lists; with
@@ -71,6 +75,7 @@
 		warnings,
 		dirty,
 		mayReadResults = false,
+		mayReadRecord = false,
 		onSaved
 	}: {
 		decisionId: number;
@@ -93,6 +98,11 @@
 		dirty: boolean;
 		/** Whether the caller may read the results and rule from them (card 2679, decision 15): the decider and administrators. */
 		mayReadResults?: boolean;
+		/**
+		 * Whether the caller may read the decision's record (card 2680, decision 29): the decider, with board edit while
+		 * the board exists, and administrators. A read, not a lifecycle control.
+		 */
+		mayReadRecord?: boolean;
 		/** A write was taken: the decision's revision after it. */
 		onSaved: (revision: string) => void | Promise<void>;
 	} = $props();
@@ -327,6 +337,9 @@
 		<a class="btn btn-ghost btn-sm" href="/decisions/{decisionId}/preview" data-action="preview">Preview as a participant</a>
 		{#if mayReadResults}
 			<a class="btn btn-ghost btn-sm" href="/decisions/{decisionId}/results" data-action="results">Results and ruling</a>
+		{/if}
+		{#if mayReadRecord}
+			<a class="btn btn-ghost btn-sm" href="/decisions/{decisionId}/record" data-action="record">Record</a>
 		{/if}
 		{#if actions.dryRun}
 			<button type="button" class="btn btn-ghost btn-sm" data-action="dryRun" disabled={dirty || busy} title={dirty ? SAVE_FIRST : undefined} onclick={dryRun}>

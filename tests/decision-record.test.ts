@@ -611,7 +611,10 @@ describe('the shown status (E10)', () => {
 			supersede: ['ruled'],
 			// Card 2678 (decision 10): open, and awaiting a ruling.
 			ask: ['open', 'closed'],
-			answer: ['open', 'closed']
+			answer: ['open', 'closed'],
+			// Card 2680 (decision 17): never a draft, nor linked once withdrawn.
+			linkCard: ['open', 'closed', 'ruled', 'superseded'],
+			unlinkCard: ['open', 'closed', 'ruled', 'superseded', 'withdrawn']
 		});
 
 		const pastItsDeadline = { status: 'open', closesAt: '2026-11-01 00:00:00' };

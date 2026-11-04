@@ -34,6 +34,13 @@
  * (`mayAnswer`). The reach test is `reachedParticipantOf`'s, which the
  * questions read asks too.
  *
+ * Card 2680 adds, signed in, whether the caller may read the record
+ * (`mayReadRecord`), the linked cards on boards the caller can open
+ * (`linkedCards`, never by a personal link), whether they may link one
+ * (`mayLinkCards`) and unlink one (`mayUnlinkCards`), and gives the board's current name to a viewer who can
+ * open the board, the name it had when the decision was made to everyone
+ * else (decision 33).
+ *
  * Card 2697 adds the preview, `readPreview`, for `/decisions/[id]/preview`:
  * the working copy as a participant of the caller's choosing will see it,
  * built by the same `viewModelOf` and `groupsOf`, so that the preview cannot
@@ -48,9 +55,12 @@
 import { error } from '@sveltejs/kit';
 import { and, asc, eq } from 'drizzle-orm';
 import { db } from './db';
-import { decisionVersions, decisions, peopleGroupMembers, peopleGroups, type Decision, type DecisionParticipant } from './db/schema';
+import { boards, decisionVersions, decisions, peopleGroupMembers, peopleGroups, type Decision, type DecisionParticipant } from './db/schema';
 import type { SessionUser } from './auth';
-import { decisionAccess, mayDo, type DecisionAccess } from './decision-access';
+import { canViewBoard } from './board-access';
+import { linkCountOf, linkedCardsFor, LINKS_PER_DECISION } from './decision-cards';
+import { mayDo, type DecisionAccess } from './decision-access';
+import { namedFor } from './decision-naming';
 import { participantAnswers, versionContentAnswer, workingViewContent } from './decision-authoring';
 import { listedOptionIds, liveOptionsOf, optionChanges, parseVersionContent, parseWorkingContent, participantsOf } from './decision-content';
 import { participantForLink } from './decision-links';
@@ -100,6 +110,15 @@ export function readDecisionPage(user: SessionUser, decisionId: number): Decisio
 		mayDo(access, 'supersede', decision) &&
 		decision.boardId !== null &&
 		supersedingOf(decision.id) === null;
+	// Card 2680 (decision 29): the Record link, where the record view would let the caller in; a draft's too.
+	page.mayReadRecord = mayDo(access, 'record', decision);
+	// Card 2680 (decisions 17 and 18): the linked cards on boards the caller can open, and whether they may link one now, as
+	// `linkCard` asks, below the cap. A draft is never linked: none, and no Link.
+	page.linkedCards = opened ? linkedCardsFor(user, decision) : [];
+	page.mayLinkCards =
+		(TRANSITIONS.linkCard as readonly string[]).includes(decision.status) && mayDo(access, 'linkCard', decision) && linkCountOf(decision.id) < LINKS_PER_DECISION;
+	// Slice 3b: whether they may unlink one, as `unlinkCard` asks: at the cap and on a withdrawn decision too, where Link is not offered.
+	page.mayUnlinkCards = (TRANSITIONS.unlinkCard as readonly string[]).includes(decision.status) && mayDo(access, 'unlinkCard', decision);
 	return page;
 }
 
@@ -320,13 +339,14 @@ function rulingViewOf(decision: Decision): DecisionPageData['ruling'] {
 }
 
 /**
- * The decision `other` as `user` may be told of it (card 2679, decision 5,
- * S8): its id and title to a signed-in viewer who may view it, and nothing to
- * anyone else, a link holder always among them.
+ * The decision `other` as the page's viewer may be told of it (card 2679,
+ * decision 5, S8): nothing to a link holder, who has no session, and
+ * otherwise `namedFor`'s rule (decision-naming.ts), which the record view's
+ * `recordEntryOf` asks too (card 2680 code review, S1 and F3). Private: this
+ * module exports no function handed `SessionUser | null`.
  */
-function namedFor(user: SessionUser | null, other: Decision): { id?: number; title?: string } {
-	if (user === null || !mayDo(decisionAccess(user, other), 'view', other)) return {};
-	return { id: other.id, title: other.title };
+function namedForViewer(user: SessionUser | null, other: Decision): { id?: number; title?: string } {
+	return user === null ? {} : namedFor(user, other);
 }
 
 /**
@@ -338,12 +358,23 @@ function supersedeLinksOf(decision: Decision, user: SessionUser | null): Pick<De
 	let supersedes: DecisionPageData['supersedes'] = null;
 	if (decision.supersedesId !== null && isRuled(decision)) {
 		const earlier = db.select().from(decisions).where(eq(decisions.id, decision.supersedesId)).get();
-		if (earlier !== undefined) supersedes = namedFor(user, earlier);
+		if (earlier !== undefined) supersedes = namedForViewer(user, earlier);
 	}
 	let laterDecision: DecisionPageData['laterDecision'] = null;
 	const later = supersedingOf(decision.id);
-	if (later !== null && isRuled(later)) laterDecision = { superseded: decision.status === 'superseded', ...namedFor(user, later) };
+	if (later !== null && isRuled(later)) laterDecision = { superseded: decision.status === 'superseded', ...namedForViewer(user, later) };
 	return { supersedes, laterDecision };
+}
+
+/**
+ * The board's name as a signed-in viewer is told it (card 2680, decision 33,
+ * F3): its current name to one who can open the board now, and the name it
+ * had when the decision was made to everyone else, so that a renamed board's
+ * new name reaches nobody who cannot open it. The register's rule.
+ */
+function boardNameFor(decision: Decision, user: SessionUser | null): string {
+	if (user === null || decision.boardId === null || !canViewBoard(user, decision.boardId)) return decision.boardName;
+	return db.select({ name: boards.name }).from(boards).where(eq(boards.id, decision.boardId)).get()?.name ?? decision.boardName;
 }
 
 /** The ids of the groups the person is a member of now, of the groups that are still there (decision 18). */
@@ -385,7 +416,7 @@ function pageOf(
 			closesAt: isRuled(decision) ? null : decision.closesAt,
 			deciderName: decision.deciderName,
 			// A link holder may have no account and no tie to the board (R3).
-			boardName: how.via === 'link' ? null : decision.boardName,
+			boardName: how.via === 'link' ? null : boardNameFor(decision, how.user),
 			withdrawnAt: decision.withdrawnAt,
 			withdrawnReason: decision.withdrawnReason
 		},

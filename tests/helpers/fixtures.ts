@@ -23,6 +23,7 @@ import {
 	cardComments,
 	cards,
 	columns,
+	decisionCardLinks,
 	decisionOptions,
 	decisionParticipants,
 	decisionQuestions,
@@ -46,6 +47,7 @@ import {
 	type CardComment,
 	type Column,
 	type Decision,
+	type DecisionCardLink,
 	type DecisionOption,
 	type DecisionParticipant,
 	type DecisionQuestion,
@@ -830,6 +832,19 @@ export function makeQuestion(
 		);
 	}
 	return question;
+}
+
+/**
+ * A link between the decision and the card (card 2680), as `linkCard` leaves
+ * one: `relates`, by nobody, unless told otherwise. `relation` may be one no
+ * write takes yet (`waits`, card 2687's), to hold what a change of it does.
+ */
+export function makeCardLink(decision: Decision, card: Card, opts: { by?: SessionUser; relation?: string } = {}): DecisionCardLink {
+	return db
+		.insert(decisionCardLinks)
+		.values({ decisionId: decision.id, cardId: card.id, relation: opts.relation ?? 'relates', createdBy: opts.by?.id ?? null, createdAt: '2026-11-01 09:00:00' })
+		.returning()
+		.get();
 }
 
 /**

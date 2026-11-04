@@ -38,6 +38,9 @@ vi.mock('$app/navigation', () => ({
 	onNavigate: () => {},
 	beforeNavigate: () => {}
 }));
+// The board's decision list listens for `decision` events (card 2680): jsdom has no EventSource, and the listening is
+// tests/decision-register.svelte.test.ts's.
+vi.mock('$lib/live-refresh', () => ({ connectLiveRefresh: vi.fn(() => () => {}) }));
 // A bare 'svelte' gives the server's runtime, whose tick and onDestroy the components cannot use in a browser: the client's, by its path.
 vi.mock('svelte', async () => {
 	const { join } = await import('node:path');
@@ -610,6 +613,11 @@ describe("the board's decision list (case 31)", () => {
 				decisions: [listRow(40, 'Pick a host', true), listRow(41, 'Pick a font', false), draft(43, 'Pick a logo', true), draft(44, 'Pick a name', false)]
 			}
 		});
+		// Card 2680 (decisions 26 and 28): All decisions goes to the register for this board, and the list listens to
+		// this board's `decision` events alone.
+		expect(target.querySelector('[data-action="all"]')!.getAttribute('href')).toBe('/decisions?board=7');
+		const { connectLiveRefresh } = await import('$lib/live-refresh');
+		expect(vi.mocked(connectLiveRefresh).mock.calls.at(-1)?.[2]).toEqual({ events: ['decision'], boardId: 7 });
 		const rows = [...target.querySelectorAll<HTMLElement>('tbody tr')];
 		// Card 2677 (F4): an opened decision's title links to its page.
 		expect(rows.map((r) => [...r.querySelector('td')!.querySelectorAll('a')].map((a) => [textOf(a), a.getAttribute('href')]))).toEqual([

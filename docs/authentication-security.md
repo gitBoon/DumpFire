@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.82
+version: 1.84
 status: As-Built
 date: 2026-11-04
 tags:
@@ -3826,6 +3826,7 @@ is held only as itself: `boardOwner` does not imply `boardReader`.
 | dryRun (card 2697) | no | yes¹ | yes¹ | no | no | no | no |
 | rule (card 2679) | no | no | yes¹ | no | no | no | no |
 | record (card 2680) | yes | no | yes¹ | no | no | no | no |
+| linkCard, unlinkCard (card 2680)³ | yes | no | no | yes | yes | no | no |
 | respond (card 2677)² | no | no | no | no | no | no | yes |
 
 ¹ While the decision's board exists, a grant resting on `author`, `decider` or `boardOwner` is
@@ -3841,6 +3842,10 @@ edit the board when named and again at opening.
 ² `participant` needs no board access, so it survives a deleted board and a lost share. The write
 asks more than the table: a consulted participant only, one `reachOf` still reaches, and through
 the web application alone (below).
+
+³ `boardOwner` and `boardEditor` are edit access to the decision's board; with no board, an
+administrator alone (design 6.1 E3). The write also asks edit access to the card's board
+(`requireCard(…, 'edit')`). See [The Register, Records and Card Links](#the-register-records-and-card-links-card-2680).
 
 ### No existence oracle
 
@@ -4359,8 +4364,9 @@ anyone who remembers the closing time and sees when the ruling arrived. The rele
 "Once released, anyone who can see this decision can work out from the totals whether the
 ruling followed the most chosen option. This cannot be undone." (`RELEASE_INFERENCE`). The
 `ruled` event's `early` and `againstResponses`, the `cut_off` events and `concern_raised` are
-`DECIDER_ONLY_EVENTS`; cards 2680 (the record) and 2689 (webhooks) are bound to show them behind
-`record` alone and never to send them.
+`DECIDER_ONLY_EVENTS`. Card 2680 shows them on the record view, behind `record` alone (with
+`early`, `againstResponses` and the cut-off as stored, and never on a person's own record); card
+2689 (webhooks) is bound never to send them.
 
 **Concerns.** A live participant, consulted or informed, reached by their account or by their
 link, may raise one on a stored `ruled` decision for 90 days after the ruling, at most 5, 10
@@ -4490,10 +4496,10 @@ the answer and publish routes carry `UNPUBLISHED_HEADERS`, as their answers name
 
 **The record.** `question_asked`, `question_answered`, `answer_published` and `answer_replaced`
 are `DECIDER_ONLY_EVENTS`: their detail holds each notice's outcome (which would say an
-account's mail preference), the asker, and a discarded draft. Cards 2680 and 2689 are bound to
-show them behind `record` alone and never to send them; so a participant's own question is not
-in their own per-person record from the events, and card 2680 must show it from the question
-rows instead.
+account's mail preference), the asker, and a discarded draft. Card 2680 shows them behind
+`record` alone (the record view), with the notice outcomes dropped; a participant's own question
+is on their own person record from the question rows (`questionViewOf`), never from the events.
+Card 2689 is bound never to send them.
 
 **The rules card 2682 must keep** (decision 16). v1 adds `GET` and `POST
 /api/v1/decisions/{id}/questions` and `POST …/questions/{qid}/answer`, each only wrapping the
@@ -4518,6 +4524,177 @@ sequenceDiagram
     X->>X: recordDraftPublished WHERE draft pending (409 on no change)
     X->>P: answer shown with "reviewed by a person"; the asker mailed after the commit
 ```
+
+### The Register, Records and Card Links (card 2680)
+
+Card 2680 (plan `docs/planning/card-2680-register-records-links.md` v1.2) adds three signed-in
+pages and two internal routes. A personal link reaches none of them: none creates a session. The
+risk is privacy, not loss: a register or record that showed a draft, another participant's
+response, an asker's name, a board the reader cannot open, or the decider-only details would
+break what participants were promised when they answered.
+
+**The register (`/decisions`).** Exactly the decisions `requireDecision(…, 'view')` passes, in
+one SQL predicate (`visibleWhere`), held to the guard over the whole access cast by a test: an
+administrator every decision; a decision that is not a draft to anyone who can open its board now
+(public boards included), its author, its decider, and a participant whose account holds exactly
+one live row on it; a draft to its author, its decider and the board's owners (creator, or a
+direct `owner` member: `ownedBoardIds`), never an editor, a reader or a participant; a decision
+whose board was deleted to its author, decider, participants and administrators. Each row holds
+the title, shown status, board, decider's and author's names (no author where the caller's only
+role is participant), closing time through `listedStatusOf` (null once ruled or superseded), the
+opening time, the caller's own role and, only where it holds, `waiting`. No participant's name,
+no count of anyone, no response, no `ruledAt`, no `early` or `againstResponses`, no `updatedAt`,
+no account id, no address.
+
+- **Boards (S1, D1).** A board the caller can open is named by its id and current name. Any
+  other is the snapshot name the decision kept, with `id: null`, so a renamed board's new name
+  never reaches a reader who cannot open it; a deleted one is the snapshot with `gone: true`.
+  The board select lists only accessible boards holding a visible decision (at most 500). A
+  well-formed `board` id of a board the caller cannot open **matches nothing**, exactly as an id
+  of no board does: dropping it would widen the list and tell the two apart.
+- **Filters (decision 7).** `registerQueryOf(params, mode)` reads every filter by allow-list
+  before any query: `tab` and `status` from fixed values; `board`, `person` and `before` as ids;
+  `q` and `who` trimmed (200 and 100 characters) and matched with `instr(lower(…), ?)`, bound, so
+  `%`, `_` and quotes are text. A page drops a malformed value; `mode: 'api'` (card 2682) answers
+  400. No `sql.raw`.
+- **The person filter (decision 8).** `person=<id>` matches only the participations the caller's
+  person record of that person shows (below); anyone else, and a person who is not there, match
+  nothing alike. Drafts are never matched. The person select is a search of at most 25 in the
+  same scope, never a silent cap. **Its names follow the person record's header (code review
+  S2):** an administrator is given and searches the directory's names, and anyone else the name
+  the newest participation in their decider scope was given under (`decision_participants.name`,
+  grouped by person), with their own person by the directory's name; so a person renamed in the
+  directory is not told to a decider by the select.
+- **The waiting tabs** are capped at 200 rows (`REGISTER_WAITING_MAX`) with "Showing the first
+  200"; Waiting on me lists only rows where `mayDo(access, 'rule', d)` holds, so a decider who
+  lost the board is not told it waits on them.
+
+**A person's record (`/decisions/people/[personId]`).** Three audiences:
+
+| | Administrator | Decider (of the decision, with `record`) | The person (self) |
+|---|---|---|---|
+| Which participations | every opened decision the person was included in | only decisions the caller decides now and may read the record of | only rows with `person_id = personId` **and** `user_id = caller` (S6) |
+| Header | directory name, job title, groups, address, left or active | the snapshot name and job title of the newest participation in scope; left or active | directory name and job title |
+| Responses | every one, replaced ones too, with `via` | the same | their own, without `via` |
+| Questions | privileged (`questionViewOf`), drafts included | the same | as the participant page gives their own |
+| Concerns | every one | every one | their own |
+| Events | every event naming them, through `recordEntryOf`, the administrator's detail | the same, with the decider's detail (no address, no `signedIn`) | `OWN_RECORD_EVENTS` only: kind, moment, version (and `seen`'s stage), no actor |
+
+- **404 parity (S5).** A path that is not a whole number above 0 is 404 `Person not found` before
+  anything is read. An administrator's read looks up the person row. For anyone else the scope is
+  worked out first (participations of that person on non-draft decisions in the caller's decider
+  scope, or the caller's own person with rows on their own account), and the person row is read
+  only on a hit or where the caller's own account holds it: a person who is not there, a deleted
+  person and one outside the caller's scope are the same 404 with the same words, and a decider
+  whose only tie to the person is a draft is 404 too.
+- **Link-given participations** (account snapshot null) are on the administrator's and decider's
+  records, never on the person's own (design 6.2 S7).
+- **Removed participations (S2).** On the person's own record, where `mayDo(view)` no longer
+  holds: only the included and removed moments, their own responses and concerns, and their own
+  questions with the answers given up to `removed_at`; no decision id, title, status, board or
+  closing time ("A decision you were removed from"). Where `view` still holds (a board reader),
+  shown in full.
+- Drafts are in nobody's person record. 25 participations a page; at most 200 events each, then
+  "More in the record" (administrator and decider only).
+
+```mermaid
+flowchart TD
+    P["/decisions/people/[personId]"] --> V{"whole number above 0?"}
+    V -->|no| N404["404 Person not found"]
+    V -->|yes| R{"caller admin?"}
+    R -->|yes| Q{"person row there?"}
+    Q -->|no| N404
+    Q -->|yes| ADM["audience admin:<br/>every opened participation"]
+    R -->|no| S["scope first: participations with person_id = id,<br/>not a draft, in the decider scope,<br/>or own person and user_id = caller"]
+    S --> H{"own person, or any hit?"}
+    H -->|no| N404
+    H -->|"own person"| SELF["audience self"]
+    H -->|"decider hit"| DEC["audience decider;<br/>person row read now"]
+```
+
+**The record view (`/decisions/[id]/record`).** `requireDecision(user, id, 'record')`:
+administrators and the decider, with board edit while the board exists. Anyone else who may view
+the decision is 403, anyone else 404, a non-integer path 404. Every kind is shown, the
+decider-only ones included. Each entry's detail is a new object built by `recordEntryOf` from
+`RECORD_DETAIL[kind]` alone, an exhaustive per-kind allow-list (so `npm run check` fails for a new
+kind with no entry; the table is in [Data Model](data-model.md)): no key ending in `Id` at any
+depth; a nested object or array at a key the spec does not name, or names as a plain value, is
+dropped; another decision is shown only through `namedFor` (its id and title to a viewer who may
+view it, nothing otherwise); the addresses of `address_changed` and every `signedIn` (the account
+a personal link was opened while signed in as) go to an administrator alone, not the decider as
+card 2675 had it. The notice outcomes of the question events are dropped. Whether the reader is an
+administrator is asked of their account inside `recordEntryOf` (`isAdmin(ctx.user)`), never taken
+from a flag its caller hands it, so no later caller (card 2688's PDF among them) can widen it
+(code review S5). `namedFor` lives in `decision-naming.ts`, typed for a signed-in
+`SessionUser`; the participant page answers a link holder, who has no session, with nothing before
+it asks (code review S1, F3). The participant select carries a person id, for a link to the
+person record, only where the decision has been opened and the participant is a person of the
+directory: the reader, the decider or an administrator, is let into exactly that record (code
+review F1).
+
+```mermaid
+sequenceDiagram
+    participant U as Caller
+    participant L as /decisions/[id]/record load
+    participant R as readRecord
+    participant E as recordEventsOf
+    U->>L: GET ?participant&after
+    L->>L: readQueryIdOrNone(params.id), else 404
+    L->>R: readRecord(user, id, query, {source:'ui', limit: 500})
+    R->>R: limit within 1..RECORD_READ_MAX, else Error
+    R->>R: requireDecision(user, id, 'record'): 404, 403
+    R->>E: events of the decision, one participant's?, id > after
+    E-->>R: rows
+    R->>R: recordEntryOf(row, {user, labels}): isAdmin(user) asked inside
+    Note over R: a new object from RECORD_DETAIL only
+    R-->>L: { entries, participants, next }
+```
+
+**Card links.** `PUT` and `DELETE /api/decisions/[id]/cards/[cardId]` (no body read; the relation
+is `relates`) call `linkCard` and `unlinkCard`. Refusals in order: the decision (`linkCard`: 404
+not viewable, 403 not an editor of its board, or not an administrator where it has none), the
+card (`requireCard(…, 'edit')`: 404, 403 `No edit access to this board`), the status (409; never
+a draft or, for a new link, a withdrawn decision), an archived card (409, before the link already
+there is looked for, so a PUT again on an archived card is 409, not 200), a relation outside
+`CARD_LINK_RELATIONS` (400), the link already there (the same relation: 200 `unchanged`, nothing
+written), the caps (409: 100 a decision, 20 a card, a new link only), then the insert. Unlinking a
+link that is not there is 404 `Link not found`; an archived card may be unlinked. API keys may
+link and unlink (card 2682 adds the v1 routes).
+
+- **Each side shows only what the viewer can see of the other (decision 18).** The decision page
+  lists a linked card only on a board the viewer can open now, `{ id, title, boardId, boardName,
+  archived }`, with no count of the rest; a personal link is given no linked cards at all.
+  `GET /api/cards/[id]/decisions` refuses as `requireCard(…, 'view')` refuses, then lists only the
+  decisions the viewer may view (`visibleDecisionIdsOf`), `{ id, title, shownStatus, closesAt,
+  relation }`, the closing time null once ruled, with no count. Neither side names who linked it.
+  A card moved to another board is seen as that board now allows.
+- **The activity entries name no decision (S7).** `decision_card_linked`,
+  `decision_card_unlinked` and `decision_card_link_deleted` are written on the card's board with
+  its card, detail "a decision" or "a linked decision was deleted": the card's board's readers
+  may not view the decision. No live event, no mail, no webhook.
+- **The decision's cap discloses a count (S8)**: a 409 at 100 tells an editor of the decision's
+  board that it holds 100 links, some perhaps on boards they cannot open. Accepted: only a count,
+  only to an editor, only at the cap. **The card's cap states none** (code review S3): its 409 is
+  "This card has reached its limit of linked decisions", since a card's links may be to decisions
+  the caller cannot view, and a count would say how many there are.
+- **The card-board entry carries the actor by design (code review S6).** Each
+  `decision_card_linked`, `decision_card_unlinked` and `decision_card_link_deleted` entry names who
+  did it, as every activity entry does, and names no decision: the card's board's readers learn
+  that someone linked the card to a decision, never which.
+- **No step-up.** Linking and unlinking destroy nothing and can be undone; the reads change
+  nothing. No password is asked.
+
+**Headers.** Five `ROUTE_HEADERS` rows carry `UNPUBLISHED_HEADERS` (`Cache-Control: no-store`,
+`X-Robots-Tag: noindex, nofollow`): `/decisions`, `/decisions/people/[personId]`,
+`/decisions/[id]/record`, `/api/cards/[id]/decisions` and `/api/decisions/[id]/cards/[cardId]`.
+A page's `__data.json` carries its route id, so one row covers a page and its data. The three
+pages also say `<meta name="robots" content="noindex">`; `Referrer-Policy` stays global. Every
+new route is in `tests/access-every-route.test.ts` (the API table and `PAGES`).
+
+**Live events.** The register re-reads on the `decision` event, which `/api/events` forwards only
+to a caller who can open its board; a decision with no board emits none. So a participant-only
+caller is never sent another board's event, and is current on navigation, a return to the tab, or
+a reconnect.
 
 ### Who is mailed
 
@@ -5453,6 +5630,8 @@ which is what Reset Everything in the admin panel leaves.
 | `src/lib/server/logger.ts` | The system log: the console, `system_logs` and the live feed, from one `emit()`; `printable()`, which puts a space in place of every control character of a line, so that a name holding a line break cannot split it (card 2214), and `UNPRINTABLE`, the class it replaces, every format character (`\p{Cf}`) among it, which a decision's title is refused for holding (card 2675) |
 | `src/lib/server/decision-access.ts` | Who may do what to a decision (card 2675): `decisionAccess()`, `DECISION_RULES`, `DRAFT_VIEWERS` and `mayDo()`, which also asks that a write resting on authorship, the decider's role or board ownership come from someone who can edit the board now; `requireDecision()` in `route-guards.ts` asks it, `404` for a decision the caller may not view |
 | `src/lib/server/decision-links.ts` | A decision's personal links (card 2675): `issueLink()`, `revokeLinks()`, `participantForLink()`, the one place a link is checked, and `reachOf()` and `mayHoldLink()`, who is mailed and who may hold a link |
+| `src/lib/server/decision-register.ts` | The register, a person's record and the record view (card 2680): `visibleWhere` (the register held to `requireDecision(…, 'view')`), `visibleDecisionIdsOf()`, `registerQueryOf()` (the filters by allow-list), the person record's three audiences with its scope read first, and `recordEntryOf()`, which builds each event's detail from `RECORD_DETAIL` alone |
+| `src/lib/server/decision-cards.ts` | What is read of card-decision links (card 2680): `linkedCardsFor()` (cards on boards the viewer can open), `readCardDecisions()` (decisions the viewer may view), and `decisionLinksOfCardsUnchecked()`, which checks no access and whose callers a test pins |
 | `src/lib/server/secret-paths.ts` | The paths that carry a secret, `/invite/[token]` and `/decision-link/[token]` (card 2675), written to the log masked; `maskSecretsInLog()`, which masks what the log already holds, in a backup's copy and in the running log at start, and `maskFailedSignIn()`, which takes the name typed out of an old failed sign-in line (card 2193) |
 | `src/lib/server/backup.ts` | `generateBackupData()`, the one copy an export and a scheduled backup both send, cleared of sessions, unused invites, the key remembered browsers are signed with, every request's link and the request form's key, and every secret, then sealed (`withoutSecrets()`); `runBackup()` does not try a destination whose credentials are not entered |
 | `src/lib/server/backup-secrets.ts` | What a backup leaves out because it is a secret, and what is done about the gaps (card 2169): `clearSecrets()`, `readSecretsHere()`, `fillSecretGaps()`, `credentialsMissing()`, `secretsToEnter()` and the two sentences; the seal: `backupSealKey()`, `sealOf()`, `sealCopy()`, `sealVerifies()`, `keepSealKey()`, and the checks made before it, `unsealedBecause()`, `backupFailsCheck()`, `strayInternalObjects()`; `fromTableStorage()`, how a table is read for the seal and the restore |

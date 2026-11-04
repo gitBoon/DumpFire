@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.79
+version: 1.81
 status: As-Built
 date: 2026-11-04
 tags:
@@ -1228,7 +1228,7 @@ Card 2675 (plan `docs/planning/card-2675-decision-service.md` v1.1) is the serve
 
 ```mermaid
 flowchart LR
-    Routes["Card 2676's routes, and later cards'<br/>(2697, 2677, 2680, 2682)"] -->|"writeAs(locals, caller =>"| Svc["decisions.ts<br/>(service: twenty-four writes,<br/>six guards on READS)"]
+    Routes["Card 2676's routes, and later cards'<br/>(2697, 2677, 2680, 2682)"] -->|"writeAs(locals, caller =>"| Svc["decisions.ts<br/>(service: thirty writes,<br/>six guards on READS)"]
     Svc --> Guard["route-guards.ts<br/>requireDecision"]
     Guard --> Acc["decision-access.ts<br/>decisionAccess, DECISION_RULES, mayDo"]
     Acc --> BA["board-access.ts<br/>getBoardRole"]
@@ -1353,7 +1353,7 @@ sequenceDiagram
 | `respondToDecision`, `respondByLink` (card 2677) | A participant's response, signed in or by a personal link. See [The participant page](#the-participant-page) |
 | `recordSeen`, `recordSeenByLink` (card 2677) | A participant recorded as having seen a version. See [The participant page](#the-participant-page) |
 
-**Activity and live events.** The six actions `decision_opened`, `decision_republished`, `decision_closed`, `decision_extended`, `decision_withdrawn` and `decision_deleted` are written only for a decision that has been opened and whose board is there, with no card, `actorOf(caller)`, `source: opts.source`, and a detail of the quoted title and the lifecycle words alone: never a count, a name, a reason or a change note. Each call writes its `action: ACTIONS.decisionX` at its own site, as `tests/activity-twins.test.ts` requires; `decisionEntry` builds the rest. There is no `decision_created`, and none of the six sends a webhook (card 2689). On the same six steps and conditions the service sends `emit(boardId, 'decision', { decisionId, status, boardId })`, `status` the shown one: a named event no page listens for yet (card 2680), so no open board re-reads itself ([Real-Time Updates via SSE](#real-time-updates-via-sse)).
+**Activity and live events.** The six actions `decision_opened`, `decision_republished`, `decision_closed`, `decision_extended`, `decision_withdrawn` and `decision_deleted` are written only for a decision that has been opened and whose board is there, with no card, `actorOf(caller)`, `source: opts.source`, and a detail of the quoted title and the lifecycle words alone: never a count, a name, a reason or a change note. Each call writes its `action: ACTIONS.decisionX` at its own site, as `tests/activity-twins.test.ts` requires; `decisionEntry` builds the rest. There is no `decision_created`, and none of the six sends a webhook (card 2689). On the same six steps and conditions the service sends `emit(boardId, 'decision', { decisionId, status, boardId })`, `status` the shown one: a named event that the register and a board's list of decisions listen for (card 2680), each re-reading through the one 250 ms debounce; the board itself does not ([Real-Time Updates via SSE](#real-time-updates-via-sse), [The register, records and card links](#the-register-records-and-card-links)). Card 2680 adds three actions, each written on the **card's** board with its `cardId` through `decisionEntry`'s optional last argument: `decision_card_linked` and `decision_card_unlinked` (detail "a decision") and `decision_card_link_deleted` (detail "a linked decision was deleted", one per linked card, written by `deleteDecision` before the delete cascades the links). None names the decision's id or title, which the card's board's readers may not be allowed to view; none has a live event, a mail or a webhook.
 
 **Outside the decision modules.** `people.ts` ends a person's links on Mark left, a link, an unlink, a new address and a delete, through `revokeLinks` ([How the directory clears links](#the-people-directory-page)). `deleteUser` in `deletes.ts` marks every person linked to the account left (`status`, `left_at`) before the account goes, ends their links through the same `revokeLinks` with the reason `left`, by the deleting administrator, and writes one `PEOPLE` line per person with no address, inside the delete's own transaction (the code review's S4). `restoreFromBackup` records `link_revoked { reason: 'restore' }` for each participant holding a link on a decision that is not a draft, empties every hash, counts them into `RestoreResult.decisionLinksCleared`, gives no default to a NULL in a decision table (F8), and fails, rolled back, when any row of `decisions` or a `decision_*` table could not be copied (see [Data Model](data-model.md#decision-records-migration-0061)). `SECRET_IN_PATH` in `secret-paths.ts` holds `{ routeId: '/decision-link/[token]', before: '/decision-link/' }`, so the gate's line, `maskMailText`, `mailStatus().lastFailure`, backups and the start-up sweep write `/decision-link/[token]`.
 
@@ -1413,7 +1413,7 @@ flowchart LR
 - `/board/[id]/decisions` (`readBoardDecisions`, `requireBoard(…, 'view')`): one query, the caller's board role read once, newest first. Every decision that is not a draft, and a draft only to `DRAFT_VIEWERS` (its author, its decider, the board's owners, administrators), each row asked of `mayDo(…, 'view')` and carrying `mayEdit` from `mayDo(…, 'edit')`. Since card 2677 (F4) an opened decision's title links to its page, `/decisions/[id]`, with **Edit** beside it where `mayEdit` holds; a draft's title links to the editor where `mayEdit` holds and is plain text otherwise. **New decision**, for a caller who can edit the board (`canCreate`), asks for a title in a small dialog, posts it and goes to the editor. The board's More menu has **Decisions** under Go to, for every board viewer.
 - `/decisions/[id]/edit` (`readEditPage`, `requireDecision(…, 'edit')`): 404 for a caller who cannot view the decision (a board editor and a draft not theirs among them), 403 for one who can view and not edit. It gives the decision, its live options and every participant row through the projection, the revision, the readability check, `editable` (`TRANSITIONS.edit`), `canSetDecider`, `canReview`, `canSetParticipants` (`edit`, and `include` once opened), `productOwnerUserId`, and the picker's data: active people as `{ id, fullName, jobTitle, groupIds }` (with `email` to an administrator alone), groups as `{ id, name, activeMemberIds }`, and the decider candidates from `editorsOf`. The people, groups and candidates are empty wherever `TRANSITIONS.edit` refuses. The people are also empty, and the groups names alone (`{ id, name }`, for the audience select), wherever `canSetParticipants` is false; the candidates are empty wherever the caller may not change the decider (card 2676's C4); once open, the caller is left out of them.
 
-**The components** (`src/lib/components/decision/`). `DecisionEditor` holds the working copy in design 4.7's order, the title, closing time (UTC) and vote mode (read-only once open and sent unchanged), options as cards with the server's labels and move left, right and remove, the agent label with **Mark reviewed** on each flagged section and **Mark all reviewed** in its top bar, and the decider select (read-only text where `canSetDecider` is false, the Product Owner marked). `ParticipantPicker` searches name, job title and group name (and the address where the server gave one), ticks a group's active members as Consulted, shows a group mixed or with no active members, flags the decision's own participants who have left ("has left: remove before saving", ticked until unticked) or are no longer in the directory ("saving takes them off"), and on an opened decision asks first, with how many are mailed and how many marked removed. `ReadinessPanel` draws the server's refusals as given and the warnings it is handed: the server's, until there are edits not yet saved, then `checkContent`'s. The page holds the revision: each answer gives the next, and the page's data is read again (`invalidateAll()`). A refusal is said in the server's words, the edits kept, and only the stale-revision 409 (`STALE_REVISION` in `$lib/decision-words.ts`, the words the service refuses with) offers **Reload**, which reads the decision again and draws the editor afresh; any other 409 keeps the edits and offers nothing that would throw them away (card 2676's C6). Where the groups' members were withheld (C4), the editor does not judge an audience "nobody ticked" on unsaved edits; the server's check does once they are saved. No page listens to the live stream yet (card 2680).
+**The components** (`src/lib/components/decision/`). `DecisionEditor` holds the working copy in design 4.7's order, the title, closing time (UTC) and vote mode (read-only once open and sent unchanged), options as cards with the server's labels and move left, right and remove, the agent label with **Mark reviewed** on each flagged section and **Mark all reviewed** in its top bar, and the decider select (read-only text where `canSetDecider` is false, the Product Owner marked). `ParticipantPicker` searches name, job title and group name (and the address where the server gave one), ticks a group's active members as Consulted, shows a group mixed or with no active members, flags the decision's own participants who have left ("has left: remove before saving", ticked until unticked) or are no longer in the directory ("saving takes them off"), and on an opened decision asks first, with how many are mailed and how many marked removed. `ReadinessPanel` draws the server's refusals as given and the warnings it is handed: the server's, until there are edits not yet saved, then `checkContent`'s. The page holds the revision: each answer gives the next, and the page's data is read again (`invalidateAll()`). A refusal is said in the server's words, the edits kept, and only the stale-revision 409 (`STALE_REVISION` in `$lib/decision-words.ts`, the words the service refuses with) offers **Reload**, which reads the decision again and draws the editor afresh; any other 409 keeps the edits and offers nothing that would throw them away (card 2676's C6). Where the groups' members were withheld (C4), the editor does not judge an audience "nobody ticked" on unsaved edits; the server's check does once they are saved. The editor does not listen to the live stream: a re-read would throw away unsaved edits (card 2680, decision 26). Card 2680 adds three components: `LinkedCards` (the decision page's linked cards, with a card search, Link and Unlink), `RecordEvents` (one list of record entries, for the record view and an administrator's or decider's person record) and, in `src/lib/components/card/`, `CardDecisions` (the card window's read-only list of the card's decisions); see [The register, records and card links](#the-register-records-and-card-links). `DecisionActions` gains a **Record** link where `mayReadRecord`.
 
 ```mermaid
 sequenceDiagram
@@ -1624,7 +1624,7 @@ The session routes are `requireUser`, `pathId`, `readBody`, then `writeAs(locals
 
 **The components** (`src/lib/components/decision/`).
 
-- `DecisionView` takes `DecisionViewProps` (`decision`, `content`, `options`, `audiences`, `participant` as `{ role }` or null, `mode: 'participant' | 'preview'`) and the snippets `banner`, `response`, `questions` and `linkedCards`. It holds no version number, publication or inclusion moment, so card 2697's preview can build its props from the working content, and it fetches and posts nothing. Sections in design 4.7's order: title and status, banner, situation, question, what is asked and by when, who sees a response (consulted only), the options (a CSS grid, `repeat(auto-fit, minmax(15rem, 1fr))`, side by side or stacked), how it affects you (`<details>` per audience, open as given), user stories (closed `<details>`), what is not yet known, already settled, technical detail (closed), the `response` snippet (consulted only), then `questions` (card 2678: `QuestionsPanel` and `QuestionForm`, under the `questions` id the question mails link to, its heading `questions-heading` taking the focus after a question is sent; [Clarification questions and answers](#clarification-questions-and-answers)) and `linkedCards` (card 2680), each drawn only when given. A flagged section or option carries `AgentLabel` (card 2712), drawn as a `<p>` with its `data-flag`.
+- `DecisionView` takes `DecisionViewProps` (`decision`, `content`, `options`, `audiences`, `participant` as `{ role }` or null, `mode: 'participant' | 'preview'`) and the snippets `banner`, `response`, `questions` and `linkedCards`. It holds no version number, publication or inclusion moment, so card 2697's preview can build its props from the working content, and it fetches and posts nothing. Sections in design 4.7's order: title and status, banner, situation, question, what is asked and by when, who sees a response (consulted only), the options (a CSS grid, `repeat(auto-fit, minmax(15rem, 1fr))`, side by side or stacked), how it affects you (`<details>` per audience, open as given), user stories (closed `<details>`), what is not yet known, already settled, technical detail (closed), the `response` snippet (consulted only), then `questions` (card 2678: `QuestionsPanel` and `QuestionForm`, under the `questions` id the question mails link to, its heading `questions-heading` taking the focus after a question is sent; [Clarification questions and answers](#clarification-questions-and-answers)) and `linkedCards` (card 2680: `LinkedCards`, under a `Linked cards` heading, on the signed-in page where there is a card or the caller may link or unlink one), each drawn only when given. A flagged section or option carries `AgentLabel` (card 2712), drawn as a `<p>` with its `data-flag`.
 - `MarkdownBlock` draws the text itself, escaped, in a `white-space: pre-wrap` block until it is mounted, then `{@html renderMarkdown(text)}`: DOMPurify needs a DOM, and Svelte keeps an `{@html}` the server drew on hydration (F5). It is the page's only `{@html}`. Comments are always shown as text.
 - `ResponseForm` (`voteMode`, `options`, `versionNumber`, `url`, `extra`, `disabled`, `initial`, `onReload`; `versionNumber` and `url` are optional when `disabled` is true, for card 2697's preview, code review C9): radio cards, one per option, then "I abstain" and "I have no concerns"; in score mode a radio group of six buttons, 0 to 5, per option, Send disabled until every option is scored; a comment and a comment per option. Send posts `{ ...extra, versionNumber, kind, optionId | scores, comment, optionComments }` (only the option comments that are not blank) and shows "Your response was recorded on <moment>:" with what was recorded. A refusal shows the server's words and keeps what was typed; only the `409` in `STALE_REVISION`'s words offers **Reload**, which reads the page again and draws the form afresh. `disabled` draws it and sends nothing (the preview). Every tap target is at least 44px, and every input 16px.
 - `watchForSeen(url, body, { trusted })` in `$lib/decision-seen.ts`, armed by both pages, on `/decisions/[id]` only when `participant` is not null (D7), and on neither where `stage` is null, listens on the window, capturing, for `pointerdown`, `keydown`, `touchstart` and `wheel`. Not `scroll`, which is trusted however it was caused, a script's `scrollTo` included (code review C3). The first event that passes the trust test (`event.isTrusted` unless one is given, which only the tests give) while `document.visibilityState` is `visible` stops the watch and posts `{ versionNumber, stage }` (with the token on the link page). With no answer, or a `429` or a `5xx`, the next action posts again; any other answer ends it.
@@ -1767,8 +1767,9 @@ flowchart LR
   the board exists, and `emit(boardId, 'decision', …)` beside each. None in the webhook map yet.
 - **The decider-only details** (`DECIDER_ONLY_EVENTS = ['ruled', 'cut_off',
   'concern_raised']`): "against", "early", the cut-off names and the concern outcomes are shown
-  on the results page alone. **A binding rule on cards 2680 and 2689**: the record shows them
-  behind `record` (`['admin', 'decider']`) alone, and webhooks never carry them.
+  on the results page alone. **A binding rule on cards 2680 and 2689**: the record view (card
+  2680, built) shows them behind `record` (`['admin', 'decider']`) alone and never on a person's
+  own record; webhooks (card 2689) never carry them.
 - **What can be worked out** (decision 26). Nothing current gives both moments once ruled:
   `DecisionPageData` holds no `ruledAt` and gives `closesAt` null, `decisionAnswer` gives
   `closesAt` only to an administrator, and `readBoardDecisions` gives none. "Against" can still
@@ -2007,6 +2008,193 @@ stateDiagram-v2
     Answered --> [*]
     Published --> [*]
 ```
+
+### The register, records and card links
+
+Card 2680 (plan `docs/planning/card-2680-register-records-links.md` v1.2) adds the cross-board
+register of decisions (`/decisions`), one person's record of what they were asked and what they
+said (`/decisions/people/[personId]`), a decision's record view (`/decisions/[id]/record`), and
+links between cards and decisions, shown on both. No migration: `decision_card_links` is migration
+0061's, and every read is answered by an index that exists.
+
+```mermaid
+flowchart LR
+    subgraph Pages
+      Reg["/decisions<br/>register"]
+      Per["/decisions/people/[personId]"]
+      Rec["/decisions/[id]/record"]
+      Dec["/decisions/[id]<br/>LinkedCards"]
+      Win["CardModal (reads on open)<br/>CardDecisions"]
+    end
+    subgraph Reads["Read modules (user: SessionUser, write nothing)"]
+      DR["decision-register.ts<br/>readRegister, readPersonRecord,<br/>readRecord, recordEntryOf,<br/>visibleDecisionIdsOf"]
+      DC["decision-cards.ts<br/>linkedCardsFor, readCardDecisions,<br/>decisionLinksOfCardsUnchecked"]
+    end
+    subgraph Service["decisions.ts (service)"]
+      LC["linkCard / unlinkCard"]
+      DD["deleteDecision<br/>(link entries first)"]
+    end
+    Reg --> DR
+    Per --> DR
+    Rec --> DR
+    Dec -->|"PUT / DELETE /api/decisions/:id/cards/:cardId"| LC
+    Dec --> DC
+    Win -->|"GET /api/cards/:id/decisions"| DC
+    DC --> DR
+    DR --> RecMod["decision-record.ts<br/>OWN_RECORD_EVENTS, RECORD_DETAIL,<br/>roundsOf, countedInRound"]
+    DR --> St["decision-status.ts<br/>shownStatusSql, listedStatusOf"]
+```
+
+**The modules.** `src/lib/server/decision-register.ts` and `src/lib/server/decision-cards.ts` are
+plain read modules: they take `user: SessionUser`, import no `inWrite` and write nothing, so a page
+load may call them (`check-at-the-write`'s rule 4). The two writes, `linkCard` and `unlinkCard`,
+are in the service (`decisions.ts`). `decision-status.ts` gains `shownStatusSql(status, now)`
+(every shown status as SQL, beside `awaitingRulingSql`, held to `decisionStatus` by a test) and
+`listedStatusOf(row, now)`, the one projection of status and closing time for every list: the
+closing time is null once ruled or superseded. `decision-record.ts` gains `OWN_RECORD_EVENTS`,
+`RECORD_DETAIL` and the reads behind them (`recordEventsOf`; `eventsOfParticipants`, bounded per
+participant in SQL by `row_number()`; `responsesOfParticipants`, `concernsOfParticipants`,
+`questionsByParticipants` and `eventsOfKindsOn`, each over a whole page's ids; and the set-based
+`roundsOf` and `countedInRound`, chunked by `IDS_AT_ONCE`). A person record's page is read in a
+fixed number of queries however many participations it holds (code review F2; a test counts
+them). `decision-questions.ts` extracts `questionViewOf`, which `questionsFor` and
+`questionsOfParticipations` (a page's questions, `'own'` or `'privileged'`) share.
+`board-access.ts` gains `ownedBoardIds(user)`. `src/lib/server/decision-naming.ts` holds
+`namedFor(user: SessionUser, other)`, what a signed-in viewer may be told of another decision,
+which the participant page's supersede links and the record view both ask; it is its own module so
+that neither imports the other, and its non-null `SessionUser` keeps it off `NOT_SERVICES` (code
+review S1, F3).
+
+**Visibility.** The register lists exactly what `requireDecision(…, 'view')` lets through, in one
+SQL predicate (`visibleWhere`): an administrator every decision; a decision that is not a draft to
+anyone who can open its board now (public boards included), its author, its decider, and a
+participant whose account holds exactly one live row on it (`GROUP BY … HAVING count(*) = 1`); a
+draft to its author, its decider and the board's owners alone (`ownedBoardIds`). A test holds the
+register to `requireDecision` over the whole access cast. `visibleDecisionIdsOf(user, ids)` is the
+same predicate for any other list (the card window's; card 2687's plan view).
+
+The register read, by tab:
+
+```mermaid
+flowchart TD
+    A["GET /decisions?tab&board&person&who&status&q&before"] --> B["registerQueryOf(params, 'page')<br/>allow-lists; a malformed value dropped"]
+    B --> C["visibleWhere(user)"]
+    C --> BF{"board= given?"}
+    BF -->|"accessible board"| BN["board_id = board"]
+    BF -->|"any other id"| NONE["matches nothing"]
+    BF -->|no| D
+    BN --> D{"tab"}
+    D -->|"waiting-response"| E["live consulted row, account-reach join,<br/>shown open; at most 200"] --> E2["roundsOf + countedInRound"]
+    D -->|"waiting-ruling"| F["decider = me, awaitingRulingSql,<br/>board null or editable; at most 200"]
+    D -->|"open / ruled / all"| G["shownStatusSql; status on All only;<br/>id < before, 50 a page"]
+    E2 --> H["person filter in the caller's record scope;<br/>instr(lower(title), q)"]
+    F --> H
+    G --> H
+    H --> I["RegisterRow via listedStatusOf;<br/>board: id and current name if accessible, else the snapshot"]
+```
+
+**Constants** (`decision-register.ts`): `REGISTER_PAGE_SIZE` 50, `REGISTER_WAITING_MAX` 200,
+`REGISTER_BOARDS_MAX` 500, `PEOPLE_MATCHES_MAX` 25, `PERSON_PAGE_SIZE` 25,
+`EVENTS_PER_PARTICIPATION` 200, `RECORD_PAGE_SIZE` 500, `RECORD_READ_MAX` 5,000. In
+`decision-cards.ts`: `LINKS_PER_DECISION` 100, `LINKS_PER_CARD` 20, `CARD_LINK_RELATIONS =
+['relates']`.
+
+**The record view and `RECORD_DETAIL`.** `readRecord(user, id, query, { source, limit })` asks
+`requireDecision(user, id, 'record')` (administrators, and the decider with board edit while the
+board exists) and reads the decision's events oldest first, by `after`, optionally one
+participant's. `limit` is required, 1 to `RECORD_READ_MAX`; outside it is a plain `Error`.
+`recordEntryOf(event, ctx)` builds a new detail object from `RECORD_DETAIL[kind]` alone (an
+exhaustive `Record<EventKind, DetailSpec>`, so a new kind with no entry fails `npm run check`): no
+key ending in `Id` at any depth, a nested object or array at a key the spec does not name
+dropped, another decision named only through `namedFor`, the option by its label, and the
+addresses of `address_changed` and every `signedIn` to an administrator alone, which
+`recordEntryOf` asks of the account (`isAdmin(ctx.user)`), never of a flag its caller hands it
+(code review S5). The page names each detail key in words (`DETAIL_WORDS` in
+`decision-words.ts`), never its stored camelCase name. Each participant carries `personId`, for a
+link to their person record, where they are a person of the directory and the decision has been
+opened; the register gives `myPersonId` for its **My record** link (code review F1).
+
+**Card links.** `linkCard(caller, { decisionId, cardId, relation }, null, opts)` and
+`unlinkCard(caller, { decisionId, cardId }, null, opts)`: edit access to the decision's board (an
+administrator where it has none: `DECISION_RULES.linkCard = ['admin', 'boardOwner',
+'boardEditor']`) and to the card's (`requireCard(…, 'edit')`). Neither touches the decision's row,
+so neither revision moves.
+
+```mermaid
+sequenceDiagram
+    participant Page as Decision page (LinkedCards)
+    participant Route as PUT /api/decisions/[id]/cards/[cardId]
+    participant Svc as decisions.ts linkCard
+    participant DB as SQLite
+    Page->>Route: PUT, Content-Type JSON, no body
+    Route->>Svc: writeAs(locals, caller => linkCard(caller, {decisionId, cardId, relation:'relates'}, null, {source:'ui'}))
+    Svc->>Svc: requireDecision 404/403; requireCard 404/403
+    Svc->>Svc: TRANSITIONS 409; archived card 409; relation not allowed 400
+    Svc->>DB: link there? same relation: unchanged; another: UPDATE relation
+    Svc->>DB: caps 100 a decision, 20 a card: 409 (a new link only)
+    Svc->>DB: INSERT decision_card_links
+    Svc->>DB: decision_card_linked on the card's board, cardId, "a decision"
+    Route->>Route: linkedCardsFor(caller, decision)
+    Route-->>Page: 200 { outcome, linkedCards }
+    Page->>Page: draws the answer; invalidateAll(); focus to the search box
+```
+
+Deleting a linked decision (only a withdrawn one can be: a draft is never linked):
+
+```mermaid
+sequenceDiagram
+    participant Svc as decisions.ts deleteDecision
+    participant DB as SQLite
+    Svc->>Svc: decisionDeleteGuard (withdrawn or draft)
+    Svc->>DB: the decision's links, each card's board
+    loop each linked card
+        Svc->>DB: decision_card_link_deleted on the card's board, cardId, "a linked decision was deleted"
+    end
+    Svc->>DB: DELETE decisions (the links cascade)
+    Svc->>Svc: early return if never opened or boardless (unchanged)
+    Svc->>DB: decision_deleted on its board (unchanged)
+```
+
+**The components.**
+- `LinkedCards` (`src/lib/components/decision/`) lists the cards linked on boards the viewer can
+  open, each `#id title` linking to `/board/<boardId>?card=<id>`, its board's name and an
+  Archived mark. Where `mayLinkCards`, a labelled search box using the card window's search
+  (`/api/cards/search`, debounced 250 ms, the latest answer alone kept), each result with Link, a
+  card already linked marked and not offered. Where `mayUnlinkCards`, Unlink beside each card.
+  Link sends `PUT /api/decisions/${decisionId}/cards/${card.id}` with the literal init `{ method:
+  'PUT', headers: { 'Content-Type': 'application/json' } }` and no body, Unlink the same with
+  `DELETE`: literal, so
+  `page-failures` reads them and they need no `UNREAD_SENDS` entry. The answer's `linkedCards` is
+  drawn at once and the page's data read again (`invalidateAll`). A refusal is said in the
+  server's words (`failureMessage`) in a polite `role="status"` line that stays drawn. After a
+  link the focus goes back to the emptied search box; after an unlink to the next card's Unlink,
+  else the previous one's, else the search box, else the list's empty words. Every link and
+  button is at least 44 px.
+- `CardDecisions` (`src/lib/components/card/`) lists each decision by its title, linking to
+  `/decisions/<id>`, with its shown status and, while not ruled, its closing time. The window
+  reads them: `CardModal`'s `onMount` calls `loadDecisions(card.id)` (`GET
+  /api/cards/${cardId}/decisions`) beside its comments and dependencies, once per open, and keeps
+  the answer while another tab is shown; the section has no read, `$effect` or `onMount` of its
+  own, as `tests/card-window.test.ts` requires of every card-window section. It is drawn in the
+  main panel's details tab after `CardSubtasks`, behind `{#if card}` (never on a new card). It
+  draws nothing for none; a failed read says so in one line and never blocks the card.
+- `RecordEvents` draws a list of `RecordEntry`, for the record view and an administrator's or
+  decider's person record.
+
+**Live listening.** `connectLiveRefresh(onRefresh, onEvent?, options = {})` (`src/lib/live-refresh.ts`)
+takes `{ events?: readonly LiveEventName[]; boardId?: number }`. `events` replaces the default
+`['update', 'xp-update']`; every caller from before passes nothing and is unchanged. With
+`boardId`, a `decision` event re-reads only when its payload's `boardId` is that board. Every
+event goes through the one 250 ms debounce, and there is still one `keepStreamOpen`. The register
+passes `{ events: ['decision'] }`; a board's list of decisions `{ events: ['decision'], boardId }`;
+the editor does not listen. **Reach:** `/api/events` forwards a `decision` event only to a caller
+who can open its board, and a decision with no board emits none, so a participant-only caller and
+any boardless decision are current on navigation, a return to the tab, or a reconnect.
+
+**The headers.** Five `ROUTE_HEADERS` rows carry `UNPUBLISHED_HEADERS` (`Cache-Control:
+no-store`, `X-Robots-Tag: noindex, nofollow`): `/decisions`, `/decisions/people/[personId]`,
+`/decisions/[id]/record`, `/api/cards/[id]/decisions` and `/api/decisions/[id]/cards/[cardId]`. The
+three pages also carry `<meta name="robots" content="noindex">`.
 
 ### The dashboard
 
