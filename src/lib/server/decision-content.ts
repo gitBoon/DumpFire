@@ -423,7 +423,8 @@ const REVISION_PURPOSE = 'decision-revision';
  * nothing it edits, an administrator's included (D3). `updated_at` is still
  * stamped by them, for the board's list and every answer that shows it; every
  * other write that stamps it changes a column covered here. The results
- * revision still covers all three (`resultsRevisionOf`).
+ * revision still covers a participant's account and address, and since card
+ * 2734 not `updated_at` either (`resultsRevisionOf`).
  */
 export function revisionOf(decision: Decision, options: DecisionOption[], participants: DecisionParticipant[]): string {
 	return createHmac('sha256', purposeKey(REVISION_PURPOSE)).update(JSON.stringify(coveredBy(decision, options, participants))).digest('hex');
@@ -462,20 +463,27 @@ const RESULTS_REVISION_PURPOSE = 'decision-results-revision';
 /**
  * The results revision (card 2679, decision 8): HMAC-SHA256, in hex, keyed
  * with `purposeKey('decision-results-revision')`, over everything the draft
- * revision covers and, as before card 2706, the decision's `updated_at` and
- * each participant's account and address (so that no ruling or release is
- * made against a participant change its caller has not seen; its value is
- * what it was), every response id `responsesOf` gives (votes, abstentions
+ * revision covers and, as before card 2706, each participant's account and
+ * address (so that no ruling or release is made against a participant change
+ * its caller has not seen), the moment the results were released, every
+ * response id `responsesOf` gives (votes, abstentions
  * and no concerns, never a concern: their table is insert-only, so the set of
  * ids is the state), and every question's id, the moment it was answered,
  * the moment an agent's draft answer was published and whether its answer is
  * an agent's (card 2678, decision 11: publishing and replacing change which
  * questions are open, and the flag moves it for a replacement made in the
  * same second as the draft). So a response, a question
- * asked, answered, published or replaced, or a change to a participant
- * between reading the results and ruling on them moves it; a seen event, a
- * mail outcome, a notice's outcome or a concern does not. Keyed, as the draft
+ * asked, answered, published or replaced, a change to a participant or a
+ * release between reading the results and ruling on them moves it; a seen
+ * event, a link issued, a Resend, a reminder, a mail outcome, a notice's
+ * outcome or a concern does not. Keyed, as the draft
  * revision is, so that holding it lets nobody test guesses offline.
+ *
+ * Card 2734: never the decision's `updated_at`, which a Resend stamps alone.
+ * Every other write that stamps it changes a column covered here in the same
+ * write; the release's was the one that did not, so `results_released_at`
+ * stands in its place (the plan's write-by-write table,
+ * docs/planning/card-2734-results-revision-delivery.md, section 2).
  */
 export function resultsRevisionOf(of: {
 	decision: Decision;
@@ -484,9 +492,9 @@ export function resultsRevisionOf(of: {
 	responseIds: number[];
 	questions: { id: number; answeredAt: string | null; answerReviewedAt: string | null; answerAgentDrafted: boolean }[];
 }): string {
-	// Built in place, in the order and shape it had before card 2706, so that its value did not change.
+	// Built in place, in the shape it had before card 2706, `updated_at` replaced by `results_released_at` (card 2734).
 	const covered = {
-		decision: [...decisionColumns(of.decision), of.decision.updatedAt],
+		decision: [...decisionColumns(of.decision), of.decision.resultsReleasedAt],
 		options: optionColumns(of.options),
 		participants: inOrder(of.participants).map((row) => [row.id, row.personId, row.role, row.userId, row.email, row.removedAt]),
 		responses: [...of.responseIds].sort((a, b) => a - b),

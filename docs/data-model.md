@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.68
+version: 1.69
 status: As-Built
 date: 2026-11-05
 tags:
@@ -854,9 +854,10 @@ migration**: every field is a 0061 column, and the new event details are JSON.
   later card adds is left out of every tally until it is added there. `concernsOf` reads
   `kind = 'concern'` alone.
 - **The results revision** (`resultsRevisionOf`, `decision-content.ts`): HMAC-SHA256 keyed with
-  `purposeKey('decision-results-revision')` over what the editor revision covers (and the
-  decision's `updated_at` and each participant's `user_id` and `email`, which card 2706 took out
-  of the editor revision and kept here, its value unchanged), every response id `responsesOf` gives in id order (never a concern) and every question's
+  `purposeKey('decision-results-revision')` over what the editor revision covers (and each
+  participant's `user_id` and `email`, which card 2706 took out of the editor revision and kept
+  here), the decision's `results_released_at` (card 2734, in place of `updated_at`, which a Resend
+  stamps alone; [below](#the-working-copy-and-its-revision-card-2676)), every response id `responsesOf` gives in id order (never a concern) and every question's
   `[id, answered_at]`, which card 2678 widened to `[id, answered_at, answer_reviewed_at,
   answer_agent_drafted]` ([below](#clarification-questions-settled-once-card-2678)). The
   ruling and the release send it; a different one is `409`.
@@ -1164,11 +1165,20 @@ write, and
 that asks the revision as its caller saw it, so none refuses an author mid-edit any more.
 `updated_at` is still stamped by all three, for the board's decision list and every answer that
 shows it; every other write that stamps it changes a covered column. The results revision still
-covers all three, unchanged.
+covers `user_id` and `email`.
+
+Card 2734 took `updated_at` out of the results revision too, so a Resend no longer refuses a
+decider's ruling or release made from a results page opened before it. Of the 18 writes that
+stamp it (all in `decisions.ts`; the card's plan, section 2, lists each), every one changes a
+column the results revision covers in the same write but two: a Resend, a delivery act that must
+not move it, and the release, which changes `results_released_at` alone and so is covered by that
+column in `updated_at`'s place. Link issuance, every event (`seen`, `invited`, `mail_outcome`,
+`reminded`, `mail_skipped`), a reminder and a concern stamp nothing and move neither revision.
 
 | Column | Editor revision | Results revision |
 |---|---|---|
-| `decisions.updated_at` | No (card 2706) | Yes |
+| `decisions.updated_at` | No (card 2706) | No (card 2734) |
+| `decisions.results_released_at` | No | Yes (card 2734) |
 | `decision_participants.user_id`, `email` | No (card 2706) | Yes |
 | `decision_participants.link_token_hash`, `link_issued_at` | No | No |
 | Every other column listed above | Yes | Yes |

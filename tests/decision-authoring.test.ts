@@ -524,7 +524,8 @@ describe('the draft revision', () => {
 		});
 
 		// Card 2706 (D2, D4): a Resend and an administrator's account and address writes change these alone, and no write
-		// that asks the revision reads them as its caller saw them; the results revision still covers the first three.
+		// that asks the revision reads them as its caller saw them; the results revision still covers a participant's
+		// user_id and email, and since card 2734 not updated_at either.
 		// The last two rows are regression guards: `link_token_hash` and `link_issued_at` were never covered, before card
 		// 2706 or since, and the rows pin that no later change adds them.
 		const unchanged: [string, (d: Decision, o: DecisionOption, p: DecisionParticipant) => [Decision, DecisionOption[], DecisionParticipant[]]][] = [

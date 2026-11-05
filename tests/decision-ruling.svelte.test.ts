@@ -59,7 +59,7 @@ import ReleasedResults from '$lib/components/decision/ReleasedResults.svelte';
 import ResultsView from '$lib/components/decision/ResultsView.svelte';
 import RulingBanner from '$lib/components/decision/RulingBanner.svelte';
 import RulingForm from '$lib/components/decision/RulingForm.svelte';
-import { CONCERN_WHO_SEES, RELEASE_INFERENCE } from '$lib/decision-words';
+import { CONCERN_WHO_SEES, RELEASE_INFERENCE, RESULTS_READ_AGAIN, STALE_REVISION } from '$lib/decision-words';
 import DecisionPage from '../src/routes/decisions/[id]/+page.svelte';
 import ResultsPage from '../src/routes/decisions/[id]/results/+page.svelte';
 
@@ -308,6 +308,106 @@ describe('RulingForm (43)', () => {
 		expect(textOf(region)).toBe('Someone has changed this decision since you opened it: reload the page');
 		expect(document.activeElement).toBe(ruleButton(target));
 		expect(onRuled).not.toHaveBeenCalled();
+		expect(navigation.invalidateAll, 'another 409 reads nothing again').not.toHaveBeenCalled();
+	});
+
+	it('reads the page again on a stale revision, keeps the choice, the reason and the conditions, unticks the box, and rules with the fresh revision (card 2734, D3)', async () => {
+		const onRuled = vi.fn(async () => {});
+		const props = $state({
+			decisionId: 7,
+			title: 'Which plan?',
+			revision: 'rev-1',
+			options: OPTIONS,
+			mostChosen: [11],
+			voted: 3,
+			early: false,
+			cutOff: [] as { name: string; reached: boolean }[],
+			openQuestions: 1,
+			onRuled
+		});
+		// The page's load run again: the results and their revision come back together.
+		navigation.invalidateAll.mockImplementationOnce(async () => {
+			props.revision = 'rev-2';
+		});
+		const target = draw(RulingForm, props);
+		const [reason, conditions] = target.querySelectorAll<HTMLTextAreaElement>('textarea');
+		const box = () => target.querySelector<HTMLInputElement>('[data-check="open-questions"]')!;
+		choose(radios(target)[1]);
+		typeInto(reason, 'B lasts longer.');
+		typeInto(conditions, 'Reviewed in a year.');
+		box().click();
+		flushSync();
+		rule(target);
+		typeInto(passwordIn()!, 'my password');
+		answer('POST /api/decisions/7/rule', 409, { message: STALE_REVISION });
+		confirmButton().click();
+		await settle();
+
+		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
+		expect(dialog()).toBeNull();
+		expect(textOf(target.querySelector('[data-said="ruling"]')!)).toBe(RESULTS_READ_AGAIN);
+		expect(radios(target)[1].checked, 'the choice kept').toBe(true);
+		expect(reason.value).toBe('B lasts longer.');
+		expect(conditions.value).toBe('Reviewed in a year.');
+		expect(box().checked, 'the open questions confirmed again').toBe(false);
+		expect(ruleButton(target).disabled).toBe(true);
+		expect(document.activeElement, 'the focus on the words, Rule being off').toBe(target.querySelector('[data-said="ruling"]'));
+
+		box().click();
+		flushSync();
+		rule(target);
+		typeInto(passwordIn()!, 'my password');
+		answer('POST /api/decisions/7/rule', 200, { decision: {}, revision: 'rev-3' });
+		confirmButton().click();
+		await settle();
+
+		expect(sent.map((request) => JSON.parse(request.body as string))).toEqual([
+			{ optionId: 12, reason: 'B lasts longer.', conditions: 'Reviewed in a year.', revision: 'rev-1', openQuestionsConfirmed: true, currentPassword: 'my password' },
+			{ optionId: 12, reason: 'B lasts longer.', conditions: 'Reviewed in a year.', revision: 'rev-2', openQuestionsConfirmed: true, currentPassword: 'my password' }
+		]);
+		expect(onRuled).toHaveBeenCalledTimes(1);
+	});
+
+	it('says the server’s words to reload when the page cannot be read again after a stale revision (card 2734, code review 2026-11-05)', async () => {
+		navigation.invalidateAll.mockImplementationOnce(async () => {
+			throw new Error('The page could not be read.');
+		});
+		const { target, onRuled } = drawForm();
+		choose(radios(target)[0]);
+		typeInto(reasonOf(target), 'Plan A.');
+		rule(target);
+		typeInto(passwordIn()!, 'my password');
+		answer('POST /api/decisions/7/rule', 409, { message: STALE_REVISION });
+		confirmButton().click();
+		await settle();
+
+		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
+		expect(dialog()).toBeNull();
+		const region = target.querySelector('[data-said="ruling"]')!;
+		expect(textOf(region)).toBe(STALE_REVISION);
+		expect(textOf(region)).not.toBe(RESULTS_READ_AGAIN);
+		expect(document.activeElement).toBe(region);
+		expect(reasonOf(target).value, 'the reason kept').toBe('Plan A.');
+		expect(onRuled).not.toHaveBeenCalled();
+	});
+
+	it('holds Rule off once the option chosen is no longer offered after the page is read again (card 2734, D3)', () => {
+		// Code review 2026-11-05: A is the most chosen, so B shows the against warning first, and only `offered` takes it away.
+		const props = $state({ decisionId: 7, title: 'Which plan?', revision: 'rev-1', options: OPTIONS, mostChosen: [11], voted: 3, early: false, cutOff: [], openQuestions: 0, onRuled: async () => {} });
+		const target = draw(RulingForm, props);
+		choose(radios(target)[1]);
+		typeInto(reasonOf(target), 'B lasts longer.');
+		expect(ruleButton(target).disabled).toBe(false);
+		expect(textOf(target.querySelector('[data-note="against"]')!), 'B goes against the responses while offered').toMatch(/^This goes against the responses/);
+
+		props.options = [OPTIONS[0]];
+		props.revision = 'rev-2';
+		flushSync();
+		expect(radios(target).map((radio) => radio.checked)).toEqual([false, false]);
+		expect(ruleButton(target).disabled).toBe(true);
+		expect(target.querySelector('[data-note="against"]'), 'no warning for a choice not offered').toBeNull();
+		expect(radios(target)[0].getAttribute('aria-describedby'), 'no radio names a warning not drawn').toBeNull();
+		expect(reasonOf(target).value).toBe('B lasts longer.');
 	});
 });
 
@@ -488,6 +588,95 @@ describe('the release on the results page (44)', () => {
 		expect(dialog()).toBeNull();
 		expect(textOf(target.querySelector('[data-said="refused"]')!)).toBe(TOO_FEW);
 		expect(target.querySelector('[data-said="done"]')!.getAttribute('role')).toBe('status');
+		expect(document.activeElement).toBe(release(target));
+	});
+
+	it('reads the page again on a stale revision, keeps the ticks, and releases with the fresh revision (card 2734, D4)', async () => {
+		const props = $state({ data: results() });
+		navigation.invalidateAll.mockImplementationOnce(async () => {
+			props.data = results({ revision: 'rev-2' });
+		});
+		const target = draw(ResultsPage, props);
+		box(target, 'key-b').click();
+		flushSync();
+		const releaseOnce = async (status: number, body: unknown) => {
+			release(target).click();
+			flushSync();
+			typeInto(passwordIn()!, 'my password');
+			answer('POST /api/decisions/7/release', status, body);
+			confirmButton().click();
+			await settle();
+		};
+		await releaseOnce(409, { message: STALE_REVISION });
+
+		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
+		expect(textOf(target.querySelector('[data-said="refused"]')!)).toBe(RESULTS_READ_AGAIN);
+		expect(box(target, 'key-b').checked, 'the tick kept').toBe(true);
+
+		await releaseOnce(200, { decision: {}, revision: 'rev-3' });
+		expect(sent.map((request) => JSON.parse(request.body as string))).toEqual([
+			{ revision: 'rev-1', omit: ['key-b'], currentPassword: 'my password' },
+			{ revision: 'rev-2', omit: ['key-b'], currentPassword: 'my password' }
+		]);
+	});
+
+	it('drops the tick of a comment the page no longer shows once it is read again (card 2734, code review 2026-11-05)', async () => {
+		const props = $state({ data: results() });
+		const fresh = results().releasePreview!;
+		// Read again, the preview no longer shows the comment on B (key-b), nor B's comment list at all.
+		navigation.invalidateAll.mockImplementationOnce(async () => {
+			props.data = results({ revision: 'rev-2', releasePreview: { ...fresh, options: fresh.options.map((option) => ({ ...option, comments: [] })) } });
+		});
+		const target = draw(ResultsPage, props);
+		box(target, 'key-1').click();
+		box(target, 'key-b').click();
+		flushSync();
+		const releaseOnce = async (status: number, body: unknown) => {
+			release(target).click();
+			flushSync();
+			typeInto(passwordIn()!, 'my password');
+			answer('POST /api/decisions/7/release', status, body);
+			confirmButton().click();
+			await settle();
+		};
+		await releaseOnce(409, { message: STALE_REVISION });
+
+		expect(textOf(target.querySelector('[data-said="refused"]')!)).toBe(RESULTS_READ_AGAIN);
+		expect(target.querySelector('[data-omit="key-b"]'), 'the comment no longer drawn').toBeNull();
+		expect(box(target, 'key-1').checked, 'the tick of a comment still shown kept').toBe(true);
+		release(target).click();
+		flushSync();
+		expect(textOf(dialog()!)).toContain('1 comment is left out.');
+		document.querySelectorAll<HTMLButtonElement>('.confirm-actions button')[0].click();
+		await settle();
+
+		await releaseOnce(200, { decision: {}, revision: 'rev-3' });
+		expect(sent.map((request) => JSON.parse(request.body as string))).toEqual([
+			{ revision: 'rev-1', omit: ['key-1', 'key-b'], currentPassword: 'my password' },
+			{ revision: 'rev-2', omit: ['key-1'], currentPassword: 'my password' }
+		]);
+	});
+
+	it('says the server’s words to reload, and keeps the ticks, when the page cannot be read again after a stale revision (card 2734, code review 2026-11-05)', async () => {
+		navigation.invalidateAll.mockImplementationOnce(async () => {
+			throw new Error('The page could not be read.');
+		});
+		const target = draw(ResultsPage, { data: results() });
+		box(target, 'key-b').click();
+		flushSync();
+		release(target).click();
+		flushSync();
+		typeInto(passwordIn()!, 'my password');
+		answer('POST /api/decisions/7/release', 409, { message: STALE_REVISION });
+		confirmButton().click();
+		await settle();
+
+		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
+		expect(dialog()).toBeNull();
+		const refused = target.querySelector('[data-said="refused"]')!;
+		expect(textOf(refused)).toBe(STALE_REVISION);
+		expect(textOf(refused)).not.toBe(RESULTS_READ_AGAIN);
+		expect(box(target, 'key-b').checked, 'the tick kept').toBe(true);
 		expect(document.activeElement).toBe(release(target));
 	});
 

@@ -13,6 +13,14 @@
 export const STALE_REVISION = 'This decision was changed since you opened it: reload it to see the change';
 
 /**
+ * What the results page says once a ruling or a release met `STALE_REVISION`
+ * and the page read its data again (card 2734, D3 and D4): the results and
+ * their revision drawn afresh together, what was chosen and typed kept.
+ */
+export const RESULTS_READ_AGAIN =
+	'The results changed since you opened them and are now shown as they are: read them, then try again. What you chose and typed is kept.';
+
+/**
  * The one answer to a personal link that does not open a decision (card
  * 2677, decision 6): unknown, expired, revoked and no longer reaching its
  * holder alike, on the page and on both of its routes, so that the answer

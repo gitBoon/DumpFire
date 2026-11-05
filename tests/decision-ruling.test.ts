@@ -60,6 +60,7 @@ import {
 	recordSeen,
 	releaseResults,
 	republishDecision,
+	resendInvitation,
 	respondToDecision,
 	ruleDecision,
 	setDecider,
@@ -1112,7 +1113,7 @@ describe('ruleDecision', () => {
 		await sent.settle();
 	});
 
-	it('moves the results revision with a response, a participant changed, a question answered and a kind not yet counted, and not with a seen, a mail outcome or a concern (7)', () => {
+	it('moves the results revision with a response, a participant changed, a question answered, a release and a kind not yet counted, and not with a seen, a mail outcome, a concern or updated_at alone (7)', () => {
 		const { decision, a } = opened();
 		const pat = withAccount(decision, 'pat');
 		const questionId = Number(
@@ -1146,6 +1147,12 @@ describe('ruleDecision', () => {
 			'a mail outcome'
 		).toBe(false);
 		expect(moves(() => makeResponse(pat.participant, { kind: 'concern', comment: 'I worry.' })), 'a concern').toBe(false);
+		// Card 2734: `updated_at` stamped alone, as a Resend's `touch` stamps it, no longer moves it; a release's column does.
+		expect(moves(() => db.update(decisions).set({ updatedAt: '2026-11-04 12:00:00' }).where(eq(decisions.id, decision.id)).run()), 'updated_at alone').toBe(false);
+		expect(
+			moves(() => db.update(decisions).set({ resultsReleasedAt: '2026-11-04 12:00:00' }).where(eq(decisions.id, decision.id)).run()),
+			'results_released_at'
+		).toBe(true);
 		// Code review F1: it fails closed, so a kind no tally counts yet moves it.
 		expect(moves(() => makeResponse(pat.participant, { kind: 'objection', comment: 'A kind not yet counted.' })), 'a kind not yet counted').toBe(true);
 		// The keyed HMAC, not the draft revision.
@@ -1161,7 +1168,71 @@ describe('ruleDecision', () => {
 		);
 	});
 
-	it("is the keyed HMAC of what it covered before card 2706, its JSON built by hand: the decision with updated_at last, the options, each participant's account and address, the responses and the questions (card 2706, D1)", () => {
+	it('leaves the results revision as the decider read it across a Resend, so the ruling passes with it, and still moves with a response, a participant change and a release (7b, card 2734)', async () => {
+		const { decision, a, decider } = opened({ status: 'open', closesAt: FUTURE });
+		const pat = withAccount(decision, 'pat');
+		const sam = withAccount(decision, 'sam');
+		const ivy = withAccount(decision, 'ivy');
+		const admin = makeUser({ username: `admin${++seq}`, role: 'admin' });
+		db.update(decisions).set({ updatedAt: '2026-11-01 09:00:00' }).where(eq(decisions.id, decision.id)).run();
+		const read = resultsRevisionFor(decision.id);
+		const before = eventsOf(decision.id).length;
+
+		// An administrator's Resend while the decider's results page is open: a delivery act alone.
+		as(admin, (caller) => resendInvitation(caller, { decisionId: decision.id, participantId: pat.participant.id }, null, UI));
+		await sent.settle();
+
+		expect(decisionRow(decision.id).updatedAt, 'updated_at still stamped (D2)').not.toBe('2026-11-01 09:00:00');
+		expect(eventsOf(decision.id).slice(before).map((event) => event.kind)).toEqual(['invited', 'mail_outcome']);
+		expect(sent.emails.map((mail) => mail.to)).toEqual([pat.person.email]);
+		expect(resultsRevisionFor(decision.id), 'the revision the decider read').toBe(read);
+
+		// What still moves it, between reading the results and ruling on them.
+		const moves = (change: () => void) => {
+			const was = resultsRevisionFor(decision.id);
+			change();
+			return resultsRevisionFor(decision.id) !== was;
+		};
+		expect(moves(() => answer(sam.participant, { optionId: a.id })), 'a response').toBe(true);
+		expect(
+			moves(() =>
+				as(decider, (caller) =>
+					setParticipants(
+						caller,
+						{ decisionId: decision.id },
+						{
+							participants: [
+								{ personId: pat.person.id, role: 'consulted' },
+								{ personId: ivy.person.id, role: 'consulted' }
+							],
+							revision: revisionFor(decision.id)
+						},
+						UI
+					)
+				)
+			),
+			'a participant removed'
+		).toBe(true);
+		await sent.settle();
+
+		// The ruling with the revision read after the response and the removal, and another Resend between: passed.
+		const now = resultsRevisionFor(decision.id);
+		as(admin, (caller) => resendInvitation(caller, { decisionId: decision.id, participantId: ivy.participant.id }, null, UI));
+		await sent.settle();
+		expect(
+			outcome(() => as(decider, (caller) => ruleDecision(caller, { decisionId: decision.id }, { optionId: a.id, reason: 'A is enough.', revision: now }, UI)))
+		).toBe('passed');
+		await sent.settle();
+
+		// A release moves it: `results_released_at`, which stands where `updated_at` stood.
+		const ruled = releasable();
+		const beforeRelease = resultsRevisionFor(ruled.decision.id);
+		release(ruled.decider, ruled.decision);
+		expect(decisionRow(ruled.decision.id).resultsReleasedAt).not.toBeNull();
+		expect(resultsRevisionFor(ruled.decision.id), 'a release').not.toBe(beforeRelease);
+	});
+
+	it("is the keyed HMAC of its JSON built by hand: the decision with results_released_at last (card 2734, in place of updated_at), the options, each participant's account and address, the responses and the questions (card 2706, D1)", () => {
 		const { decision, a, b, c } = opened();
 		const pat = withAccount(decision, 'pat');
 		const linky = withLink(decision, 'linky-token');
@@ -1180,11 +1251,15 @@ describe('ruleDecision', () => {
 		sqlite
 			.prepare("UPDATE decision_questions SET answer = 'Cost.', answered_at = ?, answer_reviewed_at = ?, answer_agent_drafted = 1 WHERE id = ?")
 			.run(PAST, '2026-11-02 10:00:00', drafted);
+		// Card 2734: a moment set, so the pin tells the column from a null in its place.
+		db.update(decisions).set({ resultsReleasedAt: '2026-11-04 12:00:00' }).where(eq(decisions.id, decision.id)).run();
 		const row = decisionRow(decision.id);
 		expect(pat.participant.userId, 'an account to cover').toBe(pat.account.id);
 
+		// Card 2734 changed this value on purpose: `updated_at` is gone from the end of the decision's columns and
+		// `results_released_at` stands there. Before, this test pinned that card 2706 left the value as it was.
 		const covered = JSON.stringify({
-			decision: [row.title, row.status, row.closesAt, row.voteMode, row.workingContent, row.currentVersion, row.deciderUserId, row.updatedAt],
+			decision: [row.title, row.status, row.closesAt, row.voteMode, row.workingContent, row.currentVersion, row.deciderUserId, row.resultsReleasedAt],
 			options: [a, b, c].map((o) => [o.id, o.label, o.position, o.addedInVersion, o.retiredInVersion]),
 			participants: [pat.participant, linky.participant, gone].map((p) => [p.id, p.personId, p.role, p.userId, p.email, p.removedAt]),
 			responses: [vote.id, abstain.id],
@@ -1200,6 +1275,9 @@ describe('ruleDecision', () => {
 		expect(revision).not.toBe(createHash('sha256').update(covered).digest('hex'));
 		expect(revision).not.toBe(createHmac('sha256', purposeKey('decision-revision')).update(covered).digest('hex'));
 		expect(revision).toBe(createHmac('sha256', purposeKey('decision-results-revision')).update(covered).digest('hex'));
+		// And `updated_at` alone, as a Resend stamps it, leaves it as it was.
+		db.update(decisions).set({ updatedAt: '2026-11-05 08:00:00' }).where(eq(decisions.id, decision.id)).run();
+		expect(resultsRevisionFor(decision.id)).toBe(revision);
 	});
 
 	it('marks the old decision superseded when its decider rules the one superseding it, and not when someone else does (8)', async () => {

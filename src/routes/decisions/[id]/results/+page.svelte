@@ -16,7 +16,11 @@
 	 * `{ revision, omit, currentPassword }` as JSON, `omit` the keys of the
 	 * comments left out. A refusal of the password stays in the dialog
 	 * (`stepUpRefusal`); any other refusal is said in the status region, in
-	 * the server's words, and the focus goes back to the control.
+	 * the server's words, and the focus goes back to the control. Card 2734
+	 * (D4): a refusal in `STALE_REVISION`'s words reads the page's data again,
+	 * the results and their revision together, keeps the Leave out ticks of
+	 * the comments still shown, drops any other, and says
+	 * `RESULTS_READ_AGAIN`, as the ruling form does (D3).
 	 *
 	 * What was done is said in a status region that stays drawn, only its
 	 * words changing, and takes the focus once the page's data is read again,
@@ -33,8 +37,8 @@
 	import ReleasedResults from '$lib/components/decision/ReleasedResults.svelte';
 	import ResultsView from '$lib/components/decision/ResultsView.svelte';
 	import RulingForm from '$lib/components/decision/RulingForm.svelte';
-	import { RELEASE_INFERENCE, shownMoment, STATUS_WORDS } from '$lib/decision-words';
-	import type { PreviewComment } from '$lib/decision-view-types';
+	import { RELEASE_INFERENCE, RESULTS_READ_AGAIN, shownMoment, STALE_REVISION, STATUS_WORDS } from '$lib/decision-words';
+	import type { PreviewComment, ReleasePreview } from '$lib/decision-view-types';
 	import { ASKS_FOR_PASSWORD, stepUpRefusal } from '$lib/step-up-words';
 	import { theme, themeIcon } from '$lib/stores/theme';
 
@@ -76,7 +80,23 @@
 				await done('Released: everyone who can see this decision is shown the totals and the comments, without names.');
 				return;
 			}
-			said = { refused: true, words: await failureMessage(res, 'The results were not released.') };
+			const words = await failureMessage(res, 'The results were not released.');
+			if (res.status === 409 && words === STALE_REVISION) {
+				// Card 2734 (D4): the results and their revision read again together, the ticks kept for the comments still
+				// shown. A tick for a comment no longer shown is dropped (code review 2026-11-05), so the dialog's count is of
+				// what is shown and the retry is not refused 400 over a comment the caller can no longer see or untick.
+				const readAgain = await invalidateAll().then(
+					() => true,
+					() => false
+				);
+				if (readAgain) {
+					const shown = new Set(previewKeys(data.releasePreview));
+					leftOut = leftOut.filter((key) => shown.has(key));
+				}
+				said = { refused: true, words: readAgain ? RESULTS_READ_AGAIN : words };
+			} else {
+				said = { refused: true, words };
+			}
 		} catch {
 			confirmingRelease = false;
 			said = { refused: true, words: 'No answer from the server. It is not known whether the results were released.' };
@@ -89,6 +109,12 @@
 		confirmingRelease = false;
 		await tick();
 		releaseButton?.focus();
+	}
+
+	/** The key of every comment the preview shows, overall and on each option. */
+	function previewKeys(shown: ReleasePreview | null): string[] {
+		if (shown === null) return [];
+		return [...shown.comments, ...shown.options.flatMap((option) => option.comments)].map((comment) => comment.key);
 	}
 
 	function toggle(key: string, out: boolean) {

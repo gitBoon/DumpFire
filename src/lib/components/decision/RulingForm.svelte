@@ -21,13 +21,21 @@
     region, in the server's words, and the focus goes back to Rule. A ruling
     taken is handed up (`onRuled`), whose page says it in its own region, as
     the form is then no longer drawn.
+  - Card 2734 (D3): a refusal in `STALE_REVISION`'s words reads the page
+    again (`invalidateAll`), which hands the form the results and their
+    revision afresh, together, and `RESULTS_READ_AGAIN` is said. The choice,
+    the reason and the conditions are kept; the open-questions box is
+    unticked, as the questions may have changed, and a choice no longer among
+    the options holds Rule off. The focus goes to those words, as Rule may be
+    off.
 -->
 <script lang="ts">
 	import { tick } from 'svelte';
+	import { invalidateAll } from '$app/navigation';
 	import { failureMessage } from '$lib/api';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import { againstOf, DECISION_TEXT_MAX } from '$lib/decision-rules';
-	import { NOT_REACHED_WORDS } from '$lib/decision-words';
+	import { NOT_REACHED_WORDS, RESULTS_READ_AGAIN, STALE_REVISION } from '$lib/decision-words';
 	import { ASKS_FOR_PASSWORD, stepUpRefusal } from '$lib/step-up-words';
 
 	let {
@@ -80,11 +88,14 @@
 	let refused = $state('');
 
 	let ruleButton = $state<HTMLButtonElement>();
+	let saidRegion = $state<HTMLElement>();
 
 	const optionId = $derived(choice === '' || choice === NONE ? null : Number(choice));
 	/** Decision 11: the rule `ruleDecision` records, shared (code review F8): against when there were votes and the choice is not among the most chosen. */
-	const against = $derived(choice !== '' && againstOf(optionId, voted, mostChosen));
-	const ready = $derived(choice !== '' && reason.trim() !== '' && (openQuestions === 0 || confirmedOpen));
+	/** Card 2734 (D3): a choice is only one still offered, as the options may change when the page is read again. */
+	const offered = $derived(choice === NONE || options.some((option) => String(option.optionId) === choice));
+	const against = $derived(offered && againstOf(optionId, voted, mostChosen));
+	const ready = $derived(offered && reason.trim() !== '' && (openQuestions === 0 || confirmedOpen));
 	const chosenWords = $derived.by(() => {
 		if (optionId === null) return 'None of these';
 		const option = options.find((candidate) => candidate.optionId === optionId);
@@ -123,7 +134,22 @@
 				await onRuled('Ruled: every participant is being mailed the ruling.');
 				return;
 			}
-			refused = await failureMessage(res, 'The decision was not ruled on.');
+			const words = await failureMessage(res, 'The decision was not ruled on.');
+			if (res.status === 409 && words === STALE_REVISION) {
+				// Card 2734 (D3): the results and their revision read again together; what was typed is kept, the box is not.
+				// The ruling was refused for certain, so a page that could not be read again says the server's words to reload it.
+				confirmedOpen = false;
+				const readAgain = await invalidateAll().then(
+					() => true,
+					() => false
+				);
+				refused = readAgain ? RESULTS_READ_AGAIN : words;
+				// Rule may now be off (the box unticked), so the focus goes to the words, which say to read the results first.
+				await tick();
+				saidRegion?.focus();
+				return;
+			}
+			refused = words;
 		} catch {
 			confirming = false;
 			refused = 'No answer from the server. It is not known whether the decision was ruled on.';
@@ -188,7 +214,7 @@
 	<div class="actions">
 		<button type="submit" class="btn btn-primary btn-sm" data-action="rule" disabled={!ready} bind:this={ruleButton}>Rule…</button>
 	</div>
-	<p class="refused" role="status" data-said="ruling">{refused}</p>
+	<p class="refused" role="status" data-said="ruling" tabindex="-1" bind:this={saidRegion}>{refused}</p>
 </form>
 
 {#if confirming}
