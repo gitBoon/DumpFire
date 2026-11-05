@@ -405,6 +405,50 @@ const FILE_0064 = '0064_add_people_changes.sql';
 /** How the model check reports 0064's table in a database that has not got it. */
 const TABLE_OF_0064 = 'people_changes: the table is in the model but not in the database';
 
+/** The file of card 2768: where two-step sign-in keeps its second factors. */
+const FILE_0065 = '0065_add_mfa_storage.sql';
+
+/** The four tables 0065 creates, in name order. */
+const TABLES_OF_0065 = ['enrolment_links', 'mfa_factors', 'mfa_recovery_codes', 'sign_in_challenges'];
+
+/** The eleven columns 0065 adds to users, each with the value it gives every account there already. */
+const COLUMNS_OF_0065: Record<string, number | null> = {
+	mfa_known_wrong: 0,
+	mfa_other_wrong: 0,
+	mfa_known_resumes_at: null,
+	mfa_other_resumes_at: null,
+	mfa_recovery_wrong: 0,
+	mfa_recovery_resumes_at: null,
+	last_sign_in_at: null,
+	last_sign_in_from: null,
+	failed_codes_since_sign_in: 0,
+	security_banner: null,
+	security_banner_at: null
+};
+
+/** How the model check reports 0065's users columns in a database that has not got them, in name order. */
+const USERS_COLUMNS_OF_0065 = Object.keys(COLUMNS_OF_0065)
+	.sort()
+	.map((column) => `users.${column}: the column is in the model but not in the database`);
+
+/**
+ * Rows of `table` read, as `contentsOf` gives them, before 0065, as 0065
+ * leaves them: every account gains the eleven columns at their defaults.
+ * Any other table's rows are as they were.
+ */
+function after0065(table: string, rows: string[]): string[] {
+	if (table !== 'users') return rows;
+	return rows
+		.map((json) =>
+			JSON.stringify(
+				Object.fromEntries(
+					Object.entries({ ...JSON.parse(json), ...COLUMNS_OF_0065 }).sort(([a], [b]) => a.localeCompare(b))
+				)
+			)
+		)
+		.sort();
+}
+
 /** The partial unique index 0063 makes on decision_events. */
 const INDEX_OF_0063 = 'idx_decision_events_participant_id_version_number_reminded';
 
@@ -427,6 +471,9 @@ const TABLES_OF_0061 = [
 	'people_groups'
 ];
 
+/** The tables of 0061 and of 0065 together, in name order: a database from before both has none of them. */
+const TABLES_OF_0061_AND_0065 = [...TABLES_OF_0061, ...TABLES_OF_0065].sort();
+
 /** How the model check reports a table of the model that a database has not got. */
 const notInTheDatabase = (table: string) => `${table}: the table is in the model but not in the database`;
 
@@ -440,10 +487,11 @@ const TABLES_OF_0060 = ['boards', 'columns', 'cards'];
  * whom it was created, unless its id is in `uncommitted` (a card on a column
  * or a board that is not there). Any other table's rows are as they were.
  * And as 0061, which every run that applies 0060 applies after it, leaves
- * them: every board gains `product_owner_user_id` NULL.
+ * them: every board gains `product_owner_user_id` NULL. And as 0065 leaves
+ * them (`after0065`): every account gains its two-step sign-in columns.
  */
 function after0060(table: string, rows: string[], uncommitted: readonly number[] = []): string[] {
-	if (!TABLES_OF_0060.includes(table)) return rows;
+	if (!TABLES_OF_0060.includes(table)) return after0065(table, rows);
 	return rows
 		.map((json) => {
 			const row = JSON.parse(json) as Record<string, unknown>;
@@ -5512,9 +5560,10 @@ describe('the database the runner leaves, against the model', () => {
 		// column of 0058 (card 2159), the table of 0059 (card 2397), the columns,
 		// keys and indexes of 0060 (milestone 22), the tables, column, key and
 		// index of 0061 (card 2673), the column of 0062 (card 2701), the table of
-		// 0064 (card 2681), and no other. 0063's index (card 2685) is on a table
-		// of 0061, absent here whole, so it is in that table's line and has none
-		// of its own.
+		// 0064 (card 2681), the four tables and eleven users columns of 0065
+		// (card 2768), and no other. 0063's index (card 2685) is on a table of
+		// 0061, absent here whole, so it is in that table's line and has none of
+		// its own; so are 0065's indexes, each on a table of 0065.
 		expect(withoutTheIndexesOf0053(differencesFromModel(structureOf(database), structureOf(modelDatabase())))).toEqual([
 			'boards.kind: the column is in the model but not in the database',
 			'boards.product_owner_user_id: the column is in the model but not in the database',
@@ -5534,19 +5583,21 @@ describe('the database the runner leaves, against the model', () => {
 			'categories: foreign key in the model but not in the database: (board_id) references boards(id), on update NO ACTION, on delete SET NULL',
 			'columns.role: the column is in the model but not in the database',
 			'columns.wip_limit: is nullable; the model has it NOT NULL',
-			...TABLES_OF_0061.filter((table) => table < 'invite_tokens').map(notInTheDatabase),
+			...TABLES_OF_0061_AND_0065.filter((table) => table < 'invite_tokens').map(notInTheDatabase),
 			'invite_tokens.token: is nullable; the model has it NOT NULL',
-			...TABLES_OF_0061.filter((table) => table > 'invite_tokens' && table < 'people_changes').map(notInTheDatabase),
+			...TABLES_OF_0061_AND_0065.filter((table) => table > 'invite_tokens' && table < 'people_changes').map(notInTheDatabase),
 			TABLE_OF_0064,
-			...TABLES_OF_0061.filter((table) => table > 'people_changes').map(notInTheDatabase),
+			...TABLES_OF_0061_AND_0065.filter((table) => table > 'people_changes' && table < 'report_schedules').map(notInTheDatabase),
 			'report_schedules.time_zone: the column is in the model but not in the database',
 			COLUMN_OF_0062,
 			'setting_setters: the table is in the model but not in the database',
 			'settings.key: is nullable; the model has it NOT NULL',
+			notInTheDatabase('sign_in_challenges'),
 			'task_requests.access_token: the column is in the model but not in the database',
 			'task_requests: index in the model but not in the database: unique index task_requests_access_token_idx on (access_token)',
 			'time_entries: the table is not in the model',
 			'user_xp.name: is nullable; the model has it NOT NULL',
+			...USERS_COLUMNS_OF_0065,
 			'webhooks.set_by: the column is in the model but not in the database',
 			'webhooks: foreign key in the model but not in the database: (set_by) references users(id), on update NO ACTION, on delete SET NULL',
 			'webhooks: index in the model but not in the database: index idx_webhooks_set_by on (set_by)'
@@ -5569,13 +5620,14 @@ describe('the database the runner leaves, against the model', () => {
 			FILE_0061,
 			FILE_0062,
 			FILE_0063,
-			FILE_0064
+			FILE_0064,
+			FILE_0065
 		]);
 		expect(report.tolerated).toEqual([]);
 		expect(report.rebuilt.map((r) => r.table)).toEqual(['columns', 'categories', 'settings', 'user_xp', 'invite_tokens']);
 		expect(report.missingFromDisk).toEqual([]);
 		expect(report.schemaDifferences).toEqual([]);
-		expect(recordedIn(database)).toHaveLength(70);
+		expect(recordedIn(database)).toHaveLength(71);
 		expect(sequenceIn(database, 'categories')).toBe(3);
 		expect(foreignKeysOn(database)).toBe(true);
 		expect(differencesIn(database)).toEqual(NONE);
@@ -5601,8 +5653,9 @@ describe('the database the runner leaves, against the model', () => {
 		// (card 2168) or 0058 (card 2159), no table of 0059 (card 2397),
 		// nothing of 0060 (milestone 22), nothing of 0061 (card 2673), no
 		// column of 0062 (card 2701), no index of 0063 (card 2685), which is on
-		// a table of 0061 and so in that table's line, and no table of 0064
-		// (card 2681).
+		// a table of 0061 and so in that table's line, no table of 0064
+		// (card 2681), and none of the tables or users columns of 0065
+		// (card 2768).
 		expect(withoutTheIndexesOf0053(differencesFromModel(structureOf(database), structureOf(modelDatabase())))).toEqual([
 			'boards.kind: the column is in the model but not in the database',
 			'boards.product_owner_user_id: the column is in the model but not in the database',
@@ -5623,13 +5676,15 @@ describe('the database the runner leaves, against the model', () => {
 			'categories: foreign key not in the model: (board_id) references boards(id), on update NO ACTION, on delete CASCADE',
 			'categories: foreign key in the model but not in the database: (board_id) references boards(id), on update NO ACTION, on delete SET NULL',
 			'columns.role: the column is in the model but not in the database',
-			...TABLES_OF_0061.filter((table) => table < 'people_changes').map(notInTheDatabase),
+			...TABLES_OF_0061_AND_0065.filter((table) => table < 'people_changes').map(notInTheDatabase),
 			TABLE_OF_0064,
-			...TABLES_OF_0061.filter((table) => table > 'people_changes').map(notInTheDatabase),
+			...TABLES_OF_0061_AND_0065.filter((table) => table > 'people_changes' && table < 'report_schedules').map(notInTheDatabase),
 			'report_schedules.time_zone: the column is in the model but not in the database',
 			COLUMN_OF_0062,
 			'setting_setters: the table is in the model but not in the database',
+			notInTheDatabase('sign_in_challenges'),
 			'time_entries: the table is not in the model',
+			...USERS_COLUMNS_OF_0065,
 			'webhooks.set_by: the column is in the model but not in the database',
 			'webhooks: foreign key in the model but not in the database: (set_by) references users(id), on update NO ACTION, on delete SET NULL',
 			'webhooks: index in the model but not in the database: index idx_webhooks_set_by on (set_by)'
@@ -5651,7 +5706,7 @@ describe('the database the runner leaves, against the model', () => {
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual(['0052_drop_time_entries.sql', '0053_index_foreign_keys_end_sessions.sql', FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064]);
+		expect(report.applied).toEqual(['0052_drop_time_entries.sql', '0053_index_foreign_keys_end_sessions.sql', FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065]);
 		expect(report.rebuilt).toEqual([
 			{ table: 'boards', rows: 3, defaulted: [], differences: differed.boards },
 			{ table: 'categories', rows: 3, defaulted: [], differences: differed.categories }
@@ -5780,7 +5835,7 @@ describe('0053, which ends every session once (card 2106)', () => {
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0053, FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064]);
+		expect(report.applied).toEqual([FILE_0053, FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065]);
 		expect(report.schemaDifferences).toEqual([]);
 		const after = contentsOf(database);
 		expect(after.sessions).toEqual([]);
@@ -5788,7 +5843,7 @@ describe('0053, which ends every session once (card 2106)', () => {
 			// The migration record, and its id counter, gain the files; 0054 ends
 			// the unused invite, which its own tests cover.
 			if (['sessions', 'invite_tokens', '__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
-			expect(after[table], table).toEqual(before[table]);
+			expect(after[table], table).toEqual(after0065(table, before[table]));
 		}
 		expect(after.users).toHaveLength(2);
 		expect(after.api_keys).toHaveLength(1);
@@ -6092,7 +6147,7 @@ describe('0054, which indexes a person’s entries by time and ends every unused
 	});
 
 	it('is the file after 0053: the composite index in place of the one on user_id, then the delete of unused invites', () => {
-		expect(realFiles.filter((f) => f > FILE_0053)).toEqual([FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064]);
+		expect(realFiles.filter((f) => f > FILE_0053)).toEqual([FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065]);
 		const sql = sqlStatements(readFileSync(join(REAL_MIGRATIONS, FILE_0054), 'utf-8')).map((s) => s.text);
 		expect(sql).toEqual([
 			'DROP INDEX IF EXISTS `idx_activity_log_user_id`;',
@@ -6233,7 +6288,7 @@ describe('0054, which indexes a person’s entries by time and ends every unused
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064]);
+		expect(report.applied).toEqual([FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect((database.prepare('SELECT token FROM invite_tokens').all() as { token: string }[]).map((r) => r.token)).toEqual([
 			'used-long-ago'
@@ -6242,7 +6297,7 @@ describe('0054, which indexes a person’s entries by time and ends every unused
 		for (const table of Object.keys(before)) {
 			// The migration record, and its id counter, gain the file.
 			if (table === 'invite_tokens' || table === '__drizzle_migrations' || table === 'sqlite_sequence') continue;
-			expect(after[table], table).toEqual(before[table]);
+			expect(after[table], table).toEqual(after0065(table, before[table]));
 		}
 		expect(indexesOf(database)).toContain('idx_activity_log_user_id_created_at');
 		expect(indexesOf(database)).not.toContain('idx_activity_log_user_id');
@@ -6311,7 +6366,7 @@ describe('0055, which gives every task request a new link once (card 2158)', () 
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064]);
+		expect(report.applied).toEqual([FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065]);
 		expect(report.schemaDifferences).toEqual([]);
 		const links = linksIn(database);
 		expect(links).toHaveLength(3);
@@ -6325,7 +6380,7 @@ describe('0055, which gives every task request a new link once (card 2158)', () 
 		for (const table of Object.keys(before)) {
 			// The migration record, and its id counter, gain the file.
 			if (['task_requests', '__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
-			expect(after[table], table).toEqual(before[table]);
+			expect(after[table], table).toEqual(after0065(table, before[table]));
 		}
 
 		// The rehearsal: every row kept, and the change noted as the one-off declared for it.
@@ -6344,7 +6399,7 @@ describe('0055, which gives every task request a new link once (card 2158)', () 
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064]);
+		expect(report.applied).toEqual([FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065]);
 		expect(linksIn(database)).toEqual([]);
 	});
 
@@ -6404,7 +6459,7 @@ describe("0056, which adds who last set a webhook's address or secret (card 2168
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064]);
+		expect(report.applied).toEqual([FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect(database.prepare('SELECT id, url, secret, active, set_by FROM webhooks').all()).toEqual([
 			{ id: 1, url: 'https://hooks.example.test/x', secret: 's3cret', active: 1, set_by: null }
@@ -6542,7 +6597,7 @@ ORDER BY m.id, c.id;`;
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064]);
+		expect(report.applied).toEqual([FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065]);
 		expect(report.schemaDifferences).toEqual([]);
 		const cardsAfter = cardsIn(database);
 		// 0060, applied in the same run, commits all seven, each on a column of a
@@ -6603,7 +6658,7 @@ ORDER BY m.id, c.id;`;
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064]);
+		expect(report.applied).toEqual([FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065]);
 		expect(cardsIn(database)).toEqual([]);
 	});
 
@@ -6654,7 +6709,7 @@ describe("0058, which adds the time zone a report schedule's time is read in (ca
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064]);
+		expect(report.applied).toEqual([FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect(database.prepare('SELECT * FROM report_schedules').get()).toEqual({ ...scheduleBefore, time_zone: 'UTC' });
 		const after = contentsOf(database);
@@ -6731,14 +6786,14 @@ describe('0059, which adds who last changed the mail settings, the App URL and e
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064]);
+		expect(report.applied).toEqual([FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect(database.prepare('SELECT * FROM setting_setters').all()).toEqual([]);
 		const after = contentsOf(database);
 		for (const table of Object.keys(before)) {
 			// The migration record, and its id counter, gain the file.
 			if (['__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
-			expect(after[table], table).toEqual(before[table]);
+			expect(after[table], table).toEqual(after0065(table, before[table]));
 		}
 		expect(indexesOf(database)).toContain('idx_setting_setters_user_id');
 		expect(database.prepare('PRAGMA foreign_key_list(setting_setters)').all()).toContainEqual(
@@ -6891,7 +6946,7 @@ describe('0060, which adds the Options role, the ideas kind, and each card’s c
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064]);
+		expect(report.applied).toEqual([FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065]);
 		expect(report.schemaDifferences).toEqual([]);
 		// The file committed them, so the backfill after it found none.
 		expect(report.backfilled.committedFilled).toBe(0);
@@ -6983,7 +7038,7 @@ describe('0060, which adds the Options role, the ideas kind, and each card’s c
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064]);
+		expect(report.applied).toEqual([FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect(database.prepare('SELECT COUNT(*) AS n FROM cards').get()).toEqual({ n: 0 });
 	});
@@ -7175,7 +7230,7 @@ describe('0061, which adds the decision records model and a Product Owner on eac
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0061, FILE_0062, FILE_0063, FILE_0064]);
+		expect(report.applied).toEqual([FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065]);
 		expect(report.tolerated).toEqual([]);
 		// boards takes the column in place: it is in the model's shape, so nothing is rebuilt.
 		expect(report.rebuilt).toEqual([]);
@@ -7196,7 +7251,7 @@ describe('0061, which adds the decision records model and a Product Owner on eac
 		for (const table of Object.keys(before)) {
 			// The migration record, and its id counter, gain the file.
 			if (['__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
-			const expected = table === 'boards' ? before.boards.map(withProductOwner).sort() : before[table];
+			const expected = table === 'boards' ? before.boards.map(withProductOwner).sort() : after0065(table, before[table]);
 			expect(after[table], table).toEqual(expected);
 		}
 		// The rehearsal: every row kept, nothing to note.
@@ -7349,7 +7404,7 @@ describe("0062, which adds each session's count of wrong current passwords (card
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0062, FILE_0063, FILE_0064]);
+		expect(report.applied).toEqual([FILE_0062, FILE_0063, FILE_0064, FILE_0065]);
 		expect(report.tolerated).toEqual([]);
 		// sessions is not one the runner reconciles: the file alone changes it.
 		expect(report.rebuilt).toEqual([]);
@@ -7374,7 +7429,7 @@ describe("0062, which adds each session's count of wrong current passwords (card
 		for (const table of Object.keys(before)) {
 			// The migration record, and its id counter, gain the file.
 			if (['__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
-			expect(table === 'sessions' ? after.sessions.map(withoutCount) : after[table], table).toEqual(before[table]);
+			expect(table === 'sessions' ? after.sessions.map(withoutCount) : after[table], table).toEqual(after0065(table, before[table]));
 		}
 
 		// Runs once: the next start applies nothing, a second run is not
@@ -7446,7 +7501,7 @@ describe('0063, which holds one closing-date reminder per participant per round 
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0063, FILE_0064]);
+		expect(report.applied).toEqual([FILE_0063, FILE_0064, FILE_0065]);
 		expect(report.tolerated).toEqual([]);
 		// decision_events is not one the runner reconciles: the file alone changes it.
 		expect(report.rebuilt).toEqual([]);
@@ -7456,7 +7511,7 @@ describe('0063, which holds one closing-date reminder per participant per round 
 		for (const table of Object.keys(before)) {
 			// The migration record, and its id counter, gain the file.
 			if (['__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
-			expect(after[table], table).toEqual(before[table]);
+			expect(after[table], table).toEqual(after0065(table, before[table]));
 		}
 		expect(
 			database.prepare("SELECT name, \"unique\" AS isUnique, partial FROM pragma_index_list('decision_events') WHERE name = ?").all(INDEX_OF_0063)
@@ -7541,7 +7596,7 @@ describe('0064, which adds people_changes, the record of every change to the peo
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0064]);
+		expect(report.applied).toEqual([FILE_0064, FILE_0065]);
 		expect(report.tolerated).toEqual([]);
 		// people_changes is new, not one the runner reconciles: the file alone makes it.
 		expect(report.rebuilt).toEqual([]);
@@ -7551,7 +7606,7 @@ describe('0064, which adds people_changes, the record of every change to the peo
 		for (const table of Object.keys(before)) {
 			// The migration record, and its id counter, gain the file.
 			if (['__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
-			expect(after[table], table).toEqual(before[table]);
+			expect(after[table], table).toEqual(after0065(table, before[table]));
 		}
 		expect(database.prepare('SELECT COUNT(*) AS n FROM people_changes').get()).toEqual({ n: 0 });
 		// One key, to users, emptied with the account; the subject is a plain integer, so a delete leaves its rows.
@@ -7580,6 +7635,92 @@ describe('0064, which adds people_changes, the record of every change to the peo
 		expect(error.file).toBe(FILE_0064);
 		expect(error.message).toContain('already exists');
 		expect((database.prepare('SELECT hash FROM __drizzle_migrations').all() as { hash: string }[]).map((row) => row.hash)).not.toContain(FILE_0064);
+	});
+});
+
+// ─── 0065: where two-step sign-in keeps its second factors ───────────────────
+
+describe('0065, which adds the tables and users columns of two-step sign-in (card 2768)', () => {
+	const STAMP = '2026-11-05 09:00:00';
+
+	/** A database with every file before 0065 applied, as a start of the build before this one leaves it. */
+	const at0064 = () => {
+		const database = memoryDb();
+		const before0065 = Object.fromEntries(
+			realFiles.filter((f) => f < FILE_0065).map((f) => [f, readFileSync(join(REAL_MIGRATIONS, f), 'utf-8')])
+		);
+		applyFilesOnly(database, migrationsDir(before0065));
+		return database;
+	};
+
+	it('is the model’s four tables and six indexes, each the statement the model’s export prints, and eleven users columns, after a header that says it runs once, and declares nothing', () => {
+		const sql = readFileSync(join(REAL_MIGRATIONS, FILE_0065), 'utf-8');
+		const statements = sqlStatements(sql).map((s) => s.text.replace(/\r\n/g, '\n'));
+		const creates = statements.filter((statement) => statement.startsWith('CREATE '));
+		const alters = statements.filter((statement) => statement.startsWith('ALTER '));
+
+		// Nothing but the two kinds.
+		expect(creates.length + alters.length).toBe(statements.length);
+		expect(creates.map((statement) => /^CREATE TABLE `([a-z_]+)` \(/.exec(statement)?.[1]).filter(Boolean)).toEqual(TABLES_OF_0065);
+		expect(creates).toHaveLength(10);
+		// The statements the model's export prints, so the two cannot drift.
+		for (const statement of creates) expect(EXPECTED_SCHEMA).toContain(statement);
+		// Every ALTER adds one users column, declared as the model declares it.
+		const usersOfTheModel = EXPECTED_SCHEMA.find((statement) => statement.startsWith('CREATE TABLE `users` (')) ?? '';
+		expect(alters.map((statement) => /^ALTER TABLE `users` ADD COLUMN `([a-z_]+)` [^;]+;$/.exec(statement)?.[1])).toEqual(
+			Object.keys(COLUMNS_OF_0065)
+		);
+		for (const statement of alters) {
+			expect(usersOfTheModel).toContain(`\t${statement.replace(/^ALTER TABLE `users` ADD COLUMN /, '').replace(/;$/, '')}`);
+		}
+		// No IF NOT EXISTS (as 0063, card 2685's code review S5): a table or an index of these names already there fails the file.
+		for (const statement of statements) expect(statement).not.toContain('IF NOT EXISTS');
+		for (const said of ['What people see:', 'Runs once.', 'A backup made before this file', 'Going back to an older image']) {
+			expect(sql, said).toContain(said);
+		}
+		expect(TOLERANT_FILES).not.toContain(FILE_0065);
+		expect(ONE_OFFS.filter((oneOff) => oneOff.file === FILE_0065)).toEqual([]);
+	});
+
+	it('applies to a database at 0064 with accounts, keeps every value, gives each account the new columns at 0 or NULL, makes the four tables empty with one cascading key to users each, and runs once', () => {
+		const database = at0064();
+		database.exec(`
+			INSERT INTO users (id, username, email, password_hash, role, created_at) VALUES
+				(1, 'ann', 'ann@example.test', 'x', 'superadmin', '${STAMP}'), (2, 'bob', 'bob@example.test', 'x', 'user', '${STAMP}');
+			INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES ('ann-laptop', 1, '2026-12-05 09:00:00', '${STAMP}');
+		`);
+		runBackfills(database);
+		const before = contentsOf(database);
+
+		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+
+		expect(report.applied).toEqual([FILE_0065]);
+		expect(report.tolerated).toEqual([]);
+		// users is not one the runner reconciles, and the four tables are new: the file alone makes them.
+		expect(report.rebuilt).toEqual([]);
+		expect(report.schemaDifferences).toEqual([]);
+		expect(schemaDifferences(database)).toEqual([]);
+		expect(unindexedForeignKeys(database)).toEqual([]);
+		// Every account keeps every value, and gains the eleven columns at 0 or NULL.
+		const columns = Object.keys(COLUMNS_OF_0065).join(', ');
+		expect(database.prepare(`SELECT ${columns} FROM users ORDER BY id`).all()).toEqual([COLUMNS_OF_0065, COLUMNS_OF_0065]);
+		const after = contentsOf(database);
+		for (const table of Object.keys(before)) {
+			// The migration record, and its id counter, gain the file.
+			if (['__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
+			expect(after[table], table).toEqual(after0065(table, before[table]));
+		}
+		// The four tables empty, each with one key, to users, emptied with the account.
+		for (const table of TABLES_OF_0065) {
+			expect(database.prepare(`SELECT COUNT(*) AS n FROM \`${table}\``).get(), table).toEqual({ n: 0 });
+			expect(
+				database.prepare(`SELECT "table", "from", on_delete AS onDelete FROM pragma_foreign_key_list('${table}')`).all(),
+				table
+			).toEqual([{ table: 'users', from: 'user_id', onDelete: 'CASCADE' }]);
+		}
+
+		// Runs once: the next start applies nothing.
+		expect(runMigrations({ database, migrationsDir: REAL_MIGRATIONS }).applied).toEqual([]);
 	});
 });
 

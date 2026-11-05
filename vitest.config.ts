@@ -30,6 +30,10 @@ export default defineConfig({
 			// to run without this, and gives each test file a folder of its own
 			// beneath it.
 			UPLOADS_DIR: join(tmpdir(), 'dumpfire-test-uploads'),
+			// Empty is unset (card 2768): so under DB_PATH=:memory: every test
+			// uses a key of its own process, written nowhere, whatever the
+			// developer's shell holds. No test reads or makes a real mfa.key.
+			MFA_KEY_FILE: '',
 			// The logger prints every entry to the console; INFO and WARN from
 			// several hundred route calls would bury the test output.
 			LOG_LEVEL: 'ERROR'

@@ -10,6 +10,9 @@ build
 **/*.db
 **/*.db-shm
 **/*.db-wal
+mfa.key
+**/mfa.key
+**/mfa.key.*.tmp
 *.export-temp
 **/*.export-temp
 *.backup-temp

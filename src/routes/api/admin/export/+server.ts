@@ -12,6 +12,13 @@
  * So the file signs nobody in, and restoring it signs everybody out; restored
  * on another server, its secrets are entered again.
  *
+ * Being a backup, it carries what a backup carries of two-step sign-in (card
+ * 2768): every pending sign-in and enrolment link is cleared from it as the
+ * sessions are; each account's second factors go in only as the ciphertext
+ * they are stored as, and its recovery codes only as hashes; the MFA key that
+ * opens the factors never does, as it is in a file of its own outside the
+ * database.
+ *
  * A POST with the superadmin's current password, `{ currentPassword }` (card
  * 2701, decision 17): it hands out every account's password hash, so it asks
  * for the password again, as the reset does. It was a GET, which a body

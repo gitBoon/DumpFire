@@ -155,9 +155,10 @@ describe('stamp, toStamp and parseStamp', () => {
 describe('timestampColumns', () => {
 	it('names every TEXT *_at column and system_logs.timestamp, and nothing that holds a day', () => {
 		const found = timestampColumns(sqlite).map((c) => `${c.table}.${c.column}`);
-		// 39, the 23 moments of the decision records (migration 0061), and when each change to the people
-		// directory was made (migration 0064, card 2681).
-		expect(found).toHaveLength(63);
+		// 39, the 23 moments of the decision records (migration 0061), when each change to the people
+		// directory was made (migration 0064, card 2681), and the 13 moments of two-step sign-in
+		// (migration 0065, card 2768): eight in its four tables and five on users.
+		expect(found).toHaveLength(76);
 		for (const column of [
 			'activity_log.created_at',
 			'api_keys.expires_at',
@@ -171,7 +172,10 @@ describe('timestampColumns', () => {
 			'sessions.expires_at',
 			'system_logs.timestamp',
 			// Card 2681.
-			'people_changes.created_at'
+			'people_changes.created_at',
+			// Card 2768: a table's moment, and a pause's end on users (B1-D8).
+			'mfa_factors.created_at',
+			'users.mfa_known_resumes_at'
 		]) {
 			expect(found).toContain(column);
 		}

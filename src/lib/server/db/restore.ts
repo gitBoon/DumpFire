@@ -35,6 +35,8 @@ import {
 	type SecretsAccount,
 	type Unsealed
 } from '../backup-secrets';
+import { MFA_KEY_CHECK_SETTING, currentMfaKey, type MfaKey } from '../mfa-key';
+import { MFA_ROWS_NOT_RESTORED, readMfaHere, restoreMfaRows, type MfaRestore } from '../mfa-backup';
 
 /** The runner's record of which migration files this database has applied. */
 const MIGRATION_RECORD = '__drizzle_migrations';
@@ -141,10 +143,17 @@ export type RestoreResult = {
 	 * review's B1 and N7). The restore goes ahead either way.
 	 */
 	unsealed: Unsealed | null;
+	/**
+	 * What became of the second factors and recovery codes (card 2768): how
+	 * many accounts kept this server's and how many took the backup's, whose
+	 * the backup held that were left out and why, and, once two-step sign-in
+	 * is in use, every account left with no factor (`restoreMfaRows`).
+	 */
+	mfa: MfaRestore;
 };
 
 /** What a restore that committed had done, for a `RestoreError` thrown after the commit. */
-export type CommittedRestore = Pick<RestoreResult, 'requestLinksReplaced' | 'decisionLinksCleared' | 'secrets' | 'sealVerified' | 'unsealed'>;
+export type CommittedRestore = Pick<RestoreResult, 'requestLinksReplaced' | 'decisionLinksCleared' | 'secrets' | 'sealVerified' | 'unsealed' | 'mfa'>;
 
 /**
  * A restore that went wrong in a way the caller has to be told about, as
@@ -434,7 +443,7 @@ export const SIGNED_OUT = 'Everybody has been signed out, you included: sign in 
 
 /**
  * The backup's rows of `table` that a restore brings in: all of them, for
- * every table but three.
+ * every table but those below.
  *
  * No session is brought in, and no invite that has not been used. A backup
  * made by this version holds neither (`withoutSecrets`, in `backup.ts`). One
@@ -459,6 +468,12 @@ export const SIGNED_OUT = 'Everybody has been signed out, you included: sign in 
  * that a backup holds (the review's S1): this server keeps its own, and
  * puts it back itself (`keepSealKey`).
  *
+ * Nor any row of two-step sign-in's four tables, nor the backup's
+ * `mfa_key_check` (card 2768): a pending sign-in and an enrolment link are
+ * never brought in, and the second factors and recovery codes are put back
+ * by their own rules once the copy is done (`restoreMfaRows`, in
+ * mfa-backup.ts), as is the key check.
+ *
  * Every table is read from its own storage, never through an index, in rowid
  * order (`fromTableStorage`), as the seal is made: an index in a backup can
  * hold rows its table does not, and a bare `SELECT *` that a `sqlite_stat1`
@@ -467,12 +482,20 @@ export const SIGNED_OUT = 'Everybody has been signed out, you included: sign in 
 export function rowsToRestore(backup: Database.Database, table: string): Record<string, unknown>[] {
 	const name = table.toLowerCase();
 	if (name === 'sessions') return [];
+	if ((MFA_ROWS_NOT_RESTORED as readonly string[]).includes(name)) return [];
 	if (name === 'settings') {
 		const hasKey = (backup.prepare(`PRAGMA table_info("${table}")`).all() as { name: string }[]).some(
 			(column) => column.name === 'key'
 		);
 		if (hasKey) {
-			const leftOut = [KNOWN_BROWSER_SECRET_KEY, REQUEST_FORM_SECRET_KEY, WEBHOOK_SECRETS_LEFT_OUT_KEY, BACKUP_SEAL, BACKUP_SEAL_KEY];
+			const leftOut = [
+				KNOWN_BROWSER_SECRET_KEY,
+				REQUEST_FORM_SECRET_KEY,
+				WEBHOOK_SECRETS_LEFT_OUT_KEY,
+				BACKUP_SEAL,
+				BACKUP_SEAL_KEY,
+				MFA_KEY_CHECK_SETTING
+			];
 			return backup
 				.prepare(fromTableStorage(backup, table, leftOut.map(() => 'key IS NOT ?').join(' AND ')))
 				.all(...leftOut) as Record<string, unknown>[];
@@ -750,6 +773,22 @@ export function defaultOutside(
  * before the clear and put back after the copy (`keepSealKey`), so that the
  * backups it made before the restore still verify after it.
  *
+ * Two-step sign-in's rows have rules of their own (card 2768;
+ * `restoreMfaRows`, in mfa-backup.ts). No pending sign-in or enrolment link
+ * is brought in. Once the rows are copied, inside the transaction, an account
+ * that is the same one here, by its id and `created_at` and never by its
+ * username, gets this server's second factors and recovery codes back as they
+ * are now, and its sign-in history; any other gets the backup's only when its
+ * seal verified and its key check is this server's MFA key's (`options.key`,
+ * this process's key unless a test gives another or none), and otherwise none,
+ * named in `mfa.leftOut`. Every account's guessing counters and pauses are
+ * zeroed. The key check is this key's when a factor exists afterwards, and
+ * this server's as it was when none does; the backup's is never kept. Once a
+ * factor exists, or one was left out, `mfa.withoutFactor` names every account
+ * with none. This server's rows are read before anything is cleared
+ * (`readMfaHere`), and every read of the backup's first asks whether its
+ * table is there, so a backup made before migration 0065 restores.
+ *
  * Nor is a restore committed whose rows would have user accounts and no
  * superadmin among them (`lacksSuperadmin`): it is rolled back and throws.
  * The backup can have a superadmin and the restore still lose it, when that
@@ -774,7 +813,7 @@ export function defaultOutside(
 export function restoreFromBackup(
 	live: Database.Database,
 	backup: Database.Database,
-	options: { outside?: Outside } = {}
+	options: { outside?: Outside; key?: MfaKey | null } = {}
 ): RestoreResult {
 	// Every read of the backup, from its list and its seal (and the file's
 	// checks before it) to the rows copied, inside one read transaction on its
@@ -793,7 +832,11 @@ export function restoreFromBackup(
 }
 
 /** `restoreFromBackup`, inside its read transaction on the backup: see there. */
-function restoreInOneSnapshot(live: Database.Database, backup: Database.Database, options: { outside?: Outside }): RestoreResult {
+function restoreInOneSnapshot(
+	live: Database.Database,
+	backup: Database.Database,
+	options: { outside?: Outside; key?: MfaKey | null }
+): RestoreResult {
 	const tables = restorableTables(live);
 	const errors: string[] = [];
 	const restored: Record<string, number> = {};
@@ -805,6 +848,11 @@ function restoreInOneSnapshot(live: Database.Database, backup: Database.Database
 		kept: { mailPassword: false, destinations: [], webhooks: [] },
 		toEnter: { mailPassword: false, destinations: [], webhooks: [] }
 	};
+	let mfa: MfaRestore = { keptFromHere: 0, takenFromBackup: 0, leftOut: [], leftOutBecause: null, withoutFactor: [] };
+	// This server's MFA key, unless the caller gives another or none (card
+	// 2768): the restore's second factors are taken from a backup only when
+	// its key check is this key's.
+	const mfaKey = options.key === undefined ? currentMfaKey() : options.key;
 	/**
 	 * Tables that do not hold everything the backup had for them, by name in
 	 * lower case, with what `errors` says about each.
@@ -872,6 +920,9 @@ function restoreInOneSnapshot(live: Database.Database, backup: Database.Database
 			// This server's secrets, read before anything is cleared, for the
 			// gaps a backup leaves (card 2169): see above.
 			const here = readSecretsHere(live);
+			// And its second factors, recovery codes, accounts and key check
+			// (card 2768), for restoreMfaRows below.
+			const mfaHere = readMfaHere(live);
 
 			// Clear every table first, so the order of the copy does not matter.
 			for (const table of tables) {
@@ -965,6 +1016,17 @@ function restoreInOneSnapshot(live: Database.Database, backup: Database.Database
 			// This server's key for sealing its backups, as it was before the
 			// clear: see above. Not caught: a restore that lost it is rolled back.
 			if (sealKey !== null) keepSealKey(live, sealKey);
+
+			// The second factors and recovery codes, by their own rules, the
+			// guessing counters zeroed, the same accounts' sign-in history and
+			// the key check (card 2768): see above. Not caught: a restore that
+			// could not put them back is rolled back.
+			mfa = restoreMfaRows(live, backup, mfaHere, { sealVerified, key: mfaKey });
+			for (const table of ['mfa_factors', 'mfa_recovery_codes']) {
+				if (!tables.includes(table)) continue;
+				const rows = (live.prepare(`SELECT COUNT(*) AS n FROM "${table}"`).get() as { n: number }).n;
+				if (rows > 0) restored[table] = rows;
+			}
 
 			// Every request a new link: see above. Not caught, so that a restore
 			// that could not replace them is rolled back, and brings in no link
@@ -1096,7 +1158,7 @@ function restoreInOneSnapshot(live: Database.Database, backup: Database.Database
 			throw new RestoreError(
 				'The backup was restored and committed, but foreign keys could not be switched back on. Restart the ' +
 					'server now: until it restarts, deleting a board, a card or a user leaves behind what belonged to it.',
-				{ errors, committed: true, cause, done: { requestLinksReplaced, decisionLinksCleared, secrets, sealVerified, unsealed } }
+				{ errors, committed: true, cause, done: { requestLinksReplaced, decisionLinksCleared, secrets, sealVerified, unsealed, mfa } }
 			);
 		}
 		throw new RestoreError(
@@ -1158,5 +1220,5 @@ function restoreInOneSnapshot(live: Database.Database, backup: Database.Database
 		);
 	}
 
-	return { restored, defaulted, errors, backfilled, timestamps, outside, requestLinksReplaced, decisionLinksCleared, secrets, sealVerified, unsealed };
+	return { restored, defaulted, errors, backfilled, timestamps, outside, requestLinksReplaced, decisionLinksCleared, secrets, sealVerified, unsealed, mfa };
 }

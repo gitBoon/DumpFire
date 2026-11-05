@@ -38,9 +38,15 @@
  * backup is sent to it until its key is confirmed, and where failure mail is
  * off nothing else says so.
  *
- * And one that does stop the server, after the migrations and before it
+ * And two that do stop the server, after the migrations and before it
  * listens: `refuseUserlessBesideAnother`, when the database in use has no
- * users while another database is beside it.
+ * users while another database is beside it; and `checkMfaKeyAtStart` (card
+ * 2768), straight after it, when the key that protects authenticator secrets
+ * does not load (under the production rules `MFA_KEY_FILE` must name it) or
+ * is not the key the stored second factors were made with. It also records
+ * the key's check when factors are stored without one, names at ERROR each
+ * factor that does not open, and warns on the console of a key file others
+ * can read or one kept in the database's own folder.
  *
  * And two things that are changed at start, beside them: `maskLiveLog`, which
  * masks the secrets an older gate wrote into the system log, and
@@ -65,8 +71,11 @@ import { secretsToEnter, secretsToEnterSentence, unconfirmedHostKeys } from './b
 import { parseAllowInside } from './webhook-address';
 import { activeWebhooksRefused, boardsOverWebhookCap, MAX_WEBHOOKS_PER_BOARD } from './webhooks';
 import { removeSettingsOfFormerAdministrators } from './setting-setters';
+import { MFA_KEY_CHECK_SETTING, mfaKeyLoad, mfaStartVerdict, type FactorAtStart, type KeyLoad } from './mfa-key';
+import { readMfaKeyCheck } from './mfa-store';
 
 const log = createLogger('STARTUP');
+const authLog = createLogger('AUTH');
 
 /**
  * One CRITICAL line when there are user accounts and none of them is the
@@ -388,6 +397,91 @@ export function refuseUserlessBesideAnother(
 
 function countUsers(): number {
 	return (sqlite.prepare('SELECT COUNT(*) AS n FROM users').get() as { n: number }).n;
+}
+
+/** What `checkMfaKeyAtStart` throws, carrying the `[CRITICAL] [AUTH]` line it wrote to the console. */
+export class MfaKeyError extends Error {
+	constructor(
+		message: string,
+		readonly line: string
+	) {
+		super(message);
+		this.name = 'MfaKeyError';
+	}
+}
+
+/** How many unreadable factors the ERROR line names one by one. */
+const UNREADABLE_NAMED = 20;
+
+/**
+ * Stop the server, before it listens, when the key that protects
+ * authenticator secrets does not load, or is not the key the stored second
+ * factors were made with (`mfaStartVerdict`, in mfa-key.ts): writes one
+ * `[CRITICAL] [AUTH]` line to the console and throws an `MfaKeyError`. Called
+ * once, from hooks.server.ts, straight after `refuseUserlessBesideAnother`,
+ * as a bare call: the throw is what stops a built server (exit code 1).
+ *
+ * When it starts: records the key's check if factors are stored without one,
+ * writes one AUTH ERROR line naming the factors that do not open (each can
+ * still sign in with a recovery code, and none is a wrong code), says, when
+ * this start made a new key, where it is and that it must be backed up apart
+ * from the database, and writes each warning to the console whatever
+ * LOG_LEVEL is. The line names paths and
+ * reasons, through `printable`, and never anything the key file holds.
+ */
+export function checkMfaKeyAtStart(
+	load: KeyLoad = mfaKeyLoad(),
+	factors: () => readonly FactorAtStart[] = readFactorsAtStart,
+	storedCheck: () => string | null = () => readMfaKeyCheck(sqlite)
+): void {
+	const verdict = mfaStartVerdict({ load, factors: factors(), storedCheck: storedCheck() });
+	if (verdict.refuse !== null) {
+		const message = `The server will not start. ${verdict.refuse}`;
+		const line = `[${new Date().toISOString()}] [CRITICAL] [AUTH] ${printable(message)}`;
+		console.error(line);
+		throw new MfaKeyError(message, line);
+	}
+
+	if (verdict.recordCheck !== null) {
+		sqlite
+			.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+			.run(MFA_KEY_CHECK_SETTING, verdict.recordCheck);
+	}
+
+	if (verdict.unreadable.length > 0) {
+		const named = verdict.unreadable
+			.slice(0, UNREADABLE_NAMED)
+			.map((factor) => `factor ${factor.id} of user ${factor.userId}`)
+			.join(', ');
+		const more = verdict.unreadable.length > UNREADABLE_NAMED ? `, and ${verdict.unreadable.length - UNREADABLE_NAMED} more` : '';
+		authLog.error(
+			`${verdict.unreadable.length} second factor(s) could not be opened with this server's MFA key: ${named}${more}. ` +
+				'None is counted as a wrong code; each account can sign in with a recovery code, or have its two-step ' +
+				'sign-in reset.',
+			{ unreadable: verdict.unreadable.length }
+		);
+	}
+
+	// A key this start made (development and test only, mfa-key.ts) is said
+	// whatever LOG_LEVEL is: it is the only copy, and no backup holds it.
+	if (load.ok && load.made && load.path !== null) {
+		warnOnConsoleAlways(
+			`The server made a new MFA key at ${printable(load.path)}. Back it up apart from the database: no backup ` +
+				'holds it, and without it every second factor is lost. See docs/deployment.md, The Key That Protects ' +
+				'Authenticator Secrets.'
+		);
+	}
+
+	for (const warning of verdict.warnings) warnOnConsoleAlways(warning);
+}
+
+function readFactorsAtStart(): FactorAtStart[] {
+	return sqlite
+		.prepare(
+			'SELECT id, user_id AS userId, factor_uid AS factorUid, key_id AS keyId, secret_ciphertext AS ciphertext, ' +
+				'secret_nonce AS nonce FROM mfa_factors ORDER BY id'
+		)
+		.all() as FactorAtStart[];
 }
 
 /**

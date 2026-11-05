@@ -168,6 +168,9 @@ const TEST_FILES = [
 	'mail-settings.test.ts',
 	'markdown.test.ts',
 	'mentions.test.ts',
+	// Card 2768: the MFA key file, sealing, TOTP and recovery codes; the start-up check, the store and the account changes.
+	'mfa-secrets.test.ts',
+	'mfa-storage.test.ts',
 	'migrations.test.ts',
 	// Card 2537: the New badge on the board's card and on the list's row, on one clock.
 	'new-badge.svelte.test.ts',

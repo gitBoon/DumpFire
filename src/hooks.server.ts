@@ -18,7 +18,7 @@ import { addressKey, addressOf, UNKNOWN_ADDRESS } from '$lib/server/client-addre
 import { isNavigation, notSignedIn, secured, sendTo, whereSent } from '$lib/server/gate-answers';
 import { refusalSeen, refuseCrossSiteWrite } from '$lib/server/same-origin';
 import { pathToLog } from '$lib/server/secret-paths';
-import { maskLiveLog, refuseUserlessBesideAnother, removeSettingsOfNonAdministrators, reportInstallation } from '$lib/server/startup-checks';
+import { checkMfaKeyAtStart, maskLiveLog, refuseUserlessBesideAnother, removeSettingsOfNonAdministrators, reportInstallation } from '$lib/server/startup-checks';
 
 const log = createLogger('HTTP');
 
@@ -39,6 +39,14 @@ runMigrations();
 // comes first while the real database sits unused. A bare call: its throw is
 // what stops the server before it listens. See $lib/server/startup-checks.ts.
 refuseUserlessBesideAnother();
+
+// Stop here too, the same way, when the key that protects authenticator
+// secrets does not load, or is not the one the stored second factors were
+// made with (card 2768): under the production rules MFA_KEY_FILE must name
+// it, and a server must not run with secrets it cannot read. The key is read
+// here, for the first time, and never at import. A bare call: its throw is
+// what stops the server before it listens. See $lib/server/startup-checks.ts.
+checkMfaKeyAtStart();
 
 // Clean expired sessions periodically (on startup)
 cleanExpiredSessions();

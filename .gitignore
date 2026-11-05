@@ -26,6 +26,9 @@ vite.config.ts.timestamp-*
 *.db
 *.db-shm
 *.db-wal
+# The key that protects second-factor secrets (card 2768): never committed.
+mfa.key
+mfa.key.*.tmp
 
 # Backup/restore temp files
 .pre-restore-safety.json

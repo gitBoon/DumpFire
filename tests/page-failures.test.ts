@@ -1173,6 +1173,32 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 		);
 	});
 
+	it('T61: shows the accounts an import left with no second factor, a line after the secrets’ lines (card 2768)', () => {
+		const js = ts.transpileModule(functionNamed(restore, 'accountOf').getText(), {
+			compilerOptions: { target: ts.ScriptTarget.ES2022 }
+		}).outputText;
+		const accountOf = new Function('count', `${js}\nreturn accountOf;`)((n: number) => String(n)) as (
+			result: Record<string, unknown>
+		) => Record<string, unknown>;
+		const SENTENCE =
+			'1 account(s) have no second factor after this restore and each needs its two-step sign-in reset before it can ' +
+			'sign in: ann. See docs/admin-guide.md, Restoring from Backup.';
+
+		expect(accountOf({ restored: {}, mfaWithoutFactor: SENTENCE }).mfaWithoutFactor).toBe(SENTENCE);
+		// Nobody has a factor, or the answer is from before card 2768: no line.
+		expect(accountOf({ restored: {} }).mfaWithoutFactor).toBeUndefined();
+
+		const report = restoreMarkup.slice(restoreMarkup.indexOf('{#if importReport}')).replace(/\r\n/g, '\n');
+		const lines = ['{#if importReport.secretsKept}\n', '{#if importReport.secretsToEnter}\n', '{#if importReport.mfaWithoutFactor}\n'].map(
+			(line) => report.indexOf(line)
+		);
+		expect(lines.every((at) => at > -1)).toBe(true);
+		expect([...lines].sort((a, b) => a - b)).toEqual(lines);
+		expect(report).toMatch(
+			/\{#if importReport\.mfaWithoutFactor\}\s*<p class="import-report-detail">\{importReport\.mfaWithoutFactor\}<\/p>/
+		);
+	});
+
 	it('shows what was removed after the restore, a line after what is to enter again (card 2411, the code review)', () => {
 		const js = ts.transpileModule(functionNamed(restore, 'accountOf').getText(), {
 			compilerOptions: { target: ts.ScriptTarget.ES2022 }

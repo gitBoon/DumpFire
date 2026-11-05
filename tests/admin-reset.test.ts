@@ -201,6 +201,17 @@ function everything(): Everything {
 	sqlite
 		.prepare("INSERT INTO people_changes (actor_user_id, actor_name, source, subject, subject_id, kind, before, after) VALUES (?, 'owner', 'ui', 'person', 1, 'created', NULL, ?)")
 		.run(owner.id, JSON.stringify({ fullName: 'Member', jobTitle: '', status: 'active', leftAt: null, groupIds: [1] }));
+	// Two-step sign-in (card 2768, migration 0065): a second factor, a recovery code, a pending sign-in and an
+	// enrolment link, each cleared with the accounts they belong to.
+	sqlite.exec(`
+		INSERT INTO mfa_factors (factor_uid, user_id, kind, label, key_id, secret_ciphertext, secret_nonce)
+			VALUES ('${'a'.repeat(32)}', ${owner.id}, 'totp', 'Phone', '${'b'.repeat(16)}', 'Y2lwaGVydGV4dA==', 'bm9uY2Vub25jZW5v');
+		INSERT INTO mfa_recovery_codes (user_id, code_hash) VALUES (${owner.id}, '${'c'.repeat(64)}');
+		INSERT INTO sign_in_challenges (token_hash, short_id, user_id, purpose, lane, password_hash, expires_at)
+			VALUES ('${'d'.repeat(64)}', 'abcd', ${owner.id}, 'sign_in', 'other', 'hash', '2099-01-01 00:00:00');
+		INSERT INTO enrolment_links (token_hash, user_id, issued_by, expires_at)
+			VALUES ('${'e'.repeat(64)}', ${member.id}, 'owner', '2099-01-01 00:00:00');
+	`);
 
 	// The two tables a reset keeps.
 	db.insert(backupLog)

@@ -437,6 +437,9 @@ describe('PUT /api/account/password', () => {
 			'update users set',
 			'delete from sessions',
 			'delete from invite_tokens',
+			// The pending sign-ins and enrolment links (card 2768), whether or not a row matches.
+			'delete from sign_in_challenges',
+			'delete from enrolment_links',
 			'insert into sessions'
 		]);
 		expect(run.effects).toEqual([]);
@@ -469,6 +472,9 @@ describe('PUT /api/account/password', () => {
 			'update users set',
 			'delete from sessions',
 			'delete from invite_tokens',
+			// The pending sign-ins and enrolment links (card 2768), whether or not a row matches.
+			'delete from sign_in_challenges',
+			'delete from enrolment_links',
 			'delete from api_keys',
 			// The webhooks the account set (card 2168): written whether or not one
 			// matches, and only when the keys end.
@@ -701,6 +707,9 @@ describe('PUT /api/users/:id/password', () => {
 			'update users set',
 			'delete from sessions',
 			'delete from invite_tokens',
+			// The pending sign-ins and enrolment links (card 2768), whether or not a row matches.
+			'delete from sign_in_challenges',
+			'delete from enrolment_links',
 			'delete from api_keys',
 			// What the account set going (card 2168), written whether or not a row matches.
 			'update webhooks set',
@@ -1115,6 +1124,9 @@ describe('the invite page', () => {
 			'update invite_tokens set',
 			'delete from sessions',
 			'delete from invite_tokens',
+			// The pending sign-ins and enrolment links (card 2768), whether or not a row matches.
+			'delete from sign_in_challenges',
+			'delete from enrolment_links',
 			'delete from api_keys',
 			'update webhooks set',
 			'update report_schedules set',
@@ -1391,6 +1403,9 @@ describe('what taking an account back switches off (card 2168)', () => {
 			'update users set',
 			'delete from sessions',
 			'delete from invite_tokens',
+			// The pending sign-ins and enrolment links (card 2768), whether or not a row matches.
+			'delete from sign_in_challenges',
+			'delete from enrolment_links',
 			'delete from api_keys',
 			'update webhooks set',
 			'update report_schedules set'
@@ -1467,6 +1482,9 @@ describe('what taking an account back switches off (card 2168)', () => {
 			'update invite_tokens set',
 			'delete from sessions',
 			'delete from invite_tokens',
+			// The pending sign-ins and enrolment links (card 2768), whether or not a row matches.
+			'delete from sign_in_challenges',
+			'delete from enrolment_links',
 			'delete from api_keys',
 			'update webhooks set',
 			'update report_schedules set',
@@ -1860,7 +1878,7 @@ describe('PUT /api/users/:id', () => {
 		// The invites end before the account is written, in its transaction.
 		// Before it, the superadmin's own password counted and the count
 		// cleared, apart from the transaction (card 2701).
-		expect(shape(run.writes)).toEqual(['update sessions set', 'update sessions set', 'delete from invite_tokens', 'update users set']);
+		expect(shape(run.writes)).toEqual(['update sessions set', 'update sessions set', 'delete from invite_tokens', 'delete from sign_in_challenges', 'delete from enrolment_links', 'update users set']);
 		expect(run.effects).toEqual([]);
 	});
 
@@ -1966,7 +1984,7 @@ describe('PUT /api/account/email', () => {
 		// The address used to be written on its own, with no transaction and nothing else.
 		// Before it, the password counted as it arrives and the count cleared for
 		// the right one, apart from the transaction (card 2701).
-		expect(shape(run.writes)).toEqual(['update sessions set', 'update sessions set', 'delete from invite_tokens', 'update users set']);
+		expect(shape(run.writes)).toEqual(['update sessions set', 'update sessions set', 'delete from invite_tokens', 'delete from sign_in_challenges', 'delete from enrolment_links', 'update users set']);
 		expect(run.effects).toEqual([]);
 		// Checked before the transaction, where a quarter of a second holds nobody up.
 		expectHashedOutsideTransaction();

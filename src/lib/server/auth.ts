@@ -14,6 +14,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { error, type Cookies } from '@sveltejs/kit';
 import { getRequestEvent } from '$app/server';
 import { endUnusedInvites } from './invites';
+import { endPendingSignIns } from './mfa-store';
 import { FIRST_LANE_CHECKS_PER_ACCOUNT, enterSignIn, firstLaneChecksAt, leaveSignIn } from './rate-limit';
 import { PASSWORDS_BUSY, checkPassword } from './passwords';
 import { createLogger } from './logger';
@@ -458,6 +459,10 @@ export function deleteSession(token: string, reason = 'unspecified'): void {
 export type AccessEnded = {
 	sessions: number;
 	invites: number;
+	/** Pending sign-ins waiting for their second factor (card 2768). */
+	challenges: number;
+	/** Links to set up an authenticator (card 2768). */
+	enrolmentLinks: number;
 	apiKeys: number;
 	/** Webhooks the account set that were on, switched off. */
 	webhooks: number;
@@ -474,7 +479,8 @@ export const namingIds = (ids: number[]): string =>
 /**
  * End what setting an account's password ends, in the transaction that sets
  * it, so that the password and all of this change together: every session of
- * the account, every invite of it that has not been used, and, when `apiKeys`
+ * the account, every invite of it that has not been used, every pending
+ * sign-in and enrolment link of it (card 2768), and, when `apiKeys`
  * is true, every API key it has and every webhook it set that is on, which is
  * switched off; when `reportSchedules` is true, every report schedule of it
  * that is on, which is paused. In that order. Returns how many of each, and
@@ -502,7 +508,10 @@ export const namingIds = (ids: number[]): string =>
  * An invite that was used is left, marked used: that is how the invite page
  * and the backup tell a spent invite from a waiting one. The invites end
  * through `endUnusedInvites`, in invites.ts, which a change of the account's
- * email address or role calls too.
+ * email address or role calls too. The pending sign-ins and enrolment links
+ * end through `endPendingSignIns`, in mfa-store.ts, which those changes call
+ * too: a sign-in that waits for its second factor was begun with the password
+ * this replaces.
  *
  * It ends nothing else. A webhook nobody is recorded as having set, one made
  * before migration 0056 or whose setter's account was deleted, is left on, and
@@ -521,6 +530,7 @@ export function endAccountAccess(userId: number, opts: { apiKeys: boolean; repor
 	}
 	const sessionsEnded = db.delete(sessions).where(eq(sessions.userId, userId)).run().changes;
 	const invitesEnded = endUnusedInvites(userId);
+	const pending = endPendingSignIns(userId);
 	const apiKeysEnded = opts.apiKeys ? db.delete(apiKeys).where(eq(apiKeys.userId, userId)).run().changes : 0;
 	const ids = (rows: { id: number }[]) => rows.map((row) => row.id).sort((a, b) => a - b);
 	const webhookIds = opts.apiKeys
@@ -546,6 +556,8 @@ export function endAccountAccess(userId: number, opts: { apiKeys: boolean; repor
 	return {
 		sessions: sessionsEnded,
 		invites: invitesEnded,
+		challenges: pending.challenges,
+		enrolmentLinks: pending.enrolmentLinks,
 		apiKeys: apiKeysEnded,
 		webhooks: webhookIds.length,
 		reportSchedules: reportScheduleIds.length,

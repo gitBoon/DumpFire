@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.122
+version: 1.123
 status: As-Built
 date: 2026-11-05
 tags:
@@ -26,6 +26,7 @@ tags:
   - attachments
   - images
   - retention
+  - mfa
 description: "REST API reference for DumpFire's external v1 API: authentication, how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it"
 ---
 
@@ -371,6 +372,31 @@ those entries. No webhook is sent for it. An image uploaded through a key to suc
 
 The web application's own attachment route changed too: an image is shown in the browser
 only when its bytes are the image type it was stored as, and is a download otherwise.
+
+**Two internal routes, for the storage of two-step sign-in (card 2768).** The v1 API does not
+change: still version `1.7.0`, and no `/api/v1` operation, answer or schema is different. Both
+routes are the superadmin's, and neither can be reached with a key.
+
+- **`POST /api/admin/import` may carry `mfaWithoutFactor`.** Once two-step sign-in is in use (a
+  second factor exists after the restore, or the backup's factors for some account were left
+  out), its answer names every restored account with no second factor, in one sentence, both
+  joined to `message` and as the field: "`<n>` account(s) have no second factor after this restore
+  and each needs its two-step sign-in reset before it can sign in: `<names>`. See
+  docs/admin-guide.md, Restoring from Backup." The same sentence is written at `WARN` under
+  `IMPORT`, and the `500` of a restore that committed and then failed carries it too. The same
+  field also carries, when they apply, why the backup's second factors were left out ("Their
+  second factors in the backup were left out because `<reason>`: `<names>`.", the reason being
+  that the backup was not made by this server or was changed since, was made under a different
+  key, or no key is loaded) and, once, a note to have accounts brought back from the backup
+  regenerate their recovery codes. When none of these applies the field is absent and the answer
+  reads as before, as it does for every restore until card 2769 lets an account set up a second
+  factor. See
+  [What a Backup Holds](authentication-security.md#second-factors-in-a-backup-the-export-and-a-restore-card-2768).
+- **`POST /api/admin/export`'s file holds what a backup holds of two-step sign-in**, as it is
+  the same file: every second factor only as AES-256-GCM ciphertext with its nonce and key id,
+  every recovery code only as an account-bound hash, and `settings.mfa_key_check`; no pending
+  sign-in and no enrolment link; and never the key, which is in a file outside the database. The
+  route itself, its body and its answer are unchanged.
 
 ### Changes on 2026-11-04
 

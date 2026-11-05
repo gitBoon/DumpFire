@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.107
+version: 1.108
 status: As-Built
 date: 2026-11-05
 tags:
@@ -37,7 +37,11 @@ tags:
   - board-page
   - card-window
   - image-retention
-description: "Docker deployment, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, and production configuration for DumpFire"
+  - mfa
+  - mfa-key-file
+  - two-step-sign-in
+  - migration-0065
+description: "Docker deployment, MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, and production configuration for DumpFire"
 ---
 
 # DumpFire Deployment Guide
@@ -158,7 +162,7 @@ Test Files  61 passed (61)
 - **A step shown as `CACHED`** was not run again, because Docker has already run it on exactly these files and it passed. Any change to a file in the build context runs it again.
 - **A failure** ends the build with `ERROR: process "/bin/sh -c npm run verify" did not complete successfully: exit code: 1`. The failing tests are named above that line. A test that reached for the network is one of them, on a workstation and in the build alike: `This test reached for the network: ...`, with the address. `npm run build` is not reached and no image is tagged; the container that is running is not affected, because nothing has replaced it.
 
-**What is kept out of the build.** `.dockerignore` keeps these out of the build context, so they never reach Docker, the builder stage or the build cache: any `*.db`, `*.db-shm` and `*.db-wal` file, at the top of the repository and in any folder beneath it (a development `dumpfire.db`, its dated backups, and a copy put in a sub-folder), any `*.backup-temp` and `*.backup-temp-*` file at any depth (the copies `GET /api/admin/export` and a backup make beside the database while they run, `<database>.backup-temp` and `<database>.backup-temp-cleared`), any `*.export-temp` file at any depth (the name an older export used for its copy), `.pre-restore-safety.json` (the copy of the data kept before a restore), the `uploads` folder of attachment files, `.env` and `.env.*`, and the local tooling in `.agent`, `.claude`, `.vscode` and `.git`, along with `.gitignore`, `README.md`, and `node_modules`, `.svelte-kit` and `build`, which the image makes for itself. The database patterns once matched at the top of the repository only, and a database copied into a sub-folder would have been sent; `**/*.db` and its two companions were added on 2026-10-13. The other names are still matched at the top only. The context was listed before each of the two builds of 2026-10-13. Before the first, which was before those patterns were added: 417 files, 5.9 MB. Before the second, with them in place: 418 files, 5,993,090 bytes. None of those names was anywhere in either.
+**What is kept out of the build.** `.dockerignore` keeps these out of the build context, so they never reach Docker, the builder stage or the build cache: any `*.db`, `*.db-shm` and `*.db-wal` file, at the top of the repository and in any folder beneath it (a development `dumpfire.db`, its dated backups, and a copy put in a sub-folder), any `*.backup-temp` and `*.backup-temp-*` file at any depth (the copies `GET /api/admin/export` and a backup make beside the database while they run, `<database>.backup-temp` and `<database>.backup-temp-cleared`), any `*.export-temp` file at any depth (the name an older export used for its copy), `.pre-restore-safety.json` (the copy of the data kept before a restore), any `mfa.key` and `mfa.key.*.tmp` file at any depth (the key a development server makes beside its database, and the temporary file it is made through: card 2768), the `uploads` folder of attachment files, `.env` and `.env.*`, and the local tooling in `.agent`, `.claude`, `.vscode` and `.git`, along with `.gitignore`, `README.md`, and `node_modules`, `.svelte-kit` and `build`, which the image makes for itself. The database patterns once matched at the top of the repository only, and a database copied into a sub-folder would have been sent; `**/*.db` and its two companions were added on 2026-10-13. The other names are still matched at the top only. The context was listed before each of the two builds of 2026-10-13. Before the first, which was before those patterns were added: 417 files, 5.9 MB. Before the second, with them in place: 418 files, 5,993,090 bytes. None of those names was anywhere in either.
 
 **What has been proved.** The step has been built twice, both times on 2026-10-13 with Docker 29.2.1 on a Windows workstation (Docker Desktop, Linux containers, amd64, BuildKit). The first build was the first time the suite ran on Linux: it passed with the totals it then had (`2200 passed | 19 expected fail | 1 skipped`), `prebuild` and `npm run build` passed after it, and a build with one failing test added inside the builder stage stopped at the step as described.
 
@@ -195,7 +199,8 @@ On the Docker host itself there is usually no Node to run the suite with outside
 
 | Variable | Default | Required | Description |
 |----------|---------|----------|-------------|
-| `NODE_ENV` | `production` | No | Node.js environment mode |
+| `NODE_ENV` | `production` in the image; unset for a server started any other way | No | Node.js environment mode. It also decides whether the production rules for the MFA key apply (card 2768): they do unless it is exactly `development` or `test`, or the database is in memory. Unset, `production`, `staging` and a misspelling are all production, so a local `node build` needs `MFA_KEY_FILE` as the image does. See [The Key That Protects Authenticator Secrets](#the-key-that-protects-authenticator-secrets) |
+| `MFA_KEY_FILE` | not set | **Yes, wherever the production rules apply**: in the image always | The path, inside the container, of the file holding the key that protects authenticator secrets (card 2768): 64 hexadecimal characters, made with `openssl rand -hex 32`, in a regular file of at most 4096 bytes. Mount it read-only from outside the volume (`/run/secrets/dumpfire_mfa_key`), never under `/app/data`. Under the production rules the server **refuses to start** when it is unset, names no file, or names a file that is not a key, and never makes one; under `development` or `test` a missing key is made, beside the database as `mfa.key` when this is unset. Read once, at start. Empty is unset. See [The Key That Protects Authenticator Secrets](#the-key-that-protects-authenticator-secrets) |
 | `PORT` | `3000` | No | HTTP port the server listens on |
 | `ORIGIN` | `http://localhost:3000` | **Yes** | Public URL — must match your domain exactly. Incorrect value causes CSRF failures. It must be the public origin: where a browser sends no `Sec-Fetch-Site` (over plain HTTP at any address but `localhost`, or an old browser), every write from the web application, sign-in included, is refused `403` unless its `Origin` is exactly `ORIGIN` (card 2700; see [Writes From DumpFire's Own Pages Alone](authentication-security.md#writes-from-dumpfires-own-pages-alone-card-2700)). It is also the address every link in a mail begins with, unless an App URL is set: see [Where a Mailed Link's Address Comes From](#where-a-mailed-links-address-comes-from) |
 | `APP_URL` | not set | No | The address links in mail begin with, when it should not be `ORIGIN`. The App URL on the admin page, under Application Settings, does the same and is read first |
@@ -419,10 +424,14 @@ docker run -d \
   --name dumpfire \
   -p 3000:3000 \
   -v dumpfire-data:/app/data \
+  -v /srv/dumpfire-secrets/dumpfire_mfa_key:/run/secrets/dumpfire_mfa_key:ro \
   -e DB_PATH=/app/data/dumpfire.db \
+  -e MFA_KEY_FILE=/run/secrets/dumpfire_mfa_key \
   -e ORIGIN=http://localhost:3000 \
   dumpfire:latest
 ```
+
+The key file must be made first, on the host: see [The Key That Protects Authenticator Secrets](#the-key-that-protects-authenticator-secrets). The image sets `NODE_ENV=production`, so without `MFA_KEY_FILE` the server refuses to start (card 2768).
 
 The image sets `DB_PATH=/app/data/dumpfire.db` since card 2083, and each of these gives it all the same, so that each is right for an image built before that as well. Such an image sets none, and without it the database and the uploads are in `/app`, inside the container and off the volume: see [Volume Mounts](#volume-mounts). With any image, the volume at `/app/data` is what keeps them.
 
@@ -434,7 +443,9 @@ docker run -d \
   --restart unless-stopped \
   -p 3000:3000 \
   -v dumpfire-data:/app/data \
+  -v /srv/dumpfire-secrets/dumpfire_mfa_key:/run/secrets/dumpfire_mfa_key:ro \
   -e DB_PATH=/app/data/dumpfire.db \
+  -e MFA_KEY_FILE=/run/secrets/dumpfire_mfa_key \
   -e ORIGIN=https://dumpfire.example.com \
   -e NODE_ENV=production \
   dumpfire:latest
@@ -454,10 +465,17 @@ services:
       - "3000:3000"
     volumes:
       - dumpfire-data:/app/data
+    secrets:
+      - dumpfire_mfa_key
     environment:
       - DB_PATH=/app/data/dumpfire.db
+      - MFA_KEY_FILE=/run/secrets/dumpfire_mfa_key
       - ORIGIN=https://dumpfire.example.com
       - NODE_ENV=production
+
+secrets:
+  dumpfire_mfa_key:
+    file: /srv/dumpfire-secrets/dumpfire_mfa_key
 
 volumes:
   dumpfire-data:
@@ -471,10 +489,229 @@ volumes:
 | `/app/data/dumpfire.db` | Main database file: the image's `DB_PATH` | Auto-created at the first start, which says so in the log |
 | `/app/data/uploads/` | Card attachments: the folder `uploads` beside the database file | Auto-created at the first upload |
 | `/app/data/uploads/.trash/` | Attachment files of deleted cards, and files no attachment names, kept for 30 days | Auto-created at the first delete or sweep that has a file to move |
+| `/run/secrets/dumpfire_mfa_key` | The key that protects authenticator secrets, named by `MFA_KEY_FILE` (card 2768): a file on the host, mounted read-only, **not on the volume** | Never made by the server in production: made on the host first, and kept and backed up apart from the database. See [The Key That Protects Authenticator Secrets](#the-key-that-protects-authenticator-secrets) |
 
 > 💡 Always mount `/app/data` as a Docker volume. Without it, all data is lost when the container is recreated.
 
 The uploads folder follows `DB_PATH`: it is the folder named `uploads` in the directory that holds the database file. A variable `UPLOADS_DIR` exists for the tests and overrides that wherever it is set; do not set it in production, where it would move uploads away from the files already stored. The image sets `DB_PATH=/app/data/dumpfire.db`. An image built before card 2083 sets none, and a container from it started without `DB_PATH` has its database at `/app/dumpfire.db` and the uploads in `/app/uploads`, both inside the container and neither on the volume. Mounting nothing at `/app/data` does the same with any image: the folder is then the container's own, and every start says so in a `[WARN] [STARTUP]` line (see [Start-Up Sequence](#start-up-sequence)). To put either right, see [Moving the Database onto the Volume](#moving-the-database-onto-the-volume).
+
+## The Key That Protects Authenticator Secrets
+
+Two-step sign-in keeps each account's authenticator-app secret encrypted (card 2768). The key
+that encrypts it is kept in a file of its own, outside the database and outside every backup,
+and `MFA_KEY_FILE` names that file. **Sign-in does not ask for a second factor yet**: card 2769
+adds that, and until it does no account has a factor. The server reads and checks the key at
+every start all the same, from the update that brings migration 0065, so **the key file must
+be in place before that image starts in production**. How the key is used is in
+[Second-Factor Secrets at Rest](authentication-security.md#second-factor-secrets-at-rest-card-2768).
+
+### When It Is Required
+
+The production rules apply unless `NODE_ENV` is exactly `development` or `test`, or the
+database is in memory (`DB_PATH=:memory:`, or empty). An unset `NODE_ENV` counts as production,
+so that a missing or misspelt setting fails closed. The image sets `NODE_ENV=production`, so
+every container needs the key file; so does a local `node build`, and `vite preview`, which
+runs under `production` too. `npm run dev` runs under `development` unless `NODE_ENV` says
+otherwise. The key is never read when a module is imported, only at the first start-up call
+(`vite build` imports the server's modules under `NODE_ENV=production`, and builds without a
+key).
+
+| Where | `MFA_KEY_FILE` not set | `MFA_KEY_FILE` names a file that is not there |
+|-------|------------------------|------------------------------------------------|
+| Production rules (the image, `node build`, `NODE_ENV` unset or anything but `development` or `test`), database on disk | **Refuses to start** | **Refuses to start**. A key is never made under the production rules |
+| `NODE_ENV=development` or `test`, database on disk | Makes `mfa.key` in the database's folder, owner-only, and uses it from then on | Makes the key at the named path |
+| Database in memory, whatever `NODE_ENV` | A key of the process's own, written nowhere (what the tests use) | Makes the key at the named path |
+
+Where a key is made, it is written to a temporary file of its own in the same folder
+(`mfa.key.<16 hex>.tmp`, created only if absent, mode `600`) and then hard-linked into place,
+which fails if another instance got there first; the temporary file is removed either way, and
+the other instance's key is read. No reader ever sees half a key. `mfa.key` and its temporary
+files are in `.gitignore` and `.dockerignore`, so a development key is never committed and never
+reaches an image.
+
+### Making the Key
+
+On the Docker host, in a folder that is not the database's volume:
+
+```bash
+umask 077
+mkdir -p /srv/dumpfire-secrets
+openssl rand -hex 32 > /srv/dumpfire-secrets/dumpfire_mfa_key
+chmod 600 /srv/dumpfire-secrets/dumpfire_mfa_key
+wc -c /srv/dumpfire-secrets/dumpfire_mfa_key     # 65: 64 hex characters and a newline
+```
+
+What the server takes as a key: a regular file of at most 4096 bytes holding 64 hexadecimal
+characters, in either case, with nothing but whitespace around them (so the newline `openssl`
+and `echo` leave is fine). Anything else is refused, and the refusal never quotes what the file
+holds. The 32 bytes it names are the whole key: never put them anywhere else, never in an
+environment variable, and never in a ticket or a chat.
+
+### Mounting It
+
+Mount the file read-only and point `MFA_KEY_FILE` at the path inside the container. The image
+sets no `USER` and runs as root, so it can read a file that is `600` and owned by root on the
+host. Under rootless Docker or user-namespace remapping, give the file to the user the
+container's root maps to instead, still `600`.
+
+- **A bind mount**, as in [Running](#running):
+  `-v /srv/dumpfire-secrets/dumpfire_mfa_key:/run/secrets/dumpfire_mfa_key:ro` and
+  `-e MFA_KEY_FILE=/run/secrets/dumpfire_mfa_key`. The file keeps its mode `600` and the server
+  starts with no warning about it.
+- **A Docker Compose file secret** (`secrets:` with `file:`, as in
+  [Docker Compose](#docker-compose)) appears at `/run/secrets/dumpfire_mfa_key`. Compose's file
+  secrets are a mount of the host file, so the mode is the host file's: `600` gives no warning.
+- **A Docker Swarm secret** is mounted `0444` by default. The server starts, with one
+  `[WARN] [STARTUP]` line at every start, on the console whatever `LOG_LEVEL` is: `The MFA key
+  file <path> can be read by its group or by everyone. Make it readable by its owner alone
+  (chmod 600) unless it is mounted as a read-only secret.` That is expected for such a mount.
+
+On Linux, a key file its group or everyone can **write** (any of mode `022`) is refused, since
+it could be swapped for another key. A file its group or everyone can **read** (any of mode
+`044`) starts with the warning above. Neither check is made on Windows.
+
+**Never inside the database's directory.** A copy of that volume would carry both the secrets
+and their key. A named key file inside the folder the database is in, or in a folder beneath
+it (both paths followed through their links), starts with one `[WARN] [STARTUP]` line at every
+start, on the console whatever `LOG_LEVEL` is: `The MFA key file <path> is inside the
+database's directory: a copy of that volume carries both the secrets and their key. Move it,
+see docs/deployment.md`. In the image that folder is `/app/data`. The `mfa.key` a development
+server makes beside its own database is not warned about as inside the database's directory;
+the start that makes it says so (see [Backing It Up](#backing-it-up)).
+
+### Backing It Up
+
+**Back the key up apart from the database**: in a password manager or a secrets store, never
+with the database's backups and never at a backup destination. A backup holds every second
+factor only as ciphertext, and the key check (`mfa_key_check`), and never the key; whoever has
+both a backup and the key can open every authenticator secret in it. Whoever loses the key
+loses every second factor: see [If the Key Is Lost](#if-the-key-is-lost).
+
+**Second factors survive a restore only onto the installation that made the backup.** Import
+Backup takes a backup's second factors only when the backup's seal verifies, and the key that
+seals backups (`backup_seal_key`) is made by each installation for itself and is in no backup.
+Restoring onto a rebuilt server, a new volume or another installation, **even with the right
+MFA key mounted**, therefore leaves every account in the backup with no second factor: each
+needs its two-step sign-in reset (card 2773) before it can sign in. The restore names them, and
+says why their factors were left out ("the backup was not made by this server, or was changed
+after it was made"). Keep the database volume, not only the backups, if you want factors to
+survive a rebuild, and keep the MFA key file with it.
+
+A development or test server that makes its own key (above) says so at that start, on the
+console whatever `LOG_LEVEL` is: `[WARN] [STARTUP] The server made a new MFA key at <path>. Back
+it up apart from the database: no backup holds it, and without it every second factor is lost.`
+
+### What the Start-Up Check Does
+
+Straight after the migrations and the check for a userless database beside another
+(`refuseUserlessBesideAnother`), `hooks.server.ts` calls `checkMfaKeyAtStart()`
+(`src/lib/server/startup-checks.ts`), which loads the key for the first time and judges it
+(`mfaStartVerdict`, `src/lib/server/mfa-key.ts`). A refusal is one line on the console,
+`[<time>] [CRITICAL] [AUTH] The server will not start. <reason>`, and the process exits with
+code 1 before it listens. The line names paths and reasons only, with every control character
+printed as a space, and never anything the key file holds. It cannot go to `system_logs`.
+
+```mermaid
+flowchart TD
+    A["Migrations, then refuseUserlessBesideAnother"] --> B{"Does the key load?"}
+    B -- "no" --> X["One CRITICAL AUTH line on the console.<br/>Exit code 1, never listens"]
+    B -- "yes" --> C{"Any mfa_factors row?"}
+    C -- "no" --> OK["Start"]
+    C -- "yes" --> D{"mfa_key_check stored?"}
+    D -- "yes, another key's" --> X
+    D -- "yes, this key's" --> E["Open every factor,<br/>zero each secret at once"]
+    D -- "no" --> F["Open every factor,<br/>zero each secret at once"]
+    F -- "none opens" --> X
+    F -- "some open" --> G["Write mfa_key_check"]
+    G --> H["One ERROR AUTH line naming<br/>any factor that does not open"]
+    E --> H
+    H --> OK
+    OK --> W{"Key file readable by others,<br/>inside the database's folder,<br/>or made by this start?"}
+    W -- "yes" --> WARN["WARN STARTUP on the console,<br/>whatever LOG_LEVEL is"]
+```
+
+| Reason in the CRITICAL line | Why it stops the server | Do |
+|-----------------------------|-------------------------|----|
+| `MFA_KEY_FILE must be set in production: it names the file holding the key that protects authenticator secrets, 64 hexadecimal characters.` | A key made at start would live in the container's own layer and be lost when the container is replaced, taking every second factor with it | Make the key and mount it, as above |
+| `MFA_KEY_FILE names no file (<path>); the server never makes a key in production.` | The same: a typo in the path must not make a new key | Correct the path or the mount |
+| `The MFA key file <path> is not a regular file.`, `… is larger than 4096 bytes, so it is not a key file.`, `… could not be read (<code>).` | It is not a key | Point it at the key file; for `EACCES`, let the container read it |
+| `The MFA key file <path> can be written by its group or by everyone, so it could be swapped for another key. Make it readable and writable by its owner alone (chmod 600).` | A key anyone on the host can replace protects nothing | `chmod 600` the file on the host |
+| `The MFA key file <path> does not hold a key: it must hold 64 hexadecimal characters and nothing else (openssl rand -hex 32).` | It is not a key | Put the key back as it was made; never a new one if factors exist (below) |
+| `The MFA key does not match the one the second factors were made with (a volume swap, a moved DB_PATH, a restore by hand, or the wrong key file).` | Second factors are stored and `mfa_key_check` is another key's: the server would run with secrets it cannot read | Mount the key the factors were made with. If it is gone, follow [If the Key Is Lost](#if-the-key-is-lost) |
+| `None of the N second factor(s) opens with this MFA key, and no key check is stored: the key does not match the one they were made with (…).` | No key check is stored (deleted by hand, say) and no factor opens, so the key is the wrong one | As the row above |
+
+Every reason ends `See docs/deployment.md, The Key That Protects Authenticator Secrets.`
+**Until card 2769 lets an account set up a factor there is no factor to compare**, so only the
+key file's own faults can stop a start; the two mismatch refusals begin once accounts have
+enrolled.
+
+When it starts, four more things can be said:
+
+- **Factors are stored and no key check is**: the key's check is recorded in `settings`, once
+  any factor opens.
+- **Some factors do not open** with this key (sealed by another key, or copied to another
+  row or account): one line, `[ERROR] [AUTH] N second factor(s) could not be opened with this
+  server's MFA key: factor <id> of user <id>, …. None is counted as a wrong code; each account
+  can sign in with a recovery code, or have its two-step sign-in reset.`, naming the first 20
+  and then `, and N more`, at every start until they are dealt with.
+- **The two warnings** above: a key file readable by others, and a named key file inside the
+  database's folder.
+- **This start made the key** (under `development` or `test` only, never under the production
+  rules): one `[WARN] [STARTUP]` line on the console, whatever `LOG_LEVEL` is, `The server made
+  a new MFA key at <path>. Back it up apart from the database: no backup holds it, and without it
+  every second factor is lost. See docs/deployment.md, The Key That Protects Authenticator
+  Secrets.` It is said at the start that made the key, and not at later starts that read it.
+
+| Start-up warning (`[WARN] [STARTUP]`, console, whatever `LOG_LEVEL`) | When | Do |
+|-----------------------------------------------------------------------|------|----|
+| `The MFA key file <path> can be read by its group or by everyone. …` | POSIX, mode has any of `044` | `chmod 600`, unless it is a read-only secret mount |
+| `The MFA key file <path> is inside the database's directory: …` | A named key file in or beneath the database's folder | Move it off the database's volume |
+| `The server made a new MFA key at <path>. Back it up apart from the database: …` | This start made the key (development or test only) | Copy the key file somewhere safe, apart from the database and its backups |
+
+### If the Key Is Lost
+
+With factors stored and no key, or another key, the server does not start, and recovery codes
+cannot bring it back. Every second factor sealed with the lost key is gone; the accounts are
+not:
+
+1. **Stop the server**: `docker stop dumpfire`.
+2. **Back up the database** as it is, with the container stopped: see
+   [Taking and Returning the Cold Copy](#taking-and-returning-the-cold-copy).
+3. **Delete every second factor and the key check**, with the container still stopped, from a
+   container of the same image on the same volume:
+
+   ```bash
+   docker run --rm --network none -v dumpfire-data:/app/data dumpfire:latest node -e "
+   const db = require('better-sqlite3')('/app/data/dumpfire.db', { fileMustExist: true });
+   db.transaction(() => {
+     console.log(db.prepare('DELETE FROM mfa_factors').run().changes + ' second factor(s) deleted');
+     db.prepare('DELETE FROM settings WHERE key = ?').run('mfa_key_check');
+   })();
+   db.close();
+   "
+   ```
+
+4. **Install a new key**: make it as in [Making the Key](#making-the-key), at the path
+   `MFA_KEY_FILE` names, and back it up apart from the database.
+5. **Start the server.** With no factor stored there is nothing to compare, and it starts.
+6. **Every account that had a second factor now has none**, and needs its two-step sign-in
+   reset before it can sign in with one (card 2773's reset). Its recovery-code rows are hashes,
+   not sealed with the key, and are left as they are.
+
+Backups made before the loss hold factors sealed with the old key and the old key's check. Import
+Backup of one gives every account it matches to this server's (by id and creation time) this
+server's factors, which are now none, and leaves out the backup's factors for every other
+account, as `key differs` ("the backup was made under a different MFA key"); when it leaves any
+out, its answer names every account left with no factor, and why. Put back by hand as the
+database file, one holding factors stops the next start with the mismatch refusal until steps 3
+to 5 are done again.
+
+**A rebuilt server is the same as a lost key, for second factors, even with the key.** If the
+server itself is rebuilt (a new volume, a new installation) and a backup is imported, every
+account's factors in it are left out as unsealed, because the key that seals backups is the old
+installation's and in no backup (see [Backing It Up](#backing-it-up)). Mounting the right MFA
+key does not change that: every account needs its two-step sign-in reset (card 2773), and the
+restore names them, with the reason.
 
 ## Attachment Files
 
@@ -616,7 +853,10 @@ flowchart TD
     Stamps --> Check["Schema check: log any difference\nfrom the model at ERROR"]
     Newer2 -->|"Yes"| Check
     Check --> Users{"No user accounts, and a database\nat /app/dumpfire.db beside it?"}
-    Users -->|"No"| Listen["Schedulers start,\nand 'Listening on' is printed"]
+    Users -->|"No"| Key{"Does the MFA key load, and is it\nthe key the stored second factors\nwere made with? (card 2768)"}
+    Key -->|"Yes"| Listen["Schedulers start,\nand 'Listening on' is printed"]
+    Key -->|"No"| KeyRefuse["Write one CRITICAL AUTH line\non the console, naming the reason"]
+    KeyRefuse --> Exit
     Users -->|"Yes"| Both["Write one CRITICAL DB line\non the console, naming both files"]
     Both --> Exit
 
@@ -636,6 +876,8 @@ Before any of it, before the database is even opened (opening a path creates the
 The refusal is one `[CRITICAL] [DB]` line on the console, which begins `The server will not start.`, names each file with its size and when it was last written (so that you can tell which is live), says what to do with each, names anything it could not read, and never says to delete a file; the process exits with code 1 and nothing is created. The line cannot go to `system_logs`, which is in the database. On a workstation there is no `/app/data/dumpfire.db`, so a scratch file is never refused; on Windows the image's path is never looked at. See [A Failed Start](#a-failed-start).
 
 One more refusal comes after the migrations, before the server listens. If the database in use is the image's, has no user accounts, and a non-empty `/app/dumpfire.db` is beside it, the server **refuses to start** with one `[CRITICAL] [DB]` line naming both files with their sizes and times. That is a database the check above let through because one earlier start, by an older image or with a `DB_PATH` it did not guard, made it and wrote to it: with no users, set-up would be open to whoever comes first while the real database sits unused. A healthy installation has users, so this never stops one that is running on its own database with an old file beside it.
+
+And one more straight after it (card 2768): the key that protects authenticator secrets is read for the first time and checked (`checkMfaKeyAtStart`). Where the production rules apply, the server **refuses to start** when `MFA_KEY_FILE` is not set, names no file, or names a file that is not a key; and, once accounts have second factors, when the key is not the one they were made with. The refusal is one `[CRITICAL] [AUTH]` line on the console beginning `The server will not start.`, and the process exits with code 1. When it starts it may write one `[ERROR] [AUTH]` line naming factors that do not open, and a `[WARN] [STARTUP]` line for a key file others can read or one inside the database's folder. See [The Key That Protects Authenticator Secrets](#the-key-that-protects-authenticator-secrets).
 
 1. **Preparation.** The `system_logs` table is created if it is missing, and a `card_dependencies` table still in its original shape is converted to the current one.
 2. **Migration files.** Every `.sql` file in `/app/drizzle` whose name is not yet recorded in the `__drizzle_migrations` table is applied, in file-name order. Each file runs in its own transaction, together with the row that records it, so a file is either applied in full and recorded or not applied at all.
@@ -659,6 +901,10 @@ What stops a start, and what is only reported:
 | At any other path, on Linux, no database or an empty file, while `/app/data/dumpfire.db` has data (an empty `DB_PATH`, or a typo) | `[CRITICAL] [DB]`, on the console only, naming `/app/data/dumpfire.db` | **No**. Set `DB_PATH=/app/data/dumpfire.db`, or take the setting out |
 | A new database would be made, and a file or folder the check needed could not be read | `[CRITICAL] [DB]`, on the console only, naming what could not be read | **No**. Let the server read it, or set `DB_PATH` to where the database is |
 | After the migrations: the image's database has no user accounts, and a database file is at `/app/dumpfire.db` | `[CRITICAL] [DB]`, on the console only, naming both files | **No**. See [A Failed Start](#a-failed-start) |
+| Under the production rules, `MFA_KEY_FILE` is not set or names no file; or the file it names is not a regular file, is over 4096 bytes, cannot be read, can be written by its group or everyone, or does not hold 64 hexadecimal characters (card 2768) | `[CRITICAL] [AUTH] The server will not start. …`, on the console only, naming the path and the reason, never the file's contents | **No**. See [The Key That Protects Authenticator Secrets](#the-key-that-protects-authenticator-secrets) |
+| Second factors are stored and the key is not the one they were made with: `mfa_key_check` is another key's, or none is stored and no factor opens (card 2768) | `[CRITICAL] [AUTH] The server will not start. The MFA key does not match …` (or `None of the N second factor(s) opens …`), on the console only | **No**. Mount the right key, or follow [If the Key Is Lost](#if-the-key-is-lost) |
+| Some second factors do not open with this key (card 2768) | `[ERROR] [AUTH] N second factor(s) could not be opened with this server's MFA key: factor <id> of user <id>, …`, the first 20 named, at every start while it is so | Yes. None is counted as a wrong code; each such account needs its two-step sign-in reset |
+| The MFA key file can be read by its group or by everyone (Linux only), or a named key file is inside the database's folder (card 2768) | `[WARN] [STARTUP]`, at every start while it is so, on the console whatever `LOG_LEVEL` is | Yes. Expected for a Docker Swarm secret (`0444`); otherwise `chmod 600` the file, or move it off the volume |
 | A migration file fails, cannot be read, holds no SQL statement, or holds a statement the runner refuses (see [Changing the Schema](#changing-the-schema)) | `[CRITICAL] [DB]` | **No** |
 | `/app/drizzle` is missing or holds no `.sql` file (an image built without its migrations) | `[CRITICAL] [DB]` | **No** |
 | The `card_dependencies` conversion or a backfill fails | `[CRITICAL] [DB]` | **No** |
@@ -1185,6 +1431,12 @@ if (db.prepare('SELECT 1 FROM pragma_table_info(?) WHERE name = ?').get('cards',
 "
 }
 ```
+
+An image that brings migration 0065 or later (card 2768) does not start without `MFA_KEY_FILE`.
+Give `rehearse` the key as its extra options, `-v <key file>:/run/secrets/dumpfire_mfa_key:ro -e
+MFA_KEY_FILE=/run/secrets/dumpfire_mfa_key`. Once accounts have second factors, the copy holds
+production's key check, so only production's key starts it; a new key is refused, as it would
+be in production. See [The Key That Protects Authenticator Secrets](#the-key-that-protects-authenticator-secrets).
 
 Then, in order:
 
@@ -5303,6 +5555,85 @@ Run it with `sqlite3 -readonly <database>`. At most 200 move a sweep, so a count
 - 16 minutes after the start, where the count was above 0: one `[INFO] [UPLOADS] Moved N image(s) of cards closed more than 180 days ago to the trash` line, and the Audit page with Source DumpFire lists the `attachment_expired` entries. No `[ERROR] [UPLOADS]` line.
 
 **Going back to the previous image.** Nothing is done to the database. Images uploaded through a key stay attached and open in the card window, which then shows an image by its name and stored type alone. The rows retention deleted stay deleted; their files are in the trash for 30 days, where an Import Backup of an earlier backup puts back what its rows name. The older image answers the three attachment paths `404`, runs no retention, reads a `system` entry as the web application's, and answers `info.version` `1.6.0`.
+
+### The Update That Brings Migration 0065 and the MFA Key File
+
+**Card 2768 (build card B1 of card 2669).** Migration `0065_add_mfa_storage.sql`, additive only:
+four empty tables (`mfa_factors`, `mfa_recovery_codes`, `sign_in_challenges`,
+`enrolment_links`) and eleven `users` columns at their defaults (see
+[Data Model](data-model.md#two-step-sign-in-storage-migration-0065)). API v1 does not change.
+What changes:
+
+- **The server will not start without `MFA_KEY_FILE`.** The image runs under the production
+  rules, so the key file must be made, mounted and named before this image's first start: see
+  [The Key That Protects Authenticator Secrets](#the-key-that-protects-authenticator-secrets).
+  A deploy without it fails loudly, with exit code 1 and one `[CRITICAL] [AUTH]` line, never
+  silently.
+- **Nobody notices anything else.** Sign-in does not ask for a second factor yet (card 2769),
+  so no account has one, and nothing on any page changes.
+- **Backups and Export** leave out pending sign-ins and enrolment links, and hold second
+  factors only as ciphertext and recovery codes only as hashes, never the key. All are empty
+  until card 2769.
+- **Import Backup** restores second factors by their own rules, and names any account left with
+  none, once two-step sign-in is in use: see
+  [Restoring from Backup](admin-guide.md#restoring-from-backup).
+- **Setting a password, and a change of an account's email address or role**, end its pending
+  sign-ins and enrolment links, in the same transaction. Their answers and log lines are
+  unchanged.
+
+#### Before the deploy
+
+**Check H1: make the key and mount it.** On the Docker host:
+`openssl rand -hex 32 > /srv/dumpfire-secrets/dumpfire_mfa_key`, `chmod 600` it, copy it
+somewhere apart from the database backups (a password manager), mount it read-only into the
+container (`-v /srv/dumpfire-secrets/dumpfire_mfa_key:/run/secrets/dumpfire_mfa_key:ro`, or the
+Compose `secrets:` of [Docker Compose](#docker-compose)), and set
+`MFA_KEY_FILE=/run/secrets/dumpfire_mfa_key`. Expect `wc -c` to say 65 (64 hex characters and a
+newline) and `ls -l` mode `-rw-------`. It is a fault if it is any other size.
+
+**Check H2, on a staging copy only: the refusal.** Start the new image without `MFA_KEY_FILE`
+(the [rehearsal](#rehearsing-an-update-against-a-copy) helper `rehearse` does, unless given
+`-e MFA_KEY_FILE=…`). Expect exit code 1, `docker logs` ending with `[CRITICAL] [AUTH] The
+server will not start. MFA_KEY_FILE must be set in production…`, and no `Listening on`. It is a
+fault if it starts, or if the line names no variable. A rehearsal of the migration itself then
+needs the key: give `rehearse` `-v <key file>:/run/secrets/dumpfire_mfa_key:ro -e
+MFA_KEY_FILE=/run/secrets/dumpfire_mfa_key` as its extra options.
+
+#### What changes at the first start
+
+- **One line from the runner**: `Applied migration: 0065_add_mfa_storage.sql`. Nothing is
+  declared to the rehearsal and nothing is backfilled.
+- **No `[AUTH]` line** about the key: with no factor stored there is nothing to compare. A key
+  mounted as a Docker Swarm secret (`0444`) gives one `[WARN] [STARTUP]` line saying the file can
+  be read by others, at every start, which is expected for that mount.
+
+#### After the deploy
+
+`<c>` is the container name. `q` is a read-only query of the database:
+
+```bash
+q() { docker exec <c> node -e "const D=require('better-sqlite3');const d=new D('/app/data/dumpfire.db',{readonly:true});console.log(JSON.stringify(d.prepare(process.argv[1]).all()))" "$1"; }
+```
+
+| # | Do | Expect | A fault if |
+|---|----|--------|------------|
+| H3 | Start the new image with H1 in place; `docker logs <c>` | It starts (`Listening on`); no `[AUTH]` CRITICAL or ERROR line; no "inside the database's directory" WARN. A Swarm secret's one readable-by-others WARN is expected | A CRITICAL or ERROR line, or the inside-directory WARN |
+| H4 | `q "SELECT hash FROM __drizzle_migrations WHERE hash LIKE '0065%'"`, then `q "SELECT (SELECT COUNT(*) FROM mfa_factors) f, (SELECT COUNT(*) FROM mfa_recovery_codes) r, (SELECT COUNT(*) FROM sign_in_challenges) c, (SELECT COUNT(*) FROM enrolment_links) l, (SELECT COUNT(*) FROM settings WHERE key='mfa_key_check') k"` | One row, `0065_add_mfa_storage.sql`; all five counts 0 | 0065 missing, or any count above 0 before card 2769 |
+| H5 | `q "SELECT COUNT(*) n FROM users WHERE mfa_known_wrong<>0 OR mfa_other_wrong<>0 OR failed_codes_since_sign_in<>0 OR last_sign_in_at IS NOT NULL"` | `n` 0 | Above 0 |
+| H6 | On staging only: mount the key file into the database's folder, set `MFA_KEY_FILE=/app/data/mfa.key`, and restart | It starts, with one `[WARN] [STARTUP]` line on the console naming the key file as inside the database's directory | No WARN |
+| H7 | Sign in; change your own password and your own email address; as an administrator reset another account's password and change its role | Each works as before; their `[AUTH]` lines on the Logs page read as before | Any change in what is answered or logged |
+| H8 | Admin → Scheduled Backups → **Run Now**; and **Export Backup** | Both succeed. Their second-factor contents mean something only once card 2769 lets accounts enrol: then both hold `mfa_factors` rows as ciphertext, and neither holds the key | Either fails |
+| H9 | On staging: Admin → Backup & Restore → **Import Backup** of the export from H8 | The report has no line about second factors (nobody has enrolled) and says everybody was signed out | A second-factor line, or a failed restore |
+
+#### Going back to the previous image
+
+Nothing is done to the database. The older image keeps 0065's tables and columns: it drops
+nothing, its schema check reports them at every start (`[ERROR] [DB]`, expected) and does not act
+on them, and it ignores `MFA_KEY_FILE`. Its backups carry any pending sign-in and enrolment link
+rows, and its Import Backup copies the four tables as any other table, ignoring card 2768's
+restore rules. Before card 2769 every one of them is empty, so none of that holds anything.
+**Coming forward again**, 0065 is already recorded and is not run, and the key must still be the
+one mounted before. Keep the key file and its mount in place while going back and forth.
 
 ## Changing the Schema
 

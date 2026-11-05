@@ -41,9 +41,30 @@ export const users = sqliteTable('users', {
 	emoji: text('emoji').default('👤'),
 	role: text('role').notNull().default('user'), // 'superadmin' | 'admin' | 'user'
 	notificationPrefs: text('notification_prefs').default('{}'),
+	// Never written after the insert: with `id`, which is never reused, it
+	// names one account for its whole life, which is how a restore matches an
+	// account of a backup to this server's (card 2768).
 	createdAt: text('created_at')
 		.notNull()
-		.default(sql`(datetime('now'))`)
+		.default(sql`(datetime('now'))`),
+	// Two-step sign-in (migration 0065, card 2768; written from card 2769). The
+	// consecutive wrong codes in each lane, the remembered browser's and every
+	// other, and when each lane's pause ends; the same for recovery codes. A
+	// restore sets every one of them back to 0 or NULL.
+	mfaKnownWrong: integer('mfa_known_wrong').notNull().default(0),
+	mfaOtherWrong: integer('mfa_other_wrong').notNull().default(0),
+	mfaKnownResumesAt: text('mfa_known_resumes_at'),
+	mfaOtherResumesAt: text('mfa_other_resumes_at'),
+	mfaRecoveryWrong: integer('mfa_recovery_wrong').notNull().default(0),
+	mfaRecoveryResumesAt: text('mfa_recovery_resumes_at'),
+	// The last completed sign-in, when and from where, and the wrong codes
+	// sent since it; the banner that tells the owner someone else holds the
+	// password, and when it was last raised (at most one an hour).
+	lastSignInAt: text('last_sign_in_at'),
+	lastSignInFrom: text('last_sign_in_from'),
+	failedCodesSinceSignIn: integer('failed_codes_since_sign_in').notNull().default(0),
+	securityBanner: text('security_banner'), // null, or the reason it is shown
+	securityBannerAt: text('security_banner_at')
 });
 
 export const sessions = sqliteTable('sessions', {
@@ -545,6 +566,104 @@ export const inviteTokens = sqliteTable('invite_tokens', {
 }, (table) => [
 	index('idx_invite_tokens_user_id').on(table.userId)
 ]);
+
+// ─── Two-Step Sign-In ────────────────────────────────────────────────────────
+// The second factor of signing in (migration 0065, card 2768). Every table
+// here belongs to one account and goes with it (CASCADE). A token is kept only
+// as its SHA-256 hash and a recovery code only as an account-bound hash; an
+// authenticator's secret only as AES-256-GCM ciphertext under a key that is
+// kept in a file outside the database and outside every backup
+// (src/lib/server/mfa-key.ts). No CHECK on the kinds and stages: the model
+// check cannot see one, and their validity is the code's.
+
+// A link that lets one account set up its authenticator (card 2769 issues and
+// takes them). Ended with the account's pending sign-ins on a password set or
+// an email or role change; never in a backup and never restored.
+export const enrolmentLinks = sqliteTable('enrolment_links', {
+	tokenHash: text('token_hash').primaryKey(), // SHA-256 hex of the token sent
+	userId: integer('user_id')
+		.notNull()
+		.references(() => users.id, { onDelete: 'cascade' }),
+	issuedBy: text('issued_by').notNull(),
+	createdAt: text('created_at')
+		.notNull()
+		.default(sql`(datetime('now'))`),
+	expiresAt: text('expires_at').notNull()
+}, (table) => [
+	index('idx_enrolment_links_user_id').on(table.userId)
+]);
+
+// An account's authenticators. `secret_ciphertext` is base64 of the
+// ciphertext and its 16-byte GCM tag, `secret_nonce` base64 of the 12 random
+// bytes it was sealed with, and `key_id` names the key that sealed it. The
+// sealing binds `factor_uid` and the user id, so a row moved to another
+// factor or account does not open. `last_step` is the last time step spent,
+// so a code is never accepted twice.
+export const mfaFactors = sqliteTable('mfa_factors', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	factorUid: text('factor_uid').notNull().unique(), // 128-bit random hex
+	userId: integer('user_id')
+		.notNull()
+		.references(() => users.id, { onDelete: 'cascade' }),
+	kind: text('kind').notNull(), // 'totp'
+	label: text('label').notNull(),
+	keyId: text('key_id').notNull(),
+	secretCiphertext: text('secret_ciphertext').notNull(),
+	secretNonce: text('secret_nonce').notNull(),
+	lastStep: integer('last_step'),
+	createdAt: text('created_at')
+		.notNull()
+		.default(sql`(datetime('now'))`),
+	lastUsedAt: text('last_used_at')
+}, (table) => [
+	index('idx_mfa_factors_user_id').on(table.userId)
+]);
+
+// An account's single-use recovery codes, each kept only as the SHA-256 hex
+// of the code bound to the account's id; `used_at` is set when it is spent.
+export const mfaRecoveryCodes = sqliteTable('mfa_recovery_codes', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	userId: integer('user_id')
+		.notNull()
+		.references(() => users.id, { onDelete: 'cascade' }),
+	codeHash: text('code_hash').notNull().unique(),
+	usedAt: text('used_at'),
+	createdAt: text('created_at')
+		.notNull()
+		.default(sql`(datetime('now'))`)
+}, (table) => [
+	index('idx_mfa_recovery_codes_user_id').on(table.userId)
+]);
+
+// A sign-in waiting for its second factor (card 2769 issues and takes them).
+// Ended on a password set or an email or role change; never in a backup and
+// never restored. The enrolment columns hold a secret being set up, sealed as
+// a factor's is.
+export const signInChallenges = sqliteTable('sign_in_challenges', {
+	tokenHash: text('token_hash').primaryKey(), // SHA-256 hex of the token sent
+	shortId: text('short_id').notNull(),
+	userId: integer('user_id')
+		.notNull()
+		.references(() => users.id, { onDelete: 'cascade' }),
+	purpose: text('purpose').notNull(),
+	stage: text('stage'),
+	lane: text('lane').notNull(),
+	passwordHash: text('password_hash').notNull(),
+	keyId: text('key_id'),
+	enrolCiphertext: text('enrol_ciphertext'),
+	enrolNonce: text('enrol_nonce'),
+	rememberedNonce: text('remembered_nonce'),
+	wrongCount: integer('wrong_count').notNull().default(0),
+	createdAt: text('created_at')
+		.notNull()
+		.default(sql`(datetime('now'))`),
+	expiresAt: text('expires_at').notNull()
+}, (table) => [
+	index('idx_sign_in_challenges_user_id').on(table.userId)
+]);
+
+export type MfaFactor = typeof mfaFactors.$inferSelect;
+export type MfaRecoveryCode = typeof mfaRecoveryCodes.$inferSelect;
 
 // ─── Type Exports ────────────────────────────────────────────────────────────
 

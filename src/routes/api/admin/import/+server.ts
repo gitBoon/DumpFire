@@ -48,6 +48,15 @@
  * holds, and the key the request form signs with is not brought in. The
  * answer and the log line say how many links were replaced.
  *
+ * Second factors and recovery codes are restored by their own rules (card
+ * 2768; `restoreMfaRows`). Once two-step sign-in is in use, every account
+ * left with no factor is named in one sentence, in the answer and its
+ * `mfaWithoutFactor`, and at WARN: each needs its two-step sign-in reset
+ * before it can sign in. The same sentence says why any account's factors in
+ * the backup were left out, and, when any account's rows were taken from the
+ * backup, that their recovery codes are as they were then. Absent when there
+ * is nothing to say.
+ *
  * A backup taken before card 2141 can bring back a board beneath one of its
  * own cards. Once the restore is committed, the line the server writes about
  * such a board at every start is written at once (`reportBoardLoops`).
@@ -105,6 +114,7 @@ import {
 	secretsToEnterSentence,
 	type SecretsAccount
 } from '$lib/server/backup-secrets';
+import { mfaWithoutFactorSentence } from '$lib/server/mfa-backup';
 
 const log = createLogger('IMPORT');
 
@@ -459,8 +469,12 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 			// What the removal above took is said after them (card 2411).
 			const secretsKept = secretsKeptSentence(secrets.kept);
 			const secretsToEnter = secretsToEnterSentence(secrets.toEnter, false, result.unsealed);
+			// The accounts left with no second factor, once two-step sign-in is
+			// in use (card 2768): each needs its reset before it can sign in.
+			// Absent when there are none, so a restore without reads as it did.
+			const mfaLine = mfaWithoutFactorSentence(result.mfa);
 			const ending = (text: string) =>
-				[linksReplaced, decisionLinks, putBack, secretsKept, secretsToEnter, settingsRemoved, workingCopy].reduce<string>(
+				[linksReplaced, decisionLinks, putBack, secretsKept, secretsToEnter, mfaLine, settingsRemoved, workingCopy].reduce<string>(
 					(said, sentence) => (sentence ? endingWith(said, sentence) : said),
 					text
 				);
@@ -482,6 +496,7 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 				workingCopy: workingCopy ?? undefined,
 				secretsKept: secretsKept ?? undefined,
 				secretsToEnter: secretsToEnter ?? undefined,
+				mfaWithoutFactor: mfaLine ?? undefined,
 				settingsRemoved: settingsRemoved ?? undefined,
 				superadmins
 			};
@@ -495,6 +510,9 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 			// it stands out on the log page beside the line every start writes
 			// while it is so, and is not lost among the INFO lines.
 			if (secretsToEnter) log.warn(secretsToEnter);
+			// So are the accounts left with no second factor (card 2768): none
+			// of them can sign in until its two-step sign-in is reset.
+			if (mfaLine) log.warn(mfaLine);
 			// A file that failed a check made before its seal (the second
 			// review's B1) is said once, at WARN, with the check it failed.
 			if (result.unsealed?.check) log.warn(failedCheckSentence(result.unsealed.check));
@@ -580,12 +598,15 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 				const decisionLinks = done && done.decisionLinksCleared > 0 ? decisionLinksSentence(done.decisionLinksCleared) : null;
 				const secretsKept = done ? secretsKeptSentence(done.secrets.kept) : null;
 				const secretsToEnter = done ? secretsToEnterSentence(done.secrets.toEnter, false, done.unsealed) : null;
-				const message = [linksReplaced, decisionLinks, secretsKept, secretsToEnter].reduce<string>(
+				// The accounts left with no second factor (card 2768), as above.
+				const mfaLine = done ? mfaWithoutFactorSentence(done.mfa) : null;
+				const message = [linksReplaced, decisionLinks, secretsKept, secretsToEnter, mfaLine].reduce<string>(
 					(said, sentence) => (sentence ? endingWith(said, sentence) : said),
 					err.message
 				);
 				log.critical(`Database restore: ${message}`, errors.length > 0 ? { errors } : undefined);
 				if (secretsToEnter) log.warn(secretsToEnter);
+				if (mfaLine) log.warn(mfaLine);
 				if (done?.unsealed?.check) log.warn(failedCheckSentence(done.unsealed.check));
 				return json(
 					{
@@ -595,7 +616,8 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 						requestLinksReplaced: done?.requestLinksReplaced,
 						decisionLinksCleared: done?.decisionLinksCleared,
 						secretsKept: secretsKept ?? undefined,
-						secretsToEnter: secretsToEnter ?? undefined
+						secretsToEnter: secretsToEnter ?? undefined,
+						mfaWithoutFactor: mfaLine ?? undefined
 					},
 					{ status: 500 }
 				);

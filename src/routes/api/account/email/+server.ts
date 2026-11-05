@@ -6,6 +6,7 @@ import { eq } from 'drizzle-orm';
 import { SESSION_COOKIE_NAME, checkCurrentPassword, refuseWrongPassword, whilePasswordHolds } from '$lib/server/auth';
 import { endUnusedInvites } from '$lib/server/invites';
 import { createLogger } from '$lib/server/logger';
+import { endPendingSignIns } from '$lib/server/mfa-store';
 import { readBody, readEmail, readText } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
@@ -18,9 +19,10 @@ const log = createLogger('AUTH');
  *
  * An invite is mailed to the address the account has when it is sent, so a
  * change of address ends every invite of the account not yet used: the mail
- * may be in a mailbox that is no longer the account's. The address and the
- * invites change in one transaction. Sessions and API keys are not ended: an
- * email change is not a password change.
+ * may be in a mailbox that is no longer the account's. So does every pending
+ * sign-in and enrolment link of the account (card 2768). The address, the
+ * invites and those change in one transaction. Sessions and API keys are not
+ * ended: an email change is not a password change.
  */
 export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 	// The wrong passwords are counted against the session that sent them,
@@ -80,10 +82,12 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 			}
 
 			// The same address in another case is not a change: an address is
-			// stored in lower case. The invites end before the address is written,
-			// as on the users route.
+			// stored in lower case. The invites, the pending sign-ins and the
+			// enrolment links end before the address is written, as on the users
+			// route.
 			const changed = email !== current.email.toLowerCase();
 			const invitesEnded = changed ? endUnusedInvites(userId) : 0;
+			if (changed) endPendingSignIns(userId);
 
 			db.update(users).set({ email }).where(eq(users.id, userId)).run();
 

@@ -11,6 +11,7 @@ import { whilePasswordHolds, type SessionUser } from '$lib/server/auth';
 import { confirmStepUp } from '$lib/server/step-up';
 import { writeAs } from '$lib/server/write-as';
 import { endUnusedInvites } from '$lib/server/invites';
+import { endPendingSignIns } from '$lib/server/mfa-store';
 import { anyRemoved, removeSettingsSetBy, settingsHeldBy } from '$lib/server/setting-setters';
 import { mayManageAccount } from '$lib/account-rule';
 import { createLogger } from '$lib/server/logger';
@@ -175,8 +176,10 @@ export const PUT: RequestHandler = async ({ params, request, locals, cookies }) 
 		writeAs(locals, (caller) => {
 			const { actor, target, updates, changed } = refusals(caller);
 
-			// The invites end before the account is written.
+			// The invites, the pending sign-ins and the enrolment links (card
+			// 2768) end before the account is written.
 			const invitesEnded = changed.length > 0 ? endUnusedInvites(target.id) : 0;
+			if (changed.length > 0) endPendingSignIns(target.id);
 			if (changed.length > 0) {
 				afterCommit(() =>
 					log.info(

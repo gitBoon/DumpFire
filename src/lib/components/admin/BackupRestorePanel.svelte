@@ -64,6 +64,8 @@
 		secretsKept?: string;
 		/** The secrets a backup does not hold that are to be entered again, and where (card 2169). */
 		secretsToEnter?: string;
+		/** The accounts left with no second factor, each needing its two-step sign-in reset (card 2768). */
+		mfaWithoutFactor?: string;
 		/** The settings removed after the restore, as their setter is not an administrator in it (card 2411). */
 		settingsRemoved?: string;
 		/** Attachment files the import had back from the uploads trash, when there were any. */
@@ -95,6 +97,7 @@
 		workingCopy?: string;
 		secretsKept?: string;
 		secretsToEnter?: string;
+		mfaWithoutFactor?: string;
 		settingsRemoved?: string;
 		attachmentsPutBack?: number;
 		requestLinksReplaced?: number;
@@ -140,6 +143,9 @@
 			// there is nothing to say, as for a backup made before that card.
 			secretsKept: result.secretsKept,
 			secretsToEnter: result.secretsToEnter,
+			// The accounts left with no second factor once two-step sign-in is
+			// in use (card 2768): the server's sentence, absent when there are none.
+			mfaWithoutFactor: result.mfaWithoutFactor,
 			// What went after the restore, mail settings above all, whose going
 			// stops invites and password resets (card 2411).
 			settingsRemoved: result.settingsRemoved,
@@ -520,6 +526,9 @@
 			{/if}
 			{#if importReport.secretsToEnter}
 				<p class="import-report-detail">{importReport.secretsToEnter}</p>
+			{/if}
+			{#if importReport.mfaWithoutFactor}
+				<p class="import-report-detail">{importReport.mfaWithoutFactor}</p>
 			{/if}
 			{#if importReport.settingsRemoved}
 				<p class="import-report-detail">{importReport.settingsRemoved}</p>

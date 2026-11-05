@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.71
+version: 1.72
 status: As-Built
 date: 2026-11-05
 tags:
@@ -32,7 +32,11 @@ tags:
   - decision-reminders
   - migration-0064
   - people-changes
-description: "Complete database schema documentation with ER diagram, table descriptions, relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), and how migrations and schema reconciliation bring every database to the model"
+  - migration-0065
+  - two-step-sign-in
+  - mfa
+  - recovery-codes
+description: "Complete database schema documentation with ER diagram, table descriptions, relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), and how migrations and schema reconciliation bring every database to the model"
 ---
 
 # DumpFire Data Model
@@ -52,6 +56,7 @@ erDiagram
         text role
         text notification_prefs
         text created_at
+        int mfa_known_wrong "0065, and ten more two-step sign-in columns: see below"
     }
 
     sessions {
@@ -380,6 +385,10 @@ erDiagram
 
     users ||--o{ setting_setters : "put it there"
     users ||--o{ sessions : "has"
+    users ||--o{ mfa_factors : "second factors (0065)"
+    users ||--o{ mfa_recovery_codes : "recovery codes (0065)"
+    users ||--o{ sign_in_challenges : "pending sign-ins (0065)"
+    users ||--o{ enrolment_links : "may enrol with (0065)"
     users ||--o{ api_keys : "owns"
     users ||--o{ team_members : "belongs to"
     teams ||--o{ team_members : "has"
@@ -1206,6 +1215,117 @@ flowchart TD
     Flags --> Write["decisions: working_content<br/>(with optionIds, lastLabel),<br/>title, closes_at, vote_mode on a draft,<br/>updated_at"]
 ```
 
+### Two-step sign-in storage (migration 0065)
+
+Where two-step sign-in keeps an account's second factors (card 2768, migration
+`0065_add_mfa_storage.sql`, 2026-11-05). This is storage only: **sign-in does not ask for a
+second factor yet.** Nothing in the application writes a factor, a recovery code, a pending
+sign-in or an enrolment link until card 2769 lets an account set one up, so after the update
+every one of the four tables is empty and every new `users` column is at its default. The
+code that writes and reads them is `src/lib/server/mfa-store.ts`; how the secrets are
+protected is in
+[Second-Factor Secrets at Rest](authentication-security.md#second-factor-secrets-at-rest-card-2768).
+
+```mermaid
+erDiagram
+    users ||--o{ mfa_factors : "has"
+    users ||--o{ mfa_recovery_codes : "has"
+    users ||--o{ sign_in_challenges : "pending sign-ins (card 2769)"
+    users ||--o{ enrolment_links : "may enrol with (card 2769)"
+    users {
+        int id PK "never reused; with created_at, what a restore matches on"
+        text created_at "never written after the insert"
+        int mfa_known_wrong "NOT NULL DEFAULT 0: consecutive wrong codes, remembered browser"
+        int mfa_other_wrong "NOT NULL DEFAULT 0: consecutive wrong codes, any other browser"
+        text mfa_known_resumes_at "when the remembered browser's pause ends"
+        text mfa_other_resumes_at "when the other browsers' pause ends"
+        int mfa_recovery_wrong "NOT NULL DEFAULT 0: consecutive wrong recovery codes"
+        text mfa_recovery_resumes_at "when the recovery-code pause ends"
+        text last_sign_in_at "the last completed sign-in"
+        text last_sign_in_from "where it came from"
+        int failed_codes_since_sign_in "NOT NULL DEFAULT 0"
+        text security_banner "NULL, or why the banner is shown"
+        text security_banner_at "when it was last raised"
+    }
+    mfa_factors {
+        int id PK "AUTOINCREMENT"
+        text factor_uid UK "128 random bits as hex, bound into the sealing"
+        int user_id FK "CASCADE, indexed"
+        text kind "totp"
+        text label
+        text key_id "16 hex: the key that sealed it"
+        text secret_ciphertext "base64 of AES-256-GCM ciphertext and its 16-byte tag"
+        text secret_nonce "base64 of 12 random bytes, new for every seal"
+        int last_step "the last time step spent: the replay guard"
+        text created_at
+        text last_used_at
+    }
+    mfa_recovery_codes {
+        int id PK "AUTOINCREMENT"
+        int user_id FK "CASCADE, indexed"
+        text code_hash UK "SHA-256 hex of the code bound to the user id"
+        text used_at "NULL until spent"
+        text created_at
+    }
+    sign_in_challenges {
+        text token_hash PK "SHA-256 hex of the token sent"
+        text short_id
+        int user_id FK "CASCADE, indexed"
+        text purpose
+        text stage
+        text lane
+        text password_hash
+        text key_id
+        text enrol_ciphertext "a secret being set up, sealed as a factor is"
+        text enrol_nonce
+        text remembered_nonce
+        int wrong_count "NOT NULL DEFAULT 0"
+        text created_at
+        text expires_at
+    }
+    enrolment_links {
+        text token_hash PK "SHA-256 hex of the token sent"
+        int user_id FK "CASCADE, indexed"
+        text issued_by
+        text created_at
+        text expires_at
+    }
+```
+
+| Table or column | What is stored | How it is protected |
+|-----------------|----------------|---------------------|
+| `mfa_factors` | Each authenticator app an account has set up: its secret (20 bytes), the key that sealed it, and the last time step spent | The secret only as AES-256-GCM ciphertext (`secret_ciphertext`, the tag after the ciphertext) with its nonce (`secret_nonce`), under a key derived from a file outside the database and outside every backup (`MFA_KEY_FILE`). The sealing binds the user id and `factor_uid`, so a row copied to another factor or account does not open. Never the secret, never the key |
+| `mfa_recovery_codes` | Each account's ten single-use recovery codes | Only `SHA-256("dumpfire-recovery-v1:<user id>:<code>")` as hex, the code in its 16-character canonical form, so a hash row moved to another account never matches. Never the code |
+| `sign_in_challenges` | A sign-in that has passed the password and waits for its second factor (card 2769) | The token only as its SHA-256 hash; a secret being set up only sealed, as a factor's is, bound to the account and the token's hash |
+| `enrolment_links` | A link that lets one account set up its authenticator (card 2769) | The token only as its SHA-256 hash |
+| `settings.mfa_key_check` | A row, no schema change: HMAC-SHA256 of the key file's bytes with a fixed label, as hex | Says which key the factors were sealed with, so a server started with another key refuses to start while any factor exists (with none there is nothing to compare, and it starts). Not the key, and no key can be worked out from it. Written with the first factor |
+| The eleven `users` columns | Each lane's consecutive wrong codes and when its pause ends (the remembered browser's, every other browser's, and recovery codes'), the last sign-in and where it came from, the wrong codes since, and the banner that tells the owner someone else holds the password, with when it was last raised | Nothing secret. Every moment is a `*_at` column, so the start-up conversion and the after-each timestamp check find it (13 new moments in all: eight in the four tables, five on `users`) |
+
+- **Indexes.** Two unique indexes, `mfa_factors_factor_uid_unique` and
+  `mfa_recovery_codes_code_hash_unique`, and one on each table's `user_id`:
+  `idx_enrolment_links_user_id`, `idx_mfa_factors_user_id`, `idx_mfa_recovery_codes_user_id`,
+  `idx_sign_in_challenges_user_id`, as every foreign key column leads an index (card 2106).
+- **Cascades.** Every key to `users` is `ON DELETE CASCADE`: deleting an account deletes its
+  factors, codes, pending sign-ins and enrolment links. None of the four is a reconciled
+  table and none has a `CHECK` (the model comparison cannot see one; which values are valid
+  is the code's).
+- **What ends them.** Setting a password (`endAccountAccess`), and a change of the account's
+  email address or role, delete the account's pending sign-ins and enrolment links
+  (`endPendingSignIns`), in the transaction that makes the change. Its factors and recovery
+  codes stay.
+- **Spending.** A time step is spent by one `UPDATE mfa_factors SET last_step = ?,
+  last_used_at = ? WHERE id = ? AND (last_step IS NULL OR last_step < ?)`, and a recovery code
+  by one `UPDATE mfa_recovery_codes SET used_at = ? WHERE user_id = ? AND code_hash = ? AND
+  used_at IS NULL`, each with nothing read before it, so two requests with the same code
+  cannot both spend it.
+- **Backups and restores.** A backup, and so the export, keeps `mfa_factors` (ciphertext),
+  `mfa_recovery_codes` (hashes) and `mfa_key_check`, and holds no `sign_in_challenges` or
+  `enrolment_links` row. A restore copies none of the four tables and not the key check: it
+  puts the factors and codes back by their own rules (`restoreMfaRows`, in
+  `src/lib/server/mfa-backup.ts`), matching an account on its `id` and `created_at` (compared
+  as moments, and an unreadable one matching nothing), never its username. See
+  [What a Backup Holds](authentication-security.md#what-a-backup-holds-and-what-a-restore-brings-in).
+
 ## Cascade Behaviour
 
 | Parent | Child | On Delete |
@@ -1219,6 +1339,7 @@ flowchart TD
 | `users` | `report_schedules` | CASCADE |
 | `users` | `board_favourites` | CASCADE |
 | `users` | `invite_tokens` | CASCADE |
+| `users` | `mfa_factors`, `mfa_recovery_codes`, `sign_in_challenges`, `enrolment_links` (migration 0065, card 2768) | CASCADE |
 | `users` | `card_attachments.uploaded_by`, `card_templates.created_by`, `milestones.created_by`, `work_dependencies.created_by_user_id`, `card_dependencies.created_by_user_id` | **none — set to NULL in code** |
 | `boards` | `columns` | CASCADE |
 | `boards` | `board_members` | CASCADE |
@@ -1493,7 +1614,7 @@ flowchart LR
     Address --> Hooks["UPDATE webhooks SET active = 0<br/>WHERE set_by = the user AND active = 1"]
     Hooks --> Settings["removeSettingsSetBy: smtp_* rows,<br/>app_url, their destinations<br/>(card 2397)"]
     Settings --> Del["DELETE FROM users"]
-    Del --> Cascade["Deleted by cascade:<br/>sessions, api_keys, report_schedules,<br/>card_comments, card_assignees,<br/>team_members, board_members,<br/>board_favourites, invite_tokens,<br/>setting_setters"]
+    Del --> Cascade["Deleted by cascade:<br/>sessions, api_keys, report_schedules,<br/>card_comments, card_assignees,<br/>team_members, board_members,<br/>board_favourites, invite_tokens,<br/>setting_setters, mfa_factors,<br/>mfa_recovery_codes, sign_in_challenges,<br/>enrolment_links"]
     Del --> Null["Set to NULL by the key:<br/>boards.created_by, cards.created_by,<br/>activity_log.user_id,<br/>task_requests.requester_user_id and resolved_by,<br/>token_usage.reported_by_user_id,<br/>webhooks.set_by"]
     Del --> Stay["Not touched:<br/>user_xp (keyed by name),<br/>task_requests addressed to the user,<br/>activity_log.user_name"]
 ```
@@ -1505,6 +1626,7 @@ flowchart LR
 | Their comments, "Unblocked" notices written in their name among them | Deleted |
 | Their API keys and report schedules | Deleted |
 | Their sessions, team and board memberships, favourites, invites and card assignments | Deleted |
+| Their second factors, recovery codes, pending sign-ins and enrolment links (migration 0065) | Deleted, by the cascade |
 | Boards and cards they created; activity entries they made | Kept. The link to the user is cleared; an activity entry keeps the name it was written with |
 | Task requests addressed to them | Kept, with the same target. Only an administrator can then accept, reject or reply |
 | Task requests they made | Kept, with `requester_user_id` NULL and `requester_email` the account's email at the delete, where mail about them goes from then on (card 2171) |
@@ -2256,7 +2378,8 @@ of about zero.
     a moment in the stored form; one ending in `_date` (and `daily_snapshots.date`) is a day,
     `YYYY-MM-DD`, never compared with a moment. `schema.ts` says so in its header.
     `timestampColumns(database)` in `src/lib/server/db/timestamps.ts` finds every such
-    TEXT column by the rule (37 on the model), leaving out SQLite's own tables,
+    TEXT column by the rule (76 on the model since migration 0065, whose 13 are among them;
+    `tests/timestamps.test.ts` pins the count), leaving out SQLite's own tables,
     `__drizzle_migrations` and `__new_*` leftovers of a rebuild.
   - **A wall-clock time is not a moment** (card 2159). `report_schedules.time_of_day` is
     `HH:MM` on a clock, and `report_schedules.time_zone` the IANA zone it is read in
@@ -2876,6 +2999,35 @@ unit test fails on any file from 0053 on that loses rows undeclared: a `DELETE`,
 `UPDATE OR REPLACE`, or a trigger whose body deletes or replaces (a `DROP INDEX` loses no
 row, and is not one). A change that would need repeating after a restore is a backfill or a runner step, not a
 one-off.
+
+**Migration 0065 is additive only** (`0065_add_mfa_storage.sql`, card 2768, 2026-11-05). It
+creates the four tables of two-step sign-in, their two unique indexes and four `user_id`
+indexes, and adds eleven columns to `users` with `ALTER TABLE users ADD COLUMN`, one
+statement per block. It changes no value a row held: the tables start empty, and each
+counter column has the constant default 0 and every other new column is NULL, which is what
+an account that has never used a second factor has. So nothing is declared for it in
+`tests/rehearsal/one-offs.ts`. `users` is not one of the six reconciled tables, so this file
+alone changes it, as 0062 alone changed `sessions`. Its header says, besides what each table
+holds and who writes it:
+
+- **No `IF NOT EXISTS`**, as 0063: a table or index of these names already in a database is
+  one this file did not make, and the file fails rather than record itself over it.
+- **What people see:** nothing. No account has a second factor until card 2769 lets one be
+  set up.
+- **Runs once.** The runner records it by name; it would not survive a second run, since
+  "already exists" and "duplicate column" are tolerated only in a fixed list of older files.
+- **A backup made before this file** holds no MFA table and restores as any other: an account
+  that is still here keeps this server's second factors and recovery codes, and one that is
+  not has none and is named by the restore once two-step sign-in is in use.
+- **Going back to an older image** keeps the tables and the columns. The older build drops
+  nothing, its model check reports them at every start and does not act on them, its backups
+  carry the pending sign-in and enrolment link rows, and its restore copies the MFA tables as
+  any other table, so a restore made on the older image ignores card 2768's rules. Going
+  forward again, 0065 is already recorded and is not run.
+
+The image that brings 0065 also refuses to start in production until `MFA_KEY_FILE` names the
+key file: see
+[The Key That Protects Authenticator Secrets](deployment.md#the-key-that-protects-authenticator-secrets).
 
 ### Two Lineages Share 0001 to 0005
 

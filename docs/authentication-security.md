@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.107
+version: 1.108
 status: As-Built
 date: 2026-11-05
 tags:
@@ -53,7 +53,14 @@ tags:
   - untrusted
   - images
   - image-check
-description: "Deep-dive into DumpFire's authentication system, what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the twenty-eight destructive actions that ask for the current password again (step-up), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert)"
+  - mfa
+  - two-step-sign-in
+  - totp
+  - recovery-codes
+  - aes-256-gcm
+  - encryption-at-rest
+  - mfa-key-file
+description: "Deep-dive into DumpFire's authentication system, what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the twenty-eight destructive actions that ask for the current password again (step-up), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them)"
 ---
 
 # Authentication & Security
@@ -1869,6 +1876,191 @@ hold the office's sign-ins for up to 15 minutes. Browsers remembered for an acco
 
 Covered by `tests/gate.test.ts` ("counting an address").
 
+## Second-Factor Secrets at Rest (Card 2768)
+
+Two-step sign-in will ask, after the password, for a code from an authenticator app or for one
+of ten single-use recovery codes. Card 2768 builds where those are kept, and nothing that uses
+them: **sign-in does not ask for a second factor yet**. Card 2769 adds the sign-in step and the
+setting up of an authenticator; until it does, no account has a factor, and every table below is
+empty. What card 2768 does already do at every start is load and check the key, and what it
+already changes is what a password set or an email or role change ends, and what backups, the
+export and a restore do with these rows.
+
+```mermaid
+flowchart TD
+    subgraph Host["Host, outside the database volume"]
+        KF["Key file named by MFA_KEY_FILE<br/>64 hex characters = 32 bytes"]
+    end
+    subgraph Key["mfa-key.ts"]
+        LOAD["loadMfaKey / mfaKeyLoad<br/>read once, at the first start-up call;<br/>never at import"]
+        DER["keyFromBytes"]
+        AES["AES-256 key<br/>HKDF-SHA256"]
+        KID["key id<br/>first 16 hex of HMAC-SHA256"]
+        CHK["key check<br/>HMAC-SHA256 hex"]
+        VERDICT["mfaStartVerdict"]
+    end
+    subgraph Crypto["mfa-crypto.ts, pure"]
+        SEAL["sealWith<br/>AES-256-GCM, 12-byte random nonce,<br/>16-byte tag, bound to the AAD"]
+        OPEN["openSealed<br/>any failure is null"]
+    end
+    subgraph Store["mfa-store.ts"]
+        ADD["addTotpFactor"]
+        GET["factorSecret<br/>usable, or no key / other key / does not open"]
+        SPEND["spendStep, spendRecoveryCode<br/>one conditional UPDATE each"]
+        CODES["storeRecoveryCodes"]
+        END["endPendingSignIns"]
+    end
+    subgraph DB["SQLite"]
+        F[("mfa_factors<br/>ciphertext, nonce, key_id, last_step")]
+        R[("mfa_recovery_codes<br/>account-bound SHA-256 hashes")]
+        C[("sign_in_challenges, enrolment_links<br/>token hashes")]
+        S[("settings.mfa_key_check")]
+    end
+    KF --> LOAD --> DER
+    DER --> AES
+    DER --> KID
+    DER --> CHK
+    AES --> SEAL
+    AES --> OPEN
+    ADD --> SEAL --> F
+    ADD -->|"first factor"| S
+    F --> GET --> OPEN
+    SPEND --> F
+    SPEND --> R
+    CODES --> R
+    END --> C
+    START["checkMfaKeyAtStart<br/>startup-checks.ts"] --> VERDICT
+    VERDICT -->|"compare"| S
+    VERDICT -->|"try to open each"| F
+```
+
+### The Key and What Is Derived From It
+
+The key is 32 bytes, kept as 64 hexadecimal characters in a file outside the database and
+outside every backup, named by `MFA_KEY_FILE`. Where the production rules apply (`NODE_ENV`
+anything but `development` or `test`, unset included, on a database that is not in memory) the
+server never makes one and refuses to start without it. How to make, mount and back it up,
+what each refusal says, and what to do if it is lost, are in
+[The Key That Protects Authenticator Secrets](deployment.md#the-key-that-protects-authenticator-secrets).
+
+The file's bytes are never used directly. Three values are derived from them
+(`keyFromBytes`, `src/lib/server/mfa-key.ts`), so the key is never used under two primitives:
+
+| Value | Derived as | Kept where | What it is for |
+|-------|-----------|-----------|----------------|
+| The AES key | HKDF-SHA256 of the file's 32 bytes, empty salt, info `dumpfire mfa aes-256-gcm v1`, 32 bytes | In the process's memory only | Sealing and opening every secret |
+| The key id | The first 16 hexadecimal characters of HMAC-SHA256(file key, `dumpfire-mfa-key-id`) | `mfa_factors.key_id` and `sign_in_challenges.key_id`, beside what it sealed | Which key sealed a secret, so a secret of another key is told apart without trying it, and a later rotation (card 2773) can tell old from new |
+| The key check | HMAC-SHA256(file key, `dumpfire-mfa-check`), as hex | `settings.mfa_key_check`, written with the first factor | Whether the key this server started with is the one its factors were made with |
+
+The AES key, and the file's bytes, are never written anywhere: not to a log, a message, a row or
+a backup. The key id and the key check are not secrets: they are identifiers from which neither
+the key nor the AES key can be worked out. They are written in the rows named above, and so they
+are in every backup that holds those rows, and the key id also appears in the `ERROR` lines that
+name a factor that cannot be opened. Nothing else of the key is written anywhere. The
+derivations are pinned by a known-answer test: a fixed key gives
+fixed hex for all three, and a fixed ciphertext opens under the derived AES key and not under
+the file's own bytes (`tests/mfa-secrets.test.ts`, T10).
+
+### Sealing a Secret
+
+An authenticator's secret is 20 random bytes (160 bits). It is stored only sealed
+(`src/lib/server/mfa-crypto.ts`):
+
+- **AES-256-GCM** with the derived key, a nonce of 12 random bytes made for every seal, and a
+  16-byte tag. `secret_ciphertext` is the base64 of the ciphertext with the tag after it;
+  `secret_nonce` the base64 of the nonce. Two seals of one secret differ in both.
+- **Bound to where it belongs** by GCM's additional data. A factor's secret is sealed with
+  `mfa-factor:<user id>:<factor_uid>`, `factor_uid` being 128 random bits as hex, made for each
+  factor; a secret being set up, held in a pending sign-in, with
+  `mfa-enrol:<user id>:<token hash>`. A sealed secret copied to another factor row, or to
+  another account's, does not open. When a secret being set up becomes a factor, it is opened
+  under the enrolment's data and sealed afresh under the factor's, with a new nonce.
+- **Opening fails closed.** Any failure is "does not open", and nothing is thrown: another key,
+  other additional data, a changed byte, a nonce that is not 12 bytes, or a ciphertext too
+  short to hold one byte and its tag. The tag is taken strictly as the last 16 bytes. A secret
+  that opens but is not exactly 20 bytes is refused too, and zeroed. Whatever was deciphered
+  before a refused tag is zeroed and not kept.
+- **A secret of any other length is never written**: `addTotpFactor` refuses one before
+  anything is stored.
+
+### The Key Check, and the Start-Up Verdict
+
+`addTotpFactor` writes the key check in the same transaction as the factor. No check stored:
+it records this key's. This key's stored: left as it is. Another key's stored: replaced while
+no factor exists (a check left behind after the last factor went), and otherwise refused, with
+nothing written ("The stored MFA key check does not match this server's key; no factor was
+written.").
+
+At every start, after the migrations and after the refusal of an empty database beside another
+(`refuseUserlessBesideAnother`), as `hooks.server.ts` calls them, `checkMfaKeyAtStart` judges
+the key (`mfaStartVerdict`):
+
+| What is stored | Verdict |
+|----------------|---------|
+| Anything, and the key did not load | Refuse to start |
+| No factor | Start. Nothing is compared or recorded: the first factor records the check |
+| Factors, and another key's check | Refuse: the key is not the one the factors were made with |
+| Factors, and this key's check | Start; every factor that does not open is named at `ERROR` |
+| Factors, and no check (deleted by hand, say) | Try every factor. None opens: refuse. Some open: record this key's check, start, and name the rest at `ERROR` |
+
+Each factor tried is opened and its secret zeroed at once. A refusal is one
+`[CRITICAL] [AUTH]` line on the console and exit code 1: a server must not run with secrets it
+cannot read. A missing check therefore cannot slip a wrong key in, since every factor is tried,
+and does not stop a server whose key is right. A start that made the key (development and test
+only) says so in one `[WARN] [STARTUP]` line on the console, whatever `LOG_LEVEL` is, naming the
+path and that the key must be backed up apart from the database.
+
+The key file is opened on Linux with `O_RDONLY | O_NONBLOCK`, so that a FIFO at the named path
+cannot hang the start waiting for a writer: the regular-file check then refuses it.
+
+### A Factor That Cannot Be Opened Is Never a Wrong Code
+
+`factorSecret` answers a factor's secret, or why it cannot: `no key` (none loaded), `other key`
+(its `key_id` is not this key's), or `does not open` (sealed for another row or account, changed,
+or not 20 bytes). Each of the three writes one line:
+
+`[ERROR] [AUTH] A second factor could not be opened (<why>): factor <id> of user <id>, made
+with key <key id>; this server's key is <key id>. It is not counted as a wrong code; the account
+can use a recovery code.`
+
+Its meta holds `factorId` and `keyId`, and its user is the account's id. The answer is
+"unusable", never "wrong": a factor that cannot be opened is not a wrong code.
+
+### The Codes and the Replay Guard
+
+- **Authenticator codes** (`src/lib/server/totp.ts`, RFC 6238 over RFC 4226): six digits, a
+  30-second step, HMAC-SHA1 over the 20-byte secret. A code is accepted for the current step and
+  the one before it, and for no other. Spaces are dropped; anything but exactly six ASCII digits
+  is refused before any code is worked out. Both candidate codes are always worked out and both
+  compared in constant time (`timingSafeEqual`), whichever matches, and the higher matching step
+  is answered. `hotp` is held to the RFC 4226 and RFC 6238 test vectors.
+- **The replay guard** (`spendStep`): a step is spent by one statement with nothing read before
+  it, `UPDATE mfa_factors SET last_step = ?, last_used_at = ? WHERE id = ? AND (last_step IS NULL
+  OR last_step < ?)`. A change of one row is "spent"; none is "not spent", a step already spent or
+  an older one, or a factor gone meanwhile. Two requests with the same code cannot both spend it.
+- **Recovery codes** (`src/lib/server/recovery-codes.ts`): ten, each sixteen characters of
+  Crockford's base32 (`0-9` and `A-Z` without `I`, `L`, `O` and `U`), shown as four groups of
+  four. Each is 80 random bits, 10 random bytes read as sixteen 5-bit groups, with no modulo
+  bias. A code is read leniently, at no cost in strength: either case, spaces and hyphens
+  dropped, `O` read as `0` and `I` or `L` as `1`.
+- **Kept only as a hash bound to the account**: SHA-256 of
+  `dumpfire-recovery-v1:<user id>:<16-character code>`, as hex. A hash row moved to another
+  account never matches either account. Storing a set replaces the account's whole set, in one
+  transaction.
+- **Spending a recovery code** (`spendRecoveryCode`): a value that cannot be a code is "not a
+  code", with no statement run; otherwise one statement with nothing read before it,
+  `UPDATE mfa_recovery_codes SET used_at = ? WHERE user_id = ? AND code_hash = ? AND used_at IS
+  NULL`, scoped to the account in its `WHERE` and inside the hash. One row changed is "spent";
+  none is "not found".
+- **Pending sign-ins and enrolment links** keep their token only as its SHA-256 hash.
+
+### What Is Never Logged or Answered
+
+No log line, start-up line, refusal or answer holds the key file's contents or any value derived
+from it but a key id, an authenticator secret, a ciphertext, a nonce, additional data, a
+recovery code or its hash, or a token. The key file's refusals name its path and a reason, never
+what it holds. The unreadable-factor lines name factor and user ids and key ids.
+
 ## Passwords, Sessions and Invites Change Together
 
 Every request that changes who can sign in makes its writes in one transaction (see [Architecture](architecture.md#writes-one-transaction-then-the-effects)). The cookie is set, and the redirect made, after the commit.
@@ -1885,6 +2077,8 @@ Every request that changes who can sign in makes its writes in one transaction (
 | First-run set-up (`/setup`) | The superadmin and their session | | |
 
 So a password is never changed while the old sessions stay good, an invite never sets a password and remains usable, and no invite waiting to be used outlives a newer invite, a password change, or a change of the account's email address or role.
+
+**Pending sign-ins and enrolment links end with the invites** (card 2768). Every way of setting a password, and every actual change of an account's email address or role (both routes), also deletes every sign-in of the account that waits for its second factor (`sign_in_challenges`) and every link that lets it set up an authenticator (`enrolment_links`), in the same transaction, through `endPendingSignIns()` in `src/lib/server/mfa-store.ts`, which throws if no transaction is open. Sending an invite again does not. The account's second factors and recovery codes are not touched. Until card 2769 issues them both tables are empty, so nothing is said of them: no answer and no log line changes, and `endAccountAccess()` returns the two counts (`challenges`, `enrolmentLinks`) for the cards that will name them.
 
 ### What Setting a Password Ends
 
@@ -1904,7 +2098,7 @@ flowchart TD
     Own --> One["endAccountAccess(userId, { apiKeys, reportSchedules }),<br/>in the transaction that sets the password"]
     Reset --> One
     Invite --> One
-    One --> Order["Sessions, then invites, then under apiKeys the keys<br/>and the webhooks whose set_by is the account and are on,<br/>then under reportSchedules the schedules that are on"]
+    One --> Order["Sessions, then invites, then pending sign-ins<br/>and enrolment links (card 2768), then under apiKeys the keys<br/>and the webhooks whose set_by is the account and are on,<br/>then under reportSchedules the schedules that are on"]
 ```
 
 | How the password is set | Sessions | Invites not yet used | API keys | Webhooks the account set | Its report schedules |
@@ -2125,7 +2319,7 @@ held it was signed in, as an administrator in the second case.
 flowchart TD
     Change["PUT /api/users/:id<br/>or PUT /api/account/email"] --> Differs{"Does the email or the role written<br/>differ from the one stored?"}
     Differs -->|"no: the same email in other case,<br/>the role it has, a username, an emoji"| Keep["Nothing ends: invitesEnded 0"]
-    Differs -->|"yes"| End["endUnusedInvites(userId), then the account is written,<br/>in one transaction"]
+    Differs -->|"yes"| End["endUnusedInvites(userId) and endPendingSignIns(userId),<br/>then the account is written, in one transaction"]
     End --> Line["After the commit: one INFO line under AUTH"]
     End --> Dead["An earlier link: This invite link no longer works ..."]
 ```
@@ -2133,6 +2327,11 @@ flowchart TD
 - **"Actually changes."** The value written differs from the one stored, an email compared in
   lower case, as it is stored. A change of username or emoji ends nothing, and no change ends
   a session or an API key: an email change is not a password change.
+- **Pending sign-ins and enrolment links end too** (card 2768): every sign-in of the account
+  waiting for its second factor and every link to set up its authenticator, deleted by
+  `endPendingSignIns(userId)` beside `endUnusedInvites(userId)`, before the account is written.
+  A sign-in begun or a link sent before the change was for the account as it was. The answer
+  and the log line are unchanged.
 - **Both routes.** `PUT /api/users/:id` (an administrator, for an ordinary user; the
   superadmin, for an administrator too, and the only one who makes an account an
   administrator) and `PUT /api/account/email` (the account's holder, with their current
@@ -2871,6 +3070,111 @@ session's expiry moves on every time it is used.
   storage, off the volume, never read back by the server and never sent anywhere) holds every
   table as it was, sessions, secrets and the seal's key included, and is not deleted; it leaves out only the key remembered browsers are signed with, as a
   backup does, since the restore forgets that key anyway: see [How Large an Import Can Be](deployment.md#how-large-an-import-can-be).
+
+#### Second Factors in a Backup, the Export and a Restore (card 2768)
+
+**The export is a backup.** `POST /api/admin/export` returns `generateBackupData()`, the same
+copy a schedule and Run Now upload, and Import Backup restores either. So both hold the same
+things of two-step sign-in, with no option and no second path:
+
+| | Second factors (`mfa_factors`) | Recovery codes | `mfa_key_check` | Pending sign-ins, enrolment links | The MFA key |
+|---|---|---|---|---|---|
+| The export, a scheduled backup, Run Now | Every row, the secret only as ciphertext with its nonce and key id | Every row, only as account-bound hashes | Kept | **None**: deleted from the copy beside the sessions, before it is sealed | **Never**: it is in a file of its own outside the database |
+| The running database, after a restore | By the rules below | By the rules below | This key's when any factor exists, else this server's as it was | **None**: never brought in, from a backup of any age, and this server's are cleared | Unchanged |
+
+Without the key a backup's ciphertext opens nothing, and the hashes are of codes with 80 random
+bits. Leaving the factors out would restore every account with no second factor, the weaker
+state. The safety copy an import writes before it replaces anything (`.pre-restore-safety.json`)
+holds every table as it was, the four MFA tables included (factors as ciphertext, codes as
+hashes), and never the key.
+
+**A restore puts the factors back by its own rules.** `rowsToRestore()` copies none of the four
+tables and not the backup's `mfa_key_check`. This server's rows are read before anything is
+cleared (`readMfaHere`), and once the copy is done, inside the restore's transaction,
+`restoreMfaRows()` (`src/lib/server/mfa-backup.ts`) puts them back:
+
+```mermaid
+flowchart TD
+    Copy["The restore's copy is done,<br/>inside its transaction"] --> Each{"For each restored account:<br/>same id and same created_at<br/>as an account here?"}
+    Each -->|"yes: the same account"| Here["This server's factors and codes,<br/>as they are now"]
+    Each -->|"no"| Trust{"Backup's seal verified with this<br/>server's key, and its mfa_key_check<br/>is this server's MFA key's?"}
+    Trust -->|"yes"| Theirs["The backup's factors and codes"]
+    Trust -->|"no"| None["None. Named in leftOut:<br/>unsealed, no key, or key differs"]
+    Here --> Zero["Every account's wrong-code counters<br/>and pauses zeroed"]
+    Theirs --> Zero
+    None --> Zero
+    Zero --> Hist["The same accounts keep this server's<br/>last sign-in, failed-code count and banner"]
+    Hist --> Check{"Any factor now?"}
+    Check -->|"yes"| Mine["mfa_key_check = this key's"]
+    Check -->|"no"| Back["mfa_key_check as it was here,<br/>or none"]
+    Mine --> Named{"Any factor now, or any left out?"}
+    Back --> Named
+    Named -->|"yes"| Say["Every account with no factor named:<br/>the answer, mfaWithoutFactor,<br/>a WARN line and the admin page"]
+    Named -->|"no"| Quiet["Nothing said"]
+```
+
+- **The same account is matched on its id and its `created_at`**, both written once and never
+  changed, and never on its username, which a rename changes. The two `created_at` are compared
+  as the moments they name (`toStamp`, `src/lib/timestamps.ts`), so a backup holding one in
+  another form (ISO 8601 with a `Z`, from before card 2095) still matches; one that names no
+  moment, on either side, matches nothing, so a doubt is a different account. The same id with
+  another `created_at` is another account. The same account keeps this server's factors and
+  codes as they are at the restore: a factor removed since the backup stays removed, a code used
+  since stays used, a step spent since stays spent, and a factor added since stays. An older
+  backup cannot bring back a factor that was taken away, even for an account renamed since.
+- **Any other account** (deleted here since the backup, or from another installation) has the
+  backup's factors and codes only when the backup's seal verified with this server's key (made
+  here, changed by nobody since: see
+  [The Secrets a Backup Does Not Hold](#the-secrets-a-backup-does-not-hold-card-2169)) **and** the
+  backup's `mfa_key_check`, read from the backup's own `settings` storage (`fromTableStorage`,
+  never through an index, as every other read of the backup is), is this server's MFA key's.
+  Otherwise it has none, and the result names it as left out, with why: `unsealed` when the seal
+  did not verify, `no key` when it did and this server has no MFA key loaded, and `key differs`
+  when it did and the backup's key check is not this key's (or it holds none). Such rows are
+  copied only in the columns both sides have.
+- **An account brought back from the backup has its recovery codes as they were in the backup.**
+  A code used after the backup was made, before the account was deleted here, can be used again
+  until the account regenerates its codes; the restore says so whenever any account's rows were
+  taken from the backup (below).
+- **Counters zeroed.** Every account's consecutive wrong codes and pauses (`mfa_known_wrong`,
+  `mfa_other_wrong`, `mfa_recovery_wrong` and their three `*_resumes_at`) are set to 0 and NULL.
+  The same accounts keep this server's `last_sign_in_at`, `last_sign_in_from`,
+  `failed_codes_since_sign_in`, `security_banner` and `security_banner_at`, so an older backup
+  cannot erase the warning that someone else holds the password; any other account has the
+  backup's.
+- **New row ids, the same `factor_uid`.** Restored rows are inserted without their ids. The
+  sealing binds `factor_uid` and the user id, not the row id, so a restored factor opens.
+- **The key check.** With any factor after the restore, `mfa_key_check` is this key's: every
+  factor then was made with it. With none, this server's check is put back as it was, or none.
+  The backup's is never kept.
+- **Accounts left without a factor are named**, once two-step sign-in is in use: when a factor
+  exists after the restore, or a backup's was left out. Then every restored account with no
+  factor is named, by id order, in one sentence: "`<n>` account(s) have no second factor after
+  this restore and each needs its two-step sign-in reset before it can sign in: `<names>`."
+  When any account's factors in the backup were left out, the sentence goes on to say why, in
+  plain words: "Their second factors in the backup were left out because `<reason>`:
+  `<names>`.", the reason being "the backup was not made by this server, or was changed after it
+  was made" (`unsealed`), "no MFA key is loaded on this server" (`no key`) or "the backup was
+  made under a different MFA key" (`key differs`). When any account's rows were taken from the
+  backup, it says once: "Accounts brought back from the backup have their recovery codes as
+  they were then; ask them to regenerate their codes." It ends "See docs/admin-guide.md,
+  Restoring from Backup." (`mfaWithoutFactorSentence`, which is given the whole `MfaRestore`).
+  It is in the import's answer and its `mfaWithoutFactor`, in a `WARN` line under `IMPORT`, and
+  on the admin page, and in the answer of a restore that committed and then failed. Before card
+  2769 nobody has a factor, so nothing is said: telling the operator every account needs a
+  reset would be false.
+- **A backup made before migration 0065** holds no MFA table and no key check. Every read of a
+  backup first asks whether its table (or the columns of `settings`) is there, so it restores:
+  the same accounts keep this server's factors and codes, and any other has none.
+- **A failure rolls the restore back.** An insert that fails is not caught.
+- **What does not apply these rules.** A database file put back by hand brings its factors and
+  key check as they are, a factor removed since included; if its check is another key's, the
+  next start refuses until the key matches (see
+  [The Key That Protects Authenticator Secrets](deployment.md#the-key-that-protects-authenticator-secrets)).
+  An older image's Import Backup copies the MFA tables as any other table. Reset Everything
+  clears the factors, the codes and the key check with everything else.
+
+Covered by `tests/mfa-storage.test.ts` (T48 to T60) and `tests/page-failures.test.ts` (T61).
 
 #### The Secrets a Backup Does Not Hold (card 2169)
 
@@ -6018,11 +6322,17 @@ which is what Reset Everything in the admin panel leaves.
 | `src/lib/server/decision-register.ts` | The register, a person's record and the record view (card 2680): `visibleWhere` (the register held to `requireDecision(…, 'view')`), `visibleDecisionIdsOf()`, `registerQueryOf()` (the filters by allow-list), the person record's three audiences with its scope read first, and `recordEntryOf()`, which builds each event's detail from `RECORD_DETAIL` alone |
 | `src/lib/server/decision-cards.ts` | What is read of card-decision links (card 2680): `linkedCardsFor()` (cards on boards the viewer can open), `readCardDecisions()` (decisions the viewer may view), and `decisionLinksOfCardsUnchecked()`, which checks no access and whose callers a test pins |
 | `src/lib/server/secret-paths.ts` | The paths that carry a secret, `/invite/[token]` and `/decision-link/[token]` (card 2675), written to the log masked; `maskSecretsInLog()`, which masks what the log already holds, in a backup's copy and in the running log at start, and `maskFailedSignIn()`, which takes the name typed out of an old failed sign-in line (card 2193) |
-| `src/lib/server/backup.ts` | `generateBackupData()`, the one copy an export and a scheduled backup both send, cleared of sessions, unused invites, the key remembered browsers are signed with, every request's link and the request form's key, and every secret, then sealed (`withoutSecrets()`); `runBackup()` does not try a destination whose credentials are not entered |
+| `src/lib/server/mfa-key.ts` | The key that protects authenticator secrets (card 2768): `loadMfaKey()` and the cached `mfaKeyLoad()` and `currentMfaKey()`, read at the first call and never at import; `productionRules()`; the key file's checks, its atomic making outside production, and whether it is inside the database's folder; `keyFromBytes()`, the AES key, key id and key check; `mfaStartVerdict()`. See [Second-Factor Secrets at Rest](#second-factor-secrets-at-rest-card-2768) |
+| `src/lib/server/mfa-crypto.ts` | `sealWith()` and `openSealed()`, AES-256-GCM bound to `factorAad()` or `enrolAad()`; `newFactorUid()`; `sha256Hex()`. Pure |
+| `src/lib/server/totp.ts` | Authenticator codes (RFC 6238 over RFC 4226): `hotp()`, `stepAt()`, `matchingStep()` (the current step and the one before, both compared in constant time), `newTotpSecret()`. Pure |
+| `src/lib/server/recovery-codes.ts` | `newRecoveryCodes()`, `canonicalRecoveryCode()` and `recoveryCodeHash()`, bound to the account. Pure |
+| `src/lib/server/mfa-store.ts` | The rows: `addTotpFactor()` with the key check, `factorSecret()`, `sealEnrolment()` and `openEnrolment()`, `spendStep()` and `spendRecoveryCode()` (one conditional `UPDATE` each), `storeRecoveryCodes()`, `endPendingSignIns()`, and `readMfaKeyCheck()` |
+| `src/lib/server/mfa-backup.ts` | What a restore does with second factors (card 2768): `readMfaHere()`, `restoreMfaRows()`, `readBackupMfaKeyCheck()` (the backup's key check from its table storage), `MFA_ROWS_NOT_RESTORED` and `mfaWithoutFactorSentence()` |
+| `src/lib/server/backup.ts` | `generateBackupData()`, the one copy an export and a scheduled backup both send, cleared of sessions, unused invites, pending sign-ins and enrolment links (card 2768), the key remembered browsers are signed with, every request's link and the request form's key, and every secret, then sealed (`withoutSecrets()`); `runBackup()` does not try a destination whose credentials are not entered |
 | `src/lib/server/backup-secrets.ts` | What a backup leaves out because it is a secret, and what is done about the gaps (card 2169): `clearSecrets()`, `readSecretsHere()`, `fillSecretGaps()`, `credentialsMissing()`, `secretsToEnter()` and the two sentences; the seal: `backupSealKey()`, `sealOf()`, `sealCopy()`, `sealVerifies()`, `keepSealKey()`, and the checks made before it, `unsealedBecause()`, `backupFailsCheck()`, `strayInternalObjects()`; `fromTableStorage()`, how a table is read for the seal and the restore |
 | `src/lib/server/db/restore.ts` | What a restore brings in and what it never does, the new link it gives every request, every decision link it ends and records (`RestoreResult.decisionLinksCleared`) and its refusal of a decision record copied in part (card 2675), and the secrets it keeps from this server (`RestoreResult.secrets`), only for a backup whose seal verifies (`RestoreResult.sealVerified`, and why not, `RestoreResult.unsealed`); `rowsToRestore()`, each table read `NOT INDEXED`; `backupLacksSuperadmin()` |
 | `src/lib/server/email.ts` | `linkBaseUrl()`: the address a mailed link begins with, from configuration alone |
-| `src/lib/server/startup-checks.ts` | The eight lines the server writes at start: no superadmin, `ORIGIN` still the image's placeholder, and a board beneath one of its own cards (card 2142), which a restore of a backup that brings one writes at once too, with each control character in a board's name or a card's title printed as a space, so that a name holding a line break cannot split the line and forge one after it (with the logger's `printable()`, card 2214); and three about the database (card 2083): the new-database line (a new, empty database was made at this start, the alarm on an installation that had data, since set-up is then open to whoever comes first), the off-volume line (the database is in the container's own file system), and the other-database line (a database at `/app/dumpfire.db` beside the one in use); and the line that `SIGN_IN_ONE_AT_A_TIME` is off (card 2194), and `reportCspMode()`'s line that `CSP_MODE` is `report-only` or neither mode (card 2162), each to the console whatever `LOG_LEVEL` is; `refuseUserlessBesideAnother()`, which stops the server before it listens when the database in use has no users while another is beside it; and `maskLiveLog()`, which masks the running log's tokens and old failed sign-in names at start |
+| `src/lib/server/startup-checks.ts` | The eight lines the server writes at start: no superadmin, `ORIGIN` still the image's placeholder, and a board beneath one of its own cards (card 2142), which a restore of a backup that brings one writes at once too, with each control character in a board's name or a card's title printed as a space, so that a name holding a line break cannot split the line and forge one after it (with the logger's `printable()`, card 2214); and three about the database (card 2083): the new-database line (a new, empty database was made at this start, the alarm on an installation that had data, since set-up is then open to whoever comes first), the off-volume line (the database is in the container's own file system), and the other-database line (a database at `/app/dumpfire.db` beside the one in use); and the line that `SIGN_IN_ONE_AT_A_TIME` is off (card 2194), and `reportCspMode()`'s line that `CSP_MODE` is `report-only` or neither mode (card 2162), each to the console whatever `LOG_LEVEL` is; `refuseUserlessBesideAnother()`, which stops the server before it listens when the database in use has no users while another is beside it; `checkMfaKeyAtStart()` and `MfaKeyError` (card 2768), straight after it, which stop the server when the MFA key does not load or is not the key the stored second factors were made with; and `maskLiveLog()`, which masks the running log's tokens and old failed sign-in names at start |
 | `src/lib/server/rate-limit.ts` | In-memory rate limiter, counting in a fixed window from each key's first attempt (`checkRateLimit`), an amount in the same way (`takeAllowance`, the day's report mail of card 2182), and wrong passwords at one account in an idle window (`signInWait`, `countWrongSignIn`, `forgetWrongSignIns`, card 2177); sign-in's count by address with the account each attempt was at (`countSignInAttempt`, `refundSignInAttempts`, `keepSignInAttemptCounted`, card 2226); and the sign-ins in flight at one key (`enterSignIn`, `leaveSignIn`, card 2194) |
 | `src/lib/server/uploads.ts` | Where attachment files are, which stored file names are refused, `writeUploadFile()` and `removeUploadFile()` for both trees' uploads, and the headers an attachment is served with: `attachmentHeaders()` (the web tree, inline only when an image's bytes match) and `downloadHeaders()` (`/api/v1`, always a download, `no-store`) |
 | `src/lib/server/image-check.ts` | Whether bytes are a PNG, JPEG, GIF or WebP image (card 2754): `imageTypeOf()`, `sniffImage()`, and `checkImage()`, the walk by allow-list that strips metadata and refuses animation, trailing data and more than 8000 px or 40 MP. No imports |

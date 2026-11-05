@@ -156,6 +156,14 @@ export function saveBackupConfig(config: BackupConfig): void {
  * this server's own secrets where they are for the same account, and says
  * what is to be entered again.
  *
+ * Nor a pending sign-in or an enrolment link (card 2768): both are deleted
+ * beside the sessions. An account's second factors and recovery codes stay,
+ * as a backup is for restoring accounts: each factor's secret only as the
+ * ciphertext it is stored as, sealed under this server's MFA key, and each
+ * code only as its hash, with `mfa_key_check` to say which key. The key
+ * itself is in a file of its own outside the database (mfa-key.ts) and is in
+ * no backup, so a backup alone opens no factor.
+ *
  * And it is sealed (the review's S1): once cleared, an HMAC-SHA256 over every
  * row of the copy, with this server's key (`backupSealKey`, made the first
  * time and held by no backup), is written into it as the `backup_seal`
@@ -187,6 +195,11 @@ export function withoutSecrets(from: string, to: string, key: Buffer = backupSea
 		maskSecretsInLog(copy);
 		if (has('sessions')) copy.prepare('DELETE FROM sessions').run();
 		if (has('invite_tokens')) copy.prepare('DELETE FROM invite_tokens WHERE used = 0').run();
+		// Every pending sign-in and enrolment link (card 2768): each is part
+		// way through a sign-in or the setting up of a second factor, and is
+		// not something to keep or bring back.
+		if (has('sign_in_challenges')) copy.prepare('DELETE FROM sign_in_challenges').run();
+		if (has('enrolment_links')) copy.prepare('DELETE FROM enrolment_links').run();
 		// The key remembered browsers are signed with (card 2194): whoever held
 		// it could make a cookie that skips sign-in's throttling for any account
 		// whose hash they also hold, and a backup holds every hash.
@@ -211,7 +224,8 @@ export function withoutSecrets(from: string, to: string, key: Buffer = backupSea
 
 /**
  * Generate a consistent SQLite backup file, with no session, no unused
- * invite, no request link and no secret in it.
+ * invite, no pending sign-in or enrolment link, no request link and no secret
+ * in it.
  *
  * Uses VACUUM INTO to create a complete, self-contained .db copy that includes
  * all WAL data — readFileSync alone would miss unflushed WAL entries. The copy
@@ -223,7 +237,10 @@ export function withoutSecrets(from: string, to: string, key: Buffer = backupSea
  * first backup the server makes, and never again.
  *
  * The export the superadmin downloads and the copy a schedule uploads are
- * both made here, so that neither can hold what the other does not.
+ * both made here, so that neither can hold what the other does not: both
+ * hold the second factors as ciphertext and the recovery codes as hashes,
+ * neither holds a pending sign-in or an enrolment link, and neither holds the
+ * MFA key (card 2768).
  *
  * Two `VACUUM INTO`s, then, and every step of it is synchronous: better-sqlite3
  * waits on SQLite, and the file is read with `readFileSync`. So the server
