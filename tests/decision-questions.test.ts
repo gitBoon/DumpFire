@@ -5,7 +5,8 @@
  * the open questions and the results revision (`decision-results.ts`); and the
  * question row's insert and its three guarded updates
  * (`decision-record.ts`). From slice 1b, the four writes and their two
- * notices (`decisions.ts`, `notifications.ts`); from slice 1c, what the pages
+ * notices (`decision-question-writes.ts`, since card 2713, and
+ * `notifications.ts`); from slice 1c, what the pages
  * read of them (`decision-view.ts`); from slice 2b, the four routes' first
  * statements and the link route's wrong-link counter, through the gate.
  *
@@ -65,7 +66,8 @@ import { actorFor, appendEvent, appendQuestion, recordAnswer, recordDraftPublish
 import { revokeLinks } from '$lib/server/decision-links';
 import { answererRoleOf, pendingDraft, questionsFor, readQuestions, type QuestionViewer } from '$lib/server/decision-questions';
 import { openQuestionsOf, readResults, resultsRevisionFor, rulingRefusals } from '$lib/server/decision-results';
-import { answerQuestion, askQuestion, askQuestionByLink, publishAnswer, ruleDecision } from '$lib/server/decisions';
+import { answerQuestion, askQuestion, askQuestionByLink, publishAnswer } from '$lib/server/decision-question-writes';
+import { ruleDecision } from '$lib/server/decision-ruling-writes';
 import { readDecisionPage, readLinkPage } from '$lib/server/decision-view';
 import { emit } from '$lib/server/events';
 import { resetAllRateLimits } from '$lib/server/rate-limit';

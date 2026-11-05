@@ -2,7 +2,7 @@ import { json } from '@sveltejs/kit';
 import { whilePasswordHolds } from '$lib/server/auth';
 import { isAdmin } from '$lib/server/board-access';
 import { participantAnswers, revisionFor } from '$lib/server/decision-authoring';
-import { changeParticipantAddress, participantAddressGuard } from '$lib/server/decisions';
+import { changeParticipantAddress, participantAddressGuard } from '$lib/server/decision-participant-writes';
 import { pathId, readBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { confirmStepUp } from '$lib/server/step-up';
@@ -14,7 +14,7 @@ import type { RequestHandler } from './$types';
  * administrator's "Use the directory's address" (card 2697, Q22): the
  * participant's address on the decision becomes the one the people directory
  * holds for their person now. `changeParticipantAddress` in
- * `$lib/server/decisions`, handed no body: the request carries no address,
+ * `$lib/server/decision-participant-writes`, handed no body: the request carries no address,
  * only `currentPassword`, so that no address the directory does not hold can
  * be chosen.
  *

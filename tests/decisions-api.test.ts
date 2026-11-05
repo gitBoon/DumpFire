@@ -38,40 +38,17 @@ import { parseVersionContent, parseWorkingContent } from '$lib/server/decision-c
 import { appendEvent, SYSTEM_ACTOR } from '$lib/server/decision-record';
 import { readPersonRecord, readRecord, readRegister, recordEntryOf, registerQueryOf } from '$lib/server/decision-register';
 import { readSummary } from '$lib/server/decision-results';
-import {
-	answerQuestion,
-	askQuestion,
-	askQuestionByLink,
-	changeParticipantAddress,
-	closeDecision,
-	createDecision,
-	deleteDecision,
-	dryRunDecision,
-	extendDecision,
-	markReviewed,
-	openDecision,
-	publishAnswer,
-	raiseConcern,
-	raiseConcernByLink,
-	recordSeen,
-	recordSeenByLink,
-	releaseResults,
-	republishDecision,
-	resendInvitation,
-	respondByLink,
-	respondToDecision,
-	ruleDecision,
-	setDecider,
-	setParticipantAccount,
-	setParticipants,
-	supersedeDecision,
-	updateDraft,
-	withdrawDecision
-} from '$lib/server/decisions';
+import { createDecision, dryRunDecision, markReviewed, setDecider, updateDraft } from '$lib/server/decision-authoring-writes';
+import { closeDecision, deleteDecision, extendDecision, openDecision, republishDecision, withdrawDecision } from '$lib/server/decision-lifecycle-writes';
+import { changeParticipantAddress, resendInvitation, setParticipantAccount, setParticipants } from '$lib/server/decision-participant-writes';
+import { recordSeen, recordSeenByLink, respondByLink, respondToDecision } from '$lib/server/decision-response-writes';
+import { raiseConcern, raiseConcernByLink, releaseResults, ruleDecision, supersedeDecision } from '$lib/server/decision-ruling-writes';
+import { answerQuestion, askQuestion, askQuestionByLink, publishAnswer } from '$lib/server/decision-question-writes';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { writeAs, type ServiceOptions } from '$lib/server/write-as';
 import { stamp } from '$lib/timestamps';
 import { api, type ApiResult } from './helpers/api';
+import { DECISION_SERVICE, SERVICE_HELPERS, SERVICES } from './helpers/source-scan';
 import { FUTURE, readyDraft, revisionNow } from './helpers/decision-faults';
 import { effects, type Effects } from './helpers/effects';
 import { gate, gateApiRoutes } from './helpers/gate';
@@ -101,7 +78,7 @@ const APP = 'https://kanban.example.test';
 const UI: ServiceOptions = { source: 'ui' };
 const API: ServiceOptions = { source: 'api' };
 
-/** The refusals decisions.ts words (module constants, not exported: card 2682, D20). */
+/** The refusals the decision services word (card 2682, D20), written out here so that a change of words is seen. */
 const MAIL_ACT =
 	"Opening, re-publishing, a dry run and sending an invitation again mail people: a person does them on the decision's page. An API key cannot";
 const STEP_UP_ACT = "Changing a participant's account or address asks for your password on the decision's page. An API key cannot";
@@ -485,21 +462,36 @@ describe('the key refusals come before any row is read (2)', () => {
 	});
 });
 
-// ─── 3. The one place decisions.ts reads the source (D7, fail closed) ────────
+// ─── 3. The one place the decision services read the source (D7, fail closed) ─
+
+/** The top-level declarations of `sourceOf` in a source file: a function, or a variable that holds one (card 2713, D6 row 6). */
+function sourceOfDeclarations(tree: ts.SourceFile): ts.Node[] {
+	return tree.statements.flatMap((statement): ts.Node[] => {
+		if (ts.isFunctionDeclaration(statement) && statement.name?.text === 'sourceOf') return [statement];
+		if (!ts.isVariableStatement(statement)) return [];
+		return statement.declarationList.declarations.filter((declared) => ts.isIdentifier(declared.name) && declared.name.text === 'sourceOf');
+	});
+}
 
 /**
  * Where a source file reads `opts.source` (as `opts.source`, `opts['source']`
  * or `const { source } = opts`) or names `writingWithKey`, outside the body of
  * `sourceOf`: each a finding, by line. An identifier scan of the parsed file,
- * so that a comment is never read, nor the import declaration.
+ * so that a comment is never read, nor the import declaration. Card 2713 (D6
+ * row 6): only a file that `mayDeclare` it (a module on SERVICE_HELPERS) may
+ * declare `sourceOf` and read inside it; anywhere else the declaration is a
+ * finding and its body is read like the rest, so that a service cannot grant
+ * itself the exemption.
  */
-function sourceReadsOutside(file: string, source: string): string[] {
+function sourceReadsOutside(file: string, source: string, mayDeclare = true): string[] {
 	const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
 	const line = (node: ts.Node) => tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1;
-	const one = tree.statements.find((statement): statement is ts.FunctionDeclaration => ts.isFunctionDeclaration(statement) && statement.name?.text === 'sourceOf');
+	const one = mayDeclare
+		? tree.statements.find((statement): statement is ts.FunctionDeclaration => ts.isFunctionDeclaration(statement) && statement.name?.text === 'sourceOf')
+		: undefined;
 	const inside = (node: ts.Node) => one?.body !== undefined && node.getStart(tree) >= one.body.getStart(tree) && node.getEnd() <= one.body.getEnd();
 	const isOpts = (node: ts.Node) => ts.isIdentifier(node) && node.text === 'opts';
-	const findings: string[] = [];
+	const findings: string[] = mayDeclare ? [] : sourceOfDeclarations(tree).map((declared) => `${file}:${line(declared)} declares sourceOf: only a module on SERVICE_HELPERS may`);
 	const visit = (node: ts.Node): void => {
 		if (ts.isImportDeclaration(node)) return;
 		if (!inside(node)) {
@@ -519,12 +511,27 @@ function sourceReadsOutside(file: string, source: string): string[] {
 	return findings;
 }
 
-describe('decisions.ts reads the source only through sourceOf (3)', () => {
-	it('reads opts.source and names writingWithKey only inside sourceOf, and the scan finds one outside it', () => {
-		const file = 'src/lib/server/decisions.ts';
-		const source = readFileSync(join(process.cwd(), file), 'utf8');
-		expect(sourceReadsOutside(file, source)).toEqual([]);
-		expect(source).toMatch(/function sourceOf\(opts: ServiceOptions\): ActivitySource \{\n\treturn opts\.source !== 'ui' \|\| writingWithKey\(\) \? 'api' : 'ui';\n\}/);
+describe('the decision services read the source only through sourceOf (3)', () => {
+	it('reads opts.source and names writingWithKey only inside the helper’s sourceOf, which no service declares, and the scan finds one outside it', () => {
+		// Card 2713 (D6 row 6, R5): the decision services on SERVICES and the modules on SERVICE_HELPERS, read from the lists
+		// themselves; asserted whole: the seven services and the helper, eight files.
+		const files = [...SERVICES.filter((file) => DECISION_SERVICE.test(file)), ...SERVICE_HELPERS];
+		expect(files).toEqual([
+			'src/lib/server/decision-authoring-writes.ts',
+			'src/lib/server/decision-lifecycle-writes.ts',
+			'src/lib/server/decision-participant-writes.ts',
+			'src/lib/server/decision-card-link-writes.ts',
+			'src/lib/server/decision-response-writes.ts',
+			'src/lib/server/decision-ruling-writes.ts',
+			'src/lib/server/decision-question-writes.ts',
+			'src/lib/server/decision-write-shared.ts'
+		]);
+		expect(files).toHaveLength(8);
+		const read = files.map((file) => ({ file, source: readFileSync(join(process.cwd(), file), 'utf8') }));
+		const declaring = read.filter(({ file, source }) => sourceOfDeclarations(ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true)).length > 0);
+		expect(declaring.map(({ file }) => file)).toEqual(['src/lib/server/decision-write-shared.ts']);
+		expect(read.flatMap(({ file, source }) => sourceReadsOutside(file, source, SERVICE_HELPERS.includes(file)))).toEqual([]);
+		expect(declaring[0].source).toMatch(/function sourceOf\(opts: ServiceOptions\): ActivitySource \{\n\treturn opts\.source !== 'ui' \|\| writingWithKey\(\) \? 'api' : 'ui';\n\}/);
 
 		const EXAMPLE = 'src/lib/server/example.ts';
 		const passes = [
@@ -549,6 +556,24 @@ describe('decisions.ts reads the source only through sourceOf (3)', () => {
 			`${EXAMPLE}:4 reads opts['source']`,
 			`${EXAMPLE}:5 takes source out of opts`,
 			`${EXAMPLE}:6 names writingWithKey`
+		]);
+
+		// Card 2713 (D6 row 6): a service that declares its own sourceOf, as a function or a constant, gains no exemption by it.
+		const SERVICE = 'src/lib/server/decision-things-writes.ts';
+		const own = [
+			"import { writingWithKey } from './write-as';",
+			"function sourceOf(opts) { return opts.source !== 'ui' || writingWithKey() ? 'api' : 'ui'; }",
+			"const other = 1, sourceOf2 = 2;",
+			'export function write(caller, at, body, opts) { return sourceOf(opts); }'
+		].join('\n');
+		expect(sourceReadsOutside(SERVICE, own, false)).toEqual([
+			`${SERVICE}:2 declares sourceOf: only a module on SERVICE_HELPERS may`,
+			`${SERVICE}:2 reads opts.source`,
+			`${SERVICE}:2 names writingWithKey`
+		]);
+		expect(sourceReadsOutside(SERVICE, "const sourceOf = (opts) => opts.source;", false)).toEqual([
+			`${SERVICE}:1 declares sourceOf: only a module on SERVICE_HELPERS may`,
+			`${SERVICE}:1 reads opts.source`
 		]);
 	});
 });

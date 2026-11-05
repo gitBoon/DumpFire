@@ -32,8 +32,8 @@ export const DEAD_DECISION_LINK =
 /**
  * The 403 for a participant `reachOf` no longer reaches through their account
  * (card 2677, decision 10, D12): the participant writes' refusal, and card
- * 2678's questions read's (moved here from decisions.ts, unchanged, so that
- * both say it in the same words).
+ * 2678's questions read's (moved here from the former decision service (card
+ * 2713), unchanged, so that both say it in the same words).
  */
 export const NO_LONGER_REACHED = 'This decision no longer reaches you as a participant: ask whoever sent it to you';
 

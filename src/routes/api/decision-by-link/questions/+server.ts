@@ -1,7 +1,7 @@
 import { isHttpError, json } from '@sveltejs/kit';
 import { addressToCount } from '$lib/server/client-address';
 import { refuseWrongLink } from '$lib/server/decision-view';
-import { askQuestionByLink } from '$lib/server/decisions';
+import { askQuestionByLink } from '$lib/server/decision-question-writes';
 import { readBody } from '$lib/server/request-body';
 import { requireSameOriginJson } from '$lib/server/same-origin';
 import { writeAs } from '$lib/server/write-as';

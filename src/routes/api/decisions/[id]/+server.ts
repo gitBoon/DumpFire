@@ -2,7 +2,8 @@ import { json } from '@sveltejs/kit';
 import { whilePasswordHolds } from '$lib/server/auth';
 import { isAdmin } from '$lib/server/board-access';
 import { decisionAnswer, optionAnswers, readinessOf, revisionFor } from '$lib/server/decision-authoring';
-import { decisionDeleteGuard, deleteDecision, updateDraft } from '$lib/server/decisions';
+import { updateDraft } from '$lib/server/decision-authoring-writes';
+import { decisionDeleteGuard, deleteDecision } from '$lib/server/decision-lifecycle-writes';
 import { pathId, readBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { confirmStepUp } from '$lib/server/step-up';
@@ -12,7 +13,7 @@ import type { RequestHandler } from './$types';
 /**
  * PUT /api/decisions/:id — save a decision's working copy: `revision`, and any
  * of `title`, `closesAt`, `voteMode` and `content` (card 2676, decisions 6 to
- * 10). `updateDraft` in `$lib/server/decisions`; the answer is
+ * 10). `updateDraft` in `$lib/server/decision-authoring-writes`; the answer is
  * `{ decision, options, revision, readiness }`, through the one projection
  * (decision 15), with the readability check worked out on the server.
  */

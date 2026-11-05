@@ -2,7 +2,7 @@
  * decision-cards.ts — what is read of the links between cards and decisions
  * (card 2680, decisions 17 to 23, 32): the decision page's linked cards, the
  * card window's linked decisions, and the batch read card 2687's plan view
- * builds on; and the limits the writes in decisions.ts ask.
+ * builds on; and the limits the writes in decision-card-link-writes.ts ask.
  *
  * Each side shows only what the viewer can see of the other (decision 18):
  * the decision page lists a linked card only on a board the viewer can open

@@ -1,7 +1,7 @@
 /**
  * Card links (card 2680, slice 2a): `linkCard` and `unlinkCard` in
- * `src/lib/server/decisions.ts`, and the deletion entries `deleteDecision`
- * writes; the reads of both sides in `src/lib/server/decision-cards.ts`
+ * `src/lib/server/decision-card-link-writes.ts`, and the deletion entries `deleteDecision`
+ * writes (`src/lib/server/decision-lifecycle-writes.ts`); the reads of both sides in `src/lib/server/decision-cards.ts`
  * (`linkedCardsFor`, `readCardDecisions`, `decisionLinksOfCardsUnchecked`);
  * and what the decision page gains (`linkedCards`, `mayLinkCards`).
  *
@@ -21,7 +21,8 @@ import { cards, decisionCardLinks, decisions, type Board, type Card, type Column
 import { revisionFor } from '$lib/server/decision-authoring';
 import { decisionLinksOfCardsUnchecked, linkedCardsFor, LINKS_PER_CARD, LINKS_PER_DECISION, readCardDecisions } from '$lib/server/decision-cards';
 import { resultsRevisionFor } from '$lib/server/decision-results';
-import { deleteDecision, linkCard, unlinkCard } from '$lib/server/decisions';
+import { deleteDecision } from '$lib/server/decision-lifecycle-writes';
+import { linkCard, unlinkCard } from '$lib/server/decision-card-link-writes';
 import { removeCard } from '$lib/server/cards';
 import { readDecisionPage, readLinkPage } from '$lib/server/decision-view';
 import { requireCard } from '$lib/server/route-guards';

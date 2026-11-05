@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.70
+version: 1.71
 status: As-Built
 date: 2026-11-05
 tags:
@@ -586,7 +586,8 @@ erDiagram
 
 #### How the decision tables are written (card 2675)
 
-The decision service (`src/lib/server/decisions.ts` and its helper modules; see
+The decision services (`src/lib/server/decision-*-writes.ts`, seven since card 2713, their
+shared helper `decision-write-shared.ts`, and the read modules; see
 [Architecture](architecture.md#the-decision-service-and-its-record)) is the only writer. Card
 2676's routes call its drafting writes ([below](#the-working-copy-and-its-revision-card-2676)),
 and card 2677's a participant's responses and opening
@@ -760,7 +761,7 @@ erDiagram
 
 Card 2677 (plan `docs/planning/card-2677-participant-page.md`) writes `decision_responses` and
 two kinds of `decision_events`, through `respondToDecision`, `respondByLink`, `recordSeen` and
-`recordSeenByLink` in `src/lib/server/decisions.ts`. It added no column and no migration: 0061
+`recordSeenByLink`, now in `src/lib/server/decision-response-writes.ts`. It added no column and no migration: 0061
 holds every column a response needs, and an event's `kind` is free text checked in code
 (`EVENT_KINDS`, which gains `seen` and `responded`).
 
@@ -836,7 +837,7 @@ stateDiagram-v2
 
 Card 2679 (plan `docs/planning/card-2679-results-ruling.md`) writes the columns 0061 left for
 the ruling, through `ruleDecision`, `releaseResults`, `raiseConcern`, `raiseConcernByLink` and
-`supersedeDecision` in `src/lib/server/decisions.ts`. **It added no column, no table and no
+`supersedeDecision`, now in `src/lib/server/decision-ruling-writes.ts`. **It added no column, no table and no
 migration**: every field is a 0061 column, and the new event details are JSON.
 
 | Written | By | What |
@@ -959,7 +960,7 @@ stateDiagram-v2
 
 Card 2678 (plan `docs/planning/card-2678-clarification-questions.md`) is the first writer of
 `decision_questions`, through `askQuestion`, `askQuestionByLink`, `answerQuestion` and
-`publishAnswer` in `src/lib/server/decisions.ts`. **It added no column, no table and no
+`publishAnswer`, now in `src/lib/server/decision-question-writes.ts`. **It added no column, no table and no
 migration**: every field is a 0061 column, the event details are JSON, and the timestamp column
 count stays 62.
 
@@ -1051,7 +1052,7 @@ stateDiagram-v2
 
 Card 2676 (plan `docs/planning/card-2676-decision-authoring.md`) writes `decisions.title`,
 `closes_at`, `vote_mode` and `working_content` on a draft, and `working_content` alone once a
-decision is open or closed, through `updateDraft` in `src/lib/server/decisions.ts`. It added no
+decision is open or closed, through `updateDraft`, now in `src/lib/server/decision-authoring-writes.ts`. It added no
 column and no migration. The shape, its limits and the label rule are in
 `src/lib/server/decision-content.ts`; the type, `WorkingContent`, is in
 `src/lib/decision-readiness.ts`, which the browser loads too.
@@ -1180,7 +1181,8 @@ covers `user_id` and `email`.
 
 Card 2734 took `updated_at` out of the results revision too, so a Resend no longer refuses a
 decider's ruling or release made from a results page opened before it. Of the 18 writes that
-stamp it (all in `decisions.ts`; the card's plan, section 2, lists each), every one changes a
+stamp it (all then in one module, the decision service card 2713 later split into
+`decision-*-writes.ts`; the card's plan, section 2, lists each), every one changes a
 column the results revision covers in the same write but two: a Resend, a delivery act that must
 not move it, and the release, which changes `results_released_at` alone and so is covered by that
 column in `updated_at`'s place. Link issuance, every event (`seen`, `invited`, `mail_outcome`,
@@ -2525,7 +2527,7 @@ of about zero.
   - `decision_card_links`: `PRIMARY KEY(decision_id, card_id)`, both CASCADE, `relation`
     (`DEFAULT 'relates'`), `created_by` (SET NULL), `created_at`, and
     `idx_decision_card_links_card_id`. Written since card 2680 by `linkCard` and `unlinkCard`
-    in `decisions.ts` alone (`PUT` and `DELETE /api/decisions/[id]/cards/[cardId]`): an editor
+    in `decision-card-link-writes.ts` alone (`PUT` and `DELETE /api/decisions/[id]/cards/[cardId]`): an editor
     of the decision's board (an administrator where it has none) who can edit the card's. A
     link is made on an open, closed, ruled or superseded decision, never on a draft or a
     withdrawn one, nor for an archived card; it may be taken off on any status but a draft.

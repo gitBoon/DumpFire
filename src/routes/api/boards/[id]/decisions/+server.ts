@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import { isAdmin } from '$lib/server/board-access';
 import { decisionAnswer, revisionFor } from '$lib/server/decision-authoring';
-import { createDecision } from '$lib/server/decisions';
+import { createDecision } from '$lib/server/decision-authoring-writes';
 import { pathId, readBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
@@ -10,7 +10,7 @@ import type { RequestHandler } from './$types';
 /**
  * POST /api/boards/:id/decisions — make a draft decision on a board the
  * caller can edit: `title` (card 2676, plan 4.3). `createDecision` in
- * `$lib/server/decisions`; `201 { decision, revision }`, the decision through
+ * `$lib/server/decision-authoring-writes`; `201 { decision, revision }`, the decision through
  * the one projection (decision 15).
  */
 export const POST: RequestHandler = async ({ params, request, locals }) => {

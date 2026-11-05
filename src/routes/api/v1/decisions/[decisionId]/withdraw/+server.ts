@@ -1,6 +1,6 @@
 import { json } from '$lib/server/v1-json';
 import { keyDecisionSaved } from '$lib/server/decision-authoring';
-import { withdrawDecision } from '$lib/server/decisions';
+import { withdrawDecision } from '$lib/server/decision-lifecycle-writes';
 import { pathId, readBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';

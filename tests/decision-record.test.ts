@@ -108,8 +108,8 @@ const PEOPLE_INSERTS_ALLOWED = ['src/lib/server/people.ts'];
 const namesAllowedFor = (sqlName: string) => (sqlName === PEOPLE_RECORD ? PEOPLE_NAMES_ALLOWED : NAMES_ALLOWED);
 const insertsAllowedFor = (sqlName: string) => (sqlName === PEOPLE_RECORD ? PEOPLE_INSERTS_ALLOWED : INSERTS_ALLOWED);
 
-/** The one file that may delete a decision, which cascades through its record. */
-const DECISION_DELETES_ALLOWED = 'src/lib/server/decisions.ts';
+/** The one file that may delete a decision, which cascades through its record: the lifecycle service's (card 2713, D6 row 12). */
+const DECISION_DELETES_ALLOWED = 'src/lib/server/decision-lifecycle-writes.ts';
 
 /** A record table's name, or the settled-once table's, as text. `idx_decision_events_…` and `idx_people_changes_…` are indexes' names, not the tables'. */
 const NAMES_A_TABLE = /\b(decision_(?:versions|responses|rulings|events|questions)|people_changes)\b/g;
@@ -459,6 +459,8 @@ describe('the record is insert-only, by the source (decision 27)', () => {
 			],
 			['SQL in a Drizzle template', { file: RECORD, source: "db.run(sql`UPDATE ${decisionEvents} SET kind = 'x'`);" }, 'SQL UPDATE'],
 			['a Drizzle delete of decisions in another file', { file: 'src/lib/server/boards.ts', source: 'db.delete(decisions).where(eq(decisions.id, id)).run();' }, '.delete(decisions)'],
+			// Card 2713: the delete moved with the lifecycle, and no other decision service may delete one either (R10).
+			['a Drizzle delete of decisions in decision-ruling-writes.ts', { file: 'src/lib/server/decision-ruling-writes.ts', source: 'db.delete(decisions).where(eq(decisions.id, id)).run();' }, '.delete(decisions)'],
 			['an SQL delete of decisions in another file', { file: SERVICE, source: "sqlite.prepare('DELETE FROM decisions WHERE id = ?').run(id);" }, 'SQL DELETE FROM decisions'],
 			['a Drizzle insert in another file', { file: SERVICE, source: 'db.insert(decisionEvents).values(v).run();' }, '.insert(decisionEvents)'],
 			['an SQL insert in the schema', { file: 'src/lib/server/db/schema.ts', source: "const seed = 'INSERT INTO decision_events (kind) VALUES (1)';" }, 'SQL INSERT into a record table'],
@@ -530,7 +532,7 @@ describe('the record is insert-only, by the source (decision 27)', () => {
 				source: 'db.select().from(decisionEvents).where(eq(decisionEvents.decisionId, id)).all();\ndb.insert(decisionEvents).values(v).returning().get();'
 			},
 			{ file: 'src/lib/server/db/restore.ts', source: "const lost = [...leftOut.keys()].filter((t) => t === 'decisions' || t.startsWith('decision_'));" },
-			{ file: 'src/lib/server/decisions.ts', source: 'db.delete(decisions).where(eq(decisions.id, id)).run();' },
+			{ file: 'src/lib/server/decision-lifecycle-writes.ts', source: 'db.delete(decisions).where(eq(decisions.id, id)).run();' },
 			// An index's name, and an update of an ordinary decision table.
 			{ file: SERVICE, source: "const i = 'idx_decision_events_participant_id';\nsqlite.prepare('UPDATE decision_participants SET link_token_hash = NULL');" },
 			// Card 2681: people_changes' one insert, in the people service, and its indexes' names.

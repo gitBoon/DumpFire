@@ -1,6 +1,6 @@
 import { json } from '$lib/server/v1-json';
 import { readQuestions } from '$lib/server/decision-questions';
-import { askQuestion } from '$lib/server/decisions';
+import { askQuestion } from '$lib/server/decision-question-writes';
 import { pathId, readBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
@@ -27,9 +27,9 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  * A participant's, reached through their account; anyone else is 403. The
  * question caps hold (ten a participant, thirty a day a caller). It is
  * recorded as asked through the API. There is no question by personal link
- * here: that is a person's act. `askQuestion` in `$lib/server/decisions`; the
- * answer is `{ question }`, its text and version, with no id and no moment,
- * marked `untrusted`.
+ * here: that is a person's act. `askQuestion` in
+ * `$lib/server/decision-question-writes`; the answer is `{ question }`, its
+ * text and version, with no id and no moment, marked `untrusted`.
  */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
 	requireUser(locals.user);

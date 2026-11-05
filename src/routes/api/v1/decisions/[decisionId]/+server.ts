@@ -1,6 +1,7 @@
 import { json } from '$lib/server/v1-json';
 import { keyDecisionAnswer, optionAnswers, readDecisionForKey, readinessOf, revisionFor } from '$lib/server/decision-authoring';
-import { deleteDecision, updateDraft } from '$lib/server/decisions';
+import { updateDraft } from '$lib/server/decision-authoring-writes';
+import { deleteDecision } from '$lib/server/decision-lifecycle-writes';
 import { pathId, readBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
@@ -32,7 +33,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  * 2728). Once opened, the title, closing time and vote mode do
  * not change here, and nobody is told of a content change until a person
  * re-publishes it on the page (D3). The decider is `PUT …/decider`.
- * `updateDraft` in `$lib/server/decisions`; the answer is
+ * `updateDraft` in `$lib/server/decision-authoring-writes`; the answer is
  * `{ decision, options, revision, readiness }`.
  */
 export const PATCH: RequestHandler = async ({ params, request, locals }) => {

@@ -3,8 +3,60 @@
  * pin something to the source: tests/check-at-the-write.test.ts (what a
  * handler does before it reads its body) and tests/gate.test.ts case 8 of
  * card 2700 (which internal handlers read a body other than as JSON).
+ *
+ * And the lists of service modules and their helper modules, which
+ * tests/check-at-the-write.test.ts holds to the service rule and
+ * tests/decisions-api.test.ts case 3 reads for the decision services (card
+ * 2713, R5): one list, so that the two cannot drift.
  */
 import ts from 'typescript';
+
+/**
+ * The modules both API trees' handlers call for their work, each written to
+ * the rule of tests/check-at-the-write.test.ts. Slice A1: the cards; A2: what is on a card; A3: dependencies,
+ * a card's cost and the token writes, milestones; A4: boards, dashboard
+ * groupings, columns, card categories and labels.
+ */
+export const SERVICES: readonly string[] = [
+	'src/lib/server/cards.ts',
+	'src/lib/server/card-assignees.ts',
+	'src/lib/server/card-comments.ts',
+	'src/lib/server/card-labels.ts',
+	'src/lib/server/subtasks.ts',
+	'src/lib/server/work-dependencies.ts',
+	'src/lib/server/token-service.ts',
+	'src/lib/server/milestone-service.ts',
+	'src/lib/server/boards.ts',
+	'src/lib/server/board-groupings.ts',
+	'src/lib/server/columns.ts',
+	'src/lib/server/card-categories.ts',
+	'src/lib/server/labels.ts',
+	// Card 2337: the card window's files, the web application's alone.
+	'src/lib/server/card-attachments.ts',
+	// Card 2674: the people directory and its groups, an administrator's.
+	'src/lib/server/people.ts',
+	// Card 2675: decisions and their permanent record. Card 2713: the former decision service, split by area into
+	// `decision-<area>-writes.ts`.
+	'src/lib/server/decision-authoring-writes.ts',
+	'src/lib/server/decision-lifecycle-writes.ts',
+	'src/lib/server/decision-participant-writes.ts',
+	'src/lib/server/decision-card-link-writes.ts',
+	'src/lib/server/decision-response-writes.ts',
+	'src/lib/server/decision-ruling-writes.ts',
+	'src/lib/server/decision-question-writes.ts'
+];
+
+/**
+ * The modules the decision services share pieces through (card 2713, D2):
+ * no service, and on neither SERVICES nor NOT_SERVICES. Each is held by the
+ * helper pin of tests/check-at-the-write.test.ts: imported by name by the
+ * decision services alone, importing none, writing nothing; and rule 3
+ * follows a read into it.
+ */
+export const SERVICE_HELPERS: readonly string[] = ['src/lib/server/decision-write-shared.ts'];
+
+/** A decision service: a module on SERVICES named `src/lib/server/decision*.ts` (card 2713). */
+export const DECISION_SERVICE = /^src\/lib\/server\/decision[^/]*\.ts$/;
 
 /** A function a handler can be written as. */
 export type HandlerFunction = ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression;

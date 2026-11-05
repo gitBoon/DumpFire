@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.65
+version: 1.66
 status: As-Built
 date: 2026-11-05
 tags:
@@ -919,7 +919,7 @@ flowchart LR
 **A reopening asks whom the round never reached** (card 2744). An **Extend** that reopens a
 decision for input (it was stored closed, or stored open past its closing time) sends the
 **invitation** ("Your view is asked: {title}") to each live consulted participant with no
-response in the current round whom the round has not reached: `unaskedOf` in `decisions.ts`,
+response in the current round whom the round has not reached: `unaskedOf` in `decision-lifecycle-writes.ts`,
 which reads `currentResultsOf` (card 2738's `reachedInRound`, the very rule an early ruling writes
 `cut_off { reached }` by). So one included or made consulted while the decision was closed, one
 whose invitation a rest or a cap held back, and one whose invitation was refused or never
@@ -1031,7 +1031,7 @@ sequenceDiagram
 Card 2697 (2026-11-04) made the decision mails reachable from the decision's editor, and added
 one mail that is no record mail, the dry run, with limits on everything that mails.
 
-**The dry run** (`dryRunDecision` in `decisions.ts`, `queueDryRun` in `decision-mail.ts`). Send
+**The dry run** (`dryRunDecision` in `decision-authoring-writes.ts`, `queueDryRun` in `decision-mail.ts`). Send
 me a dry run mails the presser the invitation a consulted participant would get: subject
 `Dry run: ` and the invitation's, body the invitation's, quoting the **working copy's** question
 and what is asked (never a version, so it shows edits not yet published), the closing time and
@@ -1126,7 +1126,7 @@ arrived:
   (`DAY_MS`) old, and sooner it is recorded as `held`. Another participant's concerns never
   hold it back. A participant's own concerns are already at most 5 and 10 minutes apart.
 - **The outcome is written on `concern_raised { responseId, notice }`, decided inside the
-  write** (`noticeOf` in `decisions.ts`), in this order:
+  write** (`noticeOf` in `decision-ruling-writes.ts`), in this order:
 
 | `notice` | When | Mail |
 |---|---|---|
@@ -1879,7 +1879,7 @@ flowchart LR
 | `xp-update` | `{}` | XP was given for a completion |
 | `celebrate` | `{type: 'complete', cardTitle, userName, userEmoji, xpGained}` | A card moved into a Complete column, or created in one (card 2134). One event for a drop of several cards, naming the last |
 | `update` | `{type: 'card', action: 'moved_away', cardTitle, fromColumn, toColumn, userName, userEmoji}` | A card moved to another board, sent to the board it left. `action: 'moved_in'`, with the same fields, goes to the board it joined. Neither names the other board (card 2181) |
-| `decision` | `{decisionId, status, boardId}` | A decision on the board opened, re-published, closed, extended, and, once it had been opened, withdrawn or deleted (card 2675); ruled, its results released, and an old decision superseded, on the old one's board (card 2679; never for a concern or a superseding draft). `status` is the shown one (`open`, `awaiting_ruling`, `withdrawn`, …). Never for a draft, a participant, a mail or a link, nor for a decision whose board is gone. The data carries no title and no name, and `boardId` itself, so the global stream can check it. Two pages listen for it (card 2680, `connectLiveRefresh`'s `events` option): the register (`/decisions`, every `decision` event the caller is sent) and a board's list of decisions (`/board/[id]/decisions`, its own board's alone, by the payload's `boardId`), each re-reading through the one 250 ms debounce; the board itself and the decision editor do not. It reaches board viewers only: a participant who cannot open the board, and any decision with no board, are current on navigation, a return to the tab, or a reconnect. Linking or unlinking a card sends no live event. The decision service's routes under `/api/decisions` send it as each write commits |
+| `decision` | `{decisionId, status, boardId}` | A decision on the board opened, re-published, closed, extended, and, once it had been opened, withdrawn or deleted (card 2675); ruled, its results released, and an old decision superseded, on the old one's board (card 2679; never for a concern or a superseding draft). `status` is the shown one (`open`, `awaiting_ruling`, `withdrawn`, …). Never for a draft, a participant, a mail or a link, nor for a decision whose board is gone. The data carries no title and no name, and `boardId` itself, so the global stream can check it. Two pages listen for it (card 2680, `connectLiveRefresh`'s `events` option): the register (`/decisions`, every `decision` event the caller is sent) and a board's list of decisions (`/board/[id]/decisions`, its own board's alone, by the payload's `boardId`), each re-reading through the one 250 ms debounce; the board itself and the decision editor do not. It reaches board viewers only: a participant who cannot open the board, and any decision with no board, are current on navigation, a return to the tab, or a reconnect. Linking or unlinking a card sends no live event. The decision services' routes under `/api/decisions` send it as each write commits |
 
 The four delete payloads say what kind of change it was and nothing more: no board name,
 card title or user (card 2108). The board of a sub-board's card can be viewed by people who

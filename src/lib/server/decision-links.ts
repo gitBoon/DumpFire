@@ -53,8 +53,9 @@ export type Reach = { via: 'account' } | { via: 'link' } | { skip: SkipReason };
 /**
  * Why a participant cannot be mailed, in words, for each reason `reachOf`
  * skips them (card 2675, decision 16): the 409 of a re-send, and the words
- * the editor's delivery panel shows (card 2697, F3: moved here from
- * decisions.ts, unchanged, as a service exports its reads and writes alone).
+ * the editor's delivery panel shows (card 2697, F3: moved here from the
+ * former decision service (card 2713), unchanged, as a service exports its
+ * reads and writes alone).
  */
 export const SKIP_WORDS: Readonly<Record<SkipReason, (name: string) => string>> = {
 	deleted: (name) => `${name} is no longer in the people directory: they cannot be mailed about this decision`,
@@ -155,7 +156,7 @@ export function mailedLinkOf(
 
 // ─── The administrator's account and address changes (card 2697, Q10, Q22) ───
 //
-// One rule each, which the write's guard in decisions.ts asks, refusing with
+// One rule each, which the write's guard in decision-participant-writes.ts asks, refusing with
 // the words, and the edit page's delivery panel asks too, offering the action
 // only where it is null (the code review's part B, F2), as `mailRestOf` serves
 // Resend: so the panel cannot offer what the write refuses, nor hide what it

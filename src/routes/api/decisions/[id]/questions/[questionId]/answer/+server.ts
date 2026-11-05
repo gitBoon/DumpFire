@@ -1,5 +1,5 @@
 import { json } from '@sveltejs/kit';
-import { answerQuestion } from '$lib/server/decisions';
+import { answerQuestion } from '$lib/server/decision-question-writes';
 import { pathId, readBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { requireSameOriginJson } from '$lib/server/same-origin';
@@ -13,8 +13,8 @@ import type { RequestHandler } from './$types';
  * decisions 1, 7, 8 and 17). Same-origin JSON only, before anything else.
  * Through the web application, a person's answer; card 2682's API reaches the
  * same service with `source: 'api'`, where it may only draft.
- * `answerQuestion` in `$lib/server/decisions`; the answer is `{ question }`,
- * the question as its answerer is given it.
+ * `answerQuestion` in `$lib/server/decision-question-writes`; the answer is
+ * `{ question }`, the question as its answerer is given it.
  */
 export const POST: RequestHandler = async ({ params, request, url, locals }) => {
 	requireSameOriginJson({ request, url });

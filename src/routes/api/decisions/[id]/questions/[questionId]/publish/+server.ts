@@ -1,5 +1,5 @@
 import { json } from '@sveltejs/kit';
-import { publishAnswer } from '$lib/server/decisions';
+import { publishAnswer } from '$lib/server/decision-question-writes';
 import { pathId } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { requireSameOriginJson } from '$lib/server/same-origin';
@@ -13,8 +13,8 @@ import type { RequestHandler } from './$types';
  * with its label, and the asker is told. Same-origin JSON only, before
  * anything else; the body is not read, as publishing changes no text. A
  * person's act, through the web application alone: card 2682 gives it no v1
- * route. `publishAnswer` in `$lib/server/decisions`; the answer is
- * `{ question }`, the question as its answerer is given it.
+ * route. `publishAnswer` in `$lib/server/decision-question-writes`; the
+ * answer is `{ question }`, the question as its answerer is given it.
  */
 export const POST: RequestHandler = async ({ params, request, url, locals }) => {
 	requireSameOriginJson({ request, url });

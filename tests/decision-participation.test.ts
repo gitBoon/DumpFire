@@ -2,7 +2,7 @@
  * A participant's part in a decision (card 2677): a response, and being
  * recorded as having seen a version, signed in or by a personal link
  * (`respondToDecision`, `respondByLink`, `recordSeen` and `recordSeenByLink`
- * in `src/lib/server/decisions.ts`, and their rows in
+ * in `src/lib/server/decision-response-writes.ts`, and their rows in
  * `src/lib/server/decision-record.ts`), slice 1; what the page is given
  * (`readDecisionPage` and `readLinkPage` in `src/lib/server/decision-view.ts`),
  * and the four routes' same-origin guard through the gate, slice 2; the
@@ -33,7 +33,8 @@ import { requireSameOriginJson } from '$lib/server/same-origin';
 import { subscribeToLogs, type LogEntry } from '$lib/server/logger';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { decisions, people, peopleGroupMembers, peopleGroups, type Board, type Decision, type DecisionOption } from '$lib/server/db/schema';
-import { recordSeen, recordSeenByLink, releaseResults, respondByLink, respondToDecision } from '$lib/server/decisions';
+import { recordSeen, recordSeenByLink, respondByLink, respondToDecision } from '$lib/server/decision-response-writes';
+import { releaseResults } from '$lib/server/decision-ruling-writes';
 import { resultsRevisionFor } from '$lib/server/decision-results';
 import { writeAs, type ServiceOptions } from '$lib/server/write-as';
 import { DEAD_DECISION_LINK, STALE_REVISION, tooManyWrongLinks, WHO_SEES_STATEMENT_VERSION } from '$lib/decision-words';

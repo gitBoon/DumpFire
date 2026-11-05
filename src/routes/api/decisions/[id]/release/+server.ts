@@ -3,7 +3,7 @@ import { whilePasswordHolds } from '$lib/server/auth';
 import { isAdmin } from '$lib/server/board-access';
 import { decisionAnswer } from '$lib/server/decision-authoring';
 import { resultsRevisionFor } from '$lib/server/decision-results';
-import { releaseResults, resultsReleaseGuard } from '$lib/server/decisions';
+import { releaseResults, resultsReleaseGuard } from '$lib/server/decision-ruling-writes';
 import { pathId, readBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { confirmStepUp } from '$lib/server/step-up';
@@ -15,7 +15,7 @@ import type { RequestHandler } from './$types';
  * totals and comments, without names, to everyone who may view it: `{
  * revision, omit, currentPassword }`, `revision` the results revision and
  * `omit` the keys of the preview's comments left out (card 2679, decisions 2,
- * 10 and 20). `releaseResults` in `$lib/server/decisions`; the answer is
+ * 10 and 20). `releaseResults` in `$lib/server/decision-ruling-writes`; the answer is
  * `{ decision, revision }`, as the ruling's.
  *
  * A release cannot be undone and shows every released comment to every board

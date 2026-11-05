@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.120
+version: 1.121
 status: As-Built
 date: 2026-11-05
 tags:
@@ -360,7 +360,7 @@ earlier", for everyone; and the editor's Open confirmation says how many people 
 ```mermaid
 flowchart LR
     Key["API key"] -->|"/api/v1/decisions…"| V1["17 operations"]
-    V1 --> Svc["decisions.ts<br/>sourceOf(opts): the word or the credential"]
+    V1 --> Svc["decision-*-writes.ts (card 2713)<br/>sourceOf(opts), decision-write-shared.ts:<br/>the word or the credential"]
     Svc -->|"draft, edit, never-opened participants,<br/>decider, withdraw, delete; extend later;<br/>questions, answers as drafts; card links"| OK["written, source api"]
     Svc -->|"open, re-publish, dry run, resend, close,<br/>account, address, anything once opened"| No["403: the decision's page"]
     Page["A person on the page"] --> Svc
@@ -4859,7 +4859,7 @@ twin lets in: a caller who may view the decision and not do the act is `403`
 sequenceDiagram
     participant A as Agent (author's key)
     participant V as /api/v1/decisions
-    participant S as decisions.ts
+    participant S as decision-*-writes.ts
     participant P as A person, on the page
     A->>V: POST /boards/3/decisions { title }
     V-->>A: 201 { decision, revision }

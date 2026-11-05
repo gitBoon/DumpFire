@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.102
+version: 1.103
 status: As-Built
 date: 2026-11-05
 tags:
@@ -3369,14 +3369,17 @@ participant (plan `card-2682-decisions-api.md`, D2).
 | A person's record | the person, a decider, administrators | **no** (no route, and `readPersonRecord` refuses any source but `'ui'` `403`) |
 | Supersede, card links | yes | yes |
 
-**The credential decides as well as the word (D7).** Every read of `opts.source` in
-`decisions.ts` goes through one private `sourceOf(opts)`, which answers `'api'` when the route
-said anything but `'ui'` **or** `writingWithKey()` is true; `keyed(opts)` is
+**The credential decides as well as the word (D7).** Every read of `opts.source` in the seven
+decision services (`decision-*-writes.ts`, card 2713) goes through one `sourceOf(opts)`, in
+their shared helper `decision-write-shared.ts`, which answers `'api'` when the route said
+anything but `'ui'` **or** `writingWithKey()` is true; `keyed(opts)` is
 `sourceOf(opts) === 'api'`. So a later v1 route that passed `'ui'` by mistake records the write
 as the API's, flags each section it changes, and is refused every person's act and every act
 above. The page's routes pass `'ui'` under a session, which is never counted, so the pages are
-unchanged. `tests/decisions-api.test.ts` case 3 is an identifier scan of the parsed file: a
-`.source` read on `opts`, or the name `writingWithKey`, anywhere but inside `sourceOf` fails.
+unchanged. `tests/decisions-api.test.ts` case 3 is an identifier scan of the eight parsed files
+(the seven services and the helper, read from `SERVICES` and `SERVICE_HELPERS`): a `.source`
+read on `opts`, or the name `writingWithKey`, anywhere but inside `sourceOf` fails, and only the
+helper may declare `sourceOf`, so no service can grant itself the exemption.
 The refusals of opening, closing and the account come straight after `requireUser`, before any
 row is read, so they say nothing of which ids exist.
 

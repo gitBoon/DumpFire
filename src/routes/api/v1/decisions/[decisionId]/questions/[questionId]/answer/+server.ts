@@ -1,5 +1,5 @@
 import { json } from '$lib/server/v1-json';
-import { answerQuestion } from '$lib/server/decisions';
+import { answerQuestion } from '$lib/server/decision-question-writes';
 import { pathId, readBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
@@ -13,8 +13,8 @@ import type { RequestHandler } from './$types';
  * participant does not see it until the author or the decider publishes it on
  * the decision's page. `replacesDraft: true`, putting an answer in place of a
  * draft, is a person's act and is refused 403. There is no publish here.
- * `answerQuestion` in `$lib/server/decisions`; the answer is `{ question }`,
- * as its answerer is given it, marked `untrusted`.
+ * `answerQuestion` in `$lib/server/decision-question-writes`; the answer is
+ * `{ question }`, as its answerer is given it, marked `untrusted`.
  */
 export const POST: RequestHandler = async ({ params, request, locals }) => {
 	requireUser(locals.user);

@@ -1,6 +1,6 @@
 import { json } from '$lib/server/v1-json';
 import { linkedCardsFor } from '$lib/server/decision-cards';
-import { linkCard, unlinkCard } from '$lib/server/decisions';
+import { linkCard, unlinkCard } from '$lib/server/decision-card-link-writes';
 import { pathId } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';

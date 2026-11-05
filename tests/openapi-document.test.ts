@@ -727,12 +727,20 @@ function textsOf(file: string, name: string, known: Known = {}, within?: readonl
 			return;
 		}
 
-		// A constant of the file that holds a text, used here: its text (card 2012).
-		if (ts.isIdentifier(node) && source.consts.has(node.text) && !(node.text in known)) {
+		// A constant of the file that holds a text, used here: its text (card 2012). Card 2713: or a constant imported by name
+		// from the repository that holds a text where it is declared, as a call into that file is followed (with `within`,
+		// only into those files): the decision services share their refusals' words through decision-write-shared.ts.
+		const importedText = (name: string): string | undefined => {
+			const imported = source.imports.get(name);
+			const target = imported ? fileOf(file, imported.module) : null;
+			return imported && target && (!within || within.includes(target)) ? read(target)?.consts.get(imported.name) : undefined;
+		};
+		if (ts.isIdentifier(node) && !(node.text in known)) {
+			const text = source.consts.has(node.text) ? source.consts.get(node.text) : importedText(node.text);
 			const parent = node.parent;
 			const declared = (ts.isVariableDeclaration(parent) || ts.isParameter(parent) || ts.isBindingElement(parent)) && parent.name === node;
 			const property = ts.isPropertyAccessExpression(parent) && parent.name === node;
-			if (!declared && !property) found.exact.add(source.consts.get(node.text)!);
+			if (text !== undefined && !declared && !property) found.exact.add(text);
 		}
 
 		// A text put together here is read whole, and not as its pieces.
@@ -1820,6 +1828,29 @@ describe('the reading of a handler', () => {
 		const alone = textsOf('example/texts/+server.ts', 'GET', {}, ['example/texts/+server.ts']);
 		expect(isOneOf(alone, 'No such thing')).toBe(true);
 		expect(isOneOf(alone, 'No access to this thing')).toBe(false);
+	});
+
+	it('reads a text constant a function imports by name from the repository, as it reads one of its own file, and only one it uses (card 2713)', () => {
+		given('example/consts/words.ts', "export const TAKEN = 'This thing is taken';\nexport const UNSAID = 'Never said here';\nexport const COUNT = 3;");
+		given(
+			'example/consts/+server.ts',
+			`import { TAKEN, UNSAID } from './words';
+			export const PUT = async () => { throw error(409, TAKEN); };
+			export const GET = async () => json({});`
+		);
+
+		expect(isOneOf(textsOf('example/consts/+server.ts', 'PUT'), 'This thing is taken')).toBe(true);
+		// Imported and not used by the handler: not its text.
+		expect(isOneOf(textsOf('example/consts/+server.ts', 'GET'), 'Never said here')).toBe(false);
+		// With `within`, a constant of another file is not read, as a call into it is not.
+		expect(isOneOf(textsOf('example/consts/+server.ts', 'PUT', {}, ['example/consts/+server.ts']), 'This thing is taken')).toBe(false);
+		// The real case: v1's decider handler, whose 403 is a constant decision-write-shared.ts shares.
+		expect(
+			isOneOf(
+				textsOf('src/routes/api/v1/decisions/[decisionId]/decider/+server.ts', 'PUT'),
+				"This decision has been opened: who is included in it, and who decides it, are changed on the decision's page. An API key cannot"
+			)
+		).toBe(true);
 	});
 
 	it('reads a shared function as each caller calls it: the options it is handed as an object, and the constants of its file (card 2012)', () => {

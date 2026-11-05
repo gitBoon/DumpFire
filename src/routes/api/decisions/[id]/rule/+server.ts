@@ -3,7 +3,7 @@ import { whilePasswordHolds } from '$lib/server/auth';
 import { isAdmin } from '$lib/server/board-access';
 import { decisionAnswer } from '$lib/server/decision-authoring';
 import { resultsRevisionFor } from '$lib/server/decision-results';
-import { decisionRuleGuard, ruleDecision } from '$lib/server/decisions';
+import { decisionRuleGuard, ruleDecision } from '$lib/server/decision-ruling-writes';
 import { pathId, readBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { confirmStepUp } from '$lib/server/step-up';
@@ -15,7 +15,7 @@ import type { RequestHandler } from './$types';
  * decision: `{ optionId, reason, conditions, revision, openQuestionsConfirmed,
  * currentPassword }`, `optionId` null for none of these and `revision` the
  * results revision the results page was given (card 2679, decisions 2, 8 and
- * 13). `ruleDecision` in `$lib/server/decisions`; the answer is
+ * 13). `ruleDecision` in `$lib/server/decision-ruling-writes`; the answer is
  * `{ decision, revision }`, the decision through the one projection and the
  * results revision as it now is.
  *

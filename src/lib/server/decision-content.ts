@@ -12,8 +12,9 @@
  * (`resultsRevisionOf`), which the ruling and the release ask, and a
  * superseding draft's content from the version ruled on (`workingFromVersion`).
  *
- * Plain functions with no caller, called by the service in `decisions.ts`
- * inside its write, and by the authoring reads. Nothing here writes a row of
+ * Plain functions with no caller, called by the decision services
+ * (`decision-<area>-writes.ts`) inside their writes, and by the authoring
+ * reads. Nothing here writes a row of
  * a decision; the revision's key is derived from the request form's, which
  * `request-tokens.ts` makes on its first use.
  *
@@ -158,7 +159,7 @@ export function parseWorkingContent(json: string): WorkingContent {
 
 /**
  * A published version's content (card 2677, decision 16, F1): what
- * `versionContent` in decisions.ts copied, read back tolerantly, as
+ * `versionContent` in decision-lifecycle-writes.ts copied, read back tolerantly, as
  * `parseWorkingContent` reads the working copy. It keeps what a version holds
  * and the working copy does not: each option's `optionId` and `label`, and
  * each review stamp as `{ byName, at }`. A server read: nothing it keeps

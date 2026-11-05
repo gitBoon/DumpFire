@@ -1,7 +1,7 @@
 /**
  * A decision's results, its ruling, the release of its results and its
  * supersession (card 2679): `ruleDecision`, `releaseResults`,
- * `supersedeDecision` and their guards in `src/lib/server/decisions.ts`; the
+ * `supersedeDecision` and their guards in `src/lib/server/decision-ruling-writes.ts`; the
  * results read and the release's projection in
  * `src/lib/server/decision-results.ts`; the ruling's row and the record's
  * reads in `src/lib/server/decision-record.ts`; and, from slice 1b, what the
@@ -52,21 +52,11 @@ import {
 	resultsRevisionFor,
 	TOO_FEW_TO_RELEASE
 } from '$lib/server/decision-results';
-import {
-	closeDecision,
-	extendDecision,
-	raiseConcern,
-	raiseConcernByLink,
-	recordSeen,
-	releaseResults,
-	republishDecision,
-	resendInvitation,
-	respondToDecision,
-	ruleDecision,
-	setDecider,
-	setParticipants,
-	supersedeDecision
-} from '$lib/server/decisions';
+import { closeDecision, extendDecision, republishDecision } from '$lib/server/decision-lifecycle-writes';
+import { recordSeen, respondToDecision } from '$lib/server/decision-response-writes';
+import { raiseConcern, raiseConcernByLink, releaseResults, ruleDecision, supersedeDecision } from '$lib/server/decision-ruling-writes';
+import { resendInvitation, setParticipants } from '$lib/server/decision-participant-writes';
+import { setDecider } from '$lib/server/decision-authoring-writes';
 import { rulesEarly } from '$lib/server/decision-status';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { purposeKey } from '$lib/server/request-tokens';

@@ -2,7 +2,7 @@ import { json } from '@sveltejs/kit';
 import { whilePasswordHolds } from '$lib/server/auth';
 import { isAdmin } from '$lib/server/board-access';
 import { decisionAnswer, revisionFor } from '$lib/server/decision-authoring';
-import { decisionWithdrawGuard, withdrawDecision } from '$lib/server/decisions';
+import { decisionWithdrawGuard, withdrawDecision } from '$lib/server/decision-lifecycle-writes';
 import { pathId, readBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { confirmStepUp } from '$lib/server/step-up';
@@ -12,7 +12,7 @@ import type { RequestHandler } from './$types';
 /**
  * POST /api/decisions/:id/withdraw — withdraw a draft, an open or a closed
  * decision: `reason`, required. Once opened, its participants are mailed the
- * reason. `withdrawDecision` in `$lib/server/decisions`, its author's, its
+ * reason. `withdrawDecision` in `$lib/server/decision-lifecycle-writes`, its author's, its
  * decider's or an administrator's; the answer is `{ decision, revision }`,
  * through the one projection (decision 15, Q18).
  *

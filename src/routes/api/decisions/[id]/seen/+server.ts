@@ -1,5 +1,5 @@
 import { json } from '@sveltejs/kit';
-import { recordSeen } from '$lib/server/decisions';
+import { recordSeen } from '$lib/server/decision-response-writes';
 import { pathId, readBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { requireSameOriginJson } from '$lib/server/same-origin';
@@ -11,7 +11,7 @@ import type { RequestHandler } from './$types';
  * a version: `versionNumber` and `stage` (card 2677, decision 14). The page
  * sends it after the person's first genuine action, never on load, as mail
  * scanners follow links. Same-origin JSON only, before anything else
- * (decision 24). `recordSeen` in `$lib/server/decisions`; the answer is
+ * (decision 24). `recordSeen` in `$lib/server/decision-response-writes`; the answer is
  * `{ recorded }`, false when it was already recorded.
  */
 export const POST: RequestHandler = async ({ params, request, url, locals }) => {

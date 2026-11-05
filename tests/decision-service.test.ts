@@ -4,8 +4,9 @@
  * opening, and opening; re-publishing, closing, extending, withdrawing and
  * deleting; re-sending, and the administrator's participant actions; with
  * the mails that carry the record, the ruling mail among them, and what is
- * recorded of each (`src/lib/server/decisions.ts` and
- * `src/lib/server/decision-mail.ts`).
+ * recorded of each (`src/lib/server/decision-authoring-writes.ts`,
+ * `src/lib/server/decision-lifecycle-writes.ts`, `src/lib/server/decision-participant-writes.ts`
+ * and `src/lib/server/decision-mail.ts`).
  *
  * Each write is called as a route will call it, inside `writeAs` and handed
  * its `caller`, with `effects()` installed so that no mail leaves, mail set
@@ -40,20 +41,9 @@ import { CLOSED_ASK_WORDS, participantForLink } from '$lib/server/decision-links
 import { CALLER_MAIL_DAILY_CAP, DAY_MS, HELD_WORDS, queueRecordMails, RECORD_MAIL_DAILY_CAP, RECORD_MAIL_MIN_MINUTES } from '$lib/server/decision-mail';
 import { toldWords } from '$lib/decision-words';
 import { mailedOnSave, openForInput } from '$lib/decision-rules';
-import {
-	changeParticipantAddress,
-	closeDecision,
-	createDecision,
-	deleteDecision,
-	extendDecision,
-	openDecision,
-	republishDecision,
-	resendInvitation,
-	setDecider,
-	setParticipantAccount,
-	setParticipants,
-	withdrawDecision
-} from '$lib/server/decisions';
+import { createDecision, setDecider } from '$lib/server/decision-authoring-writes';
+import { closeDecision, deleteDecision, extendDecision, openDecision, republishDecision, withdrawDecision } from '$lib/server/decision-lifecycle-writes';
+import { changeParticipantAddress, resendInvitation, setParticipantAccount, setParticipants } from '$lib/server/decision-participant-writes';
 import { deleteUser } from '$lib/server/deletes';
 import { mailStatus, NO_LINK_ADDRESS } from '$lib/server/email';
 import { subscribe } from '$lib/server/events';

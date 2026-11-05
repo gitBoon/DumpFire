@@ -4,7 +4,8 @@
  * in step, the draft revision every authoring write requires, agent-drafted
  * flags and Mark reviewed, the changed refusals of `setParticipants`, and
  * the readability check, whose refusals are `openDecision`'s
- * (`src/lib/server/decisions.ts`, `src/lib/server/decision-content.ts`,
+ * (`src/lib/server/decision-authoring-writes.ts`, `src/lib/server/decision-lifecycle-writes.ts`,
+ * `src/lib/server/decision-participant-writes.ts`, `src/lib/server/decision-content.ts`,
  * `src/lib/decision-readiness.ts`). Slice A1b: the authoring reads, the one
  * projection every answer goes through, and the card-A routes
  * (`src/lib/server/decision-authoring.ts`, `src/routes/api/.../decisions`).
@@ -47,7 +48,9 @@ import {
 } from '$lib/server/decision-authoring';
 import { audienceFactsOf, openFactsOf, parseWorkingContent, revisionOf } from '$lib/server/decision-content';
 import { appendVersion, SYSTEM_ACTOR } from '$lib/server/decision-record';
-import { markReviewed, openDecision, setDecider, setParticipants, updateDraft } from '$lib/server/decisions';
+import { markReviewed, setDecider, updateDraft } from '$lib/server/decision-authoring-writes';
+import { openDecision } from '$lib/server/decision-lifecycle-writes';
+import { setParticipants } from '$lib/server/decision-participant-writes';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { purposeKey } from '$lib/server/request-tokens';
 import { checkContent, refusalsOf, WARNING_CODES, type WorkingContent } from '$lib/decision-readiness';

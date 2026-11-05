@@ -31,7 +31,7 @@
  * A plain read module, not a service: it takes the signed-in account, `user:
  * SessionUser`, never `caller`, imports no `inWrite` and writes nothing, so
  * that a page load may call it (tests/check-at-the-write.test.ts, rule 4).
- * The writes are decisions.ts's.
+ * The writes are decision-question-writes.ts's.
  */
 import { error } from '@sveltejs/kit';
 import { and, eq, isNotNull, isNull, or, type SQL } from 'drizzle-orm';
@@ -144,7 +144,8 @@ const standsBehind = (row: DecisionQuestion) => row.answer !== null && (!row.ans
 /**
  * Whether the row's answer is an agent's draft no person has published or
  * replaced yet (decision 8; code review F5): the one rule, which the writes in
- * decisions.ts ask of a row and `openQuestionWhere` states in SQL beside it.
+ * decision-question-writes.ts ask of a row and `openQuestionWhere` states in
+ * SQL beside it.
  */
 export const pendingDraft = (row: Pick<DecisionQuestion, 'answer' | 'answerAgentDrafted' | 'answerReviewedAt'>) =>
 	row.answer !== null && row.answerAgentDrafted && row.answerReviewedAt === null;

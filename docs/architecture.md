@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.116
+version: 1.117
 status: As-Built
 date: 2026-11-05
 tags:
@@ -1245,7 +1245,7 @@ Card 2675 (plan `docs/planning/card-2675-decision-service.md` v1.1) is the serve
 
 ```mermaid
 flowchart LR
-    Routes["Card 2676's routes, and later cards'<br/>(2697, 2677, 2680, 2682)"] -->|"writeAs(locals, caller =>"| Svc["decisions.ts<br/>(service: thirty writes,<br/>six guards on READS)"]
+    Routes["Card 2676's routes, and later cards'<br/>(2697, 2677, 2680, 2682)"] -->|"writeAs(locals, caller =>"| Svc["decision-*-writes.ts<br/>(seven services, card 2713: thirty writes,<br/>six guards on READS)"]
     Svc --> Guard["route-guards.ts<br/>requireDecision"]
     Guard --> Acc["decision-access.ts<br/>decisionAccess, DECISION_RULES, mayDo"]
     Acc --> BA["board-access.ts<br/>getBoardRole"]
@@ -1268,7 +1268,54 @@ flowchart LR
 
 **The closing-date reminder** (card 2685) is a job beside them, `src/lib/server/decision-reminders.ts`, started by `startSchedulers` and never by a route. It is not a service either: it takes no caller, imports no `inWrite`, and writes as DumpFire with `inTransaction`, through `appendEvent` alone. For each due participant it records `reminded`, then sends and awaits the mail and records its `mail_outcome`, so at most one reminder a round is sent ([The Closing-Date Reminder](notifications-email.md#the-closing-date-reminder-card-2685)); migration 0063's partial unique index holds the "once" in the database.
 
-Only `decisions.ts` is a service: it is on `SERVICES` in `tests/check-at-the-write.test.ts`, and every write takes `(caller, at, body, opts)` and starts with `inWrite()`. Its `READS` are card 2697's four guards (`participantAccountGuard`, `participantAddressGuard`, `decisionDeleteGuard`, `decisionWithdrawGuard`) and card 2679's two (`decisionRuleGuard`, `resultsReleaseGuard`, [Results, the ruling and the release](#results-the-ruling-and-the-release)): each makes every refusal of its write, writes nothing, and is asked by the route before the caller's password and by the write first, so the refusals exist once. The four helper modules take no caller and import no `inWrite`, so they are not services, and `decisionAccess` lives apart from the service because the service imports the guards (plan decision 3). `people.ts` calls `decision-links.ts`, and the mail effect calls `decision-record.ts`, outside any service write.
+**The seven decision services** (card 2713, plan `docs/planning/card-2713-split-decision-service.md`). The decision service was one module until card 2713 split it, unchanged, by area into seven services named `decision-<area>-writes.ts`, each beside the read module of its area, and one plain helper they share, `decision-write-shared.ts`. There is no barrel: each route imports the write it calls from its own module. Only the seven are services: each is on `SERVICES` in `tests/helpers/source-scan.ts` (shared by `tests/check-at-the-write.test.ts` and `tests/decisions-api.test.ts`), and every write takes `(caller, at, body, opts)` and starts with `inWrite()`.
+
+| Module | Writes | `READS` (guards) |
+|---|---|---|
+| `decision-authoring-writes.ts` | `createDecision`, `setDecider`, `updateDraft`, `markReviewed`, `dryRunDecision` | none |
+| `decision-lifecycle-writes.ts` | `openDecision`, `republishDecision`, `closeDecision`, `extendDecision`, `withdrawDecision`, `deleteDecision` | `decisionWithdrawGuard`, `decisionDeleteGuard` |
+| `decision-participant-writes.ts` | `setParticipants`, `resendInvitation`, `setParticipantAccount`, `changeParticipantAddress` | `participantAccountGuard`, `participantAddressGuard` |
+| `decision-card-link-writes.ts` | `linkCard`, `unlinkCard` | none |
+| `decision-response-writes.ts` | `respondToDecision`, `respondByLink`, `recordSeen`, `recordSeenByLink` | none |
+| `decision-ruling-writes.ts` | `ruleDecision`, `releaseResults`, `supersedeDecision`, `raiseConcern`, `raiseConcernByLink` | `decisionRuleGuard`, `resultsReleaseGuard` |
+| `decision-question-writes.ts` | `askQuestion`, `askQuestionByLink`, `answerQuestion`, `publishAnswer` | none |
+| `decision-write-shared.ts` (no service) | none: `sourceOf`, `keyed`, `decisionEntry`, `requireRevision`, `dayBefore`, `reachesOf`, `participantOn`, `requireReachedByAccount`, `requireLinkHolder`, `snapshotColumns`, `requireMailRested`, `requireRecordMailAllowed`, `heldAsks`, and the shared constants (`MAIL_ACT`, `OPENED_PEOPLE`, `MOST_PARTICIPANTS`, `COMMENT_MAX`) | none (declares no `READS`) |
+
+```mermaid
+flowchart LR
+    subgraph Routes["Route files under src/routes/api (internal and v1)"]
+        RA["boards/[id]/decisions, v1 boards/[boardId]/decisions,<br/>decisions/[id] PATCH, v1 [decisionId] PATCH,<br/>decider (and v1), reviewed, dry-run"]
+        RL["open, republish, close, extend (and v1),<br/>withdraw (and v1), decisions/[id] DELETE,<br/>v1 [decisionId] DELETE"]
+        RP["participants (and v1),<br/>participants/[participantId]/account,<br/>…/address, …/resend"]
+        RC["cards/[cardId] (and v1)"]
+        RR["decisions/[id]/responses, …/seen,<br/>decision-by-link/responses, …/seen"]
+        RU["rule, release, supersede (and v1),<br/>decisions/[id]/concerns,<br/>decision-by-link/concerns"]
+        RQ["decisions/[id]/questions (and v1),<br/>…/answer (and v1), …/publish,<br/>decision-by-link/questions"]
+    end
+    subgraph Services["On SERVICES: inWrite() first, READS, (caller, at, body, opts)"]
+        AW["decision-authoring-writes"]
+        LW["decision-lifecycle-writes"]
+        PW["decision-participant-writes"]
+        CW["decision-card-link-writes"]
+        RW["decision-response-writes"]
+        UW["decision-ruling-writes"]
+        QW["decision-question-writes"]
+    end
+    RA -->|"writeAs"| AW
+    RL -->|"writeAs"| LW
+    RP -->|"writeAs"| PW
+    RC -->|"writeAs"| CW
+    RR -->|"writeAs"| RW
+    RU -->|"writeAs"| UW
+    RQ -->|"writeAs"| QW
+    AW & LW & PW & CW & RW & UW & QW --> SH["decision-write-shared<br/>(no service; imported by name<br/>by the seven alone; writes nothing)"]
+    AW & LW & PW & CW & RW & UW & QW --> Rd["decision-record, -content, -links, -mail,<br/>-status, -access, -results, -questions, -cards"]
+    SH --> Rd
+```
+
+No decision service imports another, and the helper imports none of them, so there is no cycle. The helper pin in `tests/check-at-the-write.test.ts` holds that: each module on `SERVICE_HELPERS` is imported only by the decision services, by name (no namespace, default or aliased import, no re-export, no `import()`), in every import form; it imports no service, declares no `READS`, calls no `insert`, `update`, `delete`, `run`, `exec` or `prepare`, and names no `inTransaction`, `locals`, `RequestEvent` or `$app/server`. Rule 3 follows a guard's call into the helper, and on through the helper's own functions, so a guard cannot reach a write through it (`takeAllowance` counts as a write there). Only the helper declares `sourceOf` (`tests/decisions-api.test.ts` case 3, over the seven services and the helper, eight files).
+
+The six guards on the services' `READS` are card 2697's four (`participantAccountGuard`, `participantAddressGuard`, `decisionDeleteGuard`, `decisionWithdrawGuard`) and card 2679's two (`decisionRuleGuard`, `resultsReleaseGuard`, [Results, the ruling and the release](#results-the-ruling-and-the-release)): each makes every refusal of its write, writes nothing, and is asked by the route before the caller's password and by the write first, so the refusals exist once. The four helper modules take no caller and import no `inWrite`, so they are not services, and `decisionAccess` lives apart from the services because they import the guards (plan decision 3). `people.ts` calls `decision-links.ts`, and the mail effect calls `decision-record.ts`, outside any service write.
 
 **The lifecycle** (`src/lib/server/decision-status.ts`). A decision is stored as `draft`, `open`, `closed`, `ruled`, `superseded` or `withdrawn` (`STORED_STATUSES`). Readers never show `closed`: `decisionStatus(row, now)` shows a closed decision, and an open one whose `closes_at` has passed, as `awaiting_ruling`, and `awaitingRulingSql(now)` is the same rule as a query condition, which `tests/decision-record.test.ts` holds to agree. `TRANSITIONS` names the stored statuses each action may be taken from, and `requireTransition(row, action)` refuses any other with `409` in the shown status's words, for example `This decision is awaiting a ruling: it cannot be opened`.
 
@@ -1302,7 +1349,7 @@ stateDiagram-v2
 
 **Who may do what** (`src/lib/server/decision-access.ts`). `decisionAccess(user, decision)` reads the caller's roles once: `admin` (`isAdmin`), `author` and `decider` (the decision's two user ids), one board role from `getBoardRole` while `board_id` is set (`owner` gives `boardOwner`, `editor` `boardEditor`, `viewer` `boardReader`), and `participant` from the one live row (`removed_at IS NULL`) holding the caller's account. It carries `canEditBoard` from the same call, false with no board. More than one live row holding the caller's account is a fault (decision 29): no `participant` role, and one WARN line under `DECISIONS` naming the decision id and the count and no person. `mayDo(access, action, decision)` reads `DECISION_RULES` (the table in [Authentication and Security](authentication-security.md#decision-access-and-personal-links)), with two more rules: a draft is viewed only by `DRAFT_VIEWERS` (admin, author, decider, boardOwner), and, while the board exists, a grant resting on `author`, `decider` or `boardOwner` (`NEED_BOARD_EDIT`) is good for anything but `view` only while `canEditBoard` holds: a decider who has lost the board cannot rule or change the decision either (card 2675's code review, S8). `requireDecision(user, decisionId, action)` in `route-guards.ts` answers `401` with no user, `400` `Invalid decision ID` for an id that is not an integer, `404` `Decision not found` both for no row and for a row the caller may not view, and `403` `You cannot <verb> this decision`. The status is each write's to check after its body, so the order is 401, 400, 404, 403, then the body's 400 and the status's 409.
 
-**The record** (`src/lib/server/decision-record.ts`). `decision_versions`, `decision_responses`, `decision_rulings` and `decision_events` are insert-only, in code alone (no trigger). `appendEvent(event, by)` and `appendVersion(version, by)` are the only inserts into the events and versions in `src` but the restore's `RECORD_DECISION_LINKS_ENDED`, and `appendEvent` throws a plain `Error` (a 500) for an event naming a participant on a draft or on a decision that is not there (comment 5599), so a draft's participant rows can be deleted freely. `by` is a `RecordActor` (`actorFor(user, sourceOf(opts))` in `decisions.ts`, the source by the route's word or the credential, card 2682's D7; or `SYSTEM_ACTOR`, `DumpFire` with source `system`). `snapshotOf(personId)` is what a participant row copies from the directory. `currentRound`, `liveOptionIds`, `accountHistory` (whether each row held an account on this decision, from its latest `included`, `re_included`, `account_attached` or `account_cleared` event; a detail that cannot be read counts as true, which issues no link) and `lastMailAt` (each participant's latest record-bearing mail) are the reads. `tests/decision-record.test.ts` scans every file under `src` for a Drizzle `.update(`, `.delete(` or `onConflict…` on the four tables, their names as text outside `db/schema.ts`, `db/expected-schema.ts`, `decision-record.ts` and `db/restore.ts`, SQL `UPDATE`, `DELETE FROM`, `REPLACE INTO`, `INSERT OR REPLACE` or `ON CONFLICT` naming them inside those files, an insert into them outside `decision-record.ts` and `db/restore.ts`, and a delete of `decisions` outside `decisions.ts`. A table is known by its import, renamed or not, a `const` alias, a property or an element of a namespace (`schema['decisionEvents']`), and `sql.identifier` or `sql.raw` of its name. A write to a table named only at run time (`DELETE FROM "${table}"`) is allowed only in the files on the test's `GENERIC_WRITERS`, each with why: `db/timestamps.ts`, `db/migrate.ts`, `db/restore.ts`, the reset route and `deletes.ts`'s `USER_REFERENCES`; a new one fails the scan, and so does one named there that no longer is one (the code review's S5).
+**The record** (`src/lib/server/decision-record.ts`). `decision_versions`, `decision_responses`, `decision_rulings` and `decision_events` are insert-only, in code alone (no trigger). `appendEvent(event, by)` and `appendVersion(version, by)` are the only inserts into the events and versions in `src` but the restore's `RECORD_DECISION_LINKS_ENDED`, and `appendEvent` throws a plain `Error` (a 500) for an event naming a participant on a draft or on a decision that is not there (comment 5599), so a draft's participant rows can be deleted freely. `by` is a `RecordActor` (`actorFor(user, sourceOf(opts))` in each decision service, `sourceOf` being `decision-write-shared.ts`'s, the source by the route's word or the credential, card 2682's D7; or `SYSTEM_ACTOR`, `DumpFire` with source `system`). `snapshotOf(personId)` is what a participant row copies from the directory. `currentRound`, `liveOptionIds`, `accountHistory` (whether each row held an account on this decision, from its latest `included`, `re_included`, `account_attached` or `account_cleared` event; a detail that cannot be read counts as true, which issues no link) and `lastMailAt` (each participant's latest record-bearing mail) are the reads. `tests/decision-record.test.ts` scans every file under `src` for a Drizzle `.update(`, `.delete(` or `onConflict…` on the four tables, their names as text outside `db/schema.ts`, `db/expected-schema.ts`, `decision-record.ts` and `db/restore.ts`, SQL `UPDATE`, `DELETE FROM`, `REPLACE INTO`, `INSERT OR REPLACE` or `ON CONFLICT` naming them inside those files, an insert into them outside `decision-record.ts` and `db/restore.ts`, and a delete of `decisions` outside `decision-lifecycle-writes.ts` (`DECISION_DELETES_ALLOWED`, card 2713). A table is known by its import, renamed or not, a `const` alias, a property or an element of a namespace (`schema['decisionEvents']`), and `sql.identifier` or `sql.raw` of its name. A write to a table named only at run time (`DELETE FROM "${table}"`) is allowed only in the files on the test's `GENERIC_WRITERS`, each with why: `db/timestamps.ts`, `db/migrate.ts`, `db/restore.ts`, the reset route and `deletes.ts`'s `USER_REFERENCES`; a new one fails the scan, and so does one named there that no longer is one (the code review's S5).
 
 **Personal links** (`src/lib/server/decision-links.ts`). A link is `/decision-link/[token]`, the token 32 random bytes in base64url, stored only as its SHA-256 in hex in `link_token_hash` (unique) with `link_issued_at`. `issueLink(participantId, by, replaced, { person, hadAccount })` hands the token back once, for the mail, after asserting `reachOf` answers `link` and `mayHoldLink` holds (a plain `Error` otherwise), and writes `link_issued { replaced }`. The person and `hadAccount` are what its caller has already read, so a mail to N link holders reads `accountHistory` once and not N + 1 times (the code review's F1). Every record-bearing mail to a link holder carries a fresh link, which replaces the last, because only the hash is kept. `revokeLinks({ personId } | { participantId }, reason, by)` empties the hash and moment of each row holding one and writes `link_revoked { reason }` per row. `participantForLink(token, now)` is the one place a link is checked: the hash looked up through the unique index, `unknown` for no live row, `expired` once `linkUsable` refuses the decision, and `unknown` again for a holder `reachOf` would no longer reach by link, asked at use (S3). `linkUsable` bounds a link by `ruled_at` (ruled, superseded), `withdrawn_at` (withdrawn) or `closes_at` (open, closed), usable while `now` is before the bound plus `LINK_DAYS_AFTER_END` (90) days; with no bound it is usable only on an open decision, and a draft, an unknown status or a bound that is no moment is refused. Nothing sweeps expired links.
 
@@ -1322,7 +1369,7 @@ stateDiagram-v2
 
 ```mermaid
 sequenceDiagram
-    participant S as decisions.ts (in writeAs)
+    participant S as a decision service (in writeAs)
     participant L as decision-links
     participant R as decision-record
     participant Q as afterCommit (one per batch)
@@ -1353,7 +1400,7 @@ sequenceDiagram
     end
 ```
 
-**The service** (`src/lib/server/decisions.ts`). Each write is `inWrite()`, the guard (`requireDecision`, or `requireBoard(…, 'edit')` for a new draft), the body (400), `requireTransition` and the other checks (409), the writes with `updated_at` stamped, then the events, the activity entry, the live event and the mails.
+**The services** (`src/lib/server/decision-*-writes.ts`, card 2713; the shape and the helpers they share are `decision-write-shared.ts`'s). Each write is `inWrite()`, the guard (`requireDecision`, or `requireBoard(…, 'edit')` for a new draft), the body (400), `requireTransition` and the other checks (409), the writes with `updated_at` stamped, then the events, the activity entry, the live event and the mails.
 
 | Write | Does |
 |---|---|
@@ -1401,7 +1448,7 @@ flowchart LR
     EM["email.ts (re-exports it)"] --> MW
     UI["edit +page.svelte:<br/>DecisionEditor, ParticipantPicker,<br/>ReadinessPanel"] -->|"checkContent alone"| RD
     UI -->|"fetch JSON with the revision"| API["/api/boards/[id]/decisions,<br/>/api/decisions/[id]…"]
-    API -->|"writeAs(locals, caller =>"| S["decisions.ts<br/>createDecision, updateDraft, markReviewed,<br/>setDecider, setParticipants, deleteDecision"]
+    API -->|"writeAs(locals, caller =>"| S["decision-authoring-writes.ts<br/>createDecision, updateDraft, markReviewed, setDecider;<br/>decision-participant-writes.ts setParticipants;<br/>decision-lifecycle-writes.ts deleteDecision"]
     API -->|"the answer, inside the callback"| R
     S --> C
     S --> RD
@@ -1478,7 +1525,7 @@ flowchart LR
     DP -->|"fetch JSON"| PR["…/participants/[participantId]/<br/>resend, account, address"]
     LR -->|"withdraw, DELETE: guard,<br/>then confirmStepUp"| SU["step-up.ts"]
     PR -->|"account, address"| SU
-    LR & PR -->|"writeAs"| S["decisions.ts"]
+    LR & PR -->|"writeAs"| S["decision-lifecycle-writes.ts,<br/>decision-participant-writes.ts,<br/>decision-authoring-writes.ts (dry run)"]
     S --> M["decision-mail.ts<br/>queueDryRun, queueRecordMails,<br/>the caps"]
     S --> RC["decision-record.ts<br/>lastDryRunAt, dryRunsSince, publishesSince,<br/>recordMailsSince, mailsSince,<br/>personOfAccount, deliveryOf"]
     S --> RL["rate-limit.ts<br/>takeAllowance"]
@@ -1546,7 +1593,7 @@ sequenceDiagram
 | Ruling | Where | What |
 |---|---|---|
 | S1 | `people.ts` (`personCreateGuard`, `personDeleteGuard`, `fromAccountsGuard` on `READS`), the three People routes, `/admin/people` and its dialogs | Adding a person, deleting one and Add from accounts ask for the password every time, guard first; 26 actions on `STEP_UP_ACTIONS` then (28 since card 2679) |
-| S2 | `requireRecordMailAllowed` in `decisions.ts`, `recordMailsSince` in `decision-record.ts`, `CALLER_MAIL_DAILY_CAP` (500) in `decision-mail.ts` | The record mail one caller causes in 24 hours, across decisions: opening, re-publishing, Resend, including someone new or again; 429. Card 2740: the invitation to one made consulted on an open decision counts too, but is held back (`mail_skipped { reason: 'caller_cap' }`, through `recordMailRefusal`, the same rule answering its words) rather than the write refused |
+| S2 | `requireRecordMailAllowed` in `decision-write-shared.ts`, `recordMailsSince` in `decision-record.ts`, `CALLER_MAIL_DAILY_CAP` (500) in `decision-mail.ts` | The record mail one caller causes in 24 hours, across decisions: opening, re-publishing, Resend, including someone new or again; 429. Card 2740: the invitation to one made consulted on an open decision counts too, but is held back (`mail_skipped { reason: 'caller_cap' }`, through `recordMailRefusal`, the same rule answering its words) rather than the write refused |
 | S3 | `closesTooFar`, `refusalsOf` (`closes_too_far`) and `checkContent`'s `closes_too_far` warning in `$lib/decision-readiness.ts`; `republishDecision` | Opening and re-publishing refuse a closing time more than 365 days ahead, 409 |
 | S4 | `DecisionActions.svelte` | Withdraw and Delete send whatever password was typed, so a dialog the server told to ask completes |
 | F1 | `DecisionEditor.svelte` | The status, chip and closing time follow `decision` as the page reads it again; unsaved edits kept |
@@ -1595,7 +1642,7 @@ flowchart LR
     V --> C["decision-content.ts<br/>parseVersionContent"]
     V --> L["decision-links.ts<br/>participantForLink, reachOf"]
     V --> RR["decision-record.ts<br/>ownResponses, lastToldOf"]
-    R1 & R2 & R3 & R4 --> S["decisions.ts<br/>respondToDecision, respondByLink,<br/>recordSeen, recordSeenByLink"]
+    R1 & R2 & R3 & R4 --> S["decision-response-writes.ts<br/>respondToDecision, respondByLink,<br/>recordSeen, recordSeenByLink"]
     R3 & R4 -.->|"a 404 from the write"| V
     S --> RR2["decision-record.ts<br/>appendResponse, appendEvent, ownResponseOf,<br/>latestResponse, responsesInRound, hasSeen,<br/>seenStands"]
     UI["DecisionView, ParticipantBanner,<br/>ParticipantResponse, ResponseForm,<br/>MarkdownBlock"] -->|"fetch JSON"| Routes
@@ -1625,7 +1672,7 @@ flowchart LR
 
 The session routes are `requireUser`, `pathId`, `readBody`, then `writeAs(locals, (caller) => service(caller, at, body, { source: 'ui' }))`. The link routes compute `addressToCount(event)` before the body, take the token from it (`''` when it is not text), and catch a `404` from the write: within the limit it is thrown again, past it the route answers `json({ message }, { status: 429, headers: { 'Retry-After': … } })`, the words `tooManyWrongLinks(retryAfterSecs)` in `$lib/decision-words.ts` ("Too many links that do not work were tried from your network. Try again in N minute(s)."). The link routes' paths do not hold `/decision-link/`, which `maskSecretPaths` would rewrite anywhere in a log line (F2).
 
-**The writes** (`src/lib/server/decisions.ts`; the response model is in [Data Model](data-model.md#responses-and-opening-card-2677)).
+**The writes** (`src/lib/server/decision-response-writes.ts`, card 2713; the response model is in [Data Model](data-model.md#responses-and-opening-card-2677)).
 
 | Write | Does |
 |---|---|
@@ -1663,7 +1710,7 @@ sequenceDiagram
     participant V as decision-view
     participant Lk as participantForLink
     participant Api as POST /api/decision-by-link/*
-    participant Sv as decisions.ts (writeAs)
+    participant Sv as decision-response-writes.ts (writeAs)
     participant Rec as decision-record
     M->>Gt: GET /decision-link/[token]
     Gt->>Pg: public route; logged as /decision-link/[token]
@@ -1733,7 +1780,7 @@ flowchart LR
         RS["POST …/supersede"]
     end
     RES["decision-results.ts (a read module)<br/>readResults, tallyOf, mostChosenOf, releasedOf,<br/>releaseRowsOf, commentKeyOf, chainOf,<br/>rulingRefusals, releaseRefusals"]
-    SVC["decisions.ts<br/>ruleDecision, releaseResults, raiseConcern(ByLink),<br/>supersedeDecision; decisionRuleGuard and<br/>resultsReleaseGuard on READS"]
+    SVC["decision-ruling-writes.ts<br/>ruleDecision, releaseResults, raiseConcern(ByLink),<br/>supersedeDecision; decisionRuleGuard and<br/>resultsReleaseGuard on READS"]
     REC["decision-record.ts<br/>appendRuling, responsesOf, revisionResponseIdsOf,<br/>concernsOf, eventsOfKind, statementsOf,<br/>supersedingOf, RESPONSE_KINDS, DECIDER_ONLY_EVENTS"]
     RULES["$lib/decision-rules.ts<br/>mostChosenOf, againstOf, the limits"]
     SVC --> RULES
@@ -1751,7 +1798,7 @@ flowchart LR
     RES --> REC
 ```
 
-**The service.** Five writes join `decisions.ts`, each `(caller, at, body, opts)` starting with
+**The service.** Five writes, in `decision-ruling-writes.ts` since card 2713, each `(caller, at, body, opts)` starting with
 `inWrite()`, and two guards join `READS`:
 
 | Function | Who (`DECISION_RULES`) | From (`TRANSITIONS`) | Writes |
@@ -1958,7 +2005,7 @@ flowchart LR
         AN["POST …/questions/[questionId]/answer<br/>answer or replace"]
         PB["POST …/questions/[questionId]/publish"]
     end
-    SVC["decisions.ts<br/>askQuestion, askQuestionByLink,<br/>answerQuestion, publishAnswer"]
+    SVC["decision-question-writes.ts<br/>askQuestion, askQuestionByLink,<br/>answerQuestion, publishAnswer"]
     PROJ["decision-questions.ts (a read module)<br/>questionsFor, readQuestions, mayAskOf,<br/>mayAnswerOf, answererRoleOf, reachedParticipantOf"]
     REC["decision-record.ts<br/>appendQuestion, recordAnswer,<br/>recordDraftPublished, recordDraftReplaced"]
     RES["decision-results.ts<br/>openQuestionsOf, mayAnswerQuestions"]
@@ -1980,7 +2027,7 @@ flowchart LR
     PROJ --> REC
 ```
 
-**The service.** Four writes join `decisions.ts`, each `(caller, at, body, opts)` starting with
+**The service.** Four writes, in `decision-question-writes.ts` since card 2713, each `(caller, at, body, opts)` starting with
 `inWrite()`; none has a step-up guard, so `READS` is unchanged. They share a private
 `questionAs`, `questionNoticesOf` and `answerNoticeOf`.
 
@@ -2019,7 +2066,7 @@ shown the question as open; a question's `id` only while `mayAnswerOf` holds; th
 name and the role read from the answer's event (`question_answered` or `answer_replaced`
 detail), never from who decides now; `untrusted: true` on every item through any source but
 `'ui'` (fail closed, code review S3). A board reader who is none of these is given `[]`. The one
-pending-draft rule is exported here, `pendingDraft(row)`, which the writes in `decisions.ts`
+pending-draft rule is exported here, `pendingDraft(row)`, which the writes in `decision-question-writes.ts`
 ask, beside `openQuestionWhere()`, the same rule in SQL that `openQuestionsOf` filters by; a
 test holds the two to agree row for row (code review F5). `readQuestions(user, decisionId, { source })`
 adds `requireDecision(user, id, 'questions')` and a 403 `NO_LONGER_REACHED` for a participant
@@ -2131,9 +2178,9 @@ flowchart LR
       DR["decision-register.ts<br/>readRegister, readPersonRecord,<br/>readRecord, recordEntryOf,<br/>visibleDecisionIdsOf"]
       DC["decision-cards.ts<br/>linkedCardsFor, readCardDecisions,<br/>decisionLinksOfCardsUnchecked"]
     end
-    subgraph Service["decisions.ts (service)"]
-      LC["linkCard / unlinkCard"]
-      DD["deleteDecision<br/>(link entries first)"]
+    subgraph Service["Decision services (card 2713)"]
+      LC["decision-card-link-writes.ts<br/>linkCard / unlinkCard"]
+      DD["decision-lifecycle-writes.ts<br/>deleteDecision (link entries first)"]
     end
     Reg --> DR
     Per --> DR
@@ -2149,7 +2196,7 @@ flowchart LR
 **The modules.** `src/lib/server/decision-register.ts` and `src/lib/server/decision-cards.ts` are
 plain read modules: they take `user: SessionUser`, import no `inWrite` and write nothing, so a page
 load may call them (`check-at-the-write`'s rule 4). The two writes, `linkCard` and `unlinkCard`,
-are in the service (`decisions.ts`). `decision-status.ts` gains `shownStatusSql(status, now)`
+are a service's (`decision-card-link-writes.ts`, card 2713). `decision-status.ts` gains `shownStatusSql(status, now)`
 (every shown status as SQL, beside `awaitingRulingSql`, held to `decisionStatus` by a test) and
 `listedStatusOf(row, now)`, the one projection of status and closing time for every list: the
 closing time is null once ruled or superseded. `decision-record.ts` gains `OWN_RECORD_EVENTS`,
@@ -2227,7 +2274,7 @@ so neither revision moves.
 sequenceDiagram
     participant Page as Decision page (LinkedCards)
     participant Route as PUT /api/decisions/[id]/cards/[cardId]
-    participant Svc as decisions.ts linkCard
+    participant Svc as decision-card-link-writes.ts linkCard
     participant DB as SQLite
     Page->>Route: PUT, Content-Type JSON, no body
     Route->>Svc: writeAs(locals, caller => linkCard(caller, {decisionId, cardId, relation:'relates'}, null, {source:'ui'}))
@@ -2246,7 +2293,7 @@ Deleting a linked decision (only a withdrawn one can be: a draft is never linked
 
 ```mermaid
 sequenceDiagram
-    participant Svc as decisions.ts deleteDecision
+    participant Svc as decision-lifecycle-writes.ts deleteDecision
     participant DB as SQLite
     Svc->>Svc: decisionDeleteGuard (withdrawn or draft)
     Svc->>DB: the decision's links, each card's board
@@ -2322,20 +2369,22 @@ flowchart LR
     R1 --> Reg["decision-register.ts<br/>readRegister, registerQueryOf(…, 'api')"]
     R2 --> Auth["decision-authoring.ts<br/>readDecisionForKey, keyDecisionAnswer,<br/>keyDecisionSaved"]
     R3 --> Auth
-    R2 & R3 & R6 --> Svc["decisions.ts<br/>sourceOf(opts), keyed(opts)"]
-    R4 --> Svc
+    R1 & R2 & R3 & R4 & R6 --> Svc["decision-*-writes.ts<br/>(authoring, lifecycle, participant,<br/>ruling, question, card-link)"]
+    Svc --> Sh["decision-write-shared.ts<br/>sourceOf(opts), keyed(opts)"]
     R4 --> Q["decision-questions.ts<br/>readQuestions"]
     R5 --> Res["decision-results.ts<br/>readSummary"]
     R5 --> Reg2["decision-register.ts<br/>readRecord (KeyRecordPage)"]
-    Svc --> WA["write-as.ts<br/>writingWithKey()"]
+    Sh --> WA["write-as.ts<br/>writingWithKey()"]
 ```
 
-**`decisions.ts`.** A private `sourceOf(opts)` answers `'api'` when `opts.source !== 'ui'` or
+**`sourceOf` and `keyed`** (`decision-write-shared.ts` since card 2713, the one module that may
+declare `sourceOf`). `sourceOf(opts)` answers `'api'` when `opts.source !== 'ui'` or
 `writingWithKey()`; `keyed(opts)` is `sourceOf(opts) === 'api'`. Every read of `opts.source` in
-the file goes through it: the `actorFor` calls, `decisionEntry`, every existing refusal and flag
+the seven decision services goes through it: the `actorFor` calls, `decisionEntry`, every existing refusal and flag
 (`markReviewed`, the person's acts, `publishAnswer`, the `replacesDraft` refusal,
 `askQuestionByLink`), `questionAs`' via and source, and `answererViewOf`. The new refusals, each
-a module constant, not exported:
+a module constant, private to the service that asks it, but for `MAIL_ACT` and `OPENED_PEOPLE`,
+which more than one service asks and the helper exports (card 2713):
 
 | Function | Under a key |
 |---|---|

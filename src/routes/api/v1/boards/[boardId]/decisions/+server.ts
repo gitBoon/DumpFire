@@ -1,6 +1,6 @@
 import { json } from '$lib/server/v1-json';
 import { keyDecisionSaved } from '$lib/server/decision-authoring';
-import { createDecision } from '$lib/server/decisions';
+import { createDecision } from '$lib/server/decision-authoring-writes';
 import { pathId, readBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
@@ -9,7 +9,7 @@ import type { RequestHandler } from './$types';
 /**
  * POST /api/v1/boards/:boardId/decisions — make a draft decision on a board
  * the key's account can edit: `title` (card 2682, D2). `createDecision` in
- * `$lib/server/decisions`; `201 { decision, revision }`, the decision in the
+ * `$lib/server/decision-authoring-writes`; `201 { decision, revision }`, the decision in the
  * shape every key is given (`keyDecisionSaved`: no reviewer's account id,
  * marked `untrusted`, D9, D10), and the revision the next write must send
  * (D28). The draft tells nobody: no mail, activity entry or live event. Its

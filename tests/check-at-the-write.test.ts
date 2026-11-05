@@ -78,7 +78,7 @@ import {
 	type BoardFixture
 } from './helpers/fixtures';
 import { watchReads } from './helpers/reads';
-import { handlersOf as exportedHandlers, type HandlerFunction } from './helpers/source-scan';
+import { DECISION_SERVICE, handlersOf as exportedHandlers, SERVICE_HELPERS, SERVICES, type HandlerFunction } from './helpers/source-scan';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 
 beforeEach(resetDb);
@@ -2308,33 +2308,9 @@ describe("card 2253's rule itself", () => {
  * behavioural backstop, run unchanged.
  */
 
-/**
- * The modules both API trees' handlers call for their work, each written to
- * the rule above. Slice A1: the cards; A2: what is on a card; A3: dependencies,
- * a card's cost and the token writes, milestones; A4: boards, dashboard
- * groupings, columns, card categories and labels.
- */
-const SERVICES = [
-	'src/lib/server/cards.ts',
-	'src/lib/server/card-assignees.ts',
-	'src/lib/server/card-comments.ts',
-	'src/lib/server/card-labels.ts',
-	'src/lib/server/subtasks.ts',
-	'src/lib/server/work-dependencies.ts',
-	'src/lib/server/token-service.ts',
-	'src/lib/server/milestone-service.ts',
-	'src/lib/server/boards.ts',
-	'src/lib/server/board-groupings.ts',
-	'src/lib/server/columns.ts',
-	'src/lib/server/card-categories.ts',
-	'src/lib/server/labels.ts',
-	// Card 2337: the card window's files, the web application's alone.
-	'src/lib/server/card-attachments.ts',
-	// Card 2674: the people directory and its groups, an administrator's.
-	'src/lib/server/people.ts',
-	// Card 2675: decisions and their permanent record.
-	'src/lib/server/decisions.ts'
-];
+// The modules both API trees' handlers call for their work (SERVICES), and the modules the decision services share
+// pieces through (SERVICE_HELPERS), are tests/helpers/source-scan.ts's, which tests/decisions-api.test.ts case 3 reads too
+// (card 2713, R5).
 
 /**
  * What a handler that calls a service may call from `$lib/server/**` after
@@ -2413,7 +2389,15 @@ function serverImportsOf(
 }
 
 /** What a service module exports and what breaks the rule in it: its reads, its writes, and the findings (2 and 3). */
-type ServiceReading = { reads: string[]; writes: string[]; pageOptions: string[]; findings: string[] };
+type ServiceReading = {
+	reads: string[];
+	writes: string[];
+	pageOptions: string[];
+	findings: string[];
+	/** Card 2713 (C1): the helper sources and the writers the reading was handed, as handed. */
+	helpers: readonly { file: string; source: string }[];
+	writers: Writers;
+};
 
 /** A page route's options for a service's write, exported by the service (the card 2296 review). */
 const PAGE_OPTIONS = /^[A-Z][A-Z0-9_]*_PAGE_OPTIONS$/;
@@ -2710,8 +2694,511 @@ const NOT_SERVICES: Record<string, string> = {
 		'`SessionUser | null` because the public request routes are called by nobody signed in.'
 };
 
-/** Rules 2 and 3 for one service module. */
-function judgeService(file: string, source: string): ServiceReading {
+/** Exported writers, by module file: what `writersOf` reads from the source, with RECORD_WRITERS added. */
+type Writers = ReadonlyMap<string, ReadonlySet<string>>;
+
+/** The database module and the transaction module, as `moduleFileOf` names them. */
+const DB_MODULE = 'src/lib/server/db/index.ts';
+const TRANSACTION_MODULE = 'src/lib/server/db/transaction.ts';
+/** What a call on the database writes with: a statement written, or one prepared or run. */
+const DB_WRITES = ['insert', 'update', 'delete', 'run', 'exec', 'prepare', 'transaction'];
+/** The allowance in memory a read must not take (card 2713, R2, C3). */
+const ALLOWANCE = { file: 'src/lib/server/rate-limit.ts', name: 'takeAllowance' };
+
+/**
+ * Card 2713 (C5): whether an identifier refers to a value bound elsewhere:
+ * not a property's name (`x.appendEvent`, `{ appendEvent: 1 }`), a
+ * declaration's own name, a label, or the exported name of `export { a as
+ * b }`. `{ appendEvent }` and `export { appendEvent }` refer to it.
+ */
+function isValueReference(node: ts.Identifier): boolean {
+	const parent = node.parent;
+	if (!parent) return false;
+	if (ts.isShorthandPropertyAssignment(parent)) return parent.name === node;
+	if (ts.isExportSpecifier(parent)) return (parent.propertyName ?? parent.name) === node;
+	if (ts.isPropertyAccessExpression(parent)) return parent.expression === node;
+	if (ts.isQualifiedName(parent) || ts.isMetaProperty(parent)) return false;
+	if ((ts.isLabeledStatement(parent) || ts.isBreakOrContinueStatement(parent)) && parent.label === node) return false;
+	if ((ts.isBindingElement(parent) || ts.isImportSpecifier(parent)) && parent.propertyName === node) return false;
+	return (parent as { name?: ts.Node }).name !== node;
+}
+
+/**
+ * Card 2713 (C5): every identifier in `root` that refers to a value, in source
+ * order: a call's callee, a callback handed on (`ids.forEach(appendEvent)`),
+ * `appendEvent.call(…)`, a name assigned (`const w = appendEvent`), a
+ * namespace (`record` of `record.appendRuling`). An import declaration, a
+ * re-export from another module and every type position are left out: they
+ * run nothing.
+ */
+function referencesIn(root: ts.Node): ts.Identifier[] {
+	const found: ts.Identifier[] = [];
+	const visit = (node: ts.Node): void => {
+		if (ts.isImportDeclaration(node) || ts.isImportEqualsDeclaration(node) || ts.isTypeAliasDeclaration(node) || ts.isInterfaceDeclaration(node)) return;
+		if (ts.isExportDeclaration(node) && (node.moduleSpecifier !== undefined || node.isTypeOnly)) return;
+		if (ts.isTypeNode(node) && !ts.isExpressionWithTypeArguments(node)) return;
+		if (ts.isIdentifier(node) && isValueReference(node)) found.push(node);
+		ts.forEachChild(node, visit);
+	};
+	visit(root);
+	return found;
+}
+
+/**
+ * Card 2713 (C2, C4, C5): the exported functions of the modules given that
+ * write, by file, read from their source. A function writes when, with
+ * `database` (the default), it calls `insert`, `update`, `delete`, `run`,
+ * `exec`, `prepare` or `transaction` on the database (a name its module
+ * imports from src/lib/server/db, or `db` or `sqlite`); and always when it
+ * names `inTransaction` (under any name, or through a namespace), or refers
+ * to a function that writes: one of its own module, followed on, or an
+ * exported writer of another of the modules (`seeds` among them), imported by
+ * name under any name or reached through a namespace import, or the
+ * namespace itself handed on whole. Referring is any reference, not only a
+ * call: a callback (`es.forEach(appendEvent)`), `.call`, a name assigned
+ * (C5). Re-exported by name, from another module or as an import exported
+ * again, a writer stays one. Read to a fixed point, so a writer reached
+ * through a chain of modules is one. A `.update` on a hash or a `.delete` on
+ * a Map is no write here: only a call on the database is, which
+ * RECORD_WRITERS holds to its named writers (`judgeWriterList`). Without
+ * `database` it reads what reaches a writer of `seeds` or `inTransaction`
+ * (`reachingWriters`, C4).
+ */
+function writersOf(
+	files: readonly { file: string; source: string }[],
+	options: { database?: boolean; seeds?: Writers } = {}
+): Map<string, Set<string>> {
+	const database = options.database ?? true;
+	type Unit = { direct: boolean; own: string[]; imported: { file: string; name: string }[] };
+	type Module = {
+		units: Map<ts.Node, Unit>;
+		local: Map<string, ts.Node>;
+		exported: Map<string, ts.Node>;
+		reexported: Map<string, { file: string; name: string }>;
+	};
+	const modules = new Map<string, Module>();
+	for (const { file, source } of files) {
+		if (!file.endsWith('.ts')) continue;
+		const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+		const dbNames = new Set(['db', 'sqlite']);
+		const transactionNames = new Set(['inTransaction']);
+		const named = new Map<string, { file: string; name: string }>();
+		const namespaces = new Map<string, string>();
+		const reexported = new Map<string, { file: string; name: string }>();
+		for (const statement of tree.statements) {
+			if (ts.isExportDeclaration(statement) && !statement.isTypeOnly && statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier)) {
+				const target = moduleFileOf(file, statement.moduleSpecifier.text);
+				if (target !== null && statement.exportClause && ts.isNamedExports(statement.exportClause)) {
+					for (const element of statement.exportClause.elements) reexported.set(element.name.text, { file: target, name: (element.propertyName ?? element.name).text });
+				}
+				continue;
+			}
+			if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+			const target = moduleFileOf(file, statement.moduleSpecifier.text);
+			const clause = statement.importClause;
+			if (target === null || !clause || clause.isTypeOnly) continue;
+			const bindings = clause.namedBindings;
+			if (bindings && ts.isNamespaceImport(bindings)) namespaces.set(bindings.name.text, target);
+			else if (bindings) {
+				for (const element of bindings.elements) {
+					if (element.isTypeOnly) continue;
+					const name = (element.propertyName ?? element.name).text;
+					if (target === DB_MODULE) dbNames.add(element.name.text);
+					if (name === 'inTransaction') transactionNames.add(element.name.text);
+					named.set(element.name.text, { file: target, name });
+				}
+			}
+		}
+		// C5: an import exported again, `export { appendEvent as relayed }`, is a re-export of it.
+		for (const statement of tree.statements) {
+			if (!ts.isExportDeclaration(statement) || statement.isTypeOnly || statement.moduleSpecifier || !statement.exportClause || !ts.isNamedExports(statement.exportClause)) continue;
+			for (const element of statement.exportClause.elements) {
+				const from = named.get((element.propertyName ?? element.name).text);
+				if (from && !element.isTypeOnly) reexported.set(element.name.text, from);
+			}
+		}
+		/** What a chain of calls and properties starts from: `db` of `db.insert(t).values(v).run`. */
+		const rootOf = (node: ts.Expression): ts.Expression => {
+			let at = bare(node);
+			while (ts.isPropertyAccessExpression(at) || ts.isElementAccessExpression(at) || ts.isCallExpression(at)) at = bare(at.expression);
+			return at;
+		};
+		/** What a function's body, or a constant's value (`withDatabase` false), calls and refers to. */
+		const unitOf = (body: ts.Node | undefined, withDatabase: boolean): Unit => {
+			const unit: Unit = { direct: false, own: [], imported: [] };
+			if (!body) return unit;
+			for (const call of callsIn(body, true)) {
+				const callee = bare(call.expression);
+				if (!ts.isPropertyAccessExpression(callee)) continue;
+				const root = rootOf(callee.expression);
+				if (withDatabase && DB_WRITES.includes(callee.name.text) && ts.isIdentifier(root) && dbNames.has(root.text)) unit.direct = true;
+				if (callee.name.text === 'inTransaction') unit.direct = true;
+			}
+			for (const reference of referencesIn(body)) {
+				if (transactionNames.has(reference.text)) unit.direct = true;
+				const space = namespaces.get(reference.text);
+				if (space !== undefined) {
+					const parent = reference.parent;
+					if (ts.isPropertyAccessExpression(parent) && parent.expression === reference) unit.imported.push({ file: space, name: parent.name.text });
+					else if (ts.isElementAccessExpression(parent) && parent.expression === reference && ts.isStringLiteralLike(parent.argumentExpression)) {
+						unit.imported.push({ file: space, name: parent.argumentExpression.text });
+					} else unit.imported.push({ file: space, name: '*' });
+					continue;
+				}
+				const from = named.get(reference.text);
+				if (from) unit.imported.push(from);
+				else unit.own.push(reference.text);
+			}
+			return unit;
+		};
+		// Each name declared at the top of the module: a function, or a constant's value (`const w = appendEvent`, C5).
+		const local = new Map<string, ts.Node>();
+		const units = new Map<ts.Node, Unit>();
+		for (const statement of tree.statements) {
+			if (ts.isFunctionDeclaration(statement) && statement.name) {
+				local.set(statement.name.text, statement);
+				if (!units.has(statement)) units.set(statement, unitOf(statement.body, database));
+			}
+			if (!ts.isVariableStatement(statement)) continue;
+			for (const declared of statement.declarationList.declarations) {
+				const value = declared.initializer && bare(declared.initializer);
+				if (!ts.isIdentifier(declared.name) || !value) continue;
+				const isFunction = ts.isArrowFunction(value) || ts.isFunctionExpression(value);
+				local.set(declared.name.text, value);
+				units.set(value, isFunction ? unitOf((value as HandlerFunction).body, database) : unitOf(value, false));
+			}
+		}
+		const exported = new Map<string, ts.Node>();
+		const reading = exportsOf(tree);
+		for (const { name, fn } of reading.functions) exported.set(name, fn);
+		for (const { fn } of reading.defaults) if (fn) exported.set('default', fn);
+		for (const { fn } of [...reading.functions, ...reading.defaults]) if (fn && !units.has(fn)) units.set(fn, unitOf(fn.body, database));
+		// An exported constant that holds a writer, `export const w = appendEvent` (C5), is one.
+		for (const { name, value } of reading.values) {
+			const held = value && ts.isExpression(value) ? bare(value) : undefined;
+			if (held && units.has(held)) exported.set(name, held);
+		}
+		modules.set(file, { units, local, exported, reexported });
+	}
+	const writers = new Map<string, Set<string>>();
+	/** The nodes of the writers found or seeded, so that a module's own call of one is a write (C4). */
+	const writerNodes = new Set<ts.Node>();
+	const add = (file: string, name: string) => {
+		writers.set(file, (writers.get(file) ?? new Set()).add(name));
+		const node = modules.get(file)?.exported.get(name);
+		if (node) writerNodes.add(node);
+	};
+	for (const [file, names] of options.seeds ?? []) for (const name of names) add(file, name);
+	const isWriter = (file: string, name: string, depth = 0): boolean => {
+		// A namespace handed on whole is a write if its module has one.
+		if (name === '*') return (writers.get(file)?.size ?? 0) > 0;
+		if (writers.get(file)?.has(name)) return true;
+		const again = modules.get(file)?.reexported.get(name);
+		return again !== undefined && depth < 10 && isWriter(again.file, again.name, depth + 1);
+	};
+	const reaches = (module: Module, node: ts.Node, seen: Set<ts.Node>): boolean => {
+		if (writerNodes.has(node)) return true;
+		if (seen.has(node)) return false;
+		seen.add(node);
+		const unit = module.units.get(node);
+		if (!unit) return false;
+		if (unit.direct || unit.imported.some(({ file, name }) => isWriter(file, name))) return true;
+		return unit.own.some((name) => {
+			const inner = module.local.get(name);
+			return inner !== undefined && reaches(module, inner, seen);
+		});
+	};
+	for (let changed = true; changed; ) {
+		changed = false;
+		for (const [file, module] of modules) {
+			for (const [name, node] of module.exported) {
+				if (writers.get(file)?.has(name) || !reaches(module, node, new Set())) continue;
+				add(file, name);
+				changed = true;
+			}
+			for (const [name, { file: from, name: original }] of module.reexported) {
+				if (writers.get(file)?.has(name) || !isWriter(from, original)) continue;
+				add(file, name);
+				changed = true;
+			}
+		}
+	}
+	return writers;
+}
+
+/**
+ * Card 2713 (C2): the writers the decision services and their helper call
+ * of the record, the activity log, the links and the mail queue, named. Each
+ * is a write wherever rule 3 looks and in the helper pin; `judgeWriterList`
+ * holds the list to what `writersOf` reads, both ways, so that a writer
+ * renamed, moved or no longer read as one fails, and one added to these
+ * modules is listed.
+ */
+const RECORD_WRITERS: Readonly<Record<string, readonly string[]>> = {
+	'src/lib/server/decision-record.ts': [
+		'appendEvent',
+		'appendVersion',
+		'appendResponse',
+		'appendRuling',
+		'appendQuestion',
+		'recordAnswer',
+		'recordDraftPublished',
+		'recordDraftReplaced'
+	],
+	'src/lib/server/logActivity.ts': ['logActivity', 'logUiActivity'],
+	'src/lib/server/decision-links.ts': ['issueLink', 'revokeLinks'],
+	// C5: `queueDryRun` queues the dry run's mail after the commit (card 2697); read by reference, its `afterCommit`
+	// reaches the transaction module's `log`, which writes system_logs, so it is a writer and is listed.
+	'src/lib/server/decision-mail.ts': ['queueRecordMails', 'queueDryRun']
+};
+
+/**
+ * Card 2713 (C2): RECORD_WRITERS against what `writersOf` reads, over the
+ * files given. A module named that is not there, a writer it no longer
+ * exports, one it exports that no longer writes as read here, and a writer
+ * of a module named that is not on the list are each a finding: the list
+ * fails closed.
+ */
+function judgeWriterList(files: readonly { file: string; source: string }[], derived: Writers, listed: Readonly<Record<string, readonly string[]>>): string[] {
+	const findings: string[] = [];
+	for (const [file, names] of Object.entries(listed)) {
+		const given = files.find((candidate) => candidate.file === file);
+		if (!given) {
+			findings.push(`RECORD_WRITERS names ${file}, which is not a module here (writers)`);
+			continue;
+		}
+		const exported = new Set(exportsOf(ts.createSourceFile(file, given.source, ts.ScriptTarget.Latest, true)).functions.map(({ name }) => name));
+		for (const name of names) {
+			if (!exported.has(name)) findings.push(`RECORD_WRITERS names ${file}#${name}, which it no longer exports (writers)`);
+			else if (!derived.get(file)?.has(name)) findings.push(`RECORD_WRITERS names ${file}#${name}, which no longer writes as this scan reads it (writers)`);
+		}
+		for (const name of derived.get(file) ?? []) {
+			if (!names.includes(name)) findings.push(`${file}#${name} writes and is not on RECORD_WRITERS (writers)`);
+		}
+	}
+	return findings;
+}
+
+/**
+ * The writers rule 3 and the helper pin count (C2): of each module on
+ * RECORD_WRITERS, what `writersOf` read of it, with each writer the list
+ * names added, so that a writer named is one even where the reading misses
+ * it. Other modules' raw database calls are left out: read this way a
+ * lazily made signing key (`formSecret`) and a `sqlite.prepare` of a SELECT
+ * are writes too, which the record's rule is not about. What of theirs
+ * reaches one of these, or `inTransaction`, is added by `reachingWriters` (C4).
+ */
+function listedWriters(derived: Writers, listed: Readonly<Record<string, readonly string[]>>): Writers {
+	const writers = new Map<string, Set<string>>();
+	for (const [file, names] of Object.entries(listed)) writers.set(file, new Set([...(derived.get(file) ?? []), ...names]));
+	return writers;
+}
+
+/**
+ * Card 2713 (C4): the writers rule 3 and the helper pin count, over the files
+ * given: the listed modules' writers (`listedWriters`) and `inTransaction`,
+ * and every exported function of any other module, a service among them,
+ * that reaches one of them, through its own functions, imports under any
+ * name, namespaces and re-exports, to a fixed point (`writersOf` without
+ * `database`). So
+ * `runDecisionRemindersOnce`, which appends to the record, and
+ * `stillCallerNow`, which opens a transaction, are writers; a raw database
+ * call outside the listed modules still is not, so that `formSecret`'s
+ * signing key made once and a `sqlite.prepare` of a SELECT stay out.
+ */
+function reachingWriters(files: readonly { file: string; source: string }[], derived: Writers, listed: Readonly<Record<string, readonly string[]>>): Writers {
+	const seeds = listedWriters(derived, listed) as Map<string, Set<string>>;
+	seeds.set(TRANSACTION_MODULE, new Set(['inTransaction']));
+	return writersOf(files, { database: false, seeds });
+}
+
+/** What a reference in a module refers to that writes (`importedWriteOf`): which kind, and the node that names it. */
+type ImportedWrite = { kind: 'writer' | 'allowance'; node: ts.Node };
+
+/**
+ * Card 2713 (C2, C3, C5): what a reference in `tree` (the module `file`,
+ * `referencesIn`) refers to of another module that writes, and the node that
+ * names it. A reference, not only a call: a callback handed on, `.call`, a
+ * name assigned (C5). `writer`: a function on `writers`, imported by name
+ * under any name or reached through a namespace import (`record.appendRuling`
+ * or `record['appendRuling']`), or a namespace of a module with a writer
+ * handed on whole. `allowance`: `takeAllowance` of src/lib/server/rate-limit.ts
+ * under any name, or any function called `takeAllowance`, the allowance in
+ * memory a read must not take (R2). Undefined for any other reference.
+ */
+function importedWriteOf(tree: ts.SourceFile, file: string, writers: Writers): (reference: ts.Identifier) => ImportedWrite | undefined {
+	const named = new Map<string, { file: string; name: string }>();
+	const namespaces = new Map<string, string>();
+	for (const statement of tree.statements) {
+		if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+		const target = moduleFileOf(file, statement.moduleSpecifier.text);
+		const bindings = statement.importClause?.namedBindings;
+		if (target === null || !bindings) continue;
+		if (ts.isNamespaceImport(bindings)) namespaces.set(bindings.name.text, target);
+		else for (const element of bindings.elements) named.set(element.name.text, { file: target, name: (element.propertyName ?? element.name).text });
+	}
+	const kindOf = (target: string, name: string, written: string): ImportedWrite['kind'] | undefined => {
+		if (writers.get(target)?.has(name)) return 'writer';
+		if ((target === ALLOWANCE.file && name === ALLOWANCE.name) || written === ALLOWANCE.name) return 'allowance';
+		return undefined;
+	};
+	return (reference) => {
+		const space = namespaces.get(reference.text);
+		if (space !== undefined) {
+			const parent = reference.parent;
+			let kind: ImportedWrite['kind'] | undefined;
+			if (ts.isPropertyAccessExpression(parent) && parent.expression === reference) kind = kindOf(space, parent.name.text, parent.name.text);
+			else if (ts.isElementAccessExpression(parent) && parent.expression === reference && ts.isStringLiteralLike(parent.argumentExpression)) {
+				kind = kindOf(space, parent.argumentExpression.text, parent.argumentExpression.text);
+			} else {
+				// The namespace handed on whole: a write if its module has one.
+				kind = (writers.get(space)?.size ?? 0) > 0 ? 'writer' : space === ALLOWANCE.file ? 'allowance' : undefined;
+				return kind && { kind, node: reference };
+			}
+			return kind && { kind, node: parent };
+		}
+		const from = named.get(reference.text);
+		const kind = from ? kindOf(from.file, from.name, reference.text) : reference.text === ALLOWANCE.name ? 'allowance' : undefined;
+		return kind && { kind, node: reference };
+	};
+}
+
+/** A write as it is written: a call's callee (`db.insert(t).values(v).run`), or the name referred to. */
+function writeText(node: ts.Node, tree: ts.SourceFile): string {
+	return ts.isCallExpression(node) ? calleeOf(node, tree) : node.getText(tree).replace(/\s+/g, '');
+}
+
+/**
+ * Card 2713 (D2, D6 row 5): the helper pin, over the files given. Each module
+ * on `helpers` is imported only by a decision service (a module on `services`
+ * named `src/lib/server/decision*.ts`, `DECISION_SERVICE`), and only by name
+ * under its own name: never as a namespace, a default or under another name
+ * (R4), never re-exported and never by `import()` or `import x = require()`,
+ * through whatever specifier names it, `$lib/server/…`, a relative path or a
+ * `.js` ending (`moduleFileOf`, R3). A `.svelte` file is read as text, and
+ * one that names a helper is a finding. A helper is on neither `services` nor
+ * `notServices`, imports no service, declares no `READS`, calls no `insert`,
+ * `update`, `delete`, `run`, `exec` or `prepare` (R2), nor refers to any
+ * writer on `writers` (`reachingWriters`: of any module, C4) it imports,
+ * under any name or through a namespace, by a call or otherwise: a callback,
+ * `.call`, a name assigned, the namespace whole (C2, C5), and keeps
+ * rule 3's file-wide bans: no `inTransaction` at all, no `locals`,
+ * `App.Locals`, `RequestEvent` or `getRequestEvent`, no `$app/server`. And no
+ * decision service imports another decision service (R6). Its
+ * `takeAllowance`, the caller's mail allowance taken inside a write, is no
+ * finding here; rule 3 counts it as a write where a read reaches it (R2, C3).
+ */
+function judgeServiceHelpers(
+	files: { file: string; source: string }[],
+	services: readonly string[],
+	helpers: readonly string[],
+	writers: Writers,
+	notServices: Record<string, string> = {}
+): string[] {
+	const findings: string[] = [];
+	const decisionServices = services.filter((file) => DECISION_SERVICE.test(file));
+	for (const helper of helpers) {
+		if (services.includes(helper)) findings.push(`${helper} is a service helper and is on SERVICES (helper pin)`);
+		if (helper in notServices) findings.push(`${helper} is a service helper and is on NOT_SERVICES (helper pin)`);
+		if (!files.some(({ file }) => file === helper)) findings.push(`SERVICE_HELPERS names ${helper}, which is not a module here (helper pin)`);
+	}
+	for (const { file, source } of files) {
+		if (file.endsWith('.svelte')) {
+			for (const helper of helpers) {
+				if (source.includes(posix.basename(helper, '.ts'))) findings.push(`${file} names ${helper}, a service helper, which only a decision service imports (helper pin)`);
+			}
+			continue;
+		}
+		const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+		const at = (node: ts.Node) => `${file}:${tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1}`;
+		const isDecisionService = decisionServices.includes(file);
+		const isHelper = helpers.includes(file);
+		const notByName = (node: ts.Node, target: string) =>
+			findings.push(`${at(node)} imports ${target}, a service helper, other than by name: import each function by its own name (helper pin)`);
+		const visit = (node: ts.Node): void => {
+			// Each module this file names, in every form.
+			let named: { specifier: ts.Expression | undefined; form: 'import' | 'export' | 'import()' | 'require' } | undefined;
+			if (ts.isImportDeclaration(node)) named = { specifier: node.moduleSpecifier, form: 'import' };
+			else if (ts.isExportDeclaration(node) && node.moduleSpecifier) named = { specifier: node.moduleSpecifier, form: 'export' };
+			else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) named = { specifier: node.arguments[0], form: 'import()' };
+			else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) named = { specifier: node.moduleReference.expression, form: 'require' };
+			const target = named?.specifier && ts.isStringLiteralLike(named.specifier) ? moduleFileOf(file, named.specifier.text) : null;
+			if (named && target !== null && helpers.includes(target)) {
+				if (!isDecisionService) {
+					findings.push(`${at(node)} imports ${target}, a service helper, which only a decision service on SERVICES may import (helper pin)`);
+				} else if (named.form === 'export') {
+					findings.push(`${at(node)} re-exports ${target}, a service helper (helper pin)`);
+				} else if (named.form !== 'import' || !ts.isImportDeclaration(node)) {
+					notByName(node, target);
+				} else {
+					const clause = node.importClause;
+					const bindings = clause?.namedBindings;
+					if (!clause || clause.name || !bindings || !ts.isNamedImports(bindings)) notByName(node, target);
+					else {
+						for (const element of bindings.elements) {
+							if (element.propertyName && element.propertyName.text !== element.name.text) {
+								findings.push(`${at(element)} imports ${element.propertyName.text} of ${target} as ${element.name.text}: import it under its own name (helper pin)`);
+							}
+						}
+					}
+				}
+			}
+			if (named && target !== null && services.includes(target)) {
+				if (isHelper) findings.push(`${at(node)} imports ${target}, a service: a service helper imports none (helper pin)`);
+				if (isDecisionService && target !== file && decisionServices.includes(target)) {
+					findings.push(`${at(node)} imports ${target}: a decision service imports no other decision service (helper pin)`);
+				}
+			}
+			ts.forEachChild(node, visit);
+		};
+		visit(tree);
+		if (!isHelper) continue;
+		// What the helper itself may not do: write, declare READS, or name a transaction or the request.
+		const writing: ts.Node[] = [];
+		// C5: any reference to an imported writer, called or handed on, is a write.
+		const importedWrite = importedWriteOf(tree, file, writers);
+		for (const reference of referencesIn(tree)) {
+			const hit = importedWrite(reference);
+			if (hit?.kind === 'writer') writing.push(hit.node);
+		}
+		const inHelper = (node: ts.Node): void => {
+			if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && ['insert', 'update', 'delete', 'run', 'exec', 'prepare'].includes(node.expression.name.text)) {
+				writing.push(node);
+			}
+			if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) && node.moduleSpecifier.text === '$app/server') findings.push(`${at(node)} imports $app/server (helper pin)`);
+			if (ts.isIdentifier(node)) {
+				if (node.text === 'READS') findings.push(`${at(node)} names READS: a service helper declares none (helper pin)`);
+				if (['inTransaction', 'locals', 'RequestEvent', 'getRequestEvent'].includes(node.text)) findings.push(`${at(node)} names ${node.text} (helper pin)`);
+				if (node.text === 'App' && ts.isQualifiedName(node.parent) && node.parent.right.text === 'Locals') findings.push(`${at(node)} names App.Locals (helper pin)`);
+			}
+			ts.forEachChild(node, inHelper);
+		};
+		inHelper(tree);
+		writing.sort((a, b) => a.getStart(tree) - b.getStart(tree));
+		for (const node of writing) {
+			if (writing.some((other) => other !== node && within(node, other))) continue;
+			const called = ts.isCallExpression(node) || (ts.isCallExpression(node.parent) && node.parent.expression === node);
+			findings.push(`${at(node)} ${called ? 'calls' : 'refers to'} ${writeText(node, tree)}: a service helper writes nothing (helper pin)`);
+		}
+	}
+	return findings;
+}
+
+/**
+ * Rules 2 and 3 for one service module. `helpers` is the source of each
+ * module on SERVICE_HELPERS, always handed (card 2713, D6 row 4, R1), so that
+ * no call can leave rule 3's follow out: a read is followed through every
+ * function of its own module and of a module on SERVICE_HELPERS it reaches,
+ * called or referred to, at any depth and from one into the other, each
+ * function read once so that a cycle ends (R2, C6). `writers` is each
+ * module's exported writers (`reachingWriters`: RECORD_WRITERS, and what of
+ * any module reaches one or `inTransaction`), always handed too (C2, C4).
+ * Wherever rule 3 looks, any reference to an imported writer, called or
+ * not, and to `takeAllowance` is a write (C2, C3, C5). The reading keeps the
+ * `helpers` and `writers` it was handed, so that the suite can show its own
+ * wiring was the one used (C1).
+ */
+function judgeService(file: string, source: string, helpers: readonly { file: string; source: string }[], writers: Writers): ServiceReading {
 	const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
 	const line = (node: ts.Node) => tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1;
 	const findings: string[] = [];
@@ -2813,41 +3300,89 @@ function judgeService(file: string, source: string): ServiceReading {
 	}
 
 	// (3): a read writes nothing: no insert, update, delete, run, exec or statement
-	// prepared (the re-check of A1, 5), and no transaction of its own; nor does a
-	// function of the module it calls, followed one level.
-	const writesIn = (body: ts.Node) => {
-		const writing = callsIn(body, true).filter((call) => {
+	// prepared (the re-check of A1, 5), no transaction of its own, no imported
+	// writer referred to and no allowance taken (card 2713, C2, C3, C5); nor
+	// does anything it reaches through its module and the helpers (C6).
+	const importedWrites = new Map<ts.SourceFile, (reference: ts.Identifier) => ImportedWrite | undefined>();
+	/**
+	 * The writes in `body`, written in the module `writtenIn`, in source order:
+	 * a call of a statement or a transaction, and any reference, called or not,
+	 * to an imported writer or the allowance (C5), whose imports say which.
+	 */
+	const writesIn = (body: ts.Node, writtenIn: ts.SourceFile): ts.Node[] => {
+		const importedWrite = importedWrites.get(writtenIn) ?? importedWriteOf(writtenIn, writtenIn.fileName, writers);
+		importedWrites.set(writtenIn, importedWrite);
+		const writing: ts.Node[] = callsIn(body, true).filter((call) => {
 			const callee = call.expression;
 			return (ts.isPropertyAccessExpression(callee) && ['insert', 'update', 'delete', 'run', 'exec', 'prepare'].includes(callee.name.text)) || namesTransaction(callee);
 		});
-		return writing.filter((call) => !writing.some((other) => other !== call && within(call, other)));
+		for (const reference of referencesIn(body)) {
+			const hit = importedWrite(reference);
+			if (hit) writing.push(hit.node);
+		}
+		writing.sort((a, b) => a.getStart(writtenIn) - b.getStart(writtenIn));
+		return writing.filter((node) => !writing.some((other) => other !== node && within(node, other)));
 	};
-	/** A function written in this module, by name: a declaration, or a constant that holds one. */
-	const moduleFunction = (name: string): HandlerFunction | undefined => {
-		for (const statement of tree.statements) {
-			if (ts.isFunctionDeclaration(statement) && statement.name?.text === name) return statement;
+	/** What a name declared at the top of a module runs: a function's body, or a constant's value (`const w = appendEvent`, C5). */
+	const bodyIn = (source: ts.SourceFile, name: string): ts.Node | undefined => {
+		for (const statement of source.statements) {
+			if (ts.isFunctionDeclaration(statement) && statement.name?.text === name) return statement.body;
 			if (!ts.isVariableStatement(statement)) continue;
 			for (const declared of statement.declarationList.declarations) {
 				const value = declared.initializer && bare(declared.initializer);
-				if (ts.isIdentifier(declared.name) && declared.name.text === name && value && (ts.isArrowFunction(value) || ts.isFunctionExpression(value))) return value;
+				if (!ts.isIdentifier(declared.name) || declared.name.text !== name || !value) continue;
+				return ts.isArrowFunction(value) || ts.isFunctionExpression(value) ? value.body : value;
 			}
 		}
 		return undefined;
 	};
+	const helperTrees = new Map(helpers.map(({ file: helperFile, source: helperSource }) => [helperFile, ts.createSourceFile(helperFile, helperSource, ts.ScriptTarget.Latest, true)]));
+	// Card 2713 (D6 row 4): each function a module, this one or a helper, imports from a module on SERVICE_HELPERS, by its local name.
+	const fromHelpers = new Map<ts.SourceFile, Map<string, { file: string; name: string }>>();
+	const fromHelperOf = (source: ts.SourceFile) => {
+		const known = fromHelpers.get(source);
+		if (known) return known;
+		const imports = new Map<string, { file: string; name: string }>();
+		for (const statement of source.statements) {
+			if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+			const target = moduleFileOf(source.fileName, statement.moduleSpecifier.text);
+			const bindings = statement.importClause?.namedBindings;
+			if (target === null || !helperTrees.has(target) || !bindings || !ts.isNamedImports(bindings)) continue;
+			for (const element of bindings.elements) imports.set(element.name.text, { file: target, name: (element.propertyName ?? element.name).text });
+		}
+		fromHelpers.set(source, imports);
+		return imports;
+	};
 	for (const { name, fn } of exported.functions) {
 		if (!reads.includes(name) || !fn.body) continue;
-		const direct = new Set(writesIn(fn.body));
-		for (const call of callsIn(fn.body, true)) {
-			if (direct.has(call)) {
-				findings.push(`${file}:${line(call)} ${name} is on READS and writes: ${calleeOf(call, tree)} (3)`);
-				continue;
+		// Card 2713 (R2, C6): the read, and on through every function of its own module and of a helper module it reaches,
+		// called or referred to, at any depth: this module's functions and each helper's are named on the way, a helper's
+		// own functions are not. Each function is read once, so a cycle ends.
+		const seen = new Set<ts.Node>([fn.body]);
+		const follow = (body: ts.Node, at: ts.SourceFile, path: string[], leaving: ts.Node | undefined): void => {
+			const writes = writesIn(body, at);
+			const steps: { node: ts.Node; next?: () => void }[] = writes.map((node) => ({ node }));
+			for (const reference of referencesIn(body)) {
+				if (writes.some((write) => within(reference, write))) continue;
+				const imported = fromHelperOf(at).get(reference.text);
+				const target = imported ? helperTrees.get(imported.file)! : at;
+				const inner = bodyIn(target, imported ? imported.name : reference.text);
+				if (!inner || seen.has(inner)) continue;
+				seen.add(inner);
+				const hop = imported ? `${imported.file}#${imported.name}` : at === tree ? reference.text : undefined;
+				steps.push({ node: reference, next: () => follow(inner, target, hop ? [...path, hop] : path, at === tree ? reference : leaving) });
 			}
-			const helper = ts.isIdentifier(call.expression) ? moduleFunction(call.expression.text) : undefined;
-			if (!helper?.body || helper === fn) continue;
-			for (const inner of writesIn(helper.body)) {
-				findings.push(`${file}:${line(inner)} ${name} is on READS and writes: ${calleeOf(inner, tree)} (through ${call.expression.getText(tree)}) (3)`);
+			steps.sort((a, b) => a.node.getStart(at) - b.node.getStart(at));
+			for (const { node, next } of steps) {
+				if (next) {
+					next();
+					continue;
+				}
+				const where = at === tree ? node : leaving!;
+				findings.push(`${file}:${line(where)} ${name} is on READS and writes: ${writeText(node, at)}${path.length > 0 ? ` (through ${path.join(' → ')})` : ''} (3)`);
 			}
-		}
+		};
+		follow(fn.body, tree, [], undefined);
 	}
 
 	// (3): inTransaction only after a write's inWrite(); nothing of the request.
@@ -2864,7 +3399,7 @@ function judgeService(file: string, source: string): ServiceReading {
 		ts.forEachChild(node, visit);
 	};
 	visit(tree);
-	return { reads, writes, pageOptions, findings: [...new Set(findings)] };
+	return { reads, writes, pageOptions, findings: [...new Set(findings)], helpers, writers };
 }
 
 /**
@@ -3271,22 +3806,26 @@ function judgeServerImportForms(file: string, source: string): string[] {
 }
 
 /**
- * Card 2682 (D33, plan review S8): the writes of `decisions.ts` that the page
- * asks the caller's password for once the decision was ever opened. Every
- * route outside src/routes/api/v1 that calls either must be a handler on
- * CURRENT_PASSWORD; v1 is refused by the credential in the service (D5).
- * Since card 2726 the service also refuses an opened one at run time unless
- * `passwordHeld()` (`requirePasswordHeld`); this scan stays as the earlier
- * warning, on the source, before any request (card 2726, D5).
+ * Card 2682 (D33, plan review S8): the writes the page asks the caller's
+ * password for once the decision was ever opened, each keyed `module#name`
+ * (card 2713, D6 row 7: by the module that exports it, not by a path a move
+ * could leave empty). Every route outside src/routes/api/v1 that calls either
+ * must be a handler on CURRENT_PASSWORD; v1 is refused by the credential in
+ * the service (D5). Since card 2726 the service also refuses an opened one at
+ * run time unless `passwordHeld()` (`requirePasswordHeld`); this scan stays
+ * as the earlier warning, on the source, before any request (card 2726, D5).
  */
-const PASSWORD_WRITES = ['deleteDecision', 'withdrawDecision'];
+const PASSWORD_WRITES = ['src/lib/server/decision-lifecycle-writes.ts#deleteDecision', 'src/lib/server/decision-lifecycle-writes.ts#withdrawDecision'];
+
+/** The modules `PASSWORD_WRITES` names. */
+const PASSWORD_MODULES = [...new Set(PASSWORD_WRITES.map((key) => key.slice(0, key.indexOf('#'))))];
 
 /**
  * D33 for one file under src/routes outside v1: each handler that calls a
  * write of `PASSWORD_WRITES` (as the imported function, by any local name) is
- * on `listed`; a call outside every handler, a namespace import of
- * decisions.ts, and any import of one by a file that is no `+server.ts` (a
- * page's server file, a helper) are findings outright.
+ * on `listed`; a call outside every handler, a namespace import of a module
+ * `PASSWORD_WRITES` names, and any import of one by a file that is no
+ * `+server.ts` (a page's server file, a helper) are findings outright.
  */
 function judgePasswordWrites(file: string, source: string, listed: readonly string[]): string[] {
 	const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
@@ -3294,9 +3833,9 @@ function judgePasswordWrites(file: string, source: string, listed: readonly stri
 	const { names, namespaces } = serverImportsOf(tree, file);
 	const findings: string[] = [];
 	for (const namespace of namespaces) {
-		if (namespace.file === 'src/lib/server/decisions.ts') findings.push(`${file}:${namespace.line} imports src/lib/server/decisions.ts as a namespace (D33)`);
+		if (PASSWORD_MODULES.includes(namespace.file)) findings.push(`${file}:${namespace.line} imports ${namespace.file} as a namespace (D33)`);
 	}
-	const locals = new Map([...names].filter(([, from]) => from.file === 'src/lib/server/decisions.ts' && PASSWORD_WRITES.includes(from.name)).map(([local, from]) => [local, from.name]));
+	const locals = new Map([...names].filter(([, from]) => PASSWORD_WRITES.includes(v1Key(from))).map(([local, from]) => [local, from.name]));
 	if (locals.size === 0) return findings;
 	if (!file.endsWith('/+server.ts')) {
 		return [...findings, ...[...locals.values()].map((name) => `${file} imports ${name}, which only a handler on CURRENT_PASSWORD may call (D33)`)];
@@ -3397,7 +3936,13 @@ function judgePasswordProofs(file: string, source: string, allowed: Readonly<Rec
 }
 
 describe('one service per action, written only inside writeAs (card 2012)', () => {
-	const services = new Map(SERVICES.map((file) => [file, judgeService(file, readFileSync(join(ROOT, file), 'utf8'))] as const));
+	const helpers = SERVICE_HELPERS.map((file) => ({ file, source: readFileSync(join(ROOT, file), 'utf8') }));
+	// Card 2713 (C2): the exported writers of every module under src, read from their source, with RECORD_WRITERS added.
+	const sourcesUnderSrc = filesUnder('src', (path) => path.endsWith('.ts')).map((file) => ({ file, source: readFileSync(join(ROOT, file), 'utf8') }));
+	const derivedWriters = writersOf(sourcesUnderSrc);
+	// C4: and every function of any module that reaches one of the listed writers or inTransaction.
+	const writers = reachingWriters(sourcesUnderSrc, derivedWriters, RECORD_WRITERS);
+	const services = new Map(SERVICES.map((file) => [file, judgeService(file, readFileSync(join(ROOT, file), 'utf8'), helpers, writers)] as const));
 	const routes = filesUnder('src/routes', (path) => /\/\+(server|page\.server|layout\.server)\.ts$/.test(path));
 
 	it('calls nothing from $lib/server after the body outside writeAs in a handler that calls a service, and calls a service write only in a callback (1, 2)', () => {
@@ -3441,45 +3986,47 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 				reads: ['personUpdateGuard', 'personCreateGuard', 'personDeleteGuard', 'fromAccountsGuard', 'listPeople', 'listPeopleGroups'],
 				writes: ['createPerson', 'updatePerson', 'deletePerson', 'addFromAccounts', 'createGroup', 'updateGroup', 'deleteGroup', 'setGroupMembers']
 			},
-			// Card 2675.
-			'src/lib/server/decisions.ts': {
-				// Card 2697 (Q10, Q29): the administrator's participant writes' refusals, and the delete's and the
-				// withdrawal's, read before the password.
-				// Card 2679 (decision 2): the ruling's and the release's, which their routes ask before the password.
-				reads: ['participantAccountGuard', 'participantAddressGuard', 'decisionDeleteGuard', 'decisionWithdrawGuard', 'decisionRuleGuard', 'resultsReleaseGuard'],
+			// Card 2713, slice 1: drafting, moved out of the former decision service (card 2675), in source order (plan 4.1).
+			'src/lib/server/decision-authoring-writes.ts': {
+				reads: [],
 				writes: [
 					'createDecision',
 					'setDecider',
-					'setParticipants',
 					// Card 2676: the working copy saved, and agent-drafted text marked reviewed.
 					'updateDraft',
 					'markReviewed',
-					'openDecision',
-					'republishDecision',
-					'closeDecision',
-					'extendDecision',
-					'withdrawDecision',
-					'deleteDecision',
-					// Card 2680: a card linked to a decision, and unlinked from it.
-					'linkCard',
-					'unlinkCard',
 					// Card 2697: a dry run of the working copy, mailed to the caller alone.
-					'dryRunDecision',
-					'resendInvitation',
-					'setParticipantAccount',
-					'changeParticipantAddress',
-					// Card 2677: a participant's response and being recorded as having seen, signed in or by a personal link.
-					'respondToDecision',
-					'respondByLink',
-					'recordSeen',
-					'recordSeenByLink',
-					// Card 2679: the ruling, the release of results, and a draft superseding a ruled decision.
-					'ruleDecision',
-					'releaseResults',
-					'supersedeDecision',
-					// Card 2679 (decision 4): a participant's concern about the ruling, signed in or by a personal link.
-					'raiseConcern',
-					'raiseConcernByLink',
+					'dryRunDecision'
+				]
+			},
+			// Card 2713, slice 2: the lifecycle and the guards of the withdrawal and the delete (card 2697, Q10, Q29), read before
+			// the password.
+			'src/lib/server/decision-lifecycle-writes.ts': {
+				reads: ['decisionWithdrawGuard', 'decisionDeleteGuard'],
+				writes: ['openDecision', 'republishDecision', 'closeDecision', 'extendDecision', 'withdrawDecision', 'deleteDecision']
+			},
+			// Card 2713, slice 3: the participants and the guards of the administrator's two participant writes (card 2697, Q10),
+			// read before the password.
+			'src/lib/server/decision-participant-writes.ts': {
+				reads: ['participantAccountGuard', 'participantAddressGuard'],
+				writes: ['setParticipants', 'resendInvitation', 'setParticipantAccount', 'changeParticipantAddress']
+			},
+			// Card 2713, slice 3: card 2680's card linked to a decision, and unlinked from it.
+			'src/lib/server/decision-card-link-writes.ts': { reads: [], writes: ['linkCard', 'unlinkCard'] },
+			// Card 2713, slice 4: card 2677's participant's response and being recorded as having seen, signed in or by a personal
+			// link.
+			'src/lib/server/decision-response-writes.ts': { reads: [], writes: ['respondToDecision', 'respondByLink', 'recordSeen', 'recordSeenByLink'] },
+			// Card 2713, slice 4: card 2679's ruling and release, whose guards (decision 2) their routes ask before the password; a
+			// draft superseding a ruled decision; and (decision 4) a participant's concern about the ruling, signed in or by a
+			// personal link.
+			'src/lib/server/decision-ruling-writes.ts': {
+				reads: ['decisionRuleGuard', 'resultsReleaseGuard'],
+				writes: ['ruleDecision', 'releaseResults', 'supersedeDecision', 'raiseConcern', 'raiseConcernByLink']
+			},
+			// Card 2713, slice 5: the last of the former decision service.
+			'src/lib/server/decision-question-writes.ts': {
+				reads: [],
+				writes: [
 					// Card 2678: a participant's question, signed in, through an API key or by a personal link; its answer, an agent's
 					// draft through a key; and a person publishing that draft.
 					'askQuestion',
@@ -3489,6 +4036,10 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 				]
 			}
 		});
+		// Card 2713 (D6 row 2): however they are split, the decision services hold the 30 writes and 6 guards between them.
+		const decisionServices = [...services].filter(([file]) => DECISION_SERVICE.test(file));
+		expect(decisionServices.flatMap(([, { writes }]) => writes)).toHaveLength(30);
+		expect(decisionServices.flatMap(([, { reads }]) => reads)).toHaveLength(6);
 		// The page routes' options a new card's nested writes share with them (the card 2296 review).
 		expect(Object.fromEntries([...services].filter(([, { pageOptions }]) => pageOptions.length > 0).map(([file, { pageOptions }]) => [file, pageOptions]))).toEqual({
 			'src/lib/server/card-assignees.ts': ['ASSIGN_PAGE_OPTIONS'],
@@ -3505,6 +4056,54 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 		// Read: the modules of src/lib/server, the routes, and the one that writes.
 		expect(files.filter(({ file }) => file.startsWith('src/lib/server/')).length).toBeGreaterThanOrEqual(60);
 		expect(files.some(({ file }) => file === 'src/lib/server/cards.ts')).toBe(true);
+	});
+
+	it('keeps each module on SERVICE_HELPERS private to the decision services: imported by name by them alone, importing none, writing nothing (card 2713, D2, D6 row 5)', () => {
+		const files = filesUnder('src', (path) => /\.(ts|js|svelte)$/.test(path)).map((file) => ({ file, source: readFileSync(join(ROOT, file), 'utf8') }));
+
+		expect(judgeServiceHelpers(files, SERVICES, SERVICE_HELPERS, writers, NOT_SERVICES)).toEqual([]);
+		// Read: every file under src, and the helper among them, imported by exactly the decision services on SERVICES.
+		expect(files.length).toBeGreaterThan(300);
+		const decisionServices = SERVICES.filter((file) => DECISION_SERVICE.test(file));
+		expect([...decisionServices].sort()).toEqual([
+			'src/lib/server/decision-authoring-writes.ts',
+			'src/lib/server/decision-card-link-writes.ts',
+			'src/lib/server/decision-lifecycle-writes.ts',
+			'src/lib/server/decision-participant-writes.ts',
+			'src/lib/server/decision-question-writes.ts',
+			'src/lib/server/decision-response-writes.ts',
+			'src/lib/server/decision-ruling-writes.ts'
+		]);
+		for (const helper of SERVICE_HELPERS) {
+			const importers = files.filter(({ file, source }) => {
+				if (file.endsWith('.svelte')) return false;
+				const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+				return tree.statements.some((s) => ts.isImportDeclaration(s) && ts.isStringLiteral(s.moduleSpecifier) && moduleFileOf(file, s.moduleSpecifier.text) === helper);
+			});
+			expect(importers.map(({ file }) => file).sort()).toEqual([...decisionServices].sort());
+		}
+	});
+
+	it('names on RECORD_WRITERS each writer of the record, the activity log, the links and the mail queue, each still exported and read as a write (card 2713, C2)', () => {
+		expect(judgeWriterList(sourcesUnderSrc, derivedWriters, RECORD_WRITERS)).toEqual([]);
+		// Read: every module under src, and each listed module's writers found in its source, not only added from the list.
+		expect(sourcesUnderSrc.length).toBeGreaterThan(200);
+		for (const [file, names] of Object.entries(RECORD_WRITERS)) expect([...(derivedWriters.get(file) ?? [])].sort()).toEqual([...names].sort());
+		// What the rule counts is the listed modules' writers, each a write in it, and (C4) what reaches one of them or a
+		// transaction from anywhere else.
+		for (const [file, names] of Object.entries(RECORD_WRITERS)) for (const name of names) expect(writers.get(file)?.has(name)).toBe(true);
+		expect(writers.get(TRANSACTION_MODULE)?.has('inTransaction')).toBe(true);
+		expect(writers.get('src/lib/server/decision-reminders.ts')?.has('runDecisionRemindersOnce')).toBe(true);
+		expect(writers.get('src/lib/server/write-as.ts')?.has('stillCallerNow')).toBe(true);
+		// A raw database call outside the listed modules is none: the signing key made once (`formSecret`, through
+		// `issueFormToken`), and a SELECT prepared.
+		for (const [file, name] of [
+			['src/lib/server/request-tokens.ts', 'issueFormToken'],
+			['src/lib/server/tokens.ts', 'getCardTokenTotals']
+		]) {
+			expect(derivedWriters.get(file)?.has(name)).toBe(true);
+			expect(writers.get(file)?.has(name) ?? false).toBe(false);
+		}
 	});
 
 	it('was looked for: the route files, the moved handlers among them, and a service that writes', () => {
@@ -3756,12 +4355,19 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 		// Today the two internal routes call them, each listed.
 		const calling = outside.filter((file) => /\b(deleteDecision|withdrawDecision)\(/.test(readFileSync(join(ROOT, file), 'utf8')));
 		expect(calling).toEqual(['src/routes/api/decisions/[id]/+server.ts', 'src/routes/api/decisions/[id]/withdraw/+server.ts']);
+		// Card 2713 (D6 row 7): fail closed, each key's module exports a function of that name, so a move that leaves a key
+		// naming a module that no longer holds the write fails here rather than finding nothing.
+		for (const key of PASSWORD_WRITES) {
+			const [module, name] = key.split('#');
+			const tree = ts.createSourceFile(module, readFileSync(join(ROOT, module), 'utf8'), ts.ScriptTarget.Latest, true);
+			expect(exportsOf(tree).functions.map((exported) => exported.name), key).toContain(name);
+		}
 
 		// Against made-up source: a listed handler passes; one not listed, a call outside every handler, a page's server
 		// file and a namespace import are found.
 		const LISTED = ['src/routes/api/example/+server.ts DELETE'];
 		const handler = [
-			"import { deleteDecision, withdrawDecision as withdraw } from '$lib/server/decisions';",
+			"import { deleteDecision, withdrawDecision as withdraw } from '$lib/server/decision-lifecycle-writes';",
 			'export const DELETE = async ({ locals }) => {',
 			"\twriteAs(locals, (caller) => deleteDecision(caller, { decisionId: 1 }, null, { source: 'ui' }));",
 			'};',
@@ -3774,13 +4380,13 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 			'src/routes/api/example/+server.ts:6 POST calls withdrawDecision and is not on CURRENT_PASSWORD (D33)',
 			'src/routes/api/example/+server.ts:8 calls deleteDecision outside every handler (D33)'
 		]);
-		const page = "import { withdrawDecision } from '$lib/server/decisions';\nexport const load = () => ({});";
+		const page = "import { withdrawDecision } from '$lib/server/decision-lifecycle-writes';\nexport const load = () => ({});";
 		expect(judgePasswordWrites('src/routes/decisions/[id]/+page.server.ts', page, LISTED)).toEqual([
 			'src/routes/decisions/[id]/+page.server.ts imports withdrawDecision, which only a handler on CURRENT_PASSWORD may call (D33)'
 		]);
-		const namespace = "import * as decisions from '$lib/server/decisions';";
+		const namespace = "import * as lifecycle from '$lib/server/decision-lifecycle-writes';";
 		expect(judgePasswordWrites('src/routes/api/example/+server.ts', namespace, LISTED)).toEqual([
-			'src/routes/api/example/+server.ts:1 imports src/lib/server/decisions.ts as a namespace (D33)'
+			'src/routes/api/example/+server.ts:1 imports src/lib/server/decision-lifecycle-writes.ts as a namespace (D33)'
 		]);
 	});
 
@@ -3966,7 +4572,7 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 			expect(calls(code)).toEqual([]);
 		});
 
-		const service = (code: string) => judgeService('src/lib/server/things.ts', code).findings;
+		const service = (code: string) => judgeService('src/lib/server/things.ts', code, [], writers).findings;
 		const WRITE_AS = "import { inWrite } from './write-as';\nimport { inTransaction } from './db/transaction';\n";
 
 		it('passes a service written to the rule', () => {
@@ -4040,7 +4646,7 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 				'src/lib/server/things.ts:6 exports KEEP_THING_PAGE_OPTIONS, page options that are not an object written out of texts, true and false (2)',
 				'src/lib/server/things.ts:7 exports THING_OPTIONS, which is not a function written here: a service exports its functions and READS alone (2)'
 			]);
-			expect(judgeService('src/lib/server/things.ts', code).pageOptions).toEqual(['MAKE_THING_PAGE_OPTIONS']);
+			expect(judgeService('src/lib/server/things.ts', code, [], writers).pageOptions).toEqual(['MAKE_THING_PAGE_OPTIONS']);
 		});
 
 		it('finds inTransaction under another name, and a read that writes (the review, 3)', () => {
@@ -4067,6 +4673,155 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 				'src/lib/server/things.ts:7 names inTransaction (as tx) other than in a write after its inWrite() (3)',
 				'src/lib/server/things.ts:11 names inTransaction (as t.inTransaction) other than in a write after its inWrite() (3)'
 			]);
+		});
+
+		it('finds a read that takes an allowance itself, through a function of its own module, and under another name (card 2713, C3)', () => {
+			const code = [
+				"import { inWrite } from './write-as';",
+				"import { takeAllowance as allow } from './rate-limit';",
+				"export const READS = ['cappedGuard', 'localGuard', 'renamedGuard', 'plainGuard'];",
+				'export function cappedGuard(user) { return takeAllowance(`x:${user.id}`, 1, 5, 1000); }',
+				'function capOf(user) { return takeAllowance(`x:${user.id}`, 1, 5, 1000); }',
+				'export function localGuard(user) { return capOf(user); }',
+				'export function renamedGuard(user) { return allow(`x:${user.id}`, 1, 5, 1000); }',
+				'export function plainGuard(user) { return user.id; }',
+				'export function makeThing(caller) { inWrite(); allow(`x`, 1, 5, 1000); return capOf(caller); }'
+			].join('\n');
+
+			// A write may take one; a read, written here or in a function it calls, may not.
+			expect(service(code)).toEqual([
+				'src/lib/server/things.ts:4 cappedGuard is on READS and writes: takeAllowance (3)',
+				'src/lib/server/things.ts:5 localGuard is on READS and writes: takeAllowance (through capOf) (3)',
+				'src/lib/server/things.ts:7 renamedGuard is on READS and writes: allow (3)'
+			]);
+		});
+
+		it('reads the writers of a module from its source, through its own functions, other modules, namespaces and re-exports, and holds RECORD_WRITERS to them (card 2713, C2)', () => {
+			const RECORD = 'src/lib/server/decision-record.ts';
+			const MAIL = 'src/lib/server/decision-mail.ts';
+			const files = [
+				{
+					file: RECORD,
+					source: [
+						"import { db } from './db';",
+						"import { createHmac } from 'node:crypto';",
+						'export function appendEvent(e) { db.insert(events).values(e).run(); }',
+						'export function appendNote(n) { return stampNote(n); }',
+						'function stampNote(n) { db.update(notes).set(n).run(); }',
+						'export function readEvents(id) { return db.select().from(events).all(); }',
+						"export function hashIt(x) { const seen = new Map(); seen.delete(x); return createHmac('sha256', 'k').update(x).digest(); }"
+					].join('\n')
+				},
+				{
+					file: MAIL,
+					source: [
+						"import * as record from './decision-record';",
+						"import { appendEvent as note } from './decision-record';",
+						'export function queueA() { note({}); }',
+						'export const queueB = () => record.appendNote({});',
+						'export function later() { return record.readEvents(1); }'
+					].join('\n')
+				},
+				{ file: 'src/lib/server/relay.ts', source: "export { queueA as queued, later } from './decision-mail';" },
+				{ file: 'src/lib/server/wrap.ts', source: "import { inTransaction as t } from './db/transaction';\nexport const wrap = () => t(() => 1);" }
+			];
+			const derived = writersOf(files);
+
+			// A Map's delete, a hash's update and a select are none.
+			expect(Object.fromEntries([...derived].map(([file, names]) => [file, [...names].sort()]))).toEqual({
+				[RECORD]: ['appendEvent', 'appendNote'],
+				[MAIL]: ['queueA', 'queueB'],
+				'src/lib/server/relay.ts': ['queued'],
+				'src/lib/server/wrap.ts': ['wrap']
+			});
+			// The list fails closed: a writer that no longer writes, one no longer exported, a module not there, and a writer not listed.
+			expect(judgeWriterList(files, derived, { [RECORD]: ['appendEvent', 'readEvents', 'appendGone'], 'src/lib/server/gone.ts': ['x'] })).toEqual([
+				`RECORD_WRITERS names ${RECORD}#readEvents, which no longer writes as this scan reads it (writers)`,
+				`RECORD_WRITERS names ${RECORD}#appendGone, which it no longer exports (writers)`,
+				`${RECORD}#appendNote writes and is not on RECORD_WRITERS (writers)`,
+				'RECORD_WRITERS names src/lib/server/gone.ts, which is not a module here (writers)'
+			]);
+			// A writer named is a write even where the reading misses it, and only listed modules' writers are counted.
+			expect(Object.fromEntries([...listedWriters(derived, { [MAIL]: ['later'] })].map(([file, names]) => [file, [...names].sort()]))).toEqual({
+				[MAIL]: ['later', 'queueA', 'queueB']
+			});
+		});
+
+		it('reads as a writer any module’s function that reaches a listed writer or inTransaction, and a writer referred to without a call, but no raw database call outside the listed modules (card 2713, C4, C5)', () => {
+			const RECORD = 'src/lib/server/decision-record.ts';
+			const files = [
+				{
+					file: RECORD,
+					source: [
+						"import { db } from './db';",
+						'export function appendEvent(e) { db.insert(events).values(e).run(); }',
+						'export function appendTwice(e) { appendEvent(e); appendEvent(e); }',
+						'export function readEvents(id) { return db.select().from(events).all(); }'
+					].join('\n')
+				},
+				// C4: a module that is not listed, reaching a listed writer through its own function, an alias and a namespace, and
+				// inTransaction under another name and through a namespace; and a re-export of it, and a module that calls that.
+				{
+					file: 'src/lib/server/reminders.ts',
+					source: [
+						"import { appendEvent as note } from './decision-record';",
+						"import * as record from './decision-record';",
+						"import { inTransaction as tx } from './db/transaction';",
+						"import * as t from './db/transaction';",
+						'export async function runOnce(now) { return step(now); }',
+						'function step(now) { note({ now }); }',
+						'export function viaSpace() { record.appendTwice({}); }',
+						'export function viaTx() { return tx(() => 1); }',
+						'export function viaT() { const run = t.inTransaction; return run(() => 1); }',
+						'export function reading() { return record.readEvents(1); }'
+					].join('\n')
+				},
+				{ file: 'src/lib/server/relay.ts', source: "export { runOnce as relayed } from './reminders';" },
+				{ file: 'src/lib/server/caller.ts', source: "import { relayed } from './relay';\nexport function stillCaller() { return relayed(new Date()); }" },
+				// C5: a writer referred to and not called: a callback, `.call`, a name assigned in a body and at the top, the
+				// namespace whole, an exported constant and an import exported again. A type and a property's name are none.
+				{
+					file: 'src/lib/server/handed.ts',
+					source: [
+						"import { appendEvent } from './decision-record';",
+						"import * as record from './decision-record';",
+						'const w = appendEvent;',
+						'export function each(es) { es.forEach(appendEvent); }',
+						'export function called(e) { appendEvent.call(null, e); }',
+						'export function assigned(e) { const v = appendEvent; v(e); }',
+						'export function topAlias(e) { w(e); }',
+						'export function whole() { return Object.values(record); }',
+						'export const held = appendEvent;',
+						'export { appendEvent as again };',
+						'export function typed() { const none: typeof appendEvent | null = null; return none; }',
+						"export function keyed() { return { appendEvent: 1 }['appendEvent']; }"
+					].join('\n')
+				},
+				// No record write: a signing key made once, a SELECT prepared.
+				{
+					file: 'src/lib/server/request-tokens.ts',
+					source: "import { db } from './db';\nfunction formSecret() { db.insert(settings).values({}).run(); return 'k'; }\nexport function issueFormToken() { return formSecret(); }"
+				},
+				{ file: 'src/lib/server/tokens.ts', source: "export function totals() { return sqlite.prepare('SELECT 1').all(); }" }
+			];
+			const sorted = (writers: Writers) => Object.fromEntries([...writers].map(([file, names]) => [file, [...names].sort()]));
+			const derived = writersOf(files);
+			const HANDED = ['again', 'assigned', 'called', 'each', 'held', 'topAlias', 'whole'];
+
+			expect(sorted(reachingWriters(files, derived, { [RECORD]: ['appendEvent', 'appendTwice'] }))).toEqual({
+				[RECORD]: ['appendEvent', 'appendTwice'],
+				[TRANSACTION_MODULE]: ['inTransaction'],
+				'src/lib/server/reminders.ts': ['runOnce', 'viaSpace', 'viaT', 'viaTx'],
+				'src/lib/server/relay.ts': ['relayed'],
+				'src/lib/server/caller.ts': ['stillCaller'],
+				'src/lib/server/handed.ts': HANDED
+			});
+			// The reading on the database (C2) finds the raw calls, and the same references (C5).
+			expect(sorted(derived)).toMatchObject({
+				'src/lib/server/request-tokens.ts': ['issueFormToken'],
+				'src/lib/server/tokens.ts': ['totals'],
+				'src/lib/server/handed.ts': HANDED
+			});
 		});
 
 		it('finds a service called with anything but its callback\'s caller first, and options or says not written out at the call (the review, 4 and 8)', () => {
@@ -4258,6 +5013,268 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 				'src/lib/server/things.ts:3 makeThing is a write (it is not on READS) and its first statement is not inWrite() (2)',
 				'src/lib/server/things.ts names nothing on READS, and exports no such function (2)'
 			]);
+		});
+
+		it("follows a read's helper one level into a module on SERVICE_HELPERS, and on through that module's own functions, takeAllowance and an imported writer a write there (card 2713, D6 row 4, R1, R2, C2)", () => {
+			const HELPER = 'src/lib/server/decision-write-shared.ts';
+			const helper = {
+				file: HELPER,
+				source: [
+					"import { appendEvent } from './decision-record';",
+					'export function stampIt(id) { db.insert(stamps).values({ id }).run(); }',
+					'export function readIt(id) { return db.select().from(things).where(eq(things.id, id)).get(); }',
+					'export function capIt(user) { return refusalOf(user); }',
+					'function refusalOf(user) { return takeAllowance(`x:${user.id}`, 1, 5, 1000); }',
+					"export function participantOn(decisionId, participantId) { appendEvent(decisionId, 'seen', SYSTEM_ACTOR, {}); return null; }"
+				].join('\n')
+			};
+			const code = [
+				"import { inWrite } from './write-as';",
+				"import { capIt, participantOn, readIt, stampIt } from './decision-write-shared';",
+				"export const READS = ['thingGuard', 'otherGuard', 'cappedGuard', 'participantGuard'];",
+				'export function thingGuard(user) { return stampIt(1); }',
+				'export function otherGuard(user) { return readIt(1); }',
+				'export function cappedGuard(user) { return capIt(user); }',
+				'export function participantGuard(user) { return participantOn(1, 2); }',
+				'export function makeThing(caller) { inWrite(); stampIt(1); capIt(caller); participantOn(1, 2); }'
+			].join('\n');
+			const FILE = 'src/lib/server/decision-things-writes.ts';
+
+			expect(judgeService(FILE, code, [helper], writers).findings).toEqual([
+				`${FILE}:4 thingGuard is on READS and writes: db.insert(stamps).values({id}).run (through ${HELPER}#stampIt) (3)`,
+				`${FILE}:6 cappedGuard is on READS and writes: takeAllowance (through ${HELPER}#capIt) (3)`,
+				`${FILE}:7 participantGuard is on READS and writes: appendEvent (through ${HELPER}#participantOn) (3)`
+			]);
+			// The helper's sources are what the follow reads (R1): without them the same module passes.
+			expect(judgeService(FILE, code, [], writers).findings).toEqual([]);
+
+			// Real wiring (R1, C1): every service was judged with the suite's own `helpers` and `writers`, the very values, and
+			// `helpers` is SERVICE_HELPERS with each module's source as it stands, so that a call site handed `[]`, part of the
+			// list or other sources fails here.
+			for (const [, reading] of services) {
+				expect(reading.helpers).toBe(helpers);
+				expect(reading.writers).toBe(writers);
+			}
+			expect(helpers).toEqual(SERVICE_HELPERS.map((file) => ({ file, source: readFileSync(join(ROOT, file), 'utf8') })));
+			// The real module holding the participant guards, and the suite's helpers with a write planted in the real
+			// participantOn, which both guards call: an insert (R1), and the record's appendEvent imported and called (C2).
+			const PARTICIPANT_ON = 'export function participantOn(decisionId: number, participantId: number): DecisionParticipant {';
+			const RECORD_IMPORT = "import { accountHistory, lastMailAt, mailsSince, peopleById, recordMailsSince, snapshotOf, type RecordActor } from './decision-record';";
+			const plant = (edit: (source: string) => string) =>
+				helpers.map((given) => {
+					if (given.file !== HELPER) return given;
+					const source = edit(given.source);
+					expect(source).not.toBe(given.source);
+					return { file: given.file, source };
+				});
+			const inserted = plant((source) => source.replace(PARTICIPANT_ON, '$&\n\tdb.insert(decisionParticipants).values({}).run();'));
+			const appended = plant((source) =>
+				source
+					.replace(RECORD_IMPORT, RECORD_IMPORT.replace('accountHistory, ', 'accountHistory, appendEvent, '))
+					.replace(PARTICIPANT_ON, "$&\n\tappendEvent(decisionId, 'seen', SYSTEM_ACTOR, {});")
+			);
+			expect(appended.find(({ file }) => file === HELPER)!.source).toContain('accountHistory, appendEvent, ');
+			const [holder] = [...services].filter(([, { reads }]) => reads.includes('participantAccountGuard')).map(([file]) => file);
+			const source = readFileSync(join(ROOT, holder), 'utf8');
+			const findingsWith = (given: typeof helpers) => judgeService(holder, source, given, writers).findings.map((finding) => finding.replace(/:\d+ /, ' '));
+			expect(findingsWith(helpers)).toEqual([]);
+			expect(findingsWith(inserted)).toEqual([
+				`${holder} participantAccountGuard is on READS and writes: db.insert(decisionParticipants).values({}).run (through ${HELPER}#participantOn) (3)`,
+				`${holder} participantAddressGuard is on READS and writes: db.insert(decisionParticipants).values({}).run (through ${HELPER}#participantOn) (3)`
+			]);
+			expect(findingsWith(appended)).toEqual([
+				`${holder} participantAccountGuard is on READS and writes: appendEvent (through ${HELPER}#participantOn) (3)`,
+				`${holder} participantAddressGuard is on READS and writes: appendEvent (through ${HELPER}#participantOn) (3)`
+			]);
+			// And the helper pin, over every file under src with the same planted helper (C2).
+			const everything = filesUnder('src', (path) => /\.(ts|js|svelte)$/.test(path)).map((file) => ({ file, source: readFileSync(join(ROOT, file), 'utf8') }));
+			const withPlanted = everything.map((given) => (given.file === HELPER ? appended.find(({ file }) => file === HELPER)! : given));
+			expect(judgeServiceHelpers(everything, SERVICES, SERVICE_HELPERS, writers, NOT_SERVICES)).toEqual([]);
+			expect(judgeServiceHelpers(withPlanted, SERVICES, SERVICE_HELPERS, writers, NOT_SERVICES).map((finding) => finding.replace(/:\d+ /, ' '))).toEqual([
+				`${HELPER} calls appendEvent: a service helper writes nothing (helper pin)`
+			]);
+		});
+
+		it("follows a read through its own module's functions into a helper and on into another, at any depth and round a cycle, a writer of any module and one referred to without a call a write there (card 2713, C4, C5, C6)", () => {
+			const HELPER = 'src/lib/server/decision-write-shared.ts';
+			const OTHER = 'src/lib/server/decision-other-shared.ts';
+			const helper = {
+				file: HELPER,
+				source: [
+					"import { appendEvent } from './decision-record';",
+					"import { runDecisionRemindersOnce } from './decision-reminders';",
+					"import { deeper } from './decision-other-shared';",
+					'export function capIt(user) { return takeAllowance(`x:${user.id}`, 1, 5, 1000); }',
+					'export function noteAll(ids) { ids.forEach(appendEvent); }',
+					'export function remind(now) { return runDecisionRemindersOnce(now); }',
+					'export function pingIt(n) { return n > 0 ? pongIt(n - 1) : null; }',
+					'function pongIt(n) { return pingIt(n); }',
+					'export function onward() { return deeper(); }'
+				].join('\n')
+			};
+			const other = { file: OTHER, source: "import { appendRuling } from './decision-record';\nexport function deeper() { return appendRuling.call(null, {}); }" };
+			const code = [
+				"import { stillCallerNow } from './write-as';",
+				"import { issueFormToken } from './request-tokens';",
+				"import { appendEvent } from './decision-record';",
+				"import { capIt, noteAll, onward, pingIt, remind } from './decision-write-shared';",
+				"export const READS = ['cappedGuard', 'deepGuard', 'noteGuard', 'remindGuard', 'callerGuard', 'handedGuard', 'cycleGuard', 'onwardGuard', 'tokenGuard'];",
+				'function outer(user) { return inner(user); }',
+				'function inner(user) { return capIt(user); }',
+				'function viaLocal(ids) { return noteAll(ids); }',
+				'function loopA(n) { return n > 0 ? loopB(n - 1) : pingIt(n); }',
+				'function loopB(n) { return loopA(n); }',
+				// C6: guard → local → helper, and guard → local → local → helper.
+				'export function cappedGuard(user) { return inner(user); }',
+				'export function deepGuard(user) { return outer(user); }',
+				// C5 in the follow: the helper hands appendEvent on as a callback.
+				'export function noteGuard(ids) { return viaLocal(ids); }',
+				// C4: a writer of a module not listed, through the helper and called directly.
+				'export function remindGuard(now) { return remind(now); }',
+				'export function callerGuard(given) { return stillCallerNow(given); }',
+				// C5 in the read itself.
+				'export function handedGuard(ids) { ids.map(appendEvent); return null; }',
+				// A cycle in this module and one in the helper end, and write nothing.
+				'export function cycleGuard(n) { return loopA(n); }',
+				// C6: from one helper into another, which calls the record by `.call`.
+				'export function onwardGuard() { return onward(); }',
+				// A raw database call outside the listed modules is none (C4).
+				'export function tokenGuard() { return issueFormToken(); }'
+			].join('\n');
+			const FILE = 'src/lib/server/decision-things-writes.ts';
+
+			expect(judgeService(FILE, code, [helper, other], writers).findings).toEqual([
+				`${FILE}:7 cappedGuard is on READS and writes: takeAllowance (through inner → ${HELPER}#capIt) (3)`,
+				`${FILE}:7 deepGuard is on READS and writes: takeAllowance (through outer → inner → ${HELPER}#capIt) (3)`,
+				`${FILE}:8 noteGuard is on READS and writes: appendEvent (through viaLocal → ${HELPER}#noteAll) (3)`,
+				`${FILE}:14 remindGuard is on READS and writes: runDecisionRemindersOnce (through ${HELPER}#remind) (3)`,
+				`${FILE}:15 callerGuard is on READS and writes: stillCallerNow (3)`,
+				`${FILE}:16 handedGuard is on READS and writes: appendEvent (3)`,
+				`${FILE}:18 onwardGuard is on READS and writes: appendRuling (through ${HELPER}#onward → ${OTHER}#deeper) (3)`
+			]);
+		});
+
+		it('finds a service helper that calls a writer of any module, or refers to a writer without calling it (card 2713, C4, C5)', () => {
+			const HELPER = 'src/lib/server/decision-write-shared.ts';
+			const helper = {
+				file: HELPER,
+				source: [
+					"import { appendEvent, appendVersion } from './decision-record';",
+					"import * as record from './decision-record';",
+					"import { runDecisionRemindersOnce } from './decision-reminders';",
+					"import { stillCallerNow as still } from './write-as';",
+					"import { issueFormToken } from './request-tokens';",
+					'const w = appendVersion;',
+					'export function remind(now) { return runDecisionRemindersOnce(now); }',
+					'export function who(given) { return still(given); }',
+					'export function each(ids) { ids.forEach(appendEvent); }',
+					'export function called(e) { appendEvent.call(null, e); }',
+					'export function assigned(e) { const v = appendEvent; return v(e); }',
+					"export function whole() { return [Object.values(record), record['appendRuling']]; }",
+					'export function token() { return issueFormToken(); }',
+					'export function typed() { const none: typeof appendEvent | null = null; return none; }'
+				].join('\n')
+			};
+
+			// C4: the reminders' run and the caller read again in a transaction are writers; C5: each reference is a write; the
+			// signing key made once, and a type, are none.
+			expect(judgeServiceHelpers([helper], [], [HELPER], writers)).toEqual([
+				`${HELPER}:6 refers to appendVersion: a service helper writes nothing (helper pin)`,
+				`${HELPER}:7 calls runDecisionRemindersOnce: a service helper writes nothing (helper pin)`,
+				`${HELPER}:8 calls still: a service helper writes nothing (helper pin)`,
+				`${HELPER}:9 refers to appendEvent: a service helper writes nothing (helper pin)`,
+				`${HELPER}:10 refers to appendEvent: a service helper writes nothing (helper pin)`,
+				`${HELPER}:11 refers to appendEvent: a service helper writes nothing (helper pin)`,
+				`${HELPER}:12 refers to record: a service helper writes nothing (helper pin)`,
+				`${HELPER}:12 refers to record['appendRuling']: a service helper writes nothing (helper pin)`
+			]);
+		});
+
+		it('keeps a module on SERVICE_HELPERS to the decision services, by name, in every form of import, and writing nothing (card 2713, D6 row 5, R2 to R4, R6)', () => {
+			const HELPER = 'src/lib/server/decision-write-shared.ts';
+			const THINGS = 'src/lib/server/decision-things-writes.ts';
+			const OTHERS = 'src/lib/server/decision-others-writes.ts';
+			const LISTED = ['src/lib/server/cards.ts', THINGS, OTHERS];
+			const helper = {
+				file: HELPER,
+				source: [
+					"import { createCard } from './cards';",
+					"import { inTransaction } from './db/transaction';",
+					'export const READS = [];',
+					'export function stampIt(id) { db.insert(stamps).values({ id }).run(); }',
+					"export function runIt() { sqlite.prepare('DELETE FROM things').run(); }",
+					'export function userOf(locals) { return locals.user; }',
+					// C2: the record's writers, by name, under another name and through a namespace; a read of it and the caller's
+					// allowance are no finding here.
+					"import { appendEvent, appendVersion as v, accountHistory } from './decision-record';",
+					"import * as record from './decision-record';",
+					"import { takeAllowance } from './rate-limit';",
+					'export function participantOn(d) { accountHistory(d); takeAllowance(`x`, 1, 5, 1000); appendEvent(d); v(d); record.appendRuling(d); }'
+				].join('\n')
+			};
+			const files = [
+				helper,
+				// Passes: a decision service, by name, by either path.
+				{ file: THINGS, source: "import { keyed, sourceOf } from './decision-write-shared';\nimport { decisionEntry } from '$lib/server/decision-write-shared';" },
+				// R4, R6, and a decision service's re-export and import().
+				{
+					file: OTHERS,
+					source: [
+						"import * as shared from './decision-write-shared';",
+						"import shared2 from './decision-write-shared';",
+						"import { keyed as k } from './decision-write-shared';",
+						"import { makeThing } from './decision-things-writes';",
+						"export { keyed } from './decision-write-shared';",
+						"const later = () => import('./decision-write-shared');"
+					].join('\n')
+				},
+				// R3: by a route, by a relative path, by a non-decision service with .js, by a decision module that is no service,
+				// by export from, export *, import(), and in a page.
+				{ file: 'src/routes/api/x/+server.ts', source: "import { keyed } from '$lib/server/decision-write-shared';" },
+				{ file: 'src/routes/api/y/+server.ts', source: "import { keyed } from '../../../lib/server/decision-write-shared';" },
+				{ file: 'src/lib/server/cards.ts', source: "import { keyed } from './decision-write-shared.js';" },
+				{ file: 'src/lib/server/decision-results.ts', source: "import { participantOn } from './decision-write-shared';" },
+				{ file: 'src/lib/server/a.ts', source: "export { keyed } from './decision-write-shared';" },
+				{ file: 'src/lib/server/b.ts', source: "export * from '$lib/server/decision-write-shared';" },
+				{ file: 'src/lib/server/c.ts', source: "export async function load() { return import('$lib/server/decision-write-shared'); }" },
+				{ file: 'src/routes/z/+page.svelte', source: "<script>import { keyed } from '$lib/server/decision-write-shared';</script>" }
+			];
+
+			expect(judgeServiceHelpers(files, LISTED, [HELPER], writers)).toEqual([
+				// The helper: a service imported, a transaction, READS, the request's locals (the parameter and its read), and two writes (R2).
+				`${HELPER}:1 imports src/lib/server/cards.ts, a service: a service helper imports none (helper pin)`,
+				`${HELPER}:2 names inTransaction (helper pin)`,
+				`${HELPER}:3 names READS: a service helper declares none (helper pin)`,
+				`${HELPER}:6 names locals (helper pin)`,
+				`${HELPER}:6 names locals (helper pin)`,
+				`${HELPER}:4 calls db.insert(stamps).values({id}).run: a service helper writes nothing (helper pin)`,
+				`${HELPER}:5 calls sqlite.prepare('DELETEFROMthings').run: a service helper writes nothing (helper pin)`,
+				`${HELPER}:10 calls appendEvent: a service helper writes nothing (helper pin)`,
+				`${HELPER}:10 calls v: a service helper writes nothing (helper pin)`,
+				`${HELPER}:10 calls record.appendRuling: a service helper writes nothing (helper pin)`,
+				// A decision service: a namespace, a default and an alias (R4), another decision service (R6), a re-export, import().
+				`${OTHERS}:1 imports ${HELPER}, a service helper, other than by name: import each function by its own name (helper pin)`,
+				`${OTHERS}:2 imports ${HELPER}, a service helper, other than by name: import each function by its own name (helper pin)`,
+				`${OTHERS}:3 imports keyed of ${HELPER} as k: import it under its own name (helper pin)`,
+				`${OTHERS}:4 imports ${THINGS}: a decision service imports no other decision service (helper pin)`,
+				`${OTHERS}:5 re-exports ${HELPER}, a service helper (helper pin)`,
+				`${OTHERS}:6 imports ${HELPER}, a service helper, other than by name: import each function by its own name (helper pin)`,
+				// Anything else, in every form (R3).
+				`src/routes/api/x/+server.ts:1 imports ${HELPER}, a service helper, which only a decision service on SERVICES may import (helper pin)`,
+				`src/routes/api/y/+server.ts:1 imports ${HELPER}, a service helper, which only a decision service on SERVICES may import (helper pin)`,
+				`src/lib/server/cards.ts:1 imports ${HELPER}, a service helper, which only a decision service on SERVICES may import (helper pin)`,
+				`src/lib/server/decision-results.ts:1 imports ${HELPER}, a service helper, which only a decision service on SERVICES may import (helper pin)`,
+				`src/lib/server/a.ts:1 imports ${HELPER}, a service helper, which only a decision service on SERVICES may import (helper pin)`,
+				`src/lib/server/b.ts:1 imports ${HELPER}, a service helper, which only a decision service on SERVICES may import (helper pin)`,
+				`src/lib/server/c.ts:1 imports ${HELPER}, a service helper, which only a decision service on SERVICES may import (helper pin)`,
+				`src/routes/z/+page.svelte names ${HELPER}, a service helper, which only a decision service imports (helper pin)`
+			]);
+			// A helper listed as a service, or excused as none, and one that is not there.
+			expect(judgeServiceHelpers([{ file: HELPER, source: '' }], [HELPER], [HELPER], writers, { [HELPER]: 'no' })).toEqual([
+				`${HELPER} is a service helper and is on SERVICES (helper pin)`,
+				`${HELPER} is a service helper and is on NOT_SERVICES (helper pin)`
+			]);
+			expect(judgeServiceHelpers([], [], [HELPER], writers)).toEqual([`SERVICE_HELPERS names ${HELPER}, which is not a module here (helper pin)`]);
 		});
 	});
 });

@@ -125,7 +125,8 @@ import {
 	runDecisionRemindersOnce,
 	stillStands
 } from '$lib/server/decision-reminders';
-import { openDecision, republishDecision, resendInvitation } from '$lib/server/decisions';
+import { openDecision, republishDecision } from '$lib/server/decision-lifecycle-writes';
+import { resendInvitation } from '$lib/server/decision-participant-writes';
 import { subscribeToLogs, type LogEntry } from '$lib/server/logger';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { writeAs, type ServiceOptions } from '$lib/server/write-as';

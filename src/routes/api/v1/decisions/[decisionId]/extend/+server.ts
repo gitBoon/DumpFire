@@ -1,6 +1,6 @@
 import { json } from '$lib/server/v1-json';
 import { keyDecisionSaved } from '$lib/server/decision-authoring';
-import { extendDecision } from '$lib/server/decisions';
+import { extendDecision } from '$lib/server/decision-lifecycle-writes';
 import { pathId, readBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
@@ -14,7 +14,7 @@ import type { RequestHandler } from './$types';
  * decision's page: `extendDecision` refuses a key 403 (code review S2).
  * Nobody is mailed: an Extend of a decision past its closing time that would
  * ask someone for their view, as a reopening does (card 2744), is refused a
- * key 403 too (`REOPEN_ASKS_ACT`). `extendDecision` in `$lib/server/decisions`;
+ * key 403 too (`REOPEN_ASKS_ACT`). `extendDecision` in `$lib/server/decision-lifecycle-writes`;
  * `keyDecisionSaved`, `{ decision, revision }` in the shape every key is
  * given (D9, D10).
  *

@@ -2,7 +2,7 @@ import { json } from '@sveltejs/kit';
 import { whilePasswordHolds } from '$lib/server/auth';
 import { isAdmin } from '$lib/server/board-access';
 import { participantAnswers, revisionFor } from '$lib/server/decision-authoring';
-import { participantAccountGuard, setParticipantAccount } from '$lib/server/decisions';
+import { participantAccountGuard, setParticipantAccount } from '$lib/server/decision-participant-writes';
 import { pathId, readBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { confirmStepUp } from '$lib/server/step-up';
@@ -14,7 +14,7 @@ import type { RequestHandler } from './$types';
  * administrator attaches the account the people directory holds for a
  * participant's person (`{ account: 'person' }`), or clears the row's account
  * (`{ account: 'none' }`) (card 2675, decision 14): `setParticipantAccount`
- * in `$lib/server/decisions`.
+ * in `$lib/server/decision-participant-writes`.
  *
  * It changes which credential answers for the participant on the record, an
  * account or a personal link mailed in its place, so it asks for the

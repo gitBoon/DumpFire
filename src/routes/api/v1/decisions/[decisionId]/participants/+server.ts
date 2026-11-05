@@ -1,6 +1,6 @@
 import { json } from '$lib/server/v1-json';
 import { keyParticipantAnswers, revisionFor } from '$lib/server/decision-authoring';
-import { setParticipants } from '$lib/server/decisions';
+import { setParticipants } from '$lib/server/decision-participant-writes';
 import { pathId, readBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';

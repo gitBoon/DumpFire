@@ -27,8 +27,8 @@
  * A plain read module, not a service: it takes the signed-in account,
  * `user: SessionUser`, never `caller`, and writes nothing, so that a page load
  * may call it (tests/check-at-the-write.test.ts, rule 4). The service in
- * decisions.ts asks its refusals (`rulingRefusals`, `releaseRefusals`) inside
- * its writes; card 2684 adds to `rulingRefusals`.
+ * decision-ruling-writes.ts asks its refusals (`rulingRefusals`,
+ * `releaseRefusals`) inside its writes; card 2684 adds to `rulingRefusals`.
  *
  * Card 2682 (D14) adds `readSummary`, what an API key is given of the
  * results: `readResults` under the key's source, allowed field by field, with
@@ -204,8 +204,8 @@ function openRowsOf(decisionId: number) {
  * The decision's open questions, oldest first (decision 13; card 2678,
  * decision 9): those no person's answer stands behind, unanswered or holding
  * an agent's draft nobody has published (`agentAnswered`). A replaced draft
- * holds a person's answer, and is closed. Card 2678's writes in decisions.ts
- * fill them.
+ * holds a person's answer, and is closed. Card 2678's writes in
+ * decision-question-writes.ts fill them.
  *
  * Who asked and when are given to the page alone (`source: 'ui'`). Through
  * any other source, card 2682's API among them, both are left out and each

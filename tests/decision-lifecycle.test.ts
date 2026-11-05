@@ -41,8 +41,10 @@ const stub = vi.hoisted(() => ({
 	afterGuard: undefined as (() => void) | undefined
 }));
 
-vi.mock('$lib/server/decisions', async (importOriginal) => {
-	const real = await importOriginal<typeof import('$lib/server/decisions')>();
+// Card 2713 (D7): the guards live with their writes in decision-lifecycle-writes.ts, so the routes' imports of them are wrapped
+// there; `withdrawDecision` and `deleteDecision` still call the real guards inside their own module, as before.
+vi.mock('$lib/server/decision-lifecycle-writes', async (importOriginal) => {
+	const real = await importOriginal<typeof import('$lib/server/decision-lifecycle-writes')>();
 	const then = <T>(answer: T): T => {
 		const run = stub.afterGuard;
 		stub.afterGuard = undefined;
@@ -93,23 +95,17 @@ import { appendEvent, recordMailsSince, SYSTEM_ACTOR } from '$lib/server/decisio
 import { resultsRevisionFor } from '$lib/server/decision-results';
 import { REVOKE_WORDS, SKIP_WORDS } from '$lib/server/decision-links';
 import { CALLER_MAIL_DAILY_CAP, DRY_RUN_DAILY_CAP, PUBLISH_DAILY_CAP, RECORD_MAIL_DAILY_CAP } from '$lib/server/decision-mail';
+import { dryRunDecision, markReviewed, setDecider, updateDraft } from '$lib/server/decision-authoring-writes';
+import { extendDecision, openDecision, republishDecision, withdrawDecision } from '$lib/server/decision-lifecycle-writes';
 import {
 	changeParticipantAddress,
-	dryRunDecision,
-	extendDecision,
-	markReviewed,
-	openDecision,
 	participantAccountGuard,
 	participantAddressGuard,
-	republishDecision,
 	resendInvitation,
-	ruleDecision,
-	setDecider,
 	setParticipantAccount,
-	setParticipants,
-	updateDraft,
-	withdrawDecision
-} from '$lib/server/decisions';
+	setParticipants
+} from '$lib/server/decision-participant-writes';
+import { ruleDecision } from '$lib/server/decision-ruling-writes';
 import { MAIL_PROBLEM_WORDS, NO_LINK_ADDRESS } from '$lib/server/email';
 import { resetAllRateLimits, takeAllowance } from '$lib/server/rate-limit';
 import { writeAs, type ServiceOptions } from '$lib/server/write-as';
