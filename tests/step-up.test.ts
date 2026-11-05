@@ -70,7 +70,7 @@ import ts from 'typescript';
 import { DRIVE_FILE_SCOPE } from '$lib/drive-scope';
 import { db, sqlite } from '$lib/server/db';
 import { afterCommit } from '$lib/server/db/transaction';
-import { boards, cards, categories, columns, decisionParticipants, inviteTokens, people, sessions, settings, userXp, users } from '$lib/server/db/schema';
+import { boards, cards, categories, columns, decisionParticipants, inviteTokens, people, sessions, settings, userXp, users, webhooks } from '$lib/server/db/schema';
 import { PASSWORD_CHANGED_MEANWHILE, SESSION_COOKIE_NAME, deleteSession, forgetChecksInFlight, passwordHeld, whilePasswordHolds } from '$lib/server/auth';
 import { addressKey } from '$lib/server/client-address';
 import { PASSWORDS_BUSY } from '$lib/server/passwords';
@@ -114,6 +114,7 @@ import {
 	makeSession,
 	makeSmtp,
 	makeUser,
+	makeWebhook,
 	resetDb,
 	stepUp
 } from './helpers/fixtures';
@@ -1470,6 +1471,59 @@ describe("v1's board and column deletes are untouched (case 24, card 2703)", () 
 		expect(res.status, await res.clone().text()).toBe(200);
 		expect(stub.compared).toBe(0);
 		expect(db.select().from(cards).all()).toEqual([]);
+	});
+});
+
+// ─── 25 and 26. Webhooks, written only with a key (card 2702) ───────────────
+
+/** A board's owner, the board, and a webhook of it already there. */
+function hooked() {
+	const owner = makeUser({ username: 'owner' });
+	const { board } = makeBoard({ owner, name: 'Hooked' });
+	const hook = makeWebhook(board, { url: 'https://hooks.example.test/kept' });
+	return { owner, board, hook };
+}
+
+/** Every webhook row, as stored. */
+const webhookRows = () => db.select().from(webhooks).all();
+
+describe('webhooks are written only with a key, which takes the password to make (cases 25 and 26, card 2702)', () => {
+	it.each([
+		{ method: 'POST', path: (h: ReturnType<typeof hooked>) => `/api/v1/boards/${h.board.id}/webhooks` },
+		{ method: 'PUT', path: (h: ReturnType<typeof hooked>) => `/api/v1/webhooks/${h.hook.id}` }
+	])('refuses $method from a signed-in session 401, even with its right password, writing and counting nothing (case 25)', async ({ method, path }) => {
+		const h = hooked();
+		const token = makeSession(h.owner);
+		const before = webhookRows();
+
+		// The page's own request, its session and the right password, and no key: the gate decides before any route.
+		const res = await gate(method, path(h), {
+			headers: { cookie: `${SESSION_COOKIE_NAME}=${token}`, ...FROM_THE_PAGE },
+			body: { url: 'https://hooks.example.test/x', currentPassword: FIXTURE_PASSWORD }
+		});
+
+		expect(res.status).toBe(401);
+		expect(await res.json()).toEqual({ message: 'Missing or invalid Authorization header. Use: Bearer <api_key>' });
+		expect(webhookRows()).toEqual(before);
+		expect(stub.compared).toBe(0);
+		expect(countOf(token)).toBe(0);
+	});
+
+	it('creates a webhook with a key and no password, the key’s account its setter: the departure card 2703 (key scopes) revisits (case 26)', async () => {
+		const owner = makeUser({ username: 'owner' });
+		const { board } = makeBoard({ owner, name: 'Hooked' });
+		const key = makeApiKey(owner);
+
+		const res = await gate('POST', `/api/v1/boards/${board.id}/webhooks`, {
+			headers: { authorization: `Bearer ${key}` },
+			body: { url: 'https://hooks.example.test/x' }
+		});
+
+		expect(res.status, await res.clone().text()).toBe(201);
+		expect(webhookRows().map(({ boardId, url, setBy }) => ({ boardId, url, setBy }))).toEqual([
+			{ boardId: board.id, url: 'https://hooks.example.test/x', setBy: owner.id }
+		]);
+		expect(stub.compared).toBe(0);
 	});
 });
 

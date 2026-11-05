@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.103
+version: 1.106
 status: As-Built
 date: 2026-11-05
 tags:
@@ -743,12 +743,45 @@ the schedule, retention or failure mail alone, an empty column's delete, a Peopl
 job title, groups or status alone, and the delete or the withdrawal of a decision never opened
 ask nothing. Left out,
 each with its reason in the plan: Vacuum, a destination's Test, the mail's Send Test and the GET
-that starts a Connect (no data changed or sent), webhook creation (card 2702), team and sharing
+that starts a Connect (no data changed or sent), team and sharing
 changes, single deletes, archive and restore, key revoke and webhook delete (they reduce access).
 **API v1 is unchanged**: a key has no password to step up with, and minting one already asks
 for it, so a stolen session cannot reach v1; `DELETE /api/v1/boards/{id}` and
 `DELETE /api/v1/columns/{id}` with a key ask nothing, pinned by case 24, and key scopes are card
 2703.
+
+**Webhooks (card 2702)** are not on the list because no session can create a webhook or set its
+address or secret, but for one write that already asks the password. A webhook is created and
+changed only through v1, with a key: the gate answers a v1 `POST` or `PUT` that carries no key
+`401` before it reads the cookie, right password or not (case 25), and a key creates one with no
+password (case 26, the departure card 2703's scopes revisit). Putting the two routes on the list
+would refuse every key `400` or `401`. The one session write is an administrator's import: its
+restore refills a webhook's secret from the one this server holds for the same webhook, and sets
+it on or off as the backup had it (`fillSecretGaps`), behind the import's confirmation of the
+current password (`POST /api/admin/import/confirm`, on `STEP_UP_ACTIONS`). The other webhook
+writes a session reaches only switch webhooks off: a password change that ends the account's
+keys, deleting an account, a restore kept apart from the outside, and the blanked secrets of a
+backup's working copy. Pages show webhooks only as counts (the Account page shows how many you
+set that are on), and no page lists or edits one. A screen that writes a webhook must ask the current password for the
+writes that choose where a board's data goes: creating one, changing its address or secret, and
+switching it on. Changing its events, switching it off and deleting it ask nothing.
+`tests/check-at-the-write.test.ts` holds this on the source, failing closed: only the seven
+functions on `WEBHOOK_WRITERS` write the `webhooks` table, each with its count; the four that
+switch webhooks off only switch off, on the database itself; and `fillSecretGaps` is referred to
+only by the restore's `restoreInOneSnapshot`, once, and imported by no other file. The check
+finds the table however it is reached: by its import under any name, through a column used
+anywhere but a drizzle-orm condition or a read's fields, through a query builder's `.table` or
+`.config`, through Drizzle's relational queries or schema taken off the database in any form, in
+SQL quoted, cased or commented in any way SQLite reads, joined from pieces, or by a string, or
+joined text, that is its name alone (each such string in `src` is listed, with why); and `eval`
+and `Function` are refused outright. Any other writer fails the tests and is told to ask the
+password first. What it cannot see is named in the plan: SQL whose table name is a variable or is
+worked out at run time, the SQL verb held in a variable, the table renamed away and written under
+its new name, a query builder or a drizzle-orm call's result held in a variable or handed on, the
+database handle held in a variable or handed on, and the migrations. Two key cases are card 2703's: revoking one key
+leaves the webhooks it made sending, and an owner's or administrator's key reads a webhook's
+secret. A stolen session's other ways out are their own cards: report mail to any address, and
+a paused webhook that sends again when its setter is given the board back.
 
 **The order, per route** (decisions 3 and 4). The quick role refusal on `locals.user` and the
 path id; `readBody` (a body is now required, so a listed request with none is `400` from
@@ -5268,6 +5301,16 @@ office or cloud network, or the cloud metadata service at `169.254.169.254`. The
 sees the answer, but the request is made. Since card 2161 **an address inside the network is
 refused**, and what is left is bounded. The tables, the words and the log lines are in
 [Where a Webhook May Send](notifications-email.md#where-a-webhook-may-send).
+
+Who may write one is the other half (card 2702). No session can create a webhook or set its
+address or secret, except an administrator's import, which refills a secret this server already
+held for the same webhook and asks the current password first. Only an API key reaches the
+routes that create and change one, and making a key asks the current password; a signed-in
+browser is refused `401` under `/api/v1/` even with the right password. The other webhook writes
+a session reaches only switch webhooks off. Pages show webhooks only as counts (the Account page
+shows how many you set that are on), and no page lists or edits one. The source check that keeps every other writer
+out, and what a future webhook screen must ask, are in
+[Step-up Before Destructive Actions](#step-up-before-destructive-actions-card-2701).
 
 ```mermaid
 sequenceDiagram

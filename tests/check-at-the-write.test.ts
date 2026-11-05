@@ -2527,11 +2527,14 @@ function typeMembers(type: string, aliases: ReadonlyMap<string, string>, seen = 
 	return members;
 }
 
+/** The file of each path `moduleFileOf` has looked for, by the path (card 2702, code review K19). */
+const MODULE_FILES = new Map<string, string>();
+
 /**
  * The file a module specifier names, from the file that names it: `$lib/server/…`, `$lib/…`, or a relative path.
  * A `.js` or `.ts` written on the end names the same module, and a `..` is followed, so that a scan that reads
  * imports by this sees `'../../lib/server/people'` and `'$lib/server/people.js'` as `src/lib/server/people.ts`
- * (card 2681, the code review's S2).
+ * (card 2681, the code review's S2). Each path is looked for once, its file kept (card 2702, code review K19).
  */
 function moduleFileOf(from: string, specifier: string): string | null {
 	const named = specifier.replace(/\.(?:js|ts)$/, '');
@@ -2539,7 +2542,16 @@ function moduleFileOf(from: string, specifier: string): string | null {
 	if (named === '$lib' || named.startsWith('$lib/')) base = posix.normalize(`src/lib/${named.slice('$lib/'.length)}`).replace(/\/$/, '');
 	else if (named.startsWith('.')) base = posix.join(posix.dirname(from), named);
 	else return null;
-	if (base === 'src/lib/server' || base.startsWith('src/lib/server/')) return serverFileOf(`$lib/server${base.slice('src/lib/server'.length)}`);
+	const kept = MODULE_FILES.get(base);
+	if (kept !== undefined) return kept;
+	const found = moduleFileAt(base);
+	MODULE_FILES.set(base, found);
+	return found;
+}
+
+/** The file a module path names: under src/lib/server by `serverFileOf`, else the path's `.ts`, or its `index.ts` where only that is there. */
+function moduleFileAt(base: string): string {
+	if (base === 'src/lib/server' || base.startsWith('src/lib/server/')) return serverFileOf(`$lib/server${base.slice('src/lib/server'.length)}`) as string;
 	for (const candidate of [`${base}.ts`, `${base}/index.ts`]) {
 		try {
 			readFileSync(join(ROOT, candidate));
@@ -3068,13 +3080,32 @@ function writeText(node: ts.Node, tree: ts.SourceFile): string {
 	return ts.isCallExpression(node) ? calleeOf(node, tree) : node.getText(tree).replace(/\s+/g, '');
 }
 
+/** A module a node names, and in which form: an import, a re-export, `import()`, or `import x = require()` or `require()`. */
+type ModuleNaming = { specifier: string; form: 'import' | 'export' | 'import()' | 'require' };
+
+/**
+ * The module `node` names, in every form a module can be named (card 2713, R3;
+ * card 2702, code review K9), with its specifier as written; undefined when
+ * `node` names none, or names one by an expression that is not a string.
+ * Shared by the helper pin and the webhook-writer rule.
+ */
+function moduleNamedBy(node: ts.Node): ModuleNaming | undefined {
+	let named: { specifier: ts.Expression | undefined; form: ModuleNaming['form'] } | undefined;
+	if (ts.isImportDeclaration(node)) named = { specifier: node.moduleSpecifier, form: 'import' };
+	else if (ts.isExportDeclaration(node) && node.moduleSpecifier) named = { specifier: node.moduleSpecifier, form: 'export' };
+	else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) named = { specifier: node.arguments[0], form: 'import()' };
+	else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) named = { specifier: node.moduleReference.expression, form: 'require' };
+	else if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'require') named = { specifier: node.arguments[0], form: 'require' };
+	return named?.specifier && ts.isStringLiteralLike(named.specifier) ? { specifier: named.specifier.text, form: named.form } : undefined;
+}
+
 /**
  * Card 2713 (D2, D6 row 5): the helper pin, over the files given. Each module
  * on `helpers` is imported only by a decision service (a module on `services`
  * named `src/lib/server/decision*.ts`, `DECISION_SERVICE`), and only by name
  * under its own name: never as a namespace, a default or under another name
- * (R4), never re-exported and never by `import()` or `import x = require()`,
- * through whatever specifier names it, `$lib/server/…`, a relative path or a
+ * (R4), never re-exported and never by `import()`, `import x = require()` or
+ * `require()` (`moduleNamedBy`), through whatever specifier names it, `$lib/server/…`, a relative path or a
  * `.js` ending (`moduleFileOf`, R3). A `.svelte` file is read as text, and
  * one that names a helper is a finding. A helper is on neither `services` nor
  * `notServices`, imports no service, declares no `READS`, calls no `insert`,
@@ -3116,13 +3147,9 @@ function judgeServiceHelpers(
 		const notByName = (node: ts.Node, target: string) =>
 			findings.push(`${at(node)} imports ${target}, a service helper, other than by name: import each function by its own name (helper pin)`);
 		const visit = (node: ts.Node): void => {
-			// Each module this file names, in every form.
-			let named: { specifier: ts.Expression | undefined; form: 'import' | 'export' | 'import()' | 'require' } | undefined;
-			if (ts.isImportDeclaration(node)) named = { specifier: node.moduleSpecifier, form: 'import' };
-			else if (ts.isExportDeclaration(node) && node.moduleSpecifier) named = { specifier: node.moduleSpecifier, form: 'export' };
-			else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) named = { specifier: node.arguments[0], form: 'import()' };
-			else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) named = { specifier: node.moduleReference.expression, form: 'require' };
-			const target = named?.specifier && ts.isStringLiteralLike(named.specifier) ? moduleFileOf(file, named.specifier.text) : null;
+			// Each module this file names, in every form (`moduleNamedBy`).
+			const named = moduleNamedBy(node);
+			const target = named ? moduleFileOf(file, named.specifier) : null;
 			if (named && target !== null && helpers.includes(target)) {
 				if (!isDecisionService) {
 					findings.push(`${at(node)} imports ${target}, a service helper, which only a decision service on SERVICES may import (helper pin)`);
@@ -3934,6 +3961,1175 @@ function judgePasswordProofs(file: string, source: string, allowed: Readonly<Rec
 	visit(tree);
 	return findings;
 }
+
+// ─── Card 2702: who may write the webhooks table ────────────────────────────
+
+/** What a webhook writer may do: only switch webhooks off (or blank a secret), or set an address, a secret or on. */
+type WebhookWriter = { does: 'switches off only' | 'sets'; writes: number; why: string };
+
+/**
+ * Card 2702 (decisions 4 and 5, plan review P1, P6, P7): every function that
+ * writes the webhooks table, keyed `file#function` (the innermost named
+ * function round the write), with what it does and how many writes it holds.
+ * A webhook sends a board's events to an address its setter chose, so a write
+ * that can set the address or the secret, or switch one on, is a way out for
+ * the board's data. Today only an API key reaches one (v1 reads no session,
+ * and a key takes the current password to make); a screen that writes one
+ * must ask the current password first. Deletes reduce access and are not
+ * writes here.
+ */
+const WEBHOOK_WRITERS: Record<string, WebhookWriter> = {
+	'src/routes/api/v1/boards/[boardId]/webhooks/+server.ts#POST': {
+		does: 'sets',
+		writes: 1,
+		why: 'Creates a webhook. Only an API key reaches it: the gate reads no session under /api/v1/, and a key takes the current password to make. What a key may do is card 2703.'
+	},
+	'src/routes/api/v1/webhooks/[webhookId]/+server.ts#PUT': {
+		does: 'sets',
+		writes: 1,
+		why: 'Changes a webhook: its address, secret, events or on and off. Only an API key reaches it, as for POST; card 2703.'
+	},
+	'src/lib/server/auth.ts#endAccountAccess': {
+		does: 'switches off only',
+		writes: 1,
+		why: "A password change that ends the account's keys switches off the webhooks the account set (card 2168)."
+	},
+	'src/lib/server/deletes.ts#deleteUser': {
+		does: 'switches off only',
+		writes: 1,
+		why: 'A deleted account’s webhooks are switched off while they still name it (card 2168).'
+	},
+	'src/lib/server/db/restore.ts#switchOffOutside': {
+		does: 'switches off only',
+		writes: 1,
+		why: 'A restore kept apart from the outside switches every webhook off.'
+	},
+	'src/lib/server/backup-secrets.ts#clearSecrets': {
+		does: 'switches off only',
+		writes: 1,
+		why: "Blanks the signing secrets in a backup's working copy and switches those webhooks off; never the running database (card 2169)."
+	},
+	'src/lib/server/backup-secrets.ts#fillSecretGaps': {
+		does: 'sets',
+		writes: 1,
+		why:
+			"An import's restore refills a secret from this server's own, for the same webhook only, and sets it on or off as the backup had it. " +
+			'It runs behind the import’s confirmation of the password (POST /api/admin/import/confirm, on STEP_UP_ACTIONS); its importers are pinned (WEBHOOK_WRITER_IMPORTERS).'
+	}
+};
+
+/**
+ * A listed writer reachable from elsewhere, and the only `file#function`s that may refer to it, each once
+ * (plan review P7; code review K5): any other reference, in its own module too, is a finding, and only the
+ * callers' files may import it.
+ */
+const WEBHOOK_WRITER_CALLERS: Record<string, readonly string[]> = {
+	'src/lib/server/backup-secrets.ts#fillSecretGaps': ['src/lib/server/db/restore.ts#restoreInOneSnapshot']
+};
+
+/**
+ * Card 2702 (code review K2): every string whose whole text is the table's name, by the `file#function`
+ * round it, with how many it holds. A string that is the name is how a write is built round the rest of
+ * the rule (`'UPDATE ' + 'webhooks'`, `sql.identifier('webhooks')`, `sql.raw('webhooks')`, a second
+ * `sqliteTable('webhooks', …)`), so any other is a finding, and so is a listed key holding more or fewer.
+ */
+const WEBHOOK_NAME_STRINGS: Record<string, { count: number; why: string }> = {
+	'src/lib/server/db/schema.ts#(top level)': { count: 1, why: "The table's declaration, sqliteTable('webhooks', …)." },
+	'src/lib/server/backup-secrets.ts#clearSecrets': {
+		count: 1,
+		why: "hasColumns(copy, 'webhooks', …): whether a backup's working copy has the columns before its secrets are blanked."
+	},
+	'src/lib/server/backup-secrets.ts#readSecretsHere': {
+		count: 3,
+		why: "hasColumns(live, 'webhooks', …) twice, whether this server has the columns before its secrets are read; and the type SecretsHere['webhooks']."
+	},
+	'src/lib/server/backup-secrets.ts#fillSecretGaps': {
+		count: 2,
+		why: "hasColumns(live, 'webhooks', …) twice: whether this server has the columns before a secret is refilled."
+	},
+	'src/lib/server/backup-secrets.ts#secretsToEnter': {
+		count: 1,
+		why: "hasColumns(database, 'webhooks', …): whether the database has the columns before the webhooks left without a secret are read."
+	},
+	'src/lib/server/db/restore.ts#switchOffOutside': { count: 1, why: "hasColumns('webhooks', 'active'): whether the restored copy has the column before it is switched off." },
+	'src/lib/server/webhooks.ts#(top level)': { count: 1, why: "createLogger('Webhooks'): the label of the module's log lines (the name in another case, which SQLite reads as the same)." },
+	'src/routes/api/v1/openapi.json/+server.ts#(top level)': { count: 6, why: "The OpenAPI document's tag 'Webhooks': five operations' tags and the tag's own entry." }
+};
+
+/**
+ * A string that is the table's name and nothing else: bare, quoted, single-quoted, backticked or bracketed,
+ * with a schema before it or not, in any case (SQLite reads names in any case), white space round it allowed.
+ * A template's piece is held to the name exactly, white space not allowed: its text is judged as SQL whole.
+ */
+const WEBHOOK_NAME_STRING = /^\s*(?:["'`[]?\w+["'`\]]?\s*\.\s*)?["'`[]?webhooks["'`\]]?\s*$/i;
+
+/**
+ * Card 2702 (code review K3): where SQL may make a table called webhooks (CREATE TABLE, ALTER TABLE … RENAME
+ * TO), by `file#function`, with how many; such SQL anywhere else is a write. The migration runner's alone.
+ */
+const WEBHOOK_TABLE_MADE: Record<string, { count: number; why: string }> = {
+	'src/lib/server/db/expected-schema.ts#(top level)': {
+		count: 1,
+		why:
+			"The migration runner's model of schema.ts (generated by drizzle-kit export, checked by a test and by the build), which it compares the live database with; " +
+			'it rebuilds only boards, columns, categories, settings, user_xp and invite_tokens from it.'
+	}
+};
+
+/** The schema module, and the one module that may import it as a namespace (to hand it to Drizzle whole). */
+const WEBHOOK_SCHEMA = 'src/lib/server/db/schema.ts';
+const SCHEMA_AS_NAMESPACE = 'src/lib/server/db/index.ts';
+
+/** Between two words of SQL: white space, or a comment, which SQLite reads as white space (code review K3). */
+const SQL_GAP = String.raw`(?:\s|/\*[\s\S]*?\*/|--[^\n]*(?:\n|$))`;
+
+/**
+ * A write to the table in SQL text (code review K3): INSERT (OR …) INTO, REPLACE INTO, UPDATE (OR …),
+ * CREATE (TEMP) TABLE (IF NOT EXISTS) and ALTER TABLE … RENAME TO, the name bare, double- or
+ * single-quoted, backticked or bracketed, with a schema before it or not, in any case, across lines and
+ * with comments between the words. A longer name (`webhooks_old`) is another table. CREATE and ALTER
+ * are writes outside the migration runner's model (WEBHOOK_TABLE_MADE).
+ */
+const WEBHOOK_SQL_WRITE = new RegExp(
+	String.raw`\b(INSERT(?:${SQL_GAP}+OR${SQL_GAP}+\w+)?${SQL_GAP}+INTO|REPLACE${SQL_GAP}+INTO|UPDATE(?:${SQL_GAP}+OR${SQL_GAP}+\w+)?` +
+		String.raw`|CREATE(?:${SQL_GAP}+TEMP(?:ORARY)?)?${SQL_GAP}+TABLE(?:${SQL_GAP}+IF${SQL_GAP}+NOT${SQL_GAP}+EXISTS)?` +
+		String.raw`|ALTER${SQL_GAP}+TABLE[^;]*?${SQL_GAP}RENAME${SQL_GAP}+TO)${SQL_GAP}+` +
+		String.raw`(?:["'\x60[]?\w+["'\x60\]]?${SQL_GAP}*\.${SQL_GAP}*)?["'\x60[]?webhooks["'\x60\]]?(?![\w$])`,
+	'gi'
+);
+
+/** What a switch-off-only writer may set: `active` off, or `secret` blank. */
+const SWITCH_OFF_SQL = /^["`[]?(?:active["`\]]?\s*=\s*0|secret["`\]]?\s*=\s*'')$/i;
+
+/** The Drizzle methods whose first argument reads the table. */
+const READS_TABLE = ['from', 'innerJoin', 'leftJoin', 'rightJoin', 'fullJoin', 'crossJoin'];
+
+/** The Drizzle methods whose first argument is a table. */
+const TAKES_TABLE = [...READS_TABLE, 'insert', 'update', 'delete'];
+
+/** The names through which Drizzle hands out its tables: the relational queries and the schema it was given (code review K1, K13). */
+const DRIZZLE_SCHEMA_WORDS = ['query', '_', 'fullSchema', 'schema'];
+
+/** The Drizzle methods an object literal of columns may be handed to, as the fields read or returned (code review K17). */
+const TAKES_FIELDS = ['select', 'selectDistinct', 'returning', 'orderBy', 'groupBy'];
+
+/** What a use of the table outside a column, a read on the database and a delete on the database is told. */
+const USES_WEBHOOKS = 'uses webhooks other than by a column, or by .from(), a join, .delete() or .$count() on the database';
+
+/** What a column used anywhere but in a drizzle-orm call or as a field of a read on the database is told (code review K17). */
+const COLUMN_ELSEWHERE = 'uses a column of webhooks other than in a drizzle-orm call with nothing taken off it, or as a field handed to a read on the database';
+
+/** What `eval` or `Function` is told (code review K16). */
+const RUNS_TEXT = 'names eval or Function, which run code built from a string that no rule reads';
+
+/** What an unlisted writer is told. */
+const ASK_FIRST =
+	"a write that can set a webhook's address or secret, or switch one on, asks the current password first " +
+	'(STEP_UP_ACTIONS; a service write with requirePasswordHeld, card 2726), and is then listed with why (card 2702)';
+
+/** A `.svelte` file with everything outside its `<script>` blocks blanked, its lines kept. */
+function scriptsOf(source: string): string {
+	let kept = source.replace(/[^\n]/g, ' ');
+	for (const found of source.matchAll(/(<script\b[^>]*>)([\s\S]*?)<\/script>/g)) {
+		const start = (found.index ?? 0) + found[1].length;
+		kept = kept.slice(0, start) + found[2] + kept.slice(start + found[2].length);
+	}
+	return kept;
+}
+
+/** The innermost named function round `node`: a declaration, or a function given to a name; `(top level)` if none. */
+function writerNameOf(node: ts.Node): string {
+	for (let at = node.parent; at; at = at.parent) {
+		if ((ts.isFunctionDeclaration(at) || ts.isMethodDeclaration(at)) && at.name && ts.isIdentifier(at.name)) return at.name.text;
+		if (ts.isArrowFunction(at) || ts.isFunctionExpression(at)) {
+			const holder = at.parent;
+			if ((ts.isVariableDeclaration(holder) || ts.isPropertyAssignment(holder) || ts.isPropertyDeclaration(holder)) && holder.initializer === at && ts.isIdentifier(holder.name)) {
+				return holder.name.text;
+			}
+		}
+	}
+	return '(top level)';
+}
+
+type WebhookReading = {
+	/** Every write found, listed or not, by its key. */
+	writes: { key: string; line: number; what: string }[];
+	/** The keys of WEBHOOK_WRITER_CALLERS this file imports or names, in any form. */
+	reaches: string[];
+	/** Each reference to a key of WEBHOOK_WRITER_CALLERS, by the `file#function` it is in. */
+	refers: { key: string; by: string }[];
+	findings: string[];
+};
+
+/** The files the webhook-writer rule walks under src (code review K6): every script, and a `.svelte` file's `<script>` blocks. */
+const WEBHOOK_WALKED = /\.(ts|mts|cts|tsx|js|mjs|cjs|jsx|svelte)$/;
+
+/** What a pinned writer is, in its findings. */
+const SETS_SECRET = "which sets a webhook's secret and switches it on";
+
+/**
+ * Card 2702 for one file under src (plan section 6; code review K1 to K6, K9,
+ * K12 to K18): the `webhooks` table of db/schema, found by its local name (in
+ * db/schema itself, by its declaration), is written only by a function on
+ * `writers`, as many times as it says, and a switch-off-only writer only
+ * switches off, on the database itself. Every value reference to the table
+ * is a write unless it is a column where a column may be (`columnPlaced`: an
+ * argument of a drizzle-orm import with nothing taken off its result, or a
+ * field handed to `select`, `selectDistinct`, `returning`, `orderBy` or
+ * `groupBy` on the database; K17), or the first argument of `.from()` or a
+ * join on a select that starts at the database or a transaction's handle
+ * (after a `.with()` or not, K18), or of `.delete()` or `.$count()` on one,
+ * with no `.table` or `.config` off the builder. `_`, `fullSchema`, `schema`
+ * or `query` off the database, a transaction's handle or any name of
+ * db/index.ts, by access, by a string key or by destructuring, and any key
+ * worked out at run time off one of those names, is a write (K13), but for
+ * `<database>.query.<table>.findFirst()` and `.findMany()` called directly;
+ * so is a property `webhooks` off Drizzle's schema. Every string built from
+ * literals (one, a template, or pieces joined by `+`, each piece that is not
+ * a literal a word of its own, K14) is a write for each match of
+ * `WEBHOOK_SQL_WRITE`, and every string, or whole joined text (K15), that is
+ * the table's name alone is on WEBHOOK_NAME_STRINGS. The table imported under
+ * another name; db/schema as a namespace outside db/index.ts, by `import x =
+ * require()` or `require()`, re-exported or by `import()`; the namespace used
+ * whole other than as drizzle()'s schema; a pinned writer imported by a file
+ * not allowed it, or named other than by an import; any reference to it
+ * outside its callers; and `eval` or `Function` (K16), are findings
+ * outright. Not seen (plan section 2): a table name worked out at run time
+ * (`['web', 'hooks'].join('')`, `String.fromCharCode`), the SQL verb held in
+ * a variable, the table renamed away and written under its new name, a
+ * builder or a drizzle-orm call's result held in a variable or handed on, the
+ * database or a transaction's handle held in a variable or handed on, and the
+ * migrations.
+ */
+function judgeWebhookWrites(file: string, source: string, writers: Readonly<Record<string, WebhookWriter>>): WebhookReading {
+	const kind = /\.(tsx|jsx)$/.test(file) ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+	const tree = ts.createSourceFile(file, file.endsWith('.svelte') ? scriptsOf(source) : source, ts.ScriptTarget.Latest, true, kind);
+	const line = (node: ts.Node) => tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1;
+	const reading: WebhookReading = { writes: [], reaches: [], refers: [], findings: [] };
+	const fileOf = (key: string) => key.slice(0, key.indexOf('#'));
+	const nameOf = (key: string) => key.slice(key.indexOf('#') + 1);
+	const keyOf = (node: ts.Node) => `${file}#${writerNameOf(node)}`;
+
+	// Every name the file declares, each with its declarations: an import is a handle only where nothing else takes its name.
+	const declared = new Map<string, ts.Node[]>();
+	const collect = (node: ts.Node): void => {
+		const name = (node as { name?: ts.Node }).name;
+		const declares =
+			ts.isVariableDeclaration(node) ||
+			ts.isParameter(node) ||
+			ts.isBindingElement(node) ||
+			ts.isFunctionDeclaration(node) ||
+			ts.isFunctionExpression(node) ||
+			ts.isClassDeclaration(node) ||
+			ts.isClassExpression(node) ||
+			ts.isEnumDeclaration(node) ||
+			ts.isImportEqualsDeclaration(node) ||
+			ts.isImportSpecifier(node) ||
+			ts.isNamespaceImport(node) ||
+			ts.isImportClause(node);
+		if (declares && name && ts.isIdentifier(name)) declared.set(name.text, [...(declared.get(name.text) ?? []), node]);
+		ts.forEachChild(node, collect);
+	};
+	collect(tree);
+
+	// Each module the file names, in every form (`moduleNamedBy`, code review K9), resolved once (K10).
+	const tables = new Set<string>(file === WEBHOOK_SCHEMA ? ['webhooks'] : []);
+	const namespaces = new Set<string>();
+	/** Every name the file imports from db/index.ts, and of them the Drizzle database, `db`. */
+	const fromDatabase = new Set<string>();
+	const databases = new Set<string>();
+	/** The local names of each pinned writer, and the namespaces of its module, by its key. */
+	const pinnedNames = new Map<string, string>();
+	const pinnedSpaces = new Map<string, string>();
+	for (const key of Object.keys(WEBHOOK_WRITER_CALLERS)) if (fileOf(key) === file) pinnedNames.set(nameOf(key), key);
+	const reach = (key: string, node: ts.Node, how: string) => {
+		reading.reaches.push(key);
+		const allowed = WEBHOOK_WRITER_CALLERS[key].map(fileOf);
+		if (!allowed.includes(file)) reading.findings.push(`${file}:${line(node)} imports ${nameOf(key)}${how}, ${SETS_SECRET}: only ${allowed.join(', ')} may (card 2702)`);
+	};
+	const naming = (node: ts.Node): void => {
+		const named = moduleNamedBy(node);
+		const target = named ? moduleFileOf(file, named.specifier) : null;
+		const clause = ts.isImportDeclaration(node) && node.importClause && !node.importClause.isTypeOnly ? node.importClause : undefined;
+		const bindings = clause?.namedBindings;
+		const valueRequire = ts.isImportEqualsDeclaration(node) && !node.isTypeOnly;
+		if (named && target === WEBHOOK_SCHEMA) {
+			if (named.form === 'export') reading.findings.push(`${file}:${line(node)} re-exports from ${WEBHOOK_SCHEMA}: import webhooks from there by its own name (card 2702)`);
+			if (named.form === 'import()') reading.findings.push(`${file}:${line(node)} imports ${WEBHOOK_SCHEMA} with import(): import webhooks by its own name (card 2702)`);
+			if (named.form === 'require') reading.findings.push(`${file}:${line(node)} imports ${WEBHOOK_SCHEMA} with require(): import webhooks by its own name (card 2702)`);
+			if (valueRequire) namespaces.add(node.name.text);
+			if (bindings && ts.isNamespaceImport(bindings)) {
+				namespaces.add(bindings.name.text);
+				if (file !== SCHEMA_AS_NAMESPACE) reading.findings.push(`${file}:${line(node)} imports ${WEBHOOK_SCHEMA} as a namespace: import webhooks by its own name (card 2702)`);
+			} else if (bindings) {
+				for (const element of bindings.elements) {
+					if (element.isTypeOnly || (element.propertyName ?? element.name).text !== 'webhooks') continue;
+					tables.add(element.name.text);
+					if (element.propertyName) reading.findings.push(`${file}:${line(node)} imports webhooks as ${element.name.text}: import it by its own name (card 2702)`);
+				}
+			}
+		}
+		if (named && target === DB_MODULE) {
+			if (clause?.name) fromDatabase.add(clause.name.text);
+			if (valueRequire) fromDatabase.add(node.name.text);
+			if (bindings && ts.isNamespaceImport(bindings)) fromDatabase.add(bindings.name.text);
+			else if (bindings) {
+				for (const element of bindings.elements) {
+					if (element.isTypeOnly) continue;
+					fromDatabase.add(element.name.text);
+					if ((element.propertyName ?? element.name).text === 'db') databases.add(element.name.text);
+				}
+			}
+		}
+		for (const key of Object.keys(WEBHOOK_WRITER_CALLERS)) {
+			if (!named || target !== fileOf(key)) continue;
+			const name = nameOf(key);
+			if (bindings && ts.isNamespaceImport(bindings)) {
+				reach(key, node, ' as a namespace');
+				pinnedSpaces.set(bindings.name.text, key);
+			} else if (bindings) {
+				for (const element of bindings.elements) {
+					if (element.isTypeOnly || (element.propertyName ?? element.name).text !== name) continue;
+					reach(key, node, '');
+					pinnedNames.set(element.name.text, key);
+				}
+			} else if (valueRequire) {
+				reach(key, node, ' with import x = require()');
+				pinnedSpaces.set(node.name.text, key);
+			} else if (named.form === 'import()' || named.form === 'require') {
+				reading.reaches.push(key);
+				const how = named.form === 'require' ? 'require()' : named.form;
+				reading.findings.push(`${file}:${line(node)} imports ${fileOf(key)} with ${how}, which holds ${name}, ${SETS_SECRET}: import it by its own name, only in its callers' files (card 2702)`);
+			} else if (named.form === 'export' && ts.isExportDeclaration(node) && !node.isTypeOnly) {
+				const clauseOut = node.exportClause;
+				const exported = !clauseOut || ts.isNamespaceExport(clauseOut) || clauseOut.elements.some((element) => !element.isTypeOnly && (element.propertyName ?? element.name).text === name);
+				if (exported) {
+					reading.reaches.push(key);
+					reading.findings.push(`${file}:${line(node)} re-exports ${name}, ${SETS_SECRET}: no file may (card 2702)`);
+				}
+			}
+		}
+		ts.forEachChild(node, naming);
+	};
+	naming(tree);
+
+	// The database: `db` of db/index.ts, under the name it is imported by, where the file declares that name nowhere else (code review K4).
+	for (const name of [...databases]) if ((declared.get(name) ?? []).length !== 1) databases.delete(name);
+	const isDatabase = (node: ts.Node) => ts.isIdentifier(node) && databases.has(node.text);
+	/** The callback `declaration` is the first parameter of, where that callback is handed to `<database>.transaction(…)`. */
+	const transactionOf = (declaration: ts.Node): ts.Node | undefined => {
+		const callback = declaration.parent;
+		const call = callback?.parent;
+		if (!ts.isParameter(declaration) || !callback || !(ts.isArrowFunction(callback) || ts.isFunctionExpression(callback)) || callback.parameters[0] !== declaration) return undefined;
+		if (!call || !ts.isCallExpression(call) || call.arguments[0] !== callback || !ts.isPropertyAccessExpression(call.expression) || call.expression.name.text !== 'transaction') return undefined;
+		return isDatabase(call.expression.expression) ? callback : undefined;
+	};
+	/** The database, or a transaction's handle: a name the file declares only as the first parameter of callbacks handed to `<database>.transaction(…)`, inside one. */
+	const isHandle = (node: ts.Node): boolean => {
+		if (!ts.isIdentifier(node)) return false;
+		if (databases.has(node.text)) return true;
+		const callbacks = (declared.get(node.text) ?? []).map(transactionOf);
+		return callbacks.length > 0 && callbacks.every((callback) => callback !== undefined) && callbacks.some((callback) => within(node, callback as ts.Node));
+	};
+	/** The name `node` is imported under from drizzle-orm (or one of its paths), by name, where the file declares that name nowhere else; undefined if it is not one. */
+	const drizzleImportOf = (node: ts.Node): string | undefined => {
+		const declarations = ts.isIdentifier(node) ? (declared.get(node.text) ?? []) : [];
+		const [only] = declarations;
+		if (declarations.length !== 1 || !ts.isImportSpecifier(only) || only.isTypeOnly || only.parent.parent.isTypeOnly) return undefined;
+		const specifier = only.parent.parent.parent.moduleSpecifier;
+		const fromDrizzle = ts.isStringLiteral(specifier) && (specifier.text === 'drizzle-orm' || specifier.text.startsWith('drizzle-orm/'));
+		return fromDrizzle ? (only.propertyName ?? only.name).text : undefined;
+	};
+	/** `drizzle` of drizzle-orm, imported by its own name, where the file declares that name nowhere else. */
+	const isDrizzle = (node: ts.Node): boolean => drizzleImportOf(node) === 'drizzle';
+
+	/** `node`, and what wraps it without changing it: parentheses, `as`, `!`, `satisfies`, `<T>`. */
+	const unwrappedUp = (node: ts.Node): ts.Node => {
+		let at = node;
+		while (ts.isParenthesizedExpression(at.parent) || ts.isAsExpression(at.parent) || ts.isNonNullExpression(at.parent) || ts.isSatisfiesExpression(at.parent) || ts.isTypeAssertionExpression(at.parent)) {
+			at = at.parent;
+		}
+		return at;
+	};
+	/** Whether a table is reached off `node` (code review K1): `.table` or `.config` along the accesses and calls that hang off it, or an element access other than by a number. */
+	const hangsTable = (node: ts.Node): boolean => {
+		for (let at = unwrappedUp(node); ; ) {
+			const up = at.parent;
+			if (ts.isPropertyAccessExpression(up) && up.expression === at) {
+				if (up.name.text === 'table' || up.name.text === 'config' || up.name.text === 'tableConfig') return true;
+			} else if (ts.isElementAccessExpression(up) && up.expression === at) {
+				if (!ts.isNumericLiteral(up.argumentExpression)) return true;
+			} else if (!(ts.isCallExpression(up) && up.expression === at)) {
+				return false;
+			}
+			at = unwrappedUp(up);
+		}
+	};
+	/**
+	 * Whether `receiver` is `<handle>.select…(…)`, or `<handle>.with(…).select…(…)`, and calls and accesses after it: a read that starts at the
+	 * database or a transaction's handle (code review K4, K18).
+	 */
+	const selectsFromDatabase = (receiver: ts.Expression): boolean => {
+		let at = receiver;
+		const names: string[] = [];
+		while (ts.isCallExpression(at) || ts.isPropertyAccessExpression(at)) {
+			if (ts.isPropertyAccessExpression(at)) names.unshift(at.name.text);
+			at = at.expression;
+		}
+		const [first, second] = names;
+		const select = (name: string | undefined) => name !== undefined && /^select(Distinct(On)?)?$/.test(name);
+		return isHandle(at) && (select(first) || (first === 'with' && select(second)));
+	};
+	/** `node` without what wraps it without changing it: parentheses, `as`, `!`, `satisfies`, `<T>`. */
+	const unwrappedDown = (node: ts.Expression): ts.Expression => {
+		let at = node;
+		while (ts.isParenthesizedExpression(at) || ts.isAsExpression(at) || ts.isNonNullExpression(at) || ts.isSatisfiesExpression(at) || ts.isTypeAssertionExpression(at)) at = at.expression;
+		return at;
+	};
+	/** The steps of the chain of accesses and calls `node` ends, from `node` in to where it starts, through what wraps them. */
+	const chainOf = (node: ts.Expression): ts.Expression[] => {
+		const steps: ts.Expression[] = [];
+		for (let at = unwrappedDown(node); ; at = unwrappedDown(at.expression)) {
+			steps.push(at);
+			if (!(ts.isPropertyAccessExpression(at) || ts.isElementAccessExpression(at) || ts.isCallExpression(at))) return steps;
+		}
+	};
+	/** Whether `node` is the database or a transaction's handle, or any name of db/index.ts, or a chain of accesses and calls that starts at one (code review K13). */
+	const offDatabase = (node: ts.Expression): boolean => {
+		const steps = chainOf(node);
+		const start = steps[steps.length - 1];
+		return ts.isIdentifier(start) && (fromDatabase.has(start.text) || isHandle(start));
+	};
+	/** Whether `node` is the database or a transaction's handle, or a name of db/index.ts, itself. */
+	const isDatabaseName = (node: ts.Expression): boolean => {
+		const at = unwrappedDown(node);
+		return ts.isIdentifier(at) && (fromDatabase.has(at.text) || isHandle(at));
+	};
+	/** `<handle>.query.<table>.findFirst(…)` or `.findMany(…)`, called directly with no table reached off it: the one use of `query` allowed (code review K1, K13). */
+	const findsDirectly = (query: ts.PropertyAccessExpression): boolean => {
+		const table = query.parent;
+		const finder = table?.parent;
+		return (
+			isHandle(query.expression) &&
+			ts.isPropertyAccessExpression(table) &&
+			table.expression === query &&
+			ts.isPropertyAccessExpression(finder) &&
+			finder.expression === table &&
+			(finder.name.text === 'findFirst' || finder.name.text === 'findMany') &&
+			ts.isCallExpression(finder.parent) &&
+			finder.parent.expression === finder &&
+			!hangsTable(finder.parent)
+		);
+	};
+	/**
+	 * Whether `node` takes Drizzle's schema off the database (code review K13): `_`, `fullSchema` or `schema` off the database, a transaction's
+	 * handle or a name of db/index.ts, or a chain that starts at one, by access or by a string key; `query` the same, but in `findsDirectly`; or
+	 * any key worked out at run time off one of those names itself.
+	 */
+	const takesSchema = (node: ts.Node): boolean => {
+		if (ts.isPropertyAccessExpression(node)) {
+			if (!DRIZZLE_SCHEMA_WORDS.includes(node.name.text) || !offDatabase(node.expression)) return false;
+			return node.name.text !== 'query' || !findsDirectly(node);
+		}
+		if (!ts.isElementAccessExpression(node)) return false;
+		const key = node.argumentExpression;
+		if (ts.isStringLiteralLike(key)) return DRIZZLE_SCHEMA_WORDS.includes(key.text) && offDatabase(node.expression);
+		return !ts.isNumericLiteral(key) && isDatabaseName(node.expression);
+	};
+	/** Whether a step of the chain `node` ends takes Drizzle's schema: what is found there once, at the step nearest where the chain starts. */
+	const schemaTakenIn = (node: ts.Expression): boolean => chainOf(node).some(takesSchema);
+	/** Whether `node` is, or hangs off, the database, a transaction's handle, any name of db/index.ts, or Drizzle's schema (code review K1). */
+	const reachesDrizzleSchema = (node: ts.Expression): boolean => {
+		let at = node;
+		for (;;) {
+			if (ts.isPropertyAccessExpression(at) && DRIZZLE_SCHEMA_WORDS.includes(at.name.text)) return true;
+			if (
+				ts.isPropertyAccessExpression(at) ||
+				ts.isElementAccessExpression(at) ||
+				ts.isCallExpression(at) ||
+				ts.isParenthesizedExpression(at) ||
+				ts.isAsExpression(at) ||
+				ts.isNonNullExpression(at) ||
+				ts.isSatisfiesExpression(at) ||
+				ts.isTypeAssertionExpression(at)
+			) {
+				at = at.expression;
+			} else {
+				return ts.isIdentifier(at) && (fromDatabase.has(at.text) || isHandle(at) || DRIZZLE_SCHEMA_WORDS.includes(at.text));
+			}
+		}
+	};
+
+	/** One write: on the list under its key, and, for a switch-off-only writer, one that `switchesOff`. */
+	const write = (node: ts.Node, what: string, switchesOff: () => boolean) => {
+		const key = keyOf(node);
+		reading.writes.push({ key, line: line(node), what });
+		const listed = writers[key];
+		if (!listed) reading.findings.push(`${file}:${line(node)} ${what} in ${writerNameOf(node)}, which is not on WEBHOOK_WRITERS: ${ASK_FIRST}`);
+		else if (listed.does === 'switches off only' && !switchesOff()) {
+			reading.findings.push(`${file}:${line(node)} ${what} in ${writerNameOf(node)}, which WEBHOOK_WRITERS lists as switching off only, and does more (card 2702)`);
+		}
+	};
+	/** `<handle>.update(table).set({ active: false })`, or with `secret: ''`, and nothing else, with no table reached off it. */
+	const switchesOffInDrizzle = (update: ts.CallExpression): boolean => {
+		if (!ts.isPropertyAccessExpression(update.expression) || !isHandle(update.expression.expression) || hangsTable(update)) return false;
+		const set = update.parent;
+		if (!ts.isPropertyAccessExpression(set) || set.name.text !== 'set' || !ts.isCallExpression(set.parent)) return false;
+		const [values] = set.parent.arguments;
+		if (!values || !ts.isObjectLiteralExpression(values) || values.properties.length === 0) return false;
+		return values.properties.every(
+			(property) =>
+				ts.isPropertyAssignment(property) &&
+				ts.isIdentifier(property.name) &&
+				((property.name.text === 'active' && property.initializer.kind === ts.SyntaxKind.FalseKeyword) ||
+					(property.name.text === 'secret' && ts.isStringLiteralLike(property.initializer) && property.initializer.text === ''))
+		);
+	};
+	/** Whether the chain `node` ends starts at the database or a transaction's handle. */
+	const startsAtHandle = (node: ts.Expression): boolean => {
+		const steps = chainOf(node);
+		return isHandle(steps[steps.length - 1]);
+	};
+	/**
+	 * Whether a column is where a column may be (code review K17): an argument of a drizzle-orm import (`eq`, `and`, `inArray`, …) with
+	 * nothing taken off what it returns; or a value of an object literal handed directly to `select`, `selectDistinct`, `returning`,
+	 * `orderBy` or `groupBy` on a chain that starts at the database or a transaction's handle; or, in db/schema.ts, a foreign key, the
+	 * whole body of an arrow handed to `.references()`.
+	 */
+	const columnPlaced = (column: ts.Expression): boolean => {
+		const at = unwrappedUp(column);
+		const holder = at.parent;
+		if (ts.isCallExpression(holder) && holder.arguments.some((argument) => argument === at) && drizzleImportOf(holder.expression) !== undefined) {
+			const result = unwrappedUp(holder);
+			const off = result.parent;
+			return !((ts.isPropertyAccessExpression(off) || ts.isElementAccessExpression(off)) && off.expression === result);
+		}
+		if (ts.isPropertyAssignment(holder) && holder.initializer === at) {
+			const fields = holder.parent;
+			const call = fields.parent;
+			return (
+				ts.isCallExpression(call) &&
+				call.arguments.some((argument) => argument === fields) &&
+				ts.isPropertyAccessExpression(call.expression) &&
+				TAKES_FIELDS.includes(call.expression.name.text) &&
+				startsAtHandle(call.expression.expression)
+			);
+		}
+		if (file === WEBHOOK_SCHEMA && ts.isArrowFunction(holder) && holder.body === at) {
+			const call = holder.parent;
+			return ts.isCallExpression(call) && call.arguments[0] === holder && ts.isPropertyAccessExpression(call.expression) && call.expression.name.text === 'references';
+		}
+		return false;
+	};
+	/** A reference to the table, by its local name or through the namespace: a column, a read, a count or a delete on the database, or a write. */
+	const judgeReference = (reference: ts.Expression) => {
+		const parent = reference.parent;
+		if (ts.isPropertyAccessExpression(parent) && parent.expression === reference) {
+			// A column: none where the table is reached off it or it is handed on as a table (code review K1), and only where a column may be (K17).
+			const outer = unwrappedUp(parent);
+			const call = outer.parent;
+			const handedOn = ts.isCallExpression(call) && call.arguments[0] === outer && ts.isPropertyAccessExpression(call.expression) && TAKES_TABLE.includes(call.expression.name.text);
+			if (hangsTable(parent) || handedOn) write(reference, 'reaches the webhooks table through a column', () => false);
+			else if (!columnPlaced(parent)) write(reference, COLUMN_ELSEWHERE, () => false);
+			return;
+		}
+		if (ts.isCallExpression(parent) && parent.arguments[0] === reference && ts.isPropertyAccessExpression(parent.expression)) {
+			const method = parent.expression.name.text;
+			if (method === 'insert') return write(reference, 'inserts into webhooks', () => false);
+			if (method === 'update') return write(reference, 'updates webhooks', () => switchesOffInDrizzle(parent));
+			// A read, a count or a delete only on the database or a transaction's handle, with no table reached off the builder (code review K1, K4, K18).
+			const reads = READS_TABLE.includes(method) && selectsFromDatabase(parent.expression.expression);
+			const counts = method === '$count' && isHandle(parent.expression.expression);
+			const deletes = method === 'delete' && isHandle(parent.expression.expression);
+			if ((reads || counts || deletes) && !hangsTable(parent)) return;
+		}
+		if (ts.isTemplateSpan(parent) && parent.expression === reference && ts.isTaggedTemplateExpression(parent.parent.parent)) {
+			return write(reference, 'interpolates webhooks into a sql template', () => false);
+		}
+		write(reference, USES_WEBHOOKS, () => false);
+	};
+	/** A reference to db/schema's namespace: a property of it, or, in db/index.ts alone, drizzle()'s schema (code review K6). */
+	const judgeNamespace = (reference: ts.Identifier) => {
+		const parent = reference.parent;
+		if (ts.isPropertyAccessExpression(parent) && parent.expression === reference) {
+			if (parent.name.text === 'webhooks') judgeReference(parent);
+			return;
+		}
+		const property = ts.isShorthandPropertyAssignment(parent) || (ts.isPropertyAssignment(parent) && parent.initializer === reference) ? parent : undefined;
+		const options = property?.parent;
+		const call = options?.parent;
+		const asSchema =
+			file === SCHEMA_AS_NAMESPACE &&
+			property !== undefined &&
+			ts.isIdentifier(property.name) &&
+			property.name.text === 'schema' &&
+			call !== undefined &&
+			ts.isCallExpression(call) &&
+			call.arguments[1] === options &&
+			isDrizzle(call.expression);
+		if (!asSchema) reading.findings.push(`${file}:${line(reference)} uses ${WEBHOOK_SCHEMA} whole, other than as drizzle()'s schema in ${SCHEMA_AS_NAMESPACE}: name each table (card 2702)`);
+	};
+	/** A reference to a pinned writer: only in its callers (code review K5). */
+	const refer = (key: string, node: ts.Node) => {
+		const by = keyOf(node);
+		reading.refers.push({ key, by });
+		const callers = WEBHOOK_WRITER_CALLERS[key];
+		if (!callers.includes(by)) reading.findings.push(`${file}:${line(node)} refers to ${nameOf(key)} in ${writerNameOf(node)}, ${SETS_SECRET}: only ${callers.join(', ')} may (card 2702)`);
+	};
+	/** A reference to a pinned writer's module as a namespace: its writer by name, or another of its names; never the module whole. */
+	const judgePinnedSpace = (key: string, reference: ts.Identifier) => {
+		const parent = reference.parent;
+		const name = nameOf(key);
+		if (ts.isPropertyAccessExpression(parent) && parent.expression === reference) {
+			if (parent.name.text === name) refer(key, parent);
+			return;
+		}
+		if (ts.isElementAccessExpression(parent) && parent.expression === reference && ts.isStringLiteralLike(parent.argumentExpression)) {
+			if (parent.argumentExpression.text === name) refer(key, parent);
+			return;
+		}
+		reading.findings.push(`${file}:${line(reference)} uses ${fileOf(key)} whole, which holds ${name}, ${SETS_SECRET}: import it by its own name (card 2702)`);
+	};
+
+	/**
+	 * The text of a string built from literals (one, a template, or pieces joined by `+`), ` _ ` for each piece that is not a literal (a
+	 * word of its own, so that a name before or after it is still a name: code review K14), and whether there is none.
+	 */
+	const textOf = (node: ts.Expression): { text: string; whole: boolean } => {
+		if (ts.isStringLiteralLike(node)) return { text: node.text, whole: true };
+		if (ts.isParenthesizedExpression(node)) return textOf(node.expression);
+		if (ts.isTemplateExpression(node)) {
+			const spans = node.templateSpans.map((span) => ({ inner: textOf(span.expression), tail: span.literal.text }));
+			return { text: node.head.text + spans.map(({ inner, tail }) => inner.text + tail).join(''), whole: spans.every(({ inner }) => inner.whole) };
+		}
+		if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+			const [left, right] = [textOf(node.left), textOf(node.right)];
+			return { text: left.text + right.text, whole: left.whole && right.whole };
+		}
+		return { text: ' _ ', whole: false };
+	};
+	/** Whether `node` is a piece of a larger string: joined by `+`, or a template's substitution. */
+	const isTextPart = (node: ts.Node): boolean => {
+		const parent = node.parent;
+		return (
+			(ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.PlusToken) ||
+			(ts.isTemplateSpan(parent) && parent.expression === node) ||
+			(ts.isParenthesizedExpression(parent) && isTextPart(parent))
+		);
+	};
+	/** The SQL writes in a string's text, each a write of the string; a switch-off only where the string is literals alone. */
+	const judgeText = (node: ts.Node, { text, whole }: { text: string; whole: boolean }) => {
+		for (const found of text.matchAll(WEBHOOK_SQL_WRITE)) {
+			// A table made: in the migration runner's model alone, as many times as it says (code review K3).
+			if (/^(CREATE|ALTER)\b/i.test(found[1]) && keyOf(node) in WEBHOOK_TABLE_MADE) {
+				tablesMade.push(keyOf(node));
+				continue;
+			}
+			const rest = text.slice(found.index ?? 0);
+			const assigned = /\bSET\s+([\s\S]*?)(?=\bWHERE\b|\bRETURNING\b|\bFROM\b|;|$)/i.exec(rest)?.[1];
+			const switchesOff = () =>
+				whole &&
+				/^UPDATE\b/i.test(found[1]) &&
+				assigned !== undefined &&
+				assigned
+					.split(',')
+					.map((part) => part.trim())
+					.every((part) => SWITCH_OFF_SQL.test(part));
+			write(node, 'writes webhooks in SQL', switchesOff);
+		}
+	};
+	/** Each string that is the table's name (code review K2), and each table made in SQL (K3), by its key. */
+	const nameStrings: string[] = [];
+	const tablesMade: string[] = [];
+
+	/** A string, or a template's piece exactly, whose text is the table's name alone (code review K2). */
+	const isNamePiece = (node: ts.Node): boolean => {
+		const piece = ts.isTemplateHead(node) || ts.isTemplateMiddle(node) || ts.isTemplateTail(node);
+		return (ts.isStringLiteralLike(node) || piece) && WEBHOOK_NAME_STRING.test(node.text) && (!piece || node.text.trim() === node.text);
+	};
+	/** Whether `node` is, or holds, such a string or piece. */
+	const namesInside = (node: ts.Node): boolean => isNamePiece(node) || (ts.forEachChild(node, (child) => namesInside(child) || undefined) ?? false);
+	/** A string that is the table's name, counted under its key, and a finding where the key is not on WEBHOOK_NAME_STRINGS. */
+	const nameFound = (node: ts.Node) => {
+		nameStrings.push(keyOf(node));
+		if (!(keyOf(node) in WEBHOOK_NAME_STRINGS)) {
+			reading.findings.push(
+				`${file}:${line(node)} names the webhooks table in a string in ${writerNameOf(node)}, which is not on WEBHOOK_NAME_STRINGS: a string that is the name builds a write round this rule; use the table by its import (card 2702)`
+			);
+		}
+	};
+	const SCHEMA_TAKEN = "reaches the webhooks table through Drizzle's schema";
+	/**
+	 * Whether a binding element of an object pattern takes Drizzle's schema off the database (code review K13): `_`, `fullSchema`, `schema` or
+	 * `query` out of a chain that starts at the database, a transaction's handle or a name of db/index.ts; or, at the top of the pattern,
+	 * a computed key or the rest out of one of those names itself.
+	 */
+	const takesSchemaApart = (element: ts.BindingElement, top: boolean, from: ts.Expression): boolean => {
+		if (!ts.isObjectBindingPattern(element.parent) || !offDatabase(from)) return false;
+		const taken = element.propertyName ?? element.name;
+		if (element.dotDotDotToken || ts.isComputedPropertyName(taken)) return top && isDatabaseName(from);
+		return (ts.isIdentifier(taken) || ts.isStringLiteralLike(taken)) && DRIZZLE_SCHEMA_WORDS.includes(taken.text);
+	};
+	/** The same for a property of an object assigned to by destructuring (`({ query: q } = db)`), at its top. */
+	const assignsSchemaApart = (property: ts.ObjectLiteralElementLike, from: ts.Expression): boolean => {
+		if (ts.isSpreadAssignment(property) || (property.name !== undefined && ts.isComputedPropertyName(property.name))) return isDatabaseName(from);
+		const name = property.name;
+		return name !== undefined && (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) && DRIZZLE_SCHEMA_WORDS.includes(name.text);
+	};
+	/**
+	 * `eval` or `Function`, by name, as a property, or by a string key (code
+	 * review K16); and `constructor` as a property or key, which off any
+	 * function is `Function` itself (card 2702, after the K13 to K19 pass).
+	 */
+	const RUN_TEXT = ['eval', 'Function'];
+	const RUN_KEYS = [...RUN_TEXT, 'constructor'];
+	const runsText = (node: ts.Node): boolean =>
+		(ts.isIdentifier(node) && references.has(node) && RUN_TEXT.includes(node.text)) ||
+		(ts.isPropertyAccessExpression(node) && RUN_KEYS.includes(node.name.text)) ||
+		(ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression) && RUN_KEYS.includes(node.argumentExpression.text));
+
+	const references = new Set(referencesIn(tree));
+	const visit = (node: ts.Node): void => {
+		// K2: a string, or a template's piece exactly, that is the table's name alone.
+		if (isNamePiece(node)) nameFound(node);
+		// SQL, in the whole text of a string built from literals, judged once.
+		const joined = ts.isTemplateExpression(node) || (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken);
+		if ((ts.isStringLiteralLike(node) || joined) && !isTextPart(node)) {
+			const text = textOf(node as ts.Expression);
+			judgeText(node, text);
+			// K15: the whole text of a template or of pieces joined by `+` that is the name, where no piece of it is.
+			if (joined && WEBHOOK_NAME_STRING.test(text.text) && !namesInside(node)) nameFound(node);
+		}
+		// K16: eval and Function, anywhere.
+		if (runsText(node)) reading.findings.push(`${file}:${line(node)} ${RUNS_TEXT} in ${writerNameOf(node)} (card 2702)`);
+		// K13: Drizzle's schema taken off the database, a transaction's handle or a name of db/index.ts, found once, nearest where the chain starts.
+		if ((ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) && takesSchema(node) && !schemaTakenIn(node.expression)) {
+			write(node, SCHEMA_TAKEN, () => false);
+		}
+		if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isObjectLiteralExpression(unwrappedDown(node.left))) {
+			const from = node.right;
+			const pattern = unwrappedDown(node.left) as ts.ObjectLiteralExpression;
+			if (offDatabase(from) && !schemaTakenIn(from)) for (const property of pattern.properties) if (assignsSchemaApart(property, from)) write(property, SCHEMA_TAKEN, () => false);
+		}
+		// K1: a property `webhooks` off the database, a transaction's handle or Drizzle's schema, but a relational read called directly; not again where K13 found the schema taken.
+		if (
+			ts.isPropertyAccessExpression(node) &&
+			node.name.text === 'webhooks' &&
+			!(ts.isIdentifier(node.expression) && namespaces.has(node.expression.text)) &&
+			reachesDrizzleSchema(node.expression) &&
+			!schemaTakenIn(node.expression)
+		) {
+			const query = node.expression;
+			const finds = ts.isPropertyAccessExpression(query) && query.name.text === 'query' && findsDirectly(query);
+			if (!finds) write(node, SCHEMA_TAKEN, () => false);
+		}
+		// K1, K13: `webhooks`, or Drizzle's schema, taken out of the database, a transaction's handle or Drizzle's schema by destructuring.
+		if (ts.isBindingElement(node)) {
+			const outer: ts.BindingElement[] = [];
+			let at: ts.Node = node.parent;
+			while (ts.isObjectBindingPattern(at) || ts.isArrayBindingPattern(at) || ts.isBindingElement(at)) {
+				if (ts.isBindingElement(at)) outer.push(at);
+				at = at.parent;
+			}
+			const from = ts.isVariableDeclaration(at) || ts.isParameter(at) ? at.initializer : undefined;
+			const takenBefore = from !== undefined && (schemaTakenIn(from) || outer.some((element, index) => takesSchemaApart(element, index === outer.length - 1, from)));
+			if (from && !takenBefore && takesSchemaApart(node, outer.length === 0, from)) write(node, SCHEMA_TAKEN, () => false);
+			const taken = node.propertyName ?? node.name;
+			const path = outer.map((element) => element.propertyName ?? element.name).flatMap((name) => (ts.isIdentifier(name) ? [name.text] : []));
+			if (ts.isIdentifier(taken) && taken.text === 'webhooks' && from && !takenBefore && (path.some((name) => DRIZZLE_SCHEMA_WORDS.includes(name)) || reachesDrizzleSchema(from))) {
+				write(node, "takes webhooks out of Drizzle's schema", () => false);
+			}
+		}
+		// Each value reference (`referencesIn`, code review K9): to the table, to db/schema's namespace, to a pinned writer or its module.
+		if (ts.isIdentifier(node) && references.has(node)) {
+			if (tables.has(node.text)) judgeReference(node);
+			if (namespaces.has(node.text)) judgeNamespace(node);
+			const pinnedName = pinnedNames.get(node.text);
+			if (pinnedName !== undefined) refer(pinnedName, node);
+			const pinnedSpace = pinnedSpaces.get(node.text);
+			if (pinnedSpace !== undefined) judgePinnedSpace(pinnedSpace, node);
+		}
+		ts.forEachChild(node, visit);
+	};
+	visit(tree);
+
+	// Each listed writer of this file holds exactly its count; so does each listed key of strings that are the name, and each caller of a pinned writer refers to it once.
+	for (const [key, { writes }] of Object.entries(writers)) {
+		if (fileOf(key) !== file) continue;
+		const found = reading.writes.filter((each) => each.key === key).length;
+		if (found !== writes) reading.findings.push(`${key} writes the webhooks table ${found} time(s), and WEBHOOK_WRITERS says ${writes} (card 2702)`);
+	}
+	for (const [key, { count }] of Object.entries(WEBHOOK_NAME_STRINGS)) {
+		if (fileOf(key) !== file) continue;
+		const found = nameStrings.filter((each) => each === key).length;
+		if (found !== count) reading.findings.push(`${key} names the webhooks table in a string ${found} time(s), and WEBHOOK_NAME_STRINGS says ${count} (card 2702)`);
+	}
+	for (const [key, { count }] of Object.entries(WEBHOOK_TABLE_MADE)) {
+		if (fileOf(key) !== file) continue;
+		const found = tablesMade.filter((each) => each === key).length;
+		if (found !== count) reading.findings.push(`${key} makes a table called webhooks in SQL ${found} time(s), and WEBHOOK_TABLE_MADE says ${count} (card 2702)`);
+	}
+	for (const [key, callers] of Object.entries(WEBHOOK_WRITER_CALLERS)) {
+		for (const caller of callers) {
+			if (fileOf(caller) !== file) continue;
+			const found = reading.refers.filter((each) => each.key === key && each.by === caller).length;
+			if (found !== 1) reading.findings.push(`${caller} refers to ${nameOf(key)} ${found} time(s), and WEBHOOK_WRITER_CALLERS says once (card 2702)`);
+		}
+	}
+	return reading;
+}
+
+describe('the webhooks table is written only by the writers listed, each as listed (card 2702)', () => {
+	const walked = filesUnder('src', (path) => WEBHOOK_WALKED.test(path)).map((file) => ({ file, source: readFileSync(join(ROOT, file), 'utf8') }));
+	const readings = new Map(walked.map(({ file, source }) => [file, judgeWebhookWrites(file, source, WEBHOOK_WRITERS)] as const));
+	const fileOf = (key: string) => key.slice(0, key.indexOf('#'));
+
+	it('finds no writer in src that is not on WEBHOOK_WRITERS, or does more than it is listed for, and nothing reaching fillSecretGaps but the restore (case 3)', () => {
+		// Each names the file, the line, the write and the function. A write that
+		// can set a webhook's address or secret, or switch one on, asks the
+		// current password first; then list it with why.
+		expect([...readings.values()].flatMap(({ findings }) => findings)).toEqual([]);
+		// Walked: every file under src, the file of every listed key among them (code review K10: the walk's own list).
+		expect(walked.length).toBeGreaterThan(300);
+		const listed = [...Object.keys(WEBHOOK_WRITERS), ...Object.keys(WEBHOOK_NAME_STRINGS), ...Object.keys(WEBHOOK_TABLE_MADE), ...Object.values(WEBHOOK_WRITER_CALLERS).flat()];
+		for (const key of listed) expect(readings.has(fileOf(key)), key).toBe(true);
+		// The pinned writer is reached by exactly its callers' files, and referred to by exactly its callers, each once (code review K5).
+		for (const [key, callers] of Object.entries(WEBHOOK_WRITER_CALLERS)) {
+			const reaching = [...readings].filter(([, { reaches }]) => reaches.includes(key)).map(([file]) => file);
+			expect(reaching.sort(), key).toEqual([...new Set(callers.map(fileOf))].sort());
+			const referring = [...readings.values()].flatMap(({ refers }) => refers.filter((each) => each.key === key).map(({ by }) => by));
+			expect(referring.sort(), key).toEqual([...callers].sort());
+		}
+	});
+
+	it('walks every kind of script under src (code review K6)', () => {
+		for (const path of ['a.ts', 'a.mts', 'a.cts', 'a.tsx', 'a.js', 'a.mjs', 'a.cjs', 'a.jsx', 'a.svelte']) expect(WEBHOOK_WALKED.test(`src/${path}`), path).toBe(true);
+	});
+
+	it('holds on WEBHOOK_WRITERS exactly the writers the walk found, each with the writes it has (case 5)', () => {
+		const counted: Record<string, number> = {};
+		for (const { writes } of readings.values()) for (const { key } of writes) counted[key] = (counted[key] ?? 0) + 1;
+
+		expect(counted).toEqual(Object.fromEntries(Object.entries(WEBHOOK_WRITERS).map(([key, { writes }]) => [key, writes])));
+	});
+
+	describe('the rule itself (case 4)', () => {
+		const EXAMPLE = 'src/lib/server/example.ts';
+		/** `code` as line 4 of a made-up module that imports the table, the connection and Drizzle's conditions, in `reopen`. */
+		const inReopen = (code: string) =>
+			[
+				"import { db, sqlite } from '$lib/server/db'; import { and, eq, inArray } from 'drizzle-orm';",
+				"import { webhooks, boards } from '$lib/server/db/schema';",
+				'export function reopen(column: string) {',
+				`\t${code}`,
+				'}'
+			].join('\n');
+		const findingsOf = (code: string) => judgeWebhookWrites(EXAMPLE, inReopen(code), WEBHOOK_WRITERS).findings;
+		const unlisted = (what: string, at = 4, name = 'reopen', file = EXAMPLE) => `${file}:${at} ${what} in ${name}, which is not on WEBHOOK_WRITERS: ${ASK_FIRST}`;
+		const named = (at = 4, name = 'reopen', file = EXAMPLE) =>
+			`${file}:${at} names the webhooks table in a string in ${name}, which is not on WEBHOOK_NAME_STRINGS: a string that is the name builds a write round this rule; use the table by its import (card 2702)`;
+		const IN_SQL = 'writes webhooks in SQL';
+		const THROUGH_COLUMN = 'reaches the webhooks table through a column';
+		const THROUGH_SCHEMA = "reaches the webhooks table through Drizzle's schema";
+		const TAKEN = "takes webhooks out of Drizzle's schema";
+		const refill = `which sets a webhook's secret and switches it on: only src/lib/server/db/restore.ts may (card 2702)`;
+		const referred = (at: number, name: string, file: string) =>
+			`${file}:${at} refers to fillSecretGaps in ${name}, which sets a webhook's secret and switches it on: only src/lib/server/db/restore.ts#restoreInOneSnapshot may (card 2702)`;
+		const ran = (at = 4, name = 'reopen', file = EXAMPLE) => `${file}:${at} ${RUNS_TEXT} in ${name} (card 2702)`;
+		const whole = (at: number, file = SCHEMA_AS_NAMESPACE) => `${file}:${at} uses ${WEBHOOK_SCHEMA} whole, other than as drizzle()'s schema in ${SCHEMA_AS_NAMESPACE}: name each table (card 2702)`;
+
+		it.each([
+			{ form: 'a Drizzle insert', code: "db.insert(webhooks).values({ boardId: 1, url: 'https://x.test' }).run();", what: 'inserts into webhooks' },
+			{ form: 'a Drizzle update', code: "db.update(webhooks).set({ url: 'https://x.test' }).run();", what: 'updates webhooks' },
+			{ form: 'INSERT INTO', code: "sqlite.prepare('INSERT INTO webhooks (board_id, url) VALUES (?, ?)').run(1, 'x');", what: IN_SQL },
+			{ form: 'INSERT OR REPLACE INTO', code: "sqlite.prepare('INSERT OR REPLACE INTO webhooks (id, url) VALUES (?, ?)').run(1, 'x');", what: IN_SQL },
+			{ form: 'REPLACE INTO', code: "sqlite.prepare('REPLACE INTO webhooks (id, url) VALUES (?, ?)').run(1, 'x');", what: IN_SQL },
+			{ form: 'UPDATE', code: "sqlite.prepare('UPDATE webhooks SET url = ?').run('x');", what: IN_SQL },
+			{ form: 'UPDATE OR IGNORE', code: "sqlite.prepare('UPDATE OR IGNORE webhooks SET url = ?').run('x');", what: IN_SQL },
+			{ form: 'lower case', code: "sqlite.prepare('update webhooks set active = 1').run();", what: IN_SQL },
+			{ form: 'a double-quoted name', code: `sqlite.prepare('UPDATE "webhooks" SET url = ?').run('x');`, what: IN_SQL },
+			{ form: 'a backticked name', code: "sqlite.prepare('UPDATE `webhooks` SET url = ?').run('x');", what: IN_SQL },
+			{ form: 'a bracketed name', code: "sqlite.prepare('UPDATE [webhooks] SET url = ?').run('x');", what: IN_SQL },
+			{ form: 'a schema before the name', code: "sqlite.prepare('UPDATE main.webhooks SET url = ?').run('x');", what: IN_SQL },
+			{ form: 'a quoted schema and name', code: `sqlite.prepare('INSERT INTO "main"."webhooks" (url) VALUES (?)').run('x');`, what: IN_SQL },
+			{ form: 'across lines', code: 'sqlite.prepare(`UPDATE\n\t\twebhooks\n\tSET active = 1`).run();', what: IN_SQL },
+			{ form: 'a template with a substitution', code: 'sqlite.prepare(`UPDATE webhooks SET ${column} = ?`).run(1);', what: IN_SQL },
+			{ form: 'a sql template', code: 'db.run(sql`UPDATE webhooks SET active = 1`);', what: IN_SQL },
+			{ form: 'the table interpolated into a sql template', code: 'db.run(sql`UPDATE ${webhooks} SET active = 1`);', what: 'interpolates webhooks into a sql template' },
+			{ form: 'the table held in a variable', code: 'const table = webhooks;', what: USES_WEBHOOKS },
+			{ form: 'the table handed to a function', code: 'copyRows(webhooks, rows);', what: USES_WEBHOOKS }
+		])('finds $form, on its line, in its function', ({ code, what }) => {
+			expect(findingsOf(code)).toEqual([unlisted(what)]);
+		});
+
+		// Code review K1 to K4: each a way round the rule the security review found or that its fix opened.
+		it.each([
+			// K1: the table reached through a column, a builder or Drizzle's schema.
+			{ form: "a column's table", code: 'db.update(webhooks.id.table).set({ url: column }).run();', found: [unlisted(THROUGH_COLUMN)] },
+			{ form: 'a column handed on as a table', code: 'db.update(webhooks.url as never).set({ url: column }).run();', found: [unlisted(THROUGH_COLUMN)] },
+			{ form: "Drizzle's full schema", code: 'db.insert(db._.fullSchema.webhooks).values({ boardId: 1, url: column }).run();', found: [unlisted(THROUGH_SCHEMA)] },
+			{ form: "a relational query's table", code: 'db.update((db.query.webhooks as any).table).set({ url: column }).run();', found: [unlisted(THROUGH_SCHEMA)] },
+			{ form: 'the table taken out of the relational queries', code: 'const { webhooks: hooks } = db.query;', found: [unlisted(THROUGH_SCHEMA)] },
+			{ form: "a delete's builder's table", code: 'db.update(db.delete(webhooks).config.table).set({ url: column }).run();', found: [unlisted(USES_WEBHOOKS)] },
+			{ form: "a read's builder's table", code: 'db.update(db.select().from(webhooks).config.table).set({ url: column }).run();', found: [unlisted(USES_WEBHOOKS)] },
+			{ form: "a read's builder's tableConfig", code: 'db.update((Object.values((db.select().from(webhooks) as any).tableConfig.columns)[0] as any).table).set({ url: column }).run();', found: [unlisted(USES_WEBHOOKS)] },
+			// K4: a read or a delete is one only on the database or a transaction's handle.
+			{ form: "a made-up object's from()", code: 'const copy = { from: (t: typeof webhooks) => db.update(t).set({ url: column }).run() }; copy.from(webhooks);', found: [unlisted(USES_WEBHOOKS)] },
+			{ form: "a made-up object's delete()", code: 'const w = { delete: (t: typeof webhooks) => db.insert(t).values({ boardId: 1, url: column }).run() }; w.delete(webhooks);', found: [unlisted(USES_WEBHOOKS)] },
+			{ form: 'a join on a chain that does not start at the database', code: 'other.select().from(boards).innerJoin(webhooks, eq(webhooks.boardId, boards.id)).all();', found: [unlisted(USES_WEBHOOKS)] },
+			{ form: "the database's name taken by a made-up object", code: 'const db = { delete: (t: unknown) => t }; db.delete(webhooks);', found: [unlisted(USES_WEBHOOKS)] },
+			// K2: a string that is the table's name.
+			{ form: 'a second table declared on the name', code: "const hooks = sqliteTable('webhooks', { id: integer('id') }); db.update(hooks).set({ url: column }).run();", found: [named()] },
+			{ form: 'sql.identifier', code: "db.run(sql`UPDATE ${sql.identifier('webhooks')} SET url = ${column}`);", found: [named()] },
+			{ form: 'sql.raw', code: "db.run(sql`UPDATE ${sql.raw('webhooks')} SET url = ${column}`);", found: [named()] },
+			{ form: 'the name in another case', code: "db.run(sql`UPDATE ${sql.raw('WEBHOOKS')} SET url = ${column}`);", found: [named()] },
+			{ form: 'the name joined by +', code: "sqlite.prepare('UPDATE ' + 'webhooks' + ' SET url = ?').run(column);", found: [unlisted(IN_SQL), named()] },
+			{ form: 'a write joined by + from pieces none of which is the name', code: "sqlite.prepare('UPDATE web' + 'hooks SET url = ?').run(column);", found: [unlisted(IN_SQL)] },
+			{ form: "the name as a template's substitution", code: "sqlite.prepare(`UPDATE ${'webhooks'} SET url = ?`).run(column);", found: [unlisted(IN_SQL), named()] },
+			// K3: SQL that names the table in any way SQLite reads it.
+			{ form: 'a single-quoted name', code: `sqlite.prepare("UPDATE 'webhooks' SET url = ?").run(column);`, found: [unlisted(IN_SQL)] },
+			{ form: 'a block comment between the words', code: "sqlite.prepare('UPDATE /**/ webhooks SET url = ?').run(column);", found: [unlisted(IN_SQL)] },
+			{ form: 'a line comment between the words', code: "sqlite.prepare('UPDATE -- the table\\n webhooks SET url = ?').run(column);", found: [unlisted(IN_SQL)] },
+			{ form: 'a table renamed to the name', code: "sqlite.exec('CREATE TABLE webhooks2 AS SELECT * FROM webhooks; DROP TABLE webhooks; ALTER TABLE webhooks2 RENAME TO webhooks');", found: [unlisted(IN_SQL)] },
+			{ form: 'a table made on the name', code: "sqlite.exec('CREATE TABLE webhooks AS SELECT * FROM webhooks_old');", found: [unlisted(IN_SQL)] },
+			// K13: Drizzle's schema taken off the database or a transaction's handle, however it is reached after.
+			{ form: "Drizzle's full schema's values (K13)", code: 'db.update(Object.values(db._.fullSchema)[17] as never).set({ url: column }).run();', found: [unlisted(THROUGH_SCHEMA)] },
+			{
+				form: "a transaction's full schema (K13)",
+				code: 'db.transaction((tx) => { tx.update(Object.values(tx._.fullSchema)[17] as never).set({ url: column }).run(); });',
+				found: [unlisted(THROUGH_SCHEMA)]
+			},
+			{ form: 'the relational queries by a key worked out (K13)', code: "const k = ['web', 'hooks'].join(''); db.update(((db.query as any)[k]).table).set({ url: column }).run();", found: [unlisted(THROUGH_SCHEMA)] },
+			{ form: 'the relational queries held in a variable (K13)', code: 'const b: any = db.query; db.update(b.webhooks.table).set({ url: column }).run();', found: [unlisted(THROUGH_SCHEMA)] },
+			{ form: 'the relational queries taken apart (K13)', code: 'const { query: q } = db; db.update((q as any).webhooks.table).set({ url: column }).run();', found: [unlisted(THROUGH_SCHEMA)] },
+			{ form: 'the relational queries assigned apart (K13)', code: 'let q: any; ({ query: q } = db); db.update(q.webhooks.table).set({ url: column }).run();', found: [unlisted(THROUGH_SCHEMA)] },
+			{ form: 'a key worked out off the database (K13)', code: "const k = '_'; db.update(Object.values(((db as any)[k]).fullSchema)[17] as never).set({ url: column }).run();", found: [unlisted(THROUGH_SCHEMA)] },
+			// K14: the name with a piece that is not a literal straight after it.
+			{ form: 'the name then a piece that is not a literal, joined by + (K14)', code: "const rest = ' SET url = ?'; sqlite.prepare('UPDATE webhooks' + rest).run(column);", found: [unlisted(IN_SQL)] },
+			{ form: "the name then a template's substitution (K14)", code: 'sqlite.prepare(`UPDATE webhooks${column}`).run();', found: [unlisted(IN_SQL)] },
+			{ form: 'the name then a substitution in a sql template (K14)', code: 'db.run(sql`UPDATE webhooks${sql.raw(column)}`);', found: [unlisted(IN_SQL)] },
+			// K15: the name joined from pieces none of which is the name.
+			{ form: 'sql.raw of pieces joined by + (K15)', code: "db.run(sql`UPDATE ${sql.raw('web' + 'hooks')} SET url = ${column}`);", found: [named()] },
+			{ form: 'sql.identifier of pieces joined by + (K15)', code: "db.run(sql`UPDATE ${sql.identifier('web' + 'hooks')} SET url = ${column}`);", found: [named()] },
+			{ form: 'a second table declared on pieces joined by + (K15)', code: "const h = sqliteTable('web' + 'hooks', {}); db.update(h).set({}).run();", found: [named()] },
+			{ form: 'sql.raw of a template of pieces (K15)', code: "db.run(sql`UPDATE ${sql.raw(`${'web'}hooks`)} SET url = ${column}`);", found: [named()] },
+			// K16: code built from a string.
+			{ form: 'eval (K16)', code: "eval('db.update(webhooks).set({ url: column }).run()');", found: [ran()] },
+			{ form: 'new Function (K16)', code: "new Function('d', 'w', 'd.update(w).set({ url: 1 }).run()');", found: [ran()] },
+			{ form: 'Function called (K16)', code: "Function('return 1')();", found: [ran()] },
+			{ form: 'eval off globalThis (K16)', code: "globalThis.eval('1');", found: [ran()] },
+			{ form: "a function's constructor (K16)", code: "(() => 0).constructor('return 1')();", found: [ran()] },
+			{ form: "a function's constructor by key (K16)", code: "(() => 0)['constructor']('return 1')();", found: [ran()] },
+			// K17: a column anywhere but a drizzle-orm call with nothing taken off it, or a field handed to a read on the database.
+			{ form: 'a column held in a variable (K17)', code: 'const c: any = webhooks.id; db.update(c.table).set({ url: column }).run();', found: [unlisted(COLUMN_ELSEWHERE)] },
+			{ form: 'a column handed to another function (K17)', code: 'function up(c: any) { return db.update(c.table); } up(webhooks.id).set({ url: column }).run();', found: [unlisted(COLUMN_ELSEWHERE)] },
+			{ form: 'a column in an object literal held in a variable (K17)', code: 'const f: any = { c: webhooks.id }; db.update(f.c.table).set({ url: column }).run();', found: [unlisted(COLUMN_ELSEWHERE)] },
+			{ form: "something taken off a drizzle-orm call's result (K17)", code: 'db.update((eq(webhooks.id, 1) as any).queryChunks[1].table).set({ url: column }).run();', found: [unlisted(COLUMN_ELSEWHERE)] },
+			{
+				form: 'a field handed to a select not on the database (K17)',
+				code: 'const fake: any = { select: (o: any) => db.update(o.c.table) }; fake.select({ c: webhooks.id }).set({ url: column }).run();',
+				found: [unlisted(COLUMN_ELSEWHERE)]
+			}
+		])('finds $form (code review)', ({ code, found }) => {
+			expect(findingsOf(code)).toEqual(found);
+		});
+
+		it.each([
+			{ form: 'a SELECT', code: "sqlite.prepare('SELECT id, url FROM webhooks WHERE board_id = ?').all(1);" },
+			{ form: '.from() and its columns', code: 'db.select({ id: webhooks.id }).from(webhooks).where(eq(webhooks.boardId, 1)).all();' },
+			{ form: 'a join', code: 'db.select().from(boards).innerJoin(webhooks, eq(webhooks.boardId, boards.id)).all();' },
+			{ form: 'a Drizzle delete', code: 'db.delete(webhooks).where(eq(webhooks.id, 1)).run();' },
+			{ form: "a read on a transaction's handle (K4)", code: 'db.transaction((tx) => tx.select().from(webhooks).where(eq(webhooks.id, 1)).all());' },
+			{ form: "a delete on a transaction's handle (K4)", code: 'db.transaction((tx) => tx.delete(webhooks).where(eq(webhooks.id, 1)).run());' },
+			{ form: 'a relational read (K1)', code: 'db.query.webhooks.findMany();' },
+			{ form: 'a relational read of one (K1)', code: 'db.query.webhooks.findFirst({ where: eq(webhooks.id, 1) });' },
+			{ form: 'DELETE FROM', code: "sqlite.prepare('DELETE FROM webhooks WHERE id = ?').run(1);" },
+			{ form: 'a longer name', code: "sqlite.prepare('UPDATE webhooks_old SET url = ?').run('x');" },
+			{ form: 'the word in words (K2)', code: 'const words = `${column} webhooks`;' },
+			{ form: 'a type', code: 'const row: typeof webhooks.$inferSelect | undefined = undefined;' },
+			{ form: 'a property named webhooks', code: 'return { webhooks: 2 } as { webhooks: number };' },
+			{ form: 'a count on the database (K18)', code: 'db.$count(webhooks, eq(webhooks.boardId, 1));' },
+			{ form: "a count on a transaction's handle (K18)", code: 'db.transaction((tx) => tx.$count(webhooks));' },
+			{ form: 'a read after a with (K18)', code: "const s = db.$with('s').as(db.select().from(boards)); db.with(s).select().from(webhooks).all();" }
+		])('finds nothing in $form', ({ code }) => {
+			expect(findingsOf(code)).toEqual([]);
+		});
+
+		it('finds the table by another name, a namespace, a re-export or import(), in a page script, a new or busier function in a listed file, a switch-off writer doing more, and fillSecretGaps imported elsewhere', () => {
+			// Imported under another name, and as a namespace: each import a finding, and the write found through it.
+			const aliased = ["import { webhooks as hooks } from '$lib/server/db/schema';", 'export const reopen = () => db.insert(hooks).values({}).run();'].join('\n');
+			expect(judgeWebhookWrites(EXAMPLE, aliased, WEBHOOK_WRITERS).findings).toEqual([
+				`${EXAMPLE}:1 imports webhooks as hooks: import it by its own name (card 2702)`,
+				unlisted('inserts into webhooks', 2)
+			]);
+			const namespace = ["import * as schema from './db/schema';", 'export const reopen = () => db.update(schema.webhooks).set({}).run();'].join('\n');
+			expect(judgeWebhookWrites(EXAMPLE, namespace, WEBHOOK_WRITERS).findings).toEqual([
+				`${EXAMPLE}:1 imports ${WEBHOOK_SCHEMA} as a namespace: import webhooks by its own name (card 2702)`,
+				unlisted('updates webhooks', 2)
+			]);
+			const elsewhere = ["export * from '$lib/server/db/schema';", "export { webhooks } from './db/schema';", "const later = () => import('$lib/server/db/schema');"].join('\n');
+			expect(judgeWebhookWrites(EXAMPLE, elsewhere, WEBHOOK_WRITERS).findings).toEqual([
+				`${EXAMPLE}:1 re-exports from ${WEBHOOK_SCHEMA}: import webhooks from there by its own name (card 2702)`,
+				`${EXAMPLE}:2 re-exports from ${WEBHOOK_SCHEMA}: import webhooks from there by its own name (card 2702)`,
+				`${EXAMPLE}:3 imports ${WEBHOOK_SCHEMA} with import(): import webhooks by its own name (card 2702)`
+			]);
+
+			// A page's script, and not its words.
+			const PAGE = 'src/routes/example/+page.svelte';
+			const page = ['<p>We update webhooks for you.</p>', '<script lang="ts">', "\tconst sent = 'UPDATE webhooks SET url = ?';", '</script>'].join('\n');
+			expect(judgeWebhookWrites(PAGE, page, WEBHOOK_WRITERS).findings).toEqual([unlisted(IN_SQL, 3, '(top level)', PAGE)]);
+
+			// A listed file: its writer as listed passes; a new function, a second write and a write that does more are found.
+			const AUTH = 'src/lib/server/auth.ts';
+			const endAccountAccess = (body: string[]) =>
+				["import { db } from './db'; import { eq } from 'drizzle-orm';", "import { webhooks } from './db/schema';", 'export function endAccountAccess(userId: number) {', ...body.map((each) => `\t${each}`), '}'];
+			const offOnly = 'db.update(webhooks).set({ active: false }).where(eq(webhooks.setBy, userId)).run();';
+			expect(judgeWebhookWrites(AUTH, endAccountAccess([offOnly]).join('\n'), WEBHOOK_WRITERS).findings).toEqual([]);
+			const added = [...endAccountAccess([offOnly]), 'export function reopenHooks(userId: number) {', '\tdb.update(webhooks).set({ active: true }).run();', '}'];
+			expect(judgeWebhookWrites(AUTH, added.join('\n'), WEBHOOK_WRITERS).findings).toEqual([unlisted('updates webhooks', 7, 'reopenHooks', AUTH)]);
+			expect(judgeWebhookWrites(AUTH, endAccountAccess([offOnly, offOnly]).join('\n'), WEBHOOK_WRITERS).findings).toEqual([
+				`${AUTH}#endAccountAccess writes the webhooks table 2 time(s), and WEBHOOK_WRITERS says 1 (card 2702)`
+			]);
+			const doesMore = (at: number, what = 'updates webhooks', file = AUTH, name = 'endAccountAccess') =>
+				`${file}:${at} ${what} in ${name}, which WEBHOOK_WRITERS lists as switching off only, and does more (card 2702)`;
+			const more = "db.update(webhooks).set({ active: false, url: 'https://x.test' }).run();";
+			expect(judgeWebhookWrites(AUTH, endAccountAccess([more]).join('\n'), WEBHOOK_WRITERS).findings).toEqual([doesMore(4)]);
+			const DELETES = 'src/lib/server/deletes.ts';
+			const onAgain = ['export function deleteUser(userId: number) {', "\tsqlite.prepare('UPDATE webhooks SET active = 1 WHERE set_by = ?').run(userId);", '}'].join('\n');
+			expect(judgeWebhookWrites(DELETES, onAgain, WEBHOOK_WRITERS).findings).toEqual([doesMore(2, IN_SQL, DELETES, 'deleteUser')]);
+
+			// The secret refill, imported by a file not allowed it: by name, under another name, and as a namespace.
+			const importing = [
+				"import { fillSecretGaps } from './backup-secrets';",
+				"import { fillSecretGaps as fill } from '$lib/server/backup-secrets';",
+				"import * as secrets from '$lib/server/backup-secrets';"
+			].join('\n');
+			expect(judgeWebhookWrites(EXAMPLE, importing, WEBHOOK_WRITERS).findings).toEqual([
+				`${EXAMPLE}:1 imports fillSecretGaps, ${refill}`,
+				`${EXAMPLE}:2 imports fillSecretGaps, ${refill}`,
+				`${EXAMPLE}:3 imports fillSecretGaps as a namespace, ${refill}`
+			]);
+		});
+
+		// Code review K5, K6, K9, K12: whole made-up files, each a case of its own.
+		const AUTH = 'src/lib/server/auth.ts';
+		const DELETES = 'src/lib/server/deletes.ts';
+		const SECRETS = 'src/lib/server/backup-secrets.ts';
+		const RESTORE = 'src/lib/server/db/restore.ts';
+		const TSX = 'src/lib/server/example.tsx';
+		const doesMore = (at: number, what: string, file: string, name: string) =>
+			`${file}:${at} ${what} in ${name}, which WEBHOOK_WRITERS lists as switching off only, and does more (card 2702)`;
+		const endAccountAccess = (code: string) =>
+			["import { db } from './db'; import { eq } from 'drizzle-orm';", "import { webhooks } from './db/schema';", 'export function endAccountAccess(userId: number) {', `\t${code}`, '}'].join('\n');
+		const deleteUser = (code: string) => ["import { sqlite } from './db';", 'export function deleteUser(userId: number, extra: string) {', `\t${code}`, '}'].join('\n');
+		const secrets = readFileSync(join(ROOT, SECRETS), 'utf8');
+		const restore = readFileSync(join(ROOT, RESTORE), 'utf8');
+		/** The line after the last of `source`'s, where a made-up line is added. */
+		const after = (source: string) => source.split('\n').length + 1;
+		const declaration = "export const webhooks = sqliteTable('webhooks', { id: integer('id') });";
+		const deliveries = "export const deliveries = sqliteTable('webhook_deliveries', { webhookId: integer('webhook_id').references(() => webhooks.id) });";
+		/** db/index.ts's namespace import, given to drizzle() as its schema on line 3, and `code` as line 4. */
+		const index = (code: string) =>
+			["import { drizzle } from 'drizzle-orm/better-sqlite3';", "import * as schema from './schema';", 'export const db = drizzle(sqlite, { schema });', code].join('\n');
+
+		it.each([
+			// K12, K1, K4: a switch-off writer switches off, on the database, and nothing else.
+			{ form: 'a Drizzle switch-off that blanks the secret', file: AUTH, source: endAccountAccess("db.update(webhooks).set({ secret: '' }).where(eq(webhooks.setBy, userId)).run();"), found: [] },
+			{ form: 'a Drizzle switch-off and a blank secret', file: AUTH, source: endAccountAccess("db.update(webhooks).set({ active: false, secret: '' }).run();"), found: [] },
+			{ form: 'a Drizzle switch-off on a made-up object', file: AUTH, source: endAccountAccess('fake.update(webhooks).set({ active: false }).run();'), found: [doesMore(4, 'updates webhooks', AUTH, 'endAccountAccess')] },
+			{
+				form: "a Drizzle switch-off with the table reached off its builder",
+				file: AUTH,
+				source: endAccountAccess("db.update(db.update(webhooks).set({ active: false }).config.table).set({ url: 'x' }).run();"),
+				found: [doesMore(4, 'updates webhooks', AUTH, 'endAccountAccess')]
+			},
+			{ form: 'the SQL switch-off', file: DELETES, source: deleteUser("sqlite.prepare('UPDATE webhooks SET active = 0 WHERE set_by = ? AND active = 1 RETURNING id').all(userId);"), found: [] },
+			{ form: 'the SQL switch-off that blanks the secret', file: DELETES, source: deleteUser(`sqlite.prepare("UPDATE webhooks SET secret = '', active = 0 WHERE set_by = ?").run(userId);`), found: [] },
+			{ form: 'a mixed SQL write', file: DELETES, source: deleteUser("sqlite.prepare('UPDATE webhooks SET active = 0, url = ? WHERE set_by = ?').run('x', userId);"), found: [doesMore(3, IN_SQL, DELETES, 'deleteUser')] },
+			{ form: 'a SQL switch-off with a substitution', file: DELETES, source: deleteUser('sqlite.prepare(`UPDATE webhooks SET active = 0 ${extra}`).run();'), found: [doesMore(3, IN_SQL, DELETES, 'deleteUser')] },
+			// K5: fillSecretGaps, referred to only by restoreInOneSnapshot, once, in its own module too.
+			{ form: 'a wrapper of fillSecretGaps in backup-secrets.ts', file: SECRETS, source: `${secrets}\nexport function refillAny(a: any, b: any) { return (fillSecretGaps as any)(a, b); }`, found: [referred(after(secrets), 'refillAny', SECRETS)] },
+			{ form: 'a second name for fillSecretGaps in restore.ts', file: RESTORE, source: `${restore}\nexport const again = fillSecretGaps;`, found: [referred(after(restore), '(top level)', RESTORE)] },
+			{
+				form: 'a second call of fillSecretGaps in restoreInOneSnapshot',
+				file: RESTORE,
+				source: restore.replace('const filled = fillSecretGaps(', 'fillSecretGaps(live, here, listed, {}); const filled = fillSecretGaps('),
+				found: [`${RESTORE}#restoreInOneSnapshot refers to fillSecretGaps 2 time(s), and WEBHOOK_WRITER_CALLERS says once (card 2702)`]
+			},
+			{
+				form: 'fillSecretGaps re-exported by restore.ts',
+				file: RESTORE,
+				source: `${restore}\nexport { fillSecretGaps } from '../backup-secrets';`,
+				found: [`${RESTORE}:${after(restore)} re-exports fillSecretGaps, which sets a webhook's secret and switches it on: no file may (card 2702)`]
+			},
+			// K9: import x = require() and require().
+			{
+				form: 'db/schema by import x = require()',
+				file: EXAMPLE,
+				source: ["import schema = require('$lib/server/db/schema');", 'export const reopen = () => db.update(schema.webhooks).set({}).run();'].join('\n'),
+				found: [`${EXAMPLE}:1 imports ${WEBHOOK_SCHEMA} with require(): import webhooks by its own name (card 2702)`, unlisted('updates webhooks', 2)]
+			},
+			{ form: 'backup-secrets by import x = require()', file: EXAMPLE, source: "import secrets = require('./backup-secrets');", found: [`${EXAMPLE}:1 imports fillSecretGaps with import x = require(), ${refill}`] },
+			{
+				form: 'backup-secrets by require()',
+				file: EXAMPLE,
+				source: "const secrets = require('$lib/server/backup-secrets');",
+				found: [
+					`${EXAMPLE}:1 imports src/lib/server/backup-secrets.ts with require(), which holds fillSecretGaps, which sets a webhook's secret and switches it on: import it by its own name, only in its callers' files (card 2702)`
+				]
+			},
+			// K12: db/schema.ts is judged: its declaration and its columns pass; any other name for the table is found.
+			{ form: "db/schema.ts's declaration and a column of it", file: WEBHOOK_SCHEMA, source: [declaration, deliveries].join('\n'), found: [] },
+			{ form: 'the table named again in db/schema.ts', file: WEBHOOK_SCHEMA, source: [declaration, 'export const hooks = webhooks;'].join('\n'), found: [unlisted(USES_WEBHOOKS, 2, '(top level)', WEBHOOK_SCHEMA)] },
+			{ form: 'the table re-exported under another name in db/schema.ts', file: WEBHOOK_SCHEMA, source: [declaration, 'export { webhooks as outbound };'].join('\n'), found: [unlisted(USES_WEBHOOKS, 2, '(top level)', WEBHOOK_SCHEMA)] },
+			{
+				form: 'a second table on the name in db/schema.ts',
+				file: WEBHOOK_SCHEMA,
+				source: [declaration, "export const again = sqliteTable('webhooks', {});"].join('\n'),
+				found: [`${WEBHOOK_SCHEMA}#(top level) names the webhooks table in a string 2 time(s), and WEBHOOK_NAME_STRINGS says 1 (card 2702)`]
+			},
+			// K6: db/index.ts gives the namespace to drizzle() as its schema, and takes it whole nowhere else.
+			{
+				form: "db/index.ts's namespace as drizzle()'s schema, and a column through it in a drizzle-orm call",
+				file: SCHEMA_AS_NAMESPACE,
+				source: index("import { eq } from 'drizzle-orm'; export const byId = (id: number) => eq(schema.webhooks.id, id);"),
+				found: []
+			},
+			// K17: a column through the namespace held in a variable, as anywhere else.
+			{
+				form: 'a column through the namespace held in a variable in db/index.ts (K17)',
+				file: SCHEMA_AS_NAMESPACE,
+				source: index('export const column = schema.webhooks.id;'),
+				found: [unlisted(COLUMN_ELSEWHERE, 4, '(top level)', SCHEMA_AS_NAMESPACE)]
+			},
+			{ form: "the table by the namespace's element", file: SCHEMA_AS_NAMESPACE, source: index("export const one = schema['webhooks'];"), found: [whole(4), named(4, '(top level)', SCHEMA_AS_NAMESPACE)] },
+			{ form: 'the table destructured from the namespace', file: SCHEMA_AS_NAMESPACE, source: index('export const { webhooks: hooks } = schema;'), found: [unlisted(TAKEN, 4, '(top level)', SCHEMA_AS_NAMESPACE), whole(4)] },
+			{ form: "the namespace's values", file: SCHEMA_AS_NAMESPACE, source: index('export const all = Object.values(schema);'), found: [whole(4)] },
+			{ form: 'the namespace spread', file: SCHEMA_AS_NAMESPACE, source: index('export const copy = { ...schema };'), found: [whole(4)] },
+			{ form: 'the namespace as another function\'s option', file: SCHEMA_AS_NAMESPACE, source: index('export const other = elsewhere(sqlite, { schema });'), found: [whole(4)] },
+			{
+				form: 'the namespace given to a made-up drizzle()',
+				file: SCHEMA_AS_NAMESPACE,
+				source: ['function drizzle(a: unknown, b: unknown) { return b; }', "import * as schema from './schema';", 'export const db = drizzle(sqlite, { schema });'].join('\n'),
+				found: [whole(3)]
+			},
+			// K6: a .tsx file is read as one.
+			{
+				form: 'a write in a .tsx file',
+				file: TSX,
+				source: [
+					"import { db } from '$lib/server/db';",
+					"import { webhooks } from '$lib/server/db/schema';",
+					"export const Panel = () => <button onClick={() => db.update(webhooks).set({ url: 'x' }).run()}>Go</button>;"
+				].join('\n'),
+				found: [unlisted('updates webhooks', 3, 'Panel', TSX)]
+			}
+		])('judges $form (code review)', ({ file, source, found }) => {
+			expect(judgeWebhookWrites(file, source, WEBHOOK_WRITERS).findings).toEqual(found);
+		});
+
+	});
+});
 
 describe('one service per action, written only inside writeAs (card 2012)', () => {
 	const helpers = SERVICE_HELPERS.map((file) => ({ file, source: readFileSync(join(ROOT, file), 'utf8') }));
