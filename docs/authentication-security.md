@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.93
+version: 1.95
 status: As-Built
 date: 2026-11-05
 tags:
@@ -4434,10 +4434,19 @@ Card 2677 added the route the invitations link to. Four routes are public, by ro
   `src/lib/decision-words.ts`). It claims nothing unless the page is a participant's and has a
   seen stage. A response, a question and a concern are each named only where the page's own
   `mayRespond`, `mayAsk` and `mayRaiseConcern` let the participant make that write now, so the
-  status, the role and each per-person limit are the server's alone; having seen is always
-  named, as the watch is armed, as this version or the ruling by the stage. A seen already
-  recorded on an earlier signed-out visit is not recorded again, so the seen clause can
-  over-claim there (a known residual, its own card). The root
+  status, the role and each per-person limit are the server's alone; having seen is named, as
+  this version or the ruling by the stage, only where the page's `seenRecorded` is false (card
+  2736). `seenAs` records one seen per participant, version and stage, so where one already
+  exists (an earlier signed-out visit among them) nothing is recorded beside the account, and
+  the clause is dropped rather than turned into "was recorded", as the earlier seen may carry
+  another account or none. The same flag drops the seen note ("Your first tap … is recorded as
+  your having seen …") on both pages and, signed in or not, arms no seen watch, as a first
+  action would record nothing (card 2736, D5). `seenRecorded` tells the page's own participant,
+  without writing anything, whether their own seen exists, by the `hasSeen` test the write
+  makes: no other participant's, no moment, no account and no way in. It is not a new
+  capability: anyone holding the personal link can already act as that participant, reading
+  their response and concerns and recording their seen, so the flag tells a link holder only a
+  fact about the participant the link already lets them act as. The root
   layout hides its user badge on the route `/decision-link/[token]`, known by its route id, so
   that a percent-encoded address of the page does not bring it back (code review C6), and the
   page has no link into the rest of DumpFire, signed in or not. The page data holds no decision

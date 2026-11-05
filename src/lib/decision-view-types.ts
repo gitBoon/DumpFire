@@ -308,6 +308,14 @@ export type DecisionPageData = {
 	 * participant, whose page posts none (F7).
 	 */
 	stage: 'question' | 'ruling' | 'withdrawal' | null;
+	/**
+	 * Card 2736: whether this participant's own seen of the current version at
+	 * `stage` is already recorded, by `hasSeen`, the test `seenAs` makes, so a
+	 * seen post now would write nothing: both pages then arm no seen watch and
+	 * draw neither note's seen claim (D5). False for a viewer who is no
+	 * participant. Nobody else's, and no moment or way in.
+	 */
+	seenRecorded: boolean;
 	/** Session only. */
 	mayEdit: boolean;
 	/** Link only: the signed-in account's name (decision 9). */

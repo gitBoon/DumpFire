@@ -17,7 +17,9 @@
  * asserts that nothing else hears of a response. The cap is written as 50:
  * `RESPONSES_PER_ROUND` is private to the service (D5). The cases are the
  * plan's, `docs/planning/card-2677-participant-page.md`, section 6, by
- * number.
+ * number. Card 2736's cases, 2736-1 and 2736-2, hold whether the page is told
+ * the participant's seen already exists, and the signed-in note that follows
+ * (`docs/planning/card-2736-seen-claim.md`).
  */
 import { isHttpError } from '@sveltejs/kit';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -688,6 +690,8 @@ describe('readDecisionPage and readLinkPage', () => {
 			earlierResponse: null,
 			mayRespond: true,
 			stage: 'question',
+			// Card 2736: no seen recorded yet.
+			seenRecorded: false,
 			mayEdit: false,
 			signedInAs: null,
 			// Card 2679 (decision 23): nothing ruled, released, raised or superseded; signed in, the results and supersede refused.
@@ -847,6 +851,8 @@ describe('readDecisionPage and readLinkPage', () => {
 			earlierResponse: null,
 			mayRespond: true,
 			stage: 'question',
+			// Card 2736: no seen recorded yet.
+			seenRecorded: false,
 			mayEdit: false,
 			signedInAs: null,
 			// Card 2679 (decision 23): as signed in, and no results or supersede flag at all by a link.
@@ -870,6 +876,46 @@ describe('readDecisionPage and readLinkPage', () => {
 		expect(JSON.stringify(page)).not.toContain('Rae Viewer');
 		expect(readLinkPage('token-page', 'browser')?.signedInAs).toBe('browser');
 		expect(readLinkPage('token-never', null)).toBeNull();
+	});
+
+	it('gives a participant whether their own seen of the current version at the page’s stage is recorded, and nobody else’s (card 2736, 2736-2)', () => {
+		const { decision, a } = opened();
+		withLink(decision, 'token-seen');
+		const { account } = withAccount(decision, 'consulted', 'pat');
+		const other = withAccount(decision, 'consulted', 'olive');
+		const reader = makeUser({ username: 'reader' });
+		addBoardMember(board, reader, 'viewer');
+		const byLink = () => readLinkPage('token-seen', 'browser')!.seenRecorded;
+
+		expect(byLink(), '(a) before any seen').toBe(false);
+		// (b) Another participant's seen is never this page's.
+		seen(other.account, decision, { versionNumber: 1, stage: 'question' });
+		expect(byLink(), '(b) another participant’s seen').toBe(false);
+		expect(readDecisionPage(account, decision.id).seenRecorded, '(b) signed in').toBe(false);
+		// (c) The token's own seen, signed out: what makes the note's seen clause untrue.
+		expect(as(null, (caller) => recordSeenByLink(caller, { token: 'token-seen' }, { versionNumber: 1, stage: 'question' }, UI))).toEqual({ recorded: true });
+		expect(byLink(), '(c) the token’s own seen').toBe(true);
+		expect(readLinkPage('token-seen', null)!.seenRecorded, '(c) signed out alike').toBe(true);
+		// (d) A seen of an earlier version is not one of the current version.
+		makeVersion(decision, {}, { number: 2, asksAgain: false });
+		expect(byLink(), '(d) a new version').toBe(false);
+		// (e) Signed in, by the signed-in page's seen and by a response's own seen.
+		expect(readDecisionPage(account, decision.id).seenRecorded, '(e) before').toBe(false);
+		seen(account, decisionRow(decision.id), { versionNumber: 2, stage: 'question' });
+		expect(readDecisionPage(account, decision.id).seenRecorded, '(e) the signed-in page’s seen').toBe(true);
+		respondWith(null, 'token-seen', { versionNumber: 2, kind: 'vote', optionId: a.id });
+		expect(byLink(), '(e) a response’s own seen').toBe(true);
+		// (f) A board reader is no participant: never set.
+		expect(readDecisionPage(reader, decision.id).seenRecorded, '(f) a board reader').toBe(false);
+
+		// (g) A seen of another stage is not the page's: seen as a question, then withdrawn.
+		const later = opened();
+		withLink(later.decision, 'token-withdrawn');
+		as(null, (caller) => recordSeenByLink(caller, { token: 'token-withdrawn' }, { versionNumber: 1, stage: 'question' }, UI));
+		expect(readLinkPage('token-withdrawn', null)!.seenRecorded, '(g) open').toBe(true);
+		db.update(decisions).set({ status: 'withdrawn', withdrawnAt: stamp(new Date(Date.now() - DAY)), withdrawnReason: 'Overtaken' }).where(eq(decisions.id, later.decision.id)).run();
+		const withdrawn = readLinkPage('token-withdrawn', null)!;
+		expect([withdrawn.stage, withdrawn.seenRecorded], '(g) withdrawn').toEqual(['withdrawal', false]);
 	});
 
 	it('names a ruling mail as the latest, with no moment, on both pages; a refused one as not delivered, never the invitation; and another participant’s mail never (card 2708, 2708-1)', () => {
@@ -1095,6 +1141,39 @@ describe('the personal link’s page, through the gate', () => {
 		expect(encodedHtml).toContain('This address is personal to you: do not share it.');
 		expect(encodedHtml).not.toContain('user-badge');
 		expect(encodedHtml).not.toContain('href="/account"');
+	});
+
+	it('signed in, claims the seen in both notes on a first visit, and in neither after one recorded on a signed-out visit, writing nothing either time (card 2736, 2736-1)', async () => {
+		resetAllRateLimits();
+		const { decision } = opened();
+		withLink(decision, 'token-page-2736');
+		const account = makeUser({ username: 'browser' });
+		const cookie = `${SESSION_COOKIE_NAME}=${makeSession(account)}`;
+		/** The signed-in note and the seen note (D5), as the page draws them, or undefined where it draws none. */
+		const notesOf = async () => {
+			const res = await gate('GET', '/decision-link/token-page-2736', { headers: { ...PAGE, cookie } });
+			expect(res.status).toBe(200);
+			const html = await res.text();
+			return { signedIn: /You are signed in as browser[^<]*/.exec(html)?.[0], seen: /Your first tap[^<]*/.exec(html)?.[0] };
+		};
+
+		// A first visit: nothing is recorded yet, so the first action will record the seen beside the account.
+		const events = count('decision_events');
+		expect(await notesOf(), 'a first visit').toEqual({
+			signedIn: 'You are signed in as browser; this is recorded with your response, with your questions and with your having seen this version.',
+			seen: 'Your first tap, click, key press or turn of the mouse wheel on this page is recorded as your having seen this version.'
+		});
+		expect(count('decision_events'), 'the load writes nothing').toBe(events);
+
+		// A signed-out visit records the seen with no account; the signed-in visit after it would record none, so neither note claims it.
+		expect(as(null, (caller) => recordSeenByLink(caller, { token: 'token-page-2736' }, { versionNumber: 1, stage: 'question' }, UI))).toEqual({ recorded: true });
+		expect(as(account, (caller) => recordSeenByLink(caller, { token: 'token-page-2736' }, { versionNumber: 1, stage: 'question' }, UI))).toEqual({ recorded: false });
+		const after = count('decision_events');
+		expect(await notesOf(), 'after a signed-out seen').toEqual({
+			signedIn: 'You are signed in as browser; this is recorded with your response and with your questions.',
+			seen: undefined
+		});
+		expect(count('decision_events'), 'the load writes nothing').toBe(after);
 	});
 
 	it('answers an unknown token and an expired link with the one 404, in the same words and headed alike (23)', async () => {

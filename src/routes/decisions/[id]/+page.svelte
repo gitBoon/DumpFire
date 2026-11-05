@@ -9,7 +9,8 @@
 	 * `/api/decisions/[id]/responses`. Their first tap, click, key press or
 	 * turn of the mouse wheel on the page posts that they have seen this
 	 * version (decision 14), or, on a ruled or superseded decision, the ruling
-	 * (card 2679, decision 9); a caller who is no participant is given no
+	 * (card 2679, decision 9), unless that seen already exists
+	 * (`seenRecorded`, card 2736), when no watch is armed; a caller who is no participant is given no
 	 * stage, arms no such watch, and posts nothing (D7, F7). The watch is
 	 * armed again, and the form drawn afresh, when the page is read for
 	 * another decision or version (code review C2). Anyone else who may view
@@ -109,7 +110,8 @@
 	// What the seen watch is armed on, as plain values, so data read again for the same decision, version and stage leaves it be.
 	const seenDecision = $derived(data.decision.id);
 	// A participant only (D7): a board reader, the author, the decider or an administrator who is no participant sends nothing.
-	const seenVersion = $derived(data.participant === null ? null : (data.version?.number ?? null));
+	// Card 2736 (D5): and none once the participant's seen exists, as a post would write nothing.
+	const seenVersion = $derived(data.participant === null || data.seenRecorded ? null : (data.version?.number ?? null));
 	const seenStage = $derived(data.stage);
 
 	$effect(() => {
@@ -134,6 +136,7 @@
 		mayRespond={data.mayRespond}
 		mayAsk={data.mayAsk}
 		mayRaiseConcern={data.mayRaiseConcern}
+		seenRecorded={data.seenRecorded}
 		personalLink={null}
 	/>
 {/snippet}

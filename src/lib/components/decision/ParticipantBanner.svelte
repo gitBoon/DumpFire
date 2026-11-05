@@ -6,12 +6,16 @@
   In order: the ruling (`RulingBanner`, card 2679) on a ruled decision; the
   withdrawal, with its moment and reason; for a participant, when they were
   told (`toldWords`, D8) and, where the page arms the seen watch, what their
-  first action records (`seenNoteWords`, decision 14); then, on a personal
-  link alone, that the address is personal (R4) and, in a browser that is
-  signed in, that the account is recorded beside what the link does (R8), in
-  `signedInNoteWords`'s words for the stage and the page's own `mayRespond`,
-  `mayAsk` and `mayRaiseConcern`, so that it claims nothing the link cannot
-  record then (card 2735).
+  first action records (`seenNoteWords`, decision 14): with a stage, and only
+  while `seenRecorded` is false, as the pages arm no watch once the
+  participant's seen exists and a first action would record nothing (card
+  2736, D5); then, on a personal link alone, that the address is personal
+  (R4) and, in a browser that is signed in, that the account is recorded
+  beside what the link does (R8), in `signedInNoteWords`'s words for the
+  stage and the page's own `mayRespond`, `mayAsk` and `mayRaiseConcern`, so
+  that it claims nothing the link cannot record then (card 2735), and with no
+  seen where `seenRecorded` says the participant's seen already exists and
+  would not be recorded again (card 2736).
 
   Every prop is required and none has a default. `personalLink` is null on
   the signed-in page and `{ signedInAs }` on the link page: the two link lines
@@ -35,6 +39,7 @@
 		mayRespond,
 		mayAsk,
 		mayRaiseConcern,
+		seenRecorded,
 		personalLink
 	}: {
 		decision: Pick<DecisionPageData['decision'], 'shownStatus' | 'withdrawnAt' | 'withdrawnReason'>;
@@ -47,6 +52,8 @@
 		mayRespond: DecisionPageData['mayRespond'];
 		mayAsk: DecisionPageData['mayAsk'];
 		mayRaiseConcern: DecisionPageData['mayRaiseConcern'];
+		/** Whether the participant's seen of this version and stage already exists, so neither note claims one (card 2736). */
+		seenRecorded: DecisionPageData['seenRecorded'];
 		/** Null on the signed-in page; on a personal link, the signed-in browser's account name, or null. */
 		personalLink: { signedInAs: string | null } | null;
 	} = $props();
@@ -64,14 +71,15 @@
 {/if}
 {#if participant !== null}
 	<p class="banner-line">{toldWords(participant.role, participant.told, participant.includedAt)}</p>
-	{#if stage !== null}
+	<!-- Card 2736 (D5): once the seen exists the pages arm no watch, so there is no first action to describe. -->
+	{#if stage !== null && !seenRecorded}
 		<p class="banner-note" data-note="seen">{seenNoteWords(stage)}</p>
 	{/if}
 {/if}
 {#if personalLink !== null}
 	<p class="banner-note personal">This address is personal to you: do not share it.</p>
 	{#if personalLink.signedInAs !== null}
-		<p class="banner-note signed-in">{signedInNoteWords(personalLink.signedInAs, participant !== null, stage, { mayRespond, mayAsk, mayRaiseConcern })}</p>
+		<p class="banner-note signed-in">{signedInNoteWords(personalLink.signedInAs, participant !== null, stage, { mayRespond, mayAsk, mayRaiseConcern, seenRecorded })}</p>
 	{/if}
 {/if}
 

@@ -707,6 +707,7 @@ describe('the decision page and DecisionActions (47, 48)', () => {
 			earlierResponse: null,
 			mayRespond: false,
 			stage: null,
+			seenRecorded: false,
 			mayEdit: false,
 			signedInAs: null,
 			ruling: RULING,

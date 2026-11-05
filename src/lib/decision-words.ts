@@ -222,33 +222,39 @@ export const replaceFieldName = (n: number) => `Your answer in place of the agen
 /**
  * The participant page's note on what its seen watch records (card 2677,
  * decision 14): the ruling on a ruled or superseded decision (card 2679,
- * decision 9), this version otherwise.
+ * decision 9), this version otherwise. Drawn only while the watch is armed,
+ * which is never once the participant's seen exists (`seenRecorded`, card
+ * 2736, D5): then the first action records nothing, so the note would claim a
+ * seen that is not written.
  */
 export const seenNoteWords = (stage: 'question' | 'ruling' | 'withdrawal') =>
 	`Your first tap, click, key press or turn of the mouse wheel on this page is recorded as your having seen ${stage === 'ruling' ? 'the ruling' : 'this version'}.`;
 
 /**
- * The personal link's note in a signed-in browser (card 2677, R8; card 2735):
+ * The personal link's note in a signed-in browser (card 2677, R8; cards 2735 and 2736):
  * what the link records beside the account, as `signedIn`, on this page and
  * no more. It claims nothing unless the page is a participant's and has a
  * stage. Then each write clause is added only where the page's own flag lets
  * the participant make that write now (`mayRespond`, `mayAsk`,
  * `mayRaiseConcern`, which carry the status, the role and each per-person
- * limit), and the seen clause always, as the watch is armed, in
- * `seenNoteWords`'s words for the stage.
+ * limit), and the seen clause, in `seenNoteWords`'s words for the stage,
+ * only where `seenRecorded` is false (card 2736): a seen already recorded is
+ * not recorded again, so nothing of it is recorded beside the account now.
+ * The clause is dropped, never turned into "was recorded", as an earlier
+ * seen's account may not be this one.
  */
 export function signedInNoteWords(
 	name: string,
 	participating: boolean,
 	stage: 'question' | 'ruling' | 'withdrawal' | null,
-	may: { mayRespond: boolean; mayAsk: boolean; mayRaiseConcern: boolean }
+	flags: { mayRespond: boolean; mayAsk: boolean; mayRaiseConcern: boolean; seenRecorded: boolean }
 ): string {
 	const kept: string[] = [];
 	if (participating && stage !== null) {
-		if (may.mayRespond) kept.push('your response');
-		if (may.mayAsk) kept.push('your questions');
-		if (may.mayRaiseConcern) kept.push('your concern');
-		kept.push(`your having seen ${stage === 'ruling' ? 'the ruling' : 'this version'}`);
+		if (flags.mayRespond) kept.push('your response');
+		if (flags.mayAsk) kept.push('your questions');
+		if (flags.mayRaiseConcern) kept.push('your concern');
+		if (!flags.seenRecorded) kept.push(`your having seen ${stage === 'ruling' ? 'the ruling' : 'this version'}`);
 	}
 	if (kept.length === 0) return `You are signed in as ${name}.`;
 	const clauses = kept.map((what) => `with ${what}`);

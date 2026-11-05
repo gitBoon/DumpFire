@@ -314,6 +314,7 @@ function pageData(more: Partial<DecisionPageData> = {}): DecisionPageData & { us
 		earlierResponse: null,
 		mayRespond: false,
 		stage: null,
+		seenRecorded: false,
 		mayEdit: false,
 		signedInAs: null,
 		ruling: null,

@@ -28,6 +28,11 @@
  *     the link page says exactly what is recorded with a signed-in account.
  *     The plan is `docs/planning/card-2735-link-signed-in-note.md`.
  *
+ *   - The seen claim (card 2736, cases 2736-3 and 2736-4): where the
+ *     participant's seen already exists, the signed-in note names no seen,
+ *     and neither page draws the seen note or arms the watch. The plan is
+ *     `docs/planning/card-2736-seen-claim.md`.
+ *
  * jsdom cannot make a trusted event, so the watch's trust test is stood in:
  * `watchForSeen` is the real one, handed a test that trusts the events this
  * file marks. What the server answers, and to whom, is in
@@ -199,6 +204,7 @@ function pageData(more: Partial<DecisionPageData> = {}): DecisionPageData & { us
 		earlierResponse: null,
 		mayRespond: true,
 		stage: 'question',
+		seenRecorded: false,
 		mayEdit: false,
 		signedInAs: null,
 		// Card 2679 (decision 23): nothing ruled, released, raised or superseded.
@@ -829,9 +835,77 @@ describe('the parts both participant pages share (card 2707)', () => {
 		}
 
 		// With no participant or no stage the note claims nothing, whatever the flags say (fail closed).
-		const every = { mayRespond: true, mayAsk: true, mayRaiseConcern: true };
+		const every = { mayRespond: true, mayAsk: true, mayRaiseConcern: true, seenRecorded: false };
 		expect(signedInNoteWords('Sam', false, 'question', every)).toBe('You are signed in as Sam.');
 		expect(signedInNoteWords('Sam', true, null, every)).toBe('You are signed in as Sam.');
+	});
+
+	it('2736-3: where the participant’s seen already exists, the signed-in note claims no seen in any state, and claims nothing where the seen was all it named', () => {
+		const informed: DecisionPageData['participant'] = { role: 'informed', includedAt: '2026-11-01 09:00:00', told: { kind: 'invited', at: '2026-11-01 09:05:00', delivered: true } };
+		const ruled = { ruling: RULING, stage: 'ruling' as const, mayRespond: false };
+		/** 2735-1's states, each with the seen already recorded: the write clauses stay, the seen clause goes. */
+		const rows: { name: string; decision: DecisionMore; more: Partial<DecisionPageData>; says: string }[] = [
+			{ name: 'open, consulted', decision: {}, more: { mayAsk: true }, says: '; this is recorded with your response and with your questions.' },
+			{ name: 'open, informed', decision: {}, more: { participant: informed, mayRespond: false, mayAsk: true }, says: '; this is recorded with your questions.' },
+			{ name: 'awaiting the ruling', decision: { shownStatus: 'awaiting_ruling' }, more: { mayRespond: false, mayAsk: true }, says: '; this is recorded with your questions.' },
+			{ name: 'ruled, under the concern limit', decision: { shownStatus: 'ruled', closesAt: null }, more: { ...ruled, mayRaiseConcern: true }, says: '; this is recorded with your concern.' },
+			{ name: 'ruled, past the concern limit', decision: { shownStatus: 'ruled', closesAt: null }, more: { ...ruled, mayRaiseConcern: false }, says: '.' },
+			{ name: 'superseded', decision: { shownStatus: 'superseded', closesAt: null }, more: ruled, says: '.' },
+			{
+				name: 'withdrawn',
+				decision: { shownStatus: 'withdrawn', withdrawnAt: '2026-11-03 10:00:00', withdrawnReason: 'The budget went.' },
+				more: { mayRespond: false, stage: 'withdrawal' },
+				says: '.'
+			}
+		];
+
+		for (const { name, decision, more, says } of rows) {
+			clear();
+			const page = draw(LinkPage, { data: { ...both(decision, { ...more, seenRecorded: true }).link, signedInAs: 'Sam' } });
+			expect([...page.querySelectorAll('.signed-in')].map(textOf), name).toEqual([`You are signed in as Sam${says}`]);
+		}
+
+		// The clause follows the flag alone: the same state, not yet seen, keeps it.
+		const flags = { mayRespond: false, mayAsk: false, mayRaiseConcern: false };
+		expect(signedInNoteWords('Sam', true, 'ruling', { ...flags, seenRecorded: false })).toBe('You are signed in as Sam; this is recorded with your having seen the ruling.');
+		expect(signedInNoteWords('Sam', true, 'ruling', { ...flags, seenRecorded: true })).toBe('You are signed in as Sam.');
+	});
+
+	it('2736-4: on either page, signed in or out, a first visit draws the seen note and posts the seen once; a repeat visit draws no seen note and arms no watch', async () => {
+		const SEEN_NOTE = 'Your first tap, click, key press or turn of the mouse wheel on this page is recorded as your having seen this version.';
+		const ruled: DecisionMore = { shownStatus: 'ruled', closesAt: null };
+		for (const [state, decision, more, stage] of [
+			['open', {}, {}, 'question'],
+			['ruled', ruled, { ruling: RULING, stage: 'ruling', mayRespond: false }, 'ruling']
+		] as const) {
+			for (const [page, component, data, url] of [
+				['signed in', DecisionPage, (seenRecorded: boolean) => both(decision, { ...more, seenRecorded }).session, 'POST /api/decisions/5/seen'],
+				['by link, signed out', LinkPage, (seenRecorded: boolean) => both(decision, { ...more, seenRecorded }).link, 'POST /api/decision-by-link/seen'],
+				['by link, signed in', LinkPage, (seenRecorded: boolean) => ({ ...both(decision, { ...more, seenRecorded }).link, signedInAs: 'Sam' }), 'POST /api/decision-by-link/seen']
+			] as const) {
+				const name = `${state}, ${page}`;
+				const token = component === LinkPage ? { token: 'tok-page' } : {};
+
+				// A first visit: the note, and the seen posted once at the first action.
+				clear();
+				const first = draw(component, { data: data(false) });
+				expect([...first.querySelectorAll('[data-note="seen"]')].map(textOf), `${name}, first visit`).toEqual([
+					stage === 'ruling' ? SEEN_NOTE.replace('this version', 'the ruling') : SEEN_NOTE
+				]);
+				for (const kind of ['pointerdown', 'keydown', 'touchstart', 'wheel'] as const) act(kind);
+				await settle();
+				expect(sent, `${name}, first visit`).toEqual([{ what: url, body: { ...token, versionNumber: 1, stage } }]);
+
+				// A repeat visit: the seen exists, so no note and no watch, whatever the person does.
+				clear();
+				const repeat = draw(component, { data: data(true) });
+				expect(repeat.querySelector('[data-note="seen"]'), `${name}, repeat visit`).toBeNull();
+				expect(repeat.querySelector('[data-section="banner"] .banner-line'), `${name}, repeat visit: the told line stays`).not.toBeNull();
+				for (const kind of ['pointerdown', 'keydown', 'touchstart', 'wheel'] as const) act(kind);
+				await settle();
+				expect(sent, `${name}, repeat visit`).toEqual([]);
+			}
+		}
 	});
 
 	it('2707-2: handed every field only the signed-in page has, the link page draws none of them, where the signed-in page draws each', () => {

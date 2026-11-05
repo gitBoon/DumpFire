@@ -15,7 +15,8 @@
 	 * (decision 4). Having seen this version, or on a ruled or superseded
 	 * decision the ruling (card 2679, decision 9), is posted after the
 	 * person's first tap, click, key press or turn of the mouse wheel
-	 * (decision 14). The page data holds no decision id (code review C5), so
+	 * (decision 14), unless that seen already exists (`seenRecorded`, card
+	 * 2736), when no watch is armed. The page data holds no decision id (code review C5), so
 	 * the link's token stands for the decision: the watch is armed again, and
 	 * the form drawn afresh, for another token or version (code review C2).
 	 *
@@ -50,7 +51,8 @@
 
 	// What the seen watch is armed on, as plain values, so data read again for the same link, version and stage leaves it be.
 	const seenToken = $derived(page.params.token);
-	const seenVersion = $derived(data.participant === null ? null : (data.version?.number ?? null));
+	// Card 2736 (D5): none once the participant's seen exists, as a post would write nothing.
+	const seenVersion = $derived(data.participant === null || data.seenRecorded ? null : (data.version?.number ?? null));
 	const seenStage = $derived(data.stage);
 
 	$effect(() => {
@@ -78,6 +80,7 @@
 		mayRespond={data.mayRespond}
 		mayAsk={data.mayAsk}
 		mayRaiseConcern={data.mayRaiseConcern}
+		seenRecorded={data.seenRecorded}
 		personalLink={{ signedInAs: data.signedInAs }}
 	/>
 {/snippet}
