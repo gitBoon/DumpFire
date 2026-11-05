@@ -69,6 +69,9 @@
  * Card 2738 adds `reachedInRound`, whom the current round's request reached,
  * which an early ruling writes on each `cut_off` (`{ reached }`).
  *
+ * Card 2742 shares its role replay (`replayRoles`) with `lastToldOf`, which
+ * answers the role an invitation was written for (`sentAs`).
+ *
  * Plain functions with no caller, called inside a service write's
  * transaction, or by the mail effect in a transaction of its own.
  */
@@ -1326,6 +1329,49 @@ export function askingMailsOf(
 /** The events that set a participant's role on a decision (card 2738): `included` and `re_included` by `role`, `role_changed` by `to`. */
 const ROLE_KINDS: readonly EventKind[] = ['included', 're_included', 'role_changed'];
 
+/** The role events `replayRoles` reads (card 2738, D1), and the removal that empties the role (R3). */
+const REPLAY_KINDS: readonly EventKind[] = [...ROLE_KINDS, 'removed'];
+
+/**
+ * Card 2738's role replay (D1, R3), shared by card 2742 (D2): one
+ * participant's events, in id order, each but a role event given back with
+ * the role in force at it. The role before any role event is the first
+ * `role_changed`'s `from`, an `included`'s own role, none before a first
+ * `re_included`, or with no role event at all `roleNow`,
+ * the row's role now; `included` and `re_included` set it by `role`,
+ * `role_changed` by `to`; a `removed` is given back with none, and none holds
+ * until a re-inclusion gives a role again. A role event whose role cannot be
+ * read leaves the role as it was. No event holds the role it was written in
+ * (a mail event's detail never has), so this is the one way to read it, for
+ * every event old or new.
+ */
+function replayRoles<R extends { kind: string; detail: Record<string, unknown> }>(mine: readonly R[], roleNow: string | null): { row: R; role: string | null }[] {
+	const isRoleEvent = (row: R) => (ROLE_KINDS as readonly string[]).includes(row.kind);
+	const roleOf = (row: R): string | null => {
+		const role = row.kind === 'role_changed' ? row.detail.to : row.detail.role;
+		return typeof role === 'string' ? role : null;
+	};
+	const first = mine.find(isRoleEvent);
+	let role: string | null;
+	if (first === undefined) role = roleNow;
+	else if (first.kind === 'role_changed') role = typeof first.detail.from === 'string' ? first.detail.from : null;
+	// A re-inclusion says nothing about the role held before the removal it
+	// follows, so with no earlier `included` the role before it is unknown
+	// (card 2742 code review).
+	else if (first.kind === 're_included') role = null;
+	else role = roleOf(first);
+	const replayed: { row: R; role: string | null }[] = [];
+	for (const row of mine) {
+		if (row.kind === 'removed') role = null;
+		else if (isRoleEvent(row)) {
+			role = roleOf(row) ?? role;
+			continue;
+		}
+		replayed.push({ row, role });
+	}
+	return replayed;
+}
+
 /**
  * The participants of `participants` whom round `round`'s request reached
  * (card 2738, D1), read from the record alone, never from an address or a
@@ -1348,8 +1394,9 @@ const ROLE_KINDS: readonly EventKind[] = ['included', 're_included', 'role_chang
  * that could still be answered.
  *
  * The role at each event is replayed from `included`, `re_included` and
- * `role_changed` in id order; before the first of them, the first
- * `role_changed`'s `from`, or with none the row's role now. An invitation
+ * `role_changed` in id order (`replayRoles`, which card 2742's `lastToldOf`
+ * shares); before the first of them, the first `role_changed`'s `from`, or
+ * with none the row's role now. An invitation
  * delivered while informed asked nothing. A `removed` resets reach (R3,
  * refining D5): only what follows the latest re-inclusion counts. A round
  * with no `published` event reaches nobody. A read alone, in batches of
@@ -1397,7 +1444,7 @@ export function reachedInRound(decisionId: number, round: number, participants: 
 				and(
 					eq(decisionEvents.decisionId, decisionId),
 					inArray(decisionEvents.participantId, ids.slice(from, from + IDS_AT_ONCE)),
-					inArray(decisionEvents.kind, [...ROLE_KINDS, 'removed', 'invited', 'asked_again', 'mail_outcome', 'seen'])
+					inArray(decisionEvents.kind, [...REPLAY_KINDS, 'invited', 'asked_again', 'mail_outcome', 'seen'])
 				)
 			)
 			.orderBy(asc(decisionEvents.id))
@@ -1412,29 +1459,13 @@ export function reachedInRound(decisionId: number, round: number, participants: 
 
 	const delivered = new Set<number>();
 	for (const row of rows) if (row.kind === 'mail_outcome' && typeof row.detail.of === 'number' && row.detail.delivered === true) delivered.add(row.detail.of);
-	const roleOf = (row: Row): string | null => {
-		const role = row.kind === 'role_changed' ? row.detail.to : row.detail.role;
-		return typeof role === 'string' ? role : null;
-	};
 
 	for (const id of ids) {
-		const mine = byParticipant.get(id) ?? [];
-		// The role before any role event: the first role_changed's `from`, an inclusion's own role, or with neither the row's role now.
-		const first = mine.find((row) => (ROLE_KINDS as readonly string[]).includes(row.kind));
-		let role: string | null;
-		if (first === undefined) role = roleNow.get(id) ?? null;
-		else if (first.kind === 'role_changed') role = typeof first.detail.from === 'string' ? first.detail.from : null;
-		else role = roleOf(first);
 		let isReached = false;
-		for (const row of mine) {
+		for (const { row, role } of replayRoles(byParticipant.get(id) ?? [], roleNow.get(id) ?? null)) {
 			// R3: a removal resets reach, and nothing counts until a re-inclusion gives a role again.
 			if (row.kind === 'removed') {
 				isReached = false;
-				role = null;
-				continue;
-			}
-			if ((ROLE_KINDS as readonly string[]).includes(row.kind)) {
-				role = roleOf(row) ?? role;
 				continue;
 			}
 			if (isReached || role !== 'consulted' || !openFor(row.id, row.at)) continue;
@@ -1660,8 +1691,16 @@ export function hasSeen(participantId: number, versionNumber: number, stage: str
  * delivered, and an earlier mail is never named in its place (D2). The
  * ruling's has no `at` (D3): its moment is the ruling's, which no page is
  * given (card 2679, decision 26). The participant's own events alone are read.
+ *
+ * An invitation also answers `sentAs` (card 2742, D1 and D3): the role the
+ * participant held when it was written, replayed from the record by
+ * `replayRoles` at the event's id, never their role now, as the mail's
+ * subject and body were chosen by the role then. Null where the record gives
+ * no role there (D4). `participant.role` is their row's role now, which the
+ * replay starts from only where the record holds no role event at all.
  */
-export function lastToldOf(participantId: number): ToldMail | null {
+export function lastToldOf(participant: { id: number; role: string }): ToldMail | null {
+	const participantId = participant.id;
 	const told = db
 		.select({ id: decisionEvents.id, kind: decisionEvents.kind, at: decisionEvents.createdAt })
 		.from(decisionEvents)
@@ -1680,7 +1719,26 @@ export function lastToldOf(participantId: number): ToldMail | null {
 			return detail.of === told.id && detail.delivered === true;
 		});
 	const kind = told.kind as ToldMail['kind'];
-	return kind === 'told_ruling' ? { kind, delivered } : { kind, at: told.at, delivered };
+	if (kind === 'told_ruling') return { kind, delivered };
+	if (kind === 'invited') return { kind, at: told.at, delivered, sentAs: sentAsOf(participant, told.id) };
+	return { kind, at: told.at, delivered };
+}
+
+/**
+ * The role participant `participant` held at their event `eventId` (card
+ * 2742, D1): their role events and removals, with that event, replayed in id
+ * order by `replayRoles`. Null for a role that is neither of the two (D4).
+ */
+function sentAsOf(participant: { id: number; role: string }, eventId: number): 'consulted' | 'informed' | null {
+	const mine = db
+		.select({ id: decisionEvents.id, kind: decisionEvents.kind, detail: decisionEvents.detail })
+		.from(decisionEvents)
+		.where(and(eq(decisionEvents.participantId, participant.id), or(inArray(decisionEvents.kind, [...REPLAY_KINDS]), eq(decisionEvents.id, eventId))))
+		.orderBy(asc(decisionEvents.id))
+		.all()
+		.map((row) => ({ ...row, detail: detailOf(row.detail) }));
+	const role = replayRoles(mine, participant.role).find(({ row }) => row.id === eventId)?.role;
+	return role === 'consulted' || role === 'informed' ? role : null;
 }
 
 /** An event's detail, read; one that cannot be read, or is no object, is empty. */

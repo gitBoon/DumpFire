@@ -307,7 +307,7 @@ export type DecisionPageData = {
 	participant:
 		| (ViewParticipant & {
 				includedAt: Stamp;
-				/** Their latest record mail of the five (card 2708), the ruling's with no `at` key (D3); null for none. */
+				/** Their latest record mail of the five (card 2708), the ruling's with no `at` key (D3), an invitation with the role it was sent for (`sentAs`, card 2742); null for none. */
 				told: ToldMail | null;
 		  })
 		| null;

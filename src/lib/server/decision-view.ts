@@ -475,7 +475,7 @@ function pageOf(
 
 	const role = participant.role === 'informed' ? 'informed' : 'consulted';
 	const own = ownResponses(participant.id, currentRound(decision.id));
-	page.participant = { role, includedAt: participant.includedAt, told: lastToldOf(participant.id) };
+	page.participant = { role, includedAt: participant.includedAt, told: lastToldOf(participant) };
 	page.ownResponse = own.current;
 	page.earlierResponse = own.earlier;
 	page.mayRespond = role === 'consulted' && shownStatus === 'open';

@@ -313,10 +313,14 @@ export const shownMoment = (at: string | null, unset: string) => (at === null ? 
  * decision 19; card 2708): one of the five record mails, its moment, and
  * whether its own outcome says it was delivered. The ruling's has no `at` key
  * at all (card 2708, D3): its moment is the ruling's own, which no page is
- * given (card 2679, decision 26).
+ * given (card 2679, decision 26). The invitation alone carries `sentAs`
+ * (card 2742, D3): the role it was written for, replayed from the record, or
+ * null where the record gives none; the other mails' words do not depend on
+ * the role.
  */
 export type ToldMail =
-	| { kind: 'invited' | 'asked_again' | 'told_of_change' | 'told_withdrawn'; at: string; delivered: boolean }
+	| { kind: 'invited'; at: string; delivered: boolean; sentAs: 'consulted' | 'informed' | null }
+	| { kind: 'asked_again' | 'told_of_change' | 'told_withdrawn'; at: string; delivered: boolean }
 	| { kind: 'told_ruling'; delivered: boolean };
 
 /**
@@ -325,17 +329,21 @@ export type ToldMail =
  * "by email" only when that mail was recorded as delivered. A mail not yet
  * known to be delivered, or none, gives the neutral words, from when they were
  * included. Since card 2708 the latest may be the withdrawal's or the
- * ruling's, the ruling's named with no moment (D3, D4).
+ * ruling's, the ruling's named with no moment (D3, D4). Since card 2742 an
+ * invitation is worded by the role it was sent for (`sentAs`), never by the
+ * participant's role now, which this is no longer given; with none, it claims
+ * no purpose (D4).
  */
-export function toldWords(role: 'consulted' | 'informed', told: ToldMail | null, includedAt: string): string {
+export function toldWords(told: ToldMail | null, includedAt: string): string {
 	if (told === null || !told.delivered) return `You were included in this decision on ${shownMoment(includedAt, '')}.`;
 	if (told.kind === 'told_ruling') return 'You were told of the ruling on this decision by email.';
 	const at = shownMoment(told.at, '');
 	if (told.kind === 'told_withdrawn') return `You were told this decision was withdrawn on ${at}, by email.`;
 	if (told.kind === 'asked_again') return `This decision changed, and you were asked for your view again on ${at}, by email.`;
-	if (told.kind === 'told_of_change') return `You were told of a change to this decision on ${at}, by email.`;
-	if (role === 'informed') return `You were told of this decision on ${at}, by email, to keep you informed.`;
-	return `You were asked for your view on this decision on ${at}, by email.`;
+	if (told.kind !== 'invited') return `You were told of a change to this decision on ${at}, by email.`;
+	if (told.sentAs === 'informed') return `You were told of this decision on ${at}, by email, to keep you informed.`;
+	if (told.sentAs === 'consulted') return `You were asked for your view on this decision on ${at}, by email.`;
+	return `You were told of this decision on ${at}, by email.`;
 }
 
 /** A withdrawn decision's banner, with the reason its withdrawal mail carries (decision 19). */

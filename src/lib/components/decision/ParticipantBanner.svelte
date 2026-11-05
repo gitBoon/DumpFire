@@ -5,7 +5,8 @@
 
   In order: the ruling (`RulingBanner`, card 2679) on a ruled decision; the
   withdrawal, with its moment and reason; for a participant, when they were
-  told (`toldWords`, D8) and, where the page arms the seen watch, what their
+  told (`toldWords`, D8; an invitation in the role it was sent for, card
+  2742, not their role now) and, where the page arms the seen watch, what their
   first action records (`seenNoteWords`, decision 14): with a stage, and only
   while `seenRecorded` is false, as the pages arm no watch once the
   participant's seen exists and a first action would record nothing (card
@@ -70,7 +71,7 @@
 	<p class="banner-line withdrawn">{withdrawnWords(decision.withdrawnAt, decision.withdrawnReason)}</p>
 {/if}
 {#if participant !== null}
-	<p class="banner-line">{toldWords(participant.role, participant.told, participant.includedAt)}</p>
+	<p class="banner-line">{toldWords(participant.told, participant.includedAt)}</p>
 	<!-- Card 2736 (D5): once the seen exists the pages arm no watch, so there is no first action to describe. -->
 	{#if stage !== null && !seenRecorded}
 		<p class="banner-note" data-note="seen">{seenNoteWords(stage)}</p>

@@ -676,7 +676,7 @@ describe('readDecisionPage and readLinkPage', () => {
 			version: { number: 1, publishedAt: '2026-11-01 09:00:00', content: { ...contentOf(b), reviewed: { question: true } } },
 			options: optionsOf({ a, b, c }),
 			audiences: FINANCE_FIRST,
-			participant: { role: 'consulted', includedAt: '2026-11-01 09:00:00', told: { kind: 'invited', at: expect.stringMatching(STAMPED), delivered: true } },
+			participant: { role: 'consulted', includedAt: '2026-11-01 09:00:00', told: { kind: 'invited', at: expect.stringMatching(STAMPED), delivered: true, sentAs: 'consulted' } },
 			ownResponse: {
 				versionNumber: 1,
 				round: 1,
@@ -846,7 +846,7 @@ describe('readDecisionPage and readLinkPage', () => {
 			version: { number: 1, publishedAt: '2026-11-01 09:00:00', content: contentOf(b) },
 			options: optionsOf({ a, b, c }),
 			audiences: FINANCE_FIRST,
-			participant: { role: 'consulted', includedAt: '2026-11-01 09:00:00', told: { kind: 'invited', at: expect.stringMatching(STAMPED), delivered: true } },
+			participant: { role: 'consulted', includedAt: '2026-11-01 09:00:00', told: { kind: 'invited', at: expect.stringMatching(STAMPED), delivered: true, sentAs: 'consulted' } },
 			ownResponse: null,
 			earlierResponse: null,
 			mayRespond: true,
@@ -966,7 +966,7 @@ describe('readDecisionPage and readLinkPage', () => {
 		const { account, participant } = withAccount(decision);
 		invite(decision, participant.id, true);
 		const invited = readDecisionPage(account, decision.id).participant?.told;
-		expect(invited).toEqual({ kind: 'invited', at: expect.stringMatching(STAMPED), delivered: true });
+		expect(invited).toEqual({ kind: 'invited', at: expect.stringMatching(STAMPED), delivered: true, sentAs: 'consulted' });
 		const of = appendEvent({ decisionId: decision.id, kind: 'reminded', participantId: participant.id, versionNumber: 1 }, SYSTEM_ACTOR);
 		appendEvent({ decisionId: decision.id, kind: 'mail_outcome', participantId: participant.id, detail: { of, mail: 'reminder', delivered: true } }, SYSTEM_ACTOR);
 

@@ -528,8 +528,9 @@ describe('card 2740: setParticipants asks one made consulted on an open decision
 		expect(sent.emails[0].html).not.toContain('Nothing is asked of you');
 		expect(sent.duringTransaction).toEqual([]);
 		expect(outcomesOf(decision.id).map((event) => event.detail)).toEqual([{ of: expect.any(Number), mail: 'invitation', delivered: true }]);
-		// Card 2708's told line reads the invitation in their role now: asked, not told for their information.
-		expect(toldWords('consulted', lastToldOf(row.id), row.includedAt)).toMatch(/^You were asked for your view on this decision on .+, by email\.$/);
+		// Card 2708's told line reads the invitation in the role it was sent for (card 2742): consulted, so asked, not told for their information.
+		expect(lastToldOf(participantRow(row.id))).toMatchObject({ kind: 'invited', delivered: true, sentAs: 'consulted' });
+		expect(toldWords(lastToldOf(participantRow(row.id)), row.includedAt)).toMatch(/^You were asked for your view on this decision on .+, by email\.$/);
 	});
 
 	it('sends a link holder made consulted a fresh link through the normal path, replacing the last (2740-2)', async () => {
@@ -703,6 +704,78 @@ describe('card 2740: setParticipants asks one made consulted on an open decision
 		expect(sent.emails.map((mail) => [mail.to, mail.subject])).toEqual([['rae@example.test', `Your view is asked: ${decision.title}`]]);
 		expect(panelRow(decision.id, rested.row.id)).toMatchObject({ lastMail: { mail: 'invitation', resend: true, outcome: 'sent' }, lastSkip: null });
 	});
+
+	// Card 2742: the told line words an invitation by the role it was sent for, replayed from the record, not by the role now.
+	describe('card 2742: the told line describes the invitation as it was sent', () => {
+		/** An invitation of the participant, written now, and its outcome saying it was delivered. */
+		const invitedAndDelivered = (decisionId: number, participantId: number) => {
+			const of = mailedNow(decisionId, participantId);
+			appendEvent({ decisionId, kind: 'mail_outcome', participantId, detail: { of, mail: 'invitation', delivered: true } }, SYSTEM_ACTOR);
+			return of;
+		};
+		const toldLine = (participantId: number) => {
+			const row = participantRow(participantId);
+			return toldWords(lastToldOf(row), row.includedAt);
+		};
+
+		it('says one invited while informed, then made consulted with the ask held back, was told to keep them informed, not asked (2742-1)', () => {
+			const decision = openOne();
+			const { person, row } = informedHolder(decision, 'Ivy Informed', 'ivy@example.test');
+			invitedAndDelivered(decision.id, row.id);
+			const before = eventsOf(decision.id).length;
+
+			// Made consulted a moment after the invitation: the rest holds the asking invitation back, so the informed one stays the latest mail.
+			set(decision, [{ personId: person.id, role: 'consulted' }]);
+
+			expect(since(decision.id, before)).toEqual([
+				['role_changed', row.id, { from: 'informed', to: 'consulted' }],
+				['mail_skipped', row.id, { mail: 'invitation', reason: 'resting' }]
+			]);
+			expect(participantRow(row.id).role).toBe('consulted');
+			expect(lastToldOf(participantRow(row.id))).toEqual({ kind: 'invited', at: expect.any(String), delivered: true, sentAs: 'informed' });
+			expect(toldLine(row.id)).toMatch(/^You were told of this decision on .+, by email, to keep you informed\.$/);
+		});
+
+		it('says one invited while consulted, then made informed, was asked for their view (2742-2)', async () => {
+			const decision = openOne();
+			const person = makePerson({ fullName: 'Cal Consulted', email: 'cal@example.test', user: makeUser({ username: 'cal' }) });
+			const row = makeParticipant(decision, { person, role: 'consulted', hadAccount: true });
+			invitedAndDelivered(decision.id, row.id);
+			const before = eventsOf(decision.id).length;
+
+			set(decision, [{ personId: person.id, role: 'informed' }]);
+
+			// One made informed is sent nothing, so the invitation that asked stays the latest mail.
+			expect(since(decision.id, before)).toEqual([['role_changed', row.id, { from: 'consulted', to: 'informed' }]]);
+			await sent.settle();
+			expect(sent.emails).toEqual([]);
+			expect(lastToldOf(participantRow(row.id))).toEqual({ kind: 'invited', at: expect.any(String), delivered: true, sentAs: 'consulted' });
+			expect(toldLine(row.id)).toMatch(/^You were asked for your view on this decision on .+, by email\.$/);
+		});
+
+		it('replays a record with no inclusion event from the first role change, and claims no purpose where the record gives no role (2742-3)', () => {
+			// (a) No `included` (the fixture writes none without `hadAccount`): the role before the change is its `from`.
+			const decision = openOne();
+			const person = makePerson({ fullName: 'Old Record', email: 'old@example.test', user: makeUser({ username: 'old' }) });
+			const row = makeParticipant(decision, { person, role: 'informed' });
+			invitedAndDelivered(decision.id, row.id);
+			set(decision, [{ personId: person.id, role: 'consulted' }]);
+			expect(lastToldOf(participantRow(row.id))).toMatchObject({ kind: 'invited', sentAs: 'informed' });
+			expect(toldLine(row.id)).toMatch(/to keep you informed\.$/);
+
+			// (b) An invitation after a removal with no re-inclusion: the record gives no role there, so neither purpose is claimed.
+			const other = openOne();
+			const odd = makeParticipant(other, { role: 'consulted', hadAccount: true });
+			appendEvent({ decisionId: other.id, kind: 'removed', participantId: odd.id }, SYSTEM_ACTOR);
+			invitedAndDelivered(other.id, odd.id);
+			expect(lastToldOf(participantRow(odd.id))).toMatchObject({ kind: 'invited', sentAs: null });
+			expect(toldLine(odd.id)).toMatch(/^You were told of this decision on .+, by email\.$/);
+
+			// (c) The same participant re-included as informed after that invitation: the re-inclusion is later, so the role at it stays none.
+			appendEvent({ decisionId: other.id, kind: 're_included', participantId: odd.id, detail: { role: 'informed', hadAccount: true } }, SYSTEM_ACTOR);
+			expect(lastToldOf(participantRow(odd.id))).toMatchObject({ kind: 'invited', sentAs: null });
+		});
+	});
 });
 
 // ─── Card 2743: one added while the decision is closed for input is not asked for a view they cannot give ──
@@ -742,7 +815,7 @@ describe('card 2743: setParticipants on a decision closed or past its closing ti
 		await sent.settle();
 		expect(sent.emails).toEqual([]);
 		// Card 2708's told line: included, which is true, never "asked".
-		expect(toldWords('consulted', lastToldOf(adaRow), participantRow(adaRow).includedAt)).toMatch(/^You were included in this decision on /);
+		expect(toldWords(lastToldOf(participantRow(adaRow)), participantRow(adaRow).includedAt)).toMatch(/^You were included in this decision on /);
 		// The delivery panel: not mailed yet, and Resend waits for a reopening (D4).
 		expect(panelRow(decision.id, leeRow)).toMatchObject({ lastMail: null, lastSkip: null, resendable: false, refusal: CLOSED_ASK_WORDS('Lee Link') });
 	});
@@ -1668,7 +1741,7 @@ describe('card 2739: a re-publish asks again only the consulted it reached, tell
 		expect(mailTo(r.holderPerson.email).subject).toBe('Changed, and your view is asked again: Ready');
 		expect(panelRow(r.author, r.id, r.linked.id).lastMail).toMatchObject({ mail: 'told_of_change', outcome: 'sent' });
 		expect(panelRow(r.author, r.id, r.holder.id).lastMail).toMatchObject({ mail: 'asked_again', outcome: 'sent' });
-		expect(toldWords('informed', lastToldOf(r.linked.id), participantRow(r.linked.id).includedAt)).toMatch(/^You were told of a change to this decision on .+, by email\.$/);
+		expect(toldWords(lastToldOf(participantRow(r.linked.id)), participantRow(r.linked.id).includedAt)).toMatch(/^You were told of a change to this decision on .+, by email\.$/);
 	});
 
 	it('asking again on a closed decision reopens it and tells the informed one of the change, never asked_again (2739-2)', async () => {

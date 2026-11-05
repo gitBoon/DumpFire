@@ -199,7 +199,7 @@ function pageData(more: Partial<DecisionPageData> = {}): DecisionPageData & { us
 		version: { number: 1, publishedAt: '2026-11-01 09:00:00', content: CONTENT },
 		options: OPTIONS,
 		audiences: AUDIENCES,
-		participant: { role: 'consulted', includedAt: '2026-11-01 09:00:00', told: { kind: 'invited', at: '2026-11-01 09:05:00', delivered: true } },
+		participant: { role: 'consulted', includedAt: '2026-11-01 09:00:00', told: { kind: 'invited', at: '2026-11-01 09:05:00', delivered: true, sentAs: 'consulted' } },
 		ownResponse: null,
 		earlierResponse: null,
 		mayRespond: true,
@@ -509,12 +509,14 @@ describe('the participant pages', () => {
 	});
 
 	it('34: say when the participant was told, "by email" only for a mail recorded as delivered, and that a withdrawn decision was withdrawn and why', () => {
-		const told = (kind: 'invited' | 'asked_again' | 'told_of_change', delivered = true) => ({ kind, at: '2026-11-01 09:05:00', delivered });
+		const told = (kind: 'asked_again' | 'told_of_change'): ToldMail => ({ kind, at: '2026-11-01 09:05:00', delivered: true });
+		/** An invitation sent for `sentAs` (card 2742), whatever the participant's role now. */
+		const invited = (sentAs: 'consulted' | 'informed' | null, delivered = true): ToldMail => ({ kind: 'invited', at: '2026-11-01 09:05:00', delivered, sentAs });
 		const rows: [string, Partial<DecisionPageData>, string][] = [
 			['(a) consulted, invited', {}, 'You were asked for your view on this decision on 2026-11-01 09:05 UTC, by email.'],
 			[
 				'(b) informed, invited',
-				{ participant: { role: 'informed', includedAt: '2026-11-01 09:00:00', told: told('invited') }, mayRespond: false },
+				{ participant: { role: 'informed', includedAt: '2026-11-01 09:00:00', told: invited('informed') }, mayRespond: false },
 				'You were told of this decision on 2026-11-01 09:05 UTC, by email, to keep you informed.'
 			],
 			[
@@ -529,7 +531,7 @@ describe('the participant pages', () => {
 			],
 			[
 				'(e) invited, not delivered',
-				{ participant: { role: 'consulted', includedAt: '2026-11-01 09:00:00', told: told('invited', false) } },
+				{ participant: { role: 'consulted', includedAt: '2026-11-01 09:00:00', told: invited('consulted', false) } },
 				'You were included in this decision on 2026-11-01 09:00 UTC.'
 			],
 			[
@@ -540,6 +542,22 @@ describe('the participant pages', () => {
 					stage: 'withdrawal'
 				},
 				'This decision was withdrawn on 2026-11-03 10:00 UTC: The budget went.'
+			],
+			// Card 2742: the invitation in the role it was sent for, never the role now, both ways; with no role recorded, no purpose claimed.
+			[
+				'(g) consulted now, invited while informed',
+				{ participant: { role: 'consulted', includedAt: '2026-11-01 09:00:00', told: invited('informed') } },
+				'You were told of this decision on 2026-11-01 09:05 UTC, by email, to keep you informed.'
+			],
+			[
+				'(h) informed now, invited while consulted',
+				{ participant: { role: 'informed', includedAt: '2026-11-01 09:00:00', told: invited('consulted') }, mayRespond: false },
+				'You were asked for your view on this decision on 2026-11-01 09:05 UTC, by email.'
+			],
+			[
+				'(i) invited, no role recorded',
+				{ participant: { role: 'consulted', includedAt: '2026-11-01 09:00:00', told: invited(null) } },
+				'You were told of this decision on 2026-11-01 09:05 UTC, by email.'
 			]
 		];
 
@@ -799,7 +817,7 @@ describe('the parts both participant pages share (card 2707)', () => {
 	});
 
 	it('2735-1: in a signed-in browser, the link page says what is recorded with the account in each state and role, and no more', () => {
-		const informed: DecisionPageData['participant'] = { role: 'informed', includedAt: '2026-11-01 09:00:00', told: { kind: 'invited', at: '2026-11-01 09:05:00', delivered: true } };
+		const informed: DecisionPageData['participant'] = { role: 'informed', includedAt: '2026-11-01 09:00:00', told: { kind: 'invited', at: '2026-11-01 09:05:00', delivered: true, sentAs: 'informed' } };
 		const ruled = { ruling: RULING, stage: 'ruling' as const, mayRespond: false };
 		/**
 		 * Each state the server can give the link page, with the flags it gives and the words the note must
@@ -841,7 +859,7 @@ describe('the parts both participant pages share (card 2707)', () => {
 	});
 
 	it('2736-3: where the participant’s seen already exists, the signed-in note claims no seen in any state, and claims nothing where the seen was all it named', () => {
-		const informed: DecisionPageData['participant'] = { role: 'informed', includedAt: '2026-11-01 09:00:00', told: { kind: 'invited', at: '2026-11-01 09:05:00', delivered: true } };
+		const informed: DecisionPageData['participant'] = { role: 'informed', includedAt: '2026-11-01 09:00:00', told: { kind: 'invited', at: '2026-11-01 09:05:00', delivered: true, sentAs: 'informed' } };
 		const ruled = { ruling: RULING, stage: 'ruling' as const, mayRespond: false };
 		/** 2735-1's states, each with the seen already recorded: the write clauses stay, the seen clause goes. */
 		const rows: { name: string; decision: DecisionMore; more: Partial<DecisionPageData>; says: string }[] = [
