@@ -79,6 +79,7 @@
 			boardId={data.decision.boardId}
 			title={data.decision.title}
 			closesAt={data.decision.closesAt}
+			shownStatus={data.decision.shownStatus}
 			{revision}
 			actions={data.actions}
 			republishSummary={data.republishSummary}

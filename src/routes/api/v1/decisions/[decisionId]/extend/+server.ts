@@ -12,7 +12,9 @@ import type { RequestHandler } from './$types';
  * than the one it has (card 2682, D30: Extend never brings it earlier, for
  * anyone). Its decider's. A decision closed for input is reopened on the
  * decision's page: `extendDecision` refuses a key 403 (code review S2).
- * Nobody is mailed. `extendDecision` in `$lib/server/decisions`;
+ * Nobody is mailed: an Extend of a decision past its closing time that would
+ * ask someone for their view, as a reopening does (card 2744), is refused a
+ * key 403 too (`REOPEN_ASKS_ACT`). `extendDecision` in `$lib/server/decisions`;
  * `keyDecisionSaved`, `{ decision, revision }` in the shape every key is
  * given (D9, D10).
  *

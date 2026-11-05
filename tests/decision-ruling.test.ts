@@ -151,10 +151,12 @@ const liveEvents = () =>
 	sent.events.filter((event) => event.event === 'decision').map((event) => ({ decisionId: event.data.decisionId, status: event.data.status, boardId: event.boardId }));
 /** What a write leaves behind: rulings, events, decisions, activity. */
 const written = () => ({ rulings: count('decision_rulings'), events: count('decision_events'), decisions: count('decisions'), activity: count('activity_log') });
-/** Wait until every ruling mail asked for has its outcome. */
+/** Wait until every ruling mail asked for has its outcome, and every invitation an Extend that reopened it sent (card 2744). */
 const settled = (decisionId: number) =>
 	vi.waitFor(() =>
-		expect(eventsOf(decisionId).filter((event) => event.kind === 'mail_outcome')).toHaveLength(eventsOf(decisionId).filter((event) => event.kind === 'told_ruling').length)
+		expect(eventsOf(decisionId).filter((event) => event.kind === 'mail_outcome')).toHaveLength(
+			eventsOf(decisionId).filter((event) => ['invited', 'told_ruling'].includes(event.kind)).length
+		)
 	);
 
 /**
@@ -404,11 +406,11 @@ describe('ruleDecision', () => {
 	it('counts the latest close after a re-publish asking again, against the closing time then in force (2e, card 2727)', async () => {
 		const askAgain = (user: SessionUser, decisionId: number) =>
 			as(user, (caller) => republishDecision(caller, { decisionId }, { changeNote: 'Asked again.', askAgain: true, revision: revisionFor(decisionId) }, UI));
-		/** Every asked_again and told_ruling mail has its outcome. */
+		/** Every invitation (card 2744: the reopening sends one to whom the round never reached), asked_again and told_ruling mail has its outcome. */
 		const mailsSettled = (decisionId: number) =>
 			vi.waitFor(() =>
 				expect(eventsOf(decisionId).filter((event) => event.kind === 'mail_outcome')).toHaveLength(
-					eventsOf(decisionId).filter((event) => ['asked_again', 'told_ruling'].includes(event.kind)).length
+					eventsOf(decisionId).filter((event) => ['invited', 'asked_again', 'told_ruling'].includes(event.kind)).length
 				)
 			);
 
@@ -679,6 +681,11 @@ describe('ruleDecision', () => {
 
 			const closesAt = daysAhead(40);
 			as(decider, (caller) => extendDecision(caller, { decisionId: decision.id }, { closesAt: `${closesAt.replace(' ', 'T')}Z` }, UI));
+			// Card 2744: the reopening sends the invitation to the two the round never reached; neither is delivered before the ruling.
+			// This leans on timing, and the timing is deterministic: `queueRecordMails` hands the send to `afterCommit`, so no
+			// `mail_outcome { delivered: true }` can be written until that async send runs, and nothing here awaits before
+			// `rule()` below. Were the send ever made synchronous, `during` would read as reached and the cut-off would change.
+			expect(eventsOf(decision.id).filter((event) => event.kind === 'invited').map((event) => event.participantId)).toEqual([during.participant.id, reopened.participant.id]);
 			sees(reopened.participant, 1);
 
 			rule(decider, decisionRow(decision.id), { optionId: a.id, reason: 'Early, while open again.' });

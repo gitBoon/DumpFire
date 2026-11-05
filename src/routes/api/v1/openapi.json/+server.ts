@@ -8683,7 +8683,9 @@ const spec = {
 				description:
 					'Gives an open decision a later closing time, by its decider (card 2682): closesAt, in the future, at most a year ahead, and later than the one it has. ' +
 					'Extend never brings a closing time earlier, for anyone: a time no later than the current one is 400. ' +
-					'A decision closed for input is reopened by Extend on the decision\'s page alone, undoing a person\'s close: a key is answered 403. Nobody is mailed; a decision_extended entry is written, through the API. ' +
+					'A decision closed for input is reopened by Extend on the decision\'s page alone, undoing a person\'s close: a key is answered 403. ' +
+					'Extending a decision past its closing time reopens it for input, which sends the invitation to each consulted participant not yet asked for their view in the current round: where there is anyone to ask, a key is answered 403, as a key never mails people. ' +
+					'Nobody is mailed; a decision_extended entry is written, through the API. ' +
 					'There is no close: closing a decision for input before its closing time makes a later ruling early, which is a person\'s call on the decision\'s page.',
 				operationId: 'extendDecision',
 				parameters: [{ $ref: '#/components/parameters/decisionId' }],
@@ -8709,13 +8711,20 @@ const spec = {
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
 					'403': {
-						description: 'The key\'s user is not its decider; or the decision is closed for input, which is reopened on the decision\'s page',
+						description:
+							'The key\'s user is not its decider; or the decision is closed for input, which is reopened on the decision\'s page; or it is past its closing time and reopening it would ask someone for their view by mail',
 						content: {
 							'application/json': {
 								schema: { $ref: '#/components/schemas/Error' },
 								examples: {
 									notDecider: { value: { message: 'You cannot extend this decision' } },
-									closed: { value: { message: "This decision is closed for input: reopening it by Extend is done on the decision's page. An API key cannot" } }
+									closed: { value: { message: "This decision is closed for input: reopening it by Extend is done on the decision's page. An API key cannot" } },
+									wouldAsk: {
+										value: {
+											message:
+												"This Extend reopens the decision for input and would ask people consulted on it for their view by mail: a person does that on the decision's page. An API key cannot"
+										}
+									}
 								}
 							}
 						}

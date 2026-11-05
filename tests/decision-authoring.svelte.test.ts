@@ -371,7 +371,8 @@ describe('ParticipantPicker (cases 22 to 25)', () => {
 		flushSync();
 		button(closed, 'Save participants').click();
 		flushSync();
-		expect(textOf(dialog()!)).toContain('1 person will be mailed now; 1 consulted cannot be asked for their view while the decision is closed for input; 0 will be marked removed.');
+		// Card 2744 (D7): the reopening asks them, so the confirmation can say so.
+		expect(textOf(dialog()!)).toContain('1 person will be mailed now; 1 consulted may be asked for their view when the decision is reopened; 0 will be marked removed.');
 		button(dialog()!, 'Cancel').click();
 		await settle();
 
@@ -381,7 +382,17 @@ describe('ParticipantPicker (cases 22 to 25)', () => {
 		flushSync();
 		button(lapsed, 'Save participants').click();
 		flushSync();
-		expect(textOf(dialog()!)).toContain('0 people will be mailed now; 1 consulted cannot be asked for their view while the decision is closed for input; 0 will be marked removed.');
+		expect(textOf(dialog()!)).toContain('0 people will be mailed now; 1 consulted may be asked for their view when the decision is reopened; 0 will be marked removed.');
+		button(dialog()!, 'Cancel').click();
+		await settle();
+
+		// Card 2744 (F3): one made consulted while it is closed is asked at the reopening too, and counted so (2744-8).
+		const switched = drawPicker({ status: 'closed', shownStatus: 'awaiting_ruling', participants: [row(4, 12, 'Bob Brown', { role: 'informed' })] });
+		button(switched, 'Role of Bob Brown: Informed').click();
+		flushSync();
+		button(switched, 'Save participants').click();
+		flushSync();
+		expect(textOf(dialog()!)).toContain('0 people will be mailed now; 1 consulted may be asked for their view when the decision is reopened; 0 will be marked removed.');
 		button(dialog()!, 'Cancel').click();
 		await settle();
 

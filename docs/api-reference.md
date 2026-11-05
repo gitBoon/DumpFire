@@ -1,9 +1,9 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.117
+version: 1.119
 status: As-Built
-date: 2026-11-04
+date: 2026-11-05
 tags:
   - api
   - rest
@@ -4815,7 +4815,13 @@ twin lets in: a caller who may view the decision and not do the act is `403`
   brings it earlier", on the web application's `POST /api/decisions/{id}/extend` too. **A key
   extends an open decision only**: one closed for input is reopened by Extend on the decision's
   page, and a key is answered `403` "This decision is closed for input: reopening it by Extend is
-  done on the decision's page. An API key cannot".
+  done on the decision's page. An API key cannot". Extending a decision past its closing time
+  reopens it for input, which sends the invitation to each consulted participant not yet asked
+  for their view in the current round (card 2744); where there is anyone to ask, a key is
+  answered `403` "This Extend reopens the decision for input and would ask people consulted on it
+  for their view by mail: a person does that on the decision's page. An API key cannot". With
+  nobody to ask, or only people no mail can reach (one who has left, or whose address changed,
+  recorded `mail_skipped` and not mailed), the key's Extend is taken and nobody is mailed.
 - **The revision.** `GET` answers the decision's `revision`; `PATCH`, `…/decider` and
   `…/participants` require it, and a stale one is `409`. It moves with a change to what an
   editor writes (the title, closing time, vote mode, content, options, decider, participants and

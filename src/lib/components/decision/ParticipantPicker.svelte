@@ -17,8 +17,9 @@
   takes them off. Nothing is dropped without the editor's tick.
 
   Save sends `{ participants, revision }`. On an opened decision it asks
-  first, saying how many are mailed, how many consulted are added without
-  being asked while it is not shown open (card 2743), and how many taken off:
+  first, saying how many are mailed, how many consulted are added or made
+  consulted without being asked while it is not shown open (card 2743), who
+  may be asked when it is reopened (card 2744), and how many taken off:
   counted by `mailedOnSave` (`$lib/decision-rules.ts`), the server's own rule,
   and advice only, as the server's skips and holds are not seen here. A refusal is said
   in the server's words and the ticks are kept; the stale-revision 409
@@ -29,7 +30,7 @@
 	import { untrack } from 'svelte';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import { failureMessage } from '$lib/api';
-	import { mailedOnSave } from '$lib/decision-rules';
+	import { mailedOnSave, openForInput } from '$lib/decision-rules';
 	import { STALE_REVISION } from '$lib/decision-words';
 
 	type Role = 'consulted' | 'informed';
@@ -160,11 +161,13 @@
 	const roleWord = (role: string) => (role === 'informed' ? 'Informed' : 'Consulted');
 
 	/**
-	 * On an opened decision: how many the save mails, how many consulted it adds without asking, and how many it takes off
+	 * On an opened decision: how many the save mails, how many consulted it adds or makes consulted without asking (asked at
+	 * the reopening, card 2744), and how many it takes off
 	 * (decision 29 counts those no longer in the directory). Who is mailed is `mailedOnSave`, the rule `setParticipants`
 	 * decides the save by (cards 2740 and 2743), read at the shown status. The count is advice: the server may still skip
 	 * one `reachOf` cannot reach or hold back an ask a rest or a cap holds, which the picker cannot see, and decides at the
-	 * save, not at the page's load.
+	 * save, not at the page's load. `unasked` is advice too: the reopening asks only whom the round has not reached, read
+	 * from the record, which the picker cannot see either.
 	 */
 	function changesOnOpen(): { mailed: number; unasked: number; takenOff: number } {
 		const on = live(rows);
@@ -177,7 +180,11 @@
 			if (held === undefined) {
 				if (mailedOnSave('included', role, shown)) mailed += 1;
 				else unasked += 1;
-			} else if (held.role !== role && mailedOnSave('role_changed', role, shown)) mailed += 1;
+			} else if (held.role !== role) {
+				if (mailedOnSave('role_changed', role, shown)) mailed += 1;
+				// Card 2744 (F3): one made consulted while it is not open is asked at the reopening, as one added is.
+				else if (role === 'consulted' && !openForInput(shown)) unasked += 1;
+			}
 		}
 		const takenOff = on.filter((row) => row.notInDirectory || (row.personId !== null && !(row.personId in ticked))).length;
 		return { mailed, unasked, takenOff };
@@ -190,8 +197,10 @@
 			return;
 		}
 		const { mailed, unasked, takenOff } = changesOnOpen();
-		// Card 2743's code review: no promise of what a reopening does, which is card 2744's to say.
-		const waiting = unasked > 0 ? ` ${unasked} consulted cannot be asked for their view while the decision is closed for input;` : '';
+		// Card 2744 (D7): the Extend or the re-publish asking again that reopens it sends them the invitation, as the caps allow.
+		// "May be" (code review 2026-11-05): the count is advice. One the round already reached, then made informed and made
+		// consulted again while it was closed, is counted here, but the server, reading the record, does not ask them again.
+		const waiting = unasked > 0 ? ` ${unasked} consulted may be asked for their view when the decision is reopened;` : '';
 		confirming = `${mailed} ${mailed === 1 ? 'person' : 'people'} will be mailed now;${waiting} ${takenOff} will be marked removed.`;
 	}
 

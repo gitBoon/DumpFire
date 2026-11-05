@@ -70,7 +70,8 @@
  * is refused what mails people (opening, re-publishing, a dry run, Resend:
  * D3), closing (D29), a participant's account and address (D6), participants
  * and the decider of a decision ever opened (D4), and withdrawing or deleting
- * one (D5), and reopening a closed one by Extend (code review S2): each is a
+ * one (D5), and reopening a closed one by Extend (code review S2), or any
+ * Extend that would ask someone for their view (card 2744, D5): each is a
  * person's act on the decision's page. Extend never brings a closing time
  * earlier, for anyone (D30).
  *
@@ -321,6 +322,14 @@ const CLOSE_ACT =
  */
 const REOPEN_ACT = "This decision is closed for input: reopening it by Extend is done on the decision's page. An API key cannot";
 
+/**
+ * The 403 for a key's Extend that would ask someone for their view (card 2744, D5): a decision stored open past its closing
+ * time is reopened for input by Extend, which mails each consulted participant the round has not reached, and a key never
+ * causes record mail. A key's Extend with nobody to ask goes ahead.
+ */
+const REOPEN_ASKS_ACT =
+	"This Extend reopens the decision for input and would ask people consulted on it for their view by mail: a person does that on the decision's page. An API key cannot";
+
 /** The 400 for an Extend that would not move the closing time later, for every source (card 2682, D30). */
 const EXTENDS_EARLIER = "closesAt must be later than the decision's current closing time: Extend never brings it earlier";
 
@@ -452,7 +461,8 @@ export function setDecider(caller: SessionUser | null, at: { decisionId: number 
  * card 2743: but while the decision is not shown open (closed, or past its
  * closing time), one included or brought back as consulted is sent nothing,
  * no link and no `mail_skipped`, as they cannot respond until it is reopened
- * (card 2744 asks them then; until it does, Resend once it is open), and one
+ * (card 2744: the Extend or the re-publish asking again that reopens it sends
+ * them the invitation then, as the caps allow), and one
  * as informed is still sent their invitation, which asks nothing (who is
  * mailed is `$lib/decision-rules.ts`'s `mailedOnSave`, which the picker
  * shares). The 10-minute rest holds only one the write mails; the caller's
@@ -465,7 +475,8 @@ export function setDecider(caller: SessionUser | null, at: { decisionId: number 
  * caller's, holds it back (`heldAsks`), the role is changed all the same and
  * `mail_skipped { mail: 'invitation', reason }` written, `resting`,
  * `daily_cap` or `caller_cap`. One made informed is sent nothing, and so is
- * one made consulted on a decision closed or past its closing time. A live
+ * one made consulted on a decision closed or past its closing time, who is
+ * asked at the reopening (card 2744). A live
  * row whose person has been deleted is marked removed in the same way, as the body cannot name it, so its account
  * no longer holds the participant role (card 2676, the code review's C1,
  * superseding decision 29's "left as it is"). Including anyone is refused, 409, with
@@ -920,6 +931,15 @@ export function openDecision(caller: SessionUser | null, at: { decisionId: numbe
  * `RECORD_MAIL_DAILY_CAP` times in 24 hours is refused as one mailed in the
  * last 10 minutes is (Q24); and, last of all, the caller's publish limit
  * (Q23).
+ *
+ * Card 2744 (D3): on a closed decision, each live consulted participant the
+ * current round has not reached (`unaskedOf`, read before the new version)
+ * was never asked, so is never sent words that assume an earlier ask:
+ * asking again, which reopens it, sends them the invitation (`invited`) and
+ * everyone else `asked_again`; telling only, which leaves it closed, sends
+ * them nothing (as card 2743 sends nothing to one added as consulted while
+ * closed), and neither the rest nor the caller's cap counts them. On a
+ * decision open for input a re-publish mails everyone as before.
  */
 export function republishDecision(caller: SessionUser | null, at: { decisionId: number }, body: RequestBody, opts: ServiceOptions): Decision {
 	inWrite();
@@ -948,7 +968,10 @@ export function republishDecision(caller: SessionUser | null, at: { decisionId: 
 	// Decision 20, as opening holds it: the new version keeps two live options (the code review's F4).
 	if (live.length - retiring.length < 2) error(409, 'This decision would have fewer than two options: it cannot be re-published');
 	if (decisionLinkBase() === null) error(409, NO_LINK_ADDRESS);
-	const current = participantsOf(decision.id).filter((row) => row.removedAt === null);
+	// Card 2744 (D3): on a closed decision (past its closing time is refused above), whom the round has not reached, read before
+	// the new version: asking again reopens it and sends them the invitation; telling only leaves it closed and sends them nothing.
+	const unasked = new Set(openForInput(decisionStatus(decision, now)) ? [] : unaskedOf(decision).map((row) => row.id));
+	const current = participantsOf(decision.id).filter((row) => row.removedAt === null && (askAgain || !unasked.has(row.id)));
 	const reaches = reachesOf(decision.id, current);
 	const mailed = current.filter((row) => 'via' in reaches.get(row.id)!);
 	requireMailRested(mailed, now);
@@ -967,7 +990,10 @@ export function republishDecision(caller: SessionUser | null, at: { decisionId: 
 		.get();
 	appendVersion({ decisionId: decision.id, number, content: versionContent(decision, liveOptionsOf(decision.id)), changeNote, asksAgain: askAgain }, by);
 	appendEvent({ decisionId: decision.id, kind: 'published', versionNumber: number, detail: { asksAgain: askAgain, changeNote } }, by);
-	queueRecordMails(row, askAgain ? 'asked_again' : 'told_of_change', { by, changeNote });
+	// Card 2744 (D3): one never asked is sent the first-time invitation, not words that assume an earlier ask.
+	const inviting = current.filter((participant) => unasked.has(participant.id));
+	if (inviting.length > 0) queueRecordMails(row, 'invitation', { by, participants: inviting });
+	queueRecordMails(row, askAgain ? 'asked_again' : 'told_of_change', { by, changeNote, participants: current.filter((participant) => !unasked.has(participant.id)) });
 
 	if (row.boardId !== null) {
 		const told = askAgain ? 'everyone asked again' : 'told of a change';
@@ -1003,10 +1029,23 @@ export function closeDecision(caller: SessionUser | null, at: { decisionId: numb
  * 2697 Q25), and later than the decision's current closing time, for every
  * source (400, card 2682 D30): an Extend that brought it earlier would be a
  * close by another name. It is open again, `closed_at` emptied; the
- * `extended { from, to }` event, `decision_extended` and the live event. No
- * mail. Through an API key only a decision whose stored status is open is
+ * `extended { from, to }` event, `decision_extended` and the live event.
+ * Through an API key only a decision whose stored status is open is
  * extended (403 otherwise, code review S2): reopening a closed one undoes a
  * person's close, and is done on the decision's page.
+ *
+ * Card 2744: an Extend that reopens the decision for input (it was closed, or
+ * open past its closing time) sends the invitation, asking for their view,
+ * to each live consulted participant the current round has not reached
+ * (`unaskedOf`, D1), after the commit; one the participant's rest or daily
+ * cap, or the caller's cap, holds back is written `mail_skipped { mail:
+ * 'invitation', reason }` and the reopening goes ahead all the same
+ * (`askUnasked`, D2). An Extend of a decision already open for input mails
+ * nobody. A key's Extend that would ask anyone is refused 403
+ * (`REOPEN_ASKS_ACT`, D5), after the status and before anything is written;
+ * one whom no mail could reach (`reachOf` skips them: left, deleted, address
+ * changed) does not count, as they are recorded `mail_skipped` and not
+ * mailed (code review 2026-11-05).
  */
 export function extendDecision(caller: SessionUser | null, at: { decisionId: number }, body: RequestBody, opts: ServiceOptions): Decision {
 	inWrite();
@@ -1022,13 +1061,23 @@ export function extendDecision(caller: SessionUser | null, at: { decisionId: num
 
 	const now = stamp();
 	requireTransition(decision, 'extend', now);
+	// Card 2744 (D1, D2): a reopening asks whom the round has not reached, read before the write; D5: never through a key.
+	const unasked = openForInput(decisionStatus(decision, now)) ? [] : unaskedOf(decision);
+	// Code review 2026-11-05: a key is refused only where a mail would go out; one `reachOf` skips is recorded, not mailed.
+	if (keyed(opts) && unasked.length > 0) {
+		const reaches = reachesOf(decision.id, unasked);
+		if (unasked.some((row) => !('skip' in reaches.get(row.id)!))) error(403, REOPEN_ASKS_ACT);
+	}
+
+	const by = actorFor(user, sourceOf(opts));
 	const row = db
 		.update(decisions)
 		.set({ status: 'open', closesAt, closedAt: null, updatedAt: now })
 		.where(eq(decisions.id, decision.id))
 		.returning()
 		.get();
-	appendEvent({ decisionId: decision.id, kind: 'extended', detail: { from: decision.closesAt, to: closesAt } }, actorFor(user, sourceOf(opts)));
+	appendEvent({ decisionId: decision.id, kind: 'extended', detail: { from: decision.closesAt, to: closesAt } }, by);
+	askUnasked(user, row, unasked, by, now);
 
 	if (row.boardId !== null) {
 		logActivity({ action: ACTIONS.decisionExtended, ...decisionEntry(row.boardId, `"${row.title}": closes ${closesAt.slice(0, 16)} UTC`, user, opts) });
@@ -2703,6 +2752,40 @@ function heldAsks(user: SessionUser, decisionId: number, rows: DecisionParticipa
 	const sending = reachable.filter((row) => !held.has(row.id));
 	if (recordMailRefusal(user, sending.length, now, pending) !== null) for (const row of sending) held.set(row.id, 'caller_cap');
 	return held;
+}
+
+/**
+ * Card 2744 (D1, D4): the live consulted participants of `decision` with no
+ * response in the current round whom the round has not reached, read from the
+ * record alone by `currentResultsOf` (card 2738's `reachedInRound`, the very
+ * pair an early ruling writes `cut_off { reached }` from): never sent an
+ * asking mail that was delivered while they were consulted and the decision
+ * open for input, and never shown the question then. So one included or made
+ * consulted while it was closed (cards 2740 and 2743), and one whose
+ * invitation was held back, refused or not yet delivered. Read before the
+ * write that reopens the decision, as the round and its windows stand.
+ */
+function unaskedOf(decision: Decision): DecisionParticipant[] {
+	const { notResponded, reached } = currentResultsOf(decision);
+	return notResponded.filter((row) => !reached.has(row.id));
+}
+
+/**
+ * Card 2744 (D2): send `unasked`, read by `unaskedOf` before an Extend
+ * reopened `row`, the invitation, which asks for their view, by the
+ * record-mail path after the commit; one their rest or daily cap, or the
+ * caller's daily cap, holds back (`heldAsks`, card 2740) is written
+ * `mail_skipped { mail: 'invitation', reason }` instead, and the reopening
+ * stands. One `reachOf` skips is recorded by `queueRecordMails`.
+ */
+function askUnasked(user: SessionUser, row: Decision, unasked: DecisionParticipant[], by: RecordActor, now: Stamp): void {
+	if (unasked.length === 0) return;
+	const held = heldAsks(user, row.id, unasked, 0, now);
+	for (const [participantId, reason] of held) {
+		appendEvent({ decisionId: row.id, kind: 'mail_skipped', participantId, detail: { mail: 'invitation', reason } }, by);
+	}
+	const asking = unasked.filter((participant) => !held.has(participant.id));
+	if (asking.length > 0) queueRecordMails(row, 'invitation', { by, participants: asking });
 }
 
 /** The moment 24 hours ago, from which the daily caps count. */

@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.61
+version: 1.63
 status: As-Built
 date: 2026-11-05
 tags:
@@ -607,7 +607,7 @@ down. The failure shows on the panel and in the log.
 | Conversation Message | Requester/Admin | `email_requests` | `Message on request: {title}` |
 | Request Complete | Requester | `email_request_progress` | `Your request is complete: {title}` |
 | Backup Failed | The backup settings' failure email address(es), one mail a run, naming every destination that failed (card 2415), a copy of the database that could not be made included (card 2416) | — (the backup settings' failure alerts, `notifyOnFailure`) | `⚠️ DumpFire Backup Failed` |
-| Decision Invitation (card 2675) | Each participant of a decision `reachOf` reaches, at the snapshot address: on opening, when added or brought back after opening (as consulted, only while the decision is open: card 2743), when made consulted while the decision is open (card 2740), and on a re-send (a consulted participant's only while it is open). No route sends it yet | — (never read, the master switch included: D22) | `Your view is asked: {title}` (consulted), `For your information: {title}` (informed) |
+| Decision Invitation (card 2675) | Each participant of a decision `reachOf` reaches, at the snapshot address: on opening, when added or brought back after opening (as consulted, only while the decision is open: card 2743), when made consulted while the decision is open (card 2740), on a re-send (a consulted participant's only while it is open), and when an Extend or a re-publish asking again reopens the decision, to each consulted participant the round never reached (card 2744). No route sends it yet | — (never read, the master switch included: D22) | `Your view is asked: {title}` (consulted), `For your information: {title}` (informed) |
 | Decision Asked Again (card 2675) | As above, on a re-publish that asks again | — | `Changed, and your view is asked again: {title}` |
 | Decision Changed (card 2675) | As above, on a re-publish that only tells | — | `Changed: {title}` |
 | Decision Withdrawn (card 2675) | As above, on withdrawing a decision that was opened | — | `Withdrawn: {title}` |
@@ -867,11 +867,12 @@ the caps hold the mail back but never the role change: where `mailRestOf` holds 
 (the 10-minute rest or `RECORD_MAIL_DAILY_CAP`), or the caller's `CALLER_MAIL_DAILY_CAP` would
 not take the mail with the write's own invitations, the role is changed and
 `mail_skipped { mail: 'invitation', reason }` written, `resting`, `daily_cap` or `caller_cap`
-(`HoldReason`), which the delivery panel says in `HELD_WORDS` ("… was made consulted less than
-10 minutes after their last mail about this decision, so they were not asked for their view:
-Resend asks them once they may be mailed again"), with Resend from the moment it may. The
+(`HoldReason`), which the delivery panel says in `HELD_WORDS` ("… was not asked for their view:
+they had been mailed about this decision less than 10 minutes before. Resend asks them once they
+may be mailed again"; card 2744 reworded them to fit an ask held at a reopening too), with Resend
+from the moment it may. The
 `caller_cap` words name no Resend, as the panel cannot ask the caller's own cap and a Resend
-would be refused 429: they say the invitation was held because the daily limit of 500 decision
+would be refused 429: they say the invitation was held, as the daily limit of 500 decision
 mails one account can send had been reached, and that it can be sent tomorrow. The panel shows
 a participant's latest skip only while it is newer than their latest record mail (on the same
 moment, the later event), so a held mail sent since by Resend leaves no "not sent" line. One
@@ -896,11 +897,12 @@ mail them all (card 2743's code review). Who a save mails is `mailedOnSave` in
 `src/lib/decision-rules.ts`, which `setParticipants` and the editor's picker both read. **Resend** refuses a consulted participant while the decision is not shown open, 409
 "This decision is awaiting a ruling: {name} is consulted, and cannot be asked for their view
 until it is reopened" (`CLOSED_ASK_WORDS`), and the delivery panel says the same in place of the
-button; an informed participant can still be sent theirs. Once an Extend (or a re-publish asking
-again) reopens the decision, Resend is offered again: until card 2744 asks them at the reopening,
-that is how they are asked. The editor's confirmation counts only those the save mails, and names
-the consulted who cannot be asked for their view while the decision is closed for input. The
-count is advice: it cannot see a participant `reachOf` skips or a mail a rest or a cap holds back.
+button; an informed participant can still be sent theirs. The reopening asks them (card 2744,
+below). The editor's confirmation counts only those the save mails, and says how many consulted
+(added, or made consulted) "may be asked for their view when the decision is reopened". The
+count is advice: it cannot see a participant `reachOf` skips or a mail a rest or a cap holds back,
+nor whom the round already reached (one reached, made informed, then made consulted again while
+the decision was closed is counted, but the reopening does not ask them again).
 
 ```mermaid
 flowchart LR
@@ -909,7 +911,50 @@ flowchart LR
     O -- no --> R{Role}
     R -- informed --> I
     R -- consulted --> N[Nothing: Resend refused until reopened]
-    N -. Extend .-> X[Card 2744 asks them; until then, Resend]
+    N -. Extend or ask again .-> X[Card 2744: invitation at the reopening]
+```
+
+**A reopening asks whom the round never reached** (card 2744). An **Extend** that reopens a
+decision for input (it was stored closed, or stored open past its closing time) sends the
+**invitation** ("Your view is asked: {title}") to each live consulted participant with no
+response in the current round whom the round has not reached: `unaskedOf` in `decisions.ts`,
+which reads `currentResultsOf` (card 2738's `reachedInRound`, the very rule an early ruling writes
+`cut_off { reached }` by). So one included or made consulted while the decision was closed, one
+whose invitation a rest or a cap held back, and one whose invitation was refused or never
+delivered; never one whose asking mail was delivered while they were consulted and the decision
+open, nor one who saw the question then, nor one who responded. The asks go through card 2740's
+`heldAsks`: one the participant's 10-minute rest or daily cap, or the caller's
+`CALLER_MAIL_DAILY_CAP`, holds is written `mail_skipped { mail: 'invitation', reason }` and the
+**reopening goes ahead all the same**; one `reachOf` skips is recorded with its own reason; the
+rest are sent in one `queueRecordMails` call after the commit (`extended`, then `link_issued` for a
+link holder, then `invited`). An Extend of a decision already open for input mails nobody. A
+**key** never causes record mail, so a key's Extend that would mail anyone is refused 403
+(`REOPEN_ASKS_ACT`); one with nobody to ask, or only people `reachOf` skips (recorded
+`mail_skipped`, not mailed), goes ahead (code review 2026-11-05). The Extend confirmation on a decision
+shown not open says the unasked are sent the invitation, as the mail limits allow.
+
+A **re-publish** on a closed decision reads the same `unaskedOf` before writing the new version.
+**Asking again** reopens it: the unasked are sent the first-time **invitation**, never
+`asked_again` ("asked again, an earlier response stays"); everyone else `asked_again`. **Telling
+only** leaves it closed: the unasked are sent nothing (as card 2743 sends nothing to one added as
+consulted while closed) and neither the rest nor the caller's cap counts them; everyone else
+`told_of_change`. A re-publish's rest and caller cap still refuse the whole write, as before. On a
+decision open for input a re-publish mails everyone as before.
+
+```mermaid
+flowchart TD
+    E[Extend] --> W{Open for input before?}
+    W -- yes --> N0[extended only]
+    W -- no --> U[unaskedOf: live consulted, no response, not reached this round]
+    U --> K{Key, and anyone unasked a mail would reach?}
+    K -- yes --> F[403 REOPEN_ASKS_ACT]
+    K -- no --> H[heldAsks]
+    H -- held --> S[mail_skipped invitation, reason; reopened all the same]
+    H -- fits --> I2[invitation, after the commit]
+    P[Re-publish, closed] --> U2[unaskedOf]
+    U2 --> A{Ask again?}
+    A -- yes --> PI[unasked: invitation; others: asked_again]
+    A -- no --> PT[unasked: nothing; others: told_of_change]
 ```
 
 ```mermaid

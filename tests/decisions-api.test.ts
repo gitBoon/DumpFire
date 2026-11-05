@@ -108,6 +108,8 @@ const CLOSE_ACT =
 	"Closing a decision for input before its closing time is done on the decision's page: it makes a later ruling early. An API key cannot";
 const EXTENDS_EARLIER = "closesAt must be later than the decision's current closing time: Extend never brings it earlier";
 const REOPEN_ACT = "This decision is closed for input: reopening it by Extend is done on the decision's page. An API key cannot";
+const REOPEN_ASKS_ACT =
+	"This Extend reopens the decision for input and would ask people consulted on it for their view by mail: a person does that on the decision's page. An API key cannot";
 
 /** The words each person's act was already refused in through a key (cards 2676 to 2679). */
 const PERSONS_ACT = "Responding is a person's act: it cannot be done with an API key";
@@ -878,6 +880,73 @@ describe('extendDecision never brings the closing time earlier, for any source (
 		expect(outcome(() => extend(asKey, decider, decision, daysAhead(7), API))).toEqual({ status: 403, message: REOPEN_ACT });
 		expect(decisionRow(decision.id).status).toBe('closed');
 		expect(kindsOf(decision.id)).not.toContain('extended');
+	});
+
+	it('(i) refuses a key the Extend of a decision past its closing time that would ask someone for their view, 403; with nobody to ask, takes it and mails nobody (card 2744, D5; 2744-7)', async () => {
+		const lapsedAt = '2026-11-02 09:00:00';
+		const later = daysAhead(7);
+		// Only an informed participant: nobody to ask, so the key's Extend is taken and mails nobody.
+		const told = opened({ closesAt: lapsedAt });
+		withAccount(told.decision, 'told', 'informed');
+		expect(extend(asKey, told.decider, told.decision, later, API)).toMatchObject({ status: 'open', closesAt: later });
+		expect(kindsOf(told.decision.id)).not.toContain('invited');
+
+		// A consulted participant the round never reached: the reopening would ask them, so a key is refused.
+		const asks = opened({ closesAt: lapsedAt });
+		withAccount(asks.decision, 'unasked');
+		const before = written();
+		expect(outcome(() => extend(asKey, asks.decider, asks.decision, later, API))).toEqual({ status: 403, message: REOPEN_ASKS_ACT });
+		expect(outcome(() => extend(asKey, asks.decider, asks.decision, later, UI))).toEqual({ status: 403, message: REOPEN_ASKS_ACT });
+		expect(written()).toEqual(before);
+		expect(decisionRow(asks.decision.id).closesAt).toBe(lapsedAt);
+		// The page reopens it, and asks them.
+		expect(extend(asSession, asks.decider, asks.decision, later, UI)).toMatchObject({ status: 'open', closesAt: later });
+		expect(kindsOf(asks.decision.id).filter((kind) => kind === 'invited')).toHaveLength(1);
+		await sent.settle();
+		expect(sent.emails.map((mail) => mail.subject)).toEqual(['Your view is asked: Which plan?']);
+	});
+
+	it('(j) takes a key the Extend of a decision past its closing time whose only consulted participant the round already reached, and mails nobody (card 2744, D5; code review 2026-11-05)', async () => {
+		const lapsedAt = '2026-11-02 09:00:00';
+		const later = daysAhead(7);
+		const { decision, decider } = opened({ closesAt: lapsedAt });
+		const { participant } = withAccount(decision, 'reached');
+		// The round's own `published`, then their invitation, delivered before the closing time then in force: reached.
+		vi.useFakeTimers({ toFake: ['Date'] });
+		try {
+			vi.setSystemTime(new Date('2026-11-01T10:00:00Z'));
+			appendEvent({ decisionId: decision.id, kind: 'published', versionNumber: 1, detail: { asksAgain: true, changeNote: null } }, SYSTEM_ACTOR);
+			const of = appendEvent({ decisionId: decision.id, kind: 'invited', participantId: participant.id }, SYSTEM_ACTOR);
+			appendEvent({ decisionId: decision.id, kind: 'mail_outcome', participantId: participant.id, detail: { of, mail: 'invitation', delivered: true } }, SYSTEM_ACTOR);
+		} finally {
+			vi.useRealTimers();
+		}
+		const before = eventsOf(decision.id).length;
+
+		expect(extend(asKey, decider, decision, later, API)).toMatchObject({ status: 'open', closesAt: later });
+
+		expect(kindsOf(decision.id).slice(before)).toEqual(['extended']);
+		await sent.settle();
+		expect(sent.emails).toEqual([]);
+	});
+
+	it('(k) takes a key the Extend of a decision past its closing time whose only unasked consulted participant no mail can reach: recorded mail_skipped, nobody mailed (code review 2026-11-05)', async () => {
+		const lapsedAt = '2026-11-02 09:00:00';
+		const later = daysAhead(7);
+		const { decision, decider } = opened({ closesAt: lapsedAt });
+		const gone = withAccount(decision, 'gone');
+		// Never reached, but left: `reachOf` skips them, so the reopening would mail nobody.
+		db.update(people).set({ status: 'left', leftAt: stamp() }).where(eq(people.id, gone.person.id)).run();
+		const before = eventsOf(decision.id).length;
+
+		expect(extend(asKey, decider, decision, later, API)).toMatchObject({ status: 'open', closesAt: later });
+
+		expect(eventsOf(decision.id).slice(before).map((event) => [event.kind, event.participantId, event.detail])).toEqual([
+			['extended', null, { from: lapsedAt, to: later }],
+			['mail_skipped', gone.participant.id, { mail: 'invitation', reason: 'left' }]
+		]);
+		await sent.settle();
+		expect(sent.emails).toEqual([]);
 	});
 });
 

@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.65
+version: 1.66
 status: As-Built
 date: 2026-11-05
 tags:
@@ -689,7 +689,7 @@ refused (comment 5599). A `detail` never holds a token, a hash or a mail server'
 | `decider_changed` | no | `{ fromUserId, fromName, toUserId, toName }` |
 | `published` | no | `{ asksAgain, changeNote }`, with `version_number` |
 | `opened` | no | `{ closesAt }` |
-| `included`, `re_included` | yes | `{ role, hadAccount }`; since card 2743, one as `consulted` on a decision not shown open (closed, or past its closing time) is followed by no mail event, as they are not asked until it is reopened (card 2744) |
+| `included`, `re_included` | yes | `{ role, hadAccount }`; since card 2743, one as `consulted` on a decision not shown open (closed, or past its closing time) is followed by no mail event, as they are not asked until it is reopened; card 2744: the `extended`, or the `published` asking again, that reopens it is followed by an `invited` (or a `mail_skipped { mail: 'invitation', reason }` an Extend writes where a rest or a cap holds the ask) for each live consulted participant the round never reached |
 | `role_changed` | yes | `{ from, to }` |
 | `removed` | yes | none |
 | `link_issued` | yes | `{ replaced }` |

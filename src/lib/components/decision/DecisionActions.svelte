@@ -29,7 +29,10 @@
     first").
   - **Close** confirms and sends the JSON type with no body.
   - **Extend** takes a closing time, read and sent as typed, in UTC, at most a
-    year ahead (`CLOSES_WITHIN_DAYS`): no `Date` is made of it.
+    year ahead (`CLOSES_WITHIN_DAYS`): no `Date` is made of it. On a decision
+    shown not open for input its confirmation says that the reopening sends
+    the invitation to anyone consulted not yet asked (card 2744, D7), read
+    from `shownStatus`; the server decides who at the write.
   - **Withdraw** needs a reason; on a decision that was ever opened its
     confirmation asks for the caller's password (`withdrawAsks`) and sends
     `{ reason, currentPassword }`, on a draft it sends `{ reason }`.
@@ -59,6 +62,7 @@
 	import { failureMessage } from '$lib/api';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import { CLOSES_HELP, closesField, type Refusal, type Warning } from '$lib/decision-readiness';
+	import { openForInput } from '$lib/decision-rules';
 	import { ASKS_FOR_PASSWORD, stepUpRefusal } from '$lib/step-up-words';
 
 	type Actions = PageData['actions'];
@@ -70,6 +74,7 @@
 		boardId,
 		title,
 		closesAt,
+		shownStatus,
 		revision,
 		actions,
 		republishSummary,
@@ -87,6 +92,8 @@
 		title: string;
 		/** The stored closing time, which Extend starts from. */
 		closesAt: string | null;
+		/** The status the decision is shown with, read at load (card 2744): Extend's confirmation says what a reopening sends. */
+		shownStatus?: string;
 		/** The decision's revision as the page holds it. */
 		revision: string;
 		/** What the caller may do now, as the server worked it out. */
@@ -320,6 +327,12 @@
 	const openMessage = $derived(
 		warnings.length === 0 ? mailed : `${mailed} Still to look at: ${warnings.map((warning) => warning.words).join('; ')}.`
 	);
+	// Card 2744 (D7): an Extend that reopens the decision for input asks whoever the round has not reached.
+	const reopenWords = $derived(
+		shownStatus !== undefined && !openForInput(shownStatus)
+			? ' Anyone consulted who has not yet been asked for their view is sent the invitation now, as the mail limits allow.'
+			: ''
+	);
 	const withdrawMessage = $derived(
 		actions.withdrawAsks
 			? `"${title}" ends for good, and every participant is mailed your reason. ${ASKS_FOR_PASSWORD}`
@@ -488,7 +501,7 @@
 {:else if confirming === 'extend'}
 	<ConfirmModal
 		title="Extend this decision?"
-		message={`"${title}" closes at ${closes.replace('T', ' ')} UTC, and is open for input until then.`}
+		message={`"${title}" closes at ${closes.replace('T', ' ')} UTC, and is open for input until then.${reopenWords}`}
 		confirmText="Extend"
 		confirmDanger={false}
 		onConfirm={extend}

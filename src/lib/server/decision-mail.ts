@@ -54,6 +54,7 @@
  * Card 2740 adds the words of an asking mail held back from a participant
  * made consulted while the decision is open (`HoldReason`, `HELD_WORDS`):
  * `setParticipants` writes the skip, and sends the rest as invitations here.
+ * Card 2744: `extendDecision` does the same for whom a reopening asks.
  *
  * Card 2685 adds the closing-date reminder's mail (`reminderMail`), which
  * decision-reminders.ts sends. It is not a record mail and not one of D22's
@@ -187,14 +188,16 @@ export type HoldReason = 'resting' | 'daily_cap' | 'caller_cap';
  * A held-back asking mail in words, for the editor's delivery panel (card 2740, D3): after "Invitation not sent, <moment>:".
  * `caller_cap` names no Resend (the code review, 2026-11-05): the panel cannot ask the caller's cap, which is the
  * account's across decisions, so a Resend offered beside it would be refused 429 until the day's limit allows.
+ * Card 2744 (D6): an Extend that reopens a decision holds back its asks in the same way, for people included as well as
+ * made consulted, so the words say what is true of both.
  */
 export const HELD_WORDS: Readonly<Record<HoldReason, (name: string) => string>> = {
 	resting: (name) =>
-		`${name} was made consulted less than ${RECORD_MAIL_MIN_MINUTES} minutes after their last mail about this decision, so they were not asked for their view: Resend asks them once they may be mailed again`,
+		`${name} was not asked for their view: they had been mailed about this decision less than ${RECORD_MAIL_MIN_MINUTES} minutes before. Resend asks them once they may be mailed again`,
 	daily_cap: (name) =>
-		`${name} was made consulted after ${RECORD_MAIL_DAILY_CAP} mails about this decision in 24 hours, so they were not asked for their view: Resend asks them once they may be mailed again`,
+		`${name} was not asked for their view: they had been mailed about this decision ${RECORD_MAIL_DAILY_CAP} times in 24 hours. Resend asks them once they may be mailed again`,
 	caller_cap: (name) =>
-		`${name} was made consulted, but the invitation asking for their view was held: the daily limit of ${CALLER_MAIL_DAILY_CAP} decision mails one account can send had been reached. It can be sent tomorrow`
+		`${name} was not asked for their view: the invitation was held, as the daily limit of ${CALLER_MAIL_DAILY_CAP} decision mails one account can send had been reached. It can be sent tomorrow`
 };
 
 /** The event each mail writes for its participant; the delivery panel reads it back (`MAIL_OF_EVENT`, the code review's part B, F5). */

@@ -589,6 +589,25 @@ describe('DecisionActions (51 to 54)', () => {
 	});
 
 	describe('Close, Extend, Withdraw and Delete (53)', () => {
+		it('Extend on a decision shown not open for input says the reopening asks whoever was not asked yet; shown open, it does not (card 2744, 2744-9)', () => {
+			const asks = 'Anyone consulted who has not yet been asked for their view is sent the invitation now, as the mail limits allow.';
+			const confirmWords = (shownStatus: string | undefined) => {
+				const { target } = drawActions(shownStatus === undefined ? {} : { shownStatus }, { extend: true });
+				control(target, 'extend')!.click();
+				flushSync();
+				typeInto(target.querySelector<HTMLInputElement>('[data-panel="extend"] input')!, '2027-06-01T09:30');
+				submit(target, 'extend');
+				const words = textOf(dialog()!);
+				dialog()!.querySelectorAll<HTMLButtonElement>('.confirm-actions button')[0].click();
+				flushSync();
+				target.remove();
+				return words;
+			};
+			expect(confirmWords('awaiting_ruling')).toContain(`"Pick a budget" closes at 2027-06-01 09:30 UTC, and is open for input until then. ${asks}`);
+			expect(confirmWords('open')).not.toContain(asks);
+			expect(confirmWords(undefined)).not.toContain(asks);
+		});
+
 		it('Extend, offered where it alone is allowed: the field read and sent as typed, in UTC, its help saying at most a year ahead, as the editor says too', async () => {
 			const { target } = drawActions({}, { extend: true });
 			expect([...target.querySelectorAll('[data-action]')].map((el) => el.getAttribute('data-action'))).toEqual(['preview', 'extend']);
