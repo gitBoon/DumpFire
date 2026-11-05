@@ -78,6 +78,7 @@ import {
 	addressRefusal,
 	attachRefusal,
 	clearRefusal,
+	CLOSED_ASK_WORDS,
 	reachOf,
 	REMOVED_WORDS,
 	REVOKE_WORDS,
@@ -91,6 +92,7 @@ import { MAIL_PROBLEM_WORDS, NO_LINK_ADDRESS, type MailProblem } from './email';
 import { requireBoard, requireDecision } from './route-guards';
 import { checkContent, refusalsOf, type ContentAnswer, type Refusal, type Warning } from '$lib/decision-readiness';
 import type { ViewContent } from '$lib/decision-view-types';
+import { openForInput } from '$lib/decision-rules';
 import { stamp, type Stamp } from '$lib/timestamps';
 
 // ─── The one projection (decision 15, R4) ────────────────────────────────────
@@ -537,7 +539,7 @@ function transitionRefusal(decision: Decision, now: Stamp): string | null {
  * Each participant's delivery (card 2697, Q13), in row order, from
  * `deliveryOf`'s one read of the record. `resendable`, `resendFrom` and
  * `refusal` follow `resendInvitation`'s own order: the status, removed,
- * `reachOf`, the link address, and the rest and the daily cap
+ * consulted while not shown open (card 2743), `reachOf`, the link address, and the rest and the daily cap
  * (`mailRestOf`, which the write asks too), so the panel offers Resend
  * exactly where the write would send.
  */
@@ -546,6 +548,8 @@ function deliveryRows(decision: Decision, rows: DecisionParticipant[], now: Stam
 	const persons = peopleById(rows.map((row) => row.personId).filter((id): id is number => id !== null));
 	const history = accountHistory(decision.id);
 	const statusRefusal = transitionRefusal(decision, now);
+	// Card 2743 (D4): as `resendInvitation` asks it, after removed.
+	const askable = openForInput(decisionStatus(decision, now));
 	const linkAddress = decisionLinkBase() !== null;
 	const since = stamp(new Date(Date.now() - DAY_MS));
 	const empty: DeliveryFacts = { lastMail: null, mailMoments: [], lastRestAt: null, lastSkip: null, lastRevoked: null };
@@ -559,6 +563,7 @@ function deliveryRows(decision: Decision, rows: DecisionParticipant[], now: Stam
 		let refusal: string | null = statusRefusal;
 		let resendFrom: Stamp | null = null;
 		if (refusal === null && row.removedAt !== null) refusal = REMOVED_WORDS(row.name);
+		if (refusal === null && row.role === 'consulted' && !askable) refusal = CLOSED_ASK_WORDS(row.name);
 		if (refusal === null && reachNow !== null) refusal = reachNow;
 		if (refusal === null && !linkAddress) refusal = NO_LINK_ADDRESS;
 		if (refusal === null) {

@@ -17,7 +17,10 @@
   takes them off. Nothing is dropped without the editor's tick.
 
   Save sends `{ participants, revision }`. On an opened decision it asks
-  first, saying how many are mailed and how many taken off. A refusal is said
+  first, saying how many are mailed, how many consulted are added without
+  being asked while it is not shown open (card 2743), and how many taken off:
+  counted by `mailedOnSave` (`$lib/decision-rules.ts`), the server's own rule,
+  and advice only, as the server's skips and holds are not seen here. A refusal is said
   in the server's words and the ticks are kept; the stale-revision 409
   (`STALE_REVISION`) alone offers to reload (C6). A caller who may not save is
   handed no people and no group members (C4).
@@ -26,6 +29,7 @@
 	import { untrack } from 'svelte';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import { failureMessage } from '$lib/api';
+	import { mailedOnSave } from '$lib/decision-rules';
 	import { STALE_REVISION } from '$lib/decision-words';
 
 	type Role = 'consulted' | 'informed';
@@ -46,6 +50,7 @@
 	let {
 		decisionId,
 		status,
+		shownStatus,
 		editable = false,
 		participants,
 		people,
@@ -57,6 +62,8 @@
 	}: {
 		decisionId: number;
 		status: string;
+		/** The status the decision is shown with, `open` or `awaiting_ruling` past its closing time (card 2743); `status` where not given. */
+		shownStatus?: string;
 		/** The decision's status lets it be edited: on an open one that the caller may not include people in, the picker says who may. */
 		editable?: boolean;
 		/** Every participant row, removed ones included, through the server's projection. */
@@ -152,13 +159,28 @@
 
 	const roleWord = (role: string) => (role === 'informed' ? 'Informed' : 'Consulted');
 
-	/** On an opened decision: how many the save mails, and how many it takes off (decision 29 counts those no longer in the directory). */
-	function changesOnOpen(): { mailed: number; takenOff: number } {
+	/**
+	 * On an opened decision: how many the save mails, how many consulted it adds without asking, and how many it takes off
+	 * (decision 29 counts those no longer in the directory). Who is mailed is `mailedOnSave`, the rule `setParticipants`
+	 * decides the save by (cards 2740 and 2743), read at the shown status. The count is advice: the server may still skip
+	 * one `reachOf` cannot reach or hold back an ask a rest or a cap holds, which the picker cannot see, and decides at the
+	 * save, not at the page's load.
+	 */
+	function changesOnOpen(): { mailed: number; unasked: number; takenOff: number } {
 		const on = live(rows);
-		const held = new Set(on.filter((row) => row.personId !== null && !row.notInDirectory).map((row) => row.personId));
-		const mailed = Object.keys(ticked).filter((id) => !held.has(Number(id))).length;
+		const shown = shownStatus ?? status;
+		const byPerson = new Map(on.filter((row) => row.personId !== null && !row.notInDirectory).map((row) => [row.personId!, row]));
+		let mailed = 0;
+		let unasked = 0;
+		for (const [id, role] of Object.entries(ticked)) {
+			const held = byPerson.get(Number(id));
+			if (held === undefined) {
+				if (mailedOnSave('included', role, shown)) mailed += 1;
+				else unasked += 1;
+			} else if (held.role !== role && mailedOnSave('role_changed', role, shown)) mailed += 1;
+		}
 		const takenOff = on.filter((row) => row.notInDirectory || (row.personId !== null && !(row.personId in ticked))).length;
-		return { mailed, takenOff };
+		return { mailed, unasked, takenOff };
 	}
 
 	function askSave() {
@@ -167,8 +189,10 @@
 			void save();
 			return;
 		}
-		const { mailed, takenOff } = changesOnOpen();
-		confirming = `${mailed} ${mailed === 1 ? 'person' : 'people'} will be mailed now; ${takenOff} will be marked removed.`;
+		const { mailed, unasked, takenOff } = changesOnOpen();
+		// Card 2743's code review: no promise of what a reopening does, which is card 2744's to say.
+		const waiting = unasked > 0 ? ` ${unasked} consulted cannot be asked for their view while the decision is closed for input;` : '';
+		confirming = `${mailed} ${mailed === 1 ? 'person' : 'people'} will be mailed now;${waiting} ${takenOff} will be marked removed.`;
 	}
 
 	async function save() {

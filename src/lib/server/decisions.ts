@@ -181,6 +181,7 @@ import {
 	addressRefusal,
 	attachRefusal,
 	clearRefusal,
+	CLOSED_ASK_WORDS,
 	mailedLinkOf,
 	participantForLink,
 	reachOf,
@@ -223,7 +224,7 @@ import {
 	type RequestBody
 } from './request-body';
 import { CLOSES_TOO_FAR, CLOSES_TOO_FAR_TO_REPUBLISH, closesTooFar, refusalsOf } from '$lib/decision-readiness';
-import { againstOf, CONCERNS_PER_PARTICIPANT, DECISION_TEXT_MAX, mostChosenOf, QUESTION_TEXT_MAX, QUESTIONS_PER_PARTICIPANT } from '$lib/decision-rules';
+import { againstOf, CONCERNS_PER_PARTICIPANT, DECISION_TEXT_MAX, mailedOnSave, mostChosenOf, openForInput, QUESTION_TEXT_MAX, QUESTIONS_PER_PARTICIPANT } from '$lib/decision-rules';
 import type { OwnConcern, OwnQuestion, OwnResponse, QuestionView } from '$lib/decision-view-types';
 import {
 	ALREADY_PUBLISHED,
@@ -447,7 +448,15 @@ export function setDecider(caller: SessionUser | null, at: { decisionId: number 
  *
  * Once open, nothing the record can name is deleted (decision 25). A new
  * person is included (`included`), a removed one comes back on the same row
- * (`re_included`), and each is invited, with a link if they have no account.
+ * (`re_included`), and each is invited, with a link if they have no account;
+ * card 2743: but while the decision is not shown open (closed, or past its
+ * closing time), one included or brought back as consulted is sent nothing,
+ * no link and no `mail_skipped`, as they cannot respond until it is reopened
+ * (card 2744 asks them then; until it does, Resend once it is open), and one
+ * as informed is still sent their invitation, which asks nothing (who is
+ * mailed is `$lib/decision-rules.ts`'s `mailedOnSave`, which the picker
+ * shares). The 10-minute rest holds only one the write mails; the caller's
+ * cap counts every inclusion, mailed now or at the ruling.
  * One left out is marked removed (`removed`) and their link ended. A changed
  * role writes `role_changed`. Card 2740: one made consulted while the
  * decision is shown open (not closed, nor past its closing time) is sent the
@@ -461,9 +470,10 @@ export function setDecider(caller: SessionUser | null, at: { decisionId: number 
  * no longer holds the participant role (card 2676, the code review's C1,
  * superseding decision 29's "left as it is"). Including anyone is refused, 409, with
  * no address to make a link on (decision 28), and re-including a
- * participant mailed in the last 10 minutes (decision 31); and 429 where
- * inviting them would take the caller past their record mail limit (the code
- * review's part B, S2).
+ * participant this write would mail who was mailed in the last 10 minutes
+ * (decision 31); and 429 where including them would take the caller past
+ * their record mail limit (the code review's part B, S2; card 2743's code
+ * review: every inclusion, as each is mailed at the ruling if not now).
  *
  * 409, naming the person, for a row that would hold the same account as
  * another live row of the decision (decision 29).
@@ -560,10 +570,21 @@ export function setParticipants(
 	// The code review's C1: a live row whose person has been deleted cannot be named by any body, so it is removed like one left out.
 	const removals = rows.filter((row) => row.removedAt === null && (row.personId === null || !named.has(row.personId)));
 
-	if (additions.length + returns.length > 0) {
+	// Who this save mails now: `$lib/decision-rules.ts`'s `mailedOnSave`, which the participant picker counts by too, read at the
+	// shown status (open for input: stored open and not past its closing time; cards 2740 and 2743, and card 2744 at a reopening).
+	// Card 2743 (D1, D2): while it is not open for input, one included or brought back as consulted is sent nothing, as they cannot
+	// respond; one as informed is still sent their invitation, which asks nothing.
+	const shown = decisionStatus(decision, now);
+	const mailedNow = (role: string) => mailedOnSave('included', role, shown);
+	const inclusions = additions.length + returns.length;
+
+	if (inclusions > 0) {
+		// Decision 28 for every inclusion (card 2743, D3): one not mailed now is mailed later, and a link holder needs the address.
 		if (decisionLinkBase() === null) error(409, NO_LINK_ADDRESS);
+		// Card 2743 (D3): the 10-minute rest and the participant's daily cap are about mail to that participant, so only one this write
+		// mails is held by them.
 		requireMailRested(
-			returns.map((r) => r.row),
+			returns.filter((r) => mailedNow(r.role)).map((r) => r.row),
 			now
 		);
 		const staying = rows.filter((row) => row.removedAt === null && !removals.includes(row));
@@ -571,13 +592,16 @@ export function setParticipants(
 			[...additions.map((a) => ({ name: a.snapshot.name, userId: a.snapshot.userId })), ...returns.map((r) => ({ name: r.row.name, userId: r.row.userId }))],
 			staying.map((row) => row.userId)
 		);
-		// The code review's part B (S2): each one included or brought back is invited, by the caller.
-		requireRecordMailAllowed(user, additions.length + returns.length, now);
+		// The code review's part B (S2): each one included or brought back is invited by the caller, now or later. Card 2743 (D3, its
+		// code review): every inclusion counts, mailed now or not, as for decision 28. One not mailed now is mailed at the ruling or
+		// the withdrawal, which mail every live participant with no cap of their own, so an inclusion that took nothing here would let
+		// a caller close a decision, include thousands for free and have the ruling mail them all.
+		requireRecordMailAllowed(user, inclusions, now);
 	}
 	// Card 2740 (D1, D4): one made consulted while the decision is open for input is asked for their view, by the invitation, now;
 	// a rest or a cap holds that mail back (D3), never the role change. Asked last, so that a refused write takes no allowance.
-	const asking = decisionStatus(decision, now) === 'open' ? roleChanges.filter((change) => change.role === 'consulted').map((change) => change.row) : [];
-	const held = heldAsks(user, decision.id, asking, additions.length + returns.length, now);
+	const asking = roleChanges.filter((change) => mailedOnSave('role_changed', change.role, shown)).map((change) => change.row);
+	const held = heldAsks(user, decision.id, asking, inclusions, now);
 
 	for (const row of removals) {
 		db.update(decisionParticipants).set({ removedAt: now, removedBy: user.id }).where(eq(decisionParticipants.id, row.id)).run();
@@ -597,7 +621,7 @@ export function setParticipants(
 		// Once a row held an account on this decision it is never read as one that did not: bringing it back cannot undo R1.
 		const hadAccount = back.row.userId !== null || history.get(back.row.id) === true;
 		appendEvent({ decisionId: decision.id, kind: 're_included', participantId: back.row.id, detail: { role: back.role, hadAccount } }, by);
-		invited.push(back.row.id);
+		if (mailedNow(back.role)) invited.push(back.row.id);
 	}
 	for (const addition of additions) {
 		const row = db
@@ -614,7 +638,7 @@ export function setParticipants(
 			.returning()
 			.get();
 		appendEvent({ decisionId: decision.id, kind: 'included', participantId: row.id, detail: { role: addition.role, hadAccount: row.userId !== null } }, by);
-		invited.push(row.id);
+		if (mailedNow(addition.role)) invited.push(row.id);
 	}
 	const after = touch(decision.id, now);
 	if (invited.length > 0) {
@@ -1271,7 +1295,9 @@ export function dryRunDecision(caller: SessionUser | null, at: { decisionId: num
  * Send a participant their invitation again, to their snapshot address: a
  * link holder with a new link, replacing the last, and an account holder
  * with the decision's page. Writes `invited { resend: true }`. 404 for a
- * participant not on this decision. 409 for one removed; for each reason
+ * participant not on this decision. 409 for one removed; for one consulted
+ * while the decision is not shown open (card 2743, D4: it would ask a view
+ * they cannot give); for each reason
  * `reachOf` skips one, in its words (decision 16); with no address to make a
  * link on (decision 28); and for one mailed in the last 10 minutes
  * (decision 31). 429 past the caller's record mail limit (the code review's
@@ -1292,6 +1318,8 @@ export function resendInvitation(
 	const now = stamp();
 	requireTransition(decision, 'resend', now);
 	if (participant.removedAt !== null) error(409, REMOVED_WORDS(participant.name));
+	// Card 2743 (D4): a consulted participant's invitation asks for their view, which cannot be given while it is not shown open.
+	if (participant.role === 'consulted' && !openForInput(decisionStatus(decision, now))) error(409, CLOSED_ASK_WORDS(participant.name));
 	const reach = reachesOf(decision.id, [participant]).get(participant.id)!;
 	if ('skip' in reach) error(409, SKIP_WORDS[reach.skip](participant.name));
 	if (decisionLinkBase() === null) error(409, NO_LINK_ADDRESS);

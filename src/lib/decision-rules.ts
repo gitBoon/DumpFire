@@ -30,6 +30,44 @@ export const QUESTION_TEXT_MAX = 2000;
 export const QUESTIONS_PER_PARTICIPANT = 10;
 
 /**
+ * Whether a decision is open for input (cards 2740 and 2743): its shown
+ * status, `decisionStatus`'s, is `open`, so stored open and not past its
+ * closing time. Closed, and open past its closing time (`awaiting_ruling`),
+ * are not: responses are refused, so no one is asked for a view.
+ */
+export function openForInput(shownStatus: string): boolean {
+	return shownStatus === 'open';
+}
+
+/**
+ * What saving the participants of an opened decision does to one person: they
+ * are `included` (added, or brought back after removal) or their role is
+ * changed (`role_changed`).
+ */
+export type ParticipantChange = 'included' | 'role_changed';
+
+/**
+ * Whether saving the participants of an opened decision sends this person
+ * their invitation now, given the decision's shown status (cards 2740 and
+ * 2743). One included is mailed while the decision is open for input, and
+ * while it is not only as informed, whose invitation asks nothing (card 2743,
+ * D1 and D2: a consulted one cannot respond, so is not asked). One whose role
+ * changes is mailed only when made consulted while it is open for input (card
+ * 2740). `setParticipants` decides the save by it, and the participant
+ * picker counts its confirmation by it, so the two never disagree on the rule.
+ *
+ * The picker's count is advice, not a promise: it cannot see what the server
+ * finds at the save, a participant `reachOf` skips (no address, an account
+ * that has left), nor a mail a rest or a daily cap holds back (card 2740's
+ * `heldAsks`), and the shown status it is handed was read when the page
+ * loaded.
+ */
+export function mailedOnSave(change: ParticipantChange, role: string, shownStatus: string): boolean {
+	const open = openForInput(shownStatus);
+	return change === 'included' ? open || role === 'informed' : open && role === 'consulted';
+}
+
+/**
  * The option or options most chosen (card 2679, decision 11): in single mode
  * those with the most votes, in score mode those with the highest total
  * score. Empty with no votes. Abstentions and "no concerns" are not votes.

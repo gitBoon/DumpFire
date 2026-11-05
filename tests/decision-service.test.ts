@@ -36,9 +36,10 @@ import {
 import { actorFor, appendEvent, lastToldOf, liveOptionIds, SYSTEM_ACTOR } from '$lib/server/decision-record';
 import { decisionAccess } from '$lib/server/decision-access';
 import { readEditPage } from '$lib/server/decision-authoring';
-import { participantForLink } from '$lib/server/decision-links';
+import { CLOSED_ASK_WORDS, participantForLink } from '$lib/server/decision-links';
 import { CALLER_MAIL_DAILY_CAP, DAY_MS, HELD_WORDS, queueRecordMails, RECORD_MAIL_DAILY_CAP, RECORD_MAIL_MIN_MINUTES } from '$lib/server/decision-mail';
 import { toldWords } from '$lib/decision-words';
+import { mailedOnSave, openForInput } from '$lib/decision-rules';
 import {
 	changeParticipantAddress,
 	closeDecision,
@@ -701,6 +702,209 @@ describe('card 2740: setParticipants asks one made consulted on an open decision
 
 		expect(sent.emails.map((mail) => [mail.to, mail.subject])).toEqual([['rae@example.test', `Your view is asked: ${decision.title}`]]);
 		expect(panelRow(decision.id, rested.row.id)).toMatchObject({ lastMail: { mail: 'invitation', resend: true, outcome: 'sent' }, lastSkip: null });
+	});
+});
+
+// ─── Card 2743: one added while the decision is closed for input is not asked for a view they cannot give ──
+
+describe('card 2743: setParticipants on a decision closed or past its closing time asks no one added as consulted', () => {
+	const set = (decision: Decision, participants: { personId: number; role: string }[]) =>
+		as(owner, (caller) => setParticipants(caller, { decisionId: decision.id }, { participants, revision: revisionNow(decision.id) }, UI));
+	const decisionWith = (row: { status?: string; closesAt?: string; closedAt?: string } = {}) =>
+		makeDecision({ board, author: owner, decider: owner, status: 'open', closesAt: FUTURE, currentVersion: 1, openedAt: '2026-11-01 09:00:00', ...row });
+	/** Closed early: closed before its closing time, which is still ahead. */
+	const closedEarly = () => decisionWith({ status: 'closed', closedAt: '2026-11-02 09:00:00' });
+	/** Stored open, its closing time past. */
+	const lapsed = () => decisionWith({ closesAt: '2026-11-02 09:00:00' });
+	const holder = (fullName: string, email: string) => makePerson({ fullName, email, user: makeUser({ username: email.split('@')[0] }) });
+	const since = (decisionId: number, before: number) => eventsOf(decisionId).slice(before).map((event) => [event.kind, event.participantId, event.detail]);
+	const panelRow = (decisionId: number, participantId: number) => readEditPage(owner, decisionId).delivery!.find((row) => row.participantId === participantId)!;
+	const idOf = (decision: Decision, personId: number) => participantRows(decision.id).find((row) => row.personId === personId)!.id;
+
+	it('includes an account holder and a link holder as consulted on a decision closed early, and sends neither anything: no mail, no link, no skip (2743-1)', async () => {
+		const decision = closedEarly();
+		const ada = holder('Ada Account', 'ada@example.test');
+		const lee = makePerson({ fullName: 'Lee Link', email: 'lee@example.test' });
+		const before = eventsOf(decision.id).length;
+
+		set(decision, [
+			{ personId: ada.id, role: 'consulted' },
+			{ personId: lee.id, role: 'consulted' }
+		]);
+
+		const adaRow = idOf(decision, ada.id);
+		const leeRow = idOf(decision, lee.id);
+		expect(since(decision.id, before)).toEqual([
+			['included', adaRow, { role: 'consulted', hadAccount: true }],
+			['included', leeRow, { role: 'consulted', hadAccount: false }]
+		]);
+		expect(participantRow(leeRow)).toMatchObject({ role: 'consulted', linkTokenHash: null, linkIssuedAt: null });
+		await sent.settle();
+		expect(sent.emails).toEqual([]);
+		// Card 2708's told line: included, which is true, never "asked".
+		expect(toldWords('consulted', lastToldOf(adaRow), participantRow(adaRow).includedAt)).toMatch(/^You were included in this decision on /);
+		// The delivery panel: not mailed yet, and Resend waits for a reopening (D4).
+		expect(panelRow(decision.id, leeRow)).toMatchObject({ lastMail: null, lastSkip: null, resendable: false, refusal: CLOSED_ASK_WORDS('Lee Link') });
+	});
+
+	it('includes one as consulted on a decision stored open past its closing time and sends nothing (2743-2)', async () => {
+		const decision = lapsed();
+		const cy = makePerson({ fullName: 'Cy Lapsed', email: 'cy@example.test' });
+		const before = eventsOf(decision.id).length;
+
+		set(decision, [{ personId: cy.id, role: 'consulted' }]);
+
+		expect(since(decision.id, before)).toEqual([['included', idOf(decision, cy.id), { role: 'consulted', hadAccount: false }]]);
+		await sent.settle();
+		expect(sent.emails).toEqual([]);
+		expect(panelRow(decision.id, idOf(decision, cy.id))).toMatchObject({ resendable: false, refusal: CLOSED_ASK_WORDS('Cy Lapsed') });
+	});
+
+	it('brings back a removed participant as consulted on a closed decision without mail, so the rest does not hold them; as informed, invites them and the rest does (2743-3)', async () => {
+		const decision = closedEarly();
+		const rae = makePerson({ fullName: 'Rae Return', email: 'rae@example.test' });
+		const raeRow = makeParticipant(decision, { person: rae, role: 'consulted', hadAccount: false, removedAt: '2026-11-02 10:00:00' });
+		// Mailed a moment ago: were the write to mail them, decision 31 would refuse it.
+		appendEvent({ decisionId: decision.id, kind: 'invited', participantId: raeRow.id }, SYSTEM_ACTOR);
+		const before = eventsOf(decision.id).length;
+
+		set(decision, [{ personId: rae.id, role: 'consulted' }]);
+
+		expect(participantRow(raeRow.id).removedAt).toBeNull();
+		expect(since(decision.id, before)).toEqual([['re_included', raeRow.id, { role: 'consulted', hadAccount: false }]]);
+		await sent.settle();
+		expect(sent.emails).toEqual([]);
+
+		// Brought back as informed, on a second closed decision: the invitation is sent, and so the rest holds them first.
+		const other = closedEarly();
+		const ivy = makePerson({ fullName: 'Ivy Back', email: 'ivy@example.test' });
+		const ivyRow = makeParticipant(other, { person: ivy, role: 'informed', hadAccount: false, removedAt: '2026-11-02 10:00:00' });
+		appendEvent({ decisionId: other.id, kind: 'invited', participantId: ivyRow.id }, SYSTEM_ACTOR);
+		expect(outcome(() => set(other, [{ personId: ivy.id, role: 'informed' }]))).toMatchObject({ status: 409 });
+		expect(participantRow(ivyRow.id).removedAt).not.toBeNull();
+
+		ageRecordMail(other.id);
+		const at = eventsOf(other.id).length;
+		set(other, [{ personId: ivy.id, role: 'informed' }]);
+		expect(since(other.id, at)).toEqual([
+			['re_included', ivyRow.id, { role: 'informed', hadAccount: false }],
+			['link_issued', ivyRow.id, { replaced: false }],
+			['invited', ivyRow.id, null]
+		]);
+		await waitForOutcomes(other.id, 1);
+		expect(sent.emails.map((mail) => [mail.to, mail.subject])).toEqual([['ivy@example.test', `For your information: ${other.title}`]]);
+	});
+
+	it('still sends one added as informed to a closed decision their invitation, which asks nothing (2743-4)', async () => {
+		const decision = closedEarly();
+		const ina = holder('Ina Informed', 'ina@example.test');
+		const before = eventsOf(decision.id).length;
+
+		set(decision, [{ personId: ina.id, role: 'informed' }]);
+
+		const inaRow = idOf(decision, ina.id);
+		expect(since(decision.id, before)).toEqual([
+			['included', inaRow, { role: 'informed', hadAccount: true }],
+			['invited', inaRow, null]
+		]);
+		await waitForOutcomes(decision.id, 1);
+		expect(sent.emails.map((mail) => [mail.to, mail.subject])).toEqual([['ina@example.test', `For your information: ${decision.title}`]]);
+		expect(sent.emails[0].html).toContain('Nothing is asked of you');
+		expect(sent.emails[0].html).not.toContain('Your view is asked by');
+		expect(sent.duringTransaction).toEqual([]);
+	});
+
+	// Card 2743's code review: one included and not mailed now is mailed at the ruling or the withdrawal, which ask no cap, so the
+	// caller's cap counts every inclusion; only the participant's own rest follows the mail (2743-3).
+	it("counts one added as consulted to a closed decision against the caller's cap, as the ruling will mail them (2743-5)", async () => {
+		const decision = closedEarly();
+		// One record mail left in the caller's day, held in memory.
+		expect(takeAllowance(`decision-record-mail:${owner.id}`, CALLER_MAIL_DAILY_CAP - 1, CALLER_MAIL_DAILY_CAP, DAY_MS)).toEqual({ taken: true });
+		const cas = makePerson({ fullName: 'Cas Consulted' });
+		const ian = makePerson({ fullName: 'Ian Informed' });
+
+		expect(outcome(() => set(decision, [{ personId: cas.id, role: 'consulted' }]))).toBe('passed');
+		// The one left was taken by the consulted addition, though it sent nothing.
+		const before = eventsOf(decision.id).length;
+		expect(
+			outcome(() =>
+				set(decision, [
+					{ personId: cas.id, role: 'consulted' },
+					{ personId: ian.id, role: 'informed' }
+				])
+			)
+		).toMatchObject({ status: 429 });
+		expect(eventsOf(decision.id)).toHaveLength(before);
+		await sent.settle();
+		expect(sent.emails).toEqual([]);
+	});
+
+	it("refuses, 429, including more people as consulted to a closed decision than the caller's cap allows, and writes nothing (2743-8)", async () => {
+		const decision = closedEarly();
+		const many = Array.from({ length: CALLER_MAIL_DAILY_CAP + 1 }, (_, i) => makePerson({ fullName: `Many ${i}` }));
+		const before = eventsOf(decision.id).length;
+
+		expect(outcome(() => set(decision, many.map((person) => ({ personId: person.id, role: 'consulted' }))))).toMatchObject({ status: 429 });
+		expect(eventsOf(decision.id)).toHaveLength(before);
+		expect(participantRows(decision.id)).toEqual([]);
+		await sent.settle();
+		expect(sent.emails).toEqual([]);
+	});
+
+	it('refuses Resend, 409, to one consulted on a decision stored open past its closing time, and writes nothing (2743-9)', async () => {
+		const decision = lapsed();
+		const col = holder('Col Lapsed', 'col@example.test');
+		const colRow = makeParticipant(decision, { person: col, role: 'consulted', hadAccount: true });
+		const before = eventsOf(decision.id).length;
+
+		expect(outcome(() => as(owner, (caller) => resendInvitation(caller, { decisionId: decision.id, participantId: colRow.id }, null, UI)))).toEqual({
+			status: 409,
+			message: CLOSED_ASK_WORDS('Col Lapsed')
+		});
+		expect(eventsOf(decision.id)).toHaveLength(before);
+		await sent.settle();
+		expect(sent.emails).toEqual([]);
+	});
+
+	it('decides who a save mails by the one rule the picker shares, read at the shown status (2743-10)', () => {
+		expect(openForInput('open')).toBe(true);
+		expect(openForInput('awaiting_ruling')).toBe(false);
+		expect(mailedOnSave('included', 'consulted', 'open')).toBe(true);
+		expect(mailedOnSave('included', 'informed', 'open')).toBe(true);
+		expect(mailedOnSave('included', 'consulted', 'awaiting_ruling')).toBe(false);
+		expect(mailedOnSave('included', 'informed', 'awaiting_ruling')).toBe(true);
+		expect(mailedOnSave('role_changed', 'consulted', 'open')).toBe(true);
+		expect(mailedOnSave('role_changed', 'informed', 'open')).toBe(false);
+		expect(mailedOnSave('role_changed', 'consulted', 'awaiting_ruling')).toBe(false);
+		expect(mailedOnSave('role_changed', 'informed', 'awaiting_ruling')).toBe(false);
+	});
+
+	it('refuses Resend to one consulted while the decision is not open, as the panel says; sends an informed one theirs; and offers it again once an Extend reopens it (2743-6)', async () => {
+		const decision = closedEarly();
+		const cal = holder('Cal Consulted', 'cal@example.test');
+		const ike = holder('Ike Informed', 'ike@example.test');
+		const calRow = makeParticipant(decision, { person: cal, role: 'consulted', hadAccount: true });
+		const ikeRow = makeParticipant(decision, { person: ike, role: 'informed', hadAccount: true });
+		const resendTo = (participantId: number) => as(owner, (caller) => resendInvitation(caller, { decisionId: decision.id, participantId }, null, UI));
+		const before = eventsOf(decision.id).length;
+
+		expect(outcome(() => resendTo(calRow.id))).toEqual({ status: 409, message: CLOSED_ASK_WORDS('Cal Consulted') });
+		expect(eventsOf(decision.id)).toHaveLength(before);
+		expect(panelRow(decision.id, calRow.id)).toMatchObject({ resendable: false, resendFrom: null, refusal: CLOSED_ASK_WORDS('Cal Consulted') });
+
+		expect(panelRow(decision.id, ikeRow.id)).toMatchObject({ resendable: true, refusal: null });
+		resendTo(ikeRow.id);
+		await waitForOutcomes(decision.id, 1);
+		expect(sent.emails.map((mail) => [mail.to, mail.subject])).toEqual([['ike@example.test', `For your information: ${decision.title}`]]);
+
+		// Reopened: Resend is how they are asked until card 2744 asks them at the Extend.
+		const later = stamp(new Date(Date.now() + 120 * 24 * 60 * 60 * 1000));
+		as(owner, (caller) => extendDecision(caller, { decisionId: decision.id }, { closesAt: `${later.replace(' ', 'T')}Z` }, UI));
+		expect(panelRow(decision.id, calRow.id)).toMatchObject({ resendable: true, refusal: null });
+		sent.clear();
+		resendTo(calRow.id);
+		await waitForOutcomes(decision.id, 2);
+		expect(sent.emails.map((mail) => [mail.to, mail.subject])).toEqual([['cal@example.test', `Your view is asked: ${decision.title}`]]);
 	});
 });
 

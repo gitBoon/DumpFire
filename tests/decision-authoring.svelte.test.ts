@@ -360,6 +360,42 @@ describe('ParticipantPicker (cases 22 to 25)', () => {
 		await settle();
 		expect(requests('PUT /api/decisions/5/participants')).toEqual([{ participants: [{ personId: 11, role: 'consulted' }], revision: 'rev-1' }]);
 	});
+
+	// Card 2743 (D5): the count is what the save mails, as the server decides it at the shown status.
+	it('25: awaiting a ruling, one added as consulted is counted as not asked and one added as informed as mailed; open, one made consulted is mailed (2743-7)', async () => {
+		const closed = drawPicker({ status: 'closed', shownStatus: 'awaiting_ruling', participants: [row(3, 11, 'Ann Able')] });
+		tickOf(closed, 'Cat Cole').click();
+		tickOf(closed, 'Fay Ford').click();
+		flushSync();
+		button(closed, 'Role of Fay Ford: Consulted').click();
+		flushSync();
+		button(closed, 'Save participants').click();
+		flushSync();
+		expect(textOf(dialog()!)).toContain('1 person will be mailed now; 1 consulted cannot be asked for their view while the decision is closed for input; 0 will be marked removed.');
+		button(dialog()!, 'Cancel').click();
+		await settle();
+
+		// Stored open past its closing time reads as the shown status says.
+		const lapsed = drawPicker({ status: 'open', shownStatus: 'awaiting_ruling', participants: [] });
+		tickOf(lapsed, 'Cat Cole').click();
+		flushSync();
+		button(lapsed, 'Save participants').click();
+		flushSync();
+		expect(textOf(dialog()!)).toContain('0 people will be mailed now; 1 consulted cannot be asked for their view while the decision is closed for input; 0 will be marked removed.');
+		button(dialog()!, 'Cancel').click();
+		await settle();
+
+		const open = drawPicker({ status: 'open', shownStatus: 'open', participants: [row(4, 12, 'Bob Brown', { role: 'informed' })] });
+		button(open, 'Role of Bob Brown: Informed').click();
+		tickOf(open, 'Cat Cole').click();
+		flushSync();
+		button(open, 'Save participants').click();
+		flushSync();
+		expect(textOf(dialog()!)).toContain('2 people will be mailed now; 0 will be marked removed.');
+		button(dialog()!, 'Cancel').click();
+		await settle();
+		expect(requests('PUT /api/decisions/5/participants')).toEqual([]);
+	});
 });
 
 // ─── The editor ─────────────────────────────────────────────────────────────

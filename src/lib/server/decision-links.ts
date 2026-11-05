@@ -70,6 +70,13 @@ export const SKIP_WORDS: Readonly<Record<SkipReason, (name: string) => string>> 
 /** Why a removed participant cannot be sent their invitation again: the 409 of a re-send, and the delivery panel's words (card 2697, Q13). */
 export const REMOVED_WORDS = (name: string) => `${name} has been removed from this decision: they cannot be mailed about it`;
 
+/**
+ * Why a consulted participant cannot be sent their invitation again while the
+ * decision is not shown open (card 2743, D4): it asks for a view they cannot
+ * give. The 409 of a re-send, and the delivery panel's words.
+ */
+export const CLOSED_ASK_WORDS = (name: string) => `This decision is awaiting a ruling: ${name} is consulted, and cannot be asked for their view until it is reopened`;
+
 /** Why a participant's personal link was ended, in words, for the editor's delivery panel (card 2697, Q13). */
 export const REVOKE_WORDS: Readonly<Record<RevokeReason, string>> = {
 	removed: 'Their link was ended when they were removed from this decision',

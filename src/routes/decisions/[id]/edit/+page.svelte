@@ -112,6 +112,7 @@
 					<ParticipantPicker
 						decisionId={data.decision.id}
 						status={data.decision.status}
+						shownStatus={data.decision.shownStatus}
 						editable={data.editable}
 						participants={data.participants}
 						people={data.people}

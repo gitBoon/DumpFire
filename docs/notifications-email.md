@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.59
+version: 1.61
 status: As-Built
 date: 2026-11-05
 tags:
@@ -607,7 +607,7 @@ down. The failure shows on the panel and in the log.
 | Conversation Message | Requester/Admin | `email_requests` | `Message on request: {title}` |
 | Request Complete | Requester | `email_request_progress` | `Your request is complete: {title}` |
 | Backup Failed | The backup settings' failure email address(es), one mail a run, naming every destination that failed (card 2415), a copy of the database that could not be made included (card 2416) | — (the backup settings' failure alerts, `notifyOnFailure`) | `⚠️ DumpFire Backup Failed` |
-| Decision Invitation (card 2675) | Each participant of a decision `reachOf` reaches, at the snapshot address: on opening, when added or brought back after opening, when made consulted while the decision is open (card 2740), and on a re-send. No route sends it yet | — (never read, the master switch included: D22) | `Your view is asked: {title}` (consulted), `For your information: {title}` (informed) |
+| Decision Invitation (card 2675) | Each participant of a decision `reachOf` reaches, at the snapshot address: on opening, when added or brought back after opening (as consulted, only while the decision is open: card 2743), when made consulted while the decision is open (card 2740), and on a re-send (a consulted participant's only while it is open). No route sends it yet | — (never read, the master switch included: D22) | `Your view is asked: {title}` (consulted), `For your information: {title}` (informed) |
 | Decision Asked Again (card 2675) | As above, on a re-publish that asks again | — | `Changed, and your view is asked again: {title}` |
 | Decision Changed (card 2675) | As above, on a re-publish that only tells | — | `Changed: {title}` |
 | Decision Withdrawn (card 2675) | As above, on withdrawing a decision that was opened | — | `Withdrawn: {title}` |
@@ -878,6 +878,39 @@ moment, the later event), so a held mail sent since by Resend leaves no "not sen
 `reachOf` skips is recorded with its own reason, and is asked before the rest: one whose address
 changed and who was also mailed a moment ago reads `address_changed`, not `resting`. A participant made informed is sent nothing,
 nor one made consulted on a decision closed or past its closing time, as they cannot respond.
+
+**Someone added while the decision is closed for input** (card 2743). On a decision stored
+closed, or stored open past its closing time, `setParticipants` sends nothing to one it adds or
+brings back as **consulted**: no invitation (it would ask for a view by a moment past, or while
+responses are refused), no link and no `mail_skipped`, as nothing was due. Their told line reads
+"You were included in this decision on …", card 2738 reads them as never reached, and the
+delivery panel shows "Not mailed yet". One added or brought back as **informed** is still sent
+their invitation ("For your information: {title}", "Nothing is asked of you"), true whether or not
+the decision is open, with a link that works on a closed decision. The 10-minute rest and the
+participant's daily cap hold only those the write mails, so bringing back a consulted participant
+mailed a moment ago is not refused. The caller's daily cap counts every inclusion, mailed now or
+not, as `NO_LINK_ADDRESS` refuses any inclusion: one not mailed now is mailed at the ruling or the
+withdrawal, which mail every live participant and ask no cap of their own, so an inclusion that
+took nothing would let a caller close a decision early, include thousands, and have the ruling
+mail them all (card 2743's code review). Who a save mails is `mailedOnSave` in
+`src/lib/decision-rules.ts`, which `setParticipants` and the editor's picker both read. **Resend** refuses a consulted participant while the decision is not shown open, 409
+"This decision is awaiting a ruling: {name} is consulted, and cannot be asked for their view
+until it is reopened" (`CLOSED_ASK_WORDS`), and the delivery panel says the same in place of the
+button; an informed participant can still be sent theirs. Once an Extend (or a re-publish asking
+again) reopens the decision, Resend is offered again: until card 2744 asks them at the reopening,
+that is how they are asked. The editor's confirmation counts only those the save mails, and names
+the consulted who cannot be asked for their view while the decision is closed for input. The
+count is advice: it cannot see a participant `reachOf` skips or a mail a rest or a cap holds back.
+
+```mermaid
+flowchart LR
+    A[Added or brought back] --> O{Shown open?}
+    O -- yes --> I[Invitation in their role]
+    O -- no --> R{Role}
+    R -- informed --> I
+    R -- consulted --> N[Nothing: Resend refused until reopened]
+    N -. Extend .-> X[Card 2744 asks them; until then, Resend]
+```
 
 ```mermaid
 sequenceDiagram
