@@ -28,8 +28,9 @@
  * review's F2): a mail whose decision has been deleted is not sent, and a
  * WARN line says so, as nothing can be recorded on it; one whose link the row
  * no longer holds, or whose participant is removed, has a new address or is
- * no longer reached through their account, is not sent either, and its
- * outcome is `mail_outcome { delivered: false, problem: 'superseded' }`. A
+ * no longer reached through their account, or (card 2739's code review)
+ * whose decision has been published again since it was built, is not sent
+ * either, and its outcome is `mail_outcome { delivered: false, problem: 'superseded' }`. A
  * failed send's ERROR line names the participant and the decision by id,
  * never the address (S7).
  *
@@ -223,7 +224,7 @@ export function decisionLinkBase(): string | null {
  * `html` may carry a token. `linkHash` is the stored form of the link it
  * carries, null for a mail to an account holder (the code review's F2).
  */
-type Queued = { to: string; subject: string; html: string; eventId: number; participantId: number; linkHash: string | null };
+type Queued = { to: string; subject: string; html: string; eventId: number; participantId: number; linkHash: string | null; version: number };
 
 /** What a mail is told beside the decision. */
 export type RecordMailOptions = {
@@ -299,7 +300,8 @@ export function queueRecordMails(decision: Decision, mail: RecordMail, opts: Rec
 			html: emailTemplate(escapeHtml(decision.title), bodyOf(decision, mail, p.role, link, content, opts)),
 			eventId,
 			participantId: p.id,
-			linkHash: token === null ? null : hashOf(token)
+			linkHash: token === null ? null : hashOf(token),
+			version: decision.currentVersion
 		});
 	}
 	if (batch.length === 0) return;
@@ -337,13 +339,17 @@ export function queueRecordMails(decision: Decision, mail: RecordMail, opts: Rec
  * removed or its address is not the one the mail is for; for a link mail
  * because the row no longer holds the link it carries (a later mail
  * replaced it, or it was ended), and for an account mail because `reachOf`
- * would no longer reach the participant through their account; `send`
- * otherwise. An account mail's `reachOf` never reads `hadAccount`, so none is
+ * would no longer reach the participant through their account; and (card
+ * 2739's code review, 2026-11-05) when the decision has been published again
+ * since the mail was built, so that it quotes a version no longer current;
+ * `send` otherwise. An account mail's `reachOf` never reads `hadAccount`, so none is
  * read for it: a row whose account was cleared meanwhile is not on the
  * account route, whatever its history.
  */
 function stillToSend(decisionId: number, m: Queued): 'send' | 'superseded' | 'decision_gone' {
-	if (!db.select({ id: decisions.id }).from(decisions).where(eq(decisions.id, decisionId)).get()) return 'decision_gone';
+	const decision = db.select({ currentVersion: decisions.currentVersion }).from(decisions).where(eq(decisions.id, decisionId)).get();
+	if (!decision) return 'decision_gone';
+	if (decision.currentVersion !== m.version) return 'superseded';
 	const row = db.select().from(decisionParticipants).where(eq(decisionParticipants.id, m.participantId)).get();
 	if (!row || row.removedAt !== null || row.email !== m.to) return 'superseded';
 	if (m.linkHash !== null) return row.linkTokenHash === m.linkHash ? 'send' : 'superseded';

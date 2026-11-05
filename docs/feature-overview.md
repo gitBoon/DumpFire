@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.77
+version: 1.79
 status: As-Built
 date: 2026-11-05
 tags:
@@ -313,7 +313,7 @@ Above the editor sit the decision's lifecycle controls (card 2697). Each shows o
 - **Preview as a participant** — opens the decision as a participant will see it, with the edits you have saved: as one of its participants (their role and their groups), as a Consulted or Informed person in a group, or as a consulted person in no group. The banner says "Preview: this is what <name> will see. Nothing is recorded.", the response form is shown but does nothing, and nothing is written: no one is told, and no "seen" is recorded
 - **Send me a dry run** — mails you the invitation a consulted participant would get, quoting the saved working copy, with "Dry run:" before its subject, a line saying you asked for it, and a link to the preview. It goes only to your address in the people directory (an administrator adds you in People, at your account's address); nobody else is mailed. One every 10 minutes, and 20 a day, across all your decisions
 - **Open** — off while the readability check lists something that stops it, which it shows. With warnings it asks "Open with 2 warnings". The confirmation says how many people it is about to mail: "Every participant of "<title>" is mailed now: 12 people." (card 2682), so a draft an agent prepared is never opened without its size being seen; then every participant is mailed their invitation. Consulted people with no account get a personal link
-- **Re-publish** — publishes the edited text as a new version, with a note saying what changed. **Ask everyone again** mails everyone and asks for their views again; **Tell them only** tells them of the change. Tell them only is off, with the reason, when an option has been added or removed since the last version
+- **Re-publish** — publishes the edited text as a new version, with a note saying what changed. **Ask everyone again** asks everyone consulted for their view again, sends anyone consulted whom this round's ask has not reached (their invitation held back or not delivered) the invitation instead, and tells everyone informed of the change, as nothing is asked of them; **Tell them only** tells everyone consulted whom this round's ask reached, and everyone informed, of the change, and sends nothing to anyone consulted it has not reached (card 2739); while such a person's invitation is still being sent, Tell them only waits for the 10-minute mail rest, so a new version never overtakes it. A note under the choice says this. Tell them only is off, with the reason, when an option has been added or removed since the last version: everyone consulted is then asked again, and people kept informed are told
 - **Save first** — Open, Re-publish and Send me a dry run each send the saved copy, so they are off ("Save your changes first") while the editor has unsaved changes
 - **Close** — stops taking responses now. **Extend** sets a new closing time, at most a year ahead, in UTC, and opens it again. It never brings the closing time earlier (card 2682): a time no later than the current one is refused, "closesAt must be later than the decision's current closing time: Extend never brings it earlier", so sending the time the panel shows unchanged is refused too
 - **Withdraw** — ends the decision, with a reason. Once it has been opened, every participant is told your reason, and you are asked for your password first; a draft that was never opened is withdrawn with no password and nobody is told

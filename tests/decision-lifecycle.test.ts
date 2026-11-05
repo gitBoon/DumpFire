@@ -1091,6 +1091,14 @@ describe("a delivery change leaves an open editor's revision, and a real change 
 		const pat = makeParticipant(made, { person, role: 'consulted', token: 'a-live-link-of-pat', hadAccount: false });
 		const account = makeUser({ username: 'pat-account' });
 		db.update(people).set({ userId: account.id, email: 'pat.new@example.test' }).where(eq(people.id, person.id)).run();
+		// Version 1's `published`, then each one's invitation delivered: the round reached Sam and Pat (card 2738), so a
+		// tell-only re-publish mails them (card 2739). Aged past the 10-minute rest, which would refuse a Resend of its own.
+		appendEvent({ decisionId: made.id, kind: 'published', versionNumber: 1, detail: { asksAgain: true, changeNote: null } }, SYSTEM_ACTOR);
+		for (const p of [sam, pat]) {
+			const of = appendEvent({ decisionId: made.id, kind: 'invited', participantId: p.id }, SYSTEM_ACTOR);
+			appendEvent({ decisionId: made.id, kind: 'mail_outcome', participantId: p.id, detail: { of, mail: 'invitation', delivered: true } }, SYSTEM_ACTOR);
+		}
+		ageRecordMail(made.id);
 		const w = { author, deputy, admin, decision: decisionRow(made.id), a, b, sam, pat };
 		db.update(decisions)
 			.set({ workingContent: JSON.stringify({ ...contentOf(w, 'An agent wrote this.'), agentDrafted: { situation: true } }), updatedAt: '2026-11-01 09:00:00' })
@@ -1135,7 +1143,16 @@ describe("a delivery change leaves an open editor's revision, and a real change 
 				)
 		],
 		['the decider named', (w, revision) => as(w.author, (caller) => setDecider(caller, at(w), { deciderUserId: w.deputy.id, revision }, UI))],
-		['re-publishing', (w, revision) => as(w.author, (caller) => republishDecision(caller, at(w), { changeNote: 'The dates moved.', askAgain: false, revision }, UI))],
+		[
+			're-publishing',
+			(w, revision) => {
+				const before = eventsOf(w.decision.id).length;
+				as(w.author, (caller) => republishDecision(caller, at(w), { changeNote: 'The dates moved.', askAgain: false, revision }, UI));
+				// Telling only mails those the round reached, Sam among them: the rest and the caps are asked, not skipped.
+				const told = eventsOf(w.decision.id).slice(before).filter((event) => event.kind === 'told_of_change');
+				expect(told.map((event) => event.participantId)).toContain(w.sam.id);
+			}
+		],
 		['a dry run', (w, revision) => dryRun(w.author, w.decision.id, { revision })]
 	];
 
@@ -1162,10 +1179,14 @@ describe("a delivery change leaves an open editor's revision, and a real change 
 		await sent.settle();
 	});
 
-	it('re-publishing after a Resend is held by the 10-minute mail rest alone, never the revision, and passes with the same revision once past it', async () => {
+	it.each([
+		['telling only', false],
+		['asking again', true]
+	])('re-publishing, %s, after a Resend is held by the 10-minute mail rest alone, never the revision, and passes with the same revision once past it', async (_name, askAgain) => {
 		const w = world();
 		const read = readEditPage(w.author, w.decision.id).revision;
-		const republish = () => as(w.author, (caller) => republishDecision(caller, at(w), { changeNote: 'The dates moved.', askAgain: false, revision: read }, UI));
+		// The round reached Sam (world()): telling only sends them told_of_change, asking again asked_again; the rest holds either.
+		const republish = () => as(w.author, (caller) => republishDecision(caller, at(w), { changeNote: 'The dates moved.', askAgain, revision: read }, UI));
 
 		as(w.author, (caller) => resendInvitation(caller, of(w, w.sam), null, UI));
 		await sent.settle();

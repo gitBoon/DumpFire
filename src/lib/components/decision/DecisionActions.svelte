@@ -22,8 +22,9 @@
     `{ revision }`.
   - **Re-publish** asks for a change note and Ask everyone again or Tell them
     only, which is off, with its reason, where the working copy adds or
-    retires an option (`republishSummary`). It sends
-    `{ changeNote, askAgain, revision }`.
+    retires an option (`republishSummary`). A note under the choice says who
+    is asked, told or invited by it (card 2739, D5); the server decides who at
+    the write. It sends `{ changeNote, askAgain, revision }`.
   - Open, Re-publish and the dry run act on the saved working copy, so each is
     off while the editor holds edits not yet saved ("Save your changes
     first").
@@ -320,8 +321,14 @@
 			...(summary.adding.length > 0 ? [`adds option ${summary.adding.join(', ')}`] : []),
 			...(summary.retiring.length > 0 ? [`retires option ${summary.retiring.join(', ')}`] : [])
 		];
-		return `Tell them only is off: this version ${changes.join(' and ')}, so everyone is asked again.`;
+		return `Tell them only is off: this version ${changes.join(' and ')}, so everyone consulted is asked again; people kept informed are told.`;
 	}
+	// Card 2739 (D5): who each choice mails, and with what. Advice: the server reads who the round reached at the write.
+	const republishWho = $derived(
+		askAgain
+			? "Everyone consulted is asked for their view again; anyone consulted whom this round's ask has not reached is sent the invitation instead. Everyone informed is told of the change."
+			: "Everyone consulted whom this round's ask reached, and everyone informed, is told of the change. Anyone consulted whom this round's ask has not reached is sent nothing: Resend asks them while the decision is open for input."
+	);
 	// Card 2682 (D32): how many people the mail-out reaches, said before it goes.
 	const mailed = $derived(`Every participant of "${title}" is mailed now: ${mailCount === 1 ? '1 person' : `${mailCount} people`}.`);
 	const openMessage = $derived(
@@ -434,7 +441,7 @@
 
 	{#if panel === 'republish'}
 		<form class="panel" id={panelId('republish')} data-panel="republish" onsubmit={(e) => (e.preventDefault(), republish())}>
-			<label class="small" for="republish-note-{decisionId}">What changed (every participant is told)</label>
+			<label class="small" for="republish-note-{decisionId}">What changed (participants are told it)</label>
 			<textarea id="republish-note-{decisionId}" class="field" rows="3" maxlength="2000" bind:value={changeNote}></textarea>
 			<fieldset>
 				<legend class="small">Then</legend>
@@ -446,6 +453,7 @@
 				{#if republishSummary?.changesOptions}
 					<p class="note" data-note="tell-only">{tellOnlyOff(republishSummary)}</p>
 				{/if}
+				<p class="note" data-note="republish-who">{republishWho}</p>
 			</fieldset>
 			<div class="panel-actions">
 				<button type="button" class="btn btn-ghost btn-sm" onclick={() => closed('republish')}>Cancel</button>

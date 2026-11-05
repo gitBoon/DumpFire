@@ -145,6 +145,7 @@ import {
 	appendResponse,
 	appendRuling,
 	appendVersion,
+	askingMailsOf,
 	concernsOf,
 	currentRound,
 	dryRunsSince,
@@ -913,8 +914,8 @@ export function openDecision(caller: SessionUser | null, at: { decisionId: numbe
 /**
  * Publish the working content again as version N+1: `changeNote` (text,
  * trimmed, 1 to 2,000) and `askAgain` (true or false). Asking again mails
- * `asked_again`, and opens a closed decision again; telling only mails
- * `told_of_change`. Refused 409 once `closes_at` has passed (E10); for telling
+ * the consulted `asked_again` and the informed `told_of_change`, and opens a
+ * closed decision again; telling only mails `told_of_change`. Refused 409 once `closes_at` has passed (E10); for telling
  * only when an option would be added or retired (E2, decision 24); when the
  * new version would hold fewer than two live options (decision 20); with no
  * address to make a link on (decision 28); and while any participant it
@@ -932,14 +933,21 @@ export function openDecision(caller: SessionUser | null, at: { decisionId: numbe
  * last 10 minutes is (Q24); and, last of all, the caller's publish limit
  * (Q23).
  *
- * Card 2744 (D3): on a closed decision, each live consulted participant the
- * current round has not reached (`unaskedOf`, read before the new version)
- * was never asked, so is never sent words that assume an earlier ask:
- * asking again, which reopens it, sends them the invitation (`invited`) and
- * everyone else `asked_again`; telling only, which leaves it closed, sends
+ * Card 2744 (D3), widened by card 2739 (D2 to D4) to a decision open for
+ * input too: each live consulted participant the current round has not
+ * reached (`unaskedOf`, read before the new version) was never asked, so is
+ * never sent words that assume an earlier ask: asking again (which reopens a
+ * closed decision) sends them the invitation (`invited`); telling only sends
  * them nothing (as card 2743 sends nothing to one added as consulted while
- * closed), and neither the rest nor the caller's cap counts them. On a
- * decision open for input a re-publish mails everyone as before.
+ * closed; on an open decision Resend asks them), and neither the rest nor
+ * the caller's cap counts them, but for one whose asking mail still awaits
+ * its outcome (`askingInFlight`, code review 2026-11-05): the rest holds the
+ * write over them, as before card 2739, so no new version overtakes it.
+ *
+ * Card 2739 (D1): asking again sends `asked_again` to the other consulted
+ * participants alone; an informed participant is asked nothing, and cannot
+ * respond, so is sent `told_of_change`, as telling only sends everyone it
+ * mails. Every one of these mails counts against the rest and the caps.
  */
 export function republishDecision(caller: SessionUser | null, at: { decisionId: number }, body: RequestBody, opts: ServiceOptions): Decision {
 	inWrite();
@@ -968,13 +976,16 @@ export function republishDecision(caller: SessionUser | null, at: { decisionId: 
 	// Decision 20, as opening holds it: the new version keeps two live options (the code review's F4).
 	if (live.length - retiring.length < 2) error(409, 'This decision would have fewer than two options: it cannot be re-published');
 	if (decisionLinkBase() === null) error(409, NO_LINK_ADDRESS);
-	// Card 2744 (D3): on a closed decision (past its closing time is refused above), whom the round has not reached, read before
-	// the new version: asking again reopens it and sends them the invitation; telling only leaves it closed and sends them nothing.
-	const unasked = new Set(openForInput(decisionStatus(decision, now)) ? [] : unaskedOf(decision).map((row) => row.id));
+	// Card 2744 (D3), card 2739 (D2): whom the round has not reached, open or closed, read before the new version: asking again
+	// sends them the invitation (and reopens a closed decision); telling only sends them nothing, nor counts them.
+	const unaskedRows = unaskedOf(decision);
+	const unasked = new Set(unaskedRows.map((row) => row.id));
 	const current = participantsOf(decision.id).filter((row) => row.removedAt === null && (askAgain || !unasked.has(row.id)));
 	const reaches = reachesOf(decision.id, current);
 	const mailed = current.filter((row) => 'via' in reaches.get(row.id)!);
-	requireMailRested(mailed, now);
+	// Code review 2026-11-05: telling only still holds the write to the rest of one it leaves out whose asking mail awaits its
+	// outcome, as before card 2739, so that no new version is published while that mail, quoting the old one, is in flight.
+	requireMailRested(askAgain ? mailed : [...mailed, ...askingInFlight(decision, unaskedRows)], now);
 	requireRecordMailAllowed(user, mailed.length, now);
 	requirePublishAllowed(user, now);
 
@@ -990,10 +1001,15 @@ export function republishDecision(caller: SessionUser | null, at: { decisionId: 
 		.get();
 	appendVersion({ decisionId: decision.id, number, content: versionContent(decision, liveOptionsOf(decision.id)), changeNote, asksAgain: askAgain }, by);
 	appendEvent({ decisionId: decision.id, kind: 'published', versionNumber: number, detail: { asksAgain: askAgain, changeNote } }, by);
-	// Card 2744 (D3): one never asked is sent the first-time invitation, not words that assume an earlier ask.
+	// Card 2744 (D3), card 2739 (D3): one never asked is sent the first-time invitation, not words that assume an earlier ask.
 	const inviting = current.filter((participant) => unasked.has(participant.id));
+	const reached = current.filter((participant) => !unasked.has(participant.id));
+	// Card 2739 (D1): only a consulted participant is asked again; an informed one is asked nothing, so is told of the change.
+	const askingAgain = new Set(askAgain ? reached.filter((participant) => participant.role === 'consulted').map((participant) => participant.id) : []);
+	const telling = reached.filter((participant) => !askingAgain.has(participant.id));
 	if (inviting.length > 0) queueRecordMails(row, 'invitation', { by, participants: inviting });
-	queueRecordMails(row, askAgain ? 'asked_again' : 'told_of_change', { by, changeNote, participants: current.filter((participant) => !unasked.has(participant.id)) });
+	if (askingAgain.size > 0) queueRecordMails(row, 'asked_again', { by, changeNote, participants: reached.filter((participant) => askingAgain.has(participant.id)) });
+	if (telling.length > 0) queueRecordMails(row, 'told_of_change', { by, changeNote, participants: telling });
 
 	if (row.boardId !== null) {
 		const told = askAgain ? 'everyone asked again' : 'told of a change';
@@ -2763,11 +2779,26 @@ function heldAsks(user: SessionUser, decisionId: number, rows: DecisionParticipa
  * open for input, and never shown the question then. So one included or made
  * consulted while it was closed (cards 2740 and 2743), and one whose
  * invitation was held back, refused or not yet delivered. Read before the
- * write that reopens the decision, as the round and its windows stand.
+ * write that reopens the decision, or (card 2739) before any re-publish
+ * writes its new version, as the round and its windows stand.
  */
 function unaskedOf(decision: Decision): DecisionParticipant[] {
 	const { notResponded, reached } = currentResultsOf(decision);
 	return notResponded.filter((row) => !reached.has(row.id));
+}
+
+/**
+ * Card 2739's code review (2026-11-05): those of `rows` whose asking mail of
+ * the current round (`askingMailsOf`: their latest `invited` or
+ * `asked_again`) has no `mail_outcome` yet, so is queued or being sent. A
+ * tell-only re-publish mails none of them, yet holds itself to their rest, as
+ * it did before card 2739, so that the mail in flight is not overtaken by a
+ * new version it does not quote. Read only.
+ */
+function askingInFlight(decision: Decision, rows: DecisionParticipant[]): DecisionParticipant[] {
+	if (rows.length === 0) return [];
+	const asking = askingMailsOf(decision.id, currentRound(decision.id), rows.map((row) => row.id));
+	return rows.filter((row) => asking.get(row.id)?.delivered === null);
 }
 
 /**

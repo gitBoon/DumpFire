@@ -1224,7 +1224,7 @@ async function withNoLinkAddress(body: () => Promise<void> | void) {
 }
 
 describe('republishDecision', () => {
-	it('asks everyone again: version 2, asked_again with a fresh link for the link holder, decision_republished and a live event (48)', async () => {
+	it('asks everyone again: version 2, asked_again for the consulted holder, told_of_change with a fresh link for the informed link holder (card 2739), decision_republished and a live event (48)', async () => {
 		const r = await openedDecision();
 		const oldHash = participantRow(r.linked.id).linkTokenHash;
 		const before = eventsOf(r.id).length;
@@ -1240,12 +1240,12 @@ describe('republishDecision', () => {
 			['published', null, 2, { asksAgain: true, changeNote: 'The dates moved.' }],
 			['asked_again', r.holder.id, 2, null],
 			['link_issued', r.linked.id, null, { replaced: true }],
-			['asked_again', r.linked.id, 2, null]
+			['told_of_change', r.linked.id, 2, null]
 		]);
 		await waitForOutcomes(r.id, 4);
 		expect(sent.emails.map((mail) => [mail.to, mail.subject])).toEqual([
 			[r.holderPerson.email, 'Changed, and your view is asked again: Ready'],
-			['linky@example.test', 'Changed, and your view is asked again: Ready']
+			['linky@example.test', 'Changed: Ready']
 		]);
 		const newHash = participantRow(r.linked.id).linkTokenHash;
 		expect(newHash).not.toBe(oldHash);
@@ -1586,8 +1586,10 @@ describe('card 2744: an Extend or a re-publish that reopens a decision asks whom
 			{ personId: nia.id, role: 'consulted' }
 		]);
 		const niaRow = rowOf(r.id, nia.id);
-		// Mailed a moment ago: were the re-publish to mail them, decision 31 would refuse it whole.
-		appendEvent({ decisionId: r.id, kind: 'invited', participantId: niaRow.id }, SYSTEM_ACTOR);
+		// Mailed a moment ago: were the re-publish to mail them, decision 31 would refuse it whole. Its outcome is written,
+		// so it is not in flight, which would hold even a tell-only re-publish (card 2739's code review, 2026-11-05).
+		const of = appendEvent({ decisionId: r.id, kind: 'invited', participantId: niaRow.id }, SYSTEM_ACTOR);
+		appendEvent({ decisionId: r.id, kind: 'mail_outcome', participantId: niaRow.id, detail: { of, mail: 'invitation', delivered: false, problem: 'refused' } }, SYSTEM_ACTOR);
 		const before = eventsOf(r.id).length;
 
 		republish(r.author, r.id, { changeNote: 'A typo fixed.', askAgain: false });
@@ -1596,7 +1598,8 @@ describe('card 2744: an Extend or a re-publish that reopens a decision asks whom
 		const written = since(r.id, before);
 		expect(written.filter(([kind]) => kind === 'told_of_change').map(([, participantId]) => participantId)).toEqual([r.holder.id, r.linked.id]);
 		expect(written.filter(([, participantId]) => participantId === niaRow.id)).toEqual([]);
-		await waitForOutcomes(r.id, 4);
+		// The opening's two, Nia's set by hand above, and the two told_of_change.
+		await waitForOutcomes(r.id, 5);
 		expect(sent.emails.map((mail) => [mail.to, mail.subject]).sort(byTo)).toEqual(
 			[
 				[r.holderPerson.email, 'Changed: Ready'],
@@ -1605,7 +1608,7 @@ describe('card 2744: an Extend or a re-publish that reopens a decision asks whom
 		);
 	});
 
-	it('re-publishing to ask again on a decision open for input sends one the round never reached asked_again, as before: only a reopening invites them (2744-10, F5 as it stands until card 2739)', async () => {
+	it('re-publishing to ask again on a decision open for input sends one the round never reached the invitation, and the informed one told_of_change (2744-10, as card 2739 changed it)', async () => {
 		// The holder's opening invitation is refused: the round never reached them, and the decision stays open for input.
 		refusal = (mail) => (mail.to === 'linky@example.test' ? undefined : refused('EENVELOPE', 'No such mailbox', { responseCode: 550 }));
 		const r = await openedDecision();
@@ -1614,23 +1617,130 @@ describe('card 2744: an Extend or a re-publish that reopens a decision asks whom
 
 		republish(r.author, r.id, { changeNote: 'Asked again.', askAgain: true });
 
-		const asking = eventsOf(r.id)
+		const mailing = eventsOf(r.id)
 			.slice(before)
-			.filter((event) => event.kind === 'invited' || event.kind === 'asked_again')
+			.filter((event) => event.kind === 'invited' || event.kind === 'asked_again' || event.kind === 'told_of_change')
 			.map((event) => [event.kind, event.participantId]);
-		expect(asking.sort((x, y) => Number(x[1]) - Number(y[1]))).toEqual(
-			[
-				['asked_again', r.holder.id],
-				['asked_again', r.linked.id]
-			].sort((x, y) => Number(x[1]) - Number(y[1]))
-		);
+		expect(mailing).toEqual([
+			['invited', r.holder.id],
+			['told_of_change', r.linked.id]
+		]);
 		await waitForOutcomes(r.id, 4);
 		expect(sent.emails.map((mail) => [mail.to, mail.subject]).sort(byTo)).toEqual(
 			[
-				[r.holderPerson.email, 'Changed, and your view is asked again: Ready'],
-				['linky@example.test', 'Changed, and your view is asked again: Ready']
+				[r.holderPerson.email, 'Your view is asked: Ready'],
+				['linky@example.test', 'Changed: Ready']
 			].sort(byTo)
 		);
+	});
+});
+
+// ─── Card 2739: a re-publish sends each participant words true of them ───────
+
+describe('card 2739: a re-publish asks again only the consulted it reached, tells the informed, and invites or skips whom the round never reached', () => {
+	const closeIt = (user: SessionUser, id: number) => as(user, (caller) => closeDecision(caller, { decisionId: id }, null, UI));
+	const mailsSince = (id: number, before: number) =>
+		eventsOf(id)
+			.slice(before)
+			.filter((event) => ['invited', 'asked_again', 'told_of_change'].includes(event.kind))
+			.map((event) => [event.kind, event.participantId, event.versionNumber]);
+	const panelRow = (user: SessionUser, id: number, participantId: number) => readEditPage(user, id).delivery!.find((row) => row.participantId === participantId)!;
+	const mailTo = (to: string) => sent.emails.find((mail) => mail.to === to)!;
+	/** The holder's opening invitation refused: the round never reached them; the informed link holder's delivered. */
+	const refuseHolder = () => (mail: OfferedMail) => (mail.to === 'linky@example.test' ? undefined : refused('EENVELOPE', 'No such mailbox', { responseCode: 550 }));
+
+	it('asking again on a decision open for input asks the reached consulted holder again and tells the informed one of the change, in words that ask nothing; the panel and the told line say so (2739-1)', async () => {
+		const r = await openedDecision();
+		const before = eventsOf(r.id).length;
+
+		republish(r.author, r.id, { changeNote: 'The dates moved.', askAgain: true });
+
+		expect(mailsSince(r.id, before)).toEqual([
+			['asked_again', r.holder.id, 2],
+			['told_of_change', r.linked.id, 2]
+		]);
+		await waitForOutcomes(r.id, 4);
+		const told = mailTo('linky@example.test');
+		expect(told.subject).toBe('Changed: Ready');
+		expect(told.html).toContain('The dates moved.');
+		expect(told.html).not.toContain('Your view is asked');
+		expect(told.html).not.toContain('asked again');
+		expect(mailTo(r.holderPerson.email).subject).toBe('Changed, and your view is asked again: Ready');
+		expect(panelRow(r.author, r.id, r.linked.id).lastMail).toMatchObject({ mail: 'told_of_change', outcome: 'sent' });
+		expect(panelRow(r.author, r.id, r.holder.id).lastMail).toMatchObject({ mail: 'asked_again', outcome: 'sent' });
+		expect(toldWords('informed', lastToldOf(r.linked.id), participantRow(r.linked.id).includedAt)).toMatch(/^You were told of a change to this decision on .+, by email\.$/);
+	});
+
+	it('asking again on a closed decision reopens it and tells the informed one of the change, never asked_again (2739-2)', async () => {
+		const r = await openedDecision();
+		closeIt(r.author, r.id);
+		const before = eventsOf(r.id).length;
+
+		republish(r.author, r.id, { changeNote: 'Reopened for views.', askAgain: true });
+
+		expect(decisionRow(r.id)).toMatchObject({ status: 'open', closedAt: null, currentVersion: 2 });
+		expect(mailsSince(r.id, before)).toEqual([
+			['asked_again', r.holder.id, 2],
+			['told_of_change', r.linked.id, 2]
+		]);
+		await waitForOutcomes(r.id, 4);
+		expect(mailTo('linky@example.test').subject).toBe('Changed: Ready');
+	});
+
+	it('telling only on a decision open for input is held by the rest of one the round never reached whose invitation is still in flight: 409, nothing written (2739-3, as the code review of 2026-11-05 changed it)', async () => {
+		refusal = refuseHolder();
+		const r = await openedDecision();
+		refusal = () => undefined;
+		// An invitation queued a moment ago, its outcome not yet written: a new version would overtake the version it quotes.
+		appendEvent({ decisionId: r.id, kind: 'invited', participantId: r.holder.id }, SYSTEM_ACTOR);
+		const before = eventsOf(r.id).length;
+
+		const held = outcome(() => republish(r.author, r.id, { changeNote: 'A typo fixed.', askAgain: false }));
+
+		expect(held).toMatchObject({ status: 409, message: expect.stringMatching(/was mailed about this decision less than 10 minutes ago/) });
+		expect(eventsOf(r.id)).toHaveLength(before);
+		expect(decisionRow(r.id)).toMatchObject({ status: 'open', currentVersion: 1 });
+		await sent.settle();
+		expect(sent.emails).toEqual([]);
+	});
+
+	it('telling only on a decision open for input sends one the round never reached nothing, and does not hold the write to their rest once their invitation has its outcome; the informed one is told (2739-6)', async () => {
+		refusal = refuseHolder();
+		const r = await openedDecision();
+		refusal = () => undefined;
+		// The holder's refused invitation went out a moment ago: were the re-publish to mail them, decision 31 would refuse it whole.
+		const before = eventsOf(r.id).length;
+
+		republish(r.author, r.id, { changeNote: 'A typo fixed.', askAgain: false });
+
+		expect(decisionRow(r.id)).toMatchObject({ status: 'open', currentVersion: 2 });
+		expect(mailsSince(r.id, before)).toEqual([['told_of_change', r.linked.id, 2]]);
+		expect(
+			eventsOf(r.id)
+				.slice(before)
+				.filter((event) => event.participantId === r.holder.id)
+		).toEqual([]);
+		// The opening's two, and the informed one's told_of_change.
+		await waitForOutcomes(r.id, 3);
+		expect(sent.emails.map((mail) => [mail.to, mail.subject])).toEqual([['linky@example.test', 'Changed: Ready']]);
+	});
+
+	it("the caller's daily cap counts the informed one's told_of_change and the unreached one's invitation: one short, 429 and nothing written (2739-4)", async () => {
+		refusal = refuseHolder();
+		const r = await openedDecision();
+		refusal = () => undefined;
+		// One mail left of the caller's allowance; the re-publish would send two (an invitation and a told_of_change).
+		resetAllRateLimits();
+		takeAllowance(`decision-record-mail:${r.author.id}`, CALLER_MAIL_DAILY_CAP - 1, CALLER_MAIL_DAILY_CAP, DAY_MS);
+		const before = eventsOf(r.id).length;
+
+		const refusedWith = outcome(() => republish(r.author, r.id, { changeNote: 'Asked again.', askAgain: true }));
+
+		expect(refusedWith).toMatchObject({ status: 429, message: expect.stringContaining(`past ${CALLER_MAIL_DAILY_CAP} in the last 24 hours`) });
+		expect(eventsOf(r.id)).toHaveLength(before);
+		expect(decisionRow(r.id).currentVersion).toBe(1);
+		await sent.settle();
+		expect(sent.emails).toEqual([]);
 	});
 });
 
@@ -2086,6 +2196,27 @@ describe('the rules that hold after opening', () => {
 		expect(sent.emails.map((mail) => mail.to)).toEqual(['first@example.test']);
 		expect(sent.refusedMail).toEqual([]);
 		expect(sent.duringTransaction).toEqual([]);
+	});
+
+	it('records a mail built before the decision was published again as superseded, sending nothing (card 2739, code review 2026-11-05)', async () => {
+		const decision = openByHand();
+		const first = makeParticipant(decision, { person: makePerson({ fullName: 'First', email: 'first@example.test' }), hadAccount: false });
+		const second = makeParticipant(decision, { person: makePerson({ fullName: 'Second', email: 'second@example.test' }), hadAccount: false });
+		// While the first mail is out, a new version is published: the second mail quotes one no longer current.
+		refusal = (mail) => {
+			if (mail.to === 'first@example.test') db.update(decisions).set({ currentVersion: 2 }).where(eq(decisions.id, decision.id)).run();
+			return undefined;
+		};
+
+		as(owner, () => queueRecordMails(decisionRow(decision.id), 'invitation', { by: actorFor(owner, 'ui') }));
+		await waitForOutcomes(decision.id, 2);
+
+		const invited = eventsOf(decision.id).filter((event) => event.kind === 'invited');
+		expect(outcomesOf(decision.id).map((event) => [event.participantId, event.detail])).toEqual([
+			[first.id, { of: invited[0].id, mail: 'invitation', delivered: true }],
+			[second.id, { of: invited[1].id, mail: 'invitation', delivered: false, problem: 'superseded' }]
+		]);
+		expect(sent.emails.map((mail) => mail.to)).toEqual(['first@example.test']);
 	});
 
 	it('holds one live participant row per account (71)', () => {

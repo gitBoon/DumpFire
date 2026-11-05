@@ -583,7 +583,25 @@ describe('DecisionActions (51 to 54)', () => {
 			expect(tellOnly.disabled).toBe(true);
 			expect(askAgain.checked).toBe(true);
 			expect(textOf(panel.querySelector('[data-note="tell-only"]')!)).toBe(
-				'Tell them only is off: this version adds option C and retires option A, so everyone is asked again.'
+				'Tell them only is off: this version adds option C and retires option A, so everyone consulted is asked again; people kept informed are told.'
+			);
+		});
+
+		it('says who each choice asks, tells or invites: the informed are told, never asked (card 2739, 2739-5)', () => {
+			const { target } = drawActions({ republishSummary: { changesOptions: false, adding: [], retiring: [] } }, { republish: true });
+
+			control(target, 'republish')!.click();
+			flushSync();
+			const panel = target.querySelector<HTMLElement>('[data-panel="republish"]')!;
+			const who = () => textOf(panel.querySelector('[data-note="republish-who"]')!);
+			expect(textOf(panel.querySelector('label')!)).toBe('What changed (participants are told it)');
+			expect(who()).toBe(
+				"Everyone consulted is asked for their view again; anyone consulted whom this round's ask has not reached is sent the invitation instead. Everyone informed is told of the change."
+			);
+			panel.querySelectorAll<HTMLInputElement>('input[type="radio"]')[1].click();
+			flushSync();
+			expect(who()).toBe(
+				"Everyone consulted whom this round's ask reached, and everyone informed, is told of the change. Anyone consulted whom this round's ask has not reached is sent nothing: Resend asks them while the decision is open for input."
 			);
 		});
 	});

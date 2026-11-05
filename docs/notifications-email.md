@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.63
+version: 1.65
 status: As-Built
 date: 2026-11-05
 tags:
@@ -793,8 +793,8 @@ decision mail](#the-dry-run-and-the-limits-on-decision-mail-card-2697)). What ea
 | Mail | Event on the record | Body (every value through `escapeHtml`) |
 |---|---|---|
 | Invitation | `invited` (`{ resend: true }` on a re-send) | The question; for a consulted participant what is asked of them and by when (UTC), for an informed one that nothing is asked; who decides; the link |
-| Asked again | `asked_again` | The change note; that an earlier response stays on the record for its version; by when; the link |
-| Told of a change | `told_of_change` | The change note; the link |
+| Asked again | `asked_again` | The change note; that an earlier response stays on the record for its version; by when; the link. Sent to consulted participants alone (card 2739) |
+| Told of a change | `told_of_change` | The change note; the link. Sent by a tell-only re-publish, and to informed participants by one that asks again (card 2739) |
 | Withdrawn | `told_withdrawn` | That it is withdrawn, the reason, that the link goes on working for 90 days; the link |
 | Ruled | `told_ruling` | The option chosen, or "None of these", the reason and the conditions; "You can raise a concern about this ruling from the page for 90 days." (card 2679); no count, no figure, no "against" and no cut-off (S4); the link |
 
@@ -840,7 +840,9 @@ one WARN line naming the decision and event ids and no address, and the batch go
 
 **Asked again before each send** (`stillToSend`, card 2675's F2). Another write can commit while
 the batch is out, so just before each mail is handed over it is checked again: the decision must
-still exist; the row must not be removed and must still hold the mail's address; a link mail's
+still exist, at the version the mail was built on (card 2739's code review, 2026-11-05: a mail
+overtaken by a re-publish quotes a version no longer current); the row must not be removed and
+must still hold the mail's address; a link mail's
 row must still hold that mail's link (`link_token_hash` the hash of its token); and an account
 mail's participant must still be reached through their account. A mail whose decision is gone is
 not sent, and is a WARN line, `Decision <id>: mail event <id> was not sent, as the decision is
@@ -933,13 +935,27 @@ link holder, then `invited`). An Extend of a decision already open for input mai
 `mail_skipped`, not mailed), goes ahead (code review 2026-11-05). The Extend confirmation on a decision
 shown not open says the unasked are sent the invitation, as the mail limits allow.
 
-A **re-publish** on a closed decision reads the same `unaskedOf` before writing the new version.
-**Asking again** reopens it: the unasked are sent the first-time **invitation**, never
-`asked_again` ("asked again, an earlier response stays"); everyone else `asked_again`. **Telling
-only** leaves it closed: the unasked are sent nothing (as card 2743 sends nothing to one added as
-consulted while closed) and neither the rest nor the caller's cap counts them; everyone else
-`told_of_change`. A re-publish's rest and caller cap still refuse the whole write, as before. On a
-decision open for input a re-publish mails everyone as before.
+A **re-publish**, on a closed decision (card 2744) or one open for input (card 2739), reads the
+same `unaskedOf` before writing the new version. **Asking again** (which reopens a closed
+decision): the unasked are sent the first-time **invitation**, never `asked_again` ("asked again,
+an earlier response stays"); every other consulted participant `asked_again`; and every
+**informed** participant `told_of_change` ("Changed: {title}" and the change note), since they are
+asked nothing and cannot respond (card 2739, D1). **Telling only** (which leaves a closed decision
+closed): the unasked are sent nothing (as card 2743 sends nothing to one added as consulted while
+closed; on an open decision the delivery panel offers Resend) and neither the rest nor the
+caller's cap counts them; everyone else, informed and reached consulted alike, `told_of_change`.
+One exception (card 2739's code review, 2026-11-05): an unasked participant whose asking mail is
+still in flight (its `invited` or `asked_again` has no `mail_outcome` yet, `askingInFlight`) holds
+a tell-only re-publish to their 10-minute rest, as before card 2739, so no new version is
+published while that mail, quoting the old one, is still to go. Every mail a re-publish sends
+counts against the rest and the caps, as before, and they still refuse the whole write. Behind
+that, `stillToSend` records any queued mail built before the decision was published again as
+`mail_outcome { delivered: false, problem: 'superseded' }` and sends nothing, as it does a mail
+whose link was replaced. No kind is new: `told_of_change` was already in `MAIL_KINDS` and
+`CALLER_CAPPED_KINDS`, the delivery panel shows it as "Told of a change" and the told line as "You
+were told of a change to this decision on …", and reach (card 2738) never counted an informed
+participant. The re-publish panel's note says who each choice asks, tells or invites, in terms
+of whom "this round's ask" has reached.
 
 ```mermaid
 flowchart TD
@@ -951,10 +967,10 @@ flowchart TD
     K -- no --> H[heldAsks]
     H -- held --> S[mail_skipped invitation, reason; reopened all the same]
     H -- fits --> I2[invitation, after the commit]
-    P[Re-publish, closed] --> U2[unaskedOf]
+    P[Re-publish, open or closed] --> U2[unaskedOf]
     U2 --> A{Ask again?}
-    A -- yes --> PI[unasked: invitation; others: asked_again]
-    A -- no --> PT[unasked: nothing; others: told_of_change]
+    A -- yes --> PI[unasked: invitation; other consulted: asked_again; informed: told_of_change]
+    A -- no --> PT[unasked: nothing; everyone else: told_of_change]
 ```
 
 ```mermaid
@@ -997,7 +1013,7 @@ sequenceDiagram
     S->>Q: one effect for the batch
     Note over S,Q: commit
     loop each mail, in order
-        Q->>Q: stillToSend: decision, row, address, link or account
+        Q->>Q: stillToSend: decision and its version, row, address, link or account
         alt decision gone
             Q->>Q: WARN line, nothing sent or written
         else superseded
