@@ -12,7 +12,13 @@
 
   A section an agent drafted carries the label until a person marks it
   reviewed; Mark reviewed sends that section, and Mark all reviewed sends
-  `'all'`. The decider select lists the board's editors, the Product Owner
+  `'all'`. Card 2728: so do the title, the decider and the participants an
+  API key chose, the label beside the title, beside the Decider heading and
+  at the head of the participant picker's section. A Mark reviewed waits,
+  with a hint to save first, while its title, section, option or decider has
+  edits not yet saved, and Mark all reviewed while any flagged one has (card
+  2728's code review): a person marks reviewed what is stored. The decider
+  select lists the board's editors, the Product Owner
   marked, and is read-only to a caller who may not change the decider (D6).
 
   Every save sends the revision (R2). A refusal is said in the server's
@@ -219,10 +225,33 @@
 		return closes === '' ? null : closes;
 	}
 
+	/** The content as edited, and as last saved, each as a body's `content`. */
+	let edited = $derived(contentOf(form));
+	let savedContent = $derived(contentOf(formOf(saved.content)));
+
 	let dirty = $derived(
-		JSON.stringify(contentOf(form)) !== JSON.stringify(contentOf(formOf(saved.content))) ||
+		JSON.stringify(edited) !== JSON.stringify(savedContent) ||
 			(draft && (title.trim() !== saved.title || closes !== closesField(saved.closesAt) || voteMode !== saved.voteMode))
 	);
+
+	/**
+	 * Whether a flagged key has edits not yet saved (card 2728's code review):
+	 * its Mark reviewed waits for Save, so a person marks reviewed what is
+	 * stored, never what the agent chose with a change typed over it that may
+	 * not be kept. The title as typed; a section as the form holds it; an
+	 * option by the id the server issued it; the decider as selected and not
+	 * yet changed. The participants are saved by the page's picker, not here.
+	 */
+	function unsavedKey(k: string): boolean {
+		if (k === 'title') return draft && title.trim() !== saved.title;
+		if (k === 'decider') return chosenDecider !== storedDecider;
+		const optionId = /^options\.(\d+)$/.exec(k)?.[1];
+		if (optionId !== undefined) {
+			const optionIn = (body: typeof edited) => JSON.stringify(body.options.find((option) => option.optionId === Number(optionId)));
+			return optionIn(edited) !== optionIn(savedContent);
+		}
+		return k in edited && JSON.stringify(edited[k as keyof typeof edited]) !== JSON.stringify(savedContent[k as keyof typeof savedContent]);
+	}
 
 	// The page is told as `dirty` changes, and once as the editor is drawn (card 2697, Q14).
 	$effect(() => {
@@ -269,6 +298,8 @@
 
 	const flaggedKey = (k: string) => saved.content.agentDrafted[k] === true;
 	let anyFlagged = $derived(Object.keys(saved.content.agentDrafted).length > 0);
+	/** Mark all reviewed waits for Save too while any flagged key has edits not yet saved. */
+	let anyFlaggedUnsaved = $derived(Object.keys(saved.content.agentDrafted).some((k) => flaggedKey(k) && unsavedKey(k)));
 
 	/** Takes a write's answer as what was last saved. */
 	function take(answer: Decision) {
@@ -320,6 +351,7 @@
 
 	async function markReviewed(sections: string[] | 'all') {
 		if (!canReview || saving) return;
+		if (sections === 'all' ? anyFlaggedUnsaved : sections.some(unsavedKey)) return;
 		saving = true;
 		error = '';
 		stale = false;
@@ -393,13 +425,24 @@
 	let groupName = $derived(new Map(groups.map((group) => [String(group.id), group.name])));
 
 	const VOTE_WORDS: Record<string, string> = { single: 'One choice', score: 'A score for each option, 0 to 5' };
+	/** Beside a Mark reviewed held off by edits not yet saved (card 2728's code review). */
+	const SAVE_FIRST = 'Save your changes first to mark this reviewed';
 </script>
 
 {#snippet agentLabel(k: string, name: string)}
 	{#if flaggedKey(k)}
 		<AgentLabel data-section={k} />
 		{#if canReview}
-			<button type="button" class="btn-ghost btn-xs" aria-label="Mark {name} reviewed" onclick={() => markReviewed([k])}>Mark reviewed</button>
+			{@const unsaved = unsavedKey(k)}
+			<button
+				type="button"
+				class="btn-ghost btn-xs"
+				aria-label="Mark {name} reviewed"
+				aria-disabled={unsaved ? 'true' : undefined}
+				aria-describedby={unsaved ? `${uid}-${k}-save-first` : undefined}
+				onclick={() => markReviewed([k])}>Mark reviewed</button
+			>
+			{#if unsaved}<span id="{uid}-{k}-save-first" class="save-first" data-save-first={k}>{SAVE_FIRST}</span>{/if}
 		{/if}
 	{/if}
 {/snippet}
@@ -422,9 +465,17 @@
 		{:else}
 			<h1 class="title-text">{saved.title}</h1>
 		{/if}
+		{@render agentLabel('title', 'Title')}
 		<span class="status-chip" data-status={saved.shownStatus}>{STATUS_WORDS[saved.shownStatus] ?? saved.shownStatus}</span>
 		{#if anyFlagged && canReview}
-			<button type="button" class="btn-ghost btn-sm" onclick={() => markReviewed('all')}>Mark all reviewed</button>
+			<button
+				type="button"
+				class="btn-ghost btn-sm"
+				aria-disabled={anyFlaggedUnsaved ? 'true' : undefined}
+				aria-describedby={anyFlaggedUnsaved ? `${uid}-all-save-first` : undefined}
+				onclick={() => markReviewed('all')}>Mark all reviewed</button
+			>
+			{#if anyFlaggedUnsaved}<span id="{uid}-all-save-first" class="save-first" data-save-first="all">{SAVE_FIRST}</span>{/if}
 		{/if}
 		{#if editable}
 			{#if dirty}<span class="unsaved">Unsaved changes</span>{/if}
@@ -557,7 +608,7 @@
 
 			<section class="side-section">
 				{#if canSetDecider}
-					<label class="small" for="{uid}-decider">Decider</label>
+					<div class="side-head"><label class="small" for="{uid}-decider">Decider</label>{@render agentLabel('decider', 'Decider')}</div>
 					<select id="{uid}-decider" class="field" bind:value={chosenDecider}>
 						{#if saved.deciderUserId === null}
 							<option value="">None named</option>
@@ -570,13 +621,18 @@
 					</select>
 					<button type="button" class="btn-ghost btn-xs" aria-disabled={chosenDecider === storedDecider || saving ? 'true' : undefined} onclick={saveDecider}>Change decider</button>
 				{:else}
-					<p class="small">Decider</p>
+					<div class="side-head"><p class="small">Decider</p>{@render agentLabel('decider', 'Decider')}</div>
 					<p class="fixed decider-fixed">{saved.deciderName ?? 'None named'}</p>
 				{/if}
 			</section>
 
-			{#if side}
-				<div class="side-section">{@render side()}</div>
+			{#if side || flaggedKey('participants')}
+				<div class="side-section">
+					{#if flaggedKey('participants')}
+						<div class="side-head" data-flagged="participants"><p class="small">Participants</p>{@render agentLabel('participants', 'Participants')}</div>
+					{/if}
+					{#if side}{@render side()}{/if}
+				</div>
 			{/if}
 
 			<div class="side-section">
@@ -600,6 +656,7 @@
 		background: rgba(99, 102, 241, 0.12); color: var(--accent-indigo);
 	}
 	.unsaved { font-size: 0.75rem; color: var(--accent-amber); }
+	.save-first { font-size: 0.75rem; color: var(--text-tertiary); }
 	.editor-error { font-size: 0.8rem; color: var(--accent-rose); margin: 0; }
 	.note { font-size: 0.8rem; color: var(--text-tertiary); margin: 0; }
 
@@ -618,6 +675,7 @@
 	}
 	.field[readonly] { background: var(--bg-base); }
 	.small { font-size: 0.72rem; color: var(--text-secondary); margin: 0; }
+	.side-head { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-xs); }
 	.fixed { font-size: 0.82rem; margin: 0; }
 	.help { font-size: 0.7rem; color: var(--text-tertiary); margin: 0; }
 

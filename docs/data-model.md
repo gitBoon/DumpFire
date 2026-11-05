@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.69
+version: 1.70
 status: As-Built
 date: 2026-11-05
 tags:
@@ -1068,7 +1068,7 @@ classDiagram
         unknowns: markdown
         alreadyRuled: markdown
         technicalDetail: markdown
-        agentDrafted: key to true (server's)
+        agentDrafted: key to true (server's; sections, title, participants, decider)
         reviewed: key to byUserId, byName, at (server's)
         lastLabel: string or null (server's)
     }
@@ -1100,6 +1100,17 @@ and in every option, audience and story: an unknown key is 400 naming its path
 `lastLabel` are the server's: each is 400 in a body. A field not sent is empty, and empty text is
 allowed in a draft. The stored form is read tolerantly (`parseWorkingContent`): a field missing
 or of the wrong type is its empty value.
+
+**What `agentDrafted` names** (card 2728, no migration). Each content section an API key changed
+(`situation`, `options.<optionId>`, `audiences`, …), and three keys for what a key chose outside
+the content: `title` (a key's create, a key's changed title on a draft, a key's new title for a
+superseding draft), `participants` (a key's participant save that added, removed or re-roled
+anyone) and `decider` (a key's change of decider). Setting a flag removes that key's `reviewed`
+stamp; only Mark reviewed, a person's act, clears it and stamps `reviewed[key]`. The three are
+written into the stored JSON by `withChosenFlag`, which keeps every other key as stored. A
+version copies all flags and stamps as the record; the participant page and the preview are
+handed none of the three (`pageFlags`). A superseding draft carries a version's `title` flag
+with the old title alone, and never its `participants` or `decider` flag.
 
 | Field | Limit |
 |---|---|
@@ -1189,7 +1200,7 @@ flowchart TD
     Read --> Rev{"revision equal to<br/>revisionOf now?"}
     Rev -->|no| C409["409: changed since you opened it"]
     Rev -->|yes| Opts["decision_options in step:<br/>insert with nextLabel, reposition,<br/>delete unpublished left out"]
-    Opts --> Flags["agentDrafted / reviewed<br/>(flagged only through an API key)"]
+    Opts --> Flags["agentDrafted / reviewed<br/>(flagged only through an API key;<br/>a changed title as agentDrafted.title)"]
     Flags --> Write["decisions: working_content<br/>(with optionIds, lastLabel),<br/>title, closes_at, vote_mode on a draft,<br/>updated_at"]
 ```
 

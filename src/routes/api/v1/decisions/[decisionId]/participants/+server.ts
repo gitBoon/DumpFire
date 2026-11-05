@@ -11,7 +11,9 @@ import type { RequestHandler } from './$types';
  * decision never opened, and who is told of it: `participants`, a list of
  * `{ personId, role }`, and `revision` (card 2682, D4). On a draft nobody is
  * mailed: the set is saved for the person who opens it on the page, who sees
- * it by name and role. Once opened, saving the set mails whoever it includes
+ * it by name and role, flagged `agentDrafted.participants` when the save
+ * changed anyone until they mark it reviewed (card 2728). Once opened,
+ * saving the set mails whoever it includes
  * a personal link at once, so `setParticipants` refuses a key 403 before the
  * body is read, whatever the status now.
  *

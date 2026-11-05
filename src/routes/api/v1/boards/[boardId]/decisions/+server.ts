@@ -12,7 +12,9 @@ import type { RequestHandler } from './$types';
  * `$lib/server/decisions`; `201 { decision, revision }`, the decision in the
  * shape every key is given (`keyDecisionSaved`: no reviewer's account id,
  * marked `untrusted`, D9, D10), and the revision the next write must send
- * (D28). The draft tells nobody: no mail, activity entry or live event.
+ * (D28). The draft tells nobody: no mail, activity entry or live event. Its
+ * title is flagged `agentDrafted.title` until a person marks it reviewed on
+ * the page (card 2728).
  *
  * A key prepares a decision; a person opens it on the decision's page (D3).
  */

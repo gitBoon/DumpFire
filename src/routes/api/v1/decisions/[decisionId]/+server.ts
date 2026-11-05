@@ -28,7 +28,8 @@ export const GET: RequestHandler = async ({ params, locals }) => {
  * `closesAt`, `voteMode` and `content`. `content`, when sent, is the whole
  * content: a section not sent is emptied. Through a key each section the save
  * changes is flagged as an agent's, cleared only by a person's Mark reviewed
- * on the page (D21). Once opened, the title, closing time and vote mode do
+ * on the page (D21); so is a changed title, as `agentDrafted.title` (card
+ * 2728). Once opened, the title, closing time and vote mode do
  * not change here, and nobody is told of a content change until a person
  * re-publishes it on the page (D3). The decider is `PUT …/decider`.
  * `updateDraft` in `$lib/server/decisions`; the answer is

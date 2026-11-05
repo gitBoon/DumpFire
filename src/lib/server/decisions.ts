@@ -133,6 +133,7 @@ import {
 	requireClosed,
 	revisionOf,
 	sectionKeysOf,
+	withChosenFlag,
 	workingFromVersion,
 	CONTENT_LIMITS,
 	type WorkingContent
@@ -357,7 +358,9 @@ function keyed(opts: ServiceOptions): boolean {
  * characters, holding no control, direction or invisible character (decision
  * 30). The decider is the board's Product Owner, if that account can edit the
  * board now, and the author otherwise (decision 7). Writes `created`; no
- * activity entry, live event or mail.
+ * activity entry, live event or mail. Through an API key the title is the
+ * key's choice, flagged `agentDrafted.title` until a person marks it
+ * reviewed (card 2728, D2); the decider is the server's, and flagged nowhere.
  */
 export function createDecision(caller: SessionUser | null, at: { boardId: number }, body: RequestBody, opts: ServiceOptions): Decision {
 	inWrite();
@@ -384,6 +387,7 @@ export function createDecision(caller: SessionUser | null, at: { boardId: number
 			authorName: user.username,
 			deciderUserId: productOwner?.id ?? user.id,
 			deciderName: productOwner?.username ?? user.username,
+			...(keyed(opts) ? { workingContent: withChosenFlag('{}', 'title') } : {}),
 			createdAt: now,
 			updatedAt: now
 		})
@@ -403,7 +407,10 @@ export function createDecision(caller: SessionUser | null, at: { boardId: number
  * decision's as the caller read it, is required (card 2676, decision 10): a
  * different one is a 409. Writes `decider_changed`. Naming the decider it has
  * changes nothing. Card 2679 (code review S1): 409 for a decision that
- * supersedes another, at any status, after the status's own refusal.
+ * supersedes another, at any status, after the status's own refusal. Card
+ * 2728 (D2): a key's change of decider is flagged `agentDrafted.decider`, its
+ * review stamp removed, until a person marks it reviewed; a person's change
+ * keeps the flag (D3).
  */
 export function setDecider(caller: SessionUser | null, at: { decisionId: number }, body: RequestBody, opts: ServiceOptions): Decision {
 	inWrite();
@@ -432,7 +439,12 @@ export function setDecider(caller: SessionUser | null, at: { decisionId: number 
 
 	const row = db
 		.update(decisions)
-		.set({ deciderUserId: account.id, deciderName: account.username, updatedAt: stamp() })
+		.set({
+			deciderUserId: account.id,
+			deciderName: account.username,
+			...(keyed(opts) ? { workingContent: withChosenFlag(decision.workingContent, 'decider') } : {}),
+			updatedAt: stamp()
+		})
 		.where(eq(decisions.id, decision.id))
 		.returning()
 		.get();
@@ -455,7 +467,11 @@ export function setDecider(caller: SessionUser | null, at: { decisionId: number 
  *
  * On a draft the set replaces the rows: a new person gets a row with their
  * snapshots (decision 19), a role is changed, and a row not named is
- * deleted. No event names a participant (comment 5599).
+ * deleted. No event names a participant (comment 5599). Card 2728 (D2):
+ * through an API key a save that adds, removes or re-roles anyone is flagged
+ * `agentDrafted.participants`, its review stamp removed, until a person
+ * marks it reviewed; a person's save keeps the flag (D3). A key reaches no
+ * other status (`OPENED_PEOPLE`).
  *
  * Once open, nothing the record can name is deleted (decision 25). A new
  * person is included (`included`), a removed one comes back on the same row
@@ -555,16 +571,25 @@ export function setParticipants(
 		for (let from = 0; from < gone.length; from += IDS_AT_ONCE) {
 			db.delete(decisionParticipants).where(inArray(decisionParticipants.id, gone.slice(from, from + IDS_AT_ONCE))).run();
 		}
-		for (const row of kept) {
-			const role = named.get(row.personId!)!;
-			if (role !== row.role) db.update(decisionParticipants).set({ role }).where(eq(decisionParticipants.id, row.id)).run();
+		const reRoled = kept.filter((row) => named.get(row.personId!) !== row.role);
+		for (const row of reRoled) {
+			db.update(decisionParticipants).set({ role: named.get(row.personId!)! }).where(eq(decisionParticipants.id, row.id)).run();
 		}
 		for (const insert of inserts) {
 			db.insert(decisionParticipants)
 				.values({ decisionId: decision.id, personId: insert.personId, role: insert.role, ...snapshotColumns(insert.snapshot), includedAt: now, includedBy: user.id, includedByName: user.username })
 				.run();
 		}
-		touch(decision.id, now);
+		// Card 2728 (D2): a key's save that adds, removes or re-roles anyone is the key's choice of who is mailed at Open.
+		const changed = gone.length > 0 || reRoled.length > 0 || inserts.length > 0;
+		if (keyed(opts) && changed) {
+			db.update(decisions)
+				.set({ workingContent: withChosenFlag(decision.workingContent, 'participants'), updatedAt: now })
+				.where(eq(decisions.id, decision.id))
+				.run();
+		} else {
+			touch(decision.id, now);
+		}
 		return participantsOf(decision.id);
 	}
 
@@ -684,7 +709,9 @@ export function setParticipants(
  *
  * Through an API key each section the save changed is flagged as drafted by
  * an agent, and its reviewed stamp removed; only Mark reviewed clears a flag
- * (decision 9). No event, activity entry, live event or mail.
+ * (decision 9). So is a draft's title the save changed, as
+ * `agentDrafted.title` (card 2728, D2), with or without `content`. No event,
+ * activity entry, live event or mail.
  */
 export function updateDraft(
 	caller: SessionUser | null,
@@ -761,13 +788,26 @@ export function updateDraft(
 		working = { ...after, agentDrafted, reviewed, lastLabel };
 	}
 
+	// Card 2728 (D2): a key's change of a draft's title is the key's choice of every invitation's subject.
+	const keyTitle = keyed(opts) && draft && title !== undefined && title !== decision.title;
+	let workingContent: string | undefined;
+	if (working) {
+		if (keyTitle) {
+			working.agentDrafted.title = true;
+			delete working.reviewed.title;
+		}
+		workingContent = JSON.stringify(working);
+	} else if (keyTitle) {
+		workingContent = withChosenFlag(decision.workingContent, 'title');
+	}
+
 	const row = db
 		.update(decisions)
 		.set({
 			...(draft && title !== undefined ? { title } : {}),
 			...(draft && closesAt !== undefined ? { closesAt } : {}),
 			...(draft && voteMode !== undefined ? { voteMode } : {}),
-			...(working ? { workingContent: JSON.stringify(working) } : {}),
+			...(workingContent !== undefined ? { workingContent } : {}),
 			updatedAt: now
 		})
 		.where(eq(decisions.id, decision.id))
@@ -779,6 +819,8 @@ export function updateDraft(
 /**
  * Mark sections drafted by an agent reviewed (card 2676, decision 9, R7):
  * `sections`, a list of section keys or `'all'`, and `revision`, required.
+ * Since card 2728 a key may also be `title`, `participants` or `decider`,
+ * each chosen through an API key (`sectionKeysOf`), and `'all'` clears them too.
  * A person's act alone: refused, 403, unless the write came through the web
  * application (`source: 'ui'`), so that an API key can never clear the label
  * it set. A key that is no section of this decision is a 400. Each flagged
@@ -1835,7 +1877,9 @@ export function releaseResults(caller: SessionUser | null, at: { decisionId: num
  * they chose. Its working content is the version ruled on, through
  * `workingFromVersion`, each option a new row labelled from A in order. Writes
  * `created { decider, supersedes }` on the draft alone; no activity entry, no
- * live event and no mail (a draft).
+ * live event and no mail (a draft). Card 2728 (D6): the version's
+ * `participants` and `decider` flags are not carried, and its `title` flag
+ * only with the old title; a new title given through an API key is flagged.
  */
 export function supersedeDecision(caller: SessionUser | null, at: { decisionId: number }, body: RequestBody, opts: ServiceOptions): Decision {
 	inWrite();
@@ -1885,9 +1929,15 @@ export function supersedeDecision(caller: SessionUser | null, at: { decisionId: 
 		const made = db.insert(decisionOptions).values({ decisionId: draft.id, label: String.fromCharCode(65 + index), position: index }).returning().get();
 		optionIds.set(option.optionId, made.id);
 	});
+	// Card 2728 (D6): the old title's flag goes with the old title; a new title replaces it, flagged when a key chose it.
+	const working = workingFromVersion(content, optionIds);
+	if (title !== decision.title) {
+		delete working.agentDrafted.title;
+		if (keyed(opts)) working.agentDrafted.title = true;
+	}
 	const row = db
 		.update(decisions)
-		.set({ workingContent: JSON.stringify(workingFromVersion(content, optionIds)) })
+		.set({ workingContent: JSON.stringify(working) })
 		.where(eq(decisions.id, draft.id))
 		.returning()
 		.get();

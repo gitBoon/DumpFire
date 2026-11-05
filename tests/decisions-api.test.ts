@@ -19,7 +19,9 @@
  * and the service refusals cards 2675 to 2680 and 2697 own are not repeated.
  *
  * The cases are the plan's, `docs/planning/card-2682-decisions-api.md`,
- * section 6.1, by number.
+ * section 6.1, by number. Case 27 is card 2728's: a title, participant list
+ * or decider a key chose is flagged until a person marks it reviewed
+ * (`docs/planning/card-2728-agent-chosen-flags.md`, section 6).
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
@@ -31,7 +33,8 @@ import { db, sqlite } from '$lib/server/db';
 import { apiKeys, decisions, people, settings, type Board, type Column, type Decision } from '$lib/server/db/schema';
 import { STALE_REVISION } from '$lib/decision-words';
 import type { Credential, SessionUser } from '$lib/server/auth';
-import { decisionAnswer, readDecisionForKey, revisionFor } from '$lib/server/decision-authoring';
+import { decisionAnswer, readDecisionForKey, readinessOf, revisionFor, versionContentAnswer, workingViewContent } from '$lib/server/decision-authoring';
+import { parseVersionContent, parseWorkingContent } from '$lib/server/decision-content';
 import { appendEvent, SYSTEM_ACTOR } from '$lib/server/decision-record';
 import { readPersonRecord, readRecord, readRegister, recordEntryOf, registerQueryOf } from '$lib/server/decision-register';
 import { readSummary } from '$lib/server/decision-results';
@@ -61,6 +64,7 @@ import {
 	setDecider,
 	setParticipantAccount,
 	setParticipants,
+	supersedeDecision,
 	updateDraft,
 	withdrawDecision
 } from '$lib/server/decisions';
@@ -1551,5 +1555,216 @@ describe('PUT and DELETE /api/v1/decisions/{decisionId}/cards/{cardId} (26)', ()
 		expect(unlinked.status).toBe(200);
 		expect(unlinked.body).toEqual({ linkedCards: [] });
 		expect(activityRows().slice(before + 1)).toEqual([{ boardId: board.id, action: 'api:decision_card_unlinked', source: 'api' }]);
+	});
+});
+
+// ─── 27. A title, participants or decider chosen through a key (card 2728) ───
+
+/** The decision's agent flags and review stamps, as the server reads them. */
+const flags = (id: number) => parseWorkingContent(decisionRow(id).workingContent).agentDrafted;
+const stamps = (id: number) => parseWorkingContent(decisionRow(id).workingContent).reviewed;
+/** The editor's agent warnings for the three chosen keys, as `[key, words]`. */
+const chosenWarnings = (id: number) =>
+	readinessOf(decisionRow(id))
+		.warnings.filter((warning) => warning.code === 'agent_drafted' && ['title', 'participants', 'decider'].includes(warning.key ?? ''))
+		.map((warning) => [warning.key, warning.words]);
+const CHOSE = (what: string) => `${what} chosen by an agent and not yet reviewed by a person`;
+
+describe('a title, participants or decider chosen through a key is flagged until a person reviews it (27, card 2728)', () => {
+	it("2728-1 flags the title of a draft a key made, gives the flag in the key's answer, and warns of it in the editor; a person's draft has none", async () => {
+		const author = editor('author');
+
+		const res = await withKey(author, 'POST', `/api/v1/boards/${board.id}/decisions`, { title: 'From an agent' });
+
+		expect(res.status).toBe(201);
+		expect(res.body.decision.content.agentDrafted).toEqual({ title: true });
+		expect(chosenWarnings(res.body.decision.id)).toEqual([['title', CHOSE('The title was')]]);
+		const mine = asSession(author, (caller) => createDecision(caller, { boardId: board.id }, { title: 'From a person' }, UI));
+		expect(decisionRow(mine.id).workingContent).toBe('{}');
+	});
+
+	it("2728-2 flags a draft's title a key changed, removing its stamp and keeping the content as stored; the same title flags nothing", async () => {
+		const { author, draft } = draftOf();
+		const stamp0 = { byUserId: author.id, byName: author.username, at: '2026-11-01 09:00:00' };
+		db.update(decisions)
+			.set({ workingContent: JSON.stringify({ situation: 'Old.', reviewed: { title: stamp0 } }) })
+			.where(eq(decisions.id, draft.id))
+			.run();
+
+		const same = await withKey(author, 'PATCH', `/api/v1/decisions/${draft.id}`, { revision: revisionNow(draft.id), title: 'A draft' });
+		expect(same.status).toBe(200);
+		expect(flags(draft.id)).toEqual({});
+
+		const res = await withKey(author, 'PATCH', `/api/v1/decisions/${draft.id}`, { revision: revisionNow(draft.id), title: 'Chosen by an agent' });
+		expect(res.status).toBe(200);
+		expect(res.body.decision).toMatchObject({ title: 'Chosen by an agent', content: { agentDrafted: { title: true }, reviewed: {} } });
+		expect(JSON.parse(decisionRow(draft.id).workingContent)).toEqual({ situation: 'Old.', agentDrafted: { title: true }, reviewed: {} });
+		expect(res.body.revision).toBe(revisionNow(draft.id));
+		expect(res.body.readiness.warnings).toContainEqual({ code: 'agent_drafted', key: 'title', words: CHOSE('The title was') });
+
+		// With content: the title's flag beside the changed section's, and the title's stamp removed.
+		const other = draftOf(author).draft;
+		db.update(decisions)
+			.set({ workingContent: JSON.stringify({ reviewed: { title: stamp0 } }) })
+			.where(eq(decisions.id, other.id))
+			.run();
+		expect(stamps(other.id)).toEqual({ title: stamp0 });
+		const withContent = await withKey(author, 'PATCH', `/api/v1/decisions/${other.id}`, {
+			revision: revisionNow(other.id),
+			title: 'Also an agent',
+			content: { situation: 'New.' }
+		});
+		expect(withContent.status).toBe(200);
+		expect(flags(other.id)).toEqual({ situation: true, title: true });
+		expect(stamps(other.id)).toEqual({});
+	});
+
+	it('2728-3 flags a decider a key named, removing its stamp; naming the same one flags nothing', async () => {
+		const { author, draft } = draftOf();
+		db.update(decisions)
+			.set({ workingContent: JSON.stringify({ reviewed: { decider: { byUserId: author.id, byName: author.username, at: '2026-11-01 09:00:00' } } }) })
+			.where(eq(decisions.id, draft.id))
+			.run();
+
+		const same = await withKey(author, 'PUT', `/api/v1/decisions/${draft.id}/decider`, { deciderUserId: author.id, revision: revisionNow(draft.id) });
+		expect(same.status).toBe(200);
+		expect(flags(draft.id)).toEqual({});
+
+		const other = editor('other');
+		const res = await withKey(author, 'PUT', `/api/v1/decisions/${draft.id}/decider`, { deciderUserId: other.id, revision: revisionNow(draft.id) });
+		expect(res.status).toBe(200);
+		expect(res.body.decision.content.agentDrafted).toEqual({ decider: true });
+		expect(stamps(draft.id)).toEqual({});
+		expect(res.body.revision).toBe(revisionNow(draft.id));
+		expect(chosenWarnings(draft.id)).toEqual([['decider', CHOSE('The decider was')]]);
+	});
+
+	it('2728-4 flags the participants when a key adds, re-roles or removes anyone, each cleared by Mark reviewed; the same set flags nothing', async () => {
+		const { author, draft } = draftOf();
+		const pat = makePerson({ fullName: 'Pat Doe' });
+		const sam = makePerson({ fullName: 'Sam Roe' });
+		const put = (participants: { personId: number; role: string }[]) =>
+			withKey(author, 'PUT', `/api/v1/decisions/${draft.id}/participants`, { participants, revision: revisionNow(draft.id) });
+		const review = () => asSession(author, (caller) => markReviewed(caller, { decisionId: draft.id }, { sections: ['participants'], revision: revisionNow(draft.id) }, UI));
+
+		expect((await put([])).status).toBe(200);
+		expect(flags(draft.id)).toEqual({});
+
+		const changes: [string, { personId: number; role: string }[]][] = [
+			['added', [{ personId: pat.id, role: 'consulted' }, { personId: sam.id, role: 'informed' }]],
+			['re-roled', [{ personId: pat.id, role: 'informed' }, { personId: sam.id, role: 'informed' }]],
+			['removed', [{ personId: pat.id, role: 'informed' }]]
+		];
+		for (const [change, participants] of changes) {
+			const res = await put(participants);
+			expect(res.status, change).toBe(200);
+			expect(flags(draft.id), change).toEqual({ participants: true });
+			expect(stamps(draft.id), change).toEqual({});
+			expect(chosenWarnings(draft.id), change).toEqual([['participants', CHOSE('The participants were')]]);
+			review();
+			expect(flags(draft.id), change).toEqual({});
+			expect(stamps(draft.id).participants, change).toMatchObject({ byUserId: author.id });
+		}
+
+		// The same set again: nothing flagged, the stamp kept.
+		expect((await put([{ personId: pat.id, role: 'informed' }])).status).toBe(200);
+		expect(flags(draft.id)).toEqual({});
+		expect(stamps(draft.id)).toHaveProperty('participants');
+	});
+
+	it("2728-5 sets no flag for a person's change of the title, decider or participants, and clears none", () => {
+		const { author, draft } = draftOf();
+		const other = editor('other');
+		const pat = makePerson({ fullName: 'Pat Doe' });
+		const byPerson = (title: string, deciderUserId: number, participants: { personId: number; role: string }[]) => {
+			asSession(author, (caller) => updateDraft(caller, { decisionId: draft.id }, { revision: revisionNow(draft.id), title }, UI));
+			asSession(author, (caller) => setDecider(caller, { decisionId: draft.id }, { deciderUserId, revision: revisionNow(draft.id) }, UI));
+			asSession(author, (caller) => setParticipants(caller, { decisionId: draft.id }, { participants, revision: revisionNow(draft.id) }, UI));
+		};
+
+		byPerson('By a person', other.id, [{ personId: pat.id, role: 'consulted' }]);
+		expect(flags(draft.id)).toEqual({});
+
+		asKey(author, (caller) => updateDraft(caller, { decisionId: draft.id }, { revision: revisionNow(draft.id), title: 'By an agent' }, API));
+		asKey(author, (caller) => setDecider(caller, { decisionId: draft.id }, { deciderUserId: author.id, revision: revisionNow(draft.id) }, API));
+		asKey(author, (caller) => setParticipants(caller, { decisionId: draft.id }, { participants: [], revision: revisionNow(draft.id) }, API));
+		expect(flags(draft.id)).toEqual({ title: true, decider: true, participants: true });
+
+		byPerson('By a person again', other.id, [{ personId: pat.id, role: 'informed' }]);
+		expect(decisionRow(draft.id)).toMatchObject({ title: 'By a person again', deciderUserId: other.id });
+		expect(flags(draft.id)).toEqual({ title: true, decider: true, participants: true });
+	});
+
+	it("2728-6 clears ['title'] alone for a person, then 'all' the rest, stamping each; a key's Mark reviewed is 403 with nothing written", () => {
+		const { author, draft } = draftOf();
+		const other = editor('other');
+		const pat = makePerson({ fullName: 'Pat Doe' });
+		asKey(author, (caller) => updateDraft(caller, { decisionId: draft.id }, { revision: revisionNow(draft.id), title: 'By an agent' }, API));
+		asKey(author, (caller) => setDecider(caller, { decisionId: draft.id }, { deciderUserId: other.id, revision: revisionNow(draft.id) }, API));
+		asKey(author, (caller) => setParticipants(caller, { decisionId: draft.id }, { participants: [{ personId: pat.id, role: 'consulted' }], revision: revisionNow(draft.id) }, API));
+		expect(chosenWarnings(draft.id)).toEqual([
+			['title', CHOSE('The title was')],
+			['participants', CHOSE('The participants were')],
+			['decider', CHOSE('The decider was')]
+		]);
+		const before = decisionRow(draft.id);
+		const review = (sections: string[] | 'all', through: typeof asKey) =>
+			through(author, (caller) => markReviewed(caller, { decisionId: draft.id }, { sections, revision: revisionNow(draft.id) }, UI));
+
+		expect(outcome(() => review(['title'], asKey))).toEqual({ status: 403, message: REVIEW_ACT });
+		expect(decisionRow(draft.id)).toEqual(before);
+
+		const revision = revisionNow(draft.id);
+		review(['title'], asSession);
+		expect(flags(draft.id)).toEqual({ participants: true, decider: true });
+		expect(stamps(draft.id).title).toMatchObject({ byUserId: author.id, byName: author.username });
+		expect(revisionNow(draft.id)).not.toBe(revision);
+
+		review('all', asSession);
+		expect(flags(draft.id)).toEqual({});
+		expect(Object.keys(stamps(draft.id)).sort()).toEqual(['decider', 'participants', 'title']);
+		expect(chosenWarnings(draft.id)).toEqual([]);
+	});
+
+	it("2728-7 flags a new title a key gives a superseding draft; the version's participants and decider flags are not carried, its title flag only with the old title", () => {
+		const ruled = () => {
+			const made = opened({ status: 'closed', closesAt: '2026-11-02 09:00:00' });
+			makeRuling(made.decision, { ruledAt: stamp() });
+			sqlite
+				.prepare("UPDATE decision_versions SET content = json_set(content, '$.agentDrafted', json(?)) WHERE decision_id = ?")
+				.run(JSON.stringify({ situation: true, title: true, participants: true, decider: true }), made.decision.id);
+			return made;
+		};
+		const supersede = (body: Record<string, unknown>, opts: ServiceOptions) => {
+			const { decision, decider } = ruled();
+			return (opts === API ? asKey : asSession)(decider, (caller) => supersedeDecision(caller, { decisionId: decision.id }, body, opts)).id;
+		};
+
+		expect(flags(supersede({}, API))).toEqual({ situation: true, title: true });
+		expect(flags(supersede({}, UI))).toEqual({ situation: true, title: true });
+		expect(flags(supersede({ title: 'Again, by an agent' }, API))).toEqual({ situation: true, title: true });
+		expect(flags(supersede({ title: 'Again, by a person' }, UI))).toEqual({ situation: true });
+	});
+
+	it('2728-8 publishes the three flags and their stamps in the version, and hands none of them to a participant page or the preview', () => {
+		const ready = readyDraft({ board });
+		const stamped = { byUserId: ready.author.id, byName: ready.author.username, at: '2026-11-05 09:00:00' };
+		db.update(decisions)
+			.set({ workingContent: JSON.stringify({ ...ready.working, agentDrafted: { situation: true, title: true, decider: true }, reviewed: { question: stamped, participants: stamped } }) })
+			.where(eq(decisions.id, ready.draft.id))
+			.run();
+		const working = parseWorkingContent(decisionRow(ready.draft.id).workingContent);
+
+		asSession(ready.author, (caller) => openDecision(caller, { decisionId: ready.draft.id }, { revision: revisionNow(ready.draft.id) }, UI));
+
+		const row = sqlite.prepare('SELECT content FROM decision_versions WHERE decision_id = ? AND number = 1').get(ready.draft.id) as { content: string };
+		const version = parseVersionContent(row.content);
+		expect(version.agentDrafted).toEqual({ situation: true, title: true, decider: true });
+		expect(version.reviewed).toEqual({ question: { byName: stamped.byName, at: stamped.at }, participants: { byName: stamped.byName, at: stamped.at } });
+		for (const answer of [versionContentAnswer(version, 'session'), workingViewContent(working)]) {
+			expect(answer.agentDrafted).toEqual({ situation: true });
+			expect(answer.reviewed).toEqual({ question: true });
+		}
+		expect(versionContentAnswer(version, 'link').agentDrafted).toEqual({ situation: true });
 	});
 });

@@ -34,7 +34,11 @@ export type WorkingContent = {
 	unknowns: string;
 	alreadyRuled: string;
 	technicalDetail: string;
-	/** The sections written through an API key and not yet marked reviewed by a person (decision 9). */
+	/**
+	 * The sections written through an API key and not yet marked reviewed by a
+	 * person (decision 9); and, since card 2728, `title`, `participants` and
+	 * `decider` (`CHOSEN_KEYS`), each chosen through a key and not yet reviewed.
+	 */
 	agentDrafted: Record<string, true>;
 	/** Who marked each section reviewed, and when (R7). */
 	reviewed: Record<string, { byUserId: number; byName: string; at: Stamp }>;
@@ -206,6 +210,21 @@ const SECTION_NAMES: Readonly<Record<string, string>> = {
 	stories: 'User stories'
 };
 
+/**
+ * What a key may choose outside the content (card 2728): the title, the
+ * participant list and the decider. Each is flagged in `agentDrafted` under
+ * its own key when a key's write changes it, warned of by `checkContent`, and
+ * cleared by a person's Mark reviewed alone, as a section's flag is.
+ */
+export const CHOSEN_KEYS = ['title', 'participants', 'decider'] as const;
+
+/** Each of `CHOSEN_KEYS`, as its warning names it (card 2728, D8). */
+const CHOSEN_WORDS: Readonly<Record<(typeof CHOSEN_KEYS)[number], string>> = {
+	title: 'The title was',
+	participants: 'The participants were',
+	decider: 'The decider was'
+};
+
 /** Text with nothing in it but spaces. */
 const blank = (text: string) => text.trim() === '';
 
@@ -213,9 +232,12 @@ const blank = (text: string) => text.trim() === '';
  * What in the content a person should look at before opening (decision 12):
  * an empty situation, question or ask; an audience with no text; an option
  * with no title, pros, cons or commercial note; an audience whose group no
- * participant belongs to now, or whose group is gone; and each section an
- * agent drafted that no person has marked reviewed. Each names its entry by
- * `key` where there is more than one of its kind.
+ * participant belongs to now, or whose group is gone; each section an
+ * agent drafted that no person has marked reviewed; and, after them, the
+ * title, participants and decider a key chose that no person has (card 2728,
+ * keyed by `CHOSEN_KEYS`: a warning, as every agent flag is, so Open's
+ * confirmation names it). Each names its entry by `key` where there is more
+ * than one of its kind.
  *
  * With `closing`, a closing time more than `CLOSES_WITHIN_DAYS` ahead too
  * (the code review's part B, S3), which opening and re-publishing refuse. It
@@ -253,10 +275,15 @@ export function checkContent(content: ContentAnswer, audience: AudienceFacts, cl
 	});
 
 	for (const key of Object.keys(content.agentDrafted)) {
+		if ((CHOSEN_KEYS as readonly string[]).includes(key)) continue;
 		const optionId = /^options\.(\d+)$/.exec(key);
 		const index = optionId === null ? -1 : content.options.findIndex((option) => option.optionId === Number(optionId[1]));
 		const section = optionId === null ? (SECTION_NAMES[key] ?? key) : index === -1 ? 'An option' : `Option ${index + 1}`;
 		warnings.push({ code: 'agent_drafted', key, words: `${section} was drafted by an agent and not yet reviewed by a person` });
+	}
+	// Card 2728: the title, the participants and the decider a key chose, in that order, after the sections.
+	for (const key of CHOSEN_KEYS) {
+		if (content.agentDrafted[key] === true) warnings.push({ code: 'agent_drafted', key, words: `${CHOSEN_WORDS[key]} chosen by an agent and not yet reviewed by a person` });
 	}
 
 	if (closing !== undefined && closesTooFar(closing.closesAt, closing.now)) {

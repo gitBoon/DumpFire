@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.119
+version: 1.120
 status: As-Built
 date: 2026-11-05
 tags:
@@ -4830,7 +4830,15 @@ twin lets in: a caller who may view the decision and not do the act is `403`
 - **`content` is whole.** `PATCH` reads `content` strictly: a section not sent is emptied. Each
   section a key changes is flagged as drafted by an agent until a person marks it reviewed on
   the page. Once opened, only the content changes, and nobody is told until a person
-  re-publishes. The title, written through a key, carries no flag (card 2682's F3, its own card).
+  re-publishes.
+- **What a key chooses is flagged too** (card 2728). The title of a draft a key made, or changed
+  by `PATCH`, or gave a superseding draft, is flagged `content.agentDrafted.title`; a change of
+  decider by `PUT …/decider`, `agentDrafted.decider`; and a `PUT …/participants` that adds,
+  removes or re-roles anyone, `agentDrafted.participants`. A write that changes nothing flags
+  nothing. Each is a readiness warning ("The title was chosen by an agent and not yet reviewed by
+  a person") and carries the agent label in the editor until a person marks it reviewed there,
+  which a key cannot do; a person's own later change keeps the flag. It is a warning, as every
+  agent flag is: Open's confirmation names it.
 - **No address, no account id, no asker.** Every key is given the shape a non-administrator is:
   no participant's `email`, `userId`, `includedBy`, `removedBy` or `linkIssuedAt`, no reviewer's
   account id, no closing time and no `closedAt` once ruled, and no picker address. No question
@@ -4856,10 +4864,11 @@ sequenceDiagram
     A->>V: POST /boards/3/decisions { title }
     V-->>A: 201 { decision, revision }
     A->>V: PATCH /decisions/42 { revision, content }
-    V-->>A: 200, each changed section flagged
+    V-->>A: 200, each changed section flagged (a changed title too, card 2728)
     A->>V: PUT /decisions/42/participants { participants, revision }
     V->>S: setParticipants, source api (never opened: saved, nobody mailed)
-    V-->>A: 200 { participants, revision }
+    V-->>A: 200 { participants, revision }, agentDrafted.participants set
+    P->>S: Mark reviewed (the title, participants, decider)
     P->>S: Open (the dialog says how many are mailed)
     A->>V: PUT /decisions/42/participants
     V->>S: openedAt is set and the write is a key's

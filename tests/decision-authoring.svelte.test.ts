@@ -55,7 +55,7 @@ import type { WorkingContent } from '$lib/decision-readiness';
 
 // The browser's `mount`, loaded by its path (see the XP bars' file).
 const clientEntry = pathToFileURL(join(process.cwd(), 'node_modules/svelte/src/index-client.js')).href;
-const { flushSync, mount, unmount }: typeof Svelte = await import(/* @vite-ignore */ clientEntry);
+const { createRawSnippet, flushSync, mount, unmount }: typeof Svelte = await import(/* @vite-ignore */ clientEntry);
 
 type Json = any;
 
@@ -570,6 +570,95 @@ describe('DecisionEditor (cases 26 to 29)', () => {
 		expect(target.querySelector('.agent-label')).toBeNull();
 		expect(button(target, 'Mark all reviewed')).toBeUndefined();
 		expect(saved).toEqual(['rev-2', 'rev-3']);
+	});
+
+	it('27 (card 2728): a title, decider and participants an agent chose each carry the label beside them; Mark reviewed waits while that key has edits not yet saved, then sends that key alone, keeping other edits', async () => {
+		const flagged = { title: true as const, decider: true as const, participants: true as const };
+		const side = createRawSnippet(() => ({ render: () => '<div class="picker">The picker</div>' }));
+		const target = drawEditor({ decision: decision({ content: content({ agentDrafted: flagged }) }), side });
+		const labels = () => [...target.querySelectorAll('.agent-label')].map((l) => l.getAttribute('data-section'));
+		expect(labels()).toEqual(['title', 'decider', 'participants']);
+		expect(target.querySelector('.top-bar [data-section="title"]')).not.toBeNull();
+		expect(textOf(target.querySelector('[data-section="decider"]')!.parentElement!)).toContain('Decider');
+		const participants = target.querySelector('[data-flagged="participants"]')!;
+		expect(participants.parentElement!.querySelector('.picker')).not.toBeNull();
+		expect(textOf(participants)).toContain('Participants');
+
+		// The code review: a title typed over and not yet saved holds its Mark reviewed (and Mark all reviewed) off, saying to save first.
+		const titleInput = target.querySelector<HTMLInputElement>('.title-input')!;
+		type(titleInput, 'Pick a supplier, edited');
+		expect(button(target, 'Mark Title reviewed').getAttribute('aria-disabled')).toBe('true');
+		expect(textOf(target.querySelector('[data-save-first="title"]')!)).toBe('Save your changes first to mark this reviewed');
+		expect(button(target, 'Mark all reviewed').getAttribute('aria-disabled')).toBe('true');
+		button(target, 'Mark Title reviewed').click();
+		button(target, 'Mark all reviewed').click();
+		await settle();
+		expect(requests('POST /api/decisions/5/reviewed')).toEqual([]);
+		expect(labels()).toEqual(['title', 'decider', 'participants']);
+
+		// The title as saved again, an unflagged section edited: Mark reviewed sends the title alone, the edit kept.
+		type(titleInput, 'Pick a supplier');
+		type(fieldLabelled(target, 'Situation'), 'Typed, not yet saved.');
+		expect(button(target, 'Mark Title reviewed').getAttribute('aria-disabled')).toBeNull();
+		expect(target.querySelector('[data-save-first]')).toBeNull();
+		answer('POST /api/decisions/5/reviewed', { decision: decision({ content: content({ agentDrafted: { decider: true, participants: true } }) }), revision: 'rev-2' });
+		button(target, 'Mark Title reviewed').click();
+		await settle();
+		expect(requests('POST /api/decisions/5/reviewed')).toEqual([{ sections: ['title'], revision: 'rev-1' }]);
+		expect(labels()).toEqual(['decider', 'participants']);
+		expect(fieldLabelled(target, 'Situation').value).toBe('Typed, not yet saved.');
+
+		answer('POST /api/decisions/5/reviewed', { decision: decision({ content: content({ agentDrafted: { decider: true } }) }), revision: 'rev-3' });
+		button(target, 'Mark Participants reviewed').click();
+		await settle();
+		expect(requests('POST /api/decisions/5/reviewed')[1]).toEqual({ sections: ['participants'], revision: 'rev-1' });
+		expect(target.querySelector('[data-flagged="participants"]')).toBeNull();
+		expect(target.querySelector('.picker')).not.toBeNull();
+		expect(button(target, 'Mark Decider reviewed')).toBeDefined();
+
+		// Another decider selected and not yet changed: its Mark reviewed waits too.
+		const select = fieldLabelled(target, 'Decider') as unknown as HTMLSelectElement;
+		select.value = '3';
+		select.dispatchEvent(new Event('change', { bubbles: true }));
+		flushSync();
+		expect(button(target, 'Mark Decider reviewed').getAttribute('aria-disabled')).toBe('true');
+		expect(target.querySelector('[data-save-first="decider"]')).not.toBeNull();
+		button(target, 'Mark Decider reviewed').click();
+		await settle();
+		expect(requests('POST /api/decisions/5/reviewed')).toHaveLength(2);
+	});
+
+	it("27 (card 2728's code review): a flagged section or option with edits not yet saved holds its Mark reviewed and Mark all reviewed off, saying to save first; saved, they send", async () => {
+		const flagged = { situation: true as const, 'options.101': true as const };
+		const target = drawEditor({ decision: decision({ content: content({ agentDrafted: flagged }) }) });
+		const held = (name: string) => button(target, name).getAttribute('aria-disabled') === 'true';
+
+		type(fieldLabelled(target, 'Situation'), 'Typed over the agent.');
+		expect([held('Mark Situation reviewed'), held('Mark option 1 reviewed'), held('Mark all reviewed')]).toEqual([true, false, true]);
+		expect([...target.querySelectorAll('[data-save-first]')].map((hint) => hint.getAttribute('data-save-first'))).toEqual(['all', 'situation']);
+		expect(button(target, 'Mark Situation reviewed').getAttribute('aria-describedby')).toBe(target.querySelector('[data-save-first="situation"]')!.id);
+		button(target, 'Mark Situation reviewed').click();
+		button(target, 'Mark all reviewed').click();
+		await settle();
+		expect(requests('POST /api/decisions/5/reviewed')).toEqual([]);
+
+		type(optionCards(target)[0].querySelector<HTMLInputElement>('input')!, 'Acme, typed over');
+		expect(held('Mark option 1 reviewed')).toBe(true);
+		button(target, 'Mark option 1 reviewed').click();
+		await settle();
+		expect(requests('POST /api/decisions/5/reviewed')).toEqual([]);
+
+		// Saved: each sends again.
+		const savedContent = content({ agentDrafted: flagged, situation: 'Typed over the agent.' });
+		savedContent.options[0].title = 'Acme, typed over';
+		answer('PUT /api/decisions/5', { decision: decision({ content: savedContent }), options: OPTIONS, revision: 'rev-2', readiness: { refusals: [], warnings: [] } });
+		button(target, 'Save').click();
+		await settle();
+		expect(target.querySelector('[data-save-first]')).toBeNull();
+		answer('POST /api/decisions/5/reviewed', { decision: decision({ content: { ...savedContent, agentDrafted: {} } }), revision: 'rev-3' });
+		button(target, 'Mark all reviewed').click();
+		await settle();
+		expect(requests('POST /api/decisions/5/reviewed')).toEqual([{ sections: 'all', revision: 'rev-1' }]);
 	});
 
 	it('28: the readability panel lists the server’s refusals and warnings in their words; an emptied question shows checkContent’s warning, the refusals as the server gave them', () => {

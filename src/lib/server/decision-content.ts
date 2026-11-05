@@ -46,7 +46,7 @@ import { isSmtpConfigured } from './email';
 import { UNPRINTABLE } from './logger';
 import { asObject, readId, readList, readObjects, readText, type RequestBody } from './request-body';
 import { purposeKey } from './request-tokens';
-import type { AudienceFacts, OpenFacts, WorkingContent } from '$lib/decision-readiness';
+import { CHOSEN_KEYS, type AudienceFacts, type OpenFacts, type WorkingContent } from '$lib/decision-readiness';
 import { DECISION_TITLE_MAX } from '$lib/decision-rules';
 import type { Stamp } from '$lib/timestamps';
 
@@ -390,14 +390,45 @@ export function changedSections(before: WorkingContent, after: ContentFields): s
 	return changed;
 }
 
-/** Every key a flag may name in this content: its text sections, each listed option, and the audiences and stories. */
+/**
+ * Every key a flag may name in this content: its text sections, each listed
+ * option, the audiences and stories, and (card 2728) the title, participants
+ * and decider.
+ */
 export function sectionKeysOf(content: WorkingContent): string[] {
 	return [
 		...TEXT_SECTIONS,
 		...content.options.filter((option) => option.optionId !== undefined).map((option) => `options.${option.optionId}`),
 		'audiences',
-		'stories'
+		'stories',
+		...CHOSEN_KEYS
 	];
+}
+
+/**
+ * The stored working content `json` with `key` flagged as an agent's choice
+ * and its review stamp removed (card 2728, D2): for a key's write to the
+ * title, the participants or the decider. Every other key is kept as stored,
+ * a missing one left missing, so the content reads exactly as before but for
+ * the flag. Stored content that is not a JSON object is read as empty, as
+ * `parseWorkingContent` reads it. Pure.
+ */
+export function withChosenFlag(json: string, key: (typeof CHOSEN_KEYS)[number]): string {
+	let stored: Record<string, unknown> = {};
+	try {
+		const parsed = JSON.parse(json) as unknown;
+		if (isRecord(parsed)) stored = parsed;
+	} catch {
+		// Not JSON: the empty content.
+	}
+	const flags = isRecord(stored.agentDrafted) ? stored.agentDrafted : {};
+	const next: Record<string, unknown> = { ...stored, agentDrafted: { ...flags, [key]: true } };
+	if (isRecord(stored.reviewed) && Object.hasOwn(stored.reviewed, key)) {
+		const kept = { ...stored.reviewed };
+		delete kept[key];
+		next.reviewed = kept;
+	}
+	return JSON.stringify(next);
 }
 
 /** What the revision's key is derived for (`purposeKey`): no other value is made with it. */
@@ -510,11 +541,15 @@ export function resultsRevisionOf(of: {
  * (`optionIds`, old id to new; an option with no new row is left out), and its
  * agent flags with each `options.<old>` key renamed to `options.<new>`. No
  * review stamp is carried: a version holds none with an account id, and
- * `parseWorkingContent` would drop it anyway. Pure.
+ * `parseWorkingContent` would drop it anyway. Card 2728 (D6): nor the
+ * `participants` or `decider` flag, as the new draft has no participants and
+ * a decider the server chose; the `title` flag is carried, and
+ * `supersedeDecision` drops or sets it by the title it gives. Pure.
  */
 export function workingFromVersion(content: VersionContent, optionIds: ReadonlyMap<number, number>): WorkingContent {
 	const agentDrafted: WorkingContent['agentDrafted'] = {};
 	for (const key of Object.keys(content.agentDrafted)) {
+		if (key === 'participants' || key === 'decider') continue;
 		const option = /^options\.(\d+)$/.exec(key);
 		if (option === null) agentDrafted[key] = true;
 		else if (optionIds.has(Number(option[1]))) agentDrafted[`options.${optionIds.get(Number(option[1]))}`] = true;

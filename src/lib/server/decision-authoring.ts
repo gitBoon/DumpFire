@@ -90,7 +90,7 @@ import { DAY_MS, decisionLinkBase, HELD_WORDS, MAIL_EVENT, mailRestOf, type Hold
 import { decisionStatus, requireTransition, TRANSITIONS, type ShownStatus } from './decision-status';
 import { MAIL_PROBLEM_WORDS, NO_LINK_ADDRESS, type MailProblem } from './email';
 import { requireBoard, requireDecision } from './route-guards';
-import { checkContent, refusalsOf, type ContentAnswer, type Refusal, type Warning } from '$lib/decision-readiness';
+import { CHOSEN_KEYS, checkContent, refusalsOf, type ContentAnswer, type Refusal, type Warning } from '$lib/decision-readiness';
 import type { ViewContent } from '$lib/decision-view-types';
 import { openForInput } from '$lib/decision-rules';
 import { stamp, type Stamp } from '$lib/timestamps';
@@ -200,7 +200,9 @@ export function contentAnswer(content: WorkingContent, admin: boolean): ContentA
  * section, with no reviewer's name and no moment; a link holder is not, as an
  * agent flag already says a section is not yet reviewed. The options and the
  * audiences are given once, by `viewModelOf` in decision-view.ts, so neither is
- * here, and no group id or reviewer's name reaches the page.
+ * here, and no group id or reviewer's name reaches the page. Card 2728 (D7):
+ * nor the `title`, `participants` or `decider` flag or stamp, which the page
+ * does not draw (`pageFlags`).
  */
 export function versionContentAnswer(content: VersionContent, via: 'session' | 'link'): ViewContent {
 	const answer: ViewContent = {
@@ -211,14 +213,21 @@ export function versionContentAnswer(content: VersionContent, via: 'session' | '
 		alreadyRuled: content.alreadyRuled,
 		technicalDetail: content.technicalDetail,
 		stories: content.stories.map((story) => ({ title: story.title, body: story.body })),
-		agentDrafted: { ...content.agentDrafted }
+		agentDrafted: pageFlags(content.agentDrafted)
 	};
-	if (via === 'session') {
-		const reviewed: Record<string, true> = {};
-		for (const key of Object.keys(content.reviewed)) reviewed[key] = true;
-		answer.reviewed = reviewed;
-	}
+	if (via === 'session') answer.reviewed = pageFlags(content.reviewed);
 	return answer;
+}
+
+/**
+ * The keys of a flag or stamp record a participant page draws: every one but
+ * `CHOSEN_KEYS` (card 2728, D7), each as `true`. The version keeps them, as
+ * the record of what was opened unreviewed and who reviewed it.
+ */
+function pageFlags(record: Record<string, unknown>): Record<string, true> {
+	const flags: Record<string, true> = {};
+	for (const key of Object.keys(record)) if (!(CHOSEN_KEYS as readonly string[]).includes(key)) flags[key] = true;
+	return flags;
 }
 
 /**
@@ -228,10 +237,10 @@ export function versionContentAnswer(content: VersionContent, via: 'session' | '
  * reviewed section, with no reviewer's name, account or moment, and no
  * `lastLabel`. The options and the audiences are `viewModelOf`'s, in
  * decision-view.ts, so neither is here, and no group id reaches the page.
+ * Nor, since card 2728, the `title`, `participants` or `decider` flag or
+ * stamp (`pageFlags`).
  */
 export function workingViewContent(content: WorkingContent): ViewContent {
-	const reviewed: Record<string, true> = {};
-	for (const key of Object.keys(content.reviewed)) reviewed[key] = true;
 	return {
 		situation: content.situation,
 		question: content.question,
@@ -240,8 +249,8 @@ export function workingViewContent(content: WorkingContent): ViewContent {
 		alreadyRuled: content.alreadyRuled,
 		technicalDetail: content.technicalDetail,
 		stories: content.stories.map((story) => ({ title: story.title, body: story.body })),
-		agentDrafted: { ...content.agentDrafted },
-		reviewed
+		agentDrafted: pageFlags(content.agentDrafted),
+		reviewed: pageFlags(content.reviewed)
 	};
 }
 

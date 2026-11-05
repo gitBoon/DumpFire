@@ -805,6 +805,19 @@ describe('checkContent (15)', () => {
 		]);
 	});
 
+	it('answers the title, participants and decider an agent chose after the sections, in that order, each keyed (card 2728, D8)', () => {
+		const chosen: WorkingContent = { ...complete(), agentDrafted: { decider: true, participants: true, situation: true, title: true } };
+
+		const warnings = checkContent(chosen, { groups: { 6: { exists: true, activeMemberIds: [7] } }, participantPersonIds: [7] });
+
+		expect(warnings).toEqual([
+			{ code: 'agent_drafted', key: 'situation', words: 'Situation was drafted by an agent and not yet reviewed by a person' },
+			{ code: 'agent_drafted', key: 'title', words: 'The title was chosen by an agent and not yet reviewed by a person' },
+			{ code: 'agent_drafted', key: 'participants', words: 'The participants were chosen by an agent and not yet reviewed by a person' },
+			{ code: 'agent_drafted', key: 'decider', words: 'The decider was chosen by an agent and not yet reviewed by a person' }
+		]);
+	});
+
 	it('answers no warning for a complete input', () => {
 		expect(checkContent(complete(), { groups: { 6: { exists: true, activeMemberIds: [7, 8] } }, participantPersonIds: [7] })).toEqual([]);
 		// S3: a closing time exactly 365 days ahead, or none, is no warning.
