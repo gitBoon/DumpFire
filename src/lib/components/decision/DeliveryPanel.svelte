@@ -8,7 +8,10 @@
   record mail and how it went (sent, refused with the problem in words, not
   sent as a later change replaced it, not sent for no link address, or being
   sent), their latest skip, and their link's latest ending. Nothing of an
-  address, a response or a total is handed over.
+  address, a response or a total is handed over. A skip is shown only where
+  it is newer than the latest mail (card 2740's code review): the server
+  leaves an older one out, deciding a tie on the same moment by the record's
+  order, and the panel never draws one older than the mail line above it.
 
   Resend is offered only where the server says `resendInvitation` would send
   now (`resendable`); where the rest or the daily cap holds a participant
@@ -219,7 +222,7 @@
 					{:else}
 						<p class="line note" data-line="mail">Not mailed yet</p>
 					{/if}
-					{#if row.lastSkip}
+					{#if row.lastSkip && (row.lastMail === null || row.lastSkip.at >= row.lastMail.at)}
 						<p class="line flag" data-line="skip">{MAIL_NAMES[row.lastSkip.mail] ?? 'A mail'} not sent, {shown(row.lastSkip.at)}: {row.lastSkip.words}</p>
 					{/if}
 					{#if row.lastRevoked}

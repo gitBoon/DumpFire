@@ -1163,8 +1163,8 @@ export type DeliveryFacts = {
 	 * runs from, as `lastMailAt` reads it, so that the panel and the write agree.
 	 */
 	lastRestAt: Stamp | null;
-	/** Their latest `mail_skipped`: the mail and the reason, as written. */
-	lastSkip: { mail: string; reason: string; at: Stamp } | null;
+	/** Their latest `mail_skipped`: the mail and the reason, as written, and its event (the panel shows it only where it is newer than `lastMail`, card 2740's code review). */
+	lastSkip: { eventId: number; mail: string; reason: string; at: Stamp } | null;
 	/** Their latest `link_revoked`: the reason, as written. */
 	lastRevoked: { reason: string; at: Stamp } | null;
 };
@@ -1215,7 +1215,7 @@ export function deliveryOf(decisionId: number): Map<number, DeliveryFacts> {
 		} else if (event.kind === 'mail_outcome') {
 			if (typeof detail.of === 'number') outcomes.set(detail.of, detail);
 		} else if (event.kind === 'mail_skipped') {
-			mine.lastSkip = { mail: typeof detail.mail === 'string' ? detail.mail : '', reason: typeof detail.reason === 'string' ? detail.reason : '', at: event.at };
+			mine.lastSkip = { eventId: event.id, mail: typeof detail.mail === 'string' ? detail.mail : '', reason: typeof detail.reason === 'string' ? detail.reason : '', at: event.at };
 		} else {
 			mine.lastRevoked = { reason: typeof detail.reason === 'string' ? detail.reason : '', at: event.at };
 		}
@@ -1355,10 +1355,12 @@ const ROLE_KINDS: readonly EventKind[] = ['included', 're_included', 'role_chang
  * with no `published` event reaches nobody. A read alone, in batches of
  * `IDS_AT_ONCE`.
  *
- * A known residual (R5, card 2740): `seen` is written once per version and
- * stage, so one who saw the question while informed and was then made
- * consulted has no `seen` while consulted, and reads as not reached. It errs
- * on the "not reached" side.
+ * A known residual (R5): `seen` is written once per version and stage, so
+ * one who saw the question while informed and was then made consulted has no
+ * `seen` while consulted. Since card 2740 the role change sends them the
+ * invitation (`setParticipants`), and once that is delivered they are
+ * reached; only one whose invitation was held back, skipped or not delivered
+ * still reads as not reached. It errs on that side.
  *
  * R6 (re-review 2026-11-05, separate card): for the same reason, a question
  * seen while the window was shut (after an early close) hides a later view

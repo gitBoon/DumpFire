@@ -196,6 +196,7 @@ import {
 	decisionLinkBase,
 	DRY_RUN_DAILY_CAP,
 	DRY_RUN_MIN_MINUTES,
+	type HoldReason,
 	later,
 	mailRestOf,
 	PUBLISH_DAILY_CAP,
@@ -448,8 +449,15 @@ export function setDecider(caller: SessionUser | null, at: { decisionId: number 
  * person is included (`included`), a removed one comes back on the same row
  * (`re_included`), and each is invited, with a link if they have no account.
  * One left out is marked removed (`removed`) and their link ended. A changed
- * role writes `role_changed`. A live row whose person has been deleted is
- * marked removed in the same way, as the body cannot name it, so its account
+ * role writes `role_changed`. Card 2740: one made consulted while the
+ * decision is shown open (not closed, nor past its closing time) is sent the
+ * invitation, which asks for their view, by the normal record-mail path (a
+ * fresh link for a link holder); where their rest or daily cap, or the
+ * caller's, holds it back (`heldAsks`), the role is changed all the same and
+ * `mail_skipped { mail: 'invitation', reason }` written, `resting`,
+ * `daily_cap` or `caller_cap`. One made informed is sent nothing, and so is
+ * one made consulted on a decision closed or past its closing time. A live
+ * row whose person has been deleted is marked removed in the same way, as the body cannot name it, so its account
  * no longer holds the participant role (card 2676, the code review's C1,
  * superseding decision 29's "left as it is"). Including anyone is refused, 409, with
  * no address to make a link on (decision 28), and re-including a
@@ -566,6 +574,10 @@ export function setParticipants(
 		// The code review's part B (S2): each one included or brought back is invited, by the caller.
 		requireRecordMailAllowed(user, additions.length + returns.length, now);
 	}
+	// Card 2740 (D1, D4): one made consulted while the decision is open for input is asked for their view, by the invitation, now;
+	// a rest or a cap holds that mail back (D3), never the role change. Asked last, so that a refused write takes no allowance.
+	const asking = decisionStatus(decision, now) === 'open' ? roleChanges.filter((change) => change.role === 'consulted').map((change) => change.row) : [];
+	const held = heldAsks(user, decision.id, asking, additions.length + returns.length, now);
 
 	for (const row of removals) {
 		db.update(decisionParticipants).set({ removedAt: now, removedBy: user.id }).where(eq(decisionParticipants.id, row.id)).run();
@@ -575,8 +587,10 @@ export function setParticipants(
 	for (const change of roleChanges) {
 		db.update(decisionParticipants).set({ role: change.role }).where(eq(decisionParticipants.id, change.row.id)).run();
 		appendEvent({ decisionId: decision.id, kind: 'role_changed', participantId: change.row.id, detail: { from: change.row.role, to: change.role } }, by);
+		const hold = held.get(change.row.id);
+		if (hold !== undefined) appendEvent({ decisionId: decision.id, kind: 'mail_skipped', participantId: change.row.id, detail: { mail: 'invitation', reason: hold } }, by);
 	}
-	const invited: number[] = [];
+	const invited: number[] = asking.filter((row) => !held.has(row.id)).map((row) => row.id);
 	const history = returns.length > 0 ? accountHistory(decision.id) : new Map<number, boolean>();
 	for (const back of returns) {
 		db.update(decisionParticipants).set({ role: back.role, removedAt: null, removedBy: null }).where(eq(decisionParticipants.id, back.row.id)).run();
@@ -2607,16 +2621,60 @@ function requirePublishAllowed(user: SessionUser, now: Stamp): void {
  * has taken from this allowance: it errs towards less mail.
  */
 function requireRecordMailAllowed(user: SessionUser, coming: number, now: Stamp): void {
-	if (coming === 0) return;
+	const refusal = recordMailRefusal(user, coming, now);
+	if (refusal !== null) error(429, refusal);
+}
+
+/**
+ * `requireRecordMailAllowed`'s rule, answering its words rather than
+ * refusing, null where the mail fits (card 2740: a role change's asking mails
+ * are held back, not the write refused). `pending` is the mail this same
+ * write has already been allowed and not yet recorded, so that the events'
+ * count holds it too. The allowance in memory is taken only where the events
+ * let the mail through, as before.
+ */
+function recordMailRefusal(user: SessionUser, coming: number, now: Stamp, pending = 0): string | null {
+	if (coming === 0) return null;
 	if (coming > CALLER_MAIL_DAILY_CAP) {
-		error(429, `This would mail ${coming} participants: one account may cause at most ${CALLER_MAIL_DAILY_CAP} decision mails in 24 hours`);
+		return `This would mail ${coming} participants: one account may cause at most ${CALLER_MAIL_DAILY_CAP} decision mails in 24 hours`;
 	}
 	const words = (from: Stamp) =>
 		`This would take your decision mail past ${CALLER_MAIL_DAILY_CAP} in the last 24 hours: it can be sent from ${from} UTC`;
-	const fromEvents = dailyCapFrom(recordMailsSince(user.id, dayBefore()), CALLER_MAIL_DAILY_CAP, coming);
-	if (fromEvents !== null && now < fromEvents) error(429, words(fromEvents));
+	const fromEvents = dailyCapFrom(recordMailsSince(user.id, dayBefore()), CALLER_MAIL_DAILY_CAP, pending + coming);
+	if (fromEvents !== null && now < fromEvents) return words(fromEvents);
 	const took = takeAllowance(`decision-record-mail:${user.id}`, coming, CALLER_MAIL_DAILY_CAP, DAY_MS);
-	if (!took.taken) error(429, words(stamp(new Date(Date.now() + took.retryAfterSecs * 1000))));
+	if (!took.taken) return words(stamp(new Date(Date.now() + took.retryAfterSecs * 1000)));
+	return null;
+}
+
+/**
+ * Card 2740 (D3): which of `rows`, live participants just made consulted on
+ * a decision open for input, are not to be sent the asking invitation now,
+ * and why, by participant id; the rest are sent it. One `reachOf` skips is
+ * left to `queueRecordMails`, which records its own reason. Of the others,
+ * one the 10-minute rest or the daily cap holds (`mailRestOf`, the rule the
+ * re-send and the delivery panel ask) is held as `resting` or `daily_cap`;
+ * then, if the caller's daily cap would not take the rest of them, together
+ * with the `pending` invitations this write sends to people it includes,
+ * every one left is held as `caller_cap`. Read only, but for the caller's
+ * allowance, taken where the mail fits.
+ */
+function heldAsks(user: SessionUser, decisionId: number, rows: DecisionParticipant[], pending: number, now: Stamp): Map<number, HoldReason> {
+	const held = new Map<number, HoldReason>();
+	if (rows.length === 0) return held;
+	const reaches = reachesOf(decisionId, rows);
+	const reachable = rows.filter((row) => !('skip' in reaches.get(row.id)!));
+	if (reachable.length === 0) return held;
+	const ids = reachable.map((row) => row.id);
+	const last = lastMailAt(ids);
+	const recent = mailsSince(ids, dayBefore());
+	for (const row of reachable) {
+		const rest = mailRestOf(row.name, last.get(row.id), recent.get(row.id) ?? [], now);
+		if (rest !== null) held.set(row.id, rest.reason);
+	}
+	const sending = reachable.filter((row) => !held.has(row.id));
+	if (recordMailRefusal(user, sending.length, now, pending) !== null) for (const row of sending) held.set(row.id, 'caller_cap');
+	return held;
 }
 
 /** The moment 24 hours ago, from which the daily caps count. */

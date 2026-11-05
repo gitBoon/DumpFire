@@ -33,10 +33,12 @@ import {
 	type Board,
 	type Decision
 } from '$lib/server/db/schema';
-import { actorFor, liveOptionIds } from '$lib/server/decision-record';
+import { actorFor, appendEvent, lastToldOf, liveOptionIds, SYSTEM_ACTOR } from '$lib/server/decision-record';
 import { decisionAccess } from '$lib/server/decision-access';
+import { readEditPage } from '$lib/server/decision-authoring';
 import { participantForLink } from '$lib/server/decision-links';
-import { queueRecordMails, RECORD_MAIL_MIN_MINUTES } from '$lib/server/decision-mail';
+import { CALLER_MAIL_DAILY_CAP, DAY_MS, HELD_WORDS, queueRecordMails, RECORD_MAIL_DAILY_CAP, RECORD_MAIL_MIN_MINUTES } from '$lib/server/decision-mail';
+import { toldWords } from '$lib/decision-words';
 import {
 	changeParticipantAddress,
 	closeDecision,
@@ -55,7 +57,7 @@ import { deleteUser } from '$lib/server/deletes';
 import { mailStatus, NO_LINK_ADDRESS } from '$lib/server/email';
 import { subscribe } from '$lib/server/events';
 import { updatePerson } from '$lib/server/people';
-import { resetAllRateLimits } from '$lib/server/rate-limit';
+import { resetAllRateLimits, takeAllowance } from '$lib/server/rate-limit';
 import { requireDecision } from '$lib/server/route-guards';
 import { parseStamp, stamp } from '$lib/timestamps';
 import { writeAs } from '$lib/server/write-as';
@@ -487,6 +489,218 @@ describe('setParticipants on an open decision', () => {
 		expect(access.participantId).toBeNull();
 		await sent.settle();
 		expect(sent.emails).toEqual([]);
+	});
+});
+
+// ─── Card 2740: one made consulted while the decision is open is asked for their view ──
+
+describe('card 2740: setParticipants asks one made consulted on an open decision for their view', () => {
+	const set = (decision: Decision, participants: { personId: number; role: string }[]) =>
+		as(owner, (caller) => setParticipants(caller, { decisionId: decision.id }, { participants, revision: revisionNow(decision.id) }, UI));
+	const openOne = (row: { status?: string; closesAt?: string; closedAt?: string } = {}) =>
+		makeDecision({ board, author: owner, decider: owner, status: 'open', closesAt: FUTURE, currentVersion: 1, openedAt: '2026-11-01 09:00:00', ...row });
+	/** An informed participant reached through their account. */
+	const informedHolder = (decision: Decision, fullName: string, email: string) => {
+		const person = makePerson({ fullName, email, user: makeUser({ username: email.split('@')[0] }) });
+		return { person, row: makeParticipant(decision, { person, role: 'informed', hadAccount: true }) };
+	};
+	const since = (decisionId: number, before: number) => eventsOf(decisionId).slice(before).map((event) => [event.kind, event.participantId, event.detail]);
+	const panelRow = (decisionId: number, participantId: number) => readEditPage(owner, decisionId).delivery!.find((row) => row.participantId === participantId)!;
+	/** A record mail of the participant, written now: it starts their rest and counts toward their daily cap. */
+	const mailedNow = (decisionId: number, participantId: number) => appendEvent({ decisionId, kind: 'invited', participantId }, SYSTEM_ACTOR);
+
+	it('sends an account holder made consulted the invitation, asking for their view, and their banner says they were asked (2740-1)', async () => {
+		const decision = openOne();
+		const { person, row } = informedHolder(decision, 'Ivy Informed', 'ivy@example.test');
+		const before = eventsOf(decision.id).length;
+
+		set(decision, [{ personId: person.id, role: 'consulted' }]);
+
+		expect(participantRow(row.id).role).toBe('consulted');
+		expect(since(decision.id, before)).toEqual([
+			['role_changed', row.id, { from: 'informed', to: 'consulted' }],
+			['invited', row.id, null]
+		]);
+		await waitForOutcomes(decision.id, 1);
+		expect(sent.emails.map((mail) => [mail.to, mail.subject])).toEqual([['ivy@example.test', `Your view is asked: ${decision.title}`]]);
+		expect(sent.emails[0].html).toContain(`${APP}/decisions/${decision.id}`);
+		expect(sent.emails[0].html).not.toContain('Nothing is asked of you');
+		expect(sent.duringTransaction).toEqual([]);
+		expect(outcomesOf(decision.id).map((event) => event.detail)).toEqual([{ of: expect.any(Number), mail: 'invitation', delivered: true }]);
+		// Card 2708's told line reads the invitation in their role now: asked, not told for their information.
+		expect(toldWords('consulted', lastToldOf(row.id), row.includedAt)).toMatch(/^You were asked for your view on this decision on .+, by email\.$/);
+	});
+
+	it('sends a link holder made consulted a fresh link through the normal path, replacing the last (2740-2)', async () => {
+		const decision = openOne();
+		const lee = makePerson({ fullName: 'Lee Link', email: 'lee@example.test' });
+		const row = makeParticipant(decision, { person: lee, role: 'informed', hadAccount: false, token: 'the-informed-link' });
+		const before = eventsOf(decision.id).length;
+
+		set(decision, [{ personId: lee.id, role: 'consulted' }]);
+
+		expect(since(decision.id, before)).toEqual([
+			['role_changed', row.id, { from: 'informed', to: 'consulted' }],
+			['link_issued', row.id, { replaced: true }],
+			['invited', row.id, null]
+		]);
+		await waitForOutcomes(decision.id, 1);
+		expect(sent.emails.map((mail) => [mail.to, mail.subject])).toEqual([['lee@example.test', `Your view is asked: ${decision.title}`]]);
+		const link = linkIn(sent.emails[0].html)!;
+		expect(link).not.toBeNull();
+		expect(participantRow(row.id).linkTokenHash).toBe(linkHashOf(tokenOf(link)));
+		expect(participantRow(row.id).linkTokenHash).not.toBe(linkHashOf('the-informed-link'));
+		expect(participantForLink('the-informed-link')).toEqual({ refused: 'unknown' });
+		expect(participantForLink(tokenOf(link))).toMatchObject({ participant: { id: row.id, role: 'consulted' } });
+		expect(sent.duringTransaction).toEqual([]);
+	});
+
+	it('sends nothing to one made informed, nor to one made consulted on a decision closed or past its closing time (2740-3)', async () => {
+		const open = openOne();
+		const cy = makePerson();
+		const asked = makeParticipant(open, { person: cy, role: 'consulted', hadAccount: false });
+		const closed = openOne({ status: 'closed', closedAt: '2026-11-02 09:00:00' });
+		const lapsed = openOne({ closesAt: '2026-11-02 09:00:00' });
+		const dee = makePerson();
+		const eve = makePerson();
+		const shut = makeParticipant(closed, { person: dee, role: 'informed', hadAccount: false });
+		const passed = makeParticipant(lapsed, { person: eve, role: 'informed', hadAccount: false });
+		const counts = [open, closed, lapsed].map((decision) => eventsOf(decision.id).length);
+
+		set(open, [{ personId: cy.id, role: 'informed' }]);
+		set(closed, [{ personId: dee.id, role: 'consulted' }]);
+		set(lapsed, [{ personId: eve.id, role: 'consulted' }]);
+
+		expect(since(open.id, counts[0])).toEqual([['role_changed', asked.id, { from: 'consulted', to: 'informed' }]]);
+		expect(since(closed.id, counts[1])).toEqual([['role_changed', shut.id, { from: 'informed', to: 'consulted' }]]);
+		expect(since(lapsed.id, counts[2])).toEqual([['role_changed', passed.id, { from: 'informed', to: 'consulted' }]]);
+		expect(participantRow(shut.id).role).toBe('consulted');
+		await sent.settle();
+		expect(sent.emails).toEqual([]);
+	});
+
+	it('changes the role and holds the mail back where the rest, the daily cap or the caller holds it: mail_skipped with the reason, said in the delivery panel (2740-4)', async () => {
+		const decision = openOne();
+		const rested = informedHolder(decision, 'Rae Rested', 'rae@example.test');
+		const capped = informedHolder(decision, 'Cap Ped', 'cap@example.test');
+		// Five record mails in the last day, none in the last 10 minutes.
+		for (let i = 0; i < RECORD_MAIL_DAILY_CAP; i++) mailedNow(decision.id, capped.row.id);
+		ageRecordMail(decision.id, RECORD_MAIL_MIN_MINUTES + 1);
+		mailedNow(decision.id, rested.row.id);
+		const before = eventsOf(decision.id).length;
+
+		set(decision, [
+			{ personId: rested.person.id, role: 'consulted' },
+			{ personId: capped.person.id, role: 'consulted' }
+		]);
+
+		expect(participantRow(rested.row.id).role).toBe('consulted');
+		expect(participantRow(capped.row.id).role).toBe('consulted');
+		expect(since(decision.id, before)).toEqual([
+			['role_changed', rested.row.id, { from: 'informed', to: 'consulted' }],
+			['mail_skipped', rested.row.id, { mail: 'invitation', reason: 'resting' }],
+			['role_changed', capped.row.id, { from: 'informed', to: 'consulted' }],
+			['mail_skipped', capped.row.id, { mail: 'invitation', reason: 'daily_cap' }]
+		]);
+		await sent.settle();
+		expect(sent.emails).toEqual([]);
+		expect(panelRow(decision.id, rested.row.id)).toMatchObject({
+			lastSkip: { mail: 'invitation', words: HELD_WORDS.resting('Rae Rested') },
+			resendable: false,
+			resendFrom: expect.any(String)
+		});
+		expect(panelRow(decision.id, capped.row.id)).toMatchObject({ lastSkip: { mail: 'invitation', words: HELD_WORDS.daily_cap('Cap Ped') }, resendable: false });
+
+		// The caller's own daily cap, spent: the role is changed, and the mail held as caller_cap.
+		const other = openOne();
+		const quin = informedHolder(other, 'Quin Quota', 'quin@example.test');
+		takeAllowance(`decision-record-mail:${owner.id}`, CALLER_MAIL_DAILY_CAP, CALLER_MAIL_DAILY_CAP, DAY_MS);
+		const at = eventsOf(other.id).length;
+		set(other, [{ personId: quin.person.id, role: 'consulted' }]);
+		expect(since(other.id, at)).toEqual([
+			['role_changed', quin.row.id, { from: 'informed', to: 'consulted' }],
+			['mail_skipped', quin.row.id, { mail: 'invitation', reason: 'caller_cap' }]
+		]);
+		expect(panelRow(other.id, quin.row.id).lastSkip).toMatchObject({ mail: 'invitation', words: HELD_WORDS.caller_cap('Quin Quota') });
+		await sent.settle();
+		expect(sent.emails).toEqual([]);
+	});
+
+	it("records one whom reachOf skips with its own reason, as every record mail does, and sends nothing (2740-5)", async () => {
+		const decision = openOne();
+		const { person, row } = informedHolder(decision, 'Mo Moved', 'mo@example.test');
+		// Also resting (mailed a moment ago): reachOf is asked first, so the address is the reason, not the rest.
+		const restless = informedHolder(decision, 'Ro Restless', 'ro@example.test');
+		mailedNow(decision.id, restless.row.id);
+		db.update(people).set({ email: 'mo-elsewhere@example.test' }).where(eq(people.id, person.id)).run();
+		db.update(people).set({ email: 'ro-elsewhere@example.test' }).where(eq(people.id, restless.person.id)).run();
+		const before = eventsOf(decision.id).length;
+
+		set(decision, [
+			{ personId: person.id, role: 'consulted' },
+			{ personId: restless.person.id, role: 'consulted' }
+		]);
+
+		const written = since(decision.id, before);
+		expect(written.filter(([kind]) => kind === 'role_changed')).toEqual([
+			['role_changed', row.id, { from: 'informed', to: 'consulted' }],
+			['role_changed', restless.row.id, { from: 'informed', to: 'consulted' }]
+		]);
+		expect(written.filter(([kind]) => kind === 'mail_skipped')).toEqual([
+			['mail_skipped', row.id, { mail: 'invitation', reason: 'address_changed' }],
+			['mail_skipped', restless.row.id, { mail: 'invitation', reason: 'address_changed' }]
+		]);
+		expect(written).toHaveLength(4);
+		await sent.settle();
+		expect(sent.emails).toEqual([]);
+	});
+
+	it("counts the write's own invitations toward the caller's cap before the asks: past it, each one made consulted is held as caller_cap and those included are invited (2740-7)", async () => {
+		const decision = openOne();
+		const asked = [informedHolder(decision, 'Ada Asked', 'ada@example.test'), informedHolder(decision, 'Bo Asked', 'bo@example.test')];
+		const newcomers = [makePerson({ fullName: 'Nia New', email: 'nia@example.test' }), makePerson({ fullName: 'Ned New', email: 'ned@example.test' })];
+		// The caller's capped mail of the last day, elsewhere: the cap less the two this write includes, so that those two fit
+		// exactly and the two asks do not. Were the write's own invitations not counted (`pending` 0), the asks would fit too.
+		const elsewhere = openOne();
+		const hourAgo = stamp(new Date(Date.now() - 60 * 60 * 1000));
+		const insert = sqlite.prepare(
+			"INSERT INTO decision_events (decision_id, participant_id, kind, version_number, detail, actor_user_id, actor_name, source, created_at) VALUES (?, NULL, 'invited', NULL, NULL, ?, 'owner', 'ui', ?)"
+		);
+		sqlite.transaction(() => {
+			for (let i = 0; i < CALLER_MAIL_DAILY_CAP - newcomers.length; i++) insert.run(elsewhere.id, owner.id, hourAgo);
+		})();
+		expect(asked.length).toBeLessThanOrEqual(newcomers.length);
+		const before = eventsOf(decision.id).length;
+
+		set(decision, [
+			...asked.map(({ person }) => ({ personId: person.id, role: 'consulted' })),
+			...newcomers.map((person) => ({ personId: person.id, role: 'informed' }))
+		]);
+
+		const written = since(decision.id, before);
+		expect(asked.map(({ row }) => participantRow(row.id).role)).toEqual(['consulted', 'consulted']);
+		expect(written.filter(([kind]) => kind === 'mail_skipped')).toEqual(asked.map(({ row }) => ['mail_skipped', row.id, { mail: 'invitation', reason: 'caller_cap' }]));
+		const invitedIds = written.filter(([kind]) => kind === 'invited').map(([, participantId]) => participantId);
+		expect(invitedIds).toHaveLength(newcomers.length);
+		for (const { row } of asked) expect(invitedIds).not.toContain(row.id);
+		await waitForOutcomes(decision.id, newcomers.length);
+		expect(sent.emails.map((mail) => mail.to).sort()).toEqual(['ned@example.test', 'nia@example.test']);
+	});
+
+	it('drops the held line from the delivery panel once a later Resend sends the invitation (2740-8)', async () => {
+		const decision = openOne();
+		const rested = informedHolder(decision, 'Rae Rested', 'rae@example.test');
+		mailedNow(decision.id, rested.row.id);
+		set(decision, [{ personId: rested.person.id, role: 'consulted' }]);
+		expect(panelRow(decision.id, rested.row.id).lastSkip).toMatchObject({ mail: 'invitation', words: HELD_WORDS.resting('Rae Rested') });
+
+		// The rest over (the earlier mail aged past it; the skip stays where it was written), Resend sends the invitation.
+		ageRecordMail(decision.id, RECORD_MAIL_MIN_MINUTES + 1);
+		as(owner, (caller) => resendInvitation(caller, { decisionId: decision.id, participantId: rested.row.id }, null, UI));
+		await waitForOutcomes(decision.id, 1);
+
+		expect(sent.emails.map((mail) => [mail.to, mail.subject])).toEqual([['rae@example.test', `Your view is asked: ${decision.title}`]]);
+		expect(panelRow(decision.id, rested.row.id)).toMatchObject({ lastMail: { mail: 'invitation', resend: true, outcome: 'sent' }, lastSkip: null });
 	});
 });
 

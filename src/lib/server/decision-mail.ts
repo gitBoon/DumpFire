@@ -51,6 +51,10 @@
  * event; and the volume limits' constants and the one rule of when a
  * participant may be mailed again (`mailRestOf`).
  *
+ * Card 2740 adds the words of an asking mail held back from a participant
+ * made consulted while the decision is open (`HoldReason`, `HELD_WORDS`):
+ * `setParticipants` writes the skip, and sends the rest as invitations here.
+ *
  * Card 2685 adds the closing-date reminder's mail (`reminderMail`), which
  * decision-reminders.ts sends. It is not a record mail and not one of D22's
  * five: for an account holder it follows `email_decisions` and the master
@@ -141,22 +145,57 @@ export function dailyCapFrom(moments: readonly Stamp[], cap: number, coming = 1)
  * `lastAt` is their latest record-bearing mail or closing-date reminder (card
  * 2685, S6: a reminder starts the rest), `recent` the moments of the
  * record-bearing mails alone in the last 24 hours, oldest first. The
- * 10-minute rest is asked first.
+ * 10-minute rest is asked first. `reason` says which held them (card 2740:
+ * the `mail_skipped` reason of a role change's asking mail held back).
  */
-export function mailRestOf(name: string, lastAt: Stamp | undefined, recent: readonly Stamp[], now: Stamp): { words: string; from: Stamp } | null {
+export function mailRestOf(
+	name: string,
+	lastAt: Stamp | undefined,
+	recent: readonly Stamp[],
+	now: Stamp
+): { words: string; from: Stamp; reason: 'resting' | 'daily_cap' } | null {
 	const rested = lastAt === undefined ? null : later(lastAt, RECORD_MAIL_MIN_MINUTES * 60 * 1000);
 	if (rested !== null && now < rested) {
-		return { words: `${name} was mailed about this decision less than ${RECORD_MAIL_MIN_MINUTES} minutes ago: they can be mailed again from ${rested} UTC`, from: rested };
+		return {
+			words: `${name} was mailed about this decision less than ${RECORD_MAIL_MIN_MINUTES} minutes ago: they can be mailed again from ${rested} UTC`,
+			from: rested,
+			reason: 'resting'
+		};
 	}
 	const capped = dailyCapFrom(recent, RECORD_MAIL_DAILY_CAP);
 	if (capped !== null && now < capped) {
 		return {
 			words: `${name} has been mailed about this decision ${RECORD_MAIL_DAILY_CAP} times in the last 24 hours: they can be mailed again from ${capped} UTC`,
-			from: capped
+			from: capped,
+			reason: 'daily_cap'
 		};
 	}
 	return null;
 }
+
+/**
+ * Why a role change's asking mail was held back (card 2740, D3): the
+ * participant's 10-minute rest (`resting`) or daily cap (`daily_cap`), as
+ * `mailRestOf` says, or the caller's daily cap (`caller_cap`,
+ * `CALLER_MAIL_DAILY_CAP`). Written as `mail_skipped { mail: 'invitation',
+ * reason }`; the role change itself is saved. Disjoint from `SkipReason`,
+ * which says why a participant cannot be mailed at all.
+ */
+export type HoldReason = 'resting' | 'daily_cap' | 'caller_cap';
+
+/**
+ * A held-back asking mail in words, for the editor's delivery panel (card 2740, D3): after "Invitation not sent, <moment>:".
+ * `caller_cap` names no Resend (the code review, 2026-11-05): the panel cannot ask the caller's cap, which is the
+ * account's across decisions, so a Resend offered beside it would be refused 429 until the day's limit allows.
+ */
+export const HELD_WORDS: Readonly<Record<HoldReason, (name: string) => string>> = {
+	resting: (name) =>
+		`${name} was made consulted less than ${RECORD_MAIL_MIN_MINUTES} minutes after their last mail about this decision, so they were not asked for their view: Resend asks them once they may be mailed again`,
+	daily_cap: (name) =>
+		`${name} was made consulted after ${RECORD_MAIL_DAILY_CAP} mails about this decision in 24 hours, so they were not asked for their view: Resend asks them once they may be mailed again`,
+	caller_cap: (name) =>
+		`${name} was made consulted, but the invitation asking for their view was held: the daily limit of ${CALLER_MAIL_DAILY_CAP} decision mails one account can send had been reached. It can be sent tomorrow`
+};
 
 /** The event each mail writes for its participant; the delivery panel reads it back (`MAIL_OF_EVENT`, the code review's part B, F5). */
 export const MAIL_EVENT: Readonly<Record<RecordMail, EventKind>> = {

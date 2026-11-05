@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.63
+version: 1.64
 status: As-Built
 date: 2026-11-05
 tags:
@@ -697,7 +697,7 @@ refused (comment 5599). A `detail` never holds a token, a hash or a mail server'
 | `invited` | yes | `{ resend: true }` on a re-send, otherwise none |
 | `asked_again`, `told_of_change` | yes | none, with `version_number` |
 | `told_withdrawn`, `told_ruling` | yes | none |
-| `mail_skipped` | yes | `{ mail, reason }`, reason `deleted`, `left`, `account_not_attached`, `account_removed` or `address_changed` |
+| `mail_skipped` | yes | `{ mail, reason }`, reason `deleted`, `left`, `account_not_attached`, `account_removed` or `address_changed` (`reachOf`); or, since card 2740, `resting`, `daily_cap` or `caller_cap` for the invitation a participant made consulted on an open decision was not sent, as a rest or a cap held it back (`HoldReason`), the role change saved |
 | `mail_outcome` | yes | `{ of, mail, delivered, problem? }`: `of` the mail event's id, `problem` a `MailProblem` code, `no_link_address`, or `superseded` for a mail not sent as it no longer stood when asked again before its send (card 2675's F2). `mail` is the record mail's name, or (card 2685) `reminder` for a closing-date reminder's outcome |
 | `closed` | no | none |
 | `extended` | no | `{ from, to }` |

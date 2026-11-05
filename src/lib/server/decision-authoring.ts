@@ -85,7 +85,7 @@ import {
 	type RevokeReason,
 	type SkipReason
 } from './decision-links';
-import { DAY_MS, decisionLinkBase, MAIL_EVENT, mailRestOf, type RecordMail } from './decision-mail';
+import { DAY_MS, decisionLinkBase, HELD_WORDS, MAIL_EVENT, mailRestOf, type HoldReason, type RecordMail } from './decision-mail';
 import { decisionStatus, requireTransition, TRANSITIONS, type ShownStatus } from './decision-status';
 import { MAIL_PROBLEM_WORDS, NO_LINK_ADDRESS, type MailProblem } from './email';
 import { requireBoard, requireDecision } from './route-guards';
@@ -466,7 +466,7 @@ export type DeliveryRow = {
 	participantId: number;
 	/** Their latest record mail: which, when, whether it was a re-send, and its outcome; `problem` the failure's words alone. */
 	lastMail: { mail: RecordMail; at: Stamp; resend: boolean; outcome: DeliveryOutcome; problem: string | null } | null;
-	/** Their latest skip, in `SKIP_WORDS`' words. */
+	/** Their latest skip, in `SKIP_WORDS`' or `HELD_WORDS`' words; null where a record mail has gone since (`skipAfter`). */
 	lastSkip: { mail: string; at: Stamp; words: string } | null;
 	/** Their link's latest ending, in `REVOKE_WORDS`' words. */
 	lastRevoked: { at: Stamp; words: string } | null;
@@ -493,6 +493,29 @@ function outcomeOf(detail: Record<string, unknown> | null): { outcome: DeliveryO
 	if (detail.problem === 'no_link_address') return { outcome: 'no_link_address', problem: null };
 	const problem = typeof detail.problem === 'string' && Object.hasOwn(MAIL_PROBLEM_WORDS, detail.problem) ? (detail.problem as MailProblem) : 'failed';
 	return { outcome: 'failed', problem: MAIL_PROBLEM_WORDS[problem] };
+}
+
+/**
+ * A `mail_skipped` reason in the panel's words: a participant who could not
+ * be mailed at all (`SKIP_WORDS`), or one made consulted whose asking mail
+ * a rest or a cap held back (`HELD_WORDS`, card 2740, D3); any other reason
+ * as plain "They were not mailed".
+ */
+function skipWordsOf(reason: string | undefined, name: string): string {
+	if (reason !== undefined && Object.hasOwn(SKIP_WORDS, reason)) return SKIP_WORDS[reason as SkipReason](name);
+	if (reason !== undefined && Object.hasOwn(HELD_WORDS, reason)) return HELD_WORDS[reason as HoldReason](name);
+	return 'They were not mailed';
+}
+
+/**
+ * The participant's latest skip where it is newer than their latest record
+ * mail, else null (card 2740's code review, 2026-11-05): a mail held back and
+ * then sent by Resend, or by any later write, is no longer "not sent". Newer
+ * by moment, as `lastMail` is chosen; on the same moment, the later event.
+ */
+function skipAfter(skip: DeliveryFacts['lastSkip'], mail: DeliveryFacts['lastMail']): DeliveryFacts['lastSkip'] {
+	if (skip === null || mail === null) return skip;
+	return skip.at > mail.at || (skip.at === mail.at && skip.eventId > mail.eventId) ? skip : null;
 }
 
 /**
@@ -549,18 +572,18 @@ function deliveryRows(decision: Decision, rows: DecisionParticipant[], now: Stam
 		}
 
 		const last = known.lastMail;
-		const skipReason = known.lastSkip?.reason;
+		const skip = skipAfter(known.lastSkip, last);
 		const revokeReason = known.lastRevoked?.reason;
 		return {
 			participantId: row.id,
 			lastMail: last === null ? null : { mail: MAIL_OF_EVENT[last.kind] ?? 'invitation', at: last.at, resend: last.resend, ...outcomeOf(last.outcome) },
 			lastSkip:
-				known.lastSkip === null
+				skip === null
 					? null
 					: {
-							mail: known.lastSkip.mail,
-							at: known.lastSkip.at,
-							words: skipReason !== undefined && Object.hasOwn(SKIP_WORDS, skipReason) ? SKIP_WORDS[skipReason as SkipReason](row.name) : 'They were not mailed'
+							mail: skip.mail,
+							at: skip.at,
+							words: skipWordsOf(skip.reason, row.name)
 						},
 			lastRevoked:
 				known.lastRevoked === null

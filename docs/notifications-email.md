@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.57
+version: 1.59
 status: As-Built
 date: 2026-11-05
 tags:
@@ -607,7 +607,7 @@ down. The failure shows on the panel and in the log.
 | Conversation Message | Requester/Admin | `email_requests` | `Message on request: {title}` |
 | Request Complete | Requester | `email_request_progress` | `Your request is complete: {title}` |
 | Backup Failed | The backup settings' failure email address(es), one mail a run, naming every destination that failed (card 2415), a copy of the database that could not be made included (card 2416) | — (the backup settings' failure alerts, `notifyOnFailure`) | `⚠️ DumpFire Backup Failed` |
-| Decision Invitation (card 2675) | Each participant of a decision `reachOf` reaches, at the snapshot address: on opening, when added or brought back after opening, and on a re-send. No route sends it yet | — (never read, the master switch included: D22) | `Your view is asked: {title}` (consulted), `For your information: {title}` (informed) |
+| Decision Invitation (card 2675) | Each participant of a decision `reachOf` reaches, at the snapshot address: on opening, when added or brought back after opening, when made consulted while the decision is open (card 2740), and on a re-send. No route sends it yet | — (never read, the master switch included: D22) | `Your view is asked: {title}` (consulted), `For your information: {title}` (informed) |
 | Decision Asked Again (card 2675) | As above, on a re-publish that asks again | — | `Changed, and your view is asked again: {title}` |
 | Decision Changed (card 2675) | As above, on a re-publish that only tells | — | `Changed: {title}` |
 | Decision Withdrawn (card 2675) | As above, on withdrawing a decision that was opened | — | `Withdrawn: {title}` |
@@ -856,6 +856,46 @@ be mailed again from <stamp> UTC", the stamp the earliest of the five plus 24 ho
 the record. One `mailRestOf` gives both answers, to the write and to the editor's delivery
 panel. Opening, withdrawal and the ruling happen once per change of status and are not
 throttled.
+
+**A participant made consulted** (card 2740). When `setParticipants` changes a participant's
+role from informed to consulted while the decision is shown open (stored open, not past its
+closing time), they are sent the **invitation**, which in their new role asks for their view
+("Your view is asked: {title}"), in the same `queueRecordMails` call as the write's other
+invitations: `role_changed`, then for a link holder `link_issued { replaced: true }` and a fresh
+link, then `invited`. It is not `asked_again`, whose words say the decision changed. The rest and
+the caps hold the mail back but never the role change: where `mailRestOf` holds the participant
+(the 10-minute rest or `RECORD_MAIL_DAILY_CAP`), or the caller's `CALLER_MAIL_DAILY_CAP` would
+not take the mail with the write's own invitations, the role is changed and
+`mail_skipped { mail: 'invitation', reason }` written, `resting`, `daily_cap` or `caller_cap`
+(`HoldReason`), which the delivery panel says in `HELD_WORDS` ("… was made consulted less than
+10 minutes after their last mail about this decision, so they were not asked for their view:
+Resend asks them once they may be mailed again"), with Resend from the moment it may. The
+`caller_cap` words name no Resend, as the panel cannot ask the caller's own cap and a Resend
+would be refused 429: they say the invitation was held because the daily limit of 500 decision
+mails one account can send had been reached, and that it can be sent tomorrow. The panel shows
+a participant's latest skip only while it is newer than their latest record mail (on the same
+moment, the later event), so a held mail sent since by Resend leaves no "not sent" line. One
+`reachOf` skips is recorded with its own reason, and is asked before the rest: one whose address
+changed and who was also mailed a moment ago reads `address_changed`, not `resting`. A participant made informed is sent nothing,
+nor one made consulted on a decision closed or past its closing time, as they cannot respond.
+
+```mermaid
+sequenceDiagram
+    participant E as Editor (the page)
+    participant S as setParticipants
+    participant R as decision-record
+    participant Q as queueRecordMails
+    E->>S: participants with a role now consulted
+    S->>S: decisionStatus open? reachOf, mailRestOf, caller cap (heldAsks)
+    S->>R: role_changed { from: informed, to: consulted }
+    alt held back
+        S->>R: mail_skipped { mail: invitation, reason: resting | daily_cap | caller_cap }
+    else sent
+        S->>Q: invitation, with the write's other invitations
+        Q->>R: link_issued { replaced } (link holder), invited
+        Note over Q: after the commit: the mail, then mail_outcome
+    end
+```
 
 ```mermaid
 sequenceDiagram

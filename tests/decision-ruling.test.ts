@@ -62,6 +62,7 @@ import {
 	respondToDecision,
 	ruleDecision,
 	setDecider,
+	setParticipants,
 	supersedeDecision
 } from '$lib/server/decisions';
 import { rulesEarly } from '$lib/server/decision-status';
@@ -701,6 +702,36 @@ describe('ruleDecision', () => {
 			appendEvent({ decisionId: decision.id, kind: 'extended', detail: { from: PAST, to: FUTURE } }, SYSTEM_ACTOR);
 			sees(back.participant, 1);
 			expect(reachedOf(decision, 1, lapsed.participant, back.participant)).toEqual([back.participant.id]);
+		});
+
+		it('counts one who saw the question while informed and was then made consulted as reached once the invitation the role change sends is delivered; not one whose invitation was held back (2740-6, R5)', async () => {
+			const { decision, a, decider } = opened({ status: 'open', closesAt: daysAhead(30) });
+			published(decision, 1);
+			const seenFirst = withAccount(decision, 'seenfirst', 'informed');
+			const heldBack = withAccount(decision, 'heldback', 'informed');
+			for (const p of [seenFirst, heldBack]) {
+				appendEvent({ decisionId: decision.id, kind: 'included', participantId: p.participant.id, detail: { role: 'informed', hadAccount: true } }, SYSTEM_ACTOR);
+				sees(p.participant, 1);
+			}
+			// Told for their information a moment ago: the 10-minute rest holds the asking mail back.
+			mailed(heldBack.participant, 'invited', true);
+			// R5: seen while informed, and `seen` is written once per version and stage, so neither is reached yet.
+			expect(reachedOf(decision, 1, seenFirst.participant, heldBack.participant)).toEqual([]);
+
+			const participants = [seenFirst, heldBack].map((p) => ({ personId: p.person.id, role: 'consulted' }));
+			as(decider, (caller) => setParticipants(caller, { decisionId: decision.id }, { participants, revision: revisionFor(decision.id) }, UI));
+			await mailsSettled(decision.id);
+			expect(eventsOf(decision.id).filter((event) => event.kind === 'mail_skipped').map((event) => [event.participantId, event.detail])).toEqual([
+				[heldBack.participant.id, { mail: 'invitation', reason: 'resting' }]
+			]);
+			expect(reachedOf(decision, 1, seenFirst.participant, heldBack.participant)).toEqual([seenFirst.participant.id]);
+
+			rule(decider, decisionRow(decision.id), { optionId: a.id, reason: 'Early.' });
+			expect(cutOffs(decision.id)).toEqual([
+				[seenFirst.participant.id, { reached: true }],
+				[heldBack.participant.id, { reached: false }]
+			]);
+			await mailsSettled(decision.id);
 		});
 
 		it('bounds the round by the id of its published event, not its moment: a mail of round 1 in the same second does not count in round 2 (2738-11, R2)', () => {
