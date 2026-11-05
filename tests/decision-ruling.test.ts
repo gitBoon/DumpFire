@@ -51,7 +51,19 @@ import {
 	resultsRevisionFor,
 	TOO_FEW_TO_RELEASE
 } from '$lib/server/decision-results';
-import { raiseConcern, raiseConcernByLink, releaseResults, respondToDecision, ruleDecision, setDecider, supersedeDecision } from '$lib/server/decisions';
+import {
+	closeDecision,
+	extendDecision,
+	raiseConcern,
+	raiseConcernByLink,
+	releaseResults,
+	republishDecision,
+	respondToDecision,
+	ruleDecision,
+	setDecider,
+	supersedeDecision
+} from '$lib/server/decisions';
+import { rulesEarly } from '$lib/server/decision-status';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { purposeKey } from '$lib/server/request-tokens';
 import { writeAs, type ServiceOptions } from '$lib/server/write-as';
@@ -297,6 +309,148 @@ describe('ruleDecision', () => {
 			['cut_off', silent.participant.id, null]
 		]);
 		await settled(decision.id);
+	});
+
+	// ─── Card 2727: a close before the closing time makes the ruling early ───────
+
+	const close = (user: SessionUser, decision: Decision) => as(user, (caller) => closeDecision(caller, { decisionId: decision.id }, null, UI));
+	const extend = (user: SessionUser, decision: Decision, closesAt: string) =>
+		as(user, (caller) => extendDecision(caller, { decisionId: decision.id }, { closesAt: `${closesAt.replace(' ', 'T')}Z` }, UI));
+	const daysAhead = (days: number) => stamp(new Date(Date.now() + days * 24 * 60 * 60 * 1000));
+	const rulingEvents = (decisionId: number) =>
+		eventsOf(decisionId)
+			.filter((event) => ['ruled', 'cut_off'].includes(event.kind))
+			.map((event) => [event.kind, event.participantId, event.kind === 'ruled' ? event.detail.early : null]);
+
+	it('rules early on a decision closed before its closing time, and cuts off each live consulted participant with no response, and nobody else (2a, card 2727)', async () => {
+		const { decision, a, decider } = opened({ status: 'open', closesAt: FUTURE });
+		const responder = withAccount(decision, 'res');
+		const silent = withAccount(decision, 'sil');
+		withAccount(decision, 'inf', 'informed');
+		const gone = withAccount(decision, 'gone');
+		db.update(decisionParticipants).set({ removedAt: PAST }).where(eq(decisionParticipants.id, gone.participant.id)).run();
+		answer(responder.participant, { optionId: a.id });
+
+		const closed = close(decider, decision);
+		expect(closed).toMatchObject({ status: 'closed', closesAt: FUTURE });
+		expect(readResults(decider, decision.id, { source: 'ui' }).rulesEarly, 'the form is told').toBe(true);
+
+		rule(decider, closed, { optionId: a.id, reason: 'Closed early.' });
+
+		expect(rulingOf(decision.id)?.early).toBe(true);
+		expect(rulingEvents(decision.id)).toEqual([
+			['ruled', null, true],
+			['cut_off', silent.participant.id, null]
+		]);
+		await settled(decision.id);
+	});
+
+	it('is not early when closed at or after the closing time: no cut_off (2b, card 2727)', async () => {
+		// The real path: stored open past its closing time, then closed, so closed_at is after closes_at.
+		const late = opened({ status: 'open', closesAt: PAST });
+		const lateSilent = withAccount(late.decision, 'late');
+		const closed = close(late.decider, late.decision);
+		expect(closed.closedAt! > PAST).toBe(true);
+		expect(readResults(late.decider, late.decision.id, { source: 'ui' }).rulesEarly).toBe(false);
+		rule(late.decider, closed, { optionId: late.a.id, reason: 'On time.' });
+		expect(rulingOf(late.decision.id)?.early).toBe(false);
+		expect(rulingEvents(late.decision.id)).toEqual([['ruled', null, false]]);
+		expect(eventsOf(late.decision.id).some((event) => event.participantId === lateSilent.participant.id && event.kind === 'cut_off')).toBe(false);
+
+		// Closed at the very moment of its closing time.
+		const onTime = opened({ status: 'closed', closesAt: PAST });
+		db.update(decisions).set({ closedAt: PAST }).where(eq(decisions.id, onTime.decision.id)).run();
+		withAccount(onTime.decision, 'ontime');
+		rule(onTime.decider, decisionRow(onTime.decision.id), { optionId: onTime.a.id, reason: 'At the time.' });
+		expect(rulingOf(onTime.decision.id)?.early).toBe(false);
+		expect(rulingEvents(onTime.decision.id)).toEqual([['ruled', null, false]]);
+		await settled(late.decision.id);
+		await settled(onTime.decision.id);
+	});
+
+	it('counts the latest close after a reopen, against the closing time then in force (2c, card 2727)', async () => {
+		// Closed early, reopened by Extend, then left past the new closing time and closed: not early.
+		const first = opened({ status: 'open', closesAt: daysAhead(1) });
+		withAccount(first.decision, 'first');
+		close(first.decider, first.decision);
+		const extended = extend(first.decider, decisionRow(first.decision.id), daysAhead(2));
+		expect(extended).toMatchObject({ status: 'open', closedAt: null });
+		db.update(decisions).set({ closesAt: PAST }).where(eq(decisions.id, first.decision.id)).run(); // the new closing time passes
+		close(first.decider, decisionRow(first.decision.id));
+		rule(first.decider, decisionRow(first.decision.id), { optionId: first.a.id, reason: 'After the extension.' });
+		expect(rulingOf(first.decision.id)?.early).toBe(false);
+		expect(rulingEvents(first.decision.id)).toEqual([['ruled', null, false]]);
+
+		// Closed early, reopened by Extend, and closed early again: early, against the extended time.
+		const second = opened({ status: 'open', closesAt: daysAhead(1) });
+		const secondSilent = withAccount(second.decision, 'second');
+		close(second.decider, second.decision);
+		const reopened = extend(second.decider, decisionRow(second.decision.id), daysAhead(2));
+		const again = close(second.decider, decisionRow(second.decision.id));
+		expect(again.closesAt, 'the extended closing time').toBe(reopened.closesAt);
+		rule(second.decider, again, { optionId: second.a.id, reason: 'Closed early again.' });
+		expect(rulingOf(second.decision.id)?.early).toBe(true);
+		expect(rulingEvents(second.decision.id)).toEqual([
+			['ruled', null, true],
+			['cut_off', secondSilent.participant.id, null]
+		]);
+		await settled(first.decision.id);
+		await settled(second.decision.id);
+	});
+
+	it('counts the latest close after a re-publish asking again, against the closing time then in force (2e, card 2727)', async () => {
+		const askAgain = (user: SessionUser, decisionId: number) =>
+			as(user, (caller) => republishDecision(caller, { decisionId }, { changeNote: 'Asked again.', askAgain: true, revision: revisionFor(decisionId) }, UI));
+		/** Every asked_again and told_ruling mail has its outcome. */
+		const mailsSettled = (decisionId: number) =>
+			vi.waitFor(() =>
+				expect(eventsOf(decisionId).filter((event) => event.kind === 'mail_outcome')).toHaveLength(
+					eventsOf(decisionId).filter((event) => ['asked_again', 'told_ruling'].includes(event.kind)).length
+				)
+			);
+
+		// Closed early, reopened by asking again, and closed early again: early, and the silent one is cut off.
+		const first = opened({ status: 'open', closesAt: daysAhead(1) });
+		const firstSilent = withAccount(first.decision, 'first');
+		close(first.decider, first.decision);
+		const reopened = askAgain(first.decider, first.decision.id);
+		expect(reopened).toMatchObject({ status: 'open', closedAt: null, closesAt: first.decision.closesAt });
+		const again = close(first.decider, reopened);
+		rule(first.decider, again, { optionId: first.a.id, reason: 'Closed early after asking again.' });
+		expect(rulingOf(first.decision.id)?.early).toBe(true);
+		expect(rulingEvents(first.decision.id)).toEqual([
+			['ruled', null, true],
+			['cut_off', firstSilent.participant.id, null]
+		]);
+
+		// Closed early, reopened by asking again, then left past its closing time and closed: not early.
+		const second = opened({ status: 'open', closesAt: daysAhead(1) });
+		withAccount(second.decision, 'second');
+		close(second.decider, second.decision);
+		expect(askAgain(second.decider, second.decision.id)).toMatchObject({ status: 'open', closedAt: null });
+		db.update(decisions).set({ closesAt: PAST }).where(eq(decisions.id, second.decision.id)).run(); // the closing time passes
+		close(second.decider, decisionRow(second.decision.id));
+		rule(second.decider, decisionRow(second.decision.id), { optionId: second.a.id, reason: 'After asking again.' });
+		expect(rulingOf(second.decision.id)?.early).toBe(false);
+		expect(rulingEvents(second.decision.id)).toEqual([['ruled', null, false]]);
+		await mailsSettled(first.decision.id);
+		await mailsSettled(second.decision.id);
+	});
+
+	it('rulesEarly: shown open, open past its time, closed with no closed_at, closed with no closes_at, and every other status (2d, card 2727)', () => {
+		const now = '2026-11-05 12:00:00';
+		const row = (status: string, closesAt: string | null, closedAt: string | null) => ({ status, closesAt, closedAt });
+		expect(rulesEarly(row('open', '2026-11-06 12:00:00', null), now), 'shown open').toBe(true);
+		expect(rulesEarly(row('open', null, null), now), 'open with no closing time').toBe(true);
+		expect(rulesEarly(row('open', now, null), now), 'open at its closing time').toBe(false);
+		expect(rulesEarly(row('closed', '2026-11-06 12:00:00', '2026-11-05 10:00:00'), now), 'closed before').toBe(true);
+		expect(rulesEarly(row('closed', '2026-11-05 10:00:00', '2026-11-05 10:00:00'), now), 'closed at').toBe(false);
+		expect(rulesEarly(row('closed', '2026-11-05 09:00:00', '2026-11-05 10:00:00'), now), 'closed after').toBe(false);
+		expect(rulesEarly(row('closed', '2026-11-06 12:00:00', null), now), 'closed with no closed_at').toBe(false);
+		// Without the closed_at guard this row would be early: nothing on it says when it closed.
+		expect(rulesEarly(row('closed', null, null), now), 'closed with neither closed_at nor closing time').toBe(false);
+		expect(rulesEarly(row('closed', null, '2026-11-05 10:00:00'), now), 'closed with no closing time').toBe(true);
+		for (const status of ['draft', 'ruled', 'superseded', 'withdrawn']) expect(rulesEarly(row(status, '2026-11-06 12:00:00', '2026-11-05 10:00:00'), now), status).toBe(false);
 	});
 
 	it('records againstResponses by the most chosen, one row per branch (3)', async () => {

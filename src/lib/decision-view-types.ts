@@ -200,6 +200,8 @@ export type ResultsData = {
 	released: { at: Stamp; byName: string; omitted: number } | null;
 	releasePreview: ReleasePreview | null;
 	mayRule: boolean;
+	/** Card 2727: whether a ruling now is early, shown open or closed before its closing time (`rulesEarly`). */
+	rulesEarly: boolean;
 	mayRelease: boolean;
 	/** The words of the first refusal a release would meet now, or null. */
 	releaseRefusal: string | null;

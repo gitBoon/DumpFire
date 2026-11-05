@@ -66,6 +66,23 @@ export function shownStatusSql(status: ShownStatus, now: Stamp): SQL {
 }
 
 /**
+ * Whether a ruling at `now` is early (card 2679 decision 12, as amended by
+ * card 2727): the decision is shown open, or it was closed for input before
+ * its closing time. Card 2727 supersedes D12's second bullet, which held a
+ * decision closed before its closing time not early.
+ * Closing leaves `closes_at` alone and nothing changes it while the row is
+ * stored `closed` (Extend and re-publishing to ask again reopen it and empty
+ * `closed_at`), so the row holds the latest close and the closing time in
+ * force at it. A close at or after the closing time is not early, nor is a
+ * closed row with no `closed_at`: nothing says when it closed.
+ */
+export function rulesEarly(row: Pick<Decision, 'status' | 'closesAt' | 'closedAt'>, now: Stamp = stamp()): boolean {
+	if (row.status === 'open') return decisionStatus(row, now) === 'open';
+	if (row.status !== 'closed' || row.closedAt === null) return false;
+	return row.closesAt === null || row.closedAt < row.closesAt;
+}
+
+/**
  * The one projection of status and closing time for every list (card 2680,
  * decision 32, S4): the register, the person record and the card links. The
  * closing time is null once ruled or superseded, as the board's list and the

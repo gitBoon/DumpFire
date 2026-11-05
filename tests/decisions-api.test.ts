@@ -1363,7 +1363,8 @@ describe('GET /api/v1/decisions/{decisionId}/summary (24)', () => {
 		expect(res.status).toBe(200);
 		expect(res.body.untrusted).toBe(true);
 		expect(res.body.openQuestions).toEqual([{ question: 'What does A cost?', agentAnswered: true, untrusted: true }]);
-		for (const key of ['revision', 'releasePreview', 'mayRule', 'mayRelease', 'releaseRefusal', 'mayAnswerQuestions']) expect(key in res.body, key).toBe(false);
+		// Card 2727: rulesEarly is the results page's, as mayRule is.
+		for (const key of ['revision', 'releasePreview', 'mayRule', 'rulesEarly', 'mayRelease', 'releaseRefusal', 'mayAnswerQuestions']) expect(key in res.body, key).toBe(false);
 		expect(JSON.stringify(res.body.openQuestions)).not.toContain(pat.participant.name);
 	});
 });

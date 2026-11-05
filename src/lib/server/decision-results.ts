@@ -44,7 +44,7 @@ import { mayDo } from './decision-access';
 import { allOptionsOf, parseVersionContent, participantsOf, resultsRevisionOf } from './decision-content';
 import { mayAnswerOf, openQuestionWhere } from './decision-questions';
 import { concernsOf, currentRound, eventsOfKind, ownResponseOf, responsesOf, revisionResponseIdsOf, rulingOf, statementsOf } from './decision-record';
-import { decisionStatus, TRANSITIONS } from './decision-status';
+import { decisionStatus, rulesEarly, TRANSITIONS } from './decision-status';
 import { purposeKey } from './request-tokens';
 import { requireDecision } from './route-guards';
 import { mostChosenOf } from '$lib/decision-rules';
@@ -628,12 +628,14 @@ export function readResults(user: SessionUser, decisionId: number, opts: { sourc
 	const releasable = decision.status === 'ruled';
 	const releaseRefusal = releasable ? (releaseRefusals(decision)[0] ?? null) : null;
 	const nameOfParticipant = new Map(participants.map((row) => [row.id, row.name]));
+	// Card 2727: one moment for the shown status and the early rule, so the two never disagree across a second boundary.
+	const now = stamp();
 
 	return {
 		decision: {
 			id: decision.id,
 			title: decision.title,
-			shownStatus: decisionStatus(decision, stamp()),
+			shownStatus: decisionStatus(decision, now),
 			voteMode,
 			closesAt: decision.closesAt,
 			deciderName: decision.deciderName,
@@ -669,6 +671,8 @@ export function readResults(user: SessionUser, decisionId: number, opts: { sourc
 			decision.resultsReleasedAt === null ? null : { at: decision.resultsReleasedAt, byName: released?.byName ?? '', omitted: released?.omitted.length ?? 0 },
 		releasePreview: releasable && decision.resultsReleasedAt === null ? previewOf(decision) : null,
 		mayRule: (TRANSITIONS.rule as readonly string[]).includes(decision.status) && mayDo(access, 'rule', decision),
+		// Card 2727: the rule ruleDecision records by, so the form names who a ruling now cuts off.
+		rulesEarly: rulesEarly(decision, now),
 		mayRelease: releasable && mayDo(access, 'release', decision) && releaseRefusal === null,
 		releaseRefusal,
 		mostChosen: mostChosenOf(current, voteMode)

@@ -204,7 +204,15 @@ describe('RulingForm (43)', () => {
 		const { target } = drawForm({ early: true, cutOff: ['Sil Ent', 'Qui Et'] });
 		const note = target.querySelector('[data-note="early"]')!;
 		expect([...note.querySelectorAll('li')].map(textOf)).toEqual(['Sil Ent', 'Qui Et']);
+		expect(textOf(note.querySelector('p')!)).toBe('The decision is still open: ruling now is early, and cuts off these people who have not responded:');
 		expect(drawForm().target.querySelector('[data-note="early"]')).toBeNull();
+	});
+
+	it('says a decision closed before its closing time is ruled early, and names who it cuts off (card 2727)', () => {
+		const { target } = drawForm({ early: true, closedEarly: true, cutOff: ['Sil Ent'] });
+		const note = target.querySelector('[data-note="early"]')!;
+		expect(textOf(note.querySelector('p')!)).toBe('The decision was closed before its closing time: ruling now is early, and cuts off these people who have not responded:');
+		expect([...note.querySelectorAll('li')].map(textOf)).toEqual(['Sil Ent']);
 	});
 
 	it('keeps Rule off until a choice, a reason and, with a question open, the box', () => {
@@ -344,12 +352,35 @@ function results(more: Partial<ResultsData> = {}): ResultsData {
 			]
 		},
 		mayRule: false,
+		rulesEarly: false,
 		mayRelease: true,
 		releaseRefusal: null,
 		mostChosen: [11],
 		...more
 	};
 }
+
+describe('the ruling form on the results page (card 2727)', () => {
+	const awaiting = (rulesEarly: boolean, shownStatus: 'open' | 'awaiting_ruling') =>
+		draw(ResultsPage, {
+			data: results({
+				decision: { ...results().decision, shownStatus },
+				ruling: null,
+				released: null,
+				releasePreview: null,
+				mayRule: true,
+				mayRelease: false,
+				rulesEarly,
+				notResponded: [{ participantId: 9, name: 'Sil Ent', groups: [] }]
+			})
+		}).querySelector('[data-note="early"]');
+
+	it('names who is cut off by the server rule: closed early, still open, and neither', () => {
+		expect(textOf(awaiting(true, 'awaiting_ruling')!.querySelector('p')!)).toMatch(/^The decision was closed before its closing time: ruling now is early/);
+		expect(textOf(awaiting(true, 'open')!.querySelector('p')!)).toMatch(/^The decision is still open: ruling now is early/);
+		expect(awaiting(false, 'awaiting_ruling'), 'closed at or after its closing time').toBeNull();
+	});
+});
 
 describe('the release on the results page (44)', () => {
 	const release = (target: HTMLElement) => target.querySelector<HTMLButtonElement>('[data-action="release"]')!;

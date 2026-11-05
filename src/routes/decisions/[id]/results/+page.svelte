@@ -158,7 +158,8 @@
 					options={data.options}
 					mostChosen={data.mostChosen}
 					voted={data.current.voted}
-					early={data.decision.shownStatus === 'open'}
+					early={data.rulesEarly}
+					closedEarly={data.rulesEarly && data.decision.shownStatus !== 'open'}
 					cutOff={data.notResponded.map((person) => person.name)}
 					openQuestions={data.openQuestions.length}
 					onRuled={done}

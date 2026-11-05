@@ -245,6 +245,7 @@ function results(more: Partial<ResultsData> = {}): ResultsData {
 		released: null,
 		releasePreview: null,
 		mayRule: true,
+		rulesEarly: false,
 		mayRelease: false,
 		releaseRefusal: null,
 		mostChosen: [],

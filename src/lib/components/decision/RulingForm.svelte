@@ -8,7 +8,8 @@
     `aria-describedby` (F5).
   - The reason is required and the conditions are not; each is a labelled
     textarea of at most 4,000 characters with its count.
-  - Ruling while the decision is shown open is early: the people who have not
+  - Ruling while the decision is shown open, or once it was closed for input
+    before its closing time (card 2727), is early: the people who have not
     responded, and are cut off by it, are named before confirming.
   - With questions still open, Rule is off until the box saying so is ticked.
   - Rule… opens a dialog that asks for the caller's password and sends
@@ -34,6 +35,7 @@
 		mostChosen,
 		voted,
 		early,
+		closedEarly = false,
 		cutOff,
 		openQuestions,
 		onRuled
@@ -48,8 +50,10 @@
 		mostChosen: number[];
 		/** How many voted in the current round. */
 		voted: number;
-		/** Whether the decision is shown open now, so that ruling is early. */
+		/** Whether ruling now is early: the decision is shown open, or was closed before its closing time. */
 		early: boolean;
+		/** Card 2727: it is early because the decision was closed for input before its closing time, not because it is open. */
+		closedEarly?: boolean;
 		/** Who an early ruling cuts off: the live consulted participants who have not responded. */
 		cutOff: string[];
 		/** How many questions are still open. */
@@ -156,7 +160,7 @@
 
 	{#if early}
 		<div class="note" data-note="early">
-			<p>The decision is still open: ruling now is early{cutOff.length > 0 ? ', and cuts off these people who have not responded:' : '.'}</p>
+			<p>{closedEarly ? 'The decision was closed before its closing time' : 'The decision is still open'}: ruling now is early{cutOff.length > 0 ? ', and cuts off these people who have not responded:' : '.'}</p>
 			{#if cutOff.length > 0}
 				<ul>
 					{#each cutOff as name, index (index)}

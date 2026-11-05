@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.74
+version: 1.75
 status: As-Built
 date: 2026-11-05
 tags:
@@ -377,7 +377,7 @@ sequenceDiagram
 Once people have answered, the decider rules (card 2679, from 4 November 2026).
 
 - **The results** — **Results and ruling**, in the editor and on the decision's page, opens `/decisions/<id>/results` for the decider and DumpFire's administrators, and nobody else: how each option is doing in the current round (earlier rounds kept apart and closed), each response with its person's name and comments, who has not answered yet, anyone removed, open questions, and any concerns raised after the ruling. On a phone each table stacks into labelled rows
-- **Ruling** — on the results page, the decider picks an option or "None of these", says why (required) and adds any conditions, each up to 4,000 characters. If the choice is not the most chosen, the form warns that it goes against the responses, which only the decider and administrators are shown. Ruling before the closing time lists the people who have not answered, who are recorded as cut off. With questions still open, a box must be ticked first. **Rule…** asks for your password, and every participant is then mailed the ruling, its reason and its conditions, with no figures, and told they can raise a concern for 90 days. If the page's figures have changed since you opened it, the ruling is refused and you reload
+- **Ruling** — on the results page, the decider picks an option or "None of these", says why (required) and adds any conditions, each up to 4,000 characters. If the choice is not the most chosen, the form warns that it goes against the responses, which only the decider and administrators are shown. Ruling before the closing time lists the people who have not answered, who are recorded as cut off. So does ruling on a decision you closed for input before its closing time: the form says it was closed early and names them, and the ruling is recorded as early. With questions still open, a box must be ticked first. **Rule…** asks for your password, and every participant is then mailed the ruling, its reason and its conditions, with no figures, and told they can raise a concern for 90 days. If the page's figures have changed since you opened it, the ruling is refused and you reload
 - **The ruled banner** — everyone who can see the decision then reads "Ruled by <decider>: Option B: <title>" (or "None of these"), the reason and the conditions at the top of its page. No time is shown, nor whether it went against the responses or was early. The closing time is no longer shown once it is ruled, so nobody can tell from the page whether the ruling came early
 - **Releasing the results** — after ruling, the decider may release the totals and the comments, without names, to everyone who can see the decision. The results page shows exactly what will be shown first, with **Leave out** by each comment. Figures that could single someone out read "withheld", with no number: a count of 1 or 2, a count within 2 of everyone, and a mean score whose scores could single someone out; whenever any is withheld, so is the number who answered. Beside a release of a decision it supersedes, or that supersedes it, the number who answered is always withheld and never one count alone. Comments carry no name or time and are sorted by their text. **Release results…** warns "Once released, anyone who can see this decision can work out from the totals whether the ruling followed the most chosen option. This cannot be undone.", asks for your password, and mails nobody. It is refused when fewer than 3 people answered, when anyone answered before the page said results could be released, when the decision has been superseded, or when a decision it supersedes, or that supersedes it, released results from almost the same people
 - **Raising a concern** — a participant, consulted or informed, signed in or by their link, can raise a concern about the ruling on its page for 90 days, up to 5 of them and at least 10 minutes apart. The form says "The decider and DumpFire's administrators see your concern with your name. A release of the results never includes concerns." and lists your own. The decider is mailed that a concern arrived, with neither your name nor your words, at most once a day about you
@@ -386,7 +386,7 @@ Once people have answered, the decider rules (card 2679, from 4 November 2026).
 ```mermaid
 stateDiagram-v2
     Open --> Ruled: Rule (decider, your password; early cuts off who has not answered)
-    Closed --> Ruled: Rule (decider, your password)
+    Closed --> Ruled: Rule (decider, your password; early, cutting off who has not answered, if closed before its closing time)
     Ruled --> Ruled: Release results (decider, your password, one way)
     Ruled --> Ruled: A participant raises a concern (90 days)
     Ruled --> Superseded: the superseding draft is ruled by the decider, Product Owner or an administrator

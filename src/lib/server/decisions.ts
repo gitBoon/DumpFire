@@ -203,7 +203,7 @@ import {
 	queueRecordMails,
 	RECORD_MAIL_MIN_MINUTES
 } from './decision-mail';
-import { DECISION_ACTION_WORDS, decisionStatus, linkUsable, requireTransition } from './decision-status';
+import { DECISION_ACTION_WORDS, decisionStatus, linkUsable, requireTransition, rulesEarly } from './decision-status';
 import { isSmtpConfigured, NO_LINK_ADDRESS } from './email';
 import { emit } from './events';
 import { ACTIONS, actorOf, logActivity, type ActivitySource } from './logActivity';
@@ -1546,7 +1546,8 @@ export function decisionRuleGuard(
  * 12): the option chosen, or none of these, the reason and the conditions.
  * Every refusal is `decisionRuleGuard`'s, asked first.
  *
- * The ruling row, `early` when the decision is shown open now and `against`
+ * The ruling row, `early` when the decision is shown open now or was closed
+ * for input before its closing time (`rulesEarly`, card 2727) and `against`
  * when there were votes and the choice is not among the most chosen; the
  * decision `ruled`, with `ruled_at`; `ruled { optionId, early,
  * againstResponses, productOwnerUserId }`, the last the board's Product Owner
@@ -1572,7 +1573,8 @@ export function ruleDecision(caller: SessionUser | null, at: { decisionId: numbe
 	const by = actorFor(user, sourceOf(opts));
 	const voteMode = decision.voteMode === 'score' ? 'score' : 'single';
 	const { tally, notResponded } = currentResultsOf(decision);
-	const early = decisionStatus(decision, now) === 'open';
+	// Card 2727: early when shown open, or when closed for input before its closing time.
+	const early = rulesEarly(decision, now);
 	const againstResponses = againstOf(ruling.optionId, tally.voted, mostChosenOf(tally, voteMode));
 	// Code review S1: who may supersede this ruling is frozen at it, the board's Product Owner as it names one now.
 	const productOwnerUserId =

@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.97
+version: 1.99
 status: As-Built
 date: 2026-11-05
 tags:
@@ -1752,7 +1752,7 @@ flowchart LR
 | Function | Who (`DECISION_RULES`) | From (`TRANSITIONS`) | Writes |
 |---|---|---|---|
 | `decisionRuleGuard` (read) | `rule`: the decider, with board edit while the board exists | `open`, `closed` | nothing: 401, 404, 403 (an API key too), 400 for the body, 409 status, then `rulingRefusals`' 409s (a stale results revision, questions open unconfirmed) |
-| `ruleDecision` | as its guard, asked first | as its guard | `appendRuling`; `ruled`, `ruled_at`; `ruled { optionId, early, againstResponses, productOwnerUserId, supersededOld? }`, `productOwnerUserId` the board's Product Owner now, or null (code review S1); `cut_off` per live consulted non-responder when shown open; the ruling mail; `decision_ruled` and the live event; the old decision `superseded` when the ruler may supersede it |
+| `ruleDecision` | as its guard, asked first | as its guard | `appendRuling`; `ruled`, `ruled_at`; `ruled { optionId, early, againstResponses, productOwnerUserId, supersededOld? }`, `productOwnerUserId` the board's Product Owner now, or null (code review S1); `cut_off` per live consulted non-responder when early (shown open, or closed before its closing time: `rulesEarly`, card 2727); the ruling mail; `decision_ruled` and the live event; the old decision `superseded` when the ruler may supersede it |
 | `resultsReleaseGuard` (read) | `release`: the decider alone | `ruled` | nothing: 401, 404, 403, 400, 409 status, `releaseRefusals`' 409s, 409 stale revision, 400 an unknown `omit` key |
 | `releaseResults` | as its guard | as its guard | `results_released_at`, `_by`; `results_released { upToResponseId, omitted }`; `decision_results_released` and the live event; no mail |
 | `raiseConcern`, `raiseConcernByLink` (`concernAs`) | `concern`: a live participant, consulted or informed, reached by account or by link | `ruled`, within 90 days of `ruled_at` | a `concern` response; `concern_raised { responseId, notice }`; `seen { stage: 'ruling' }` once; the decider's notice for `asked`. No activity, no live event |
@@ -1782,7 +1782,15 @@ flowchart LR
   and `CONCERNS_PER_PARTICIPANT` (code review F8), are the one rule for the form's warning and
   the write: in single mode the most votes, in score mode the highest total; "against" when
   there was a vote and the choice is not among them, "none of these" included. `early` when
-  shown `open` at the moment of ruling.
+  shown `open` at the moment of ruling, or when the decision was closed for input before its
+  closing time (card 2727, amending card 2679 D12): `rulesEarly(row, now)` in `decision-status.ts`, the one rule for
+  `ruleDecision` and for the results page's `rulesEarly`, which tells the ruling form to name
+  who is cut off. It reads `closed_at` and `closes_at` and needs nothing more: closing leaves
+  `closes_at` alone, and nothing changes it while the row is stored `closed`, as Extend and a
+  re-publish that asks again reopen it and empty `closed_at`. So after a reopen the latest close
+  counts, against the closing time in force at it. A close at or after the closing time is not
+  early, nor is a `closed` row with no `closed_at`. Rulings made before card 2727 are not
+  rewritten (the record is insert-only).
 - **The release's projection** (`projectionOf` in `decision-results.ts`): cells through
   `shownCells`; each score-mode mean through `meanOf`, its scores counted as cells (code
   review S2); and, beside another release in the supersede chain (`chainReleased`), the number
