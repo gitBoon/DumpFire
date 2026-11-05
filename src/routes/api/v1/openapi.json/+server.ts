@@ -1838,8 +1838,17 @@ const spec = {
 						description: 'Live consulted participants with no response in the current round',
 						items: {
 							type: 'object',
-							properties: { participantId: { type: 'integer' }, name: { type: 'string' }, groups: { type: 'array', items: { type: 'string' } } },
-							required: ['participantId', 'name', 'groups']
+							properties: {
+								participantId: { type: 'integer' },
+								name: { type: 'string' },
+								groups: { type: 'array', items: { type: 'string' } },
+								reached: {
+									type: 'boolean',
+									description:
+										'Whether the current round\'s request has reached them, read from the record: an asking mail of the round delivered, or the question seen, while consulted (card 2738)'
+								}
+							},
+							required: ['participantId', 'name', 'groups', 'reached']
 						}
 					},
 					removed: {
@@ -1892,12 +1901,20 @@ const spec = {
 							early: { type: 'boolean' },
 							againstResponses: { type: 'boolean' },
 							cutOff: { type: 'array', items: { type: 'string' }, description: 'The names of those who had not responded when it was ruled early' },
+							cutOffReached: {
+								type: 'array',
+								items: { type: ['boolean', 'null'] },
+								description:
+									'In cutOff\'s order: whether the round\'s request had reached each when the ruling cut them off; null for a cut-off recorded before card 2738, which says neither'
+							},
 							supersededOld: { type: ['boolean', 'null'], description: 'null where the decision supersedes none' },
 							byName: { type: 'string' },
 							at: { type: 'string', format: 'date-time' },
 							untrusted: { type: 'boolean', const: true }
 						},
-						required: ['optionId', 'label', 'title', 'reason', 'conditions', 'early', 'againstResponses', 'cutOff', 'supersededOld', 'byName', 'at', 'untrusted']
+						required: [
+							'optionId', 'label', 'title', 'reason', 'conditions', 'early', 'againstResponses', 'cutOff', 'cutOffReached', 'supersededOld', 'byName', 'at', 'untrusted'
+						]
 					},
 					released: {
 						type: ['object', 'null'],

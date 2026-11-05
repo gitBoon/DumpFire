@@ -201,15 +201,48 @@ describe('RulingForm (43)', () => {
 	});
 
 	it('names who an early ruling cuts off', () => {
-		const { target } = drawForm({ early: true, cutOff: ['Sil Ent', 'Qui Et'] });
+		const { target } = drawForm({ early: true, cutOff: [{ name: 'Sil Ent', reached: true }, { name: 'Qui Et', reached: true }] });
 		const note = target.querySelector('[data-note="early"]')!;
 		expect([...note.querySelectorAll('li')].map(textOf)).toEqual(['Sil Ent', 'Qui Et']);
 		expect(textOf(note.querySelector('p')!)).toBe('The decision is still open: ruling now is early, and cuts off these people who have not responded:');
 		expect(drawForm().target.querySelector('[data-note="early"]')).toBeNull();
 	});
 
+	it('marks each one the round’s request never reached, and the dialog counts them (card 2738)', () => {
+		const { target } = drawForm({
+			early: true,
+			cutOff: [
+				{ name: 'Sil Ent', reached: true },
+				{ name: 'Moe Ved', reached: false },
+				{ name: 'Lef Tus', reached: false }
+			]
+		});
+		const note = target.querySelector('[data-note="early"]')!;
+		expect([...note.querySelectorAll('li')].map(textOf)).toEqual([
+			'Sil Ent',
+			"Moe Ved (never reached by this round's request)",
+			"Lef Tus (never reached by this round's request)"
+		]);
+		expect(note.querySelectorAll('[data-note="not-reached"]')).toHaveLength(2);
+
+		choose(radios(target)[0]);
+		typeInto(reasonOf(target), 'Plan A.');
+		rule(target);
+		expect(textOf(dialog()!)).toContain("3 who have not responded are cut off, 2 of them never reached by this round's request.");
+	});
+
+	it('says nothing of reach in the dialog when the request reached everyone cut off (card 2738)', () => {
+		const { target } = drawForm({ early: true, cutOff: [{ name: 'Sil Ent', reached: true }] });
+		choose(radios(target)[0]);
+		typeInto(reasonOf(target), 'Plan A.');
+		rule(target);
+		expect(textOf(dialog()!)).toContain('1 who have not responded are cut off.');
+		expect(textOf(dialog()!)).not.toContain('never reached');
+		expect(target.querySelector('[data-note="not-reached"]')).toBeNull();
+	});
+
 	it('says a decision closed before its closing time is ruled early, and names who it cuts off (card 2727)', () => {
-		const { target } = drawForm({ early: true, closedEarly: true, cutOff: ['Sil Ent'] });
+		const { target } = drawForm({ early: true, closedEarly: true, cutOff: [{ name: 'Sil Ent', reached: true }] });
 		const note = target.querySelector('[data-note="early"]')!;
 		expect(textOf(note.querySelector('p')!)).toBe('The decision was closed before its closing time: ruling now is early, and cuts off these people who have not responded:');
 		expect([...note.querySelectorAll('li')].map(textOf)).toEqual(['Sil Ent']);
@@ -329,7 +362,7 @@ function results(more: Partial<ResultsData> = {}): ResultsData {
 		options: OPTIONS,
 		current: tally(2),
 		earlierRounds: [tally(1, { responded: 1 })],
-		notResponded: [{ participantId: 4, name: 'Sil Ent', groups: [] }],
+		notResponded: [{ participantId: 4, name: 'Sil Ent', groups: [], reached: true }],
 		removed: [],
 		openQuestions: [],
 		mayAnswerQuestions: false,
@@ -371,7 +404,10 @@ describe('the ruling form on the results page (card 2727)', () => {
 				mayRule: true,
 				mayRelease: false,
 				rulesEarly,
-				notResponded: [{ participantId: 9, name: 'Sil Ent', groups: [] }]
+				notResponded: [
+					{ participantId: 9, name: 'Sil Ent', groups: [], reached: true },
+					{ participantId: 10, name: 'Moe Ved', groups: [], reached: false }
+				]
 			})
 		}).querySelector('[data-note="early"]');
 
@@ -379,6 +415,10 @@ describe('the ruling form on the results page (card 2727)', () => {
 		expect(textOf(awaiting(true, 'awaiting_ruling')!.querySelector('p')!)).toMatch(/^The decision was closed before its closing time: ruling now is early/);
 		expect(textOf(awaiting(true, 'open')!.querySelector('p')!)).toMatch(/^The decision is still open: ruling now is early/);
 		expect(awaiting(false, 'awaiting_ruling'), 'closed at or after its closing time').toBeNull();
+	});
+
+	it('hands the form whom the request never reached (card 2738)', () => {
+		expect([...awaiting(true, 'open')!.querySelectorAll('li')].map(textOf)).toEqual(['Sil Ent', "Moe Ved (never reached by this round's request)"]);
 	});
 });
 
@@ -549,8 +589,10 @@ describe('ResultsView (45)', () => {
 					reason: 'B anyway.',
 					conditions: null,
 					early: true,
+					closedEarly: false,
 					againstResponses: true,
 					cutOff: ['Sil Ent'],
+					cutOffReached: [true],
 					supersededOld: null,
 					byName: 'decider',
 					at: '2026-11-04 09:00:00'
@@ -560,8 +602,69 @@ describe('ResultsView (45)', () => {
 		const ruling = textOf(target.querySelector('[data-block="ruling"]')!);
 		expect(ruling).toContain('Ruled on Option B: Plan B');
 		expect(ruling).toContain('Against the responses Yes');
-		expect(ruling).toContain('Early Yes');
+		expect(ruling).toContain('Early Yes: ruled while the decision was open');
 		expect(ruling).toContain('Cut off Sil Ent');
+	});
+
+	it('says how a ruling was early: while open, or after a close before the closing time; and No when not early (card 2738, code review R6)', () => {
+		const earlyWords = (early: boolean, closedEarly: boolean) => {
+			const target = draw(ResultsView, {
+				results: results({
+					ruling: {
+						optionId: 12,
+						label: 'B',
+						title: 'Plan B',
+						reason: 'B anyway.',
+						conditions: null,
+						early,
+						closedEarly,
+						againstResponses: false,
+						cutOff: [],
+						cutOffReached: [],
+						supersededOld: null,
+						byName: 'decider',
+						at: '2026-11-04 09:00:00'
+					}
+				})
+			});
+			const ruling = target.querySelector('[data-block="ruling"]')!;
+			const terms = [...ruling.querySelectorAll('dt')].map(textOf);
+			return textOf(ruling.querySelectorAll('dd')[terms.indexOf('Early')]);
+		};
+		expect(earlyWords(true, false)).toBe('Yes: ruled while the decision was open');
+		expect(earlyWords(true, true)).toBe('Yes: ruled after it was closed before its closing time');
+		expect(earlyWords(false, false)).toBe('No');
+	});
+
+	it('marks a cut-off and a non-responder the request never reached, and leaves one recorded before card 2738 unmarked (card 2738)', () => {
+		const target = draw(ResultsView, {
+			results: results({
+				notResponded: [
+					{ participantId: 4, name: 'Sil Ent', groups: ['Ops'], reached: true },
+					{ participantId: 5, name: 'Moe Ved', groups: [], reached: false }
+				],
+				ruling: {
+					optionId: 12,
+					label: 'B',
+					title: 'Plan B',
+					reason: 'B anyway.',
+					conditions: null,
+					early: true,
+					closedEarly: false,
+					againstResponses: false,
+					cutOff: ['Sil Ent', 'Moe Ved', 'Old Timer'],
+					cutOffReached: [true, false, null],
+					supersededOld: null,
+					byName: 'decider',
+					at: '2026-11-04 09:00:00'
+				}
+			})
+		});
+		expect([...target.querySelectorAll('[data-list="not-responded"] li')].map(textOf)).toEqual([
+			'Sil Ent (Ops)',
+			"Moe Ved (never reached by this round's request)"
+		]);
+		expect(textOf(target.querySelector('[data-block="ruling"]')!)).toContain("Cut off Sil Ent, Moe Ved (never reached by this round's request), Old Timer");
 	});
 });
 

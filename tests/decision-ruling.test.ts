@@ -38,7 +38,8 @@ import {
 } from '$lib/server/db/schema';
 import { DECISION_RULES } from '$lib/server/decision-access';
 import { resultsRevisionOf, allOptionsOf, participantsOf } from '$lib/server/decision-content';
-import { appendEvent, concernsOf, currentRound, DECIDER_ONLY_EVENTS, latestResponse, rulingOf, SYSTEM_ACTOR } from '$lib/server/decision-record';
+import { appendEvent, concernsOf, currentRound, DECIDER_ONLY_EVENTS, latestResponse, reachedInRound, rulingOf, SYSTEM_ACTOR } from '$lib/server/decision-record';
+import { revokeLinks } from '$lib/server/decision-links';
 import { STEP_UP_MISSING, STEP_UP_WRONG } from '$lib/server/step-up';
 import {
 	ALREADY_RELEASED,
@@ -306,7 +307,8 @@ describe('ruleDecision', () => {
 		expect(rulingOf(decision.id)?.early).toBe(true);
 		expect(eventsOf(decision.id).filter((event) => ['ruled', 'cut_off'].includes(event.kind)).map((event) => [event.kind, event.participantId, event.detail])).toEqual([
 			['ruled', null, { optionId: a.id, early: true, againstResponses: false, productOwnerUserId: null }],
-			['cut_off', silent.participant.id, null]
+			// Card 2738: no asking mail of the round is on the record for them, so it says they were never reached.
+			['cut_off', silent.participant.id, { reached: false }]
 		]);
 		await settled(decision.id);
 	});
@@ -451,6 +453,329 @@ describe('ruleDecision', () => {
 		expect(rulesEarly(row('closed', null, null), now), 'closed with neither closed_at nor closing time').toBe(false);
 		expect(rulesEarly(row('closed', null, '2026-11-05 10:00:00'), now), 'closed with no closing time').toBe(true);
 		for (const status of ['draft', 'ruled', 'superseded', 'withdrawn']) expect(rulesEarly(row(status, '2026-11-06 12:00:00', '2026-11-05 10:00:00'), now), status).toBe(false);
+	});
+
+	// ─── Card 2738: an early ruling says whom the round's request never reached ──
+
+	describe('card 2738: whom the round’s request reached', () => {
+		const askAgain = (user: SessionUser, decisionId: number) =>
+			as(user, (caller) => republishDecision(caller, { decisionId }, { changeNote: 'Asked again.', askAgain: true, revision: revisionFor(decisionId) }, UI));
+		/** Every record mail asked for has its outcome. */
+		const mailsSettled = (decisionId: number) =>
+			vi.waitFor(() =>
+				expect(eventsOf(decisionId).filter((event) => event.kind === 'mail_outcome')).toHaveLength(
+					eventsOf(decisionId).filter((event) => ['invited', 'asked_again', 'told_ruling'].includes(event.kind)).length
+				)
+			);
+		const cutOffs = (decisionId: number) => eventsOf(decisionId).filter((event) => event.kind === 'cut_off').map((event) => [event.participantId, event.detail]);
+		/** A record mail of the participant now, with its outcome: delivered, not delivered, or none written yet (undefined). */
+		function mailed(p: DecisionParticipant, kind: 'invited' | 'asked_again', delivered: boolean | undefined) {
+			const of = appendEvent({ decisionId: p.decisionId, kind, participantId: p.id, versionNumber: kind === 'asked_again' ? 1 : null }, SYSTEM_ACTOR);
+			if (delivered !== undefined) {
+				const mail = kind === 'invited' ? 'invitation' : 'asked_again';
+				appendEvent({ decisionId: p.decisionId, kind: 'mail_outcome', participantId: p.id, detail: { of, mail, delivered, ...(delivered ? {} : { problem: 'no_link_address' }) } }, SYSTEM_ACTOR);
+			}
+		}
+		const rowOf = (p: DecisionParticipant) => db.select().from(decisionParticipants).where(eq(decisionParticipants.id, p.id)).get()!;
+		const reachedOf = (decision: Decision, round: number, ...who: DecisionParticipant[]) => [...reachedInRound(decision.id, round, who.map(rowOf))].sort((x, y) => x - y);
+		/** The `published` event a version's publishing writes (the `opened()` fixture writes none): it opens the round by id. */
+		const published = (decision: Decision, number: number, asksAgain = true) =>
+			appendEvent({ decisionId: decision.id, kind: 'published', versionNumber: number, detail: { asksAgain, changeNote: number === 1 ? null : 'A change' } }, SYSTEM_ACTOR);
+		/** A question seen by the participant now. */
+		const sees = (p: DecisionParticipant, versionNumber: number) =>
+			appendEvent({ decisionId: p.decisionId, kind: 'seen', participantId: p.id, versionNumber, detail: { stage: 'question' } }, SYSTEM_ACTOR);
+		const close = (user: SessionUser, decisionId: number) => as(user, (caller) => closeDecision(caller, { decisionId }, null, UI));
+
+		it('records never reached for one whose address changed and one who had left before the request, and reached for one it was delivered to (2738-1)', async () => {
+			// Within a year, so that it may be re-published.
+			const { decision, a, decider } = opened({ status: 'open', closesAt: daysAhead(30) });
+			const told = withAccount(decision, 'told');
+			const moved = withAccount(decision, 'moved');
+			const gone = withAccount(decision, 'gone');
+			db.update(people).set({ email: 'moved-elsewhere@example.test' }).where(eq(people.id, moved.person.id)).run();
+			db.update(people).set({ status: 'left', leftAt: stamp() }).where(eq(people.id, gone.person.id)).run();
+
+			askAgain(decider, decision.id);
+			await mailsSettled(decision.id);
+			expect(eventsOf(decision.id).filter((event) => event.kind === 'mail_skipped').map((event) => [event.participantId, event.detail.reason])).toEqual([
+				[moved.participant.id, 'address_changed'],
+				[gone.participant.id, 'left']
+			]);
+			// The results page marks them before the ruling, by the rule the ruling records.
+			expect(readResults(decider, decision.id, { source: 'ui' }).notResponded.map((p) => [p.participantId, p.reached])).toEqual([
+				[told.participant.id, true],
+				[moved.participant.id, false],
+				[gone.participant.id, false]
+			]);
+
+			rule(decider, decisionRow(decision.id), { optionId: a.id, reason: 'Early.' });
+
+			expect(cutOffs(decision.id)).toEqual([
+				[told.participant.id, { reached: true }],
+				[moved.participant.id, { reached: false }],
+				[gone.participant.id, { reached: false }]
+			]);
+			const { ruling } = readResults(decider, decision.id, { source: 'ui' });
+			expect(ruling?.cutOff).toEqual([told.participant.name, moved.participant.name, gone.participant.name]);
+			expect(ruling?.cutOffReached).toEqual([true, false, false]);
+			await mailsSettled(decision.id);
+		});
+
+		it('keeps a link holder whose link was revoked after a delivered request a true cut-off (2738-2)', async () => {
+			const { decision, a, decider } = opened({ status: 'open', closesAt: daysAhead(30) });
+			const linky = withLink(decision, 'token-2738', 'consulted');
+			askAgain(decider, decision.id);
+			await mailsSettled(decision.id);
+			expect(rowOf(linky.participant).linkTokenHash, 'the request issued a new link').not.toBeNull();
+
+			db.update(people).set({ status: 'left', leftAt: stamp() }).where(eq(people.id, linky.person.id)).run();
+			revokeLinks({ participantId: linky.participant.id }, 'left', SYSTEM_ACTOR);
+			expect(rowOf(linky.participant).linkTokenHash).toBeNull();
+
+			rule(decider, decisionRow(decision.id), { optionId: a.id, reason: 'Early.' });
+			expect(cutOffs(decision.id)).toEqual([[linky.participant.id, { reached: true }]]);
+			await mailsSettled(decision.id);
+		});
+
+		it('counts any delivered request, not only the latest; one never delivered, or with no outcome yet, did not reach them (2738-3)', async () => {
+			const { decision, a, decider } = opened({ status: 'open', closesAt: FUTURE });
+			published(decision, 1);
+			const resent = withAccount(decision, 'resent');
+			const failed = withAccount(decision, 'failed');
+			const pending = withAccount(decision, 'pending');
+			mailed(resent.participant, 'invited', true);
+			mailed(resent.participant, 'invited', false);
+			mailed(failed.participant, 'invited', false);
+			mailed(pending.participant, 'invited', undefined);
+
+			rule(decider, decision, { optionId: a.id, reason: 'Early.' });
+			expect(cutOffs(decision.id)).toEqual([
+				[resent.participant.id, { reached: true }],
+				[failed.participant.id, { reached: false }],
+				[pending.participant.id, { reached: false }]
+			]);
+			// The made-up outcomes above are not the ruling mail's: wait for those alone.
+			await vi.waitFor(() =>
+				expect(eventsOf(decision.id).filter((event) => event.kind === 'mail_outcome' && event.detail.mail === 'ruling')).toHaveLength(
+					eventsOf(decision.id).filter((event) => event.kind === 'told_ruling').length
+				)
+			);
+		});
+
+		it('counts a request only while consulted: an invitation delivered while informed asked nothing (2738-4)', () => {
+			const { decision } = opened({ status: 'open', closesAt: FUTURE });
+			published(decision, 1);
+			const makeConsulted = (p: DecisionParticipant) => {
+				db.update(decisionParticipants).set({ role: 'consulted' }).where(eq(decisionParticipants.id, p.id)).run();
+				appendEvent({ decisionId: decision.id, kind: 'role_changed', participantId: p.id, detail: { from: 'informed', to: 'consulted' } }, SYSTEM_ACTOR);
+			};
+			// Included informed, told for their information, then made consulted: never asked.
+			const switched = withAccount(decision, 'switched', 'informed');
+			appendEvent({ decisionId: decision.id, kind: 'included', participantId: switched.participant.id, detail: { role: 'informed', hadAccount: true } }, SYSTEM_ACTOR);
+			mailed(switched.participant, 'invited', true);
+			makeConsulted(switched.participant);
+			// The same, then asked again once consulted: reached.
+			const askedLater = withAccount(decision, 'askedlater', 'informed');
+			appendEvent({ decisionId: decision.id, kind: 'included', participantId: askedLater.participant.id, detail: { role: 'informed', hadAccount: true } }, SYSTEM_ACTOR);
+			mailed(askedLater.participant, 'invited', true);
+			makeConsulted(askedLater.participant);
+			mailed(askedLater.participant, 'asked_again', true);
+			// No inclusion on the record: the role before the first role_changed is its `from`.
+			const unrecorded = withAccount(decision, 'unrecorded', 'informed');
+			mailed(unrecorded.participant, 'invited', true);
+			makeConsulted(unrecorded.participant);
+			// Consulted throughout, with no role event at all: the row's role.
+			const plain = withAccount(decision, 'plain');
+			mailed(plain.participant, 'invited', true);
+
+			expect(reachedOf(decision, 1, switched.participant, askedLater.participant, unrecorded.participant, plain.participant)).toEqual(
+				[askedLater.participant.id, plain.participant.id].sort((x, y) => x - y)
+			);
+		});
+
+		it('reads the current round alone: a request delivered in round 1 does not reach them in round 2 (2738-5)', () => {
+			const { decision, a, b, c, decider } = opened({ status: 'open', closesAt: FUTURE });
+			published(decision, 1);
+			const old = withAccount(decision, 'old');
+			mailed(old.participant, 'invited', true);
+			expect(reachedOf(decision, 1, old.participant)).toEqual([old.participant.id]);
+
+			const options = [a, b, c].map((o) => ({ optionId: o.id, label: o.label, title: `Plan ${o.label}` }));
+			makeVersion(decision, { question: 'Which plan?', options }, { number: 2, asksAgain: true, publishedAt: stamp() });
+			published(decision, 2);
+			expect(currentRound(decision.id)).toBe(2);
+			expect(reachedOf(decision, 2, old.participant)).toEqual([]);
+			expect(readResults(decider, decision.id, { source: 'ui' }).notResponded).toEqual([{ participantId: old.participant.id, name: old.participant.name, groups: [], reached: false }]);
+			// A round with no version reaches nobody.
+			expect(reachedOf(decision, 3, old.participant)).toEqual([]);
+		});
+
+		it('counts the question seen in the round as reached, by account with no mail delivered; not one of an earlier round, nor the ruling seen (2738-6)', () => {
+			const { decision, a, b, c } = opened({ status: 'open', closesAt: FUTURE });
+			published(decision, 1);
+			const seer = withAccount(decision, 'seer');
+			const other = withAccount(decision, 'other');
+			appendEvent({ decisionId: decision.id, kind: 'seen', participantId: seer.participant.id, versionNumber: 1, detail: { stage: 'question' } }, SYSTEM_ACTOR);
+			appendEvent({ decisionId: decision.id, kind: 'seen', participantId: other.participant.id, versionNumber: 1, detail: { stage: 'ruling' } }, SYSTEM_ACTOR);
+			expect(reachedOf(decision, 1, seer.participant, other.participant)).toEqual([seer.participant.id]);
+
+			const options = [a, b, c].map((o) => ({ optionId: o.id, label: o.label, title: `Plan ${o.label}` }));
+			makeVersion(decision, { question: 'Which plan?', options }, { number: 2, asksAgain: true, publishedAt: stamp() });
+			published(decision, 2);
+			expect(reachedOf(decision, 2, seer.participant), 'round 1 seen').toEqual([]);
+			appendEvent({ decisionId: decision.id, kind: 'seen', participantId: seer.participant.id, versionNumber: 2, detail: { stage: 'question' } }, SYSTEM_ACTOR);
+			expect(reachedOf(decision, 2, seer.participant)).toEqual([seer.participant.id]);
+		});
+
+		it('says neither of a cut-off recorded before card 2738 (2738-7)', () => {
+			const { decision, a, decider } = opened({ status: 'open', closesAt: FUTURE });
+			const before = withAccount(decision, 'before');
+			makeRuling(decision, { optionId: a.id, early: true, ruledAt: stamp() });
+			appendEvent({ decisionId: decision.id, kind: 'cut_off', participantId: before.participant.id }, SYSTEM_ACTOR);
+			const { ruling } = readResults(decider, decision.id, { source: 'ui' });
+			expect(ruling?.cutOff).toEqual([before.participant.name]);
+			expect(ruling?.cutOffReached).toEqual([null]);
+		});
+
+		// ─── Code review 2026-11-05: only what was written while the decision was open for input counts ──
+
+		it('records never reached for one added and invited after an early close, the invitation delivered; and says the ruling followed that close (2738-8, R1 scenario A, R6)', async () => {
+			const { decision, a, decider } = opened({ status: 'open', closesAt: daysAhead(30) });
+			const asked = withAccount(decision, 'asked');
+			askAgain(decider, decision.id);
+			await mailsSettled(decision.id);
+
+			close(decider, decision.id);
+			// Y is added and invited after the close, and the invitation is delivered.
+			const late = withAccount(decision, 'late');
+			appendEvent({ decisionId: decision.id, kind: 'included', participantId: late.participant.id, detail: { role: 'consulted', hadAccount: true } }, SYSTEM_ACTOR);
+			mailed(late.participant, 'invited', true);
+			expect(readResults(decider, decision.id, { source: 'ui' }).notResponded.map((p) => [p.participantId, p.reached])).toEqual([
+				[asked.participant.id, true],
+				[late.participant.id, false]
+			]);
+
+			rule(decider, decisionRow(decision.id), { optionId: a.id, reason: 'Early, after the close.' });
+			expect(cutOffs(decision.id)).toEqual([
+				[asked.participant.id, { reached: true }],
+				[late.participant.id, { reached: false }]
+			]);
+			expect(readResults(decider, decision.id, { source: 'ui' }).ruling).toMatchObject({ early: true, closedEarly: true });
+			await mailsSettled(decision.id);
+		});
+
+		it('counts the question seen before an early close and after an extend reopened it, never one seen while it was closed (2738-9, R1 scenario B)', async () => {
+			const { decision, a, decider } = opened({ status: 'open', closesAt: daysAhead(30) });
+			published(decision, 1);
+			const before = withAccount(decision, 'before');
+			const during = withAccount(decision, 'during');
+			const reopened = withAccount(decision, 'reopened');
+			sees(before.participant, 1);
+			close(decider, decision.id);
+			// One signs in after the close and a question-stage seen is recorded.
+			sees(during.participant, 1);
+			expect(reachedOf(decision, 1, before.participant, during.participant, reopened.participant)).toEqual([before.participant.id]);
+
+			const closesAt = daysAhead(40);
+			as(decider, (caller) => extendDecision(caller, { decisionId: decision.id }, { closesAt: `${closesAt.replace(' ', 'T')}Z` }, UI));
+			sees(reopened.participant, 1);
+
+			rule(decider, decisionRow(decision.id), { optionId: a.id, reason: 'Early, while open again.' });
+			expect(cutOffs(decision.id)).toEqual([
+				[before.participant.id, { reached: true }],
+				[during.participant.id, { reached: false }],
+				[reopened.participant.id, { reached: true }]
+			]);
+			// The extend emptied closed_at: this ruling was made while the decision was open.
+			expect(readResults(decider, decision.id, { source: 'ui' }).ruling).toMatchObject({ early: true, closedEarly: false });
+			await settled(decision.id);
+		});
+
+		it('counts nothing written after the closing time passed, until an extend reopens it (2738-10, R1)', () => {
+			const { decision } = opened({ status: 'open', closesAt: FUTURE });
+			published(decision, 1);
+			const lapsed = withAccount(decision, 'lapsed');
+			const back = withAccount(decision, 'back');
+			// Seen now, when the closing time then in force (the extend's `from`) had passed.
+			sees(lapsed.participant, 1);
+			appendEvent({ decisionId: decision.id, kind: 'extended', detail: { from: PAST, to: FUTURE } }, SYSTEM_ACTOR);
+			sees(back.participant, 1);
+			expect(reachedOf(decision, 1, lapsed.participant, back.participant)).toEqual([back.participant.id]);
+		});
+
+		it('bounds the round by the id of its published event, not its moment: a mail of round 1 in the same second does not count in round 2 (2738-11, R2)', () => {
+			const { decision, a, b, c } = opened({ status: 'open', closesAt: FUTURE });
+			published(decision, 1);
+			const earlier = withAccount(decision, 'earlier');
+			const later = withAccount(decision, 'later');
+			mailed(earlier.participant, 'invited', true);
+			const options = [a, b, c].map((o) => ({ optionId: o.id, label: o.label, title: `Plan ${o.label}` }));
+			makeVersion(decision, { question: 'Which plan?', options }, { number: 2, asksAgain: true, publishedAt: stamp() });
+			published(decision, 2);
+			mailed(later.participant, 'asked_again', true);
+			// Every event, and the version, in one second.
+			const second = stamp();
+			sqlite.prepare('UPDATE decision_events SET created_at = ? WHERE decision_id = ?').run(second, decision.id);
+			sqlite.prepare('UPDATE decision_versions SET published_at = ? WHERE decision_id = ?').run(second, decision.id);
+
+			expect(reachedOf(decision, 2, earlier.participant, later.participant)).toEqual([later.participant.id]);
+		});
+
+		it('resets reach on removal: only what follows the latest re-inclusion counts, as consulted (2738-12, R3)', () => {
+			const { decision } = opened({ status: 'open', closesAt: FUTURE });
+			published(decision, 1);
+			const included = (p: DecisionParticipant) =>
+				appendEvent({ decisionId: decision.id, kind: 'included', participantId: p.id, detail: { role: 'consulted', hadAccount: true } }, SYSTEM_ACTOR);
+			const removedAndBack = (p: DecisionParticipant, role: 'consulted' | 'informed') => {
+				appendEvent({ decisionId: decision.id, kind: 'removed', participantId: p.id }, SYSTEM_ACTOR);
+				appendEvent({ decisionId: decision.id, kind: 're_included', participantId: p.id, detail: { role, hadAccount: true } }, SYSTEM_ACTOR);
+				db.update(decisionParticipants).set({ role }).where(eq(decisionParticipants.id, p.id)).run();
+			};
+			// Reached, then removed and brought back with nothing since: not reached.
+			const stale = withAccount(decision, 'stale');
+			included(stale.participant);
+			mailed(stale.participant, 'invited', true);
+			sees(stale.participant, 1);
+			removedAndBack(stale.participant, 'consulted');
+			// Removed, then re-included as informed and invited: the invitation asked nothing.
+			const informed = withAccount(decision, 'informedback');
+			included(informed.participant);
+			removedAndBack(informed.participant, 'informed');
+			mailed(informed.participant, 'invited', true);
+			// Removed, then re-included as consulted and invited: reached.
+			const consulted = withAccount(decision, 'consultedback');
+			included(consulted.participant);
+			removedAndBack(consulted.participant, 'consulted');
+			mailed(consulted.participant, 'invited', true);
+			// Removed, then re-included as consulted, then the question seen: reached.
+			const seen = withAccount(decision, 'seenback');
+			included(seen.participant);
+			removedAndBack(seen.participant, 'consulted');
+			sees(seen.participant, 1);
+
+			expect(reachedOf(decision, 1, stale.participant, informed.participant, consulted.participant, seen.participant)).toEqual(
+				[consulted.participant.id, seen.participant.id].sort((x, y) => x - y)
+			);
+		});
+
+		it('counts the question seen of a tell-only version within the round, and a tell-only publish reopens nothing (2738-13)', () => {
+			const { decision, a, b, c } = opened({ status: 'open', closesAt: FUTURE });
+			published(decision, 1);
+			const options = [a, b, c].map((o) => ({ optionId: o.id, label: o.label, title: `Plan ${o.label}` }));
+			makeVersion(decision, { question: 'Which plan?', options }, { number: 2, asksAgain: false, publishedAt: stamp() });
+			published(decision, 2, false);
+			expect(currentRound(decision.id)).toBe(1);
+			const told = withAccount(decision, 'told');
+			const shut = withAccount(decision, 'shut');
+			// Version 2 is within round 1: its question seen is the round's.
+			sees(told.participant, 2);
+			appendEvent({ decisionId: decision.id, kind: 'closed' }, SYSTEM_ACTOR);
+			makeVersion(decision, { question: 'Which plan?', options }, { number: 3, asksAgain: false, publishedAt: stamp() });
+			published(decision, 3, false);
+			sees(shut.participant, 3);
+
+			expect(reachedOf(decision, 1, told.participant, shut.participant)).toEqual([told.participant.id]);
+		});
 	});
 
 	it('records againstResponses by the most chosen, one row per branch (3)', async () => {
@@ -1114,7 +1439,7 @@ describe('readResults', () => {
 			]
 		});
 		expect(results.earlierRounds.map((tally) => [tally.round, tally.responded, tally.votes.map((v) => v.count)])).toEqual([[1, 1, [1, 0, 0]]]);
-		expect(results.notResponded).toEqual([{ participantId: ria.participant.id, name: ria.participant.name, groups: [] }]);
+		expect(results.notResponded).toEqual([{ participantId: ria.participant.id, name: ria.participant.name, groups: [], reached: false }]);
 		expect(results.removed).toEqual([
 			{ participantId: rem.participant.id, name: rem.participant.name, role: 'consulted', latest: row(rem, { kind: 'vote', optionId: c.id }) }
 		]);
@@ -1128,8 +1453,10 @@ describe('readResults', () => {
 			reason: 'C, for the long run.',
 			conditions: null,
 			early: true,
+			closedEarly: false,
 			againstResponses: true,
 			cutOff: [ria.participant.name],
+			cutOffReached: [false],
 			supersededOld: null,
 			byName: decider.username,
 			at: expect.any(String)
@@ -1433,14 +1760,18 @@ describe('[1b] the participant page, the editor and the board’s list', () => {
 			const loaded = await pageLoad(`/decisions/${decision.id}`, { user });
 			expect(loaded.type, who).toBe('data');
 			for (const text of [page, JSON.stringify((loaded as { data: unknown }).data)]) {
-				for (const absent of ['"early"', '"againstResponses"', '"ruledAt"', '"cutOff"', silent.participant.name, ruled.ruledAt!, closesAt]) expect(text, `${who}: ${absent}`).not.toContain(absent);
+				for (const absent of ['"early"', '"againstResponses"', '"ruledAt"', '"cutOff"', '"cutOffReached"', '"reached"', silent.participant.name, ruled.ruledAt!, closesAt]) {
+					expect(text, `${who}: ${absent}`).not.toContain(absent);
+				}
 			}
 			const edit = readEditPage(user, decision.id);
 			expect(edit.decision.closesAt, who).toBeNull();
 			const editLoaded = await pageLoad(`/decisions/${decision.id}/edit`, { user });
 			expect(editLoaded.type, who).toBe('data');
 			for (const text of [JSON.stringify(edit), JSON.stringify((editLoaded as { data: unknown }).data)]) {
-				for (const absent of ['"early"', '"againstResponses"', '"ruledAt"', '"cutOff"', 'cut_off', closesAt]) expect(text, `${who}, editor: ${absent}`).not.toContain(absent);
+				for (const absent of ['"early"', '"againstResponses"', '"ruledAt"', '"cutOff"', '"cutOffReached"', '"reached"', 'cut_off', closesAt]) {
+					expect(text, `${who}, editor: ${absent}`).not.toContain(absent);
+				}
 			}
 			expect(readBoardDecisions(user, board.id).decisions.find((row) => row.id === decision.id)?.closesAt, `${who}, the board's list`).toBeNull();
 		}

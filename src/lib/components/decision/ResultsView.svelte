@@ -9,6 +9,8 @@
   each latest response with the participant's name, those who have not
   responded, the removed, the open questions, the concerns, and the ruling as
   the record holds it, "against", "early" and the cut-off names among it.
+  Card 2738: a non-responder or a cut-off the round's request never reached
+  is marked so (`NOT_REACHED_WORDS`), in the same list.
 
   The open questions (card 2678, decision 9, F11) are those no person's
   answer stands behind: each with who asked and when, its text as typed
@@ -26,7 +28,7 @@
 -->
 <script lang="ts">
 	import type { ResultRow, ResultsData, RoundTally } from '$lib/decision-view-types';
-	import { RESULTS_ANSWER_ELSEWHERE, resultsQuestionsClosedWords, shownMoment } from '$lib/decision-words';
+	import { NOT_REACHED_WORDS, RESULTS_ANSWER_ELSEWHERE, resultsQuestionsClosedWords, shownMoment } from '$lib/decision-words';
 	import AgentLabel from './AgentLabel.svelte';
 
 	let { results }: { results: ResultsData } = $props();
@@ -159,7 +161,9 @@
 	{#if results.notResponded.length > 0}
 		<ul data-list="not-responded">
 			{#each results.notResponded as person (person.participantId)}
-				<li>{person.name}{person.groups.length > 0 ? ` (${person.groups.join(', ')})` : ''}</li>
+				<li>
+					{person.name}{person.groups.length > 0 ? ` (${person.groups.join(', ')})` : ''}{#if !person.reached}{' '}<span class="not-reached" data-note="not-reached">({NOT_REACHED_WORDS})</span>{/if}
+				</li>
 			{/each}
 		</ul>
 	{:else}
@@ -225,10 +229,12 @@
 			<dt>Against the responses</dt>
 			<dd>{results.ruling.againstResponses ? 'Yes: it was not the most chosen option' : 'No'}</dd>
 			<dt>Early</dt>
-			<dd>{results.ruling.early ? 'Yes: ruled while the decision was open' : 'No'}</dd>
+			<!-- Card 2738 (code review R6): since card 2727 an early ruling may be of a decision closed before its closing time. -->
+			<dd>{results.ruling.early ? (results.ruling.closedEarly ? 'Yes: ruled after it was closed before its closing time' : 'Yes: ruled while the decision was open') : 'No'}</dd>
 			{#if results.ruling.cutOff.length > 0}
 				<dt>Cut off</dt>
-				<dd>{results.ruling.cutOff.join(', ')}</dd>
+				<!-- Card 2738: each the record says the round's request never reached is marked; one recorded before it (null) is not. -->
+				<dd>{results.ruling.cutOff.map((name, index) => (results.ruling?.cutOffReached[index] === false ? `${name} (${NOT_REACHED_WORDS})` : name)).join(', ')}</dd>
 			{/if}
 		</dl>
 	{/if}
@@ -248,6 +254,7 @@
 	.results h3 { font-size: 0.95rem; margin: var(--space-md) 0 0; }
 	.results ul { margin: 0; padding-left: var(--space-lg); font-size: 0.88rem; }
 	.none { margin: 0; font-size: 0.85rem; color: var(--text-tertiary); }
+	.not-reached { color: var(--text-tertiary); }
 	.comment { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
 	[data-list='questions'] li { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-xs); margin-bottom: var(--space-xs); min-width: 0; }
 	/* A long name with no break wraps at phone width rather than pushing the page sideways (code review F8). */

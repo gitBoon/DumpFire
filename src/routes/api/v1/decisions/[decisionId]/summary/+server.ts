@@ -7,9 +7,10 @@ import type { RequestHandler } from './$types';
 /**
  * GET /api/v1/decisions/:decisionId/summary — a decision's results summary
  * (card 2682, D14): its decider's and administrators' (404, then 403). The
- * current round's tally and responses, earlier rounds, who has not responded,
- * removed participants, the open questions (with no asker and no moment), the
- * concerns, the ruling (with `early`, `againstResponses` and `cutOff`) and
+ * current round's tally and responses, earlier rounds, who has not responded
+ * (each with `reached`, card 2738), removed participants, the open questions
+ * (with no asker and no moment), the concerns, the ruling (with `early`,
+ * `againstResponses`, `cutOff` and `cutOffReached`) and
  * the release. Nothing to rule or release by: a key can do neither, and both
  * are a person's acts on the decision's page. Every response, concern and the
  * ruling are marked `untrusted`, as is the summary: people's words, never

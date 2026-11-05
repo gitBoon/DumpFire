@@ -1218,7 +1218,8 @@ describe('the record view', () => {
 				seen: { stage: 'question', signedIn },
 				responded: { responseId: 9, statement: 2, signedIn },
 				ruled: { optionId, early: true, againstResponses: true, productOwnerUserId: 4, supersededOld: false },
-				cut_off: null,
+				// Card 2738: whether the round's request ever reached them.
+				cut_off: { reached: false },
 				superseded: { byDecisionId: other.id },
 				results_released: { upToResponseId: 9, omitted: [{ responseId: 9, field: 'comment' }, 'not an object'] },
 				concern_raised: { responseId: 9, notice: 'sent', signedIn },
@@ -1256,6 +1257,7 @@ describe('the record view', () => {
 			}
 			const shown = (kind: EventKind) => entries.find((entry) => entry.kind === kind)!.detail;
 			expect(shown('ruled')).toEqual({ option: 'B', early: true, againstResponses: true, supersededOld: false });
+			expect(shown('cut_off')).toEqual({ reached: false });
 			expect(shown('results_released')).toEqual({ omitted: [{ field: 'comment' }] });
 			expect(shown('question_asked')).toEqual({ signedIn: { name: 'Pat' } });
 			expect(shown('mail_outcome')).toEqual({ mail: 'invited', delivered: false, problem: 'refused' });
@@ -1264,6 +1266,17 @@ describe('the record view', () => {
 			expect(shown('account_attached')).toEqual({});
 			expect(shown('created')).toEqual({ decider: 'Dana', supersedes: { id: other.id, title: other.title } });
 			expect(shown('superseded')).toEqual({ by: { id: other.id, title: other.title } });
+		});
+
+		it('gives cut_off’s reached to the decider and the administrator alike, and nothing for one recorded before card 2738 (card 2738)', () => {
+			const decision = decisionOn(board, { decider: dana });
+			const participant = join(decision, makePerson());
+			appendEvent({ decisionId: decision.id, kind: 'cut_off', participantId: participant.id, detail: { reached: false } }, SYSTEM_ACTOR);
+			appendEvent({ decisionId: decision.id, kind: 'cut_off', participantId: participant.id }, SYSTEM_ACTOR);
+
+			for (const reader of [dana, admin]) {
+				expect(record(reader, decision.id).entries.slice(-2).map((e) => e.detail), reader.username).toEqual([{ reached: false }, {}]);
+			}
 		});
 
 		it('gives signedIn to the administrator, and not to the decider (64)', () => {

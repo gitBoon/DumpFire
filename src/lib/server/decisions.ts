@@ -1552,8 +1552,9 @@ export function decisionRuleGuard(
  * decision `ruled`, with `ruled_at`; `ruled { optionId, early,
  * againstResponses, productOwnerUserId }`, the last the board's Product Owner
  * now, or null, which is the one `productOwner` who may supersede this ruling
- * from then on (code review S1); on an early ruling `cut_off` for each live consulted
- * participant with no response in the round; and the ruling mail to every
+ * from then on (code review S1); on an early ruling `cut_off { reached }` for each live consulted
+ * participant with no response in the round, `reached` whether the round's
+ * request ever reached them (`reachedInRound`, card 2738); and the ruling mail to every
  * live participant, which is held to no rest or cap and counted against
  * none, and with no link address goes ahead recorded as not sent. While its
  * board is there, `decision_ruled` (the title alone) and the live event.
@@ -1572,7 +1573,7 @@ export function ruleDecision(caller: SessionUser | null, at: { decisionId: numbe
 	const now = stamp();
 	const by = actorFor(user, sourceOf(opts));
 	const voteMode = decision.voteMode === 'score' ? 'score' : 'single';
-	const { tally, notResponded } = currentResultsOf(decision);
+	const { tally, notResponded, reached } = currentResultsOf(decision);
 	// Card 2727: early when shown open, or when closed for input before its closing time.
 	const early = rulesEarly(decision, now);
 	const againstResponses = againstOf(ruling.optionId, tally.voted, mostChosenOf(tally, voteMode));
@@ -1606,7 +1607,12 @@ export function ruleDecision(caller: SessionUser | null, at: { decisionId: numbe
 		},
 		by
 	);
-	if (early) for (const participant of notResponded) appendEvent({ decisionId: decision.id, kind: 'cut_off', participantId: participant.id }, by);
+	// Card 2738 (D2): every cut-off says whether the round's request ever reached them, both ways.
+	if (early) {
+		for (const participant of notResponded) {
+			appendEvent({ decisionId: decision.id, kind: 'cut_off', participantId: participant.id, detail: { reached: reached.has(participant.id) } }, by);
+		}
+	}
 
 	const chosen = ruling.optionId === null ? undefined : versionOptionsOf(decision.id, decision.currentVersion).find((option) => option.optionId === ruling.optionId);
 	const label = ruling.optionId === null ? null : (chosen?.label ?? allOptionsOf(decision.id).find((option) => option.id === ruling.optionId)?.label ?? null);

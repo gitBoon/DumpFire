@@ -671,6 +671,20 @@ describe('readSummary (5)', () => {
 		const { decision, decider } = summarised();
 		const { ruling } = readSummary(decider, decision.id, { source: 'api' });
 		expect(ruling).toMatchObject({ early: true, againstResponses: true, cutOff: ['ria Person'] });
+		// Card 2738: the fixture's cut_off carries no detail, as one recorded before it: neither reached nor not.
+		expect(ruling?.cutOffReached).toEqual([null]);
+	});
+
+	it('(b2) says whom the round’s request reached, on notResponded and on each cut-off (card 2738)', () => {
+		const { decision, decider, ria } = summarised();
+		appendEvent({ decisionId: decision.id, kind: 'cut_off', participantId: ria.participant.id, detail: { reached: false } }, SYSTEM_ACTOR);
+		const summary = readSummary(decider, decision.id, { source: 'api' });
+		expect(summary.ruling?.cutOffReached).toEqual([null, false]);
+		// Quin's concern and Ria's silence count as no response; neither was sent a request on this record.
+		expect(summary.notResponded.map((row) => [row.name, row.reached])).toEqual([
+			['quin Person', false],
+			['ria Person', false]
+		]);
 	});
 
 	it("(c) marks each response, each concern and the ruling, the objects holding people's words (plan review S7)", () => {

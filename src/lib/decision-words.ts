@@ -378,6 +378,15 @@ export function responseLines(
 }
 
 /**
+ * The mark beside a cut-off or non-responding participant whom the round's
+ * request never reached (card 2738, D4): no asking mail of the round was
+ * delivered to them while consulted, nor had they opened the question. The
+ * ruling form, the results page's Not responded list and the ruling's Cut off
+ * line say it alike.
+ */
+export const NOT_REACHED_WORDS = "never reached by this round's request";
+
+/**
  * Each kind of event on a decision's record, as the record view and a
  * person's record name it (card 2680, decision 16). A kind not named here is
  * shown by its stored name, its underscores as spaces.
@@ -455,6 +464,8 @@ export const DETAIL_WORDS: Readonly<Record<string, string>> = {
 	statement: 'Who-sees statement version',
 	option: 'Option',
 	early: 'Early',
+	// Card 2738: on `cut_off`.
+	reached: "Reached by this round's request",
 	againstResponses: 'Against the responses',
 	supersededOld: 'Superseded the earlier ruling',
 	by: 'Superseded by',

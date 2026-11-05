@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.98
+version: 1.100
 status: As-Built
 date: 2026-11-05
 tags:
@@ -4625,7 +4625,14 @@ ruling followed the most chosen option. This cannot be undone." (`RELEASE_INFERE
 `ruled` event's `early` and `againstResponses`, the `cut_off` events and `concern_raised` are
 `DECIDER_ONLY_EVENTS`. Card 2680 shows them on the record view, behind `record` alone (with
 `early`, `againstResponses` and the cut-off as stored, and never on a person's own record); card
-2689 (webhooks) is bound never to send them.
+2689 (webhooks) is bound never to send them. Card 2738's `reached` on each `cut_off`, the
+results page's `notResponded[].reached` and the ruling's `cutOffReached` are read and shown
+only where the cut-off already is: the record view behind `record`, the results page and the v1
+summary behind `results`. The participant and edit pages carry neither key (case 36). Its code
+review (2026-11-05) counts only what was written while the decision was open for input, bounded
+by the round's `published` event id, so a mail or a look after an early close cannot mark
+someone as having been asked; it errs on the "not reached" side. The results page's
+`closedEarly` is the same readers' alone.
 
 **Concerns.** A live participant, consulted or informed, reached by their account or by their
 link, may raise one on a stored `ruled` decision for 90 days after the ruling, at most 5, 10

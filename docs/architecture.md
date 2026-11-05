@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.99
+version: 1.102
 status: As-Built
 date: 2026-11-05
 tags:
@@ -1752,7 +1752,7 @@ flowchart LR
 | Function | Who (`DECISION_RULES`) | From (`TRANSITIONS`) | Writes |
 |---|---|---|---|
 | `decisionRuleGuard` (read) | `rule`: the decider, with board edit while the board exists | `open`, `closed` | nothing: 401, 404, 403 (an API key too), 400 for the body, 409 status, then `rulingRefusals`' 409s (a stale results revision, questions open unconfirmed) |
-| `ruleDecision` | as its guard, asked first | as its guard | `appendRuling`; `ruled`, `ruled_at`; `ruled { optionId, early, againstResponses, productOwnerUserId, supersededOld? }`, `productOwnerUserId` the board's Product Owner now, or null (code review S1); `cut_off` per live consulted non-responder when early (shown open, or closed before its closing time: `rulesEarly`, card 2727); the ruling mail; `decision_ruled` and the live event; the old decision `superseded` when the ruler may supersede it |
+| `ruleDecision` | as its guard, asked first | as its guard | `appendRuling`; `ruled`, `ruled_at`; `ruled { optionId, early, againstResponses, productOwnerUserId, supersededOld? }`, `productOwnerUserId` the board's Product Owner now, or null (code review S1); `cut_off { reached }` per live consulted non-responder when early (shown open, or closed before its closing time: `rulesEarly`, card 2727; `reached` whether the round's request ever reached them, `reachedInRound`, card 2738); the ruling mail; `decision_ruled` and the live event; the old decision `superseded` when the ruler may supersede it |
 | `resultsReleaseGuard` (read) | `release`: the decider alone | `ruled` | nothing: 401, 404, 403, 400, 409 status, `releaseRefusals`' 409s, 409 stale revision, 400 an unknown `omit` key |
 | `releaseResults` | as its guard | as its guard | `results_released_at`, `_by`; `results_released { upToResponseId, omitted }`; `decision_results_released` and the live event; no mail |
 | `raiseConcern`, `raiseConcernByLink` (`concernAs`) | `concern`: a live participant, consulted or informed, reached by account or by link | `ruled`, within 90 days of `ruled_at` | a `concern` response; `concern_raised { responseId, notice }`; `seen { stage: 'ruling' }` once; the decider's notice for `asked`. No activity, no live event |
@@ -1791,6 +1791,58 @@ flowchart LR
   counts, against the closing time in force at it. A close at or after the closing time is not
   early, nor is a `closed` row with no `closed_at`. Rulings made before card 2727 are not
   rewritten (the record is insert-only).
+- **Who the cut-off reached** (card 2738). Each `cut_off` an early ruling writes is
+  `cut_off { reached }`: whether the current round's request ever reached the participant,
+  `reachedInRound` in `decision-record.ts`, read from the record alone. Reached means a
+  delivered `invited` or `asked_again` (any of them, its `mail_outcome` `delivered: true`), or
+  the question seen in the round (`seen { stage: 'question' }`, `version_number` at or above
+  the round, how an account holder is reached by account when no mail got through), either
+  while their role was `consulted` (replayed from `included`, `re_included` and
+  `role_changed`) and **while the decision was open for input in the round** (code review
+  2026-11-05, `openForInputIn`): after the round's own `published` event by id, never by
+  moment; in a window opened by that `published` or an `extended`, and not shut since by
+  `closed`, `ruled` or `withdrawn` (a later `published` changes nothing: within the current
+  round it only tells, as one that asked again would start a later round); and before the closing time then in force (the latest `extended`'s `to`, else the
+  next one's `from`, else `closes_at` now). A `removed` resets reach: only what follows the
+  latest re-inclusion counts. One skipped at the request (`mail_skipped`: a new address,
+  left), one whose only mail failed or had no outcome yet at the ruling, one made consulted
+  after an informed invitation, and one added and invited, or who saw the question, after an
+  early close are cut off with `reached: false`; a link revoked after a delivered request,
+  with no removal, leaves `reached: true`. The results page marks the same on **Not
+  responded** and the ruling form on its cut-off list, by the same read, and the ruling record
+  gives `cutOffReached` beside `cutOff` (`null` for a cut-off recorded before card 2738). A
+  known residual (R5, card 2740): `seen` is written once per version and stage, so one who saw the
+  question while informed and was then made consulted reads as not reached; it errs on that side.
+  Two more (re-review 2026-11-05): **R6** (a separate card), for the same reason a question seen
+  while the window was shut after an early close hides a later view made once an extend reopened
+  it, so that view records nothing and reads as not reached, erring the same way; **R7**
+  (accepted), an `invited` queued while the window was open but delivered seconds after a close
+  counts as reached, as the mail is judged at its `invited` event and `stillToSend`
+  (`decision-mail.ts`) does not check for a close, a gap seconds wide.
+
+```mermaid
+flowchart TD
+    A[Live consulted participant, no response this round] --> W{Each of their events: after the round's<br/>published by id, in an open window, before<br/>the closing time in force, consulted,<br/>and after the latest removal?}
+    W -- no --> X[not counted]
+    W -- yes --> B{Delivered invited or asked_again?}
+    B -- yes --> R[cut_off reached: true]
+    B -- no --> C{Question of the round seen?}
+    C -- yes --> R
+    C -- no --> N[cut_off reached: false<br/>marked never reached by this round's request]
+    X --> N
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> Open: the round's published (asks again)
+    Open --> Shut: closed, ruled, withdrawn, or the closing time passes
+    Shut --> Open: extended
+    Open --> Open: a later published (within the round it only tells)
+```
+- **How the ruling was early** (card 2738's code review, R6). The results page's ruling record
+  says "Yes: ruled while the decision was open" or, where `closedEarly` (an early ruling with
+  `closed_at` set, which a ruling leaves as it was), "Yes: ruled after it was closed before its
+  closing time". `closedEarly` is the results page's alone; the v1 summary is unchanged.
 - **The release's projection** (`projectionOf` in `decision-results.ts`): cells through
   `shownCells`; each score-mode mean through `meanOf`, its scores counted as cells (code
   review S2); and, beside another release in the supersede chain (`chainReleased`), the number
@@ -1845,7 +1897,7 @@ sequenceDiagram
     S-->>R: checked hash (400 missing, 403 wrong, counted)
     R->>W: whilePasswordHolds(writeAs(ruleDecision))
     W->>G: the same guard, in the transaction
-    W->>W: appendRuling; ruled; cut_off if early; old decision superseded if the ruler may
+    W->>W: appendRuling; ruled; cut_off { reached } if early; old decision superseded if the ruler may
     W->>M: queueRecordMails 'ruling' (told_ruling now)
     W->>W: decision_ruled; live event
     R-->>P: { decision, revision }

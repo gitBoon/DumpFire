@@ -43,7 +43,7 @@ import type { SessionUser } from './auth';
 import { mayDo } from './decision-access';
 import { allOptionsOf, parseVersionContent, participantsOf, resultsRevisionOf } from './decision-content';
 import { mayAnswerOf, openQuestionWhere } from './decision-questions';
-import { concernsOf, currentRound, eventsOfKind, ownResponseOf, responsesOf, revisionResponseIdsOf, rulingOf, statementsOf } from './decision-record';
+import { concernsOf, currentRound, eventsOfKind, ownResponseOf, reachedInRound, responsesOf, revisionResponseIdsOf, rulingOf, statementsOf } from './decision-record';
 import { decisionStatus, rulesEarly, TRANSITIONS } from './decision-status';
 import { purposeKey } from './request-tokens';
 import { requireDecision } from './route-guards';
@@ -173,15 +173,19 @@ function roundTally(decision: Decision, participants: readonly DecisionParticipa
 }
 
 /**
- * The current round's tally, and the live consulted participants with no
- * response in it: what `ruleDecision` works "against" and the cut-off from
- * (decisions 11 and 12), and what the results page shows.
+ * The current round's tally, the live consulted participants with no
+ * response in it, and which of those the round's request reached
+ * (`reachedInRound`, card 2738): what `ruleDecision` works "against" and the
+ * cut-off from, each `cut_off` saying whether it reached them (decisions 11
+ * and 12).
  */
-export function currentResultsOf(decision: Decision): { tally: RoundTally; notResponded: DecisionParticipant[] } {
+export function currentResultsOf(decision: Decision): { tally: RoundTally; notResponded: DecisionParticipant[]; reached: Set<number> } {
 	const participants = participantsOf(decision.id);
-	const tally = roundTally(decision, participants, responsesOf(decision.id), currentRound(decision.id));
+	const round = currentRound(decision.id);
+	const tally = roundTally(decision, participants, responsesOf(decision.id), round);
 	const answered = new Set(tally.rows.map((row) => row.participantId));
-	return { tally, notResponded: liveConsulted(participants).filter((row) => !answered.has(row.id)) };
+	const notResponded = liveConsulted(participants).filter((row) => !answered.has(row.id));
+	return { tally, notResponded, reached: reachedInRound(decision.id, round, notResponded) };
 }
 
 // ─── The open questions and the results revision (decisions 8 and 13) ───────
@@ -600,6 +604,9 @@ export function readResults(user: SessionUser, decisionId: number, opts: { sourc
 	const round = currentRound(decision.id);
 	const current = roundTally(decision, participants, responses, round);
 	const answered = new Set(current.rows.map((row) => row.participantId));
+	const notResponded = liveConsulted(participants).filter((row) => !answered.has(row.id));
+	// Card 2738: the same read the ruling writes on each cut_off, so the page marks whom a ruling now would record as never reached.
+	const reached = reachedInRound(decision.id, round, notResponded);
 	const latest = latestInRound(responses, round);
 	const earlier = [...new Set(responses.map((row) => row.round))].filter((r) => r < round).sort((a, b) => b - a);
 
@@ -609,6 +616,7 @@ export function readResults(user: SessionUser, decisionId: number, opts: { sourc
 		const option = versionOptionsOf(decision.id, record.versionNumber).find((candidate) => candidate.optionId === record.optionId);
 		const nameOf = new Map(participants.map((row) => [row.id, row.name]));
 		const ruled = eventsOfKind(decision.id, 'ruled').at(-1);
+		const cutOff = eventsOfKind(decision.id, 'cut_off');
 		ruling = {
 			optionId: record.optionId,
 			label: option?.label ?? null,
@@ -616,8 +624,13 @@ export function readResults(user: SessionUser, decisionId: number, opts: { sourc
 			reason: record.reason,
 			conditions: record.conditions,
 			early: record.early,
+			// Card 2738 (code review R6): a ruling leaves closed_at as it was, and only a close sets it, so an early ruling
+			// with it set was of a decision closed before its closing time (card 2727); an extend or a re-asking empties it.
+			closedEarly: record.early && decision.closedAt !== null,
 			againstResponses: record.againstResponses,
-			cutOff: eventsOfKind(decision.id, 'cut_off').map((event) => (event.participantId === null ? '' : (nameOf.get(event.participantId) ?? ''))),
+			cutOff: cutOff.map((event) => (event.participantId === null ? '' : (nameOf.get(event.participantId) ?? ''))),
+			// Card 2738 (D4): in cutOff's order; null for a cut-off recorded before it, which says neither.
+			cutOffReached: cutOff.map((event) => (typeof event.detail.reached === 'boolean' ? event.detail.reached : null)),
 			supersededOld: typeof ruled?.detail.supersededOld === 'boolean' ? ruled.detail.supersededOld : null,
 			byName: record.ruledByName,
 			at: record.ruledAt
@@ -648,9 +661,7 @@ export function readResults(user: SessionUser, decisionId: number, opts: { sourc
 		options: versionOptionsOf(decision.id, decision.currentVersion),
 		current,
 		earlierRounds: earlier.map((r) => roundTally(decision, participants, responses, r)),
-		notResponded: liveConsulted(participants)
-			.filter((row) => !answered.has(row.id))
-			.map((row) => ({ participantId: row.id, name: row.name, groups: groupNamesOf(row.groups) })),
+		notResponded: notResponded.map((row) => ({ participantId: row.id, name: row.name, groups: groupNamesOf(row.groups), reached: reached.has(row.id) })),
 		removed: participants
 			.filter((row) => row.removedAt !== null)
 			.map((row) => {
@@ -705,7 +716,8 @@ export type DecisionSummary = {
 	removed: { participantId: number; name: string; role: string; latest: SummaryRow | null }[];
 	openQuestions: OpenQuestion[];
 	concerns: { name: string; comment: string; createdAt: Stamp; via: string; untrusted: true }[];
-	ruling: (RulingRecord & { untrusted: true }) | null;
+	// Card 2738 (code review R6): `closedEarly` is the results page's alone; the summary is unchanged.
+	ruling: (Omit<RulingRecord, 'closedEarly'> & { untrusted: true }) | null;
 	released: ResultsData['released'];
 	mostChosen: ResultsData['mostChosen'];
 	untrusted: true;
@@ -750,7 +762,8 @@ function summaryTallyOf(tally: RoundTally): SummaryTally {
  * decider and administrators, `results`: 404, then 403), handed the key's
  * source so that the open questions carry no asker and no moment and are
  * marked, rebuilt field by field. The ruling keeps `early`,
- * `againstResponses` and `cutOff`, the decider's and administrators' alone
+ * `againstResponses`, `cutOff` and `cutOffReached` (card 2738), and
+ * `notResponded` its `reached`, the decider's and administrators' alone
  * (card 2679, decision 26), as is every reader of this.
  */
 export function readSummary(user: SessionUser, decisionId: number, opts: { source: 'api' }): DecisionSummary {
@@ -783,6 +796,7 @@ export function readSummary(user: SessionUser, decisionId: number, opts: { sourc
 						early: ruling.early,
 						againstResponses: ruling.againstResponses,
 						cutOff: ruling.cutOff,
+						cutOffReached: ruling.cutOffReached,
 						supersededOld: ruling.supersededOld,
 						byName: ruling.byName,
 						at: ruling.at,

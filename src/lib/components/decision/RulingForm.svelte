@@ -10,7 +10,9 @@
     textarea of at most 4,000 characters with its count.
   - Ruling while the decision is shown open, or once it was closed for input
     before its closing time (card 2727), is early: the people who have not
-    responded, and are cut off by it, are named before confirming.
+    responded, and are cut off by it, are named before confirming; one the
+    round's request never reached is marked so, and the dialog counts them
+    (card 2738).
   - With questions still open, Rule is off until the box saying so is ticked.
   - Rule… opens a dialog that asks for the caller's password and sends
     `{ optionId, reason, conditions, revision, openQuestionsConfirmed,
@@ -25,6 +27,7 @@
 	import { failureMessage } from '$lib/api';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import { againstOf, DECISION_TEXT_MAX } from '$lib/decision-rules';
+	import { NOT_REACHED_WORDS } from '$lib/decision-words';
 	import { ASKS_FOR_PASSWORD, stepUpRefusal } from '$lib/step-up-words';
 
 	let {
@@ -54,8 +57,8 @@
 		early: boolean;
 		/** Card 2727: it is early because the decision was closed for input before its closing time, not because it is open. */
 		closedEarly?: boolean;
-		/** Who an early ruling cuts off: the live consulted participants who have not responded. */
-		cutOff: string[];
+		/** Who an early ruling cuts off: the live consulted participants who have not responded, each with whether the round's request reached them (card 2738). */
+		cutOff: { name: string; reached: boolean }[];
 		/** How many questions are still open. */
 		openQuestions: number;
 		/** A ruling was taken: the words to say. */
@@ -87,9 +90,13 @@
 		const option = options.find((candidate) => candidate.optionId === optionId);
 		return option === undefined ? '' : `Option ${option.label}${option.title ? `: ${option.title}` : ''}`;
 	});
+	/** Card 2738: how many of those cut off the round's request never reached. */
+	const notReached = $derived(cutOff.filter((person) => !person.reached).length);
 	const message = $derived(
 		`"${title}" is ruled for good on ${chosenWords}, and every participant is mailed the ruling and your reason.` +
-			(early && cutOff.length > 0 ? ` ${cutOff.length} who have not responded are cut off.` : '') +
+			(early && cutOff.length > 0
+				? ` ${cutOff.length} who have not responded are cut off${notReached > 0 ? `, ${notReached} of them ${NOT_REACHED_WORDS}` : ''}.`
+				: '') +
 			` ${ASKS_FOR_PASSWORD}`
 	);
 
@@ -163,8 +170,8 @@
 			<p>{closedEarly ? 'The decision was closed before its closing time' : 'The decision is still open'}: ruling now is early{cutOff.length > 0 ? ', and cuts off these people who have not responded:' : '.'}</p>
 			{#if cutOff.length > 0}
 				<ul>
-					{#each cutOff as name, index (index)}
-						<li>{name}</li>
+					{#each cutOff as person, index (index)}
+						<li>{person.name}{#if !person.reached}{' '}<span class="not-reached" data-note="not-reached">({NOT_REACHED_WORDS})</span>{/if}</li>
 					{/each}
 				</ul>
 			{/if}
@@ -204,6 +211,7 @@
 	.note { font-size: 0.82rem; color: var(--text-secondary); }
 	.note p { margin: 0; }
 	.note ul { margin: var(--space-xs) 0 0; padding-left: var(--space-lg); }
+	.not-reached { color: var(--text-tertiary); }
 	.confirm-open { display: flex; gap: var(--space-xs); align-items: flex-start; font-size: 0.85rem; }
 	.actions { display: flex; justify-content: flex-end; }
 	.refused { margin: 0; font-size: 0.82rem; color: var(--accent-rose); min-height: 1em; }

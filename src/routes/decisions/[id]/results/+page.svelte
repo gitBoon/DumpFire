@@ -160,7 +160,7 @@
 					voted={data.current.voted}
 					early={data.rulesEarly}
 					closedEarly={data.rulesEarly && data.decision.shownStatus !== 'open'}
-					cutOff={data.notResponded.map((person) => person.name)}
+					cutOff={data.notResponded.map((person) => ({ name: person.name, reached: person.reached }))}
 					openQuestions={data.openQuestions.length}
 					onRuled={done}
 				/>

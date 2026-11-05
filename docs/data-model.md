@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.61
+version: 1.63
 status: As-Built
 date: 2026-11-05
 tags:
@@ -708,7 +708,7 @@ refused (comment 5599). A `detail` never holds a token, a hash or a mail server'
 | `seen` (card 2677) | yes | `{ stage }`, `stage` `question`, `ruling` or `withdrawal`, with `version_number`; `signedIn { userId, name }` beside it for a link holder in a signed-in browser |
 | `responded` (card 2677) | yes | `{ responseId }`, with `version_number`; `signedIn` as for `seen`; since card 2679 `statement`, the who-sees statement's version the page showed (now 2), where the body sent it |
 | `ruled` (card 2679) | no | `{ optionId, early, againstResponses, productOwnerUserId }`, `optionId` null for none of these, `productOwnerUserId` the board's Product Owner at the ruling or null, the one account that holds `productOwner` on the decision from then on (code review S1), and `supersededOld` (boolean) on a decision that supersedes another; with `version_number`. **Decider and administrator only** |
-| `cut_off` (card 2679) | yes | none: a live consulted participant with no response in the round, on an early ruling, written after `ruled`. Early is shown open at the ruling, or, since card 2727, stored `closed` with `closed_at` before `closes_at` (read from those two columns: the `closed` event still carries no detail); rulings before card 2727 are not rewritten. **Decider and administrator only** |
+| `cut_off` (card 2679) | yes | `{ reached }` since card 2738, none before: `reached` whether the round's request ever reached them (a delivered `invited` or `asked_again` of the round, or the question seen in it, while consulted and while the decision was open for input in the round, after the round's `published` event by id, a `removed` resetting it: `reachedInRound`, card 2738's code review), written both ways; a `cut_off` with no detail says neither. A live consulted participant with no response in the round, on an early ruling, written after `ruled`. Early is shown open at the ruling, or, since card 2727, stored `closed` with `closed_at` before `closes_at` (read from those two columns: the `closed` event still carries no detail); rulings before card 2727 are not rewritten. **Decider and administrator only** |
 | `superseded` (card 2679) | no | `{ byDecisionId }`, on the old decision, when the ruler of the decision superseding it may supersede it |
 | `results_released` (card 2679) | no | `{ upToResponseId, omitted: { responseId, field }[] }`: the highest response id counted, which freezes the release, and each comment left out, `field` `comment` or `option:<id>` |
 | `concern_raised` (card 2679) | yes | `{ responseId, notice }`, `notice` one of `asked`, `held`, `no_decider`, `no_link_address`, `prefs_off`, `no_mail_host` (code review F2); `signedIn` as for `seen`; with `version_number`. **Decider and administrator only** |
@@ -888,11 +888,11 @@ By kind: `created` shows `decider` and `supersedes` (as the other decision, thro
 kinds `resend`; `mail_skipped` `mail` and `reason`; `mail_outcome` `mail`, `delivered` and
 `problem`; `address_changed` `from` and `to` to an administrator alone; `seen` `stage`;
 `responded` `statement`; `ruled` `option` (its label), `early`, `againstResponses` and
-`supersededOld`; `superseded` `by` (through `namedFor`); `results_released` `omitted[]` with
+`supersededOld`; `cut_off` `reached` (card 2738); `superseded` `by` (through `namedFor`); `results_released` `omitted[]` with
 `field` alone; `concern_raised` `notice`; `question_answered` `role` and `agentDrafted`;
 `answer_replaced` `role` and `discarded` (`text`, `byName`, `at`); and `signedIn` (its `name`
 alone) on `seen`, `responded`, `concern_raised` and `question_asked`, to an administrator alone.
-`removed`, `closed`, `account_attached`, `account_cleared`, `dry_run`, `cut_off` and
+`removed`, `closed`, `account_attached`, `account_cleared`, `dry_run` and
 `answer_published` show nothing. The pages name each shown key in words (`DETAIL_WORDS` in
 `decision-words.ts`), never the stored camelCase name. A person record shows at most 200 events a
 participation, and reads one more to say there are more, bounded in SQL by `row_number() over

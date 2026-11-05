@@ -158,8 +158,18 @@ export type RulingRecord = {
 	reason: string;
 	conditions: string | null;
 	early: boolean;
+	/**
+	 * Card 2738 (code review R6, card 2727's early close): an early ruling of a decision closed for
+	 * input before its closing time, rather than one ruled while it was open. False where not early.
+	 */
+	closedEarly: boolean;
 	againstResponses: boolean;
 	cutOff: string[];
+	/**
+	 * Card 2738 (D4), in `cutOff`'s order: whether the round's request had reached each when the
+	 * ruling cut them off, or null for a cut-off recorded before card 2738, which says neither.
+	 */
+	cutOffReached: (boolean | null)[];
 	/** Null where the decision supersedes none. */
 	supersededOld: boolean | null;
 	byName: string;
@@ -187,8 +197,11 @@ export type ResultsData = {
 	current: RoundTally;
 	/** Newest first. */
 	earlierRounds: RoundTally[];
-	/** Live consulted participants with no response in the current round. */
-	notResponded: { participantId: number; name: string; groups: string[] }[];
+	/**
+	 * Live consulted participants with no response in the current round; `reached` (card 2738):
+	 * whether the round's request has reached them, as an early ruling now would record it.
+	 */
+	notResponded: { participantId: number; name: string; groups: string[]; reached: boolean }[];
 	/** Removed participants, each with their latest row in the current round, or null. */
 	removed: { participantId: number; name: string; role: string; latest: ResultRow | null }[];
 	/** Card 2678 (decision 9): a question no person's answer stands behind, an agent's unpublished draft among them (`agentAnswered`). */

@@ -66,6 +66,9 @@
  * which reads `MAIL_KINDS` alone. Migration 0063's partial unique index holds one
  * `reminded` per participant per round.
  *
+ * Card 2738 adds `reachedInRound`, whom the current round's request reached,
+ * which an early ruling writes on each `cut_off` (`{ reached }`).
+ *
  * Plain functions with no caller, called inside a service write's
  * transaction, or by the mail effect in a transaction of its own.
  */
@@ -291,7 +294,8 @@ export const RECORD_DETAIL: Readonly<Record<EventKind, DetailSpec>> = {
 	seen: { stage: 'value', signedIn: SIGNED_IN },
 	responded: { statement: 'value', signedIn: SIGNED_IN },
 	ruled: { option: 'option', early: 'value', againstResponses: 'value', supersededOld: 'value' },
-	cut_off: {},
+	// Card 2738 (D2): whether the round's request ever reached them; none on a cut-off recorded before it.
+	cut_off: { reached: 'value' },
 	superseded: { by: { decision: 'byDecisionId' } },
 	results_released: { omitted: { each: ['field'] } },
 	concern_raised: { notice: 'value', signedIn: SIGNED_IN },
@@ -1317,6 +1321,183 @@ export function askingMailsOf(
 	}
 	for (const asking of found.values()) asking.delivered = delivered.get(asking.eventId) ?? null;
 	return found;
+}
+
+/** The events that set a participant's role on a decision (card 2738): `included` and `re_included` by `role`, `role_changed` by `to`. */
+const ROLE_KINDS: readonly EventKind[] = ['included', 're_included', 'role_changed'];
+
+/**
+ * The participants of `participants` whom round `round`'s request reached
+ * (card 2738, D1), read from the record alone, never from an address or a
+ * person's status now: one with, while their role was `consulted`, either
+ *
+ *   - an `invited` or `asked_again` whose own `mail_outcome` says
+ *     `delivered: true`: any such mail, not only the latest (`askingMailsOf`
+ *     keeps the latest), and an outcome not yet written is not delivered (as
+ *     `mailedLinkOf`); or
+ *   - a `seen { stage: 'question' }` of a version of the round
+ *     (`version_number` at or above it): they opened the question, which is
+ *     how an account holder is reached by account when no mail got through;
+ *
+ * and only one written while the decision was open for input in the round
+ * (code review 2026-11-05, R1 and R2; `openForInputIn`): after the round's
+ * own `published` event by id, never by moment, so that a mail of the round
+ * before written in the same second is not counted; in a window no `closed`
+ * has shut since; and before the closing time then in force. A mail sent to
+ * one added after an early close, or a question seen after it, asked nothing
+ * that could still be answered.
+ *
+ * The role at each event is replayed from `included`, `re_included` and
+ * `role_changed` in id order; before the first of them, the first
+ * `role_changed`'s `from`, or with none the row's role now. An invitation
+ * delivered while informed asked nothing. A `removed` resets reach (R3,
+ * refining D5): only what follows the latest re-inclusion counts. A round
+ * with no `published` event reaches nobody. A read alone, in batches of
+ * `IDS_AT_ONCE`.
+ *
+ * A known residual (R5, card 2740): `seen` is written once per version and
+ * stage, so one who saw the question while informed and was then made
+ * consulted has no `seen` while consulted, and reads as not reached. It errs
+ * on the "not reached" side.
+ *
+ * R6 (re-review 2026-11-05, separate card): for the same reason, a question
+ * seen while the window was shut (after an early close) hides a later view
+ * made once an extend reopened it, so that view records nothing and reads as
+ * not reached. It errs on the "not reached" side.
+ *
+ * R7 (re-review 2026-11-05, accepted): an `invited` queued while the window
+ * was open but delivered seconds after a close counts as reached, as the
+ * mail is judged at its `invited` event and `stillToSend` does not check for
+ * a close. The gap is seconds wide.
+ */
+export function reachedInRound(decisionId: number, round: number, participants: readonly { id: number; role: string }[]): Set<number> {
+	const reached = new Set<number>();
+	if (participants.length === 0) return reached;
+	const openFor = openForInputIn(decisionId, round);
+	if (openFor === null) return reached;
+	const roleNow = new Map(participants.map((row) => [row.id, row.role]));
+	type Row = { id: number; participantId: number | null; kind: string; at: Stamp; versionNumber: number | null; detail: Record<string, unknown> };
+	const rows: Row[] = [];
+	const ids = [...roleNow.keys()];
+	const byParticipant = new Map<number, Row[]>(ids.map((id) => [id, []]));
+	for (let from = 0; from < ids.length; from += IDS_AT_ONCE) {
+		const batch = db
+			.select({
+				id: decisionEvents.id,
+				participantId: decisionEvents.participantId,
+				kind: decisionEvents.kind,
+				at: decisionEvents.createdAt,
+				versionNumber: decisionEvents.versionNumber,
+				detail: decisionEvents.detail
+			})
+			.from(decisionEvents)
+			.where(
+				and(
+					eq(decisionEvents.decisionId, decisionId),
+					inArray(decisionEvents.participantId, ids.slice(from, from + IDS_AT_ONCE)),
+					inArray(decisionEvents.kind, [...ROLE_KINDS, 'removed', 'invited', 'asked_again', 'mail_outcome', 'seen'])
+				)
+			)
+			.orderBy(asc(decisionEvents.id))
+			.all();
+		for (const row of batch) {
+			const read = { ...row, detail: detailOf(row.detail) };
+			rows.push(read);
+			if (row.participantId !== null) byParticipant.get(row.participantId)?.push(read);
+		}
+	}
+	// Each batch is in id order and holds its own participants', so each participant's list is too.
+
+	const delivered = new Set<number>();
+	for (const row of rows) if (row.kind === 'mail_outcome' && typeof row.detail.of === 'number' && row.detail.delivered === true) delivered.add(row.detail.of);
+	const roleOf = (row: Row): string | null => {
+		const role = row.kind === 'role_changed' ? row.detail.to : row.detail.role;
+		return typeof role === 'string' ? role : null;
+	};
+
+	for (const id of ids) {
+		const mine = byParticipant.get(id) ?? [];
+		// The role before any role event: the first role_changed's `from`, an inclusion's own role, or with neither the row's role now.
+		const first = mine.find((row) => (ROLE_KINDS as readonly string[]).includes(row.kind));
+		let role: string | null;
+		if (first === undefined) role = roleNow.get(id) ?? null;
+		else if (first.kind === 'role_changed') role = typeof first.detail.from === 'string' ? first.detail.from : null;
+		else role = roleOf(first);
+		let isReached = false;
+		for (const row of mine) {
+			// R3: a removal resets reach, and nothing counts until a re-inclusion gives a role again.
+			if (row.kind === 'removed') {
+				isReached = false;
+				role = null;
+				continue;
+			}
+			if ((ROLE_KINDS as readonly string[]).includes(row.kind)) {
+				role = roleOf(row) ?? role;
+				continue;
+			}
+			if (isReached || role !== 'consulted' || !openFor(row.id, row.at)) continue;
+			const asked = (row.kind === 'invited' || row.kind === 'asked_again') && delivered.has(row.id);
+			const saw = row.kind === 'seen' && row.detail.stage === 'question' && row.versionNumber !== null && row.versionNumber >= round;
+			if (asked || saw) isReached = true;
+		}
+		if (isReached) reached.add(id);
+	}
+	return reached;
+}
+
+/** The decision-level events that open and close a decision for input (card 2738, code review R1), replayed in id order. */
+const WINDOW_KINDS: readonly EventKind[] = ['published', 'closed', 'extended', 'ruled', 'withdrawn'];
+
+/**
+ * Whether an event of round `round`, by its id and moment, was written while
+ * the decision was open for input (card 2738, code review 2026-11-05, R1 and
+ * R2), or null where the round has no `published` event. Replayed from the
+ * record: the round's own `published` (asking again) opens it; `closed`,
+ * `ruled` and `withdrawn` shut it; `extended` opens it again; a later
+ * `published` changes nothing, since in the current round (the only round
+ * either caller reads, `currentRound`) it only tells: one that asked again
+ * would be a later round's start (re-review 2026-11-05).
+ * An event counts only after the round's `published` by id (never by
+ * moment), in a window open at its id, and before the closing time in force
+ * then: the `to` of the latest `extended` before it, else the `from` of the
+ * first after it, else the decision's `closes_at` now (a decision's closing
+ * time changes after opening by `extended` alone). Stamps are of one format,
+ * so the text compares as the time.
+ */
+function openForInputIn(decisionId: number, round: number): ((id: number, at: Stamp) => boolean) | null {
+	const events = db
+		.select({ id: decisionEvents.id, kind: decisionEvents.kind, versionNumber: decisionEvents.versionNumber, detail: decisionEvents.detail })
+		.from(decisionEvents)
+		.where(and(eq(decisionEvents.decisionId, decisionId), inArray(decisionEvents.kind, [...WINDOW_KINDS])))
+		.orderBy(asc(decisionEvents.id))
+		.all()
+		.map((row) => ({ ...row, detail: detailOf(row.detail) }));
+	const start = events.find((event) => event.kind === 'published' && event.versionNumber === round);
+	if (start === undefined) return null;
+
+	// Each window from an event's id on: open or shut. A `published` after the start only tells: one that asked again would start a later round.
+	const windows: { from: number; open: boolean }[] = [{ from: start.id, open: true }];
+	for (const event of events) {
+		if (event.id <= start.id || event.kind === 'published') continue;
+		windows.push({ from: event.id, open: event.kind === 'extended' });
+	}
+	const extensions = events.filter((event) => event.kind === 'extended');
+	const closesNow = db.select({ closesAt: decisions.closesAt }).from(decisions).where(eq(decisions.id, decisionId)).get()?.closesAt ?? null;
+	const stampOf = (value: unknown): Stamp | null => (typeof value === 'string' ? value : null);
+	const closesAtFor = (id: number): Stamp | null => {
+		const before = extensions.filter((event) => event.id < id).at(-1);
+		if (before !== undefined) return stampOf(before.detail.to);
+		const after = extensions.find((event) => event.id > id);
+		return after !== undefined ? stampOf(after.detail.from) : closesNow;
+	};
+
+	return (id, at) => {
+		// Every window starts at or after the round's `published`, so an event at or before it by id finds none.
+		const window = windows.filter((each) => each.from < id).at(-1);
+		if (window === undefined || !window.open) return false;
+		const closesAt = closesAtFor(id);
+		return closesAt === null || at < closesAt;
+	};
 }
 
 /**
