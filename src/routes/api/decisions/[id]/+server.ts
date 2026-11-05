@@ -1,11 +1,11 @@
-import { error, json } from '@sveltejs/kit';
+import { json } from '@sveltejs/kit';
 import { whilePasswordHolds } from '$lib/server/auth';
 import { isAdmin } from '$lib/server/board-access';
 import { decisionAnswer, optionAnswers, readinessOf, revisionFor } from '$lib/server/decision-authoring';
 import { decisionDeleteGuard, deleteDecision, updateDraft } from '$lib/server/decisions';
 import { pathId, readBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
-import { STEP_UP_MISSING, confirmStepUp } from '$lib/server/step-up';
+import { confirmStepUp } from '$lib/server/step-up';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
@@ -55,12 +55,9 @@ export const DELETE: RequestHandler = async ({ params, request, locals, cookies 
 	if (!holdsRecord) {
 		// One transaction: the decision is read and the caller checked in the
 		// same one that deletes it (card 2253). A decision opened since, and so
-		// holding a record now, is not deleted without the password: refused, and
-		// nothing written.
-		writeAs(locals, (caller) => {
-			if (decisionDeleteGuard(caller, { decisionId: id }).holdsRecord) error(400, { message: STEP_UP_MISSING, stepUp: 'missing' });
-			deleteDecision(caller, { decisionId: id }, null, { source: 'ui' });
-		});
+		// holding a record now, is not deleted without the password: the service
+		// refuses it 400 `STEP_UP_MISSING`, nothing written (card 2726).
+		writeAs(locals, (caller) => deleteDecision(caller, { decisionId: id }, null, { source: 'ui' }));
 		return json({ success: true });
 	}
 

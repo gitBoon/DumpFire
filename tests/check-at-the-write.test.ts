@@ -3272,11 +3272,12 @@ function judgeServerImportForms(file: string, source: string): string[] {
 
 /**
  * Card 2682 (D33, plan review S8): the writes of `decisions.ts` that the page
- * asks the caller's password for once the decision was ever opened. The
- * service cannot tell a confirmed session from one that is not (card 2726's
- * `passwordHeld()` will), so every route outside src/routes/api/v1 that calls
- * either must be a handler on CURRENT_PASSWORD; v1 is refused by the
- * credential in the service (D5).
+ * asks the caller's password for once the decision was ever opened. Every
+ * route outside src/routes/api/v1 that calls either must be a handler on
+ * CURRENT_PASSWORD; v1 is refused by the credential in the service (D5).
+ * Since card 2726 the service also refuses an opened one at run time unless
+ * `passwordHeld()` (`requirePasswordHeld`); this scan stays as the earlier
+ * warning, on the source, before any request (card 2726, D5).
  */
 const PASSWORD_WRITES = ['deleteDecision', 'withdrawDecision'];
 
@@ -3308,6 +3309,90 @@ function judgePasswordWrites(file: string, source: string, listed: readonly stri
 		if (!handler) findings.push(`${file}:${line(call)} calls ${name} outside every handler (D33)`);
 		else if (!listed.includes(`${file} ${handler.method}`)) findings.push(`${file}:${line(call)} ${handler.method} calls ${name} and is not on CURRENT_PASSWORD (D33)`);
 	}
+	return findings;
+}
+
+/**
+ * Card 2726's code review (2026-11-05): the two ways a write is held to the
+ * password a handler has just checked, each by the file that defines it.
+ * `whilePasswordHolds` is also what sets `passwordHeld()`, which
+ * `deleteDecision` and `withdrawDecision` ask for themselves. The proof takes
+ * the hash as an argument, and any server code can read that from the row,
+ * so what gives it its meaning is where it may be written: only in a handler
+ * allowed it (`judgePasswordProofs`), which asks for the password before it.
+ */
+const PROOF_DEFINED_IN: Record<string, string> = {
+	whilePasswordHolds: 'src/lib/server/auth.ts',
+	requirePasswordUnchanged: 'src/lib/server/step-up.ts'
+};
+
+/**
+ * The handlers that ask for the current password but hold what they guard with
+ * `requirePasswordUnchanged` alone, since it cannot run in a transaction: the
+ * import's restore, the export's copy and a backup run. They are not on
+ * CURRENT_PASSWORD, whose (d) holds a handler to `whilePasswordHolds`, and may
+ * not use it.
+ */
+const PASSWORD_UNCHANGED_ONLY = [
+	'src/routes/api/admin/import/+server.ts POST',
+	'src/routes/api/admin/export/+server.ts POST',
+	'src/routes/api/admin/backup/+server.ts POST'
+];
+
+/** By proof, the handlers that may use it, and the lists they are on, for the findings. */
+const PROOF_ALLOWED: Record<string, { keys: readonly string[]; lists: string }> = {
+	whilePasswordHolds: { keys: CURRENT_PASSWORD, lists: 'CURRENT_PASSWORD' },
+	requirePasswordUnchanged: { keys: [...CURRENT_PASSWORD, ...PASSWORD_UNCHANGED_ONLY], lists: 'CURRENT_PASSWORD or PASSWORD_UNCHANGED_ONLY' }
+};
+
+/** What asks for the current password, one of which a handler allowed a proof calls before it. */
+const ASKS_PASSWORD = ['confirmStepUp', 'takeImportConfirmation', 'checkCurrentPassword'];
+
+/**
+ * Card 2726's code review for one file under src: each use of a proof of
+ * `PROOF_DEFINED_IN` (a call, a reference, a property or a text naming it) is
+ * inside a handler of a `+server.ts` that `allowed` lets use it. In the file
+ * that defines it, only its own declaration names it. A plain import names it
+ * and does nothing; one under another name, a re-export of every name of the
+ * defining file, and any `.svelte` file naming it are findings outright, so
+ * a page action, a `$lib` helper and a handler not listed are all found.
+ */
+function judgePasswordProofs(file: string, source: string, allowed: Readonly<Record<string, { keys: readonly string[]; lists: string }>>): string[] {
+	const proofs = Object.keys(PROOF_DEFINED_IN);
+	if (file.endsWith('.svelte')) {
+		return proofs.filter((name) => new RegExp(`\\b${name}\\b`).test(source)).map((name) => `${file} names ${name}, which only a handler on ${allowed[name].lists} may use (card 2726)`);
+	}
+	const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+	const line = (node: ts.Node) => tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1;
+	const handlers = file.endsWith('/+server.ts') ? handlersOf(tree) : [];
+	const findings: string[] = [];
+	const judge = (node: ts.Identifier | ts.StringLiteralLike, name: string): void => {
+		const at = `${file}:${line(node)}`;
+		if (file === PROOF_DEFINED_IN[name]) {
+			const declared = ts.isFunctionDeclaration(node.parent) && node.parent.name === node;
+			if (!declared) findings.push(`${at} uses ${name} outside its own declaration (card 2726)`);
+			return;
+		}
+		if (ts.isImportSpecifier(node.parent)) {
+			if (node.parent.propertyName === node) findings.push(`${at} imports ${name} under another name (card 2726)`);
+			return;
+		}
+		const handler = handlers.find(({ fn }) => fn !== undefined && within(node, fn));
+		if (!handler) findings.push(`${at} uses ${name} outside every handler on ${allowed[name].lists} (card 2726)`);
+		else if (!allowed[name].keys.includes(`${file} ${handler.method}`)) findings.push(`${at} ${handler.method} uses ${name} and is not on ${allowed[name].lists} (card 2726)`);
+	};
+	const visit = (node: ts.Node): void => {
+		if (ts.isExportDeclaration(node) && !node.exportClause && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+			const target = moduleFileOf(file, node.moduleSpecifier.text);
+			for (const name of proofs) {
+				if (target === PROOF_DEFINED_IN[name]) findings.push(`${file}:${line(node)} re-exports every name of ${target}, ${name} among them (card 2726)`);
+			}
+		}
+		const isModuleName = node.parent !== undefined && (ts.isImportDeclaration(node.parent) || ts.isExportDeclaration(node.parent)) && node.parent.moduleSpecifier === node;
+		if ((ts.isIdentifier(node) || ts.isStringLiteralLike(node)) && !isModuleName && proofs.includes(node.text)) judge(node, node.text);
+		ts.forEachChild(node, visit);
+	};
+	visit(tree);
 	return findings;
 }
 
@@ -3696,6 +3781,81 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 		const namespace = "import * as decisions from '$lib/server/decisions';";
 		expect(judgePasswordWrites('src/routes/api/example/+server.ts', namespace, LISTED)).toEqual([
 			'src/routes/api/example/+server.ts:1 imports src/lib/server/decisions.ts as a namespace (D33)'
+		]);
+	});
+
+	it('lets whilePasswordHolds and requirePasswordUnchanged be used across src only in a handler allowed them, which asks the password first, and the rule finds one that is not (card 2726, code review)', () => {
+		const everywhere = filesUnder('src', (path) => /\.(ts|js|svelte)$/.test(path));
+		expect(everywhere.length).toBeGreaterThan(300);
+		expect(everywhere.flatMap((file) => judgePasswordProofs(file, readFileSync(join(ROOT, file), 'utf8'), PROOF_ALLOWED))).toEqual([]);
+
+		// Each handler allowed a proof uses it, and asks for the password before its first use: the list holds no
+		// handler that does not need it, and none that would hold a write to a password it never asked for.
+		const faults: string[] = [];
+		for (const [name, { keys }] of Object.entries({ whilePasswordHolds: PROOF_ALLOWED.whilePasswordHolds, requirePasswordUnchanged: { keys: PASSWORD_UNCHANGED_ONLY } })) {
+			for (const key of keys) {
+				const [file, method] = key.split(' ');
+				const tree = ts.createSourceFile(file, readFileSync(join(ROOT, file), 'utf8'), ts.ScriptTarget.Latest, true);
+				const fn = handlersOf(tree).find((handler) => handler.method === method)?.fn;
+				if (!fn) {
+					faults.push(`${key}: no handler this test can read`);
+					continue;
+				}
+				const calls = callsIn(fn, true).sort((a, b) => a.getStart(tree) - b.getStart(tree));
+				const first = calls.find((call) => calleeOf(call, tree) === name);
+				const asks = calls.find((call) => ASKS_PASSWORD.includes(calleeOf(call, tree)));
+				if (!first) faults.push(`${key} does not call ${name}`);
+				else if (!asks || asks.getStart(tree) > first.getStart(tree)) faults.push(`${key} calls ${name} before it asks for the password`);
+			}
+		}
+		expect(faults).toEqual([]);
+
+		// Against made-up source: a listed handler passes; a page action, a $lib helper, a handler not listed, an
+		// import under another name, a re-export and a page component are found, and so is a second use in the
+		// file that defines it.
+		const ALLOWED = {
+			whilePasswordHolds: { keys: ['src/routes/api/example/+server.ts DELETE'], lists: 'CURRENT_PASSWORD' },
+			requirePasswordUnchanged: { keys: ['src/routes/api/example/+server.ts DELETE'], lists: 'CURRENT_PASSWORD or PASSWORD_UNCHANGED_ONLY' }
+		};
+		const handler = [
+			"import { whilePasswordHolds } from '$lib/server/auth';",
+			'export const DELETE = async ({ locals }) => {',
+			'\tawait whilePasswordHolds(1, hash, () => writeAs(locals, (caller) => remove(caller)));',
+			'};',
+			'export const POST = async ({ locals }) => {',
+			'\tawait whilePasswordHolds(1, hash, () => writeAs(locals, (caller) => remove(caller)));',
+			'};'
+		].join('\n');
+		expect(judgePasswordProofs('src/routes/api/example/+server.ts', handler, ALLOWED)).toEqual([
+			'src/routes/api/example/+server.ts:6 POST uses whilePasswordHolds and is not on CURRENT_PASSWORD (card 2726)'
+		]);
+		const action = [
+			"import { whilePasswordHolds } from '$lib/server/auth';",
+			'export const actions = {',
+			'\tdefault: async ({ locals }) => whilePasswordHolds(1, hash, () => writeAs(locals, (caller) => remove(caller)))',
+			'};'
+		].join('\n');
+		expect(judgePasswordProofs('src/routes/decisions/[id]/+page.server.ts', action, ALLOWED)).toEqual([
+			'src/routes/decisions/[id]/+page.server.ts:3 uses whilePasswordHolds outside every handler on CURRENT_PASSWORD (card 2726)'
+		]);
+		const helper = [
+			"import { whilePasswordHolds } from '$lib/server/auth';",
+			"import { requirePasswordUnchanged as unchanged } from '$lib/server/step-up';",
+			'export const removeHeld = (userId, hash) => whilePasswordHolds(userId, hash, () => remove());'
+		].join('\n');
+		expect(judgePasswordProofs('src/lib/server/removal.ts', helper, ALLOWED)).toEqual([
+			'src/lib/server/removal.ts:2 imports requirePasswordUnchanged under another name (card 2726)',
+			'src/lib/server/removal.ts:3 uses whilePasswordHolds outside every handler on CURRENT_PASSWORD (card 2726)'
+		]);
+		expect(judgePasswordProofs('src/lib/server/index.ts', "export * from './auth';", ALLOWED)).toEqual([
+			'src/lib/server/index.ts:1 re-exports every name of src/lib/server/auth.ts, whilePasswordHolds among them (card 2726)'
+		]);
+		expect(judgePasswordProofs('src/lib/components/Example.svelte', '<script>const proof = "requirePasswordUnchanged";</script>', ALLOWED)).toEqual([
+			'src/lib/components/Example.svelte names requirePasswordUnchanged, which only a handler on CURRENT_PASSWORD or PASSWORD_UNCHANGED_ONLY may use (card 2726)'
+		]);
+		const defining = ['export async function whilePasswordHolds() {}', 'export const again = () => whilePasswordHolds();'].join('\n');
+		expect(judgePasswordProofs('src/lib/server/auth.ts', defining, ALLOWED)).toEqual([
+			'src/lib/server/auth.ts:2 uses whilePasswordHolds outside its own declaration (card 2726)'
 		]);
 	});
 

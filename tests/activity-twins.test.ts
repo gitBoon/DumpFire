@@ -2691,9 +2691,9 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 		{ service: 'updateDraft', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'ui' }] }
 	],
 	// Card 2697, B4 (Q9): every refusal first, read only, and whether the decision holds a record; with none,
-	// asked again in the delete; with one, as the step-up's guard, before the delete. As the column delete's.
+	// the delete, which refuses one opened meanwhile itself (card 2726); with one, as the step-up's guard, before
+	// the delete. As the column delete's.
 	'src/routes/api/decisions/[id]/+server.ts DELETE': [
-		{ service: 'decisionDeleteGuard', args: [code('caller'), { decisionId: code('id') }] },
 		{ service: 'decisionDeleteGuard', args: [code('caller'), { decisionId: code('id') }] },
 		{ service: 'deleteDecision', args: [code('caller'), { decisionId: code('id') }, null, { source: 'ui' }] },
 		{ service: 'decisionDeleteGuard', args: [code('caller'), { decisionId: code('id') }] },
@@ -2723,7 +2723,6 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 	],
 	// Card 2697, B4 (Q29): as the delete, by whether the decision was ever opened.
 	'src/routes/api/decisions/[id]/withdraw/+server.ts POST': [
-		{ service: 'decisionWithdrawGuard', args: [code('caller'), { decisionId: code('id') }, code('body')] },
 		{ service: 'decisionWithdrawGuard', args: [code('caller'), { decisionId: code('id') }, code('body')] },
 		{ service: 'withdrawDecision', args: [code('caller'), { decisionId: code('id') }, code('body'), { source: 'ui' }] },
 		{ service: 'decisionWithdrawGuard', args: [code('caller'), { decisionId: code('id') }, code('body')] },

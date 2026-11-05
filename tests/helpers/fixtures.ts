@@ -62,7 +62,7 @@ import {
 	type Team,
 	type WorkDependency
 } from '$lib/server/db/schema';
-import { SESSION_COOKIE_NAME, createSession, forgetChecksInFlight, generateApiKey, type SessionUser } from '$lib/server/auth';
+import { SESSION_COOKIE_NAME, createSession, forgetChecksInFlight, generateApiKey, whilePasswordHolds, type SessionUser } from '$lib/server/auth';
 import { CONFIRMATION_HEADER, STEP_UP_FIELD, forgetImportConfirmations, issueImportConfirmation } from '$lib/server/step-up';
 import { appendEvent, SYSTEM_ACTOR } from '$lib/server/decision-record';
 import { resetMailStatus } from '$lib/server/email';
@@ -221,6 +221,21 @@ export function stepUp(
 		body: { ...body, [STEP_UP_FIELD]: password },
 		headers: { cookie: `${SESSION_COOKIE_NAME}=${makeSession(user)}` }
 	};
+}
+
+/**
+ * Run `write` inside `whilePasswordHolds` for `user`, against their stored
+ * hash read from the row, so that `passwordHeld(user.id)` is true while it
+ * runs (card 2726). It skips the password confirmation: no password is asked
+ * or checked, and nothing is counted on a session. It exists only for service
+ * unit tests that call a service asking the proof itself (`deleteDecision`,
+ * `withdrawDecision` on an opened decision) directly; a test of a route sends
+ * the password instead. The write runs at once, before the promise is
+ * answered.
+ */
+export function holdingPassword<T>(user: SessionUser, write: () => T extends PromiseLike<unknown> ? never : T): Promise<T> {
+	const hash = db.select({ passwordHash: users.passwordHash }).from(users).where(eq(users.id, user.id)).get()!.passwordHash;
+	return whilePasswordHolds(user.id, hash, write);
 }
 
 /**

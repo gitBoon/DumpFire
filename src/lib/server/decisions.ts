@@ -112,7 +112,7 @@ import {
 	type DecisionParticipant,
 	type DecisionQuestion
 } from './db/schema';
-import type { SessionUser } from './auth';
+import { requirePasswordHeld, type SessionUser } from './auth';
 import { canEditBoard, isAdmin } from './board-access';
 import { decisionAccess, mayDo, type DecisionAccess } from './decision-access';
 import {
@@ -1033,13 +1033,18 @@ export function decisionWithdrawGuard(
  *
  * Every refusal is `decisionWithdrawGuard`'s, asked first; its internal route
  * asks for the caller's password between the two once the decision has been
- * opened (card 2697, Q29).
+ * opened (card 2697, Q29). Once opened, the service itself refuses 400
+ * `STEP_UP_MISSING` unless it runs inside `whilePasswordHolds` for the
+ * caller's own account (`requirePasswordHeld`, card 2726), whatever route
+ * calls it; a key is refused before that, as it always was.
  */
 export function withdrawDecision(caller: SessionUser | null, at: { decisionId: number }, body: RequestBody, opts: ServiceOptions): Decision {
 	inWrite();
 	const { user, decision, reason, wasOpened } = decisionWithdrawGuard(caller, at, body);
 	// Card 2682, D5: where the page would ask the password, after every refusal the guard makes; no password is read.
 	if (wasOpened && keyed(opts)) error(403, OPENED_ACT);
+	// Card 2726: the password's proof, asked by the service, not left to the route.
+	if (wasOpened) requirePasswordHeld(user.id);
 
 	const now = stamp();
 	const by = actorFor(user, sourceOf(opts));
@@ -1084,13 +1089,17 @@ export function decisionDeleteGuard(caller: SessionUser | null, at: { decisionId
  *
  * Every refusal is `decisionDeleteGuard`'s, asked first; its internal route
  * asks for the caller's password between the two where the decision holds a
- * record (card 2697, Q9).
+ * record (card 2697, Q9). Where it holds one, the service itself refuses 400
+ * `STEP_UP_MISSING` unless it runs inside `whilePasswordHolds` for the
+ * caller's own account (`requirePasswordHeld`, card 2726), as the withdrawal.
  */
 export function deleteDecision(caller: SessionUser | null, at: { decisionId: number }, body: null, opts: ServiceOptions): void {
 	inWrite();
 	const { user, decision, holdsRecord } = decisionDeleteGuard(caller, at);
 	// Card 2682, D5: as the withdrawal.
 	if (holdsRecord && keyed(opts)) error(403, OPENED_ACT);
+	// Card 2726: as the withdrawal.
+	if (holdsRecord) requirePasswordHeld(user.id);
 
 	const now = stamp();
 	// Card 2680 (decision 19, S7): each linked card keeps a trace on its own board, written before the delete cascades the

@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.95
+version: 1.97
 status: As-Built
 date: 2026-11-05
 tags:
@@ -1514,7 +1514,7 @@ stateDiagram-v2
     withdrawn --> [*]: Delete (password, the record goes for good)
 ```
 
-**The guards and the password** (card 2701's pattern, as the column delete runs it). The delete and the withdrawal first run `decisionDeleteGuard(caller, at)` or `decisionWithdrawGuard(caller, at, body)` in a `writeAs` of their own: every refusal of the write (404, 403, the reason's 400, the status's 409), writing nothing, and whether the decision was ever opened (`openedAt` set: `holdsRecord`, `wasOpened`). Never opened, the write runs in a transaction with no password that asks the guard again, and refuses `400 STEP_UP_MISSING` if the decision was opened meanwhile. Opened, `confirmStepUp(locals, cookies, body, '<key>', guard)` checks `currentPassword` (400 missing, 403 wrong and counted), and the write runs in `whilePasswordHolds(userId, hash, …)`, refused `409 PASSWORD_CHANGED_MEANWHILE` if the stored hash moved since the check. The administrator's account and address routes run the same way with their own guards and ask always. `STEP_UP_ACTIONS` was twenty-six once card 2697's code review, part B, added the People add, delete and Add from accounts ([Authentication and Security](authentication-security.md#decision-access-and-personal-links)), and is twenty-eight since card 2679 added the ruling and the release.
+**The guards and the password** (card 2701's pattern, as the column delete runs it). The delete and the withdrawal first run `decisionDeleteGuard(caller, at)` or `decisionWithdrawGuard(caller, at, body)` in a `writeAs` of their own: every refusal of the write (404, 403, the reason's 400, the status's 409), writing nothing, and whether the decision was ever opened (`openedAt` set: `holdsRecord`, `wasOpened`). Never opened, the write runs in a transaction with no password, where the service asks the guard again and refuses `400 STEP_UP_MISSING` if the decision was opened meanwhile. The service makes that refusal itself for every caller (card 2726): `withdrawDecision` and `deleteDecision` refuse an opened decision unless they run inside `whilePasswordHolds` for the caller's own account (`requirePasswordHeld`, `passwordHeld` in `auth.ts`), after the guard and after an API key's `403`. Opened, `confirmStepUp(locals, cookies, body, '<key>', guard)` checks `currentPassword` (400 missing, 403 wrong and counted), and the write runs in `whilePasswordHolds(userId, hash, …)`, refused `409 PASSWORD_CHANGED_MEANWHILE` if the stored hash moved since the check. The administrator's account and address routes run the same way with their own guards and ask always. `STEP_UP_ACTIONS` was twenty-six once card 2697's code review, part B, added the People add, delete and Add from accounts ([Authentication and Security](authentication-security.md#decision-access-and-personal-links)), and is twenty-eight since card 2679 added the ruling and the release.
 
 ```mermaid
 sequenceDiagram
@@ -1526,10 +1526,10 @@ sequenceDiagram
     Pg->>Rt: {} or { currentPassword } (JSON)
     Rt->>Gd: writeAs of its own: 404, 403, 409, and holdsRecord
     alt never opened
-        Rt->>Wr: writeAs: the guard again (400 STEP_UP_MISSING if opened meanwhile), then the delete
+        Rt->>Wr: writeAs: the guard again, then the delete (400 STEP_UP_MISSING if opened meanwhile: no password held)
     else opened
         Rt->>Su: currentPassword (400), the check (403, counted), the guard first
-        Rt->>Wr: whilePasswordHolds → writeAs: the delete (409 if the hash moved)
+        Rt->>Wr: whilePasswordHolds → writeAs: the delete, passwordHeld(caller) true (409 if the hash moved)
     end
     Rt-->>Pg: { success: true }
 ```
@@ -2586,7 +2586,7 @@ flowchart LR
 - **At most two threads**, `min(2, max(1, CPUs - 1))`, or `PASSWORD_THREADS` (0 to 8, left unset in a deployment; 0 is the server's own thread a turn later, which the tests use). Each is started from a string of code, not a file of its own, because Vite carries no worker file into the server build; it loads bcryptjs from `node_modules` by an absolute path, so the image did not change.
 - **One line, two lanes.** A caller the server already knows goes first, but never more than three in a row while a check of the second lane waits, and an account's current passwords and remembered sign-ins are held to five in flight, so the second lane is always served; the second lane holds at most 150 checks a thread, and a check that arrives when it is full, or whose caller has gone by the time a thread is free (`req.socket.destroyed`, in the built server), is not made and its route answers `503`.
 - **A thread that stops** is replaced and the check sent once more; one that cannot start at all leaves every check on the server's thread, with one `ERROR` line, rather than keep anybody out.
-- **A transaction cannot await**, so no hash or check is made inside one. A route that asks for a current password checks it before its transaction, and writes through `whilePasswordHolds()` in `auth.ts`, which writes only while the stored hash is still the one checked and otherwise refuses `409`, comparing nothing again (card 2701's code review, S2).
+- **A transaction cannot await**, so no hash or check is made inside one. A route that asks for a current password checks it before its transaction, and writes through `whilePasswordHolds()` in `auth.ts`, which writes only while the stored hash is still the one checked and otherwise refuses `409`, comparing nothing again (card 2701's code review, S2). While its write runs, `passwordHeld(userId)` is true for that account alone, so a service can refuse a write that needs the password whatever route calls it (`requirePasswordHeld`; the decision delete and withdrawal since card 2726). At run time that proves only that the write runs inside `whilePasswordHolds`; it is not an unforgeable token, since the hash it takes can be read from the row. A source scan in `tests/check-at-the-write.test.ts` lets `whilePasswordHolds` be used only in the handlers on `CURRENT_PASSWORD`, each of which asks for the password first, so together they show the write ran inside `whilePasswordHolds` in an allowed handler (card 2726's code review).
 
 The whole rule, with the lanes, the bound, the log lines and what the people using it notice, is in [Password Hashing](authentication-security.md#password-hashing).
 

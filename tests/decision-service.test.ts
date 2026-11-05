@@ -59,6 +59,7 @@ import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { requireDecision } from '$lib/server/route-guards';
 import { parseStamp, stamp } from '$lib/timestamps';
 import { writeAs } from '$lib/server/write-as';
+import { STEP_UP_MISSING } from '$lib/step-up-words';
 import type { ServiceOptions } from '$lib/server/write-as';
 import { FUTURE as SHARED_FUTURE, OPEN_FAULTS, readyDraft as readyDraftOn, revisionNow } from './helpers/decision-faults';
 import { effects, type Effects, type OfferedMail } from './helpers/effects';
@@ -66,6 +67,7 @@ import { readBudget } from './helpers/reads';
 import {
 	addBoardMember,
 	ageRecordMail,
+	holdingPassword,
 	linkHashOf,
 	makeBoard,
 	makeDecision,
@@ -122,6 +124,17 @@ function outcome(run: () => unknown): 'passed' | { status: number; message: stri
 		return 'passed';
 	} catch (err) {
 		if (isHttpError(err)) return { status: err.status, message: err.body.message };
+		throw err;
+	}
+}
+
+/** A refusal's status and whole body, its `stepUp` code with it (card 2726); anything else is thrown on. */
+function refusalOf(run: () => unknown): { status: number; body: App.Error } | 'passed' {
+	try {
+		run();
+		return 'passed';
+	} catch (err) {
+		if (isHttpError(err)) return { status: err.status, body: err.body };
 		throw err;
 	}
 }
@@ -767,6 +780,9 @@ const resend = (user: SessionUser, id: number, participantId: number) =>
 	as(user, (caller) => resendInvitation(caller, { decisionId: id, participantId }, null, UI));
 const withdraw = (user: SessionUser, id: number, reason = 'No longer needed.') => as(user, (caller) => withdrawDecision(caller, { decisionId: id }, { reason }, UI));
 const remove = (user: SessionUser, id: number) => as(user, (caller) => deleteDecision(caller, { decisionId: id }, null, UI));
+// Card 2726: an opened decision is withdrawn or deleted only with the caller's password held, as its route holds it.
+const withdrawHeld = (user: SessionUser, id: number, reason?: string) => holdingPassword(user, () => withdraw(user, id, reason));
+const removeHeld = (user: SessionUser, id: number) => holdingPassword(user, () => remove(user, id));
 const setAccount = (user: SessionUser, id: number, participantId: number, account: string) =>
 	as(user, (caller) => setParticipantAccount(caller, { decisionId: id, participantId }, { account }, UI));
 // Card 2697 (Q22): "Use the directory's address" sends no address; the write copies the directory's.
@@ -982,7 +998,7 @@ describe('withdrawDecision', () => {
 		const r = await openedDecision();
 		const before = eventsOf(r.id).length;
 
-		const row = withdraw(r.author, r.id, 'The budget was cut.');
+		const row = await withdrawHeld(r.author, r.id, 'The budget was cut.');
 
 		expect(row).toMatchObject({ status: 'withdrawn', withdrawnReason: 'The budget was cut.' });
 		expect(row.withdrawnAt).not.toBeNull();
@@ -1007,7 +1023,7 @@ describe('withdrawDecision', () => {
 		makeParticipant(boardless, { person: makePerson(), hadAccount: false });
 		const entries = activityRows().length;
 		sent.clear();
-		withdraw(owner, boardless.id);
+		await withdrawHeld(owner, boardless.id);
 		await waitForOutcomes(boardless.id, 1);
 		expect(activityRows()).toHaveLength(entries);
 		expect(sent.events).toEqual([]);
@@ -1021,6 +1037,20 @@ describe('withdrawDecision', () => {
 
 		expect(decisionRow(draft.id).status).toBe('withdrawn');
 		expect(kindsOf(draft.id)).toEqual(['withdrawn']);
+		await sent.settle();
+		expect(sent.all).toEqual([]);
+		expect(activityRows()).toEqual([]);
+	});
+
+	it('refuses an opened decision 400 STEP_UP_MISSING without the password held, whatever calls it: nothing written or mailed (card 2726)', async () => {
+		const opened = openByHand();
+		makeParticipant(opened, { person: makePerson(), hadAccount: false });
+		const before = kindsOf(opened.id);
+
+		expect(refusalOf(() => withdraw(owner, opened.id))).toEqual({ status: 400, body: { message: STEP_UP_MISSING, stepUp: 'missing' } });
+
+		expect(decisionRow(opened.id)).toMatchObject({ status: 'open', withdrawnAt: null });
+		expect(kindsOf(opened.id)).toEqual(before);
 		await sent.settle();
 		expect(sent.all).toEqual([]);
 		expect(activityRows()).toEqual([]);
@@ -1048,11 +1078,11 @@ describe('deleteDecision', () => {
 		sqlite
 			.prepare("INSERT INTO decision_responses (decision_id, participant_id, version_number, round, kind, via) VALUES (?, ?, 1, 1, 'no_concerns', 'link')")
 			.run(r.id, r.linked.id);
-		withdraw(r.author, r.id);
+		await withdrawHeld(r.author, r.id);
 		await waitForOutcomes(r.id, 4);
 		sent.clear();
 
-		remove(r.author, r.id);
+		await removeHeld(r.author, r.id);
 
 		for (const table of ['decisions', 'decision_options', 'decision_participants', 'decision_versions', 'decision_responses', 'decision_events']) {
 			expect(count(table)).toBe(0);
@@ -1066,12 +1096,16 @@ describe('deleteDecision', () => {
 		makeParticipant(second, { person: makePerson({ email: 'first@example.test' }), hadAccount: false });
 		makeParticipant(second, { person: makePerson({ email: 'second@example.test' }), hadAccount: false });
 		let mailEvents: number[] = [];
+		// The delete's promise is kept, marked handled at once and awaited once the assertions are made: a refusal
+		// fails this case there, rather than escaping as an unhandled rejection (card 2726's code review).
+		let removed: Promise<unknown> | undefined;
 		refusal = () => {
 			if (mailEvents.length === 0) {
 				mailEvents = eventsOf(second.id)
 					.filter((event) => event.kind === 'told_withdrawn')
 					.map((event) => event.id);
-				remove(owner, second.id);
+				removed = removeHeld(owner, second.id);
+				removed.catch(() => {});
 			}
 			return undefined;
 		};
@@ -1079,7 +1113,7 @@ describe('deleteDecision', () => {
 		const level = process.env.LOG_LEVEL;
 		process.env.LOG_LEVEL = 'WARN';
 		try {
-			withdraw(owner, second.id);
+			await withdrawHeld(owner, second.id);
 			await vi.waitFor(() => expect(sqlite.prepare("SELECT COUNT(*) AS n FROM system_logs WHERE level = 'WARN'").get()).toEqual({ n: 2 }));
 		} finally {
 			if (level === undefined) delete process.env.LOG_LEVEL;
@@ -1095,6 +1129,8 @@ describe('deleteDecision', () => {
 		]);
 		expect(warnings.map((w) => `${w.message} ${w.meta}`).join('\n')).not.toMatch(/example\.test/);
 		expect(count('decisions')).toBe(0);
+		expect(removed).toBeDefined();
+		await removed;
 	});
 
 	it('refuses deleting a ruled decision, 409, with nothing removed (61)', () => {
@@ -1102,6 +1138,15 @@ describe('deleteDecision', () => {
 
 		expect(outcome(() => remove(owner, ruled.id))).toEqual({ status: 409, message: 'This decision is ruled: it cannot be deleted' });
 		expect(decisionRow(ruled.id)).toBeDefined();
+	});
+
+	it('refuses a withdrawn decision that was opened 400 STEP_UP_MISSING without the password held, whatever calls it: nothing removed (card 2726)', () => {
+		const withdrawn = openByHand({ status: 'withdrawn' });
+
+		expect(refusalOf(() => remove(owner, withdrawn.id))).toEqual({ status: 400, body: { message: STEP_UP_MISSING, stepUp: 'missing' } });
+
+		expect(decisionRow(withdrawn.id)).toMatchObject({ status: 'withdrawn' });
+		expect(activityRows()).toEqual([]);
 	});
 });
 
@@ -1516,7 +1561,7 @@ describe('the rules that hold after opening', () => {
 
 		await withNoLinkAddress(async () => {
 			const before = eventsOf(r.id).length;
-			withdraw(r.author, r.id);
+			await withdrawHeld(r.author, r.id);
 			const written = eventsOf(r.id).slice(before);
 			const mails = written.filter((event) => event.kind === 'told_withdrawn');
 			expect(written.map((event) => [event.kind, event.participantId])).toEqual([

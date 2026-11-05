@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.96
+version: 1.98
 status: As-Built
 date: 2026-11-05
 tags:
@@ -51,7 +51,7 @@ tags:
   - current-password
   - decision-records
   - untrusted
-description: "Deep-dive into DumpFire's authentication system, what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the twenty-eight destructive actions that ask for the current password again (step-up), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served"
+description: "Deep-dive into DumpFire's authentication system, what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the twenty-eight destructive actions that ask for the current password again (step-up), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served"
 ---
 
 # Authentication & Security
@@ -791,6 +791,36 @@ awaited before the effect starts: `403` `PASSWORD_CHANGED_MEANWHILE`, or for the
 The services (`deleteBoardFor`, `deleteColumnFor`, `purgeArchivedCards`, …) take `caller` as
 before and are never handed the password. Drive Connect checks the password before it takes
 the Connect's state or asks Google, so a wrong one leaves the Connect usable and sends no code.
+
+**The proof a service asks for itself** (card 2726). While `whilePasswordHolds(userId, hash,
+write)` runs `write`, and only then, `passwordHeld(userId)` in `auth.ts` is true. The account is
+pushed onto a module-private stack once the stored hash has been compared under the lock and
+popped in a `finally`, whether the write returns or throws; nothing else writes it. It cannot
+outlast its request: the write is synchronous inside one transaction (`inTransaction` refuses
+one that returns a promise), so no other request's code runs while it is set, and it is gone
+before the transaction's `afterCommit` effects run. It is kept by account, so a nested
+`whilePasswordHolds` for another account proves nothing for the caller.
+`requirePasswordHeld(userId)` refuses `400` `{ message: STEP_UP_MISSING, stepUp: 'missing' }`
+otherwise, the answer the page already meets by asking for the password. `withdrawDecision` and
+`deleteDecision` ask it for the caller (`user.id`, as the write's `writeAs` read them) whenever
+the decision was ever opened (`openedAt` set), after every refusal of their guard and after an
+API key's `403`, so an opened decision is never withdrawn or deleted without the password,
+whatever route calls them. A draft never opened asks for nothing.
+
+What the proof guarantees, and what it does not. At run time it shows only that the write runs
+inside `whilePasswordHolds` for that account. It is not an unforgeable token:
+`whilePasswordHolds` takes the hash as an argument, and any server code can read that from the
+row. That the password was checked first is held by source scans, at test time.
+`tests/check-at-the-write.test.ts` lets `whilePasswordHolds` be used nowhere in `src` but in a
+handler on its `CURRENT_PASSWORD` list, and `requirePasswordUnchanged` only there or on
+`PASSWORD_UNCHANGED_ONLY` (the import, the export and a backup run, which cannot be held in a
+transaction); each of those handlers asks for the password (`confirmStepUp`,
+`takeImportConfirmation` or `checkCurrentPassword`) before it. A page action, a `$lib` helper,
+an unlisted handler, an import under another name, a re-export or a component naming either is
+a finding. The step-up pin in `tests/step-up.test.ts` (cases 1 and 2) holds each action that
+asks to ask before what it guards. Together: the write ran inside `whilePasswordHolds` in an
+allowed handler. A proof that only a password check can mint is a separate card. The other
+services behind `STEP_UP_ACTIONS` still rely on their route alone (card 2726, F1).
 
 ```mermaid
 sequenceDiagram
@@ -3385,7 +3415,9 @@ each response, concern and the ruling of the summary (the mark on the holding ob
 **The password stays on every other route that deletes or withdraws (D33).** A scan in
 `tests/check-at-the-write.test.ts` holds every handler outside `src/routes/api/v1` that calls
 `deleteDecision` or `withdrawDecision` to `CURRENT_PASSWORD`, and refuses any other route file
-there that imports either. The service's own `passwordHeld()` is card 2726's.
+there that imports either. Since card 2726 the service refuses an opened decision itself
+unless the caller's password is held (`requirePasswordHeld`, above); the scan stays as the
+earlier warning, read from the source before any request.
 
 ```mermaid
 flowchart TD

@@ -30,6 +30,7 @@ import { api } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
 import {
 	addBoardMember,
+	holdingPassword,
 	makeBoard,
 	makeCard,
 	makeCardLink,
@@ -354,14 +355,15 @@ describe('what happens to a link', () => {
 		expect(linkActivity()).toEqual([]);
 	});
 
-	it('goes with a deleted withdrawn decision, leaving one entry on the linked card’s other board (99)', () => {
+	it('goes with a deleted withdrawn decision, leaving one entry on the linked card’s other board (99)', async () => {
 		const author = makeUser({ username: 'author' });
 		addBoardMember(A, author, 'editor');
 		const decision = decisionOn(A, { status: 'withdrawn', author, title: 'A withdrawn decision' });
 		const card = makeCard(todoB);
 		makeCardLink(decision, card);
 
-		as(author, (caller) => deleteDecision(caller, { decisionId: decision.id }, null, UI));
+		// Card 2726: a decision that was opened is deleted only with the password held, as its route holds it.
+		await holdingPassword(author, () => as(author, (caller) => deleteDecision(caller, { decisionId: decision.id }, null, UI)));
 		expect(db.select().from(decisionCardLinks).all()).toEqual([]);
 		expect(linkActivity()).toEqual([{ boardId: B.id, cardId: card.id, action: 'decision_card_link_deleted', detail: 'a linked decision was deleted' }]);
 		expect(activity().filter((row) => row.boardId === B.id).map((row) => row.detail).join()).not.toContain('A withdrawn decision');

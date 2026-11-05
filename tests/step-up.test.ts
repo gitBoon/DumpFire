@@ -69,8 +69,9 @@ import { google } from 'googleapis';
 import ts from 'typescript';
 import { DRIVE_FILE_SCOPE } from '$lib/drive-scope';
 import { db, sqlite } from '$lib/server/db';
+import { afterCommit } from '$lib/server/db/transaction';
 import { boards, cards, categories, columns, decisionParticipants, inviteTokens, people, sessions, settings, userXp, users } from '$lib/server/db/schema';
-import { PASSWORD_CHANGED_MEANWHILE, SESSION_COOKIE_NAME, deleteSession, forgetChecksInFlight } from '$lib/server/auth';
+import { PASSWORD_CHANGED_MEANWHILE, SESSION_COOKIE_NAME, deleteSession, forgetChecksInFlight, passwordHeld, whilePasswordHolds } from '$lib/server/auth';
 import { addressKey } from '$lib/server/client-address';
 import { PASSWORDS_BUSY } from '$lib/server/passwords';
 import {
@@ -1469,5 +1470,74 @@ describe("v1's board and column deletes are untouched (case 24, card 2703)", () 
 		expect(res.status, await res.clone().text()).toBe(200);
 		expect(stub.compared).toBe(0);
 		expect(db.select().from(cards).all()).toEqual([]);
+	});
+});
+
+// ─── Card 2726: the proof a service asks for itself ─────────────────────────
+
+describe("passwordHeld: the proof whilePasswordHolds holds while its write runs (card 2726)", () => {
+	it("is true only inside the write, for its own account; false after it returns or throws, and never set when the hash moved", async () => {
+		const pat = makeUser({ username: 'pat' });
+		const sam = makeUser({ username: 'sam' });
+		const seen: Record<string, boolean> = {};
+
+		seen.before = passwordHeld(pat.id);
+		await whilePasswordHolds(pat.id, FIXTURE_PASSWORD_HASH, () => {
+			seen.ownInside = passwordHeld(pat.id);
+			seen.otherInside = passwordHeld(sam.id);
+		});
+		seen.afterReturn = passwordHeld(pat.id);
+
+		await expect(
+			whilePasswordHolds(pat.id, FIXTURE_PASSWORD_HASH, () => {
+				throw new Error('the write failed');
+			})
+		).rejects.toThrow('the write failed');
+		seen.afterThrow = passwordHeld(pat.id);
+
+		let ranOnMovedHash = false;
+		const moved = whilePasswordHolds(pat.id, hashSync('another password', 4), () => {
+			ranOnMovedHash = true;
+		});
+		seen.whileRefused = passwordHeld(pat.id);
+		await expect(moved).rejects.toMatchObject({ status: 409, body: { message: PASSWORD_CHANGED_MEANWHILE, stepUp: 'changed' } });
+
+		expect(seen).toEqual({ before: false, ownInside: true, otherInside: false, afterReturn: false, afterThrow: false, whileRefused: false });
+		expect(ranOnMovedHash).toBe(false);
+	});
+
+	it("keeps the outer account held through a nested whilePasswordHolds for another account, which proves that account alone and only while it runs", async () => {
+		const pat = makeUser({ username: 'pat' });
+		const sam = makeUser({ username: 'sam' });
+		const seen: Record<string, boolean> = {};
+		let inner: Promise<void> | undefined;
+
+		await whilePasswordHolds(pat.id, FIXTURE_PASSWORD_HASH, () => {
+			inner = whilePasswordHolds(sam.id, FIXTURE_PASSWORD_HASH, () => {
+				seen.innerSam = passwordHeld(sam.id);
+				seen.innerPat = passwordHeld(pat.id);
+			});
+			seen.afterInnerPat = passwordHeld(pat.id);
+			seen.afterInnerSam = passwordHeld(sam.id);
+		});
+		await inner;
+		seen.afterOuterPat = passwordHeld(pat.id);
+
+		expect(seen).toEqual({ innerSam: true, innerPat: true, afterInnerPat: true, afterInnerSam: false, afterOuterPat: false });
+	});
+
+	it('is false in an afterCommit effect queued by the write: the effect runs once the proof is cleared', async () => {
+		const pat = makeUser({ username: 'pat' });
+		const seen: Record<string, boolean> = {};
+
+		await whilePasswordHolds(pat.id, FIXTURE_PASSWORD_HASH, () => {
+			seen.inWrite = passwordHeld(pat.id);
+			afterCommit(() => {
+				seen.inEffect = passwordHeld(pat.id);
+			});
+		});
+		await vi.waitFor(() => expect(seen).toHaveProperty('inEffect'));
+
+		expect(seen).toEqual({ inWrite: true, inEffect: false });
 	});
 });

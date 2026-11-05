@@ -18,7 +18,7 @@ import { FIRST_LANE_CHECKS_PER_ACCOUNT, enterSignIn, firstLaneChecksAt, leaveSig
 import { PASSWORDS_BUSY, checkPassword } from './passwords';
 import { createLogger } from './logger';
 import { stamp, toStamp } from '$lib/timestamps';
-import { PASSWORD_CHANGED_MEANWHILE, STEP_UP_IN_FLIGHT, STEP_UP_SIGNED_OUT } from '$lib/step-up-words';
+import { PASSWORD_CHANGED_MEANWHILE, STEP_UP_IN_FLIGHT, STEP_UP_MISSING, STEP_UP_SIGNED_OUT } from '$lib/step-up-words';
 import { registerStampFunctions } from './db/timestamps';
 import { pathToLog } from './secret-paths';
 
@@ -221,6 +221,22 @@ export { PASSWORD_CHANGED_MEANWHILE };
 type NotAPromise<T> = T extends PromiseLike<unknown> ? never : T;
 
 /**
+ * The accounts whose password a running `whilePasswordHolds` write holds,
+ * innermost last (card 2726). Pushed only there, once the stored hash has been
+ * compared under the lock, and popped in its `finally`, whether the write
+ * returns or throws. Nothing else writes it and nothing exports a way to.
+ *
+ * It cannot outlast its request: the write is synchronous inside one
+ * transaction (`inTransaction` refuses one that returns a promise), so no
+ * other request's code runs while it is set, and it is popped before the
+ * transaction's `afterCommit` effects run. It is kept by account, not as a
+ * bare count as `writingWithKey()` is: a nested `whilePasswordHolds` for
+ * another account adds that account alone, so a write is never proven for a
+ * caller whose password was not the one held.
+ */
+const held: number[] = [];
+
+/**
  * Run `write` in one transaction, only while the account's stored hash is
  * still `checkedHash`, the one the password was checked against before it.
  *
@@ -235,14 +251,53 @@ type NotAPromise<T> = T extends PromiseLike<unknown> ? never : T;
  * session's count never saw (the code review's S2, 2026-11-04). Nothing can
  * change the hash between the comparison and the write: better-sqlite3 runs
  * the whole transaction without yielding, under `BEGIN IMMEDIATE`.
+ *
+ * While `write` runs, and only then, `passwordHeld(userId)` is true (card
+ * 2726): a service that must not write without the password asks it itself.
  */
 export async function whilePasswordHolds<T>(userId: number, checkedHash: string, write: (current: User) => NotAPromise<T>): Promise<T> {
 	return inTransaction(() => {
 		const current = db.select().from(users).where(eq(users.id, userId)).get();
 		if (!current) throw error(404, 'User not found');
 		if (current.passwordHash !== checkedHash) error(409, { message: PASSWORD_CHANGED_MEANWHILE, stepUp: 'changed' });
-		return write(current);
+		held.push(userId);
+		try {
+			return write(current);
+		} finally {
+			held.pop();
+		}
 	}) as T;
+}
+
+/**
+ * Whether a running `whilePasswordHolds` write holds the password of the
+ * account `userId` (card 2726). A service asks it for the caller as the
+ * write's `writeAs` read them (`caller.id`), so that what asks a password
+ * cannot be written through a route that forgot to ask.
+ *
+ * At run time it proves only that the write runs inside `whilePasswordHolds`
+ * for that account. It is not an unforgeable token: `whilePasswordHolds` takes
+ * the hash as an argument, which any server code can read from the row. That
+ * the password was checked first is held by source scans, at test time:
+ * `tests/check-at-the-write.test.ts` lets `whilePasswordHolds` be used
+ * nowhere in src but in a handler on its CURRENT_PASSWORD list, each of which
+ * asks for the password before it, and the step-up pin
+ * (`tests/step-up.test.ts`, cases 1 and 2) holds each action that asks to ask
+ * before what it guards. Together: the write ran inside `whilePasswordHolds`
+ * in an allowed handler. A proof only a password check can mint is a card of
+ * its own.
+ */
+export function passwordHeld(userId: number): boolean {
+	return held.includes(userId);
+}
+
+/**
+ * Refused 400 `STEP_UP_MISSING` (`stepUp: 'missing'`) unless `passwordHeld(userId)`
+ * (card 2726): the answer a route gives a request that sent no password, which
+ * the pages meet by asking for it.
+ */
+export function requirePasswordHeld(userId: number): void {
+	if (!passwordHeld(userId)) error(400, { message: STEP_UP_MISSING, stepUp: 'missing' });
 }
 
 // ─── Session Management ─────────────────────────────────────────────────────

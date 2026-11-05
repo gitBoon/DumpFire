@@ -123,6 +123,7 @@ import {
 	FIXTURE_PASSWORD,
 	addBoardMember,
 	ageRecordMail,
+	holdingPassword,
 	makeBoard,
 	makeDecision,
 	makeOption,
@@ -668,7 +669,7 @@ describe('the daily cap on record mail to one participant (57)', () => {
 	it('(c) still mails them the withdrawal', async () => {
 		const { author, decision, participant } = mailedFiveTimes();
 
-		as(author, (caller) => withdrawDecision(caller, { decisionId: decision.id }, { reason: 'No longer needed.' }, UI));
+		await holdingPassword(author, () => as(author, (caller) => withdrawDecision(caller, { decisionId: decision.id }, { reason: 'No longer needed.' }, UI)));
 		await sent.settle();
 
 		expect(eventsOf(decision.id).filter((event) => event.kind === 'told_withdrawn').map((event) => event.participantId)).toEqual([participant.id]);
@@ -795,7 +796,7 @@ describe('the daily cap on record mail one caller causes, across decisions (S2)'
 		expect(recordMailsSince(decider.id, since), 'nothing counted before').toEqual([]);
 
 		as(decider, (caller) => ruleDecision(caller, { decisionId: toRule.id }, { optionId: a.id, reason: 'A is enough.', revision: resultsRevisionFor(toRule.id) }, UI));
-		as(decider, (caller) => withdrawDecision(caller, { decisionId: toWithdraw.id }, { reason: 'No longer needed.' }, UI));
+		await holdingPassword(decider, () => as(decider, (caller) => withdrawDecision(caller, { decisionId: toWithdraw.id }, { reason: 'No longer needed.' }, UI)));
 		await sent.settle();
 
 		// Every mail was sent and written as the decider's own, so a cap that counted these kinds would see six.

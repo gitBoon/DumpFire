@@ -1,11 +1,11 @@
-import { error, json } from '@sveltejs/kit';
+import { json } from '@sveltejs/kit';
 import { whilePasswordHolds } from '$lib/server/auth';
 import { isAdmin } from '$lib/server/board-access';
 import { decisionAnswer, revisionFor } from '$lib/server/decision-authoring';
 import { decisionWithdrawGuard, withdrawDecision } from '$lib/server/decisions';
 import { pathId, readBody } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
-import { STEP_UP_MISSING, confirmStepUp } from '$lib/server/step-up';
+import { confirmStepUp } from '$lib/server/step-up';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
@@ -35,9 +35,9 @@ export const POST: RequestHandler = async ({ params, request, locals, cookies })
 	if (!wasOpened) {
 		// One transaction: the decision is read and the caller checked in the
 		// same one that withdraws it (card 2253). A draft opened since is not
-		// withdrawn without the password: refused, and nothing written.
+		// withdrawn without the password: the service refuses it 400
+		// `STEP_UP_MISSING`, nothing written (card 2726).
 		const answer = writeAs(locals, (caller) => {
-			if (decisionWithdrawGuard(caller, { decisionId: id }, body).wasOpened) error(400, { message: STEP_UP_MISSING, stepUp: 'missing' });
 			const decision = withdrawDecision(caller, { decisionId: id }, body, { source: 'ui' });
 			return { decision: decisionAnswer(decision, isAdmin(caller)), revision: revisionFor(decision.id) };
 		});
