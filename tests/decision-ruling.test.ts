@@ -38,7 +38,7 @@ import {
 } from '$lib/server/db/schema';
 import { DECISION_RULES } from '$lib/server/decision-access';
 import { resultsRevisionOf, allOptionsOf, participantsOf } from '$lib/server/decision-content';
-import { appendEvent, concernsOf, currentRound, DECIDER_ONLY_EVENTS, latestResponse, reachedInRound, rulingOf, SYSTEM_ACTOR } from '$lib/server/decision-record';
+import { appendEvent, concernsOf, currentRound, DECIDER_ONLY_EVENTS, latestResponse, reachedInRound, rulingOf, seenStands, SYSTEM_ACTOR } from '$lib/server/decision-record';
 import { revokeLinks } from '$lib/server/decision-links';
 import { STEP_UP_MISSING, STEP_UP_WRONG } from '$lib/server/step-up';
 import {
@@ -57,6 +57,7 @@ import {
 	extendDecision,
 	raiseConcern,
 	raiseConcernByLink,
+	recordSeen,
 	releaseResults,
 	republishDecision,
 	respondToDecision,
@@ -813,6 +814,176 @@ describe('ruleDecision', () => {
 			sees(shut.participant, 3);
 
 			expect(reachedOf(decision, 1, told.participant, shut.participant)).toEqual([told.participant.id]);
+		});
+
+		// ─── Card 2741: a seen made while shut, or before a re-inclusion, does not hide a later view while open ──
+
+		describe('card 2741: a view while open is recorded where no earlier seen counts', () => {
+			/** The question seens of the participant, in order: how many the record holds. */
+			const seensOf = (p: DecisionParticipant) => eventsOf(p.decisionId).filter((event) => event.kind === 'seen' && event.participantId === p.id).length;
+			/**
+			 * The participant opens their page and it posts the seen it says it would (card 2736): the page's `seenRecorded`
+			 * is read first, and must be false exactly when the write records one. Answers whether one was recorded.
+			 */
+			const views = (who: { account: SessionUser; participant: DecisionParticipant }, versionNumber = 1) => {
+				const page = readDecisionPage(who.account, who.participant.decisionId);
+				expect(page.stage).toBe('question');
+				const { recorded } = as(who.account, (caller) => recordSeen(caller, { decisionId: who.participant.decisionId }, { versionNumber, stage: 'question' }, UI));
+				expect(recorded, 'the page posts a seen exactly when the write records one').toBe(!page.seenRecorded);
+				return recorded;
+			};
+			/** The decider sets the participants to `who`, each consulted unless `role` says otherwise: one left out is removed, one put back re-included. */
+			const setTo = (decider: SessionUser, decisionId: number, who: { person: { id: number } }[], role: (index: number) => 'consulted' | 'informed' = () => 'consulted') =>
+				as(decider, (caller) =>
+					setParticipants(caller, { decisionId }, { participants: who.map((p, index) => ({ personId: p.person.id, role: role(index) })), revision: revisionFor(decisionId) }, UI)
+				);
+
+			it('records a view after an extend reopened it where the only seen was made while closed, once; never again, nor for one seen before the close (2741-1)', async () => {
+				const { decision, a, decider } = opened({ status: 'open', closesAt: daysAhead(30) });
+				published(decision, 1);
+				const before = withAccount(decision, 'before');
+				const shut = withAccount(decision, 'shut');
+				const responder = withAccount(decision, 'responder');
+				expect(views(before), 'seen while open').toBe(true);
+				close(decider, decision.id);
+				expect(views(shut), 'seen while closed').toBe(true);
+				expect(views(responder), 'seen while closed').toBe(true);
+				// While it stays closed a view adds nothing: a new seen would count for nothing either.
+				expect(views(shut), 'again while closed').toBe(false);
+				expect(reachedOf(decision, 1, before.participant, shut.participant, responder.participant)).toEqual([before.participant.id]);
+
+				as(decider, (caller) => extendDecision(caller, { decisionId: decision.id }, { closesAt: `${daysAhead(40).replace(' ', 'T')}Z` }, UI));
+				// The view while open again is recorded, once; the one seen while open before the close needs none.
+				expect(views(shut), 'after the extend').toBe(true);
+				expect(views(shut), 'again after the extend').toBe(false);
+				expect(views(before), 'seen before the close').toBe(false);
+				expect([seensOf(before.participant), seensOf(shut.participant)]).toEqual([1, 2]);
+				// A response records the seen by the same test.
+				as(responder.account, (caller) => respondToDecision(caller, { decisionId: decision.id }, { versionNumber: 1, kind: 'vote', optionId: a.id }, UI));
+				expect(seensOf(responder.participant), 'a response after the extend').toBe(2);
+
+				expect(reachedOf(decision, 1, before.participant, shut.participant, responder.participant)).toEqual(
+					[before.participant.id, shut.participant.id, responder.participant.id].sort((x, y) => x - y)
+				);
+				await settled(decision.id);
+			});
+
+			it('records a view after a re-inclusion as consulted where the only seen was before the removal; not after one as informed (2741-2)', async () => {
+				const { decision, decider } = opened({ status: 'open', closesAt: daysAhead(30) });
+				published(decision, 1);
+				const stay = withAccount(decision, 'stay');
+				const back = withAccount(decision, 'back');
+				const told = withAccount(decision, 'told');
+				expect(views(back), 'seen before the removal').toBe(true);
+				expect(views(told), 'seen before the removal').toBe(true);
+				expect(reachedOf(decision, 1, back.participant, told.participant)).toEqual([back.participant.id, told.participant.id].sort((x, y) => x - y));
+
+				setTo(decider, decision.id, [stay]);
+				expect(rowOf(back.participant).removedAt).not.toBeNull();
+				// Brought back, `back` consulted and `told` informed.
+				setTo(decider, decision.id, [stay, back, told], (index) => (index === 2 ? 'informed' : 'consulted'));
+				expect([rowOf(back.participant).removedAt, rowOf(told.participant).role]).toEqual([null, 'informed']);
+
+				expect(views(back), 'after the re-inclusion as consulted').toBe(true);
+				expect(views(back), 'again').toBe(false);
+				// Informed now, a new seen would count for nothing: the one before the removal stands.
+				expect(views(told), 'after the re-inclusion as informed').toBe(false);
+				expect([seensOf(back.participant), seensOf(told.participant)]).toEqual([2, 1]);
+				expect(reachedOf(decision, 1, back.participant)).toEqual([back.participant.id]);
+				await mailsSettled(decision.id);
+			});
+
+			it('records a view once made consulted where the only seen was made while informed (2741-3, R5)', () => {
+				const { decision } = opened({ status: 'open', closesAt: FUTURE });
+				published(decision, 1);
+				const switched = withAccount(decision, 'switched', 'informed');
+				appendEvent({ decisionId: decision.id, kind: 'included', participantId: switched.participant.id, detail: { role: 'informed', hadAccount: true } }, SYSTEM_ACTOR);
+				expect(views(switched), 'seen while informed').toBe(true);
+				expect(views(switched), 'again while informed').toBe(false);
+				db.update(decisionParticipants).set({ role: 'consulted' }).where(eq(decisionParticipants.id, switched.participant.id)).run();
+				appendEvent({ decisionId: decision.id, kind: 'role_changed', participantId: switched.participant.id, detail: { from: 'informed', to: 'consulted' } }, SYSTEM_ACTOR);
+				expect(reachedOf(decision, 1, switched.participant)).toEqual([]);
+
+				expect(views(switched), 'once consulted').toBe(true);
+				expect(views(switched), 'again').toBe(false);
+				expect(reachedOf(decision, 1, switched.participant)).toEqual([switched.participant.id]);
+			});
+
+			it('records nothing more where the round has no published event, or the closing time has passed with no extend (2741-4)', () => {
+				// No `published` event (an older record): the seen stands, as before.
+				const old = opened({ status: 'open', closesAt: FUTURE });
+				const unpublished = withAccount(old.decision, 'unpublished');
+				expect(views(unpublished)).toBe(true);
+				appendEvent({ decisionId: old.decision.id, kind: 'extended', detail: { from: FUTURE, to: FUTURE } }, SYSTEM_ACTOR);
+				expect(views(unpublished), 'no round to count in').toBe(false);
+				// Open past its closing time: shown awaiting a ruling, so a view adds nothing.
+				const lapsed = opened({ status: 'open', closesAt: daysAhead(30) });
+				published(lapsed.decision, 1);
+				const late = withAccount(lapsed.decision, 'late');
+				db.update(decisions).set({ closesAt: PAST }).where(eq(decisions.id, lapsed.decision.id)).run();
+				expect(views(late), 'seen past the closing time').toBe(true);
+				expect(views(late), 'again past it').toBe(false);
+				// An extend's record and row reopen it: the view is recorded.
+				db.update(decisions).set({ closesAt: FUTURE }).where(eq(decisions.id, lapsed.decision.id)).run();
+				appendEvent({ decisionId: lapsed.decision.id, kind: 'extended', detail: { from: PAST, to: FUTURE } }, SYSTEM_ACTOR);
+				expect(views(late), 'after the extend').toBe(true);
+				expect(reachedOf(lapsed.decision, 1, late.participant)).toEqual([late.participant.id]);
+			});
+
+			// ─── Code review 2026-11-05 ──
+
+			it('records no second seen of a tell-only version where a seen of an earlier version of the round already counts (2741-5)', async () => {
+				const { decision, a, b, c, decider } = opened({ status: 'open', closesAt: daysAhead(30) });
+				published(decision, 1);
+				const reader = withAccount(decision, 'reader');
+				expect(views(reader), 'version 1 while open').toBe(true);
+				// A tell-only re-publish: version 2 is within round 1.
+				const options = [a, b, c].map((o) => ({ optionId: o.id, label: o.label, title: `Plan ${o.label}` }));
+				makeVersion(decision, { question: 'Which plan?', options }, { number: 2, asksAgain: false, publishedAt: stamp() });
+				published(decision, 2, false);
+				expect(currentRound(decision.id)).toBe(1);
+				close(decider, decision.id);
+				expect(views(reader, 2), 'version 2 while closed').toBe(true);
+
+				as(decider, (caller) => extendDecision(caller, { decisionId: decision.id }, { closesAt: `${daysAhead(40).replace(' ', 'T')}Z` }, UI));
+				// Its seen of version 1 while open already counts in the round: a view of version 2 adds nothing.
+				expect(views(reader, 2), 'version 2 after the extend').toBe(false);
+				expect(seensOf(reader.participant)).toBe(2);
+				expect(reachedOf(decision, 1, reader.participant)).toEqual([reader.participant.id]);
+				await settled(decision.id);
+			});
+
+			it('asks both the row and the record: where either says a new seen would count for nothing, the one there stands (2741-6)', () => {
+				const { decision } = opened({ status: 'open', closesAt: FUTURE });
+				published(decision, 1);
+				const stands = (p: DecisionParticipant, row: DecisionParticipant = rowOf(p), shown: Decision = decisionRow(decision.id)) =>
+					seenStands(shown, row, 1, 'question', stamp());
+				/** One who saw the question while informed and was then made consulted, by row and record alike: a view now is recorded. */
+				const ready = (name: string) => {
+					const { participant } = withAccount(decision, name, 'informed');
+					sees(participant, 1);
+					db.update(decisionParticipants).set({ role: 'consulted' }).where(eq(decisionParticipants.id, participant.id)).run();
+					appendEvent({ decisionId: decision.id, kind: 'role_changed', participantId: participant.id, detail: { from: 'informed', to: 'consulted' } }, SYSTEM_ACTOR);
+					expect(stands(participant), 'row and record agree: live, consulted and open').toBe(false);
+					return participant;
+				};
+
+				// The row says shut where the record says open.
+				const rowSide = ready('rowside');
+				expect(stands(rowSide, { ...rowOf(rowSide), removedAt: stamp() }), 'the row removed, the record not').toBe(true);
+				expect(stands(rowSide, { ...rowOf(rowSide), role: 'informed' }), 'the row informed, the record consulted').toBe(true);
+				expect(stands(rowSide, rowOf(rowSide), { ...decisionRow(decision.id), status: 'closed' }), 'the row closed, the record open').toBe(true);
+				// The record says shut where the row says open.
+				const informedOnRecord = ready('informedonrecord');
+				appendEvent({ decisionId: decision.id, kind: 'role_changed', participantId: informedOnRecord.id, detail: { from: 'consulted', to: 'informed' } }, SYSTEM_ACTOR);
+				expect(stands(informedOnRecord), 'the record informed, the row consulted').toBe(true);
+				const removedOnRecord = ready('removedonrecord');
+				appendEvent({ decisionId: decision.id, kind: 'removed', participantId: removedOnRecord.id }, SYSTEM_ACTOR);
+				expect(stands(removedOnRecord), 'the record removed, the row live').toBe(true);
+				const closedOnRecord = ready('closedonrecord');
+				appendEvent({ decisionId: decision.id, kind: 'closed' }, SYSTEM_ACTOR);
+				expect(stands(closedOnRecord), 'the record closed, the row open').toBe(true);
+			});
 		});
 	});
 

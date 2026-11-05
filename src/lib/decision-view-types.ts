@@ -325,10 +325,13 @@ export type DecisionPageData = {
 	stage: 'question' | 'ruling' | 'withdrawal' | null;
 	/**
 	 * Card 2736: whether this participant's own seen of the current version at
-	 * `stage` is already recorded, by `hasSeen`, the test `seenAs` makes, so a
-	 * seen post now would write nothing: both pages then arm no seen watch and
-	 * draw neither note's seen claim (D5). False for a viewer who is no
-	 * participant. Nobody else's, and no moment or way in.
+	 * `stage` is already recorded, by `seenStands`, the test `seenAs` makes, so
+	 * a seen post now would write nothing: both pages then arm no seen watch and
+	 * draw neither note's seen claim (D5). Card 2741: false where a question
+	 * seen exists but the write would record a new one (every earlier one made
+	 * while the decision was shut, before a re-inclusion, or while informed).
+	 * False for a viewer who is no participant. Nobody else's, and no moment or
+	 * way in.
 	 */
 	seenRecorded: boolean;
 	/** Session only. */

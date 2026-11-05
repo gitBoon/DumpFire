@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.111
+version: 1.113
 status: As-Built
 date: 2026-11-05
 tags:
@@ -1597,7 +1597,7 @@ flowchart LR
     V --> RR["decision-record.ts<br/>ownResponses, lastToldOf"]
     R1 & R2 & R3 & R4 --> S["decisions.ts<br/>respondToDecision, respondByLink,<br/>recordSeen, recordSeenByLink"]
     R3 & R4 -.->|"a 404 from the write"| V
-    S --> RR2["decision-record.ts<br/>appendResponse, appendEvent, ownResponseOf,<br/>latestResponse, responsesInRound, hasSeen"]
+    S --> RR2["decision-record.ts<br/>appendResponse, appendEvent, ownResponseOf,<br/>latestResponse, responsesInRound, hasSeen,<br/>seenStands"]
     UI["DecisionView, ParticipantBanner,<br/>ParticipantResponse, ResponseForm,<br/>MarkdownBlock"] -->|"fetch JSON"| Routes
     W["$lib/decision-seen.ts<br/>watchForSeen"] -->|"fetch JSON"| R2 & R4
     Gate["hooks.server.ts PUBLIC_ROUTES,<br/>gate-answers.ts ROUTE_HEADERS"] -.-> LP & R3 & R4
@@ -1634,12 +1634,12 @@ The session routes are `requireUser`, `pathId`, `readBody`, then `writeAs(locals
 | `recordSeen` | `requireDecision(…, 'view')`; `403` unless `ui`; `403` "Only a participant of this decision is recorded as having seen it" for a caller with no row; the same reach rule. Then `seenAs` |
 | `recordSeenByLink` | `participantForLink` (`404`), `403` unless `ui`, then `seenAs` with the link actor and `signedIn` |
 
-`respondAs` and `seenAs` are private and shared, so the two ways in cannot drift. `respondAs` reads the body (`versionNumber`, `kind`, a single-mode `optionId` or a score-mode `scores`, `comment`, `optionComments`; 400), then checks `requireTransition(…, 'respond')` and that the shown status is `open` (`409` "This decision is awaiting a ruling: responses are closed"), that `versionNumber` is `current_version` (`409` in `STALE_REVISION`'s words), that the answer differs from the participant's latest in the round or is for a newer version than it (else that row, `unchanged: true`, nothing written; the same answer confirmed on a newer version is a new row bound to it, code review C1), and the cap of 50 a round (`409` "You have changed your response too many times in this round: ask the decider"). It writes the row, `responded { responseId }` and, where there is none for the version, `seen { stage: 'question' }`, and answers `ownResponseOf(row)`. `seenAs` reads `versionNumber` (`current_version` alone, `400` for any other, an earlier one included, code review C4) and `stage`; `ruling` only on a ruled or superseded decision and `withdrawal` only on a withdrawn one (`409`); then `{ recorded: false }` when `hasSeen` holds, else one `seen { stage }`. No activity entry, live event, webhook or mail is written for either (design S3).
+`respondAs` and `seenAs` are private and shared, so the two ways in cannot drift. `respondAs` reads the body (`versionNumber`, `kind`, a single-mode `optionId` or a score-mode `scores`, `comment`, `optionComments`; 400), then checks `requireTransition(…, 'respond')` and that the shown status is `open` (`409` "This decision is awaiting a ruling: responses are closed"), that `versionNumber` is `current_version` (`409` in `STALE_REVISION`'s words), that the answer differs from the participant's latest in the round or is for a newer version than it (else that row, `unchanged: true`, nothing written; the same answer confirmed on a newer version is a new row bound to it, code review C1), and the cap of 50 a round (`409` "You have changed your response too many times in this round: ask the decider"). It writes the row, `responded { responseId }` and, where none stands for the version (`seenStands`), `seen { stage: 'question' }`, and answers `ownResponseOf(row)`. `seenAs` reads `versionNumber` (`current_version` alone, `400` for any other, an earlier one included, code review C4) and `stage`; `ruling` only on a ruled or superseded decision and `withdrawal` only on a withdrawn one (`409`); then `{ recorded: false }` when `seenStands` holds, else one `seen { stage }`. `seenStands` (`decision-record.ts`, card 2741) is `hasSeen` (one seen per participant, version and stage) at the ruling and withdrawal stages and for a first question seen; a question seen that exists stands unless a new one would count toward card 2738's reach and no question seen of the round (of any version, as reach reads `>= round`) already does, by reach's own test (`reaches`, after the latest removal): a new one counts only where the record's window is open now (read first: where it is shut the participant's events are not read), the row is live and consulted, and the decision is shown open. The row and the record are both asked, and each guard holds alone where the two disagree (code review 2026-11-05). So a view after an extend reopened the decision, after a re-inclusion, or after being made consulted is recorded where every earlier seen was made while it was shut, before the removal, or while informed; once one that counts is written, the next view finds it and writes none. Plan: `docs/planning/card-2741-seen-window.md`. No activity entry, live event, webhook or mail is written for either (design S3).
 
 **The pages.**
 
 - `/decisions/[id]` (`readDecisionPage(locals.user!, Number(params.id))`): the board's name (as text: the page data carries no board id), **Edit** where `mayEdit`, then `DecisionView`. A draft, or a decision with no version, shows "This decision has not been opened yet". A participant gets the banner and, consulted, the statement and the form posting to `/api/decisions/[id]/responses`. Anyone else who may view reads the version and its status, with no banner, form or seen watch.
-- `/decision-link/[token]` (`readLinkPage(params.token, locals.user?.username ?? null)`): a public route (`PUBLIC_ROUTES`). Any refusal goes to `refuseWrongLink(addressToCount(event))`: within the limit `404` `DEAD_DECISION_LINK`, past it `error(429, tooManyWrongLinks(…))`, the wait in words since an error page carries no header of the load's. The page has no header menu, board name, Edit, or link into DumpFire, and the root layout hides its user badge on the route id `/decision-link/[token]`, which a percent-encoded address shares (D9, code review C6). Under the banner: "This address is personal to you: do not share it." and, in a signed-in browser, "You are signed in as <name>; this is recorded with …", naming only what the link records beside the account as `signedIn` then (`signedInNoteWords`, card 2735): nothing unless there is a participant and a stage; then a response, questions and a concern each only where the page's own `mayRespond`, `mayAsk` and `mayRaiseConcern` are set, so the status, the role and each per-person limit come from the server's flags; and having seen this version, or the ruling, by the stage, only where the page's `seenRecorded` is false (card 2736): `pageOf` sets it, for a participant alone, with `hasSeen(participant.id, currentVersion, stage)`, the test `seenAs` makes, so a seen already recorded (on a signed-out visit, by the signed-in page, or with a response or concern) is not claimed, and is never said to have been recorded with this account, as the earlier seen's account may be another. It writes `<meta name="robots" content="noindex">` and `<meta name="referrer" content="no-referrer">`. The form and the seen watch post to the link routes, the token (`page.params.token`, never in the page data) in the body.
+- `/decision-link/[token]` (`readLinkPage(params.token, locals.user?.username ?? null)`): a public route (`PUBLIC_ROUTES`). Any refusal goes to `refuseWrongLink(addressToCount(event))`: within the limit `404` `DEAD_DECISION_LINK`, past it `error(429, tooManyWrongLinks(…))`, the wait in words since an error page carries no header of the load's. The page has no header menu, board name, Edit, or link into DumpFire, and the root layout hides its user badge on the route id `/decision-link/[token]`, which a percent-encoded address shares (D9, code review C6). Under the banner: "This address is personal to you: do not share it." and, in a signed-in browser, "You are signed in as <name>; this is recorded with …", naming only what the link records beside the account as `signedIn` then (`signedInNoteWords`, card 2735): nothing unless there is a participant and a stage; then a response, questions and a concern each only where the page's own `mayRespond`, `mayAsk` and `mayRaiseConcern` are set, so the status, the role and each per-person limit come from the server's flags; and having seen this version, or the ruling, by the stage, only where the page's `seenRecorded` is false (card 2736): `pageOf` sets it, for a participant alone, with `seenStands(decision, participant, currentVersion, stage, now)`, the test `seenAs` makes (card 2741: false where a question seen exists but the write would record a new one, so the page arms its watch and posts it), so a seen already recorded (on a signed-out visit, by the signed-in page, or with a response or concern) is not claimed, and is never said to have been recorded with this account, as the earlier seen's account may be another. It writes `<meta name="robots" content="noindex">` and `<meta name="referrer" content="no-referrer">`. The form and the seen watch post to the link routes, the token (`page.params.token`, never in the page data) in the body.
 - On both pages the seen watch is armed in an `$effect` on the decision (the token, on the link page), the version and the stage, held as `$derived` plain values, and its stopper is returned; it is not armed where `seenRecorded` is set, as `seenAs` would write nothing, and `ParticipantBanner` then draws no seen note (card 2736, D5); the form is keyed on the decision (the token), the version and Reload's count. Data read again for another decision or version arms a fresh watch and draws the form afresh; the same data read again leaves both be (code review C2). An own response given on an older version, as after a re-publish that only tells, is labelled "Given on version N." (C1). On a ruled, superseded or withdrawn decision the response section says "Responses are closed." and gives the last response, labelled, where there is one (C7).
 - Neither load writes anything: mail scanners follow links. A banner says when the participant was told, from `lastToldOf`, and "by email" only for a mail whose `mail_outcome` says delivered (D8); otherwise "You were included in this decision on <includedAt>." (`toldWords` in `$lib/decision-words.ts`). A withdrawn decision's banner gives the moment and the reason (`withdrawnWords`).
 - Since card 2708 the told line reads the participant's latest of the five record mails (`MAIL_KINDS`: `invited`, `asked_again`, `told_of_change`, `told_withdrawn`, `told_ruling`), as one `ToldMail` type shared by `lastToldOf`, the page data and `toldWords`. The closing-date reminder is not counted (it is no record mail, and a person's own record claims no delivery for it). The latest mail alone is named: refused, superseded or with no outcome yet, the line gives the neutral words and never an earlier mail. The ruling mail is named with no moment ("You were told of the ruling on this decision by email."), and `lastToldOf` answers it with no `at` key, so the page data still holds no ruling moment and no `"at"` key once ruled (card 2679, decision 26, held by `decision-ruling.test.ts` case 34); the withdrawal mail gives its moment ("You were told this decision was withdrawn on <at>, by email."), which the withdrawn line already shows. The caller's daily mail cap (`recordMailsSince`) keeps its own three kinds, `CALLER_CAPPED_KINDS`, so the withdrawal and the ruling are still never counted against it. Plan: `docs/planning/card-2708-banner-told-line.md`. Since card 2742 an invitation is worded by the role it was sent for, never the participant's role now: `lastToldOf(participant)` answers `sentAs` on an `invited`, the role at that event's id replayed from `included`, `re_included`, `role_changed` and `removed` by `replayRoles`, the one replay card 2738's `reachedInRound` uses too (no event holds the role it was written in, so old and new invitations are read alike, with no migration); `toldWords(told, includedAt)` is no longer given the role. One invited while informed and then made consulted, the asking invitation held back, reads "to keep you informed"; one asked and then made informed reads "You were asked for your view". Where the record gives no role at the invitation (`sentAs: null`), the line claims no purpose: "You were told of this decision on <at>, by email." Plan: `docs/planning/card-2742-told-line-role.md`.
@@ -1683,7 +1683,7 @@ sequenceDiagram
     Api->>Api: requireSameOriginJson (415, 403)
     Api->>Sv: recordSeenByLink(caller, { token }, body, { source: 'ui' })
     Sv->>Lk: participantForLink(token), inside the write
-    Sv->>Rec: hasSeen? else seen { stage } (source link, signedIn if any)
+    Sv->>Rec: seenStands? else seen { stage } (source link, signedIn if any)
     P->>Api: responses { token, versionNumber, kind, ... }
     Api->>Sv: respondByLink
     Sv->>Sv: ui only, consulted, the body, open now, current version, unchanged, cap
@@ -1704,7 +1704,11 @@ flowchart TD
     D --> E{same-origin JSON? participant? reached?<br/>ui? the current version? stage fits the status?}
     E -- no --> X[415, 403, 400 or 409; nothing written]
     E -- yes --> F{hasSeen for participant, version, stage?}
-    F -- yes --> G["{ recorded: false }"]
+    F -- yes --> Q{"question stage, and a new seen<br/>would count toward reach (card 2741)?"}
+    Q -- no --> G["{ recorded: false }"]
+    Q -- yes --> C{an earlier question seen of the round<br/>already counts?}
+    C -- yes --> G
+    C -- no --> H
     F -- no --> H["seen { stage } with version_number"]
     R[A response] --> F
 ```
@@ -1811,14 +1815,13 @@ flowchart LR
   early close are cut off with `reached: false`; a link revoked after a delivered request,
   with no removal, leaves `reached: true`. The results page marks the same on **Not
   responded** and the ruling form on its cut-off list, by the same read, and the ruling record
-  gives `cutOffReached` beside `cutOff` (`null` for a cut-off recorded before card 2738). A
-  known residual (R5): `seen` is written once per version and stage, so one who saw the
-  question while informed and was then made consulted has no `seen` while consulted. Since card
-  2740 the role change sends them the invitation, and once it is delivered they are reached; only
-  one whose invitation was held back, skipped or not delivered still reads as not reached.
-  Two more (re-review 2026-11-05): **R6** (a separate card), for the same reason a question seen
-  while the window was shut after an early close hides a later view made once an extend reopened
-  it, so that view records nothing and reads as not reached, erring the same way; **R7**
+  gives `cutOffReached` beside `cutOff` (`null` for a cut-off recorded before card 2738).
+  **R5** and **R6** (re-review 2026-11-05) are closed by card 2741: a question seen made while
+  informed, while the window was shut, or before the latest re-inclusion no longer hides a later
+  view that reach would count (`seenStands`, which shares `reaches` and `sinceRemoval` with
+  `reachedInRound`), so that view is recorded and counts. One who never opens the question again
+  is reached only by a delivered request (since card 2740 a role change sends one), erring the
+  same way as before. **R7**
   (accepted), an `invited` queued while the window was open but delivered seconds after a close
   counts as reached, as the mail is judged at its `invited` event and `stillToSend`
   (`decision-mail.ts`) does not check for a close, a gap seconds wide.
@@ -1873,7 +1876,7 @@ title, `noneOfThese`, reason, conditions, `ruledByName`; no moment), `released` 
 each naming the other decision only to a signed-in viewer who may view it. A participant alone
 is given `stage` (`ruling` on a ruled or superseded decision), their own `concerns` and
 `mayRaiseConcern`, and, since card 2736, `seenRecorded` (whether their own seen of the current
-version at that stage exists, by `hasSeen`); a session page adds `mayReadResults` and `maySupersede`. The pages draw
+version at that stage stands, by `seenStands`, the test `seenAs` makes, card 2741); a session page adds `mayReadResults` and `maySupersede`. The pages draw
 `RulingBanner` in the banner (through `ParticipantBanner` since card 2707) and `ReleasedResults` and `ConcernForm` through `DecisionView`'s
 `results` and `concern` snippets; `ResponseForm` sends `statement: WHO_SEES_STATEMENT_VERSION`
 beside `whoSeesStatement`, the words `DecisionView` shows.

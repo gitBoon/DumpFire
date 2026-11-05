@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.66
+version: 1.68
 status: As-Built
 date: 2026-11-05
 tags:
@@ -793,10 +793,14 @@ holds every column a response needs, and an event's `kind` is free text checked 
   is `latestResponse(participantId, round) !== null` for many at once (`RESPONSE_KINDS` alone).
 - **Only while open.** The stored status must be `open` (`TRANSITIONS.respond`) and the shown
   status `open`, as an open decision past `closes_at` is awaiting a ruling.
-- **Each response** also writes `responded { responseId }` and, when the participant has none
-  for that version, `seen { stage: 'question' }`.
+- **Each response** also writes `responded { responseId }` and, when no seen stands for that
+  version (`seenStands`), `seen { stage: 'question' }`.
 - **`seen`** is written once per participant, version and stage (`hasSeen`, read through
-  `idx_decision_events_participant_id`): a second post for the same three writes nothing. Only
+  `idx_decision_events_participant_id`): a second post for the same three writes nothing.
+  Since card 2741 (`seenStands`) one exception at the question stage: where no question seen
+  of the round (of any version of it) is one card 2738's reach counts (each was made while the
+  decision was shut, before the latest re-inclusion, or while informed) and a new one would
+  count, the new one is written. No new kind or detail key; no migration. Only
   the current version is accepted (`400` for any other, an earlier one included). The page
   sends it after the person's first action, never on load: the `ruling` stage on a ruled or
   superseded decision, which the page shows since card 2679, to a participant alone.

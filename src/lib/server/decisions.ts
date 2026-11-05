@@ -172,6 +172,7 @@ import {
 	RESPONSE_KINDS,
 	responsesInRound,
 	responsesOf,
+	seenStands,
 	snapshotOf,
 	statementsOf,
 	supersedingOf,
@@ -2156,7 +2157,8 @@ function signedInOf(caller: SessionUser | null): { userId: number; name: string 
  * writes nothing; the same answer for a newer version is a new row bound to
  * it. Otherwise the
  * row (`replaces_id` that latest), `responded { responseId }`, and
- * `seen { stage: 'question' }` for the version where there is none.
+ * `seen { stage: 'question' }` for the version where none stands
+ * (`seenStands`, card 2741).
  *
  * Card 2679 (decision 25): `statement`, optional, a whole number, the version
  * of the who-sees statement the page showed. The current one is recorded on
@@ -2245,7 +2247,8 @@ function respondAs(
 		},
 		by
 	);
-	if (!hasSeen(participant.id, versionNumber, 'question')) {
+	// Card 2741: by `seenAs`'s own test, so a response after an extend or a re-inclusion records the seen reach counts.
+	if (!seenStands(decision, participant, versionNumber, 'question', now)) {
 		appendEvent({ decisionId: decision.id, kind: 'seen', participantId: participant.id, versionNumber, detail: { stage: 'question', ...signed } }, by);
 	}
 	return { response: ownResponseOf(row), unchanged: false };
@@ -2602,7 +2605,11 @@ function readOptionComments(body: RequestBody, keys: string[]): string | null {
  * `question`, `ruling` or `withdrawal` (400 otherwise). 409 for `ruling` on a
  * decision not ruled or superseded, and for `withdrawal` on one not
  * withdrawn. One `seen { stage }` event per participant, version and stage:
- * a second writes nothing and answers `{ recorded: false }`.
+ * a second writes nothing and answers `{ recorded: false }`. Card 2741: at
+ * the question stage, a seen that card 2738's reach would not count (made
+ * while the decision was shut, before the latest re-inclusion, or while
+ * informed) does not hide a view that it would: that one is recorded too
+ * (`seenStands`, the test the page's `seenRecorded` asks).
  */
 function seenAs(
 	decision: Decision,
@@ -2620,7 +2627,7 @@ function seenAs(
 		error(409, 'This decision has not been ruled on: there is no ruling to have seen');
 	}
 	if (stage === 'withdrawal' && decision.status !== 'withdrawn') error(409, 'This decision has not been withdrawn: there is no withdrawal to have seen');
-	if (hasSeen(participant.id, versionNumber, stage)) return { recorded: false };
+	if (seenStands(decision, participant, versionNumber, stage, stamp())) return { recorded: false };
 	appendEvent(
 		{ decisionId: decision.id, kind: 'seen', participantId: participant.id, versionNumber, detail: { stage, ...(signedIn === null ? {} : { signedIn }) } },
 		by

@@ -43,7 +43,9 @@
  *
  * Card 2736 adds, for a participant, whether their own seen of the current
  * version at the page's stage is already recorded (`seenRecorded`), by the
- * `hasSeen` test `seenAs` makes: nobody else's, with no moment or way in.
+ * test `seenAs` makes (`seenStands`, card 2741: false where a question seen
+ * exists but the write would record a new one): nobody else's, with no
+ * moment or way in.
  *
  * Card 2697 adds the preview, `readPreview`, for `/decisions/[id]/preview`:
  * the working copy as a participant of the caller's choosing will see it,
@@ -69,7 +71,7 @@ import { participantAnswers, versionContentAnswer, workingViewContent } from './
 import { listedOptionIds, liveOptionsOf, optionChanges, parseVersionContent, parseWorkingContent, participantsOf } from './decision-content';
 import { participantForLink } from './decision-links';
 import { mayAnswerOf, mayAskOf, questionsFor, reachedParticipantOf } from './decision-questions';
-import { concernsOf, currentRound, hasSeen, lastToldOf, ownResponses, rulingOf, supersedingOf } from './decision-record';
+import { concernsOf, currentRound, lastToldOf, ownResponses, rulingOf, seenStands, supersedingOf } from './decision-record';
 import { releasedOf, versionOptionsOf } from './decision-results';
 import { decisionStatus, linkUsable, TRANSITIONS } from './decision-status';
 import { createLogger } from './logger';
@@ -481,9 +483,10 @@ function pageOf(
 	page.mayRespond = role === 'consulted' && shownStatus === 'open';
 	const stage = stageOf(decision.status);
 	page.stage = stage;
-	// Card 2736: whether their seen of this version at this stage exists, by the test `seenAs` makes, so that the
-	// signed-in note claims no seen the write would not record. Their own row's fact alone.
-	page.seenRecorded = hasSeen(participant.id, version.number, stage);
+	// Card 2736: whether their seen of this version at this stage stands, by the test `seenAs` makes (`seenStands`, card
+	// 2741), so that the signed-in note claims no seen the write would not record, and the page posts one the write would.
+	// Their own row's fact alone.
+	page.seenRecorded = seenStands(decision, participant, version.number, stage, now);
 	// Card 2679 (decision 4): their own concerns, and the window, which is a personal link's own life after the ruling.
 	page.concerns = concernsOf({ participantId: participant.id }).map((row) => ({ comment: row.comment ?? '', createdAt: row.createdAt }));
 	// Code review F9: no form past the fifth, as the write refuses a sixth.

@@ -72,6 +72,11 @@
  * Card 2742 shares its role replay (`replayRoles`) with `lastToldOf`, which
  * answers the role an invitation was written for (`sentAs`).
  *
+ * Card 2741 adds `seenStands`, whether a participant's seen already stands,
+ * which `seenAs`, a response's own seen and the page's `seenRecorded` all
+ * ask: a question seen that card 2738's reach would not count (`reaches`)
+ * no longer hides a later view that it would.
+ *
  * Plain functions with no caller, called inside a service write's
  * transaction, or by the mail effect in a transaction of its own.
  */
@@ -96,6 +101,7 @@ import {
 	type Person
 } from './db/schema';
 import type { SessionUser } from './auth';
+import { decisionStatus } from './decision-status';
 import type { ActivitySource } from './logActivity';
 import type { OwnResponse } from '$lib/decision-view-types';
 import type { ToldMail } from '$lib/decision-words';
@@ -1402,17 +1408,13 @@ function replayRoles<R extends { kind: string; detail: Record<string, unknown> }
  * with no `published` event reaches nobody. A read alone, in batches of
  * `IDS_AT_ONCE`.
  *
- * A known residual (R5): `seen` is written once per version and stage, so
- * one who saw the question while informed and was then made consulted has no
- * `seen` while consulted. Since card 2740 the role change sends them the
- * invitation (`setParticipants`), and once that is delivered they are
- * reached; only one whose invitation was held back, skipped or not delivered
- * still reads as not reached. It errs on that side.
- *
- * R6 (re-review 2026-11-05, separate card): for the same reason, a question
- * seen while the window was shut (after an early close) hides a later view
- * made once an extend reopened it, so that view records nothing and reads as
- * not reached. It errs on the "not reached" side.
+ * R5 and R6 (re-review 2026-11-05), closed by card 2741: a question seen
+ * this test would not count (made while informed, while the window was shut,
+ * or before the latest re-inclusion) no longer hides a later view that it
+ * would. `seenStands` lets `seenAs` record that view, so it counts here. One
+ * who never opens the question again still reads as not reached unless a
+ * delivered request reached them (since card 2740 a role change sends one).
+ * It errs on that side.
  *
  * R7 (re-review 2026-11-05, accepted): an `invited` queued while the window
  * was open but delivered seconds after a close counts as reached, as the
@@ -1461,21 +1463,37 @@ export function reachedInRound(decisionId: number, round: number, participants: 
 	for (const row of rows) if (row.kind === 'mail_outcome' && typeof row.detail.of === 'number' && row.detail.delivered === true) delivered.add(row.detail.of);
 
 	for (const id of ids) {
-		let isReached = false;
-		for (const { row, role } of replayRoles(byParticipant.get(id) ?? [], roleNow.get(id) ?? null)) {
-			// R3: a removal resets reach, and nothing counts until a re-inclusion gives a role again.
-			if (row.kind === 'removed') {
-				isReached = false;
-				continue;
-			}
-			if (isReached || role !== 'consulted' || !openFor(row.id, row.at)) continue;
-			const asked = (row.kind === 'invited' || row.kind === 'asked_again') && delivered.has(row.id);
-			const saw = row.kind === 'seen' && row.detail.stage === 'question' && row.versionNumber !== null && row.versionNumber >= round;
-			if (asked || saw) isReached = true;
-		}
-		if (isReached) reached.add(id);
+		const since = sinceRemoval(replayRoles(byParticipant.get(id) ?? [], roleNow.get(id) ?? null));
+		if (since.some(({ row, role }) => reaches(row, role, round, openFor, delivered))) reached.add(id);
 	}
 	return reached;
+}
+
+/** One participant's event as `reaches` reads it. */
+type ReachRow = { id: number; kind: string; at: Stamp; versionNumber: number | null; detail: Record<string, unknown> };
+
+/**
+ * Whether one of a participant's events counts toward round `round`'s reach
+ * (card 2738, D1, R1 and R2), given the role `replayRoles` gives at it:
+ * written while consulted and while the decision was open for input
+ * (`openFor`), and either an `invited` or `asked_again` whose id is in
+ * `delivered`, or a question seen of a version of the round. Shared by
+ * `reachedInRound` and card 2741's `seenStands`, so the two cannot drift.
+ */
+function reaches(row: ReachRow, role: string | null, round: number, openFor: (id: number, at: Stamp) => boolean, delivered: ReadonlySet<number>): boolean {
+	if (role !== 'consulted' || !openFor(row.id, row.at)) return false;
+	const asked = (row.kind === 'invited' || row.kind === 'asked_again') && delivered.has(row.id);
+	const saw = row.kind === 'seen' && row.detail.stage === 'question' && row.versionNumber !== null && row.versionNumber >= round;
+	return asked || saw;
+}
+
+/** The replayed events after the latest `removed` (card 2738, R3): a removal resets reach, and nothing before it counts. */
+function sinceRemoval<T extends { row: { kind: string } }>(replayed: readonly T[]): T[] {
+	let from = 0;
+	replayed.forEach(({ row }, at) => {
+		if (row.kind === 'removed') from = at + 1;
+	});
+	return replayed.slice(from);
 }
 
 /** The decision-level events that open and close a decision for input (card 2738, code review R1), replayed in id order. */
@@ -1680,6 +1698,64 @@ export function hasSeen(participantId: number, versionNumber: number, stage: str
 		.where(and(eq(decisionEvents.participantId, participantId), eq(decisionEvents.kind, 'seen'), eq(decisionEvents.versionNumber, versionNumber)))
 		.all()
 		.some((event) => detailOf(event.detail).stage === stage);
+}
+
+/**
+ * Whether the participant's seen of version `versionNumber` at `stage`
+ * already stands, so that no other is recorded (card 2741): the one test
+ * `seenAs`, a response's own seen and the page's `seenRecorded` ask, so that
+ * the page arms its seen watch exactly when the write would record.
+ *
+ * At the ruling and withdrawal stages, and at the question stage with no seen
+ * of the version yet, it is `hasSeen`: one seen per participant, version and
+ * stage (decision 14). A question seen that exists stands unless a new one
+ * would count toward the current round's reach and no question seen of the
+ * round (of any version, as reach reads it) already does, by card 2738's own
+ * test (`reaches`, after the latest removal): a new one counts only where the
+ * participant's row is live and consulted now, the decision is shown open at
+ * `now` (`decisionStatus`) and the record has its window open at `now`
+ * (`openForInputIn`), which is read before the participant's events. The row
+ * and the record are both asked, and each guard holds alone where the two
+ * disagree (code review 2026-11-05, 2741-6). So a view after an extend
+ * reopened the decision, or after a re-inclusion, or after being made
+ * consulted, is recorded where every earlier one was made while it was shut,
+ * before the removal, or while informed; and a second seen of a version is
+ * written only while no seen of the round counts, so the next view finds it.
+ * A round with no `published` event counts nothing, so there the seen stands,
+ * as before.
+ */
+export function seenStands(
+	decision: Pick<Decision, 'id' | 'status' | 'closesAt'>,
+	participant: { id: number; role: string; removedAt: Stamp | null },
+	versionNumber: number,
+	stage: string,
+	now: Stamp
+): boolean {
+	const seen = hasSeen(participant.id, versionNumber, stage);
+	if (stage !== 'question' || !seen) return seen;
+	if (participant.removedAt !== null || participant.role !== 'consulted' || decisionStatus(decision, now) !== 'open') return true;
+	const round = currentRound(decision.id);
+	const openFor = openForInputIn(decision.id, round);
+	// The record's window at `now` first (code review 2026-11-05): an id above every event's reads the window and closing
+	// time in force now, so where it is shut no new seen could count, and the participant's events are not read at all.
+	if (openFor === null || !openFor(Number.MAX_SAFE_INTEGER, now)) return true;
+	const mine = db
+		.select({ id: decisionEvents.id, kind: decisionEvents.kind, at: decisionEvents.createdAt, versionNumber: decisionEvents.versionNumber, detail: decisionEvents.detail })
+		.from(decisionEvents)
+		.where(and(eq(decisionEvents.participantId, participant.id), inArray(decisionEvents.kind, [...REPLAY_KINDS, 'seen'])))
+		.orderBy(asc(decisionEvents.id))
+		.all()
+		.map((row) => ({ ...row, detail: detailOf(row.detail) }));
+	// The seen that would be written, replayed after every event so far (its id is above them all), so that it is judged
+	// exactly as reach will judge it once written: if it would count for nothing, the one there stands. Once one that counts
+	// is written it is judged the same way, so the next view finds it and writes none.
+	const next: ReachRow = { id: Number.MAX_SAFE_INTEGER, kind: 'seen', at: now, versionNumber, detail: { stage } };
+	const since = sinceRemoval(replayRoles([...mine, next], participant.role));
+	const none = new Set<number>();
+	if (!reaches(next, since.at(-1)?.role ?? null, round, openFor, none)) return true;
+	// Any question seen reach counts, of this version or another of the round (`reaches` reads `>= round`), so that one
+	// view of version 1 while open is not followed by a second seen of a tell-only version 2 (code review 2026-11-05).
+	return since.some(({ row, role }) => row !== next && row.kind === 'seen' && reaches(row, role, round, openFor, none));
 }
 
 /**

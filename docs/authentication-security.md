@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.100
+version: 1.102
 status: As-Built
 date: 2026-11-05
 tags:
@@ -4485,8 +4485,13 @@ Card 2677 added the route the invitations link to. Four routes are public, by ro
   another account or none. The same flag drops the seen note ("Your first tap … is recorded as
   your having seen …") on both pages and, signed in or not, arms no seen watch, as a first
   action would record nothing (card 2736, D5). `seenRecorded` tells the page's own participant,
-  without writing anything, whether their own seen exists, by the `hasSeen` test the write
-  makes: no other participant's, no moment, no account and no way in. It is not a new
+  without writing anything, whether their own seen stands, by the `seenStands` test the write
+  makes: no other participant's, no moment, no account and no way in. Since card 2741 a
+  question seen that card 2738's reach would not count (made while the decision was shut,
+  before the latest re-inclusion, or while informed) does not stand once a new one would
+  count, so the flag is false, the clause is named and the watch armed exactly when the write
+  will record; the test reads only the decision's window events and, only where that window
+  is open now, the participant's own events, and the write stays bounded (once a counting seen is written, the next view finds it). It is not a new
   capability: anyone holding the personal link can already act as that participant, reading
   their response and concerns and recording their seen, so the flag tells a link holder only a
   fact about the participant the link already lets them act as. The root
