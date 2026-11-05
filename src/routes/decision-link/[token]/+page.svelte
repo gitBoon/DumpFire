@@ -75,6 +75,9 @@
 		laterDecision={data.laterDecision}
 		participant={data.participant}
 		stage={data.stage}
+		mayRespond={data.mayRespond}
+		mayAsk={data.mayAsk}
+		mayRaiseConcern={data.mayRaiseConcern}
 		personalLink={{ signedInAs: data.signedInAs }}
 	/>
 {/snippet}

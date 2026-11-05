@@ -8,7 +8,10 @@
   told (`toldWords`, D8) and, where the page arms the seen watch, what their
   first action records (`seenNoteWords`, decision 14); then, on a personal
   link alone, that the address is personal (R4) and, in a browser that is
-  signed in, that the account is recorded beside what the link does (R8).
+  signed in, that the account is recorded beside what the link does (R8), in
+  `signedInNoteWords`'s words for the stage and the page's own `mayRespond`,
+  `mayAsk` and `mayRaiseConcern`, so that it claims nothing the link cannot
+  record then (card 2735).
 
   Every prop is required and none has a default. `personalLink` is null on
   the signed-in page and `{ signedInAs }` on the link page: the two link lines
@@ -19,7 +22,7 @@
 -->
 <script lang="ts">
 	import type { DecisionPageData } from '$lib/decision-view-types';
-	import { seenNoteWords, toldWords, withdrawnWords } from '$lib/decision-words';
+	import { seenNoteWords, signedInNoteWords, toldWords, withdrawnWords } from '$lib/decision-words';
 	import RulingBanner from './RulingBanner.svelte';
 
 	let {
@@ -29,6 +32,9 @@
 		laterDecision,
 		participant,
 		stage,
+		mayRespond,
+		mayAsk,
+		mayRaiseConcern,
 		personalLink
 	}: {
 		decision: Pick<DecisionPageData['decision'], 'shownStatus' | 'withdrawnAt' | 'withdrawnReason'>;
@@ -37,6 +43,10 @@
 		laterDecision: DecisionPageData['laterDecision'];
 		participant: DecisionPageData['participant'];
 		stage: DecisionPageData['stage'];
+		/** The page's own flags for each write, which the signed-in note claims only where set (card 2735). */
+		mayRespond: DecisionPageData['mayRespond'];
+		mayAsk: DecisionPageData['mayAsk'];
+		mayRaiseConcern: DecisionPageData['mayRaiseConcern'];
 		/** Null on the signed-in page; on a personal link, the signed-in browser's account name, or null. */
 		personalLink: { signedInAs: string | null } | null;
 	} = $props();
@@ -61,13 +71,7 @@
 {#if personalLink !== null}
 	<p class="banner-note personal">This address is personal to you: do not share it.</p>
 	{#if personalLink.signedInAs !== null}
-		<p class="banner-note signed-in">
-			{#if stage === 'ruling'}
-				You are signed in as {personalLink.signedInAs}; this is recorded with your concern and with your having seen the ruling.
-			{:else}
-				You are signed in as {personalLink.signedInAs}; this is recorded with your response and with your having seen this version.
-			{/if}
-		</p>
+		<p class="banner-note signed-in">{signedInNoteWords(personalLink.signedInAs, participant !== null, stage, { mayRespond, mayAsk, mayRaiseConcern })}</p>
 	{/if}
 {/if}
 

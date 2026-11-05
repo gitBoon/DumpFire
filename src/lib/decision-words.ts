@@ -227,6 +227,35 @@ export const replaceFieldName = (n: number) => `Your answer in place of the agen
 export const seenNoteWords = (stage: 'question' | 'ruling' | 'withdrawal') =>
 	`Your first tap, click, key press or turn of the mouse wheel on this page is recorded as your having seen ${stage === 'ruling' ? 'the ruling' : 'this version'}.`;
 
+/**
+ * The personal link's note in a signed-in browser (card 2677, R8; card 2735):
+ * what the link records beside the account, as `signedIn`, on this page and
+ * no more. It claims nothing unless the page is a participant's and has a
+ * stage. Then each write clause is added only where the page's own flag lets
+ * the participant make that write now (`mayRespond`, `mayAsk`,
+ * `mayRaiseConcern`, which carry the status, the role and each per-person
+ * limit), and the seen clause always, as the watch is armed, in
+ * `seenNoteWords`'s words for the stage.
+ */
+export function signedInNoteWords(
+	name: string,
+	participating: boolean,
+	stage: 'question' | 'ruling' | 'withdrawal' | null,
+	may: { mayRespond: boolean; mayAsk: boolean; mayRaiseConcern: boolean }
+): string {
+	const kept: string[] = [];
+	if (participating && stage !== null) {
+		if (may.mayRespond) kept.push('your response');
+		if (may.mayAsk) kept.push('your questions');
+		if (may.mayRaiseConcern) kept.push('your concern');
+		kept.push(`your having seen ${stage === 'ruling' ? 'the ruling' : 'this version'}`);
+	}
+	if (kept.length === 0) return `You are signed in as ${name}.`;
+	const clauses = kept.map((what) => `with ${what}`);
+	const said = clauses.length === 1 ? clauses[0] : `${clauses.slice(0, -1).join(', ')} and ${clauses[clauses.length - 1]}`;
+	return `You are signed in as ${name}; this is recorded ${said}.`;
+}
+
 /** The ruled banner's first line (decision 9): who ruled, and on what. No moment. */
 export function rulingWords(ruling: { label: string | null; title: string | null; noneOfThese: boolean; ruledByName: string }): string {
 	if (ruling.noneOfThese || ruling.label === null) return `Ruled by ${ruling.ruledByName}: None of these`;

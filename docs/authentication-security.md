@@ -1,9 +1,9 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.91
+version: 1.93
 status: As-Built
-date: 2026-11-04
+date: 2026-11-05
 tags:
   - decision-reminders
   - authentication
@@ -4429,8 +4429,15 @@ Card 2677 added the route the invitations link to. Four routes are public, by ro
   in the log and the work they cause. One WARN line, the first
   time an address is over in a window, names the address's key and no token.
 - **No session, ever.** The link routes never make a session or set a cookie. A signed-in
-  browser stays signed in as itself, and the page says so under its banner: "You are signed in as
-  <name>; this is recorded with your response and with your having seen this version." The root
+  browser stays signed in as itself, and the page says so under its banner, naming only what the
+  link records beside the account then (card 2735; the words are `signedInNoteWords` in
+  `src/lib/decision-words.ts`). It claims nothing unless the page is a participant's and has a
+  seen stage. A response, a question and a concern are each named only where the page's own
+  `mayRespond`, `mayAsk` and `mayRaiseConcern` let the participant make that write now, so the
+  status, the role and each per-person limit are the server's alone; having seen is always
+  named, as the watch is armed, as this version or the ruling by the stage. A seen already
+  recorded on an earlier signed-out visit is not recorded again, so the seen clause can
+  over-claim there (a known residual, its own card). The root
   layout hides its user badge on the route `/decision-link/[token]`, known by its route id, so
   that a percent-encoded address of the page does not bring it back (code review C6), and the
   page has no link into the rest of DumpFire, signed in or not. The page data holds no decision

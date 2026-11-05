@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.69
+version: 1.71
 status: As-Built
-date: 2026-11-04
+date: 2026-11-05
 tags:
   - decision-reminders
   - features
@@ -356,7 +356,7 @@ Once a decision is opened, each participant reads it on its own page and, if the
 - **If the decision changed** — if it was changed after you opened it, sending says so and offers **Reload**. If it was changed and you were asked again, your earlier answer is shown as for the earlier version, and you answer again. Once the closing time has passed, or the decision is ruled on, superseded or withdrawn, the page says responses are closed and shows your last one, if you gave one
 - **Who sees your answer** — the page says: "While this decision is open, only <the decider>, who decides, sees your response. DumpFire's administrators can also see it in the record. No other participant sees it, or any totals. After the ruling, the decider may show the totals and the comments, without names, to everyone who can see this decision." The last sentence came with card 2679 (4 November 2026), and each response records which wording it was given under, so that an answer given before the page said so is never shown to anyone else
 - **What is recorded when you open it** — your first tap, click, key press or turn of the mouse wheel on the page records that you have seen this version; the page says so. Scrolling alone does not, as a mail scanner's script can scroll a page too. Opening the email, or the link being fetched by a mail scanner, records nothing. Sending a response records it too. Once a decision is ruled on, the same first action records that you have seen the ruling, and the page says that instead (card 2679)
-- **Signed in on someone else's computer** — if the browser is signed in to DumpFire when a personal link is opened, the page says "You are signed in as <name>; this is recorded with your response and with your having seen this version", and offers no way into the rest of DumpFire
+- **Signed in on someone else's computer** — if the browser is signed in to DumpFire when a personal link is opened, the page says so, and names only what the link can record beside that account then: a response, a question or a concern only where the page would let you give one now, and your having seen the decision or its ruling (card 2735). It offers no way into the rest of DumpFire
 - **A link that no longer works** — an old, expired or replaced link shows "This link does not open a decision. It may have expired, or a newer email may have replaced it. Ask whoever sent it to you for a new one." Each new email about the decision carries a new link, and the old one stops working. A link works until 90 days after the decision is ruled on, withdrawn or closes
 
 ```mermaid

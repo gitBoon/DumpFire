@@ -24,6 +24,10 @@
  *     the page again and draws the form afresh. The plan is
  *     `docs/planning/card-2707-shared-participant-snippets.md`.
  *
+ *   - The signed-in note (card 2735, case 2735-1): in each status and role,
+ *     the link page says exactly what is recorded with a signed-in account.
+ *     The plan is `docs/planning/card-2735-link-signed-in-note.md`.
+ *
  * jsdom cannot make a trusted event, so the watch's trust test is stood in:
  * `watchForSeen` is the real one, handed a test that trusts the events this
  * file marks. What the server answers, and to whom, is in
@@ -65,7 +69,7 @@ vi.mock('svelte', async () => {
 import DecisionView from '$lib/components/decision/DecisionView.svelte';
 import MarkdownBlock from '$lib/components/decision/MarkdownBlock.svelte';
 import ResponseForm from '$lib/components/decision/ResponseForm.svelte';
-import { STALE_REVISION, type ToldMail } from '$lib/decision-words';
+import { STALE_REVISION, signedInNoteWords, type ToldMail } from '$lib/decision-words';
 import { renderMarkdown } from '$lib/markdown';
 import DecisionPage from '../src/routes/decisions/[id]/+page.svelte';
 import LinkPage from '../src/routes/decision-link/[token]/+page.svelte';
@@ -708,7 +712,6 @@ describe('the parts both participant pages share (card 2707)', () => {
 			name: string;
 			decision: DecisionMore;
 			more: Partial<DecisionPageData>;
-			recorded: string;
 			bannerOpens: string;
 			responseLines: string[];
 			form: boolean;
@@ -717,7 +720,6 @@ describe('the parts both participant pages share (card 2707)', () => {
 				name: '(a) open, an earlier round’s response, the form',
 				decision: {},
 				more: { version: version2, earlierResponse: response({ comment: 'Cheaper' }) },
-				recorded: 'with your response and with your having seen this version.',
 				bannerOpens: asked,
 				responseLines: ['This decision changed on 2026-11-02 09:00 UTC. Your earlier response was for version 1:', 'You chose option A: Rent.', 'Your comment: Cheaper'],
 				form: true
@@ -726,7 +728,6 @@ describe('the parts both participant pages share (card 2707)', () => {
 				name: '(b) awaiting the ruling, a response given',
 				decision: { shownStatus: 'awaiting_ruling' },
 				more: { mayRespond: false, ownResponse: response() },
-				recorded: 'with your response and with your having seen this version.',
 				bannerOpens: asked,
 				responseLines: ['Responses closed on 2099-12-01 12:00 UTC.', 'Your response:', 'You chose option A: Rent.'],
 				form: false
@@ -735,7 +736,6 @@ describe('the parts both participant pages share (card 2707)', () => {
 				name: '(c) awaiting the ruling, no response given',
 				decision: { shownStatus: 'awaiting_ruling' },
 				more: { mayRespond: false },
-				recorded: 'with your response and with your having seen this version.',
 				bannerOpens: asked,
 				responseLines: ['Responses closed on 2099-12-01 12:00 UTC.', 'You gave no response in this round.'],
 				form: false
@@ -744,7 +744,6 @@ describe('the parts both participant pages share (card 2707)', () => {
 				name: '(d) ruled, a response on an older version, the ruling',
 				decision: { shownStatus: 'ruled', closesAt: null },
 				more: { version: version2, mayRespond: false, ownResponse: response(), ruling: RULING, stage: 'ruling' },
-				recorded: 'with your concern and with your having seen the ruling.',
 				bannerOpens: 'Ruled by Dee Cider: Option B: Buy',
 				responseLines: ['Responses are closed.', 'Your last response:', 'You chose option A: Rent.', 'Given on version 1.'],
 				form: false
@@ -753,14 +752,13 @@ describe('the parts both participant pages share (card 2707)', () => {
 				name: '(e) withdrawn',
 				decision: { shownStatus: 'withdrawn', withdrawnAt: '2026-11-03 10:00:00', withdrawnReason: 'The budget went.' },
 				more: { mayRespond: false, stage: 'withdrawal' },
-				recorded: 'with your response and with your having seen this version.',
 				bannerOpens: 'This decision was withdrawn on 2026-11-03 10:00 UTC: The budget went.',
 				responseLines: ['Responses are closed.'],
 				form: false
 			}
 		];
 
-		for (const { name, decision, more, recorded, bannerOpens, responseLines, form } of rows) {
+		for (const { name, decision, more, bannerOpens, responseLines, form } of rows) {
 			// The signed-in page is handed the account name too, and still draws no personal-link line.
 			const data = both(decision, { ...more, signedInAs: 'Sam' });
 			clear();
@@ -771,10 +769,10 @@ describe('the parts both participant pages share (card 2707)', () => {
 			const linkBanner = partsOf(link, 'banner');
 			expect(sessionBanner.length, name).toBeGreaterThan(0);
 			expect(linkBanner.slice(0, -2), name).toEqual(sessionBanner);
-			expect([...link.querySelectorAll('[data-section="banner"] > p')].slice(-2).map(textOf), name).toEqual([
-				'This address is personal to you: do not share it.',
-				`You are signed in as Sam; this is recorded ${recorded}`
-			]);
+			// The link page's two lines: the personal address, then the signed-in note, whose words are 2735-1's to hold.
+			const [personal, signedIn] = [...link.querySelectorAll('[data-section="banner"] > p')].slice(-2);
+			expect(textOf(personal), name).toBe('This address is personal to you: do not share it.');
+			expect(signedIn.classList.contains('signed-in'), name).toBe(true);
 			expect(textOf(session.querySelector('[data-section="banner"]')!), name).not.toMatch(/personal to you|signed in as/);
 
 			// Each page, against the words expected rather than only against the other page.
@@ -792,6 +790,48 @@ describe('the parts both participant pages share (card 2707)', () => {
 			const sessionResponse = partsOf(session, 'response');
 			expect(partsOf(link, 'response'), name).toEqual(sessionResponse);
 		}
+	});
+
+	it('2735-1: in a signed-in browser, the link page says what is recorded with the account in each state and role, and no more', () => {
+		const informed: DecisionPageData['participant'] = { role: 'informed', includedAt: '2026-11-01 09:00:00', told: { kind: 'invited', at: '2026-11-01 09:05:00', delivered: true } };
+		const ruled = { ruling: RULING, stage: 'ruling' as const, mayRespond: false };
+		/**
+		 * Each state the server can give the link page, with the flags it gives and the words the note must
+		 * say (plan section 3): each write clause follows its flag, so a per-person limit drops it too.
+		 */
+		const rows: { name: string; decision: DecisionMore; more: Partial<DecisionPageData>; says: string }[] = [
+			{ name: 'open, consulted', decision: {}, more: { mayAsk: true }, says: 'with your response, with your questions and with your having seen this version.' },
+			{ name: 'open, consulted, at the questions limit', decision: {}, more: { mayAsk: false }, says: 'with your response and with your having seen this version.' },
+			{ name: 'open, informed: no response', decision: {}, more: { participant: informed, mayRespond: false, mayAsk: true }, says: 'with your questions and with your having seen this version.' },
+			{ name: 'awaiting the ruling, consulted', decision: { shownStatus: 'awaiting_ruling' }, more: { mayRespond: false, mayAsk: true }, says: 'with your questions and with your having seen this version.' },
+			{ name: 'awaiting the ruling, informed', decision: { shownStatus: 'awaiting_ruling' }, more: { participant: informed, mayRespond: false, mayAsk: true }, says: 'with your questions and with your having seen this version.' },
+			{ name: 'ruled, consulted', decision: { shownStatus: 'ruled', closesAt: null }, more: { ...ruled, mayRaiseConcern: true }, says: 'with your concern and with your having seen the ruling.' },
+			{ name: 'ruled, informed', decision: { shownStatus: 'ruled', closesAt: null }, more: { ...ruled, mayRaiseConcern: true, participant: informed }, says: 'with your concern and with your having seen the ruling.' },
+			{ name: 'ruled, past the concern limit', decision: { shownStatus: 'ruled', closesAt: null }, more: { ...ruled, mayRaiseConcern: false }, says: 'with your having seen the ruling.' },
+			{ name: 'superseded', decision: { shownStatus: 'superseded', closesAt: null }, more: ruled, says: 'with your having seen the ruling.' },
+			{
+				name: 'withdrawn',
+				decision: { shownStatus: 'withdrawn', withdrawnAt: '2026-11-03 10:00:00', withdrawnReason: 'The budget went.' },
+				more: { mayRespond: false, stage: 'withdrawal' },
+				says: 'with your having seen this version.'
+			}
+		];
+
+		for (const { name, decision, more, says } of rows) {
+			const data = both(decision, more);
+			clear();
+			const signedIn = draw(LinkPage, { data: { ...data.link, signedInAs: 'Sam' } });
+			expect([...signedIn.querySelectorAll('.signed-in')].map(textOf), name).toEqual([`You are signed in as Sam; this is recorded ${says}`]);
+			// The same state signed out draws no such line.
+			clear();
+			const signedOut = draw(LinkPage, { data: data.link });
+			expect(signedOut.querySelector('.signed-in'), `${name}, signed out`).toBeNull();
+		}
+
+		// With no participant or no stage the note claims nothing, whatever the flags say (fail closed).
+		const every = { mayRespond: true, mayAsk: true, mayRaiseConcern: true };
+		expect(signedInNoteWords('Sam', false, 'question', every)).toBe('You are signed in as Sam.');
+		expect(signedInNoteWords('Sam', true, null, every)).toBe('You are signed in as Sam.');
 	});
 
 	it('2707-2: handed every field only the signed-in page has, the link page draws none of them, where the signed-in page draws each', () => {

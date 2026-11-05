@@ -1084,7 +1084,7 @@ describe('the personal link’s page, through the gate', () => {
 		expect(headedOf(signed)).toEqual(HEADED);
 		expect(count('sessions')).toBe(sessions);
 		expect(count('decision_events')).toBe(before.events);
-		expect(signedHtml).toContain('You are signed in as browser; this is recorded with your response and with your having seen this version.');
+		expect(signedHtml).toContain('You are signed in as browser; this is recorded with your response, with your questions and with your having seen this version.');
 		expect(signedHtml).not.toContain('user-badge');
 		expect(signedHtml).not.toContain('href="/account"');
 
