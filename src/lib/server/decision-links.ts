@@ -12,7 +12,9 @@
  * fresh one, which replaces the last (decision 10).
  *
  * Who is mailed at all, and who may hold a link, is one rule, `reachOf`
- * (decision 16): every mail, every re-send and every link asks it.
+ * (decision 16): every mail, every re-send and every link asks it. Whether a
+ * link holder still holds a link a mail with none may point them to is
+ * `mailedLinkOf` (card 2721), which `reachOf` does not ask.
  *
  * A link ends when `revokeLinks` empties it, with a `link_revoked` event
  * giving the reason (decision 12), and it lapses 90 days after the moment
@@ -26,7 +28,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { and, eq, isNotNull } from 'drizzle-orm';
 import { db } from './db';
 import { decisionParticipants, decisions, people, type Decision, type DecisionParticipant, type Person } from './db/schema';
-import { accountHistory, appendEvent, type RecordActor } from './decision-record';
+import { accountHistory, appendEvent, deliveryOf, type RecordActor } from './decision-record';
 import { linkUsable } from './decision-status';
 import { stamp, type Stamp } from '$lib/timestamps';
 
@@ -119,6 +121,29 @@ export function reachOf(p: DecisionParticipant, person: Person | null, hadAccoun
 	if (hadAccount) return { skip: 'account_removed' };
 	if (p.email !== person.email) return { skip: 'address_changed' };
 	return { via: 'link' }; // mayHoldLink holds here
+}
+
+/**
+ * The live link a link holder holds, and the record mail that carried it, or
+ * null where they may hold no working link (card 2685, S1; card 2721, D2):
+ * the row holds a hash, the decision's links are usable at `at`
+ * (`linkUsable`), and their latest record mail, which issued that hash (only
+ * a record mail calls `issueLink`), has `mail_outcome { delivered: true }`.
+ * An outcome not yet written is not delivered: fail closed. `reachOf` reads
+ * no hash, so a mail that tells a link holder to use the link in their latest
+ * email asks this first: the closing-date reminder (`standsAt`) and the
+ * answer notice (`answerNoticeOf`) alike. A read alone: it issues and revokes
+ * nothing.
+ */
+export function mailedLinkOf(
+	decision: Pick<Decision, 'id' | 'status' | 'ruledAt' | 'withdrawnAt' | 'closesAt'>,
+	p: DecisionParticipant,
+	at: Stamp
+): { linkHash: string; lastMailEventId: number } | null {
+	if (p.linkTokenHash === null || !linkUsable(decision, at)) return null;
+	const last = deliveryOf(decision.id).get(p.id)?.lastMail ?? null;
+	if (last === null || last.outcome?.delivered !== true) return null;
+	return { linkHash: p.linkTokenHash, lastMailEventId: last.eventId };
 }
 
 // ─── The administrator's account and address changes (card 2697, Q10, Q22) ───

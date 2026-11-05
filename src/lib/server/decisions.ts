@@ -181,6 +181,7 @@ import {
 	addressRefusal,
 	attachRefusal,
 	clearRefusal,
+	mailedLinkOf,
 	participantForLink,
 	reachOf,
 	REMOVED_WORDS,
@@ -2386,11 +2387,18 @@ function questionNoticeFor(userId: number, earlier: { detail: Record<string, unk
  * `no_mail_host`, or `asked` to the participant's snapshot address, which no
  * preference governs, and never to an account a browser beside their link
  * was signed in as. No rest: each question is answered once.
+ *
+ * A link holder's notice issues no link (card 2721, D1). `latestLink` is
+ * whether it may tell them to use the one in their latest email:
+ * `mailedLinkOf`, the closing-date reminder's rule, on the write's clock (D2,
+ * D4). Otherwise it tells them to ask for a new one (D3).
  */
 function answerNoticeOf(
 	decision: Decision,
 	row: DecisionQuestion
-): { outcome: 'not_reached' | 'no_link_address' | 'prefs_off' | 'no_mail_host' } | { outcome: 'asked'; to: { userId: number } | { address: string } } {
+):
+	| { outcome: 'not_reached' | 'no_link_address' | 'prefs_off' | 'no_mail_host' }
+	| { outcome: 'asked'; to: { userId: number } | { address: string; latestLink: boolean } } {
 	if (row.participantId === null) return { outcome: 'not_reached' };
 	const participant = db
 		.select()
@@ -2407,7 +2415,7 @@ function answerNoticeOf(
 		return { outcome: 'asked', to: { userId: participant.userId } };
 	}
 	if (!isSmtpConfigured()) return { outcome: 'no_mail_host' };
-	return { outcome: 'asked', to: { address: participant.email } };
+	return { outcome: 'asked', to: { address: participant.email, latestLink: mailedLinkOf(decision, participant, stamp()) !== null } };
 }
 
 /** The question of this decision, or 404 for one that is not on it (card 2678, decision 17). */

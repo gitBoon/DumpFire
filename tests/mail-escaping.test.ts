@@ -460,7 +460,13 @@ describe('every mail in notifications.ts', () => {
 			// A link holder's: to their snapshot address, with no link at all.
 			name: 'notifyQuestionAnswered (link)',
 			link: false,
-			send: () => notifications.notifyQuestionAnswered({ address: REQUESTER }, 1, MARKER)
+			send: () => notifications.notifyQuestionAnswered({ address: REQUESTER, latestLink: true }, 1, MARKER)
+		},
+		{
+			// Card 2721 (D3): a link holder who may hold no working link, told to ask for a new one, still with no link.
+			name: 'notifyQuestionAnswered (link, no live link)',
+			link: false,
+			send: () => notifications.notifyQuestionAnswered({ address: REQUESTER, latestLink: false }, 1, MARKER)
 		}
 	];
 

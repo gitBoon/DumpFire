@@ -1,9 +1,9 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.55
+version: 1.57
 status: As-Built
-date: 2026-11-04
+date: 2026-11-05
 tags:
   - notifications
   - email
@@ -1061,15 +1061,30 @@ The rest is per participant, so another participant's question never holds back 
 notice. An empty `notices` list means nobody may answer now.
 
 **The answer notice** (`notifyQuestionAnswered(to, decisionId, title)`, `to` being `{ userId }`
-or `{ address }`). Decided when a person answers, publishes an agent's draft or replaces it,
+or `{ address, latestLink }`). Decided when a person answers, publishes an agent's draft or replaces it,
 and written on `question_answered { questionId, role, agentDrafted, notice }`, `answer_published
 { questionId, notice }` or `answer_replaced { questionId, role, discarded, notice }`, none of
 which names a participant. "Your question about <title> has been answered." An account
 holder's mail links to `/decisions/<id>#questions`. **A link holder's mail carries no link and
-issues none**: it says "Open the decision from the personal link in the latest email you were
-sent about it." Issuing a fresh link, as record mails do, would end the link in their last
-record mail and put a new key in a mailbox for a notice. It goes to the participant row's
-snapshot address, never to an account a browser beside the link was signed in as.
+issues none**: issuing a fresh link, as record mails do, would end the link in their last record
+mail and put a new key in a mailbox for a notice. It goes to the participant row's snapshot
+address, never to an account a browser beside the link was signed in as. Which line it carries in
+place of a link is decided in the write (card 2721), by `mailedLinkOf` in
+`src/lib/server/decision-links.ts`, the closing-date reminder's rule, shared rather than copied:
+
+| The row, at the answer | `latestLink` | The line |
+|---|---|---|
+| Holds a hash, `linkUsable` now, and its latest record mail (the one that issued the hash) has `mail_outcome { delivered: true }` | `true` | "Open the decision from the personal link in the latest email you were sent about it." (`LATEST_LINK_LINE`) |
+| Anything else: the hash emptied (by a restore, or any other `link_revoked`), the link past its time, the latest record mail refused or its outcome not yet written, or no record mail at all | `false` | "The personal link you were last sent may no longer open the decision. Ask its author or its decider to send you a new one." (`ASK_FOR_LINK_LINE`) |
+
+`reachOf` reads no hash, which is why the line asks `mailedLinkOf`: after a restore every row's
+hash is empty, and a link holder told to use their latest email would be pointed at a link that
+opens nothing. The author or the decider gives a new link with Resend, allowed in the same
+statuses as an answer. The send still waits for the commit; nothing is asked again at the send,
+so a link ended between the commit and the send (a restore, an address change, a removal or an
+account being attached) can leave that one mail's line stale; the mail carries no credential. The
+recorded `notice` is `asked` either way: which line went follows from the record's
+`link_revoked` and `mail_outcome` events.
 
 | `notice` | When | Mail |
 |---|---|---|
@@ -1102,11 +1117,13 @@ sequenceDiagram
     D->>X: an answer, a publish or a replacement
     X->>X: answerNoticeOf: awaiting_review (a key's draft), not_reached, …, asked
     X->>Q: notifyQuestionAnswered
-    Q-->>P: "Your question about … has been answered" (a link holder's: no link)
+    Q-->>P: "Your question about … has been answered" (a link holder's: no link; the latest-email line only under mailedLinkOf)
 ```
 
-Covered by `tests/decision-questions.test.ts` (cases 6, 12, 13 to 16, 19 to 21) and
-`tests/mail-escaping.test.ts`.
+Covered by `tests/decision-questions.test.ts` (cases 6, 12, 13 to 16, 19 to 21, and card 2721's
+2721-2: a link cleared by a restore, by an answer, by a publish and by a replacement; a refused latest mail; one
+with no outcome yet; no record mail; a link past its time) and `tests/mail-escaping.test.ts`
+(both of a link holder's lines).
 
 ### The Closing-Date Reminder (card 2685)
 
@@ -1191,7 +1208,8 @@ is asked by <closes_at> UTC, and you have not responded to the current version y
 decides:** and the decider's name, then an account holder's **Open the decision** button to
 `<App URL>/decisions/<id>`, behind a sign-in, or a link holder's line, "Open the decision from
 the personal link in the latest email you were sent about it." (`LATEST_LINK_LINE` in
-`$lib/decision-words`, the answer notice's line too, so both say it in the same words; the button
+`$lib/decision-words`, the answer notice's line too, so both say it in the same words, and both
+ask `mailedLinkOf` first (card 2721); the button
 is `openDecisionButton`, the record mails' too). It quotes
 no question or ask, names no other participant and gives no figure. **It mints no personal link
 and carries no token**: the link a link holder holds stays the only live one, and link rotation

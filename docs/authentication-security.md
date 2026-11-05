@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.95
+version: 1.96
 status: As-Built
 date: 2026-11-05
 tags:
@@ -4333,6 +4333,17 @@ A participant who has no account is reached by `/decision-link/[token]`.
   the start rather than being kept; and a fault in one decision's step is one ERROR line with ids
   alone, never an error's own words, which may hold an address. See
   [The Closing-Date Reminder](notifications-email.md#the-closing-date-reminder-card-2685).
+- **Never in the answer notice** (cards 2678 and 2721). The notice of an answer, a side effect of
+  someone else's write, mints no link, carries no token and revokes nothing. It tells a link
+  holder to use the link in their latest email only under the reminder's rule, now one helper
+  both ask, `mailedLinkOf` in `decision-links.ts`: the row holds a hash, `linkUsable` holds, and
+  the latest record mail, the one that issued that hash, was delivered. `reachOf` reads no hash,
+  so without it a notice after a restore, which empties every hash, pointed at a link that opens
+  nothing. Otherwise it says "The personal link you were last sent may no longer open the
+  decision. Ask its author or its decider to send you a new one." (`ASK_FOR_LINK_LINE`): a new
+  credential is given only by Resend, a person's act. It is decided in the write and sent after
+  the commit, with nothing asked again at the send. See
+  [The Question Notices](notifications-email.md#the-question-notices-card-2678).
 - **Expiry** is worked out when the link is read (`linkUsable`). It is usable until 90 days after
   `ruled_at` for a ruled or superseded decision, `withdrawn_at` for a withdrawn one, and
   `closes_at` for an open or closed one. With no such moment it is usable only on an open
@@ -4656,7 +4667,7 @@ the author and decider with board edit); "named" is privileged and `source: 'ui'
 | The results' open questions through an API key (card 2682's summary, `readResults(…, { source })`) | n/a | the decider: no names or moments, every one `untrusted: true` | the same | n/a |
 | A question's own answer through an API key (`askQuestion`) | no moment, `untrusted: true` | n/a | n/a | n/a |
 | The new-question mail | n/a | names nobody, quotes nothing; never to the asker's own account | n/a | n/a |
-| The answer mail | names nobody, quotes nothing; a link holder's carries no link | n/a | n/a | n/a |
+| The answer mail | names nobody, quotes nothing; a link holder's carries no link, and points at their latest email's only while `mailedLinkOf` finds it live and delivered (card 2721) | n/a | n/a | n/a |
 
 The question form says so before Send (`QUESTION_WHO_SEES`): "Everyone included in this
 decision sees your question and its answer, without your name. The decider, the author and
@@ -5848,7 +5859,7 @@ which is what Reset Everything in the admin panel leaves.
 | `src/lib/server/client-address.ts` | The caller's address, asked so that it cannot throw, and the `'unknown'` count a request with no readable address is held to; `addressKey()`, what a count by address counts, an IPv6 address by its /64 (card 2195) |
 | `src/lib/server/logger.ts` | The system log: the console, `system_logs` and the live feed, from one `emit()`; `printable()`, which puts a space in place of every control character of a line, so that a name holding a line break cannot split it (card 2214), and `UNPRINTABLE`, the class it replaces, every format character (`\p{Cf}`) among it, which a decision's title is refused for holding (card 2675) |
 | `src/lib/server/decision-access.ts` | Who may do what to a decision (card 2675): `decisionAccess()`, `DECISION_RULES`, `DRAFT_VIEWERS` and `mayDo()`, which also asks that a write resting on authorship, the decider's role or board ownership come from someone who can edit the board now; `requireDecision()` in `route-guards.ts` asks it, `404` for a decision the caller may not view |
-| `src/lib/server/decision-links.ts` | A decision's personal links (card 2675): `issueLink()`, `revokeLinks()`, `participantForLink()`, the one place a link is checked, and `reachOf()` and `mayHoldLink()`, who is mailed and who may hold a link |
+| `src/lib/server/decision-links.ts` | A decision's personal links (card 2675): `issueLink()`, `revokeLinks()`, `participantForLink()`, the one place a link is checked, and `reachOf()` and `mayHoldLink()`, who is mailed and who may hold a link, and `mailedLinkOf()` (card 2721), whether a mail with no link may point a holder at their latest email's |
 | `src/lib/server/decision-register.ts` | The register, a person's record and the record view (card 2680): `visibleWhere` (the register held to `requireDecision(…, 'view')`), `visibleDecisionIdsOf()`, `registerQueryOf()` (the filters by allow-list), the person record's three audiences with its scope read first, and `recordEntryOf()`, which builds each event's detail from `RECORD_DETAIL` alone |
 | `src/lib/server/decision-cards.ts` | What is read of card-decision links (card 2680): `linkedCardsFor()` (cards on boards the viewer can open), `readCardDecisions()` (decisions the viewer may view), and `decisionLinksOfCardsUnchecked()`, which checks no access and whose callers a test pins |
 | `src/lib/server/secret-paths.ts` | The paths that carry a secret, `/invite/[token]` and `/decision-link/[token]` (card 2675), written to the log masked; `maskSecretsInLog()`, which masks what the log already holds, in a backup's copy and in the running log at start, and `maskFailedSignIn()`, which takes the name typed out of an old failed sign-in line (card 2193) |

@@ -61,7 +61,8 @@ import { db, sqlite } from '$lib/server/db';
 import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { decisionParticipants, decisionQuestions, decisions, people, settings, users, type Board, type Decision } from '$lib/server/db/schema';
 import { decisionAccess } from '$lib/server/decision-access';
-import { actorFor, appendEvent, appendQuestion, recordAnswer, recordDraftPublished, recordDraftReplaced } from '$lib/server/decision-record';
+import { actorFor, appendEvent, appendQuestion, recordAnswer, recordDraftPublished, recordDraftReplaced, SYSTEM_ACTOR } from '$lib/server/decision-record';
+import { revokeLinks } from '$lib/server/decision-links';
 import { answererRoleOf, pendingDraft, questionsFor, readQuestions, type QuestionViewer } from '$lib/server/decision-questions';
 import { openQuestionsOf, readResults, resultsRevisionFor, rulingRefusals } from '$lib/server/decision-results';
 import { answerQuestion, askQuestion, askQuestionByLink, publishAnswer, ruleDecision } from '$lib/server/decisions';
@@ -72,8 +73,10 @@ import { writeAs, type ServiceOptions } from '$lib/server/write-as';
 import {
 	ALREADY_PUBLISHED,
 	ANSWERED,
+	ASK_FOR_LINK_LINE,
 	DEAD_DECISION_LINK,
 	DRAFT_PENDING,
+	LATEST_LINK_LINE,
 	NO_DRAFT,
 	NO_LONGER_REACHED,
 	NOTHING_TO_PUBLISH,
@@ -183,6 +186,18 @@ function withAccount(decision: Decision, name: string, role: 'consulted' | 'info
 function withLink(decision: Decision, token: string, role: 'consulted' | 'informed' = 'consulted') {
 	const person = makePerson({ fullName: `Linky ${token}` });
 	return { person, participant: makeParticipant(decision, { person, role, token }) };
+}
+
+/**
+ * The participant's invitation, as `queueRecordMails` writes it, and its
+ * delivery's outcome: delivered, refused, or (undefined) not yet known (card
+ * 2721).
+ */
+function invited(decision: Decision, participantId: number, delivered?: boolean) {
+	const of = appendEvent({ decisionId: decision.id, kind: 'invited', participantId, versionNumber: 1 }, SYSTEM_ACTOR);
+	if (delivered === undefined) return;
+	const detail = { of, mail: 'invitation', delivered, ...(delivered ? {} : { problem: 'refused' }) };
+	appendEvent({ decisionId: decision.id, kind: 'mail_outcome', participantId, detail }, SYSTEM_ACTOR);
 }
 
 /** A signed-in account as `questionsFor` is handed it: its access, and its own participant row. */
@@ -1172,9 +1187,11 @@ describe('answerQuestion and publishAnswer', () => {
 		answer(a.decider, a.decision, makeQuestion(a.decision, pat.participant).id);
 		expect(outcomeOf(a.decision.id), '(a)').toBe('prefs_off');
 
-		// (b) A link holder: mailed at the snapshot address, with no link, and no link issued.
+		// (b) A link holder whose invitation, which carried the link, was delivered: mailed at the snapshot address, with no
+		// link, told to use the one in their latest email (card 2721, 2721-1), and no link issued.
 		const b = opened();
 		const lia = withLink(b.decision, 'token-q19');
+		invited(b.decision, lia.participant.id, true);
 		const hash = linkHashOf('token-q19');
 		await fresh();
 		answer(b.decider, b.decision, makeQuestion(b.decision, lia.participant, { via: 'link' }).id);
@@ -1182,6 +1199,7 @@ describe('answerQuestion and publishAnswer', () => {
 		await sent.settle();
 		expect(answerMails().map((mail) => mail.to), '(b)').toEqual([lia.participant.email]);
 		expect(answerMails()[0].html, '(b)').toContain('Open the decision from the personal link in the latest email you were sent about it.');
+		expect(answerMails()[0].html, '(b)').not.toContain(ASK_FOR_LINK_LINE);
 		expect(answerMails()[0].html, '(b)').not.toMatch(/\/decision-link\/|\/decisions\/|href=/);
 		expect(eventsOf(b.decision.id).filter((event) => event.kind === 'link_issued'), '(b)').toEqual([]);
 		expect(db.select().from(decisionParticipants).where(eq(decisionParticipants.id, lia.participant.id)).get()?.linkTokenHash, '(b)').toBe(hash);
@@ -1220,6 +1238,109 @@ describe('answerQuestion and publishAnswer', () => {
 		answer(e.decider, e.decision, eq2.id);
 		expect(outcomeOf(e.decision.id), '(e)').toBe('no_link_address');
 		await sent.settle();
+		expect(sent.duringTransaction).toEqual([]);
+	});
+
+	it('tells a link holder who may hold no working link to ask for a new one, issuing none, one row each (card 2721, 2721-2)', async () => {
+		const noticeOf = (decisionId: number) =>
+			eventsOf(decisionId)
+				.filter((event) => ['question_answered', 'answer_published', 'answer_replaced'].includes(event.kind))
+				.at(-1)?.detail.notice;
+		const hashOf = (participantId: number) => db.select().from(decisionParticipants).where(eq(decisionParticipants.id, participantId)).get()?.linkTokenHash;
+
+		const rows: [string, (seq: number) => { decision: Decision; participantId: number; run: () => unknown }][] = [
+			[
+				'(a) the link cleared by a restore after a delivered invitation',
+				(n) => {
+					const { decision, decider } = opened();
+					const { participant } = withLink(decision, `token-2721-${n}`);
+					invited(decision, participant.id, true);
+					revokeLinks({ participantId: participant.id }, 'restore', SYSTEM_ACTOR);
+					const q = makeQuestion(decision, participant, { via: 'link' });
+					return { decision, participantId: participant.id, run: () => answer(decider, decision, q.id) };
+				}
+			],
+			[
+				'(b) a live link whose latest record mail failed',
+				(n) => {
+					const { decision, decider } = opened();
+					const { participant } = withLink(decision, `token-2721-${n}`);
+					invited(decision, participant.id, false);
+					const q = makeQuestion(decision, participant, { via: 'link' });
+					return { decision, participantId: participant.id, run: () => answer(decider, decision, q.id) };
+				}
+			],
+			[
+				'(c) a live link whose latest record mail has no outcome yet',
+				(n) => {
+					const { decision, decider } = opened();
+					const { participant } = withLink(decision, `token-2721-${n}`);
+					invited(decision, participant.id);
+					const q = makeQuestion(decision, participant, { via: 'link' });
+					return { decision, participantId: participant.id, run: () => answer(decider, decision, q.id) };
+				}
+			],
+			[
+				'(d) a live link with no record mail at all',
+				(n) => {
+					const { decision, decider } = opened();
+					const { participant } = withLink(decision, `token-2721-${n}`);
+					const q = makeQuestion(decision, participant, { via: 'link' });
+					return { decision, participantId: participant.id, run: () => answer(decider, decision, q.id) };
+				}
+			],
+			[
+				'(e) a live link past its time: closed, more than 90 days after closes_at',
+				(n) => {
+					const { decision, decider } = opened({ status: 'closed', closesAt: '2026-01-01 09:00:00' });
+					const { participant } = withLink(decision, `token-2721-${n}`);
+					invited(decision, participant.id, true);
+					const q = makeQuestion(decision, participant, { via: 'link' });
+					return { decision, participantId: participant.id, run: () => answer(decider, decision, q.id) };
+				}
+			],
+			[
+				"(f) the link cleared by a restore, the answer an agent's draft published",
+				(n) => {
+					const { decision, decider, author } = opened();
+					const { participant } = withLink(decision, `token-2721-${n}`);
+					invited(decision, participant.id, true);
+					revokeLinks({ participantId: participant.id }, 'restore', SYSTEM_ACTOR);
+					const q = makeQuestion(decision, participant, { via: 'link', answer: 'An agent says 10k.', by: decider, agentDrafted: true });
+					return { decision, participantId: participant.id, run: () => publish(author, decision, q.id) };
+				}
+			],
+			[
+				"(g) the link cleared by a restore, the answer a person's in place of an agent's draft",
+				(n) => {
+					const { decision, decider, author } = opened();
+					const { participant } = withLink(decision, `token-2721-${n}`);
+					invited(decision, participant.id, true);
+					revokeLinks({ participantId: participant.id }, 'restore', SYSTEM_ACTOR);
+					const q = makeQuestion(decision, participant, { via: 'link', answer: 'An agent says 10k.', by: decider, agentDrafted: true });
+					return { decision, participantId: participant.id, run: () => answer(author, decision, q.id, { answer: 'A person says 12k.', replacesDraft: true }) };
+				}
+			]
+		];
+
+		let n = 0;
+		for (const [name, build] of rows) {
+			const { decision, participantId, run } = build(++n);
+			const hash = hashOf(participantId);
+			await fresh();
+			const issuedBefore = eventsOf(decision.id).filter((event) => event.kind === 'link_issued').length;
+			run();
+			expect(noticeOf(decision.id), name).toBe('asked');
+			await sent.settle();
+			const email = db.select().from(decisionParticipants).where(eq(decisionParticipants.id, participantId)).get()!.email;
+			expect(answerMails().map((mail) => mail.to), name).toEqual([email]);
+			const [mail] = answerMails();
+			expect(mail.html, name).toContain(ASK_FOR_LINK_LINE);
+			expect(mail.html, name).not.toContain(LATEST_LINK_LINE);
+			expect(mail.html, name).not.toMatch(/\/decision-link\/|\/decisions\/|href=/);
+			expect(eventsOf(decision.id).filter((event) => event.kind === 'link_issued').length, name).toBe(issuedBefore);
+			expect(hashOf(participantId), name).toBe(hash);
+		}
 		expect(sent.duringTransaction).toEqual([]);
 	});
 

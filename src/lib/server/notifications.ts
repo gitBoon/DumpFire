@@ -22,7 +22,7 @@
  */
 
 import { escapeHtml } from '$lib/escape-html';
-import { LATEST_LINK_LINE } from '$lib/decision-words';
+import { ASK_FOR_LINK_LINE, LATEST_LINK_LINE } from '$lib/decision-words';
 import { MASTER_PREF, type NotificationPref } from '$lib/notification-prefs';
 import { MAIL_PROBLEM_WORDS, linkBaseUrl, sendEmailWithAttachment, isSmtpConfigured, trySendEmail, type MailOutcome } from './email';
 import { db } from './db';
@@ -1187,18 +1187,21 @@ export function notifyDecisionQuestion(recipientUserId: number, decisionId: numb
  * switch, mailed a link to the decision's page, behind a sign-in; or a link
  * holder's snapshot address, which no preference governs, mailed no link at
  * all: a fresh personal link would end the one in their latest record mail
- * and put a new key in a mailbox for a notice, so the mail tells them to use
- * that one. The answer write decides whether to call it; the send is after
- * the commit.
+ * and put a new key in a mailbox for a notice (card 2721, D1). With
+ * `latestLink`, which the write worked out with `mailedLinkOf` (the row
+ * holds a live link and the mail that carried it was delivered), the mail
+ * tells them to use that one (`LATEST_LINK_LINE`); without it, to ask the
+ * author or the decider for a new one (`ASK_FOR_LINK_LINE`). The answer
+ * write decides whether to call it; the send is after the commit.
  */
-export function notifyQuestionAnswered(to: { userId: number } | { address: string }, decisionId: number, title: string): void {
+export function notifyQuestionAnswered(to: { userId: number } | { address: string; latestLink: boolean }, decisionId: number, title: string): void {
 	if (!isSmtpConfigured()) return;
 	const subject = `Your question about ${title} has been answered`;
 	if ('address' in to) {
 		const html = emailTemplate('Your question was answered', `
 			<div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #4338ca;">
 				<p style="margin: 0 0 12px; font-size: 13px; color: #334155;">Your question about <strong>${escapeHtml(title)}</strong> has been answered.</p>
-				<p style="margin: 0; font-size: 13px; color: #475569;">${escapeHtml(LATEST_LINK_LINE)}</p>
+				<p style="margin: 0; font-size: 13px; color: #475569;">${escapeHtml(to.latestLink ? LATEST_LINK_LINE : ASK_FOR_LINK_LINE)}</p>
 			</div>
 		`);
 		sendEmail(to.address, subject, html).catch(err => log.error(`Answer notice failed for decision ${decisionId}`, err));

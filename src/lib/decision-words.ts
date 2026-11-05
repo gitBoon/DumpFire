@@ -34,9 +34,21 @@ export const NO_LONGER_REACHED = 'This decision no longer reaches you as a parti
  * 2685's code review, F5): the closing-date reminder (`decision-mail.ts`) and
  * the answer notice (`notifications.ts`, card 2678) alike, so that both say
  * it in the same words. Neither mints a link, so the one in their latest
- * record mail stays the only one.
+ * record mail stays the only one. Said only while the row holds a live link
+ * and that mail was delivered (`mailedLinkOf`, card 2721): the reminder is
+ * not sent otherwise, and the answer notice says `ASK_FOR_LINK_LINE` instead.
  */
 export const LATEST_LINK_LINE = 'Open the decision from the personal link in the latest email you were sent about it.';
+
+/**
+ * What the answer notice tells a link holder in place of `LATEST_LINK_LINE`
+ * where they may hold no working link (card 2721, D3): their link was ended,
+ * by a restore among others, has lapsed, or the mail that carried it was not
+ * delivered. The notice issues no link (D1); the author or the decider gives
+ * a new one with Resend. Names roles, not people (card 2678, decision 5).
+ */
+export const ASK_FOR_LINK_LINE =
+	'The personal link you were last sent may no longer open the decision. Ask its author or its decider to send you a new one.';
 
 /**
  * The 429 for an address past its limit of links that open no decision (card

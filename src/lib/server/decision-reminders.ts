@@ -65,16 +65,14 @@ import {
 	changedSinceAsked,
 	countedInRound,
 	currentRound,
-	deliveryOf,
 	lastMailAt,
 	mailsSince,
 	remindedIn,
 	reminderOf,
 	SYSTEM_ACTOR
 } from './decision-record';
-import { reachOf } from './decision-links';
+import { mailedLinkOf, reachOf } from './decision-links';
 import { DAY_MS, decisionLinkBase, mailRestOf, reminderMail } from './decision-mail';
-import { linkUsable } from './decision-status';
 import { isSmtpConfigured, trySendEmail } from './email';
 import { createLogger } from './logger';
 import { MASTER_PREF, type NotificationPref } from '$lib/notification-prefs';
@@ -265,11 +263,11 @@ function standsAt(decision: Decision, p: DecisionParticipant, round: number, ask
 	let linkHash: string | null = null;
 	let lastMailEventId: number | null = null;
 	if (reach.via === 'link') {
-		if (p.linkTokenHash === null || !linkUsable(decision, stamp(t))) return null;
-		const last = deliveryOf(decision.id).get(p.id)?.lastMail ?? null;
-		if (last === null || last.outcome?.delivered !== true) return null;
-		linkHash = p.linkTokenHash;
-		lastMailEventId = last.eventId;
+		// The one rule, shared with the answer notice (card 2721, D2).
+		const held = mailedLinkOf(decision, p, stamp(t));
+		if (held === null) return null;
+		linkHash = held.linkHash;
+		lastMailEventId = held.lastMailEventId;
 	}
 	// No counted response in the round.
 	if (countedInRound([{ participantId: p.id, round }]).has(p.id)) return null;

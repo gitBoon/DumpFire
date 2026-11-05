@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.94
+version: 1.95
 status: As-Built
 date: 2026-11-05
 tags:
@@ -1251,7 +1251,7 @@ flowchart LR
     Acc --> BA["board-access.ts<br/>getBoardRole"]
     Svc --> St["decision-status.ts<br/>decisionStatus, awaitingRulingSql,<br/>TRANSITIONS, linkUsable"]
     Svc --> Rec["decision-record.ts<br/>appendEvent, appendVersion, snapshotOf,<br/>currentRound, liveOptionIds,<br/>accountHistory, lastMailAt"]
-    Svc --> Lk["decision-links.ts<br/>issueLink, revokeLinks,<br/>participantForLink, reachOf, mayHoldLink,<br/>attachRefusal, clearRefusal, addressRefusal"]
+    Svc --> Lk["decision-links.ts<br/>issueLink, revokeLinks,<br/>participantForLink, reachOf, mayHoldLink,<br/>mailedLinkOf, attachRefusal, clearRefusal, addressRefusal"]
     Svc --> Ml["decision-mail.ts<br/>queueRecordMails, decisionLinkBase,<br/>RECORD_MAIL_MIN_MINUTES"]
     Svc --> Act["logActivity, emit"]
     Lk --> Rec
