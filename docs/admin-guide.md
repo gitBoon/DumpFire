@@ -1,9 +1,9 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.95
+version: 1.96
 status: As-Built
-date: 2026-11-04
+date: 2026-11-05
 tags:
   - people-directory
   - api-keys
@@ -1243,6 +1243,7 @@ Every board change is recorded in the activity log (visible per-board in the sta
 - Milestone created on a board. One that belongs to no board has no board's log to go in, and writes no entry
 - Milestone changed, closed, reopened or deleted, and a card put in a milestone or taken out, on a page or through the API, the bulk routes included (card 2289; none of it was recorded). A save that changes nothing writes nothing
 - API actions (prefixed with `api:`)
+- An image of a card closed long ago moved to the trash by DumpFire itself (`attachment_expired`, source `system`, no user, named DumpFire; card 2754)
 
 A card update (`card_updated`, `api:card_updated`) names only the fields that changed, as "Updated fields: theme on "…"", and a save that changes nothing is not recorded at all: no entry, no `card.updated` webhook, and the card's `updatedAt` stays, so the activity report does not count the card as worked on. A field sent with the value the card holds is not a change, and an empty value and none are the same when comparing (a description, on-hold note or business value is still cleared with empty text, not with none). Until 2026-10-15 every field a save sent was named, changed or not, so pressing Save on an unchanged card in the card window wrote "Updated fields: title, description, priority, …" (card 2183). A move out of an On Hold column clears the card's on-hold note and is recorded by the move's own entry alone; a drag out of On Hold on the board page also wrote "Updated fields: onHoldNote" until then (card 2208). A card update never names `position`: a change of a card's position within its column is not recorded on any route, as a drag's is not, and moves no `updatedAt`; the web application's card update recorded one as "Updated fields: position", with a `card.updated` webhook, until card 2288.
 
@@ -1263,7 +1264,8 @@ The board's activity panel and the All Tasks activity panel name each action in 
 | `cards_purged`, `cards_cleared`, `column_deleted` | Purged archived cards, Cleared cards, Deleted column |
 | `subtask_created`, `subtask_updated`, `subtask_completed`, `subtask_deleted`, and `subtask_toggled`, written by older versions | Created subtask, Updated subtask, Completed subtask, Deleted subtask, Updated subtask. `subtask_updated` is written for an untick, `Reopened <subtask> (on <card>)`, and for a change of title, description, priority, colour or due date, `Updated <subtask> (on <card>): title, dueDate`, naming only the fields changed; one request that ticks or unticks and edits writes two entries. A change of position alone, and a save that changes nothing, write none (card 2299: neither an untick nor an edit was recorded) |
 | `comment_added`, `comment_edited`, `comment_deleted` | Added comment, Edited comment, Deleted comment (card 2283: a delete was not recorded) |
-| `attachment_added`, `attachment_deleted` | Attached file, Deleted file (card 2337: neither was recorded). Written by the web application's Files tab alone, never with `api:`: `Attached "my notes.pdf" to "Plan"` and `Deleted the file "my notes.pdf" from "Plan"`, the file named as its uploader named it (less any invisible Unicode formatting characters, which could reorder the line), by whoever attached or deleted it (any editor of the board may delete any file on it; the file stays in the trash 30 days). Counted as work on the card by the activity report, as a comment is. No webhook |
+| `attachment_added`, `attachment_deleted` | Attached file, Deleted file (card 2337: neither was recorded). Written by the web application's Files tab, and since card 2754 `api:attachment_added` for an image attached through an API key (a key deletes no file): `Attached "my notes.pdf" to "Plan"` and `Deleted the file "my notes.pdf" from "Plan"`, the file named as its uploader named it (less any invisible Unicode formatting characters, which could reorder the line), by whoever attached or deleted it (any editor of the board may delete any file on it; the file stays in the trash 30 days). Counted as work on the card by the activity report, as a comment is. No webhook |
+| `attachment_expired` | Moved old image to trash (card 2754). Written by DumpFire itself, never by a person: source `system`, no user, the name **DumpFire**, never with `api:`. One for each image (PNG, JPEG, GIF or WebP) that [image retention](backup-reporting.md#image-retention) takes from a card archived, or completed and still in its Complete column, more than `IMAGE_RETENTION_DAYS` ago (180 unless the server sets it): `Moved "login page.png" on "Plan" to the trash: the card was closed more than 180 days ago`. The file stays in the uploads trash 30 days. No webhook |
 | `assignee_added`, `assignee_removed` | Assigned user, Unassigned user |
 | `dependency_added`, `dependency_removed`, `dependencies_bulk_added` | Added dependency, Removed dependency, Added dependencies. A batch through `POST /api/v1/dependencies/bulk` writes one `dependency_added` per link it creates, on the board of the card that waits, naming that card (card 2291); `dependencies_bulk_added`, one entry with no card for the whole batch, was written by older versions only, and keeps its label for those rows |
 | `board_created`, `board_updated`, `milestone_created` | Created board, Updated board, Created milestone |
@@ -1287,11 +1289,11 @@ newest first. Administrators only. The Audit Log's filters apply together (card 
 | **Action**, a bare name: `card_completed` | That action however it was done, on a page or through the API. It used to find only what was done on a page |
 | **Action** ending in `*`: `card_*` | Every action that begins so, however done. Only a trailing `*` is a wildcard: `card_*` finds `card_moved`, `card_completed` and the rest, and not `cards_purged` or `cards_cleared`, which it used to |
 | **Action** with `api:` in front: `api:card_completed`, `api:*` | Done through the API only, as before |
-| **Source**: All, Web application, API | Where each entry was made. All is both |
+| **Source**: All, Web application, API, DumpFire | Where each entry was made. All is every source. DumpFire (`system`, card 2754) is what DumpFire did itself, with no person: today only `attachment_expired`, and Web application no longer includes it |
 
 So Action `card_completed` with Source All shows every completion, with Source API those
 made through the API, and with Source Web application those made on a page. The page asks
-`GET /api/audit`, which answers a `source` other than `ui` or `api` with `400`. It reads the
+`GET /api/audit`, which answers a `source` other than `ui`, `api` or `system` with `400`. It reads the
 log through the same code as the API's `GET /api/v1/audit-log` (card 2294), so the two find
 the same entries; the page shows each action as it is stored, `api:` and all.
 

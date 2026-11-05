@@ -64,17 +64,21 @@ export const IMAGE_BODY_SIZE_LIMIT = '512M';
  *   the attachment upload   26M, to anybody signed in: the handler refuses a
  *                           file over 25 MB, and the form it arrives in is a
  *                           little larger than the file
+ *   a key's image upload    5M, to anybody signed in (a key's user is): the
+ *                           image is the body itself, raw bytes and no form,
+ *                           and no screenshot needs more (card 2754, D2)
  *   the import              a whole database, so as much as there is, to the
  *                           superadmin alone
  *
- * Each handler asks the same before it reads a byte of the body: one needs
- * edit access to the card's board, and the other is the superadmin's. The
- * import was given its limit for any signed-in caller, so that a user who
- * could not import anything could still have the server read half a gigabyte
- * before the handler said so.
+ * Each handler asks the same before it reads a byte of the body: the two
+ * uploads need edit access to the card's board, and the import is the
+ * superadmin's. The import was given its limit for any signed-in caller, so
+ * that a user who could not import anything could still have the server read
+ * half a gigabyte before the handler said so.
  */
 const LARGER: Record<string, { bytes: number | 'the server'; to: 'signed in' | 'the superadmin' }> = {
 	'POST /api/cards/[id]/attachments': { bytes: 26 * M, to: 'signed in' },
+	'POST /api/v1/cards/[cardId]/attachments': { bytes: 5 * M, to: 'signed in' },
 	'POST /api/admin/import': { bytes: 'the server', to: 'the superadmin' }
 };
 

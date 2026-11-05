@@ -23,9 +23,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { db, sqlite } from '$lib/server/db';
 import { activityLog } from '$lib/server/db/schema';
-import { toIso } from '$lib/timestamps';
+import { expireClosedCardImages } from '$lib/server/image-retention';
+import { stamp, toIso } from '$lib/timestamps';
 import { api } from './helpers/api';
-import { addBoardMember, makeBoard, makeCard, makeUser, resetDb } from './helpers/fixtures';
+import { addBoardMember, makeAttachment, makeBoard, makeCard, makeUser, resetDb } from './helpers/fixtures';
 
 beforeEach(resetDb);
 
@@ -329,5 +330,40 @@ describe('the activity list puts a second’s entries newest first by id (card 2
 		expect(await read(`?boardId=${w.A.board.id}`, w.owner)).toEqual([tied[2], tied[1]]);
 		expect(await read('', w.admin)).toEqual([...tied].reverse());
 		expect(await read('', member)).toEqual([...tied].reverse());
+	});
+});
+
+/**
+ * Card 2754, slice S3 (case 46): DumpFire's own entries, the images retention
+ * moves to the trash, are written with source `system` and no user, and both
+ * routes filter by it. They are stored bare, as the web application's are, so
+ * `source=ui` asks the column as well as the spelling.
+ */
+describe('the two audit routes filter by source system, DumpFire’s own entries (card 2754)', () => {
+	it('find retention’s entries alone with source=system, leave them out of ui, and still refuse any other source', async () => {
+		const w = world();
+		const now = new Date();
+		const closed = makeCard(w.A.cols['Complete'], { title: 'Shipped', completedAt: stamp(new Date(now.getTime() - 181 * 86_400_000)) });
+		makeAttachment(closed, { name: 'shot.png', mimeType: 'image/png' });
+		expect(expireClosedCardImages(now, 180)).toEqual({ expired: 1, more: false });
+		const expired = db.select().from(activityLog).all().find((row) => row.action === 'attachment_expired')!;
+
+		const system = await both('?source=system', w.admin);
+		for (const answer of [system.internal, system.v1]) {
+			expect(answer.data.map((row: { id: number; source: string; userId: number | null; userName: string }) => [row.id, row.source, row.userId, row.userName])).toEqual([
+				[expired.id, 'system', null, 'DumpFire']
+			]);
+		}
+		const ui = await both('?source=ui', w.admin);
+		for (const answer of [ui.internal, ui.v1]) {
+			expect(answer.data.map((row: { id: number }) => row.id)).toEqual([w.rows[4].id, w.rows[1].id]);
+		}
+		// With no source, every entry, retention's among them.
+		expect((await both('', w.admin)).v1.pagination.total).toBe(6);
+
+		for (const route of ROUTES) {
+			const res = await api('GET', `${route}?source=x`, { user: w.admin });
+			expect([route, res.status, res.body]).toEqual([route, 400, { message: 'source must be "ui", "api" or "system"' }]);
+		}
 	});
 });

@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.106
+version: 1.107
 status: As-Built
 date: 2026-11-05
 tags:
@@ -51,7 +51,9 @@ tags:
   - current-password
   - decision-records
   - untrusted
-description: "Deep-dive into DumpFire's authentication system, what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the twenty-eight destructive actions that ask for the current password again (step-up), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served"
+  - images
+  - image-check
+description: "Deep-dive into DumpFire's authentication system, what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the twenty-eight destructive actions that ask for the current password again (step-up), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert)"
 ---
 
 # Authentication & Security
@@ -3475,6 +3477,54 @@ and withdraw belong to its destructive scope. A title written through a key carr
 agent-drafted flag (F3, its own card, widened to the participant set and the decider), so the
 editor's Open confirmation now says how many people it is about to mail (D32).
 
+### API Keys and Card Images (Card 2754)
+
+Since API `1.7.0` a key lists a card's files, downloads one, and attaches an image (the
+[API reference](api-reference.md#attachments) has the contract). A key is its user's
+credential, so this is a new way to put bytes on the server's disk. What bounds it:
+
+| Control | What it does |
+|---|---|
+| **Access asked before the body and again at the write** | The upload asks for the card (`404`) and edit access to its board (`403`) before it reads a byte of the body, so a caller with no access is not sent 5 MB first, and `attachImage` asks both again inside the `writeAs` that writes the row, with the key itself (`401`). A key revoked or an access removed while the body arrives writes nothing. List and download need view access; a download of a file on another card is `404` before any access is asked |
+| **Images only, by their bytes** | The declared `Content-Type` must be `image/png`, `image/jpeg`, `image/gif` or `image/webp` (`415`, nothing read). Then the bytes' magic must be that type (`415`), and `checkImage()` in `src/lib/server/image-check.ts` walks the file structure by structure to its end, keeping by allow-list: a structure the format marks safe to drop is dropped, any other unknown one refused (`400`). Nothing is decoded or re-encoded, and the module imports nothing |
+| **Metadata stripped** | Text chunks, EXIF, XMP, IPTC, comments, JPEG thumbnails and every other application segment or extension are taken out; for WebP only the EXIF and XMP flags of `VP8X` are cleared. Kept structures that could carry data (GIF graphic control and `NETSCAPE2.0`, JPEG `APP14 Adobe` and `DRI`) must have their exact shape, else `400` |
+| **Animation and trailing data refused** | APNG (`acTL`, `fcTL`, `fdAT`), a GIF of more than one image, an animated WebP (`ANIM`, `ANMF` or the `VP8X` flag), and any byte after `IEND`, `EOI`, the GIF trailer or the RIFF size: `400`. Trailing data is how a second file rides inside an image |
+| **Size** | 5 MB a body, held by the gate whether the length is declared or the body is chunked; at most 8000 pixels on a side and 40 megapixels (`400`) |
+| **Names are the server's** | The file on disk is `<uuid>.<extension>`, the extension from the bytes. The name shown is `?name=` cleaned (last path segment, control and format characters and `<>:"\|?*` out, cut to 100 characters, extension replaced by the bytes'), never a path |
+| **Allowances keyed per user** | 30 uploads an hour (`attachment-upload:user:<id>`), taken before the body is read, and 100 MB a day (`attachment-bytes:user:<id>`), charged with every byte read, before the check, so an invalid body costs what was sent. Keyed on the key's user, so a second key buys nothing. In memory, like the gate's 60 a minute; one taken stays taken whatever is refused after it (`src/lib/server/upload-allowance.ts`) |
+| **20 images a card** | Counted inside the write transaction, every image row whichever tree attached it, so two uploads cannot both find room for the 20th (`409`) |
+| **A download is always inert** | Always `Content-Disposition: attachment`; `Content-Type` the image type only when the stored type is one of the four and the bytes' magic is it, else `application/octet-stream`; `X-Content-Type-Options: nosniff`, `Content-Security-Policy: sandbox` and `Cache-Control: no-store`, so no cache between keeps a copy of a file the key's user may later lose access to (`downloadHeaders()` in `src/lib/server/uploads.ts`) |
+| **No delete** | A key removes no file: evidence on a card stays until a person deletes it in the web application, or [image retention](backup-reporting.md#image-retention) moves it |
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant K as Key holder
+    participant G as Gate
+    participant R as v1 upload route
+    participant W as writeAs (one transaction)
+
+    K->>G: POST image bytes
+    G->>G: over 5 MB declared 413, key 401, 60/min 429
+    G->>R: request
+    R->>R: requireCard edit: 404, 403 (no body read)
+    R->>R: Content-Type 415, takeUploadCount 429 (no body read)
+    R->>R: read the body (413 past 5 MB)
+    R->>W: takeUploadBytes: key 401, 100 MB a day 429
+    R->>R: checkImage: 415, 400; metadata stripped
+    R->>R: writeUploadFile uuid.ext
+    R->>W: attachImage: key 401, requireCard edit 404, 403 again,<br/>retention 409, 20 images 409, row and entry
+    W-->>R: committed, or refused and the file removed
+    R-->>K: 201 Attachment, or the refusal
+```
+
+**Carried.** Card 2703's key scopes map onto these as a read scope (list, download) and a
+write scope (upload). The code review's F3, that a download answers `404` for a file on
+another card before it asks access, so ids on a card the caller cannot open can be told
+apart (`403` against `404`), is shared with the web tree (card 2361) and goes to its own card,
+both trees together. The card window's upload still takes the browser's claimed type and has
+no per-card or per-user cap: a new card (the plan's D20).
+
 ## Board Access Control
 
 Board access is determined by `board-access.ts` using a priority-based resolution.
@@ -3609,9 +3659,12 @@ that decides nothing, and every write that has one checks twice, not only the up
 vacuum and the reset have none, and ask first at the write): every guard is asked again inside the
 `writeAs` that writes, given the account as it is now, and every handler, a `DELETE` with no
 body included, checks and writes in one transaction (see
-[Asked Again at the Write](#asked-again-at-the-write-card-2253)). An upload is the one request
-whose first check reads a row (`requireCard`, before the file is read, so that a caller with no
-access is not sent 25 MB first), and it asks the row again inside its `writeAs`. The public
+[Asked Again at the Write](#asked-again-at-the-write-card-2253)). The two uploads are the
+requests whose first check reads a row (`requireCard`, before the file is read, so that a
+caller with no access is not sent 25 MB, or 5 MB, first), and each asks the row again inside
+its `writeAs`: the card window's `POST /api/cards/:id/attachments` and, since card 2754, a
+key's `POST /api/v1/cards/:cardId/attachments`, which also takes its hourly upload count
+before the body (see [API Keys and Card Images](#api-keys-and-card-images-card-2754)). The public
 request form and its confirmation ask their rate limits and the form token first, and the
 import its media type: none of them a row.
 `tests/check-at-the-write.test.ts` reads every handler under `src/routes/api` and fails on
@@ -5869,13 +5922,17 @@ flowchart TD
     Name -->|"No"| R404["404 File not found on disk"]
     Name -->|"Yes"| Inert{"Is it PNG, JPEG, GIF, WebP or .txt,<br/>by BOTH its extension AND the type<br/>stored at upload?"}
     Inert -->|"No: PDF, HTML and SVG among them"| Download["Content-Disposition: attachment<br/>Content-Type: application/octet-stream<br/>nosniff, CSP sandbox"]
-    Inert -->|"Yes"| Inline["Content-Disposition: inline<br/>Content-Type: the type DumpFire names<br/>nosniff, CSP sandbox"]
+    Inert -->|"Yes, .txt"| Inline["Content-Disposition: inline<br/>Content-Type: the type DumpFire names<br/>nosniff, CSP sandbox"]
+    Inert -->|"Yes, an image"| Bytes{"Do the file's magic bytes<br/>name the stored image type?<br/>(card 2754)"}
+    Bytes -->|"Yes"| Inline
+    Bytes -->|"No: HTML saved as shot.png, typed image/png"| Download
 ```
 
 | Control | What it does |
 |---------|--------------|
 | **A download unless proven inert** | Everything is answered `Content-Disposition: attachment` with `Content-Type: application/octet-stream`, except five types that cannot run a script: PNG, JPEG, GIF, WebP and plain text (`.txt`). HTML, SVG and PDF are never shown in the browser |
 | **Extension and stored type must agree** | Both are the uploader's. A file named `.png` that was uploaded as `text/html` is a download |
+| **An image is shown only when its bytes match** | Since card 2754 the name and the stored type are not enough for an image: it is inline only when `sniffImage()` (`src/lib/server/image-check.ts`) finds the stored type's magic at the start of the file. A page uploaded as `shot.png` and typed `image/png`, which the card window's upload still accepts, is a download. Text has no magic, and is served as `text/plain` with `nosniff` whatever it holds |
 | **The served type is DumpFire's, not the uploader's** | An inline file is answered with the type written in the code for its kind (`image/png`, `text/plain; charset=utf-8`), never with the stored text |
 | **`X-Content-Type-Options: nosniff`** on every answer | The browser shows the file as the type named and does not guess another |
 | **`Content-Security-Policy: sandbox`** on every answer | Whatever is shown can run nothing. A PDF is a download for this reason: a browser shows one in its own viewer, which does not start under a sandbox, so a PDF could be shown only by leaving the sandbox off it |
@@ -5885,9 +5942,17 @@ flowchart TD
 
 Uploading needs edit access to the card and is limited to 25 MB. Deleting an attachment
 needs edit access; its row is deleted in a transaction and its file is moved to the
-[uploads trash](architecture.md#uploads-and-the-trash) once that has committed.
+[uploads trash](architecture.md#uploads-and-the-trash) once that has committed. Both trees
+write an upload's file through `writeUploadFile()` and remove it through `removeUploadFile()`
+when its row is refused.
 
-Covered by `tests/uploads.test.ts`.
+Through an API key (card 2754) the rules are stricter, and every download is a download: see
+[API Keys and Card Images](#api-keys-and-card-images-card-2754). Images of cards closed long ago
+are moved to the trash by DumpFire itself, with an entry whose source is `system`: see
+[Image Retention](backup-reporting.md#image-retention).
+
+Covered by `tests/uploads.test.ts`, and for the v1 routes and the image check by
+`tests/v1-attachments.test.ts` and `tests/image-check.test.ts`.
 
 ## First-Run Setup Guard
 
@@ -5959,5 +6024,7 @@ which is what Reset Everything in the admin panel leaves.
 | `src/lib/server/email.ts` | `linkBaseUrl()`: the address a mailed link begins with, from configuration alone |
 | `src/lib/server/startup-checks.ts` | The eight lines the server writes at start: no superadmin, `ORIGIN` still the image's placeholder, and a board beneath one of its own cards (card 2142), which a restore of a backup that brings one writes at once too, with each control character in a board's name or a card's title printed as a space, so that a name holding a line break cannot split the line and forge one after it (with the logger's `printable()`, card 2214); and three about the database (card 2083): the new-database line (a new, empty database was made at this start, the alarm on an installation that had data, since set-up is then open to whoever comes first), the off-volume line (the database is in the container's own file system), and the other-database line (a database at `/app/dumpfire.db` beside the one in use); and the line that `SIGN_IN_ONE_AT_A_TIME` is off (card 2194), and `reportCspMode()`'s line that `CSP_MODE` is `report-only` or neither mode (card 2162), each to the console whatever `LOG_LEVEL` is; `refuseUserlessBesideAnother()`, which stops the server before it listens when the database in use has no users while another is beside it; and `maskLiveLog()`, which masks the running log's tokens and old failed sign-in names at start |
 | `src/lib/server/rate-limit.ts` | In-memory rate limiter, counting in a fixed window from each key's first attempt (`checkRateLimit`), an amount in the same way (`takeAllowance`, the day's report mail of card 2182), and wrong passwords at one account in an idle window (`signInWait`, `countWrongSignIn`, `forgetWrongSignIns`, card 2177); sign-in's count by address with the account each attempt was at (`countSignInAttempt`, `refundSignInAttempts`, `keepSignInAttemptCounted`, card 2226); and the sign-ins in flight at one key (`enterSignIn`, `leaveSignIn`, card 2194) |
-| `src/lib/server/uploads.ts` | Where attachment files are, which stored file names are refused, and the headers an attachment is served with |
+| `src/lib/server/uploads.ts` | Where attachment files are, which stored file names are refused, `writeUploadFile()` and `removeUploadFile()` for both trees' uploads, and the headers an attachment is served with: `attachmentHeaders()` (the web tree, inline only when an image's bytes match) and `downloadHeaders()` (`/api/v1`, always a download, `no-store`) |
+| `src/lib/server/image-check.ts` | Whether bytes are a PNG, JPEG, GIF or WebP image (card 2754): `imageTypeOf()`, `sniffImage()`, and `checkImage()`, the walk by allow-list that strips metadata and refuses animation, trailing data and more than 8000 px or 40 MP. No imports |
+| `src/lib/server/upload-allowance.ts` | A key's user's image uploads (card 2754): `takeUploadCount()`, 30 an hour, and `takeUploadBytes()`, 100 MB a day, both by user; `UploadAllowanceRefused` |
 | `src/lib/server/db/transaction.ts` | `inTransaction()`: the check and the write it guards are one transaction |

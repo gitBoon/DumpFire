@@ -10,6 +10,10 @@
  * board's Activity Log and `GET /api/v1/audit-log` did not show these actions
  * when they were done on screen, and other open pages did not refresh.
  *
+ * Card 2754 adds a seventh: attaching an image to a card, a form posted by
+ * the card window and the image itself sent to `/api/v1` with a key, each
+ * recording the same entry and sending the same live event.
+ *
  * The two trees were held together by nothing, which is how they came apart.
  * The first test here makes each pair's request on the same fixture, built
  * twice, and compares the entry each writes and the live updates each sends,
@@ -75,6 +79,7 @@ import {
 	stepUp,
 	type BoardFixture
 } from './helpers/fixtures';
+import { png } from './helpers/image-bytes';
 import { diffSnapshots, expectUnchanged, snapshotDb, type DbSnapshot } from './helpers/snapshot';
 
 beforeEach(resetDb);
@@ -197,6 +202,19 @@ const TWINS: Twin[] = [
 		internal: (s) => api('POST', '/api/milestones', { user: s.owner, body: { name: 'Launch', boardId: s.A.board.id } }),
 		v1: (s) => api('POST', '/api/v1/milestones', { user: s.owner, body: { name: 'Launch', boardId: s.A.board.id } }),
 		action: 'milestone_created'
+	},
+	{
+		// Card 2754: the card window's upload, a form, and a key's, the image as the body with its name in the query.
+		what: 'attaching an image to a card',
+		build: scene,
+		internal: (s) => {
+			const form = new FormData();
+			form.append('file', new File([png() as BlobPart], 'shot.png', { type: 'image/png' }));
+			return api('POST', `/api/cards/${s.first.id}/attachments`, { user: s.owner, body: form });
+		},
+		v1: (s) =>
+			api('POST', `/api/v1/cards/${s.first.id}/attachments?name=shot.png`, { user: s.owner, body: png(), headers: { 'content-type': 'image/png' } }),
+		action: 'attachment_added'
 	}
 ];
 
@@ -252,14 +270,15 @@ describe('the internal routes and their v1 twins, side by side', () => {
 		}
 	);
 
-	it('each pair is what the plan names: six pairs, six actions', () => {
+	it('each pair is what the plan names: six pairs, six actions, and card 2754’s upload', () => {
 		expect(TWINS.map((t) => t.action)).toEqual([
 			'assignee_added',
 			'assignee_removed',
 			'comment_edited',
 			'board_created',
 			'board_updated',
-			'milestone_created'
+			'milestone_created',
+			'attachment_added'
 		]);
 	});
 });
@@ -2925,7 +2944,9 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 	'src/routes/api/v1/comments/[commentId]/+server.ts DELETE': [
 		{ service: 'deleteComment', args: [code('caller'), { commentId: code('commentId') }, null, { source: 'api' }] }
 	],
-	// Card 2337: the card window's files, which `/api/v1` does not serve, so no twin.
+	// Card 2337: the card window's files. Card 2754: `/api/v1` lists a card's files and uploads an image, the card
+	// window's upload's twin through `attachImage`, which writes the same row, entry and event (`TWINS`); it deletes
+	// nothing, so the delete has no twin. The web list reads the rows itself, with their names on disk.
 	'src/routes/api/cards/[id]/attachments/+server.ts POST': [
 		{
 			service: 'attachFile',
@@ -2939,6 +2960,26 @@ const SERVICE_OPTIONS: Record<string, { service: string; args: Written[] }[]> = 
 	],
 	'src/routes/api/cards/[id]/attachments/[attachmentId]/+server.ts DELETE': [
 		{ service: 'deleteAttachment', args: [code('caller'), { cardId: code('cardId'), attachmentId: code('attachmentId') }, null, { source: 'ui' }] }
+	],
+	'src/routes/api/v1/cards/[cardId]/attachments/+server.ts GET': [
+		{ service: 'listAttachments', args: [code('locals.user'), { cardId: code('cardId') }, {}] }
+	],
+	'src/routes/api/v1/cards/[cardId]/attachments/+server.ts POST': [
+		{
+			service: 'attachImage',
+			args: [
+				code('caller'),
+				{ cardId: code('cardId') },
+				{
+					filename: code('filename'),
+					name: code('name'),
+					mimeType: code('checked.mimeType'),
+					extension: code('checked.extension'),
+					sizeBytes: code('checked.bytes.byteLength')
+				},
+				{ source: 'api' }
+			]
+		}
 	],
 	'src/routes/api/labels/+server.ts PUT': [{ service: 'toggleCardLabel', args: [code('caller'), {}, code('body'), { source: 'ui' }] }],
 	'src/routes/api/v1/cards/[cardId]/labels/+server.ts POST': [

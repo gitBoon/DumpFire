@@ -10,6 +10,7 @@
  *
  *   512K   every request on every route, a page's form action included
  *   26M    POST /api/cards/[id]/attachments, for anybody signed in
+ *   5M     POST /api/v1/cards/[cardId]/attachments, for anybody signed in (card 2754)
  *   all    POST /api/admin/import, for the superadmin
  *
  * A declared length over the limit is refused before the body is read. A
@@ -294,7 +295,12 @@ describe('a request that declares a body larger than its route accepts', () => {
 	});
 });
 
-// ─── The two routes that accept more ─────────────────────────────────────────
+// ─── The routes that accept more ─────────────────────────────────────────────
+//
+// The third, a key's image upload (POST /api/v1/cards/[cardId]/attachments, 5M,
+// card 2754), is sent through the gate in tests/v1-attachments.test.ts: a
+// declared length over its limit before the key, a body that runs past what it
+// declared, and one sent in chunks.
 
 describe('the attachment upload, POST /api/cards/[id]/attachments', () => {
 	const upload = (): FormData => {
@@ -720,14 +726,17 @@ describe('the limit, read as the node adapter reads it', () => {
 describe('the limit of a route', () => {
 	const built = { isDev: false, limit: '512M' };
 	const ATTACHMENTS = '/api/cards/[id]/attachments';
+	const IMAGES = '/api/v1/cards/[cardId]/attachments';
 	const IMPORT = '/api/admin/import';
 
-	it('is 512K on every route but two, whoever is asking', () => {
+	it('is 512K on every route but three, whoever is asking', () => {
 		for (const caller of ['not yet known', 'nobody', 'signed in', 'the superadmin'] as const) {
 			for (const [method, route] of [
 				['POST', '/login'],
 				['POST', '/api/cards'],
-				['POST', '/api/v1/cards/[cardId]/attachments'],
+				['GET', IMAGES],
+				['PUT', IMAGES],
+				['POST', '/api/v1/cards/[cardId]/attachments/[attachmentId]'],
 				['PUT', ATTACHMENTS],
 				['GET', IMPORT],
 				['POST', '/api/admin/export'],
@@ -750,11 +759,18 @@ describe('the limit of a route', () => {
 		expect(bodyLimit(ATTACHMENTS, 'post', 'signed in', built)).toBe(26 * M);
 	});
 
-	it('is 512K on those two as well for a caller who is known to be nobody', () => {
-		// What the gate asks when it hands a request on with no session. Both
-		// routes turn such a caller away before that, so `gate()` cannot reach
+	it('is 5M for a key’s image upload, for a caller who is signed in, and for one not yet known (card 2754)', () => {
+		expect(bodyLimit(IMAGES, 'POST', 'signed in', built)).toBe(5 * M);
+		expect(bodyLimit(IMAGES, 'POST', 'the superadmin', built)).toBe(5 * M);
+		expect(bodyLimit(IMAGES, 'POST', 'not yet known', built)).toBe(5 * M);
+	});
+
+	it('is 512K on those three as well for a caller who is known to be nobody', () => {
+		// What the gate asks when it hands a request on with no session. Each
+		// route turns such a caller away before that, so `gate()` cannot reach
 		// this: it is what keeps it so if one of them is ever made public.
 		expect(bodyLimit(ATTACHMENTS, 'POST', 'nobody', built)).toBe(DEFAULT_BODY_LIMIT);
+		expect(bodyLimit(IMAGES, 'POST', 'nobody', built)).toBe(DEFAULT_BODY_LIMIT);
 		expect(bodyLimit(IMPORT, 'POST', 'nobody', built)).toBe(DEFAULT_BODY_LIMIT);
 	});
 
@@ -762,6 +778,7 @@ describe('the limit of a route', () => {
 		// Started with no BODY_SIZE_LIMIT, the adapter fails a body over 512K
 		// half way through: refused here instead, with the limit in the answer.
 		expect(bodyLimit(ATTACHMENTS, 'POST', 'signed in', { isDev: false, limit: '512K' })).toBe(512 * K);
+		expect(bodyLimit(IMAGES, 'POST', 'signed in', { isDev: false, limit: '512K' })).toBe(512 * K);
 		expect(bodyLimit(IMPORT, 'POST', 'the superadmin', { isDev: false, limit: '512K' })).toBe(512 * K);
 		expect(bodyLimit('/api/cards', 'POST', 'signed in', { isDev: false, limit: '100K' })).toBe(100 * K);
 		expect(bodyLimit(ATTACHMENTS, 'POST', 'signed in', { isDev: false, limit: '1G' })).toBe(26 * M);

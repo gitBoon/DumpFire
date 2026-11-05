@@ -19,8 +19,14 @@
  * What it moves and what it leaves alone is `sweepUnnamed`, in uploads.ts.
  * Whatever it moves stays in the trash for 30 days, where Import Backup still
  * finds a file that a restored row names.
+ *
+ * Before it, each run expires the images of cards closed longer than
+ * `IMAGE_RETENTION_DAYS` (`image-retention.ts`, card 2754), in a try/catch of
+ * its own: whatever retention meets, a refused setting or a failure, the
+ * orphan sweep still runs, and moves any file whose move to the trash failed.
  */
 import { sqlite } from './db';
+import { expireClosedCardImages, retentionDays } from './image-retention';
 import { createLogger } from './logger';
 import { sweepUnnamed, uploadKey, UploadsDirError, type SweepResult } from './uploads';
 
@@ -39,8 +45,33 @@ function firstTen(list: readonly string[]): string {
 }
 
 /**
+ * Expire the images of cards closed longer than `IMAGE_RETENTION_DAYS`, once
+ * (card 2754). A setting that is refused is logged at ERROR and runs nothing;
+ * `off` runs nothing and says nothing. Nothing it meets is thrown.
+ */
+function expireImages(now: Date): void {
+	try {
+		const setting = retentionDays();
+		if (!setting.ok) {
+			log.error(setting.message);
+			return;
+		}
+		if (setting.days === null) return;
+		expireClosedCardImages(now, setting.days);
+	} catch (err) {
+		log.error(
+			`Images of closed cards were not moved to the trash: ${err instanceof Error ? err.message : String(err)}. ` +
+				'Nothing of this run was moved; the next run tries again.'
+		);
+	}
+}
+
+/**
  * Sweep once, and log what was done. Returns what `sweepUnnamed` did, or
  * null if the sweep did not run.
+ *
+ * Retention runs first (`expireImages`), in its own try/catch, so that the
+ * sweep runs whatever retention does.
  *
  * It does nothing while a transaction is open on the connection. The rows,
  * the counter and the folder are read and the files moved in one synchronous
@@ -54,6 +85,8 @@ function firstTen(list: readonly string[]): string {
 export function sweepUploads(now: Date = new Date()): SweepResult | null {
 	try {
 		if (sqlite.inTransaction) return null;
+
+		expireImages(now);
 
 		let named: Set<string>;
 		let highestCardId: number;

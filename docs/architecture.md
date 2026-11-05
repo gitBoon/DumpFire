@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.117
+version: 1.118
 status: As-Built
 date: 2026-11-05
 tags:
@@ -320,7 +320,8 @@ flowchart TD
 
 `handOn` is how every request the gate lets through reaches SvelteKit, from each of the
 places `handleRequest()` hands one on and from step 3. It asks the body's size again, now
-that the caller is known: the attachment upload gives 26 MB to anybody signed in, and the
+that the caller is known: the attachment upload gives 26 MB to anybody signed in, a key's
+image upload (`POST /api/v1/cards/[cardId]/attachments`, card 2754) 5 MB, and the
 import the whole of `BODY_SIZE_LIMIT` to the superadmin alone. Then it hands on a copy of the
 request whose body passes through a count (`heldToLimit()`), so that a body with no length
 is refused `413` once it is read past the limit, and puts `guardBody()` on that copy, which
@@ -371,8 +372,8 @@ answered with a session and no key, uncounted.
 ### The body guard
 
 A handler reads its JSON body with `readBody(request)`, which calls `request.json()` (see
-[Reading a body](#reading-a-body)), and two read a file: the attachment upload with
-`formData()` and the backup import with `arrayBuffer()`. The guard is what makes a body the
+[Reading a body](#reading-a-body)), and three read a file: the attachment upload with
+`formData()`, and the backup import and a key's image upload (card 2754) with `arrayBuffer()`. The guard is what makes a body the
 caller got wrong a `400` or a `413` and not a `500`, for every handler under `/api/` at
 once.
 
@@ -2980,7 +2981,7 @@ The breadcrumb walk on the board page and a card moved onto its own sub-board ar
 `src/lib/server/uploads.ts` is the one definition of where attachment files are. An attachment row holds a file name only; every path is built from the card id and that name.
 
 ```
-<uploads>/<cardId>/<filename>            a card's file
+<uploads>/<cardId>/<filename>            a card's file (a key's image: <uuid>.<png|jpg|gif|webp>)
 <uploads>/.trash/<cardId>/<filename>     the same file, once its row is deleted
 <uploads>/.trash/<cardId>/.trashed-at    when that folder was last added to
 ```
@@ -2989,9 +2990,10 @@ The uploads folder is the folder `uploads` beside the database file. The module 
 
 ```mermaid
 stateDiagram-v2
-    [*] --> CardFolder : Upload - the file is written, then its row
-    CardFolder --> [*] : The row could not be written, so the file is removed again
+    [*] --> CardFolder : Upload, either tree - writeUploadFile, then its row
+    CardFolder --> [*] : The row could not be written, so removeUploadFile removes the file again
     CardFolder --> Trash : Its row is deleted and the delete commits
+    CardFolder --> Trash : Image retention - an image of a card closed longer than IMAGE_RETENTION_DAYS, its row deleted
     CardFolder --> Trash : The sweep - no row names it and it has not changed for 24 hours
     CardFolder --> CardFolder : The card is archived or restored - nothing moves
     Trash --> CardFolder : Import Backup brings back a row that names the file
@@ -2999,21 +3001,26 @@ stateDiagram-v2
     Removed --> [*]
 ```
 
-A row is deleted, and its file moved, by deleting the attachment itself, by a permanent delete of its card, column or board, by Purge Archived Cards, by Clear Cards and by Reset.
+A row is deleted, and its file moved, by deleting the attachment itself, by a permanent delete of its card, column or board, by Purge Archived Cards, by Clear Cards, by Reset and, for an image, by image retention (card 2754).
+
+Both trees write an upload's file the same way (card 2754, D19): `writeUploadFile()` checks the name, makes the card's folder if it is not there, writes the file, makes the folder again once if the sweep removed it between the two, and on a failure removes what it wrote and a folder it made; `removeUploadFile()` undoes it when the row is then refused, never throwing, and removes the folder only if the upload made it and it is empty.
 
 - **A file is never deleted with its row.** Backups hold the database and not the files, so a file whose row has gone is moved to the trash, where an import of an earlier backup can find it.
 - **Only the files named by the deleted rows are moved.** The card's folder is then removed if it is empty, and never recursively. A file that is not there is passed over: a working copy restored from a backup has none.
 - **A stored file name is treated as data.** A name with a separator, a drive letter or `..` in it, which a restored backup could hold, is refused before it is joined into a path.
 - **The trash is emptied by the log maintenance timer**, ten minutes after the server starts and then every six hours, of every folder last added to more than 30 days before. The timer starts with the server, and its first look at the trash is ten minutes later: nothing is removed from the disk as the server starts. It looks only at numbered folders directly inside `.trash`, removes the files in one that is due and then the folder, follows no link and never goes into a folder inside one, so it cannot reach anything outside the trash.
-- **Serving.** `attachmentHeaders()` answers every attachment as a download (`Content-Disposition: attachment`, `application/octet-stream`) except PNG, JPEG, GIF, WebP and `.txt` files, which are shown in the browser, and only when the stored type and the file's extension agree. A PDF, an HTML file and an SVG file are downloads. Every answer carries `X-Content-Type-Options: nosniff` and `Content-Security-Policy: sandbox`. On a card, those four image types have a thumbnail that opens the image, and the name of every attachment is a link that saves the file. See [Authentication & Security](authentication-security.md#attachments).
+- **Serving.** `attachmentHeaders()` answers every attachment as a download (`Content-Disposition: attachment`, `application/octet-stream`) except PNG, JPEG, GIF, WebP and `.txt` files, which are shown in the browser, and only when the stored type and the file's extension agree and, for an image, its magic bytes are the stored type (`sniffImage()`, card 2754). A PDF, an HTML file and an SVG file are downloads. Every answer carries `X-Content-Type-Options: nosniff` and `Content-Security-Policy: sandbox`. On a card, those four image types have a thumbnail that opens the image, and the name of every attachment is a link that saves the file. `/api/v1` serves a file through `downloadHeaders()` instead: always `attachment`, typed as an image only when the bytes are the stored image type, with `nosniff`, `sandbox` and `Cache-Control: no-store` (card 2754). See [Authentication & Security](authentication-security.md#attachments).
 
 - **Files no row names are swept** (card 2107). `src/lib/server/uploads-sweep.ts` is one of the schedulers, started by `startSchedulers()` in `schedulers.ts`, so it runs only where they run (never under `vite dev`, in a rehearsal or with `SCHEDULERS=off`): 15 minutes after the start, then every six hours. `sweepUploads()` does nothing while the connection has a transaction open; otherwise it reads every `card_attachments` row as `<card id>/<file name>` (`uploadKey()`) and the highest card id issued (the larger of `sqlite_sequence` and `MAX(cards.id)`), and hands both to `sweepUnnamed()` in `uploads.ts`, which touches no database and no logger. That walks the folders named exactly by a card id (`/^[1-9][0-9]*$/`, read with `lstat`, so a link is never followed) and moves, through `moveToTrash`, each plain file no row names that has not changed for 24 hours. The rows, the listing and the moves are one synchronous pass, so no request of this process writes a row in between; against another process on the same volume the 24-hour margin is what protects. A folder numbered above the highest card id belongs to another database and is left alone; so is a folder the sweep finds already empty, and every name that is not a card's folder. A read that fails moves nothing.
+
+- **Image retention runs first in each sweep** (card 2754, `src/lib/server/image-retention.ts`), in a try/catch of its own. `retentionDays()` reads `IMAGE_RETENTION_DAYS` (unset 180; `off`; digits from 30 to 3650; anything else logged at `ERROR` and nothing run). `expireClosedCardImages()`, in one `inTransaction` (a scheduled job, not a service, so not in a `writeAs`), selects image rows on cards archived before the cutoff, or now in a Complete-role column (`isCompleteColumnTitle`) and completed before it, takes the longest closed first, at most 200, deletes them, writes one `attachment_expired` entry each with `source: 'system'`, no user and the name `DumpFire`, emits `{type: 'attachment', cardId}` once per card, and hands the files to `trashAfterCommit`. A file whose move fails is left with no row naming it, and the orphan sweep after it moves it a day later. `isExpiredCard()` is the same rule for one card, asked by `attachImage()` for a key's upload (`409`). See [Image Retention](backup-reporting.md#image-retention).
 
 ```mermaid
 flowchart TD
     Tick["Sweep: 15 minutes after start, then six-hourly"] --> Tx{"Transaction open?"}
     Tx -->|"yes"| Skip["Skip this run"]
-    Tx -->|"no"| Read{"Rows and the highest card id read?"}
+    Tx -->|"no"| Ret["Image retention, own try/catch (card 2754):<br/>up to 200 images of long-closed cards<br/>to the trash, or an ERROR line"]
+    Ret --> Read{"Rows and the highest card id read?"}
     Read -->|"no"| Warn["One WARN line, nothing moved"]
     Read -->|"yes"| Walk["Each folder named exactly by a card id,<br/>never a link, never .trash"]
     Walk --> Other{"Above the highest card id?"}
@@ -3158,7 +3165,7 @@ which imports it, and a setter exported from it would let anything set the count
 
 | `ServiceOptions` | What it is |
 |---|---|
-| `source` | `'ui'` from the internal tree, `'api'` from v1: the `source` of every entry and webhook the write records, and v1's actions stored with `api:` |
+| `source` | `'ui'` from the internal tree, `'api'` from v1: the `source` of every entry and webhook the write records, and v1's actions stored with `api:`. Never `'system'` (typed `Exclude<ActivitySource, 'system'>`): that source is DumpFire's own, written only by image retention, which is a scheduled job and calls no service (card 2754) |
 | `baseUrl?` | `linkBaseUrl(url)`, read before `writeAs` (a setting, no row): the address the mail the write sends links to |
 | `says?` | The tree's own words for a refusal where it has them (`No edit access to this card's board` against `No edit access to this board`), handed to the guard |
 
@@ -3308,7 +3315,7 @@ stateDiagram-v2
 | Session Cleanup | On startup | Remove expired session tokens |
 | Log Maintenance | On startup, then every six hours | Prune `system_logs` past its retention |
 | Uploads Trash | Ten minutes after startup, then every six hours, on the log maintenance timer; never on startup itself | Remove attachment files that have been in the trash for more than 30 days |
-| Attachment File Sweep | 15 minutes after startup, then every six hours; only where the schedulers run (`SCHEDULERS`) | Move attachment files that no row names, unchanged for 24 hours, to the trash (card 2107) |
+| Attachment File Sweep | 15 minutes after startup, then every six hours; only where the schedulers run (`SCHEDULERS`) | First, image retention: move to the trash at most 200 images of cards closed longer than `IMAGE_RETENTION_DAYS` (180), each with an `attachment_expired` entry, source `system` (card 2754). Then move attachment files that no row names, unchanged for 24 hours, to the trash (card 2107) |
 | Decision Reminder | 5 minutes after startup, then every 5 minutes; only where the schedulers run (`SCHEDULERS`) | Record, then mail, one closing-date reminder per round to each consulted participant who has not responded, about a day before the closing time; at most 200 and 4 minutes a run (card 2685, `decision-reminders.ts`; [The Closing-Date Reminder](notifications-email.md#the-closing-date-reminder-card-2685)) |
 
 ```mermaid

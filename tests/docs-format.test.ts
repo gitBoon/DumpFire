@@ -257,7 +257,8 @@ describe('what the samples are made of', () => {
 		expect(answerFile({ '200': { content: { 'application/vnd.ms-excel; charset=x': {} } } })).toBe('answer.bin');
 		expect(answerFile(undefined)).toBe('');
 
-		// In the real document that is one operation: the plan of a milestone as a PDF.
+		// In the real document that is two operations: the plan of a milestone as a PDF, and a file on a card (card
+		// 2754), whose type is the file's, so it is saved as answer.bin: application/octet-stream is listed first.
 		const files: string[] = [];
 		for (const [path, item] of Object.entries<any>(spec.paths)) {
 			for (const [method, op] of Object.entries<any>(item)) {
@@ -266,7 +267,10 @@ describe('what the samples are made of', () => {
 				if (answerFile(responses)) files.push(`${method.toUpperCase()} ${path}: ${answerFile(responses)}`);
 			}
 		}
-		expect(files).toEqual(['GET /api/v1/milestones/{milestoneId}/pdf: answer.pdf']);
+		expect(files).toEqual([
+			'GET /api/v1/cards/{cardId}/attachments/{attachmentId}: answer.bin',
+			'GET /api/v1/milestones/{milestoneId}/pdf: answer.pdf'
+		]);
 	});
 
 	it('the samples of an operation that answers a file save it, and none of them parses it as JSON', () => {

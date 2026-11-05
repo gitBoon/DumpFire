@@ -12,7 +12,9 @@
  * trash, where an import of an earlier backup can find it again, and the
  * trash is emptied of anything older than 30 days. A file in a card's folder
  * that no row names is moved to the trash the same way, by a sweep
- * (`sweepUnnamed`, run by `uploads-sweep.ts`).
+ * (`sweepUnnamed`, run by `uploads-sweep.ts`). An upload's own file is
+ * written here as well, before its row, and removed again if the row is not
+ * written (`writeUploadFile`, `removeUploadFile`; card 2754).
  *
  * Nothing here runs when the module is loaded, and nothing here touches the
  * database or the log. Each function says what it did and what it could not
@@ -20,12 +22,14 @@
  * must not import the logger. The sweep's caller reads the rows it is given.
  *
  * The files are moved with the synchronous calls, so that a delete has moved
- * them before it answers.
+ * them before it answers. An upload is written with the asynchronous ones:
+ * it may be many megabytes.
  */
 import {
 	existsSync,
 	lstatSync,
 	mkdirSync,
+	promises as fsp,
 	readdirSync,
 	readFileSync,
 	renameSync,
@@ -35,6 +39,7 @@ import {
 } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { getDbPath } from './db';
+import { imageTypeOf, sniffImage } from './image-check';
 
 /** The uploads folder is somewhere it must not be. */
 export class UploadsDirError extends Error {
@@ -205,6 +210,74 @@ function plainName(dir: string, filename: string): string {
 export function attachmentPath(cardId: number, filename: string): string {
 	const dir = cardDir(cardId);
 	return join(dir, plainName(dir, filename));
+}
+
+// ─── An upload's file ───────────────────────────────────────────────────────
+
+/** What `writeUploadFile` wrote, and whether it made the card's folder for it. */
+export type WrittenUpload = UploadFile & { madeDir: boolean };
+
+/**
+ * Write an upload's file into its card's folder. The file first, and then its
+ * row, which the caller writes: a row is never left naming a file that was
+ * not written. Both API trees' uploads call it (card 2754, D19: it was the
+ * card window's route's own code).
+ *
+ * The name is checked first (`attachmentPath`), and nothing is made for one
+ * that is refused. The folder is made if it is not there. The sweep of files
+ * no row names (`uploads-sweep.ts`) can run between the two awaits, move the
+ * folder's last file to the trash and remove the folder it left empty; so a
+ * write that finds no folder makes it again, once. The sweep removes only a
+ * folder it emptied, and it moves no file changed in the last 24 hours, so
+ * the folder holding the file just written stays.
+ *
+ * If the write fails, what it wrote is removed, and the folder if it made
+ * it, and the failure is thrown. It answers whether it made the folder, for
+ * `removeUploadFile` if the row is then not written.
+ *
+ * Each call is made through `fs.promises` as it is when called, so that
+ * tests/uploads.test.ts can stand in for `mkdir` and `writeFile` and run the
+ * sweep, or a failure, between the folder made and the file written.
+ */
+export async function writeUploadFile(cardId: number, filename: string, bytes: Uint8Array): Promise<WrittenUpload> {
+	const path = attachmentPath(cardId, filename);
+	const dir = cardDir(cardId);
+	let madeDir = false;
+	try {
+		madeDir = (await fsp.mkdir(dir, { recursive: true })) !== undefined;
+		try {
+			await fsp.writeFile(path, bytes);
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+			madeDir = (await fsp.mkdir(dir, { recursive: true })) !== undefined || madeDir;
+			await fsp.writeFile(path, bytes);
+		}
+	} catch (err) {
+		await removeUploadFile({ cardId, filename, madeDir });
+		throw err;
+	}
+	return { cardId, filename, madeDir };
+}
+
+/**
+ * Remove a file `writeUploadFile` wrote, once its row has been refused, and
+ * the card's folder if that write made it and nothing is in it now. Never
+ * throws: a file that was never written, or has gone, is passed over.
+ */
+export async function removeUploadFile(written: WrittenUpload): Promise<void> {
+	try {
+		await fsp.unlink(attachmentPath(written.cardId, written.filename));
+	} catch {
+		// It was never written, or its name names no file.
+	}
+	// Not recursive: a folder with another upload in it stays.
+	if (written.madeDir) {
+		try {
+			await fsp.rmdir(cardDir(written.cardId));
+		} catch {
+			// Not empty, or gone.
+		}
+	}
 }
 
 function messageOf(err: unknown): string {
@@ -575,7 +648,11 @@ const INERT: { extensions: string[]; stored: string; served: string }[] = [
  * the uploader gave it, so an uploaded HTML or SVG file opened as a page of
  * the application, with the reader's session. The stored type and the name
  * are both the uploader's, so both have to agree: a file named `.png` that
- * was uploaded as `text/html` is a download.
+ * was uploaded as `text/html` is a download. And so do the bytes, for an
+ * image (card 2754, S12): one is shown only when the magic at the start of
+ * `bytes` names the type stored, so a page uploaded as `shot.png`, typed
+ * `image/png`, is a download too. Text has no magic, and is shown as
+ * `text/plain` whatever it holds.
  *
  * A PDF is a download too. A browser shows one in its own viewer, and that
  * viewer does not start inside a sandbox, so a PDF could be shown only by
@@ -585,18 +662,60 @@ const INERT: { extensions: string[]; stored: string; served: string }[] = [
  * as the type named. `sandbox` goes on every one, so that what is shown can
  * run nothing.
  */
-export function attachmentHeaders(attachment: {
-	originalName: string;
-	mimeType: string;
-}): Record<string, string> {
+export function attachmentHeaders(
+	attachment: {
+		originalName: string;
+		mimeType: string;
+	},
+	bytes: Uint8Array
+): Record<string, string> {
 	const name = String(attachment.originalName ?? '');
 	const extension = /\.([A-Za-z0-9]+)$/.exec(name)?.[1].toLowerCase() ?? '';
 	const stored = String(attachment.mimeType ?? '').split(';')[0].trim().toLowerCase();
-	const inert = INERT.find((type) => type.stored === stored && type.extensions.includes(extension));
+	const listed = INERT.find((type) => type.stored === stored && type.extensions.includes(extension));
+	const inert = listed && (imageTypeOf(listed.stored) === null || sniffImage(bytes) === listed.stored) ? listed : undefined;
 
-	// A plain ASCII name for a browser that does not read `filename*`, and the
-	// real one encoded as RFC 5987 has it. The name is the uploader's: put in
-	// the header as it was, a quote or a line break in it wrote the header.
+	return {
+		'Content-Type': inert ? inert.served : 'application/octet-stream',
+		'Content-Disposition': `${inert ? 'inline' : 'attachment'}; ${fileNames(name)}`,
+		'X-Content-Type-Options': 'nosniff',
+		'Content-Security-Policy': 'sandbox'
+	};
+}
+
+/**
+ * The headers `/api/v1` answers an attachment with (card 2754, D8): always a
+ * download, never shown. Its type is the image type stored only when the
+ * stored type is one of the four and the magic at the start of `bytes` names
+ * it; anything else, a `.txt` among them, is `application/octet-stream`. With
+ * `nosniff`, `sandbox`, and `no-store`, so that no cache between keeps a copy
+ * of a file the key's user may later lose access to.
+ */
+export function downloadHeaders(
+	attachment: {
+		originalName: string;
+		mimeType: string;
+	},
+	bytes: Uint8Array
+): Record<string, string> {
+	const stored = imageTypeOf(attachment.mimeType);
+	const type = stored !== null && sniffImage(bytes) === stored ? stored : 'application/octet-stream';
+	return {
+		'Content-Type': type,
+		'Content-Disposition': `attachment; ${fileNames(String(attachment.originalName ?? ''))}`,
+		'X-Content-Type-Options': 'nosniff',
+		'Content-Security-Policy': 'sandbox',
+		'Cache-Control': 'no-store'
+	};
+}
+
+/**
+ * The name a download is saved under, as `Content-Disposition` gives it: a
+ * plain ASCII name for a browser that does not read `filename*`, and the real
+ * one encoded as RFC 5987 has it. The name is the uploader's: put in the
+ * header as it was, a quote or a line break in it wrote the header.
+ */
+function fileNames(name: string): string {
 	const ascii = name.replace(/[^\x20-\x7E]|["\\]/g, '_').trim() || 'download';
 	let encoded: string;
 	try {
@@ -606,11 +725,5 @@ export function attachmentHeaders(attachment: {
 		encoded = encodeURIComponent(ascii);
 	}
 	encoded = encoded.replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
-
-	return {
-		'Content-Type': inert ? inert.served : 'application/octet-stream',
-		'Content-Disposition': `${inert ? 'inline' : 'attachment'}; filename="${ascii}"; filename*=UTF-8''${encoded}`,
-		'X-Content-Type-Options': 'nosniff',
-		'Content-Security-Policy': 'sandbox'
-	};
+	return `filename="${ascii}"; filename*=UTF-8''${encoded}`;
 }

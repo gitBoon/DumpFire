@@ -55,6 +55,7 @@ import {
 	activityLog,
 	boardCategories,
 	boards,
+	cardAttachments,
 	cardComments,
 	cards,
 	categories,
@@ -90,6 +91,7 @@ import {
 	makeUser,
 	resetDb
 } from './helpers/fixtures';
+import { png } from './helpers/image-bytes';
 import { watchReads } from './helpers/reads';
 
 const ROOT = process.cwd();
@@ -113,9 +115,10 @@ const V1_JSON = '$lib/server/v1-json';
  * editors' read and save, the delete, the decider, the participants, extend,
  * withdraw and supersede; and its slice 2b seven: the questions read and
  * asked, an answer drafted, the summary, the record, and a card linked and
- * unlinked.
+ * unlinked. Card 2754 added three: a card's files listed, an image uploaded,
+ * and a file downloaded.
  */
-const OPERATIONS = 107;
+const OPERATIONS = 110;
 
 // ─── The document ────────────────────────────────────────────────────────────
 
@@ -378,7 +381,8 @@ function reading(file: string, name: string, known: Known = {}): Reading {
 					if (target) take(reading(target, imported.name, calledWith(read(target)?.functions.get(imported.name), node, known, source.consts)));
 				}
 			} else if (ts.isPropertyAccessExpression(called)) {
-				if (called.name.text === 'json' && ts.isIdentifier(called.expression) && called.expression.text === 'request') {
+				// The body read as JSON, or as bytes (card 2754: a key's image upload is its body).
+				if (['json', 'arrayBuffer', 'bytes', 'blob'].includes(called.name.text) && ts.isIdentifier(called.expression) && called.expression.text === 'request') {
 					found.readsBody = true;
 				}
 				if (
@@ -1164,6 +1168,12 @@ const MIRRORS: Record<string, Mirror> = {
 		adds: {
 			username: 'every comment answer names its author',
 			userEmoji: 'and carries their emoji'
+		}
+	},
+	Attachment: {
+		table: cardAttachments,
+		withholds: {
+			filename: "the file's name in the card's folder on the server, which the server makes and a key has no use for (card 2754, D9)"
 		}
 	},
 	Webhook: {
@@ -2523,6 +2533,45 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(keysOf(missing.body)).toEqual(propertiesOf(answerSchema(op.name, 404)));
 	});
 
+	it('attachments (card 2754): an image uploaded as its raw bytes, the card\'s list, the image downloaded as a file, and JSON when refused', async () => {
+		const { admin, first } = fixture();
+		const upload = 'POST /api/v1/cards/{cardId}/attachments';
+		const list = 'GET /api/v1/cards/{cardId}/attachments';
+		const download = 'GET /api/v1/cards/{cardId}/attachments/{attachmentId}';
+		const image = png();
+
+		// The body is the image, as one of the four types the document lists, with the name in the query.
+		const sent = OPS.find((o) => o.name === upload)!;
+		expect(Object.keys(sent.entry.requestBody.content)).toEqual(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+		expect(sent.entry.parameters.map((p: Json) => deref(p).name)).toEqual(['cardId', 'name']);
+		const made = await api('POST', `/api/v1/cards/${first.id}/attachments?name=shot.png`, { user: admin, body: image, headers: { 'content-type': 'image/png' } });
+		expect(made.status).toBe(201);
+		expect(keysOf(made.body)).toEqual(propertiesOf(answerSchema(upload, 201)));
+		expect(typeFaults(answerSchema(upload, 201), made.body, 'attachment')).toEqual([]);
+
+		const listed = await api('GET', `/api/v1/cards/${first.id}/attachments`, { user: admin });
+		expect(listed.status).toBe(200);
+		expect(listed.body).toEqual([made.body]);
+		expect(typeFaults(answerSchema(list, 200), listed.body, 'attachments')).toEqual([]);
+
+		// The file, not JSON, typed as the image its bytes are, and a download.
+		const file = await api('GET', `/api/v1/cards/${first.id}/attachments/${made.body.id}`, { user: admin });
+		const op = OPS.find((o) => o.name === download)!;
+		expect(file.status).toBe(200);
+		expect(Object.keys(op.entry.responses['200'].content)).toEqual(['application/octet-stream', 'image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+		expect(file.headers.get('content-type')).toBe('image/png');
+		expect(file.headers.get('content-disposition')).toBe(`attachment; filename="shot.png"; filename*=UTF-8''shot.png`);
+		expect(file.headers.get('cache-control')).toBe('no-store');
+
+		// Each refusal is JSON in the schema the document gives it.
+		const wrongType = await api('POST', `/api/v1/cards/${first.id}/attachments`, { user: admin, body: image, headers: { 'content-type': 'image/svg+xml' } });
+		expect(wrongType.status).toBe(415);
+		expect(keysOf(wrongType.body)).toEqual(propertiesOf(answerSchema(upload, 415)));
+		const missing = await api('GET', `/api/v1/cards/${first.id}/attachments/999999`, { user: admin });
+		expect(missing.status).toBe(404);
+		expect(keysOf(missing.body)).toEqual(propertiesOf(answerSchema(download, 404)));
+	});
+
 	// ─── Tokens ──────────────────────────────────────────────────────────────
 
 	// The bodies sent are the document's own examples, and the answers are held to
@@ -2774,14 +2823,14 @@ describe('what a route answers, against the schema the document gives for it', (
 
 	// ─── The document itself ─────────────────────────────────────────────────
 
-	it('GET /openapi.json: answered to a caller with no key, as version 1.6.0, and listing itself', async () => {
+	it('GET /openapi.json: answered to a caller with no key, as version 1.7.0, and listing itself', async () => {
 		const name = 'GET /api/v1/openapi.json';
 
 		// No user: the one route under /api/v1/ that is reached without a key.
 		const res = await api('GET', '/api/v1/openapi.json');
 
 		expect(res.status).toBe(200);
-		expect(res.body.info.version).toBe('1.6.0');
+		expect(res.body.info.version).toBe('1.7.0');
 		const schema = answerSchema(name, 200);
 		expect(keysOf(res.body)).toEqual(propertiesOf(schema));
 		expect(keysOf(res.body.info)).toEqual(propertiesOf(schema.properties.info));
@@ -2828,7 +2877,13 @@ describe('what a route answers, against the schema the document gives for it', (
 		// Card 2337: a file attached or deleted in the web application is recorded, and sends no webhook.
 		expect(changes).toContain('(97) GET /api/v1/audit-log and the activity reads can return `attachment_added` and `attachment_deleted`');
 		expect(changes.indexOf('(97)')).toBeGreaterThan(changes.indexOf('(96)'));
-		expect(spec.info.description).toContain('`attachment_added` and `attachment_deleted`, written by the web application when a file is attached to or deleted from a card');
+		// Card 2754: the attachments paragraph names the API's own upload as writing the first, and the web application alone the second.
+		expect(spec.info.description).toContain(
+			'`attachment_added`, written when a file is attached to a card in the web application or an image through this API (as `api:attachment_added`), and ' +
+				'`attachment_deleted`, written when one is deleted in the web application. No webhook is sent for either.'
+		);
+		expect(spec.info.description).not.toContain('Attachments** are not part of this API');
+		expect(spec.info.description).toContain('A key lists a card\'s files, downloads one, and attaches an image: see the tag Attachments. It deletes none.');
 		// Card 2359: a column, label, category or grouping save that changes nothing writes nothing.
 		expect(changes).toContain('(98) PUT /api/v1/columns/{columnId}, PUT /api/v1/labels/{labelId}, PUT /api/v1/categories/{categoryId} and PUT /api/v1/board-categories/{categoryId} write only the fields whose value changes');
 		expect(changes.indexOf('(98)')).toBeGreaterThan(changes.indexOf('(97)'));
@@ -2940,7 +2995,7 @@ describe('what a route answers, against the schema the document gives for it', (
 		const start = note.indexOf('**Changed on 2026-10-27 (version 1.3.1).**');
 		expect(start).toBeGreaterThan(0);
 		expect(start).toBeLessThan(note.indexOf('**Changed on 2026-10-26 (version 1.3.0).**'));
-		// Fourth of the dated notes since 1.6.0 (card 2682), 1.5.0 (card 2681) and 1.4.0 (card 2673), which come first.
+		// Fifth of the dated notes since 1.7.0 (card 2754), 1.6.0 (card 2682), 1.5.0 (card 2681) and 1.4.0 (card 2673), which come first.
 		expect(start).toBeGreaterThan(note.indexOf('**Changed on 2026-11-03 (version 1.4.0).**'));
 		expect(note.indexOf('**Changed on 2026-11-03 (version 1.4.0).**')).toBeGreaterThan(note.indexOf('**Changed on 2026-11-04 (version 1.5.0).**'));
 		const changes = note.slice(start, note.indexOf('**Changed on 2026-10-26'));
@@ -2950,12 +3005,52 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(spec.components.schemas.ActivityReportCard.properties.bucket.description).toContain("one raised before 2026-10-01 is also still in the board's first column");
 	});
 
-	it('is version 1.6.0, and its newest dated note, first of them all, announces the decisions operations and what a key does not do with a decision (card 2682)', () => {
+	it('is version 1.7.0, and its newest dated note, first of them all, announces the attachments operations, the image upload and its limits (card 2754)', () => {
 		const note = spec.info.description as string;
-		expect(spec.info.version).toBe('1.6.0');
-		const start = note.indexOf('**Changed on 2026-11-04 (version 1.6.0).**');
+		expect(spec.info.version).toBe('1.7.0');
+		const start = note.indexOf('**Changed on 2026-11-05 (version 1.7.0).**');
 		expect(start).toBeGreaterThan(0);
 		expect(note.indexOf('**Changed on')).toBe(start);
+		const changes = note.slice(start, note.indexOf('**Changed on 2026-11-04 (version 1.6.0).**'));
+		const numbers = [...changes.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]));
+		expect(numbers).toEqual([1, 2, 3, 4, 5, 6, 7]);
+		expect(changes).toContain('Three operations are new, under the tag Attachments');
+		// Slice S3: image retention, its entry and the source it is written with, and the 409 for a card it would take.
+		for (const words of ['more than IMAGE_RETENTION_DAYS ago, 180 unless the server sets it', 'an `attachment_expired` entry whose source is the new value `system`, with no user, named DumpFire', 'GET /api/v1/audit-log answers `system` in `source` and filters by it', 'an image uploaded to such a card is refused 409']) {
+			expect(changes, words).toContain(words);
+		}
+		expect(spec.components.schemas.AuditLogEntry.properties.source.enum).toEqual(['ui', 'api', 'system']);
+		const auditLog = spec.paths['/api/v1/audit-log'].get;
+		expect(auditLog.parameters.find((p: { name: string }) => p.name === 'source').schema.enum).toEqual(['ui', 'api', 'system']);
+		expect(auditLog.responses['400'].content['application/json'].example).toEqual({ message: 'source must be "ui", "api" or "system"' });
+		expect(spec.info.description).toContain('`attachment_expired`, whose source is `system`, with no user and the name DumpFire; no webhook is sent for it.');
+		expect(spec.paths['/api/v1/cards/{cardId}/attachments'].post.responses['409'].description).toContain('more than IMAGE_RETENTION_DAYS ago');
+		for (const op of ['GET /api/v1/cards/{cardId}/attachments', 'POST /api/v1/cards/{cardId}/attachments', 'GET /api/v1/cards/{cardId}/attachments/{attachmentId}']) {
+			expect(changes, op).toContain(op);
+		}
+		for (const words of ['the body is the image itself', 'up to 5 MB', 'its metadata (EXIF, XMP, text, comments, thumbnails) is taken out', 'anything after the end of the image is refused', '30 images an hour and 100 MB a day, whichever of their keys is used', 'a card holds at most 20 images', 'typed as an image only when its bytes are that image', 'a file is not deleted through a key', '(7) nothing else changed']) {
+			expect(changes, words).toContain(words);
+		}
+		// And the Attachments tag, under which /docs lists the three.
+		expect(OPS.filter((op) => (op.entry.tags ?? []).includes('Attachments')).map((op) => op.name)).toEqual([
+			'GET /api/v1/cards/{cardId}/attachments',
+			'POST /api/v1/cards/{cardId}/attachments',
+			'GET /api/v1/cards/{cardId}/attachments/{attachmentId}'
+		]);
+
+		// The 1.6.0 note (card 2682) is second.
+		const second = note.indexOf('**Changed on 2026-11-04 (version 1.6.0).**');
+		expect(second).toBeGreaterThan(start);
+		expect(note.indexOf('**Changed on', start + 1)).toBe(second);
+	});
+
+	it('announces the decisions operations and what a key does not do with a decision in the 1.6.0 note, second of the dated notes (card 2682)', () => {
+		const note = spec.info.description as string;
+		const start = note.indexOf('**Changed on 2026-11-04 (version 1.6.0).**');
+		expect(start).toBeGreaterThan(0);
+		// After the 1.7.0 note (card 2754) alone.
+		expect(note.indexOf('**Changed on')).toBe(note.indexOf('**Changed on 2026-11-05 (version 1.7.0).**'));
+		expect(note.indexOf('**Changed on', note.indexOf('**Changed on') + 1)).toBe(start);
 		const changes = note.slice(start, note.indexOf('**Changed on 2026-11-04 (version 1.5.0).**'));
 		const numbers = [...changes.matchAll(/\((\d+)\) /g)].map((m) => Number(m[1]));
 		expect(numbers).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
@@ -2985,13 +3080,15 @@ describe('what a route answers, against the schema the document gives for it', (
 		expect(note.indexOf('**Changed on', start + 1)).toBe(second);
 	});
 
-	it('announces the people and groups operations, the refused keys and no addresses in the 1.5.0 note, second of the dated notes (card 2681)', () => {
+	it('announces the people and groups operations, the refused keys and no addresses in the 1.5.0 note, third of the dated notes (card 2681)', () => {
 		const note = spec.info.description as string;
 		const start = note.indexOf('**Changed on 2026-11-04 (version 1.5.0).**');
 		expect(start).toBeGreaterThan(0);
-		// After the 1.6.0 note (card 2682) alone.
-		expect(note.indexOf('**Changed on')).toBe(note.indexOf('**Changed on 2026-11-04 (version 1.6.0).**'));
-		expect(note.indexOf('**Changed on', note.indexOf('**Changed on') + 1)).toBe(start);
+		// After the 1.7.0 note (card 2754) and the 1.6.0 note (card 2682) alone.
+		const first = note.indexOf('**Changed on');
+		expect(first).toBe(note.indexOf('**Changed on 2026-11-05 (version 1.7.0).**'));
+		expect(note.indexOf('**Changed on', first + 1)).toBe(note.indexOf('**Changed on 2026-11-04 (version 1.6.0).**'));
+		expect(note.indexOf('**Changed on', note.indexOf('**Changed on', first + 1) + 1)).toBe(start);
 		const changes = note.slice(start, note.indexOf('**Changed on 2026-11-03'));
 		expect(changes).toContain('GET /api/v1/people and GET /api/v1/people-groups');
 		expect(changes).toContain("No answer carries a person's email address or account id");
@@ -3009,7 +3106,7 @@ describe('what a route answers, against the schema the document gives for it', (
 			'PUT /api/v1/people-groups/{groupId}/members'
 		]);
 
-		// The 1.4.0 note (card 2673) is second.
+		// The 1.4.0 note (card 2673) comes next.
 		const second = note.indexOf('**Changed on 2026-11-03 (version 1.4.0).**');
 		expect(second).toBeGreaterThan(start);
 		expect(note.indexOf('**Changed on', start + 1)).toBe(second);

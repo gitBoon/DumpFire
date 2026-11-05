@@ -163,6 +163,7 @@ import {
 } from './helpers/fixtures';
 import { gate, gateRoutes } from './helpers/gate';
 import { sendAround, type HeldCredential } from './helpers/held-body';
+import { png } from './helpers/image-bytes';
 import { watchReads } from './helpers/reads';
 import { diffSnapshots, expectUnchanged, snapshotDb, type DbSnapshot } from './helpers/snapshot';
 import { loadKeys, pageLoad } from './helpers/actions';
@@ -2188,6 +2189,16 @@ const TABLE: Record<string, Case | Case[]> = {
 		json(`/api/v1/cards/${w.A.card.id}/assignees`, { userId: w.editor.id })
 	),
 	'GET /api/v1/cards/[cardId]/board-history': view((w) => `/api/v1/cards/${w.A.card.id}/board-history`),
+	// Card 2754: a key's image upload sends the image itself as its body.
+	'GET /api/v1/cards/[cardId]/attachments': view((w) => `/api/v1/cards/${w.A.card.id}/attachments`),
+	'POST /api/v1/cards/[cardId]/attachments': edit((w) => ({
+		path: `/api/v1/cards/${w.A.card.id}/attachments?name=shot.png`,
+		body: png(),
+		headers: { 'content-type': 'image/png' }
+	})),
+	'GET /api/v1/cards/[cardId]/attachments/[attachmentId]': view(
+		(w) => `/api/v1/cards/${w.A.card.id}/attachments/${w.A.attachment.id}`
+	),
 	'GET /api/v1/cards/[cardId]/comments': view((w) => `/api/v1/cards/${w.A.card.id}/comments`),
 	'POST /api/v1/cards/[cardId]/comments': edit((w) =>
 		json(`/api/v1/cards/${w.A.card.id}/comments`, { content: 'A comment' })
@@ -2547,7 +2558,15 @@ async function expectRefused(
 	// An upload is not read for a caller who is going to be refused. A handler
 	// that read it, wrote the file and took it away again on finding the caller
 	// had no access would leave the folder as it was: this is how it is seen.
-	const read = parts(req).body instanceof FormData ? vi.spyOn(Request.prototype, 'formData') : undefined;
+	// A form is read with formData(), and a key's image upload, its bytes, with
+	// arrayBuffer() (card 2754).
+	const sentBody = parts(req).body;
+	const read =
+		sentBody instanceof FormData
+			? vi.spyOn(Request.prototype, 'formData')
+			: sentBody instanceof Uint8Array
+				? vi.spyOn(Request.prototype, 'arrayBuffer')
+				: undefined;
 
 	try {
 		const res = await call(method, pattern, req, who);

@@ -9,7 +9,7 @@ import type { RequestHandler } from './$types';
  * Internal twin of /api/v1/audit-log for the /audit page. Both read the log
  * through `queryAuditLog` (`$lib/server/audit-log`, card 2294), where the
  * filters are listed and the seven ways the two had come apart are settled.
- * Filters: ?boardId=N &action=string (suffix * for prefix match) &source=ui|api
+ * Filters: ?boardId=N &action=string (suffix * for prefix match) &source=ui|api|system
  *          &userId=N &cardId=N &from=ISO &to=ISO &limit=N (default 100, max
  *          500) &offset=N &before=<createdAt>,<id>
  *

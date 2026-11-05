@@ -34,7 +34,7 @@ const spec = {
 	openapi: '3.1.0',
 	info: {
 		title: 'DumpFire API',
-		version: '1.6.0',
+		version: '1.7.0',
 		description:
 			'REST API for the DumpFire Kanban board. Automate card creation, movement, assignments, and more.\n\n' +
 			'**Failures.** Every failure DumpFire answers under /api/v1/ is JSON with a `message` that says why, as in ' +
@@ -42,6 +42,18 @@ const spec = {
 			'(404, {"message": "Not found"}) and a method the route does not have (405, with an Allow header naming the ones it has). ' +
 			'Some failures carry more beside the message: a 429 has `retryAfterSecs`, the 409 for a dependency that would close a loop has `cycle`, ' +
 			'and the 409 for a batch that was refused lists every item of it that was at fault.\n\n' +
+			'**Changed on 2026-11-05 (version 1.7.0).** A card\'s files through an API key (card 2754). Three operations are new, under the tag Attachments: ' +
+			'(1) GET /api/v1/cards/{cardId}/attachments lists a card\'s files, oldest first, each as the new schema Attachment; ' +
+			'(2) POST /api/v1/cards/{cardId}/attachments attaches an image: the body is the image itself, a PNG, JPEG, GIF or WebP sent with that Content-Type, up to 5 MB, ' +
+			'its name in `?name=`. Its bytes must be the type it was sent as and a whole, still image; its metadata (EXIF, XMP, text, comments, thumbnails) is taken out before it is kept, ' +
+			'and anything after the end of the image is refused. A key\'s user may upload 30 images an hour and 100 MB a day, whichever of their keys is used, and a card holds at most 20 images; ' +
+			'(3) GET /api/v1/cards/{cardId}/attachments/{attachmentId} downloads one file, always as a download, typed as an image only when its bytes are that image; ' +
+			'(4) the upload is the one operation whose limit is not 512 KB, and the one that asks for the card and the caller before it reads its body; ' +
+			'(5) a file is not deleted through a key; ' +
+			'(6) the images of a card closed (completed and still in its Complete column, or archived) more than IMAGE_RETENTION_DAYS ago, 180 unless the server sets it, ' +
+			'are moved to the trash by DumpFire itself, each with an `attachment_expired` entry whose source is the new value `system`, with no user, named DumpFire: ' +
+			'GET /api/v1/audit-log answers `system` in `source` and filters by it, and an image uploaded to such a card is refused 409; ' +
+			'(7) nothing else changed.\n\n' +
 			'**Changed on 2026-11-04 (version 1.6.0).** Decision records through an API key (card 2682). Seventeen operations are new, under the tag Decisions: ' +
 			'(1) GET /api/v1/decisions reads the register; POST /api/v1/boards/{boardId}/decisions makes a draft; GET, PATCH and DELETE /api/v1/decisions/{decisionId} read a decision as its editors do, save its working copy and delete one never opened; ' +
 			'PUT …/decider and PUT …/participants name its decider and its participants; POST …/extend, …/withdraw and …/supersede; GET and POST …/questions and POST …/questions/{questionId}/answer; GET …/summary and GET …/record; ' +
@@ -428,12 +440,14 @@ const spec = {
 			'its last second, 23:59:59 UTC. Anything else is answered 400 naming the parameter. Until 2026-10-14 some stored times were answered as ' +
 			'`YYYY-MM-DD HH:MM:SS`, which names no zone, and the same field could be in either form (item 53).\n\n' +
 			'**The request body.** A body that is missing, is not valid JSON, or is JSON and not an object is answered 400 when the ' +
-			'operation reads it. The size limit is 512 KB on every operation here. A body that declares more than that in Content-Length is ' +
+			'operation reads it. The size limit is 512 KB on every operation here but one: POST /api/v1/cards/{cardId}/attachments, whose body is ' +
+			'an image, takes 5 MB. A body that declares more than its limit in Content-Length is ' +
 			'answered 413 before the operation is reached, and before the key is looked at: its `message` says how large it is and what the ' +
 			'limit is, and `limitBytes` is the limit as a number. A body sent in chunks, with no Content-Length, is held to the same limit as it ' +
 			'is read: once it passes it, it is answered 413 with a `message` that says the limit, and `limitBytes`, and no more of it is read. A body ' +
 			'that runs past the length it declared is answered 413, {"message": "Payload Too Large"}. Every operation that reads a body reads it before it looks ' +
 			'for the resource, so a body that is not a JSON object sent to a card that does not exist is answered 400 where an object is answered 404 or 403. ' +
+			'The image upload is the one that does not: it looks for the card and checks the caller before it reads a byte, and asks both again when it writes. ' +
 			'The fields of an object are read after that: what the path names is looked for (404, to everyone), the caller is checked (403), and then ' +
 			'each field is read (400, naming the field), so a caller who would be refused is answered 404 or 403 whatever the fields hold. An ' +
 			'operation with nothing in its path to look for, the token operations and the dependency and token batches read their fields first. ' +
@@ -451,12 +465,17 @@ const spec = {
 			'**Deletes.** Archiving a card touches nothing but the card. A permanent delete of a card, a column or a board ' +
 			'removes everything under it, sub-boards at every depth included, and every dependency link that has a deleted ' +
 			'card or subtask at either end. Attachment files of deleted cards are kept on the server for 30 days. Ids are never reused.\n\n' +
-			'**Attachments** are not part of this API. In the web application an attachment opened by its address is shown in ' +
-			'the browser only if it is a PNG, JPEG, GIF, WebP or .txt file whose stored type and extension agree; every other ' +
+			'**Attachments.** A key lists a card\'s files, downloads one, and attaches an image: see the tag Attachments. It deletes none. ' +
+			'A download through this API is always a download, with Content-Security-Policy: sandbox, X-Content-Type-Options: nosniff and ' +
+			'Cache-Control: no-store, typed as an image only when its stored type is a PNG, JPEG, GIF or WebP and its bytes are that image. ' +
+			'In the web application an attachment opened by its address is shown in ' +
+			'the browser only if it is a PNG, JPEG, GIF, WebP or .txt file whose stored type and extension agree, and, for an image, whose bytes are that image; every other ' +
 			'attachment, a PDF, an HTML or an SVG file among them, is a download. Every answer carries ' +
 			'Content-Security-Policy: sandbox and X-Content-Type-Options: nosniff. GET /api/v1/audit-log and the activity reads can return ' +
-			'`attachment_added` and `attachment_deleted`, written by the web application when a file is attached to or deleted from a card; ' +
-			'neither was recorded before. No webhook is sent for either.\n\n' +
+			'`attachment_added`, written when a file is attached to a card in the web application or an image through this API (as `api:attachment_added`), and ' +
+			'`attachment_deleted`, written when one is deleted in the web application. No webhook is sent for either. ' +
+			'An image of a card closed more than IMAGE_RETENTION_DAYS ago (180 unless the server sets it) is moved to the trash by DumpFire itself, with ' +
+			'`attachment_expired`, whose source is `system`, with no user and the name DumpFire; no webhook is sent for it.\n\n' +
 			'**Three answers that are not JSON.** Each is made by SvelteKit before DumpFire\'s gate is given the request, so the gate ' +
 			'cannot answer them as it answers everything else. (1) A POST, PUT, PATCH or DELETE whose Content-Type is that of a form or text/plain, sent with no Origin header ' +
 			'matching the server, is answered 403 in plain text, with one exception: when the request\'s Accept header is exactly ' +
@@ -1340,7 +1359,7 @@ const spec = {
 					id: { type: 'integer' },
 					boardId: { type: 'integer', description: 'The board the entry was written against' },
 					cardId: { type: ['integer', 'null'], description: 'The card it is about. null for an entry about no card, or whose card has since been deleted.' },
-					userId: { type: ['integer', 'null'], description: 'Who did it. null once that user has been deleted.' },
+					userId: { type: ['integer', 'null'], description: 'Who did it. null once that user has been deleted, or for an entry DumpFire wrote itself (source `system`).' },
 					action: {
 						type: 'string',
 						description: 'The canonical action name, the same whether it was done in the web application or through the API: card_moved. Filter and group on this.'
@@ -1349,7 +1368,11 @@ const spec = {
 					detail: { type: ['string', 'null'] },
 					userName: { type: ['string', 'null'], description: 'The user\'s name as it was when the entry was written' },
 					userEmoji: { type: ['string', 'null'] },
-					source: { type: 'string', enum: ['ui', 'api'], description: 'Where the action came from. Never null.' },
+					source: {
+						type: 'string',
+						enum: ['ui', 'api', 'system'],
+						description: 'Where the action came from: the web application, the API, or DumpFire itself (`system`, with no user, named DumpFire). Never null.'
+					},
 					createdAt: { type: 'string', format: 'date-time' },
 					boardName: { type: 'string', description: 'Name of the board, or "Unknown"' }
 				},
@@ -2138,6 +2161,29 @@ const spec = {
 					userEmoji: { type: 'string' }
 				},
 				required: ['id', 'cardId', 'userId', 'content', 'createdAt', 'updatedAt', 'username', 'userEmoji']
+			},
+			Attachment: {
+				type: 'object',
+				description:
+					'A file on a card: one attached in the web application, or an image attached through this API. The name the file is kept under on the server is not given.',
+				properties: {
+					id: { type: 'integer' },
+					cardId: { type: 'integer' },
+					originalName: {
+						type: 'string',
+						description:
+							'The name it is shown and downloaded under: the uploader\'s, or for an image uploaded through this API the `name` asked for, cleaned and given the extension of its bytes'
+					},
+					mimeType: {
+						type: 'string',
+						description:
+							'The type it was stored with: for an image uploaded through this API, the type its bytes are; for a file attached in the web application, the type the browser named'
+					},
+					sizeBytes: { type: 'integer', description: 'Its size in bytes, as kept: for an image uploaded through this API, once its metadata was taken out' },
+					uploadedBy: { type: ['integer', 'null'], description: 'The user who attached it, or null where that is not recorded' },
+					createdAt: { type: 'string', format: 'date-time' }
+				},
+				required: ['id', 'cardId', 'originalName', 'mimeType', 'sizeBytes', 'uploadedBy', 'createdAt']
 			},
 			SubtaskLinkedWork: {
 				type: 'object',
@@ -3226,7 +3272,8 @@ const spec = {
 			},
 			PayloadTooLarge: {
 				description:
-					'The request body is over the size limit, which is 512 KB on every operation of this API. Nothing was written. ' +
+					'The request body is over the size limit, which is 512 KB on every operation of this API but the image upload, ' +
+					'POST /api/v1/cards/{cardId}/attachments, whose limit is 5 MB. Nothing was written. ' +
 					'A request that declares more than the limit in Content-Length is answered before its body is read: the message says how large it is and ' +
 					'what the limit is, and `limitBytes` is the limit as a number of bytes. A body sent in chunks, with no Content-Length, is answered the ' +
 					'same once it has been read past the limit, with the limit and `limitBytes`; its size is not said, because it was not read to its end. ' +
@@ -5048,6 +5095,201 @@ const spec = {
 				}
 			}
 		},
+		'/api/v1/cards/{cardId}/attachments': {
+			get: {
+				tags: ['Attachments'],
+				summary: 'List a card\'s files',
+				description:
+					'Every file on a card, oldest first and, within one second, by id: the files attached in the web application and the images attached through this API. ' +
+					'Needs view access to the card\'s board. Read a file with GET /api/v1/cards/{cardId}/attachments/{attachmentId}.',
+				operationId: 'listAttachments',
+				parameters: [{ $ref: '#/components/parameters/cardId' }],
+				responses: {
+					'200': {
+						description: 'The card\'s files',
+						content: {
+							'application/json': {
+								schema: { type: 'array', items: { $ref: '#/components/schemas/Attachment' } }
+							}
+						}
+					},
+					'400': {
+						description: 'cardId is not a whole number of 1 or more',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid card ID' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'No access to the board the card is on',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board' } } }
+					},
+					'404': {
+						description: 'There is no such card',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Card not found' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
+				}
+			},
+			post: {
+				tags: ['Attachments'],
+				summary: 'Attach an image to a card',
+				description:
+					'Attaches a PNG, JPEG, GIF or WebP image to a card. The body is the image itself, not JSON and not a form, sent with its type as Content-Type, ' +
+					'up to 5 MB; Content-Length may be left out (a body sent in chunks is counted as it is read). Needs edit access to the card\'s board. ' +
+					'The bytes must be the type they are sent as and a whole, still image of it, at most 8000 pixels on a side and 40 megapixels in all: ' +
+					'an animated image, or one with anything after its end, is refused. Its metadata (EXIF, XMP, text chunks, comments, thumbnails) is taken out before it is kept; ' +
+					'nothing is decoded or re-encoded. A key\'s user may upload 30 images an hour and 100 MB a day, whichever of their keys is used, and a card holds at most 20 images, ' +
+					'whichever way they were attached. Logs api:attachment_added to the activity feed and emits a live board update; no webhook is sent. ' +
+					'In order: the card is looked for (404) and the caller checked (403), the Content-Type is read (415) and the upload counted against the hour (429), ' +
+					'all before a byte of the body is read; then the body is read (413 past 5 MB, not counted against the day), every byte read is counted against the day (429), ' +
+					'and the bytes are checked (415, 400), so a body the check refuses still counts against the day; ' +
+					'then, as the image is written, the key, the card and the caller are asked again (401, 404, 403), whether the card was closed more than IMAGE_RETENTION_DAYS ago, ' +
+					'so that its images are being moved to the trash (409), and the card\'s room for one more image (409). ' +
+					'Nothing is written on a refusal. An upload counted against the hour or the day stays counted when a later step refuses it.',
+				operationId: 'createAttachment',
+				parameters: [
+					{ $ref: '#/components/parameters/cardId' },
+					{
+						name: 'name',
+						in: 'query',
+						required: false,
+						schema: { type: 'string' },
+						description:
+							'The name the image is shown and downloaded under. Only what follows its last / or \\ is kept; control and format characters and <>:"|?* are taken out; ' +
+							'it is cut to 100 characters, and its extension is then replaced by the one its bytes are (.png, .jpg, .gif or .webp). ' +
+							'Left out, or with nothing left, the image is named image-<UTC date>-<time>, as image-2026-11-05-143000.png.'
+					}
+				],
+				requestBody: {
+					required: true,
+					description: 'The image itself, as its bytes',
+					content: {
+						'image/png': { schema: { type: 'string', format: 'binary' } },
+						'image/jpeg': { schema: { type: 'string', format: 'binary' } },
+						'image/gif': { schema: { type: 'string', format: 'binary' } },
+						'image/webp': { schema: { type: 'string', format: 'binary' } }
+					}
+				},
+				responses: {
+					'201': {
+						description: 'The image is attached: its name as cleaned, its type as its bytes are, and its size once its metadata was taken out',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/Attachment' }
+							}
+						}
+					},
+					'400': {
+						description:
+							'cardId is not a whole number of 1 or more; or the bytes are not a valid image of their type: cut short, malformed, animated, with anything after the image\'s end, ' +
+							'or over 8000 pixels on a side or 40 megapixels. The message says which. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid card ID' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'No access to the card\'s board, or view access only; asked again as the image is written. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No edit access to this board' } } }
+					},
+					'404': {
+						description: 'There is no such card; asked again as the image is written',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Card not found' } } }
+					},
+					'409': {
+						description:
+							'The card was closed (completed and still in its Complete column, or archived) more than IMAGE_RETENTION_DAYS ago, 180 unless the server sets it, ' +
+							'so its images are moved to the trash: reopen or restore it first. Or the card already holds 20 images, however they were attached. Nothing was written.',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'This card already has 20 images' } } }
+					},
+					'413': { $ref: '#/components/responses/PayloadTooLarge' },
+					'415': {
+						description:
+							'The Content-Type is not image/png, image/jpeg, image/gif or image/webp (the body is not read); or the bytes are not the type it names. Nothing was written.',
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/Error' },
+								example: { message: 'Send the image as the body, with Content-Type image/png, image/jpeg, image/gif or image/webp' }
+							}
+						}
+					},
+					'429': {
+						description:
+							'More than 60 requests in a minute with this key (see RateLimited); or the key\'s user has uploaded 30 images in the last hour, counted before the body is read, ' +
+							'or this image would take them past 100 MB in a day, counted with the bytes read, before they are checked. Every key of the user counts against the same hour and day. ' +
+							'Nothing was written: send it again after the Retry-After seconds.',
+						headers: {
+							'Retry-After': {
+								description: 'Seconds until the request can be sent again. The same number as `retryAfterSecs` in the body.',
+								schema: { type: 'integer' }
+							}
+						},
+						content: {
+							'application/json': {
+								schema: { $ref: '#/components/schemas/RateLimitError' },
+								example: { message: 'Rate limit exceeded', retryAfterSecs: 42 }
+							}
+						}
+					},
+					'500': { $ref: '#/components/responses/InternalError' }
+				}
+			}
+		},
+		'/api/v1/cards/{cardId}/attachments/{attachmentId}': {
+			get: {
+				tags: ['Attachments'],
+				summary: 'Download a file on a card',
+				description:
+					'One file on a card, as its bytes and not JSON. It is always a download (Content-Disposition: attachment, with its name), never shown, with ' +
+					'X-Content-Type-Options: nosniff, Content-Security-Policy: sandbox and Cache-Control: no-store. Its Content-Type is image/png, image/jpeg, image/gif or image/webp ' +
+					'only when it was stored as that type and its bytes are that image; anything else, a text file among them, is application/octet-stream. ' +
+					'Needs view access to the card\'s board. A file on another card is answered as one that is not there, before any question of access. A failure is answered as JSON, as everywhere else.',
+				operationId: 'getAttachment',
+				parameters: [
+					{ $ref: '#/components/parameters/cardId' },
+					{
+						name: 'attachmentId',
+						in: 'path',
+						required: true,
+						schema: { type: 'integer', minimum: 1 },
+						description: 'Attachment ID, as `id` in the card\'s list: a whole number of 1 or more. Anything else is 400 Invalid attachment ID.'
+					}
+				],
+				responses: {
+					'200': {
+						description: 'The file',
+						headers: {
+							'Content-Disposition': {
+								description: 'attachment, with the file\'s name: filename= in ASCII, and filename*= in UTF-8',
+								schema: { type: 'string' }
+							},
+							'Content-Length': { description: 'The file\'s size in bytes', schema: { type: 'integer' } },
+							'Cache-Control': { description: 'Always no-store', schema: { type: 'string' } }
+						},
+						content: {
+							'application/octet-stream': { schema: { type: 'string', format: 'binary' } },
+							'image/png': { schema: { type: 'string', format: 'binary' } },
+							'image/jpeg': { schema: { type: 'string', format: 'binary' } },
+							'image/gif': { schema: { type: 'string', format: 'binary' } },
+							'image/webp': { schema: { type: 'string', format: 'binary' } }
+						}
+					},
+					'400': {
+						description: 'cardId or attachmentId is not a whole number of 1 or more',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Invalid attachment ID' } } }
+					},
+					'401': { $ref: '#/components/responses/Unauthorized' },
+					'403': {
+						description: 'No access to the board the card is on',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'No access to this board' } } }
+					},
+					'404': {
+						description: 'There is no such file on this card (`Attachment not found`), or its file is not on the server (`File not found on disk`)',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'Attachment not found' } } }
+					},
+					'429': { $ref: '#/components/responses/RateLimited' },
+					'500': { $ref: '#/components/responses/InternalError' }
+				}
+			}
+		},
 		'/api/v1/comments/{commentId}': {
 			get: {
 				tags: ['Comments'],
@@ -6757,8 +6999,8 @@ const spec = {
 					{
 						name: 'source',
 						in: 'query',
-						schema: { type: 'string', enum: ['ui', 'api'] },
-						description: 'Filter by where the action came from: the web application or the API'
+						schema: { type: 'string', enum: ['ui', 'api', 'system'] },
+						description: 'Filter by where the action came from: the web application, the API, or DumpFire itself (`system`, since 2026-11-05)'
 					},
 					{
 						name: 'from',
@@ -6828,8 +7070,8 @@ const spec = {
 						}
 					},
 					'400': {
-						description: 'source is neither ui nor api, boardId, userId or cardId is not a whole number of 1 or more (`Invalid board ID`), from or to is not a date or a timestamp (`from is not a date`), from is after to ("`from` is after `to`", item 74), or before is not an entry\'s createdAt and id (item 104)',
-						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'source must be "ui" or "api"' } } }
+						description: 'source is not ui, api or system, boardId, userId or cardId is not a whole number of 1 or more (`Invalid board ID`), from or to is not a date or a timestamp (`from is not a date`), from is after to ("`from` is after `to`", item 74), or before is not an entry\'s createdAt and id (item 104)',
+						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'source must be "ui", "api" or "system"' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },
 					'403': {
@@ -9399,6 +9641,7 @@ const spec = {
 		{ name: 'Assignees', description: 'Card user assignments' },
 		{ name: 'Subtasks', description: 'Card subtasks / checklist items' },
 		{ name: 'Comments', description: 'Card discussion comments' },
+		{ name: 'Attachments', description: "A card's files: listed and downloaded, and an image attached" },
 		{ name: 'Labels', description: 'Board labels for tagging cards' },
 		{ name: 'Card Labels', description: 'Label assignments on cards' },
 		{

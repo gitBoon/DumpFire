@@ -17,7 +17,7 @@ import type { RequestHandler } from './$types';
  *                      source, so `card_moved` finds both UI and API moves;
  *                      a trailing `*` is a prefix match, and nothing else is
  *                      a wildcard: `card_*` does not find `cards_purged`.
- *   ?source=ui|api   — Where the action came from
+ *   ?source=ui|api|system — Where the action came from (`system`: DumpFire itself)
  *   ?userId=N        — Filter by user
  *   ?cardId=N        — Filter by card
  *   ?from=ISO        — From date (inclusive)

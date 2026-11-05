@@ -151,6 +151,10 @@ const TEST_FILES = [
 	'ideas-board.test.ts',
 	// Milestone 22, slice S5b: the same on the screens (Create Board, the header, the More menu, the columns, the Send window).
 	'ideas-screens.svelte.test.ts',
+	// Card 2754, slice S1: whether bytes are a PNG, JPEG, GIF or WebP image, and their metadata taken out.
+	'image-check.test.ts',
+	// Card 2754, slice S3: the images of cards closed long ago moved to the trash, as DumpFire itself.
+	'image-retention.test.ts',
 	'import-working-copy.test.ts',
 	'internal-refusals.test.ts',
 	'kanban-column-header.svelte.test.ts',
@@ -214,6 +218,8 @@ const TEST_FILES = [
 	'uploads-sweep.test.ts',
 	'uploads.test.ts',
 	'user-delete.test.ts',
+	// Card 2754, slice S2b: a card's files listed and downloaded, and an image uploaded, through /api/v1 with a key.
+	'v1-attachments.test.ts',
 	'webhooks.test.ts',
 	'write-as.test.ts',
 	'xp-leaderboard.svelte.test.ts'

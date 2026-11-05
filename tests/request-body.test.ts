@@ -848,6 +848,8 @@ const NOT_JSON: Record<string, string> = {
 	'src/routes/api/admin/import/+server.ts arrayBuffer()': 'The import reads a .db backup, as bytes.',
 	'src/routes/api/cards/[id]/attachments/+server.ts formData()':
 		'The attachment upload reads a form. guardBody answers a body that is not one 400.',
+	'src/routes/api/v1/cards/[cardId]/attachments/+server.ts arrayBuffer()':
+		"A key's image upload (card 2754) reads the image as bytes: the body is the image itself, checked by checkImage.",
 	'src/lib/server/body-limits.ts .body':
 		'heldToLimit passes the body through a count, for whatever reads it after. Its other two are `request.body === null`, which reads nothing.'
 };

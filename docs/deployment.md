@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.106
+version: 1.107
 status: As-Built
-date: 2026-11-04
+date: 2026-11-05
 tags:
   - decision-reminders
   - docker
@@ -36,7 +36,8 @@ tags:
   - webhook-allow-list
   - board-page
   - card-window
-description: "Docker deployment, the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, and production configuration for DumpFire"
+  - image-retention
+description: "Docker deployment, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, and production configuration for DumpFire"
 ---
 
 # DumpFire Deployment Guide
@@ -206,6 +207,7 @@ On the Docker host itself there is usually no Node to run the suite with outside
 | `DB_PATH` | `/app/data/dumpfire.db` in the image; `dumpfire.db` in the working directory for a server started any other way | No | The database file. It must be on the volume: the uploads are in the folder `uploads` beside it. The image sets it since card 2083; an image built before that sets none, and a container from it started without `DB_PATH` keeps its database at `/app/dumpfire.db`, inside the container. At the image's path, a server that finds no database there, or an empty file, while it can see a database file at `/app/dumpfire.db` or elsewhere in `/app/data`, or a `dumpfire.db-wal` without its database, **refuses to start** rather than create an empty one: see [Start-Up Sequence](#start-up-sequence) |
 | `LOG_LEVEL` | `INFO` | No | Lowest level logged: `DEBUG`, `INFO`, `WARN`, `ERROR` or `CRITICAL`. Leave it at `INFO` or `WARN` when updating: the migration runner reports what it applied and rebuilt at `WARN` |
 | `LOG_RETENTION_DAYS` | `30` | No | How long rows are kept in `system_logs`. The table is also capped at 50,000 rows, whatever their age |
+| `IMAGE_RETENTION_DAYS` | not set, which is `180` | No | How many days a closed card keeps its images (card 2754): an image (PNG, JPEG, GIF or WebP, by its stored type) on a card archived, or completed and still in its Complete column, longer ago than this is moved to the attachment trash by the sweep, at most 200 a run. A whole number of days from `30` to `3650`, digits only, or `off` (lowercase) for no retention. **Anything else** (`abc`, `10`, ` 180`, `+180`, an empty value) **moves nothing** and logs an `[ERROR] [UPLOADS]` line at every sweep until it is put right. Runs only where the schedulers run. See [Image retention](#image-retention) |
 | `SCHEDULERS` | `on` in a built server, `off` under `npm run dev` | No | `on` or `off`: whether the backup, report and snapshot schedulers, the decision reminder (card 2685) and the attachment file sweep run. Set it to `off` for any instance that holds production's data and is not production. Such an instance holds production's backup destinations, report schedules, open decisions and mail settings, and with its schedulers running it backs up to production's destinations, prunes the backups there, sends production's reports and mails the participants of production's open decisions a reminder before each closes. When they are off, one `[WARN] [SCHEDULERS]` line at start says so: `Schedulers are off (…). No scheduled backup, report, snapshot, decision reminder or attachment file sweep will run from this instance. Set SCHEDULERS=on to run them.` "Run Backup Now" in the admin panel works either way, and so do email and webhooks sent in answer to an action. To make such a copy harmless in itself, import the backup as a working copy: see [Admin Guide](admin-guide.md#restoring-from-backup) |
 | `PASSWORD_THREADS` | not set: two, or one on a machine with one or two CPUs | No: **leave it unset** | How many worker threads hash and check passwords, so that the server's own thread is never held by one (card 2191). Unset, it is `min(2, max(1, CPUs - 1))`. A whole number from `0` to `8` is taken as it is; `0` checks every password on the server's own thread, as the tests do, which holds every other request for about a fifth of a second each time, and is not for a server. Anything else is one `[WARN] [AUTH]` line, `PASSWORD_THREADS="…" is not a whole number from 0 to 8: password checks run on N worker thread(s)`, and the default. Read once, at the first check. See [Password Hashing](authentication-security.md#password-hashing) |
 | `SIGN_IN_ONE_AT_A_TIME` | not set, which is `on` | No: **set it only as** [If an Attack Keeps an Owner Out](#if-an-attack-keeps-an-owner-out) **says, and remove it after** | `on` or `off`, in any case, trimmed; empty is `on`. `off` turns off the rule that holds sign-ins from browsers not remembered for an account to one at a time while the account is being guessed at (card 2194): every browser is then let in after the account's wait. While it is `off`, one `[WARN] [STARTUP]` line at every start says so, to the console whatever `LOG_LEVEL` is. Anything else is one `[WARN] [AUTH]` line, `SIGN_IN_ONE_AT_A_TIME is "…", which is neither on nor off: sign-ins from browsers not remembered are held to one at a time`, and `on`. Read once, at start. See [Browsers That Have Signed In Before](authentication-security.md#browsers-that-have-signed-in-before) |
@@ -476,7 +478,7 @@ The uploads folder follows `DB_PATH`: it is the folder named `uploads` in the di
 
 ## Attachment Files
 
-A file attached to a card is stored on disk, not in the database. The database holds a row for it, with the file's name; the file is at `uploads/<card id>/<file name>` beside the database.
+A file attached to a card is stored on disk, not in the database. The database holds a row for it, with the file's name; the file is at `uploads/<card id>/<file name>` beside the database. Both ways of attaching a file write there: the card window's upload, and since card 2754 an image uploaded through an API key (`POST /api/v1/cards/{cardId}/attachments`), whose file is named `<uuid>.<png|jpg|gif|webp>` by the server and whose row adds about a hundred bytes to the database. No file is ever kept in the database itself, so images do not grow it or its backups.
 
 > ⚠️ **Attachment files are in no backup.** A scheduled backup, "Run Backup Now" and the database export each hold the database and nothing else. Back the uploads folder up separately, or a restore brings back cards whose attachments cannot be opened.
 
@@ -487,6 +489,7 @@ flowchart TD
     Upload["A file is attached to card 12"] --> Live["uploads/12/report.pdf"]
     Live -->|"The attachment, its card, its column or its board is deleted,<br/>archived cards are purged, a board's cards are cleared,<br/>or the database is reset"| Trash["uploads/.trash/12/report.pdf<br/>with a marker file holding the date"]
     Live -->|"No attachment row names it, and it has not<br/>changed for 24 hours: the sweep"| Trash
+    Live -->|"An image on a card archived, or completed and in its<br/>Complete column, longer than IMAGE_RETENTION_DAYS (180):<br/>image retention, in the sweep, row deleted"| Trash
     Live -->|"The card is archived"| Live
     Trash -->|"Import Backup restores a row<br/>that names the file"| Live
     Trash -->|"More than 30 days in the trash,<br/>ten minutes after a start or<br/>at a six-hourly maintenance tick"| Gone["Removed from disk"]
@@ -495,7 +498,7 @@ flowchart TD
 
 ### The trash
 
-- **A deleted card's files are moved, not removed.** They go to `uploads/.trash/<card id>/`, beside a marker file `.trashed-at` that holds the date. Archiving a card moves nothing.
+- **A deleted card's files are moved, not removed.** They go to `uploads/.trash/<card id>/`, beside a marker file `.trashed-at` that holds the date. Archiving or completing a card moves nothing at the time; only [image retention](#image-retention), long after, moves its images.
 - **They stay for 30 days.** A folder of the trash is removed once it was last added to more than 30 days ago. The period is fixed.
 - **The trash is emptied by a timer, never at start-up.** The timer starts with the server, looks at the trash for the first time ten minutes after a start and then every six hours, so nothing is removed from disk as the server comes up. A server that is restarted more often than every six hours still empties its trash, at the ten-minute run after each start; one that is restarted more often than every ten minutes never does.
 - **`SCHEDULERS=off` does not stop it.** The timer belongs to log maintenance, not to the schedulers `SCHEDULERS` decides (the backup, report and snapshot schedulers, the decision reminder and the attachment file sweep), and runs in every instance.
@@ -531,6 +534,23 @@ A file can be in a card's folder with no attachment row naming it: a move to the
   | `[WARN] [UPLOADS] Attachment files were not swept: …` | The uploads folder was refused, with why |
 - **Two databases in one folder share one uploads folder.** The uploads folder is the folder `uploads` beside the database file, so a scratch database made beside `dumpfire.db`, for a test or a rehearsal on the host, has the live installation's files as its own. Started with the schedulers on, its sweep moves to the trash every file of the live installation that its own rows do not name, in every card folder numbered up to its own highest card id, a day after the file was written; 30 days later they are gone. Start a scratch database with `SCHEDULERS=off`, as [the rehearsal](#rehearsing-an-update-against-a-copy) does, or in a folder of its own, or with `UPLOADS_DIR` pointing at an empty folder of its own. (`UPLOADS_DIR` is for such a run and the tests; production never sets it.)
 - **Disk space.** Deleting cards does not free the space their attachments use until 30 days later. To free it sooner, delete folders under `uploads/.trash/` by hand: the application has no way to empty the trash early. A file removed that way can no longer be put back by Import Backup.
+
+### Image retention
+
+Images are not deleted when a card is completed: cards are reopened, and a card's screenshots are the record of what was asked. **Each sweep run first moves to the trash the images of cards closed longer than `IMAGE_RETENTION_DAYS`** (card 2754; 180 days unless set). The rule, the entry it writes and how to get an image back are in [Image Retention](backup-reporting.md#image-retention); for the host:
+
+- **What it takes.** Rows whose stored type is `image/png`, `image/jpeg`, `image/gif` or `image/webp` (parameters and case ignored), whichever way they were attached, on a card that is archived with `archived_at` older than the cutoff, or that sits now in a column titled Complete or Done (any case, trimmed) with `completed_at` older than the cutoff. A PDF, a text file or any other file stays. A card with a stale `completed_at` in another column keeps its images.
+- **How.** In one transaction, at most 200 rows a run, oldest closed first: the rows are deleted, each with an `attachment_expired` entry (source `system`, no user, named DumpFire) and the card's live update, and the files are moved to `uploads/.trash/<card id>/` once that commits. They stay there 30 days like any other, where Import Backup can still put back a file that a restored row names. A file whose move fails stays in its card's folder with no row naming it, and the orphan sweep moves it a day later.
+- **When.** At the start of each sweep run, so only where the schedulers run: 15 minutes after the start, then every six hours. It is skipped while a transaction is open. It has a try/catch of its own: whatever it meets, the orphan sweep after it still runs.
+- **What it logs** (context `UPLOADS`):
+
+  | Line | When |
+  |---|---|
+  | `[INFO] [UPLOADS] Moved N image(s) of cards closed more than D days ago to the trash` | A run that moved any; with `; more are due, and the next run takes up to 200 of them` when there were more than 200. Nothing is logged when there was nothing to move |
+  | `[ERROR] [UPLOADS] IMAGE_RETENTION_DAYS is set to "…", which is neither off nor a whole number of days from 30 to 3650. No image was moved to the trash: …` | At every run while the setting is refused. Nothing is moved; the orphan sweep still runs |
+  | `[ERROR] [UPLOADS] Images of closed cards were not moved to the trash: …. Nothing of this run was moved; the next run tries again.` | Retention failed (the database could not be read or written) |
+
+- **Before the first deploy**, count what the first runs will move with [the read-only query](#before-the-deploy-count-what-retention-will-first-move). With `off` nothing is ever moved, and an image a key uploads to a long-closed card is accepted.
 
 ### Backing up and restoring the files
 
@@ -5247,6 +5267,43 @@ On production, as **O** with an API key of O's, in the `curl.exe` form of [Part 
 
 **Going back to the previous image.** Nothing is done to the database. A column's limit made by the newer image stays. The older image answers `info.version` `1.3.0`, drops a limit sent with a new column, puts a card raised outside the first column in `progressed`, lists a second's entries in no set order, and averages an archived card in `me/stats`.
 
+### Card Images Through the API and Image Retention (API 1.7.0)
+
+**Card 2754.** No migration and no schema change: `card_attachments` already holds what is needed, and `activity_log.source` is free text. The OpenAPI document is version **1.7.0**, with a "Changed on 2026-11-05" note; [External API Reference](api-reference.md#changes-on-2026-11-05) has the same list. What changes:
+
+- **Three `/api/v1` operations** list a card's files, download one, and attach an image (PNG, JPEG, GIF or WebP, up to 5 MB, its metadata taken out), into the same uploads folder as the card window's: see [Attachment Files](#attachment-files). The upload's 5 MB is set in the application ([Upload Size Limits](#upload-size-limits)). `BODY_SIZE_LIMIT` already allows more, but **behind nginx add the `location ~ ^/api/v1/cards/[0-9]+/attachments$` block** of [Reverse Proxy — Nginx](#reverse-proxy--nginx) before the deploy: without it nginx's own 1 MB default refuses every image over 1 MB with its own HTML `413`, which never reaches DumpFire. Cloudflare Tunnel needs nothing.
+- **Image retention** starts with the first sweep, 15 minutes after the first start where the schedulers run, and moves at most 200 images a run, every six hours: see [Image retention](#image-retention).
+- **The card window shows an image only when its bytes are the image type it was stored as**; any other is a download. An image that was uploaded with the wrong type stops opening in the browser and downloads instead.
+- **A new activity source**, `system`, on the Audit page's Source filter as DumpFire.
+
+#### Before the deploy: count what retention will first move
+
+Decide `IMAGE_RETENTION_DAYS` first: leave it unset for 180, set a number from 30 to 3650, or `off`. Then, on the production database, read-only, count what the first runs will move at 180 days (change both `-180 days` for another setting):
+
+```sql
+SELECT COUNT(*) AS images, COALESCE(SUM(a.size_bytes), 0) AS bytes
+  FROM card_attachments a
+  JOIN cards c     ON c.id = a.card_id
+  JOIN columns col ON col.id = c.column_id
+ WHERE lower(trim(CASE WHEN instr(a.mime_type, ';') > 0
+                       THEN substr(a.mime_type, 1, instr(a.mime_type, ';') - 1)
+                       ELSE a.mime_type END))
+       IN ('image/png', 'image/jpeg', 'image/gif', 'image/webp')
+   AND (   (c.archived_at IS NOT NULL AND c.archived_at < datetime('now', '-180 days'))
+        OR (c.completed_at IS NOT NULL AND c.completed_at < datetime('now', '-180 days')
+            AND lower(trim(col.title)) IN ('complete', 'done')));
+```
+
+Run it with `sqlite3 -readonly <database>`. At most 200 move a sweep, so a count of 450 is moved over three runs, the last about twelve hours after the first. Every one stays in the trash 30 days. If the count is more than you expect, take a copy of the uploads folder first ([Backing up and restoring the files](#backing-up-and-restoring-the-files)), or deploy with `IMAGE_RETENTION_DAYS=off` and set it later.
+
+#### After the deploy
+
+- `GET /api/v1/openapi.json` answers `"version":"1.7.0"`.
+- With a key, `POST /api/v1/cards/<a test card>/attachments` with a screenshot, `Content-Type: image/png`: `201` with an `id`; the card window shows the image, and its activity "Attached …" from the API. A file renamed from `.svg` to `.png` and sent the same way: `415`.
+- 16 minutes after the start, where the count was above 0: one `[INFO] [UPLOADS] Moved N image(s) of cards closed more than 180 days ago to the trash` line, and the Audit page with Source DumpFire lists the `attachment_expired` entries. No `[ERROR] [UPLOADS]` line.
+
+**Going back to the previous image.** Nothing is done to the database. Images uploaded through a key stay attached and open in the card window, which then shows an image by its name and stored type alone. The rows retention deleted stay deleted; their files are in the trash for 30 days, where an Import Backup of an earlier backup puts back what its rows name. The older image answers the three attachment paths `404`, runs no retention, reads a `system` entry as the web application's, and answers `info.version` `1.6.0`.
+
 ## Changing the Schema
 
 The structure of the database is changed in one way only:
@@ -5318,12 +5375,19 @@ server {
         client_max_body_size 26m;
         proxy_pass http://localhost:3000;
     }
+
+    # An image uploaded with an API key (card 2754): up to 5 MB, the image
+    # itself as the body. DumpFire answers anything larger, with its limit.
+    location ~ ^/api/v1/cards/[0-9]+/attachments$ {
+        client_max_body_size 6m;
+        proxy_pass http://localhost:3000;
+    }
 }
 ```
 
 > ⚠️ **SSE requires `proxy_buffering off`** — without this, real-time board updates will not work.
 
-> ⚠️ **Without the two `client_max_body_size` lines, nginx refuses any upload over 1 MB itself**, with a page of its own that never reaches DumpFire. The import then says the backup "was refused before it reached DumpFire, probably a size limit at the proxy in front of it (HTTP 413)", and so does an attachment. Before the page could tell the difference it said "Invalid backup file".
+> ⚠️ **Without the three `client_max_body_size` lines, nginx refuses any upload over 1 MB itself**, with a page of its own that never reaches DumpFire. The import then says the backup "was refused before it reached DumpFire, probably a size limit at the proxy in front of it (HTTP 413)", and so does an attachment. Before the page could tell the difference it said "Invalid backup file".
 
 Leave `proxy_request_buffering` as it is, which is on. nginx then reads the whole upload before it passes it on, with its length in `Content-Length`, and DumpFire refuses one that declares more than its route accepts before reading any of it. Switched off, nginx passes an upload on in chunks as it arrives, which DumpFire also accepts: it counts such a body as it reads it, and refuses it once it passes the limit (see [Upload Size Limits](#upload-size-limits)). nginx keeps an upload of that size in a temporary file while it reads it, so its temp directory (`client_body_temp_path`) needs room for one backup.
 
@@ -5454,6 +5518,7 @@ flowchart LR
 |-----------|--------------------------|-------------------|
 | Every route, a page's form included | 512 KB | `src/lib/server/body-limits.ts` |
 | `POST /api/cards/[id]/attachments`, for a caller who is signed in | 26 MB: the handler accepts a file of up to 25 MB | The same file |
+| `POST /api/v1/cards/[cardId]/attachments`, for a key's user (card 2754) | 5 MB: the body is the image itself, with no form around it | The same file |
 | `POST /api/admin/import`, for the superadmin (anybody else signed in is held to 512 KB, and refused by the handler before it reads a byte) | All the server accepts: `BODY_SIZE_LIMIT` | The `Dockerfile` sets `512M`; override it with `-e BODY_SIZE_LIMIT=...` |
 
 A request that declares its length in `Content-Length` is held to the limit on that, before its body is read, so an upload that says it is too large is refused without any of it being read. One that declares no length, sent in chunks by its client or by a proxy that passes a body on that way (`cloudflared` does unless it is told not to: see below), is counted as it is read and refused once it passes the limit: the server reads up to the limit, and no further, before it refuses it. Either way the server never reads more than the limit, but a refusal of a body sent in chunks is not free. The server on its own holds a body with no length to `BODY_SIZE_LIMIT` alone, the whole server's limit (it held one to no limit at all before adapter-node 5.5.5), which is why the gate counts it against its route's. A chunked body that passes `BODY_SIZE_LIMIT` itself is refused by the server first, before the gate's count sees the bytes that pass it, and is answered `413` `{"message":"Payload Too Large"}`, without `limitBytes`: that is the import, whose limit is `BODY_SIZE_LIMIT`. Every route with a smaller limit still gets the gate's `413` with `limitBytes`.
@@ -5573,3 +5638,10 @@ The external API `/api/v1/*` is rate-limited, in memory, per process:
   address: see [The Caller's Address Behind a Proxy](#the-callers-address-behind-a-proxy).
 - Returns `429 Too Many Requests` with a `Retry-After` header when exceeded.
 - `GET /api/v1/openapi.json` needs no key and is not counted.
+- **The image upload** (`POST /api/v1/cards/{cardId}/attachments`, card 2754) has two
+  allowances more, kept per user and not per key, so a user's second key buys nothing:
+  **30 uploads an hour** (`attachment-upload:user:<id>`), taken before the body is read, and
+  **100 MB a day** (`attachment-bytes:user:<id>`), charged the bytes actually read, before
+  they are checked. Each is `429` with `Retry-After`; one taken stays taken when a later step
+  refuses the upload. They are in memory too: a restart starts them again. Each card holds
+  at most 20 images (`409`).

@@ -51,7 +51,7 @@ import { allOptionsOf, participantsOf, revisionOf } from './decision-content';
 import { accountHistory, lastMailAt, mailsSince, peopleById, recordMailsSince, snapshotOf, type RecordActor } from './decision-record';
 import { participantForLink, reachOf, type Reach } from './decision-links';
 import { CALLER_MAIL_DAILY_CAP, DAY_MS, dailyCapFrom, type HoldReason, mailRestOf } from './decision-mail';
-import { actorOf, type ActivitySource } from './logActivity';
+import { actorOf } from './logActivity';
 import { takeAllowance } from './rate-limit';
 import { DECISION_TEXT_MAX } from '$lib/decision-rules';
 import { DEAD_DECISION_LINK, NO_LONGER_REACHED, STALE_REVISION } from '$lib/decision-words';
@@ -84,7 +84,7 @@ export const OPENED_PEOPLE =
  * person's act to a key and records no agent's write as a person's
  * (`tests/decisions-api.test.ts` case 3).
  */
-export function sourceOf(opts: ServiceOptions): ActivitySource {
+export function sourceOf(opts: ServiceOptions): ServiceOptions['source'] {
 	return opts.source !== 'ui' || writingWithKey() ? 'api' : 'ui';
 }
 

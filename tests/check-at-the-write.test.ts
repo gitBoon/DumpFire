@@ -130,6 +130,12 @@ const ALLOWED: Record<string, string> = {
 	'src/routes/api/cards/[id]/attachments/+server.ts POST':
 		'The upload asks before it reads 25 MB, so that a caller with no access is not sent it, and asks again with the row inside ' +
 		'the transaction that attaches it (docs/authentication-security.md, "An upload is the one request that checks twice").',
+	'src/routes/api/v1/cards/[cardId]/attachments/+server.ts POST':
+		"A key's image upload (card 2754), the card window's upload's twin: it asks for the card and edit access before it reads " +
+		'5 MB, as the card window does, and again with the row inside the transaction that attaches it; it reads the declared type ' +
+		'from the request\'s header (415, imageTypeOf), and counts the upload against the key\'s user\'s hour in memory ' +
+		'(takeUploadCount, 429 answered by tooMany), so that a caller who would be refused is not sent the body. The type and the ' +
+		'count read no row.',
 	'src/routes/api/requests/+server.ts POST':
 		'The public request form: the form token and the rate limits are asked before the body. They read no row.',
 	'src/routes/api/requests/[id]/confirm/+server.ts POST':
@@ -573,6 +579,14 @@ const QUICK_CHECKS_IN: Record<string, { guards: string[]; reason: string }> = {
 		reason:
 			'The upload asks before it reads 25 MB, so that a caller with no access is not sent it (card 2115\'s ALLOWED), ' +
 			'and asks again with caller inside the writeAs that attaches it (decision 7).'
+	},
+	'src/routes/api/v1/cards/[cardId]/attachments/+server.ts POST': {
+		guards: ['requireCard', 'takeUploadCount'],
+		reason:
+			"A key's image upload (card 2754) asks for the card before it reads 5 MB, as the card window's upload does, and asks " +
+			'again with caller inside the writeAs that attaches it; and counts the upload against the hour of the account the gate ' +
+			"read, before the body (the review's S2): an account whose key is revoked meanwhile is refused at the write, and its " +
+			'count stays taken, as any refusal after it leaves it. Each binds no name.'
 	},
 	'src/routes/api/requests/+server.ts POST': {
 		guards: ['screenAnonymous'],
@@ -1593,6 +1607,8 @@ describe('every write handler asks who the caller is at the write (card 2253)', 
 			'src/routes/api/v1/cards/[cardId]/+server.ts DELETE',
 			'src/routes/api/v1/cards/[cardId]/assignees/+server.ts POST',
 			'src/routes/api/v1/cards/[cardId]/assignees/+server.ts DELETE',
+			// Card 2754: a key's image upload, new, keeping it from the start.
+			'src/routes/api/v1/cards/[cardId]/attachments/+server.ts POST',
 			'src/routes/api/v1/cards/[cardId]/comments/+server.ts POST',
 			'src/routes/api/v1/cards/[cardId]/dependencies/+server.ts POST',
 			'src/routes/api/v1/cards/[cardId]/dependencies/+server.ts DELETE',
@@ -2323,12 +2339,17 @@ const OUTSIDE_WRITE: Record<string, string> = {
 		"The address the mail a write sends links to: the configured App URL or the server's origin, read before the " +
 		'transaction, as it decides nothing about the caller or the row.',
 	json: "v1's answer (`$lib/server/v1-json`), made from what the callback returned, once the write is committed.",
-	attachmentPath:
-		"A path in the card's folder (`$lib/server/uploads`): no row, read before and after the transaction for the file " +
-		'itself, which an upload writes before its row and removes again if the row is not written (card 2337).',
-	cardDir:
-		"The card's folder (`$lib/server/uploads`): no row, made before the transaction for the file and removed after a " +
-		'failed one if the upload made it (card 2337).',
+	writeUploadFile:
+		"An upload's file, written into the card's folder before the transaction (`$lib/server/uploads`, card 2754's D19, " +
+		'the card window route\'s own code until then): no row, and it decides nothing about the caller; the row is the ' +
+		"service's, written after in a writeAs, which asks the card and the caller's access again (card 2337).",
+	removeUploadFile:
+		"The file `writeUploadFile` wrote, removed after a refused or failed transaction, and the card's folder if the " +
+		'upload made it (`$lib/server/uploads`, card 2754): no row.',
+	checkImage:
+		"A key's uploaded image, checked against its declared type and its metadata taken out (`$lib/server/image-check`, card " +
+		'2754): the bytes alone, no imports, no row; it decides nothing about the caller, who is asked for in the writeAs ' +
+		'that charges the bytes and again in the one that writes the row.',
 	refuseWrongLink:
 		'A personal link that opened no decision, counted in memory against the address once the write has refused it ' +
 		'(`$lib/server/decision-view`, card 2677, decision 8): it reads no row and writes none, but one WARN line in the log ' +
@@ -5173,7 +5194,7 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 			'src/lib/server/card-categories.ts': { reads: [], writes: ['createCardCategory', 'updateCardCategory', 'deleteCardCategory'] },
 			'src/lib/server/labels.ts': { reads: ['labelsOfBoard'], writes: ['createLabel', 'updateLabel', 'deleteLabel'] },
 			// Card 2337.
-			'src/lib/server/card-attachments.ts': { reads: [], writes: ['attachFile', 'deleteAttachment'] },
+			'src/lib/server/card-attachments.ts': { reads: ['listAttachments'], writes: ['attachFile', 'attachImage', 'deleteAttachment'] },
 			// Card 2674.
 			'src/lib/server/people.ts': {
 				// Card 2697 (Q21): a person's change's refusals, read before its password is asked for; and (the code

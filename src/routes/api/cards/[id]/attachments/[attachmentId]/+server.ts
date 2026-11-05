@@ -43,11 +43,12 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 	const data = await readFile(filePath).catch(() => null);
 	if (!data) throw error(404, 'File not found on disk');
 
-	// A download unless it is one of a few types that can run nothing, and
-	// sandboxed either way. See attachmentHeaders.
+	// A download unless it is one of a few types that can run nothing, an image
+	// only when its bytes are that image, and sandboxed either way. See
+	// attachmentHeaders.
 	return new Response(data, {
 		headers: {
-			...attachmentHeaders(attachment),
+			...attachmentHeaders(attachment, data),
 			'Content-Length': String(data.length)
 		}
 	});

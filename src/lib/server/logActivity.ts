@@ -26,8 +26,13 @@ import { activityLog } from './db/schema';
 import { afterCommit } from './db/transaction';
 import { dispatchWebhook, type WebhookEvent } from './webhooks';
 
-/** Where an action originated. */
-export type ActivitySource = 'ui' | 'api';
+/**
+ * Where an action originated: the web application, the API, or DumpFire
+ * itself (`system`, card 2754, D15), for an entry no person made, as the
+ * images retention moves to the trash. A `system` entry is stored bare, as a
+ * `ui` one is, and names no user.
+ */
+export type ActivitySource = 'ui' | 'api' | 'system';
 
 /**
  * The canonical action vocabulary, shared by both sources.
@@ -79,10 +84,14 @@ export const ACTIONS = {
 	commentAdded: 'comment_added',
 	commentEdited: 'comment_edited',
 	commentDeleted: 'comment_deleted',
-	// A file attached to a card and one deleted, by the web application alone:
-	// `/api/v1` serves no attachments (card 2337). Neither sends a webhook.
+	// A file attached to a card and one deleted (card 2337): attached by the web
+	// application or, an image, through `/api/v1` (card 2754); deleted by the
+	// web application alone. Neither sends a webhook. An image of a card closed
+	// longer than IMAGE_RETENTION_DAYS, moved to the trash by DumpFire itself
+	// (card 2754, `image-retention.ts`), source `system`, no user: no webhook.
 	attachmentAdded: 'attachment_added',
 	attachmentDeleted: 'attachment_deleted',
+	attachmentExpired: 'attachment_expired',
 	assigneeAdded: 'assignee_added',
 	assigneeRemoved: 'assignee_removed',
 	dependencyAdded: 'dependency_added',
@@ -211,10 +220,11 @@ export function actionCondition(action: string): SQL {
  * Where a stored row came from.
  *
  * Prefers the recorded column and falls back to the prefix, which is what rows
- * written before the column existed have to be read by.
+ * written before the column existed have to be read by. `system` is only
+ * ever recorded: no row older than the column is DumpFire's own.
  */
 export function readSource(row: { action: string; source?: string | null }): ActivitySource {
-	if (row.source === 'ui' || row.source === 'api') return row.source;
+	if (row.source === 'ui' || row.source === 'api' || row.source === 'system') return row.source;
 	return row.action.startsWith('api:') ? 'api' : 'ui';
 }
 

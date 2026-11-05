@@ -316,7 +316,8 @@ export const activityLog = sqliteTable('activity_log', {
 	userName: text('user_name').default(''),
 	userEmoji: text('user_emoji').default('👤'),
 	/**
-	 * Where the action came from: 'ui' or 'api'.
+	 * Where the action came from: 'ui' or 'api', or 'system' for an entry
+	 * DumpFire wrote itself, with no user (card 2754: image retention).
 	 *
 	 * Null on rows written before this column existed. Those are not backfilled
 	 * — the `api:` prefix on their action name already says which they were, and

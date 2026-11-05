@@ -33,7 +33,7 @@ import { error } from '@sveltejs/kit';
 import { and, desc, eq, gte, like, lte, notLike, sql } from 'drizzle-orm';
 import { db, sqlite } from './db';
 import { activityLog } from './db/schema';
-import { actionCondition, canonicalAction, readSource } from './logActivity';
+import { actionCondition, canonicalAction, readSource, type ActivitySource } from './logActivity';
 import { pathId, readLimit, readOffset, readQueryDate, readQueryId, refuseReversedRange } from './request-body';
 import type { Stamp } from '$lib/timestamps';
 
@@ -48,7 +48,7 @@ export type AuditLogParams = {
 	userId?: number;
 	cardId?: number;
 	action: string | null;
-	source: 'ui' | 'api' | null;
+	source: ActivitySource | null;
 	from?: Stamp;
 	to?: Stamp;
 	limit: number;
@@ -85,7 +85,9 @@ export function readBefore(value: string | null): AuditCursor | undefined {
  *   ?boardId=N       — the board at the time of the event
  *   ?action=string   — the action, however it was done; a trailing `*` is a
  *                      prefix match, and nothing else is a wildcard
- *   ?source=ui|api   — where it was done, or `400 source must be "ui" or "api"`
+ *   ?source=ui|api|system — where it was done, `system` for DumpFire's own
+ *                      entries (card 2754), or `400 source must be "ui",
+ *                      "api" or "system"`
  *   ?userId=N, ?cardId=N
  *   ?from=, ?to=     — each a date, an ISO 8601 timestamp or `YYYY-MM-DD
  *                      HH:MM:SS` in UTC, or `400 from is not a date`; a bare
@@ -123,11 +125,11 @@ export function readAuditParams(search: URLSearchParams): AuditLogParams {
 	const offset = readOffset(search.get('offset'));
 	const before = readBefore(search.get('before'));
 
-	if (source && source !== 'ui' && source !== 'api') {
-		throw error(400, 'source must be "ui" or "api"');
+	if (source && source !== 'ui' && source !== 'api' && source !== 'system') {
+		throw error(400, 'source must be "ui", "api" or "system"');
 	}
 
-	return { boardId, userId, cardId, action, source: (source || null) as 'ui' | 'api' | null, from, to, limit, offset, before };
+	return { boardId, userId, cardId, action, source: (source || null) as ActivitySource | null, from, to, limit, offset, before };
 }
 
 /**
@@ -167,9 +169,12 @@ export function queryAuditLog(params: AuditLogParams, { canonical }: { canonical
 	// Source is filtered on the stored spelling, not the `source` column, because
 	// rows written before that column existed have it null. The prefix is the
 	// same fact and covers the whole history, so a source filter does not make
-	// two and a half thousand older entries disappear.
+	// two and a half thousand older entries disappear. DumpFire's own entries
+	// (`system`, card 2754) are stored bare, as the web application's are, and
+	// were never written before the column: they are told by the column alone.
 	if (source === 'api') conditions.push(like(activityLog.action, 'api:%'));
-	if (source === 'ui') conditions.push(notLike(activityLog.action, 'api:%'));
+	if (source === 'ui') conditions.push(notLike(activityLog.action, 'api:%'), sql`${activityLog.source} IS NOT 'system'`);
+	if (source === 'system') conditions.push(eq(activityLog.source, 'system'));
 	if (from) conditions.push(gte(activityLog.createdAt, from));
 	if (to) conditions.push(lte(activityLog.createdAt, to));
 	// The entries older than the cursor, in the order the page is read in

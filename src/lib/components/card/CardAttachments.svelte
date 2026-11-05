@@ -159,7 +159,10 @@
 	 * an <img> can show: PNG, JPEG, GIF and WebP, and each by both the type
 	 * stored with the upload and the extension of its name. Everything else is
 	 * answered as a download, an SVG among them, and gets the ordinary file row.
-	 * Keep in step with `attachmentHeaders` in `$lib/server/uploads.ts`.
+	 * Keep in step with `attachmentHeaders` in `$lib/server/uploads.ts`, which
+	 * also needs the file's bytes to be that image (card 2754): one that is not
+	 * is answered as a download, and a file whose bytes are not an image at all
+	 * shows nothing in the <img>.
 	 */
 	const SHOWN_AS_IMAGE: { stored: string; extensions: string[] }[] = [
 		{ stored: 'image/png', extensions: ['png'] },

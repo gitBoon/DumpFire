@@ -54,6 +54,8 @@ export const ACTIVITY_LABELS: Readonly<Record<string, string>> = Object.freeze({
 	comment_deleted: 'Deleted comment',
 	attachment_added: 'Attached file',
 	attachment_deleted: 'Deleted file',
+	// Card 2754: an image of a card closed long ago, moved to the trash by DumpFire itself.
+	attachment_expired: 'Moved old image to trash',
 	assignee_added: 'Assigned user',
 	assignee_removed: 'Unassigned user',
 	dependency_added: 'Added dependency',

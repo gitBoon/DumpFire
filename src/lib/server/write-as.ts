@@ -65,8 +65,11 @@ import type { ActivitySource } from './logActivity';
  * with `null` for the body of a request that has none.
  */
 export type ServiceOptions = {
-	/** Which tree the request came through, for the entries the write records. */
-	source: ActivitySource;
+	/**
+	 * Which tree the request came through, for the entries the write records:
+	 * never `system`, which is DumpFire's own and comes through no tree (card 2754).
+	 */
+	source: Exclude<ActivitySource, 'system'>;
 	/** The address the mail a write sends links to (`linkBaseUrl`), where it sends any. */
 	baseUrl?: string | null;
 	/**

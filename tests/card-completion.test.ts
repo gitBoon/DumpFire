@@ -1175,13 +1175,13 @@ describe('every reader of the activity log counts what the page did and what the
 		expect((await found('source=api')).sort()).toEqual([viaApi.id, viaApi.id]);
 	});
 
-	it('the audit log of the Audit page: refuses a source that is neither ui nor api', async () => {
+	it('the audit log of the Audit page: refuses a source that is not ui, api or system', async () => {
 		const admin = makeUser({ role: 'admin' });
 
 		const res = await api('GET', '/api/audit?source=web', { user: admin });
 
 		expect(res.status).toBe(400);
-		expect(res.body).toEqual({ message: 'source must be "ui" or "api"' });
+		expect(res.body).toEqual({ message: 'source must be "ui", "api" or "system"' });
 	});
 
 	// R8 of card 2127. `_` is LIKE's one-character wildcard, so `card_%`

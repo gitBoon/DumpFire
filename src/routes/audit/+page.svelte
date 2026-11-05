@@ -148,7 +148,8 @@
 	let fBoardId = $state('');
 	let fUserId = $state('');
 	let fAction = $state('');
-	// Where the action was done: '' for both, 'ui' for the web application, 'api' for the API.
+	// Where the action was done: '' for every source, 'ui' for the web application, 'api' for the API,
+	// 'system' for DumpFire itself (card 2754: images of cards closed long ago moved to the trash).
 	// The Action filter finds an action however it was done (card 2127).
 	let fSource = $state('');
 	let fFrom = $state('');
@@ -403,6 +404,7 @@
 						<option value="">All</option>
 						<option value="ui">Web application</option>
 						<option value="api">API</option>
+						<option value="system">DumpFire</option>
 					</select>
 				</label>
 				<label class="ct-field">

@@ -1,9 +1,9 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.38
+version: 1.39
 status: As-Built
-date: 2026-10-28
+date: 2026-11-05
 tags:
   - backup
   - reports
@@ -14,7 +14,9 @@ tags:
   - s3
   - google-drive
   - onedrive
-description: "Scheduled backup system with multi-destination support and PDF report generation engine with email delivery"
+  - attachments
+  - image-retention
+description: "Scheduled backup system with multi-destination support, what a backup holds (no attachment files), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery"
 ---
 
 # Backup & Reporting System
@@ -58,7 +60,11 @@ They have to be backed up separately: see
 So that a restored database is not left without its files, the attachment files of a
 deleted card are not removed with it. They are moved to a trash folder inside `uploads`
 and kept for 30 days, and Import Backup puts back any file in the trash that a restored
-attachment names.
+attachment names. The same holds for the images [image retention](#image-retention) moves.
+
+That is still so since card 2754, which lets an API key attach images: an image is a file
+in `uploads/<card id>/` with a row of about a hundred bytes, never a blob in the database,
+so screenshots do not grow a backup.
 
 Nor does the file hold what opens something for whoever reads it: no session, no invite
 that has not been used, no task request's link and not the key the public request form
@@ -80,6 +86,61 @@ server: keep the mail password and each destination's credentials outside DumpFi
 does still hold that is worth guarding: every user's password hash and email, and every
 webhook's address, which for a Slack or Teams incoming webhook is all anyone needs to post to
 that channel.
+
+### Image Retention
+
+A card keeps its images when it is completed: cards are reopened, and the screenshots are the
+record of what was asked. **Images of cards closed long ago are moved to the trash by DumpFire
+itself** (card 2754, `src/lib/server/image-retention.ts`), so that the uploads folder does not
+grow for ever.
+
+- **What counts as closed.** A card archived with `archived_at` older than the cutoff, in any
+  column; or a card that sits now in a Complete-role column (titled Complete or Done, any case,
+  as burndown reads it) with `completed_at` older than the cutoff. `completed_at` alone is not
+  enough: a card moved out of Complete keeps its images whatever stamp it still carries.
+- **The cutoff.** `IMAGE_RETENTION_DAYS` before now: 180 days unless the server sets it. A whole
+  number from 30 to 3650 (digits only) sets it; `off` turns retention off. Any other value is
+  refused: nothing is moved, and every run logs an error until it is put right. See
+  [Deployment](deployment.md#image-retention).
+- **What is moved.** Only image rows, a stored type of `image/png`, `image/jpeg`, `image/gif`
+  or `image/webp`, whichever way they were attached (the card window or an API key). A PDF, a
+  text file or any other attachment stays.
+- **How.** In one transaction, at most 200 rows a run, the longest-closed first; the rest go in
+  the next run. Each row is deleted with an `attachment_expired` entry, `Moved "<file>" on
+  "<card>" to the trash: the card was closed more than N days ago`, whose source is `system`,
+  with no user and the name **DumpFire** (the Audit page's Source filter lists it as DumpFire);
+  each card's board gets a live update, so an open card window drops the file. No webhook is
+  sent. Once that commits, the files are moved to `uploads/.trash/<card id>/`, where they stay
+  30 days like a deleted card's. One `[INFO] [UPLOADS]` line gives the count.
+- **When.** First in each run of the attachment file sweep, in a try/catch of its own, so only
+  where the schedulers run (15 minutes after a start, then every six hours) and never while a
+  transaction is open. Whatever retention meets, the orphan sweep after it still runs, and
+  moves any file whose move to the trash failed.
+- **An upload to such a card.** An image sent through an API key to a card retention would
+  already take is refused `409` ("reopen or restore it to attach one"), since the next run
+  would move it. The card window's upload is not refused (card 2754's code review, C3): its
+  image is moved by the next run.
+- **Getting one back.** Within 30 days, an Import Backup of a backup that holds the row puts
+  the file back from the trash. The card is still closed in that backup, so set
+  `IMAGE_RETENTION_DAYS` higher, or `off`, before the import, or the next run moves it again.
+  To keep a card's images, reopen the card, or restore it from the archive. After 30 days only
+  your own copy of the uploads folder has the file.
+
+```mermaid
+flowchart TD
+    Sweep["Attachment file sweep run<br/>(schedulers on; 15 min after start, then every 6 h)"] --> Tx{"A transaction<br/>open?"}
+    Tx -->|"Yes"| Skip["Skipped this run"]
+    Tx -->|"No"| Setting{"IMAGE_RETENTION_DAYS"}
+    Setting -->|"off"| Orphans
+    Setting -->|"not 30-3650 digits"| Err["[ERROR] [UPLOADS]<br/>nothing moved"] --> Orphans
+    Setting -->|"unset: 180, or 30-3650"| Select["Image rows (png, jpeg, gif, webp)<br/>on cards archived before the cutoff,<br/>or in a Complete-role column now<br/>and completed before it"]
+    Select --> Cap["Longest closed first,<br/>at most 200"]
+    Cap --> Write["One transaction: delete the rows,<br/>attachment_expired each (source system,<br/>no user, DumpFire), live update per card"]
+    Write --> Trash["After commit: files moved to<br/>uploads/.trash/cardId/ for 30 days"]
+    Trash --> Log["[INFO] [UPLOADS] Moved N image(s)…"]
+    Log --> Orphans["Orphan sweep: files no row names,<br/>a failed move among them"]
+    Write -.->|"throws"| Caught["[ERROR] [UPLOADS] not moved,<br/>rolled back"] --> Orphans
+```
 
 ### Schedule Options
 
@@ -1491,6 +1552,7 @@ Individual card reports can be generated for completion notifications. These inc
 |------|-------|---------|
 | `src/lib/server/backup.ts` | ~570 | Backup scheduling, data generation (`withoutSecrets()`: no session, no unused invite, no key remembered browsers are signed with, no request link or form key, no secret, and sealed), upload orchestration (`runBackup()`, which does not try a destination without its credentials) |
 | `src/lib/server/backup-secrets.ts` | ~1,400 | What a backup leaves out because it is a secret (card 2169), and what the admin routes mask and keep (cards 2187 and 2190: `SECRET_MASK`, `maskDestination()`, `keepMaskedSecrets()`, `keepMailPassword()`): `clearSecrets()`, `readSecretsHere()` and `fillSecretGaps()` for a restore, `credentialsMissing()`, `secretsToEnter()` for the start-up line, and the two sentences; the seal: `backupSealKey()`, `sealOf()`, `sealCopy()`, `sealVerifies()`, `keepSealKey()`, and the checks made before it, `unsealedBecause()`, `backupFailsCheck()`, `strayInternalObjects()`; `fromTableStorage()`, how a table is read for the seal and the restore |
+| `src/lib/server/image-retention.ts` | ~230 | Image retention (card 2754): `retentionDays()` reads `IMAGE_RETENTION_DAYS`, `expireClosedCardImages()` moves at most `MOST_EXPIRED_A_RUN` (200) images of closed cards to the trash with an `attachment_expired` entry by `RETENTION_ACTOR` (DumpFire), `isExpiredCard()` for the v1 upload's `409`; called first by `sweepUploads()` in `uploads-sweep.ts` |
 | `src/lib/server/backup-destinations.ts` | ~870 | SFTP, S3, Google Drive, OneDrive destination implementations; `readDestination()`; `reachFolder()` and `makeDumpfireFolder()` for Google Drive (card 2188); the SFTP host key's verifier and pin, the first look, and `HostKeyNotConfirmed`, `HostKeyMismatch`, `HostKeyTypeNotOffered` and `HostKeySignatureFailed` (card 2250) |
 | `src/lib/server/ssh-host-key.ts` | ~160 | An SFTP destination's host key, read, stored and checked (card 2250): `readHostKey()`, `confirmedHostKey()`, `fingerprintOf()`, `typeOf()`, `pinFor()`, `serverKeyFile()`, `HOST_KEY_NOT_CONFIRMED` and `HOST_KEY_REFUSAL`; it connects to nothing |
 | `src/lib/drive-scope.ts` | ~40 | `DRIVE_FILE_SCOPE`, `driveScopeIsNarrow()` and `dumpfireFolderName()`, read by the server and the admin page (card 2188) |

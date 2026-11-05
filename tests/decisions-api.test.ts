@@ -531,7 +531,8 @@ describe('the decision services read the source only through sourceOf (3)', () =
 		const declaring = read.filter(({ file, source }) => sourceOfDeclarations(ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true)).length > 0);
 		expect(declaring.map(({ file }) => file)).toEqual(['src/lib/server/decision-write-shared.ts']);
 		expect(read.flatMap(({ file, source }) => sourceReadsOutside(file, source, SERVICE_HELPERS.includes(file)))).toEqual([]);
-		expect(declaring[0].source).toMatch(/function sourceOf\(opts: ServiceOptions\): ActivitySource \{\n\treturn opts\.source !== 'ui' \|\| writingWithKey\(\) \? 'api' : 'ui';\n\}/);
+		// Typed as a request's tree, which `system` (card 2754, DumpFire's own entries) never is.
+		expect(declaring[0].source).toMatch(/function sourceOf\(opts: ServiceOptions\): ServiceOptions\['source'\] \{\n\treturn opts\.source !== 'ui' \|\| writingWithKey\(\) \? 'api' : 'ui';\n\}/);
 
 		const EXAMPLE = 'src/lib/server/example.ts';
 		const passes = [

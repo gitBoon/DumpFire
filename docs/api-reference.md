@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.121
+version: 1.122
 status: As-Built
 date: 2026-11-05
 tags:
@@ -23,7 +23,10 @@ tags:
   - people-directory
   - decision-records
   - untrusted
-description: "REST API reference for DumpFire's external v1 API: authentication, how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one), examples, and the changelog, the internal routes that ask for the current password among it"
+  - attachments
+  - images
+  - retention
+description: "REST API reference for DumpFire's external v1 API: authentication, how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it"
 ---
 
 # External API Reference
@@ -142,9 +145,10 @@ have at most 10: delete 1 before adding another.`).
 | `403` | The key's user may not do this |
 | `404` | The resource in the path does not exist, whoever asks; an id in the body names nothing (a category, a user, a milestone); something to be removed is not there (an assignee, a label on a card, a card in the milestone named); or the path is no route: `{ "message": "Not found" }` |
 | `405` | The route does not have this method: `{ "message": "PATCH method not allowed" }`. The `Allow` header names the methods it has |
-| `409` | Conflict: a card moved to a Complete column while it has open subtasks or sub-boards, a card moved onto a board beneath it, at any depth, a sub-board that would be more than 20 levels deep (made under a card, or carried by a card moved to another board), a dependency that already exists or would close a loop, a board's 11th webhook, or a rejected batch |
-| `413` | The request body is over the size limit, 512 KB: `{ "message", "limitBytes" }`. See [The Request Body](#the-request-body) |
-| `429` | Rate limited: 60 requests in the minute with one key, or 60 from one address with no key DumpFire accepts |
+| `409` | Conflict: a card moved to a Complete column while it has open subtasks or sub-boards, a card moved onto a board beneath it, at any depth, a sub-board that would be more than 20 levels deep (made under a card, or carried by a card moved to another board), a dependency that already exists or would close a loop, a board's 11th webhook, a card's 21st image or an image sent to a card whose images retention is moving to the trash, or a rejected batch |
+| `413` | The request body is over the size limit, 512 KB (5 MB for the image upload): `{ "message", "limitBytes" }`. See [The Request Body](#the-request-body) |
+| `415` | The image upload only: the `Content-Type` is not `image/png`, `image/jpeg`, `image/gif` or `image/webp`, or the bytes are not the type it names. See [Attachments](#attachments) |
+| `429` | Rate limited: 60 requests in the minute with one key, or 60 from one address with no key DumpFire accepts; for the image upload, also 30 uploads in the hour or 100 MB in the day for the key's user |
 | `500` | DumpFire failed: `{ "message": "Internal Error" }`. Nothing of the fault is in the answer; it is written to DumpFire's system log, with the route and the key's user |
 
 ### The Request Body
@@ -156,7 +160,7 @@ What a route that takes a body answers to one it cannot use:
 | No body, an empty one, or text that is not JSON | `400` `{ "message": "The request body is missing or is not valid JSON" }` |
 | JSON that is `null`, a number, a string or a boolean | `400` `{ "message": "The request body must be a JSON object" }` |
 | A JSON array, `[]` included | `400` `{ "message": "The request body must be a JSON object" }`. No route takes one |
-| More than the size limit, which is 512 KB on every route of this API, declared in `Content-Length` | `413` `{ "message": "The request is larger than this server accepts here: it is 600 KB, and the limit is 512 KB", "limitBytes": 524288 }`, before the body is read and before the key is looked at |
+| More than the size limit, which is 512 KB on every route of this API but the image upload (5 MB, see [Attachments](#attachments)), declared in `Content-Length` | `413` `{ "message": "The request is larger than this server accepts here: it is 600 KB, and the limit is 512 KB", "limitBytes": 524288 }`, before the body is read and before the key is looked at |
 | A body with no `Content-Length`, one sent in chunks, that runs past 512 KB | `413` `{ "message": "The request is larger than this server accepts here: the limit is 512 KB", "limitBytes": 524288 }`, when the route reads it. It is read up to the limit and no further |
 | A body that runs past the `Content-Length` it declared | `413` `{ "message": "Payload Too Large" }`, when the route reads it |
 
@@ -172,7 +176,10 @@ form all do), and a body that says it is too large is refused before any of it i
 
 The limit is 512 KB here whatever `BODY_SIZE_LIMIT` the deployment sets: that variable is
 the most the server accepts on any route, and it is raised for the web application's
-attachment upload and its backup import, which are not part of this API. See
+attachment upload and its backup import, which are not part of this API. One operation of
+this API has a larger limit: `POST /api/v1/cards/{cardId}/attachments`, whose body is an
+image and not JSON, takes 5 MB, and it is the one operation that asks for the card and the
+caller before it reads its body (see [Attachments](#attachments)). See
 [Upload Size Limits](deployment.md#upload-size-limits).
 
 ### What a Field May Hold
@@ -289,6 +296,10 @@ request, so the gate cannot make it JSON:
 | A trailing slash on a route's path | `308` to the same path without it | The path without the slash |
 | A URL that is not validly encoded | `400` in plain text | A valid URL |
 
+The image upload is not refused by the first row: its body is sent as `image/png`,
+`image/jpeg`, `image/gif` or `image/webp`, none of which is a form type. A file upload sent as
+`multipart/form-data` would be, which is why the upload takes the image itself as its body.
+
 `/api/v1` with nothing after it is not under `/api/v1/`. DumpFire's gate takes it for a path
 of the web application's own, which a key does not open: it is answered `401`
 `{ "message": "Not authenticated" }`, or, to a browser, with a redirect to the login page.
@@ -303,8 +314,10 @@ Every answer DumpFire's gate gives carries `X-Content-Type-Options: nosniff`,
 header itself. The last switches off the filter old browsers ran over a page, which could
 itself be used to make a page leak; current browsers have dropped it. Until 2026-10-14 an
 answer under `/api/v1/` carried `nosniff` alone, and the `401` and `429` none. The three answers above are made before the gate, and carry none.
-No answer of the API carries a `Content-Security-Policy`: the web application's pages carry
-one, and an attachment keeps its own `sandbox`.
+No answer of the API carries a `Content-Security-Policy` but one: a file downloaded with
+`GET /api/v1/cards/{cardId}/attachments/{attachmentId}` carries `sandbox`, with `nosniff` and
+`Cache-Control: no-store` (since 1.7.0). The web application's pages carry their own, and an
+attachment served there keeps its own `sandbox`.
 See [Security Headers](authentication-security.md#security-headers).
 
 A `502`, `503` or `504` is not DumpFire's either: see [Writes and Failures](#writes-and-failures).
@@ -335,6 +348,29 @@ moment as `YYYY-MM-DD HH:MM:SS` in UTC, and the web application's own routes and
 exports answer that form; the API turns it into ISO 8601 as it answers. Until 2026-10-14
 some fields were answered in that form, which names no zone, and the same field could be in
 either.
+
+### Changes on 2026-11-05
+
+**The v1 API: version `1.7.0`, a card's files through a key (card 2754).** Three operations
+are new, under the tag Attachments, described in [Attachments](#attachments):
+`GET /api/v1/cards/{cardId}/attachments` lists a card's files as the new schema `Attachment`;
+`POST /api/v1/cards/{cardId}/attachments` attaches a PNG, JPEG, GIF or WebP image, sent as the
+body itself, up to 5 MB; `GET /api/v1/cards/{cardId}/attachments/{attachmentId}` downloads one
+file, always as a download. A key deletes no file. The upload's bytes are checked by
+allow-list, its metadata is taken out, and an animated image or one with anything after its
+end is refused. A key's user may upload 30 images an hour and 100 MB a day, whichever of their
+keys is used, and a card holds at most 20 images, however they were attached.
+
+Images of cards closed long ago are now moved to the trash by DumpFire itself: an image on a
+card archived, or completed and still in its Complete column, more than `IMAGE_RETENTION_DAYS`
+ago (180 unless the server sets it) is deleted with a new action, `attachment_expired`, under
+a new `source`, `system`, with no user and the name `DumpFire`. `GET /api/v1/audit-log`
+answers `system` in `source` and filters by `?source=system`; `?source=ui` no longer finds
+those entries. No webhook is sent for it. An image uploaded through a key to such a card is
+`409`. See [Image Retention](backup-reporting.md#image-retention).
+
+The web application's own attachment route changed too: an image is shown in the browser
+only when its bytes are the image type it was stored as, and is a download otherwise.
 
 ### Changes on 2026-11-04
 
@@ -1613,7 +1649,10 @@ new, `DELETE /comments/:commentId` (card 2283); these operations, answers and fi
   `attachment_added`, `Attached "<file name>" to "<card>"`, and one deleted logs
   `attachment_deleted`, `Deleted the file "<file name>" from "<card>"`, the file named as its
   uploader named it, by whoever did it, with `source` `ui`; neither was recorded.
-  Attachments are not part of this API, so neither is ever written with `api:`. **No webhook
+  Attachments were not part of this API then, so neither was written with `api:` (since
+  1.7.0 an image uploaded through a key writes `api:attachment_added`, and DumpFire's own
+  retention writes `attachment_expired`, source `system`: see
+  [Changes on 2026-11-05](#changes-on-2026-11-05)). **No webhook
   is sent for either**: there is no `attachment.*` event, and a receiver could not fetch the
   file (item 97).
 - **`PUT /columns/:columnId`, `/labels/:labelId`, `/categories/:categoryId` and
@@ -2899,6 +2938,12 @@ flowchart TB
         EditComment["PUT /comments/:id"]
     end
 
+    subgraph Attachments["Attachments"]
+        ListAttachments["GET /cards/:id/attachments"]
+        UploadImage["POST /cards/:id/attachments (image body)"]
+        GetAttachment["GET /cards/:id/attachments/:attachmentId"]
+    end
+
     subgraph Dependencies["Dependencies"]
         CardDeps["GET, POST, DELETE /cards/:id/dependencies"]
         SubtaskDeps["GET, POST, DELETE /subtasks/:id/dependencies"]
@@ -3029,8 +3074,9 @@ Full design: [Burndown Charts](burndown-charts.md).
 
 ### `GET /api/v1/audit-log` (admin)
 
-Params: `boardId`, `userId`, `cardId`, `action`, `source` (`ui` | `api`), `from`,
-`to`, `limit` (default **100**, max **500**), `offset`, `before`.
+Params: `boardId`, `userId`, `cardId`, `action`, `source` (`ui` | `api` | `system`), `from`,
+`to`, `limit` (default **100**, max **500**), `offset`, `before`. Any other `source` is `400`
+`source must be "ui", "api" or "system"`.
 
 `boardId`, `userId` and `cardId` are ids, read as an id in the path is: one that is not a
 whole number of 1 or more is `400` `Invalid board ID` (`Invalid user ID`,
@@ -3042,6 +3088,14 @@ UI and API actions share one vocabulary. `action` comes back canonical (no `api:
 prefix) so one filter matches both sources; `rawAction` keeps the stored
 spelling; `source` says which. A completion is logged as `card_completed`
 whichever route performed it.
+
+**`source` `system`** (since 1.7.0, card 2754) is an entry DumpFire wrote itself, which no
+person made: `userId` is `null` and `userName` is `DumpFire`. The one such action is
+`attachment_expired`, `Moved "<file name>" on "<card>" to the trash: the card was closed more
+than N days ago`, written by [image retention](backup-reporting.md#image-retention). It is
+stored bare, with no `api:`, so `?source=ui` leaves it out by the `source` column and
+`?source=system` finds it. `attachment_added` is written by both trees now: `ui` from the
+card window, `api:attachment_added` from the v1 image upload.
 
 Since 2026-10-26 (milestone 22) the vocabulary has seven more actions: `card_committed`,
 `card_returned_to_options`, `card_discarded`, `card_abandoned`, `card_sent`,
@@ -4449,19 +4503,176 @@ already there, entries add: the same batch sent again adds the tokens again.
 
 ### Attachments
 
-Attachments are not part of the v1 API. The web application uploads and serves them through
-its own routes, with a session and not an API key. What a browser gets when it opens one by
-its address:
+Since `1.7.0` (card 2754) a key lists a card's files, downloads one, and attaches an image.
+It deletes none: a file is deleted in the web application alone. Files are kept on the
+server's disk, in the uploads folder beside the database, with a small row each in
+`card_attachments`; never in the database itself (see
+[Attachment files](deployment.md#attachment-files)).
+
+| Operation | Access | Limits |
+|---|---|---|
+| `GET /api/v1/cards/:cardId/attachments` | View access to the card's board | The key's 60 a minute |
+| `POST /api/v1/cards/:cardId/attachments` | Edit access, asked before the body is read and again at the write | 5 MB a body; 30 uploads an hour and 100 MB a day for the key's user, whichever of their keys; 20 images a card |
+| `GET /api/v1/cards/:cardId/attachments/:attachmentId` | View access to the card's board | The key's 60 a minute |
+
+An **`Attachment`** is the row without the name the file is kept under on the server:
+
+```json
+{
+  "id": 412,
+  "cardId": 2754,
+  "originalName": "login page.png",
+  "mimeType": "image/png",
+  "sizeBytes": 183214,
+  "uploadedBy": 3,
+  "createdAt": "2026-11-05T10:12:44.000Z"
+}
+```
+
+`mimeType` is, for an image uploaded through a key, the type its bytes are; for a file
+attached in the web application, the type the browser named. `sizeBytes` is the size kept:
+for an image uploaded through a key, once its metadata was taken out.
+
+#### `GET /api/v1/cards/:cardId/attachments`
+
+Every file on the card, the web application's and the API's, oldest first and, within one
+second, by id. Errors, in order: `401`, `429` (the gate); `400` `Invalid card ID`; `404`
+`Card not found`; `403` `No access to this board`.
+
+#### `POST /api/v1/cards/:cardId/attachments`
+
+Attaches one image. The body is the image itself, not JSON and not a form, sent with its type
+as `Content-Type`: `image/png`, `image/jpeg`, `image/gif` or `image/webp` (parameters and case
+are ignored). `Content-Length` may be left out: a body sent in chunks is counted as it is read.
+`?name=` is the name it is shown and downloaded under, optional.
+
+```bash
+curl -X POST "https://dumpfire.example.com/api/v1/cards/2754/attachments?name=login%20page" \
+  -H "Authorization: Bearer df_..." -H "Content-Type: image/png" --data-binary @login.png
+```
+
+```powershell
+Invoke-RestMethod -Method Post -Uri "$base/api/v1/cards/2754/attachments?name=login%20page" `
+  -Headers @{ Authorization = "Bearer $key" } -ContentType 'image/png' -InFile .\login.png
+```
+
+`201` is the `Attachment`. What is kept:
+
+- **The bytes are checked, by allow-list.** The magic bytes must be the type declared, and the
+  file is walked structure by structure to the format's end. Kept are only the structures an
+  image needs: PNG `IHDR`, `PLTE`, `IDAT`, `IEND` and the colour chunks `tRNS`, `gAMA`,
+  `cHRM`, `sRGB`, `iCCP`, `cICP`, `sBIT`, `pHYs`; JPEG frames `SOF0` to `SOF2`, tables, `DRI`,
+  scans, `APP0` `JFIF` (written again with no thumbnail), `APP2` `ICC_PROFILE` and `APP14`
+  `Adobe`; WebP `VP8X`, `ICCP`, `ALPH`, `VP8 `, `VP8L`; GIF graphic control and
+  `NETSCAPE2.0` blocks. **Metadata is taken out**: text chunks, EXIF, XMP, IPTC, comments,
+  thumbnails and every other application segment or extension. Nothing is decoded or
+  re-encoded: the pixel data is kept as sent.
+- **Refused** (`400`): anything after the image's end (`IEND`, `EOI`, the GIF trailer, the RIFF
+  size), any animation (APNG, a GIF of more than one image, an animated WebP), a structure the
+  format does not allow to be dropped, a file cut short or malformed, and more than 8000 pixels
+  on a side or 40 megapixels in all.
+- **The name** is `?name=` cleaned: only what follows its last `/` or `\`, with control and
+  format characters and `<>:"|?*` taken out, trimmed, cut to 100 characters, and then its
+  extension (a dot and one to five letters or digits) replaced by the bytes' own: `.png`,
+  `.jpg`, `.gif` or `.webp`. `Fig. 3 login page` is `Fig. 3 login page.png`. Left out, or with
+  nothing left, it is `image-<UTC date>-<time>`, as `image-2026-11-05-143000.png`. The file
+  on disk is named by the server, `<uuid>.<extension>`.
+- **Recorded** as `api:attachment_added`, `Attached "<name>" to "<card>"`, with the live board
+  update the card window's upload sends. No webhook.
+
+Errors, in the order they are asked:
+
+1. `413` with `limitBytes` (5242880): a `Content-Length` over 5 MB, from the gate, before the
+   key is looked at.
+2. `401` no key or a bad one; `429` the key's 60 a minute.
+3. `400` `Invalid card ID`.
+4. `404` `Card not found`; `403` `No edit access to this board`.
+5. `415` the `Content-Type` is not one of the four. Nothing has been read.
+6. `429` the upload count: the key's user has uploaded 30 images in the hour, with
+   `Retry-After` and `retryAfterSecs`. Nothing has been read.
+7. `413` while the body is read: one sent in chunks, or one running past its declared length,
+   passes 5 MB. Not counted against the day.
+8. The bytes read are counted against the day: `429` when they would take the key's user past
+   100 MB in 24 hours (then nothing is counted), with `Retry-After`; `401` if the key or its
+   account changed while the body was read. Counted before the check, so a body refused at 9
+   still counts what was sent.
+9. `415` the bytes are not one of the four, or are another of them than declared; `400` they
+   are not a valid image of their type, as above. The message says which.
+10. As the image is written, in one transaction: `401` the key or its account changed; `404`
+    and `403` again; `409` the card was closed more than `IMAGE_RETENTION_DAYS` ago, so retention
+    is moving its images to the trash (`This card was closed more than 180 days ago, so its
+    images are moved to the trash: reopen or restore it to attach one`; not asked when
+    retention is `off`); `409` `This card already has 20 images`, counting every image row on
+    the card whichever tree attached it.
+
+Nothing is written on any refusal: a file written before a refused row is removed, and the
+card's folder if this request made it. An upload counted against the hour or the day (6, 8)
+stays counted when a later step refuses it.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Client (key)
+    participant G as Gate (hooks.server.ts)
+    participant R as POST /api/v1/cards/:cardId/attachments
+    participant A as upload-allowance.ts
+    participant I as image-check.ts
+    participant D as uploads/cardId/
+    participant S as attachImage (card-attachments.ts)
+
+    C->>G: POST, Content-Type image/png, raw bytes
+    G->>G: Content-Length over 5 MB: 413 (before the key)
+    G->>G: key 401, 60 a minute 429
+    G->>R: request, body held to 5 MB
+    R->>R: card id 400, card 404, edit access 403
+    R->>R: Content-Type one of four, else 415
+    R->>A: takeUploadCount (30 an hour, per user): 429
+    R->>R: read the body (413 past 5 MB)
+    R->>A: takeUploadBytes(bytes read) in writeAs (100 MB a day, per user): 429
+    R->>I: checkImage: 415 type, 400 structure, trailing data, animation, size
+    I-->>R: bytes without metadata, type, extension
+    R->>D: writeUploadFile uuid.ext
+    R->>S: writeAs: key 401, card 404, edit 403, retention 409, 20 images 409
+    S-->>R: row, api:attachment_added, live event (no webhook)
+    R-->>C: 201 Attachment
+    Note over R,D: on a refusal at the write, removeUploadFile removes the file and a folder it made
+```
+
+#### `GET /api/v1/cards/:cardId/attachments/:attachmentId`
+
+The file's bytes, not JSON, always as a download, whatever the file is:
+
+| Header | Value |
+|---|---|
+| `Content-Type` | `image/png`, `image/jpeg`, `image/gif` or `image/webp` only when the stored type is that image and the bytes' magic is it; anything else, a `.txt` or a PDF among them, `application/octet-stream` |
+| `Content-Disposition` | `attachment; filename="<ASCII name>"; filename*=UTF-8''<name>` |
+| `X-Content-Type-Options` | `nosniff` |
+| `Content-Security-Policy` | `sandbox` |
+| `Cache-Control` | `no-store`, so no cache between keeps a file the key's user may later lose access to |
+| `Content-Length` | The file's size |
+
+Errors, in order, as JSON: `401`, `429` (the gate); `400` `Invalid card ID` or
+`Invalid attachment ID`; `404` `Attachment not found`, also for a file on another card, before
+any question of access (as the card window's route answers it, card 2361); `403`
+`No access to this board`; `404` `File not found on disk`.
+
+#### In the web application
+
+The card window uploads and serves files through its own routes, with a session and not a
+key. What a browser gets when it opens one by its address:
 
 | The file | Answered as |
 |----------|-------------|
-| A PNG, JPEG, GIF, WebP or `.txt` file, where the type stored at upload and the file name's extension agree | Shown in the browser (`Content-Disposition: inline`), with the type DumpFire names for it |
-| Anything else: PDF, HTML, SVG, Office documents, archives, or a file whose name and stored type disagree | A download (`Content-Disposition: attachment`, `application/octet-stream`) |
+| A PNG, JPEG, GIF or WebP whose stored type and file name's extension agree and whose bytes are that image, or a `.txt` file whose stored type and extension agree | Shown in the browser (`Content-Disposition: inline`), with the type DumpFire names for it |
+| Anything else: PDF, HTML, SVG, Office documents, archives, a file whose name and stored type disagree, or an image whose bytes are not the type stored (since 2026-11-05, card 2754) | A download (`Content-Disposition: attachment`, `application/octet-stream`) |
 
 Every answer carries `Content-Security-Policy: sandbox` and `X-Content-Type-Options: nosniff`.
 
 On a card, the four image types have a thumbnail that opens the image. Every other
 attachment is saved to disk, and so is an image when its name is clicked.
+
+Images of cards closed long ago are moved to the trash by DumpFire, whichever tree attached
+them: see [Image Retention](backup-reporting.md#image-retention).
 
 ---
 

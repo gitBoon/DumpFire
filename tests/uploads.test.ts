@@ -10,8 +10,10 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	promises as fsPromises,
 	readdirSync,
 	readFileSync,
+	rmdirSync,
 	rmSync,
 	utimesSync,
 	writeFileSync
@@ -30,11 +32,14 @@ import {
 	emptyTrash,
 	moveToTrash,
 	putBackFromTrash,
+	removeUploadFile,
 	resolveUploadsDir,
 	TRASH_DAYS,
 	UploadPathError,
-	UploadsDirError
+	UploadsDirError,
+	writeUploadFile
 } from '$lib/server/uploads';
+import { bytes, gif, jpeg, le32, png, webp } from './helpers/image-bytes';
 import { api } from './helpers/api';
 import { eachWriteInTurn } from './helpers/each-write';
 import { effects } from './helpers/effects';
@@ -53,21 +58,18 @@ import {
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 import { sweepUploads } from '$lib/server/uploads-sweep';
 
-// The upload route's `mkdir`, with a hook a test can set to run straight after
-// it once: where the sweep can run, between the folder made and the file
-// written. Every other call is the real one.
-const afterMkdir = vi.hoisted(() => ({ once: null as null | (() => void) }));
-vi.mock('fs/promises', async (importOriginal) => {
-	const actual = await importOriginal<typeof import('fs/promises')>();
-	const mkdir = (async (...args: Parameters<typeof actual.mkdir>) => {
-		const made = await actual.mkdir(...args);
-		const hook = afterMkdir.once;
-		afterMkdir.once = null;
-		hook?.();
-		return made;
-	}) as typeof actual.mkdir;
-	return { ...actual, default: { ...actual, mkdir }, mkdir };
-});
+// The `fs.promises` an upload's file is written with (`writeUploadFile`, which
+// was the upload route's own code until card 2754), stood in for in every
+// test: `mkdir` with a hook a test can set to run straight after it once,
+// where the sweep can run, between the folder made and the file written; and
+// `writeFile` with failures a test can queue, one a call, thrown before the
+// file is written or after. Every other call is the real one. A spy on the
+// object, not a mock of the module: tests/setup.ts has loaded uploads.ts
+// before a mock in this file would be registered.
+const afterMkdir: { once: null | (() => void) } = { once: null };
+const writes = { calls: 0, failures: [] as { error: Error; afterWriting?: boolean }[] };
+const realMkdir = fsPromises.mkdir;
+const realWriteFile = fsPromises.writeFile;
 
 const DAY = 86_400_000;
 
@@ -77,6 +79,20 @@ let card: Card;
 const tempDirs: string[] = [];
 
 beforeEach(() => {
+	vi.spyOn(fsPromises, 'mkdir').mockImplementation((async (...args: Parameters<typeof realMkdir>) => {
+		const made = await realMkdir(...args);
+		const hook = afterMkdir.once;
+		afterMkdir.once = null;
+		hook?.();
+		return made;
+	}) as typeof realMkdir);
+	vi.spyOn(fsPromises, 'writeFile').mockImplementation(async (...args: Parameters<typeof realWriteFile>) => {
+		writes.calls++;
+		const failure = writes.failures.shift();
+		if (failure?.afterWriting) await realWriteFile(...args);
+		if (failure) throw failure.error;
+		return realWriteFile(...args);
+	});
 	resetDb();
 	owner = makeUser({ username: 'owner' });
 	A = makeBoard({ owner, name: 'A' });
@@ -84,6 +100,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	afterMkdir.once = null;
+	writes.calls = 0;
+	writes.failures = [];
 	vi.useRealTimers();
 	vi.restoreAllMocks();
 	process.env.LOG_LEVEL = 'ERROR';
@@ -593,6 +612,82 @@ describe('an import', () => {
 
 // ─── Uploading ──────────────────────────────────────────────────────────────
 
+// Card 2754 (D19, T11): the upload route's file write and its cleanup, moved
+// into uploads.ts for both API trees. These were written against the route's
+// own behaviour before the move, and the move changed none of it.
+describe("an upload's file, written before its row and removed again if the row is not", () => {
+	const data = Buffer.from('the bytes');
+	const failure = (code: string) => Object.assign(new Error(`${code}: made to fail`), { code });
+
+	it("is written into the card's folder, which it makes, and says it made it", async () => {
+		expect(await writeUploadFile(card.id, 'a.txt', data)).toEqual({ cardId: card.id, filename: 'a.txt', madeDir: true });
+		expect(readFileSync(at(card.id, 'a.txt'), 'utf8')).toBe('the bytes');
+	});
+
+	it('is written into a folder that is there, and says it did not make it', async () => {
+		const earlier = makeAttachment(card, { name: 'earlier.txt' });
+		expect(await writeUploadFile(card.id, 'b.txt', data)).toEqual({ cardId: card.id, filename: 'b.txt', madeDir: false });
+		expect(readdirSync(at(card.id)).sort()).toEqual([earlier.filename, 'b.txt'].sort());
+	});
+
+	it('makes the folder again, once, when it goes between the folder made and the file written, and says it made it', async () => {
+		mkdirSync(at(card.id), { recursive: true });
+		afterMkdir.once = () => rmdirSync(at(card.id));
+
+		expect(await writeUploadFile(card.id, 'c.txt', data)).toEqual({ cardId: card.id, filename: 'c.txt', madeDir: true });
+		expect(readFileSync(at(card.id, 'c.txt'), 'utf8')).toBe('the bytes');
+		expect(writes.calls).toBe(2);
+	});
+
+	it('throws a second ENOENT after that one more try, and removes the folder it made', async () => {
+		writes.failures.push({ error: failure('ENOENT') }, { error: failure('ENOENT') });
+
+		await expect(writeUploadFile(card.id, 'd.txt', data)).rejects.toMatchObject({ code: 'ENOENT' });
+		expect(writes.calls).toBe(2);
+		expect(fileIn(card.id)).toBe(false);
+	});
+
+	it('throws any other failure at once, with what it wrote removed, and the folder if it made it', async () => {
+		writes.failures.push({ error: failure('EIO'), afterWriting: true });
+		await expect(writeUploadFile(card.id, 'e.txt', data)).rejects.toMatchObject({ code: 'EIO' });
+		expect(writes.calls).toBe(1);
+		expect(fileIn(card.id)).toBe(false);
+
+		// A folder it found stays, with what was in it.
+		const earlier = makeAttachment(card, { name: 'earlier.txt' });
+		writes.failures.push({ error: failure('ENOSPC'), afterWriting: true });
+		await expect(writeUploadFile(card.id, 'f.txt', data)).rejects.toMatchObject({ code: 'ENOSPC' });
+		expect(readdirSync(at(card.id))).toEqual([earlier.filename]);
+	});
+
+	it("refuses a name that is not a file in the card's own folder before it makes anything", async () => {
+		await expect(writeUploadFile(card.id, '../x.txt', data)).rejects.toThrow(UploadPathError);
+		expect(fileIn(card.id)).toBe(false);
+		expect(writes.calls).toBe(0);
+	});
+
+	it('is removed with the folder only if the write made it and nothing else is in it, and the removal never throws', async () => {
+		await removeUploadFile(await writeUploadFile(card.id, 'g.txt', data));
+		expect(fileIn(card.id)).toBe(false);
+
+		const earlier = makeAttachment(card, { name: 'earlier.txt' });
+		await removeUploadFile(await writeUploadFile(card.id, 'h.txt', data));
+		expect(readdirSync(at(card.id))).toEqual([earlier.filename]);
+
+		// Made by the write, and another upload's file put in it since: the folder stays.
+		const other = makeCard(A.cols['To Do']);
+		const first = await writeUploadFile(other.id, 'i.txt', data);
+		writeFileSync(at(other.id, 'j.txt'), 'another upload');
+		await removeUploadFile(first);
+		expect(readdirSync(at(other.id))).toEqual(['j.txt']);
+
+		// A file gone already, and a name that is refused: nothing thrown, nothing else touched.
+		await expect(removeUploadFile(first)).resolves.toBeUndefined();
+		await expect(removeUploadFile({ cardId: card.id, filename: '../x', madeDir: true })).resolves.toBeUndefined();
+		expect(readdirSync(at(card.id))).toEqual([earlier.filename]);
+	});
+});
+
 describe('uploading an attachment', () => {
 	const page = () => new File(['<p>hello</p>'], 'my page.html', { type: 'text/html' });
 
@@ -746,14 +841,17 @@ describe('uploading an attachment', () => {
 
 describe('serving an attachment', () => {
 	/** Upload a file and open it. */
-	const served = async (name: string, type: string, content = 'x') => {
-		const sent = await upload(card, new File([content], name, { type }));
+	const served = async (name: string, type: string, content: string | Uint8Array = 'x') => {
+		const sent = await upload(card, new File([content as BlobPart], name, { type }));
 		expect(sent.status).toBe(200);
 		const res = await api('GET', `/api/cards/${card.id}/attachments/${sent.body.id}`, { user: owner });
 		expect(res.status).toBe(200);
 		return res;
 	};
 	const disposition = (res: { headers: Headers }) => res.headers.get('content-disposition') ?? '';
+	/** Bytes that are an image of `type`, for one of the four; anything else is a byte of text. */
+	const contentOf = (type: string): string | Uint8Array =>
+		({ 'image/png': png(), 'image/jpeg': jpeg(), 'image/gif': gif(), 'image/webp': webp() } as Record<string, Uint8Array>)[type.split(';')[0]] ?? 'x';
 
 	it('answers an HTML, an SVG or a PDF upload as a download, and never as a page', async () => {
 		for (const [name, type] of [
@@ -783,10 +881,34 @@ describe('serving an attachment', () => {
 			['small.webp', 'image/webp', 'image/webp'],
 			['notes.txt', 'text/plain', 'text/plain; charset=utf-8']
 		]) {
-			const res = await served(name, type);
+			const res = await served(name, type, contentOf(type));
 			expect(disposition(res), name).toMatch(/^inline; /);
 			expect(res.headers.get('content-type'), name).toBe(as);
 		}
+	});
+
+	// Card 2754 (S12): the name and the stored type are both the uploader's, so
+	// an image is shown only when its bytes are that image too.
+	it('shows an image only when its bytes are that image, and answers any other as a download (card 2754)', async () => {
+		for (const [name, type, content] of [
+			['shot.png', 'image/png', '<script>alert(1)</script>'],
+			['shot.png', 'image/png', jpeg()],
+			['photo.jpg', 'image/jpeg', png()],
+			['moving.gif', 'image/gif', 'GIF8'],
+			['small.webp', 'image/webp', bytes('RIFF', le32(4), 'WAVE')]
+		] as const) {
+			const res = await served(name, type, content);
+			expect(disposition(res), `${name} holding ${String(content).slice(0, 10)}`).toMatch(/^attachment; /);
+			expect(res.headers.get('content-type'), name).toBe('application/octet-stream');
+		}
+
+		// Text has no magic bytes: it is shown as text whatever it holds, and nosniff keeps it text.
+		const notes = await served('notes.txt', 'text/plain', '<script>alert(1)</script>');
+		expect(disposition(notes)).toMatch(/^inline; /);
+		expect(notes.headers.get('content-type')).toBe('text/plain; charset=utf-8');
+
+		expect(attachmentHeaders({ originalName: 'shot.png', mimeType: 'image/png' }, png())['Content-Disposition']).toMatch(/^inline; /);
+		expect(attachmentHeaders({ originalName: 'shot.png', mimeType: 'image/png' }, new Uint8Array())['Content-Type']).toBe('application/octet-stream');
 	});
 
 	it('needs the stored type and the name to agree before it shows anything', async () => {
@@ -800,12 +922,13 @@ describe('serving an attachment', () => {
 			['notes.txt', 'text/html'],
 			['shot.png.html', 'image/png']
 		]) {
-			const res = await served(name, type);
+			// The bytes are the stored type's image where it is one, so that only the name disagrees.
+			const res = await served(name, type, contentOf(type));
 			expect(disposition(res), `${name} as ${type}`).toMatch(/^attachment; /);
 			expect(res.headers.get('content-type'), `${name} as ${type}`).toBe('application/octet-stream');
 		}
 		// A type is compared without its parameters and whatever its case.
-		expect(attachmentHeaders({ originalName: 'A.PNG', mimeType: 'IMAGE/PNG; q=1' })['Content-Type']).toBe('image/png');
+		expect(attachmentHeaders({ originalName: 'A.PNG', mimeType: 'IMAGE/PNG; q=1' }, png())['Content-Type']).toBe('image/png');
 	});
 
 	it('sandboxes every answer, and forbids sniffing the type of every one', async () => {
@@ -834,7 +957,7 @@ describe('serving an attachment', () => {
 				"filename*=UTF-8''r%C3%A9sum%C3%A9%20%22final%22%0D%0ASet-Cookie%3A%20x%3D1%20%28v2%29.pdf"
 		);
 		expect(res.headers.get('set-cookie')).toBeNull();
-		expect(attachmentHeaders({ originalName: '', mimeType: 'text/plain' })['Content-Disposition']).toBe(
+		expect(attachmentHeaders({ originalName: '', mimeType: 'text/plain' }, new Uint8Array())['Content-Disposition']).toBe(
 			"attachment; filename=\"download\"; filename*=UTF-8''download"
 		);
 	});
