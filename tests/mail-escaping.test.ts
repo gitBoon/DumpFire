@@ -29,7 +29,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import type { SessionUser } from '$lib/server/auth';
 import { db, sqlite } from '$lib/server/db';
-import { backupLog, boardCategories, boards, reportSchedules, settings, taskRequests, type Board, type Card } from '$lib/server/db/schema';
+import { backupLog, boardCategories, boards, reportSchedules, settings, taskRequests, users, type Board, type Card } from '$lib/server/db/schema';
 import { runBackup, saveBackupConfig } from '$lib/server/backup';
 import * as notifications from '$lib/server/notifications';
 import { initReportScheduler } from '$lib/server/reports';
@@ -349,6 +349,32 @@ describe('every mail in notifications.ts', () => {
 		{ name: 'sendInviteEmail', link: true, send: () => notifications.sendInviteEmail('new@example.test', MARKER, TOKEN, BASE) },
 		// Card 2773 (decision 7): a notice only, with no link and no token.
 		{ name: 'sendMfaResetNotice', link: false, send: () => notifications.sendMfaResetNotice('holder@example.test', MARKER, MARKER, true) },
+		// Card 2769 (4.9): each security notice, with no link, naming the owner from the row and the address as received;
+		// the enrolled notice (slice 3) with the account's API keys and webhooks, each named as a row holds it.
+		...(['enrolled', 'recovery-code-used', 'codes-paused', 'codes-locked', 'recovery-codes-guessed', 'wrong-code', 'unfinished-sign-in'] as const).map(
+			(notice) => ({
+				name: `sendSecurityNotice (${notice})`,
+				link: false,
+				send: () => {
+					db.update(users).set({ username: MARKER }).where(eq(users.id, recipient.id)).run();
+					notifications.sendSecurityNotice(recipient.id, notice, {
+						at: new Date(),
+						address: MARKER,
+						count: 5,
+						until: new Date(),
+						codesLeft: 2,
+						apiKeys: [{ name: MARKER, createdAt: MARKER, lastUsedAt: MARKER }],
+						webhooks: [{ board: MARKER, host: MARKER, createdAt: MARKER }]
+					});
+				}
+			})
+		),
+		// Card 2769 (decision 23): the release mail, with the set-up link and the address of the sign-in as received.
+		{
+			name: 'sendReleaseLinkMail',
+			link: true,
+			send: () => notifications.sendReleaseLinkMail('holder@example.test', MARKER, TOKEN, BASE, { at: new Date(), address: MARKER })
+		},
 		{
 			name: 'notifyBoardShared',
 			link: true,

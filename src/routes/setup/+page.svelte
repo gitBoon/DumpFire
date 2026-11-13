@@ -25,6 +25,11 @@
 			<span class="setup-icon">🔥</span>
 			<h1>Welcome to DumpFire</h1>
 			<p class="setup-subtitle">Create your superadmin account to get started.</p>
+			<!-- Card 2769: only setting up two-step sign-in signs in, and a set-up left unfinished needs the host's reset. -->
+			<p class="setup-subtitle">
+				Next you will set up two-step sign-in with an authenticator app on your phone. Finish it straight away: if
+				you leave it, the account can only be recovered on the server.
+			</p>
 		</div>
 
 		{#if form?.error || clientError}

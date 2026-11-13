@@ -685,6 +685,7 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		"\t`expires_at` text NOT NULL,",
 		"\t`created_at` text DEFAULT (datetime('now')) NOT NULL,",
 		"\t`wrong_password_count` integer DEFAULT 0 NOT NULL,",
+		"\t`two_step` integer DEFAULT 0 NOT NULL,",
 		"\tFOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade",
 		");"
 	].join('\n'),
@@ -721,6 +722,8 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		"\t`wrong_count` integer DEFAULT 0 NOT NULL,",
 		"\t`created_at` text DEFAULT (datetime('now')) NOT NULL,",
 		"\t`expires_at` text NOT NULL,",
+		"\t`enrol_grant` text,",
+		"\t`enrolment_link_hash` text,",
 		"\tFOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade",
 		");"
 	].join('\n'),
@@ -856,7 +859,8 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 		"\t`last_sign_in_from` text,",
 		"\t`failed_codes_since_sign_in` integer DEFAULT 0 NOT NULL,",
 		"\t`security_banner` text,",
-		"\t`security_banner_at` text",
+		"\t`security_banner_at` text,",
+		"\t`mfa_password_enrol` integer DEFAULT 0 NOT NULL",
 		");"
 	].join('\n'),
 	"CREATE UNIQUE INDEX `users_username_unique` ON `users` (`username`);",

@@ -87,6 +87,7 @@ import { PASSWORDS_BUSY, checkPassword, makePasswordHash } from '$lib/server/pas
 import { endUnusedInvites, issueInvite } from '$lib/server/invites';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { knownBrowserCookie, rememberBrowser, rememberedNonce } from '$lib/server/known-browsers';
+import { CHALLENGE_COOKIE, tokenHashOf } from '$lib/server/sign-in-challenges';
 import { dispatchWebhook } from '$lib/server/webhooks';
 import { PUT as changeOwnPassword } from '../src/routes/api/account/password/+server';
 import { load as loadAdminPage } from '../src/routes/admin/+page.server';
@@ -175,6 +176,15 @@ const sessionsOf = (id: number) =>
 		.where(eq(sessions.userId, id))
 		.all()
 		.map((s) => s.id);
+/** The account's pending sign-ins (card 2769), each as its token's hash, its purpose and what let it set up a factor. */
+const challengesOf = (id: number) =>
+	(
+		sqlite.prepare('SELECT token_hash, purpose, enrol_grant FROM sign_in_challenges WHERE user_id = ? ORDER BY rowid').all(id) as {
+			token_hash: string;
+			purpose: string;
+			enrol_grant: string | null;
+		}[]
+	).map((row) => [row.token_hash, row.purpose, row.enrol_grant]);
 
 /**
  * The session cookie of a request sent from the session `id`. The routes that
@@ -183,10 +193,10 @@ const sessionsOf = (id: number) =>
  */
 const from = (id: string) => ({ cookie: `${SESSION_COOKIE_NAME}=${id}` });
 
-/** A session that is good for another day. */
+/** A session that is good for another day, made after a second factor as createSession makes every one (card 2769). */
 function makeSession(user: SessionUser, id: string): void {
 	db.insert(sessions)
-		.values({ id, userId: user.id, expiresAt: stamp(new Date(Date.now() + 24 * 60 * 60 * 1000)) })
+		.values({ id, userId: user.id, expiresAt: stamp(new Date(Date.now() + 24 * 60 * 60 * 1000)), twoStep: 1 })
 		.run();
 }
 
@@ -1052,7 +1062,8 @@ describe('POST /api/users/:id/invite', () => {
 		expect(await loadInvite(first)).toEqual({ valid: false, username: '' });
 
 		const used = await action(`/invite/${second}`, { form });
-		expect(used).toMatchObject({ type: 'redirect', status: 303, location: '/' });
+		// On to setting up two-step sign-in (card 2769).
+		expect(used).toMatchObject({ type: 'redirect', status: 303, location: '/login/enrol' });
 		expect(await matches(NEW, hashOf(invitee.id))).toBe(true);
 	});
 });
@@ -1091,23 +1102,23 @@ describe('the invite page', () => {
 		return { invitee, bystander };
 	};
 
-	it('sets the password, uses the invite up, ends the account\'s other access and signs the user in, or does none of it', async () => {
+	it('sets the password, uses the invite up, ends the account\'s other access and opens its set-up, or does none of it', async () => {
 		const run = await eachWriteInTurn({
 			build: invitedWithAccess,
 			request: () => use(),
 			afterSuccess: async ({ invitee, bystander }, res: ActionResult) => {
-				expect(res).toMatchObject({ type: 'redirect', status: 303, location: '/' });
+				// On to setting up two-step sign-in, which alone signs in (card 2769).
+				expect(res).toMatchObject({ type: 'redirect', status: 303, location: '/login/enrol' });
 				expect(await matches(NEW, hashOf(invitee.id))).toBe(true);
 
 				// This invite is kept, marked used; the other is gone, and so are
-				// the sessions and the key. The one session is the cookie's.
+				// the sessions and the key. No session is made: the cookie is the
+				// set-up challenge's.
 				expect(invitesOf(invitee.id)).toEqual([[TOKEN, true]]);
 				expect(keysOf(invitee.id)).toEqual([]);
-				const mine = sessionsOf(invitee.id);
-				expect(mine).toHaveLength(1);
-				expect(mine).not.toContain('invitee-laptop');
-				expect(mine).not.toContain('invitee-phone');
-				expect(res.cookies[SESSION_COOKIE_NAME].value).toBe(mine[0]);
+				expect(sessionsOf(invitee.id)).toEqual([]);
+				expect(res.cookies[SESSION_COOKIE_NAME]).toBeUndefined();
+				expect(challengesOf(invitee.id)).toEqual([[tokenHashOf(res.cookies[CHALLENGE_COOKIE].value), 'enrol', 'invite']]);
 
 				expect(sessionsOf(bystander.id)).toEqual(['theirs']);
 				expect(invitesOf(bystander.id)).toEqual([['their-invite', false]]);
@@ -1131,7 +1142,11 @@ describe('the invite page', () => {
 			'delete from api_keys',
 			'update webhooks set',
 			'update report_schedules set',
-			'insert into sessions'
+			// The set-up challenge, in place of a session (card 2769): the expired
+			// ones swept, this browser's and the account's older ones, and the new one.
+			'delete from sign_in_challenges',
+			'delete from sign_in_challenges',
+			'insert into sign_in_challenges'
 		]);
 		expect(run.effects).toEqual([]);
 		expectHashedOutsideTransaction();
@@ -1141,7 +1156,7 @@ describe('the invite page', () => {
 		const { invitee } = invited();
 		makeInvite(invitee, 'the-other-invite');
 
-		expect(await use()).toMatchObject({ type: 'redirect', status: 303, location: '/' });
+		expect(await use()).toMatchObject({ type: 'redirect', status: 303, location: '/login/enrol' });
 
 		const refused = await expectNothingWritten(() =>
 			use({ password: 'a second password', confirmPassword: 'a second password' }, 'the-other-invite')
@@ -1207,10 +1222,12 @@ describe('the invite page', () => {
 		expect(both.map((res) => res.type).sort()).toEqual(['failure', 'redirect']);
 		expect(both.find((res) => res.type === 'failure')).toMatchObject(INVALID);
 
-		// One session, and its cookie went to the one that was let in.
-		const mine = sessionsOf(invitee.id);
+		// One set-up challenge, and its cookie went to the one that was let in;
+		// no session, which only setting up makes (card 2769).
+		const mine = challengesOf(invitee.id);
 		expect(mine).toHaveLength(1);
-		expect(both.find((res) => res.type === 'redirect')!.cookies[SESSION_COOKIE_NAME].value).toBe(mine[0]);
+		expect(tokenHashOf(both.find((res) => res.type === 'redirect')!.cookies[CHALLENGE_COOKIE].value)).toBe(mine[0][0]);
+		expect(sessionsOf(invitee.id)).toEqual([]);
 		expect(both.find((res) => res.type === 'failure')!.cookies).toEqual({});
 		// The password is the one that was let in's. Each submission hashed its
 		// own, since a hash is awaited and the second looks at the invite before
@@ -1474,7 +1491,7 @@ describe('what taking an account back switches off (card 2168)', () => {
 			build: withInvite,
 			request: use,
 			afterSuccess: (s, res: ActionResult) => {
-				expect(res).toMatchObject({ type: 'redirect', status: 303, location: '/' });
+				expect(res).toMatchObject({ type: 'redirect', status: 303, location: '/login/enrol' });
 				expectTakenBack(s, { schedules: true });
 			}
 		});
@@ -1489,7 +1506,10 @@ describe('what taking an account back switches off (card 2168)', () => {
 			'delete from api_keys',
 			'update webhooks set',
 			'update report_schedules set',
-			'insert into sessions'
+			// The set-up challenge, in place of a session (card 2769).
+			'delete from sign_in_challenges',
+			'delete from sign_in_challenges',
+			'insert into sign_in_challenges'
 		]);
 
 		await atInfo(async () => {
@@ -1935,11 +1955,11 @@ describe('PUT /api/users/:id', () => {
 			['expired', false],
 			['spent', true]
 		]);
-		// And the invite still sets the password.
+		// And the invite still sets the password, and leads on to setting up two-step sign-in (card 2769).
 		expect(await action('/invite/waiting', { form: { password: NEW, confirmPassword: NEW } })).toMatchObject({
 			type: 'redirect',
 			status: 303,
-			location: '/'
+			location: '/login/enrol'
 		});
 		expect(await matches(NEW, hashOf(target.id))).toBe(true);
 	});
@@ -2453,27 +2473,34 @@ describe('the setup page', () => {
 	});
 	const setUp = (fields: Record<string, string> = form()) => action('/setup', { form: fields });
 
-	it('makes the superadmin and signs them in, or does neither', async () => {
+	it('makes the superadmin and opens their set-up of two-step sign-in, or does neither', async () => {
 		const run = await eachWriteInTurn({
 			build: () => ({}),
 			request: () => setUp(),
 			afterSuccess: async (_s, res: ActionResult) => {
-				expect(res).toMatchObject({ type: 'redirect', status: 303, location: '/' });
+				// On to setting up two-step sign-in, which alone signs in (card 2769).
+				expect(res).toMatchObject({ type: 'redirect', status: 303, location: '/login/enrol' });
 
 				const made = db.select().from(users).all();
 				expect(made).toHaveLength(1);
 				expect(made[0]).toMatchObject({ username: 'first', email: 'first@example.test', role: 'superadmin' });
 				expect(await matches(NEW, made[0].passwordHash)).toBe(true);
 
-				const theirs = sessionsOf(made[0].id);
-				expect(theirs).toHaveLength(1);
-				expect(res.cookies[SESSION_COOKIE_NAME].value).toBe(theirs[0]);
+				expect(sessionsOf(made[0].id)).toEqual([]);
+				expect(challengesOf(made[0].id)).toEqual([[tokenHashOf(res.cookies[CHALLENGE_COOKIE].value), 'enrol', 'setup']]);
 			}
 		});
 
 		// A failure at the second used to leave a superadmin and nobody signed
 		// in as them: the page could not be reached again, only the sign-in one.
-		expect(shape(run.writes)).toEqual(['insert into users', 'insert into sessions']);
+		// Now the second is the set-up challenge (card 2769): the expired ones
+		// swept, this browser's and the account's older ones, and the new one.
+		expect(shape(run.writes)).toEqual([
+			'insert into users',
+			'delete from sign_in_challenges',
+			'delete from sign_in_challenges',
+			'insert into sign_in_challenges'
+		]);
 		expect(run.effects).toEqual([]);
 		expectHashedOutsideTransaction();
 	});
@@ -2483,21 +2510,23 @@ describe('the setup page', () => {
 		// before it read its form, and both went on to make one.
 		const both = await Promise.all([setUp(form('first')), setUp(form('second'))]);
 
-		// Both are sent to the front page, as anyone is once a user exists.
-		expect(both.map((res) => [res.type, res.type === 'redirect' && res.location])).toEqual([
+		// The one let in is sent on to set up two-step sign-in (card 2769); the
+		// other to the front page, as anyone is once a user exists.
+		expect(both.map((res) => [res.type, res.type === 'redirect' && res.location]).sort()).toEqual([
 			['redirect', '/'],
-			['redirect', '/']
+			['redirect', '/login/enrol']
 		]);
 
 		const made = db.select().from(users).all();
 		expect(made).toHaveLength(1);
 		expect(made[0].role).toBe('superadmin');
 
-		// One of them is signed in, as the superadmin there is.
-		const signedIn = both.filter((res) => SESSION_COOKIE_NAME in res.cookies);
-		expect(signedIn).toHaveLength(1);
-		expect(sessionsOf(made[0].id)).toEqual([signedIn[0].cookies[SESSION_COOKIE_NAME].value]);
-		expect(db.select().from(sessions).all()).toHaveLength(1);
+		// One of them goes on to set up the superadmin's two-step sign-in, and
+		// neither is signed in (card 2769).
+		const settingUp = both.filter((res) => CHALLENGE_COOKIE in res.cookies);
+		expect(settingUp).toHaveLength(1);
+		expect(challengesOf(made[0].id)).toEqual([[tokenHashOf(settingUp[0].cookies[CHALLENGE_COOKIE].value), 'enrol', 'setup']]);
+		expect(db.select().from(sessions).all()).toEqual([]);
 		// Each hashed its own, outside the transaction (card 2191, D10); one was made.
 		expect(bcrypt.inTransaction).toEqual([false, false]);
 	});
@@ -2544,8 +2573,10 @@ describe('the setup page', () => {
  * cookie whose MAC is over the account's password hash, so setting the
  * password, by any way there is, forgets every browser of the account at
  * once. The way that also signs the browser in remembers that browser again,
- * with the new hash: the holder's own change, an invite's use, set-up. An
- * administrator's reset signs nobody in, and remembers nobody.
+ * with the new hash: the holder's own change. An invite's use and set-up sign
+ * nobody in until two-step sign-in is set up (card 2769), which remembers the
+ * browser then, so they remember nobody; nor does an administrator's reset,
+ * which signs nobody in.
  */
 describe('remembered browsers, when a password is set', () => {
 	it('are forgotten by the holder’s own change, all but the browser that made it, which is remembered anew', async () => {
@@ -2577,30 +2608,26 @@ describe('remembered browsers, when a password is set', () => {
 		expect(remembers(laptop, me.id)).toBe(true);
 	});
 
-	it('are forgotten by an invite’s use, which remembers the browser that used it', async () => {
+	it('are forgotten by an invite’s use, which remembers no browser before two-step sign-in is set up', async () => {
 		const invitee = withPassword(makeUser({ username: 'invitee' }));
 		const before = rememberedFor(invitee);
 		makeInvite(invitee, 'the-invite');
 
 		const res = await action('/invite/the-invite', { form: { password: NEW, confirmPassword: NEW } });
 
-		expect(res).toMatchObject({ type: 'redirect', location: '/' });
-		const known = res.cookies[knownBrowserCookie(invitee.id)];
-		expect(known.options).toEqual(KNOWN_OPTIONS);
-		expect(remembers({ name: knownBrowserCookie(invitee.id), value: known.value }, invitee.id)).toBe(true);
+		expect(res).toMatchObject({ type: 'redirect', location: '/login/enrol' });
+		expect(res.cookies[knownBrowserCookie(invitee.id)]).toBeUndefined();
 		expect(remembers(before, invitee.id)).toBe(false);
 	});
 
-	it('include the browser that set the instance up, for the superadmin', async () => {
+	it('do not include the browser that set the instance up before the superadmin sets up two-step sign-in', async () => {
 		const res = await action('/setup', {
 			form: { username: 'first', email: 'first@example.test', password: NEW, confirmPassword: NEW }
 		});
 
-		expect(res).toMatchObject({ type: 'redirect', location: '/' });
+		expect(res).toMatchObject({ type: 'redirect', location: '/login/enrol' });
 		const [chief] = db.select().from(users).all();
-		const known = res.cookies[knownBrowserCookie(chief.id)];
-		expect(known.options).toEqual(KNOWN_OPTIONS);
-		expect(remembers({ name: knownBrowserCookie(chief.id), value: known.value }, chief.id)).toBe(true);
+		expect(res.cookies[knownBrowserCookie(chief.id)]).toBeUndefined();
 	});
 
 	it('are every one forgotten by an administrator’s reset, which remembers none', async () => {

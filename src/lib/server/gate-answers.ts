@@ -315,6 +315,16 @@ const UNPUBLISHED_HEADERS: readonly [name: string, value: string][] = [
  * request and its messages, and the pages post only by `fetch`, as
  * `/decision-link/[token]`'s does. So does the confirm page's `POST`, whose
  * answer's `replyUrl` holds the request's access token.
+ *
+ * `/login/verify`, the second step of signing in (card 2769, decision 5),
+ * names the account being signed in to and, once the code is right, its keys
+ * and webhooks: kept out of search and of every cache. Its address holds no
+ * secret, and its form may be posted natively, so it carries
+ * `FORM_LINK_HEADERS` and its own `Origin`, never `no-referrer`. So does
+ * `/login/enrol`, the set-up page, which shows the new authenticator's secret
+ * and the recovery codes. `/enrol/[token]`, a set-up link's page, holds the
+ * link in its address and posts nothing, so it carries
+ * `PERSONAL_LINK_HEADERS`, `no-referrer` included.
  */
 export const ROUTE_HEADERS: ReadonlyMap<string, readonly [name: string, value: string][]> = new Map([
 	['/decision-link/[token]', PERSONAL_LINK_HEADERS],
@@ -325,6 +335,12 @@ export const ROUTE_HEADERS: ReadonlyMap<string, readonly [name: string, value: s
 	// Card 2678 (decision 12): a link holder's clarification question.
 	['/api/decision-by-link/questions', PERSONAL_LINK_HEADERS],
 	['/invite/[token]', FORM_LINK_HEADERS],
+	// Card 2769 (decision 5): the second step of signing in.
+	['/login/verify', FORM_LINK_HEADERS],
+	// And the set-up page, which shows the new secret and the recovery codes.
+	['/login/enrol', FORM_LINK_HEADERS],
+	// And a set-up link's page, whose address holds the link (decision 5).
+	['/enrol/[token]', PERSONAL_LINK_HEADERS],
 	['/request/[id]/confirm', PERSONAL_LINK_HEADERS],
 	['/request/[id]/reply', PERSONAL_LINK_HEADERS],
 	['/api/requests/[id]', PERSONAL_LINK_HEADERS],

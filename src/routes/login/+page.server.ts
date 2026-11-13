@@ -2,25 +2,26 @@ import { createHash } from 'node:crypto';
 import { fail, redirect, type ActionFailure, type Cookies } from '@sveltejs/kit';
 import { eq } from 'drizzle-orm';
 import type { Actions, PageServerLoad } from './$types';
-import { getUserByUsername, getUserByEmail, createSession, setSessionCookie } from '$lib/server/auth';
+import { getUserByUsername, getUserByEmail } from '$lib/server/auth';
 import { db } from '$lib/server/db';
 import { users } from '$lib/server/db/schema';
 import {
 	FIRST_LANE_CHECKS_PER_ACCOUNT,
 	FREE_WRONG_SIGN_INS,
+	accountKey,
 	countSignInAttempt,
 	countWrongSignIn,
 	enterSignIn,
 	firstLaneChecksAt,
 	firstSignInRefusal,
-	forgetWrongSignIns,
 	keepSignInAttemptCounted,
 	leaveSignIn,
-	refundSignInAttempts,
 	signInWait,
 	wrongSignInsAt
 } from '$lib/server/rate-limit';
-import { rememberBrowser, rememberedNonce, signInsOneAtATime } from '$lib/server/known-browsers';
+import { rememberedNonce, signInsOneAtATime } from '$lib/server/known-browsers';
+import { readChallengeToken, readEnrolLinkToken } from '$lib/server/sign-in-challenges';
+import { afterPassword, type LoginNotice } from '$lib/server/second-step';
 import { createLogger } from '$lib/server/logger';
 import { addressOf, addressToCount } from '$lib/server/client-address';
 import { CheckNotMade, DUMMY_HASH, callerHasGone, checkPassword } from '$lib/server/passwords';
@@ -131,7 +132,7 @@ function beginSignIn(data: FormData, getClientAddress: () => string, cookies: Pi
 	const lookedUp = identity.includes('@') ? identity.toLowerCase() : identity;
 	const found = identity.includes('@') ? getUserByEmail(lookedUp) : getUserByUsername(lookedUp);
 	const key = found
-		? `user:${found.id}`
+		? accountKey(found.id)
 		: `name:${createHash('sha256').update(lookedUp).digest('hex')}`;
 
 	const address = addressOf({ getClientAddress })?.slice(0, 100) ?? null;
@@ -208,11 +209,14 @@ export const load: PageServerLoad = async ({ locals }) => {
 };
 
 export const actions: Actions = {
-	default: async ({ request, cookies, getClientAddress, platform }) => {
+	default: async ({ request, cookies, getClientAddress, platform, url }) => {
 		const signIn = beginSignIn(await request.formData(), getClientAddress, cookies);
 		if ('answer' in signIn) return signIn.answer;
 		try {
-			return await checkSignIn(signIn, cookies, platform);
+			// The challenge this browser already holds, if any, from the raw
+			// header (card 2769, decision 27): a right password replaces it.
+			// And the set-up link a link's page left it (decision 19).
+			return await checkSignIn(signIn, cookies, platform, url, readChallengeToken(request, url), readEnrolLinkToken(request));
 		} finally {
 			// The places it took, given back however it was answered.
 			for (const at of signIn.entered) leaveSignIn(at);
@@ -228,12 +232,19 @@ export const actions: Actions = {
  * the account's count as it is, since an attack is not over because the
  * owner signed in, and gives the address nothing back, since nothing was
  * counted there.
+ *
+ * A right password is handed to `afterPassword` (card 2769) with the hash it
+ * was checked against: it opens the second step, or says why there is none,
+ * and nothing is forgotten or given back until a second step is passed.
  */
 async function checkSignIn(
 	{ userId, key, password, identity, typedLength, address, countedAs, remembered }: Extract<SignIn, { key: string }>,
 	cookies: Cookies,
-	platform: App.Platform | undefined
-): Promise<ActionFailure<{ error: string; identity: string }>> {
+	platform: App.Platform | undefined,
+	url: URL,
+	previousToken: string | null,
+	linkToken: string | null
+): Promise<ActionFailure<{ error: string; identity: string }> | LoginNotice> {
 	const fromIp = address ?? 'unknown';
 
 	// Wrong passwords at one account (card 2177): after five within 15
@@ -314,25 +325,11 @@ async function checkSignIn(
 		return fail(400, { error: 'Invalid username/email or password', identity });
 	}
 
-	// Successful login from a browser not remembered: the account's waits
-	// forgotten, and the address's attempts at this account given back, and
-	// only those (card 2226).
-	if (remembered === null) {
-		forgetWrongSignIns(key);
-		refundSignInAttempts(countedAs, key);
-	}
-
-	// The line's address is null where there is none, as the gate writes it;
-	// 'unknown' is the rate limit's name for that, not an address.
-	log.info(`User "${user.username}" logged in`, {
-		identityType: identity.includes('@') ? 'email' : 'username'
-	}, { userId: user.id, ip: address });
-
-	// Create session and set cookie, and remember the browser for the
-	// account, with a new cookie, for a year from now (card 2194).
-	const token = createSession(user.id);
-	setSessionCookie(cookies, token);
-	rememberBrowser(cookies, user.id, user.passwordHash);
-
-	throw redirect(303, '/');
+	// The hash checked is the one read before the check: a password set while
+	// it was awaited is found by the issue, which compares it (decision 26).
+	return afterPassword(
+		{ user, checkedHash: user.passwordHash, remembered, address, identity, previousToken, linkToken },
+		cookies,
+		url
+	);
 }

@@ -20,6 +20,10 @@
   password. Its link is shown once in the same dialog as an invite's, with
   `kind: 'mfa-reset'`. 📧 is refused for an account that uses two-step
   sign-in, as the server refuses its invite: reset it first.
+
+  An account that may still set up two-step sign-in on its password alone, in
+  the 14 days after the release that turned it on, says until when (card
+  2769, decision 25: `passwordSetUpUntil`).
 -->
 <script lang="ts">
 	import type { PageData } from '../../../routes/admin/$types';
@@ -647,6 +651,10 @@
 					<div class="user-row-info">
 						<span class="user-row-name">{u.username}</span>
 						<span class="user-row-email">{u.email}</span>
+						<!-- Card 2769 (decision 25): leave to set up two-step sign-in on the password alone, in the 14 days after the release. -->
+						{#if u.passwordSetUpUntil}
+							<span class="user-row-setup">may set up on password until {u.passwordSetUpUntil} UTC</span>
+						{/if}
 					</div>
 					<span class="role-badge role-{u.role}">{u.role}</span>
 					<!-- Only what the server would let you do to this account (the rule in $lib/account-rule.ts). On your own row, only the password. -->
@@ -712,6 +720,7 @@
 	.user-row-info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 	.user-row-name { font-weight: 600; font-size: 0.85rem; }
 	.user-row-email { font-size: 0.72rem; color: var(--text-tertiary); }
+	.user-row-setup { font-size: 0.72rem; color: var(--accent-amber); }
 
 	.role-badge {
 		font-size: 0.65rem; font-weight: 700; text-transform: uppercase;

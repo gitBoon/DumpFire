@@ -100,9 +100,18 @@ export function resetKnownBrowserSecretCache(): void {
 	cachedSecret = null;
 }
 
+/**
+ * The MAC's domain: 2 since two-step sign-in (card 2769, decision 24). A
+ * browser is remembered only after a second factor from then on; an older
+ * image, which remembers one on a password alone, signs under 1, and every
+ * cookie it signs is refused here, even where it made the secret again after
+ * migration 0067 deleted it.
+ */
+const MAC_DOMAIN = 'known-browser:2';
+
 function macOf(secret: string, userId: number, issuedAt: number, nonce: string, passwordHash: string): string {
 	return createHmac('sha256', secret)
-		.update(`known-browser:1:${userId}:${issuedAt}:${nonce}:${passwordHash}`)
+		.update(`${MAC_DOMAIN}:${userId}:${issuedAt}:${nonce}:${passwordHash}`)
 		.digest('hex');
 }
 

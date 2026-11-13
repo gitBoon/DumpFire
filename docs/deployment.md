@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.111
+version: 1.112
 status: As-Built
 date: 2026-11-13
 tags:
@@ -43,7 +43,10 @@ tags:
   - migration-0065
   - key-rotation
   - mfa-reset
-description: "Docker deployment, MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, and production configuration for DumpFire"
+  - migration-0066
+  - migration-0067
+  - release-mail
+description: "Docker deployment, the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, and production configuration for DumpFire"
 ---
 
 # DumpFire Deployment Guide
@@ -1105,15 +1108,26 @@ flowchart TD
     Up["Start-up sequence completes,\nand the server is listening"] --> Check{"Any users\nin DB?"}
     Check -->|"No"| Setup["Redirect to /setup"]
     Setup --> Create["Create superadmin account"]
-    Create --> Dashboard["Dashboard ready"]
+    Create --> Enrol["/login/enrol: set up two-step sign-in<br/>QR code, first code, ten recovery codes"]
+    Enrol --> Dashboard["Dashboard ready"]
     Check -->|"Yes"| Login["Redirect to /login"]
-    Login --> Dashboard
+    Login --> Second["Code, or set-up"]
+    Second --> Dashboard
 ```
 
-1. Start the container
+1. Start the container, with `MFA_KEY_FILE` in place: without the key, set-up answers `503`
+   and makes nothing
 2. Visit the application URL
 3. You'll be redirected to `/setup` to create the first superadmin account
-4. After setup, `/setup` is permanently blocked
+4. You are then taken to set up two-step sign-in (card 2769), with an authenticator app on your
+   phone. Finish it straight away: only its last step signs you in
+5. After setup, `/setup` is permanently blocked
+
+**A set-up left unfinished** leaves the superadmin with a password and no authenticator, and no
+leave to set one up on the password: signing in answers that the account needs a set-up link.
+The way back is the host's command, which prints one:
+`docker exec <container> node scripts/mfa-reset.mjs <username>` (see
+[If the Superadmin Loses Their Authenticator](#if-the-superadmin-loses-their-authenticator)).
 
 The start that made the new database says so in the log: `[WARN] [STARTUP] No database was at /app/data/dumpfire.db: a new, empty one was created at this start.` On a new installation that is expected, once. On an installation that had data it means the server is not looking where the data is, and set-up is open to whoever opens the site first: stop the container at once and see [Moving the Database onto the Volume](#moving-the-database-onto-the-volume).
 
@@ -1215,7 +1229,7 @@ The link's address is the host's own configuration first, and a setting any admi
 | `Refused: this database has no two-step sign-in tables; start the server once to migrate it (<path>).` | `1` | A database from before migration 0065 |
 | `Refused: the reset could not be written, and nothing was changed: database is locked` | `1` | The server, or something else, held the database for more than five seconds. Run it again |
 
-The page the link opens, where its holder gives the account's password and sets up a new authenticator, is card 2769's, which is never released without this command. A newer reset, from here or from 🛡️, ends the link, and so does setting the account's password or changing its email address or role. Reset the password first, if that is needed too, and two-step sign-in after.
+The page the link opens is card 2769's, which is never released without this command: it names the account and sends its holder to sign in with the account's password, which then leads to setting up a new authenticator. The same command is the way back for a first-run set-up left unfinished. A newer reset, from here or from 🛡️, ends the link, and so does setting the account's password or changing its email address or role. Reset the password first, if that is needed too, and two-step sign-in after.
 
 ### If an Attack Keeps an Owner Out
 
@@ -5908,6 +5922,137 @@ which `node` can read, with the warning
 **If the server does not start** after the update and `docker logs` says `attempt to write a
 readonly database`, `unable to open database file` or `EACCES`, U1 was not made, or an image from
 before card 2776 has run on the volume since: make it, and start the container again. Nothing in the data was changed by the failed start.
+
+### The Release That Turns On Two-Step Sign-In (Card 2769)
+
+**Card 2769 (build card B2 of card 2669).** Migrations `0066_add_mfa_password_enrol.sql` and
+`0067_end_sessions_for_two_step.sql`, three new pages (`/login/verify`, `/login/enrol`,
+`/enrol/[token]`) and one new runtime dependency (`uqr` 0.1.3, see
+[SBOM Analysis](sbom-analysis.md)). API v1 does not change. From this release **a right password
+no longer signs anyone in**: every account proves an authenticator code or a recovery code, or
+sets an authenticator up, before a session exists. How it works is in
+[Two-Step Sign-In](authentication-security.md#two-step-sign-in-card-2769).
+
+**Release rules.**
+
+- **Never released without card 2773** (the reset and the host's command, built) **and card
+  2849** (invite tokens stored as hashes): an invite is now a grant to set up the second factor.
+- **`MFA_KEY_FILE` in place** (card 2768): see
+  [The Key That Protects Authenticator Secrets](#the-key-that-protects-authenticator-secrets).
+- **Stop every instance before the release starts**, and never run two images side by side
+  across it. An older image still running would sign people in on a password alone.
+- **Where mail is set up, the App URL or `ORIGIN` must be the real address** before the release,
+  not the image's placeholder `http://localhost:3000`: the release mails links built from it.
+- **Rolling back past this card is a security event** (below).
+
+**What people notice.**
+
+- **Everybody is signed out once, and every remembered browser is forgotten** (0067). The first
+  sign-in from any browser is a new browser's.
+- **At their next sign-in nobody has an authenticator yet**, so each account sets one up, by one
+  of these, decided at the right password:
+
+| The account | No mail host configured | A mail host configured |
+|---|---|---|
+| Existed at the release, with no authenticator and no set-up link | Sets up on its password alone, for **14 days** from the release (the accepted risk R1). After that it needs a link | The first right password emails it a set-up link, good for 7 days, and the sign-in page says so. A second sign-in within 24 hours is told when it went; after 24 hours a new link is mailed, and the older one ends once that mail has gone (a failed send keeps it). While a set-up from a mailed link is under way, a sign-in elsewhere is told so and nothing is mailed. The mail names the time and address of the sign-in |
+| Reset (🛡️ or the host's command, by this image or an older one) before or after the release | Needs the link the reset gave | The same |
+| Made after the release | Needs an invite or a 🛡️ link | The same |
+| The superadmin made at a first-run set-up after the release, who left the set-up unfinished | Needs the host's command, which prints a link | The same |
+
+- **A configured mail host that cannot send** (its password not entered on this server, no
+  address to make the link from, or the placeholder) answers `503` "could not email" and gives
+  no link. It never falls back to setting up on the password. Fix the mail, or give the person
+  a 🛡️ link.
+- **API keys, webhooks and scripts keep working** through the release. Keys were made on a
+  password alone, which is accepted as a non-interactive credential (R2): review them first.
+- **Clearing the mail settings within the 14 days reopens setting up on the password** for every
+  account still marked: an administrator's decision. A working copy (Import Backup) takes the
+  leave from every account.
+- **Without the MFA key** an account with an authenticator still reaches the code page, where an
+  authenticator code is `503` and a recovery code signs in; an account that would set up is
+  `503` at the password. Production refuses to start without the key in any case.
+- **The admin page** shows, under each account that may still set up on its password, "may set
+  up on password until `<date>` UTC", and nothing while a mail host is set up. See
+  [The Release That Turns On Two-Step Sign-In](admin-guide.md#the-release-that-turns-on-two-step-sign-in).
+- **A pending sign-in left unfinished** is swept at start-up and every five minutes, and its
+  owner mailed (at most once an hour).
+
+#### Before the deploy
+
+`<c>` is the container name. `q` is a read-only query of the database:
+
+```bash
+q() { docker exec <c> node -e "const D=require('better-sqlite3');const d=new D('/app/data/dumpfire.db',{readonly:true});console.log(JSON.stringify(d.prepare(process.argv[1]).all()))" "$1"; }
+```
+
+**Check W1: a cold copy.** Take it as in [Taking and Returning the Cold Copy](#taking-and-returning-the-cold-copy).
+It is the only way back to sessions and remembered browsers, and going back is a security event.
+
+**Check W2: the address links are made from.** Where mail is set up:
+`docker exec <c> printenv APP_URL ORIGIN` and `q "SELECT value FROM settings WHERE key='app_url'"`.
+Expect the App URL setting, or else `APP_URL`, or else `ORIGIN`, to be this server's real
+address. It is a fault if the first one set is empty or `http://localhost:3000`: every release
+sign-in would answer "could not email".
+
+**Check W3: review the API keys.** `q "SELECT u.username, k.name, k.created_at, k.last_used_at, k.expires_at FROM api_keys k JOIN users u ON u.id = k.user_id ORDER BY u.username, k.created_at"`.
+Ask each holder about a key they do not recognise: they revoke it on their Account page. An
+administrator ends every key of an account by setting its password (🔑). A key nobody recognises
+is how someone who had a password stays in after this release.
+
+**Check W4: who may set up on a password.** `q "SELECT username, role FROM users WHERE NOT EXISTS (SELECT 1 FROM mfa_factors f WHERE f.user_id = users.id) AND NOT EXISTS (SELECT 1 FROM enrolment_links l WHERE l.user_id = users.id)"`.
+These get `mfa_password_enrol = 1` from 0066. Where no mail host is configured, whoever holds one
+of their passwords can set up first, for 14 days. **Consider resetting every administrator's
+two-step sign-in first**, and any account whose password may be known: 🛡️ for an administrator
+(by the superadmin), and `docker exec <c> node scripts/mfa-reset.mjs <username>` for the
+superadmin. A reset account needs its link, which you hand over yourself, and is never set up on
+its password.
+
+**Check W5: stop every instance.** `docker ps --filter ancestor=dumpfire` (or your image's name)
+lists nothing running before the new image starts. Include staging copies that share the
+database.
+
+#### What changes at the first start
+
+- **Two lines from the runner**: `Applied migration: 0066_add_mfa_password_enrol.sql` and
+  `Applied migration: 0067_end_sessions_for_two_step.sql`. Both are declared to the rehearsal
+  (0066 keeps the rows of `users`; 0067 deletes the rows of `sessions` and one of `settings`).
+- **Every session ends**, and the remembered-browser secret is deleted.
+- **`two_step_released_at`** is written to `settings`: the 14 days start.
+
+#### After the deploy
+
+| # | Do | Expect | A fault if |
+|---|----|--------|------------|
+| W6 | `q "SELECT hash FROM __drizzle_migrations WHERE hash LIKE '006%'"`, `q "SELECT COUNT(*) n FROM sessions"`, `q "SELECT value FROM settings WHERE key='two_step_released_at'"` | 0066 and 0067 recorded; `n` 0 straight after the start; the setting is the start's time | Either file missing, a session left from before, or no setting |
+| W7 | `q "SELECT username, mfa_password_enrol FROM users"` | 1 for each account W4 listed, 0 for every other | Any other |
+| W8 | Sign in yourself | The set-up page (or, with mail set up, the notice that a link was emailed). Finish it: the QR code, the first code, ten recovery codes, "I have saved these codes" | Signed in at once |
+| W9 | Audit page, Live Console | `Two-step sign-in set up for "<you>" (user <id>) (<password, link, invite or setup>)` and `User "<you>" logged in`. No code, secret, token or link anywhere | Any secret in a line |
+| W10 | `q "SELECT COUNT(*) n FROM sessions WHERE two_step <> 1"` | 0 | Above 0 |
+| W11 | Sign out, sign in again | The code page; the current code signs in | No code asked |
+| W12 | `curl -H "Authorization: Bearer <a key>" https://<host>/api/v1/boards` | `200` | `401` |
+| W13 | Browser tools on `/login/verify` | `Cache-Control: no-store`, `Referrer-Policy: strict-origin`; the challenge cookie `HttpOnly; SameSite=Strict; Path=/`, named `__Host-dumpfire_challenge` over HTTPS | Cacheable, or the cookie readable from script |
+| W14 | Admin → Users, where no mail host is set up | "may set up on password until `<date>` UTC" under each account W7 shows 1 that has not set up yet, 14 days after W6's time, your own row included. With a mail host set up, no such line | No date, one on an account that has set up, or one while a mail host is set up |
+
+**A session an older image made is refused.** One `WARN` line, "Session made without a second
+factor (an older image, or from before two-step sign-in) — refused and deleted", for each such
+session, and its browser is sent to sign in.
+
+#### Going back to the previous image
+
+**Going back past this card is a security event.** The older image signs people in on a password
+alone for as long as it runs. Nothing is done to the database: the columns and the setting stay,
+unread, and its model check reports them at every start (`[ERROR] [DB]`, expected). Authenticators
+set up meanwhile stay stored, and the older image ignores them. A reset made on the older image
+(🛡️ or the host's command, from card 2773 on) leaves the account's mark at 1 but issues a link,
+which this image reads as closing setting up on the password for that account.
+
+**Coming forward again**, 0066 and 0067 are already recorded and are not run, so nothing ends
+the older image's sessions by migration. This image refuses them instead: each was written with
+`two_step` 0 and is deleted at its next request, and each remembered-browser cookie the older
+image signed is under the old MAC domain and not remembered. So everybody it signed in signs in
+again with the second step. The 14 days still count from the first release. Treat everything
+done while the older image ran as done by whoever held a password: review the Audit page and the
+API keys (W3) again.
 
 ## Changing the Schema
 

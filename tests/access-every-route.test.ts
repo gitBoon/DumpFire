@@ -5437,10 +5437,15 @@ describe('every page load, to a caller who cannot open a board (card 2130)', () 
 		'page /decisions/people/[personId]': { paths: () => [personIds.viEwer, personIds.patPage].map((id) => `/decisions/people/${id}`) },
 		'page /decisions/[id]/record': { paths: () => [decisionIds.openA, decisionIds.openB, decisionIds.draftA].map((id) => `/decisions/${id}/record`) },
 		'page /decision-link/[token]': { none: 'gives one decision, to the holder of its link, whoever is signed in' },
+		// Card 2769: a set-up link's page.
+		'page /enrol/[token]': { none: 'gives the name of the account a set-up link is for, to the holder of the link, to nobody signed in' },
 		'page /graph': { none: "gives the caller's own account: the graph is drawn from GET /api/graph, which the table asks" },
 		'page /inbox': { paths: () => ['/inbox'] },
 		'page /invite/[token]': { none: "gives the name of the account an invite is for, to the holder of the invite's link" },
 		'page /login': { none: 'gives nothing, and sends a signed-in caller on' },
+		// Card 2769: the second step of signing in.
+		'page /login/verify': { none: 'gives the name of the account a pending sign-in is for, to the browser holding its challenge' },
+		'page /login/enrol': { none: 'gives the secret and the recovery codes being set up, to the browser holding the set-up challenge' },
 		'page /logout': { none: 'gives nothing: it sends every caller on' },
 		'page /plan': { paths: (w) => ['/plan', `/plan?board=${w.A.board.id}`, `/plan?board=${w.B.board.id}`] },
 		'page /plan/[id]': { paths: (w) => [`/plan/${w.A.milestone.id}`, `/plan/${w.B.milestone.id}`] },

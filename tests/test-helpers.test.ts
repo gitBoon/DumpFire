@@ -20,6 +20,8 @@ import { notifyCardMoved } from '$lib/server/notifications';
 import { getWorkDependencies } from '$lib/server/planning';
 import { deliveryResultFor, dispatchWebhook } from '$lib/server/webhooks';
 import { SESSION_COOKIE_NAME } from '$lib/server/auth';
+import { CHALLENGE_COOKIE } from '$lib/server/sign-in-challenges';
+import { NO_CODE, SIGN_IN_EXPIRED } from '$lib/server/second-step';
 import { action, loadKeys, pageLoad, pagePatterns } from './helpers/actions';
 import { eachWriteInTurn } from './helpers/each-write';
 import { effects, type Effects } from './helpers/effects';
@@ -42,6 +44,7 @@ import {
 import { sendAround } from './helpers/held-body';
 import { readBudget, ReadBudgetSpent, watchReads } from './helpers/reads';
 import { StandInRequest } from './helpers/stand-in-request';
+import { giveFactor, passwordStep } from './helpers/two-step';
 import { diffSnapshots, expectUnchanged, snapshotDb } from './helpers/snapshot';
 
 beforeEach(resetDb);
@@ -453,14 +456,16 @@ describe('action(), the caller for form actions', () => {
 			}
 		});
 
-		expect(res).toMatchObject({ type: 'redirect', status: 303, location: '/' });
+		// Card 2769: on to setting up two-step sign-in, with the challenge's cookie and no session.
+		expect(res).toMatchObject({ type: 'redirect', status: 303, location: '/login/enrol' });
 		const created = db.select().from(users).all();
 		expect(created).toHaveLength(1);
 		expect(created[0]).toMatchObject({ username: 'first', email: 'first@example.test', role: 'superadmin' });
 
-		const cookie = res.cookies[SESSION_COOKIE_NAME];
+		const cookie = res.cookies[CHALLENGE_COOKIE];
 		expect(cookie.options).toMatchObject({ path: '/', httpOnly: true });
-		expect(db.select().from(sessions).all().map((s) => s.userId)).toEqual([created[0].id]);
+		expect(res.cookies[SESSION_COOKIE_NAME]).toBeUndefined();
+		expect(db.select().from(sessions).all()).toEqual([]);
 	});
 
 	it('passes route parameters, and cookies the browser sent', async () => {
@@ -476,6 +481,20 @@ describe('action(), the caller for form actions', () => {
 		const out = await action('/logout', { cookies: { [SESSION_COOKIE_NAME]: 'not-a-session' } });
 		expect(out).toMatchObject({ type: 'redirect', location: '/login' });
 		expect(out.deletedCookies).toEqual([SESSION_COOKIE_NAME]);
+	});
+
+	// Card 2769, plan case T44 (decision 29): an action that reads the raw header,
+	// as the code page reads its challenge, sees the cookies a test sends too.
+	it('sends the cookies the browser sent in a Cookie header as well (T44)', async () => {
+		const user = makeUser();
+		giveFactor(user);
+		const { challenge } = await passwordStep(user);
+
+		const held = await action('/login/verify', { form: {}, cookies: { [CHALLENGE_COOKIE]: challenge! } });
+		expect(held).toMatchObject({ type: 'failure', status: 400, data: { error: NO_CODE } });
+		// And with none sent, there is no challenge.
+		const none = await action('/login/verify', { form: {} });
+		expect(none).toMatchObject({ type: 'failure', status: 400, data: { error: SIGN_IN_EXPIRED } });
 	});
 
 	it('fails the test for a page or an action that is not there', async () => {

@@ -1726,6 +1726,21 @@ describe('the two-step sign-in reset on the users panel and its dialog, mounted 
 	});
 });
 
+// Card 2769 (decision 25): an account that may still set up two-step sign-in on its
+// password alone, in the 14 days after the release, says until when.
+describe('the users panel’s password set-up date (card 2769)', () => {
+	it('T76: a row with passwordSetUpUntil says "may set up on password until <date>", and a row without says nothing of it', () => {
+		const data = { ...pageData, users: [{ ...pageData.users[0], passwordSetUpUntil: null }, { ...bob, passwordSetUpUntil: '2026-11-27 10:00:00' }] };
+
+		const target = draw(UsersPanel, { data, isSuperadmin: true, confirm: vi.fn(), loadMailStatus: vi.fn(), inviteLink: null });
+
+		const rows = [...target.querySelectorAll('.user-row')];
+		const said = (name: string) => rows.find((row) => row.querySelector('.user-row-name')!.textContent === name)!.textContent!;
+		expect(said('bob')).toContain('may set up on password until 2026-11-27 10:00:00 UTC');
+		expect(said('chief')).not.toContain('may set up on password');
+	});
+});
+
 // Card 2397: an administrator made a user, or deleted, takes with them the mail
 // settings, the App URL and the destinations they last set; the answer says so.
 describe('the users panel says what a role change or a delete removed (card 2397)', () => {

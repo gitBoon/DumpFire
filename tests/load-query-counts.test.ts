@@ -161,6 +161,8 @@ describe('the admin page’s load (card 2297)', () => {
 				reportSchedules: user.id === admin.id ? null : 0,
 				// Nobody holds a second factor (card 2773); the caller's own is not given.
 				twoStep: user.id === admin.id ? null : false,
+				// Nobody may set up on a password alone (card 2769): no account is marked, and no release is recorded.
+				passwordSetUpUntil: null,
 				// Nobody set a mail setting, the App URL or a destination (card 2397's review).
 				settingsSet: null
 			})),

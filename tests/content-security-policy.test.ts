@@ -28,8 +28,10 @@ import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { cspMode, secured } from '$lib/server/gate-answers';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { reportCspMode, reportInstallation } from '$lib/server/startup-checks';
+import { CHALLENGE_COOKIE } from '$lib/server/sign-in-challenges';
 import { makeApiKey, makeAttachment, makeBoard, makeCard, makeSession, makeUser, resetDb } from './helpers/fixtures';
 import { gate } from './helpers/gate';
+import { giveFactor, openReleaseWindow, passwordStep } from './helpers/two-step';
 
 const ROOT = process.cwd();
 const read = (file: string) => readFileSync(join(ROOT, file), 'utf8');
@@ -162,8 +164,18 @@ describe('a page', () => {
 		'carries the policy, with a nonce of its own on every script it has, and the five headers as before',
 		async () => {
 			const { board } = makeBoard({ owner: user });
+			// Card 2769: the two sign-in pages, each for the browser holding a live challenge.
+			const holder = makeUser();
+			giveFactor(holder);
+			const verifying = { cookie: `${CHALLENGE_COOKIE}=${(await passwordStep(holder)).challenge}` };
+			const newcomer = makeUser();
+			sqlite.prepare('UPDATE users SET mfa_password_enrol = 1 WHERE id = ?').run(newcomer.id);
+			openReleaseWindow();
+			const enrolling = { cookie: `${CHALLENGE_COOKIE}=${(await passwordStep(newcomer)).challenge}` };
 			const pages: [string, string, Record<string, string>, number][] = [
 				['the login page, for nobody', '/login', HTML, 200],
+				['the code page, with a live challenge', '/login/verify', { ...verifying, ...HTML }, 200],
+				['the set-up page, with a live challenge', '/login/enrol', { ...enrolling, ...HTML }, 200],
 				['the API’s documents, for nobody', '/docs', HTML, 200],
 				['the dashboard, signed in', '/', { ...asUser, ...HTML }, 200],
 				['a board, signed in', `/board/${board.id}`, { ...asUser, ...HTML }, 200],
@@ -204,7 +216,14 @@ describe('a page', () => {
 				for (const tag of scripts) expect(tag, what).toContain(`nonce="${nonce}"`);
 				expect(html, what).toContain('dumpfire-theme');
 
-				expect(headersOf(res), what).toEqual(path === '/request' ? { ...FIVE, 'x-frame-options': null } : FIVE);
+				// The request form may be framed; the two sign-in pages name only the origin (card 2769, decision 5).
+				const expected =
+					path === '/request'
+						? { ...FIVE, 'x-frame-options': null }
+						: path === '/login/verify' || path === '/login/enrol'
+							? { ...FIVE, 'referrer-policy': 'strict-origin' }
+							: FIVE;
+				expect(headersOf(res), what).toEqual(expected);
 			}
 
 			// A nonce is made for each page, never kept.

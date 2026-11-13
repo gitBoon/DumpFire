@@ -26,6 +26,10 @@
  * - Every account's guessing counters and pauses are zeroed. The same
  *   accounts keep this server's last sign-in, failed-code count and banner;
  *   any other has the backup's.
+ * - Every account's leave to set up on its password alone
+ *   (`mfa_password_enrol`, card 2769) is zeroed, and the same accounts then
+ *   have this server's back: a backup gives it to no account, and a reset
+ *   made here since the backup stays made.
  * - The key check is this key's when any factor exists afterwards; with none
  *   it is this server's as it was.
  *
@@ -47,17 +51,33 @@ import { readMfaKeyCheck } from './mfa-store';
 /** The tables no restore copies: this module puts back the first two, and the other two are never brought in. */
 export const MFA_ROWS_NOT_RESTORED = ['mfa_factors', 'mfa_recovery_codes', 'sign_in_challenges', 'enrolment_links'] as const;
 
-/** An account's sign-in history, which the same account keeps from this server across a restore. */
-const HISTORY = ['last_sign_in_at', 'last_sign_in_from', 'failed_codes_since_sign_in', 'security_banner', 'security_banner_at'] as const;
+/**
+ * An account's sign-in history, which the same account keeps from this server
+ * across a restore; and its leave to set up two-step sign-in on its password
+ * alone (card 2769), so that a reset made here since the backup stays made.
+ */
+const HISTORY = [
+	'last_sign_in_at',
+	'last_sign_in_from',
+	'failed_codes_since_sign_in',
+	'security_banner',
+	'security_banner_at',
+	'mfa_password_enrol'
+] as const;
 
-/** Every account's guessing counters and pauses, as a restore leaves them. */
+/**
+ * Every account's guessing counters and pauses, as a restore leaves them; and
+ * its leave to set up on its password alone, which only the same account then
+ * has back (`HISTORY`): no backup gives it to any other (card 2769, decision 18).
+ */
 const GUESSING: Record<string, number | null> = {
 	mfa_known_wrong: 0,
 	mfa_other_wrong: 0,
 	mfa_known_resumes_at: null,
 	mfa_other_resumes_at: null,
 	mfa_recovery_wrong: 0,
-	mfa_recovery_resumes_at: null
+	mfa_recovery_resumes_at: null,
+	mfa_password_enrol: 0
 };
 
 /** What this server held before the restore cleared it. */

@@ -74,7 +74,7 @@
 			{#if isReset}
 				<p id="invite-link-warning" style="margin-bottom: var(--space-sm)">Give {inviteLink.username} this link yourself, by a way only they read: it is shown once, here. It works for seven days, and stops working if their two-step sign-in is reset again. Whoever opens it sets up the authenticator of {inviteLink.username}'s account, and the account still needs its password. Do not open it yourself.</p>
 			{:else}
-				<p id="invite-link-warning" style="margin-bottom: var(--space-sm)">Give this link to {inviteLink.username} yourself, by a way only they read. Whoever opens it can set the password of {inviteLink.username}'s account and is then signed in as them. It works once, for seven days, and stops working if another invite is sent to this account. Do not open it yourself.</p>
+				<p id="invite-link-warning" style="margin-bottom: var(--space-sm)">Give this link to {inviteLink.username} yourself, by a way only they read. Whoever opens it can set the password of {inviteLink.username}'s account, then sets up its two-step sign-in and is signed in as them. It works once, for seven days, and stops working if another invite is sent to this account. Do not open it yourself.</p>
 			{/if}
 			<div class="invite-link-row">
 				<code>{inviteLink.url}</code>

@@ -40,6 +40,7 @@ import {
 import { countWrongSignIn, resetAllRateLimits, signInWait } from '$lib/server/rate-limit';
 import { makeApiKey, makeUser, resetDb } from './helpers/fixtures';
 import { gate } from './helpers/gate';
+import { giveFactor } from './helpers/two-step';
 
 /**
  * The CPUs this process may use. Tests 1 and 2 time two real threads against
@@ -135,7 +136,7 @@ async function signIn(identity: string, password: string, ip: string, platform?:
 		ip,
 		platform
 	});
-	return { status: res.status, text: await res.text() };
+	return { status: res.status, location: res.headers.get('location'), text: await res.text() };
 }
 
 const BUSY =
@@ -445,8 +446,11 @@ describe('the line', () => {
 		await expect(checkPassword(RIGHT, CHEAP, 'other', { gone: () => true })).rejects.toEqual(new CheckNotMade('gone'));
 		expect(passwordChecks().checked).toBe(checked);
 
-		// A caller still there is checked.
-		expect((await signIn('pat', RIGHT, '203.0.113.61', { req: { socket: { destroyed: false } } })).status).toBe(303);
+		// A caller still there is checked: at an account that holds a second
+		// factor, the right password goes on to the code page (card 2769).
+		giveFactor(user);
+		const checkedRes = await signIn('pat', RIGHT, '203.0.113.61', { req: { socket: { destroyed: false } } });
+		expect({ status: checkedRes.status, location: checkedRes.location }).toEqual({ status: 303, location: '/login/verify' });
 	});
 
 	// Card 2177 keeps the name cut to 320 characters for the answer (its R6);

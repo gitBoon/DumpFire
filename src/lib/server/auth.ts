@@ -303,13 +303,20 @@ export function requirePasswordHeld(userId: number): void {
 
 // ─── Session Management ─────────────────────────────────────────────────────
 
-/** Create a new session for a user. Returns the session token (UUID). */
+/**
+ * Create a new session for a user. Returns the session token (UUID).
+ *
+ * The session is marked as made after a second factor (`two_step` 1, card
+ * 2769): call this only once the second factor has been checked, or with the
+ * code checked in the same request. A session an older image makes has 0, and
+ * `findSession` refuses it.
+ */
 export function createSession(userId: number): string {
 	const token = crypto.randomUUID();
 	const expiresAt = stamp(new Date(Date.now() + SESSION_DURATION_DAYS * 24 * 60 * 60 * 1000));
 
 	db.insert(sessions)
-		.values({ id: token, userId, expiresAt })
+		.values({ id: token, userId, expiresAt, createdAt: stamp(), twoStep: 1 })
 		.run();
 
 	// Said once the session is committed. The logger keeps a line written
@@ -326,11 +333,12 @@ export function createSession(userId: number): string {
 type FoundSession =
 	| { open: true; session: Session; user: User }
 	| { open: false; why: 'missing' }
-	| { open: false; why: 'expired' | 'orphaned'; session: Session };
+	| { open: false; why: 'expired' | 'orphaned' | 'one-step'; session: Session };
 
 /**
- * Whether the session with this token is open: it is there, it has not
- * expired, and its account still exists. If not, which of those it failed.
+ * Whether the session with this token is open: it is there, it was made
+ * after a second factor, it has not expired, and its account still exists.
+ * If not, which of those it failed.
  *
  * Two reads, and nothing written or logged. `validateSession`,
  * `sessionStillOpen`, `openSessionUser` and `stillAuthenticated` all ask it,
@@ -342,6 +350,11 @@ function findSession(token: string): FoundSession {
 		.where(eq(sessions.id, token))
 		.get();
 	if (!session) return { open: false, why: 'missing' };
+
+	// Made on a password alone (card 2769, decision 24): by an older image,
+	// run after the release, which writes no value to the column, or left
+	// from before it. Refused whatever its expiry; the gate deletes it.
+	if (session.twoStep !== 1) return { open: false, why: 'one-step', session };
 
 	// Read as the moment it names, and closed when it names none (the P6
 	// review, S2): compared as text, `zzz`, 30 February 2099, or ISO with its
@@ -375,6 +388,19 @@ export function validateSession(token: string): SessionUser | null {
 
 	if (!found.open && found.why === 'expired') {
 		log.info('Session validation failed — session expired', { tokenPrefix, expiresAt: found.session.expiresAt }, { userId: found.session.userId });
+		return null;
+	}
+
+	if (!found.open && found.why === 'one-step') {
+		// Made without a second factor: by an older image run after the
+		// release, or never ended by it (card 2769, decision 24). Deleted here,
+		// as an orphan is, so that it is said once.
+		log.warn(
+			'Session made without a second factor (an older image, or from before two-step sign-in) — refused and deleted',
+			{ tokenPrefix },
+			{ userId: found.session.userId }
+		);
+		db.delete(sessions).where(eq(sessions.id, token)).run();
 		return null;
 	}
 

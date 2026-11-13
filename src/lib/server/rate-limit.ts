@@ -249,6 +249,16 @@ export function enterSignIn(key: string, allowed: number): boolean {
  */
 export const FIRST_LANE_CHECKS_PER_ACCOUNT = 5;
 
+/**
+ * What sign-in's throttles count an account's wrong passwords and attempts
+ * under: `user:<id>` (a name that is no account is counted under
+ * `name:<sha-256>`, by the sign-in action). The second step forgets and
+ * gives back under the same key (card 2769).
+ */
+export function accountKey(userId: number): string {
+	return `user:${userId}`;
+}
+
 /** The key of an account's first-lane checks in flight, for `enterSignIn` and `leaveSignIn`. */
 export function firstLaneChecksAt(userId: number): string {
 	return `known:user:${userId}`;

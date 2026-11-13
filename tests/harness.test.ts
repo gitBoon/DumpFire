@@ -216,6 +216,10 @@ const TEST_FILES = [
 	'timestamps.test.ts',
 	'todo-page.test.ts',
 	'transaction.test.ts',
+	// Card 2769: setting up two-step sign-in, on the password, after an invite and at the first-run set-up.
+	'two-step-enrol.test.ts',
+	// Card 2769: two-step sign-in, from sessions made only after a second factor to the code page.
+	'two-step-sign-in.test.ts',
 	// Milestone 22, slice S4a: options are left out of every delivery measure; lead and cycle time from the commitment.
 	'upstream-measures.test.ts',
 	// Milestone 22, slice S6: the public API's reads of upstream, its filters and the upstream figures.

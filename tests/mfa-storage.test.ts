@@ -804,7 +804,9 @@ describe('backups and restores', () => {
 			'last_sign_in_from',
 			'failed_codes_since_sign_in',
 			'security_banner',
-			'security_banner_at'
+			'security_banner_at',
+			// Migration 0066 (card 2769).
+			'mfa_password_enrol'
 		]) {
 			backup.exec(`ALTER TABLE users DROP COLUMN ${column}`);
 		}
@@ -830,19 +832,23 @@ describe('backups and restores', () => {
 			mfaRecoveryWrong: 3,
 			mfaRecoveryResumesAt: '2026-11-05 10:25:00'
 		};
+		// Leave to set up on the password alone (card 2769) is zeroed with the
+		// guessing counters, and then kept for the same account as its history is.
 		const then = {
 			lastSignInAt: '2026-10-01 09:00:00',
 			lastSignInFrom: '10.0.0.1',
 			failedCodesSinceSignIn: 1,
 			securityBanner: null,
-			securityBannerAt: null
+			securityBannerAt: null,
+			mfaPasswordEnrol: 1
 		};
 		const now = {
 			lastSignInAt: '2026-11-04 18:00:00',
 			lastSignInFrom: '10.0.0.2',
 			failedCodesSinceSignIn: 3,
 			securityBanner: 'password used elsewhere',
-			securityBannerAt: '2026-11-04 18:05:00'
+			securityBannerAt: '2026-11-04 18:05:00',
+			mfaPasswordEnrol: 1
 		};
 		for (const id of [same.id, gone.id]) db.update(users).set({ ...guessing, ...then }).where(eq(users.id, id)).run();
 		const backup = backupNow();
@@ -862,7 +868,48 @@ describe('backups and restores', () => {
 			});
 		}
 		expect(userRow(same.id)).toMatchObject(now);
-		expect(userRow(gone.id)).toMatchObject(then);
+		expect(userRow(gone.id)).toMatchObject({ ...then, mfaPasswordEnrol: 0 });
+	});
+
+	it("T4: the same account keeps this server's flag 0 over the backup's 1; an account brought back from the backup gets 0", () => {
+		// The flag lets an account set up two-step sign-in on its password alone
+		// (card 2769). An administrator's reset since the backup set it to 0
+		// here, and a restore must not give that leave back; nor may a backup
+		// give it to an account that is not this server's.
+		makeUser({ role: 'superadmin' });
+		const same = makeUser();
+		const gone = makeUser();
+		for (const id of [same.id, gone.id]) db.update(users).set({ mfaPasswordEnrol: 1 }).where(eq(users.id, id)).run();
+		const backup = backupNow();
+		db.update(users).set({ mfaPasswordEnrol: 0 }).where(eq(users.id, same.id)).run();
+		deleteUser(gone.id);
+
+		const result = restore(backup);
+
+		expect(result.errors).toEqual([]);
+		expect(userRow(same.id).mfaPasswordEnrol).toBe(0);
+		expect(userRow(gone.id).mfaPasswordEnrol).toBe(0);
+	});
+
+	it("T5: a backup made before migration 0066 restores, and the same account keeps this server's flag", () => {
+		makeUser({ role: 'superadmin' });
+		const same = makeUser();
+		const other = makeUser();
+		db.update(users).set({ mfaPasswordEnrol: 1 }).where(eq(users.id, same.id)).run();
+		const backup = backupNow();
+		// As a backup made before migration 0066 is: none of its columns, and no setting that starts the 14 days.
+		backup.exec('ALTER TABLE users DROP COLUMN mfa_password_enrol');
+		backup.exec('ALTER TABLE sessions DROP COLUMN two_step');
+		backup.exec('ALTER TABLE sign_in_challenges DROP COLUMN enrol_grant');
+		backup.exec('ALTER TABLE sign_in_challenges DROP COLUMN enrolment_link_hash');
+		backup.prepare("DELETE FROM settings WHERE key = 'two_step_released_at'").run();
+		deleteUser(other.id);
+
+		const result = restore(backup);
+
+		expect(result.errors).toEqual([]);
+		expect(userRow(same.id).mfaPasswordEnrol).toBe(1);
+		expect(userRow(other.id).mfaPasswordEnrol).toBe(0);
 	});
 
 	it("T56: a backup holding challenges and enrolment links brings none in, and this server's are gone", () => {

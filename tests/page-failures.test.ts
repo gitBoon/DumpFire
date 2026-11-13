@@ -1645,6 +1645,38 @@ describe('the invite page, src/routes/invite/[token]/+page.svelte', () => {
 	});
 });
 
+// ─── The code page of two-step sign-in (card 2769) ──────────────────────────
+
+describe('the code page, src/routes/login/verify/+page.svelte (card 2769)', () => {
+	// Plan case T43 (I2): `update()` reloads the page's data, and a browser now
+	// signed in is sent home from the page, so the report of decision 16 would
+	// never be seen. The form's answer is kept with the data as it was.
+	it('keeps the form’s answer on the page: its use:enhance callback calls update({ invalidateAll: false }), and nothing calls update() bare (T43)', () => {
+		const source = readFileSync(join(ROOT, 'src/routes/login/verify/+page.svelte'), 'utf8');
+		const markup = source.slice(source.indexOf('</script>'));
+		const form = markup.slice(markup.indexOf('<form method="POST" use:enhance='), markup.indexOf('class="verify-form"'));
+
+		expect(form).toContain('await update({ invalidateAll: false });');
+		expect(source.match(/\bupdate\(/g)).toEqual(['update(']);
+	});
+});
+
+describe('the set-up page, src/routes/login/enrol/+page.svelte (card 2769)', () => {
+	// The ruling of 2026-11-13 on slice 3's report: a confirm with something to
+	// report answers the report of decision 16, as a right code does, and a
+	// browser now signed in is sent home from the page by a reload, so the
+	// confirm form keeps its answer with the data as it was. The first code's
+	// form still reloads: its answer is a redirect back to the page.
+	it('keeps the confirm’s answer on the page: its use:enhance callback calls update({ invalidateAll: false })', () => {
+		const source = readFileSync(join(ROOT, 'src/routes/login/enrol/+page.svelte'), 'utf8');
+		const markup = source.slice(source.indexOf('</script>'));
+		const confirm = markup.slice(markup.indexOf('<form method="POST" action="?/confirm" use:enhance='), markup.lastIndexOf('class="enrol-form"'));
+
+		expect(confirm).toContain('await update({ invalidateAll: false });');
+		expect(source.match(/\bupdate\([^)]*\)/g)).toEqual(['update()', 'update({ invalidateAll: false })']);
+	});
+});
+
 // ─── A request link that no longer works (card 2158) ─────────────────────────
 
 describe('a request’s pages, for a link that no longer works (card 2158)', () => {
@@ -6164,7 +6196,7 @@ describe('the admin page’s invite whose mail was not sent, src/lib/components/
 		for (const words of [
 			'📧 The invite mail was not sent',
 			'Give this link to {inviteLink.username} yourself, by a way only they read. Whoever opens it can set the password of ' +
-				"{inviteLink.username}'s account and is then signed in as them. It works once, for seven days, and stops working if " +
+				"{inviteLink.username}'s account, then sets up its two-step sign-in and is signed in as them. It works once, for seven days, and stops working if " +
 				'another invite is sent to this account. Do not open it yourself.',
 			'It is not shown again. If it is lost, send a new invite with 📧.',
 			'Why it failed is under Email / SMTP below.'

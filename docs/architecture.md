@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.120
+version: 1.121
 status: As-Built
 date: 2026-11-13
 tags:
@@ -34,7 +34,8 @@ tags:
   - dry-run
   - preview
   - decisions-api
-description: "High-level and component-level architecture of the DumpFire Kanban board system, including decisions through API v1 and how the credential refuses a key what is a person's (card 2682), the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
+  - two-step-sign-in
+description: "High-level and component-level architecture of the DumpFire Kanban board system, including decisions through API v1 and how the credential refuses a key what is a person's (card 2682), how two-step sign-in is built (card 2769: the sign-in pages, second-step.ts, sign-in-challenges.ts and otpauth.ts, and the one synchronous stretch from the challenge to the session), the gate every request passes and how an API failure is answered, how a write is made all or nothing, the one service per action both API trees call, when its effects are sent, what a delete takes, how the board page and its card window apply each change and read only their board again, how the admin page, the dashboard, All Tasks and the plan page are split into components and save the card window off the board, and how a page left open notices a new version"
 ---
 
 # DumpFire Architecture Overview
@@ -686,6 +687,103 @@ flowchart LR
     RoleCheck --> BoardCheck
     BoardCheck --> TeamCheck
 ```
+
+### Signing In: Two Steps (Card 2769)
+
+A session cookie is made only after a second factor. A right password opens a ten-minute
+pending sign-in (a *challenge*), and the code page or the set-up page finishes it. `validateSession()`
+refuses a session not marked `two_step = 1`. API keys are untouched: the gate authenticates
+`/api/v1/*` by the `Authorization` header alone, before it reads any cookie.
+
+```mermaid
+flowchart LR
+    subgraph Pages["Sign-in pages, public routes"]
+        L["/login"]
+        V["/login/verify"]
+        E["/login/enrol"]
+        K["/enrol/[token]"]
+        I["/invite/[token]"]
+        S["/setup"]
+    end
+    subgraph Server["src/lib/server"]
+        SS["second-step.ts<br/>afterPassword, verifyStep,<br/>enrolView, enrolCode, enrolConfirm,<br/>finishSignIn, issueSetUpChallenge"]
+        CH["sign-in-challenges.ts<br/>cookies, issue, take, count,<br/>stages, codePause, raiseSignal,<br/>sweepExpiredChallenges"]
+        RL["rate-limit.ts<br/>accountKey"]
+        HK["hooks.server.ts<br/>startChallengeSweep: start-up,<br/>every 5 minutes"]
+        OT["otpauth.ts<br/>base32, otpauth text, QR via uqr"]
+        ST["mfa-store.ts<br/>factors, codes, links,<br/>releaseWindowOpen"]
+        AU["auth.ts<br/>createSession two_step 1,<br/>findSession refuses others"]
+        KB["known-browsers.ts<br/>MAC known-browser:2:"]
+        NO["notifications.ts<br/>sendSecurityNotice,<br/>sendReleaseLinkMail"]
+    end
+    DB[("users, sessions, settings,<br/>sign_in_challenges, mfa_factors,<br/>mfa_recovery_codes, enrolment_links")]
+    L -->|"values, not the body"| SS
+    V --> SS
+    E --> SS
+    K -->|"link cookie"| L
+    I --> SS
+    S --> SS
+    SS --> CH
+    SS --> RL
+    HK --> CH
+    SS --> ST
+    SS --> OT
+    SS --> AU
+    SS --> KB
+    SS -->|"after commit"| NO
+    CH --> DB
+    ST --> DB
+    AU --> DB
+```
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as Browser
+    participant L as /login
+    participant V as /login/verify
+    participant DB as SQLite
+    B->>L: identity and password
+    L->>L: throttles, wait, worker check
+    L->>DB: afterPassword, one synchronous transaction: factor, link, leave, hash, issue challenge
+    L-->>B: challenge cookie, 303 /login/verify
+    B->>V: code
+    V->>DB: verifyStep, one synchronous transaction: check, count, compare, take, session
+    V-->>B: session and remembered-browser cookies, 303 /
+```
+
+- **Each form action reads its own form** in its `+page.server.ts` and hands values to
+  `second-step.ts`, which never reads a request body (the body readers stay in the routes,
+  as `tests/request-body.test.ts` requires).
+- **The second step is one synchronous stretch.** `verifyStep()`, `enrolCode()` and
+  `enrolConfirm()` are synchronous, and so are the helpers they share (`laneOf()`, `refuse()`,
+  `openChallenge()`, `finishSignIn()`, `signedInAnswer()`, `mayStillEnrolOnPassword()`,
+  `issueSetUpChallenge()`); their actions await only `request.formData()` before calling them,
+  so nothing can come between reading the challenge and taking it with the session or the
+  factor. `afterPassword()` reads the factor, the link and the leave and issues the challenge in
+  one synchronous transaction too, and is `async` only for the release mail it ends with. A
+  source scan holds all of that (T29), and another (T45) holds that `createSession()` is called
+  only from `second-step.ts` and the own-password change.
+- **The invite and the first-run set-up** issue their challenge with `issueSetUpChallenge()`
+  inside their own transaction and send the browser on with `goToSetUp()` after the commit.
+- **The throttles** are keyed by `accountKey()` from `rate-limit.ts`, which the password step
+  and the second step share.
+- **Notices are sent after the commit, not awaited**; the release mail alone is awaited, since
+  a link whose mail did not go is deleted. Log lines and address counts that belong to a
+  committed sign-in are made through `afterCommit()` too.
+- **Expired challenges are swept** at start-up and every five minutes (`startChallengeSweep()`
+  from `hooks.server.ts`, an unref'd timer), as well as whenever a challenge is issued.
+- **The pages' loads do not redirect a `POST`**, so a form posted without JavaScript is answered
+  on the page with the action's result.
+- **The QR code** is drawn on the server by `uqr` and shown as a `data:` image, which the
+  Content-Security-Policy's `img-src 'self' data:` allows; no markup goes into the page with
+  `{@html}`.
+- **`SignInReport.svelte`** shows what is reported after a right code or a confirm; the code
+  and set-up forms call `update({ invalidateAll: false })` so that the report is not reloaded
+  away, and its Continue loads the home page afresh (`data-sveltekit-reload`).
+
+The whole design, every answer and the accepted risks are in
+[Two-Step Sign-In](authentication-security.md#two-step-sign-in-card-2769).
 
 ### Role Hierarchy
 

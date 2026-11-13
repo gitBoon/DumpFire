@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.112
+version: 1.113
 status: As-Built
 date: 2026-11-13
 tags:
@@ -63,7 +63,11 @@ tags:
   - mfa-reset
   - enrolment-links
   - key-rotation
-description: "Deep-dive into DumpFire's authentication system, what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the twenty-nine destructive actions that ask for the current password again (step-up), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log)"
+  - sign-in-challenges
+  - release-mail
+  - security-notices
+  - iso-27001
+description: "Deep-dive into DumpFire's authentication system, what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the twenty-nine destructive actions that ask for the current password again (step-up), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, the accepted risks and the ISO 27001 rows)"
 ---
 
 # Authentication & Security
@@ -124,7 +128,9 @@ flowchart TD
 
 Every answer in the chart is returned by the gate and carries the security headers (see
 [Security Headers](#security-headers)); none is thrown. A signed-in caller who asks for
-`/login` or `/setup` is sent to `/` as well.
+`/login`, `/login/verify`, `/login/enrol` or `/setup` is sent to `/` as well. A session made
+without a second factor is refused and deleted (card 2769: see
+[Older Images and Instances](#older-images-and-instances)).
 
 ### Which Rule Applies to a Path
 
@@ -158,6 +164,8 @@ no other:
 | Route id | What it is |
 |----------|------------|
 | `/login` | The login page |
+| `/login/verify`, `/login/enrol` | The second step of signing in, and setting up an authenticator (card 2769). Each answers only the browser holding a live challenge, which a right password, an invite or the first-run set-up opened; any other is sent to `/login` (see [Two-Step Sign-In](#two-step-sign-in-card-2769)) |
+| `/enrol/[token]` | A set-up link's page (card 2769). It asks nothing and posts nothing, and leaves the link for the sign-in that follows |
 | `/docs` | The API's documents |
 | `/invite/[token]` | The page an invite links to |
 | `/request`, `/request/[id]/confirm`, `/request/[id]/reply` | The public request form, and the two pages its mails link to |
@@ -1017,6 +1025,7 @@ toast or in storage. Case 17 searches every log row and answer of a run for it.
 | Duration | 30 days sliding window |
 | Storage | `sessions` table in SQLite |
 | Wrong current passwords | `sessions.wrong_password_count` (migration 0062, card 2701): one added for each password compared (a check refused unchecked, in flight or busy, adds none), set to 0 by a right one, and the third wrong one ends the session. See [Guessing a Current Password](#guessing-a-current-password) |
+| Made after a second factor | `sessions.two_step` (migration 0066, card 2769): `createSession()` writes 1; a session with any other value is refused and deleted. See [Older Images and Instances](#older-images-and-instances) |
 | Flags | `httpOnly`, `sameSite: lax`, `secure` in production |
 
 ### Sliding Window
@@ -1129,6 +1138,30 @@ It is declared to the rehearsal as a one-off that keeps every row (`keepsRows` i
 and notes the change. `tests/migrations.test.ts` holds it: every token replaced, 64 hex
 characters, all different, none the old; every other column and table as it was; harmless
 on an empty table; recorded once, and a later start replaces nothing.
+
+### Every Session and Remembered Browser Ended Once, by Migration 0067
+
+The release of two-step sign-in (card 2769) ends every session again, and forgets every
+remembered browser. `0067_end_sessions_for_two_step.sql` is two statements, `DELETE FROM
+sessions` and `DELETE FROM settings WHERE key = 'known_browser_secret'`, under a header comment
+saying so, run once on each database. It runs after `0066_add_mfa_password_enrol.sql`, which
+adds `sessions.two_step` and leaves every session there at 0, which this image refuses anyway.
+
+Every session there was made on a password alone, and a remembered browser gets sign-in's
+lenient lane, which must now be reached only after a second factor. With the secret gone every
+old cookie fails its MAC, and the next browser remembered makes a new one.
+
+| What | After the start that applies 0067 |
+|---|---|
+| Sessions | None: everybody signs in again, with the second step |
+| Remembered browsers | None: every browser is a new one at its next sign-in |
+| API keys, invites, enrolment links, requesters' links | Untouched |
+
+Both files are declared to the rehearsal in `tests/rehearsal/one-offs.ts`: 0066 as a one-off
+that keeps the rows of `users`, and 0067 as deleting the rows of `sessions` and the secret's
+row of `settings`. Nothing repeats them at start-up or after a restore. See
+[Two-Step Sign-In](#two-step-sign-in-card-2769) and
+[The Release That Turns On Two-Step Sign-In](deployment.md#the-release-that-turns-on-two-step-sign-in-card-2769).
 
 ### An Open Stream and Its Session
 
@@ -1513,7 +1546,9 @@ at one account every 15 minutes (card 2177).
   account), and the right password takes that account's attempts off the address's count,
   and nothing else. Someone who mistypes their own password three times and then signs in
   has those four back, so mistypes at an account whose owner then signs in never add up
-  across an office. Attempts at another account, at a name that is no account (a mistyped
+  across an office. Since card 2769 the give-back happens when the second step is passed (a
+  right code, a recovery code, or a set-up confirmed), not at the password: a right password
+  alone gives nothing back and forgets nothing. Attempts at another account, at a name that is no account (a mistyped
   username included), and refusals stay counted to the end of the window, and the count
   never goes below zero. It used to clear the address's whole count, so anyone with an
   account could send nine guesses at another, sign in to their own, and go on from the same
@@ -1538,9 +1573,9 @@ answered as it would have been:
 | 7 or more | 4 s |
 
 - **The wait refuses nothing.** The answer's status and words do not change: a wrong password
-  is `400` "Invalid username/email or password", as before, and the right password signs in
-  after at most four seconds, clearing the account's count and giving back the address's
-  attempts at the account. What can refuse a sign-in at the account is the one-at-a-time
+  is `400` "Invalid username/email or password", as before, and the right password goes on to
+  the second step after at most four seconds; passing that clears the account's count and gives
+  back the address's attempts at the account (card 2769). What can refuse a sign-in at the account is the one-at-a-time
   rule below (card 2194), which reverses card 2177's "never refused": while the account has
   had five wrong passwords within 15 minutes of each other, a browser not remembered for it
   is let in one at a time, and the rest are refused at once, `429`. A browser remembered for
@@ -1649,10 +1684,14 @@ flowchart TD
     CheckO -->|"lane full, or caller gone"| R503["503 Sign-in is very busy"]
     CheckK -->|"caller gone"| R503
     CheckK -->|"wrong"| WrongK["counted at the cookie's nonce,<br/>the failed line, 400"]
-    CheckK -->|"right"| OkK["session, cookie issued anew, 303 to /<br/>the account's count left as it is"]
+    CheckK -->|"right"| OkK["afterPassword: the second step, known lane<br/>the account's count left as it is"]
     CheckO -->|"wrong, or no account"| WrongO["countWrongSignIn(key), WARN at the fifth,<br/>the failed line, 400"]
-    CheckO -->|"right"| OkO["forgetWrongSignIns(key),<br/>the address's attempts at this account given back,<br/>session, cookie issued, 303 to /"]
+    CheckO -->|"right"| OkO["afterPassword: the second step, other lane<br/>forgetWrongSignIns and the give-back<br/>once it is passed"]
 ```
+
+Since card 2769 a right password opens the second step and makes no session: see
+[What a Right Password Leads To](#what-a-right-password-leads-to). The session, the cookie and
+the give-back follow a right code or a confirmed set-up.
 
 What it does, and what it does not, said plainly:
 
@@ -1743,16 +1782,18 @@ and counts nothing. The code is
 | | |
 |---|---|
 | Name | `dumpfire_known_<user id>`, one for each account the browser has signed in to |
-| Value | `<issued at>.<nonce>.<mac>`: the time of issue in seconds, 16 random bytes in hex, and `HMAC-SHA256(key, "known-browser:1:<user id>:<issued at>:<nonce>:<the account's password hash>")` in hex. About 110 bytes |
+| Value | `<issued at>.<nonce>.<mac>`: the time of issue in seconds, 16 random bytes in hex, and `HMAC-SHA256(key, "known-browser:2:<user id>:<issued at>:<nonce>:<the account's password hash>")` in hex. About 110 bytes. The domain was `known-browser:1:` until card 2769: a cookie signed under it, by an older image, is not remembered (see [Older Images and Instances](#older-images-and-instances)) |
 | Options | `Path=/login`, `HttpOnly`, `SameSite=Strict`, `Secure` by the session cookie's rule (`COOKIE_SECURE` when set, otherwise in production: `secureCookies()` in `auth.ts`), `Max-Age` a year |
 | Good when | It parses, was issued no more than 365 days ago and not more than a minute in the future, and its MAC matches, compared in constant time, with the account's hash as it is now. Anything else is answered as no cookie at all |
 
 **When a browser is remembered.** A new cookie (a new time and nonce) is set to the browser
-that signs in successfully, at each sign-in; to the browser that changes its own password, with
-the new hash; to the browser that uses an invite, and the one that sets the installation up;
-and to a browser that signs out with an open session (`POST /logout`), with the account's
-hash read before the session ends: a browser that signed out is a browser that signed in. So
-after the deploy that brought this in, a browser is remembered once it signs in or signs out.
+that signs in successfully, at each sign-in, which since card 2769 means once its second step
+is passed (a right code, a recovery code, or a set-up confirmed) and never at the password
+alone; to the browser that changes its own password, with the new hash; and to a browser that
+signs out with an open session (`POST /logout`), with the account's hash read before the
+session ends: a browser that signed out is a browser that signed in. An invite and the
+first-run set-up no longer remember the browser: they lead to setting up an authenticator, whose
+confirm does.
 `rememberBrowser()` runs after the change is committed and never fails the request: a key
 that cannot be had is one `WARN` line, "A browser could not be remembered for user N: …", and
 no cookie.
@@ -1788,7 +1829,8 @@ not remembered keeps card 2177's rule that the right password clears the account
 
 **The key: 32 random bytes in `settings`, key `known_browser_secret`.** Made by the first
 browser remembered (a check of a cookie never makes one: with no key no cookie is good), read
-once into memory, as the request form's key is. **Never in a backup and never restored**:
+once into memory, as the request form's key is. Migration 0067 (card 2769) deleted it once, so
+every browser remembered before the release was forgotten. **Never in a backup and never restored**:
 `withoutSecrets()` deletes the row from every backup's copy, and `rowsToRestore()` leaves it
 out of a restore, which clears the live row with every other; so the restored server makes a
 new key, and every browser is forgotten, as every session already is. Whoever held the key and
@@ -1805,8 +1847,9 @@ caller's address. The ways in:
 - a browser remembered for the account;
 - a session already open, which is not touched;
 - an invite, only where mail is set up, and only for an account an administrator may manage:
-  never the superadmin's, and an administrator's only from the superadmin. An invite signs the
-  browser in without the sign-in page and remembers it;
+  never the superadmin's, and an administrator's only from the superadmin. An invite leads to
+  setting up an authenticator without the sign-in page, and the confirm remembers the browser.
+  Since card 2773 no invite works for an account that holds a second factor;
 - waiting until 15 minutes after the last wrong guess;
 - `SIGN_IN_ONE_AT_A_TIME=off` on the host, for one sign-in: see
   [If an Attack Keeps an Owner Out](deployment.md#if-an-attack-keeps-an-owner-out).
@@ -1884,12 +1927,11 @@ Covered by `tests/gate.test.ts` ("counting an address").
 
 ## Second-Factor Secrets at Rest (Card 2768)
 
-Two-step sign-in will ask, after the password, for a code from an authenticator app or for one
-of ten single-use recovery codes. Card 2768 builds where those are kept, and nothing that uses
-them: **sign-in does not ask for a second factor yet**. Card 2769 adds the sign-in step and the
-setting up of an authenticator; until it does, no account has a factor, and every table below is
-empty. What card 2768 does already do at every start is load and check the key, and what it
-already changes is what a password set or an email or role change ends, and what backups, the
+Two-step sign-in asks, after the password, for a code from an authenticator app or for one
+of ten single-use recovery codes. Card 2768 builds where those are kept; card 2769 adds the
+sign-in step and the setting up of an authenticator, which use them (see
+[Two-Step Sign-In](#two-step-sign-in-card-2769)). Card 2768 also loads and checks the key at
+every start, and sets what a password set or an email or role change ends, and what backups, the
 export and a restore do with these rows.
 
 ```mermaid
@@ -2073,10 +2115,12 @@ what it holds. The unreadable-factor lines name factor and user ids and key ids.
 ## A Lost Authenticator: the Reset, the Host's Command and a Change of Key (Card 2773)
 
 Someone who loses the phone their authenticator is on, and has no recovery code left, cannot
-sign in once card 2769 asks for a second factor. Card 2773 builds the ways back, and is built
-first: card 2769 is never released without it. **Until card 2769 no account has a factor**, and
-the page an enrolment link opens, `/enrol/[token]`, is card 2769's; this card issues the link
-and its address, and everything below already runs.
+sign in now that card 2769 asks for a second factor. Card 2773 builds the ways back, and was
+built first: card 2769 is never released without it. This card issues the link and its address;
+the page an enrolment link opens, `/enrol/[token]`, is card 2769's (see
+[Set-Up Links and Their Page](#set-up-links-and-their-page)). A reset also takes away the
+account's leave to set up on its password alone (`mfa_password_enrol = 0`, card 2769), so the
+link is the way back.
 
 ```mermaid
 flowchart TD
@@ -2122,7 +2166,7 @@ outside a transaction):
 | Ended or set back | Kept |
 |-------------------|------|
 | Every authenticator (`mfa_factors`) and recovery code of the account, deleted | The password |
-| `mfa_known_wrong`, `mfa_other_wrong`, `mfa_recovery_wrong` set to 0, and their three `*_resumes_at` pauses cleared | API keys, and the webhooks the account set |
+| `mfa_known_wrong`, `mfa_other_wrong`, `mfa_recovery_wrong` set to 0, and their three `*_resumes_at` pauses cleared; `mfa_password_enrol` set to 0 (card 2769) | API keys, and the webhooks the account set |
 | Every session, so it is signed out everywhere | Report schedules |
 | Every invite not yet used | `security_banner`, `last_sign_in_*` and `failed_codes_since_sign_in`, which are about the password and the last sign-in, which a reset does not change |
 | Every sign-in waiting for its second factor, and every enrolment link | |
@@ -2141,8 +2185,8 @@ link's is ([Where a Mailed Link's Address Comes From](#where-a-mailed-links-addr
 **The link is given to the caller, once, in the answer, and never mailed.** Whoever stole the
 phone may already know the password and have changed the account's address, so a mailed link
 could go straight to them; the administrator is the person the holder asked for help, and hands
-the link over by a channel they both trust. The link alone does not set up a factor: card 2769's
-page asks for the account's password first. The answer is `Cache-Control: no-store`:
+the link over by a channel they both trust. The link alone does not set up a factor: its page
+sends the holder to sign in with the account's password first (card 2769). The answer is `Cache-Control: no-store`:
 
 ```json
 { "success": true, "enrolmentUrl": "https://dumpfire.example.com/enrol/<token>", "mailSent": true,
@@ -2211,8 +2255,8 @@ its own words; see [Resetting Two-Step Sign-In](admin-guide.md#resetting-two-ste
 
 ### Invites Refused for an Account With a Second Factor
 
-An invite sets the account's password and signs its user in, and an account with a factor
-also needs its authenticator, so **no invite works for an account that holds a second factor**.
+An invite sets the account's password and leads its user on to set up an authenticator (card
+2769), so **no invite works for an account that holds a second factor**.
 `usableInvite()` (`src/lib/server/invites.ts`), the one place that decides whether an invite
 works, asks it in its own query (`NOT EXISTS` on `mfa_factors`), so the invite page, its form
 before it hashes the password, the form's transaction and the invite route's answer after its
@@ -2238,7 +2282,10 @@ for statement, in raw SQL in one `BEGIN IMMEDIATE` transaction, with `issued_by`
 - **The log row** is written in the same transaction, so there is no reset without it: `CRITICAL`
   under `AUTH`, `user_id` the account, no address, `Two-step sign-in reset for user <id>
   ("<name>") on the server's host, with scripts/mfa-reset.mjs: …`, its meta the counts and
-  `resetBy: "host"`. The username is made printable as the logger makes every line.
+  `resetBy: "host"`. The username is made printable as the logger makes every line. Where the
+  reset ended sign-ins left at their second step (card 2769), a second row at `WARN` says so,
+  "The reset ended N sign-in(s) of user <id> ("<name>") left at their second step; no notice
+  was mailed".
 - **The link goes to stdout only**: the counts, where its address came from, and the link.
   The address is the host's own configuration before a setting any administrator can change:
   `APP_URL`; then `ORIGIN` unless it is the image's placeholder `http://localhost:3000`; then the
@@ -2314,6 +2361,580 @@ request to `/enrol/<token>`, and its percent-encoded forms, as `/enrol/[token]`,
 `maskSecretPaths()` rewrites `/enrol/<token>` to `/enrol/[token]` wherever a line holds it, in a
 mail server's refusal, a backup's copy of the log and the start-up sweep of the running log alike.
 
+## Two-Step Sign-In (Card 2769)
+
+**A right password no longer signs anyone in.** It opens a ten-minute pending sign-in, a
+*challenge*. An account that holds an authenticator is asked for its six-digit code, or a
+recovery code, at `/login/verify`. An account that holds none is taken through setting one up
+at `/login/enrol`: scan a QR code, type the first code, save ten recovery codes, confirm. Only
+then is a session made. An invite and the first-run set-up lead to the same set-up page, and
+never to a session of their own.
+
+The release that brings it ends every session and forgets every remembered browser once
+(migrations 0066 and 0067). It is never released without card 2773 (the reset and the host's
+command, built) and card 2849 (invite tokens stored as hashes): an invite is now a grant to set
+up the second factor. Every running instance is stopped before the release starts, production
+needs `MFA_KEY_FILE`, and where mail is set up the App URL or `ORIGIN` must be the real address.
+The steps are in [The Release That Turns On Two-Step Sign-In](deployment.md#the-release-that-turns-on-two-step-sign-in-card-2769).
+
+| Where | What it holds |
+|---|---|
+| `src/lib/server/sign-in-challenges.ts` | The challenge: its two cookies, issuing, finding, counting, taking, the enrol stages, `codePause()`, the stolen-password signal (`raiseSignal()`) and the sweep of expired challenges |
+| `src/lib/server/second-step.ts` | `afterPassword()`, `verifyView()`, `verifyStep()`, `finishSignIn()`, `enrolView()`, `enrolCode()`, `enrolConfirm()`, and every answer's words. Each takes values, never a request body |
+| `src/lib/server/otpauth.ts` | Base32 (RFC 4648), the `otpauth://` text, the secret in groups of four, and the QR code as a `data:` image |
+| `src/routes/login/verify/`, `src/routes/login/enrol/`, `src/routes/enrol/[token]/` | The code page, the set-up page, and a set-up link's page |
+| `src/lib/components/SignInReport.svelte` | What is reported after a right code when there is something to report |
+
+```mermaid
+flowchart LR
+    L["/login<br/>password"] -->|"factor held"| V["/login/verify<br/>code or recovery code"]
+    L -->|"no factor, allowed to set up"| E["/login/enrol<br/>QR, first code, ten codes, confirm"]
+    I["/invite/[token]<br/>password set"] --> E
+    S["/setup<br/>superadmin made"] --> E
+    K["/enrol/[token]<br/>link cookie"] -.->|"then the password"| L
+    V -->|"right"| H["Session, two_step 1<br/>303 / or the report"]
+    E -->|"confirm"| H
+```
+
+### What a Right Password Leads To
+
+The login action checks the password as before (the throttles, the wait, the worker), then hands
+the account and the hash it checked to `afterPassword()`. Nothing is forgotten or given back
+until a second step is passed. In this order:
+
+```mermaid
+flowchart TD
+    P["Right password, checked hash H"] --> A0{"Account still there?"}
+    A0 -- no --> GONE["400: the sign-in has expired"]
+    A0 -- yes --> F{"Account holds a factor?"}
+    F -- yes --> V["Verify challenge<br/>303 /login/verify"]
+    F -- no --> K0{"MFA key loaded?"}
+    K0 -- no --> NK["503: two-step sign-in cannot be set up"]
+    K0 -- yes --> C{"Link cookie names a live link<br/>of this account?"}
+    C -- yes --> EL["Enrol challenge, grant link<br/>303 /login/enrol"]
+    C -- no --> G{"mfa_password_enrol 1, within 14 days<br/>of two_step_released_at, and no link<br/>but release-mail ones?"}
+    G -- no --> N["403: needs a set-up link"]
+    G -- yes --> M{"Mail host configured?"}
+    M -- no --> R1["Enrol challenge, grant password<br/>303 /login/enrol. Risk R1"]
+    M -- yes --> U{"SMTP password present and the link<br/>address real, not the placeholder?"}
+    U -- no --> X["503: could not email, no link"]
+    U -- yes --> Q{"A live release-mail link<br/>under 24 hours old?"}
+    Q -- yes --> SENT["200 notice: emailed N hours ago"]
+    Q -- no --> W{"A set-up under way<br/>on a live link of the account?"}
+    W -- yes --> UW["200 notice: being set up from the link,<br/>no mail"]
+    W -- no --> MAIL["Issue a new link beside the old,<br/>commit, send and await"]
+    MAIL -- sent --> OK["Older release-mail links deleted<br/>200 notice: a link has been emailed"]
+    MAIL -- failed --> FAIL["New link deleted, old ones kept<br/>503 could not email"]
+```
+
+- **The factor, the link, the mark and the window are read, and the challenge issued, in one
+  synchronous transaction**, so a reset or a set-up committed while the password was checked
+  is seen.
+- **Every branch that writes compares the hash first.** The challenge's transaction, and the
+  release mail's, read the account's `password_hash` and write nothing when it is not the one
+  checked: `409`, "Your password was changed while you were signing in…". A password set while
+  the check was awaited ends the sign-in (decision 26). An account deleted meanwhile is `400`
+  with the expired words.
+- **No MFA key stops only a set-up.** An account that holds a factor is still sent to
+  `/login/verify` without it: an authenticator code there is `503` ("Your authenticator cannot
+  be checked on this server right now…"), and a recovery code still signs in. An account that
+  would set up is `503` at the password, with nothing written (decision 28).
+- **Leave to set up on the password** (`mayStillEnrolOnPassword()`) needs the mark, the 14 days,
+  and no enrolment link of the account but release-mail ones. A reset made by an older image,
+  which knows nothing of the mark, still issues a link of its own, and so closes it.
+- **The release mail reads the hash, the mark and the window again** in its own transaction, so
+  a reset committed while the password was checked is honoured: `403`.
+- **A set-up link of another account is ignored**, and the sign-in goes on down the tree.
+- **The "needs a link" answer** is the same whether the account was made after the release,
+  was reset, or is past its 14 days. An administrator's 🛡️ issues the link; an invite does
+  too, for an account with no factor.
+- **One `AUTH` line**: `Password accepted for "<name>" (user <id>) from IP <address>, second
+  step issued (verify|enrol), challenge <short id>`, or `…, no second step: <why>`, the why
+  being `needs a link`, `link mailed`, `link already mailed`, `a set-up is under way on its
+  emailed link`, `no MFA key`, or at `WARN` `could not email`, `could not email (<the mail
+  problem>)`, `the password was changed while it was checked` and `the account was deleted
+  while its password was checked`. Never the token.
+
+The words are the constants at the top of `src/lib/server/second-step.ts`. The release mail's
+two notices are shown on the sign-in page, with the name kept in the form.
+
+### The Pending Sign-In
+
+A challenge is a row of `sign_in_challenges` and a cookie.
+
+- **The token** is 32 random bytes, base64url, in the cookie only. The row holds its SHA-256.
+  A short id of 8 random hex characters, made separately, is the only thing the log names.
+- **It lasts ten minutes** (`CHALLENGE_SECONDS = 600`), read through `toStamp`. An expiry that
+  names no moment has passed.
+- **It keeps** its purpose (`verify` or `enrol`), the lane its codes count in (`known` when the
+  password came with a valid remembered-browser cookie for the account, `other` otherwise),
+  the hash the password was checked against, a count of wrong codes, and
+  for an enrol challenge its stage, what lets it set up a factor (`enrol_grant`: `password`,
+  `link`, `invite` or `setup`) and the hash of the link it came from (`enrolment_link_hash`).
+- **An enrol challenge keeps what is being set up, sealed**: the new secret, then the first
+  code's step and the ten recovery codes, as JSON under the MFA key, bound to the account and
+  the token's hash (`enrolAad`, see [Sealing a Secret](#sealing-a-secret)).
+- The `remembered_nonce` column is not written: the lane is all that is used of the remembered
+  browser. The column stays, unused.
+
+**Issuing** (`issueChallenge()`) is one synchronous transaction, a savepoint inside an invite's
+or the set-up's own:
+
+1. The account is there and its hash is still the one checked; otherwise nothing is written.
+2. Every expired challenge, of any account, is deleted (`sweepExpiredChallenges()`). Each
+   **verify** challenge among them was never finished, and is a stolen-password signal (below).
+3. This browser's previous challenge is deleted, whichever account it was for (one account's
+   password and then another's in one browser leaves the first nothing to expire into a
+   signal); then any enrol challenge of the account when an enrol one is issued, and all but
+   the account's newest two. So an account has at most three.
+4. The row is written, `created_at` with it. An enrol challenge starts at `secret_shown` with a
+   new 20-byte secret sealed for it.
+
+**The sweep** also runs on its own: at start-up and every five minutes
+(`startChallengeSweep()`, called once from `hooks.server.ts`; its timer does not keep the process
+alive, and a failure is one `ERROR` line). So a verify challenge left unfinished raises its
+signal within minutes, without waiting for some later sign-in at any account.
+
+**Taking** (`takeChallenge()`) is a conditional `DELETE … RETURNING` in the transaction that
+makes the session or the factor. The caller read the row in the same synchronous stretch, so
+exactly one row is taken; anything else throws and rolls the transaction back. `verifyStep`,
+`enrolCode` and `enrolConfirm` are synchronous, and their actions await only
+`request.formData()` before calling them, so no other request can come between the read and the
+take, and there is no "check in flight" to guard (decision 6). A source scan in
+`tests/two-step-sign-in.test.ts` (T29) holds that.
+
+**The cookies.**
+
+| Cookie | Name | Options | Holds |
+|---|---|---|---|
+| The challenge | `__Host-dumpfire_challenge` when `secureCookies()` is true or the request came over `https:`; `dumpfire_challenge` otherwise | `HttpOnly`, `SameSite=Strict`, `Path=/`, `Max-Age=600`, no `Domain`, `Secure` with the prefix | The token |
+| A set-up link | `dumpfire_enrol_link` | `HttpOnly`, `SameSite=Strict`, `Path=/login`, `Max-Age=3600`, `Secure` as the challenge's. No prefix: `__Host-` needs `Path=/` | The link's raw token |
+
+- **Read from the raw `Cookie` header**, by the name in force alone: exactly one pair of that
+  name, holding a token as one is made, is the token. None, two or more (a planted cookie
+  beside the real one), or a cookie of the other name, is no challenge.
+- **Deleted with `Path=/` and the same `Secure`** when the sign-in finishes, and with every
+  answer that ends the challenge. A `GET` of either page with no live challenge deletes it and
+  sends the browser to `/login`.
+- **A form posted without JavaScript** is answered on the page itself: the pages' loads do not
+  redirect a `POST`, since the challenge may already be taken (signed in, with the report) or
+  ended (the restart words), and the page shows the action's answer alone.
+- A database copy holds only hashes, which cannot be turned into either cookie.
+
+### Signing In With an Authenticator
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as Browser
+    participant L as /login
+    participant V as /login/verify
+    participant DB as Database
+    participant M as Mail
+    B->>L: identity and password
+    L->>L: throttles, wait and worker check, as before
+    L->>DB: one transaction: hash still the one checked, sweep, cap, insert
+    L-->>B: challenge cookie and 303 /login/verify
+    B->>V: code, or recovery code
+    V->>DB: one synchronous transaction, in the order below
+    alt right, and its step not spent
+        V->>DB: take challenge, spend step, counts to 0, last sign-in, session two_step 1
+        V-->>B: session and remembered-browser cookies, challenge cookie deleted, 303 / or the report
+    else right, but its step already spent
+        V->>DB: counts taken back
+        V-->>B: 400 wait for the next code
+    else wrong
+        V->>DB: counts stand, a pause or the lock at 5, 10, 15, 20, 25, 30
+        V-->>B: 400, or restart after the fifth on this challenge
+        V-)M: after commit, the notices
+    end
+```
+
+`verifyStep()`, in this order:
+
+1. **A live verify challenge, of an account still there**, else `400` "This sign-in has expired
+   or was already used…", cookie deleted.
+2. **The account's hash is the one the challenge was issued against**, else `409`, the challenge
+   deleted and one `WARN` line.
+3. Neither field sent: `400`, nothing counted. A recovery code goes to step 6.
+4. **The lane neither locked nor paused**: locked is `403`, paused is `429` with the minutes
+   left. Neither is counted. A pause whose time cannot be read is read as the lock.
+5. **A factor that opens** (`factorSecret()`): none is `503`, nothing counted, one `ERROR` line.
+   That is also the answer with no MFA key loaded, and for an account whose factor went while
+   it was signing in.
+6. **Counted**, one statement each: the challenge's `wrong_count`, the lane's count and
+   `failed_codes_since_sign_in`.
+7. **Compared** (`matchingStep()`, both steps in constant time). Right: the counts taken back,
+   then `spendStep()`; a step already spent is `400` "wait for the next code", with the counts
+   as they were. Wrong: the counts stand, `codePause()` on the lane's new count sets a pause or
+   reaches the lock, and the fifth wrong code on the challenge deletes it: `400` "Too many wrong
+   codes. Sign in again." (when that is also the lane's fifth, the pause and its notice are
+   recorded too, and shown at the next sign-in).
+
+**A right code** takes the challenge, writes `last_sign_in_at` and `last_sign_in_from`, sets
+`failed_codes_since_sign_in` to 0 and makes the session (`finishSignIn()`), all in that
+transaction. After the commit: the session cookie, the browser remembered for the account (see
+[Browsers That Have Signed In Before](#browsers-that-have-signed-in-before)), the challenge cookie
+deleted, and `User "<name>" logged in` at `INFO` with `secondStep` in its meta. For a browser
+not remembered, the account's waits are forgotten and the address's attempts at it given back
+here, not at the password; the known lane does neither, as before. The `WARN` of a recovery
+code that signed in, and a wrong recovery code's count at the address, are made after the
+commit too, so a sign-in that rolls back says and counts nothing.
+
+**The code fields** take six digits, as `123456` or `123 456`. A page whose lane is locked opens
+on the recovery-code field, and so does a `403` "locked" answer.
+
+### Wrong Codes: the Lanes, Pauses and the Lock
+
+Every wrong authenticator code is counted three ways: on the challenge (five end it), on its
+**lane**, and in `failed_codes_since_sign_in`. A lane is `mfa_known_wrong` for a browser
+remembered for the account and `mfa_other_wrong` for any other, so wrong codes from strangers do
+not pause the owner's own browser. A lane's count is of wrong codes in a row; a right code sets
+it to 0 and clears its pause. The counts live in `users`, so a restart does not empty them.
+
+| Wrong codes in a row in the lane | What it sets |
+|---|---|
+| 5 | Code entry paused 15 minutes |
+| 10 | 1 hour |
+| 15 | 4 hours |
+| 20 | 24 hours |
+| 25 | 24 hours |
+| 30 | Locked: codes refused until a recovery code or a reset |
+
+- **A recovery code always works**, past a pause or the lock.
+- Each pause and the lock is one `WARN` line naming the account, the lane and the count, and a
+  notice to the owner.
+- The per-challenge five bound how fast one browser can guess within a pause window; the lane
+  bounds the account across browsers; the password's own throttles bound how often a challenge
+  can be had.
+
+### Recovery Codes at Sign-In
+
+The "Use a recovery code instead" field sends `recoveryCode`.
+
+- **A malformed one** (not 16 letters and digits once read leniently) is `400` with the format,
+  and nothing is counted: a typo is not a guess.
+- **A wrong one** counts on the challenge, on `mfa_recovery_wrong` and
+  `failed_codes_since_sign_in`, and on the address's sign-in attempts, which the password step
+  is held to. **There is no account-wide pause** for recovery codes: it would let a password
+  holder lock the owner out of the one way back, and 80 random bits need none.
+  `mfa_recovery_resumes_at` stays unused. Every tenth wrong one in a row mails the
+  `recovery-codes-guessed` notice.
+- **A right one** signs in, and clears both lanes' counts and pauses, the lock included, and the
+  recovery count. One `WARN` line, `A recovery code signed in "<name>" (user <id>) from IP
+  <address>: <n> left`, and the `recovery-code-used` notice with the number left.
+
+### Setting Up an Authenticator
+
+```mermaid
+stateDiagram-v2
+    [*] --> secret_shown: enrol challenge issued
+    secret_shown --> code_verified: right first code, ten codes made and sealed
+    code_verified --> codes_shown: the page shows the codes
+    codes_shown --> codes_shown: a reload shows the same ten
+    codes_shown --> [*]: confirm, factor and codes and session in one transaction
+    secret_shown --> [*]: fifth wrong code, expiry, reset, password set
+    code_verified --> [*]: expiry, reset, password set
+    codes_shown --> [*]: expiry, reset, password set
+```
+
+Each move is a conditional `UPDATE` from the stage before. An action at any other stage of a
+live challenge is `409` "This step is not ready yet…", and writes nothing.
+
+**The page** (`enrolView()`). At `secret_shown`: the QR code, the account, the issuer
+(`DumpFire`) and the secret in base32 in groups of four, for typing in by hand. The QR code is
+drawn on the server by `uqr` as SVG and given to the page as a `data:image/svg+xml;base64,…`
+image, which the policy's `img-src 'self' data:` allows; nothing is put in the page with
+`{@html}`. The `otpauth://totp/DumpFire:<account>` text names the secret unpadded, the issuer,
+`SHA1`, 6 digits and 30 seconds, the account encoded so that a space or a colon stays part of
+it. From the right first code on: the ten recovery codes, the same ten on every reload, and "I
+have saved these codes".
+
+**The first code** (`?/code`, `enrolCode()`): a live challenge of an account still there (else
+`400` with the expired words, cookie deleted); the hash unchanged (else `409`, ended); at
+`secret_shown` (else `409`); what the challenge keeps opens (else `503`, nothing counted); then
+counted on the challenge alone and compared. Right: ten recovery codes made and sealed with the
+secret and the code's step, `code_verified`, and `303` back to the page. Wrong: `400`, which
+asks the holder to check their phone's clock; the fifth ends the challenge.
+
+**Confirm** (`?/confirm`, `enrolConfirm()`), one synchronous transaction. First everything that
+refuses it, with nothing written: a live challenge (none at all is refused too), at
+`codes_shown` (a live one at another stage is the stage answer), the hash unchanged, the
+account holding no factor and no recovery codes, the link it came from, if any, still live, and,
+for a set-up on the password alone, that leave still there and still no mail host (a reset, a
+link issued by an older image, the end of the 14 days, or a mail host set up meanwhile ends
+it). Every such refusal is one answer, `409` "This set-up can no longer be finished. Sign in
+again.", and one `WARN` line saying why; what the challenge keeps not opening is `503`. Then,
+together:
+
+- the challenge taken, and the link taken by its hash (one row each, else it throws);
+- the factor written, labelled `Authenticator`, and the first code's step spent;
+- the ten recovery codes stored;
+- every other pending sign-in, link and unused invite of the account ended;
+- `mfa_password_enrol` set to 0;
+- the last sign-in written, `failed_codes_since_sign_in` set to 0, and the session made.
+
+After the commit: the session cookie, the browser remembered, the challenge cookie deleted, two
+`INFO` lines (`Two-step sign-in set up for "<name>" (user <id>) (<grant>)` and `User "<name>"
+logged in`), the waits forgotten for a browser not remembered, and the `enrolled` notice. A
+reset keeps the banner and the wrong-code count, so the set-up page shows the report below when
+either is there, as the code page does.
+
+**The four ways to the set-up page.**
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as Browser
+    participant L as /login
+    participant E as /login/enrol
+    participant DB as Database
+    Note over B,DB: Risk R1: no mail host, flag 1, within 14 days
+    B->>L: identity and password
+    L->>DB: one transaction: no factor, the leave to set up, no mail host, enrol challenge, grant password
+    L-->>B: challenge cookie, 303 /login/enrol
+    B->>E: GET: QR code and the secret
+    B->>E: POST ?/code with the first code
+    E->>DB: secret_shown to code_verified, codes sealed
+    B->>E: GET: the ten codes, code_verified to codes_shown
+    B->>E: POST ?/confirm
+    E->>DB: the leave and no mail host again, take challenge, factor, codes, flag 0, session
+    E-->>B: session and remembered-browser cookies, 303 /
+```
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as Browser
+    participant K as /enrol/[token]
+    participant L as /login
+    participant E as /login/enrol
+    participant DB as Database
+    B->>K: GET /enrol/token
+    K->>DB: link by its hash: live, account holds no factor?
+    K-->>B: dumpfire_enrol_link cookie, Path=/login, an hour. The page names the account
+    B->>L: identity and password, every sign-in throttle
+    L->>DB: hash unchanged, enrol challenge, grant link, the link's hash kept
+    L-->>B: challenge cookie, link cookie deleted, 303 /login/enrol
+    B->>E: QR, first code, codes, confirm, as above
+    E->>DB: the link still live, taken with the factor
+```
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as Browser
+    participant I as /invite/[token]
+    participant E as /login/enrol
+    participant DB as Database
+    B->>I: new password
+    I->>I: MFA key loaded? Else 503 before any hash
+    I->>I: hash the password on a worker
+    I->>DB: one transaction: invite checked and used, password set, endAccountAccess, enrol challenge, grant invite
+    I-->>B: challenge cookie, 303 /login/enrol. No session, no remembered browser
+    B->>E: QR, first code, codes, confirm
+```
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as Browser
+    participant S as /setup
+    participant E as /login/enrol
+    participant DB as Database
+    B->>S: superadmin's name, email and password
+    S->>S: MFA key loaded? Else 503 before any hash
+    S->>DB: one transaction: no user yet, superadmin made with flag 0, enrol challenge, grant setup
+    S-->>B: challenge cookie, 303 /login/enrol. No session
+    B->>E: QR, first code, codes, confirm
+```
+
+- **An invite is spent when the password is set**, before the set-up is finished. The invite page
+  says so. An invite used and its set-up left: send the invite again, or reset the account's
+  two-step sign-in. The invite page's button reads "Set Password & Continue".
+- **A first-run set-up left unfinished** leaves a superadmin with no factor and flag 0, whose
+  password alone leads to "needs a set-up link". The way back is the host's command,
+  `node scripts/mfa-reset.mjs <name>` (see [The Host's Command](#the-hosts-command)). The set-up
+  page says to finish straight away.
+- **No MFA key**: the invite and the set-up refuse `503` before any password is hashed, so no
+  account is left with a new password and no way to finish; a sign-in that would set up is
+  refused the same way at the password. A set-up page whose challenge cannot be opened answers
+  the same `503`, and so does a confirm.
+- **The invite and the set-up issue their challenge** through `issueSetUpChallenge()` inside
+  their own transaction, after the password is set, and send the browser on with `goToSetUp()`
+  after the commit.
+
+### Set-Up Links and Their Page
+
+`/enrol/[token]` asks nothing and posts nothing (decision 19). Its load:
+
+| Case | What the page shows | Cookie |
+|---|---|---|
+| Signed in | Sign out first, then open the link again | None |
+| A token as one is made, whose hash names a live link of an account that holds no factor | "This link sets up two-step sign-in for `<name>`. Sign in with your password to continue", and a link to `/login` | `dumpfire_enrol_link`, the raw token |
+| Anything else: unknown, expired, used, replaced | The dead-link words: ask an administrator for a new one | None |
+
+The password is asked at `/login`, with every throttle sign-in has, and only a right one at the
+account the link is for opens an enrol challenge that names the link. A link is read by
+`usableEnrolmentLink()` in `src/lib/server/mfa-store.ts` and taken only at confirm. Its page
+carries `no-referrer`, and its address is masked in the log (see
+[The Enrolment Link's Path Is Masked](#the-enrolment-links-path-is-masked)).
+
+### The Release, Risk R1 and the Release Mail
+
+**Who may set up on a password alone.** Migration 0066 gives `users.mfa_password_enrol = 1`
+to every account that has no factor and **no enrolment link row, expired or not** (an account
+reset before the release stays reset), and records `two_step_released_at` in `settings`. The mark
+is honoured only within 14 days of that setting (`releaseWindowOpen()`, `PASSWORD_SET_UP_MS`);
+a missing or unreadable setting is read as the 14 days over. It is honoured only while the
+account holds no enrolment link but release-mail ones, so a reset made by an older image, which
+leaves the mark, still closes it. It is set back to 0 by an enrolment, by `resetTwoStep()`, by
+the host's command, by a restore for every account not this server's, and for every account by
+making a working copy (Import Backup's working-copy restore, which has no mail host and so
+would open R1 for every marked account). An account made after the release, the superadmin made
+at set-up included, has 0.
+
+**Clearing the mail settings is an administrator's action that reopens R1.** R1 turns on "no
+mail host configured", so an administrator who clears Email / SMTP within the 14 days lets
+every account still marked set up on its password again. A set-up already begun on the password
+is refused at confirm if a mail host was set up meanwhile.
+
+**The admin page** gives each account `passwordSetUpUntil`, the end of its 14 days, by the same
+rule as sign-in: marked, holding no factor and no link but release-mail ones, the window open,
+and **no mail host set up** (with one, a sign-in is mailed a link instead). Null otherwise, and
+null for an account the caller may not reset, but the caller's own row shows its own. The Users
+panel shows "may set up on password until `<date>` UTC" under the address. See
+[The Release That Turns On Two-Step Sign-In](admin-guide.md#the-release-that-turns-on-two-step-sign-in).
+
+**The release mail** (decision 23), where a mail host is configured. One synchronous transaction
+checks the account, the hash, the mark and the window again, then looks for a live
+`release-mail` link of the account. One under 24 hours old: nothing is issued, and the sign-in
+is told when it went and when a new one may be had. A set-up already under way on a live link of
+the account (a live enrol challenge naming it): nothing is issued and nothing mailed, and the
+sign-in is told "Two-step sign-in is being set up for this account from the link we emailed.
+Finish it there, or sign in again in ten minutes." (`200`), so whoever else holds the password
+cannot end the owner's set-up. Otherwise a new link is issued **beside** the older ones
+(`issueEnrolmentLink(…, { replace: false })`), seven days long. After the commit the mail is
+sent and awaited (`sendReleaseLinkMail()`). A mail that went has the account's older
+release-mail links deleted, in a transaction of its own. A mail that did not go has only its own
+new link deleted, by its hash, and is `503`: no link is left that nobody received, and the link
+the owner already holds keeps working. The mail names the time and address of the sign-in and
+says that if it was not them, their password is known to someone else. So at most one mail a
+day, and the mail is itself the stolen-password signal: only a right password sends it.
+
+A configured mail host that cannot send a link (its password not entered on this server, no
+address to make the link from, or the image's placeholder `http://localhost:3000`) is `503` with
+no link, and **never** falls through to R1.
+
+### The Page After a Right Code
+
+After a right code, or a confirm, the page shows a report instead of going home when the account
+has `failed_codes_since_sign_in` above 0 **or** a security banner raised at or after its
+previous sign-in (decision 16; a banner with no readable time, or an account never signed in, is
+read as raised since):
+
+- the number of wrong codes since the last sign-in, with that sign-in's time and address;
+- the banner's reason, and when it was raised, when it was raised since the previous sign-in;
+- "If that was not you, change your password now.";
+- the account's live API keys (name, made, last used) and its webhooks that are on (the board
+  and the host they send to, and when made: the host alone, since a path may hold the
+  receiver's own secret);
+- **Continue**, which loads the home page afresh, so the page's signed-in state is read anew.
+
+The count is then 0, and the last sign-in is written, so a banner is reported once: the next
+sign-in goes home. The banner itself stays set, for card 2772. Both forms call
+`update({ invalidateAll: false })`, so the report is not reloaded away (the reload of a signed-in
+browser on these pages would go home); without JavaScript the page shows the report from the
+action's answer.
+
+### Notices and Stolen-Password Signals
+
+`sendSecurityNotice()` (`src/lib/server/notifications.ts`) sends nothing unless a mail host is
+set up with its password. It is called after the commit and never awaited, and cannot be
+switched off. Each names the time (UTC) and the address as received, and what to do if it was not
+the owner. None holds a code, secret, token or link.
+
+| Notice | When | At most once an hour |
+|---|---|---|
+| `enrolled` | Every enrolment; lists the account's live API keys and webhooks, to revoke any not recognised | No |
+| `recovery-code-used` | A recovery code signs in; how many are left, and to make new ones at 3 or fewer | No |
+| `codes-paused` | A lane pauses; until when | No |
+| `codes-locked` | A lane reaches 30 | No |
+| `recovery-codes-guessed` | Every tenth wrong recovery code in a row | No |
+| `wrong-code` | The first wrong code on a verify challenge; raises the security banner | Yes |
+| `unfinished-sign-in` | An unused verify challenge swept as expired; raises the banner | Yes |
+
+**The signals.** Someone who reaches a verify challenge had the password. So the first wrong
+code on one, and a verify challenge left unused until the sweep finds it expired, each set
+`security_banner` and `security_banner_at` by one conditional `UPDATE` that does nothing within
+an hour of the last (`raiseSignal()`), and mail only when it wrote. Expired challenges are
+swept when a challenge is issued and, on their own, at start-up and every five minutes. An
+expired enrol challenge sends nothing. The third signal is the release mail.
+
+**Ended by a restore or the host's command.** A restore and `scripts/mfa-reset.mjs` end the
+verify challenges they find with the rest. Neither mails: each writes one `WARN` line under
+`AUTH` instead, the restore's naming the user ids as they were before it ("The restore ended N
+sign-in(s) left at their second step, …; no notice was mailed"), the command's naming the
+account ("The reset ended N sign-in(s) of user … left at their second step; no notice was
+mailed").
+
+### Older Images and Instances
+
+An older image, run after the release, would sign people in on a password alone. Two marks stop
+this image accepting what it makes (decision 24):
+
+```mermaid
+flowchart TD
+    O["An older image or instance<br/>runs after 0066 and 0067"] --> S1["It makes a session:<br/>two_step stays 0, the column's default"]
+    O --> S2["It remembers a browser:<br/>MAC under known-browser:1:"]
+    S1 --> T["This image: findSession answers one-step,<br/>validateSession deletes it, one WARN"]
+    S2 --> U["This image: the MAC does not match<br/>under known-browser:2:, not remembered"]
+```
+
+- **`sessions.two_step`.** `createSession()` writes 1, and is called only by `finishSignIn()`
+  and by a change of one's own password from a session (`tests/two-step-sign-in.test.ts` T45).
+  `findSession()` answers `one-step` for any other value, before the expiry, and
+  `validateSession()` deletes the row and writes one `WARN` line: "Session made without a second
+  factor (an older image, or from before two-step sign-in) — refused and deleted".
+- **The remembered-browser MAC's domain** is `known-browser:2:` (`MAC_DOMAIN` in
+  `src/lib/server/known-browsers.ts`). A cookie signed under `known-browser:1:`, by an older image
+  even with a secret it made again after 0067, is not remembered.
+- **So a rollback past this card is a security event**: the older image accepts password-only
+  sign-in while it runs. Rolling forward again refuses whatever it made. Stop every instance
+  before the release, and never run two images side by side across it.
+
+### Headers and the Log
+
+| Route | Headers | Why |
+|---|---|---|
+| `/login/verify`, `/login/enrol` | `FORM_LINK_HEADERS`: `Referrer-Policy: strict-origin`, `X-Robots-Tag: noindex, nofollow`, `Cache-Control: no-store` | They name the account, show the secret and the codes, and post forms that must keep their `Origin`. Their address holds no secret |
+| `/enrol/[token]` | `PERSONAL_LINK_HEADERS`: `Referrer-Policy: no-referrer`, the same two | Its address is the link. It posts nothing |
+
+All three are public routes. A signed-in caller asking `/login/verify` or `/login/enrol` is sent
+home by the gate; `/enrol/[token]` tells them to sign out first. A code arrives only in a `POST`
+body, and no answer echoes one. The log names a challenge by its short id, never its token, a
+code, a secret or a link.
+
+### Accepted Risks
+
+| # | Risk | Bound |
+|---|---|---|
+| R1 | On a server with **no mail host configured**, an account that existed at the release, with no factor and no link, can be set up first by someone who holds its password | 14 days from `two_step_released_at`, then never. An administrator's reset ends it for an account at once, and so does a reset by an older image. Where any mail host is configured, R1 does not apply, but an administrator who clears the mail settings within the 14 days reopens it: that is an administrator's action. A working copy closes it for every account. Reset every administrator's two-step sign-in before the release; the Users panel shows who still may |
+| R2 | API keys made before the release, on a password alone, keep working | A key is a non-interactive credential, a 256-bit secret kept hashed, and is recorded as such against ISO 27001 A.8.5. The enrolment notice and the report list the account's keys and webhooks; the release steps include a review. Card 2772 gives older keys a deadline |
+| R3 | A password holder can evict the owner's live challenge: an account has at most three, the oldest goes | The owner signs in again. Each eviction needs the right password, and a verify challenge left unused is itself a signal (S12) |
+| R4 | An older image started after the release makes sessions and cookies on a password alone that it would accept | This image refuses both; the deployment guide makes a rollback a security event |
+
+### ISO/IEC 27001:2022
+
+| Control | How two-step sign-in meets it |
+|---|---|
+| A.8.5 Secure authentication | Two factors for every interactive sign-in: a password, then an authenticator code or a recovery code, before any session. No switch turns it off. Wrong codes are counted in the database, per challenge and per lane, with pauses and a lock that survive restarts. API keys are non-interactive credentials (R2). Asking for the code again before destructive and credential-issuing actions is cards 2770 and 2771 |
+| A.5.17 Authentication information | Secrets sealed under a key kept out of the database; challenge tokens, link tokens and recovery codes kept only as hashes; nothing secret logged or answered. The owner is mailed at every enrolment, recovery-code use, pause, lock and likely stolen password, and shown the last sign-in and their keys |
+
+Covered by `tests/two-step-sign-in.test.ts`, `tests/two-step-enrol.test.ts`, and the pins in
+`tests/gate.test.ts`, `tests/atomic-accounts.test.ts`, `tests/migrations.test.ts` and
+`tests/mfa-storage.test.ts`.
+
 ## Passwords, Sessions and Invites Change Together
 
 Every request that changes who can sign in makes its writes in one transaction (see [Architecture](architecture.md#writes-one-transaction-then-the-effects)). The cookie is set, and the redirect made, after the commit.
@@ -2327,12 +2948,13 @@ Every request that changes who can sign in makes its writes in one transaction (
 | An administrator resets an account's two-step sign-in (`POST /api/users/:id/mfa/reset`, card 2773) | Its second factors and recovery codes deleted, its wrong-code counts set back, the end of every session, pending sign-in and enrolment link, and one new enrolment link. The password is not changed. The notice mail is sent after the commit, and waited for | All end | Kept |
 | An administrator changes an account's email or role (`PUT /api/users/:id`) | The change, and the end of the account's invites when its email or role is changed | All end, when the email or role written differs from the one stored | Kept |
 | Change your own email (`PUT /api/account/email`) | The new address and the end of the account's invites | All end, when the address differs from the one stored | Kept |
-| Use an invite (`/invite/:token`) | The password, the invite marked used, the end of every session the account had, and the first session | All others end | All end |
-| First-run set-up (`/setup`) | The superadmin and their session | | |
+| Use an invite (`/invite/:token`) | The password, the invite marked used, the end of every session, pending sign-in and enrolment link the account had, and one set-up challenge (card 2769). No session: the set-up's confirm makes it | All others end | All end |
+| First-run set-up (`/setup`) | The superadmin, made with `mfa_password_enrol = 0`, and one set-up challenge (card 2769). No session | | |
+| Confirm a set-up (`/login/enrol?/confirm`, card 2769) | The challenge and its link taken, the factor and recovery codes, the end of every other pending sign-in, enrolment link and unused invite, `mfa_password_enrol` set to 0, the last sign-in, and the session | All end | Kept |
 
 So a password is never changed while the old sessions stay good, an invite never sets a password and remains usable, and no invite waiting to be used outlives a newer invite, a password change, or a change of the account's email address or role.
 
-**Pending sign-ins and enrolment links end with the invites** (card 2768). Every way of setting a password, and every actual change of an account's email address or role (both routes), also deletes every sign-in of the account that waits for its second factor (`sign_in_challenges`) and every link that lets it set up an authenticator (`enrolment_links`), in the same transaction, through `endPendingSignIns()` in `src/lib/server/mfa-store.ts`, which throws if no transaction is open. Sending an invite again does not. The account's second factors and recovery codes are not touched. So **set a password before resetting two-step sign-in, never after**: a password set after the reset ends the enrolment link it issued (card 2773). Until card 2769 nothing issues a pending sign-in, and only card 2773's reset issues an enrolment link, so the routes that end them say nothing of them: no answer and no log line changes, and `endAccountAccess()` returns the two counts (`challenges`, `enrolmentLinks`) for the cards that will name them.
+**Pending sign-ins and enrolment links end with the invites** (card 2768). Every way of setting a password, and every actual change of an account's email address or role (both routes), also deletes every sign-in of the account that waits for its second factor (`sign_in_challenges`) and every link that lets it set up an authenticator (`enrolment_links`), in the same transaction, through `endPendingSignIns()` in `src/lib/server/mfa-store.ts`, which throws if no transaction is open. Sending an invite again does not. The account's second factors and recovery codes are not touched. So **set a password before resetting two-step sign-in, never after**: a password set after the reset ends the enrolment link it issued (card 2773). A pending sign-in ended this way is gone at its next step: the code page and the first code answer that the sign-in has expired, and a set-up's confirm that it can no longer be finished (card 2769). The routes that end them say nothing of them: no answer and no log line changes, and `endAccountAccess()` returns the two counts (`challenges`, `enrolmentLinks`) for the cards that will name them.
 
 ### What Setting a Password Ends
 
@@ -3403,6 +4025,13 @@ flowchart TD
   `failed_codes_since_sign_in`, `security_banner` and `security_banner_at`, so an older backup
   cannot erase the warning that someone else holds the password; any other account has the
   backup's.
+- **Leave to set up on a password alone** (`mfa_password_enrol`, card 2769) is zeroed for every
+  account, and the same accounts then have this server's back: a backup gives it to no account,
+  and a reset made here since the backup stays made. A working copy then takes it from every
+  account, its own included, since it has no mail host. `two_step_released_at` is restored as
+  any setting is, so a backup made before migration 0066 restores with none, and the 14 days are
+  over. The verify challenges the restore ends are said in one `WARN` line, with no notice
+  mailed.
 - **New row ids, the same `factor_uid`.** Restored rows are inserted without their ids. The
   sealing binds `factor_uid` and the user id, not the row id, so a restored factor opens.
 - **The key check.** With any factor after the restore, `mfa_key_check` is this key's: every
@@ -3421,9 +4050,9 @@ flowchart TD
   they were then; ask them to regenerate their codes." It ends "See docs/admin-guide.md,
   Restoring from Backup." (`mfaWithoutFactorSentence`, which is given the whole `MfaRestore`).
   It is in the import's answer and its `mfaWithoutFactor`, in a `WARN` line under `IMPORT`, and
-  on the admin page, and in the answer of a restore that committed and then failed. Before card
-  2769 nobody has a factor, so nothing is said: telling the operator every account needs a
-  reset would be false.
+  on the admin page, and in the answer of a restore that committed and then failed. While no
+  account has a factor and none was left out, nothing is said: telling the operator every
+  account needs a reset would be false.
 - **A backup made before migration 0065** holds no MFA table and no key check. Every read of a
   backup first asks whether its table (or the columns of `settings`) is there, so it restores:
   the same accounts keep this server's factors and codes, and any other has none.
@@ -3711,17 +4340,17 @@ sequenceDiagram
     B->>B: read the form, hash the password
     A->>DB: BEGIN IMMEDIATE
     A->>DB: is the invite unused, unexpired and not the superadmin's? Yes
-    A->>DB: set the password, mark the invite used,<br/>end the sessions, other invites and API keys,<br/>create a session
+    A->>DB: set the password, mark the invite used,<br/>end the sessions, other invites and API keys,<br/>issue a set-up challenge (card 2769)
     A->>DB: COMMIT
-    A-->>A: session cookie, redirect to /
+    A-->>A: challenge cookie, redirect to /login/enrol
     B->>DB: BEGIN IMMEDIATE
     B->>DB: is the invite unused and unexpired? No
     B->>DB: nothing written
     B-->>B: "This invite link no longer works. It has expired,<br/>it has already been used, or it was cancelled ..."
 ```
 
-- **An invite cannot be used twice.** The second of two submissions of one link finds it used and is refused, with no password changed and no session made.
-- **Set-up cannot create two superadmins.** The second of two submissions of the set-up form finds a user, creates nothing, gets no session and is redirected to `/`.
+- **An invite cannot be used twice.** The second of two submissions of one link finds it used and is refused, with no password changed and no challenge issued.
+- **Set-up cannot create two superadmins.** The second of two submissions of the set-up form finds a user, creates nothing, gets no challenge and is redirected to `/`.
 - **A password change is checked against the row as it is.** The transaction writes only while the stored hash is still the one the current password was checked against. If the password was changed by another request in between, nothing is written and the answer is `409` (`whilePasswordHolds()`, see [Password Hashing](#password-hashing)); the current password is not checked again against the new hash, which until card 2701's code review (S2) it was, outside the transaction and uncounted. Making an API key and changing your email, which ask for the password too, are checked the same way, so a key cannot be made, nor an address moved, with a password a change has just ended. The email route also looks for the address being taken inside the transaction that writes it.
 - **Two submissions at once each hash.** The hash of an invite's or set-up's password is awaited, so the second submission passes its first look at the invite before the first commits, and each hashes (card 2191); the one transaction still lets exactly one in.
 
@@ -6071,6 +6700,8 @@ redirects, to a caller who is signed in or not.
   |---|---|
   | `/decision-link/[token]`, `/api/decision-by-link/responses`, `/api/decision-by-link/seen`, `/api/decision-by-link/concerns` (card 2679) | `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex, nofollow`, `Cache-Control: no-store` |
   | `/invite/[token]` (card 2698) | `Referrer-Policy: strict-origin`, `X-Robots-Tag: noindex, nofollow`, `Cache-Control: no-store` |
+  | `/login/verify`, `/login/enrol` (card 2769) | `Referrer-Policy: strict-origin`, `X-Robots-Tag: noindex, nofollow`, `Cache-Control: no-store` (`FORM_LINK_HEADERS`) |
+  | `/enrol/[token]` (card 2769) | `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex, nofollow`, `Cache-Control: no-store` (`PERSONAL_LINK_HEADERS`) |
   | `/request/[id]/confirm`, `/request/[id]/reply`, `/api/requests/[id]`, `/api/requests/[id]/messages`, `/api/requests/[id]/confirm` (card 2698) | `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex, nofollow`, `Cache-Control: no-store` |
   | `/decisions/[id]`, `/api/decisions/[id]/responses`, `/api/decisions/[id]/seen`, `/api/decisions/[id]/concerns` (card 2679) | `Cache-Control: no-store`, `X-Robots-Tag: noindex, nofollow` (the robots header since card 2679) |
   | `/decisions/[id]/preview`, `/decisions/[id]/edit`, `/board/[id]/decisions` (card 2697); `/decisions/[id]/results`, `/api/decisions/[id]/rule`, `/api/decisions/[id]/release`, `/api/decisions/[id]/supersede` (card 2679) | `Cache-Control: no-store`, `X-Robots-Tag: noindex, nofollow` (`UNPUBLISHED_HEADERS`) |
@@ -6098,7 +6729,11 @@ redirects, to a caller who is signed in or not.
   invite page has a form action: it posts with `use:enhance`, but a submit made before its
   scripts have loaded, or with scripts off, is a native post. So `/invite/[token]` carries
   `strict-origin`, which sends the origin alone, never the path, so the token stays out of every
-  `Referer` while the native post still says the page's own `Origin` and is accepted. The request
+  `Referer` while the native post still says the page's own `Origin` and is accepted. Card
+  2769's code page and set-up page post forms the same way, and carry `strict-origin` for the
+  same reason; their addresses hold no secret, and they are kept from every cache and index
+  because they name the account and show its new secret and recovery codes. A set-up link's
+  page, `/enrol/[token]`, posts nothing and carries `no-referrer`. The request
   form's confirm and reply pages and `/decision-link/[token]` post only through `fetch`, which
   sends the real `Origin` whatever the policy, and they keep `no-referrer`.
 - **The public request form may be framed by another site.** `/request`,
@@ -6530,7 +7165,8 @@ stateDiagram-v2
     NoUsers --> R401 : A script asking an internal API route
     R401 --> [*] : 401 Not authenticated
     SetupPage --> CreateSuperadmin : Create first account
-    CreateSuperadmin --> HasUsers : User created
+    CreateSuperadmin --> SetUpTwoStep : Enrol challenge, 303 /login/enrol
+    SetUpTwoStep --> HasUsers : Confirmed, session made
     HasUsers --> BlockSetup : /setup permanently blocked
     BlockSetup --> NormalAuth : Standard auth flow
 ```
@@ -6540,17 +7176,29 @@ set-up forms submitted at the same moment create one superadmin and not two; see
 [One Use Means One Use](#one-use-means-one-use). `/setup` opens again when there is no user,
 which is what Reset Everything in the admin panel leaves.
 
+Since card 2769 the set-up makes no session. It checks the MFA key is loaded before it hashes
+the password (`503` otherwise, nothing made), makes the superadmin with
+`mfa_password_enrol = 0`, and issues a set-up challenge in the same transaction; the browser is
+sent to `/login/enrol`, and only the confirm there signs in. The superadmin exists from the first
+step, so `/setup` is already closed while the set-up page is open. A set-up left
+unfinished is recovered on the host with `node scripts/mfa-reset.mjs <name>`.
+
 ## Key Implementation Files
 
 | File | Purpose |
 |------|---------|
-| `src/lib/server/auth.ts` | Session CRUD, API key generation and validation; `endAccountAccess()`, what setting a password ends; `stillAuthenticated()`, the key or session asked again inside a write's transaction, which answers the account as it is now and sets `locals.user` to it (`null` for a public route with nobody signed in; `401` and an ERROR line for a handler reached with no credential recorded, outside vitest); `checkCurrentPassword()`, the count of current-password guesses on the session's row, one check in flight per session and the sign-out at the third (card 2701), `refuseWrongPassword()`, the route's answer to one, and `whilePasswordHolds()`, its write only while the hash checked is still stored; `secureCookies()`, the `Secure` rule of the session cookie and the remembered browser's; `openSessionUser()`, which each open live stream asks at each heartbeat, and `sessionStillOpen()`, the same question without the account |
+| `src/lib/server/auth.ts` | Session CRUD, API key generation and validation; `createSession()`, which writes `two_step = 1`, and `findSession()`, which refuses any other value as `one-step` (card 2769); `endAccountAccess()`, what setting a password ends; `stillAuthenticated()`, the key or session asked again inside a write's transaction, which answers the account as it is now and sets `locals.user` to it (`null` for a public route with nobody signed in; `401` and an ERROR line for a handler reached with no credential recorded, outside vitest); `checkCurrentPassword()`, the count of current-password guesses on the session's row, one check in flight per session and the sign-out at the third (card 2701), `refuseWrongPassword()`, the route's answer to one, and `whilePasswordHolds()`, its write only while the hash checked is still stored; `secureCookies()`, the `Secure` rule of the session cookie and the remembered browser's; `openSessionUser()`, which each open live stream asks at each heartbeat, and `sessionStillOpen()`, the same question without the account |
 | `src/lib/server/step-up.ts` | The current password asked again before a destructive action (card 2701): `STEP_UP_ACTIONS`, `confirmStepUp()`, `requirePasswordUnchanged()`, and the import's confirmation, `issueImportConfirmation()` and `takeImportConfirmation()`. See [Step-up Before Destructive Actions](#step-up-before-destructive-actions-card-2701) |
 | `src/lib/step-up-words.ts` | The step-up's words and codes, which the server answers with and the pages read: `STEP_UP_FIELD`, the refusals, `PASSWORD_CHANGED_MEANWHILE`, `CONFIRMATION_HEADER`, `StepUpCode`, and `stepUpRefusal()`, `refusalWatch()` and `isStepUpSignOut()`, which tell a refusal of the password from any other by its `stepUp` code |
 | `src/lib/components/CurrentPasswordField.svelte` | The one field for the caller's own password, asked again (card 2701's code review, F7): label, `autocomplete="current-password"`, the refusal in an alert, `aria-invalid` and `aria-describedby`, the focus on a refusal, and no field to type in once the session is signed out |
 | `src/lib/server/write-as.ts` | Who the caller is, asked again at the write (card 2253): `writeAs(locals, (caller) => …)`, the one transaction every write handler writes in, beginning with `stillAuthenticated()`; `stillCallerNow(locals)`, the same question in a transaction of its own, for the nine handlers whose work cannot run in one (the export the ninth, card 2701); `inWrite()`, the first statement of every service write, refused unless a `writeAs` callback is running, and `ServiceOptions`, what every service write is handed beside the caller (card 2012). See [Asked Again at the Write](#asked-again-at-the-write-card-2253) |
 | `src/lib/server/passwords.ts` | Every bcrypt hash and check, on worker threads in two lanes (card 2191): `checkPassword()`, `makePasswordHash()`, `CheckNotMade`, `callerHasGone()`, `passwordChecks()`, `BCRYPT_ROUNDS` and `DUMMY_HASH`. The only importer of bcryptjs |
-| `src/lib/server/known-browsers.ts` | Browsers that have signed in before (card 2194): `rememberBrowser()`, `rememberedNonce()`, the key in `settings` and `resetKnownBrowserSecretCache()`, and `signInsOneAtATime()`, which reads `SIGN_IN_ONE_AT_A_TIME` |
+| `src/lib/server/known-browsers.ts` | Browsers that have signed in before (card 2194): `rememberBrowser()`, `rememberedNonce()`, the key in `settings` and `resetKnownBrowserSecretCache()`, and `signInsOneAtATime()`, which reads `SIGN_IN_ONE_AT_A_TIME`; the MAC's domain, `known-browser:2:` since card 2769 |
+| `src/lib/server/sign-in-challenges.ts` | The pending sign-in of two-step sign-in (card 2769): the challenge cookie (`challengeCookieName()`, `readChallengeToken()`, `setChallengeCookie()`, `deleteChallengeCookie()`) and the set-up link's (`ENROL_LINK_COOKIE`); `issueChallenge()`, `liveChallenge()`, `takeChallenge()`, the counts, the enrol stages (`openEnrolState()`, `moveEnrolStage()`), `codePause()`, `raiseSignal()`, and the sweep of expired challenges, `sweepExpiredChallenges()` and `startChallengeSweep()` (at start-up and every five minutes). See [The Pending Sign-In](#the-pending-sign-in) |
+| `src/lib/server/second-step.ts` | What a right password leads to and the second step (card 2769): `afterPassword()` and the release mail, `verifyView()`, `verifyStep()`, `finishSignIn()`, `enrolView()`, `enrolCode()`, `enrolConfirm()`, `issueSetUpChallenge()` and `goToSetUp()` for the invite and the set-up, their helpers (`laneOf()`, `refuse()`, `openChallenge()`, `signedInAnswer()`), and every answer's words. Takes values, never a request body |
+| `src/lib/server/otpauth.ts` | `base32()`, `otpauthUri()`, `secretInGroups()` and `qrDataUri()`, the QR code drawn by `uqr` as a `data:` image (card 2769). Pure |
+| `src/routes/login/verify/+page.server.ts`, `src/routes/login/enrol/+page.server.ts`, `src/routes/enrol/[token]/+page.server.ts` | The code page, the set-up page and a set-up link's page (card 2769). Each action awaits only its form, then hands the values on |
+| `src/lib/components/SignInReport.svelte` | The report after a right code or a confirm: wrong codes since the last sign-in, the banner, the account's keys and webhooks (card 2769) |
 | `src/lib/server/invites.ts` | `issueInvite()`, the one way an invite is issued, which ends the account's earlier invites; `endUnusedInvites()`, which ends them when a password is set and when an account's email or role changes; `INVITE_LIFETIME_MS`; `usableInvite()`, the one place that decides an invite works, which since card 2773 refuses one for an account with a second factor |
 | `src/lib/server/board-access.ts` | Board-level role resolution and permission checks; `isAdmin()` |
 | `src/lib/server/route-guards.ts` | Per-route guards that resolve the board from the row and throw 401/404/403; `requireManagedAccount()`, `requireTeamManager()` and `requireSuperadmin()`, which look at no board; `requireAdmin()` and `refuseOwnAccount()`, which read no row (card 2253); `requireSubBoardLink()`, who may put a board under a card |
@@ -6587,7 +7235,7 @@ which is what Reset Everything in the admin panel leaves.
 | `src/lib/server/mfa-crypto.ts` | `sealWith()` and `openSealed()`, AES-256-GCM bound to `factorAad()` or `enrolAad()`; `newFactorUid()`; `sha256Hex()`. Pure |
 | `src/lib/server/totp.ts` | Authenticator codes (RFC 6238 over RFC 4226): `hotp()`, `stepAt()`, `matchingStep()` (the current step and the one before, both compared in constant time), `newTotpSecret()`. Pure |
 | `src/lib/server/recovery-codes.ts` | `newRecoveryCodes()`, `canonicalRecoveryCode()` and `recoveryCodeHash()`, bound to the account. Pure |
-| `src/lib/server/mfa-store.ts` | The rows: `addTotpFactor()` with the key check, `factorSecret()`, `sealEnrolment()` and `openEnrolment()`, `spendStep()` and `spendRecoveryCode()` (one conditional `UPDATE` each), `storeRecoveryCodes()`, `endPendingSignIns()`, and `readMfaKeyCheck()`; `issueEnrolmentLink()` and `resetTwoStep()` (card 2773), each inside the caller's transaction |
+| `src/lib/server/mfa-store.ts` | The rows: `addTotpFactor()` with the key check, `factorSecret()`, `sealEnrolment()` and `openEnrolment()`, `spendStep()` and `spendRecoveryCode()` (one conditional `UPDATE` each), `storeRecoveryCodes()`, `endPendingSignIns()`, and `readMfaKeyCheck()`; `issueEnrolmentLink()` and `resetTwoStep()` (card 2773), each inside the caller's transaction; `usableEnrolmentLink()`, `releaseWindowOpen()` and `passwordSetUpEnds()` (card 2769) |
 | `src/routes/api/users/[id]/mfa/reset/+server.ts` | An administrator's reset of another account's two-step sign-in (card 2773): the refusals before the password and in the transaction, the notice after the commit, and the three checks before the link is put in the answer. See [The Administrator's Reset](#the-administrators-reset) |
 | `scripts/mfa-reset.mjs` | The host's reset of an account's two-step sign-in by its username (card 2773), standalone, in the image at `/app/scripts/`. See [The Host's Command](#the-hosts-command) |
 | `src/lib/server/mfa-backup.ts` | What a restore does with second factors (card 2768): `readMfaHere()`, `restoreMfaRows()`, `readBackupMfaKeyCheck()` (the backup's key check from its table storage), `MFA_ROWS_NOT_RESTORED` and `mfaWithoutFactorSentence()` |
@@ -6596,7 +7244,7 @@ which is what Reset Everything in the admin panel leaves.
 | `src/lib/server/db/restore.ts` | What a restore brings in and what it never does, the new link it gives every request, every decision link it ends and records (`RestoreResult.decisionLinksCleared`) and its refusal of a decision record copied in part (card 2675), and the secrets it keeps from this server (`RestoreResult.secrets`), only for a backup whose seal verifies (`RestoreResult.sealVerified`, and why not, `RestoreResult.unsealed`); `rowsToRestore()`, each table read `NOT INDEXED`; `backupLacksSuperadmin()` |
 | `src/lib/server/email.ts` | `linkBaseUrl()`: the address a mailed link begins with, from configuration alone |
 | `src/lib/server/startup-checks.ts` | The eight lines the server writes at start: no superadmin, `ORIGIN` still the image's placeholder, and a board beneath one of its own cards (card 2142), which a restore of a backup that brings one writes at once too, with each control character in a board's name or a card's title printed as a space, so that a name holding a line break cannot split the line and forge one after it (with the logger's `printable()`, card 2214); and three about the database (card 2083): the new-database line (a new, empty database was made at this start, the alarm on an installation that had data, since set-up is then open to whoever comes first), the off-volume line (the database is in the container's own file system), and the other-database line (a database at `/app/dumpfire.db` beside the one in use); and the line that `SIGN_IN_ONE_AT_A_TIME` is off (card 2194), and `reportCspMode()`'s line that `CSP_MODE` is `report-only` or neither mode (card 2162), each to the console whatever `LOG_LEVEL` is; `refuseUserlessBesideAnother()`, which stops the server before it listens when the database in use has no users while another is beside it; `checkMfaKeyAtStart()` and `MfaKeyError` (card 2768), straight after it, which stop the server when the MFA key does not load or is not the key the stored second factors were made with; and `maskLiveLog()`, which masks the running log's tokens and old failed sign-in names at start |
-| `src/lib/server/rate-limit.ts` | In-memory rate limiter, counting in a fixed window from each key's first attempt (`checkRateLimit`), an amount in the same way (`takeAllowance`, the day's report mail of card 2182), and wrong passwords at one account in an idle window (`signInWait`, `countWrongSignIn`, `forgetWrongSignIns`, card 2177); sign-in's count by address with the account each attempt was at (`countSignInAttempt`, `refundSignInAttempts`, `keepSignInAttemptCounted`, card 2226); and the sign-ins in flight at one key (`enterSignIn`, `leaveSignIn`, card 2194) |
+| `src/lib/server/rate-limit.ts` | In-memory rate limiter, counting in a fixed window from each key's first attempt (`checkRateLimit`), an amount in the same way (`takeAllowance`, the day's report mail of card 2182), and wrong passwords at one account in an idle window (`signInWait`, `countWrongSignIn`, `forgetWrongSignIns`, card 2177); sign-in's count by address with the account each attempt was at (`countSignInAttempt`, `refundSignInAttempts`, `keepSignInAttemptCounted`, card 2226); and the sign-ins in flight at one key (`enterSignIn`, `leaveSignIn`, card 2194); `accountKey()`, the `user:<id>` key the password step and the second step both count under (card 2769) |
 | `src/lib/server/uploads.ts` | Where attachment files are, which stored file names are refused, `writeUploadFile()` and `removeUploadFile()` for both trees' uploads, and the headers an attachment is served with: `attachmentHeaders()` (the web tree, inline only when an image's bytes match) and `downloadHeaders()` (`/api/v1`, always a download, `no-store`) |
 | `src/lib/server/image-check.ts` | Whether bytes are a PNG, JPEG, GIF or WebP image (card 2754): `imageTypeOf()`, `sniffImage()`, and `checkImage()`, the walk by allow-list that strips metadata and refuses animation, trailing data and more than 8000 px or 40 MP. No imports |
 | `src/lib/server/upload-allowance.ts` | A key's user's image uploads (card 2754): `takeUploadCount()`, 30 an hour, and `takeUploadBytes()`, 100 MB a day, both by user; `UploadAllowanceRefused` |

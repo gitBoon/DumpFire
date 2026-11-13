@@ -146,7 +146,10 @@ function seedAccount(username: string) {
 			mfaRecoveryResumesAt: later,
 			failedCodesSinceSignIn: 5,
 			securityBanner: 'codes-failed',
-			securityBannerAt: stamp()
+			securityBannerAt: stamp(),
+			// May set up on its password alone (card 2769): the reset clears it,
+			// so the whole-table comparison fails unless the script does too.
+			mfaPasswordEnrol: 1
 		})
 		.where(eq(users.id, user.id))
 		.run();
@@ -324,5 +327,35 @@ describe('scripts/mfa-reset.mjs', () => {
 		const { line, token } = printedLink(ran.stdout);
 		expect(line).toBe(`${base}/enrol/${token}`);
 		expect(fileLinks().find((link) => link.userId === holder.id)?.tokenHash).toBe(sha256Hex(token));
+	});
+
+	// Card 2769, its security review's CS1: a sign-in left at its second step,
+	// which the reset ends, is said; no notice is mailed from the host.
+	it('T100 (card 2769): a reset that ends a sign-in left at its second step writes one WARN line saying so', () => {
+		const holder = seedAccount('holder');
+		db.insert(signInChallenges)
+			.values({
+				tokenHash: sha256Hex('a verify challenge'),
+				shortId: 'v-holder',
+				userId: holder.id,
+				purpose: 'verify',
+				lane: 'other',
+				passwordHash: '$2b$04$notareal.hash',
+				expiresAt: stamp(new Date(Date.now() + 10 * 60 * 1000))
+			})
+			.run();
+		writeCopy();
+
+		const ran = run(['holder']);
+
+		expect(ran.status, ran.stderr).toBe(0);
+		const warned = (fileDump({ logs: true }).system_logs as Row[]).filter((line) => line.level === 'WARN');
+		expect(warned).toEqual([
+			expect.objectContaining({
+				context: 'AUTH',
+				user_id: holder.id,
+				message: `The reset ended 1 sign-in(s) of user ${holder.id} ("holder") left at their second step; no notice was mailed`
+			})
+		]);
 	});
 });

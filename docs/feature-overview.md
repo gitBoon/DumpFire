@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.79
+version: 1.80
 status: As-Built
-date: 2026-11-05
+date: 2026-11-13
 tags:
   - decision-reminders
   - features
@@ -14,6 +14,7 @@ tags:
   - options-column
   - ideas-board
   - upstream
+  - two-step-sign-in
 description: "Non-technical overview of all DumpFire features for stakeholders, managers, and end users"
 ---
 
@@ -686,12 +687,36 @@ Three habits keep the figures honest (the whole feature, with its rules, is in [
 
 ---
 
+## Signing In
+
+### Two-Step Sign-In
+
+From 13 November 2026 (card 2769), **every account signs in in two steps**: the password, then a six-digit code from an authenticator app on the person's phone. There is no way to switch it off, for anyone.
+
+- **Setting it up** — the first time, the person scans a QR code with their app, types the code it shows, and saves ten recovery codes. Each recovery code works once, for when the phone is lost
+- **Wrong codes** — five in a row pause code entry for 15 minutes, and longer each time after, up to a lock at thirty; a recovery code always works
+- **Told when something is wrong** — the owner is emailed when two-step sign-in is set up, when a recovery code is used, when codes are paused or locked, and when someone gets the password right but the code wrong. After such a thing the next sign-in shows what happened, with the account's API keys and webhooks to check
+- **A lost phone** — an administrator resets the account's two-step sign-in and hands the person a set-up link themselves; the superadmin's is reset on the server
+- **API keys are not affected** — scripts and integrations keep working
+
+```mermaid
+flowchart LR
+    P["Password"] --> F{"Authenticator<br/>set up?"}
+    F -->|"yes"| C["Code from the app,<br/>or a recovery code"]
+    F -->|"no"| S["Scan the QR code,<br/>type a code,<br/>save ten recovery codes"]
+    C --> In["Signed in"]
+    S --> In
+```
+
+On the day it was turned on everyone was signed out once and set it up at their next sign-in.
+
 ## Administration
 
 ### User Management
 
 - **Roles**: Superadmin, Admin, and User
-- **Invite via email** — send password-set links to new users
+- **Invite via email** — send password-set links to new users, who then set up two-step sign-in
+- **Reset two-step sign-in** — for someone who has lost their phone: a set-up link, shown once, to hand over in person
 - **Emoji avatars** — each user chooses their own emoji identity
 
 ### People Directory

@@ -4,7 +4,8 @@
  * and every one that rewrites a column in the rows it keeps (`keepsRows`: 0055,
  * card 2158, which gives every task request a new link; 0057, card 2155, which
  * takes cards out of a milestone of another board; 0060, milestone 22, which
- * commits every card that is not upstream).
+ * commits every card that is not upstream; 0066, card 2769, which lets the
+ * accounts there at the release set up two-step sign-in on their password).
  *
  * The rehearsal (copy.rehearsal.ts) fails on any table that has fewer rows
  * after the runner than before. A file named here is allowed to take rows from
@@ -61,7 +62,16 @@ export const ONE_OFFS: readonly OneOff[] = Object.freeze([
 		table: 'cards',
 		change: 'committed_at and committed_by filled from created_at and created_by for every card not upstream',
 		keepsRows: true
-	}
+	},
+	// Card 2769: the release of two-step sign-in.
+	{
+		file: '0066_add_mfa_password_enrol.sql',
+		table: 'users',
+		change: 'mfa_password_enrol set to 1 for every account with no second factor and no enrolment link',
+		keepsRows: true
+	},
+	{ file: '0067_end_sessions_for_two_step.sql', table: 'sessions', change: 'every row deleted' },
+	{ file: '0067_end_sessions_for_two_step.sql', table: 'settings', change: 'the remembered-browser secret deleted' }
 ]);
 
 /** The first file the rule covers. Files before it were written before the rule. */

@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.125
+version: 1.126
 status: As-Built
 date: 2026-11-13
 tags:
@@ -27,7 +27,8 @@ tags:
   - images
   - retention
   - mfa
-description: "REST API reference for DumpFire's external v1 API: authentication, how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it, and card 2773's reset of an account's two-step sign-in and the invite's new 409"
+  - two-step-sign-in
+description: "REST API reference for DumpFire's external v1 API: authentication, how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it, and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
 ---
 
 # External API Reference
@@ -51,7 +52,7 @@ against the rate limit.
 
 ### Generating a Key
 
-1. Log in → **My Account** (⚙️) → **API Keys** section
+1. Log in, with your password and then a code from your authenticator app (card 2769) → **My Account** (⚙️) → **API Keys** section
 2. Enter a name and your current password → **Generate Key**
 3. Copy the key immediately — it is shown **once only**
 
@@ -352,6 +353,33 @@ either.
 
 ### Changes on 2026-11-13
 
+**Two-step sign-in (card 2769). The v1 API does not change**: still version `1.7.1`, and no
+`/api/v1` operation, answer or schema is different. A key never touches a session, so keys,
+webhooks and scripts keep working through the release, and the release does not end them. Keys
+made before it were made on a password alone: review them, and revoke any nobody recognises
+(see [The Release That Turns On Two-Step Sign-In](deployment.md#the-release-that-turns-on-two-step-sign-in-card-2769)).
+Making a key still needs a session, which now needs an authenticator code as well as the
+password. What changes are the web application's own sign-in forms, which are pages, not API:
+
+- **The login form** (`POST /login`) no longer signs in on a right password. It answers `303`
+  to `/login/verify` (an account with an authenticator) or `/login/enrol` (one setting one up),
+  with a ten-minute challenge cookie and no session; or `200` with a `notice` (a set-up link was
+  emailed, or was earlier, or a set-up from the emailed link is under way); or `400` (the account
+  was deleted while its password was checked), `403` (the account needs a set-up link), `409`
+  (the password changed while it was checked) or `503` (an account that would set up and no
+  MFA key, or a set-up link could not be emailed). An account with an authenticator goes to
+  `/login/verify` even with no MFA key, where a recovery code still signs in. A wrong password is
+  answered as before.
+- **The invite form** (`POST /invite/{token}`) and **the first-run set-up**
+  (`POST /setup`) set the password, or make the superadmin, and answer `303` to `/login/enrol`
+  with a challenge cookie and no session; both are `503` before any password is hashed when the
+  server has no MFA key.
+- **Three public pages are new**: `/login/verify` (the code), `/login/enrol` (setting up an
+  authenticator) and `/enrol/{token}` (a set-up link's page, which asks nothing and sends its
+  holder to sign in). A session is made only by a right code there, or by a confirmed set-up.
+
+See [Two-Step Sign-In](authentication-security.md#two-step-sign-in-card-2769).
+
 **The v1 API: version `1.7.1`, what a token costs (card 2845).** No operation, field or status
 changed; `costUsd` on the token answers changed in value:
 
@@ -367,9 +395,10 @@ Anthropic's published table on 2026-11-13.
 **One internal route is new and one refuses more, for a lost authenticator (card 2773).** The v1
 API does not change: still version `1.7.1`, and no `/api/v1` operation, answer or schema is
 different. Both routes are the web application's own, an administrator's with a session, and
-neither can be reached with a key. Until card 2769 lets an account set up a second factor,
-nobody has one, so the `409` below is never met and the reset removes nothing but sessions,
-invites and links.
+neither can be reached with a key. Until card 2769 (above) lets an account set up a second
+factor, nobody has one, so the `409` below is not met and the reset removes nothing but
+sessions, invites and links. Since card 2769 the reset also takes away the account's leave to
+set up on its password alone.
 
 - **`POST /api/users/{id}/mfa/reset` is new**: it resets another account's two-step sign-in.
   Body `{ "currentPassword": "…" }`, the caller's own password, asked every time (it joins the

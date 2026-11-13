@@ -1,11 +1,13 @@
 import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
-import { hasAnyUsers, createSession, setSessionCookie } from '$lib/server/auth';
+import { hasAnyUsers } from '$lib/server/auth';
 import { CheckNotMade, PASSWORDS_BUSY, callerHasGone, makePasswordHash } from '$lib/server/passwords';
-import { rememberBrowser } from '$lib/server/known-browsers';
 import { db } from '$lib/server/db';
 import { inTransaction } from '$lib/server/db/transaction';
 import { users } from '$lib/server/db/schema';
+import { currentMfaKey } from '$lib/server/mfa-key';
+import { readChallengeToken } from '$lib/server/sign-in-challenges';
+import { NO_MFA_KEY, goToSetUp, issueSetUpChallenge } from '$lib/server/second-step';
 
 export const load: PageServerLoad = async () => {
 	if (hasAnyUsers()) {
@@ -15,7 +17,7 @@ export const load: PageServerLoad = async () => {
 };
 
 export const actions: Actions = {
-	default: async ({ request, cookies, platform }) => {
+	default: async ({ request, cookies, platform, url }) => {
 		// The form is read before anything is checked. Whether a user exists used
 		// to be checked first, so two submissions both found none while each
 		// waited for its form, and both created a superadmin.
@@ -50,6 +52,11 @@ export const actions: Actions = {
 			return fail(400, { error: 'Passwords do not match', username, email });
 		}
 
+		// The superadmin sets up two-step sign-in next (card 2769), which needs
+		// the MFA key: without it, nothing is hashed or made, so that no account
+		// is left with no way to finish (decision 28).
+		if (currentMfaKey() === null) return fail(503, { error: NO_MFA_KEY, username, email });
+
 		// Hashing takes about a quarter of a second, on a worker thread, and is
 		// awaited, which a transaction cannot do, so it is done before one is.
 		// In the second lane: nobody is signed in yet. Two submissions at once
@@ -65,34 +72,35 @@ export const actions: Actions = {
 
 		// One transaction: that there is no user yet is read in the one that
 		// creates the superadmin, so there cannot be two, and the user and their
-		// session are made together.
-		const signedIn = inTransaction(() => {
+		// set-up challenge are made together.
+		const previousToken = readChallengeToken(request, url);
+		const setUp = inTransaction(() => {
 			if (hasAnyUsers()) return null;
 
-			// Create the superadmin user
+			// Create the superadmin user. Never with leave to set up two-step
+			// sign-in on the password alone (card 2769, decision 9): a set-up
+			// left unfinished is recovered with `node scripts/mfa-reset.mjs`.
 			const user = db.insert(users)
 				.values({
 					username,
 					email: email.toLowerCase(),
 					passwordHash,
 					emoji,
-					role: 'superadmin'
+					role: 'superadmin',
+					mfaPasswordEnrol: 0
 				})
 				.returning()
 				.get();
 
-			// Create session
-			return { token: createSession(user.id), userId: user.id };
+			// No session: only setting up two-step sign-in signs in (card 2769).
+			return issueSetUpChallenge(user.id, passwordHash, previousToken, 'setup');
 		});
 
-		// With no token, somebody else set the instance up in the meantime, and
-		// this is answered as it is whenever a user already exists. With one,
-		// the browser is remembered for the superadmin (card 2194).
-		if (signedIn) {
-			setSessionCookie(cookies, signedIn.token);
-			rememberBrowser(cookies, signedIn.userId, passwordHash);
-		}
+		// With none, somebody else set the instance up in the meantime, and this
+		// is answered as it is whenever a user already exists. With one, the
+		// browser goes on to set up two-step sign-in.
+		if (!setUp) throw redirect(303, '/');
 
-		throw redirect(303, '/');
+		goToSetUp(cookies, url, setUp, 'the first-run set-up');
 	}
 };

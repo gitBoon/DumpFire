@@ -431,22 +431,71 @@ const USERS_COLUMNS_OF_0065 = Object.keys(COLUMNS_OF_0065)
 	.sort()
 	.map((column) => `users.${column}: the column is in the model but not in the database`);
 
+/** The file of card 2769: what the release of two-step sign-in needs stored first. */
+const FILE_0066 = '0066_add_mfa_password_enrol.sql';
+
+/** The file of card 2769: every session ended once, and the remembered-browser secret deleted. */
+const FILE_0067 = '0067_end_sessions_for_two_step.sql';
+
+/** The four columns 0066 adds, as the model check reports them in a database that has not got them, in name order. */
+const COLUMNS_OF_0066 = [
+	'sessions.two_step: the column is in the model but not in the database',
+	'sign_in_challenges.enrol_grant: the column is in the model but not in the database',
+	'sign_in_challenges.enrolment_link_hash: the column is in the model but not in the database',
+	'users.mfa_password_enrol: the column is in the model but not in the database'
+];
+
 /**
- * Rows of `table` read, as `contentsOf` gives them, before 0065, as 0065
- * leaves them: every account gains the eleven columns at their defaults.
- * Any other table's rows are as they were.
+ * What the rehearsal notes of a run that applies 0066 and 0067 to a database
+ * with no remembered-browser secret: `settings`, which held `had` rows, has
+ * one more, the moment of the release; and every one of `accounts` accounts
+ * was given leave to set up on its password, the one-off declared for users.
  */
-function after0065(table: string, rows: string[]): string[] {
-	if (table !== 'users') return rows;
-	return rows
+const SETTINGS_NOTE_OF_0066 = (had: number) => `settings had ${had} row(s) and has ${had + 1}: a migration put the others there`;
+const USERS_NOTE_OF_0066 = (accounts: number) =>
+	`users: mfa_password_enrol set to 1 for every account with no second factor and no enrolment link in its ${accounts} row(s) by ${FILE_0066}, ` +
+	'a one-off declared in tests/rehearsal/one-offs.ts';
+
+/** How the model check reports 0066's sessions column in a database that has not got it. */
+const SESSIONS_COLUMN_OF_0066 = COLUMNS_OF_0066[0];
+
+/** The users columns of 0065 and of 0066 together, in name order: a database from before both has none of them. */
+const USERS_COLUMNS_OF_0065_AND_0066 = [...USERS_COLUMNS_OF_0065, COLUMNS_OF_0066[3]].sort();
+
+/** The setting 0066 writes, as `contentsOf` gives it: the moment the file ran, in the stored form of a moment. */
+const RELEASED_AT_ROW = expect.stringMatching(/^\{"key":"two_step_released_at","value":"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"\}$/);
+
+/** `rows` as `contentsOf` gives them, each with `columns` added and its keys sorted again. */
+const withColumns = (rows: string[], columns: Record<string, unknown>) =>
+	rows
 		.map((json) =>
 			JSON.stringify(
-				Object.fromEntries(
-					Object.entries({ ...JSON.parse(json), ...COLUMNS_OF_0065 }).sort(([a], [b]) => a.localeCompare(b))
-				)
+				Object.fromEntries(Object.entries({ ...JSON.parse(json), ...columns }).sort(([a], [b]) => a.localeCompare(b)))
 			)
 		)
 		.sort();
+
+/**
+ * Rows of `table` read, as `contentsOf` gives them, before 0065, as 0065,
+ * 0066 and 0067 leave them. 0065: every account gains the eleven columns at
+ * their defaults. 0066: every account gains `mfa_password_enrol` 1, since a
+ * database from before 0065 can hold no second factor and no enrolment link;
+ * a pending sign-in gains its two columns NULL; and `settings` gains
+ * `two_step_released_at`, the moment it ran, unless it was there. 0067: every
+ * session is deleted, and the remembered-browser secret. Any other table's
+ * rows are as they were.
+ */
+function afterRelease(table: string, rows: string[]): unknown[] {
+	if (table === 'users') return withColumns(rows, { ...COLUMNS_OF_0065, mfa_password_enrol: 1 });
+	if (table === 'sessions') return [];
+	if (table === 'sign_in_challenges') return withColumns(rows, { enrol_grant: null, enrolment_link_hash: null });
+	if (table !== 'settings') return rows;
+	const keyOf = (json: string) => (JSON.parse(json) as { key: string }).key;
+	const kept = rows.filter((json) => keyOf(json) !== 'known_browser_secret');
+	if (kept.some((json) => keyOf(json) === 'two_step_released_at')) return kept;
+	// In the place its key sorts to, whatever the moment it holds.
+	const placeholder = JSON.stringify({ key: 'two_step_released_at', value: '' });
+	return [...kept, placeholder].sort().map((json) => (json === placeholder ? RELEASED_AT_ROW : json));
 }
 
 /** The partial unique index 0063 makes on decision_events. */
@@ -487,11 +536,12 @@ const TABLES_OF_0060 = ['boards', 'columns', 'cards'];
  * whom it was created, unless its id is in `uncommitted` (a card on a column
  * or a board that is not there). Any other table's rows are as they were.
  * And as 0061, which every run that applies 0060 applies after it, leaves
- * them: every board gains `product_owner_user_id` NULL. And as 0065 leaves
- * them (`after0065`): every account gains its two-step sign-in columns.
+ * them: every board gains `product_owner_user_id` NULL. And as 0065, 0066 and
+ * 0067 leave them (`afterRelease`): every account gains its two-step sign-in
+ * columns, every session is ended, and the release is recorded in settings.
  */
-function after0060(table: string, rows: string[], uncommitted: readonly number[] = []): string[] {
-	if (!TABLES_OF_0060.includes(table)) return after0065(table, rows);
+function after0060(table: string, rows: string[], uncommitted: readonly number[] = []): unknown[] {
+	if (!TABLES_OF_0060.includes(table)) return afterRelease(table, rows);
 	return rows
 		.map((json) => {
 			const row = JSON.parse(json) as Record<string, unknown>;
@@ -1825,7 +1875,8 @@ describe('the six reconciled tables', () => {
 			},
 			{
 				table: 'settings',
-				rows: 2,
+				// The seed's two and two_step_released_at, which 0066 wrote before the seed.
+				rows: 3,
 				defaulted: [],
 				differences: ['settings.key: is nullable; the model has it NOT NULL']
 			},
@@ -1853,7 +1904,7 @@ describe('the six reconciled tables', () => {
 				'What differed, and no longer does: categories.board_id: is NOT NULL; the model has it nullable; ' +
 				'categories: foreign key in the database but not in the model: (board_id) references boards(id), on update NO ACTION, on delete CASCADE; ' +
 				'categories: foreign key in the model but not in the database: (board_id) references boards(id), on update NO ACTION, on delete SET NULL',
-			"[WARN] [DB] settings rebuilt in the model's shape — 2 row(s) carried across. " +
+			"[WARN] [DB] settings rebuilt in the model's shape — 3 row(s) carried across. " +
 				'What differed, and no longer does: settings.key: is nullable; the model has it NOT NULL',
 			"[WARN] [DB] user_xp rebuilt in the model's shape — 2 row(s) carried across. " +
 				'What differed, and no longer does: user_xp.name: is nullable; the model has it NOT NULL',
@@ -5565,9 +5616,11 @@ describe('the database the runner leaves, against the model', () => {
 		// keys and indexes of 0060 (milestone 22), the tables, column, key and
 		// index of 0061 (card 2673), the column of 0062 (card 2701), the table of
 		// 0064 (card 2681), the four tables and eleven users columns of 0065
-		// (card 2768), and no other. 0063's index (card 2685) is on a table of
-		// 0061, absent here whole, so it is in that table's line and has none of
-		// its own; so are 0065's indexes, each on a table of 0065.
+		// (card 2768), the sessions and users columns of 0066 (card 2769), and
+		// no other. 0063's index (card 2685) is on a table of 0061, absent here
+		// whole, so it is in that table's line and has none of its own; so are
+		// 0065's indexes, each on a table of 0065, and 0066's two columns of
+		// sign_in_challenges.
 		expect(withoutTheIndexesOf0053(differencesFromModel(structureOf(database), structureOf(modelDatabase())))).toEqual([
 			'boards.kind: the column is in the model but not in the database',
 			'boards.product_owner_user_id: the column is in the model but not in the database',
@@ -5593,6 +5646,7 @@ describe('the database the runner leaves, against the model', () => {
 			TABLE_OF_0064,
 			...TABLES_OF_0061_AND_0065.filter((table) => table > 'people_changes' && table < 'report_schedules').map(notInTheDatabase),
 			'report_schedules.time_zone: the column is in the model but not in the database',
+			SESSIONS_COLUMN_OF_0066,
 			COLUMN_OF_0062,
 			'setting_setters: the table is in the model but not in the database',
 			'settings.key: is nullable; the model has it NOT NULL',
@@ -5601,7 +5655,7 @@ describe('the database the runner leaves, against the model', () => {
 			'task_requests: index in the model but not in the database: unique index task_requests_access_token_idx on (access_token)',
 			'time_entries: the table is not in the model',
 			'user_xp.name: is nullable; the model has it NOT NULL',
-			...USERS_COLUMNS_OF_0065,
+			...USERS_COLUMNS_OF_0065_AND_0066,
 			'webhooks.set_by: the column is in the model but not in the database',
 			'webhooks: foreign key in the model but not in the database: (set_by) references users(id), on update NO ACTION, on delete SET NULL',
 			'webhooks: index in the model but not in the database: index idx_webhooks_set_by on (set_by)'
@@ -5625,13 +5679,15 @@ describe('the database the runner leaves, against the model', () => {
 			FILE_0062,
 			FILE_0063,
 			FILE_0064,
-			FILE_0065
+			FILE_0065,
+			FILE_0066,
+			FILE_0067
 		]);
 		expect(report.tolerated).toEqual([]);
 		expect(report.rebuilt.map((r) => r.table)).toEqual(['columns', 'categories', 'settings', 'user_xp', 'invite_tokens']);
 		expect(report.missingFromDisk).toEqual([]);
 		expect(report.schemaDifferences).toEqual([]);
-		expect(recordedIn(database)).toHaveLength(71);
+		expect(recordedIn(database)).toHaveLength(73);
 		expect(sequenceIn(database, 'categories')).toBe(3);
 		expect(foreignKeysOn(database)).toBe(true);
 		expect(differencesIn(database)).toEqual(NONE);
@@ -5658,8 +5714,9 @@ describe('the database the runner leaves, against the model', () => {
 		// nothing of 0060 (milestone 22), nothing of 0061 (card 2673), no
 		// column of 0062 (card 2701), no index of 0063 (card 2685), which is on
 		// a table of 0061 and so in that table's line, no table of 0064
-		// (card 2681), and none of the tables or users columns of 0065
-		// (card 2768).
+		// (card 2681), none of the tables or users columns of 0065
+		// (card 2768), and neither the sessions nor the users column of 0066
+		// (card 2769).
 		expect(withoutTheIndexesOf0053(differencesFromModel(structureOf(database), structureOf(modelDatabase())))).toEqual([
 			'boards.kind: the column is in the model but not in the database',
 			'boards.product_owner_user_id: the column is in the model but not in the database',
@@ -5684,11 +5741,12 @@ describe('the database the runner leaves, against the model', () => {
 			TABLE_OF_0064,
 			...TABLES_OF_0061_AND_0065.filter((table) => table > 'people_changes' && table < 'report_schedules').map(notInTheDatabase),
 			'report_schedules.time_zone: the column is in the model but not in the database',
+			SESSIONS_COLUMN_OF_0066,
 			COLUMN_OF_0062,
 			'setting_setters: the table is in the model but not in the database',
 			notInTheDatabase('sign_in_challenges'),
 			'time_entries: the table is not in the model',
-			...USERS_COLUMNS_OF_0065,
+			...USERS_COLUMNS_OF_0065_AND_0066,
 			'webhooks.set_by: the column is in the model but not in the database',
 			'webhooks: foreign key in the model but not in the database: (set_by) references users(id), on update NO ACTION, on delete SET NULL',
 			'webhooks: index in the model but not in the database: index idx_webhooks_set_by on (set_by)'
@@ -5710,7 +5768,7 @@ describe('the database the runner leaves, against the model', () => {
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual(['0052_drop_time_entries.sql', '0053_index_foreign_keys_end_sessions.sql', FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065]);
+		expect(report.applied).toEqual(['0052_drop_time_entries.sql', '0053_index_foreign_keys_end_sessions.sql', FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067]);
 		expect(report.rebuilt).toEqual([
 			{ table: 'boards', rows: 3, defaulted: [], differences: differed.boards },
 			{ table: 'categories', rows: 3, defaulted: [], differences: differed.categories }
@@ -5839,7 +5897,7 @@ describe('0053, which ends every session once (card 2106)', () => {
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0053, FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065]);
+		expect(report.applied).toEqual([FILE_0053, FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067]);
 		expect(report.schemaDifferences).toEqual([]);
 		const after = contentsOf(database);
 		expect(after.sessions).toEqual([]);
@@ -5847,7 +5905,7 @@ describe('0053, which ends every session once (card 2106)', () => {
 			// The migration record, and its id counter, gain the files; 0054 ends
 			// the unused invite, which its own tests cover.
 			if (['sessions', 'invite_tokens', '__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
-			expect(after[table], table).toEqual(after0065(table, before[table]));
+			expect(after[table], table).toEqual(afterRelease(table, before[table]));
 		}
 		expect(after.users).toHaveLength(2);
 		expect(after.api_keys).toHaveLength(1);
@@ -5880,7 +5938,11 @@ describe('0053, which ends every session once (card 2106)', () => {
 		expect(found.problems).toEqual([]);
 		expect(found.notes).toEqual([
 			`invite_tokens had 2 row(s) and has 1: every unused invite deleted by ${FILE_0054}, a one-off declared in tests/rehearsal/one-offs.ts`,
-			`sessions had 2 row(s) and has 0: every row deleted by ${FILE_0053}, a one-off declared in tests/rehearsal/one-offs.ts`
+			// 0053 is the first applied of the two files declared for sessions (0067 is the other), and is the one named.
+			`sessions had 2 row(s) and has 0: every row deleted by ${FILE_0053}, a one-off declared in tests/rehearsal/one-offs.ts`,
+			// 0066 records the release in settings (card 2769); there was no remembered-browser secret for 0067 to delete.
+			SETTINGS_NOTE_OF_0066(0),
+			USERS_NOTE_OF_0066(2)
 		]);
 	});
 
@@ -6052,7 +6114,8 @@ describe('a migration file that loses rows (card 2106, decision 3)', () => {
 
 		it('is a failure in a run that did not apply that file', () => {
 			expect(comparing(['0054_something_else.sql'])).toEqual({
-				problems: [`sessions had 5 row(s) and has 0, and ${FILE_0053}, which may take its rows, was not applied in this run`],
+				// 0067 (card 2769) is declared for sessions too, and was not applied either.
+				problems: [`sessions had 5 row(s) and has 0, and ${FILE_0053}, ${FILE_0067}, which may take its rows, was not applied in this run`],
 				notes: []
 			});
 			expect(comparing([]).problems).toHaveLength(1);
@@ -6151,7 +6214,7 @@ describe('0054, which indexes a person’s entries by time and ends every unused
 	});
 
 	it('is the file after 0053: the composite index in place of the one on user_id, then the delete of unused invites', () => {
-		expect(realFiles.filter((f) => f > FILE_0053)).toEqual([FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065]);
+		expect(realFiles.filter((f) => f > FILE_0053)).toEqual([FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067]);
 		const sql = sqlStatements(readFileSync(join(REAL_MIGRATIONS, FILE_0054), 'utf-8')).map((s) => s.text);
 		expect(sql).toEqual([
 			'DROP INDEX IF EXISTS `idx_activity_log_user_id`;',
@@ -6292,7 +6355,7 @@ describe('0054, which indexes a person’s entries by time and ends every unused
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065]);
+		expect(report.applied).toEqual([FILE_0054, FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect((database.prepare('SELECT token FROM invite_tokens').all() as { token: string }[]).map((r) => r.token)).toEqual([
 			'used-long-ago'
@@ -6301,7 +6364,7 @@ describe('0054, which indexes a person’s entries by time and ends every unused
 		for (const table of Object.keys(before)) {
 			// The migration record, and its id counter, gain the file.
 			if (table === 'invite_tokens' || table === '__drizzle_migrations' || table === 'sqlite_sequence') continue;
-			expect(after[table], table).toEqual(after0065(table, before[table]));
+			expect(after[table], table).toEqual(afterRelease(table, before[table]));
 		}
 		expect(indexesOf(database)).toContain('idx_activity_log_user_id_created_at');
 		expect(indexesOf(database)).not.toContain('idx_activity_log_user_id');
@@ -6312,7 +6375,10 @@ describe('0054, which indexes a person’s entries by time and ends every unused
 		expect(found).toEqual({
 			problems: [],
 			notes: [
-				`invite_tokens had 3 row(s) and has 1: every unused invite deleted by ${FILE_0054}, a one-off declared in tests/rehearsal/one-offs.ts`
+				`invite_tokens had 3 row(s) and has 1: every unused invite deleted by ${FILE_0054}, a one-off declared in tests/rehearsal/one-offs.ts`,
+				// And 0066's, applied in the same run (card 2769).
+				SETTINGS_NOTE_OF_0066(0),
+				USERS_NOTE_OF_0066(2)
 			]
 		});
 
@@ -6370,7 +6436,7 @@ describe('0055, which gives every task request a new link once (card 2158)', () 
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065]);
+		expect(report.applied).toEqual([FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067]);
 		expect(report.schemaDifferences).toEqual([]);
 		const links = linksIn(database);
 		expect(links).toHaveLength(3);
@@ -6384,7 +6450,7 @@ describe('0055, which gives every task request a new link once (card 2158)', () 
 		for (const table of Object.keys(before)) {
 			// The migration record, and its id counter, gain the file.
 			if (['task_requests', '__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
-			expect(after[table], table).toEqual(after0065(table, before[table]));
+			expect(after[table], table).toEqual(afterRelease(table, before[table]));
 		}
 
 		// The rehearsal: every row kept, and the change noted as the one-off declared for it.
@@ -6393,7 +6459,10 @@ describe('0055, which gives every task request a new link once (card 2158)', () 
 		expect(found).toEqual({
 			problems: [],
 			notes: [
-				`task_requests: every access_token replaced in its 3 row(s) by ${FILE_0055}, a one-off declared in tests/rehearsal/one-offs.ts`
+				// 0066's, applied in the same run (card 2769), with it.
+				SETTINGS_NOTE_OF_0066(0),
+				`task_requests: every access_token replaced in its 3 row(s) by ${FILE_0055}, a one-off declared in tests/rehearsal/one-offs.ts`,
+				USERS_NOTE_OF_0066(1)
 			]
 		});
 	});
@@ -6403,7 +6472,7 @@ describe('0055, which gives every task request a new link once (card 2158)', () 
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065]);
+		expect(report.applied).toEqual([FILE_0055, FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067]);
 		expect(linksIn(database)).toEqual([]);
 	});
 
@@ -6463,7 +6532,7 @@ describe("0056, which adds who last set a webhook's address or secret (card 2168
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065]);
+		expect(report.applied).toEqual([FILE_0056, FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect(database.prepare('SELECT id, url, secret, active, set_by FROM webhooks').all()).toEqual([
 			{ id: 1, url: 'https://hooks.example.test/x', secret: 's3cret', active: 1, set_by: null }
@@ -6484,7 +6553,15 @@ describe("0056, which adds who last set a webhook's address or secret (card 2168
 		// The rehearsal: every row kept, and the board noted as given its Options column (card 2527).
 		const found: Findings = { problems: [], notes: [] };
 		compare(state, stateOf(database), report.applied, found);
-		expect(found).toEqual({ problems: [], notes: [`columns had 0 row(s) and has 1: each delivery board that had none was given its Options column at the start (card 2527)`] });
+		expect(found).toEqual({
+			problems: [],
+			notes: [
+				`columns had 0 row(s) and has 1: each delivery board that had none was given its Options column at the start (card 2527)`,
+				// And 0066's, applied in the same run (card 2769).
+				SETTINGS_NOTE_OF_0066(0),
+				USERS_NOTE_OF_0066(1)
+			]
+		});
 
 		expect(foreignKeysOn(database)).toBe(true);
 		database.exec("INSERT INTO users (id, username, email, password_hash) VALUES (2, 'bob', 'bob@example.test', 'x')");
@@ -6601,7 +6678,7 @@ ORDER BY m.id, c.id;`;
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065]);
+		expect(report.applied).toEqual([FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067]);
 		expect(report.schemaDifferences).toEqual([]);
 		const cardsAfter = cardsIn(database);
 		// 0060, applied in the same run, commits all seven, each on a column of a
@@ -6650,9 +6727,12 @@ ORDER BY m.id, c.id;`;
 			notes: [
 				// Each board given its Options column at the start (card 2527).
 				`columns had 2 row(s) and has 4: each delivery board that had none was given its Options column at the start (card 2527)`,
+				// And 0066's, applied in the same run (card 2769).
+				SETTINGS_NOTE_OF_0066(0),
 				`cards: milestone_id cleared where it named a milestone of another board in its 7 row(s) by ${FILE_0057}, a one-off declared in tests/rehearsal/one-offs.ts`,
 				// And 0060's, applied in the same run.
-				`cards: committed_at and committed_by filled from created_at and created_by for every card not upstream in its 7 row(s) by ${FILE_0060}, a one-off declared in tests/rehearsal/one-offs.ts`
+				`cards: committed_at and committed_by filled from created_at and created_by for every card not upstream in its 7 row(s) by ${FILE_0060}, a one-off declared in tests/rehearsal/one-offs.ts`,
+				USERS_NOTE_OF_0066(1)
 			]
 		});
 	});
@@ -6662,7 +6742,7 @@ ORDER BY m.id, c.id;`;
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065]);
+		expect(report.applied).toEqual([FILE_0057, FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067]);
 		expect(cardsIn(database)).toEqual([]);
 	});
 
@@ -6713,7 +6793,7 @@ describe("0058, which adds the time zone a report schedule's time is read in (ca
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065]);
+		expect(report.applied).toEqual([FILE_0058, FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect(database.prepare('SELECT * FROM report_schedules').get()).toEqual({ ...scheduleBefore, time_zone: 'UTC' });
 		const after = contentsOf(database);
@@ -6728,7 +6808,15 @@ describe("0058, which adds the time zone a report schedule's time is read in (ca
 		// The rehearsal: every row kept, and the board noted as given its Options column (card 2527).
 		const found: Findings = { problems: [], notes: [] };
 		compare(state, stateOf(database), report.applied, found);
-		expect(found).toEqual({ problems: [], notes: [`columns had 0 row(s) and has 1: each delivery board that had none was given its Options column at the start (card 2527)`] });
+		expect(found).toEqual({
+			problems: [],
+			notes: [
+				`columns had 0 row(s) and has 1: each delivery board that had none was given its Options column at the start (card 2527)`,
+				// And 0066's, applied in the same run (card 2769).
+				SETTINGS_NOTE_OF_0066(0),
+				USERS_NOTE_OF_0066(1)
+			]
+		});
 
 		const again = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 		expect(again.applied).toEqual([]);
@@ -6790,23 +6878,23 @@ describe('0059, which adds who last changed the mail settings, the App URL and e
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065]);
+		expect(report.applied).toEqual([FILE_0059, FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect(database.prepare('SELECT * FROM setting_setters').all()).toEqual([]);
 		const after = contentsOf(database);
 		for (const table of Object.keys(before)) {
 			// The migration record, and its id counter, gain the file.
 			if (['__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
-			expect(after[table], table).toEqual(after0065(table, before[table]));
+			expect(after[table], table).toEqual(afterRelease(table, before[table]));
 		}
 		expect(indexesOf(database)).toContain('idx_setting_setters_user_id');
 		expect(database.prepare('PRAGMA foreign_key_list(setting_setters)').all()).toContainEqual(
 			expect.objectContaining({ table: 'users', from: 'user_id', to: 'id', on_delete: 'CASCADE' })
 		);
-		// The rehearsal: every row kept, nothing to note.
+		// The rehearsal: every row kept, nothing to note but 0066's, applied in the same run (card 2769).
 		const found: Findings = { problems: [], notes: [] };
 		compare(state, stateOf(database), report.applied, found);
-		expect(found).toEqual({ problems: [], notes: [] });
+		expect(found).toEqual({ problems: [], notes: [SETTINGS_NOTE_OF_0066(4), USERS_NOTE_OF_0066(2)] });
 
 		expect(foreignKeysOn(database)).toBe(true);
 		// Two accounts recorded for two places of one setting: the key is the setting and the place.
@@ -6950,7 +7038,7 @@ describe('0060, which adds the Options role, the ideas kind, and each card’s c
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065]);
+		expect(report.applied).toEqual([FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067]);
 		expect(report.schemaDifferences).toEqual([]);
 		// The file committed them, so the backfill after it found none.
 		expect(report.backfilled.committedFilled).toBe(0);
@@ -6990,7 +7078,10 @@ describe('0060, which adds the Options role, the ideas kind, and each card’s c
 			notes: [
 				// Boards A and B given their Options columns at the start (card 2527).
 				`columns had 4 row(s) and has 6: each delivery board that had none was given its Options column at the start (card 2527)`,
-				`cards: committed_at and committed_by filled from created_at and created_by for every card not upstream in its 5 row(s) by ${FILE_0060}, a one-off declared in tests/rehearsal/one-offs.ts`
+				// And 0066's, applied in the same run (card 2769).
+				SETTINGS_NOTE_OF_0066(0),
+				`cards: committed_at and committed_by filled from created_at and created_by for every card not upstream in its 5 row(s) by ${FILE_0060}, a one-off declared in tests/rehearsal/one-offs.ts`,
+				USERS_NOTE_OF_0066(2)
 			]
 		});
 
@@ -7042,7 +7133,7 @@ describe('0060, which adds the Options role, the ideas kind, and each card’s c
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065]);
+		expect(report.applied).toEqual([FILE_0060, FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067]);
 		expect(report.schemaDifferences).toEqual([]);
 		expect(database.prepare('SELECT COUNT(*) AS n FROM cards').get()).toEqual({ n: 0 });
 	});
@@ -7234,7 +7325,7 @@ describe('0061, which adds the decision records model and a Product Owner on eac
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065]);
+		expect(report.applied).toEqual([FILE_0061, FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067]);
 		expect(report.tolerated).toEqual([]);
 		// boards takes the column in place: it is in the model's shape, so nothing is rebuilt.
 		expect(report.rebuilt).toEqual([]);
@@ -7255,13 +7346,13 @@ describe('0061, which adds the decision records model and a Product Owner on eac
 		for (const table of Object.keys(before)) {
 			// The migration record, and its id counter, gain the file.
 			if (['__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
-			const expected = table === 'boards' ? before.boards.map(withProductOwner).sort() : after0065(table, before[table]);
+			const expected = table === 'boards' ? before.boards.map(withProductOwner).sort() : afterRelease(table, before[table]);
 			expect(after[table], table).toEqual(expected);
 		}
-		// The rehearsal: every row kept, nothing to note.
+		// The rehearsal: every row kept, nothing to note but 0066's, applied in the same run (card 2769).
 		const found: Findings = { problems: [], notes: [] };
 		compare(state, stateOf(database), report.applied, found);
-		expect(found).toEqual({ problems: [], notes: [] });
+		expect(found).toEqual({ problems: [], notes: [SETTINGS_NOTE_OF_0066(0), USERS_NOTE_OF_0066(2)] });
 
 		// Runs once: the next start applies nothing, and a second run is not tolerated.
 		const again = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
@@ -7406,9 +7497,29 @@ describe("0062, which adds each session's count of wrong current passwords (card
 		runBackfills(database);
 		const before = contentsOf(database);
 
+		// Every session reads 0, as 0062 leaves them: read from a copy taken to
+		// 0062 and no further, since 0067 (card 2769) then ends every session.
+		const at0062 = new Database(database.serialize());
+		opened.push(at0062);
+		applyFilesOnly(
+			at0062,
+			migrationsDir(Object.fromEntries(realFiles.filter((f) => f <= FILE_0062).map((f) => [f, readFileSync(join(REAL_MIGRATIONS, f), 'utf-8')])))
+		);
+		expect(at0062.prepare('SELECT id, user_id, wrong_password_count FROM sessions ORDER BY id').all()).toEqual([
+			{ id: 'ann-laptop', user_id: 1, wrong_password_count: 0 },
+			{ id: 'ann-phone', user_id: 1, wrong_password_count: 0 },
+			{ id: 'bob-laptop', user_id: 2, wrong_password_count: 0 }
+		]);
+		// And the sessions but for the new column, as they were.
+		const withoutCount = (json: string) => {
+			const { wrong_password_count: _count, ...row } = JSON.parse(json) as Record<string, unknown>;
+			return JSON.stringify(row);
+		};
+		expect(contentsOf(at0062).sessions.map(withoutCount)).toEqual(before.sessions);
+
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0062, FILE_0063, FILE_0064, FILE_0065]);
+		expect(report.applied).toEqual([FILE_0062, FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067]);
 		expect(report.tolerated).toEqual([]);
 		// sessions is not one the runner reconciles: the file alone changes it.
 		expect(report.rebuilt).toEqual([]);
@@ -7419,21 +7530,12 @@ describe("0062, which adds each session's count of wrong current passwords (card
 				.prepare("SELECT name, type, \"notnull\" AS required, dflt_value AS dflt FROM pragma_table_info('sessions') WHERE name = 'wrong_password_count'")
 				.all()
 		).toEqual([{ name: 'wrong_password_count', type: 'INTEGER', required: 1, dflt: '0' }]);
-		expect(database.prepare('SELECT id, user_id, wrong_password_count FROM sessions ORDER BY id').all()).toEqual([
-			{ id: 'ann-laptop', user_id: 1, wrong_password_count: 0 },
-			{ id: 'ann-phone', user_id: 1, wrong_password_count: 0 },
-			{ id: 'bob-laptop', user_id: 2, wrong_password_count: 0 }
-		]);
-		// Every other row as it was, and the sessions but for the new column.
+		// Every other row as it was; the sessions ended by 0067 (`afterRelease`).
 		const after = contentsOf(database);
-		const withoutCount = (json: string) => {
-			const { wrong_password_count: _count, ...row } = JSON.parse(json) as Record<string, unknown>;
-			return JSON.stringify(row);
-		};
 		for (const table of Object.keys(before)) {
 			// The migration record, and its id counter, gain the file.
 			if (['__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
-			expect(table === 'sessions' ? after.sessions.map(withoutCount) : after[table], table).toEqual(after0065(table, before[table]));
+			expect(after[table], table).toEqual(afterRelease(table, before[table]));
 		}
 
 		// Runs once: the next start applies nothing, a second run is not
@@ -7505,7 +7607,7 @@ describe('0063, which holds one closing-date reminder per participant per round 
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0063, FILE_0064, FILE_0065]);
+		expect(report.applied).toEqual([FILE_0063, FILE_0064, FILE_0065, FILE_0066, FILE_0067]);
 		expect(report.tolerated).toEqual([]);
 		// decision_events is not one the runner reconciles: the file alone changes it.
 		expect(report.rebuilt).toEqual([]);
@@ -7515,7 +7617,7 @@ describe('0063, which holds one closing-date reminder per participant per round 
 		for (const table of Object.keys(before)) {
 			// The migration record, and its id counter, gain the file.
 			if (['__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
-			expect(after[table], table).toEqual(after0065(table, before[table]));
+			expect(after[table], table).toEqual(afterRelease(table, before[table]));
 		}
 		expect(
 			database.prepare("SELECT name, \"unique\" AS isUnique, partial FROM pragma_index_list('decision_events') WHERE name = ?").all(INDEX_OF_0063)
@@ -7600,7 +7702,7 @@ describe('0064, which adds people_changes, the record of every change to the peo
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0064, FILE_0065]);
+		expect(report.applied).toEqual([FILE_0064, FILE_0065, FILE_0066, FILE_0067]);
 		expect(report.tolerated).toEqual([]);
 		// people_changes is new, not one the runner reconciles: the file alone makes it.
 		expect(report.rebuilt).toEqual([]);
@@ -7610,7 +7712,7 @@ describe('0064, which adds people_changes, the record of every change to the peo
 		for (const table of Object.keys(before)) {
 			// The migration record, and its id counter, gain the file.
 			if (['__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
-			expect(after[table], table).toEqual(after0065(table, before[table]));
+			expect(after[table], table).toEqual(afterRelease(table, before[table]));
 		}
 		expect(database.prepare('SELECT COUNT(*) AS n FROM people_changes').get()).toEqual({ n: 0 });
 		// One key, to users, emptied with the account; the subject is a plain integer, so a delete leaves its rows.
@@ -7667,8 +7769,11 @@ describe('0065, which adds the tables and users columns of two-step sign-in (car
 		expect(creates.length + alters.length).toBe(statements.length);
 		expect(creates.map((statement) => /^CREATE TABLE `([a-z_]+)` \(/.exec(statement)?.[1]).filter(Boolean)).toEqual(TABLES_OF_0065);
 		expect(creates).toHaveLength(10);
-		// The statements the model's export prints, so the two cannot drift.
-		for (const statement of creates) expect(EXPECTED_SCHEMA).toContain(statement);
+		// The statements the model's export prints, so the two cannot drift;
+		// sign_in_challenges' less the two columns 0066 adds to it after (card 2769).
+		const lessColumnsOf0066 = (statement: string) =>
+			statement.replace('\n\t`enrol_grant` text,\n\t`enrolment_link_hash` text,', '');
+		for (const statement of creates) expect(EXPECTED_SCHEMA.map(lessColumnsOf0066)).toContain(statement);
 		// Every ALTER adds one users column, declared as the model declares it.
 		const usersOfTheModel = EXPECTED_SCHEMA.find((statement) => statement.startsWith('CREATE TABLE `users` (')) ?? '';
 		expect(alters.map((statement) => /^ALTER TABLE `users` ADD COLUMN `([a-z_]+)` [^;]+;$/.exec(statement)?.[1])).toEqual(
@@ -7698,7 +7803,7 @@ describe('0065, which adds the tables and users columns of two-step sign-in (car
 
 		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 
-		expect(report.applied).toEqual([FILE_0065]);
+		expect(report.applied).toEqual([FILE_0065, FILE_0066, FILE_0067]);
 		expect(report.tolerated).toEqual([]);
 		// users is not one the runner reconciles, and the four tables are new: the file alone makes them.
 		expect(report.rebuilt).toEqual([]);
@@ -7712,7 +7817,7 @@ describe('0065, which adds the tables and users columns of two-step sign-in (car
 		for (const table of Object.keys(before)) {
 			// The migration record, and its id counter, gain the file.
 			if (['__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
-			expect(after[table], table).toEqual(after0065(table, before[table]));
+			expect(after[table], table).toEqual(afterRelease(table, before[table]));
 		}
 		// The four tables empty, each with one key, to users, emptied with the account.
 		for (const table of TABLES_OF_0065) {
@@ -7725,6 +7830,213 @@ describe('0065, which adds the tables and users columns of two-step sign-in (car
 
 		// Runs once: the next start applies nothing.
 		expect(runMigrations({ database, migrationsDir: REAL_MIGRATIONS }).applied).toEqual([]);
+	});
+});
+
+// ─── 0066 and 0067: the release of two-step sign-in ──────────────────────────
+
+describe('0066 and 0067, which release two-step sign-in: the leave to set up on a password, and every session ended (card 2769)', () => {
+	const STAMP = '2026-11-13 09:00:00';
+	const LATER = '2099-01-01 00:00:00';
+	const EARLIER = '2026-11-01 00:00:00';
+
+	/** The real files up to and including `last`, or before it with `before`, as a migrations directory. */
+	const filesTo = (last: string, { before = false }: { before?: boolean } = {}) =>
+		migrationsDir(
+			Object.fromEntries(
+				realFiles.filter((f) => (before ? f < last : f <= last)).map((f) => [f, readFileSync(join(REAL_MIGRATIONS, f), 'utf-8')])
+			)
+		);
+
+	/**
+	 * A database with every file before 0066 applied, as a start of the build
+	 * before this one leaves it: ann holds a second factor, bob a live
+	 * enrolment link, cat an expired one, and dan neither. ann and dan are
+	 * signed in, dan has a pending sign-in, and the remembered-browser secret
+	 * and one other setting are there.
+	 */
+	function at0065(): Database.Database {
+		const database = memoryDb();
+		applyFilesOnly(database, filesTo(FILE_0066, { before: true }));
+		database.exec(`
+			INSERT INTO users (id, username, email, password_hash, role, created_at) VALUES
+				(1, 'ann', 'ann@example.test', 'x', 'superadmin', '${STAMP}'),
+				(2, 'bob', 'bob@example.test', 'x', 'user', '${STAMP}'),
+				(3, 'cat', 'cat@example.test', 'x', 'user', '${STAMP}'),
+				(4, 'dan', 'dan@example.test', 'x', 'user', '${STAMP}');
+			INSERT INTO mfa_factors (factor_uid, user_id, kind, label, key_id, secret_ciphertext, secret_nonce, created_at) VALUES
+				('00112233445566778899aabbccddeeff', 1, 'totp', 'Phone', 'k1', 'c', 'n', '${STAMP}');
+			INSERT INTO enrolment_links (token_hash, user_id, issued_by, created_at, expires_at) VALUES
+				('hash-of-bob-link', 2, 'admin-reset', '${STAMP}', '${LATER}'),
+				('hash-of-cat-link', 3, 'admin-reset', '${STAMP}', '${EARLIER}');
+			INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES
+				('ann-laptop', 1, '${LATER}', '${STAMP}'),
+				('dan-phone', 4, '${LATER}', '${STAMP}');
+			INSERT INTO sign_in_challenges (token_hash, short_id, user_id, purpose, lane, password_hash, created_at, expires_at) VALUES
+				('hash-of-dan-challenge', 'c0ffee00', 4, 'sign-in', 'other', 'x', '${STAMP}', '${LATER}');
+			INSERT INTO settings (key, value) VALUES ('known_browser_secret', 'ab12'), ('theme', 'dark');
+		`);
+		runBackfills(database);
+		return database;
+	}
+
+	/** The moment a stored-form value names, in milliseconds. */
+	const momentOf = (value: string) => Date.parse(`${value.replace(' ', 'T')}Z`);
+
+	it('T1: 0066 is six statements, one to a block, none IF NOT EXISTS, after a header that says what it does, declared to the rehearsal as keeping the rows of users, and not tolerated twice', () => {
+		const sql = readFileSync(join(REAL_MIGRATIONS, FILE_0066), 'utf-8').replace(/\r\n/g, '\n');
+		const blocks = sql.split('--> statement-breakpoint');
+		const statements = sqlStatements(sql).map((s) => s.text);
+
+		expect(blocks).toHaveLength(6);
+		for (const block of blocks) expect(sqlStatements(block), block).toHaveLength(1);
+		expect(statements).toEqual([
+			'ALTER TABLE `users` ADD COLUMN `mfa_password_enrol` integer DEFAULT 0 NOT NULL;',
+			'ALTER TABLE `sessions` ADD COLUMN `two_step` integer DEFAULT 0 NOT NULL;',
+			'ALTER TABLE `sign_in_challenges` ADD COLUMN `enrol_grant` text;',
+			'ALTER TABLE `sign_in_challenges` ADD COLUMN `enrolment_link_hash` text;',
+			"INSERT INTO `settings` (`key`, `value`) VALUES ('two_step_released_at', datetime('now'))\n  ON CONFLICT (`key`) DO NOTHING;",
+			'UPDATE `users` SET `mfa_password_enrol` = 1\n' +
+				'WHERE NOT EXISTS (SELECT 1 FROM `mfa_factors` WHERE `mfa_factors`.`user_id` = `users`.`id`)\n' +
+				'  AND NOT EXISTS (SELECT 1 FROM `enrolment_links` WHERE `enrolment_links`.`user_id` = `users`.`id`);'
+		]);
+		// Each column declared as the model declares it.
+		for (const statement of statements.filter((s) => s.startsWith('ALTER '))) {
+			const [, table, column] = /^ALTER TABLE `([a-z_]+)` ADD COLUMN (.+);$/.exec(statement)!;
+			const ofTheModel = EXPECTED_SCHEMA.find((s) => s.startsWith(`CREATE TABLE \`${table}\` (`)) ?? '';
+			expect(ofTheModel, statement).toContain(`\t${column}`);
+		}
+		for (const statement of statements) expect(statement).not.toContain('IF NOT EXISTS');
+		for (const said of [
+			'What people see:',
+			'Runs once.',
+			'A backup made before this file',
+			'Going back to an older image',
+			'an expired one',
+			'An account made after this',
+			'two_step_released_at',
+			'keepsRows on users'
+		]) {
+			expect(sql, said).toContain(said);
+		}
+		expect(ONE_OFFS.filter((oneOff) => oneOff.file === FILE_0066)).toEqual([
+			{
+				file: FILE_0066,
+				table: 'users',
+				change: 'mfa_password_enrol set to 1 for every account with no second factor and no enrolment link',
+				keepsRows: true
+			}
+		]);
+		expect(TOLERANT_FILES).not.toContain(FILE_0066);
+	});
+
+	it('T2: 0066 on a database at 0065 gives the flag only to the account with no factor and no link, expired or live; sessions two_step 0, the challenge columns NULL, the release written, the model clean, and runs once', () => {
+		const database = at0065();
+		const before = contentsOf(database);
+		const dir = filesTo(FILE_0066);
+
+		const report = runMigrations({ database, migrationsDir: dir });
+
+		expect(report.applied).toEqual([FILE_0066]);
+		expect(report.tolerated).toEqual([]);
+		// users and sessions are not ones the runner reconciles; settings needs no rebuild: the file alone changes them.
+		expect(report.rebuilt).toEqual([]);
+		expect(report.schemaDifferences).toEqual([]);
+		expect(schemaDifferences(database)).toEqual([]);
+		// The factor, the live link and the expired link each keep 0.
+		expect(database.prepare('SELECT username, mfa_password_enrol AS flag FROM users ORDER BY id').all()).toEqual([
+			{ username: 'ann', flag: 0 },
+			{ username: 'bob', flag: 0 },
+			{ username: 'cat', flag: 0 },
+			{ username: 'dan', flag: 1 }
+		]);
+		// Every session there is one this image refuses (findSession).
+		expect(database.prepare('SELECT id, two_step FROM sessions ORDER BY id').all()).toEqual([
+			{ id: 'ann-laptop', two_step: 0 },
+			{ id: 'dan-phone', two_step: 0 }
+		]);
+		expect(database.prepare('SELECT short_id, enrol_grant, enrolment_link_hash FROM sign_in_challenges').all()).toEqual([
+			{ short_id: 'c0ffee00', enrol_grant: null, enrolment_link_hash: null }
+		]);
+		// The release, now, in the stored form of a moment; the secret is 0067's to delete.
+		const released = database.prepare("SELECT value FROM settings WHERE key = 'two_step_released_at'").pluck().get() as string;
+		expect(released).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+		expect(Math.abs(momentOf(released) - Date.now())).toBeLessThan(60_000);
+		expect(database.prepare("SELECT value FROM settings WHERE key = 'known_browser_secret'").pluck().get()).toBe('ab12');
+		// Every row of every other table as it was.
+		const after = contentsOf(database);
+		for (const table of Object.keys(before)) {
+			if (['users', 'sessions', 'sign_in_challenges', 'settings', '__drizzle_migrations', 'sqlite_sequence'].includes(table)) continue;
+			expect(after[table], table).toEqual(before[table]);
+		}
+		// And the accounts but for the flag.
+		const withoutFlag = (json: string) => {
+			const { mfa_password_enrol: _flag, ...row } = JSON.parse(json) as Record<string, unknown>;
+			return JSON.stringify(row);
+		};
+		expect(after.users.map(withoutFlag)).toEqual(before.users);
+
+		// Runs once: the next start applies nothing and changes nothing.
+		expect(runMigrations({ database, migrationsDir: dir }).applied).toEqual([]);
+		expect(contentsOf(database)).toEqual(after);
+	});
+
+	it('T3: 0067 ends every session and the remembered-browser secret and keeps every other setting; the rehearsal notes the one-offs declared for users, sessions and settings; a session made after it survives the next start', () => {
+		const sql = readFileSync(join(REAL_MIGRATIONS, FILE_0067), 'utf-8').replace(/\r\n/g, '\n');
+		expect(sqlStatements(sql).map((s) => s.text)).toEqual([
+			'DELETE FROM `sessions`;',
+			"DELETE FROM `settings` WHERE `key` = 'known_browser_secret';"
+		]);
+		for (const said of ['What people see:', 'Runs once.']) expect(sql, said).toContain(said);
+		expect(ONE_OFFS.filter((oneOff) => oneOff.file === FILE_0067).map((oneOff) => oneOff.table)).toEqual(['sessions', 'settings']);
+		expect(TOLERANT_FILES).not.toContain(FILE_0067);
+
+		// From 0065, as the release's start does: both files in one run.
+		const database = at0065();
+		const state = stateOf(database);
+
+		const report = runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+
+		expect(report.applied).toEqual([FILE_0066, FILE_0067]);
+		expect(report.schemaDifferences).toEqual([]);
+		expect(database.prepare('SELECT COUNT(*) AS n FROM sessions').get()).toEqual({ n: 0 });
+		expect(database.prepare('SELECT key FROM settings ORDER BY key').pluck().all()).toEqual(['theme', 'two_step_released_at']);
+		// API keys, invites, enrolment links and pending sign-ins are untouched.
+		expect(database.prepare('SELECT COUNT(*) AS n FROM enrolment_links').get()).toEqual({ n: 2 });
+		expect(database.prepare('SELECT COUNT(*) AS n FROM sign_in_challenges').get()).toEqual({ n: 1 });
+		// settings lost the secret and gained the release, so has as many rows as it had: nothing to note of it.
+		const found: Findings = { problems: [], notes: [] };
+		compare(state, stateOf(database), report.applied, found);
+		expect(found).toEqual({
+			problems: [],
+			notes: [
+				`sessions had 2 row(s) and has 0: every row deleted by ${FILE_0067}, a one-off declared in tests/rehearsal/one-offs.ts`,
+				USERS_NOTE_OF_0066(4)
+			]
+		});
+
+		// A start that stopped after 0066 (0067 failed, say) and is started again: the secret's loss is the one declared.
+		const halfway = at0065();
+		runMigrations({ database: halfway, migrationsDir: filesTo(FILE_0066) });
+		const atHalfway = stateOf(halfway);
+		const resumed = runMigrations({ database: halfway, migrationsDir: REAL_MIGRATIONS });
+		expect(resumed.applied).toEqual([FILE_0067]);
+		const foundAfter: Findings = { problems: [], notes: [] };
+		compare(atHalfway, stateOf(halfway), resumed.applied, foundAfter);
+		expect(foundAfter).toEqual({
+			problems: [],
+			notes: [
+				`sessions had 2 row(s) and has 0: every row deleted by ${FILE_0067}, a one-off declared in tests/rehearsal/one-offs.ts`,
+				`settings had 3 row(s) and has 2: the remembered-browser secret deleted by ${FILE_0067}, a one-off declared in tests/rehearsal/one-offs.ts`
+			]
+		});
+
+		// Signed in again after it, with a second factor: the next start deletes nothing.
+		database.exec(`INSERT INTO sessions (id, user_id, expires_at, created_at, two_step) VALUES ('signed-in-again', 1, '${LATER}', '${STAMP}', 1)`);
+		const after = contentsOf(database);
+		expect(runMigrations({ database, migrationsDir: REAL_MIGRATIONS }).applied).toEqual([]);
+		expect(contentsOf(database)).toEqual(after);
+		expect(database.prepare('SELECT id FROM sessions').pluck().all()).toEqual(['signed-in-again']);
 	});
 });
 

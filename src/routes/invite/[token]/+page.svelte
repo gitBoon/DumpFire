@@ -42,6 +42,11 @@
 			{#if data.valid}
 				<h1>Welcome, {data.username}!</h1>
 				<p class="invite-subtitle">Set your password to get started with DumpFire.</p>
+				<!-- Card 2769 (decision 10): the invite is spent with the password, so set-up is finished now or not at all. -->
+				<p class="invite-subtitle">
+					Next you will set up two-step sign-in with an authenticator app on your phone. Finish it straight away:
+					this invite stops working once your password is set.
+				</p>
 			{:else}
 				<!-- The same words as the form's failure, in +page.server.ts: one answer for every dead link. -->
 				<h1>Invite Unavailable</h1>
@@ -122,7 +127,7 @@
 
 				<button type="submit" class="btn-primary submit-btn">
 					<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M13.5 2.5l-8 8L2 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-					Set Password & Sign In
+					Set Password & Continue
 				</button>
 			</form>
 		{:else}

@@ -30,7 +30,8 @@ import { enrolmentLinks, mfaFactors, mfaRecoveryCodes, settings, signInChallenge
 import { inTransaction } from './db/transaction';
 import { endAccountAccess } from './auth';
 import { createLogger } from './logger';
-import { stamp } from '$lib/timestamps';
+import { registerStampFunctions } from './db/timestamps';
+import { parseStamp, stamp } from '$lib/timestamps';
 import { MFA_KEY_CHECK_SETTING, currentMfaKey } from './mfa-key';
 import { enrolAad, factorAad, newFactorUid, openSealed, sealWith, sha256Hex, type Sealed } from './mfa-crypto';
 import { TOTP_SECRET_BYTES } from './totp';
@@ -248,6 +249,52 @@ export const ENROLMENT_LINK_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
 /** The path an enrolment link's token follows, after the server's address: `<base>/enrol/<token>` (card 2773, decision 2). */
 export const ENROLMENT_LINK_PATH = '/enrol/';
 
+/** An enrolment link that can still be used: its hash, and the account it sets up. */
+export type UsableEnrolmentLink = { tokenHash: string; userId: number; username: string };
+
+/**
+ * The enrolment link with this token, if it can still be used (card 2769,
+ * decision 19): a token as one is made, whose hash names a link before its
+ * expiry, as `stamp_of` reads it, of an account that holds no second factor.
+ * Null for anything else. One read, nothing written: the link is taken only
+ * when the factor is written (`enrolConfirm`).
+ */
+export function usableEnrolmentLink(token: string | null, now: number = Date.now()): UsableEnrolmentLink | null {
+	if (token === null || !/^[A-Za-z0-9_-]{43}$/.test(token)) return null;
+	registerStampFunctions(sqlite);
+	const row = sqlite
+		.prepare(
+			'SELECT enrolment_links.token_hash AS tokenHash, users.id AS userId, users.username AS username FROM enrolment_links ' +
+				'JOIN users ON users.id = enrolment_links.user_id WHERE enrolment_links.token_hash = ? ' +
+				'AND stamp_of(enrolment_links.expires_at) > ? ' +
+				'AND NOT EXISTS (SELECT 1 FROM mfa_factors WHERE mfa_factors.user_id = users.id)'
+		)
+		.get(sha256Hex(token), stamp(new Date(now))) as UsableEnrolmentLink | undefined;
+	return row ?? null;
+}
+
+/** The setting the release migration (0066) writes: when two-step sign-in was turned on, which starts the 14 days (decision 25). */
+export const TWO_STEP_RELEASED_AT = 'two_step_released_at';
+
+/** How long after the release an account marked `mfa_password_enrol = 1` may set up on its password alone: 14 days (R1). */
+export const PASSWORD_SET_UP_MS = 14 * 24 * 60 * 60 * 1000;
+
+/**
+ * When leave to set up on a password alone ends, from `two_step_released_at`
+ * as it is stored: 14 days after it. Null for no setting, or one that names
+ * no moment: the window is then over (decision 25).
+ */
+export function passwordSetUpEnds(releasedAt: string | null | undefined): Date | null {
+	const released = parseStamp(releasedAt);
+	return released === null ? null : new Date(released.getTime() + PASSWORD_SET_UP_MS);
+}
+
+/** Whether the 14 days after the release are still running at `now` (decision 25). */
+export function releaseWindowOpen(now: number = Date.now()): boolean {
+	const ends = passwordSetUpEnds(db.select({ value: settings.value }).from(settings).where(eq(settings.key, TWO_STEP_RELEASED_AT)).get()?.value);
+	return ends !== null && ends.getTime() > now;
+}
+
 /**
  * Issue an enrolment link for the account, and return its token (card 2773).
  * The account's earlier links are deleted first, so it has one link that
@@ -255,10 +302,15 @@ export const ENROLMENT_LINK_PATH = '/enrol/';
  * SHA-256 is stored; the token itself is returned for the caller to show
  * once, and is never logged or stored.
  *
+ * `replace: false` keeps the earlier links (card 2769, the review's CR6): the
+ * release mail issues its link beside them, and deletes the older ones only
+ * once the mail has gone, so that a mail that fails does not take away the
+ * link the owner already holds.
+ *
  * Inside the caller's transaction, the one that checked the account may be
  * given a link. It throws if no transaction is open.
  */
-export function issueEnrolmentLink(userId: number, issuedBy: string): string {
+export function issueEnrolmentLink(userId: number, issuedBy: string, { replace = true }: { replace?: boolean } = {}): string {
 	if (!sqlite.inTransaction) {
 		throw new Error(
 			'issueEnrolmentLink must be called inside the transaction that checks the account may be given a link: ' +
@@ -266,7 +318,7 @@ export function issueEnrolmentLink(userId: number, issuedBy: string): string {
 		);
 	}
 
-	db.delete(enrolmentLinks).where(eq(enrolmentLinks.userId, userId)).run();
+	if (replace) db.delete(enrolmentLinks).where(eq(enrolmentLinks.userId, userId)).run();
 	const token = randomBytes(32).toString('base64url');
 	db.insert(enrolmentLinks)
 		.values({
@@ -293,8 +345,9 @@ export type TwoStepReset = {
 /**
  * Set the account's two-step sign-in back to nothing, and issue the link that
  * sets up a new one (card 2773, decision 11): its factors and recovery codes
- * are deleted, its wrong-code counts set to 0 and their pauses cleared, and
- * its sessions, unused invites, pending sign-ins and enrolment links ended.
+ * are deleted, its wrong-code counts set to 0 and their pauses cleared, its
+ * leave to set up on its password alone taken away (card 2769), and its
+ * sessions, unused invites, pending sign-ins and enrolment links ended.
  * Its password, API keys, webhooks, report schedules, security banner, last
  * sign-in and failed codes since it are kept: the banner and that count are
  * about the password and the last sign-in, which a reset does not change.
@@ -321,7 +374,10 @@ export function resetTwoStep(userId: number, issuedBy: string = 'admin-reset'): 
 			mfaRecoveryWrong: 0,
 			mfaKnownResumesAt: null,
 			mfaOtherResumesAt: null,
-			mfaRecoveryResumesAt: null
+			mfaRecoveryResumesAt: null,
+			// No setting up on the password alone after a reset (card 2773,
+			// section 9; card 2769): the link issued below is the way back.
+			mfaPasswordEnrol: 0
 		})
 		.where(eq(users.id, userId))
 		.run();

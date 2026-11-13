@@ -211,7 +211,9 @@ function reset(database, username) {
 			database
 				.prepare(
 					'UPDATE users SET mfa_known_wrong = 0, mfa_other_wrong = 0, mfa_recovery_wrong = 0, ' +
-						'mfa_known_resumes_at = NULL, mfa_other_resumes_at = NULL, mfa_recovery_resumes_at = NULL WHERE id = ?'
+						'mfa_known_resumes_at = NULL, mfa_other_resumes_at = NULL, mfa_recovery_resumes_at = NULL, ' +
+						// No setting up on the password alone after a reset (card 2769).
+						'mfa_password_enrol = 0 WHERE id = ?'
 				)
 				.run(id);
 
@@ -219,6 +221,10 @@ function reset(database, username) {
 			// (endUnusedInvites), then endPendingSignIns' challenges and links. Keys, webhooks and schedules kept.
 			const sessions = database.prepare('DELETE FROM sessions WHERE user_id = ?').run(id).changes;
 			const invites = database.prepare('DELETE FROM invite_tokens WHERE user_id = ? AND used = 0').run(id).changes;
+			// Sign-ins left at their second step are ended unfinished: said at WARN below, and not mailed (card 2769, CS1).
+			const unfinished = /** @type {{ n: number }} */ (
+				database.prepare("SELECT COUNT(*) AS n FROM sign_in_challenges WHERE user_id = ? AND purpose = 'verify'").get(id)
+			).n;
 			const challenges = database.prepare('DELETE FROM sign_in_challenges WHERE user_id = ?').run(id).changes;
 			database.prepare('DELETE FROM enrolment_links WHERE user_id = ?').run(id);
 
@@ -250,6 +256,19 @@ function reset(database, username) {
 			database
 				.prepare('INSERT INTO system_logs (timestamp, level, context, message, meta, user_id, ip) VALUES (?, ?, ?, ?, ?, ?, ?)')
 				.run(stamp(now), 'CRITICAL', 'AUTH', message, meta, id, null);
+			if (unfinished > 0) {
+				database
+					.prepare('INSERT INTO system_logs (timestamp, level, context, message, meta, user_id, ip) VALUES (?, ?, ?, ?, ?, ?, ?)')
+					.run(
+						stamp(now),
+						'WARN',
+						'AUTH',
+						`The reset ended ${unfinished} sign-in(s) of user ${id} ("${name}") left at their second step; no notice was mailed`,
+						null,
+						id,
+						null
+					);
+			}
 
 			return { id, name, factors, recoveryCodes, sessions, invites, challenges, token };
 		})

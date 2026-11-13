@@ -586,9 +586,11 @@ describe('a restore', () => {
 		const result = restoreFromBackup(live, backup);
 
 		expect(result.errors).toEqual([]);
-		// And the form signing key the restore makes in its transaction (card 2750).
-		expect(column(live, 'SELECT key FROM settings ORDER BY key')).toEqual(['app_url', 'request_form_secret']);
-		expect(result.restored.settings).toBe(1);
+		// And the form signing key the restore makes in its transaction (card
+		// 2750), and the backup's two_step_released_at, which migration 0066
+		// wrote to it and a restore brings in as any setting (card 2769).
+		expect(column(live, 'SELECT key FROM settings ORDER BY key')).toEqual(['app_url', 'request_form_secret', 'two_step_released_at']);
+		expect(result.restored.settings).toBe(2);
 	});
 
 	// Card 2158. A backup made before it holds every request's link as it was

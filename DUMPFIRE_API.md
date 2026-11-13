@@ -46,7 +46,7 @@ All API requests require an API key, sent via the `Authorization` header.
 
 ### Generating an API Key
 
-1. Log in to DumpFire
+1. Log in to DumpFire: your password, then a code from your authenticator app (since card 2769, 2026-11-13; the first time, you set the app up)
 2. Navigate to **My Account** (⚙️)
 3. Scroll to the **🔑 API Keys** section
 4. Enter a descriptive name (e.g. "CI Pipeline", "n8n Automation")
@@ -250,6 +250,12 @@ A `502`, `503` or `504` is not DumpFire's either: see [Writes, Failures and Retr
 
 ### Changes on 2026-11-13
 
+**Two-step sign-in (card 2769). The v1 API does not change**: still `1.7.1`, and no `/api/v1` operation, answer or schema is different. A key never touches a session, so keys, webhooks and scripts keep working through the release, which does not end them. Keys made before it were made on a password alone: review them, and revoke any nobody recognises. Making a key still needs a session, and a session now needs a code from an authenticator app (or a recovery code) after the password. What changes are the web application's own sign-in forms, which are pages, not API:
+
+- **The login form** (`POST /login`) no longer signs in on a right password: it answers `303` to `/login/verify` (an account with an authenticator) or `/login/enrol` (one setting one up), with a ten-minute challenge cookie and no session; or `200` with a `notice` (a set-up link was emailed, or was earlier, or a set-up from the emailed link is under way); or `400` (the account was deleted while its password was checked), `403` (the account needs a set-up link), `409` (the password changed while it was checked) or `503` (an account that would set up and no MFA key, or a set-up link could not be emailed). An account with an authenticator goes to `/login/verify` even with no MFA key, where a recovery code still signs in. A wrong password is answered as before.
+- **The invite form** (`POST /invite/{token}`) and **the first-run set-up** (`POST /setup`) answer `303` to `/login/enrol` with a challenge cookie and no session, and `503` before any password is hashed when the server has no MFA key.
+- **Three public pages are new**: `/login/verify`, `/login/enrol` and `/enrol/{token}`. A session is made only by a right code, or by a confirmed set-up. See [docs/authentication-security.md](docs/authentication-security.md#two-step-sign-in-card-2769).
+
 **The v1 API: version `1.7.1`, what a token costs (card 2845).** No operation, field or status
 changed; `costUsd` on the token answers changed in value:
 
@@ -262,7 +268,7 @@ changed; `costUsd` on the token answers changed in value:
 Cost is worked out when it is read, so both re-price every past entry. Rates verified against
 Anthropic's published table on 2026-11-13.
 
-**One internal route is new and one refuses more, for a lost authenticator (card 2773).** The OpenAPI document does not change: still `1.7.1`, and no `/api/v1` operation, answer or schema is different. Both routes are the web application's own, an administrator's with a session, and neither can be reached with a key. Until card 2769 lets an account set up a second factor nobody has one, so the `409` below is never met and the reset removes nothing but sessions, invites and links.
+**One internal route is new and one refuses more, for a lost authenticator (card 2773).** The OpenAPI document does not change: still `1.7.1`, and no `/api/v1` operation, answer or schema is different. Both routes are the web application's own, an administrator's with a session, and neither can be reached with a key. Until card 2769 (above) lets an account set up a second factor nobody has one, so the `409` below is not met and the reset removes nothing but sessions, invites and links. Since card 2769 the reset also takes away the account's leave to set up on its password alone.
 
 - **`POST /api/users/{id}/mfa/reset` is new**: it resets another account's two-step sign-in. Body `{ "currentPassword": "…" }`, the caller's own password, asked every time (it joins the step-up list, now twenty-nine). It deletes the account's second factors and recovery codes, sets its wrong-code counts back, ends its sessions, unused invites, sign-ins waiting for a second factor and enrolment links, and issues one enrolment link, good for seven days; the password, API keys, webhooks and report schedules are kept. The link is given once, in the answer, and never mailed; its address is taken as an invite's is, the App URL setting first. Where mail is set up, the account's address is sent a notice that holds no link. Answered `200` with `Cache-Control: no-store`: `{ success, enrolmentUrl, mailSent, mailProblem?, factorsRemoved, recoveryCodesRemoved, sessionsEnded, challengesEnded, invitesEnded, message }`, `enrolmentUrl` being `<base>/enrol/<token>`.
 - **The link is withheld** (`enrolmentUrl: null`, and the message "`<name>`'s two-step sign-in was reset, but its link cannot be shown to you now. Run the reset again to issue a new one.") when, after the notice, the caller's session has ended or is no longer an administrator's, the caller may no longer manage the account, or the link is no longer the account's. `mailProblem`, in the words an invite's failure uses, is there only where mail is set up and the notice was not sent; the reset stands either way. An account with no second factor is reset all the same, which issues a fresh link.

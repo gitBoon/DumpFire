@@ -25,7 +25,15 @@
 import { escapeHtml } from '$lib/escape-html';
 import { ASK_FOR_LINK_LINE, LATEST_LINK_LINE } from '$lib/decision-words';
 import { MASTER_PREF, type NotificationPref } from '$lib/notification-prefs';
-import { MAIL_PROBLEM_WORDS, linkBaseUrl, sendEmailWithAttachment, isSmtpConfigured, trySendEmail, type MailOutcome } from './email';
+import {
+	MAIL_PROBLEM_WORDS,
+	linkBaseUrl,
+	sendEmailWithAttachment,
+	isSmtpConfigured,
+	smtpPasswordMissing,
+	trySendEmail,
+	type MailOutcome
+} from './email';
 import { db } from './db';
 import { afterCommit } from './db/transaction';
 import { users, cards, cardAssignees, boards, teamMembers, boardMembers, boardTeams, taskRequests } from './db/schema';
@@ -412,6 +420,186 @@ export function sendMfaResetNotice(email: string, username: string, resetBy: str
 	`);
 
 	return sendEmail(email, 'Your DumpFire two-step sign-in was reset', html);
+}
+
+/** What a security notice is about (card 2769, 4.9). */
+export type SecurityNotice =
+	| 'enrolled'
+	| 'recovery-code-used'
+	| 'codes-paused'
+	| 'codes-locked'
+	| 'recovery-codes-guessed'
+	| 'wrong-code'
+	| 'unfinished-sign-in';
+
+/**
+ * What a security notice names: when (said in UTC) and from which address, as
+ * received, null where there is none; and, by notice, how many wrong codes,
+ * until when code entry is paused, how many recovery codes are left, and the
+ * account's live API keys and the webhooks it set that are on (S2).
+ */
+export type SecurityNoticeDetail = {
+	at: Date;
+	address: string | null;
+	count?: number;
+	until?: Date;
+	codesLeft?: number;
+	apiKeys?: { name: string; createdAt: string; lastUsedAt: string | null }[];
+	webhooks?: { board: string; host: string; createdAt: string }[];
+};
+
+/**
+ * Tell an account's owner that something happened at their two-step sign-in
+ * that they should know of (card 2769, 4.9): two-step sign-in set up, with
+ * the account's API keys and webhooks listed (S2), a recovery code used, code entry
+ * paused or locked, recovery codes guessed at, a wrong code after the right
+ * password, or a sign-in begun with the right password and never finished.
+ * Each says when and from where, and what to do if it was not them. Never a
+ * code, a secret, a token or a link.
+ *
+ * Nothing is sent unless a mail host is set up and its password is not
+ * missing. Called once the write it follows from is committed, and never
+ * awaited: a sign-in is not held up by the mail server. They cannot be
+ * switched off: they are about the account itself.
+ */
+export function sendSecurityNotice(userId: number, notice: SecurityNotice, detail: SecurityNoticeDetail): void {
+	if (!isSmtpConfigured() || smtpPasswordMissing()) return;
+	const owner = db.select({ email: users.email, username: users.username }).from(users).where(eq(users.id, userId)).get();
+	if (!owner) return;
+
+	const when = detail.at.toUTCString();
+	const from = detail.address === null ? '' : ` from ${escapeHtml(detail.address)}`;
+	const notYou =
+		'If this was not you, your password is known to someone else: change it straight away, and tell an administrator.';
+	const keys = (detail.apiKeys ?? []).map(
+		(key) =>
+			`<li>${escapeHtml(key.name)}: made ${escapeHtml(key.createdAt)} UTC, ` +
+			`${key.lastUsedAt === null ? 'never used' : `last used ${escapeHtml(key.lastUsedAt)} UTC`}</li>`
+	);
+	const hooks = (detail.webhooks ?? []).map(
+		(hook) => `<li>${escapeHtml(hook.board)}, to ${escapeHtml(hook.host)}: made ${escapeHtml(hook.createdAt)} UTC</li>`
+	);
+	const listed = (heading: string, items: string[]) =>
+		`</p><p style="color: #334155; line-height: 1.6;">${heading}</p>` +
+		(items.length === 0 ? '<p style="color: #64748b;">None.</p>' : `<ul style="color: #334155;">${items.join('')}</ul>`) +
+		'<p style="color: #334155; line-height: 1.6;">';
+	const words: Record<SecurityNotice, { subject: string; title: string; body: string; after: string }> = {
+		enrolled: {
+			subject: 'Two-step sign-in was set up for your DumpFire account',
+			title: 'Two-step sign-in was set up',
+			body:
+				`Two-step sign-in was set up for your DumpFire account on ${escapeHtml(when)}${from}, with an authenticator app ` +
+				'and ten recovery codes.' +
+				listed('Your API keys:', keys) +
+				listed('Your webhooks:', hooks) +
+				'If you do not recognise one of these, revoke it.',
+			after:
+				'If this was not you, someone holds your password and has set up two-step sign-in in your name: tell an ' +
+				'administrator straight away, and ask them to reset your two-step sign-in.'
+		},
+		'recovery-code-used': {
+			subject: 'A recovery code was used to sign in to DumpFire',
+			title: 'A recovery code was used',
+			body:
+				`A recovery code was used to sign in to your DumpFire account on ${escapeHtml(when)}${from}. ` +
+				`You have ${detail.codesLeft ?? 0} recovery code${detail.codesLeft === 1 ? '' : 's'} left.` +
+				((detail.codesLeft ?? 0) <= 3 ? ' That is few: make a new set as soon as you can.' : ''),
+			after: 'If this was not you, someone holds your password and a recovery code: change your password straight away, and tell an administrator.'
+		},
+		'codes-paused': {
+			subject: 'Code entry for your DumpFire account is paused',
+			title: 'Code entry is paused',
+			body:
+				`${detail.count ?? 0} wrong authenticator codes in a row were entered for your DumpFire account, the last on ${escapeHtml(when)}${from}. ` +
+				`Code entry is paused until ${escapeHtml((detail.until ?? detail.at).toUTCString())}. A recovery code still works.`,
+			after: notYou
+		},
+		'codes-locked': {
+			subject: 'Authenticator codes for your DumpFire account are locked',
+			title: 'Authenticator codes are locked',
+			body:
+				`${detail.count ?? 0} wrong authenticator codes in a row were entered for your DumpFire account, the last on ${escapeHtml(when)}${from}. ` +
+				'Authenticator codes are locked: sign in with a recovery code, or ask an administrator to reset your two-step sign-in.',
+			after: notYou
+		},
+		'recovery-codes-guessed': {
+			subject: 'Wrong recovery codes were entered for your DumpFire account',
+			title: 'Wrong recovery codes',
+			body: `${detail.count ?? 0} wrong recovery codes in a row were entered for your DumpFire account, the last on ${escapeHtml(when)}${from}.`,
+			after: notYou
+		},
+		'wrong-code': {
+			subject: 'Your DumpFire password was used with a wrong code',
+			title: 'A wrong code after your password',
+			body: `Someone entered your DumpFire password correctly on ${escapeHtml(when)}${from}, and then a wrong two-step sign-in code.`,
+			after: notYou
+		},
+		'unfinished-sign-in': {
+			subject: 'A sign-in to your DumpFire account was not finished',
+			title: 'A sign-in was not finished',
+			body:
+				`Someone entered your DumpFire password correctly on ${escapeHtml(when)}${from}, and did not finish signing in ` +
+				'with a two-step sign-in code.',
+			after: notYou
+		}
+	};
+	const { subject, title, body, after } = words[notice];
+	const html = emailTemplate(escapeHtml(title), `
+		<p style="color: #334155; line-height: 1.6;">
+			Hi <strong style="color: #0f172a;">${escapeHtml(owner.username)}</strong>, ${body}
+		</p>
+		<p style="color: #64748b; font-size: 12px;">
+			${escapeHtml(after)}
+		</p>
+	`);
+
+	sendEmail(owner.email, subject, html).catch((err) => log.error(`Security notice (${notice}) failed for user ${userId}`, err));
+}
+
+/**
+ * Email an account the set-up link the release of two-step sign-in gives it
+ * (card 2769, decision 23), and say whether the mail went: someone signed in
+ * with its password, when (said in UTC) and from which address, as received;
+ * that two-step sign-in is now required, with the link that sets it up and
+ * how long it works; and that if it was not them, their password is known to
+ * someone else. The mail is itself the signal of a stolen password: only a
+ * right password sends it.
+ *
+ * Called by the sign-in once the transaction that issued the link has
+ * committed, and awaited: a link whose mail did not go is deleted. `not-configured`
+ * when no mail host is set by the time it is sent.
+ */
+export function sendReleaseLinkMail(
+	email: string,
+	username: string,
+	token: string,
+	baseUrl: string,
+	signIn: { at: Date; address: string | null }
+): Promise<MailOutcome> {
+	if (!isSmtpConfigured()) {
+		return Promise.resolve({ sent: false, problem: 'not-configured', detail: MAIL_PROBLEM_WORDS['not-configured'] });
+	}
+
+	const link = `${baseUrl}/enrol/${token}`;
+	const from = signIn.address === null ? '' : ` from ${escapeHtml(signIn.address)}`;
+	const html = emailTemplate('Set up two-step sign-in', `
+		<p style="color: #334155; line-height: 1.6;">
+			Hi <strong style="color: #0f172a;">${escapeHtml(username)}</strong>, someone signed in to your DumpFire account with your password on ${escapeHtml(signIn.at.toUTCString())}${from}.
+		</p>
+		<p style="color: #334155; line-height: 1.6;">
+			Two-step sign-in is now required: use this link to set it up. It works for 7 days.
+		</p>
+		<div style="text-align: center; margin: 24px 0;">
+			<a href="${escapeHtml(link)}" style="display: inline-block; padding: 12px 32px; background: #6366f1; color: white; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 14px;">
+				Set Up Two-Step Sign-In
+			</a>
+		</div>
+		<p style="color: #64748b; font-size: 12px;">
+			If this was not you, your password is known to someone else: set up two-step sign-in with this link, change your password straight away, and tell an administrator.
+		</p>
+	`);
+
+	return sendEmail(email, 'Set up two-step sign-in for your DumpFire account', html);
 }
 
 /** Notify a user when they are added to a board. */

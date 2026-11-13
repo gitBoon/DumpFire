@@ -83,7 +83,7 @@ export type ActionOptions = {
 	form?: Record<string, string> | FormData;
 	/** Who is calling. `null` (the default) is an anonymous caller. */
 	user?: SessionUser | null;
-	/** Cookies the browser sends with the form. */
+	/** Cookies the browser sends with the form: through `cookies.get`, and in the `Cookie` header. */
 	cookies?: Record<string, string>;
 	headers?: Record<string, string>;
 	/** The address the request appears to come from. */
@@ -124,7 +124,13 @@ export async function action(path: string, opts: ActionOptions = {}): Promise<Ac
 		form = new FormData();
 		for (const [key, value] of Object.entries(opts.form ?? {})) form.set(key, value);
 	}
-	const request = new Request(url, { method: 'POST', headers: opts.headers, body: form });
+	// The cookies are sent as a browser sends them, in a `Cookie` header, as
+	// well as through `cookies.get`: a reader of the raw header (the challenge
+	// cookie, card 2769) sees them too. After any the test wrote itself.
+	const headers = new Headers(opts.headers);
+	const sent = [headers.get('cookie'), ...Object.entries(opts.cookies ?? {}).map(([name, value]) => `${name}=${encodeURIComponent(value)}`)];
+	if (sent.some(Boolean)) headers.set('cookie', sent.filter(Boolean).join('; '));
+	const request = new Request(url, { method: 'POST', headers, body: form });
 
 	const jar = new Map<string, string>(Object.entries(opts.cookies ?? {}));
 	const set: Record<string, CookieChange> = {};

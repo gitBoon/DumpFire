@@ -1,9 +1,9 @@
 ---
 title: "SBOM Analysis: DumpFire"
 category: "Identity & Security"
-version: 1.5
+version: 1.6
 status: As-Built
-date: 2026-10-18
+date: 2026-11-13
 tags:
   - sbom
   - licensing
@@ -17,12 +17,14 @@ tags:
   - nodemailer
   - sveltekit
   - devalue
-description: "Software Bill of Materials and open-source posture analysis for the DumpFire Kanban board application, with the changes of 2026-10-15 (jsdom for the tests, dompurify raised to 3.4.17, the Inter font bundled under the SIL Open Font License 1.1) and of 2026-10-18 (nodemailer 8.0.7 to 10.1.1, @types/nodemailer removed; @sveltejs/kit 2.60.1 to 2.70.3, svelte 5.55.7 to 5.57.2, @sveltejs/adapter-node 5.5.4 to 5.5.7, devalue 5.8.1 to 5.9.4, qs 6.15.1 to 6.16.0 by an override)"
+  - uqr
+  - qr-code
+description: "Software Bill of Materials and open-source posture analysis for the DumpFire Kanban board application, with the changes of 2026-10-15 (jsdom for the tests, dompurify raised to 3.4.17, the Inter font bundled under the SIL Open Font License 1.1) and of 2026-10-18 (nodemailer 8.0.7 to 10.1.1, @types/nodemailer removed; @sveltejs/kit 2.60.1 to 2.70.3, svelte 5.55.7 to 5.57.2, @sveltejs/adapter-node 5.5.4 to 5.5.7, devalue 5.8.1 to 5.9.4, qs 6.15.1 to 6.16.0 by an override) and of 2026-11-13 (uqr 0.1.3, MIT, no dependencies, pinned exactly, for two-step sign-in's QR code, and why not qrcode)"
 ---
 
 # SBOM Analysis: DumpFire
 
-Based on production dependency analysis via `license-checker` and `npm audit` (scanned 2026-05-15, post-update), here is an architectural summary and open-source posture analysis of the DumpFire application. The counts and tables of sections 2 to 6 are that scan's. What changed on 2026-10-15 (cards 2202 and 2203) is in [section 9](#9-changes-on-2026-10-15), and what changed on 2026-10-18 (card 2227) in [section 10](#10-changes-on-2026-10-18); each is folded into the rows it touches below.
+Based on production dependency analysis via `license-checker` and `npm audit` (scanned 2026-05-15, post-update), here is an architectural summary and open-source posture analysis of the DumpFire application. The counts and tables of sections 2 to 6 are that scan's. What changed on 2026-10-15 (cards 2202 and 2203) is in [section 9](#9-changes-on-2026-10-15), and what changed on 2026-10-18 (card 2227) in [section 10](#10-changes-on-2026-10-18), and on 2026-11-13 (card 2769) in [section 11](#11-changes-on-2026-11-13); each is folded into the rows it touches below.
 
 ## 1. Application Summary
 
@@ -129,6 +131,7 @@ The following tables list all 237 production-scoped packages compiled into the p
 | jwa | 2.0.1 | MIT | Linked — JSON Web Algorithms |
 | jws | 4.0.1 | MIT | Linked — JSON Web Signatures |
 | ecdsa-sig-formatter | 1.0.11 | Apache-2.0 | Linked — ECDSA signature formatting |
+| uqr | 0.1.3 (pinned exactly) | MIT | Linked — the QR code of two-step sign-in's set-up page, drawn as SVG on the server (card 2769, [section 11](#11-changes-on-2026-11-13)) |
 
 ### Email (MIT-0)
 
@@ -647,3 +650,37 @@ is no route; and `/%zz`, sent as it is (`curl --path-as-is`), answered `400` `Ma
 in plain text with the five security headers, and nothing written to the log for it. The
 server was stopped by its process id, nothing was left listening on port 4399, and the
 database and its `-wal` and `-shm` were deleted.
+
+## 11. Changes on 2026-11-13
+
+Card 2769 (two-step sign-in) adds one runtime dependency, to draw the QR code an authenticator
+app scans when two-step sign-in is set up.
+
+**`uqr` 0.1.3, new** (`package.json` `"uqr": "0.1.3"`, pinned exactly, without a caret, as
+`nodemailer` is). MIT. **No dependencies**: the lock gains `node_modules/uqr` and nothing
+else, integrity
+`sha512-0rjE8iEJe4YmT9TOhwsZtqCMRLc5DXZUI2UEYUUg63ikBkqqE5EYWaI0etFe/5KUcmcYwLih2RND1kq+hrUJXA==`.
+79 KB unpacked. Published on 2026-04-03, over seven months before it was taken, which card
+2227's rule asks of a new release. `tests/two-step-sign-in.test.ts` (T47) fails if
+`package.json` or the lock name another version.
+
+```mermaid
+flowchart LR
+    U["otpauth.ts<br/>otpauthUri(account, secret)"] --> R["uqr renderSVG(text)"]
+    R --> D["The SVG as a data: address, base64"]
+    D --> P["/login/enrol<br/>an img, allowed by img-src 'self' data:"]
+```
+
+- **How it is used.** `src/lib/server/otpauth.ts` calls `renderSVG()` on the server alone, with
+  the `otpauth://` text, and hands the page the SVG as a `data:` address for an `<img>`. Nothing
+  of it reaches the browser as script, and no markup goes into the page with `{@html}`, which
+  `tests/markdown.test.ts` scans for.
+- **Why not `qrcode`.** `qrcode` 1.5.4, the usual choice, depends on `yargs@^15` (eleven more
+  packages), `pngjs` and `dijkstrajs`, for a command line and PNG output DumpFire does not use.
+  One package with none beneath it is less to read and less to trust.
+- **`npm audit --omit=dev`**, run 2026-11-13 with `uqr` in the tree: 7 vulnerabilities (2 low, 3
+  moderate, 2 high), in `@azure/msal-node` (and `@azure/identity`), `fast-xml-parser` (and
+  `@aws-sdk/xml-builder`), `nodemailer` (up to 10.1.3) and `qs` (up to 6.16.0, and
+  `googleapis-common`). None is in `uqr`, which brings no other package, so the count without it
+  is the same seven. They are advisories published since section 10's clean run, outside card
+  2769, and are covered by card 2852.

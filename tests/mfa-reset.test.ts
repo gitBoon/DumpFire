@@ -147,7 +147,10 @@ describe('POST /api/users/[id]/mfa/reset', () => {
 				mfaRecoveryResumesAt: later,
 				failedCodesSinceSignIn: 5,
 				securityBanner: 'codes-failed',
-				securityBannerAt: stamp()
+				securityBannerAt: stamp(),
+				// As the release migration leaves an account with no factor and no
+				// link (card 2769): the reset must close password-only set-up.
+				mfaPasswordEnrol: 1
 			})
 			.where(eq(users.id, holder.id))
 			.run();
@@ -186,7 +189,8 @@ describe('POST /api/users/[id]/mfa/reset', () => {
 			mfaRecoveryWrong: 0,
 			mfaKnownResumesAt: null,
 			mfaOtherResumesAt: null,
-			mfaRecoveryResumesAt: null
+			mfaRecoveryResumesAt: null,
+			mfaPasswordEnrol: 0
 		});
 		// Kept: the password, the keys, the banner and the failed codes since the last sign-in.
 		expect(after.passwordHash).toBe(FIXTURE_PASSWORD_HASH);

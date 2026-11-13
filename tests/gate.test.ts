@@ -64,6 +64,7 @@ import {
 	resetKnownBrowserSecretCache
 } from '$lib/server/known-browsers';
 import { maskSecretPaths } from '$lib/server/secret-paths';
+import { CHALLENGE_COOKIE } from '$lib/server/sign-in-challenges';
 import { reportSignInsNotOneAtATime } from '$lib/server/startup-checks';
 import { addressKey } from '$lib/server/client-address';
 import { passwordChecks } from '$lib/server/passwords';
@@ -90,6 +91,7 @@ import {
 	stepUp
 } from './helpers/fixtures';
 import { bodyOverTheLimit, fakeEvent, FROM_THE_PAGE, gate, gateApiRoutes, gateRoutes, type FakeEventOptions, type GateOptions } from './helpers/gate';
+import { codeFor, giveFactor, type GivenFactor } from './helpers/two-step';
 
 /** SvelteKit's source, as a path Vite resolves from the repository root, as ./helpers/gate.ts loads it. */
 const KIT = '/node_modules/@sveltejs/kit/src';
@@ -145,6 +147,7 @@ let asChief: Record<string, string>;
 
 beforeEach(() => {
 	resetDb();
+	factors.clear();
 	// The v1 limit is 60 requests a minute for a key, counted in memory.
 	resetAllRateLimits();
 	user = makeUser();
@@ -407,6 +410,36 @@ function signIn(identity: string, password: string, ip: string | null = '203.0.1
 	});
 }
 
+/** The authenticator each account that signs in here holds (card 2769), given at its first right password. */
+const factors = new Map<number, GivenFactor>();
+
+/**
+ * Sign in to `account` through both steps (card 2769), from `ip`, sending
+ * `cookie` if there is one: the right password ('right'), then the current
+ * code of the account's authenticator, given it here if it has none. The
+ * answer is the code's; how long the password was held is what `heldFor`
+ * measures, since the code is never held. A password step that opened no
+ * challenge is answered as it was. The factor's last step is cleared first,
+ * so that a second sign-in within one 30-second step is not a replay:
+ * replays are not what these tests are about.
+ */
+async function signInWithCode(account: SessionUser, ip: string | null = '203.0.113.30', cookie?: string): Promise<Answer> {
+	let factor = factors.get(account.id);
+	if (factor === undefined) {
+		factor = giveFactor(account);
+		factors.set(account.id, factor);
+	}
+	const password = await signIn(account.username, 'right', ip, cookie);
+	const challenge = password.headers.getSetCookie().find((c) => c.startsWith(`${CHALLENGE_COOKIE}=`));
+	if (password.status !== 303 || challenge === undefined) return password;
+	sqlite.prepare('UPDATE mfa_factors SET last_step = NULL WHERE id = ?').run(factor.factorId);
+	return send('POST', '/login/verify', {
+		headers: { ...LOGIN_FORM, cookie: challenge.split(';')[0] },
+		body: `code=${codeFor(factor.secret)}`,
+		ip
+	});
+}
+
 /**
  * Put `setTimeout` and `Date` on a fake clock, after one sign-in that loads
  * the login page's modules on the real one, and spends nothing: an empty name
@@ -548,7 +581,7 @@ describe('wrong passwords at one account, from any number of addresses', () => {
 		const ips = [...Array(7).fill(A), ...Array(7).fill(B), ...Array(6).fill(C)];
 		await heldInTurn(ips.map((ip) => wrongAt(user.username, ip)));
 
-		const [right] = await heldFor(signIn(user.username, 'right', C));
+		const [right] = await heldFor(signInWithCode(user, C));
 		expect(right.ms).toBe(4000);
 		expect(right.res.status).toBe(303);
 		expect(right.res.headers.get('location')).toBe('/');
@@ -640,7 +673,7 @@ describe('wrong passwords at one account, from any number of addresses', () => {
 		const other = makeUser();
 		await heldInTurn(Array.from({ length: 9 }, () => wrongAt(other.username, A)));
 
-		const [right] = await heldFor(signIn(user.username, 'right', A));
+		const [right] = await heldFor(signInWithCode(user, A));
 		expect(right.res.status).toBe(303);
 
 		// The tenth attempt from A in the window, and then the limit.
@@ -654,7 +687,7 @@ describe('wrong passwords at one account, from any number of addresses', () => {
 	it('keeps a name that is no account counted when the address then signs in to an account', async () => {
 		await heldInTurn([wrongAt('nobody-here', A), wrongAt('nobody-here', A)]);
 		await heldInTurn([A, A, A].map((ip) => wrongAt(user.username, ip)));
-		const [right] = await heldFor(signIn(user.username, 'right', A));
+		const [right] = await heldFor(signInWithCode(user, A));
 		expect(right.res.status).toBe(303);
 
 		// The two at `nobody-here` stay: eight more, and the ninth is refused.
@@ -668,7 +701,7 @@ describe('wrong passwords at one account, from any number of addresses', () => {
 	// has those attempts back, so an office's mistypes do not add up.
 	it('gives back the mistypes of someone who then signs in', async () => {
 		await heldInTurn([A, A, A].map((ip) => wrongAt(user.username, ip)));
-		const [right] = await heldFor(signIn(user.username, 'right', A));
+		const [right] = await heldFor(signInWithCode(user, A));
 		expect(right.res.status).toBe(303);
 
 		await heldInTurn(Array.from({ length: 10 }, () => wrongAt('nobody-else', A)));
@@ -816,11 +849,14 @@ describe('wrong passwords at one account, from any number of addresses', () => {
 	it('checks a long password whole after a wait: what is kept through it holds every character bcrypt reads', async () => {
 		const long = Array.from({ length: 100 }, (_, i) => String.fromCharCode(65 + (i % 26))).join('');
 		sqlite.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashSync(long, 4), user.id);
+		// An account with an authenticator, so that the right password is answered with its second step (card 2769).
+		giveFactor(user);
 		await heldInTurn([A, A, B, B, C].map((ip) => wrongAt(user.username, ip)));
 
 		const [right] = await heldFor(signIn(user.username, long, D));
 		expect(right.ms).toBe(1000);
 		expect(right.res.status).toBe(303);
+		expect(right.res.headers.get('location')).toBe('/login/verify');
 	});
 });
 
@@ -874,7 +910,7 @@ describe('a browser that has signed in here before', () => {
 
 	/** Sign in to `account` with the right password from `ip`: the cookie that remembers the browser, as `name=value`. */
 	async function rememberedAt(account: SessionUser = user, ip = A): Promise<string> {
-		const [{ res }] = await heldFor(signIn(account.username, 'right', ip));
+		const [{ res }] = await heldFor(signInWithCode(account, ip));
 		expect(res.status).toBe(303);
 		return setCookie(res, knownBrowserCookie(account.id))!.split(';')[0];
 	}
@@ -895,7 +931,7 @@ describe('a browser that has signed in here before', () => {
 	const countedAt = (ip: string) => countSignInAttempt(ip, 'asked-by-the-test').attempts;
 
 	it('is remembered by signing in, for a year, with a cookie sent to the sign-in page alone', async () => {
-		const [{ res }] = await heldFor(signIn(user.username, 'right', A));
+		const [{ res }] = await heldFor(signInWithCode(user, A));
 
 		expect(res.status).toBe(303);
 		const cookie = setCookie(res, knownBrowserCookie(user.id));
@@ -908,7 +944,7 @@ describe('a browser that has signed in here before', () => {
 		await heldInTurn([A, A, B, B, C, C, D].map((ip) => wrongAt(user.username, ip)));
 		expect(signInWait(`user:${user.id}`)).toBe(4000);
 
-		const [right] = await heldFor(signIn(user.username, 'right', D, cookie));
+		const [right] = await heldFor(signInWithCode(user, D, cookie));
 		expect([right.ms, right.res.status]).toEqual([0, 303]);
 
 		// The attack is not over because the owner signed in.
@@ -953,7 +989,7 @@ describe('a browser that has signed in here before', () => {
 		const together = await heldFor(signIn(user.username, 'wrong', A), signIn(user.username, 'wrong', A), signIn(user.username, 'wrong', A));
 		expect(together.map(({ ms, res }) => [ms, res.status])).toEqual(ONE_AT_A_TIME);
 
-		const [right] = await heldFor(signIn(user.username, 'right', A));
+		const [right] = await heldFor(signInWithCode(user, A));
 		expect(right.res.status).toBe(303);
 
 		// The one checked and the right one are given back; the two refused are not.
@@ -1062,7 +1098,7 @@ describe('a browser that has signed in here before', () => {
 			expect((await heldFor(signIn(name, 'wrong', A)))[0].res.status).toBe(400);
 		}
 
-		const [right] = await heldFor(signIn(user.username, 'right', A, cookie));
+		const [right] = await heldFor(signInWithCode(user, A, cookie));
 		expect([right.ms, right.res.status]).toEqual([0, 303]);
 
 		// Card 2226: its success gave back nothing, not even the three at its
@@ -1075,7 +1111,7 @@ describe('a browser that has signed in here before', () => {
 	// The review's R5: nobody signs in at the deploy, so a browser signed in
 	// since before it is remembered when it signs out.
 	it('stays remembered when it signs out, and is remembered by signing out', async () => {
-		const [{ res }] = await heldFor(signIn(user.username, 'right', A));
+		const [{ res }] = await heldFor(signInWithCode(user, A));
 		const known = setCookie(res, knownBrowserCookie(user.id))!.split(';')[0];
 		const session = setCookie(res, SESSION_COOKIE_NAME)!.split(';')[0];
 		const logOut = (cookie?: string) =>
@@ -1754,7 +1790,8 @@ describe('a body that is not a form, sent where a form is read', () => {
 		expect(count('card_attachments')).toBe(0);
 	});
 
-	it.each(['/login', '/invite/no-such-invite', '/setup'])('is answered 400 and not 500 by the form action of %s', async (path) => {
+	// Card 2769: the second step of signing in, and the set-up page's two actions, each of which reads its own form.
+	it.each(['/login', '/login/verify', '/login/enrol?/code', '/login/enrol?/confirm', '/invite/no-such-invite', '/setup'])('is answered 400 and not 500 by the form action of %s', async (path) => {
 		// Set-up is open only while there are no users.
 		if (path === '/setup') resetDb();
 		const reported = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -2682,7 +2719,7 @@ describe('the security headers', () => {
 						['its data', () => send('GET', `/invite/${token}/__data.json`), 200],
 						['its form, from the script', () => send('POST', '/invite/no-such-invite', { headers: { ...form, accept: 'application/json' }, body: posted }), 200],
 						['its form, as a page', () => send('POST', '/invite/no-such-invite', { headers: { ...form, ...HTML }, body: posted }), 400],
-						// Accepted: the password is set and the browser sent on to `/`.
+						// Accepted: the password is set and the browser sent on to `/login/enrol` (card 2769).
 						['its form, posted natively', () => send('POST', `/invite/${token}`, { headers: native, body: posted }), 303]
 					]
 				],
@@ -2762,6 +2799,12 @@ describe('the routes a caller who is not signed in is let through to', () => {
 	/** What is meant to be public, written out here: the list the gate keeps is held to it. */
 	const PUBLIC = [
 		'/login',
+		// Card 2769: the second step of signing in, which answers only a browser holding a live challenge.
+		'/login/verify',
+		// Card 2769: the set-up page, likewise.
+		'/login/enrol',
+		// Card 2769: a set-up link's page, which asks nothing and leaves the link for the sign-in.
+		'/enrol/[token]',
 		'/docs',
 		'/invite/[token]',
 		'/request',

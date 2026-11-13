@@ -34,6 +34,13 @@
 			</div>
 		{/if}
 
+		<!-- A right password that opened no second step, and why (card 2769): a set-up link was emailed, or was earlier. -->
+		{#if form?.notice && !clientError}
+			<div class="notice-banner" role="status">
+				<p>{form.notice}</p>
+			</div>
+		{/if}
+
 		<form method="POST" use:enhance={() => {
 			clientError = '';
 			isOriginError = false;
@@ -166,6 +173,21 @@
 	}
 
 	.error-banner p {
+		margin: 0;
+	}
+
+	.notice-banner {
+		padding: var(--space-md) var(--space-lg);
+		background: rgba(99, 102, 241, 0.1);
+		border: 1px solid rgba(99, 102, 241, 0.3);
+		border-radius: var(--radius-md);
+		color: var(--text-primary);
+		font-size: 0.85rem;
+		line-height: 1.5;
+		margin-bottom: var(--space-xl);
+	}
+
+	.notice-banner p {
 		margin: 0;
 	}
 

@@ -64,7 +64,14 @@ export const users = sqliteTable('users', {
 	lastSignInFrom: text('last_sign_in_from'),
 	failedCodesSinceSignIn: integer('failed_codes_since_sign_in').notNull().default(0),
 	securityBanner: text('security_banner'), // null, or the reason it is shown
-	securityBannerAt: text('security_banner_at')
+	securityBannerAt: text('security_banner_at'),
+	// 1 when the account may set up its authenticator on its password alone:
+	// set by the release migration (0066, card 2769) for every account that had
+	// no second factor and no enrolment link then, and honoured only where no
+	// mail host is configured and for 14 days from `two_step_released_at`.
+	// Set back to 0 by an enrolment, by resetTwoStep and by the host reset
+	// script, and by a restore for every account that is not this server's.
+	mfaPasswordEnrol: integer('mfa_password_enrol').notNull().default(0)
 });
 
 export const sessions = sqliteTable('sessions', {
@@ -79,7 +86,11 @@ export const sessions = sqliteTable('sessions', {
 	// The wrong current passwords this session has sent, counted as each
 	// arrives and set back to 0 only by a right one; at three the session is
 	// ended (migration 0062, card 2701; checkCurrentPassword in auth.ts).
-	wrongPasswordCount: integer('wrong_password_count').notNull().default(0)
+	wrongPasswordCount: integer('wrong_password_count').notNull().default(0),
+	// 1 when the session was made after a second factor (migration 0066, card
+	// 2769). createSession writes 1; findSession refuses and deletes a row with
+	// 0, which is what an older image, writing without the column, leaves.
+	twoStep: integer('two_step').notNull().default(0)
 }, (table) => [
 	index('idx_sessions_user_id').on(table.userId)
 ]);
@@ -657,7 +668,12 @@ export const signInChallenges = sqliteTable('sign_in_challenges', {
 	createdAt: text('created_at')
 		.notNull()
 		.default(sql`(datetime('now'))`),
-	expiresAt: text('expires_at').notNull()
+	expiresAt: text('expires_at').notNull(),
+	// What lets an enrol challenge set up a factor ('password', 'link',
+	// 'invite' or 'setup'), and the hash of the enrolment link it came from,
+	// which is taken with the factor (migration 0066, card 2769).
+	enrolGrant: text('enrol_grant'),
+	enrolmentLinkHash: text('enrolment_link_hash')
 }, (table) => [
 	index('idx_sign_in_challenges_user_id').on(table.userId)
 ]);

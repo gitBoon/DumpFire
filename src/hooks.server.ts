@@ -20,6 +20,7 @@ import { refusalSeen, refuseCrossSiteWrite } from '$lib/server/same-origin';
 import { pathToLog } from '$lib/server/secret-paths';
 import { checkMfaKeyAtStart, maskLiveLog, refuseUserlessBesideAnother, removeSettingsOfNonAdministrators, reportInstallation } from '$lib/server/startup-checks';
 import { ensureFormSecret } from '$lib/server/request-tokens';
+import { startChallengeSweep } from '$lib/server/sign-in-challenges';
 
 const log = createLogger('HTTP');
 
@@ -57,6 +58,11 @@ ensureFormSecret();
 
 // Clean expired sessions periodically (on startup)
 cleanExpiredSessions();
+
+// Sweep expired sign-in challenges now and every five minutes (card 2769,
+// CS1): a verify challenge left unfinished raises its account's banner and
+// mails the owner without waiting for some later sign-in to sweep it.
+startChallengeSweep();
 
 // Start log retention maintenance (prune old system_logs entries)
 initLogMaintenance();
@@ -109,6 +115,14 @@ reportInstallation();
  */
 const PUBLIC_ROUTES = new Set([
 	'/login',
+	// The second step of signing in (card 2769): it answers only the browser
+	// holding a live challenge, which a right password opened. The set-up page
+	// likewise, whose challenge a password, an invite or the first-run set-up opened.
+	'/login/verify',
+	'/login/enrol',
+	// A set-up link's page (card 2769, decision 19): it asks nothing, and
+	// leaves the link for the sign-in that follows, which asks the password.
+	'/enrol/[token]',
 	'/docs',
 	'/invite/[token]',
 	'/request',
@@ -134,6 +148,9 @@ const PUBLIC_ROUTES = new Set([
 	'/api/decision-by-link/questions',
 	'/api/v1/openapi.json'
 ]);
+
+/** The sign-in pages, by route id, which a caller who is signed in is sent home from. */
+const SIGNED_IN_SENT_HOME = new Set(['/login', '/login/verify', '/login/enrol']);
 
 /** The set-up page, by route id: the one page there is before there is a user, and never one after. */
 const SETUP_ROUTE = '/setup';
@@ -402,8 +419,8 @@ async function handleRequest(event: RequestEvent, resolve: ResolveFn, path: stri
 		return sendTo(event, '/login');
 	}
 
-	// Authenticated user visiting /login — redirect home
-	if (routeId === '/login') return sendTo(event, '/');
+	// Authenticated user visiting /login, or its second step (card 2769) — redirect home
+	if (routeId !== null && SIGNED_IN_SENT_HOME.has(routeId)) return sendTo(event, '/');
 
 	// ── 4. Admin guard — block non-admin from admin routes ───────────
 	const isAdminRoute = ADMIN_ROUTES.some((r) => path.startsWith(r));

@@ -1,7 +1,7 @@
 ---
 title: "Testing"
 category: Testing
-version: 1.229
+version: 1.230
 status: Living
 date: 2026-11-13
 tags:
@@ -37,7 +37,8 @@ tags:
   - split-pages
   - image-check
   - attachments
-description: "How DumpFire's automated tests are built and run: the in-memory database fixture, the route and form-action helpers, the harness that sends a request through the gate, the table that says who may call every API route and the tests made from it, the tests that read the source to keep every API failure one shape and the OpenAPI document true, the helpers that prove a request is all or nothing, the faults the suite records without hiding, the components mounted under jsdom, the board page's state, refresh and card window run without a page, the split admin, dashboard, All Tasks and plan pages mounted whole, the expected schema, what each suite covers, the MFA key the tests use and how the two-step sign-in storage is tested (card 2768), and how to rehearse the migration runner against a copy of a real database"
+  - two-step-sign-in
+description: "How DumpFire's automated tests are built and run: the in-memory database fixture, the route and form-action helpers, the harness that sends a request through the gate, the table that says who may call every API route and the tests made from it, the tests that read the source to keep every API failure one shape and the OpenAPI document true, the helpers that prove a request is all or nothing, the faults the suite records without hiding, the components mounted under jsdom, the board page's state, refresh and card window run without a page, the split admin, dashboard, All Tasks and plan pages mounted whole, the expected schema, what each suite covers, the MFA key the tests use and how the two-step sign-in storage is tested (card 2768), how two-step sign-in itself is tested (card 2769: the two new files, tests/helpers/two-step.ts, action()'s Cookie header, the frozen Date, the source scans and why the older sign-in tests give the account a factor), and how to rehearse the migration runner against a copy of a real database"
 ---
 
 # Testing
@@ -668,6 +669,11 @@ expect(res.cookies.dumpfire_session).toBeDefined();
 - The result's `type` is `success`, `failure` (the action returned `fail`), `redirect`
   or `error`, with `status` and `data`, `location` or `body` to match.
 - `cookies` holds what the action set and `deletedCookies` what it deleted.
+- **The cookies a test gives are sent twice over** (card 2769, decision 29): through
+  `cookies.get`, as before, and as a `Cookie` header on the request, after any the test wrote
+  itself, as a browser sends them. The challenge cookie of two-step sign-in is read from the raw
+  header, so an action that reads it sees the test's cookies too. `tests/test-helpers.test.ts`
+  holds it (T44).
 - `name` picks a named action; without it the `default` action is called.
 - The path is matched against the real route tree, and a path or an action that is not
   there throws. `hooks.server.ts` does not run.
@@ -697,6 +703,67 @@ expect(JSON.stringify(res)).not.toContain('kept-to-board-B');
   that asks every page compares its table with it.
 - A load that asks for `parent()` or calls `fetch` fails the test: none does today.
   `hooks.server.ts` does not run.
+
+### Two-step sign-in in tests (card 2769)
+
+Since card 2769 a right password signs nobody in, so every test that signs in through the
+login form gives the account an authenticator first and finishes with its code. The helpers
+are in `tests/helpers/two-step.ts`:
+
+| Helper | What it does |
+|---|---|
+| `giveFactor(user)` | Writes the account an authenticator labelled `Authenticator` and ten recovery codes, as the store writes them, under the test process's own MFA key. Answers the factor's id, its secret and the codes as the owner holds them |
+| `codeFor(secret, at?)` | The code that authenticator shows at a moment, now by default |
+| `wrongCodeFor(secret, at?)` | A six-digit code that is neither the current step's nor its neighbours': wrong whenever it is sent within the step |
+| `passwordStep(user, opts?)` | The right password at `/login`, with any cookies; answers the action's result and the challenge token it set |
+| `verify(token, form, opts?)` | A code or a recovery code at `/login/verify` against that challenge |
+| `signInFully(user, factor, opts?)` | Both steps, the password and the current code; answers the session cookie's value and every cookie the code's answer set |
+| `openReleaseWindow(at?)` | Records the release as having run at `at`, now by default, so an account marked `mfa_password_enrol = 1` is within its 14 days. `resetDb()` empties `settings`, and with no such row the window is over |
+
+```mermaid
+sequenceDiagram
+    participant T as Test
+    participant H as tests/helpers/two-step.ts
+    participant A as action()
+    participant DB as SQLite :memory:
+    T->>H: giveFactor(user)
+    H->>DB: addTotpFactor, storeRecoveryCodes
+    T->>H: signInFully(user, factor)
+    H->>A: POST /login, the fixture password
+    A-->>H: 303 /login/verify, challenge cookie
+    H->>A: POST /login/verify, codeFor(secret), Cookie header
+    A-->>H: 303 /, session cookie
+    H-->>T: session, result
+```
+
+- **Why the sign-in pins give the account a factor.** An account with no factor and no leave to
+  set up on its password is answered "needs a set-up link", so the older tests of the login
+  form (`gate.test.ts`, `password-checks.test.ts`) would test that refusal and not what they
+  were written for. Each now gives the account a factor and passes the second step with
+  `codeFor`; `content-security-policy.test.ts` does the same to reach the two sign-in pages
+  with a live challenge. The invite and set-up pins (`atomic-accounts.test.ts`,
+  `test-helpers.test.ts`) expect `303` to `/login/enrol` and a challenge cookie where they
+  expected a session.
+- **The fake-timer rule.** Both new files freeze the clock with
+  `vi.useFakeTimers({ toFake: ['Date'] })` and `vi.setSystemTime(new Date())` in `beforeEach`,
+  so a code and its check fall in one 30-second step, and `vi.useRealTimers()` in `afterEach`.
+  Only `Date` is faked: the password is checked on a worker thread and its timers must run as
+  ever. A case that crosses a pause or an expiry moves the clock with `vi.setSystemTime`.
+- **Enrolment on the password** needs three things seeded, since slice 4's rules apply to every
+  case: `mfa_password_enrol = 1`, `openReleaseWindow()`, and no mail host. The one case that
+  mails sets the host up after the password step.
+- **`$app/environment` is mocked `dev: false`** in `tests/two-step-enrol.test.ts`, so links are
+  made as a built server makes them.
+- **Two source scans.** T29 reads `second-step.ts` and the actions with the TypeScript parser:
+  `verifyStep`, `enrolCode`, `enrolConfirm` and the helpers they call (`openChallenge`,
+  `finishSignIn`, `signedInAnswer`, `refuse`, `laneOf`, `mayStillEnrolOnPassword`,
+  `issueSetUpChallenge`) are not `async` and hold no `await`; `afterPassword` holds no `await`
+  either, and is `async` only for the release mail, its last statement (`return releaseMail(`);
+  and each action awaits only `request.formData()` before calling its step. T45 holds that
+  `createSession` is called only in `second-step.ts` and `api/account/password/+server.ts`.
+- **The sweep's timer** is started by `hooks.server.ts`; a case that drives it uses
+  `startChallengeSweep()` and `stopChallengeSweep()` (T83), with `setInterval` and
+  `clearInterval` faked beside `Date`, the one case that fakes more than the clock.
 
 ### Timestamps: the check after every test
 
@@ -2251,6 +2318,19 @@ flowchart LR
 | `tests/people-directory.svelte.test.ts` | `PersonDialog` (card 2697, plan case 61), 7 tests under jsdom: a rename alone shows no password field and sends no `email`, `userId` or `currentPassword`; a changed address or account shows `CurrentPasswordField` and sends it with the change; a refused password keeps the dialog open, the field cleared. The code review's part B (S1): Add person asks, Add Person off until the password is typed, and sends it with every field; Add from accounts asks, sends `{ userIds, currentPassword }` and keeps the dialog open on a refused one; the People page's Delete confirms with the password and sends `{ currentPassword }` |
 | `tests/mfa-secrets.test.ts` | The secrets of two-step sign-in with no database row (card 2768, plan cases T1 to T29, with T5b and T17b from the review-fix pass), 31 tests. TOTP: `hotp` against the RFC 4226 Appendix D codes and, with 8 digits, the RFC 6238 Appendix B SHA-1 codes; the current and the previous step accepted (with a space typed inside), the next step and two back refused, and five or seven digits, letters and an empty string refused; a code that is not a string (a number, null, undefined, an array, an object) null without a throw (T5b). Recovery codes: ten distinct, in the alphabet and shape; lenient reading; refusals; the hash bound to the account. **A known-answer test** (T10): a fixed file key of the bytes 0 to 31 gives pinned hex for the key id, the key check and the derived AES key, and a pinned nonce and ciphertext open under the derived key and not under the file's own bytes, so a changed derivation fails the suite and cannot strand every stored factor. Sealing: a round trip, two seals differing, the key id named; nothing opens under another `factor_uid` or user id, with a tag byte changed, or from 16 bytes (an empty secret sealed under the test key, so the body is exactly a valid tag that only the length guard refuses). The loader, in scratch folders: unset under `production`, unset `NODE_ENV` and `staging` refused; a missing named file refused under the production rules with none made; a good file read; 63 characters or 64 that are not hex refused without the content quoted; a folder or a file over 4 KiB refused; group- or world-writable refused, `0444` warned, and a FIFO refused as not a regular file without hanging (T17b) (all three skipped on Windows, `it.skipIf`); a key made beside the database through a link, mode `600` off Windows, no temporary file left, and read back the next time; the race lost to another instance; the in-memory key written nowhere and kept (a `<cwd>/mfa.key` a development server made is allowed, and must be there or not, with the same mtime, after as before); a named file inside the database's folder warned, by a relative path or a link. The start-up verdict's six cases |
 | `tests/mfa-storage.test.ts` | Two-step sign-in's storage on the application's own in-memory database (card 2768, plan cases T30 to T60, one from slice 1b's report, and T31b, T53b and R1 to R5 from the review-fix pass), 39 tests. `checkMfaKeyAtStart`: one `[CRITICAL] [AUTH]` line with the path printable and no file content, and `MfaKeyError`; the check recorded, the unreadable factor at `ERROR` and the warnings when it starts; a key this start made said in one `[WARN]` line naming its path, printable, and that it must be backed up apart, and a key read not said (T31b). The store: no secret bytes in the row (raw, hex or base64), the key check written by the first factor and left by the second; a ciphertext copied to another row or account and a sealed 19-byte secret `does not open`, one `ERROR` line each with no ciphertext, nonce or secret; `other key` and `no key`; another key's check replaced with no factor and refused with one; an enrolment seal re-sealed for the factor; a secret not 20 bytes refused with nothing written. **The two spends pinned to one statement with no read before it**: `spendStep` and `spendRecoveryCode` are run once under `failingWrite()`, whose writes must be exactly `['update mfa_factors set']` (or `mfa_recovery_codes`), and once more under `watchReads(table)`, which must see no read of the table at all. The two wrap the same `prepare` and cannot be installed together, hence two passes. A step spent twice or an older step `not spent`, the row unchanged; recovery codes stored as ten account-bound hashes and replaced as a set; a row of another account holding this account's own hash of the code `not found` and left unspent, which only the `WHERE`'s `user_id` can refuse (T42), and a hash row moved to another account `not found`; a malformed code runs no statement (`prepare` and `exec` spied). `endAccountAccess`, `PUT /api/account/email` and `PUT /api/users/[id]` end the account's pending sign-ins and enrolment links and not another's. Backups and restores, from `generateBackupData()` into the same database: no challenge or link in a backup, the factor as ciphertext, the hashes and the key check in it, and neither the file key nor the derived key in its bytes; this server's own older backup, a rename, a deleted account brought back, another server's seal (`unsealed`), another key (`key differs`), no key loaded (`no key`, T53b), the same id with another `created_at` taken as another account, this server's factor and codes not kept and the account named without a factor (R1), the same moment in another form (ISO 8601 with `Z`) matched (R2), a `created_at` that names no moment matching nothing even as the same text on both sides (R3), a backup without the MFA tables, counters and history, challenges and links never brought in, and the key check with and without factors after. `mfaWithoutFactorSentence`: the reason the backup's factors were left out, in plain words, for each of the three (R4), and the note to regenerate recovery codes said once when any account's rows were taken from the backup, alone or after the names, and null with nothing to say (R5). The import's answer with and without `mfaWithoutFactor` |
+| `tests/two-step-sign-in.test.ts` | Two-step sign-in up to the code page (card 2769, plan cases T6 to T47 but T43 and T44, which are in `page-failures.test.ts` and `test-helpers.test.ts`, and the review-fix cases T78 and T80 to T86), 54 tests. What keeps an older image from minting access: a session with `two_step` 0 refused, deleted and said once at `WARN`, and `createSession` writing 1 (T6); a remembered-browser cookie signed under `known-browser:1:` not remembered, one under `known-browser:2:` remembered (T7). The second step: a right password opening one hashed challenge and no session; the throttles forgotten and given back only at a right code; a right code's session, cookies and spent step; wrong codes counted on the challenge, the lane and since the last sign-in; the fifth on a challenge ending it with the lane's pause; `codePause` at 5, 10, 15, 20, 25, 29 and 30; a pause refused `429` uncounted, the lock `403`; recovery codes past the lock and a pause, ten wrong in a row mailed once with no recovery pause, a malformed one uncounted; a spent step; a factor that does not open; the two lanes; a pause outlasting memory; the password changed under a challenge and during the check (`409`); expiry; the source scan of the synchronous stretch (T29); a reset between the steps; the cap of three and the browser's own replaced; two cookies of the name in force read as none; the `__Host-` name under `COOKIE_SECURE` and over `https:`; the two stolen-password signals and their hourly limit; the report page for wrong codes and for the banner; no mail when mail is not set up; the gate's redirect home and the three pages' headers. Then T45 (who calls `createSession`), T46 (base32 against RFC 4648, the `otpauth://` text, groups of four) and T47 (`uqr` pinned exactly, and the QR code an SVG `data:` image with its namespace). From the review-fix pass: the code page posted without JavaScript, showing the restart words and, after a right code, the report whose Continue reloads (T78); a recovery code's sign-in rolled back saying nothing at `WARN` (T80); an account deleted while its password was checked given the expired words (T81); a raised banner reported once (T82); the sweep at start-up and on its timer raising the unfinished-sign-in signal (T83); one account's password and then another's in one browser (T84); the code fields taking `123456` or `123 456`, and a locked page opening on the recovery code (T85); and a pending sign-in whose account no longer holds a factor (T86) |
+| `tests/two-step-enrol.test.ts` | Setting up two-step sign-in (card 2769, plan cases T48 to T75 and T77, and the review-fix cases T87 to T99), 46 tests. On the password: the set-up challenge and page, the first code, the ten codes the same on a reload, every action at the wrong stage `409` with nothing written, wrong first codes and the fifth, confirm writing everything together, and confirm refused when a factor was added or the password changed. After an invite and at the first-run set-up: no session until confirm, the superadmin without leave to set up on the password, the `enrolled` notice with the keys and webhooks and no secret, and no MFA key refused `503` before any hash. The release-day rules: the release mail once a day, a failed send leaving no link, an unusable mail host and the placeholder address `503`, flag 0 needing a link, the 14 days on day 13 and day 15, a reset then a password reset still needing a link. Set-up links: the link page and its cookie, dead links, another account's link ignored, a link expiring before confirm, signed in told to sign out first, and an account reset with wrong codes since shown the report after its set-up (T77). The admin load's `passwordSetUpUntil` (T75). From the review-fix pass: confirm posted without JavaScript showing the report (T87); with no MFA key, an enrolled account still sent to its code page, a code `503` and a recovery code signing in (T88), a would-be set-up `503` with nothing written (T89), the first-run set-up `503` before any hash (T90) and confirm `503` (T93); a mail host with no link address `503` (T91); a release link over a day old replaced by a new mail (T92), and a failed new mail leaving the old link working (T94); a set-up under way on the mailed link not ended by a sign-in elsewhere (T95); a link from an older image's reset closing the password set-up (T96); a working copy taking every account's leave (T97); a mail host set up during a password set-up refusing confirm (T98); and the admin load's date on the caller's own row, and none while a mail host is set up (T99) |
+
+**Card 2769's pins in older files.** `migrations.test.ts` (T1 to T3: 0066's six statements and
+header, the marks on a database at 0065, 0067's deletes and what the rehearsal notes);
+`mfa-storage.test.ts` (T4, T5: the flag across a restore and from a backup made before 0066);
+`mfa-reset.test.ts` and `mfa-reset-script.test.ts` (the flag cleared by both resets, and T100:
+the host's reset that ends a sign-in left at its second step writes one `WARN` line);
+`admin-panels.test.ts` (T76: the Users panel's line); `page-failures.test.ts` (T43: the code
+form's `update({ invalidateAll: false })`); `test-helpers.test.ts` (T44: `action()`'s `Cookie`
+header); and the route lists of `gate.test.ts`, `access-every-route.test.ts`,
+`content-security-policy.test.ts`, `load-query-counts.test.ts`, `mail-escaping.test.ts` and
+`harness.test.ts`, each gaining the new pages, mails and files as they came.
 
 **Card 2680's registry entries.** Besides its four files (`decision-register.test.ts`,
 `decision-card-links.test.ts` and their two `.svelte.test.ts` files, each in `TEST_FILES`), card
@@ -2436,6 +2516,19 @@ The comparison is `compare()` in `tests/rehearsal/compare.ts`, and the declared 
 and the list of test files does not count, imported both by `copy.rehearsal.ts` and by
 `tests/migrations.test.ts`, which tests `compare()` itself. Importing `copy.rehearsal.ts`
 from a test file would run its rehearsal there.
+
+**The release of two-step sign-in is two files for the rehearsal's sake** (card 2769). An entry
+is either a file that can lose rows or, marked `keepsRows`, one that loses none and rewrites a
+column; `tests/migrations.test.ts` refuses a `keepsRows` entry whose file can lose rows. The
+header of `one-offs.ts` lists both kinds but does not say a file cannot be both, which is what
+the guard holds. So 0066 (the columns, the setting and the flag, `keepsRows` on `users`) and
+0067 (every session and the remembered-browser secret deleted, declared for `sessions` and
+`settings`) are separate. Under `Worth knowing`, a run that applies them notes that `users`
+had `mfa_password_enrol` set by 0066 in its rows; that `settings` has one row more, "a
+migration put the others there", when there was no remembered-browser secret for 0067 to
+delete (the release's moment is the new row); and a loss of `sessions` against a declared
+file, the first applied of the two declared for it (0053 in a run that applies both). A run
+that loses `sessions` without applying either names both in its problem.
 
 It prints the timestamps the first run converted, `Timestamps converted to the stored form
 (YYYY-MM-DD HH:MM:SS, UTC): N` with a line for each column and its count, and the second

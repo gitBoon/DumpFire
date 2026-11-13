@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.73
+version: 1.74
 status: As-Built
 date: 2026-11-13
 tags:
@@ -33,10 +33,12 @@ tags:
   - migration-0064
   - people-changes
   - migration-0065
+  - migration-0066
+  - migration-0067
   - two-step-sign-in
   - mfa
   - recovery-codes
-description: "Complete database schema documentation with ER diagram, table descriptions, relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), and how migrations and schema reconciliation bring every database to the model"
+description: "Complete database schema documentation with ER diagram, table descriptions, relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), and how migrations and schema reconciliation bring every database to the model"
 ---
 
 # DumpFire Data Model
@@ -57,6 +59,7 @@ erDiagram
         text notification_prefs
         text created_at
         int mfa_known_wrong "0065, and ten more two-step sign-in columns: see below"
+        int mfa_password_enrol "0066: NOT NULL DEFAULT 0; 1 may set up on the password"
     }
 
     sessions {
@@ -65,6 +68,7 @@ erDiagram
         text expires_at
         text created_at
         int wrong_password_count "0062: NOT NULL DEFAULT 0; 3 ends the session"
+        int two_step "0066: NOT NULL DEFAULT 0; 1 made after a second factor"
     }
 
     teams {
@@ -1218,12 +1222,11 @@ flowchart TD
 ### Two-step sign-in storage (migration 0065)
 
 Where two-step sign-in keeps an account's second factors (card 2768, migration
-`0065_add_mfa_storage.sql`, 2026-11-05). This is storage only: **sign-in does not ask for a
-second factor yet.** Nothing in the application writes a factor, a recovery code, a pending
-sign-in or an enrolment link until card 2769 lets an account set one up, so after the update
-every one of the four tables is empty and every new `users` column is at its default. The
-code that writes and reads them is `src/lib/server/mfa-store.ts`; how the secrets are
-protected is in
+`0065_add_mfa_storage.sql`, 2026-11-05). Card 2768 built the storage alone; since card 2769
+sign-in writes and reads every table here (see
+[Two-step sign-in at sign-in](#two-step-sign-in-at-sign-in-migrations-0066-and-0067) for the
+columns it added). The code that writes and reads them is `src/lib/server/mfa-store.ts` and
+`src/lib/server/sign-in-challenges.ts`; how the secrets are protected is in
 [Second-Factor Secrets at Rest](authentication-security.md#second-factor-secrets-at-rest-card-2768).
 
 ```mermaid
@@ -1278,7 +1281,7 @@ erDiagram
         text key_id
         text enrol_ciphertext "a secret being set up, sealed as a factor is"
         text enrol_nonce
-        text remembered_nonce
+        text remembered_nonce "not written since card 2769: unused"
         int wrong_count "NOT NULL DEFAULT 0"
         text created_at
         text expires_at
@@ -1325,6 +1328,59 @@ erDiagram
   `src/lib/server/mfa-backup.ts`), matching an account on its `id` and `created_at` (compared
   as moments, and an unreadable one matching nothing), never its username. See
   [What a Backup Holds](authentication-security.md#what-a-backup-holds-and-what-a-restore-brings-in).
+
+### Two-step sign-in at sign-in (migrations 0066 and 0067)
+
+Card 2769 turns two-step sign-in on (2026-11-13). `0066_add_mfa_password_enrol.sql` adds four
+columns and one setting, and gives a mark to the accounts that may set up on their password;
+`0067_end_sessions_for_two_step.sql` ends every session and the remembered-browser secret. How
+they are used is in [Two-Step Sign-In](authentication-security.md#two-step-sign-in-card-2769).
+
+```mermaid
+erDiagram
+    users ||--o{ sessions : has
+    users ||--o{ sign_in_challenges : "pending sign-ins"
+    users ||--o{ enrolment_links : "may enrol with"
+    enrolment_links ||--o| sign_in_challenges : "named by hash, taken with the factor"
+    users {
+        int mfa_password_enrol "0066: NOT NULL DEFAULT 0. 1 = may set up on the password, no mail host, 14 days"
+    }
+    sessions {
+        int two_step "0066: NOT NULL DEFAULT 0. 1 = made after a second factor; any other refused"
+    }
+    sign_in_challenges {
+        text enrol_grant "0066: password, link, invite or setup; NULL for verify"
+        text enrolment_link_hash "0066: the link it came from, no foreign key"
+    }
+    settings {
+        text two_step_released_at "0066: a row, the moment 0066 ran; starts the 14 days"
+    }
+```
+
+| Column or row | What it holds | Written by |
+|---|---|---|
+| `users.mfa_password_enrol` | 1 when the account may set up its authenticator on its password alone, honoured only where no mail host is configured, within 14 days of `two_step_released_at`, and while the account holds no enrolment link but release-mail ones (the accepted risk R1) | 0066: 1 for every account with no second factor and no enrolment link row, expired or not. Set to 0 by an enrolment's confirm, `resetTwoStep()`, `scripts/mfa-reset.mjs`, by a restore for every account not this server's, and by a working-copy restore for every account (`switchOffOutside()` in `src/lib/server/db/restore.ts`). 0 for every account made since, the superadmin at set-up included |
+| `sessions.two_step` | 1 when the session was made after a second factor | `createSession()` writes 1. 0066 left every session there at 0, and an older image, which writes no value, leaves 0: `findSession()` refuses such a row and `validateSession()` deletes it |
+| `sign_in_challenges.enrol_grant` | What lets an enrol challenge set up a factor: `password`, `link`, `invite` or `setup`. NULL on a verify challenge | `issueChallenge()` |
+| `sign_in_challenges.enrolment_link_hash` | The SHA-256 of the enrolment link an enrol challenge came from, taken with the factor at confirm | `issueChallenge()`, for a link challenge |
+| `settings.two_step_released_at` | The moment 0066 ran, in the stored form of a moment. A missing or unreadable value is read as the 14 days over | 0066 (`INSERT … ON CONFLICT DO NOTHING`). Restored as any setting, so a backup made before 0066 restores with none |
+
+- **No foreign key and no `*_at` column** among the four columns, so no index and no
+  timestamp conversion is added. `users` and `sessions` are not reconciled tables: 0066 alone
+  changes them. `two_step_released_at` is a row of `settings`, not a column.
+- **What a backup and a restore do.** `mfa_password_enrol` is zeroed for every account by a
+  restore, and the same accounts then have this server's value back (`GUESSING` and `HISTORY` in
+  `src/lib/server/mfa-backup.ts`); a working copy then sets it to 0 for every account. A backup
+  holds no session, so `two_step` never travels.
+- **`enrolment_links.issued_by`** gains a value: `release-mail`, for the link a sign-in mails
+  (card 2769), beside `admin-reset` and `host-reset` (card 2773). Issuing a link deletes the
+  account's earlier ones, but the release mail's: it issues its link beside them
+  (`issueEnrolmentLink(…, { replace: false })`) and deletes the older release-mail links only
+  once its mail has gone, so a failed send leaves the link already mailed working. A link not
+  issued by the release mail (an older image's reset, say) closes R1 for the account.
+- **`sign_in_challenges.remembered_nonce`** (0065) is no longer written: the lane is all that is
+  used of the remembered browser. The column stays.
+- **`mfa_recovery_resumes_at`** stays unused: recovery codes have no account-wide pause.
 
 ## Cascade Behaviour
 
@@ -3028,6 +3084,34 @@ holds and who writes it:
 The image that brings 0065 also refuses to start in production until `MFA_KEY_FILE` names the
 key file: see
 [The Key That Protects Authenticator Secrets](deployment.md#the-key-that-protects-authenticator-secrets).
+
+**Migrations 0066 and 0067 turn two-step sign-in on** (card 2769, 2026-11-13). They are two
+files because the rehearsal's guard refuses a `keepsRows` file that loses rows, and the release
+both marks accounts and ends sessions.
+
+- **`0066_add_mfa_password_enrol.sql`**, six statements, one per block, no `IF NOT EXISTS`:
+  `users.mfa_password_enrol` and `sessions.two_step` (both `integer DEFAULT 0 NOT NULL`),
+  `sign_in_challenges.enrol_grant` and `.enrolment_link_hash` (both `text`), the
+  `two_step_released_at` setting (`datetime('now')`, `ON CONFLICT DO NOTHING`), and last one
+  `UPDATE users SET mfa_password_enrol = 1` for every account with no row in `mfa_factors` and
+  none in `enrolment_links`. Declared in `tests/rehearsal/one-offs.ts` as a one-off that keeps
+  the rows of `users` (`keepsRows`). Its header says what each column means and who sets the
+  flag to 0, that every session there is left at `two_step` 0, that the setting starts the 14
+  days, what people see (nothing until they sign in), that it runs once, what a backup made
+  before it restores to (no setting, so the window closed, and every flag 0 but this server's
+  own accounts'), and what going back to an older image does (the columns and the setting kept
+  and unread; that image's sessions and cookies refused when this one runs again).
+- **`0067_end_sessions_for_two_step.sql`**, two statements: `DELETE FROM sessions` and `DELETE
+  FROM settings WHERE key = 'known_browser_secret'`. Declared twice in
+  `tests/rehearsal/one-offs.ts`, for `sessions` and for `settings`. Its header says every
+  session there was made on a password alone, that API keys, invites, enrolment links and
+  requesters' links are untouched, that everybody is signed out once, and that nothing repeats
+  it at start-up or after a restore.
+
+A rehearsal of a run that applies both notes three things: `settings` has one row more (the
+setting), `users` had `mfa_password_enrol` set in its rows by 0066, and the declared losses of
+`sessions` and of the secret's row. See
+[Every Session and Remembered Browser Ended Once, by Migration 0067](authentication-security.md#every-session-and-remembered-browser-ended-once-by-migration-0067).
 
 ### Two Lineages Share 0001 to 0005
 

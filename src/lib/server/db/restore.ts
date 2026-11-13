@@ -37,6 +37,9 @@ import {
 } from '../backup-secrets';
 import { MFA_KEY_CHECK_SETTING, currentMfaKey, type MfaKey } from '../mfa-key';
 import { MFA_ROWS_NOT_RESTORED, readMfaHere, restoreMfaRows, type MfaRestore } from '../mfa-backup';
+import { createLogger } from '../logger';
+
+const log = createLogger('AUTH');
 
 /** The runner's record of which migration files this database has applied. */
 const MIGRATION_RECORD = '__drizzle_migrations';
@@ -544,7 +547,8 @@ const MAIL_SETTINGS = [
  * is none the setting is removed: the backup destinations, and the mail
  * settings. The backup schedule is set to disabled. `app_url` and every other
  * setting are left alone, and so is every other table but `setting_setters`,
- * whose rows for the mail and the destinations go with them (card 2406).
+ * whose rows for the mail and the destinations go with them (card 2406), and
+ * `users.mfa_password_enrol`, set to 0 for every account (card 2769, CS5).
  *
  * A `backup_config` that is not a JSON object is removed rather than
  * rewritten. A missing one is read as no destinations and no schedule, which
@@ -577,6 +581,13 @@ export function switchOffOutside(database: Database.Database): OutsideSwitchedOf
 	}
 	if (hasColumns('webhooks', 'active')) {
 		done.webhooks = database.prepare('UPDATE webhooks SET active = 0 WHERE active != 0').run().changes;
+	}
+	// A working copy has no mail host, which would let every account marked
+	// for it set up two-step sign-in on its password alone (card 2769, R1):
+	// that leave is taken from every account instead (CS5). Its owners are
+	// given set-up links by an administrator.
+	if (hasColumns('users', 'mfa_password_enrol')) {
+		database.prepare('UPDATE users SET mfa_password_enrol = 0 WHERE mfa_password_enrol != 0').run();
 	}
 	if (!hasColumns('settings', 'key', 'value')) return done;
 
@@ -915,6 +926,7 @@ function restoreInOneSnapshot(
 	}
 
 	let failure: unknown = null;
+	let unfinished: number[] = [];
 	try {
 		live.transaction(() => {
 			// This server's secrets, read before anything is cleared, for the
@@ -923,6 +935,14 @@ function restoreInOneSnapshot(
 			// And its second factors, recovery codes, accounts and key check
 			// (card 2768), for restoreMfaRows below.
 			const mfaHere = readMfaHere(live);
+			// The sign-ins left at their second step, which the clear below
+			// ends (card 2769, CS1): said once the restore is committed. No
+			// notice is mailed, since the accounts are the backup's from here.
+			if (live.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sign_in_challenges'").get()) {
+				unfinished = (live.prepare("SELECT user_id FROM sign_in_challenges WHERE purpose = 'verify' ORDER BY user_id").all() as { user_id: number }[]).map(
+					(row) => row.user_id
+				);
+			}
 
 			// Clear every table first, so the order of the copy does not matter.
 			for (const table of tables) {
@@ -1189,6 +1209,13 @@ function restoreInOneSnapshot(
 
 	// The restore is committed. A failure from here on is something to report
 	// about a restore that succeeded, not a failed restore.
+	if (unfinished.length > 0) {
+		log.warn(
+			`The restore ended ${unfinished.length} sign-in(s) left at their second step, of user id(s) ` +
+				`${[...new Set(unfinished)].join(', ')} as they were before it; no notice was mailed`,
+			{ userIds: [...new Set(unfinished)] }
+		);
+	}
 	let backfilled: Backfill = {
 		firstCompletedAt: 0,
 		accessTokens: 0,

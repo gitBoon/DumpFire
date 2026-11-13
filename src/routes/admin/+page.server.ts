@@ -6,6 +6,8 @@ import { db } from '$lib/server/db';
 import { getDbPath } from '$lib/server/db';
 import { defaultOutside } from '$lib/server/db/restore';
 import { settingsHeldBy } from '$lib/server/setting-setters';
+import { TWO_STEP_RELEASED_AT, passwordSetUpEnds } from '$lib/server/mfa-store';
+import { stamp } from '$lib/timestamps';
 import { boards, columns, cards, categories, users, teams, teamMembers } from '$lib/server/db/schema';
 import { count, eq, sql } from 'drizzle-orm';
 import { statSync } from 'node:fs';
@@ -66,6 +68,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 	// The users panel names them in its confirmation before anything is sent.
 	const caller = locals.user;
 	const held = settingsHeldBy();
+	const now = Date.now();
 	const mayReset = (target: { id: number; role: string }) => target.id !== caller.id && mayManageAccount(caller, target);
 	const allUsers = db.select({
 		id: users.id,
@@ -80,16 +83,29 @@ export const load: PageServerLoad = async ({ locals }) => {
 		// Whether the account holds a second factor (card 2773): the panel offers
 		// its reset, and refuses its invite, which would not work. By the same
 		// rule as the counts: null for an account the caller may not reset.
-		twoStep: sql<number>`EXISTS (SELECT 1 FROM "mfa_factors" WHERE "mfa_factors"."user_id" = "users"."id")`
+		twoStep: sql<number>`EXISTS (SELECT 1 FROM "mfa_factors" WHERE "mfa_factors"."user_id" = "users"."id")`,
+		// When the release of two-step sign-in was, for an account that may
+		// still set one up on its password alone: marked, holding no factor and
+		// no link but the release mail's (card 2769, decision 25 and CS4), while
+		// no mail host is set up, since a sign-in is then mailed a link instead
+		// (CR10; `isSmtpConfigured`'s rule, read in this one query). Null for
+		// any other. The 14 days are added below.
+		releasedAt: sql<string | null>`CASE WHEN "users"."mfa_password_enrol" = 1 AND NOT EXISTS (SELECT 1 FROM "mfa_factors" WHERE "mfa_factors"."user_id" = "users"."id") AND NOT EXISTS (SELECT 1 FROM "enrolment_links" WHERE "enrolment_links"."user_id" = "users"."id" AND "enrolment_links"."issued_by" <> 'release-mail') AND NOT EXISTS (SELECT 1 FROM "settings" WHERE "settings"."key" = 'smtp_host' AND coalesce("settings"."value", '') <> '') THEN (SELECT "value" FROM "settings" WHERE "settings"."key" = ${TWO_STEP_RELEASED_AT}) END`
 	}).from(users).all()
-		.map((user) => {
+		.map(({ releasedAt, ...user }) => {
 			const counted = mayReset(user);
+			// Until when it may, while the 14 days are running; null once they
+			// are over. Shown on the caller's own row too, which offers no
+			// reset: it is the caller's own leave (CR10).
+			const until = passwordSetUpEnds(releasedAt);
+			const shown = counted || user.id === caller.id;
 			return {
 				...user,
 				apiKeys: counted ? user.apiKeys : null,
 				webhooks: counted ? user.webhooks : null,
 				reportSchedules: counted ? user.reportSchedules : null,
 				twoStep: counted ? user.twoStep === 1 : null,
+				passwordSetUpUntil: shown && until !== null && until.getTime() > now ? stamp(until) : null,
 				settingsSet: counted ? (held.get(user.id) ?? null) : null
 			};
 		});

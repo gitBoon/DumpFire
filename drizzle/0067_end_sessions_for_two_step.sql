@@ -1,0 +1,32 @@
+-- Every session ended once, and every remembered browser forgotten, for two-step sign-in (card 2769, 2026-11-13).
+--
+-- From this release a session is made only after a second factor. Every
+-- session there now was made on a password alone, so every one is deleted,
+-- and none goes on predating its account's second factor. 0066 has already
+-- marked each of them two_step 0, which this image refuses anyway; this
+-- deletes the rows outright.
+--
+-- The remembered-browser secret (the setting known_browser_secret) is
+-- deleted too. A browser that signed in before this release was remembered
+-- on a password alone, and a remembered browser gets the more lenient lane
+-- of sign-in throttling, which must now be reached only after a second
+-- factor. With the secret gone, every cookie signed with it is refused, and
+-- the next browser remembered makes a new one. This image also signs under a
+-- new MAC domain (src/lib/server/known-browsers.ts), so a cookie an older
+-- image signs is refused as well.
+--
+-- API keys, invites, enrolment links and requesters' links are untouched.
+--
+-- Declared to the rehearsal in tests/rehearsal/one-offs.ts, which then
+-- expects `sessions` to lose its rows and `settings` the secret's.
+--
+-- What people see: everybody is signed out once, on the start that applies
+-- this file, and every browser is asked for the second step as a new one.
+--
+-- Runs once. The runner records this file by name and never runs it again,
+-- and nothing repeats the deletes at start-up or after a restore: a restore
+-- brings in no session.
+
+DELETE FROM `sessions`;
+--> statement-breakpoint
+DELETE FROM `settings` WHERE `key` = 'known_browser_secret';

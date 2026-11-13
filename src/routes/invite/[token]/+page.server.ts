@@ -1,14 +1,16 @@
-import { fail, redirect } from '@sveltejs/kit';
+import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { db } from '$lib/server/db';
 import { afterCommit, inTransaction } from '$lib/server/db/transaction';
 import { apiKeys, inviteTokens, reportSchedules, users, webhooks } from '$lib/server/db/schema';
 import { and, eq, count } from 'drizzle-orm';
-import { createSession, setSessionCookie, endAccountAccess, namingIds } from '$lib/server/auth';
+import { endAccountAccess, namingIds } from '$lib/server/auth';
 import { CheckNotMade, PASSWORDS_BUSY, callerHasGone, makePasswordHash } from '$lib/server/passwords';
-import { rememberBrowser } from '$lib/server/known-browsers';
 import { createLogger } from '$lib/server/logger';
 import { usableInvite } from '$lib/server/invites';
+import { currentMfaKey } from '$lib/server/mfa-key';
+import { readChallengeToken } from '$lib/server/sign-in-challenges';
+import { NO_MFA_KEY, goToSetUp, issueSetUpChallenge } from '$lib/server/second-step';
 
 const log = createLogger('AUTH');
 
@@ -66,7 +68,7 @@ export const load: PageServerLoad = async ({ params }) => {
 };
 
 export const actions: Actions = {
-	default: async ({ params, request, cookies, platform }) => {
+	default: async ({ params, request, cookies, platform, url }) => {
 		const token = params.token;
 		const invalid = () => fail(400, { error: DEAD_LINK });
 
@@ -80,6 +82,12 @@ export const actions: Actions = {
 		// Looked at here so that a dead link is answered as one whatever the form
 		// holds, and is not hashed for. It is read again where it is used.
 		if (!usableInvite(token)) return invalid();
+
+		// Using the invite leads on to setting up two-step sign-in (card 2769),
+		// which needs the MFA key: without it, nothing is hashed or set, so that
+		// no account is left with a new password and no way to finish
+		// (decision 28).
+		if (currentMfaKey() === null) return fail(503, { error: NO_MFA_KEY });
 
 		if (!password || password.length < 8) {
 			return fail(400, { error: 'Password must be at least 8 characters.' });
@@ -105,8 +113,9 @@ export const actions: Actions = {
 
 		// One transaction: the invite is read and checked as unused in the one
 		// that uses it, so it cannot be used twice, and the password, the invite,
-		// what setting a password ends and the session change together.
-		const signedIn = inTransaction(() => {
+		// what setting a password ends and the set-up challenge change together.
+		const previousToken = readChallengeToken(request, url);
+		const setUp = inTransaction(() => {
 			const invite = usableInvite(token);
 			if (!invite) return null;
 
@@ -146,16 +155,13 @@ export const actions: Actions = {
 				)
 			);
 
-			// Create session and log them in
-			return { sessionToken: createSession(invite.userId), userId: invite.userId };
+			// No session: the invite leads on to setting up two-step sign-in
+			// (card 2769), and only that signs in. The challenge is issued
+			// after what setting a password ends, which ends pending sign-ins.
+			return issueSetUpChallenge(invite.userId, passwordHash, previousToken, 'invite');
 		});
-		if (!signedIn) return invalid();
+		if (!setUp) return invalid();
 
-		setSessionCookie(cookies, signedIn.sessionToken);
-		// The new password ended every remembered browser of the account; this
-		// one is remembered for it (card 2194).
-		rememberBrowser(cookies, signedIn.userId, passwordHash);
-
-		throw redirect(303, '/');
+		goToSetUp(cookies, url, setUp, 'an invite');
 	}
 };
