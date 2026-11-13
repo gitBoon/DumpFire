@@ -49,6 +49,16 @@ COPY --from=builder /app/drizzle        ./drizzle
 # Mount a volume here for data persistence
 RUN mkdir -p /app/data
 
+# The server runs as the image's own `node` user (uid and gid 1000), not as
+# root (card 2776). It owns /app/data, the one folder it writes: the database,
+# its -wal and -shm files, the uploads, the backup's and the import's copies.
+# The code (/app/build, node_modules, drizzle) stays root's, so the server
+# cannot change it. A new named volume takes this folder's owner; one made by
+# an image from before this change is root's, and is given to uid 1000 once
+# before this image first starts: see docs/deployment.md, "The Update That
+# Runs the Server as a User Who Is Not Root".
+RUN chown node:node /app/data
+
 # The database, on the volume mounted at /app/data. Before this was set, a
 # container started without DB_PATH kept its database at /app/dumpfire.db, in
 # the container's own file system. A variable given at `docker run -e` or in
@@ -76,6 +86,9 @@ ENV HOST_HEADER=X-Forwarded-Host
 ENV BODY_SIZE_LIMIT=512M
 
 EXPOSE 3000
+
+# Not root (card 2776): see the chown above. Port 3000 needs no privilege.
+USER node
 
 # The SvelteKit node adapter outputs to build/
 CMD ["node", "build"]

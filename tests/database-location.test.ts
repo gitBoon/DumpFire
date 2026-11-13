@@ -34,6 +34,7 @@ import {
 	databaseLocation,
 	entryAt,
 	heldInContainerLayer,
+	importFiles,
 	type Entry,
 	type OtherDatabase,
 	type PathModule
@@ -368,6 +369,38 @@ describe('the image', () => {
 		expect(at('ENV DB_PATH=')).toBeGreaterThan(at('RUN mkdir -p /app/data'));
 		// The builder stage, which runs the tests and the build, has none.
 		expect(dockerfile.indexOf('ENV DB_PATH=')).toBeGreaterThan(production);
+	});
+
+	// Card 2776: the server ran as root, so a file's mode (the MFA key file's
+	// 0600) protected nothing inside the container.
+	it('runs the server as the node user, who owns the data folder and nothing else it is given', () => {
+		const dockerfile = readFileSync(join(process.cwd(), 'Dockerfile'), 'utf8');
+		const production = dockerfile.indexOf('AS production');
+		const users = [...dockerfile.matchAll(/^USER (\S+)\r?$/gm)];
+		const chowns = [...dockerfile.matchAll(/^RUN chown (\S+) (\S+)\r?$/gm)];
+
+		// One USER, in the production stage, after the folder is given and before the server starts.
+		expect(users.map((m) => m[1])).toEqual(['node']);
+		expect(users[0].index).toBeGreaterThan(dockerfile.indexOf('RUN chown', production));
+		expect(users[0].index).toBeLessThan(dockerfile.indexOf('CMD ["node", "build"]'));
+		// The data folder alone, after it is made: the code stays root's.
+		expect(chowns.map((m) => [m[1], m[2]])).toEqual([['node:node', '/app/data']]);
+		expect(chowns[0].index).toBeGreaterThan(dockerfile.indexOf('RUN mkdir -p /app/data', production));
+	});
+
+	// Card 2776: an import wrote its two files to the working directory, /app in
+	// the image, which the node user cannot write. Beside a database file, the
+	// upload's copy has no .db at its end, so that one left by a stopped import
+	// is never taken for a hidden database (the code review's 2776 point 6). The
+	// import tests run on a database in memory, and hold the working directory.
+	it.each([
+		['beside a database file', IMAGE_DB_PATH, { upload: '/app/data/dumpfire.db.restore-temp', safety: '/app/data/.pre-restore-safety.json' }],
+		['in the working directory for a database in memory', ':memory:', { upload: '/work/.restore-temp.db', safety: '/work/.pre-restore-safety.json' }]
+	])('has an import write its files %s', (_name, dbPath, paths) => {
+		const found = importFiles(dbPath, '/work');
+		const slashes = (p: string) => p.split(String.fromCharCode(92)).join('/');
+		expect({ upload: slashes(found.upload), safety: slashes(found.safety) }).toEqual(paths);
+		expect(paths.upload.endsWith('.db') && dbPath !== ':memory:').toBe(false);
 	});
 });
 

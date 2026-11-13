@@ -11,8 +11,9 @@
  * knowing what it rests on is worse than no cost number.
  *
  * Every rate here was checked against the published pricing table on
- * 2026-10-14 — base input, both cache-write tiers, cache read and output, for
- * all twenty models. They are list rates and change, so SOURCE_NOTE is
+ * 2026-11-13 — base input, both cache-write tiers, cache read and output, for
+ * all twenty-two models (card 2845: Fable 5.2 and Mythos 5.2 added, Sonnet
+ * 5.5's cache read put right). They are list rates and change, so SOURCE_NOTE is
  * rendered next to the totals and nobody has to guess how stale this is.
  *
  * Cost is worked out every time it is read, from the token counts and the model
@@ -23,7 +24,7 @@
  * Source: https://platform.claude.com/docs/en/about-claude/pricing
  */
 
-export const PRICING_VERIFIED = '2026-10-14';
+export const PRICING_VERIFIED = '2026-11-13';
 export const SOURCE_NOTE = `Anthropic list prices, USD, verified ${PRICING_VERIFIED}`;
 
 export interface ModelPrice {
@@ -34,8 +35,9 @@ export interface ModelPrice {
 	label: string;
 	/**
 	 * Cache-read multiplier, when the model does not use the standard 0.1x.
-	 * Claude Fable 5.1 and Mythos 5.1 read cache at 0.025x — pricing them at
-	 * 0.1x would overstate their cache reads fourfold, and cache reads are
+	 * Claude Fable 5.2, Mythos 5.2, Fable 5.1 and Mythos 5.1 read cache at
+	 * 0.025x, and Opus 5.5 and Sonnet 5.5 at 0.05x — pricing them at 0.1x would
+	 * overstate their cache reads fourfold or twofold, and cache reads are
 	 * ~99% of agentic usage.
 	 */
 	cacheReadMultiplier?: number;
@@ -52,10 +54,15 @@ export interface ModelPrice {
  * never across a version: see VERSION_AFTER_KEY.
  */
 export const MODEL_PRICES: Record<string, ModelPrice> = {
-	// Cache-read rates confirmed against the published table: Opus 5 $0.50/MTok,
-	// Sonnet 5 and Sonnet 5.5 $0.20, Haiku 4.5 $0.10 — all 0.1x of base input.
-	// Three models are the exception: the two 5.1 models at 0.025x ($0.25 on a
-	// $10 base), and Opus 5.5 at 0.05x ($0.20 on a $4 base).
+	// Cache-read rates confirmed against the published table on 2026-11-13: Opus 5
+	// $0.50/MTok, Sonnet 5 $0.20, Haiku 4.5 $0.10 — all 0.1x of base input. Six
+	// models are the exception: the 5.2 and 5.1 models at 0.025x ($0.20 on an $8
+	// base, $0.25 on a $10 base), and Opus 5.5 and Sonnet 5.5 at 0.05x ($0.20 on
+	// a $4 base, $0.10 on a $2 base). Sonnet 5.5 was priced at 0.1x until card
+	// 2845, twice its cache-read rate.
+	// Fast mode on the 5.2 models is $16 / $80. Not priced, as for Opus 5.5 below.
+	'claude-fable-5-2': { input: 8, output: 40, label: 'Fable 5.2', cacheReadMultiplier: 0.025 },
+	'claude-mythos-5-2': { input: 8, output: 40, label: 'Mythos 5.2', cacheReadMultiplier: 0.025 },
 	'claude-fable-5-1': { input: 10, output: 50, label: 'Fable 5.1', cacheReadMultiplier: 0.025 },
 	'claude-mythos-5-1': { input: 10, output: 50, label: 'Mythos 5.1', cacheReadMultiplier: 0.025 },
 	'claude-fable-5': { input: 10, output: 50, label: 'Fable 5' },
@@ -70,7 +77,7 @@ export const MODEL_PRICES: Record<string, ModelPrice> = {
 	'claude-opus-4-5': { input: 5, output: 25, label: 'Opus 4.5' },
 	'claude-opus-4-1': { input: 15, output: 75, label: 'Opus 4.1' },
 	'claude-opus-4': { input: 15, output: 75, label: 'Opus 4' },
-	'claude-sonnet-5-5': { input: 2, output: 10, label: 'Sonnet 5.5' },
+	'claude-sonnet-5-5': { input: 2, output: 10, label: 'Sonnet 5.5', cacheReadMultiplier: 0.05 },
 	'claude-sonnet-5': { input: 2, output: 10, label: 'Sonnet 5' },
 	'claude-sonnet-4-6': { input: 3, output: 15, label: 'Sonnet 4.6' },
 	'claude-sonnet-4-5': { input: 3, output: 15, label: 'Sonnet 4.5' },

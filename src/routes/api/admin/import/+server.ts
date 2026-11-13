@@ -73,7 +73,8 @@
 
 import { error, isHttpError, json } from '@sveltejs/kit';
 import { SESSION_COOKIE_NAME } from '$lib/server/auth';
-import { sqlite } from '$lib/server/db';
+import { getDbPath, sqlite } from '$lib/server/db';
+import { importFiles } from '$lib/server/db/location';
 import { convertedList, totalConverted } from '$lib/server/db/timestamps';
 import { releasedCardsList, unfiledBoardsList } from '$lib/server/db/migrate';
 import {
@@ -92,7 +93,6 @@ import {
 } from '$lib/server/db/restore';
 import Database from 'better-sqlite3';
 import { writeFileSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
 import type { RequestHandler } from './$types';
 import { createLogger } from '$lib/server/logger';
 import { resetFormSecretCache } from '$lib/server/request-tokens';
@@ -295,8 +295,10 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 		}
 
 		// Write the uploaded backup to a temp file so we can open it as a DB
-		const tempPath = join(process.cwd(), '.restore-temp.db');
-		writeFileSync(tempPath, buffer);
+		// Beside the database, readable by its owner alone (card 2776): see importFiles.
+		const importPaths = importFiles(getDbPath());
+		const tempPath = importPaths.upload;
+		writeFileSync(tempPath, buffer, { mode: 0o600 });
 
 		let errors: string[] = [];
 
@@ -328,7 +330,7 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 									: sqlite.prepare(`SELECT * FROM "${table}"`).all();
 						} catch {}
 					}
-					writeFileSync(join(process.cwd(), '.pre-restore-safety.json'), JSON.stringify(safetyBackup));
+					writeFileSync(importPaths.safety, JSON.stringify(safetyBackup), { mode: 0o600 });
 
 					result = restoreFromBackup(sqlite, backupDb, { outside });
 				}

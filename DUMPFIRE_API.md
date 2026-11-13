@@ -248,6 +248,20 @@ Three answers are not JSON. Each is made by SvelteKit before DumpFire's gate is 
 
 A `502`, `503` or `504` is not DumpFire's either: see [Writes, Failures and Retries](#writes-failures-and-retries).
 
+### Changes on 2026-11-13
+
+**The v1 API: version `1.7.1`, what a token costs (card 2845).** No operation, field or status
+changed; `costUsd` on the token answers changed in value:
+
+- **Claude Fable 5.2 and Claude Mythos 5.2 are priced**, `claude-fable-5-2` and
+  `claude-mythos-5-2` at $8 / $40 per million tokens with cache reads at $0.20 (0.025x). Their
+  tokens were unpriced and counted in `unpricedTokens`.
+- **Claude Sonnet 5.5's cache reads are $0.10 per million** (0.05x its input rate), where they
+  were priced at $0.20, twice their rate.
+
+Cost is worked out when it is read, so both re-price every past entry. Rates verified against
+Anthropic's published table on 2026-11-13.
+
 ### Changes on 2026-11-04
 
 The OpenAPI document's version went from `1.5.0` to `1.6.0`: decision records through a key (card 2682). Seventeen operations are new, under the tag Decisions, listed in [Decisions](#decisions).
@@ -2583,7 +2597,7 @@ never both, and the one it is not on is `null`.
 | `unpricedTokens` | Tokens left out of the cost: recorded with no model, or with a model DumpFire has no price for |
 | `apiCalls` | Calls behind the total. `null` unless every entry said how many |
 
-**How a cost is priced.** `costUsd` is worked out every time it is read, from each entry's tokens and model, at Anthropic's list rates; no price is stored, so a change of rate re-prices past entries. A model is priced when its id is one in DumpFire's table (the Claude 5.5, 5.1, 5, 4.x and 3.5 models, rates verified 2026-10-14), or one of them followed by a date (eight digits) or a tag (`claude-haiku-4-5-20251001`, `claude-opus-4-6[1m]`). An id that is one of them followed by a version DumpFire does not list (`claude-opus-5-6`, `claude-opus-50`) is not priced as the shorter id: it is unpriced, and its tokens are counted in `unpricedTokens`, as an entry with no model is. `claude-haiku-5-5` is billed by the size of each call's prompt, and DumpFire prices every Haiku 5.5 token at its rate for prompts of 100K tokens or fewer ($0.10 / $0.50 per million): an entry does not say which of its calls were longer. Opus 5.5's fast mode is priced at the standard rate.
+**How a cost is priced.** `costUsd` is worked out every time it is read, from each entry's tokens and model, at Anthropic's list rates; no price is stored, so a change of rate re-prices past entries. A model is priced when its id is one in DumpFire's table (the Claude 5.5, 5.2, 5.1, 5, 4.x and 3.5 models, rates verified 2026-11-13), or one of them followed by a date (eight digits) or a tag (`claude-haiku-4-5-20251001`, `claude-opus-4-6[1m]`). An id that is one of them followed by a version DumpFire does not list (`claude-opus-5-6`, `claude-opus-50`) is not priced as the shorter id: it is unpriced, and its tokens are counted in `unpricedTokens`, as an entry with no model is. `claude-haiku-5-5` is billed by the size of each call's prompt, and DumpFire prices every Haiku 5.5 token at its rate for prompts of 100K tokens or fewer ($0.10 / $0.50 per million): an entry does not say which of its calls were longer. Opus 5.5's fast mode is priced at the standard rate.
 
 > **`recorded: false` with `entries: 0` means not recorded. It does not mean a cost of zero.** Show it as unknown.
 

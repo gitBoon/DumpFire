@@ -34,7 +34,7 @@ const spec = {
 	openapi: '3.1.0',
 	info: {
 		title: 'DumpFire API',
-		version: '1.7.0',
+		version: '1.7.1',
 		description:
 			'REST API for the DumpFire Kanban board. Automate card creation, movement, assignments, and more.\n\n' +
 			'**Failures.** Every failure DumpFire answers under /api/v1/ is JSON with a `message` that says why, as in ' +
@@ -42,6 +42,10 @@ const spec = {
 			'(404, {"message": "Not found"}) and a method the route does not have (405, with an Allow header naming the ones it has). ' +
 			'Some failures carry more beside the message: a 429 has `retryAfterSecs`, the 409 for a dependency that would close a loop has `cycle`, ' +
 			'and the 409 for a batch that was refused lists every item of it that was at fault.\n\n' +
+			'**Changed on 2026-11-13 (version 1.7.1).** What a token costs (card 2845): ' +
+			'(1) costUsd on the token answers prices claude-fable-5-2 and claude-mythos-5-2 at $8 / $40 per million, with cache reads at $0.20, where their tokens were unpriced and counted in unpricedTokens; ' +
+			'(2) the cache reads of claude-sonnet-5-5 are priced at $0.10 per million, 0.05x its input rate, where they were priced at $0.20; ' +
+			'cost is worked out when it is read, so both re-price past entries. (3) nothing else changed: no operation, field or status.\n\n' +
 			'**Changed on 2026-11-05 (version 1.7.0).** A card\'s files through an API key (card 2754). Three operations are new, under the tag Attachments: ' +
 			'(1) GET /api/v1/cards/{cardId}/attachments lists a card\'s files, oldest first, each as the new schema Attachment; ' +
 			'(2) POST /api/v1/cards/{cardId}/attachments attaches an image: the body is the image itself, a PNG, JPEG, GIF or WebP sent with that Content-Type, up to 5 MB, ' +

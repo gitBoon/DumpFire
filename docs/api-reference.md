@@ -1,9 +1,9 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.123
+version: 1.124
 status: As-Built
-date: 2026-11-05
+date: 2026-11-13
 tags:
   - api
   - rest
@@ -349,6 +349,20 @@ moment as `YYYY-MM-DD HH:MM:SS` in UTC, and the web application's own routes and
 exports answer that form; the API turns it into ISO 8601 as it answers. Until 2026-10-14
 some fields were answered in that form, which names no zone, and the same field could be in
 either.
+
+### Changes on 2026-11-13
+
+**The v1 API: version `1.7.1`, what a token costs (card 2845).** No operation, field or status
+changed; `costUsd` on the token answers changed in value:
+
+- **Claude Fable 5.2 and Claude Mythos 5.2 are priced**, `claude-fable-5-2` and
+  `claude-mythos-5-2` at $8 / $40 per million tokens with cache reads at $0.20 (0.025x). Their
+  tokens were unpriced and counted in `unpricedTokens`.
+- **Claude Sonnet 5.5's cache reads are $0.10 per million** (0.05x its input rate), where they
+  were priced at $0.20, twice their rate.
+
+Cost is worked out when it is read, so both re-price every past entry. Rates verified against
+Anthropic's published table on 2026-11-13.
 
 ### Changes on 2026-11-05
 
@@ -4464,7 +4478,7 @@ newest first.
 **How a cost is priced.** `costUsd` is worked out every time it is read, from each entry's
 tokens and model, at Anthropic's list rates; no price is stored, so a change of rate
 re-prices past entries. A model is priced when its id is one in DumpFire's table (the
-Claude 5.5, 5.1, 5, 4.x and 3.5 models, rates verified 2026-10-14), or one of them
+Claude 5.5, 5.2, 5.1, 5, 4.x and 3.5 models, rates verified 2026-11-13), or one of them
 followed by a date (eight digits) or a tag (`claude-haiku-4-5-20251001`,
 `claude-opus-4-6[1m]`). An id that is one of them followed by a version DumpFire does not
 list (`claude-opus-5-6`, `claude-opus-50`) is

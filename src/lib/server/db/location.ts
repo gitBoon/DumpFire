@@ -44,6 +44,28 @@ export const IMAGE_DB_PATH = '/app/data/dumpfire.db';
 /** The file a server started without `DB_PATH` opens, in its working directory. */
 export const LEGACY_DB_NAME = 'dumpfire.db';
 
+/**
+ * Where an import writes its two files, the upload's copy and the safety copy
+ * (card 2776): beside the database, as a backup writes its own copies. They
+ * were written to the working directory, which in the image is `/app`, the
+ * code's own folder: the server runs as a user who cannot write there, and the
+ * safety copy went when the container was recreated.
+ *
+ * The upload's copy is the database's name with `.restore-temp` after it
+ * (`dumpfire.db.restore-temp`), as the backup's is `.backup-temp`: no `.db`
+ * at its end, so a copy left by an import that was stopped (out of memory) is
+ * never taken by the start-up guard for a database hidden on the volume. The
+ * safety copy is `.pre-restore-safety.json` in the same folder. A database in
+ * memory has no folder, so both go to the working directory then, under the
+ * names they had (`.restore-temp.db`).
+ */
+export function importFiles(dbPath: string, cwd: string = process.cwd()): { upload: string; safety: string } {
+	if (dbPath === ':memory:') {
+		return { upload: nodePath.join(cwd, '.restore-temp.db'), safety: nodePath.join(cwd, '.pre-restore-safety.json') };
+	}
+	return { upload: `${dbPath}.restore-temp`, safety: nodePath.join(nodePath.dirname(dbPath), '.pre-restore-safety.json') };
+}
+
 /** What is at a path, as far as the guard needs to know. */
 export type Entry =
 	/** Nothing there: ENOENT, or ENOTDIR (a part of the path is a file). */

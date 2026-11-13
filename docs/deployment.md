@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.109
+version: 1.110
 status: As-Built
 date: 2026-11-13
 tags:
@@ -162,7 +162,7 @@ Test Files  61 passed (61)
 - **A step shown as `CACHED`** was not run again, because Docker has already run it on exactly these files and it passed. Any change to a file in the build context runs it again.
 - **A failure** ends the build with `ERROR: process "/bin/sh -c npm run verify" did not complete successfully: exit code: 1`. The failing tests are named above that line. A test that reached for the network is one of them, on a workstation and in the build alike: `This test reached for the network: ...`, with the address. `npm run build` is not reached and no image is tagged; the container that is running is not affected, because nothing has replaced it.
 
-**What is kept out of the build.** `.dockerignore` keeps these out of the build context, so they never reach Docker, the builder stage or the build cache: any `*.db`, `*.db-shm` and `*.db-wal` file, at the top of the repository and in any folder beneath it (a development `dumpfire.db`, its dated backups, and a copy put in a sub-folder), any `*.backup-temp` and `*.backup-temp-*` file at any depth (the copies `GET /api/admin/export` and a backup make beside the database while they run, `<database>.backup-temp` and `<database>.backup-temp-cleared`), any `*.export-temp` file at any depth (the name an older export used for its copy), `.pre-restore-safety.json` (the copy of the data kept before a restore), any `mfa.key` and `mfa.key.*.tmp` file at any depth (the key a development server makes beside its database, and the temporary file it is made through: card 2768), the `uploads` folder of attachment files, `.env` and `.env.*`, and the local tooling in `.agent`, `.claude`, `.vscode` and `.git`, along with `.gitignore`, `README.md`, and `node_modules`, `.svelte-kit` and `build`, which the image makes for itself. The database patterns once matched at the top of the repository only, and a database copied into a sub-folder would have been sent; `**/*.db` and its two companions were added on 2026-10-13. The other names are still matched at the top only. The context was listed before each of the two builds of 2026-10-13. Before the first, which was before those patterns were added: 417 files, 5.9 MB. Before the second, with them in place: 418 files, 5,993,090 bytes. None of those names was anywhere in either.
+**What is kept out of the build.** `.dockerignore` keeps these out of the build context, so they never reach Docker, the builder stage or the build cache: any `*.db`, `*.db-shm` and `*.db-wal` file, at the top of the repository and in any folder beneath it (a development `dumpfire.db`, its dated backups, and a copy put in a sub-folder), any `*.backup-temp` and `*.backup-temp-*` file at any depth (the copies `GET /api/admin/export` and a backup make beside the database while they run, `<database>.backup-temp` and `<database>.backup-temp-cleared`), any `*.restore-temp` file at any depth (the copy of an uploaded backup an import makes beside the database while it runs, `<database>.restore-temp`: card 2776), any `*.export-temp` file at any depth (the name an older export used for its copy), `.pre-restore-safety.json` (the copy of the data kept before a restore), any `mfa.key` and `mfa.key.*.tmp` file at any depth (the key a development server makes beside its database, and the temporary file it is made through: card 2768), the `uploads` folder of attachment files, `.env` and `.env.*`, and the local tooling in `.agent`, `.claude`, `.vscode` and `.git`, along with `.gitignore`, `README.md`, and `node_modules`, `.svelte-kit` and `build`, which the image makes for itself. The database patterns once matched at the top of the repository only, and a database copied into a sub-folder would have been sent; `**/*.db` and its two companions were added on 2026-10-13. The other names are still matched at the top only. The context was listed before each of the two builds of 2026-10-13. Before the first, which was before those patterns were added: 417 files, 5.9 MB. Before the second, with them in place: 418 files, 5,993,090 bytes. None of those names was anywhere in either.
 
 **What has been proved.** The step has been built twice, both times on 2026-10-13 with Docker 29.2.1 on a Windows workstation (Docker Desktop, Linux containers, amd64, BuildKit). The first build was the first time the suite ran on Linux: it passed with the totals it then had (`2200 passed | 19 expected fail | 1 skipped`), `prebuild` and `npm run build` passed after it, and a build with one failing test added inside the builder stage stopped at the step as described.
 
@@ -485,7 +485,7 @@ volumes:
 
 | Container Path | Purpose | Persist? |
 |---------------|---------|----------|
-| `/app/data` | SQLite database + uploaded attachments | **Yes — required** |
+| `/app/data` | SQLite database + uploaded attachments. Owned by uid 1000, the `node` user the server runs as (card 2776) | **Yes — required** |
 | `/app/data/dumpfire.db` | Main database file: the image's `DB_PATH` | Auto-created at the first start, which says so in the log |
 | `/app/data/uploads/` | Card attachments: the folder `uploads` beside the database file | Auto-created at the first upload |
 | `/app/data/uploads/.trash/` | Attachment files of deleted cards, and files no attachment names, kept for 30 days | Auto-created at the first delete or sweep that has a file to move |
@@ -538,6 +538,7 @@ umask 077
 mkdir -p /srv/dumpfire-secrets
 openssl rand -hex 32 > /srv/dumpfire-secrets/dumpfire_mfa_key
 chmod 600 /srv/dumpfire-secrets/dumpfire_mfa_key
+sudo chown 1000:1000 /srv/dumpfire-secrets/dumpfire_mfa_key   # the server runs as uid 1000 (card 2776)
 wc -c /srv/dumpfire-secrets/dumpfire_mfa_key     # 65: 64 hex characters and a newline
 ```
 
@@ -549,10 +550,10 @@ environment variable, and never in a ticket or a chat.
 
 ### Mounting It
 
-Mount the file read-only and point `MFA_KEY_FILE` at the path inside the container. The image
-sets no `USER` and runs as root, so it can read a file that is `600` and owned by root on the
-host. Under rootless Docker or user-namespace remapping, give the file to the user the
-container's root maps to instead, still `600`.
+Mount the file read-only and point `MFA_KEY_FILE` at the path inside the container. The server
+runs as the image's `node` user, uid 1000 (card 2776), so the file is owned by uid 1000 on the
+host and is `600`. Under rootless Docker or user-namespace remapping, give it to the host uid that
+the container's uid 1000 maps to instead, still `600`.
 
 - **A bind mount**, as in [Running](#running):
   `-v /srv/dumpfire-secrets/dumpfire_mfa_key:/run/secrets/dumpfire_mfa_key:ro` and
@@ -795,7 +796,9 @@ Copy the whole uploads folder, the trash included. With the volume and path used
 
 ```bash
 mkdir -p -m 700 "$HOME/dumpfire-uploads"
-docker run --rm --network none -v dumpfire-data:/app/data:ro -v "$HOME/dumpfire-uploads:/backup" \
+# As your own user, who owns the folder the copy goes to (the image runs as uid 1000 since card 2776).
+# Under rootless Docker, use --user root in its place: that is you there.
+docker run --rm --network none --user "$(id -u):$(id -g)" -v dumpfire-data:/app/data:ro -v "$HOME/dumpfire-uploads:/backup" \
   dumpfire:latest sh -c 'if [ ! -d /app/data/uploads ]; then echo "No /app/data/uploads on the volume: nothing was copied. Check DB_PATH." >&2; exit 1; fi; cp -a /app/data/uploads/. /backup/ && ls -A /backup'
 ```
 
@@ -1175,15 +1178,15 @@ ls -la "$HOME/dumpfire-move"
 **If a newer image has already started on the volume and made a new, empty database there** (its log said `No database was at /app/data/dumpfire.db: a new, empty one was created at this start.`, and nobody has used the site since), that database is in the way. Move it aside on the volume, never delete it:
 
 ```bash
-docker run --rm --network none -v "$vol:/app/data" "$img" sh -c \
+docker run --rm --network none --user root -v "$vol:/app/data" "$img" sh -c \
   'd=/app/data/set-aside-$(date +%Y%m%d-%H%M%S) && mkdir "$d" && for f in dumpfire.db dumpfire.db-wal dumpfire.db-shm; do if [ -e "/app/data/$f" ]; then mv "/app/data/$f" "$d/"; fi; done; ls -la /app/data "$d"'
 ```
 
-Then copy the files into the volume, with a short-lived container as the cold copy does. It copies nothing if a database is there already. It uses `cp -R`, not `cp -a`, so the files belong to the container's user and `/app/data` keeps its own owner and mode (`cp -a` would give the volume folder the copy folder's owner and its `700`, which a volume on NFS with root squashing, or a future image that does not run as root, could not open):
+Then copy the files into the volume, with a short-lived container as the cold copy does. It copies nothing if a database is there already. It runs as root, to read your `700` folder, and gives what it copied to uid 1000, the user the server runs as since card 2776. It uses `cp -R`, not `cp -a`, so `/app/data` keeps its own mode (`cp -a` would give the volume folder the copy folder's `700` and owner):
 
 ```bash
-docker run --rm --network none -v "$vol:/app/data" -v "$HOME/dumpfire-move:/move" "$img" sh -c \
-  'if [ -e /app/data/dumpfire.db ]; then echo "/app/data/dumpfire.db is there already: nothing was copied." >&2; exit 1; fi; cp -R /move/. /app/data/ && ls -la /app/data'
+docker run --rm --network none --user root -v "$vol:/app/data" -v "$HOME/dumpfire-move:/move" "$img" sh -c \
+  'if [ -e /app/data/dumpfire.db ]; then echo "/app/data/dumpfire.db is there already: nothing was copied." >&2; exit 1; fi; cp -R /move/. /app/data/ && chown -R 1000:1000 /app/data && ls -la /app/data'
 ```
 
 **Start the new image on the volume.** Under Docker Compose, edit the compose file: take out any line that mounts a file or a volume at `/app/dumpfire.db`, and give the service the volume at `/app/data` and `DB_PATH`:
@@ -1239,12 +1242,14 @@ These are for the volume and path the examples on this page use: the volume `dum
 # Take it, with the application's container stopped, into a folder only you can read.
 docker stop dumpfire
 mkdir -p -m 700 "$HOME/dumpfire-cold"
-docker run --rm --network none -v dumpfire-data:/app/data -v "$HOME/dumpfire-cold:/cold" \
+# As root, to write your 700 folder whichever user the image runs as (uid 1000 since card 2776).
+docker run --rm --network none --user root -v dumpfire-data:/app/data -v "$HOME/dumpfire-cold:/cold" \
   dumpfire:rollback sh -c 'cp -a /app/data/dumpfire.db* /cold/ && ls -l /cold'
 
 # Return it. Only where the new image never printed "Listening on".
-docker run --rm --network none -v dumpfire-data:/app/data -v "$HOME/dumpfire-cold:/cold" \
-  dumpfire:rollback sh -c 'rm -f /app/data/dumpfire.db-wal /app/data/dumpfire.db-shm && cp -a /cold/dumpfire.db* /app/data/ && ls -l /app/data'
+# The returned files are given to uid 1000, the server's user, which an image from before card 2776 (root) can read too.
+docker run --rm --network none --user root -v dumpfire-data:/app/data -v "$HOME/dumpfire-cold:/cold" \
+  dumpfire:rollback sh -c 'rm -f /app/data/dumpfire.db-wal /app/data/dumpfire.db-shm && cp -a /cold/dumpfire.db* /app/data/ && chown 1000:1000 /app/data/dumpfire.db* && ls -l /app/data'
 ```
 
 `dumpfire.db*` takes the database and whichever of its `-wal` and `-shm` files exist. Returning it removes those two first, so that none is left beside the database that the copy does not have.
@@ -1308,7 +1313,7 @@ The `CRITICAL` line is also written to the `system_logs` table, after the failin
 - **Rename a file on the volume to `dumpfire.db`**, with its `-wal` and `-shm` files, with the container stopped, in a short-lived container as the moving section does it (shown for `/app/data/kanban.db`; set `vol` and `img` as that section says). It renames nothing if a `dumpfire.db`, or a `-wal` or `-shm` file of that name, is there already (SQLite would otherwise replay another database's `-wal` onto the renamed one):
 
   ```bash
-  docker run --rm --network none -v "$vol:/app/data" "$img" sh -c \
+  docker run --rm --network none --user root -v "$vol:/app/data" "$img" sh -c \
     'cd /app/data && if [ -e dumpfire.db ] || [ -e dumpfire.db-wal ] || [ -e dumpfire.db-shm ]; then echo "dumpfire.db, or its -wal or -shm file, is there already: nothing was renamed." >&2; exit 1; fi; for s in "" -wal -shm; do if [ -e "kanban.db$s" ]; then mv "kanban.db$s" "dumpfire.db$s"; fi; done; ls -la /app/data'
   ```
 
@@ -1322,6 +1327,8 @@ What to do:
 3. Either fix the cause and start again, or go back to the previous image. A failed file was rolled back and is not recorded, so the next start runs it again from its first statement. The files applied before it are recorded and are not run again.
 
 ### Going Back to the Previous Image
+
+> **An image from before card 2776 runs as root.** Back on one, it writes root's files to the volume. Before coming forward again to an image that runs as `node`, give the volume to uid 1000 once more: check U1 of [The Update That Runs the Server as a User Who Is Not Root](#the-update-that-runs-the-server-as-a-user-who-is-not-root).
 
 | Situation | What to do | What is lost |
 |-----------|------------|--------------|
@@ -1400,6 +1407,9 @@ mkdir -p "$HOME/dumpfire-rehearsal" && cd "$HOME/dumpfire-rehearsal"
 mkdir r1 r2
 docker cp dumpfire:/tmp/rehearsal.db r1/dumpfire.db
 docker cp dumpfire:/tmp/rehearsal.db r2/dumpfire.db
+# The image runs as uid 1000 since card 2776: give it the copies. Under rootless Docker, skip
+# this and add --user root to rehearse and inspect below, which is you there.
+sudo chown -R 1000:1000 r1 r2
 docker exec dumpfire rm /tmp/rehearsal.db
 ```
 
@@ -2855,7 +2865,7 @@ Six cards go out in one image, and this is the one note for them. Each closes a 
 - **Card 2206**: `boardIds` on `GET /api/v1/milestones`, `GET /api/milestones` and the plan page's list holds only boards the caller can open.
 - **Card 2207**: a mention is the longest username the text after `@` begins with, in any case, so usernames with capitals, dots, hyphens, spaces or letters outside English can be mentioned; `@jane.doe` no longer mails `jane`, and an email address in a comment no longer mails an account named after its domain.
 
-**The third backfill.** Every start, after the migrations, and every restore or Import Backup, runs 0057's statement again (`CARDS_LEAVE_OTHER_BOARDS_MILESTONES` in `src/lib/server/db/migrate.ts`, held to 0057's text by a test), in the same transaction as the other two backfills: a failure of it stops the start, as theirs does. It is safe to repeat because no write can now put a card in a milestone of another board: putting one in is refused, a move to another board takes it out (card 2155), and a milestone is given to another board only when all its cards are there (card 2179). So it finds cards only after a restore of a backup taken before 0057, or after coming forward again from an older image that was used meanwhile. When it finds any it writes `[WARN] [DB] Took <n> card(s) out of a milestone that belongs to another board: card 12 left milestone 3, …`, and a restore's log line adds `<n> card(s) taken out of a milestone of another board (card 12 left milestone 3, …)` to its "Filled in". Each names the first 50 cards by id, with the milestone each left, and then `; and <n> more`: once a card is out, nothing else records which goal held it. To see every card and goal by name before an Import Backup, copy the backup file into the container (`docker cp <backup file> dumpfire:/tmp/backup.db`) and run check 0o's command with `'/tmp/backup.db'` in place of `process.env.DB_PATH || 'dumpfire.db'`: it opens the file read-only and lists exactly the cards the restore will take out. **A count at any other start means some write still makes such a card**: report it as a fault.
+**The third backfill.** Every start, after the migrations, and every restore or Import Backup, runs 0057's statement again (`CARDS_LEAVE_OTHER_BOARDS_MILESTONES` in `src/lib/server/db/migrate.ts`, held to 0057's text by a test), in the same transaction as the other two backfills: a failure of it stops the start, as theirs does. It is safe to repeat because no write can now put a card in a milestone of another board: putting one in is refused, a move to another board takes it out (card 2155), and a milestone is given to another board only when all its cards are there (card 2179). So it finds cards only after a restore of a backup taken before 0057, or after coming forward again from an older image that was used meanwhile. When it finds any it writes `[WARN] [DB] Took <n> card(s) out of a milestone that belongs to another board: card 12 left milestone 3, …`, and a restore's log line adds `<n> card(s) taken out of a milestone of another board (card 12 left milestone 3, …)` to its "Filled in". Each names the first 50 cards by id, with the milestone each left, and then `; and <n> more`: once a card is out, nothing else records which goal held it. To see every card and goal by name before an Import Backup, copy the backup file into the container (`docker cp <backup file> dumpfire:/tmp/backup.db`, then `docker exec -u root dumpfire chown node /tmp/backup.db`, since `docker cp` writes it as root) and run check 0o's command with `'/tmp/backup.db'` in place of `process.env.DB_PATH || 'dumpfire.db'`: it opens the file read-only and lists exactly the cards the restore will take out. **A count at any other start means some write still makes such a card**: report it as a fault.
 
 ```mermaid
 flowchart TD
@@ -4869,8 +4879,9 @@ Nothing is done to the database. The older image prunes on Run Now again, and **
 
   ```bash
   docker cp dumpfire-backup-<date>.db <container>:/tmp/check-2411.db
+  docker exec -u root <container> chown node /tmp/check-2411.db   # docker cp writes it as root (card 2776)
   docker exec <container> node -e "const db = require('better-sqlite3')('/tmp/check-2411.db', { readonly: true, fileMustExist: true }); console.log(JSON.stringify(db.prepare('SELECT s.setting, s.user_id, u.role FROM setting_setters s LEFT JOIN users u ON u.id = s.user_id ORDER BY s.setting').all())); db.close();"
-  docker exec <container> rm /tmp/check-2411.db
+  docker exec -u root <container> rm /tmp/check-2411.db
   ```
 - **After a restart, a schedule with no successful scheduled backup among the newest 10 history rows** (ten Run Now presses since, or failures) runs one at the first check, a minute after the start: sooner, never later. A Run Now made before card 2405 has no `-manual` and still counts as a scheduled run.
 
@@ -5636,6 +5647,75 @@ restore rules. Before card 2769 every one of them is empty, so none of that hold
 **Coming forward again**, 0065 is already recorded and is not run, and the key must still be the
 one mounted before. Keep the key file and its mount in place while going back and forth.
 
+### The Update That Runs the Server as a User Who Is Not Root
+
+**Card 2776 (build card B7 of card 2669).** No migration, no setting, no route. The server runs as
+the image's own `node` user, uid and gid 1000, and no longer as root, so a fault that let
+someone run code in it would not run as root, and a file's mode (the MFA key file's `600`) means
+something inside the container. What changes:
+
+- **The data folder must belong to uid 1000.** `/app/data`, on the volume, is the one folder the
+  server writes: the database and its `-wal` and `-shm` files, `uploads/` and its `.trash/`,
+  the backup's temporary copies, and now the import's two files (below). A new named volume takes
+  the image's owner for it, so a new installation needs nothing. **A volume made by an older image
+  is root's**, and the server cannot write it: give it to uid 1000 (check U1) before anything from
+  this image touches the volume, the commands of this guide run from it included, and **again
+  whenever an image from before card 2776 has run on it**: a rollback to one, or step 5 of a
+  rehearsal, writes root's files (a card's uploads folder, `.trash/`, a `-wal` file) that the
+  server then cannot write.
+- **The MFA key file must be readable by uid 1000** (check U2). It was read as root.
+- **An import writes its two files beside the database**, `/app/data/dumpfire.db.restore-temp`
+  (named after the database, with no `.db` at its end, so one left by a stopped import is never
+  taken for a hidden database at start) and `/app/data/.pre-restore-safety.json`, both readable by
+  their owner alone, and no longer in `/app`, the code's folder, which the
+  server cannot write. The safety copy is now on the volume: it survives the container being
+  recreated. Remove it once an import is known to be
+  good, as before, at its new path (see [How Large an Import Can Be](#how-large-an-import-can-be)).
+- **`docker exec` and `docker run` run as `node` too**, by default. Three kinds of command in this
+  guide change with it, and say so where they are: one that copies out of the volume to a folder
+  of yours runs as your own user (`--user "$(id -u):$(id -g)"`); one that copies into the volume,
+  or renames or moves files on it, runs as root and gives what it wrote to uid 1000; and a file put
+  into the container with `docker cp` belongs to root, so it is made readable with `docker exec -u
+  root <container> chown node <file>` and removed with `docker exec -u root <container> rm <file>`.
+  **Under rootless Docker**, a container's uid 1000 is not you on the host: run a command that
+  copies to or from a folder of yours with `--user root` there, which is you.
+- **Nobody notices anything on the site.**
+
+#### Before the deploy
+
+**Check U1: give the volume to uid 1000.** With the old container stopped, and the volume's name
+from `docker inspect --format '{{range .Mounts}}{{.Name}}{{println}}{{end}}' dumpfire`:
+
+```bash
+docker run --rm --user root -v dumpfire-data:/app/data --entrypoint chown dumpfire:latest -R 1000:1000 /app/data
+docker run --rm -v dumpfire-data:/app/data --entrypoint sh dumpfire:latest -c 'id && touch /app/data/.write-test && rm /app/data/.write-test && echo writable'
+```
+
+Expect the second to print `uid=1000(node) gid=1000(node)` and `writable`. It is a fault if it
+says `Permission denied`. A bind mount in place of a named volume is given the same way on the
+host: `sudo chown -R 1000:1000 <the folder>`. Under rootless Docker or user-namespace remapping,
+uid 1000 in the container is another uid on the host: run the first command as written, which
+asks Docker to map it.
+
+**Check U2: the MFA key file.** On the host: `sudo chown 1000:1000
+/srv/dumpfire-secrets/dumpfire_mfa_key`, keeping mode `600`. A Docker Swarm secret is given
+`uid: "1000"` and `mode: 0400` in its `secrets:` entry, or is read at its default `0444`, root's,
+which `node` can read, with the warning
+[Mounting It](#mounting-it) describes. It is a fault if the new container stops at start with
+`[CRITICAL] [AUTH]` naming the key file as unreadable.
+
+#### After the deploy
+
+| # | Do | Expect | Fault if |
+|---|---|---|---|
+| U3 | `docker exec dumpfire id` | `uid=1000(node) gid=1000(node)` | `uid=0(root)` |
+| U4 | Sign in, and attach a file to a card | Both work | `attempt to write a readonly database` or `EACCES` in `docker logs` |
+| U5 | On a staging copy, Import Backup | It succeeds, and `docker exec dumpfire ls -l /app/data/.pre-restore-safety.json` shows `-rw-------` owned by `node` | `EACCES`, or the file in `/app` |
+
+**If the server does not start** after the update and `docker logs` says `attempt to write a
+readonly database`, `unable to open database file` or `EACCES`, U1 was not made, or an image from
+before card 2776 has run on the volume since: make it, and start the container again. Nothing in the data was changed by the failed start.
+
 ## Changing the Schema
 
 The structure of the database is changed in one way only:
@@ -5874,8 +5954,8 @@ It prints `512M`. Nothing printed means the image was built from a `Dockerfile` 
 The limit is not the only ceiling. An import does this, in order:
 
 1. Reads the whole upload into memory.
-2. Writes it to `.restore-temp.db` in the server's working directory, and opens that.
-3. Writes a safety copy of the running database, every table as one JSON text, to `.pre-restore-safety.json` in the same directory. It leaves out the `known_browser_secret` row of `settings`, the key remembered browsers are signed with, which no backup holds either.
+2. Writes it to `dumpfire.db.restore-temp` beside the database, in `/app/data` in the image, readable by its owner alone (card 2776; it was `.restore-temp.db` in the server's working directory, `/app`), and opens that.
+3. Writes a safety copy of the running database, every table as one JSON text, to `.pre-restore-safety.json` in the same folder, readable by its owner alone. It leaves out the `known_browser_secret` row of `settings`, the key remembered browsers are signed with, which no backup holds either.
 4. Replaces the rows.
 
 So the server needs memory for the whole backup and, at the same moment, for the running database as JSON, which is larger than the database's own file because every row repeats its column names. That JSON is one piece of text, and Node 22 cannot make one longer than 536,870,888 characters, about 512 MB: a running database whose rows come to more than that as JSON cannot be imported over. The import then fails with "Restore failed: Invalid string length" and nothing is changed. That, and the memory the container is allowed, are the practical ceiling, and both are reached well before a backup of 512 MB is. Neither has been measured on a large database: try an import of production's size on an instance that is not production before it is needed.
@@ -5885,10 +5965,10 @@ Two limits outside DumpFire end an upload before it is read:
 - **The server's own time limit for a request.** Node gives a request five minutes, its `server.requestTimeout` default of 300 seconds, to arrive in full, and the image does not change it. An upload that takes longer is cut off and the import never starts. Behind nginx, which reads the whole upload before it passes it on, the server is handed it in a moment, whatever the caller's connection. With no proxy, or behind one that passes the upload on as it arrives (Cloudflare Tunnel, Caddy, nginx with `proxy_request_buffering off`), the server receives it at the caller's speed, and an import that takes more than five minutes to upload cannot be done that way: upload it from somewhere closer to the server.
 - **Cloudflare's own limit on a request's body.** Behind Cloudflare, a Cloudflare Tunnel included, Cloudflare refuses a request whose body is over its plan's limit before it reaches the server: 100 MB on the Free and Pro plans. A backup larger than that cannot be imported through it; import it through an address that does not pass through Cloudflare.
 
-Both files are written to the working directory, which in the image is `/app`: **inside the container and off the volume**. They need that much free space in the container's own layer, and they go when the container is recreated. `.restore-temp.db` is deleted when the import ends. `.pre-restore-safety.json` is not: it stays until the next import replaces it, and it holds everything the database held, password hashes and live sessions included, but for the key remembered browsers are signed with. Once the import is known to be good, remove it:
+Both files are written beside the database, which in the image is `/app/data`: **on the volume** (card 2776). They were written to the working directory, `/app`, inside the container, which the server, running as `node`, cannot write. They need that much free space on the volume. `dumpfire.db.restore-temp` is deleted when the import ends; one left by an import that was stopped (the server out of memory) has no `.db` at its end, so the start-up guard never takes it for a database hidden on the volume, and it can be removed. `.pre-restore-safety.json` is not: it stays until the next import replaces it, now across a container being recreated, and it holds everything the database held, password hashes and live sessions included, but for the key remembered browsers are signed with: as much as the database file beside it, and it rides in any copy of the volume. Once the import is known to be good, remove it:
 
 ```bash
-docker exec <container> rm -f /app/.pre-restore-safety.json
+docker exec <container> rm -f /app/data/.pre-restore-safety.json
 ```
 
 ## Backup Destinations

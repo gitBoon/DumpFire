@@ -79,9 +79,9 @@ const NEW_YORK_EVENING = ['America/New_York', '2026-11-01T02:30:00Z'] as const;
 describe('the 5.5 models', () => {
 	it('each resolves to its own row, at its published rate', () => {
 		expect(priceFor('claude-opus-5-5')).toMatchObject({ input: 4, output: 20, cacheReadMultiplier: 0.05 });
-		expect(priceFor('claude-sonnet-5-5')).toMatchObject({ input: 2, output: 10 });
-		// Sonnet 5.5 reads cache at the usual 0.1x ($0.20), not Opus 5.5's 0.05x.
-		expect(priceFor('claude-sonnet-5-5')?.cacheReadMultiplier).toBeUndefined();
+		// Sonnet 5.5 reads cache at 0.05x ($0.10), as Opus 5.5 does: it was priced at
+		// the usual 0.1x until card 2845, twice its rate.
+		expect(priceFor('claude-sonnet-5-5')).toMatchObject({ input: 2, output: 10, cacheReadMultiplier: 0.05 });
 		expect(priceFor('claude-haiku-5-5')).toMatchObject({ input: 0.1, output: 0.5 });
 		expect(priceFor('claude-haiku-5-5')?.cacheReadMultiplier).toBeUndefined();
 	});
@@ -91,17 +91,31 @@ describe('the 5.5 models', () => {
 		expect(priceFor('claude-opus-5-5')?.note).toBeUndefined();
 	});
 
-	it('every older row is kept', () => {
-		for (const id of [
-			'claude-fable-5-1', 'claude-mythos-5-1', 'claude-fable-5', 'claude-mythos-5', 'claude-opus-5',
-			'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-opus-4-5', 'claude-opus-4-1',
-			'claude-opus-4', 'claude-sonnet-5', 'claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-sonnet-4',
-			'claude-haiku-4-5', 'claude-haiku-3-5'
-		]) {
-			expect(MODEL_PRICES[id], id).toBeDefined();
+	// Card 2845: Fable 5.2 had no row, and its entries were unpriced. Every model on
+	// the published table of 2026-11-13 has a row at its published rate: base input,
+	// output and the cache-read multiplier (cache writes are 1.25x and 2x for every
+	// model on it). A model added to the table is added here and to MODEL_PRICES.
+	it('every model on the published table has its row, at its published rate', () => {
+		const PUBLISHED: [string, number, number, number | undefined][] = [
+			['claude-fable-5-2', 8, 40, 0.025], ['claude-mythos-5-2', 8, 40, 0.025],
+			['claude-fable-5-1', 10, 50, 0.025], ['claude-mythos-5-1', 10, 50, 0.025],
+			['claude-fable-5', 10, 50, undefined], ['claude-mythos-5', 10, 50, undefined],
+			['claude-opus-5-5', 4, 20, 0.05], ['claude-opus-5', 5, 25, undefined],
+			['claude-opus-4-8', 5, 25, undefined], ['claude-opus-4-7', 5, 25, undefined],
+			['claude-opus-4-6', 5, 25, undefined], ['claude-opus-4-5', 5, 25, undefined],
+			['claude-opus-4-1', 15, 75, undefined], ['claude-opus-4', 15, 75, undefined],
+			['claude-sonnet-5-5', 2, 10, 0.05], ['claude-sonnet-5', 2, 10, undefined],
+			['claude-sonnet-4-6', 3, 15, undefined], ['claude-sonnet-4-5', 3, 15, undefined],
+			['claude-sonnet-4', 3, 15, undefined], ['claude-haiku-5-5', 0.1, 0.5, undefined],
+			['claude-haiku-4-5', 1, 5, undefined]
+		];
+		for (const [id, input, output, cacheReadMultiplier] of PUBLISHED) {
+			expect(MODEL_PRICES[id], id).toMatchObject({ input, output });
+			expect(MODEL_PRICES[id].cacheReadMultiplier, id).toBe(cacheReadMultiplier);
 		}
-		expect(Object.keys(MODEL_PRICES)).toHaveLength(20);
-		expect(PRICING_VERIFIED).toBe('2026-10-14');
+		// And Haiku 3.5, retired from the table and kept for entries recorded against it.
+		expect(Object.keys(MODEL_PRICES).sort()).toEqual([...PUBLISHED.map(([id]) => id), 'claude-haiku-3-5'].sort());
+		expect(PRICING_VERIFIED).toBe('2026-11-13');
 	});
 });
 
@@ -123,7 +137,7 @@ describe('how a model id finds its row', () => {
 	});
 
 	it('a version DumpFire does not list is unpriced, never priced as an older model', () => {
-		for (const id of ['claude-opus-5-6', 'claude-opus-4-9', 'claude-sonnet-5-5-1', 'claude-haiku-5-6', 'claude-fable-5-2', 'claude-opus-5-1234567']) {
+		for (const id of ['claude-opus-5-6', 'claude-opus-4-9', 'claude-sonnet-5-5-1', 'claude-haiku-5-6', 'claude-fable-5-3', 'claude-opus-5-1234567']) {
 			expect(priceFor(id), id).toBeNull();
 		}
 		const r = costOf([
@@ -175,8 +189,10 @@ describe('a measured breakdown', () => {
 	it('costs what the published rates say', () => {
 		// 0.1 x 4 + 0.02 x 20 + 5 x 0.20 + 0.2 x 5 + 0.3 x 8
 		expect(costOfBreakdown(b, 'claude-opus-5-5')).toBeCloseTo(5.2, 10);
-		// 0.1 x 2 + 0.02 x 10 + 5 x 0.20 + 0.2 x 2.5 + 0.3 x 4
-		expect(costOfBreakdown(b, 'claude-sonnet-5-5')).toBeCloseTo(3.1, 10);
+		// 0.1 x 2 + 0.02 x 10 + 5 x 0.10 + 0.2 x 2.5 + 0.3 x 4 (card 2845: cache reads at 0.05x)
+		expect(costOfBreakdown(b, 'claude-sonnet-5-5')).toBeCloseTo(2.6, 10);
+		// 0.1 x 8 + 0.02 x 40 + 5 x 0.20 + 0.2 x 10 + 0.3 x 16 (card 2845)
+		expect(costOfBreakdown(b, 'claude-fable-5-2')).toBeCloseTo(9.4, 10);
 		// 0.1 x 0.1 + 0.02 x 0.5 + 5 x 0.01 + 0.2 x 0.125 + 0.3 x 0.2
 		expect(costOfBreakdown(b, 'claude-haiku-5-5')).toBeCloseTo(0.155, 10);
 		// 0.1 x 5 + 0.02 x 25 + 5 x 0.50 + 0.2 x 6.25 + 0.3 x 10
@@ -549,7 +565,7 @@ describe('what is said about a figure', () => {
 
 	it('an unpriced model is named, and an entry with none says so', () => {
 		expect(unpricedReason(null)).toBe('No model recorded, so this cannot be priced.');
-		expect(unpricedReason('claude-opus-5-6')).toBe("No price for claude-opus-5-6 in DumpFire's table (prices verified 2026-10-14).");
+		expect(unpricedReason('claude-opus-5-6')).toBe("No price for claude-opus-5-6 in DumpFire's table (prices verified 2026-11-13).");
 		expect(UNPRICED_SUM_NOTE).toBe('recorded without a model, or with a model DumpFire has no price for');
 	});
 });

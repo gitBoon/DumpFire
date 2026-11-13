@@ -38,6 +38,9 @@ mfa.key.*.tmp
 # -shm beside either). The first holds live sessions. Anywhere in the tree.
 *.backup-temp
 *.backup-temp-*
+# <db>.restore-temp, the copy of an uploaded backup an import makes beside the
+# database while it runs (card 2776).
+*.restore-temp
 
 # Debug/log files
 check-errors.txt

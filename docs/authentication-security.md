@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.109
+version: 1.110
 status: As-Built
 date: 2026-11-13
 tags:
@@ -514,7 +514,7 @@ sequenceDiagram
   | Handler | Why not `writeAs` | The check guards |
   |---|---|---|
   | `POST /api/admin/vacuum` | `VACUUM` cannot run in a transaction | `sqlite.exec('VACUUM')`. The check is the first statement (no body), with no quick check before it |
-  | `POST /api/admin/import` | the restore opens its own transaction, and files are written first | the temporary copy. Asked once the upload is in, before `.restore-temp.db` and `.pre-restore-safety.json` are written, so a refusal leaves neither; nothing is asked after the restore, whose database is the backup's |
+  | `POST /api/admin/import` | the restore opens its own transaction, and files are written first | the temporary copy. Asked once the upload is in, before the upload's copy (`dumpfire.db.restore-temp` beside the database since card 2776, `.restore-temp.db` before) and `.pre-restore-safety.json` are written, so a refusal leaves neither; nothing is asked after the restore, whose database is the backup's |
   | `POST /api/reports` | it reads only, after a body | the first `generate*Report` |
   | `POST /api/reports/email` | mail leaves the process | the first `generate*Report`, and, **asked a second time** after the PDF is made, the sends. The second check decides again what the mail relies on: scope `all` asks `isAdmin` (`403 Only admins can generate all-boards reports`), scope `board` `canViewBoard`, and scope `category` that every board of the grouping in the PDF is still one the sender can open (`403 Failed to generate report or no access`). A refusal sends nothing; the day's allowance it took stays taken |
   | `POST /api/admin/backup` | the backup leaves the process | `runBackup` |
@@ -3065,9 +3065,9 @@ session's expiry moves on every time it is used.
   enter them again, and set new webhook secrets with their receivers. They carry no seal
   either (below): Import Backup of one fills nothing from this server, which changes nothing,
   since they hold their own secrets. The safety
-  copy an import writes before it replaces anything (`.pre-restore-safety.json`, in the
-  server's working directory, which in the image is `/app`: inside the container's own
-  storage, off the volume, never read back by the server and never sent anywhere) holds every
+  copy an import writes before it replaces anything (`.pre-restore-safety.json`, beside the
+  database, which in the image is `/app/data`, on the volume since card 2776, readable by its
+  owner alone, never read back by the server and never sent anywhere) holds every
   table as it was, sessions, secrets and the seal's key included, and is not deleted; it leaves out only the key remembered browsers are signed with, as a
   backup does, since the restore forgets that key anyway: see [How Large an Import Can Be](deployment.md#how-large-an-import-can-be).
 
