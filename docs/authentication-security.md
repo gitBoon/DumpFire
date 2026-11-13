@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.110
+version: 1.111
 status: As-Built
 date: 2026-11-13
 tags:
@@ -300,7 +300,7 @@ method but `GET` and `HEAD`: `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS` or any 
 
 **The threat.** The session cookie is `SameSite=Lax`, so a browser sends it with a request
 from any page of the same site, and a site is the scheme and the registrable domain, ports
-aside: a page on any other `https://*.elecfron.com` host is same-site to DumpFire. SvelteKit's
+aside: a page on any other host of the same registrable domain (any `https://*.example.com`, for a DumpFire at `https://dumpfire.example.com`) is same-site to DumpFire. SvelteKit's
 own origin check refuses a cross-site write only when its `Content-Type` is a form's
 (urlencoded, multipart, `text/plain`), and not at all under `vite dev`. So a page on a sibling
 host that ran someone else's script could send a signed-in visitor's browser to post, with

@@ -1923,7 +1923,7 @@ describe('a write that is not from DumpFire’s own page', () => {
 		it.each([
 			// The attacker's page's own Origin, as the browser sends it; a request
 			// no page started (`none`) carries none.
-			{ row: '(e)', site: 'same-site', origin: 'https://sibling.elecfron.com' },
+			{ row: '(e)', site: 'same-site', origin: 'https://sibling.example.com' },
 			{ row: '(f)', site: 'cross-site', origin: 'https://attacker.example.test' },
 			{ row: '(g)', site: 'none', origin: null }
 		])('$row the real attack: a body-less POST /api/admin/reset from the superadmin’s session, Sec-Fetch-Site: $site', async ({ site, origin }) => {
