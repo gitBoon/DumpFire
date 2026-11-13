@@ -75,7 +75,8 @@ import { mailedLinkOf, reachOf } from './decision-links';
 import { DAY_MS, decisionLinkBase, mailRestOf, reminderMail } from './decision-mail';
 import { isSmtpConfigured, trySendEmail } from './email';
 import { createLogger } from './logger';
-import { MASTER_PREF, type NotificationPref } from '$lib/notification-prefs';
+import { shouldNotifyUser } from './notifications';
+import type { NotificationPref } from '$lib/notification-prefs';
 import { stamp } from '$lib/timestamps';
 
 const log = createLogger('DECISIONS');
@@ -205,38 +206,19 @@ function personOf(p: DecisionParticipant) {
 /** The preference the reminder follows, with the master switch (decision 6): a key of the one list, so one nobody can save is refused. */
 const REMINDER_PREF: NotificationPref = 'email_decisions';
 
-/** The accounts whose stored preferences could not be read, each warned of once in this process (code review S6). */
-const unreadablePrefsWarned = new Set<number>();
-
 /**
  * Whether the account's preferences let it be sent the reminder (decision 6,
  * code review S6): the master switch first, then `email_decisions`; none
- * saved is every switch on. Where `shouldNotifyUser` reads preferences it
- * cannot parse as the defaults, every switch on, the reminder reads them,
- * and an account that is not there, as off for this mail: an unattended job
- * sends nothing it cannot show was wanted. One WARN line per account per
- * process says so, with its id alone, so a run every 5 minutes does not
- * repeat it.
+ * saved is every switch on. An account that is not there is off for this
+ * mail: an unattended job sends nothing it cannot show was wanted.
+ * Preferences that cannot be read are off, as they are now for every mail:
+ * `shouldNotifyUser` took that rule from here, with its one WARN line per
+ * account per process (card 2724).
  */
 function prefsAllow(userId: number): boolean {
-	const row = db.select({ prefs: users.notificationPrefs }).from(users).where(eq(users.id, userId)).get();
+	const row = db.select({ id: users.id }).from(users).where(eq(users.id, userId)).get();
 	if (row === undefined) return false;
-	if (!row.prefs) return true;
-	let stored: unknown;
-	try {
-		stored = JSON.parse(row.prefs);
-	} catch {
-		stored = undefined;
-	}
-	if (stored === null || typeof stored !== 'object' || Array.isArray(stored)) {
-		if (!unreadablePrefsWarned.has(userId)) {
-			unreadablePrefsWarned.add(userId);
-			log.warn(`The notification preferences of user ${userId} could not be read, so they are sent no decision reminder until they are saved again`, { userId });
-		}
-		return false;
-	}
-	const prefs = stored as Record<string, unknown>;
-	return prefs[MASTER_PREF] !== false && prefs[REMINDER_PREF] !== false;
+	return shouldNotifyUser(userId, REMINDER_PREF);
 }
 
 /**

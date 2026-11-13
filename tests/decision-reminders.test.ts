@@ -535,7 +535,9 @@ describe('who is due', () => {
 	});
 
 	it('passes over an account holder whose preferences cannot be read, warning once for each over three runs, and reminds the rest (50)', async () => {
-		// The code review's S6: read as off for this mail, where the other mails read them as every switch on.
+		// The code review's S6: read as off for this mail, where the other mails
+		// read them as every switch on; card 2724 made them off for every mail,
+		// with this one WARN line per account, now written by shouldNotifyUser.
 		const { decision, participants } = await opened([{ via: 'account' }, { via: 'account' }, { via: 'account' }]);
 		const [notJson, notObject, control] = participants;
 		db.update(users).set({ notificationPrefs: '{not json' }).where(eq(users.id, notJson.user!.id)).run();
@@ -547,7 +549,9 @@ describe('who is due', () => {
 		expect(mailedTo()).toEqual([control.p.email]);
 		expect(logged('WARN')).toEqual(
 			[notJson, notObject].map(
-				({ user }) => `The notification preferences of user ${user!.id} could not be read, so they are sent no decision reminder until they are saved again`
+				({ user }) =>
+					`The notification preferences of user ${user!.id} could not be read, so they are sent no mail they can switch off ` +
+					'until they are saved again: notification_prefs is not a JSON object'
 			)
 		);
 	});

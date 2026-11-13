@@ -80,7 +80,9 @@ let chief: SessionUser;
 /** The superadmin's session, which a save asks their current password from (card 2701). */
 let chiefSession: string;
 
-const stored = () => Object.fromEntries(db.select().from(settings).all().map((row) => [row.key, row.value]));
+// Not the form signing key, which every database a test starts on holds, as a started server's does (card 2750).
+const stored = () =>
+	Object.fromEntries(db.select().from(settings).all().filter((row) => row.key !== 'request_form_secret').map((row) => [row.key, row.value]));
 const save = (body: Record<string, unknown>) =>
 	api('PUT', '/api/admin/smtp', {
 		user: chief,

@@ -346,8 +346,8 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 			// request form signs with, which no restore brings in (card 2158):
 			// the row that was here went with the rest. The copy of it in
 			// memory is forgotten, as a reset does, or it would go on signing
-			// and accepting form tokens with the key the restore cleared, and a
-			// new one is made at first use. So is
+			// and accepting form tokens with the key the restore cleared, and the
+			// new one the restore wrote in its transaction is read (card 2750). So is
 			// the key remembered browsers are signed with, which no backup
 			// holds (card 2194): every browser is forgotten.
 			resetFormSecretCache();

@@ -5312,14 +5312,18 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 		expect(writers.get(TRANSACTION_MODULE)?.has('inTransaction')).toBe(true);
 		expect(writers.get('src/lib/server/decision-reminders.ts')?.has('runDecisionRemindersOnce')).toBe(true);
 		expect(writers.get('src/lib/server/write-as.ts')?.has('stillCallerNow')).toBe(true);
-		// A raw database call outside the listed modules is none: the signing key made once (`formSecret`, through
-		// `issueFormToken`), and a SELECT prepared.
-		for (const [file, name] of [
-			['src/lib/server/request-tokens.ts', 'issueFormToken'],
-			['src/lib/server/tokens.ts', 'getCardTokenTotals']
-		]) {
+		// A raw database call outside the listed modules is none: a SELECT prepared. (The signing key made once was the
+		// other example, `formSecret` through `issueFormToken`, until card 2750 moved its one write to
+		// `writeFormSecret`, at start-up and inside a reset's and a restore's transaction.)
+		for (const [file, name] of [['src/lib/server/tokens.ts', 'getCardTokenTotals']]) {
 			expect(derivedWriters.get(file)?.has(name)).toBe(true);
 			expect(writers.get(file)?.has(name) ?? false).toBe(false);
+		}
+		// Card 2750: the functions that sign or verify with that key only read it. `issueFormToken` made it at first
+		// use, and so did every read guard that reaches `purposeKey` (`revisionOf`, `decisionRuleGuard`,
+		// `resultsReleaseGuard`, `requireRevision`).
+		for (const name of ['issueFormToken', 'verifyFormToken', 'purposeKey']) {
+			expect(derivedWriters.get('src/lib/server/request-tokens.ts')?.has(name) ?? false, name).toBe(false);
 		}
 	});
 

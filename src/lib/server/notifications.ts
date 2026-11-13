@@ -87,21 +87,38 @@ function noLinkAddress(baseUrl: string | null, what: string): baseUrl is null {
 
 type NotifPrefs = Record<string, boolean>;
 
+/** The accounts whose stored preferences could not be read, each warned of once in this process (card 2724). */
+const unreadablePrefsWarned = new Set<number>();
+
+/** For tests: forget which accounts were warned of, as a restart does. */
+export function forgetUnreadablePrefsWarnings(): void {
+	unreadablePrefsWarned.clear();
+}
+
 /**
- * Get a user's notification preferences (defaults to all enabled).
+ * A user's notification preferences: what is stored, every key missing from
+ * it being on. `{}` when nothing is stored.
  *
- * Preferences that cannot be read, because the stored text is not JSON or is
- * not a JSON object, are the defaults, and a WARN line names the user. This is
- * called inside the transaction of whoever made the change being mailed about,
- * and an error thrown here used to fail that person's write: a comment could
- * not be saved on a board one of whose members had a `notification_prefs`
- * that would not parse.
+ * `null` when what is stored cannot be read, because it is not JSON or is not
+ * a JSON object (card 2724). Such preferences send no mail the person can
+ * switch off: what they asked for cannot be known, and the mail they cannot
+ * switch off (an invite, a password reset) never asks. They were read as the
+ * defaults, every switch on, so a damaged value sent mail its owner had
+ * turned off; the decision reminder already read them as off (card 2685,
+ * code review S6), and now every mail does. One WARN line per account per
+ * process says so, with the account's id: it was one at every read, and a
+ * busy board wrote one for each member at each change.
+ *
+ * This is called inside the transaction of whoever made the change being
+ * mailed about, so it never throws: an error here once failed that person's
+ * write, a comment not saved on a board one of whose members had a
+ * `notification_prefs` that would not parse.
  *
  * The account's own route (`api/account/notifications`) reads them through
- * here too, so a user whose stored preferences are unreadable is shown the
- * defaults and can save over them.
+ * here too: unreadable ones are shown with every switch off, as they are
+ * applied, and saving any switch replaces them.
  */
-export function getUserNotifPrefs(userId: number): NotifPrefs {
+export function getUserNotifPrefs(userId: number): NotifPrefs | null {
 	const user = db.select({ notificationPrefs: users.notificationPrefs })
 		.from(users).where(eq(users.id, userId)).get();
 	if (!user?.notificationPrefs) return {};
@@ -111,11 +128,15 @@ export function getUserNotifPrefs(userId: number): NotifPrefs {
 	} catch {
 		// Not JSON. Reported below, with what is JSON and not an object.
 	}
-	log.warn(
-		`The notification preferences of user ${userId} could not be read, so the defaults were used: ` +
-			'notification_prefs is not a JSON object'
-	);
-	return {};
+	if (!unreadablePrefsWarned.has(userId)) {
+		unreadablePrefsWarned.add(userId);
+		log.warn(
+			`The notification preferences of user ${userId} could not be read, so they are sent no mail they can switch off ` +
+				'until they are saved again: notification_prefs is not a JSON object',
+			{ userId }
+		);
+	}
+	return null;
 }
 
 /**
@@ -131,6 +152,8 @@ export function getUserNotifPrefs(userId: number): NotifPrefs {
  */
 export function shouldNotifyUser(userId: number, type: NotificationPref): boolean {
 	const prefs = getUserNotifPrefs(userId);
+	// Unreadable: off (card 2724).
+	if (prefs === null) return false;
 	// Master toggle
 	if (prefs[MASTER_PREF] === false) return false;
 	// Per-type toggle

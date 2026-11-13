@@ -6,7 +6,7 @@
  */
 import http from 'node:http';
 import https from 'node:https';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
 import { inTransaction } from '$lib/server/db/transaction';
@@ -90,7 +90,8 @@ describe('failingWrite', () => {
 		expect(writes.fired).toBe(true);
 		setting('third');
 
-		expect(db.select().from(settings).all().map((r) => r.key)).toEqual(['first', 'third']);
+		// Not the form signing key, which every database a test starts on holds, as a started server's does (card 2750).
+		expect(db.select().from(settings).all().map((r) => r.key).filter((key) => key !== 'request_form_secret')).toEqual(['first', 'third']);
 	});
 
 	it('starts counting again when it is armed and when it is reset', () => {
@@ -116,7 +117,7 @@ describe('failingWrite', () => {
 		insert.run('a', 'x');
 		setting('b');
 		expect(writes.count).toBe(0);
-		expect(db.select().from(settings).all()).toHaveLength(2);
+		expect(db.select().from(settings).all().filter((r) => r.key !== 'request_form_secret')).toHaveLength(2);
 
 		// Installed again for afterEach to remove.
 		writes = failingWrite();
@@ -827,7 +828,19 @@ describe('eachWriteInTurn', () => {
 });
 
 describe('sendAround(), a request whose body is held while something else happens', () => {
-	it('answers a refusal the gate makes before it reads the body, without waiting for it, as JSON', { timeout: 10_000 }, async () => {
+	// Each request sent once before either test (card 2755), so that the
+	// gate's own path, loaded through Vite, is loaded here: both are refused
+	// by the gate before any route is reached. Under the whole suite the first
+	// request through it can take seconds, and once took 11 s, past the 10 s
+	// these tests then allowed themselves. The fault they guard, a helper that waits for a body
+	// the gate never asks for, is a hang, which any limit catches, so they now
+	// take the suite's own; and the load is paid here, before either starts.
+	beforeAll(async () => {
+		await sendAround('POST', '/api/v1/boards/1/webhooks', { key: 'df_not-a-key' }, {}, () => {});
+		await sendAround('POST', '/%zz', { session: 'none' }, {}, () => {});
+	}, 60_000);
+
+	it('answers a refusal the gate makes before it reads the body, without waiting for it, as JSON', async () => {
 		makeUser();
 		const meanwhile = vi.fn();
 
@@ -837,7 +850,7 @@ describe('sendAround(), a request whose body is held while something else happen
 		expect(meanwhile).not.toHaveBeenCalled();
 	});
 
-	it('answers one that is not JSON as its text', { timeout: 10_000 }, async () => {
+	it('answers one that is not JSON as its text', async () => {
 		const res = await sendAround('POST', '/%zz', { session: 'none' }, {}, () => {});
 
 		expect(res).toEqual({ status: 400, body: 'Malformed URI' });

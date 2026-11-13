@@ -20,14 +20,31 @@
  * there were. Both reads are by id, ascending: the order the plain read gave,
  * which a join through `columns` would otherwise turn into results grouped by
  * board.
+ *
+ * The title is matched as typed (card 2718): `instr` of both sides lowered by
+ * SQLite, where it was a `LIKE` built from the text, so `%` and `_` were
+ * wildcards and "50%" found "500 tests". `lower()` folds A to Z alone, as
+ * `LIKE` did, so what matched in another case still does, and a title in
+ * letters beyond them is matched exactly as it was.
+ *
+ * `?editable=1` keeps only cards on boards the caller can edit
+ * (`editableBoardIds`), for a picker whose choice is an edit of the card's
+ * board: the decision page's linked cards, where every card on a board the
+ * caller could only read was offered and its link refused 403.
  */
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { cards, columns, boards, subtasks } from '$lib/server/db/schema';
-import { eq, like, isNull, and, inArray, ne, asc } from 'drizzle-orm';
-import { getAccessibleBoardIds } from '$lib/server/board-access';
+import { eq, isNull, and, inArray, ne, asc, sql, type SQL } from 'drizzle-orm';
+import type { SQLiteColumn } from 'drizzle-orm/sqlite-core';
+import { editableBoardIds, getAccessibleBoardIds } from '$lib/server/board-access';
 import { readQueryId } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
+
+/** `column` holds `text` as typed, in any case of A to Z: no character of it is a wildcard. */
+function holds(column: SQLiteColumn, text: string): SQL {
+	return sql`instr(lower(${column}), lower(${text})) > 0`;
+}
 
 export const GET: RequestHandler = async ({ url, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
@@ -44,7 +61,9 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 
 	// The boards the caller can open, or null for every board (an
 	// administrator). None: nothing to search, and no empty `IN ()` is built.
-	const open = getAccessibleBoardIds(locals.user);
+	const accessible = getAccessibleBoardIds(locals.user);
+	const editable = url.searchParams.get('editable') === '1' ? editableBoardIds(locals.user) : null;
+	const open = editable === null ? accessible : (accessible ?? [...editable]).filter((id) => editable.has(id));
 	if (open !== null && open.length === 0) return json([]);
 	const onOpenBoard = open === null ? undefined : inArray(columns.boardId, open);
 
@@ -56,7 +75,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		.innerJoin(columns, eq(cards.columnId, columns.id))
 		.where(
 			and(
-				idMatch ? eq(cards.id, Number(idMatch[1])) : like(cards.title, `%${q}%`),
+				idMatch ? eq(cards.id, Number(idMatch[1])) : holds(cards.title, q),
 				isNull(cards.archivedAt),
 				excludeId ? ne(cards.id, excludeId) : undefined,
 				onOpenBoard
@@ -77,7 +96,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 				.innerJoin(columns, eq(cards.columnId, columns.id))
 				.where(
 					and(
-						idMatch ? eq(subtasks.id, Number(idMatch[1])) : like(subtasks.title, `%${q}%`),
+						idMatch ? eq(subtasks.id, Number(idMatch[1])) : holds(subtasks.title, q),
 						isNull(cards.archivedAt),
 						onOpenBoard
 					)

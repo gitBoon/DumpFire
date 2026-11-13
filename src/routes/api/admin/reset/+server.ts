@@ -3,7 +3,7 @@ import { sqlite } from '$lib/server/db';
 import { restorableTables } from '$lib/server/db/restore';
 import { SESSION_COOKIE_NAME, whilePasswordHolds, type SessionUser } from '$lib/server/auth';
 import { readBody } from '$lib/server/request-body';
-import { resetFormSecretCache } from '$lib/server/request-tokens';
+import { resetFormSecretCache, writeFormSecret } from '$lib/server/request-tokens';
 import { resetKnownBrowserSecretCache } from '$lib/server/known-browsers';
 import { requireSuperadmin } from '$lib/server/route-guards';
 import { confirmStepUp } from '$lib/server/step-up';
@@ -94,6 +94,11 @@ export const POST: RequestHandler = async ({ request, locals, cookies }) => {
 			// Nothing is caught: one table that cannot be cleared fails them all.
 			for (const table of tables) sqlite.prepare(`DELETE FROM "${table}"`).run();
 
+			// The form signing key was a setting and went with the rest: a new
+			// one, in this transaction, so the reset never commits without one
+			// and no read-only check is ever the first to need it (card 2750).
+			writeFormSecret();
+
 			return { tables: tables.length, rows, files };
 		}));
 	} catch (e) {
@@ -116,10 +121,10 @@ export const POST: RequestHandler = async ({ request, locals, cookies }) => {
 	// succeeded.
 
 	// The key the public request form's tokens are signed with was a setting,
-	// and is gone. The copy of it kept in memory is forgotten with it, so that
-	// the next token is signed with a new key, kept in the settings, and a
-	// token signed with the old one is refused. Left in memory, the old key
-	// went on signing until the server stopped, with no setting behind it.
+	// and was replaced in the reset's transaction. The copy of the old one kept
+	// in memory is forgotten, so that the next token is signed with the new
+	// key and a token signed with the old one is refused. Left in memory, the
+	// old key went on signing until the server stopped.
 	resetFormSecretCache();
 	// So was the key remembered browsers are signed with (card 2194): every
 	// browser is forgotten, and the next one remembered makes a new key.

@@ -282,7 +282,8 @@ describe('POST /api/admin/reset', () => {
 				});
 
 				// Everything is cleared, the users among them: they used to stay.
-				for (const table of cleared()) expect(count(table), table).toBe(0);
+				// Settings hold one row: the form signing key, made again as the reset commits (card 2750).
+				for (const table of cleared()) expect(count(table), table).toBe(table === 'settings' ? 1 : 0);
 
 				// The backup history is as it was, and so is the line that was in
 				// the system log.
@@ -347,7 +348,9 @@ describe('POST /api/admin/reset', () => {
 			'update "sessions" set',
 			'update "sessions" set'
 		]);
-		expect(run.writes.slice(2).sort()).toEqual(
+		// And the new form signing key, last, in the same transaction (card 2750).
+		expect(run.writes.at(-1)).toMatch(/^INSERT INTO settings \(key, value\) VALUES/);
+		expect(run.writes.slice(2, -1).sort()).toEqual(
 			cleared()
 				.map((table) => `DELETE FROM "${table}"`)
 				.sort()
@@ -462,8 +465,9 @@ describe('POST /api/admin/reset', () => {
 		expect((await reset(e)).status).toBe(200);
 
 		// The key was a setting and went with the rest. The copy of it in memory
-		// used to stay, and went on accepting this token.
-		expect(count('settings')).toBe(0);
+		// used to stay, and went on accepting this token. A new one is made as
+		// the reset commits (card 2750), and it is the only setting.
+		expect(sqlite.prepare('SELECT key FROM settings').all()).toEqual([{ key: 'request_form_secret' }]);
 		expect(verifyFormToken(before)).toBe(false);
 
 		// A token made now is good, and is signed with a key that is in the
@@ -489,7 +493,8 @@ describe('POST /api/admin/reset', () => {
 		expect(res.status).toBe(200);
 		expect(res.body).toMatchObject({ success: true, redirect: '/setup', trash: { moved: 3, missing: 0 } });
 		expect(res.body.trash.failed).toEqual([expect.stringMatching(/^card \d+, "\.\.\/outside\.txt": /)]);
-		for (const table of cleared()) expect(count(table), table).toBe(0);
+		// Settings hold one row: the form signing key, made again as the reset commits (card 2750).
+		for (const table of cleared()) expect(count(table), table).toBe(table === 'settings' ? 1 : 0);
 		expect(logLines().at(-1)?.message).toMatch(
 			/3 attachment file\(s\) moved to the trash, and 1 could not be moved and are where they were: card \d+, "\.\.\/outside\.txt"/
 		);

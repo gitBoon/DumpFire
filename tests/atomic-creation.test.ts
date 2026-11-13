@@ -409,20 +409,23 @@ describe('POST /api/cards/:id/comments', () => {
 			// Reading the member's preferences used to throw inside the owner's
 			// transaction, and the owner's comment was not saved.
 			const res = await api('POST', `/api/cards/${first.id}/comments`, { user: owner, body: { content: 'Hello' } });
+			const again = await api('POST', `/api/cards/${first.id}/comments`, { user: owner, body: { content: 'Again' } });
 			await sent.settle();
 
-			expect(res.status).toBe(201);
-			expect(db.select({ content: cardComments.content }).from(cardComments).all()).toEqual([{ content: 'Hello' }]);
-			// Preferences that cannot be read are the defaults, and the default is to be told.
-			expect(sent.emails.map((e) => e.to)).toContain('member@example.test');
+			expect([res.status, again.status]).toEqual([201, 201]);
+			expect(db.select({ content: cardComments.content }).from(cardComments).all()).toEqual([{ content: 'Hello' }, { content: 'Again' }]);
+			// Preferences that cannot be read send no mail that can be switched
+			// off (card 2724): they were the defaults, and sent every mail.
+			expect(sent.emails.map((e) => e.to)).not.toContain('member@example.test');
+			// One line for the account, not one at each read.
 			expect(
 				sqlite.prepare("SELECT level, message FROM system_logs WHERE context = 'NOTIFY' ORDER BY id").all()
 			).toEqual([
 				{
 					level: 'WARN',
 					message:
-						`The notification preferences of user ${member.id} could not be read, so the defaults were used: ` +
-						'notification_prefs is not a JSON object'
+						`The notification preferences of user ${member.id} could not be read, so they are sent no mail they can switch off ` +
+						'until they are saved again: notification_prefs is not a JSON object'
 				}
 			]);
 		} finally {
@@ -692,12 +695,14 @@ describe('PUT /api/admin/smtp', () => {
 		headers: { cookie: `${SESSION_COOKIE_NAME}=${chiefSession}` }
 	});
 
+	// Not the form signing key, which every database a test starts on holds, as a started server's does (card 2750).
 	const stored = () =>
 		Object.fromEntries(
 			db
 				.select()
 				.from(settings)
 				.all()
+				.filter((row) => row.key !== 'request_form_secret')
 				.map((row) => [row.key, row.value])
 		);
 

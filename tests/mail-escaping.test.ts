@@ -473,8 +473,12 @@ describe('every mail in notifications.ts', () => {
 	it('has a case for every mail the module exports', () => {
 		const exported = Object.entries(notifications)
 			// emailTemplate is the wrapper, not a mail: card 2675's decision mails call it with the title escaped. shouldNotifyUser
-			// reads a preference, for card 2679's concern write, and sends nothing.
-			.filter(([name, value]) => typeof value === 'function' && !['getUserNotifPrefs', 'emailTemplate', 'shouldNotifyUser'].includes(name))
+			// reads a preference, for card 2679's concern write, and sends nothing. forgetUnreadablePrefsWarnings is for tests
+			// (card 2724).
+			.filter(
+				([name, value]) =>
+					typeof value === 'function' && !['getUserNotifPrefs', 'emailTemplate', 'shouldNotifyUser', 'forgetUnreadablePrefsWarnings'].includes(name)
+			)
 			.map(([name]) => name)
 			.sort();
 		const covered = [...new Set(MAILS.map((mail) => mail.name.split(' ')[0]))].sort();

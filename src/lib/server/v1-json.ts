@@ -73,5 +73,6 @@ function walk(value: unknown, key: string | null): unknown {
 
 /** `json` from `@sveltejs/kit`, with every stored timestamp in `data` as ISO 8601 (`onTheWire`). */
 export function json(data: unknown, init?: ResponseInit): Response {
+	// error-shape-allowed: v1-json
 	return kitJson(onTheWire(data), init);
 }

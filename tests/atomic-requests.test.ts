@@ -17,6 +17,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
+import { createHmac } from 'node:crypto';
 import { db, sqlite } from '$lib/server/db';
 import {
 	activityLog,
@@ -32,7 +33,7 @@ import {
 import type { SessionUser } from '$lib/server/auth';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { requesterAddress } from '$lib/server/request-access';
-import { issueFormToken, newRequestToken, resetFormSecretCache } from '$lib/server/request-tokens';
+import { ensureFormSecret, issueFormToken, newRequestToken, resetFormSecretCache, verifyFormToken } from '$lib/server/request-tokens';
 import { pageLoad } from './helpers/actions';
 import { api, type ApiResult } from './helpers/api';
 import { eachWriteInTurn } from './helpers/each-write';
@@ -929,5 +930,48 @@ describe('mail to a requester who made the request signed in', () => {
 		if (all.type !== 'data') throw new Error(`All Tasks answered ${JSON.stringify(all)}`);
 		const inAll = all.data.buckets.flatMap((b: any) => b.cards).find((c: any) => c.id === cardId);
 		expect(inAll.requestOrigin).toEqual(origin);
+	});
+});
+
+// Card 2750: the key form tokens and decision revisions are signed with was
+// made at first use, from inside checks meant to be read-only. It is made at
+// start-up and inside a reset's and a restore's transaction now, and every
+// function that signs or verifies only reads it.
+describe('the form signing key (card 2750)', () => {
+	const keyRows = () => sqlite.prepare("SELECT value FROM settings WHERE key = 'request_form_secret'").all() as { value: string }[];
+	const changes = () => (sqlite.prepare('SELECT total_changes() AS n').get() as { n: number }).n;
+
+	it('is made where there is none, and the one there is kept, so two first uses agree', () => {
+		sqlite.prepare("DELETE FROM settings WHERE key = 'request_form_secret'").run();
+		ensureFormSecret();
+		const made = keyRows();
+		expect(made).toEqual([{ value: expect.stringMatching(/^[0-9a-f]{64}$/) }]);
+
+		// A second start, or a second process that lost the race, writes nothing over it.
+		ensureFormSecret();
+		expect(keyRows()).toEqual(made);
+
+		// Another process wrote first: its key is the one this process signs with.
+		const theirs = 'a'.repeat(64);
+		sqlite.prepare("UPDATE settings SET value = ? WHERE key = 'request_form_secret'").run(theirs);
+		ensureFormSecret();
+		const token = issueFormToken();
+		const [expiry, nonce, signature] = token.split('.');
+		expect(signature).toBe(createHmac('sha256', theirs).update(`${expiry}.${nonce}`).digest('hex'));
+	});
+
+	it('is only read when a form token is made or checked, and where it is missing both refuse and nothing is written', () => {
+		const changesBefore = changes();
+		const token = issueFormToken();
+		expect(verifyFormToken(token)).toBe(true);
+		expect(changes()).toBe(changesBefore);
+
+		sqlite.prepare("DELETE FROM settings WHERE key = 'request_form_secret'").run();
+		resetFormSecretCache();
+		const changesAfterDelete = changes();
+		expect(() => issueFormToken()).toThrow(/form signing key is missing/);
+		expect(() => verifyFormToken(token)).toThrow(/form signing key is missing/);
+		expect(changes()).toBe(changesAfterDelete);
+		expect(keyRows()).toEqual([]);
 	});
 });

@@ -100,6 +100,9 @@ function contentsOf(database: Database.Database): Record<string, string[]> {
 	return contents;
 }
 
+/** A table's rows without the form signing key, which a restore makes in its transaction (card 2750) and no backup brings. */
+const withoutFormKey = (rows: string[]) => rows.filter((row) => !row.includes('"key":"request_form_secret"'));
+
 /** The tables that hold something a working copy switches off. */
 const OUTSIDE_TABLES = ['report_schedules', 'webhooks', 'settings'];
 
@@ -376,7 +379,8 @@ describe('restoring as a working copy', () => {
 		// The backup configuration keeps what does not reach outside. The mail
 		// settings are gone, and no other setting is touched.
 		const settings = settingsIn(live);
-		expect(Object.keys(settings).sort()).toEqual(['app_url', 'backup_config', 'theme']);
+		// With the form signing key the restore makes (card 2750).
+		expect(Object.keys(settings).sort()).toEqual(['app_url', 'backup_config', 'request_form_secret', 'theme']);
 		expect(JSON.parse(settings['backup_config'])).toEqual(BACKUP_CONFIG_OFF);
 		expect(settings['app_url']).toBe(APP_URL);
 		expect(settings['theme']).toBe('dark');
@@ -429,7 +433,7 @@ describe('restoring as a working copy', () => {
 		expect(result.errors).toEqual([]);
 		expect(result.outside).toBeNull();
 		expect(reachingOutside(live)).toEqual(AS_THE_BACKUP_HAS_IT);
-		for (const table of OUTSIDE_TABLES) expect(contentsOf(live)[table]).toEqual(contentsOf(backup)[table]);
+		for (const table of OUTSIDE_TABLES) expect(withoutFormKey(contentsOf(live)[table])).toEqual(withoutFormKey(contentsOf(backup)[table]));
 		expect(everythingElseIn(live)).toEqual(everythingElseIn(backup));
 	});
 
@@ -447,7 +451,7 @@ describe('restoring as a working copy', () => {
 			expect(result.errors).toEqual([]);
 			expect(result.outside).toEqual({ ...SWITCHED_OFF, backupScheduleWasOn: false, backupDestinations: 0 });
 			// It went on to the mail settings, and the restore is committed.
-			expect(Object.keys(settingsIn(live)).sort()).toEqual(['app_url', 'theme']);
+			expect(Object.keys(settingsIn(live)).sort()).toEqual(['app_url', 'request_form_secret', 'theme']);
 			expect(everythingElseIn(live)).toEqual(everythingElseIn(backup));
 		}
 	);
@@ -472,8 +476,8 @@ describe('restoring as a working copy', () => {
 			mailSettings: 0
 		});
 		// No configuration is written where there was none.
-		expect(settingsIn(live)).toEqual({ app_url: APP_URL, theme: 'dark' });
-		for (const table of OUTSIDE_TABLES) expect(contentsOf(live)[table]).toEqual(contentsOf(backup)[table]);
+		expect(settingsIn(live)).toEqual({ app_url: APP_URL, request_form_secret: expect.stringMatching(/^[0-9a-f]{64}$/), theme: 'dark' });
+		for (const table of OUTSIDE_TABLES) expect(withoutFormKey(contentsOf(live)[table])).toEqual(withoutFormKey(contentsOf(backup)[table]));
 	});
 
 	it('says the backup schedule was already off when it was, and still removes its destinations', () => {
@@ -911,7 +915,8 @@ describe('through the route', () => {
 		expect(logged[0]).toMatch(/Filled in: first_completed_at on 0 card\(s\), access_token on 0 request\(s\)\.$/);
 		expect(`${response.body.message} ${logged[0]}`).not.toMatch(/working copy|switched off|removed/i);
 		expect(reachingOutside(sqlite)).toEqual(AS_THE_BACKUP_HAS_IT);
-		for (const table of OUTSIDE_TABLES) expect(contentsOf(sqlite)[table]).toEqual(contentsOf(backup)[table]);
+		// The settings as the backup has them, beside the form signing key the restore makes (card 2750).
+		for (const table of OUTSIDE_TABLES) expect(withoutFormKey(contentsOf(sqlite)[table])).toEqual(withoutFormKey(contentsOf(backup)[table]));
 	});
 
 	it('says what a working copy of a backup made since card 2169 had on, and the webhooks to enter', async () => {
@@ -1098,15 +1103,16 @@ describe('through the route', () => {
 		// backup's is left out, and the one that was here went with the rest.
 		// The copy in memory of the one it replaced used to stay, and went on
 		// accepting this token.
-		expect(settingsIn(sqlite)['request_form_secret']).toBeUndefined();
-		expect(verifyFormToken(before)).toBe(false);
-
-		// A token made now is signed with a key made at first use and kept in
-		// the settings: a process starting now agrees with this one.
-		const after = issueFormToken();
-		expect(verifyFormToken(after)).toBe(true);
+		// A new one is made as the restore commits (card 2750), not at first
+		// use, so no check that only reads is the first to need it.
 		const made = settingsIn(sqlite)['request_form_secret'];
 		expect(made).toMatch(/^[0-9a-f]{64}$/);
+		expect(verifyFormToken(before)).toBe(false);
+
+		// A token made now is signed with it: a process starting now agrees
+		// with this one.
+		const after = issueFormToken();
+		expect(verifyFormToken(after)).toBe(true);
 		resetFormSecretCache();
 		expect(verifyFormToken(after)).toBe(true);
 		expect(verifyFormToken(before)).toBe(false);

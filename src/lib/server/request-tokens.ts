@@ -16,8 +16,9 @@
  *    and is not a secret.
  */
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import type Database from 'better-sqlite3';
 import { eq } from 'drizzle-orm';
-import { db } from './db';
+import { db, sqlite } from './db';
 import { settings, type TaskRequest } from './db/schema';
 
 // ─── Request tokens ──────────────────────────────────────────────────────────
@@ -80,26 +81,62 @@ export const REQUEST_FORM_SECRET_KEY = 'request_form_secret';
 
 let cachedSecret: string | null = null;
 
+/** The stored key, or undefined where there is none. A read, and nothing else. */
+function storedSecret(): string | undefined {
+	return db.select().from(settings).where(eq(settings.key, REQUEST_FORM_SECRET_KEY)).get()?.value;
+}
+
 /**
- * The key form tokens are signed with.
+ * Write a new form key where there is none (card 2750): the one place it is
+ * written. At start-up (`ensureFormSecret`), and inside the transaction of a
+ * reset and of a restore, each of which clears it, so that neither commits
+ * without one and a write that fails rolls either back. The caller forgets
+ * the key held in memory once its transaction commits
+ * (`resetFormSecretCache`), and the next use reads the new one.
  *
- * Generated on first use and kept in the settings table, so tokens survive a
- * restart and every instance sharing the database agrees on them.
+ * It was made at first use, from inside `formSecret`, which every function
+ * that signs reaches, the read guards among them (`decisionRuleGuard`,
+ * `resultsReleaseGuard`, `requireRevision`, through `revisionOf` and
+ * `purposeKey`): a check meant to be read-only, run before a write, could
+ * insert a settings row once.
+ *
+ * Two at once agree. The insert does nothing where a key is there, and the
+ * key used is the one read from the table, never the one written here, so
+ * whichever process wrote first is the one every process uses.
+ */
+export function writeFormSecret(database: Database.Database = sqlite): void {
+	database
+		.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING')
+		.run(REQUEST_FORM_SECRET_KEY, randomBytes(32).toString('hex'));
+}
+
+/**
+ * At start-up, after the migrations (hooks.server.ts): make the form's key
+ * where there is none, and forget any held. Thrown where it cannot: the
+ * server stops before it listens.
+ */
+export function ensureFormSecret(): void {
+	cachedSecret = null;
+	writeFormSecret();
+	if (storedSecret() === undefined) throw new Error('The form signing key could not be made: no row was there to read back');
+}
+
+/**
+ * The key form tokens are signed with, kept in the settings table, so tokens
+ * survive a restart and every instance sharing the database agrees on them.
+ *
+ * Read, never written (card 2750). Where there is none, nothing is signed
+ * and nothing verified: it throws, and the request fails (fail closed).
+ * `ensureFormSecret` makes it at every start and after a reset or a restore,
+ * so a missing key is a fault, never the first use.
  */
 function formSecret(): string {
 	if (cachedSecret) return cachedSecret;
-
-	const existing = db.select().from(settings).where(eq(settings.key, REQUEST_FORM_SECRET_KEY)).get();
-	if (existing) {
-		cachedSecret = existing.value;
-		return cachedSecret;
+	const existing = storedSecret();
+	if (existing === undefined) {
+		throw new Error('The form signing key is missing; it is made at start-up and after a reset or a restore (ensureFormSecret)');
 	}
-
-	const created = randomBytes(32).toString('hex');
-	db.insert(settings).values({ key: REQUEST_FORM_SECRET_KEY, value: created }).onConflictDoNothing().run();
-	// Read back rather than trust what we wrote: if another process got there
-	// first, theirs is the one in the table.
-	cachedSecret = db.select().from(settings).where(eq(settings.key, REQUEST_FORM_SECRET_KEY)).get()!.value;
+	cachedSecret = existing;
 	return cachedSecret;
 }
 
@@ -141,7 +178,8 @@ export function verifyFormToken(token: string | null | undefined, now: number = 
 /**
  * Forget the cached signing key, as a fresh process would. For a reset, which
  * clears the setting it is a copy of, and for an import, which replaces it,
- * once either is committed; and for tests.
+ * once either is committed (each has written the new one in its transaction,
+ * `writeFormSecret`, card 2750); and for tests.
  */
 export function resetFormSecretCache(): void {
 	cachedSecret = null;

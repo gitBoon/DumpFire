@@ -4224,6 +4224,8 @@ describe('restoring a backup taken before the latest migrations', () => {
 
 		expect(result.errors).toEqual(['settings row (key NULL): NOT NULL constraint failed: settings.key']);
 		expect(live.prepare('SELECT key, value FROM settings ORDER BY key').all()).toEqual([
+			// Made in the restore's transaction (card 2750).
+			{ key: 'request_form_secret', value: expect.stringMatching(/^[0-9a-f]{64}$/) },
 			{ key: 'smtp_host', value: 'mail.example.test' },
 			{ key: 'theme', value: 'dark' }
 		]);
@@ -4903,7 +4905,9 @@ describe('restoring a backup taken before the latest migrations', () => {
 			expect(logged).toEqual([`[ERROR] [IMPORT] Restore committed, with 1 problem(s): ${problem}`]);
 			// And it is what it says: the backup is in, without that one row.
 			expect(sqlite.prepare('SELECT id FROM boards ORDER BY id').all()).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
+			// And the form signing key, made again once the restore committed (card 2750).
 			expect(sqlite.prepare('SELECT key FROM settings ORDER BY key').all()).toEqual([
+				{ key: 'request_form_secret' },
 				{ key: 'smtp_host' },
 				{ key: 'theme' }
 			]);

@@ -17,12 +17,21 @@ import type { RequestHandler } from './$types';
  */
 const DEFAULTS: Record<string, boolean> = defaultPrefs();
 
-/** GET — Return current user's notification preferences. */
+/** Every key, each off: how stored preferences that cannot be read are applied (card 2724). */
+const ALL_OFF: Record<string, boolean> = Object.fromEntries(Object.keys(DEFAULTS).map((key) => [key, false]));
+
+/**
+ * GET — Return current user's notification preferences.
+ *
+ * Stored preferences that cannot be read are answered as they are applied,
+ * every switch off, with `unreadable: true` so the page can say why
+ * (card 2724).
+ */
 export const GET: RequestHandler = async ({ locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 
-	// Stored preferences that cannot be read are the defaults (`getUserNotifPrefs`).
 	const stored = getUserNotifPrefs(locals.user.id);
+	if (stored === null) return json({ ...ALL_OFF, unreadable: true });
 	return json({ ...DEFAULTS, ...stored });
 };
 
@@ -37,9 +46,10 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
 	const saved = writeAs(locals, (caller) => {
 		const userId = requireUser(caller).id;
 
-		// Read existing. Unreadable ones are the defaults, so this save replaces
-		// them with something that can be read.
-		const existing = getUserNotifPrefs(userId);
+		// Read existing. Unreadable ones start from every switch off, as they
+		// were applied and shown, so this save replaces them with something
+		// that can be read and holds what the page showed (card 2724).
+		const existing = getUserNotifPrefs(userId) ?? ALL_OFF;
 
 		// Merge: only known keys, each `true` or `false`. A known key sent as
 		// anything else (`"false"`, 0, null) was left out without a word, and is a

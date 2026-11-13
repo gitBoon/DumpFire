@@ -66,9 +66,11 @@ let cachedSecret: string | null = null;
 
 /**
  * The key the cookies are signed with: read once into memory, and made on
- * first use when `make` is true (only when a browser is remembered), exactly as
- * the request form's key is (request-tokens.ts). Null when there is none and
- * none is to be made: no cookie can be good then.
+ * first use when `make` is true, which is only when a browser is remembered, a
+ * write of its own. A check of a cookie never makes it: null when there is
+ * none, and no cookie can be good then. (The request form's key was made the
+ * same way from inside read-only checks, and is made at start-up and inside a
+ * reset's and a restore's transaction since card 2750.)
  */
 function knownBrowserSecret(make: boolean): string | null {
 	if (cachedSecret) return cachedSecret;

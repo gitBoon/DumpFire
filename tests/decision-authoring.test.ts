@@ -52,7 +52,8 @@ import { markReviewed, setDecider, updateDraft } from '$lib/server/decision-auth
 import { openDecision } from '$lib/server/decision-lifecycle-writes';
 import { setParticipants } from '$lib/server/decision-participant-writes';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
-import { purposeKey } from '$lib/server/request-tokens';
+import { purposeKey, resetFormSecretCache } from '$lib/server/request-tokens';
+import { requireRevision } from '$lib/server/decision-write-shared';
 import { checkContent, refusalsOf, WARNING_CODES, type WorkingContent } from '$lib/decision-readiness';
 import { STALE_REVISION } from '$lib/decision-words';
 import { stamp } from '$lib/timestamps';
@@ -488,6 +489,28 @@ describe('the draft revision', () => {
 		// A purpose key is that purpose's alone.
 		expect(purposeKey('decision-revision').equals(purposeKey('another purpose'))).toBe(false);
 		expect(STALE_REVISION).toBe(STALE);
+	});
+
+	// Card 2750: the revision is keyed with the form signing key, which was made
+	// at its first use, so the first revision check after a start, a reset or a
+	// restore could write a settings row. requireRevision stands for every read
+	// guard that signs (decisionRuleGuard and resultsReleaseGuard reach the same
+	// revisionOf).
+	it('is checked by requireRevision with no write, and refused where the signing key is missing, with none written', () => {
+		const draft = draftOf({ closesAt: FUTURE });
+		const changes = () => (sqlite.prepare('SELECT total_changes() AS n').get() as { n: number }).n;
+		// As a process that has just started: the key is in the settings, and nothing is held.
+		resetFormSecretCache();
+		const atStart = changes();
+		expect(() => requireRevision(decisionRow(draft.id), revisionNow(draft.id))).not.toThrow();
+		expect(changes()).toBe(atStart);
+
+		sqlite.prepare("DELETE FROM settings WHERE key = 'request_form_secret'").run();
+		resetFormSecretCache();
+		const withoutKey = changes();
+		expect(() => requireRevision(decisionRow(draft.id), 'a'.repeat(64))).toThrow(/form signing key is missing/);
+		expect(changes()).toBe(withoutKey);
+		expect(sqlite.prepare("SELECT key FROM settings WHERE key = 'request_form_secret'").all()).toEqual([]);
 	});
 
 	describe("covers every column the editor's writes change (9)", () => {

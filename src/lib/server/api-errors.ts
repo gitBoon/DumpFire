@@ -231,8 +231,8 @@ export async function jsonInPlaceOf(response: Response, method: string): Promise
 	if (allow !== null) headers.set('allow', allow);
 
 	// The status is the old answer's, so it is not written here as a number,
-	// and tests/error-shape.test.ts lists this line as the one answer it
-	// cannot read. Move the line and that list has to follow.
+	// and tests/error-shape.test.ts allows it by the marker below.
+	// error-shape-allowed: replaced-failure
 	return json({ message }, { status: response.status, headers });
 }
 

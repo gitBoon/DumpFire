@@ -30,8 +30,11 @@
  * error(e.status, e.message)`).
  *
  * A legitimate answer that cannot be written so that this test can read it
- * goes on `ALLOWED` below, by file and line and with the reason. The rule is
- * not loosened for it.
+ * goes on `ALLOWED` below, with the reason, and is marked where it is made by
+ * a comment naming it, `// error-shape-allowed: <name>`, on its line or the
+ * line above. The rule is not loosened for it. The list was keyed by line
+ * number until card 2723: any line added above an entry broke this test for a
+ * change that had nothing to do with it.
  *
  * It needs no database. `tests/setup.ts` still runs, as it does for every file.
  */
@@ -44,21 +47,24 @@ const ROOT = process.cwd();
 
 /**
  * Answers this test cannot classify and that are right as they are, as
- * `'path/from/the/repository/root.ts:line': 'why'`.
+ * `'path/from/the/repository/root.ts#name': 'why'`, where `name` is the one
+ * its marker comment gives (`MARKER`).
  *
- * Three entries. An entry that no longer matches a finding fails the test, so
- * that the list cannot outlive its reasons.
+ * Three entries. An entry that no longer matches a finding fails the test, and
+ * so does a marker that is on no finding, so that neither can outlive its
+ * reasons; a finding marked with a name not listed here is a fault like any
+ * other.
  */
 const ALLOWED: Record<string, string> = {
-	'src/lib/server/api-errors.ts:236':
+	'src/lib/server/api-errors.ts#replaced-failure':
 		'jsonInPlaceOf: the JSON the gate puts in place of a failure that was not JSON. Its status is the ' +
 		'status of the answer it replaces, which cannot be written as a number, and its body is { message } ' +
 		'and nothing else. tests/gate.test.ts holds what it answers.',
-	'src/lib/server/v1-json.ts:76':
+	'src/lib/server/v1-json.ts#v1-json':
 		"json, the v1 API's own: SvelteKit's json given its caller's body and options, with each stored " +
 		'timestamp in ISO 8601 (card 2095, plan R1). Each call of it is read where it is made, as a call of ' +
 		"SvelteKit's json is: the import of it is read as one below.",
-	'src/hooks.server.ts:424':
+	'src/hooks.server.ts#malformed-uri':
 		'the 400 "Malformed URI" for an address that cannot be decoded, in plain text: what SvelteKit itself ' +
 		'answered before it called the gate, up to 2.60, and which the gate now answers in its place, word for ' +
 		'word, since SvelteKit 2.61 hands it such an address (card 2227). It is no route, under /api/ or not. ' +
@@ -80,10 +86,15 @@ const LEAST_ERROR_CALLS = 300;
 /** Likewise for `json(...)` answers that state a status. */
 const LEAST_JSON_WITH_STATUS = 30;
 
+/** The comment that marks an allowed answer, on its line or the line above: `// error-shape-allowed: malformed-uri`. */
+const MARKER = /\/\/ error-shape-allowed: ([a-z0-9-]+)/;
+
 type Finding = {
 	/** `src/routes/api/labels/+server.ts:110`. */
 	at: string;
 	what: string;
+	/** `src/hooks.server.ts#malformed-uri`, when a marker is on its line or the line above. */
+	marked?: string;
 };
 
 type Found = {
@@ -94,6 +105,8 @@ type Found = {
 	jsonWithStatus: number;
 	/** Answers of 400 or above that are returned and not thrown. */
 	returnedFailures: number;
+	/** Every marker in the file, as `file#name`, whether or not it is on a finding. */
+	markers: string[];
 };
 
 /** The names of an object literal's keys, or null if one of them cannot be read. */
@@ -128,7 +141,18 @@ function knownToBeTypedError(node: ts.Node, name: string): boolean {
 /** Everything in one file that answers a failure in a shape other than `{ message }`. */
 function check(file: string, source: string): Found {
 	const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
-	const found: Found = { findings: [], errorCalls: 0, jsonWithStatus: 0, returnedFailures: 0 };
+	const lines = source.split(/\r?\n/);
+	const markerOn = (line: number) => MARKER.exec(lines[line - 1] ?? '')?.[1];
+	const found: Found = {
+		findings: [],
+		errorCalls: 0,
+		jsonWithStatus: 0,
+		returnedFailures: 0,
+		markers: lines.flatMap((text) => {
+			const name = MARKER.exec(text)?.[1];
+			return name ? [`${file}#${name}`] : [];
+		})
+	};
 
 	// What this file calls `error`, `json` and `text` from @sveltejs/kit. A
 	// file that does not import one of them has no such call: `error` is also
@@ -155,7 +179,8 @@ function check(file: string, source: string): Found {
 
 	const report = (node: ts.Node, what: string) => {
 		const line = tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1;
-		found.findings.push({ at: `${file}:${line}`, what });
+		const name = markerOn(line) ?? markerOn(line - 1);
+		found.findings.push({ at: `${file}:${line}`, what, ...(name ? { marked: `${file}#${name}` } : {}) });
 	};
 
 	/** An `error(status, body)` call. */
@@ -272,26 +297,34 @@ const FILES = [
 ];
 
 describe('every failure the API answers', () => {
-	const total: Found = { findings: [], errorCalls: 0, jsonWithStatus: 0, returnedFailures: 0 };
+	const total: Found = { findings: [], errorCalls: 0, jsonWithStatus: 0, returnedFailures: 0, markers: [] };
 	for (const file of FILES) {
 		const found = check(file, readFileSync(join(ROOT, file), 'utf8'));
 		total.findings.push(...found.findings);
 		total.errorCalls += found.errorCalls;
 		total.jsonWithStatus += found.jsonWithStatus;
 		total.returnedFailures += found.returnedFailures;
+		total.markers.push(...found.markers);
 	}
 
 	it('is JSON with a `message` and no `error`, in every route file, the gate and the server library', () => {
-		const faults = total.findings.filter((f) => !(f.at in ALLOWED)).map((f) => `${f.at} ${f.what}`);
+		const faults = total.findings
+			.filter((f) => !(f.marked !== undefined && f.marked in ALLOWED))
+			.map((f) => `${f.at} ${f.what}${f.marked ? ` (marked ${f.marked}, which is not on the allow-list)` : ''}`);
 
 		// Each line names the file and the line of the answer.
 		expect(faults).toEqual([]);
 	});
 
-	it('has nothing on its allow-list that is no longer found', () => {
-		const stillFound = new Set(total.findings.map((f) => f.at));
+	it('has each name on its allow-list on exactly one finding, and no marker that is on no finding', () => {
+		const findingsOf = new Map<string, number>();
+		for (const f of total.findings) if (f.marked) findingsOf.set(f.marked, (findingsOf.get(f.marked) ?? 0) + 1);
 
-		expect(Object.keys(ALLOWED).filter((at) => !stillFound.has(at))).toEqual([]);
+		// One finding a name, as the line number it replaced allowed one: a marker
+		// copied beside another answer of the wrong shape would otherwise allow it
+		// too (card 2723's code review).
+		expect(Object.keys(ALLOWED).filter((name) => findingsOf.get(name) !== 1)).toEqual([]);
+		expect(total.markers.filter((name) => !findingsOf.has(name))).toEqual([]);
 	});
 
 	it('was looked for in the whole tree: a parser that found nothing would pass the test above', () => {
@@ -361,6 +394,20 @@ describe('the check itself', () => {
 		expect(found[0]).toMatch(what);
 	});
 
+	// Card 2723: an allowed answer is found by its marker, on its line or the
+	// line above, and not by its line number; a marker further up marks nothing.
+	it.each<[string, string, string | undefined]>([
+		['on its line', "\nexport const GET = () => {\n\tthrow error(404); // error-shape-allowed: on-line\n};\n", 'example.ts#on-line'],
+		['on the line above', "\nexport const GET = () => {\n\t// error-shape-allowed: above\n\tthrow error(404);\n};\n", 'example.ts#above'],
+		['two lines above', "\n// error-shape-allowed: too-far\nexport const GET = () => {\n\tthrow error(404);\n};\n", undefined]
+	])('reads a marker %s', (_name, code, marked) => {
+		const found = check('example.ts', KIT + code);
+
+		expect(found.findings).toHaveLength(1);
+		expect(found.findings[0].marked).toBe(marked);
+		expect(found.markers).toHaveLength(1);
+	});
+
 	it('names the file and the line', () => {
 		expect(check('src/routes/api/example/+server.ts', KIT + "\nexport const GET = () => {\n\tthrow error(404);\n};\n").findings).toEqual([
 			{ at: 'src/routes/api/example/+server.ts:4', what: expect.stringContaining('error(status) with no text') }
@@ -404,7 +451,7 @@ describe('the check itself', () => {
 				"log.error('not an answer');\n"
 		);
 
-		expect(found).toEqual({ findings: [], errorCalls: 2, jsonWithStatus: 2, returnedFailures: 2 });
+		expect(found).toEqual({ findings: [], errorCalls: 2, jsonWithStatus: 2, returnedFailures: 2, markers: [] });
 	});
 
 	it('follows the name a file gives to error, and leaves alone an error that is not SvelteKit’s', () => {

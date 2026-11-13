@@ -63,6 +63,8 @@ import {
 	type WorkDependency
 } from '$lib/server/db/schema';
 import { SESSION_COOKIE_NAME, createSession, forgetChecksInFlight, generateApiKey, whilePasswordHolds, type SessionUser } from '$lib/server/auth';
+import { forgetUnreadablePrefsWarnings } from '$lib/server/notifications';
+import { ensureFormSecret } from '$lib/server/request-tokens';
 import { CONFIRMATION_HEADER, STEP_UP_FIELD, forgetImportConfirmations, issueImportConfirmation } from '$lib/server/step-up';
 import { appendEvent, SYSTEM_ACTOR } from '$lib/server/decision-record';
 import { resetMailStatus } from '$lib/server/email';
@@ -136,6 +138,11 @@ export function resetDb(): void {
 	// under way, which a restart ends too (card 2701).
 	forgetImportConfirmations();
 	forgetChecksInFlight();
+	// And which accounts' unreadable notification preferences were warned of (card 2724).
+	forgetUnreadablePrefsWarnings();
+	// And the form signing key, which a start makes, so that no check made by
+	// a test is the first to need it: none makes it now (card 2750).
+	ensureFormSecret();
 }
 
 export type Role = 'user' | 'admin' | 'superadmin';

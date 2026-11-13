@@ -142,7 +142,7 @@ describe('LinkedCards on the decision page', () => {
 		expect(target.querySelector<HTMLAnchorElement>('.card-link')!.getAttribute('href')).toBe('/board/3?card=12');
 
 		await search(target, 'ship');
-		expect(sent.map((s) => `${s.method} ${s.url}`)).toEqual(['GET /api/cards/search?q=ship']);
+		expect(sent.map((s) => `${s.method} ${s.url}`)).toEqual(['GET /api/cards/search?q=ship&editable=1']);
 		button(target, 'link', 21)!.click();
 		await settle();
 

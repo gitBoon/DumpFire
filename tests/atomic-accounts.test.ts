@@ -81,6 +81,7 @@ import { db, sqlite } from '$lib/server/db';
 import { inTransaction } from '$lib/server/db/transaction';
 import { apiKeys, inviteTokens, reportSchedules, sessions, taskRequests, users } from '$lib/server/db/schema';
 import { MASTER_PREF, NOTIFICATION_PREFS } from '$lib/notification-prefs';
+import { shouldNotifyUser } from '$lib/server/notifications';
 import { PASSWORD_CHANGED_MEANWHILE, sessionStillOpen, SESSION_COOKIE_NAME, STEP_UP_SIGNED_OUT, type SessionUser } from '$lib/server/auth';
 import { PASSWORDS_BUSY, checkPassword, makePasswordHash } from '$lib/server/passwords';
 import { endUnusedInvites, issueInvite } from '$lib/server/invites';
@@ -2645,29 +2646,32 @@ describe('/api/account/notifications', () => {
 	it.each([
 		['text that is not JSON', 'not json'],
 		['JSON that is not an object', '"off"']
-	])('answers the defaults, and saves over them, for a user whose stored preferences are %s', async (_what, stored) => {
+	])('answers every switch off, said to be unreadable, and saves over them, for a user whose stored preferences are %s', async (_what, stored) => {
 		const user = makeUser({ username: 'ann' });
 		db.update(users).set({ notificationPrefs: stored }).where(eq(users.id, user.id)).run();
+		const ALL_OFF = Object.fromEntries(Object.keys(DEFAULTS).map((key) => [key, false]));
 
 		// Text that is not JSON used to throw, on the read and on the save, so
 		// the user could neither see their preferences nor repair them. A JSON
-		// string was spread into the answer a character at a time.
+		// string was spread into the answer a character at a time. Then they
+		// were answered as the defaults, every switch on, and sent every mail;
+		// now as they are applied, every switch off (card 2724).
 		const read = await api('GET', '/api/account/notifications', { user });
 		expect(read.status).toBe(200);
-		expect(read.body).toEqual(DEFAULTS);
+		expect(read.body).toEqual({ ...ALL_OFF, unreadable: true });
 		expect(storedFor(user)).toBe(stored);
 
 		// A preference that is not true or false is refused (card 2117), and
 		// tests/request-body.test.ts holds it; one it does not know is left alone.
 		const saved = await api('PUT', '/api/account/notifications', {
 			user,
-			body: { email_comments: false, not_a_preference: false }
+			body: { email_all: true, email_comments: true, not_a_preference: false }
 		});
 		expect(saved.status).toBe(200);
-		expect(saved.body).toEqual({ ...DEFAULTS, email_comments: false });
-		// What is stored now can be read: the one preference that was set.
-		expect(JSON.parse(storedFor(user)!)).toEqual({ email_comments: false });
-		expect((await api('GET', '/api/account/notifications', { user })).body).toEqual({ ...DEFAULTS, email_comments: false });
+		expect(saved.body).toEqual({ ...ALL_OFF, email_all: true, email_comments: true });
+		// What is stored now can be read: every switch, as the page showed them, with the two turned on.
+		expect(JSON.parse(storedFor(user)!)).toEqual({ ...ALL_OFF, email_all: true, email_comments: true });
+		expect((await api('GET', '/api/account/notifications', { user })).body).toEqual({ ...ALL_OFF, email_all: true, email_comments: true });
 	});
 
 	it('answers and saves as it did for preferences that can be read', async () => {
@@ -2678,6 +2682,20 @@ describe('/api/account/notifications', () => {
 		const saved = await api('PUT', '/api/account/notifications', { user, body: { email_planning: false } });
 		expect(saved.body).toEqual({ ...DEFAULTS, email_all: false, email_planning: false });
 		expect(JSON.parse(storedFor(user)!)).toEqual({ email_all: false, email_planning: false });
+	});
+
+	// Card 2724: every kind of mail a person can switch off is off for preferences
+	// that cannot be read. Each mail asks through shouldNotifyUser, directly or
+	// through filterRecipientsByPref, which the test below holds of the source.
+	it('sends no kind of mail that can be switched off to a user whose preferences cannot be read', () => {
+		const user = makeUser({ username: 'ann' });
+		const control = makeUser({ username: 'bob' });
+		db.update(users).set({ notificationPrefs: '{not json' }).where(eq(users.id, user.id)).run();
+
+		for (const { key } of NOTIFICATION_PREFS) {
+			expect(shouldNotifyUser(user.id, key), key).toBe(false);
+			expect(shouldNotifyUser(control.id, key), key).toBe(true);
+		}
 	});
 
 	/**

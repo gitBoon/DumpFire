@@ -3093,7 +3093,9 @@ describe('the accounts, administration, teams, reports and requests that card 21
 			{ key: 'smtp_host', value: 'smtp.example.test' },
 			{ key: 'smtp_from_address', value: 'board' }
 		]).run();
-		const stored = () => Object.fromEntries(db.select().from(settings).all().map((row) => [row.key, row.value]));
+		// Not the form signing key, which every database a test starts on holds, as a started server's does (card 2750).
+		const stored = () =>
+			Object.fromEntries(db.select().from(settings).all().filter((row) => row.key !== 'request_form_secret').map((row) => [row.key, row.value]));
 
 		const res = await api(
 			'PUT',

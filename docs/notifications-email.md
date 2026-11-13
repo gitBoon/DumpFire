@@ -1,9 +1,9 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.67
+version: 1.68
 status: As-Built
-date: 2026-11-05
+date: 2026-11-13
 tags:
   - notifications
   - email
@@ -1297,9 +1297,8 @@ pre-filter. Then, for each one left, every one of these, the clauses asked again
    a mail sent to this person, in this role, by this route, in this inclusion (a re-inclusion's
    own invitation, written after it, is the next asking mail);
 9. an account holder has **Decisions** (`email_decisions`) and **All Email Notifications** on.
-   Preferences that cannot be read (not JSON, or not a JSON object) count as off for this mail,
-   where every other mail reads them as every switch on, and one WARN line per account per
-   process names the account by id;
+   Preferences that cannot be read (not JSON, or not a JSON object) count as off, as they do for
+   every mail since card 2724 (see [Preferences That Cannot Be Read](#preferences-that-cannot-be-read-card-2724));
 10. `mailRestOf` lets them be mailed now.
 
 Anyone who fails one is passed over and nothing is written: no `mail_skipped`, which a run every
@@ -1472,6 +1471,14 @@ every report mail names the account behind it (card 2182): see
 Stored as JSON in `users.notification_prefs`. Each user can toggle individual notification types, on My Account under **Email Notifications**.
 
 There is one list of them, `NOTIFICATION_PREFS` in `src/lib/notification-prefs.ts`, a module with no server imports (card 2146). The account page draws its switches from it, `GET` and `PUT /api/account/notifications` make their defaults and their save from it (`defaultPrefs()`, every key on), and `shouldNotifyUser()` and `filterRecipientsByPref()` in `notifications.ts` take a key of it as their type, so `npm run check` refuses a mail that reads a key nobody can save. `GET` answers every key, so the page shows what is stored.
+
+### Preferences That Cannot Be Read (card 2724)
+
+Stored preferences that are not JSON, or not a JSON object, cannot say what their owner asked for. They send **no mail that can be switched off**: `getUserNotifPrefs()` answers `null` for them, and `shouldNotifyUser()` answers no to every kind, so `filterRecipientsByPref()` and the decision reminder do too. Mail a person cannot switch off (an invite, a password reset, a decision's record mails) never asks, and is sent as before. Until card 2724 they were read as the defaults, every switch on, so a damaged value sent mail its owner had turned off; the decision reminder alone read them as off (card 2685).
+
+One `[WARN] [NOTIFY]` line per account per process says so, naming the account by id alone: `The notification preferences of user <id> could not be read, so they are sent no mail they can switch off until they are saved again: notification_prefs is not a JSON object`. It was one line at every read, one for each member of a board at each change.
+
+`GET /api/account/notifications` answers them as they are applied, every key `false`, with `unreadable: true`, and the account page says under its heading: "Your saved choices could not be read, so you are sent none of these emails. Turn on the ones you want: saving replaces them." A `PUT` starts from every key off, so the first switch turned on saves every key, readable, and the line goes. No admin control resets another account's preferences: the route writes only readable JSON, so a damaged value comes from outside the application, and the person can repair their own on the page.
 
 | Switch on My Account | Key | Read by |
 |----------------------|-----|---------|

@@ -19,7 +19,7 @@ import { BOARDS_UNDER_DELETED_GROUPINGS, defaultsForNull, orDefault, runBackfill
 import { normaliseTimestamps, unreadableList, type TimestampNormalisation } from './timestamps';
 import { stamp } from '$lib/timestamps';
 import { KNOWN_BROWSER_SECRET_KEY } from '../known-browsers';
-import { REQUEST_FORM_SECRET_KEY } from '../request-tokens';
+import { REQUEST_FORM_SECRET_KEY, writeFormSecret } from '../request-tokens';
 import {
 	BACKUP_SEAL,
 	BACKUP_SEAL_KEY,
@@ -1016,6 +1016,12 @@ function restoreInOneSnapshot(
 			// This server's key for sealing its backups, as it was before the
 			// clear: see above. Not caught: a restore that lost it is rolled back.
 			if (sealKey !== null) keepSealKey(live, sealKey);
+
+			// A new form signing key, which no restore brings in and the clear
+			// took (card 2158): made here, so the restore never commits without
+			// one and no read-only check is the first to need it (card 2750).
+			// Not caught: a restore that could not make it is rolled back.
+			writeFormSecret(live);
 
 			// The second factors and recovery codes, by their own rules, the
 			// guessing counters zeroed, the same accounts' sign-in history and

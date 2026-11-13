@@ -12,9 +12,10 @@
   superseded, below the cap of 100), a card search: the card window's
   (`/api/cards/search`, by #id or title, debounced 250 ms, the latest answer
   alone kept), each result offered with Link, one already linked shown and
-  not offered. The search reaches every board the viewer can open; a card on
-  a board they can only read is refused by the server (403, `No edit access
-  to this board`) and the refusal is said. Where `mayUnlink` (the same
+  not offered. The search asks for `editable=1` (card 2718), so it reaches
+  only the boards the viewer can edit, where it reached every board they can
+  open and offered cards whose link the server then refused (403, `No edit
+  access to this board`); a refusal that still comes is said. Where `mayUnlink` (the same
   access, on any decision but a draft, at the cap too), Unlink beside each
   card.
 
@@ -97,7 +98,8 @@
 			let error = '';
 			let res: Response | null = null;
 			try {
-				res = await fetch(`/api/cards/search?q=${encodeURIComponent(q)}`);
+				// Only cards on boards the viewer can edit: a link is an edit of the card's board.
+				res = await fetch(`/api/cards/search?q=${encodeURIComponent(q)}&editable=1`);
 			} catch {
 				error = 'No answer from the server. The search could not be run.';
 			}

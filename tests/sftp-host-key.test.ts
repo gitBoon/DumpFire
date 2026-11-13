@@ -30,7 +30,7 @@
  * under test.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createHash } from 'node:crypto';
+import { createHash, generateKeyPairSync } from 'node:crypto';
 import { utils, type ParsedKey } from 'ssh2';
 import { runBackup, saveBackupConfig } from '$lib/server/backup';
 import {
@@ -113,10 +113,38 @@ vi.mock('ssh2-sftp-client', () => ({
 	}
 }));
 
-/** A host key's raw blob, as ssh2 hands it to a verifier. */
+/**
+ * A host key's raw blob, as ssh2 hands it to a verifier.
+ *
+ * An ed25519 blob is made from `node:crypto`'s key, not ssh2's generator
+ * (card 2725). ssh2 1.17.0's `generateKeyPairSync('ed25519')` writes the
+ * public key with a leading zero byte dropped, 31 bytes instead of 32, about
+ * one key in 256 (10 in a probe of 3,000), and its own `parseKey` then
+ * answers `Malformed OpenSSH public key`: an Error, which has no
+ * `getPublicSSH`, so this file failed to load about once in a hundred runs.
+ * The fault is in the generator alone; a server's real key is never made by
+ * it. The blob is the SSH wire form, `string "ssh-ed25519"` then the 32-byte
+ * key as a `string`, and ssh2 is asked to read it back before it is used.
+ */
 function blobOf(type: 'ed25519' | 'ecdsa' | 'rsa', bits?: number): Buffer {
-	const pair = utils.generateKeyPairSync(type as 'ed25519', bits ? ({ bits } as object) : {});
-	return (utils.parseKey(pair.public) as ParsedKey).getPublicSSH();
+	let openssh: string;
+	if (type === 'ed25519') {
+		const raw = Buffer.from(generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' }).x!, 'base64url');
+		const string = (bytes: Buffer) => Buffer.concat([u32(bytes.length), bytes]);
+		openssh = `ssh-ed25519 ${Buffer.concat([string(Buffer.from('ssh-ed25519')), string(raw)]).toString('base64')}`;
+	} else {
+		openssh = utils.generateKeyPairSync(type as 'ed25519', bits ? ({ bits } as object) : {}).public;
+	}
+	const parsed = utils.parseKey(openssh);
+	if (parsed instanceof Error || Array.isArray(parsed)) throw new Error(`ssh2 could not read the ${type} key made for the test: ${String(parsed)}`);
+	return (parsed as ParsedKey).getPublicSSH();
+}
+
+/** A 32-bit big-endian length, as SSH writes one before a string. */
+function u32(n: number): Buffer {
+	const out = Buffer.alloc(4);
+	out.writeUInt32BE(n, 0);
+	return out;
 }
 
 /** A blob's fingerprint as `ssh-keygen -l` prints it: SHA256: and the unpadded base64 of its SHA-256. */

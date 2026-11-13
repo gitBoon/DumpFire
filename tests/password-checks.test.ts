@@ -164,21 +164,32 @@ describe('the server’s thread', () => {
 		expect(gap, `the longest gap ${gap.toFixed(1)} ms, one check ${oneCheck.toFixed(1)} ms`).toBeLessThan(oneCheck / 2);
 	});
 
-	// Four sign-ins at a cost-12 account are about two fifths of a second of
-	// checks on two threads. The key's answer needs none of it: sent 20 ms
-	// after them, it is answered within 100 ms of their start, half of one
-	// check.
+	// The key's answer waits on no password check: it is answered while both
+	// threads are still checking sign-ins, before either has finished one.
+	//
+	// The test proves that by what is running, not by the clock (card 2717).
+	// It used to require an answer within 100 ms, and under the whole suite it
+	// took 103 and 138 ms: the bound measured how busy the machine was. Now
+	// the key is sent only once both threads hold a sign-in's check, and the
+	// number of checks finished is read when its answer arrives: it must not
+	// have moved. The account's hash is at cost 14, so each check is four of
+	// the application's (about four fifths of a second), and a busy machine
+	// slows the checks and the key's answer together.
 	//
 	// It is sent from a timer. A request made in this process runs in
 	// microtasks, so once sent it is never caught behind a check; what a held
 	// thread delays is a timer, as it delays a request arriving on a socket.
-	// Checked on the server's thread, as before card 2191, the timer fires
-	// only once a sign-in's check has held the thread for a fifth of a second.
+	// Checked on the server's thread, as before card 2191, no check is ever
+	// running on a thread, so the wait for two never ends and the test fails;
+	// and were the key sent anyway, its timer would fire only once a check had
+	// finished.
 	it.skipIf(CPUS < 3)('answers an unrelated request while sign-ins are being checked, before any of them', async () => {
+		// Made here, not in beforeAll: a second of the test's own thread, spent only where the test runs.
+		const slow = hashSync(RIGHT, BCRYPT_ROUNDS + 2);
+		sqlite.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(slow, user.id);
 		await warm();
 
 		const order: string[] = [];
-		const started = performance.now();
 		// Each answer is taken as it arrives, before its body is read, as the
 		// key's is.
 		const signIns = [1, 2, 3, 4].map((n) =>
@@ -191,11 +202,21 @@ describe('the server’s thread', () => {
 				return res;
 			})
 		);
+		await vi.waitFor(() => expect(passwordChecks().running).toBe(2), { timeout: 5000, interval: 1 });
+		// Read once both threads are seen busy, not before the sign-ins are sent:
+		// had this poll been held for a whole check, one could have finished and
+		// its thread taken the next, with both still busy (the code review's P2).
+		const finishedAtTwo = passwordChecks().checked;
+		const answeredAtTwo = order.length;
+
+		let finishedWhenAnswered = -1;
 		let keyAnsweredIn = Infinity;
-		const me = new Promise((resolve) => setTimeout(resolve, 20))
+		const sent = performance.now();
+		const me = new Promise((resolve) => setTimeout(resolve, 0))
 			.then(() => gate('GET', '/api/v1/me', { headers: { authorization: `Bearer ${key}` }, ip: '203.0.113.50' }))
 			.then((res) => {
-				keyAnsweredIn = performance.now() - started;
+				finishedWhenAnswered = passwordChecks().checked;
+				keyAnsweredIn = performance.now() - sent;
 				order.push('key');
 				return res;
 			});
@@ -203,8 +224,10 @@ describe('the server’s thread', () => {
 		const [meRes, ...answers] = await Promise.all([me, ...signIns]);
 		expect(meRes.status).toBe(200);
 		expect(answers.map((res) => res.status)).toEqual([400, 400, 400, 400]);
-		expect(order[0]).toBe('key');
-		expect(keyAnsweredIn).toBeLessThan(100);
+		expect(order[answeredAtTwo]).toBe('key');
+		expect(finishedWhenAnswered, 'password checks finished before the key was answered').toBe(finishedAtTwo);
+		// A backstop only: what the test proves is the line above.
+		expect(keyAnsweredIn).toBeLessThan(2000);
 		expect(passwordChecks().checked).toBe(6);
 	});
 });

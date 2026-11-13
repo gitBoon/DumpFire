@@ -1,9 +1,9 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.108
+version: 1.109
 status: As-Built
-date: 2026-11-05
+date: 2026-11-13
 tags:
   - decision-reminders
   - authentication
@@ -3018,8 +3018,8 @@ session's expiry moves on every time it is used.
   "N request link(s) replaced: a link mailed before this restore no longer works, and its
   requester can have a new one sent from the page it opens." (`requestLinksReplaced` in its
   figures), when there were any. A restore that rolls back leaves every link as it was.
-  `rowsToRestore()` never brings the form's key in; the restored server makes a new one at
-  first use, and a form open during the restore fails once and is reloaded. A backup with no
+  `rowsToRestore()` never brings the form's key in; the restore writes a new one in its own
+  transaction (card 2750), and a form open during the restore fails once and is reloaded. A backup with no
   links restored by an image from before this change, or put in place by hand as the
   database file, has them filled in by the start's backfill.
 - **A restore ends every personal decision link** (card 2675), inside its transaction, once
@@ -4179,7 +4179,7 @@ flowchart LR
 | A webhook's address | Left out, with its secret, but to the board's owner, an administrator and the request that made the webhook | Both webhook reads, the answer to an update | 2133, decision 14 |
 | A board's events, by webhook | Sent only while the account that set the webhook up can open the board, asked at each event with its role as it is then; none for a webhook with no recorded setter, from the deploy on. A held webhook is not sent to, keeps `active`, and says why in `pausedBecause`, given where its address is given. Before, a former editor, or an administrator made an ordinary user, went on receiving every event of the board | Every delivery (`deliver`); `pausedBecause` in both webhook reads, the answer to an update and the create | 2325 |
 | The activity report | Only the boards the caller can open are read, before the query. A board named in `boardIds` they cannot open is refused, `403` "No access to board N", and one that does not exist `404` "Board N not found", administrators included, as the burndown answers. `meta.boardsExcludedForAccess` is always `0`: it counted the boards with activity the caller could not open, and with a window down to the second it told them when such a board was worked on. A milestone's counts in the report are of its cards on boards the caller can open, as its burndown's are: a card moved onto a board they cannot open told them, by moving `from`, the second it was completed | `GET /api/v1/reports/activity` | 2326 |
-| Card search (the pickers) | Cards and subtasks on boards the caller can open, filtered in the query with "not archived", the card left out (`exclude`) and the card's column being there, before its limit of 60, then the first 25 (40 with subtasks) by id. It read the first 60 matches of every board and dropped the hidden ones afterwards, so matches on other people's boards pushed the caller's own out, and an answer shorter than the cap told them that hidden matches existed. A caller who opens no board is answered `[]` with no query; `#<id>` of a hidden card is `[]`, as a missing one is | `GET /api/cards/search` (the dependency picker, the plan page's **+ Add cards**) | 2327 |
+| Card search (the pickers) | Cards and subtasks on boards the caller can open, filtered in the query with "not archived", the card left out (`exclude`) and the card's column being there, before its limit of 60, then the first 25 (40 with subtasks) by id. It read the first 60 matches of every board and dropped the hidden ones afterwards, so matches on other people's boards pushed the caller's own out, and an answer shorter than the cap told them that hidden matches existed. A caller who opens no board is answered `[]` with no query; `#<id>` of a hidden card is `[]`, as a missing one is. The title is matched as typed, `%` and `_` being no wildcards (card 2718). `editable=1` narrows the boards to those the caller can edit, every board for an administrator (card 2718): the decision page's linked cards ask it, since a link is an edit of the card's board | `GET /api/cards/search` (the dependency picker, the plan page's **+ Add cards**, the decision page's linked cards) | 2327, 2718 |
 
 An administrator opens every board and is given every row of each, as before.
 
@@ -4752,7 +4752,7 @@ A participant who has no account is reached by `/decision-link/[token]`.
   to the same participant, so a Resend, and the fresh link it carries, cannot follow it within 10
   minutes. Its code review (2026-11-04) made it fail closed where it could fail open: an account
   holder whose stored notification preferences cannot be read is sent no reminder (other mail
-  reads them as every switch on), with one WARN line per account per process; a removal or a
+  read them as every switch on until card 2724, which made them off for every mail), with one WARN line per account per process; a removal or a
   re-inclusion since the asking mail passes the participant over, as a role, address or account
   change does; migration 0063 has no `IF NOT EXISTS`, so a same-named index it did not make stops
   the start rather than being kept; and a fault in one decision's step is one ERROR line with ids
@@ -5429,7 +5429,7 @@ sign-in they do not have, both in `src/lib/server/request-tokens.ts`.
 
 | Secret | Issued | Lifetime | Opens |
 |--------|--------|----------|-------|
-| **Form token** | with the form page, by `issueFormToken()`; HMAC-SHA256 over an expiry and a nonce, signed with a key kept in `settings.request_form_secret` | 2 hours | `GET /api/requests/targets` and `POST /api/requests`, sent as `X-Form-Token` |
+| **Form token** | with the form page, by `issueFormToken()`; HMAC-SHA256 over an expiry and a nonce, signed with a key kept in `settings.request_form_secret`. The key is written in one place, `writeFormSecret()`: at every start (`ensureFormSecret()`, after the migrations) and inside the transaction of a reset and of a restore, each of which clears it (card 2750). Every function that signs or verifies only reads it, the decision read guards that key a revision with `purposeKey()` among them, and where it is missing they throw and the request fails, so a check meant to be read-only never writes it. It was made at first use, which could be inside such a check | 2 hours | `GET /api/requests/targets` and `POST /api/requests`, sent as `X-Form-Token` |
 | **Request token** | when a request is created; 32 random bytes in `task_requests.access_token` | the life of the request, or until it is replaced: once by migration 0055, and for every request at every restore | that one request's thread: read, reply, confirm |
 
 A signed-in user needs neither: their session is checked, and `request-access.ts`

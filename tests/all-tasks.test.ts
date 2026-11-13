@@ -67,8 +67,10 @@ import {
 	makeMilestone,
 	makeSubBoard,
 	makeSubtask,
+	makeTeam,
 	makeUser,
 	resetDb,
+	shareBoardWithTeam,
 	type BoardFixture,
 	type SubBoardFixture
 } from './helpers/fixtures';
@@ -561,6 +563,91 @@ describe('the picker’s search, GET /api/cards/search', () => {
 				['card', card.id],
 				['subtask', sub.id]
 			]);
+		});
+	});
+
+	// Card 2718: the title was matched with a LIKE built from the text, so %
+	// and _ were wildcards. Each row makes a card the text is in and one it
+	// matched only as a pattern; the last is a contract the change keeps (LIKE
+	// matched A to Z in any case).
+	describe('matches the text as typed (card 2718)', () => {
+		const search = async (user: SessionUser, query: string) =>
+			((await api('GET', `/api/cards/search?${query}`, { user })).body as { id: number; kind: string }[]).map((r) => [r.kind, r.id]);
+
+		it.each<[string, string, string, string]>([
+			['a percent sign', '50%', 'Coverage 50% done', 'Coverage 500 done'],
+			['an underscore', 'a_b', 'Rename a_b', 'Rename axb'],
+			['a quote', "it's", "Fix it's broken", 'Fix its broken'],
+			['letters in another case', 'DEPLOY', 'Deploy the page', 'Deplo the page']
+		])('as %s', async (_name, text, title, decoy) => {
+			const me = makeUser({ username: 'me' });
+			const board = makeBoard({ owner: me, name: 'Mine' });
+			const hit = makeCard(board.cols['To Do'], { title });
+			makeCard(board.cols['To Do'], { title: decoy });
+
+			expect(await search(me, `q=${encodeURIComponent(text)}`)).toEqual([['card', hit.id]]);
+		});
+
+		it('in a subtask’s title too', async () => {
+			const me = makeUser({ username: 'me' });
+			const card = makeCard(makeBoard({ owner: me, name: 'Mine' }).cols['To Do'], { title: 'Holder' });
+			const hit = makeSubtask(card, { title: 'Reach 50% coverage' });
+			makeSubtask(card, { title: 'Reach 500 coverage' });
+
+			expect(await search(me, `q=${encodeURIComponent('50%')}&kinds=subtask`)).toEqual([['subtask', hit.id]]);
+		});
+	});
+
+	// Card 2718, from the 2680 review: the decision page's linked cards offered
+	// cards on boards the caller could only read, and each link was refused.
+	describe('with editable=1, only boards the caller can edit (card 2718)', () => {
+		it('keeps their own board and one they are an editor of, and leaves out one they only view and a public board', async () => {
+			const stranger = makeUser({ username: 'stranger' });
+			const me = makeUser({ username: 'me' });
+			const own = makeCard(makeBoard({ owner: me, name: 'Mine' }).cols['To Do'], { title: 'zq2718 own' });
+			const edited = makeBoard({ owner: stranger, name: 'Edited' });
+			addBoardMember(edited.board, me, 'editor');
+			const asEditor = makeCard(edited.cols['To Do'], { title: 'zq2718 editor' });
+			const viewed = makeBoard({ owner: stranger, name: 'Viewed' });
+			addBoardMember(viewed.board, me, 'viewer');
+			makeCard(viewed.cols['To Do'], { title: 'zq2718 viewer' });
+			makeCard(makeBoard({ owner: stranger, name: 'Public', isPublic: true }).cols['To Do'], { title: 'zq2718 public' });
+
+			const all = await api('GET', '/api/cards/search?q=zq2718', { user: me });
+			const editable = await api('GET', '/api/cards/search?q=zq2718&editable=1', { user: me });
+
+			expect(all.body).toHaveLength(4);
+			expect(editable.body.map((c: any) => c.id)).toEqual([own.id, asEditor.id]);
+		});
+
+		// Through a team, as roleOnBoard reads it: a team's editor share edits, a
+		// viewer share does not, and a member's own viewer row decides over a
+		// team's editor share (the code review's 2718 point 3).
+		it('keeps a board a team edits, and leaves out one a team only views and one where their own row says viewer', async () => {
+			const stranger = makeUser({ username: 'stranger' });
+			const me = makeUser({ username: 'me' });
+			const team = makeTeam([me]);
+			const teamEdits = makeBoard({ owner: stranger, name: 'Team edits' });
+			shareBoardWithTeam(teamEdits.board, team, 'editor');
+			const kept = makeCard(teamEdits.cols['To Do'], { title: 'zq2718 team editor' });
+			const teamViews = makeBoard({ owner: stranger, name: 'Team views' });
+			shareBoardWithTeam(teamViews.board, team, 'viewer');
+			makeCard(teamViews.cols['To Do'], { title: 'zq2718 team viewer' });
+			const overridden = makeBoard({ owner: stranger, name: 'Overridden' });
+			shareBoardWithTeam(overridden.board, team, 'editor');
+			addBoardMember(overridden.board, me, 'viewer');
+			makeCard(overridden.cols['To Do'], { title: 'zq2718 own viewer row' });
+
+			expect((await api('GET', '/api/cards/search?q=zq2718', { user: me })).body).toHaveLength(3);
+			expect((await api('GET', '/api/cards/search?q=zq2718&editable=1', { user: me })).body.map((c: any) => c.id)).toEqual([kept.id]);
+		});
+
+		it('leaves an administrator every board', async () => {
+			const stranger = makeUser({ username: 'stranger' });
+			const admin = makeUser({ username: 'admin', role: 'admin' });
+			const theirs = makeCard(makeBoard({ owner: stranger, name: 'Private' }).cols['To Do'], { title: 'zq2718 private' });
+
+			expect((await api('GET', '/api/cards/search?q=zq2718&editable=1', { user: admin })).body.map((c: any) => c.id)).toEqual([theirs.id]);
 		});
 	});
 });

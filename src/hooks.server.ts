@@ -19,6 +19,7 @@ import { isNavigation, notSignedIn, secured, sendTo, whereSent } from '$lib/serv
 import { refusalSeen, refuseCrossSiteWrite } from '$lib/server/same-origin';
 import { pathToLog } from '$lib/server/secret-paths';
 import { checkMfaKeyAtStart, maskLiveLog, refuseUserlessBesideAnother, removeSettingsOfNonAdministrators, reportInstallation } from '$lib/server/startup-checks';
+import { ensureFormSecret } from '$lib/server/request-tokens';
 
 const log = createLogger('HTTP');
 
@@ -47,6 +48,12 @@ refuseUserlessBesideAnother();
 // here, for the first time, and never at import. A bare call: its throw is
 // what stops the server before it listens. See $lib/server/startup-checks.ts.
 checkMfaKeyAtStart();
+
+// Make the key form tokens and decision revisions are signed with, where
+// there is none (card 2750), so that every check that signs or verifies only
+// reads it. It was made at first use, which could be inside a read-only check.
+// A bare call: a database that cannot take it stops the server here.
+ensureFormSecret();
 
 // Clean expired sessions periodically (on startup)
 cleanExpiredSessions();
@@ -421,6 +428,7 @@ export const handle: Handle = async ({ event, resolve }) => {
 	// before it began calling this hook for one: 400, the same plain words, and
 	// nothing written to the log. It is no route, so nobody is asked who they
 	// are; the security headers are put on it, now that it passes through here.
+	// error-shape-allowed: malformed-uri
 	if (routed === null) return secured(text('Malformed URI', { status: 400 }), null);
 	const path = routed;
 	// A call to a remote function, which is answered 404 below whatever path it

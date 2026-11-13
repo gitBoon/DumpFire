@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.108
+version: 1.109
 status: As-Built
-date: 2026-11-05
+date: 2026-11-13
 tags:
   - decision-reminders
   - docker
@@ -152,7 +152,7 @@ Test Files  61 passed (61)
      Tests  5572 passed (5572)
 ```
 
-- **On a builder with fewer than three CPUs, two tests are skipped**, and the second line reads `5570 passed | 2 skipped (5572)`, which is a pass. They are the two tests of `tests/password-checks.test.ts` that time the server's thread while real worker threads check passwords (card 2191): the thread stays free while six checks are made at once, and an unrelated request is answered meanwhile. Each runs two threads, the first against a bound of half of one check timed in the same run (card 2274) and the second against 100 ms, and with fewer than three CPUs the two threads share them with the test's own, which could fail the build for a fault that is not there. Before a build, `docker info --format '{{.NCPU}}'` on the host that builds says how many it has. The other fourteen tests of the file run anywhere.
+- **On a builder with fewer than three CPUs, two tests are skipped**, and the second line reads `5570 passed | 2 skipped (5572)`, which is a pass. They are the two tests of `tests/password-checks.test.ts` that time the server's thread while real worker threads check passwords (card 2191): the thread stays free while six checks are made at once, and an unrelated request is answered meanwhile. Each runs two threads, the first against a bound of half of one check timed in the same run (card 2274) and the second by waiting until both threads hold a check, then requiring the request's answer before either finishes (card 2717), and with fewer than three CPUs the two threads share them with the test's own, which could fail the build for a fault that is not there. Before a build, `docker info --format '{{.NCPU}}'` on the host that builds says how many it has. The other fourteen tests of the file run anywhere.
 
 - **What it adds to a build.** About as long as the suite takes outside Docker on the same machine. The first build with the step, on 2026-10-13, spent 18.5 seconds in it on a 28-core workstation, when the suite was 2220 tests and took 20 seconds on that workstation outside Docker. The second build, later that day on the same workstation, when the suite was 2624 tests and took 28 seconds there, spent 23.7 seconds in the step, of which vitest counted 22.5 as its own. The suite has grown since (43 seconds there on 2026-10-15) and has not been built in Docker at that size. A smaller Docker host will take longer.
 - **What it adds to the image.** Nothing. The suite runs in the builder stage, which is thrown away. The production stage is copied from `build/`, `node_modules/` (reinstalled without dev dependencies after the build), `package.json` and `drizzle/` alone. An image built with the step and one built without it from the same tree held the same 27,933 files, apart from the content hashes in the names under `build/` that differ between any two builds, and no `tests/` folder and no vitest. The image of the second build, of the suite as it was then, was listed in the same way and came to the same 27,933: `/app` holds `build/`, `drizzle/`, `node_modules/`, `package.json` and an empty `data/`, with no `tests/`, no `src/`, no database file, and no package the lock file marks as a dev dependency (no vitest, vite, TypeScript, `svelte-check` or `drizzle-kit`). Two names from `devDependencies` in `package.json` are in it all the same, because a production dependency names each as a peer and `npm ci --omit=dev` therefore keeps it: `svelte`, for `svelte-dnd-action`, and `@types/better-sqlite3`, for `drizzle-orm`.
@@ -854,7 +854,8 @@ flowchart TD
     Newer2 -->|"Yes"| Check
     Check --> Users{"No user accounts, and a database\nat /app/dumpfire.db beside it?"}
     Users -->|"No"| Key{"Does the MFA key load, and is it\nthe key the stored second factors\nwere made with? (card 2768)"}
-    Key -->|"Yes"| Listen["Schedulers start,\nand 'Listening on' is printed"]
+    Key -->|"Yes"| FormKey["Make the request form's signing key\nwhere there is none (card 2750)"]
+    FormKey --> Listen["Schedulers start,\nand 'Listening on' is printed"]
     Key -->|"No"| KeyRefuse["Write one CRITICAL AUTH line\non the console, naming the reason"]
     KeyRefuse --> Exit
     Users -->|"Yes"| Both["Write one CRITICAL DB line\non the console, naming both files"]

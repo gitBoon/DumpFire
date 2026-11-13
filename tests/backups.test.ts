@@ -264,7 +264,8 @@ beforeEach(() => {
 			accessToken: REQUEST_LINK
 		})
 		.run();
-	sqlite.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(REQUEST_FORM_SECRET_KEY, FORM_KEY);
+	// In place of the one resetDb made, as a start makes one (card 2750).
+	sqlite.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(REQUEST_FORM_SECRET_KEY, FORM_KEY);
 	// The form's key as a process that has just started knows it: read from the settings.
 	resetFormSecretCache();
 });
@@ -585,7 +586,8 @@ describe('a restore', () => {
 		const result = restoreFromBackup(live, backup);
 
 		expect(result.errors).toEqual([]);
-		expect(column(live, 'SELECT key FROM settings ORDER BY key')).toEqual(['app_url']);
+		// And the form signing key the restore makes in its transaction (card 2750).
+		expect(column(live, 'SELECT key FROM settings ORDER BY key')).toEqual(['app_url', 'request_form_secret']);
 		expect(result.restored.settings).toBe(1);
 	});
 
@@ -630,8 +632,11 @@ describe('a restore', () => {
 			expectNewLinks(live, 2);
 			// Given inside the restore, so the backfill after it had none to give.
 			expect(result.backfilled.accessTokens).toBe(0);
-			// No form key came in, and the one that was here went with the settings.
-			expect(column(live, `SELECT value FROM settings WHERE key = '${REQUEST_FORM_SECRET_KEY}'`)).toEqual([]);
+			// No form key came in, and the one that was here went with the settings:
+			// the one there is the restore made, in its transaction (card 2750).
+			const formKey = column<string>(live, `SELECT value FROM settings WHERE key = '${REQUEST_FORM_SECRET_KEY}'`);
+			expect(formKey).toHaveLength(1);
+			expect(formKey[0]).toMatch(/^[0-9a-f]{64}$/);
 		});
 
 		it('counts none for a backup with no requests', () => {
@@ -678,7 +683,9 @@ describe('a restore', () => {
 			expect(now[0]).not.toBe(before);
 			expect((await api('GET', `/api/requests/${id}?token=${before}`)).status).toBe(404);
 			expect((await api('GET', `/api/requests/${id}?token=${now[0]}`)).status).toBe(200);
-			expect(requestKeysHere().formKey).toEqual([]);
+			// The form's key is not the one the backup held: the restore made a new one (card 2750).
+			expect(requestKeysHere().formKey).toHaveLength(1);
+			expect(requestKeysHere().formKey).not.toContain(FORM_KEY);
 		});
 
 		it('refuses after an import a form token signed before it, and takes one signed after', async () => {

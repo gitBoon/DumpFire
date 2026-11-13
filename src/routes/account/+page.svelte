@@ -232,6 +232,9 @@
 	type NotifPrefs = Partial<Record<NotificationPrefKey, boolean>>;
 
 	let notifPrefs = $state<NotifPrefs>({});
+	// The saved preferences could not be read, so every switch is shown off,
+	// as the mail applies them, until any switch is saved (card 2724).
+	let notifUnreadable = $state(false);
 	let notifLoading = $state(true);
 	let notifSaving = $state(false);
 	/** Why the last change of a switch was not saved, under the switches (card 2148). */
@@ -360,7 +363,11 @@
 	onMount(async () => {
 		try {
 			const res = await fetch('/api/account/notifications');
-			if (res.ok) notifPrefs = await res.json();
+			if (res.ok) {
+				const { unreadable, ...prefs } = await res.json();
+				notifPrefs = prefs;
+				notifUnreadable = unreadable === true;
+			}
 		} catch { /* silent */ }
 		notifLoading = false;
 
@@ -403,6 +410,7 @@
 			});
 			if (res.ok) {
 				notifPrefs = await res.json();
+				notifUnreadable = false;
 			} else {
 				notifPrefs = was;
 				notifError = await failureMessage(res, 'Your notification settings were not saved.');
@@ -604,6 +612,9 @@
 		<section class="account-card glass fade-in-up" style="animation-delay: 0.3s">
 			<h2>🔔 Email Notifications</h2>
 			<p class="notif-desc">Choose which email notifications you'd like to receive.</p>
+			{#if notifUnreadable}
+				<p class="notif-desc" role="status">Your saved choices could not be read, so you are sent none of these emails. Turn on the ones you want: saving replaces them.</p>
+			{/if}
 
 			{#if notifLoading}
 				<p class="notif-loading">Loading preferences...</p>
