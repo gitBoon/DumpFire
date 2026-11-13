@@ -1775,6 +1775,9 @@ const TABLE: Record<string, Case | Case[]> = {
 	// which asks for the one they have: here they are refused, as anyone is
 	// who names their own account.
 	'PUT /api/users/[id]/password': admin((w) => json(`/api/users/${w.owner.id}/password`, { password: 'a long password' })),
+	// Another account's two-step sign-in reset (card 2773): its link is made on
+	// the server's own address, as an invite's is.
+	'POST /api/users/[id]/mfa/reset': admin((w) => `/api/users/${w.viewer.id}/mfa/reset`),
 
 	// ── The people directory (card 2674) ──────────────────────────────────
 	// An administrator's alone: it holds names and addresses of people with no account.
@@ -3354,6 +3357,11 @@ describe('who may manage which account', () => {
 		{
 			route: 'POST /api/users/[id]/invite',
 			send: (by, account) => api('POST', `/api/users/${account.id}/invite`, confirmed(by))
+		},
+		// Card 2773: whoever is handed the enrolment link sets up the account's second factor with it.
+		{
+			route: 'POST /api/users/[id]/mfa/reset',
+			send: (by, account) => api('POST', `/api/users/${account.id}/mfa/reset`, confirmed(by))
 		}
 	];
 

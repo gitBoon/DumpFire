@@ -347,6 +347,8 @@ describe('every mail in notifications.ts', () => {
 			send: () => notifications.notifyUserAssigned(board.id, card.id, MARKER, recipient.email, MARKER, MARKER, BASE)
 		},
 		{ name: 'sendInviteEmail', link: true, send: () => notifications.sendInviteEmail('new@example.test', MARKER, TOKEN, BASE) },
+		// Card 2773 (decision 7): a notice only, with no link and no token.
+		{ name: 'sendMfaResetNotice', link: false, send: () => notifications.sendMfaResetNotice('holder@example.test', MARKER, MARKER, true) },
 		{
 			name: 'notifyBoardShared',
 			link: true,

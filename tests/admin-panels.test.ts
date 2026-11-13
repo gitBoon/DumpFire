@@ -43,6 +43,7 @@ import AppUrlPanel from '$lib/components/admin/AppUrlPanel.svelte';
 import ScheduledBackupsPanel from '$lib/components/admin/ScheduledBackupsPanel.svelte';
 import UsersPanel from '$lib/components/admin/UsersPanel.svelte';
 import ResetPasswordDialog from '$lib/components/admin/ResetPasswordDialog.svelte';
+import InviteLinkDialog from '$lib/components/admin/InviteLinkDialog.svelte';
 import TeamsPanel from '$lib/components/admin/TeamsPanel.svelte';
 import SmtpPanel from '$lib/components/admin/SmtpPanel.svelte';
 import DangerZonePanel from '$lib/components/admin/DangerZonePanel.svelte';
@@ -1622,6 +1623,106 @@ describe('the users panel, mounted', () => {
 		expect(document.activeElement).toBe(mine);
 		// The new password typed is kept, to send again with the right one.
 		expect(target.querySelector<HTMLInputElement>('input[placeholder="New password (min 8 chars)"]')!.value).toBe('a-new-password');
+	});
+});
+
+// Card 2773: 🛡️ resets another account's two-step sign-in, its link shown once in the invite
+// link's dialog with words of its own, and 📧 is refused for an account that uses it.
+describe('the two-step sign-in reset on the users panel and its dialog, mounted (card 2773)', () => {
+	const ada = { id: 3, username: 'ada', email: 'ada@example.com', emoji: '🛠️', role: 'admin' };
+	/** Every account but the caller's own counted, as the admin load gives them; `twoStep` null where the caller may not manage it. */
+	const withTwoStep = (currentUser: typeof chief | typeof ada, bobsTwoStep: boolean) => ({
+		...pageData,
+		currentUser,
+		users: [
+			{ ...chief, apiKeys: null, webhooks: null, reportSchedules: null, twoStep: null },
+			{ ...bob, twoStep: bobsTwoStep },
+			{ ...ada, apiKeys: 0, webhooks: 0, reportSchedules: 0, twoStep: currentUser.id === chief.id ? false : null }
+		]
+	});
+	const shieldsOf = (target: HTMLElement) =>
+		[...target.querySelectorAll<HTMLButtonElement>('button[title="Reset two-step sign-in"]')].map(
+			(button) => button.closest('.user-row')!.querySelector('.user-row-name')!.textContent
+		);
+
+	it('T18: shows 🛡️ on every account the caller manages but their own and the superadmin’s, asks with the password, sends it, and hands the link back with its kind', async () => {
+		answer = (what) =>
+			what === 'POST /api/users/2/mfa/reset'
+				? Response.json({ success: true, enrolmentUrl: 'https://kanban.example.com/enrol/t3', mailSent: false, message: "bob's two-step sign-in was reset." })
+				: undefined;
+		const asAdmin = draw(UsersPanel, { data: withTwoStep(ada, true), isSuperadmin: false, confirm: vi.fn(), loadMailStatus: vi.fn(), inviteLink: null });
+		expect(shieldsOf(asAdmin)).toEqual(['bob']);
+		unmount(drawn!.component);
+		drawn!.target.remove();
+
+		const link = { value: null as unknown };
+		const confirm = vi.fn();
+		const target = draw(UsersPanel, bound({ data: withTwoStep(chief, true), isSuperadmin: true, confirm, loadMailStatus: vi.fn() }, 'inviteLink', link));
+		expect(shieldsOf(target)).toEqual(['bob', 'ada']);
+
+		const shield = target.querySelector<HTMLButtonElement>('button[title="Reset two-step sign-in"]')!;
+		shield.click();
+		expect(confirm).toHaveBeenCalledTimes(1);
+		expect(confirm.mock.calls[0][0]).toBe('Reset Two-Step Sign-In');
+		expect(confirm.mock.calls[0][1]).toBe(
+			"Reset bob's two-step sign-in? Their authenticator and recovery codes stop working, they are signed out everywhere, and you are given a link, once, to pass on to them yourself. " +
+				ASKS_FOR_PASSWORD
+		);
+		expect(confirm.mock.calls[0][3]).toEqual({ askPassword: true });
+		await confirm.mock.calls[0][2](MINE);
+		await settle();
+
+		expect(asked('POST /api/users/2/mfa/reset').map((request) => request.body)).toEqual([{ currentPassword: MINE }]);
+		expect(link.value).toEqual({
+			url: 'https://kanban.example.com/enrol/t3',
+			username: 'bob',
+			message: "bob's two-step sign-in was reset.",
+			returnTo: shield,
+			kind: 'mfa-reset'
+		});
+		// So that `twoStep` is read again, and 📧 is offered again.
+		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
+	});
+
+	it('T19: makes 📧 aria-disabled for an account that uses two-step sign-in, its title saying why, and pressing it sends nothing', async () => {
+		const confirm = vi.fn();
+		const target = draw(UsersPanel, { data: withTwoStep(chief, true), isSuperadmin: true, confirm, loadMailStatus: vi.fn(), inviteLink: null });
+
+		const refused = target.querySelector<HTMLButtonElement>('button[title="This account uses two-step sign-in. Reset it first, then send the invite"]')!;
+		expect(refused.closest('.user-row')!.querySelector('.user-row-name')!.textContent).toBe('bob');
+		expect(refused.getAttribute('aria-disabled')).toBe('true');
+		// Not disabled, so its title shows.
+		expect(refused.disabled).toBe(false);
+		refused.click();
+		await settle();
+
+		expect(confirm).not.toHaveBeenCalled();
+		expect(sent.filter((request) => request.what.includes('/invite'))).toEqual([]);
+		// ada does not use it: her 📧 is as it was.
+		const hers = target.querySelector<HTMLButtonElement>('button[title="Resend invite email"]')!;
+		expect(hers.closest('.user-row')!.querySelector('.user-row-name')!.textContent).toBe('ada');
+		expect(hers.hasAttribute('aria-disabled')).toBe(false);
+	});
+
+	it('T20: shows a reset’s link in the dialog with its own label, heading, warning and footer, and none of the invite’s words', () => {
+		const target = draw(InviteLinkDialog, {
+			inviteLink: { url: 'https://kanban.example.com/enrol/t3', username: 'bob', message: "bob's two-step sign-in was reset.", kind: 'mfa-reset' }
+		});
+
+		const dialog = target.querySelector<HTMLElement>('[role="alertdialog"]')!;
+		expect(dialog.getAttribute('aria-label')).toBe("The two-step sign-in reset's link");
+		expect(dialog.querySelector('h2')!.textContent).toBe('🛡️ Two-step sign-in was reset');
+		expect(dialog.querySelector('code')!.textContent).toBe('https://kanban.example.com/enrol/t3');
+		expect(dialog.querySelector('#invite-link-said')!.textContent).toBe("bob's two-step sign-in was reset.");
+		expect(dialog.querySelector('#invite-link-warning')!.textContent).toBe(
+			'Give bob this link yourself, by a way only they read: it is shown once, here. It works for seven days, and stops working if their ' +
+				"two-step sign-in is reset again. Whoever opens it sets up the authenticator of bob's account, and the account still needs its " +
+				'password. Do not open it yourself.'
+		);
+		expect(dialog.textContent).toContain("It is not shown again. If it is lost, reset bob's two-step sign-in again with 🛡️");
+		expect(dialog.textContent).not.toContain('invite');
+		expect(buttonNamed(dialog, '📋 Copy')).toBeDefined();
+		expect(buttonNamed(dialog, 'Done')).toBeDefined();
 	});
 });
 

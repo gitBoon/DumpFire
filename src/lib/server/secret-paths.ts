@@ -44,7 +44,11 @@ import type Database from 'better-sqlite3';
  */
 const SECRET_IN_PATH: readonly { routeId: string; before: string }[] = [
 	{ routeId: '/invite/[token]', before: '/invite/' },
-	{ routeId: '/decision-link/[token]', before: '/decision-link/' }
+	{ routeId: '/decision-link/[token]', before: '/decision-link/' },
+	// An enrolment link (card 2773, F1): its token, with the account's password,
+	// sets up the account's second factor. Masked before its page exists (card
+	// 2769), so that no link opened is ever written down.
+	{ routeId: '/enrol/[token]', before: '/enrol/' }
 ];
 
 /**

@@ -651,6 +651,8 @@ const CURRENT_PASSWORD = [
 	'src/routes/api/users/[id]/+server.ts DELETE',
 	'src/routes/api/users/[id]/password/+server.ts PUT',
 	'src/routes/api/users/[id]/invite/+server.ts POST',
+	// Card 2773: another account's two-step sign-in reset.
+	'src/routes/api/users/[id]/mfa/reset/+server.ts POST',
 	// Slice 2b: the board and column deletes.
 	'src/routes/api/boards/[id]/+server.ts DELETE',
 	'src/routes/api/columns/[id]/+server.ts DELETE',

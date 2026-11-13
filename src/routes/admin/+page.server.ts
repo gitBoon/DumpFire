@@ -76,7 +76,11 @@ export const load: PageServerLoad = async ({ locals }) => {
 		createdAt: users.createdAt,
 		apiKeys: sql<number>`(SELECT COUNT(*) FROM "api_keys" WHERE "api_keys"."user_id" = "users"."id")`,
 		webhooks: sql<number>`(SELECT COUNT(*) FROM "webhooks" WHERE "webhooks"."set_by" = "users"."id" AND "webhooks"."active" = 1)`,
-		reportSchedules: sql<number>`(SELECT COUNT(*) FROM "report_schedules" WHERE "report_schedules"."user_id" = "users"."id" AND "report_schedules"."enabled" = 1)`
+		reportSchedules: sql<number>`(SELECT COUNT(*) FROM "report_schedules" WHERE "report_schedules"."user_id" = "users"."id" AND "report_schedules"."enabled" = 1)`,
+		// Whether the account holds a second factor (card 2773): the panel offers
+		// its reset, and refuses its invite, which would not work. By the same
+		// rule as the counts: null for an account the caller may not reset.
+		twoStep: sql<number>`EXISTS (SELECT 1 FROM "mfa_factors" WHERE "mfa_factors"."user_id" = "users"."id")`
 	}).from(users).all()
 		.map((user) => {
 			const counted = mayReset(user);
@@ -85,6 +89,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 				apiKeys: counted ? user.apiKeys : null,
 				webhooks: counted ? user.webhooks : null,
 				reportSchedules: counted ? user.reportSchedules : null,
+				twoStep: counted ? user.twoStep === 1 : null,
 				settingsSet: counted ? (held.get(user.id) ?? null) : null
 			};
 		});

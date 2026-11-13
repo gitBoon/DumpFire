@@ -22,7 +22,7 @@
  * before it opens is shown with the driver and the guard replaced, so nothing
  * is opened at all.
  */
-import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, posix, win32 } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -386,6 +386,18 @@ describe('the image', () => {
 		// The data folder alone, after it is made: the code stays root's.
 		expect(chowns.map((m) => [m[1], m[2]])).toEqual([['node:node', '/app/data']]);
 		expect(chowns[0].index).toBeGreaterThan(dockerfile.indexOf('RUN mkdir -p /app/data', production));
+	});
+
+	// Card 2773: the host's reset of the superadmin's two-step sign-in is run in the container, so the image holds it.
+	it('T31: copies scripts/mfa-reset.mjs into the production stage, before the server stops being root', () => {
+		const dockerfile = readFileSync(join(process.cwd(), 'Dockerfile'), 'utf8');
+		const production = dockerfile.indexOf('AS production');
+		const copies = [...dockerfile.matchAll(/^COPY --from=builder (\S+)\s+(\S+)\r?$/gm)].filter((m) => m[1].includes('scripts'));
+
+		expect(copies.map((m) => [m[1], m[2]])).toEqual([['/app/scripts/mfa-reset.mjs', './scripts/mfa-reset.mjs']]);
+		expect(copies[0].index).toBeGreaterThan(production);
+		expect(copies[0].index).toBeLessThan(dockerfile.indexOf('USER node'));
+		expect(existsSync(join(process.cwd(), 'scripts', 'mfa-reset.mjs'))).toBe(true);
 	});
 
 	// Card 2776: an import wrote its two files to the working directory, /app in

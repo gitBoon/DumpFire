@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.111
+version: 1.112
 status: As-Built
 date: 2026-11-13
 tags:
@@ -60,7 +60,10 @@ tags:
   - aes-256-gcm
   - encryption-at-rest
   - mfa-key-file
-description: "Deep-dive into DumpFire's authentication system, what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the twenty-eight destructive actions that ask for the current password again (step-up), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them)"
+  - mfa-reset
+  - enrolment-links
+  - key-rotation
+description: "Deep-dive into DumpFire's authentication system, what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the twenty-nine destructive actions that ask for the current password again (step-up), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log)"
 ---
 
 # Authentication & Security
@@ -723,6 +726,7 @@ reason, and pinned both ways against the handlers (`tests/step-up.test.ts`, case
 | `POST /api/users` | admin | Makes an account: a credential that outlives the session |
 | `PUT /api/users/[id]`, **with `role` or `email`** | admin | An account's privileges, or the address its invites and resets go to |
 | `DELETE /api/users/[id]`, `PUT /api/users/[id]/password`, `POST /api/users/[id]/invite` | admin | Removes an account, sets its password, or a reset by another way |
+| `POST /api/users/[id]/mfa/reset` (card 2773) | admin, within whose account they may manage | Removes another account's second factor and issues the link that sets up a new one, given to the caller |
 | `DELETE /api/boards/[id]` | the board's owner, or admin | A board and every sub-board under it, for good: boards have no archive |
 | `DELETE /api/columns/[id]`, **with a card in it, archived ones included** | editor of the board | Every card in the column, with their sub-boards and files |
 | `PUT /api/admin/backup`, **with `destinations`** | admin | Where every later backup is sent |
@@ -740,12 +744,14 @@ reason, and pinned both ways against the handlers (`tests/step-up.test.ts`, case
 | `POST /api/decisions/[id]/rule` (card 2679) | its decider | Rules on a decision for good, and mails every participant the ruling and its reason |
 | `POST /api/decisions/[id]/release` (card 2679) | its decider | Shows a ruled decision's totals and comments, for good, to everyone who can see it |
 
-The list is twenty-eight: card 2701's eighteen (the import among them, standing as its
+The list is twenty-nine: card 2701's eighteen (the import among them, standing as its
 confirmation), card 2697's eight: the five its plan listed, and the three People writes its
 code review's part B added on 2026-11-04, S1, so that every People write that sets or ends an
 address or an account asks ([Decision Access and Personal Links](#decision-access-and-personal-links)),
-and card 2679's two, the ruling and the release, which ask every time
-([Results, the Ruling and the Release](#results-the-ruling-and-the-release-card-2679)). The
+card 2679's two, the ruling and the release, which ask every time
+([Results, the Ruling and the Release](#results-the-ruling-and-the-release-card-2679)), and card
+2773's one, the reset of another account's two-step sign-in, which asks every time
+([The Administrator's Reset](#the-administrators-reset)). The
 conditional ones test their field with `Object.hasOwn`, as the body readers do
 (`request-body.ts`), or the row: a user change of `username` or `emoji` alone, a backup save of
 the schedule, retention or failure mail alone, an empty column's delete, a People save of name,
@@ -1378,7 +1384,7 @@ Covered by `tests/password-checks.test.ts` and `tests/atomic-accounts.test.ts`.
 Three routes ask a caller who is already signed in for their current password: changing
 your email (`PUT /api/account/email`), changing your password (`PUT /api/account/password`,
 which the admin page's dialog on your own row uses too) and Generate Key
-(`POST /api/account/api-keys`). Since cards 2701, 2697 and 2679 (2026-11-04) so do the twenty-eight actions of
+(`POST /api/account/api-keys`). Since cards 2701, 2697 and 2679 (2026-11-04), and card 2773 (2026-11-13), so do the twenty-nine actions of
 [Step-up Before Destructive Actions](#step-up-before-destructive-actions-card-2701). The
 password is what whoever holds a session and not the password (an unlocked machine, a copied
 cookie) would need, and a password found at any of them passes every one of them.
@@ -1949,7 +1955,7 @@ The file's bytes are never used directly. Three values are derived from them
 | Value | Derived as | Kept where | What it is for |
 |-------|-----------|-----------|----------------|
 | The AES key | HKDF-SHA256 of the file's 32 bytes, empty salt, info `dumpfire mfa aes-256-gcm v1`, 32 bytes | In the process's memory only | Sealing and opening every secret |
-| The key id | The first 16 hexadecimal characters of HMAC-SHA256(file key, `dumpfire-mfa-key-id`) | `mfa_factors.key_id` and `sign_in_challenges.key_id`, beside what it sealed | Which key sealed a secret, so a secret of another key is told apart without trying it, and a later rotation (card 2773) can tell old from new |
+| The key id | The first 16 hexadecimal characters of HMAC-SHA256(file key, `dumpfire-mfa-key-id`) | `mfa_factors.key_id` and `sign_in_challenges.key_id`, beside what it sealed | Which key sealed a secret, so a secret of another key is told apart without trying it, and a change of key at start (card 2773) re-seals only the factors still under the old one |
 | The key check | HMAC-SHA256(file key, `dumpfire-mfa-check`), as hex | `settings.mfa_key_check`, written with the first factor | Whether the key this server started with is the one its factors were made with |
 
 The AES key, and the file's bytes, are never written anywhere: not to a log, a message, a row or
@@ -2002,6 +2008,9 @@ the key (`mfaStartVerdict`):
 | Factors, and another key's check | Refuse: the key is not the one the factors were made with |
 | Factors, and this key's check | Start; every factor that does not open is named at `ERROR` |
 | Factors, and no check (deleted by hand, say) | Try every factor. None opens: refuse. Some open: record this key's check, start, and name the rest at `ERROR` |
+
+That is the table with no previous key. With `MFA_KEY_FILE_PREVIOUS` naming one, the verdict
+changes the key at that start (card 2773): see [Changing the Key at Start](#changing-the-key-at-start).
 
 Each factor tried is opened and its secret zeroed at once. A refusal is one
 `[CRITICAL] [AUTH]` line on the console and exit code 1: a server must not run with secrets it
@@ -2061,6 +2070,250 @@ from it but a key id, an authenticator secret, a ciphertext, a nonce, additional
 recovery code or its hash, or a token. The key file's refusals name its path and a reason, never
 what it holds. The unreadable-factor lines name factor and user ids and key ids.
 
+## A Lost Authenticator: the Reset, the Host's Command and a Change of Key (Card 2773)
+
+Someone who loses the phone their authenticator is on, and has no recovery code left, cannot
+sign in once card 2769 asks for a second factor. Card 2773 builds the ways back, and is built
+first: card 2769 is never released without it. **Until card 2769 no account has a factor**, and
+the page an enrolment link opens, `/enrol/[token]`, is card 2769's; this card issues the link
+and its address, and everything below already runs.
+
+```mermaid
+flowchart TD
+    Lost["An authenticator is lost"] --> Whose{"Whose account?"}
+    Whose -->|"one an administrator may manage"| Shield["🛡️ on the admin page:<br/>POST /api/users/[id]/mfa/reset"]
+    Whose -->|"the superadmin's, or no administrator can sign in"| Host["The host:<br/>docker exec … node scripts/mfa-reset.mjs username"]
+    Shield --> Reset["resetTwoStep: factors, recovery codes,<br/>sessions, unused invites, pending sign-ins<br/>and links ended; one new enrolment link"]
+    Host --> Reset
+    Reset --> Given["The link given once to whoever reset it:<br/>in the answer, or on the terminal.<br/>Never mailed, never logged"]
+    Given --> Holder["Handed to the holder by a way they trust;<br/>with the account's password it sets up<br/>a new authenticator (card 2769's page)"]
+    Shield -.-> Notice["A notice to the account's address:<br/>who reset it and when, no link"]
+```
+
+### The Administrator's Reset
+
+`POST /api/users/[id]/mfa/reset` (`src/routes/api/users/[id]/mfa/reset/+server.ts`), with the
+body `{ "currentPassword": "…" }`. It is shaped as an administrator's password reset is, and
+asks the same account rule, `requireManagedAccount()`:
+
+| Caller and account | Answer |
+|--------------------|--------|
+| Not signed in | `401` |
+| An id that is not a whole number above 0 | `400` "Invalid user ID" |
+| The caller's own account, whoever the caller is | `403` "Manage your own two-step sign-in on the Account page", before the role is asked: this asks for no second factor, and would hand whoever held the caller's session and password a link to enrol their own |
+| A caller who is not an administrator | `403` "Forbidden" |
+| No such account | `404` "User not found" |
+| The superadmin's account | `403` "Only the server's host can reset the superadmin's two-step sign-in, with scripts/mfa-reset.mjs" |
+| An administrator's account, the caller not the superadmin | `403` "Only superadmin can reset an admin's two-step sign-in" |
+| No address to make the link from (no App URL, no `APP_URL`, no `ORIGIN`, on a built server) | `503` with the invite's words (`NO_LINK_ADDRESS`): a reset with no link would leave the account with no way to set up a new authenticator |
+| `currentPassword` missing, wrong, or the step-up's other refusals | As [Step-up Before Destructive Actions](#step-up-before-destructive-actions-card-2701) |
+| An ordinary user's account to an administrator; a user's or an administrator's to the superadmin; an account with no factor too | `200`, the reset done |
+
+Every refusal that needs no password is asked before the password, in `confirmStepUp`'s guard,
+and every one of them again inside the transaction that resets (`whilePasswordHolds` and
+`writeAs`), so an account made an administrator between the two is refused there and nothing is
+changed. Nothing is changed by any refusal. An account with no factor is reset all the same: it
+is how an expired or ended link is replaced, and how an account a restore left without a factor
+is given one.
+
+**What the reset changes** (`resetTwoStep()` in `src/lib/server/mfa-store.ts`, which throws
+outside a transaction):
+
+| Ended or set back | Kept |
+|-------------------|------|
+| Every authenticator (`mfa_factors`) and recovery code of the account, deleted | The password |
+| `mfa_known_wrong`, `mfa_other_wrong`, `mfa_recovery_wrong` set to 0, and their three `*_resumes_at` pauses cleared | API keys, and the webhooks the account set |
+| Every session, so it is signed out everywhere | Report schedules |
+| Every invite not yet used | `security_banner`, `last_sign_in_*` and `failed_codes_since_sign_in`, which are about the password and the last sign-in, which a reset does not change |
+| Every sign-in waiting for its second factor, and every enrolment link | |
+| Then one new enrolment link | |
+
+The sessions, invites, pending sign-ins and links end through
+`endAccountAccess(userId, { apiKeys: false, reportSchedules: false })`, and the link is issued
+after it, since that deletes the account's links. **The link** (`issueEnrolmentLink()`, also
+inside the caller's transaction): its token is 32 random bytes as base64url; only its SHA-256 is
+stored, in `enrolment_links` with `issued_by` (`admin-reset` here), `created_at` and an
+`expires_at` seven days on (`ENROLMENT_LINK_LIFETIME_MS`); issuing deletes the account's earlier
+links first, so an account has one link that works and a leaked older one stops. Its address is
+`<base>/enrol/<token>` (`ENROLMENT_LINK_PATH`), `<base>` being `linkBaseUrl()`'s, as a mailed
+link's is ([Where a Mailed Link's Address Comes From](#where-a-mailed-links-address-comes-from)).
+
+**The link is given to the caller, once, in the answer, and never mailed.** Whoever stole the
+phone may already know the password and have changed the account's address, so a mailed link
+could go straight to them; the administrator is the person the holder asked for help, and hands
+the link over by a channel they both trust. The link alone does not set up a factor: card 2769's
+page asks for the account's password first. The answer is `Cache-Control: no-store`:
+
+```json
+{ "success": true, "enrolmentUrl": "https://dumpfire.example.com/enrol/<token>", "mailSent": true,
+  "factorsRemoved": 1, "recoveryCodesRemoved": 10, "sessionsEnded": 2, "challengesEnded": 0,
+  "invitesEnded": 0,
+  "message": "ann's two-step sign-in was reset. Give them the link yourself: it is shown once, and works for seven days. ann was sent a notice that holds no link." }
+```
+
+`mailProblem`, why the notice was not sent in the words an invite's failure uses
+(`MAIL_PROBLEM_WORDS`), is there only when mail is set up and the notice was not sent, its
+password not entered on this server included. Where mail is not set up no notice is tried,
+`mailSent` is `false` and there is no `mailProblem`.
+
+**The notice.** Once the reset has committed, and where mail is set up with its password, the
+account's address is sent `sendMfaResetNotice()` (`src/lib/server/notifications.ts`), awaited:
+"Your DumpFire two-step sign-in was reset", naming who reset it and when (UTC). Where the reset
+removed an authenticator (`hadFactor`), it says the authenticator and recovery codes no longer
+work and the account has been signed out everywhere; where the account had none, it says so
+instead, and that its two-step sign-in was reset and a new set-up link issued, and that it has
+been signed out everywhere. Either way an administrator will give the holder the link themselves,
+and it is never sent by email. Its footer: "If you did not ask for this, tell an administrator
+straight away. Use only a link an administrator hands you directly." It holds no link and no
+token, and every text in it is escaped. The reset stands whether or not it goes.
+
+**The link is shown only after three fresh checks**, as an invite's is after its awaited mail
+(R-S1, `invite-link.ts`), because the caller may have been demoted or signed out while the mail
+was out: the caller's session is still open, theirs, and an administrator's; they may still
+manage the account (these two are `callerStillManages()` in `invite-link.ts`, the one helper the
+invite route and this route both ask); and the link, by its hash, is still the account's and
+unexpired, this route's own check. If one
+fails, the reset stands, `enrolmentUrl` is `null`, the message says "…'s two-step sign-in was
+reset, but its link cannot be shown to you now. Run the reset again to issue a new one.", and
+one `WARN` line under `AUTH` says why: `The enrolment link of user <id>, issued by user <id>'s
+reset, was not given to them: <the caller's session has ended, or is no longer an
+administrator's | the caller may no longer manage the account | the link is no longer the
+account's>`.
+
+**The log.** After the commit, one `CRITICAL` line under `AUTH`, filed under the caller:
+`Two-step sign-in reset for user <id> ("<name>") by "<admin>": removed <n> factor(s) and <m>
+recovery code(s), ended <s> session(s), <c> pending sign-in(s) and <i> invite(s); an enrolment
+link was issued`, its meta the counts and both ids. Never the token or the link.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as Admin's browser
+    participant R as /api/users/[id]/mfa/reset
+    participant DB as Database
+    participant M as Mail server
+    A->>R: POST { currentPassword }
+    R->>R: own account, role, readBody
+    R->>R: confirmStepUp: the refusals read only, then the password
+    R->>DB: whilePasswordHolds + writeAs: the refusals again, resetTwoStep
+    DB-->>R: the counts and the token (committed)
+    R->>R: CRITICAL AUTH line: both accounts and the counts, no token
+    opt mail set up, its password entered
+        R->>M: the notice, no link (awaited)
+    end
+    R->>DB: the three checks, read only
+    R-->>A: 200 { enrolmentUrl or null, mailSent, mailProblem?, counts, message }, no-store
+```
+
+The admin page's 🛡️ **Reset two-step sign-in** is on every row that has 📧, asks through the
+page's confirm with the caller's password, and shows the link in the invite link's dialog with
+its own words; see [Resetting Two-Step Sign-In](admin-guide.md#resetting-two-step-sign-in).
+
+### Invites Refused for an Account With a Second Factor
+
+An invite sets the account's password and signs its user in, and an account with a factor
+also needs its authenticator, so **no invite works for an account that holds a second factor**.
+`usableInvite()` (`src/lib/server/invites.ts`), the one place that decides whether an invite
+works, asks it in its own query (`NOT EXISTS` on `mfa_factors`), so the invite page, its form
+before it hashes the password, the form's transaction and the invite route's answer after its
+mail all refuse it alike: an invite made before the account set up a factor stops working once
+it has one. `POST /api/users/[id]/invite` refuses to make one, `409` "This account uses two-step
+sign-in. Reset it first, then send the invite.", after the account rule and before the mail
+checks, both before the password and inside its transaction. An administrator who means to give
+such an account back resets its two-step sign-in first.
+
+### The Host's Command
+
+`scripts/mfa-reset.mjs <username>`, copied into the image (`/app/scripts/`) and run as
+`docker exec <container> node scripts/mfa-reset.mjs <username>`, is the way back for the
+superadmin, whom nobody manages through the application, and for any account when nobody can
+use the admin page. It is standalone (`better-sqlite3` and Node's own modules, no `$lib`, as the
+image holds the built server and not its source), and does what `resetTwoStep` does, statement
+for statement, in raw SQL in one `BEGIN IMMEDIATE` transaction, with `issued_by` `host-reset`.
+`tests/mfa-reset-script.test.ts` compares every table and column after it with what
+`resetTwoStep` leaves for an account alike, so a change made to one and not the other fails.
+
+- **The account** is looked up by its username, trimmed, matched exactly, as sign-in matches it,
+  inside the transaction.
+- **The log row** is written in the same transaction, so there is no reset without it: `CRITICAL`
+  under `AUTH`, `user_id` the account, no address, `Two-step sign-in reset for user <id>
+  ("<name>") on the server's host, with scripts/mfa-reset.mjs: …`, its meta the counts and
+  `resetBy: "host"`. The username is made printable as the logger makes every line.
+- **The link goes to stdout only**: the counts, where its address came from, and the link.
+  The address is the host's own configuration before a setting any administrator can change:
+  `APP_URL`; then `ORIGIN` unless it is the image's placeholder `http://localhost:3000`; then the
+  `app_url` setting, with a warning that an administrator set it; else the path alone, to put the
+  server's address in front of. Each is read as `appUrlAsRead()` and `configuredOrigin()` read
+  them. This is the reverse of `linkBaseUrl()`'s order for the admin route, deliberately: the
+  host is more trusted than the setting.
+- **Refusals**, each with nothing changed: no username, or more than one argument (exit 2); run
+  as root on POSIX, since root-owned `-wal` and `-shm` files would stop the server, which runs as
+  `node` (card 2776); a `DB_PATH` (or `./dumpfire.db`) that names no file, opened with
+  `fileMustExist` so none is made; a database without migration 0065's tables; no such account;
+  and the database still busy after `busy_timeout = 5000` (each exit 1). It opens the database
+  with `foreign_keys = ON`, as the server does.
+
+How to run it, and every line it prints, are in
+[If the Superadmin Loses Their Authenticator](deployment.md#if-the-superadmin-loses-their-authenticator).
+
+### Changing the Key at Start
+
+The server keeps the key it loaded for the life of its process, so the key is changed at a start
+and never by a command beside a running server, whose factors re-sealed by another process
+would be unreadable to it. `MFA_KEY_FILE` names the new key and `MFA_KEY_FILE_PREVIOUS` the old.
+`loadPreviousMfaKey()` (`src/lib/server/mfa-key.ts`) reads the old file afresh at every start, by
+the key file's own rules (a file its group or everyone can write is refused), and never makes
+one; unset or empty is no previous key. `mfaStartVerdict()` then answers, besides what it
+answers with no previous key, `reseal`, the factors to seal again (C is the current key, P the
+previous):
+
+| Previous key | Stored check | Factors | Verdict |
+|--------------|--------------|---------|---------|
+| Did not load, or is C | any | any | Refuse, before the return for no factors |
+| none | | | As [with no previous key](#the-key-check-and-the-start-up-verdict) |
+| P | neither C's nor P's | some | Refuse: the key does not match |
+| P | neither C's nor P's | none | Start; record nothing (a set-up under P is still deleted, as in every row with P that starts) |
+| P | P's, C's or none | none | Start; record C's check where P's was stored; warn that the previous key opens nothing |
+| P | P's, C's or none | some open with P | Re-seal those; record C's check; name at `ERROR` any that open with neither |
+| P | P's, C's or none | some, none opening with P | As with no previous key, a stored P's check counting as none (so none opening with C refuses); warn that the previous key opens nothing |
+
+`checkMfaKeyAtStart()` (`src/lib/server/startup-checks.ts`) applies a non-empty `reseal`, a
+check to record, or the deletion of any `sign_in_challenges` row whose `key_id` is P's (asked
+for even when there is nothing to re-seal and no check to record, a second start with P still
+named, say, since nothing opens such a row any more) in one `sqlite.transaction(…).immediate()`,
+inside which it reads the factors and
+the check again and decides again, so an instance still running on the old key cannot write
+between the read and the commit. Each factor is opened with P, sealed afresh with C under the
+same `factorAad` and a new nonce, and written by
+`UPDATE mfa_factors SET key_id = ?, secret_nonce = ?, secret_ciphertext = ? WHERE id = ? AND key_id = <P's id>`,
+which must change exactly one row; `factor_uid` and `last_step` are kept. Every
+`sign_in_challenges` row sealed under P is deleted, and C's check is recorded where the verdict
+says to. Any failure, a
+database another instance holds included, rolls all of it back and refuses the start, saying
+that nothing was changed and starting again is safe. Each opened secret is zeroed once sealed,
+and P's AES key is zeroed when the check returns, whatever it answered: the running server holds
+only C. A start that re-sealed writes one line under `AUTH` at `WARN`, also to the console
+whatever `LOG_LEVEL` is: "Rotated N second factor(s) to the new MFA key. Back up the new key now,
+then remove MFA_KEY_FILE_PREVIOUS; keep the old key file offline for as long as you keep backups
+made before today." `factorSecret()` is unchanged: after the start no usable factor is under P.
+
+A restore needs nothing of this: Import Backup never copies a backup's key check and takes
+another account's factors only under the current key's check, so a backup made before a change
+restores, its factors for accounts not on this server left out as `key differs`. A database
+file made before a change and put back by hand is started once with its old key as
+`MFA_KEY_FILE_PREVIOUS`. The procedure, and keeping the old key, are in
+[Changing the Key](deployment.md#changing-the-key).
+
+### The Enrolment Link's Path Is Masked
+
+An enrolment link's token, with the account's password, sets up the account's second factor, so
+its path is a secret like an invite's. `/enrol/` is in `SECRET_IN_PATH`
+(`src/lib/server/secret-paths.ts`) as `{ routeId: '/enrol/[token]', before: '/enrol/' }`, put
+there before card 2769's page exists so that no link opened is ever written down: the gate logs a
+request to `/enrol/<token>`, and its percent-encoded forms, as `/enrol/[token]`, and
+`maskSecretPaths()` rewrites `/enrol/<token>` to `/enrol/[token]` wherever a line holds it, in a
+mail server's refusal, a backup's copy of the log and the start-up sweep of the running log alike.
+
 ## Passwords, Sessions and Invites Change Together
 
 Every request that changes who can sign in makes its writes in one transaction (see [Architecture](architecture.md#writes-one-transaction-then-the-effects)). The cookie is set, and the redirect made, after the commit.
@@ -2070,7 +2323,8 @@ Every request that changes who can sign in makes its writes in one transaction (
 | Change your own password (`PUT /api/account/password`) | The new password, the end of every session the user has, and the new session that keeps this browser signed in | All end | Kept, unless the body says `endApiKeys: true`, which the Account page's box sends |
 | An administrator sets a user's password (`PUT /api/users/:id/password`) | The new password and the end of every session that user has. Nobody sets their own password by this route, an administrator included: the caller's own id is answered 403 and told to use the Account page | All end | All end |
 | Create a user (`POST /api/users`) | The user and, where no password was given, their invite. The invite email is sent after the commit, and waited for (card 2196) | A new account has none | A new account has none |
-| Send an invite again (`POST /api/users/:id/invite`) | The new invite. The email is sent after the commit, and waited for (card 2196) | All earlier ones end | Kept |
+| Send an invite again (`POST /api/users/:id/invite`) | The new invite. The email is sent after the commit, and waited for (card 2196). Refused `409` for an account with a second factor (card 2773) | All earlier ones end | Kept |
+| An administrator resets an account's two-step sign-in (`POST /api/users/:id/mfa/reset`, card 2773) | Its second factors and recovery codes deleted, its wrong-code counts set back, the end of every session, pending sign-in and enrolment link, and one new enrolment link. The password is not changed. The notice mail is sent after the commit, and waited for | All end | Kept |
 | An administrator changes an account's email or role (`PUT /api/users/:id`) | The change, and the end of the account's invites when its email or role is changed | All end, when the email or role written differs from the one stored | Kept |
 | Change your own email (`PUT /api/account/email`) | The new address and the end of the account's invites | All end, when the address differs from the one stored | Kept |
 | Use an invite (`/invite/:token`) | The password, the invite marked used, the end of every session the account had, and the first session | All others end | All end |
@@ -2078,7 +2332,7 @@ Every request that changes who can sign in makes its writes in one transaction (
 
 So a password is never changed while the old sessions stay good, an invite never sets a password and remains usable, and no invite waiting to be used outlives a newer invite, a password change, or a change of the account's email address or role.
 
-**Pending sign-ins and enrolment links end with the invites** (card 2768). Every way of setting a password, and every actual change of an account's email address or role (both routes), also deletes every sign-in of the account that waits for its second factor (`sign_in_challenges`) and every link that lets it set up an authenticator (`enrolment_links`), in the same transaction, through `endPendingSignIns()` in `src/lib/server/mfa-store.ts`, which throws if no transaction is open. Sending an invite again does not. The account's second factors and recovery codes are not touched. Until card 2769 issues them both tables are empty, so nothing is said of them: no answer and no log line changes, and `endAccountAccess()` returns the two counts (`challenges`, `enrolmentLinks`) for the cards that will name them.
+**Pending sign-ins and enrolment links end with the invites** (card 2768). Every way of setting a password, and every actual change of an account's email address or role (both routes), also deletes every sign-in of the account that waits for its second factor (`sign_in_challenges`) and every link that lets it set up an authenticator (`enrolment_links`), in the same transaction, through `endPendingSignIns()` in `src/lib/server/mfa-store.ts`, which throws if no transaction is open. Sending an invite again does not. The account's second factors and recovery codes are not touched. So **set a password before resetting two-step sign-in, never after**: a password set after the reset ends the enrolment link it issued (card 2773). Until card 2769 nothing issues a pending sign-in, and only card 2773's reset issues an enrolment link, so the routes that end them say nothing of them: no answer and no log line changes, and `endAccountAccess()` returns the two counts (`challenges`, `enrolmentLinks`) for the cards that will name them.
 
 ### What Setting a Password Ends
 
@@ -2364,6 +2618,12 @@ could send any account an invite, the superadmin's and their own included. Whoev
 an invite sets the account's password with it and is asked for no other, so an invite is
 a password reset by another way and is asked what a reset is asked.
 
+A fifth, `POST /api/users/:id/mfa/reset` (card 2773), resets an account's two-step sign-in and
+asks the same guard with words of its own. Its columns are the same as below, the superadmin's
+account included: that is reset only from the host (see
+[A Lost Authenticator](#a-lost-authenticator-the-reset-the-hosts-command-and-a-change-of-key-card-2773)),
+and the caller's own is refused on it, an administrator's and the superadmin's alike.
+
 | The account is | An ordinary user | An administrator | The superadmin |
 |----------------|------------------|------------------|----------------|
 | An ordinary user's | ❌ | ✅ | ✅ |
@@ -2372,6 +2632,7 @@ a password reset by another way and is asked what a reset is asked.
 | Another superadmin's, were there one | ❌ | ❌ | ❌ |
 | The caller's own, on the password route | ❌ | ❌ | ❌ |
 | The caller's own, on the invite route | ❌ | ❌ | ❌ |
+| The caller's own, on the two-step sign-in reset route (card 2773) | ❌ | ❌ | ❌ |
 | The caller's own, on the delete route | ❌ | ❌ | ❌ |
 | The caller's own, on the change route: `email` | ❌ | ❌ | ❌ |
 | The caller's own, on the change route: `role` | ❌ | ❌ | ❌ |
@@ -6290,7 +6551,7 @@ which is what Reset Everything in the admin panel leaves.
 | `src/lib/server/write-as.ts` | Who the caller is, asked again at the write (card 2253): `writeAs(locals, (caller) => …)`, the one transaction every write handler writes in, beginning with `stillAuthenticated()`; `stillCallerNow(locals)`, the same question in a transaction of its own, for the nine handlers whose work cannot run in one (the export the ninth, card 2701); `inWrite()`, the first statement of every service write, refused unless a `writeAs` callback is running, and `ServiceOptions`, what every service write is handed beside the caller (card 2012). See [Asked Again at the Write](#asked-again-at-the-write-card-2253) |
 | `src/lib/server/passwords.ts` | Every bcrypt hash and check, on worker threads in two lanes (card 2191): `checkPassword()`, `makePasswordHash()`, `CheckNotMade`, `callerHasGone()`, `passwordChecks()`, `BCRYPT_ROUNDS` and `DUMMY_HASH`. The only importer of bcryptjs |
 | `src/lib/server/known-browsers.ts` | Browsers that have signed in before (card 2194): `rememberBrowser()`, `rememberedNonce()`, the key in `settings` and `resetKnownBrowserSecretCache()`, and `signInsOneAtATime()`, which reads `SIGN_IN_ONE_AT_A_TIME` |
-| `src/lib/server/invites.ts` | `issueInvite()`, the one way an invite is issued, which ends the account's earlier invites; `endUnusedInvites()`, which ends them when a password is set and when an account's email or role changes; `INVITE_LIFETIME_MS` |
+| `src/lib/server/invites.ts` | `issueInvite()`, the one way an invite is issued, which ends the account's earlier invites; `endUnusedInvites()`, which ends them when a password is set and when an account's email or role changes; `INVITE_LIFETIME_MS`; `usableInvite()`, the one place that decides an invite works, which since card 2773 refuses one for an account with a second factor |
 | `src/lib/server/board-access.ts` | Board-level role resolution and permission checks; `isAdmin()` |
 | `src/lib/server/route-guards.ts` | Per-route guards that resolve the board from the row and throw 401/404/403; `requireManagedAccount()`, `requireTeamManager()` and `requireSuperadmin()`, which look at no board; `requireAdmin()` and `refuseOwnAccount()`, which read no row (card 2253); `requireSubBoardLink()`, who may put a board under a card |
 | `src/lib/server/sub-boards.ts` | `wouldLoop()`, whether putting a board under a card would make a loop, by a walk that ends on a loop already in the data; `linkableBoards()`, what the board page offers to link |
@@ -6321,12 +6582,14 @@ which is what Reset Everything in the admin panel leaves.
 | `src/lib/server/decision-links.ts` | A decision's personal links (card 2675): `issueLink()`, `revokeLinks()`, `participantForLink()`, the one place a link is checked, and `reachOf()` and `mayHoldLink()`, who is mailed and who may hold a link, and `mailedLinkOf()` (card 2721), whether a mail with no link may point a holder at their latest email's |
 | `src/lib/server/decision-register.ts` | The register, a person's record and the record view (card 2680): `visibleWhere` (the register held to `requireDecision(…, 'view')`), `visibleDecisionIdsOf()`, `registerQueryOf()` (the filters by allow-list), the person record's three audiences with its scope read first, and `recordEntryOf()`, which builds each event's detail from `RECORD_DETAIL` alone |
 | `src/lib/server/decision-cards.ts` | What is read of card-decision links (card 2680): `linkedCardsFor()` (cards on boards the viewer can open), `readCardDecisions()` (decisions the viewer may view), and `decisionLinksOfCardsUnchecked()`, which checks no access and whose callers a test pins |
-| `src/lib/server/secret-paths.ts` | The paths that carry a secret, `/invite/[token]` and `/decision-link/[token]` (card 2675), written to the log masked; `maskSecretsInLog()`, which masks what the log already holds, in a backup's copy and in the running log at start, and `maskFailedSignIn()`, which takes the name typed out of an old failed sign-in line (card 2193) |
-| `src/lib/server/mfa-key.ts` | The key that protects authenticator secrets (card 2768): `loadMfaKey()` and the cached `mfaKeyLoad()` and `currentMfaKey()`, read at the first call and never at import; `productionRules()`; the key file's checks, its atomic making outside production, and whether it is inside the database's folder; `keyFromBytes()`, the AES key, key id and key check; `mfaStartVerdict()`. See [Second-Factor Secrets at Rest](#second-factor-secrets-at-rest-card-2768) |
+| `src/lib/server/secret-paths.ts` | The paths that carry a secret, `/invite/[token]`, `/decision-link/[token]` (card 2675) and `/enrol/[token]` (card 2773), written to the log masked; `maskSecretsInLog()`, which masks what the log already holds, in a backup's copy and in the running log at start, and `maskFailedSignIn()`, which takes the name typed out of an old failed sign-in line (card 2193) |
+| `src/lib/server/mfa-key.ts` | The key that protects authenticator secrets (card 2768): `loadMfaKey()` and the cached `mfaKeyLoad()` and `currentMfaKey()`, read at the first call and never at import; `productionRules()`; the key file's checks, its atomic making outside production, and whether it is inside the database's folder; `keyFromBytes()`, the AES key, key id and key check; `mfaStartVerdict()`, with `reseal` for a change of key; `loadPreviousMfaKey()`, the old key named by `MFA_KEY_FILE_PREVIOUS`, never kept (card 2773). See [Second-Factor Secrets at Rest](#second-factor-secrets-at-rest-card-2768) and [Changing the Key at Start](#changing-the-key-at-start) |
 | `src/lib/server/mfa-crypto.ts` | `sealWith()` and `openSealed()`, AES-256-GCM bound to `factorAad()` or `enrolAad()`; `newFactorUid()`; `sha256Hex()`. Pure |
 | `src/lib/server/totp.ts` | Authenticator codes (RFC 6238 over RFC 4226): `hotp()`, `stepAt()`, `matchingStep()` (the current step and the one before, both compared in constant time), `newTotpSecret()`. Pure |
 | `src/lib/server/recovery-codes.ts` | `newRecoveryCodes()`, `canonicalRecoveryCode()` and `recoveryCodeHash()`, bound to the account. Pure |
-| `src/lib/server/mfa-store.ts` | The rows: `addTotpFactor()` with the key check, `factorSecret()`, `sealEnrolment()` and `openEnrolment()`, `spendStep()` and `spendRecoveryCode()` (one conditional `UPDATE` each), `storeRecoveryCodes()`, `endPendingSignIns()`, and `readMfaKeyCheck()` |
+| `src/lib/server/mfa-store.ts` | The rows: `addTotpFactor()` with the key check, `factorSecret()`, `sealEnrolment()` and `openEnrolment()`, `spendStep()` and `spendRecoveryCode()` (one conditional `UPDATE` each), `storeRecoveryCodes()`, `endPendingSignIns()`, and `readMfaKeyCheck()`; `issueEnrolmentLink()` and `resetTwoStep()` (card 2773), each inside the caller's transaction |
+| `src/routes/api/users/[id]/mfa/reset/+server.ts` | An administrator's reset of another account's two-step sign-in (card 2773): the refusals before the password and in the transaction, the notice after the commit, and the three checks before the link is put in the answer. See [The Administrator's Reset](#the-administrators-reset) |
+| `scripts/mfa-reset.mjs` | The host's reset of an account's two-step sign-in by its username (card 2773), standalone, in the image at `/app/scripts/`. See [The Host's Command](#the-hosts-command) |
 | `src/lib/server/mfa-backup.ts` | What a restore does with second factors (card 2768): `readMfaHere()`, `restoreMfaRows()`, `readBackupMfaKeyCheck()` (the backup's key check from its table storage), `MFA_ROWS_NOT_RESTORED` and `mfaWithoutFactorSentence()` |
 | `src/lib/server/backup.ts` | `generateBackupData()`, the one copy an export and a scheduled backup both send, cleared of sessions, unused invites, pending sign-ins and enrolment links (card 2768), the key remembered browsers are signed with, every request's link and the request form's key, and every secret, then sealed (`withoutSecrets()`); `runBackup()` does not try a destination whose credentials are not entered |
 | `src/lib/server/backup-secrets.ts` | What a backup leaves out because it is a secret, and what is done about the gaps (card 2169): `clearSecrets()`, `readSecretsHere()`, `fillSecretGaps()`, `credentialsMissing()`, `secretsToEnter()` and the two sentences; the seal: `backupSealKey()`, `sealOf()`, `sealCopy()`, `sealVerifies()`, `keepSealKey()`, and the checks made before it, `unsealedBecause()`, `backupFailsCheck()`, `strayInternalObjects()`; `fromTableStorage()`, how a table is read for the seal and the restore |

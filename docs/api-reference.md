@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.124
+version: 1.125
 status: As-Built
 date: 2026-11-13
 tags:
@@ -27,7 +27,7 @@ tags:
   - images
   - retention
   - mfa
-description: "REST API reference for DumpFire's external v1 API: authentication, how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it"
+description: "REST API reference for DumpFire's external v1 API: authentication, how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it, and card 2773's reset of an account's two-step sign-in and the invite's new 409"
 ---
 
 # External API Reference
@@ -363,6 +363,60 @@ changed; `costUsd` on the token answers changed in value:
 
 Cost is worked out when it is read, so both re-price every past entry. Rates verified against
 Anthropic's published table on 2026-11-13.
+
+**One internal route is new and one refuses more, for a lost authenticator (card 2773).** The v1
+API does not change: still version `1.7.1`, and no `/api/v1` operation, answer or schema is
+different. Both routes are the web application's own, an administrator's with a session, and
+neither can be reached with a key. Until card 2769 lets an account set up a second factor,
+nobody has one, so the `409` below is never met and the reset removes nothing but sessions,
+invites and links.
+
+- **`POST /api/users/{id}/mfa/reset` is new**: it resets another account's two-step sign-in.
+  Body `{ "currentPassword": "…" }`, the caller's own password, asked every time (it joins the
+  step-up list, now twenty-nine). It deletes the account's second factors and recovery codes,
+  sets its wrong-code counts back, ends its sessions, unused invites, sign-ins waiting for a
+  second factor and enrolment links, and issues one enrolment link, good for seven days; the
+  password, API keys, webhooks and report schedules are kept. The link is given once, in the
+  answer, and never mailed; the account's address, where mail is set up, is sent a notice that
+  holds no link. Answered `200` with `Cache-Control: no-store`:
+
+  ```json
+  {
+    "success": true,
+    "enrolmentUrl": "https://dumpfire.example.com/enrol/<token>",
+    "mailSent": true,
+    "factorsRemoved": 1,
+    "recoveryCodesRemoved": 10,
+    "sessionsEnded": 2,
+    "challengesEnded": 0,
+    "invitesEnded": 0,
+    "message": "ann's two-step sign-in was reset. Give them the link yourself: it is shown once, and works for seven days. ann was sent a notice that holds no link."
+  }
+  ```
+
+  `mailProblem` is added, in the words an invite's failure uses, only where mail is set up and
+  the notice was not sent; the reset stands either way. `enrolmentUrl` is `null`, with the
+  message "`<name>`'s two-step sign-in was reset, but its link cannot be shown to you now. Run the
+  reset again to issue a new one.", when, after the notice, the caller's session has ended or is
+  no longer an administrator's, the caller may no longer manage the account, or the link is no
+  longer the account's. An account with no second factor is reset all the same, which issues a
+  fresh link. Refusals, each with nothing changed: `401` not signed in; `400` "Invalid user ID";
+  `403` "Manage your own two-step sign-in on the Account page" for the caller's own account,
+  whoever they are; `403` "Forbidden" for a caller who is not an administrator; `404` "User not
+  found"; `403` "Only the server's host can reset the superadmin's two-step sign-in, with
+  scripts/mfa-reset.mjs"; `403` "Only superadmin can reset an admin's two-step sign-in" for an
+  administrator's account when the caller is not the superadmin; `503` "This server has no
+  address configured to make the link from, so nothing was sent and nothing was saved. …" (as
+  the invite's) when the server has no App URL, `APP_URL` or `ORIGIN` (the link's address is
+  taken as an invite's is, the App URL setting first); and the step-up's own
+  answers (`400` with no `currentPassword` or no body, `403` "Password is incorrect. Nothing was
+  changed.", `403` signed out at the third, `429`), each with `stepUp` in its body. See
+  [A Lost Authenticator](authentication-security.md#a-lost-authenticator-the-reset-the-hosts-command-and-a-change-of-key-card-2773).
+- **`POST /api/users/{id}/invite` refuses an account with a second factor**: `409` "This account
+  uses two-step sign-in. Reset it first, then send the invite.", with no invite made, asked
+  after who may invite the account and before the mail checks, so before the password. An
+  invite made before the account set up a second factor stops working once it has one. Its
+  other answers are unchanged.
 
 ### Changes on 2026-11-05
 

@@ -34,6 +34,9 @@ export default defineConfig({
 			// uses a key of its own process, written nowhere, whatever the
 			// developer's shell holds. No test reads or makes a real mfa.key.
 			MFA_KEY_FILE: '',
+			// And no previous key (card 2773): no test start changes the key unless
+			// it names one itself.
+			MFA_KEY_FILE_PREVIOUS: '',
 			// The logger prints every entry to the console; INFO and WARN from
 			// several hundred route calls would bury the test output.
 			LOG_LEVEL: 'ERROR'

@@ -19,7 +19,7 @@
  * the account was made an administrator. All of them end through
  * `endUnusedInvites`, so "an invite that has not been used" is written once.
  */
-import { and, eq, gt } from 'drizzle-orm';
+import { and, eq, gt, sql } from 'drizzle-orm';
 import { db, sqlite } from './db';
 import { inviteTokens, users } from './db/schema';
 import { stamp, toStamp } from '$lib/timestamps';
@@ -94,6 +94,12 @@ export function endUnusedInvites(userId: number): number {
  * on which links work; and an invite route asks it before it hands the link
  * of an invite whose mail did not go to the administrator who issued it
  * (card 2196, R-S1): a newer invite sent meanwhile has deleted this one.
+ *
+ * Nor does an invite work for an account that holds a second factor (card
+ * 2773, decision 9): it would set the password of an account whose holder
+ * also needs their authenticator, and an administrator who means to give the
+ * account back resets its two-step sign-in first. Asked in the one query, so
+ * the page, its form before hashing and its transaction all refuse it.
  */
 export function usableInvite(token: string) {
 	// The stored form, as `issueInvite` writes the expiry (card 2095).
@@ -104,7 +110,11 @@ export function usableInvite(token: string) {
 		.where(and(
 			eq(inviteTokens.token, token),
 			eq(inviteTokens.used, false),
-			gt(inviteTokens.expiresAt, now)
+			gt(inviteTokens.expiresAt, now),
+			// Written out with the table names: Drizzle writes a column of a query
+			// on one table without its table's name, and inside the sub-select a
+			// bare "user_id" would be the factor's own.
+			sql`NOT EXISTS (SELECT 1 FROM "mfa_factors" WHERE "mfa_factors"."user_id" = "invite_tokens"."user_id")`
 		))
 		.get();
 	if (!found || found.role === 'superadmin') return undefined;

@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.110
+version: 1.111
 status: As-Built
 date: 2026-11-13
 tags:
@@ -41,7 +41,9 @@ tags:
   - mfa-key-file
   - two-step-sign-in
   - migration-0065
-description: "Docker deployment, MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, and production configuration for DumpFire"
+  - key-rotation
+  - mfa-reset
+description: "Docker deployment, MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, and production configuration for DumpFire"
 ---
 
 # DumpFire Deployment Guide
@@ -201,6 +203,7 @@ On the Docker host itself there is usually no Node to run the suite with outside
 |----------|---------|----------|-------------|
 | `NODE_ENV` | `production` in the image; unset for a server started any other way | No | Node.js environment mode. It also decides whether the production rules for the MFA key apply (card 2768): they do unless it is exactly `development` or `test`, or the database is in memory. Unset, `production`, `staging` and a misspelling are all production, so a local `node build` needs `MFA_KEY_FILE` as the image does. See [The Key That Protects Authenticator Secrets](#the-key-that-protects-authenticator-secrets) |
 | `MFA_KEY_FILE` | not set | **Yes, wherever the production rules apply**: in the image always | The path, inside the container, of the file holding the key that protects authenticator secrets (card 2768): 64 hexadecimal characters, made with `openssl rand -hex 32`, in a regular file of at most 4096 bytes. Mount it read-only from outside the volume (`/run/secrets/dumpfire_mfa_key`), never under `/app/data`. Under the production rules the server **refuses to start** when it is unset, names no file, or names a file that is not a key, and never makes one; under `development` or `test` a missing key is made, beside the database as `mfa.key` when this is unset. Read once, at start. Empty is unset. See [The Key That Protects Authenticator Secrets](#the-key-that-protects-authenticator-secrets) |
+| `MFA_KEY_FILE_PREVIOUS` | not set | No: **set it only to change the key**, as [Changing the Key](#changing-the-key) says, **and remove it after** | The path, inside the container, of the **old** key file while the key is being changed (card 2773); `MFA_KEY_FILE` then names the new one. At that start, before the server listens, every second factor that opens with the old key is sealed again under the new one and the new key's check is recorded, in one transaction. The file is read by `MFA_KEY_FILE`'s rules (a regular file of at most 4096 bytes holding 64 hexadecimal characters, refused if its group or everyone can write it), must exist (a previous key is never made, under any `NODE_ENV`), and must not be the same key as `MFA_KEY_FILE`: each of those **refuses the start**. Read afresh at every start, used once and not kept. Empty is unset. While it is set and opens nothing, every start says so in a `[WARN] [STARTUP]` line |
 | `PORT` | `3000` | No | HTTP port the server listens on |
 | `ORIGIN` | `http://localhost:3000` | **Yes** | Public URL — must match your domain exactly. Incorrect value causes CSRF failures. It must be the public origin: where a browser sends no `Sec-Fetch-Site` (over plain HTTP at any address but `localhost`, or an old browser), every write from the web application, sign-in included, is refused `403` unless its `Origin` is exactly `ORIGIN` (card 2700; see [Writes From DumpFire's Own Pages Alone](authentication-security.md#writes-from-dumpfires-own-pages-alone-card-2700)). It is also the address every link in a mail begins with, unless an App URL is set: see [Where a Mailed Link's Address Comes From](#where-a-mailed-links-address-comes-from) |
 | `APP_URL` | not set | No | The address links in mail begin with, when it should not be `ORIGIN`. The App URL on the admin page, under Application Settings, does the same and is read first |
@@ -593,10 +596,17 @@ Backup takes a backup's second factors only when the backup's seal verifies, and
 seals backups (`backup_seal_key`) is made by each installation for itself and is in no backup.
 Restoring onto a rebuilt server, a new volume or another installation, **even with the right
 MFA key mounted**, therefore leaves every account in the backup with no second factor: each
-needs its two-step sign-in reset (card 2773) before it can sign in. The restore names them, and
+needs its two-step sign-in reset (card 2773, see
+[Resetting Two-Step Sign-In](admin-guide.md#resetting-two-step-sign-in)) before it can sign in. The restore names them, and
 says why their factors were left out ("the backup was not made by this server, or was changed
 after it was made"). Keep the database volume, not only the backups, if you want factors to
 survive a rebuild, and keep the MFA key file with it.
+
+**Keep every old key for as long as the backups made with it.** After a
+[change of key](#changing-the-key), backups and cold copies made before it hold factors sealed
+under the old key: keep the old key file offline, apart from them, until the last of them is
+deleted. It is what puts their factors back when such a file is restored by hand (see
+[Restoring After a Change of Key](#restoring-after-a-change-of-key)).
 
 A development or test server that makes its own key (above) says so at that start, on the
 console whatever `LOG_LEVEL` is: `[WARN] [STARTUP] The server made a new MFA key at <path>. Back
@@ -640,14 +650,21 @@ flowchart TD
 | `The MFA key file <path> does not hold a key: it must hold 64 hexadecimal characters and nothing else (openssl rand -hex 32).` | It is not a key | Put the key back as it was made; never a new one if factors exist (below) |
 | `The MFA key does not match the one the second factors were made with (a volume swap, a moved DB_PATH, a restore by hand, or the wrong key file).` | Second factors are stored and `mfa_key_check` is another key's: the server would run with secrets it cannot read | Mount the key the factors were made with. If it is gone, follow [If the Key Is Lost](#if-the-key-is-lost) |
 | `None of the N second factor(s) opens with this MFA key, and no key check is stored: the key does not match the one they were made with (…).` | No key check is stored (deleted by hand, say) and no factor opens, so the key is the wrong one | As the row above |
+| `MFA_KEY_FILE_PREVIOUS names no file (<path>); a previous key is never made.` | The key is being changed and the old key is not where it is said to be (card 2773) | Correct the path or the mount, or take `MFA_KEY_FILE_PREVIOUS` out: see [Changing the Key](#changing-the-key) |
+| `MFA_KEY_FILE_PREVIOUS cannot be used. The MFA key file <path> …`, followed by any of the key file's own reasons above | The old key file is not a key, or could be swapped for another | As for `MFA_KEY_FILE`'s own row |
+| `MFA_KEY_FILE_PREVIOUS holds the same key as MFA_KEY_FILE. To change the key, MFA_KEY_FILE names the new key and MFA_KEY_FILE_PREVIOUS the old one.` | Both name one key, so nothing would change: a mistake in how the server was started, refused whether or not factors are stored | Point `MFA_KEY_FILE` at the new key |
+| `The second factors could not be sealed again under the new MFA key (<why>). Nothing was changed, and starting again is safe; if another instance is running on this database, stop it first.` | The change of key failed partway, most often because another instance holds the database (`database is locked`): its transaction is rolled back whole | Stop every instance on the database, then start again |
 
 Every reason ends `See docs/deployment.md, The Key That Protects Authenticator Secrets.`
 **Until card 2769 lets an account set up a factor there is no factor to compare**, so only the
 key file's own faults can stop a start; the two mismatch refusals begin once accounts have
 enrolled.
 
-When it starts, four more things can be said:
+When it starts, five more things can be said:
 
+- **The key was changed** (card 2773), with `MFA_KEY_FILE_PREVIOUS` set: one `[WARN] [AUTH]` line
+  saying how many factors were sealed again under the new key, or one `[WARN] [STARTUP]` line
+  saying the previous key opens nothing. See [Changing the Key](#changing-the-key).
 - **Factors are stored and no key check is**: the key's check is recorded in `settings`, once
   any factor opens.
 - **Some factors do not open** with this key (sealed by another key, or copied to another
@@ -668,6 +685,136 @@ When it starts, four more things can be said:
 | `The MFA key file <path> can be read by its group or by everyone. …` | POSIX, mode has any of `044` | `chmod 600`, unless it is a read-only secret mount |
 | `The MFA key file <path> is inside the database's directory: …` | A named key file in or beneath the database's folder | Move it off the database's volume |
 | `The server made a new MFA key at <path>. Back it up apart from the database: …` | This start made the key (development or test only) | Copy the key file somewhere safe, apart from the database and its backups |
+| `The previous MFA key, named by MFA_KEY_FILE_PREVIOUS, opens nothing: no second factor is sealed under it. Remove MFA_KEY_FILE_PREVIOUS, and keep the old key file offline for as long as you keep backups made with it.` | `MFA_KEY_FILE_PREVIOUS` is set and no stored factor opens with it: the change was made at an earlier start, or no account has a factor yet (card 2773) | Make the container again without `MFA_KEY_FILE_PREVIOUS` and its mount |
+
+### Changing the Key
+
+Change the key when the key file may have been read by someone who should not have it (a host
+that was broken into, a copy left in a ticket), when someone who held it leaves, or on a
+schedule of your own. Changing it needs the old key: a key that is **lost** cannot be changed,
+only replaced, which costs every second factor (see [If the Key Is Lost](#if-the-key-is-lost)).
+
+The key is changed **at a start** (card 2773), never while the server runs: the server loads its
+key once and keeps it, so factors sealed again by anything else would be unreadable to it until
+it restarted. `MFA_KEY_FILE` names the new key and `MFA_KEY_FILE_PREVIOUS` the old one. Before
+the server listens, wherever there is a factor to seal again, a key check to record, or an
+authenticator being set up under the old key, the start-up check (`checkMfaKeyAtStart`) does all
+of this in one `BEGIN IMMEDIATE` transaction:
+
+- reads the factors and the stored key check again under the write lock, and decides again;
+- seals every factor that opens with the old key again under the new one, with a new nonce and
+  the same additional data, keeping its `factor_uid` and the step it last spent, so nobody has
+  to set up their authenticator again and no code already used works a second time;
+- deletes every authenticator being set up under the old key (a pending enrolment, which can no
+  longer be opened: that person starts setting up again), at every start while
+  `MFA_KEY_FILE_PREVIOUS` is set, even one with nothing to seal again and no check to record;
+- records the new key's check.
+
+Each old secret, and the AES key derived from the old file, is zeroed once used; the old key is
+not kept by the running server. If any of it fails, the transaction is rolled back whole,
+nothing is changed, the start is refused (the last row of the table in
+[What the Start-Up Check Does](#what-the-start-up-check-does)), and starting again is safe.
+
+```mermaid
+flowchart TD
+    Stop["1. Stop every instance on the database"] --> Copy["2. Take a cold copy of the database"]
+    Copy --> Make["3. Make the new key on the host,<br/>back it up apart from the database"]
+    Make --> Start["4. Make the container again:<br/>MFA_KEY_FILE = new key,<br/>MFA_KEY_FILE_PREVIOUS = old key"]
+    Start --> Check{"The start-up check, before listening"}
+    Check -- "old key missing, not a key, the same as the new,<br/>or factors stored under neither key's check" --> Refused["CRITICAL AUTH, exit 1.<br/>Nothing changed: correct it, go to 4"]
+    Check -- "another instance holds the database,<br/>or a seal fails" --> Rolled["CRITICAL AUTH, exit 1.<br/>Rolled back whole: stop it, go to 4"]
+    Check -- "factors open with the old key" --> Sealed["One transaction: seal them again under the new key,<br/>delete set-ups under the old key,<br/>record the new key's check"]
+    Check -- "nothing opens with the old key" --> Nothing["Set-ups under the old key deleted, if any.<br/>WARN STARTUP: the previous key opens nothing"]
+    Sealed --> Warn["WARN AUTH: Rotated N second factor(s)…<br/>on the console whatever LOG_LEVEL is"]
+    Warn --> Remove["5. Make the container again<br/>without MFA_KEY_FILE_PREVIOUS"]
+    Nothing --> Remove
+    Remove --> Offline["6. Old key file offline, for as long as<br/>any backup made before the change is kept"]
+```
+
+1. **Stop every instance first**: production, and any other container that opens the same
+   database file or volume (a second replica, a staging copy pointed at it). The change reads and
+   writes under the database's write lock, so an instance still running cannot write between
+   its read and its commit; but one that is writing when the new key starts can make that start
+   fail, and one left running on the old key afterwards seals every factor it writes
+   under a key the new server does not hold, and those factors are named at `ERROR` at every
+   start and need their accounts' two-step sign-in reset. `docker stop dumpfire`.
+2. **Take a cold copy of the database**, with the container stopped: see
+   [Taking and Returning the Cold Copy](#taking-and-returning-the-cold-copy).
+3. **Make the new key** beside the old, and back it up apart from the database now:
+
+   ```bash
+   umask 077
+   cd /srv/dumpfire-secrets
+   mv dumpfire_mfa_key dumpfire_mfa_key.previous
+   openssl rand -hex 32 > dumpfire_mfa_key
+   chmod 600 dumpfire_mfa_key dumpfire_mfa_key.previous
+   sudo chown 1000:1000 dumpfire_mfa_key dumpfire_mfa_key.previous   # the server's user (card 2776)
+   wc -c dumpfire_mfa_key                                             # 65
+   ```
+
+4. **Make the container again with both keys.** `docker start` and `docker restart` cannot add
+   a setting, so remove the container (the database and the uploads are on the volume and stay)
+   and run it with its usual command and the old key mounted and named:
+
+   ```bash
+   docker rm dumpfire
+   docker run -d \
+     --name dumpfire \
+     --restart unless-stopped \
+     -p 3000:3000 \
+     -v dumpfire-data:/app/data \
+     -v /srv/dumpfire-secrets/dumpfire_mfa_key:/run/secrets/dumpfire_mfa_key:ro \
+     -v /srv/dumpfire-secrets/dumpfire_mfa_key.previous:/run/secrets/dumpfire_mfa_key_previous:ro \
+     -e DB_PATH=/app/data/dumpfire.db \
+     -e MFA_KEY_FILE=/run/secrets/dumpfire_mfa_key \
+     -e MFA_KEY_FILE_PREVIOUS=/run/secrets/dumpfire_mfa_key_previous \
+     -e ORIGIN=https://dumpfire.example.com \
+     -e NODE_ENV=production \
+     dumpfire:latest
+   ```
+
+   In Compose, add a second secret (`dumpfire_mfa_key_previous`, `file:` the old key) to the
+   service and to `secrets:`, and `- MFA_KEY_FILE_PREVIOUS=/run/secrets/dumpfire_mfa_key_previous`
+   under `environment:`, then `docker compose up -d`.
+
+   `docker logs dumpfire 2>&1` then has, once factors exist, `[WARN] [AUTH] Rotated N second
+   factor(s) to the new MFA key. Back up the new key now, then remove MFA_KEY_FILE_PREVIOUS;
+   keep the old key file offline for as long as you keep backups made before today.`, printed
+   on the console whatever `LOG_LEVEL` is, and `Listening on`. Before card 2769 lets anyone set
+   up a factor, or if every factor was already changed, it has the `[WARN] [STARTUP]` line
+   "The previous MFA key, named by MFA_KEY_FILE_PREVIOUS, opens nothing…" in its place, and a
+   stored check of the old key is replaced by the new key's all the same. A factor that opens
+   with neither key is named in the usual `[ERROR] [AUTH]` line.
+5. **Make the container again without `MFA_KEY_FILE_PREVIOUS`** and without the old key's mount,
+   the same way. A start that still has it re-seals nothing (it deletes only a set-up still under
+   the old key, which an instance left running on it could have made) and says the previous key
+   opens nothing, at every start until it is removed.
+6. **Take the old key file off the host and keep it offline** (a password manager's or a
+   secrets store's entry, apart from the database's backups) for as long as you keep any backup,
+   cold copy or exported file made before the change: those hold factors sealed under the old
+   key, and it is the only key that opens them. Then delete it.
+
+#### Restoring After a Change of Key
+
+**A database file put back by hand** (a cold copy, or a backup file copied over the database)
+made before the change holds factors sealed under the old key and the old key's check. Started
+with the new key alone, the server refuses: "The MFA key does not match the one the second
+factors were made with…". Start it once as in step 4, with `MFA_KEY_FILE` naming the current key
+and `MFA_KEY_FILE_PREVIOUS` the old key the file was made under, fetched from where it is kept
+offline: that start seals the file's factors again under the current key and records its check.
+Then remove `MFA_KEY_FILE_PREVIOUS` as in step 5. For a file made before two changes, the old key
+is the one in use when the file was made; one previous key is named at a time.
+
+**Import Backup of a backup made before the change** (online, on the admin page) needs no key
+named and is not refused. It never copies a backup's key check, and the server keeps running on
+its current key. An account that is the same here and in the backup (the same id and creation
+time) keeps this server's factors, which are already under the new key, so nothing changes for
+it. Any other account (deleted here since the backup, say) gets the backup's factors only when
+the backup's key check is this server's key, which a backup made before the change is not: its
+factors are left out, and the restore names those accounts as having no second factor, "because
+the backup was made under a different MFA key". Reset each one's two-step sign-in (see
+[Resetting Two-Step Sign-In](admin-guide.md#resetting-two-step-sign-in)).
+`MFA_KEY_FILE_PREVIOUS` plays no part in Import Backup: it is read only at a start.
 
 ### If the Key Is Lost
 
@@ -696,7 +843,10 @@ not:
    `MFA_KEY_FILE` names, and back it up apart from the database.
 5. **Start the server.** With no factor stored there is nothing to compare, and it starts.
 6. **Every account that had a second factor now has none**, and needs its two-step sign-in
-   reset before it can sign in with one (card 2773's reset). Its recovery-code rows are hashes,
+   reset before it can sign in with one: 🛡️ on the admin page (see
+   [Resetting Two-Step Sign-In](admin-guide.md#resetting-two-step-sign-in)), and for the
+   superadmin the host's command (see
+   [If the Superadmin Loses Their Authenticator](#if-the-superadmin-loses-their-authenticator)). Its recovery-code rows are hashes,
    not sealed with the key, and are left as they are.
 
 Backups made before the loss hold factors sealed with the old key and the old key's check. Import
@@ -881,7 +1031,7 @@ The refusal is one `[CRITICAL] [DB]` line on the console, which begins `The serv
 
 One more refusal comes after the migrations, before the server listens. If the database in use is the image's, has no user accounts, and a non-empty `/app/dumpfire.db` is beside it, the server **refuses to start** with one `[CRITICAL] [DB]` line naming both files with their sizes and times. That is a database the check above let through because one earlier start, by an older image or with a `DB_PATH` it did not guard, made it and wrote to it: with no users, set-up would be open to whoever comes first while the real database sits unused. A healthy installation has users, so this never stops one that is running on its own database with an old file beside it.
 
-And one more straight after it (card 2768): the key that protects authenticator secrets is read for the first time and checked (`checkMfaKeyAtStart`). Where the production rules apply, the server **refuses to start** when `MFA_KEY_FILE` is not set, names no file, or names a file that is not a key; and, once accounts have second factors, when the key is not the one they were made with. The refusal is one `[CRITICAL] [AUTH]` line on the console beginning `The server will not start.`, and the process exits with code 1. When it starts it may write one `[ERROR] [AUTH]` line naming factors that do not open, and a `[WARN] [STARTUP]` line for a key file others can read or one inside the database's folder. See [The Key That Protects Authenticator Secrets](#the-key-that-protects-authenticator-secrets).
+And one more straight after it (card 2768): the key that protects authenticator secrets is read for the first time and checked (`checkMfaKeyAtStart`). Where the production rules apply, the server **refuses to start** when `MFA_KEY_FILE` is not set, names no file, or names a file that is not a key; and, once accounts have second factors, when the key is not the one they were made with. The refusal is one `[CRITICAL] [AUTH]` line on the console beginning `The server will not start.`, and the process exits with code 1. When it starts it may write one `[ERROR] [AUTH]` line naming factors that do not open, and a `[WARN] [STARTUP]` line for a key file others can read or one inside the database's folder. With `MFA_KEY_FILE_PREVIOUS` set (card 2773) the same check changes the key: it refuses an old key file that is missing, is not a key or is the same key, and otherwise seals every factor of the old key again under the new one in one transaction, saying so in one `[WARN] [AUTH]` line on the console whatever `LOG_LEVEL` is; see [Changing the Key](#changing-the-key). See [The Key That Protects Authenticator Secrets](#the-key-that-protects-authenticator-secrets).
 
 1. **Preparation.** The `system_logs` table is created if it is missing, and a `card_dependencies` table still in its original shape is converted to the current one.
 2. **Migration files.** Every `.sql` file in `/app/drizzle` whose name is not yet recorded in the `__drizzle_migrations` table is applied, in file-name order. Each file runs in its own transaction, together with the row that records it, so a file is either applied in full and recorded or not applied at all.
@@ -908,6 +1058,9 @@ What stops a start, and what is only reported:
 | Under the production rules, `MFA_KEY_FILE` is not set or names no file; or the file it names is not a regular file, is over 4096 bytes, cannot be read, can be written by its group or everyone, or does not hold 64 hexadecimal characters (card 2768) | `[CRITICAL] [AUTH] The server will not start. …`, on the console only, naming the path and the reason, never the file's contents | **No**. See [The Key That Protects Authenticator Secrets](#the-key-that-protects-authenticator-secrets) |
 | Second factors are stored and the key is not the one they were made with: `mfa_key_check` is another key's, or none is stored and no factor opens (card 2768) | `[CRITICAL] [AUTH] The server will not start. The MFA key does not match …` (or `None of the N second factor(s) opens …`), on the console only | **No**. Mount the right key, or follow [If the Key Is Lost](#if-the-key-is-lost) |
 | Some second factors do not open with this key (card 2768) | `[ERROR] [AUTH] N second factor(s) could not be opened with this server's MFA key: factor <id> of user <id>, …`, the first 20 named, at every start while it is so | Yes. None is counted as a wrong code; each such account needs its two-step sign-in reset |
+| `MFA_KEY_FILE_PREVIOUS` is set and names no file, a file that is not a key, or the same key as `MFA_KEY_FILE`; or the change of key failed partway (another instance holds the database, say) (card 2773) | `[CRITICAL] [AUTH] The server will not start. MFA_KEY_FILE_PREVIOUS …` (or `The second factors could not be sealed again under the new MFA key …`), on the console only | **No**. Nothing was changed. See [Changing the Key](#changing-the-key) |
+| `MFA_KEY_FILE_PREVIOUS` is set and factors open with it (card 2773) | `[WARN] [AUTH] Rotated N second factor(s) to the new MFA key. Back up the new key now, then remove MFA_KEY_FILE_PREVIOUS; …`, at that start, on the console whatever `LOG_LEVEL` is | Yes, with every such factor sealed again under the new key. Back up the new key, then remove `MFA_KEY_FILE_PREVIOUS` |
+| `MFA_KEY_FILE_PREVIOUS` is set and no factor opens with it (card 2773) | `[WARN] [STARTUP] The previous MFA key, named by MFA_KEY_FILE_PREVIOUS, opens nothing: …`, at every start while it is set, on the console whatever `LOG_LEVEL` is | Yes. Remove `MFA_KEY_FILE_PREVIOUS` |
 | The MFA key file can be read by its group or by everyone (Linux only), or a named key file is inside the database's folder (card 2768) | `[WARN] [STARTUP]`, at every start while it is so, on the console whatever `LOG_LEVEL` is | Yes. Expected for a Docker Swarm secret (`0444`); otherwise `chmod 600` the file, or move it off the volume |
 | A migration file fails, cannot be read, holds no SQL statement, or holds a statement the runner refuses (see [Changing the Schema](#changing-the-schema)) | `[CRITICAL] [DB]` | **No** |
 | `/app/drizzle` is missing or holds no `.sql` file (an image built without its migrations) | `[CRITICAL] [DB]` | **No** |
@@ -1026,6 +1179,43 @@ At least one line should end `superadmin`. Then sign in as that user: the admin 
 If the old superadmin's account is still there, there are now two, and neither can manage the other's account. Make the old one an administrator with the same command, with `'admin'` in place of `'superadmin'` in the `UPDATE`, or delete it as the new superadmin once its role is changed.
 
 An import cannot bring this about: a backup that has users and no superadmin among them is refused before anything is written. See [Restoring from Backup](admin-guide.md#restoring-from-backup).
+
+### If the Superadmin Loses Their Authenticator
+
+Nobody manages the superadmin's account through the application, so the admin page's 🛡️ **Reset two-step sign-in** never reaches it: the route answers `403` "Only the server's host can reset the superadmin's two-step sign-in, with scripts/mfa-reset.mjs". The image carries that command (card 2773), and the host runs it:
+
+```bash
+docker exec <container> node scripts/mfa-reset.mjs <username>
+```
+
+It works for any account, by its username, trimmed and matched exactly as sign-in matches it, so it is also the way back when no administrator can reach the admin page. It does what 🛡️ does, in one `BEGIN IMMEDIATE` transaction: the account's authenticators and recovery codes are deleted, its counts of wrong codes set to nought and their pauses cleared, its sessions, unused invites, sign-ins waiting for a second factor and enrolment links ended, and one new enrolment link issued (`issued_by` `host-reset`), good for seven days. Its password, API keys, webhooks, report schedules and security banner are kept: it sets no password (for a lost password, see [If Nobody Can Sign In as the Superadmin](#if-nobody-can-sign-in-as-the-superadmin)). The same transaction writes one `CRITICAL` line under `AUTH` to the system log, which the Audit page's Live Console shows: `Two-step sign-in reset for user 1 ("greg") on the server's host, with scripts/mfa-reset.mjs: removed 1 factor(s) and 10 recovery code(s), ended 2 session(s), 0 pending sign-in(s) and 0 invite(s); an enrolment link was issued`. Neither the line nor anything else holds the link.
+
+It runs while the server runs, with no restart, waiting up to five seconds for a write of the server's to finish. `docker exec` runs it as the image's own user, `node`, which the server runs as (card 2776). It refuses to run as root (`docker exec -u root`), because a write as root would leave the database's `-wal` and `-shm` files root's and the server could not open its database again. It opens `DB_PATH` (the image sets `/app/data/dumpfire.db`) and never makes a database.
+
+It prints the counts, where the link's address came from, and the link, on the terminal only:
+
+```
+Two-step sign-in was reset for "greg" (user 1): removed 1 factor(s) and 10 recovery code(s), ended 2 session(s), 0 pending sign-in(s) and 0 invite(s).
+
+Give greg this link yourself, by a way only they read. It is shown once and works for seven days, and the account still needs its password.
+The link's address is from ORIGIN.
+
+https://dumpfire.example.com/enrol/<token>
+```
+
+The link's address is the host's own configuration first, and a setting any administrator can change only where the host sets none: `APP_URL`; then `ORIGIN`, unless it is the image's `http://localhost:3000`, which is nobody's address; then the App URL setting, with a warning that an administrator set it and any administrator can change it, so check it is this server's address before passing the link on; and with none of them, the path alone (`/enrol/<token>`) and "put your server's address in front of this path". The admin page's 🛡️ takes its address as mailed links do, the App URL setting first (see [Where a Mailed Link's Address Comes From](#where-a-mailed-links-address-comes-from)).
+
+| It prints, on stderr where it refused | Exit code | What happened |
+|---------------------------------------|-----------|---------------|
+| The counts and the link, as above | `0` | The account was reset |
+| `Usage: node scripts/mfa-reset.mjs <username>` … | `2` | No username, an empty one, or more than one argument. Nothing was opened |
+| `Refused: there is no account with the username "gerg". Nothing was changed.` | `1` | The name matched nobody, exactly. Names are case-sensitive, as at sign-in |
+| `Refused: this is running as root. Run it as the user the server runs as, …: docker exec -u node <container> node scripts/mfa-reset.mjs <username>` | `1` | Run as root. Nothing was opened |
+| `Refused: there is no database at <path> (…). Set DB_PATH to the server's database file.` | `1` | `DB_PATH` names no file. No file was made |
+| `Refused: this database has no two-step sign-in tables; start the server once to migrate it (<path>).` | `1` | A database from before migration 0065 |
+| `Refused: the reset could not be written, and nothing was changed: database is locked` | `1` | The server, or something else, held the database for more than five seconds. Run it again |
+
+The page the link opens, where its holder gives the account's password and sets up a new authenticator, is card 2769's, which is never released without this command. A newer reset, from here or from 🛡️, ends the link, and so does setting the account's password or changing its email address or role. Reset the password first, if that is needed too, and two-step sign-in after.
 
 ### If an Attack Keeps an Owner Out
 
@@ -5645,7 +5835,10 @@ on them, and it ignores `MFA_KEY_FILE`. Its backups carry any pending sign-in an
 rows, and its Import Backup copies the four tables as any other table, ignoring card 2768's
 restore rules. Before card 2769 every one of them is empty, so none of that holds anything.
 **Coming forward again**, 0065 is already recorded and is not run, and the key must still be the
-one mounted before. Keep the key file and its mount in place while going back and forth.
+one mounted before. Keep the key file and its mount in place while going back and forth. An
+image from before card 2773 does not read `MFA_KEY_FILE_PREVIOUS` and cannot change the key: after
+a [change of key](#changing-the-key), going back to one needs `MFA_KEY_FILE` to name the **new**
+key, whose check the database now holds.
 
 ### The Update That Runs the Server as a User Who Is Not Root
 

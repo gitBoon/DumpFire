@@ -1,5 +1,6 @@
 import { json, error } from '@sveltejs/kit';
 import { issueInvite } from '$lib/server/invites';
+import { holdsFactor } from '$lib/server/mfa-store';
 import { inviteMailAnswer } from '$lib/server/invite-link';
 import { MAIL_PROBLEM_WORDS, NO_LINK_ADDRESS, isSmtpConfigured, linkBaseUrl, smtpPasswordMissing } from '$lib/server/email';
 import { sendInviteEmail } from '$lib/server/notifications';
@@ -66,6 +67,14 @@ export const POST: RequestHandler = async ({ params, request, locals, url, cooki
 			superadmin: 'Only superadmin can reset superadmin password, which an invite does',
 			admin: 'Only superadmin can reset an admin\'s password, which an invite does'
 		});
+
+		// An account that holds a second factor is not invited (card 2773,
+		// decision 9): the invite would not work (`usableInvite`), and its holder
+		// needs their authenticator as well as a password. Asked after the account
+		// rule and before the mail, so that the caller is told what to do first.
+		if (holdsFactor(target.id)) {
+			throw error(409, 'This account uses two-step sign-in. Reset it first, then send the invite.');
+		}
 
 		// Asked after the account rule, so that a caller who may not invite this
 		// account is told so whether or not mail is set up.

@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.72
+version: 1.73
 status: As-Built
-date: 2026-11-05
+date: 2026-11-13
 tags:
   - database
   - schema
@@ -2700,8 +2700,8 @@ stateDiagram-v2
   compares; a compare that fails on its worker stays counted. A right one sets it to 0 while
   the row is still there, and a wrong one that leaves it at 3 deletes the session (the code
   review's S1, ruled 2026-11-04: only a compare counts). The Account page's three forms and the
-  twenty-eight step-up actions share it (card 2701's eighteen, card 2697's eight and card
-  2679's two). It replaced a count in memory with a 15-minute window, so a
+  twenty-nine step-up actions share it (card 2701's eighteen, card 2697's eight, card
+  2679's two and card 2773's one). It replaced a count in memory with a 15-minute window, so a
   restart no longer clears it. `sessions` is not a reconciled table, so the file alone adds the
   column; every existing session reads 0 and no row is changed, so nothing is declared to the
   rehearsal. No backup holds a session row and no restore brings one in, so neither carries a

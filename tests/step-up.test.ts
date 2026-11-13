@@ -70,7 +70,7 @@ import ts from 'typescript';
 import { DRIVE_FILE_SCOPE } from '$lib/drive-scope';
 import { db, sqlite } from '$lib/server/db';
 import { afterCommit } from '$lib/server/db/transaction';
-import { boards, cards, categories, columns, decisionParticipants, inviteTokens, people, sessions, settings, userXp, users, webhooks } from '$lib/server/db/schema';
+import { boards, cards, categories, columns, decisionParticipants, enrolmentLinks, inviteTokens, people, sessions, settings, userXp, users, webhooks } from '$lib/server/db/schema';
 import { PASSWORD_CHANGED_MEANWHILE, SESSION_COOKIE_NAME, deleteSession, forgetChecksInFlight, passwordHeld, whilePasswordHolds } from '$lib/server/auth';
 import { addressKey } from '$lib/server/client-address';
 import { PASSWORDS_BUSY } from '$lib/server/passwords';
@@ -274,7 +274,7 @@ const linkRevokedReasons = (participantId: number) =>
 // ─── 1 and 2. The list, and the routes that ask ──────────────────────────────
 
 describe('the list of what asks, pinned against the routes (cases 1 and 2)', () => {
-	it("is the twenty-eight actions: decision 2's eighteen (the import among them, as its confirmation), card 2697's eight and card 2679's two, each with why it asks", () => {
+	it("is the twenty-nine actions: decision 2's eighteen (the import among them, as its confirmation), card 2697's eight, card 2679's two and card 2773's one, each with why it asks", () => {
 		expect(Object.keys(STEP_UP_ACTIONS).sort()).toEqual(
 			[
 				'POST /api/admin/reset',
@@ -308,7 +308,9 @@ describe('the list of what asks, pinned against the routes (cases 1 and 2)', () 
 				'POST /api/decisions/[id]/withdraw',
 				// Card 2679 (decision 2): a ruling, and the one-way release of its results.
 				'POST /api/decisions/[id]/rule',
-				'POST /api/decisions/[id]/release'
+				'POST /api/decisions/[id]/release',
+				// Card 2773: another account's two-step sign-in reset, which hands the caller its enrolment link.
+				'POST /api/users/[id]/mfa/reset'
 			].sort()
 		);
 		for (const [action, why] of Object.entries(STEP_UP_ACTIONS)) expect(why.trim().length, action).toBeGreaterThan(20);
@@ -504,6 +506,16 @@ describe('each admin action asks for the current password (case 3)', () => {
 			done: (res, s) => {
 				expect(res.body).toMatchObject({ success: true, mailSent: true });
 				expect(db.select().from(inviteTokens).where(eq(inviteTokens.userId, s.member.id)).all()).toHaveLength(1);
+			}
+		},
+		// Card 2773: another account's two-step sign-in reset, its link answered once.
+		{
+			action: 'POST /api/users/[id]/mfa/reset',
+			who: 'admin',
+			path: (s) => `/api/users/${s.member.id}/mfa/reset`,
+			done: (res, s) => {
+				expect(res.body).toMatchObject({ success: true, enrolmentUrl: expect.stringContaining('/enrol/') });
+				expect(db.select().from(enrolmentLinks).where(eq(enrolmentLinks.userId, s.member.id)).all()).toHaveLength(1);
 			}
 		},
 		// Slice 2b: the board and column deletes.

@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.119
+version: 1.120
 status: As-Built
 date: 2026-11-13
 tags:
@@ -1563,7 +1563,7 @@ stateDiagram-v2
     withdrawn --> [*]: Delete (password, the record goes for good)
 ```
 
-**The guards and the password** (card 2701's pattern, as the column delete runs it). The delete and the withdrawal first run `decisionDeleteGuard(caller, at)` or `decisionWithdrawGuard(caller, at, body)` in a `writeAs` of their own: every refusal of the write (404, 403, the reason's 400, the status's 409), writing nothing, and whether the decision was ever opened (`openedAt` set: `holdsRecord`, `wasOpened`). Never opened, the write runs in a transaction with no password, where the service asks the guard again and refuses `400 STEP_UP_MISSING` if the decision was opened meanwhile. The service makes that refusal itself for every caller (card 2726): `withdrawDecision` and `deleteDecision` refuse an opened decision unless they run inside `whilePasswordHolds` for the caller's own account (`requirePasswordHeld`, `passwordHeld` in `auth.ts`), after the guard and after an API key's `403`. Opened, `confirmStepUp(locals, cookies, body, '<key>', guard)` checks `currentPassword` (400 missing, 403 wrong and counted), and the write runs in `whilePasswordHolds(userId, hash, …)`, refused `409 PASSWORD_CHANGED_MEANWHILE` if the stored hash moved since the check. The administrator's account and address routes run the same way with their own guards and ask always. `STEP_UP_ACTIONS` was twenty-six once card 2697's code review, part B, added the People add, delete and Add from accounts ([Authentication and Security](authentication-security.md#decision-access-and-personal-links)), and is twenty-eight since card 2679 added the ruling and the release.
+**The guards and the password** (card 2701's pattern, as the column delete runs it). The delete and the withdrawal first run `decisionDeleteGuard(caller, at)` or `decisionWithdrawGuard(caller, at, body)` in a `writeAs` of their own: every refusal of the write (404, 403, the reason's 400, the status's 409), writing nothing, and whether the decision was ever opened (`openedAt` set: `holdsRecord`, `wasOpened`). Never opened, the write runs in a transaction with no password, where the service asks the guard again and refuses `400 STEP_UP_MISSING` if the decision was opened meanwhile. The service makes that refusal itself for every caller (card 2726): `withdrawDecision` and `deleteDecision` refuse an opened decision unless they run inside `whilePasswordHolds` for the caller's own account (`requirePasswordHeld`, `passwordHeld` in `auth.ts`), after the guard and after an API key's `403`. Opened, `confirmStepUp(locals, cookies, body, '<key>', guard)` checks `currentPassword` (400 missing, 403 wrong and counted), and the write runs in `whilePasswordHolds(userId, hash, …)`, refused `409 PASSWORD_CHANGED_MEANWHILE` if the stored hash moved since the check. The administrator's account and address routes run the same way with their own guards and ask always. `STEP_UP_ACTIONS` was twenty-six once card 2697's code review, part B, added the People add, delete and Add from accounts ([Authentication and Security](authentication-security.md#decision-access-and-personal-links)), was twenty-eight once card 2679 added the ruling and the release, and is twenty-nine since card 2773 added the reset of another account's two-step sign-in (`POST /api/users/[id]/mfa/reset`).
 
 ```mermaid
 sequenceDiagram

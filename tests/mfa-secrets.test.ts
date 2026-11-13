@@ -8,8 +8,12 @@
  * removed after every test: no test makes or reads an mfa.key in the
  * repository. Everything else uses keys made in the test. The process's own
  * key, under DB_PATH=:memory: and MFA_KEY_FILE='', is written nowhere.
+ *
+ * And changing the key at start (card 2773): the verdict with a previous key
+ * named, and the start-up check that seals the factors again, which is tested
+ * on the in-memory database, emptied before each of its cases.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
@@ -17,16 +21,27 @@ import { join, relative } from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import { hotp, matchingStep, newTotpSecret, stepAt } from '$lib/server/totp';
 import { RECOVERY_ALPHABET, canonicalRecoveryCode, newRecoveryCodes, recoveryCodeHash } from '$lib/server/recovery-codes';
-import { factorAad, newFactorUid, openSealed, sealWith } from '$lib/server/mfa-crypto';
+import { factorAad, newFactorUid, openSealed, sealWith, sha256Hex } from '$lib/server/mfa-crypto';
 import {
+	MFA_KEY_CHECK_SETTING,
+	currentMfaKey,
 	keyFromBytes,
 	loadMfaKey,
+	loadPreviousMfaKey,
 	mfaKeyLoad,
 	mfaStartVerdict,
 	type FactorAtStart,
 	type KeyLoad,
-	type MfaKey
+	type MfaKey,
+	type PreviousKeyLoad
 } from '$lib/server/mfa-key';
+import { db, sqlite } from '$lib/server/db';
+import { mfaFactors, settings, signInChallenges } from '$lib/server/db/schema';
+import { readMfaKeyCheck } from '$lib/server/mfa-store';
+import { MfaKeyError, checkMfaKeyAtStart } from '$lib/server/startup-checks';
+import { stamp } from '$lib/timestamps';
+import { makeUser, resetDb } from './helpers/fixtures';
+import { diffSnapshots, expectUnchanged, snapshotDb } from './helpers/snapshot';
 
 /** The RFC 4226 and RFC 6238 SHA-1 test secret. */
 const RFC_SECRET = Buffer.from('12345678901234567890', 'ascii');
@@ -384,6 +399,7 @@ describe('mfaStartVerdict', () => {
 		expect(mfaStartVerdict({ load: loaded, factors: [opens, misplaced], storedCheck: null })).toEqual({
 			refuse: null,
 			recordCheck: key.check,
+			reseal: [],
 			unreadable: [{ id: 2, userId: 6 }],
 			warnings: []
 		});
@@ -397,15 +413,302 @@ describe('mfaStartVerdict', () => {
 	it("T27: with the check matching, starts, names a factor of another key id, and records nothing", () => {
 		expect(
 			mfaStartVerdict({ load: loaded, factors: [factor(1, 1, key), factor(2, 3, otherKey)], storedCheck: key.check })
-		).toEqual({ refuse: null, recordCheck: null, unreadable: [{ id: 2, userId: 3 }], warnings: [] });
+		).toEqual({ refuse: null, recordCheck: null, reseal: [], unreadable: [{ id: 2, userId: 3 }], warnings: [] });
 	});
 
 	it("T28: with no factors and another key's check stored, starts and records nothing", () => {
 		expect(mfaStartVerdict({ load: loaded, factors: [], storedCheck: otherKey.check })).toEqual({
 			refuse: null,
 			recordCheck: null,
+			reseal: [],
 			unreadable: [],
 			warnings: []
+		});
+	});
+});
+
+// ─── Changing the key at start (card 2773) ───────────────────────────────────
+
+describe('changing the MFA key at start (card 2773)', () => {
+	/** The opens-nothing warning of a previous key that seals no factor. */
+	const OPENS_NOTHING = /The previous MFA key, named by MFA_KEY_FILE_PREVIOUS, opens nothing/;
+
+	/** A previous key as `loadPreviousMfaKey` answers one, from `raw`, its derived keys new each time. */
+	const previousOf = (raw: Buffer): PreviousKeyLoad => ({ ok: true, key: keyFromBytes(raw), path: null, warnings: [] });
+
+	/** Every console line written while `fn` runs, by stream. */
+	function consoleLines(fn: () => void): { error: string[]; warn: string[] } {
+		const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		try {
+			fn();
+			return { error: error.mock.calls.map((call) => String(call[0])), warn: warn.mock.calls.map((call) => String(call[0])) };
+		} finally {
+			error.mockRestore();
+			warn.mockRestore();
+		}
+	}
+
+	describe('checkMfaKeyAtStart, on the database', () => {
+		/** This process's key, which the start runs with. */
+		const current = () => currentMfaKey()!;
+		const keyCheck = () => readMfaKeyCheck(sqlite);
+		const factorRows = () => db.select().from(mfaFactors).orderBy(mfaFactors.id).all();
+
+		/** A factor of the account, its 20-byte secret sealed under `by`, written as it is stored. */
+		const storeFactor = (userId: number, by: MfaKey, secret: Buffer = newTotpSecret()) => {
+			const factorUid = newFactorUid();
+			const sealed = sealWith(by, secret, factorAad(userId, factorUid));
+			return db
+				.insert(mfaFactors)
+				.values({
+					factorUid,
+					userId,
+					kind: 'totp',
+					label: 'Phone',
+					keyId: sealed.keyId,
+					secretCiphertext: sealed.ciphertext,
+					secretNonce: sealed.nonce,
+					lastStep: 58_000_000 + userId,
+					createdAt: stamp()
+				})
+				.returning()
+				.get();
+		};
+
+		/**
+		 * T32's database: the previous key's check stored, two factors under the
+		 * previous key, one that opens with neither, and an enrolment being set up
+		 * under the previous key. Answers the previous key's bytes, the secrets of
+		 * the two, and the three accounts.
+		 */
+		function underThePreviousKey() {
+			const raw = randomBytes(32);
+			const old = keyFromBytes(raw);
+			const [ann, bob, cy] = [makeUser(), makeUser(), makeUser()];
+			const secrets = [newTotpSecret(), newTotpSecret()];
+			const first = storeFactor(ann.id, old, secrets[0]);
+			const second = storeFactor(bob.id, old, secrets[1]);
+			const third = storeFactor(cy.id, keyFromBytes(randomBytes(32)));
+			db.insert(settings).values({ key: MFA_KEY_CHECK_SETTING, value: old.check }).run();
+			storeEnrolment(ann.id, old.id, 'e1');
+			return { raw, old, secrets, factors: [first, second, third], users: [ann, bob, cy] };
+		}
+
+		/** An enrolment being set up for the account, its secret sealed under the key `keyId` names. */
+		function storeEnrolment(userId: number, keyId: string, shortId: string) {
+			db.insert(signInChallenges)
+				.values({
+					tokenHash: sha256Hex(`enrol-${randomBytes(4).toString('hex')}`),
+					shortId,
+					userId,
+					purpose: 'enrol',
+					lane: 'other',
+					passwordHash: '$2b$04$notareal.hash',
+					keyId,
+					enrolCiphertext: 'c2VhbGVk',
+					enrolNonce: 'bm9uY2U=',
+					expiresAt: stamp(new Date(Date.now() + 10 * 60 * 1000))
+				})
+				.run();
+		}
+
+		beforeEach(() => {
+			resetDb();
+		});
+
+		it('T32: seals the two factors of the previous key again under this one, deletes its enrolment, records this key, names the third, and warns at LOG_LEVEL=ERROR', () => {
+			const scene = underThePreviousKey();
+			const previous = previousOf(scene.raw);
+
+			const lines = consoleLines(() => checkMfaKeyAtStart(mfaKeyLoad(), undefined, undefined, previous));
+
+			const after = factorRows();
+			for (const i of [0, 1]) {
+				const before = scene.factors[i];
+				const now = after[i];
+				expect(now.keyId).toBe(current().id);
+				expect(now.secretNonce).not.toBe(before.secretNonce);
+				expect(now.factorUid).toBe(before.factorUid);
+				expect(now.lastStep).toBe(before.lastStep);
+				const opened = openSealed(
+					current(),
+					{ nonce: now.secretNonce, ciphertext: now.secretCiphertext },
+					factorAad(now.userId, now.factorUid)
+				);
+				expect(opened).toEqual(scene.secrets[i]);
+			}
+			// The third opens with neither, and is left as it was.
+			expect(after[2]).toEqual(scene.factors[2]);
+			expect(db.select().from(signInChallenges).all()).toEqual([]);
+			expect(keyCheck()).toBe(current().check);
+
+			const unreadable = lines.error.filter((line) => line.includes('[ERROR] [AUTH]'));
+			expect(unreadable).toHaveLength(1);
+			expect(unreadable[0]).toContain(`factor ${scene.factors[2].id} of user ${scene.users[2].id}`);
+			const rotated = lines.warn.filter((line) => line.includes('[WARN] [AUTH]'));
+			expect(rotated).toHaveLength(1);
+			expect(rotated[0]).toContain(
+				'Rotated 2 second factor(s) to the new MFA key. Back up the new key now, then remove MFA_KEY_FILE_PREVIOUS; ' +
+					'keep the old key file offline for as long as you keep backups made before today'
+			);
+			// The previous key's derived keys are zeroed once used (decision 17).
+			expect(previous.ok && previous.key!.encryptionKey.every((byte) => byte === 0)).toBe(true);
+		});
+
+		it("T33: a second start with the previous key still set deletes only the previous key's enrolments, writes nothing else, and says it opens nothing", () => {
+			const scene = underThePreviousKey();
+			consoleLines(() => checkMfaKeyAtStart(mfaKeyLoad(), undefined, undefined, previousOf(scene.raw)));
+			// Begun since (by an instance still on the old key, say): with nothing to
+			// seal again and no check to record, the one under the previous key is
+			// still deleted, as nothing opens it; this key's is kept (card 2773's review).
+			storeEnrolment(scene.users[1].id, scene.old.id, 'e2');
+			storeEnrolment(scene.users[2].id, current().id, 'e3');
+			const before = snapshotDb();
+
+			const lines = consoleLines(() => checkMfaKeyAtStart(mfaKeyLoad(), undefined, undefined, previousOf(scene.raw)));
+
+			expect(diffSnapshots(before, snapshotDb())).toEqual([expect.stringMatching(/^sign_in_challenges: row \d+ was removed/)]);
+			expect(db.select().from(signInChallenges).all().map((row) => row.shortId)).toEqual(['e3']);
+			expect(lines.warn.filter((line) => OPENS_NOTHING.test(line))).toHaveLength(1);
+			expect(lines.warn.some((line) => line.includes('Rotated'))).toBe(false);
+		});
+
+		it('T34: when sealing the second factor fails, nothing is changed and the start refuses', () => {
+			const scene = underThePreviousKey();
+			const before = snapshotDb();
+			let sealed = 0;
+			const failing: typeof sealWith = (key, plaintext, aad) => {
+				if (++sealed === 2) throw new Error('the seal failed partway');
+				return sealWith(key, plaintext, aad);
+			};
+
+			let thrown: unknown;
+			const lines = consoleLines(() => {
+				try {
+					checkMfaKeyAtStart(mfaKeyLoad(), undefined, undefined, previousOf(scene.raw), failing);
+				} catch (err) {
+					thrown = err;
+				}
+			});
+
+			expect(sealed).toBe(2);
+			expect(thrown).toBeInstanceOf(MfaKeyError);
+			expect(lines.error.filter((line) => line.includes('[CRITICAL] [AUTH]'))).toHaveLength(1);
+			expect((thrown as MfaKeyError).message).toMatch(/Nothing was changed, and starting again is safe/);
+			expectUnchanged(before);
+		});
+	});
+
+	describe('mfaStartVerdict, with a previous key', () => {
+		const current = keyFromBytes(randomBytes(32));
+		const oldRaw = randomBytes(32);
+		const old = keyFromBytes(oldRaw);
+		const loaded: KeyLoad = { ok: true, key: current, path: null, made: false, insideDatabaseDir: false, warnings: [] };
+
+		/** A factor row as the start-up check reads it, sealed under `by`. */
+		const factor = (id: number, userId: number, by: MfaKey): FactorAtStart => {
+			const factorUid = newFactorUid();
+			const sealed = sealWith(by, newTotpSecret(), factorAad(userId, factorUid));
+			return { id, userId, factorUid, keyId: sealed.keyId, ciphertext: sealed.ciphertext, nonce: sealed.nonce };
+		};
+
+		it.each([
+			{
+				case: 'T35',
+				says: "stored this key's check with some factors under the previous key: seals those again",
+				factors: () => [factor(1, 1, old), factor(2, 2, current)],
+				storedCheck: current.check,
+				expected: { refuse: null, recordCheck: current.check, reseal: [1], unreadable: [], warnings: [] }
+			},
+			{
+				case: 'T36',
+				says: "stored the previous key's check with no factor under it: records this key's, and warns",
+				factors: () => [factor(1, 1, current)],
+				storedCheck: old.check,
+				expected: { refuse: null, recordCheck: current.check, reseal: [], unreadable: [], warnings: [expect.stringMatching(OPENS_NOTHING)] }
+			},
+			{
+				case: 'T37',
+				says: 'no stored check and factors only under the previous key: seals them again and records this key',
+				factors: () => [factor(1, 1, old), factor(2, 2, old)],
+				storedCheck: null,
+				expected: { refuse: null, recordCheck: current.check, reseal: [1, 2], unreadable: [], warnings: [] }
+			},
+			{
+				case: 'T38',
+				says: "stored the previous key's check and no factors: records this key's, and warns",
+				factors: () => [],
+				storedCheck: old.check,
+				expected: { refuse: null, recordCheck: current.check, reseal: [], unreadable: [], warnings: [expect.stringMatching(OPENS_NOTHING)] }
+			},
+			// The truth table's rows 4, 5 (with C's check) and 8, in plan section 4.6 (card 2773's review).
+			{
+				case: 'T38a',
+				says: 'stored a check of neither key and no factors: starts, and records nothing',
+				factors: () => [],
+				storedCheck: keyFromBytes(randomBytes(32)).check,
+				expected: { refuse: null, recordCheck: null, reseal: [], unreadable: [], warnings: [] }
+			},
+			{
+				case: 'T38b',
+				says: "stored this key's check and no factors: starts, records nothing, and warns",
+				factors: () => [],
+				storedCheck: current.check,
+				expected: { refuse: null, recordCheck: null, reseal: [], unreadable: [], warnings: [expect.stringMatching(OPENS_NOTHING)] }
+			},
+			{
+				case: 'T38c',
+				says: 'no stored check and factors that open with neither key: refuses',
+				factors: () => [factor(1, 1, keyFromBytes(randomBytes(32))), factor(2, 2, keyFromBytes(randomBytes(32)))],
+				storedCheck: null,
+				expected: { refuse: expect.stringMatching(/None of the 2 second factor\(s\) opens with this MFA key/) }
+			}
+		])('$case: $says', ({ factors, storedCheck, expected }) => {
+			expect(mfaStartVerdict({ load: loaded, factors: factors(), storedCheck, previous: previousOf(oldRaw) })).toEqual(expected);
+		});
+
+		describe('refusals', () => {
+			let scratch: string;
+			beforeEach(() => {
+				scratch = mkdtempSync(join(tmpdir(), 'dumpfire-mfa-previous-'));
+			});
+			afterEach(() => {
+				rmSync(scratch, { recursive: true, force: true });
+			});
+
+			const refusalOf = (previous: PreviousKeyLoad, factors: FactorAtStart[], storedCheck: string | null) =>
+				mfaStartVerdict({ load: loaded, factors, storedCheck, previous }).refuse;
+
+			it.each([
+				{
+					case: 'T39',
+					says: 'a previous key file that is not there, with no factors stored',
+					refusal: () => refusalOf(loadPreviousMfaKey({ keyFile: join(scratch, 'missing.key') }), [], null),
+					expected: /MFA_KEY_FILE_PREVIOUS names no file/
+				},
+				{
+					case: 'T40',
+					says: 'a previous key that is this key, with no factors stored',
+					refusal: () => refusalOf({ ok: true, key: current, path: null, warnings: [] }, [], null),
+					expected: /MFA_KEY_FILE_PREVIOUS holds the same key as MFA_KEY_FILE/
+				},
+				{
+					case: 'T41',
+					says: 'a stored check of neither key, with factors stored',
+					refusal: () => refusalOf(previousOf(oldRaw), [factor(1, 1, current)], keyFromBytes(randomBytes(32)).check),
+					expected: /does not match the one the second factors were made with/
+				}
+			])('$case: refuses $says', ({ refusal, expected }) => {
+				expect(refusal()).toMatch(expected);
+			});
+
+			it.skipIf(!POSIX)('T42: refuses a previous key file its group can write, with no factors stored', () => {
+				const path = join(scratch, 'old.key');
+				writeFileSync(path, `${oldRaw.toString('hex')}\n`, { mode: 0o600 });
+				chmodSync(path, 0o620);
+				expect(refusalOf(loadPreviousMfaKey({ keyFile: path }), [], null)).toMatch(/MFA_KEY_FILE_PREVIOUS cannot be used\. .*can be written/);
+			});
 		});
 	});
 });

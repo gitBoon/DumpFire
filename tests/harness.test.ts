@@ -168,6 +168,10 @@ const TEST_FILES = [
 	'mail-settings.test.ts',
 	'markdown.test.ts',
 	'mentions.test.ts',
+	// Card 2773: the host's reset, scripts/mfa-reset.mjs, run in a process of its own on a scratch copy; and an
+	// administrator's reset of another account's two-step sign-in, and invites refused for an enrolled account.
+	'mfa-reset-script.test.ts',
+	'mfa-reset.test.ts',
 	// Card 2768: the MFA key file, sealing, TOTP and recovery codes; the start-up check, the store and the account changes.
 	'mfa-secrets.test.ts',
 	'mfa-storage.test.ts',

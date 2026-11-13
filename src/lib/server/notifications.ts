@@ -10,8 +10,9 @@
  * removed (card 2010).
  * All functions silently no-op if SMTP is not configured.
  * Notifications are fire-and-forget — they never block API responses. The
- * invite is the one exception: its route awaits it after its commit, and
- * says whether it went (card 2196).
+ * invite is one exception: its route awaits it after its commit, and says
+ * whether it went (card 2196). The notice of a two-step sign-in reset is the
+ * other (card 2773).
  *
  * Every text put into a mail's HTML here goes through `escapeHtml` where it is
  * put, each link in an `href` included (the rule is in `$lib/escape-html`).
@@ -372,6 +373,45 @@ export function sendInviteEmail(email: string, username: string, inviteToken: st
 	`);
 
 	return sendEmail(email, 'You\'re invited to DumpFire!', html);
+}
+
+/**
+ * Tell an account its two-step sign-in was reset by an administrator, and say
+ * whether the mail went (card 2773, decision 7): who reset it and when, that
+ * an administrator will give them the link that sets up a new authenticator,
+ * and what to do if they did not ask for it.
+ *
+ * A notice only: it holds no link and no token. Whoever stole the phone may
+ * know the password and have changed the account's address, so the link is
+ * handed over by the administrator, by a channel they trust (decision 6).
+ * Called by the reset route once its transaction has committed, and awaited.
+ *
+ * `hadFactor` is whether the reset removed an authenticator (card 2773's
+ * review): an account that had none is not told that one stopped working,
+ * only that its set-up was begun again with a new link.
+ */
+export function sendMfaResetNotice(email: string, username: string, resetBy: string, hadFactor: boolean): Promise<MailOutcome> {
+	if (!isSmtpConfigured()) {
+		return Promise.resolve({ sent: false, problem: 'not-configured', detail: MAIL_PROBLEM_WORDS['not-configured'] });
+	}
+
+	const when = new Date().toUTCString();
+	const lost = hadFactor
+		? 'Your authenticator and your recovery codes no longer work, and you have been signed out everywhere. An administrator will give you a link to set up a new authenticator themselves: it is never sent by email.'
+		: 'Your account had no authenticator set up: its two-step sign-in was reset and a new set-up link issued, and you have been signed out everywhere. An administrator will give you that link themselves: it is never sent by email.';
+	const html = emailTemplate('Your two-step sign-in was reset', `
+		<p style="color: #334155; line-height: 1.6;">
+			Hi <strong style="color: #0f172a;">${escapeHtml(username)}</strong>, <strong style="color: #0f172a;">${escapeHtml(resetBy)}</strong> reset the two-step sign-in of your DumpFire account on ${escapeHtml(when)}.
+		</p>
+		<p style="color: #334155; line-height: 1.6;">
+			${lost}
+		</p>
+		<p style="color: #64748b; font-size: 12px;">
+			If you did not ask for this, tell an administrator straight away. Use only a link an administrator hands you directly.
+		</p>
+	`);
+
+	return sendEmail(email, 'Your DumpFire two-step sign-in was reset', html);
 }
 
 /** Notify a user when they are added to a board. */

@@ -24,6 +24,12 @@
  * and imports server modules. The first call of `mfaKeyLoad`, which
  * hooks.server.ts makes through `checkMfaKeyAtStart`, reads the file, and its
  * answer is kept for the life of the process.
+ *
+ * The key is changed at a start (card 2773, decision 1): `MFA_KEY_FILE` names
+ * the new key and `MFA_KEY_FILE_PREVIOUS` the old one, and the start-up check
+ * seals every factor of the old key again under the new one before the server
+ * listens. The previous key is read once, by `loadPreviousMfaKey`, and is
+ * never kept: the running server holds only its own key.
  */
 import { closeSync, constants, fstatSync, linkSync, openSync, readSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -282,7 +288,45 @@ export type FactorAtStart = { id: number; userId: number; factorUid: string; key
 
 export type MfaStartVerdict =
 	| { refuse: string }
-	| { refuse: null; recordCheck: string | null; unreadable: { id: number; userId: number }[]; warnings: string[] };
+	| {
+			refuse: null;
+			recordCheck: string | null;
+			/** The factors to seal again under this server's key: those that open with the previous one (card 2773). */
+			reseal: number[];
+			unreadable: { id: number; userId: number }[];
+			warnings: string[];
+	  };
+
+/**
+ * The previous key, named by `MFA_KEY_FILE_PREVIOUS` while the key is being
+ * changed (card 2773): `key` is null when it names none.
+ */
+export type PreviousKeyLoad =
+	| { ok: true; key: MfaKey | null; path: string | null; warnings: string[] }
+	| { ok: false; problem: string };
+
+/**
+ * Load the previous key from what is given, never from the environment (card
+ * 2773, decision 17). Unset or empty is no previous key. A path is read by
+ * the key file's own rules (a file its group or everyone can write is
+ * refused), and must name a file: a previous key is never made. Nothing is
+ * kept here: the start-up check uses it once, to seal the factors again under
+ * the new key, and zeroes what was derived from it.
+ */
+export function loadPreviousMfaKey(input: { keyFile: string | undefined }): PreviousKeyLoad {
+	if (typeof input.keyFile !== 'string' || input.keyFile === '') return { ok: true, key: null, path: null, warnings: [] };
+
+	const path = resolve(input.keyFile);
+	const read = readKeyFile(path);
+	if (read.kind === 'missing') {
+		return { ok: false, problem: `MFA_KEY_FILE_PREVIOUS names no file (${path}); a previous key is never made. ${SEE}` };
+	}
+	if (read.kind === 'problem') return { ok: false, problem: `MFA_KEY_FILE_PREVIOUS cannot be used. ${read.problem}` };
+
+	const key = keyFromBytes(read.raw);
+	read.raw.fill(0);
+	return { ok: true, key, path, warnings: read.warnings };
+}
 
 /** Whether a factor opens with `key` to a 20-byte secret. What opened is zeroed at once. */
 function opensWith(key: MfaKey, factor: FactorAtStart): boolean {
@@ -294,6 +338,10 @@ function opensWith(key: MfaKey, factor: FactorAtStart): boolean {
 	return whole;
 }
 
+const KEY_MISMATCH =
+	"The MFA key does not match the one the second factors were made with (a volume swap, a moved DB_PATH, " +
+	`a restore by hand, or the wrong key file). ${SEE}`;
+
 /**
  * Whether the server may start with the key it loaded, and what to record and
  * say if it may. With factors stored, a key check from another key refuses;
@@ -301,32 +349,94 @@ function opensWith(key: MfaKey, factor: FactorAtStart): boolean {
  * any opens and the start refused if none does. With a check that matches,
  * every factor that does not open is named. With no factors there is nothing
  * to compare, and nothing is recorded: the first factor written records it.
+ *
+ * With a previous key (`MFA_KEY_FILE_PREVIOUS`, card 2773), the table of its
+ * plan's section 4.6: a previous key that did not load, or that is this
+ * server's own, refuses, factors or none. A stored check of neither key
+ * refuses where factors are stored. Otherwise every factor that opens with
+ * the previous key is to be sealed again under this one (`reseal`), and this
+ * key's check recorded. With none to seal again, the rules above apply, a
+ * stored check of the previous key counting as none stored, and a warning
+ * says to remove the previous key, which opens nothing. One exception to
+ * them: with no factors, a stored check of the previous key is replaced by
+ * this key's (recorded, where the rules above would record nothing), so the
+ * next start compares this key and not the old one.
  */
 export function mfaStartVerdict(input: {
 	load: KeyLoad;
 	factors: readonly FactorAtStart[];
 	storedCheck: string | null;
+	previous?: PreviousKeyLoad | null;
 }): MfaStartVerdict {
 	const { load, factors, storedCheck } = input;
+	const previous = input.previous ?? null;
 	if (!load.ok) return { refuse: load.problem };
 
 	const key = load.key;
-	const warnings = [...load.warnings];
+	// The first row of the table, asked before the return for no factors: a
+	// previous key that cannot be read, or that is this one, is a mistake in
+	// how the server was started, whether or not anything is stored yet.
+	if (previous !== null && !previous.ok) return { refuse: previous.problem };
+	const old = previous?.ok ? previous.key : null;
+	if (old !== null && old.check === key.check) {
+		return {
+			refuse:
+				'MFA_KEY_FILE_PREVIOUS holds the same key as MFA_KEY_FILE. To change the key, MFA_KEY_FILE names the new ' +
+				`key and MFA_KEY_FILE_PREVIOUS the old one. ${SEE}`
+		};
+	}
+
+	const warnings = [...load.warnings, ...(previous?.ok ? previous.warnings : [])];
 	if (load.insideDatabaseDir && load.path !== null) {
 		warnings.push(
 			`The MFA key file ${load.path} is inside the database's directory: a copy of that volume carries both the ` +
 				'secrets and their key. Move it, see docs/deployment.md'
 		);
 	}
-	if (factors.length === 0) return { refuse: null, recordCheck: null, unreadable: [], warnings };
+	if (old === null) return withThisKey(key, factors, storedCheck, warnings);
 
-	if (storedCheck !== null && storedCheck !== key.check) {
+	const opensNothing =
+		'The previous MFA key, named by MFA_KEY_FILE_PREVIOUS, opens nothing: no second factor is sealed under it. ' +
+		`Remove MFA_KEY_FILE_PREVIOUS, and keep the old key file offline for as long as you keep backups made with it. ${SEE}`;
+	if (storedCheck !== null && storedCheck !== key.check && storedCheck !== old.check) {
+		if (factors.length > 0) return { refuse: KEY_MISMATCH };
+		return { refuse: null, recordCheck: null, reseal: [], unreadable: [], warnings };
+	}
+
+	// A stored check of the previous key is replaced by this one's, so that the
+	// next start compares this key.
+	if (factors.length === 0) {
 		return {
-			refuse:
-				"The MFA key does not match the one the second factors were made with (a volume swap, a moved DB_PATH, " +
-				`a restore by hand, or the wrong key file). ${SEE}`
+			refuse: null,
+			recordCheck: storedCheck === old.check ? key.check : null,
+			reseal: [],
+			unreadable: [],
+			warnings: [...warnings, opensNothing]
 		};
 	}
+
+	const reseal = factors.filter((factor) => opensWith(old, factor)).map((factor) => factor.id);
+	if (reseal.length > 0) {
+		const unreadable = factors
+			.filter((factor) => !reseal.includes(factor.id) && !opensWith(key, factor))
+			.map(({ id, userId }) => ({ id, userId }));
+		return { refuse: null, recordCheck: key.check, reseal, unreadable, warnings };
+	}
+
+	const verdict = withThisKey(key, factors, storedCheck === old.check ? null : storedCheck, warnings);
+	return verdict.refuse === null ? { ...verdict, warnings: [...verdict.warnings, opensNothing] } : verdict;
+}
+
+/** The verdict on this key alone, as it was before a previous key could be named. */
+function withThisKey(
+	key: MfaKey,
+	factors: readonly FactorAtStart[],
+	storedCheck: string | null,
+	warnings: string[]
+): MfaStartVerdict {
+	if (factors.length === 0) return { refuse: null, recordCheck: null, reseal: [], unreadable: [], warnings };
+
+	if (storedCheck !== null && storedCheck !== key.check) return { refuse: KEY_MISMATCH };
 
 	const unreadable = factors.filter((factor) => !opensWith(key, factor)).map(({ id, userId }) => ({ id, userId }));
 	if (storedCheck === null) {
@@ -338,7 +448,7 @@ export function mfaStartVerdict(input: {
 					`hand, or the wrong key file). ${SEE}`
 			};
 		}
-		return { refuse: null, recordCheck: key.check, unreadable, warnings };
+		return { refuse: null, recordCheck: key.check, reseal: [], unreadable, warnings };
 	}
-	return { refuse: null, recordCheck: null, unreadable, warnings };
+	return { refuse: null, recordCheck: null, reseal: [], unreadable, warnings };
 }

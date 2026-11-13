@@ -14,6 +14,12 @@
   asks in it for the caller's own password too, which it sends, and Add User
   has a field of its own for it (card 2701). After an invite the mail panel is
   read again through the page.
+
+  🛡️ resets another account's two-step sign-in (card 2773, plan 4.4), on
+  every row that shows 📧, asked through the same confirm with the caller's
+  password. Its link is shown once in the same dialog as an invite's, with
+  `kind: 'mfa-reset'`. 📧 is refused for an account that uses two-step
+  sign-in, as the server refuses its invite: reset it first.
 -->
 <script lang="ts">
 	import type { PageData } from '../../../routes/admin/$types';
@@ -66,9 +72,11 @@
 		/**
 		 * The page's: the link of an invite whose mail was not sent, which its
 		 * dialog shows, and the control the focus goes back to after Done (card
-		 * 2365's review: + Add User for Create, or the row's 📧).
+		 * 2365's review: + Add User for Create, or the row's 📧). A two-step
+		 * sign-in reset's link is handed back the same way, with `kind:
+		 * 'mfa-reset'` (card 2773).
 		 */
-		inviteLink: { url: string; username: string; message: string; returnTo?: HTMLElement } | null;
+		inviteLink: { url: string; username: string; message: string; returnTo?: HTMLElement; kind?: 'invite' | 'mfa-reset' } | null;
 	} = $props();
 
 	/**
@@ -106,6 +114,16 @@
 	 * to issue a second invite, which ends the first one's link.
 	 */
 	let inviteInFlight = $state<number | 'new' | null>(null);
+
+	/**
+	 * The account a 🛡️ reset is out for (card 2773), for the "…" on its 🛡️.
+	 * A reset also sets `inviteInFlight`, so that it and an invite are gated
+	 * as one: each issues a link the dialog shows, and one at a time.
+	 */
+	let twoStepInFlight = $state<number | null>(null);
+
+	/** What 📧 says, and does nothing, for an account that uses two-step sign-in (card 2773): the server refuses its invite. */
+	const INVITE_REFUSED = 'This account uses two-step sign-in. Reset it first, then send the invite';
 
 	async function createUser() {
 		if (!newUsername.trim() || !newEmail.trim() || !newUserCurrentPassword) return;
@@ -475,6 +493,8 @@
 	 */
 	function askResendInvite(userId: number, username: string, control?: HTMLElement) {
 		if (inviteInFlight !== null || inviteLink !== null) return;
+		// Card 2773: aria-disabled, not disabled, so its title says why; pressed, it does nothing.
+		if (data.users.find((u) => u.id === userId)?.twoStep === true) return;
 		confirm(
 			'Send Invite',
 			`Send ${username} a new invite? Whoever opens its link sets the account's password, and an invite sent earlier stops working. ${ASKS_FOR_PASSWORD}`,
@@ -525,6 +545,60 @@
 			// The panel the dialog points to, read again so it shows this mail:
 			// every administrator's since card 2395.
 			loadMailStatus();
+		}
+	}
+
+	/**
+	 * 🛡️ pressed (card 2773, plan 4.4): the page's confirm asks first, for the
+	 * caller's own password too, as the server does (a reset hands the caller a
+	 * link that sets up another account's second factor), and Confirm sends it.
+	 */
+	function askResetTwoStep(userId: number, username: string, control?: HTMLElement) {
+		if (inviteInFlight !== null || inviteLink !== null) return;
+		confirm(
+			'Reset Two-Step Sign-In',
+			`Reset ${username}'s two-step sign-in? Their authenticator and recovery codes stop working, they are signed out everywhere, and you are given a link, once, to pass on to them yourself. ${ASKS_FOR_PASSWORD}`,
+			(password) => resetTwoStepOf(userId, username, password, control),
+			{ askPassword: true }
+		);
+	}
+
+	/**
+	 * 🛡️, confirmed: the reset, whose link the server gives once, in its answer,
+	 * and never mails (decision 6). It opens the link's dialog, with `kind:
+	 * 'mfa-reset'`; where the server withheld the link (decision 15), its words
+	 * are a warning that stays, saying to run the reset again. Either way the
+	 * page's data is read again, so `twoStep` is, and 📧 is offered again. A
+	 * refusal of the password is given back for the confirm to show.
+	 */
+	async function resetTwoStepOf(userId: number, username: string, currentPassword: string, control?: HTMLElement): Promise<string | void> {
+		if (inviteInFlight !== null || inviteLink !== null) return;
+		const started = toasts.navigation();
+		inviteInFlight = userId;
+		twoStepInFlight = userId;
+		try {
+			const res = await sentAsking(
+				() => fetch(`/api/users/${userId}/mfa/reset`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword }) }),
+				'Failed to reset two-step sign-in'
+			);
+			if (typeof res === 'string') return res;
+			if (!res) return;
+			const result = await answerBody(res);
+			const said = typeof result?.message === 'string' ? result.message : `${username}'s two-step sign-in was reset.`;
+			// The notice the account's address is sent holds no link (decision 7); where it was not sent, the caller is told why.
+			const notice = typeof result?.mailProblem === 'string' ? ` The notice to ${username} was not sent: ${result.mailProblem}.` : '';
+			// Card 2773: the link is shown before the page's data is read again. The
+			// reset is already committed and the link is given only this once, so a
+			// reload that fails must not be able to lose it.
+			if (typeof result?.enrolmentUrl === 'string') {
+				inviteLink = { url: result.enrolmentUrl, username, message: `${said}${notice}`, returnTo: control, kind: 'mfa-reset' };
+			} else {
+				showToast(`${said}${notice}`, 'warning', started);
+			}
+			await invalidateAll();
+		} finally {
+			inviteInFlight = null;
+			twoStepInFlight = null;
 		}
 	}
 </script>
@@ -601,7 +675,15 @@
 						{/if}
 						<button class="btn-ghost btn-sm" onclick={() => resetDialog?.openResetDialog(u.id)} title="Reset password">🔑</button>
 						{#if u.id !== data.currentUser.id}
-							<button class="btn-ghost btn-sm" onclick={(e) => askResendInvite(u.id, u.username, e.currentTarget)} disabled={inviteInFlight !== null || inviteLink !== null} title="Resend invite email">{inviteInFlight === u.id ? '…' : '📧'}</button>
+							<!-- Card 2773: refused for an account that uses two-step sign-in, aria-disabled so its title says why. -->
+							<button
+								class="btn-ghost btn-sm invite-resend"
+								onclick={(e) => askResendInvite(u.id, u.username, e.currentTarget)}
+								disabled={inviteInFlight !== null || inviteLink !== null}
+								aria-disabled={u.twoStep === true ? 'true' : undefined}
+								title={u.twoStep === true ? INVITE_REFUSED : 'Resend invite email'}
+							>{inviteInFlight === u.id && twoStepInFlight === null ? '…' : '📧'}</button>
+							<button class="btn-ghost btn-sm" onclick={(e) => askResetTwoStep(u.id, u.username, e.currentTarget)} disabled={inviteInFlight !== null || inviteLink !== null} title="Reset two-step sign-in">{twoStepInFlight === u.id ? '…' : '🛡️'}</button>
 							<button class="btn-ghost btn-sm danger" onclick={() => askDeleteUser(u.id, u.username)} title="Delete user">🗑️</button>
 						{/if}
 					{:else}
@@ -648,6 +730,8 @@
 
 	/* Change beside the picker (card 2376): dimmed, and sending nothing, until a role other than the account's is chosen. */
 	.role-change[aria-disabled='true'] { opacity: 0.35; cursor: default; }
+	/* 📧 for an account that uses two-step sign-in (card 2773): dimmed, its title saying why, and sending nothing. Keyed to the class, as Change is, so rewording the title cannot undim it. */
+	.invite-resend[aria-disabled='true'] { opacity: 0.35; cursor: default; }
 	/* The status line is for screen readers alone. */
 	.saving-status {
 		position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;

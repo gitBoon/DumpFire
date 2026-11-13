@@ -120,6 +120,8 @@ export const STEP_UP_ACTIONS = Object.freeze({
 	'DELETE /api/users/[id]': 'Removes an account and what goes with it',
 	'PUT /api/users/[id]/password': "Sets another account's password: a takeover",
 	'POST /api/users/[id]/invite': 'A password reset by another way, whose link is answered when the mail fails',
+	// Card 2773: what stands in for a lost authenticator, and hands the caller the link that sets up its successor.
+	'POST /api/users/[id]/mfa/reset': "Removes another account's second factor and issues the link that sets up a new one",
 	'DELETE /api/boards/[id]': 'Deletes a board and everything under it, sub-boards at every depth included, for good',
 	'DELETE /api/columns/[id]': 'With a card in it: deletes every card in the column, with their sub-boards and files',
 	'POST /api/admin/export': "Hands out every account's password hash and email address",

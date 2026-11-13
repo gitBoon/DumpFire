@@ -45,6 +45,12 @@ COPY --from=builder /app/package.json   ./package.json
 # Copy migration files — needed at runtime by hooks.server
 COPY --from=builder /app/drizzle        ./drizzle
 
+# The host's reset of an account's two-step sign-in (card 2773), for the
+# superadmin, whom nobody manages through the app: run as
+#   docker exec <container> node scripts/mfa-reset.mjs <username>
+# It needs better-sqlite3 alone, from node_modules above. Root's, as the code is.
+COPY --from=builder /app/scripts/mfa-reset.mjs ./scripts/mfa-reset.mjs
+
 # Create a directory for the SQLite database
 # Mount a volume here for data persistence
 RUN mkdir -p /app/data

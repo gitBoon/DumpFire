@@ -46,7 +46,9 @@
  * is not the key the stored second factors were made with. It also records
  * the key's check when factors are stored without one, names at ERROR each
  * factor that does not open, and warns on the console of a key file others
- * can read or one kept in the database's own folder.
+ * can read or one kept in the database's own folder. With
+ * `MFA_KEY_FILE_PREVIOUS` set it changes the key (card 2773): every factor of
+ * the old key is sealed again under the new one before the server listens.
  *
  * And two things that are changed at start, beside them: `maskLiveLog`, which
  * masks the secrets an older gate wrote into the system log, and
@@ -71,7 +73,16 @@ import { secretsToEnter, secretsToEnterSentence, unconfirmedHostKeys } from './b
 import { parseAllowInside } from './webhook-address';
 import { activeWebhooksRefused, boardsOverWebhookCap, MAX_WEBHOOKS_PER_BOARD } from './webhooks';
 import { removeSettingsOfFormerAdministrators } from './setting-setters';
-import { MFA_KEY_CHECK_SETTING, mfaKeyLoad, mfaStartVerdict, type FactorAtStart, type KeyLoad } from './mfa-key';
+import {
+	MFA_KEY_CHECK_SETTING,
+	loadPreviousMfaKey,
+	mfaKeyLoad,
+	mfaStartVerdict,
+	type FactorAtStart,
+	type KeyLoad,
+	type PreviousKeyLoad
+} from './mfa-key';
+import { factorAad, openSealed, sealWith } from './mfa-crypto';
 import { readMfaKeyCheck } from './mfa-store';
 
 const log = createLogger('STARTUP');
@@ -263,10 +274,17 @@ const isMemory = (dbPath: string) => dbPath === ':memory:' || dbPath === '';
  * log when LOG_LEVEL lets a WARN line through (not at ERROR or CRITICAL), and
  * written to the console whatever LOG_LEVEL is, as the location refusal is. A
  * LOG_LEVEL of ERROR must not hide the alarm.
+ *
+ * Kept under STARTUP unless it is given another context: the line of a key
+ * change is AUTH's (card 2773, decision 18).
  */
-function warnOnConsoleAlways(message: string): void {
-	log.warn(message);
-	if (!isLogged('WARN')) console.warn(`[${new Date().toISOString()}] [WARN] [STARTUP] ${printable(message)}`);
+function warnOnConsoleAlways(message: string, context: 'STARTUP' | 'AUTH' = 'STARTUP'): void {
+	// One path for both contexts (card 2773's review), so the two cannot drift apart.
+	const logger = context === 'AUTH' ? authLog : log;
+	logger.warn(message);
+	if (isLogged('WARN')) return;
+	const line = context === 'AUTH' ? `[WARN] [AUTH] ${printable(message)}` : `[WARN] [STARTUP] ${printable(message)}`;
+	console.warn(`[${new Date().toISOString()}] ${line}`);
 }
 
 /**
@@ -428,24 +446,121 @@ const UNREADABLE_NAMED = 20;
  * from the database, and writes each warning to the console whatever
  * LOG_LEVEL is. The line names paths and
  * reasons, through `printable`, and never anything the key file holds.
+ *
+ * And the key is changed here (card 2773, decision 1): with
+ * `MFA_KEY_FILE_PREVIOUS` naming the old key (`previous`, read afresh at every
+ * call and never kept), every factor that opens with it is sealed again under
+ * this server's key, with a new nonce and the same additional data, its
+ * `factor_uid` and `last_step` kept; every pending enrolment sealed under the
+ * old key is deleted, as it can no longer be opened; and this key's check is
+ * recorded. All of it in one `BEGIN IMMEDIATE` transaction that reads the
+ * factors and the check again and decides again, so that another instance
+ * still running on the old key cannot write between the read and the commit
+ * (decision 16): a database another instance holds fails the start, which
+ * changes nothing, and starting again is safe. What was opened, and the keys
+ * derived from the old one, are zeroed once used (decision 17). `seal` is a
+ * seam for the tests, to fail partway.
  */
 export function checkMfaKeyAtStart(
 	load: KeyLoad = mfaKeyLoad(),
 	factors: () => readonly FactorAtStart[] = readFactorsAtStart,
-	storedCheck: () => string | null = () => readMfaKeyCheck(sqlite)
+	storedCheck: () => string | null = () => readMfaKeyCheck(sqlite),
+	previous: PreviousKeyLoad = loadPreviousMfaKey({ keyFile: process.env.MFA_KEY_FILE_PREVIOUS }),
+	seal: typeof sealWith = sealWith
 ): void {
-	const verdict = mfaStartVerdict({ load, factors: factors(), storedCheck: storedCheck() });
-	if (verdict.refuse !== null) {
-		const message = `The server will not start. ${verdict.refuse}`;
-		const line = `[${new Date().toISOString()}] [CRITICAL] [AUTH] ${printable(message)}`;
-		console.error(line);
-		throw new MfaKeyError(message, line);
+	try {
+		startWithMfaKey(load, factors, storedCheck, previous, seal);
+	} finally {
+		// The old key is needed for nothing after this (decision 17).
+		if (previous.ok && previous.key !== null) previous.key.encryptionKey.fill(0);
 	}
+}
 
-	if (verdict.recordCheck !== null) {
-		sqlite
-			.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
-			.run(MFA_KEY_CHECK_SETTING, verdict.recordCheck);
+/** The one `[CRITICAL] [AUTH]` line of a start refused, written to the console, and the error to throw. */
+function mfaKeyRefusal(reason: string): MfaKeyError {
+	const message = `The server will not start. ${reason}`;
+	const line = `[${new Date().toISOString()}] [CRITICAL] [AUTH] ${printable(message)}`;
+	console.error(line);
+	return new MfaKeyError(message, line);
+}
+
+function startWithMfaKey(
+	load: KeyLoad,
+	factors: () => readonly FactorAtStart[],
+	storedCheck: () => string | null,
+	previous: PreviousKeyLoad,
+	seal: typeof sealWith
+): void {
+	let verdict = mfaStartVerdict({ load, factors: factors(), storedCheck: storedCheck(), previous });
+	if (verdict.refuse !== null) throw mfaKeyRefusal(verdict.refuse);
+
+	const old = previous.ok ? previous.key : null;
+	// Card 2773: an enrolment sealed under the previous key is deleted even on a
+	// start with nothing to seal again and no check to record (a second start
+	// with MFA_KEY_FILE_PREVIOUS still set, say), as nothing opens it any more.
+	const staleChallenges =
+		old !== null && sqlite.prepare('SELECT 1 FROM sign_in_challenges WHERE key_id = ? LIMIT 1').get(old.id) !== undefined;
+	if (load.ok && (verdict.reseal.length > 0 || verdict.recordCheck !== null || staleChallenges)) {
+		const key = load.key;
+		try {
+			verdict = sqlite
+				.transaction(() => {
+					// Read and decided again, under the write lock: what was read above
+					// may have been changed by another instance since (decision 16).
+					const stored = factors();
+					const again = mfaStartVerdict({ load, factors: stored, storedCheck: storedCheck(), previous });
+					if (again.refuse !== null) throw mfaKeyRefusal(again.refuse);
+
+					if (again.reseal.length > 0 && old !== null) {
+						const byId = new Map(stored.map((factor) => [factor.id, factor]));
+						const update = sqlite.prepare(
+							'UPDATE mfa_factors SET key_id = ?, secret_nonce = ?, secret_ciphertext = ? WHERE id = ? AND key_id = ?'
+						);
+						for (const id of again.reseal) {
+							const factor = byId.get(id)!;
+							const aad = factorAad(factor.userId, factor.factorUid);
+							const secret = openSealed(old, factor, aad);
+							if (secret === null) throw new Error(`factor ${id} no longer opens with the previous key`);
+							try {
+								const sealed = seal(key, secret, aad);
+								if (update.run(sealed.keyId, sealed.nonce, sealed.ciphertext, id, old.id).changes !== 1) {
+									throw new Error(`factor ${id} was changed while it was sealed again`);
+								}
+							} finally {
+								secret.fill(0);
+							}
+						}
+					}
+
+					// A secret being set up, sealed under the old key, opens with nothing now.
+					if (old !== null) sqlite.prepare('DELETE FROM sign_in_challenges WHERE key_id = ?').run(old.id);
+
+					if (again.recordCheck !== null) {
+						sqlite
+							.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+							.run(MFA_KEY_CHECK_SETTING, again.recordCheck);
+					}
+					return again;
+				})
+				.immediate();
+		} catch (err) {
+			if (err instanceof MfaKeyError) throw err;
+			throw mfaKeyRefusal(
+				`The second factors could not be sealed again under the new MFA key (${(err as Error)?.message ?? String(err)}). ` +
+					'Nothing was changed, and starting again is safe; if another instance is running on this database, ' +
+					'stop it first. See docs/deployment.md, The Key That Protects Authenticator Secrets.'
+			);
+		}
+
+		// Said whatever LOG_LEVEL is: the new key is now the only one that opens
+		// the factors, and no backup holds it (decision 18).
+		if (verdict.reseal.length > 0) {
+			warnOnConsoleAlways(
+				`Rotated ${verdict.reseal.length} second factor(s) to the new MFA key. Back up the new key now, then remove ` +
+					'MFA_KEY_FILE_PREVIOUS; keep the old key file offline for as long as you keep backups made before today.',
+				'AUTH'
+			);
+		}
 	}
 
 	if (verdict.unreadable.length > 0) {

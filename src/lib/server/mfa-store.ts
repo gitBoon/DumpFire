@@ -14,18 +14,25 @@
  * A step and a recovery code are each spent by one conditional UPDATE and
  * nothing read before it, so two requests with the same code cannot both
  * spend it. Writes of more than one statement run in `inTransaction`, which is
- * a savepoint inside a caller's own. Issuing and taking challenges and
- * enrolment links is card 2769's.
+ * a savepoint inside a caller's own.
+ *
+ * Issuing an enrolment link, and the reset that removes an account's second
+ * factor and issues one, are card 2773's (`issueEnrolmentLink`,
+ * `resetTwoStep`): that card is built before 2769, and the administrator's
+ * reset and the host's command both need a link. Issuing and taking
+ * challenges, and taking an enrolment link, are card 2769's.
  */
+import { randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { and, eq, isNull, lt, or, sql } from 'drizzle-orm';
 import { db, sqlite } from './db';
-import { enrolmentLinks, mfaFactors, mfaRecoveryCodes, settings, signInChallenges, type MfaFactor } from './db/schema';
+import { enrolmentLinks, mfaFactors, mfaRecoveryCodes, settings, signInChallenges, users, type MfaFactor } from './db/schema';
 import { inTransaction } from './db/transaction';
+import { endAccountAccess } from './auth';
 import { createLogger } from './logger';
 import { stamp } from '$lib/timestamps';
 import { MFA_KEY_CHECK_SETTING, currentMfaKey } from './mfa-key';
-import { enrolAad, factorAad, newFactorUid, openSealed, sealWith, type Sealed } from './mfa-crypto';
+import { enrolAad, factorAad, newFactorUid, openSealed, sealWith, sha256Hex, type Sealed } from './mfa-crypto';
 import { TOTP_SECRET_BYTES } from './totp';
 import { canonicalRecoveryCode, recoveryCodeHash } from './recovery-codes';
 
@@ -49,6 +56,15 @@ export function readMfaKeyCheck(database: Database.Database): string | null {
 		| { value: string | null }
 		| undefined;
 	return row?.value ?? null;
+}
+
+/**
+ * Whether the account holds a second factor (card 2773, decision 9): such an
+ * account is not sent an invite. One read, for a route's own check; the
+ * queries that ask it of many accounts at once keep their own subquery.
+ */
+export function holdsFactor(userId: number): boolean {
+	return db.select({ id: mfaFactors.id }).from(mfaFactors).where(eq(mfaFactors.userId, userId)).get() !== undefined;
 }
 
 /**
@@ -224,4 +240,99 @@ export function endPendingSignIns(userId: number): { challenges: number; enrolme
 	const challenges = db.delete(signInChallenges).where(eq(signInChallenges.userId, userId)).run().changes;
 	const links = db.delete(enrolmentLinks).where(eq(enrolmentLinks.userId, userId)).run().changes;
 	return { challenges, enrolmentLinks: links };
+}
+
+/** How long an enrolment link works for once it is issued: seven days, as an invite (card 2773). */
+export const ENROLMENT_LINK_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** The path an enrolment link's token follows, after the server's address: `<base>/enrol/<token>` (card 2773, decision 2). */
+export const ENROLMENT_LINK_PATH = '/enrol/';
+
+/**
+ * Issue an enrolment link for the account, and return its token (card 2773).
+ * The account's earlier links are deleted first, so it has one link that
+ * works, and a leaked older one stops working (decision 3). Only the token's
+ * SHA-256 is stored; the token itself is returned for the caller to show
+ * once, and is never logged or stored.
+ *
+ * Inside the caller's transaction, the one that checked the account may be
+ * given a link. It throws if no transaction is open.
+ */
+export function issueEnrolmentLink(userId: number, issuedBy: string): string {
+	if (!sqlite.inTransaction) {
+		throw new Error(
+			'issueEnrolmentLink must be called inside the transaction that checks the account may be given a link: ' +
+				'wrap the check and this call in inTransaction.'
+		);
+	}
+
+	db.delete(enrolmentLinks).where(eq(enrolmentLinks.userId, userId)).run();
+	const token = randomBytes(32).toString('base64url');
+	db.insert(enrolmentLinks)
+		.values({
+			tokenHash: sha256Hex(token),
+			userId,
+			issuedBy,
+			createdAt: stamp(),
+			expiresAt: stamp(new Date(Date.now() + ENROLMENT_LINK_LIFETIME_MS))
+		})
+		.run();
+	return token;
+}
+
+/** What `resetTwoStep` removed and ended, and the new link's token. */
+export type TwoStepReset = {
+	factors: number;
+	recoveryCodes: number;
+	sessions: number;
+	invites: number;
+	challenges: number;
+	token: string;
+};
+
+/**
+ * Set the account's two-step sign-in back to nothing, and issue the link that
+ * sets up a new one (card 2773, decision 11): its factors and recovery codes
+ * are deleted, its wrong-code counts set to 0 and their pauses cleared, and
+ * its sessions, unused invites, pending sign-ins and enrolment links ended.
+ * Its password, API keys, webhooks, report schedules, security banner, last
+ * sign-in and failed codes since it are kept: the banner and that count are
+ * about the password and the last sign-in, which a reset does not change.
+ * The link is issued last, because ending the account's access deletes its
+ * links.
+ *
+ * Inside the caller's transaction, the one that checked the account may be
+ * reset. It throws if no transaction is open.
+ */
+export function resetTwoStep(userId: number, issuedBy: string = 'admin-reset'): TwoStepReset {
+	if (!sqlite.inTransaction) {
+		throw new Error(
+			'resetTwoStep must be called inside the transaction that checks the account may be reset: wrap the ' +
+				'check and this call in inTransaction.'
+		);
+	}
+
+	const factors = db.delete(mfaFactors).where(eq(mfaFactors.userId, userId)).run().changes;
+	const recoveryCodes = db.delete(mfaRecoveryCodes).where(eq(mfaRecoveryCodes.userId, userId)).run().changes;
+	db.update(users)
+		.set({
+			mfaKnownWrong: 0,
+			mfaOtherWrong: 0,
+			mfaRecoveryWrong: 0,
+			mfaKnownResumesAt: null,
+			mfaOtherResumesAt: null,
+			mfaRecoveryResumesAt: null
+		})
+		.where(eq(users.id, userId))
+		.run();
+	const ended = endAccountAccess(userId, { apiKeys: false, reportSchedules: false });
+	const token = issueEnrolmentLink(userId, issuedBy);
+	return {
+		factors,
+		recoveryCodes,
+		sessions: ended.sessions,
+		invites: ended.invites,
+		challenges: ended.challenges,
+		token
+	};
 }

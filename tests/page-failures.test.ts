@@ -2739,7 +2739,9 @@ const WRITES: Record<string, Write[]> = {
 		{ name: 'createUser', reads: 'sentAsking', done: ['showCreateUser = false'] },
 		{ name: 'changeUserRole', reads: 'failureMessage', putsBack: ['putBack()'], done: ['await invalidateAll()'] },
 		{ name: 'deleteUser', reads: 'sentAsking', done: ["showToast('User deleted')"] },
-		{ name: 'resendInvite', reads: 'sentAsking' }
+		{ name: 'resendInvite', reads: 'sentAsking' },
+		// Card 2773: 🛡️, whose link opens the invite link's dialog only for an answer that is a success.
+		{ name: 'resetTwoStepOf', reads: 'sentAsking', done: ['await invalidateAll()'] }
 	],
 	'src/lib/components/admin/ResetPasswordDialog.svelte': [
 		{ name: 'resetPassword', reads: 'failureMessage', done: ['resetPasswordUserId = null'] }
@@ -6120,9 +6122,12 @@ describe('the admin page’s invite whose mail was not sent, src/lib/components/
 			.filter((fn) => /\binviteLink\b/.test(fn.getText()))
 			.map((fn) => fn.name!.text)
 			.sort();
-		// Card 2701: 📧's confirm reads it, to ask nothing while a link is shown, and sets it nowhere.
-		expect(touching).toEqual(['askResendInvite', 'closeInviteLink', 'copyInviteLink', 'createUser', 'resendInvite']);
+		// Card 2701: 📧's confirm reads it, to ask nothing while a link is shown, and sets it nowhere. Card 2773: so
+		// does 🛡️'s, and its reset sets it to the reset's link.
+		expect(touching).toEqual(['askResendInvite', 'askResetTwoStep', 'closeInviteLink', 'copyInviteLink', 'createUser', 'resendInvite', 'resetTwoStepOf']);
 		expect(linkSet(functionNamed(tree, 'askResendInvite'))).toEqual([]);
+		expect(linkSet(functionNamed(tree, 'askResetTwoStep'))).toEqual([]);
+		expect(linkSet(functionNamed(tree, 'resetTwoStepOf')).map((assignment) => sideOf(assignment))).toEqual(['ok']);
 		expect(linkSet(functionNamed(dialogTree, 'closeInviteLink'))).toEqual([]);
 		expect(statementsOf(functionNamed(dialogTree, 'closeInviteLink'), 'inviteLink = null')).toHaveLength(1);
 
@@ -6142,7 +6147,9 @@ describe('the admin page’s invite whose mail was not sent, src/lib/components/
 		// No markup sets it: only the users panel's two functions, and Done.
 		expect(allMarkup).not.toMatch(/inviteLink\s*=[^=]/);
 		// The page holds it, and hands it to the panel that sets it and the dialog that shows it.
-		expect(pageSource).toContain('let inviteLink = $state<{ url: string; username: string; message: string; returnTo?: HTMLElement } | null>(null);');
+		expect(pageSource).toContain(
+			"let inviteLink = $state<{ url: string; username: string; message: string; returnTo?: HTMLElement; kind?: 'invite' | 'mfa-reset' } | null>(null);"
+		);
 		expect(pageSource.split('\n').filter((line) => line.includes('<UsersPanel ') && line.includes(' bind:inviteLink '))).toHaveLength(1);
 		// Card 2395: it no longer needs to know whether the reader is the superadmin.
 		expect(pageSource).toContain('<InviteLinkDialog bind:inviteLink />');
@@ -6172,7 +6179,8 @@ describe('the admin page’s invite whose mail was not sent, src/lib/components/
 	});
 
 	it('gates every 📧 and Create User on one flag, inviteInFlight, set before the request and cleared in finally (R-S5)', () => {
-		for (const name of ['resendInvite', 'createUser']) {
+		// Card 2773: and 🛡️'s reset, which issues a link the same dialog shows.
+		for (const name of ['resendInvite', 'createUser', 'resetTwoStepOf']) {
 			const fn = functionNamed(tree, name);
 			const tried = fn.body!.statements.find((statement): statement is ts.TryStatement => ts.isTryStatement(statement));
 			expect(tried, name).toBeDefined();
@@ -6182,13 +6190,25 @@ describe('the admin page’s invite whose mail was not sent, src/lib/components/
 			);
 		}
 		expect(statementsOf(functionNamed(tree, 'resendInvite'), 'inviteInFlight = userId')).toHaveLength(1);
+		expect(statementsOf(functionNamed(tree, 'resetTwoStepOf'), 'inviteInFlight = userId')).toHaveLength(1);
 		expect(functionNamed(tree, 'createUser').getText()).toContain("if (!newPassword) inviteInFlight = 'new';");
 
 		// Card 2701: 📧 asks first, for the caller's password, through the page's confirm, and asks nothing while an invite is out.
-		expect(markup).toContain(
-			'<button class="btn-ghost btn-sm" onclick={(e) => askResendInvite(u.id, u.username, e.currentTarget)} disabled={inviteInFlight !== null || inviteLink !== null} title="Resend invite email">{inviteInFlight === u.id ? \'…\' : \'📧\'}</button>'
+		// Card 2773: aria-disabled for an account that uses two-step sign-in, beside 🛡️, gated the same way.
+		expect(markup.replace(/\r\n/g, '\n')).toContain(
+			[
+				'<button',
+				'\tclass="btn-ghost btn-sm invite-resend"',
+				'\tonclick={(e) => askResendInvite(u.id, u.username, e.currentTarget)}',
+				'\tdisabled={inviteInFlight !== null || inviteLink !== null}',
+				"\taria-disabled={u.twoStep === true ? 'true' : undefined}",
+				"\ttitle={u.twoStep === true ? INVITE_REFUSED : 'Resend invite email'}",
+				">{inviteInFlight === u.id && twoStepInFlight === null ? '…' : '📧'}</button>",
+				'<button class="btn-ghost btn-sm" onclick={(e) => askResetTwoStep(u.id, u.username, e.currentTarget)} disabled={inviteInFlight !== null || inviteLink !== null} title="Reset two-step sign-in">{twoStepInFlight === u.id ? \'…\' : \'🛡️\'}</button>'
+			].join('\n\t\t\t\t\t\t\t')
 		);
 		expect(functionNamed(tree, 'askResendInvite').body!.statements[0].getText()).toBe('if (inviteInFlight !== null || inviteLink !== null) return;');
+		expect(functionNamed(tree, 'askResetTwoStep').body!.statements[0].getText()).toBe('if (inviteInFlight !== null || inviteLink !== null) return;');
 		// And Create waits for the caller's own password too (card 2701).
 		expect(markup).toContain(
 			'onclick={createUser} disabled={creatingUser || inviteInFlight !== null || inviteLink !== null || !newUsername || !newEmail || !newUserCurrentPassword}>'

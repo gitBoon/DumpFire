@@ -3331,6 +3331,32 @@ describe('what the gate writes to the system log', () => {
 		expect(maskSecretPaths('POST /api/decision-by-link/responses → 200')).toBe('POST /api/decision-by-link/responses → 200');
 	});
 
+	it('T17: is an enrolment link with its token masked, plain and percent-encoded, and in a line that quotes it (card 2773, F1)', async () => {
+		// The 31 bytes of "enrol-link-token-card-2773-test" in base64url: 42 characters, in the alphabet of a real
+		// enrolment token (32 random bytes, 43 characters), so the masking is shown on a token of that shape.
+		const token = 'ZW5yb2wtbGluay10b2tlbi1jYXJkLTI3NzMtdGVzdA';
+		const kept: LogEntry[] = [];
+		const unsubscribe = subscribeToLogs((entry) => kept.push(entry));
+
+		let lines: { level: string; message: string; status: number }[];
+		try {
+			lines = await logged(async () => {
+				await gate('GET', `/enrol/${token}`, { headers: { accept: 'text/html' } });
+				await gate('GET', `/%65nrol/${token}`, { headers: { accept: 'text/html' } });
+			});
+		} finally {
+			unsubscribe();
+		}
+
+		expect(lines.map((line) => line.message.replace(/ → .*$/, ''))).toEqual(['GET /enrol/[token]', 'GET /enrol/[token]']);
+		expect(kept.length).toBeGreaterThan(0);
+		expect(JSON.stringify(kept)).not.toContain(token);
+		expect(JSON.stringify(sqlite.prepare('SELECT message, meta FROM system_logs').all())).not.toContain(token);
+		expect(maskSecretPaths(`Opened https://dumpfire.example.test/enrol/${token} from a phone`)).toBe(
+			'Opened https://dumpfire.example.test/enrol/[token] from a phone'
+		);
+	});
+
 	it('is never a query, so a token sent as ?token= is not written down', async () => {
 		const secret = 'request-link-token-0b8d2f';
 		const lines = await logged(async () => {

@@ -45,12 +45,40 @@ export type InviteMailAnswer =
 	| { mailSent: false; mailProblem: string; inviteUrl: string }
 	| { mailSent: false; mailProblem: string; inviteUrl: null };
 
+/**
+ * The words of the two checks every link given in an answer asks first: the
+ * invite's here (R-S1), and the two-step reset's enrolment link (card 2773,
+ * decision 15), which shares them so the two cannot come to say different
+ * things of the same failure.
+ */
+export const CALLER_NOT_GIVEN = {
+	session: "the caller's session has ended, or is no longer an administrator's",
+	rule: 'the caller may no longer manage the account'
+} as const;
+
 /** Why the link of an invite whose mail failed was not given, by the check that failed. */
 const NOT_GIVEN = {
-	session: "the caller's session has ended, or is no longer an administrator's",
-	rule: 'the caller may no longer manage the account',
+	...CALLER_NOT_GIVEN,
 	invite: 'the invite no longer works'
 } as const;
+
+/**
+ * The first two checks of R-S1 (and of card 2773's decision 15), by reads
+ * only: the caller's session is still open and an administrator's, and the
+ * caller, as their account is now, may still manage the account, read
+ * afresh. Answers the first that fails, or null when both hold; each caller
+ * then asks its own third check, of its own link.
+ */
+export function callerStillManages(cookies: Cookies, actorId: number, accountId: number): keyof typeof CALLER_NOT_GIVEN | null {
+	// Only a session reaches an internal route: a key is taken only under /api/v1/.
+	const caller = openSessionUser(cookies.get(SESSION_COOKIE_NAME));
+	if (!caller || caller.id !== actorId || !isAdmin(caller)) return 'session';
+
+	const account = db.select({ id: users.id, role: users.role }).from(users).where(eq(users.id, accountId)).get();
+	if (!account || account.id === caller.id || !mayManageAccount(caller, account)) return 'rule';
+
+	return null;
+}
 
 /**
  * What the answer to the request that issued an invite says of its mail.
@@ -87,12 +115,8 @@ export function inviteMailAnswer(opts: {
 
 /** The first of R-S1's checks that fails, or null when all three hold. */
 function whyNotGiven(cookies: Cookies, actorId: number, accountId: number, token: string): keyof typeof NOT_GIVEN | null {
-	// Only a session reaches an internal route: a key is taken only under /api/v1/.
-	const caller = openSessionUser(cookies.get(SESSION_COOKIE_NAME));
-	if (!caller || caller.id !== actorId || !isAdmin(caller)) return 'session';
-
-	const account = db.select({ id: users.id, role: users.role }).from(users).where(eq(users.id, accountId)).get();
-	if (!account || account.id === caller.id || !mayManageAccount(caller, account)) return 'rule';
+	const callerCheck = callerStillManages(cookies, actorId, accountId);
+	if (callerCheck !== null) return callerCheck;
 
 	const invite = usableInvite(token);
 	if (!invite || invite.userId !== accountId) return 'invite';
