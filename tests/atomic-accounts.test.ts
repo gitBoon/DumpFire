@@ -113,6 +113,7 @@ import { sendAround } from './helpers/held-body';
 import { watchReads } from './helpers/reads';
 import { diffSnapshots, expectUnchanged, snapshotDb } from './helpers/snapshot';
 import { parseStamp, stamp } from '$lib/timestamps';
+import { inviteHashOf } from './helpers/fixtures';
 
 bcrypt.open = () => sqlite.inTransaction;
 
@@ -209,14 +210,15 @@ function withPassword(user: SessionUser): SessionUser {
 const HOUR = 60 * 60 * 1000;
 
 /**
- * An invite, written as it is stored: good for another hour unless told
- * otherwise. Written directly, as production may hold more than one waiting
- * invite for an account from before an account had one.
+ * An invite, written as it is stored, as the hash of `token` (card 2849): good
+ * for another hour unless told otherwise. Written directly, as production may
+ * hold more than one waiting invite for an account from before an account had
+ * one.
  */
 function makeInvite(user: SessionUser, token: string, opts: { expiresIn?: number; used?: boolean } = {}): void {
 	db.insert(inviteTokens)
 		.values({
-			token,
+			tokenHash: inviteHashOf(token),
 			userId: user.id,
 			expiresAt: stamp(new Date(Date.now() + (opts.expiresIn ?? HOUR))),
 			used: opts.used ?? false
@@ -224,14 +226,14 @@ function makeInvite(user: SessionUser, token: string, opts: { expiresIn?: number
 		.run();
 }
 
-/** A user's invites, as `[token, used]`, oldest first. */
+/** A user's invites, as `[the token's hash, used]`, oldest first. */
 const invitesOf = (id: number) =>
 	db
 		.select()
 		.from(inviteTokens)
 		.where(eq(inviteTokens.userId, id))
 		.all()
-		.map((i) => [i.token, i.used] as const);
+		.map((i) => [i.tokenHash, i.used] as const);
 
 /** The names of a user's API keys. */
 const keysOf = (id: number) =>
@@ -433,7 +435,7 @@ describe('PUT /api/account/password', () => {
 				// The invite would set the password again; the keys were not asked about.
 				expect(invitesOf(me.id)).toEqual([]);
 				expect(keysOf(me.id)).toEqual(['my script', 'my other script']);
-				expect(invitesOf(other.id)).toEqual([['their-invite', false]]);
+				expect(invitesOf(other.id)).toEqual([[inviteHashOf('their-invite'), false]]);
 				expect(keysOf(other.id)).toEqual(['their script']);
 			}
 		});
@@ -472,7 +474,7 @@ describe('PUT /api/account/password', () => {
 
 				// Nobody else's.
 				expect(sessionsOf(other.id)).toEqual(['theirs']);
-				expect(invitesOf(other.id)).toEqual([['their-invite', false]]);
+				expect(invitesOf(other.id)).toEqual([[inviteHashOf('their-invite'), false]]);
 				expect(keysOf(other.id)).toEqual(['their script']);
 			}
 		});
@@ -742,7 +744,7 @@ describe('PUT /api/users/:id/password', () => {
 		// The target's are not the administrator's.
 		expect(sessionsOf(s.target.id)).toEqual(['target-laptop', 'target-phone']);
 		expect(keysOf(s.target.id)).toEqual(['target key']);
-		expect(invitesOf(s.target.id)).toEqual([['target-invite', false]]);
+		expect(invitesOf(s.target.id)).toEqual([[inviteHashOf('target-invite'), false]]);
 	});
 
 	it('leaves the user\'s ended key refused at the gate, and everyone else\'s working', async () => {
@@ -875,8 +877,11 @@ describe('POST /api/users', () => {
 				expect(sent[0]).toMatchObject({
 					kind: 'email',
 					to: 'newbie@example.test',
-					html: expect.stringContaining(`/invite/${invites[0].token}`)
+					html: expect.stringContaining('/invite/')
 				});
+				// Kept as its hash (card 2849).
+				const mailed = (sent[0] as { html: string }).html.match(/\/invite\/([\w-]+)/)![1];
+				expect(inviteHashOf(mailed)).toEqual(invites[0].tokenHash);
 			}
 		});
 
@@ -1024,13 +1029,13 @@ describe('POST /api/users/:id/invite', () => {
 				expect(sent[0]).toMatchObject({ kind: 'email', to: 'invitee@example.test' });
 				const mailed = tokenIn((sent[0] as { html: string }).html);
 				expect(invitesOf(invitee.id)).toEqual([
-					['spent', true],
-					[mailed, false]
+					[inviteHashOf('spent'), true],
+					[inviteHashOf(mailed), false]
 				]);
-				const issued = db.select().from(inviteTokens).where(eq(inviteTokens.token, mailed)).get()!;
+				const issued = db.select().from(inviteTokens).where(eq(inviteTokens.tokenHash, inviteHashOf(mailed))).get()!;
 				expect(parseStamp(issued.expiresAt)!.getTime()).toBeGreaterThan(Date.now() + 6 * 24 * HOUR);
 
-				expect(invitesOf(bystander.id)).toEqual([['theirs', false]]);
+				expect(invitesOf(bystander.id)).toEqual([[inviteHashOf('theirs'), false]]);
 			}
 		});
 
@@ -1077,12 +1082,12 @@ describe('the invite page', () => {
 	const invited = () => {
 		const invitee = makeUser({ username: 'invitee' });
 		db.insert(inviteTokens)
-			.values({ token: TOKEN, userId: invitee.id, expiresAt: stamp(new Date(Date.now() + 60 * 60 * 1000)) })
+			.values({ tokenHash: inviteHashOf(TOKEN), userId: invitee.id, expiresAt: stamp(new Date(Date.now() + 60 * 60 * 1000)) })
 			.run();
 		return { invitee };
 	};
 
-	const invite = () => db.select().from(inviteTokens).where(eq(inviteTokens.token, TOKEN)).get()!;
+	const invite = () => db.select().from(inviteTokens).where(eq(inviteTokens.tokenHash, inviteHashOf(TOKEN))).get()!;
 	const use = (fields: Record<string, string> = form, token = TOKEN) => action(`/invite/${token}`, { form: fields });
 
 	/**
@@ -1114,14 +1119,14 @@ describe('the invite page', () => {
 				// This invite is kept, marked used; the other is gone, and so are
 				// the sessions and the key. No session is made: the cookie is the
 				// set-up challenge's.
-				expect(invitesOf(invitee.id)).toEqual([[TOKEN, true]]);
+				expect(invitesOf(invitee.id)).toEqual([[inviteHashOf(TOKEN), true]]);
 				expect(keysOf(invitee.id)).toEqual([]);
 				expect(sessionsOf(invitee.id)).toEqual([]);
 				expect(res.cookies[SESSION_COOKIE_NAME]).toBeUndefined();
 				expect(challengesOf(invitee.id)).toEqual([[tokenHashOf(res.cookies[CHALLENGE_COOKIE].value), 'enrol', 'invite']]);
 
 				expect(sessionsOf(bystander.id)).toEqual(['theirs']);
-				expect(invitesOf(bystander.id)).toEqual([['their-invite', false]]);
+				expect(invitesOf(bystander.id)).toEqual([[inviteHashOf('their-invite'), false]]);
 				expect(keysOf(bystander.id)).toEqual(['their key']);
 			}
 		});
@@ -1239,7 +1244,7 @@ describe('the invite page', () => {
 		const { invitee } = invited();
 		// What the other submission would have committed by then.
 		const reads = watchReads('invite_tokens', (nth) => {
-			if (nth === 1) db.update(inviteTokens).set({ used: true }).where(eq(inviteTokens.token, TOKEN)).run();
+			if (nth === 1) db.update(inviteTokens).set({ used: true }).where(eq(inviteTokens.tokenHash, inviteHashOf(TOKEN))).run();
 		});
 
 		let res: ActionResult;
@@ -1262,8 +1267,8 @@ describe('the invite page', () => {
 		const other = makeUser({ username: 'other' });
 		db.insert(inviteTokens)
 			.values([
-				{ token: 'expired', userId: other.id, expiresAt: stamp(new Date(Date.now() - 1000)) },
-				{ token: 'used', userId: other.id, expiresAt: stamp(new Date(Date.now() + 60 * 60 * 1000)), used: true }
+				{ tokenHash: inviteHashOf('expired'), userId: other.id, expiresAt: stamp(new Date(Date.now() - 1000)) },
+				{ tokenHash: inviteHashOf('used'), userId: other.id, expiresAt: stamp(new Date(Date.now() + 60 * 60 * 1000)), used: true }
 			])
 			.run();
 		const refused = async (fields: Record<string, string>, token?: string) => {
@@ -1885,8 +1890,8 @@ describe('PUT /api/users/:id', () => {
 
 				// The one that was used stays, marked used. The one waiting and the
 				// one expired are gone, and nobody else's.
-				expect(invitesOf(target.id)).toEqual([['spent', true]]);
-				expect(invitesOf(bystander.id)).toEqual([['theirs', false]]);
+				expect(invitesOf(target.id)).toEqual([[inviteHashOf('spent'), true]]);
+				expect(invitesOf(bystander.id)).toEqual([[inviteHashOf('theirs'), false]]);
 				// Whoever has the mail, at the address the account had, is told it no longer works.
 				await expectDeadLink('waiting');
 
@@ -1909,7 +1914,7 @@ describe('PUT /api/users/:id', () => {
 		const promoted = await change(chief, target.id, { role: 'admin' });
 		expect(promoted.status).toBe(200);
 		expect(promoted.body).toMatchObject({ role: 'admin', invitesEnded: 2 });
-		expect(invitesOf(target.id)).toEqual([['spent', true]]);
+		expect(invitesOf(target.id)).toEqual([[inviteHashOf('spent'), true]]);
 		await expectDeadLink('waiting');
 
 		// One sent while the account is an administrator's ends when it is a user's again.
@@ -1917,7 +1922,7 @@ describe('PUT /api/users/:id', () => {
 		const demoted = await change(chief, target.id, { role: 'user' });
 		expect(demoted.status).toBe(200);
 		expect(demoted.body).toMatchObject({ role: 'user', invitesEnded: 1 });
-		expect(invitesOf(target.id)).toEqual([['spent', true]]);
+		expect(invitesOf(target.id)).toEqual([[inviteHashOf('spent'), true]]);
 		await expectDeadLink(sentToAnAdmin);
 	});
 
@@ -1928,8 +1933,8 @@ describe('PUT /api/users/:id', () => {
 
 		expect(res.status).toBe(200);
 		expect(res.body).toMatchObject({ email: 'elsewhere@example.test', invitesEnded: 2 });
-		expect(invitesOf(target.id)).toEqual([['spent', true]]);
-		expect(invitesOf(bystander.id)).toEqual([['theirs', false]]);
+		expect(invitesOf(target.id)).toEqual([[inviteHashOf('spent'), true]]);
+		expect(invitesOf(bystander.id)).toEqual([[inviteHashOf('theirs'), false]]);
 		await expectDeadLink('waiting');
 	});
 
@@ -1951,9 +1956,9 @@ describe('PUT /api/users/:id', () => {
 		}
 
 		expect(invitesOf(target.id)).toEqual([
-			['waiting', false],
-			['expired', false],
-			['spent', true]
+			[inviteHashOf('waiting'), false],
+			[inviteHashOf('expired'), false],
+			[inviteHashOf('spent'), true]
 		]);
 		// And the invite still sets the password, and leads on to setting up two-step sign-in (card 2769).
 		expect(await action('/invite/waiting', { form: { password: NEW, confirmPassword: NEW } })).toMatchObject({
@@ -1993,8 +1998,8 @@ describe('PUT /api/account/email', () => {
 				expect(res.body).toEqual({ success: true, email: 'moved@example.test' });
 				expect(userRow(target.id).email).toBe('moved@example.test');
 
-				expect(invitesOf(target.id)).toEqual([['spent', true]]);
-				expect(invitesOf(bystander.id)).toEqual([['theirs', false]]);
+				expect(invitesOf(target.id)).toEqual([[inviteHashOf('spent'), true]]);
+				expect(invitesOf(bystander.id)).toEqual([[inviteHashOf('theirs'), false]]);
 				await expectDeadLink('waiting');
 
 				// The session that asked is still good.
@@ -2115,7 +2120,7 @@ describe('endUnusedInvites', () => {
 		expect(invitesOf(target.id)).toHaveLength(3);
 
 		expect(inTransaction(() => endUnusedInvites(target.id))).toBe(2);
-		expect(invitesOf(target.id)).toEqual([['spent', true]]);
+		expect(invitesOf(target.id)).toEqual([[inviteHashOf('spent'), true]]);
 	});
 });
 

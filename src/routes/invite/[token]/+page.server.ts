@@ -125,10 +125,10 @@ export const actions: Actions = {
 				.where(eq(users.id, invite.userId))
 				.run();
 
-			// Mark token as used
+			// Mark this invite used: the row read above, by its hash.
 			db.update(inviteTokens)
 				.set({ used: true })
-				.where(eq(inviteTokens.token, token))
+				.where(eq(inviteTokens.tokenHash, invite.tokenHash))
 				.run();
 
 			// An invite is how an account is taken back, so using one ends every

@@ -1,9 +1,9 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.39
+version: 1.40
 status: As-Built
-date: 2026-11-05
+date: 2026-11-16
 tags:
   - backup
   - reports
@@ -16,7 +16,8 @@ tags:
   - onedrive
   - attachments
   - image-retention
-description: "Scheduled backup system with multi-destination support, what a backup holds (no attachment files), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery"
+  - invites
+description: "Scheduled backup system with multi-destination support, what a backup holds (no attachment files; invites only used ones, as hashes, and an older backup's plain tokens replaced on restore), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery"
 ---
 
 # Backup & Reporting System
@@ -67,7 +68,7 @@ in `uploads/<card id>/` with a row of about a hundred bytes, never a blob in the
 so screenshots do not grow a backup.
 
 Nor does the file hold what opens something for whoever reads it: no session, no invite
-that has not been used, no task request's link and not the key the public request form
+that has not been used (and the used ones only as hashes, card 2849), no task request's link and not the key the public request form
 signs with (card 2158). Every request is in it, with its link empty, and a restore gives
 every request a new link, so a link mailed before a restore stops working and its
 requester asks for the current one from the page it opens. See
@@ -501,7 +502,7 @@ sequenceDiagram
     Backup->>Live: VACUUM INTO '<db>.backup-temp'
     Note over Live: Complete copy,<br/>including WAL data
     Backup->>Copy: Open '<db>.backup-temp'
-    Copy->>Copy: Mask tokens and old failed sign-in names in system_logs (maskSecretsInLog)
+    Copy->>Copy: Mask secret paths and old failed sign-in names in system_logs (maskSecretsInLog)
     Copy->>Copy: DELETE FROM sessions
     Copy->>Copy: DELETE FROM invite_tokens WHERE used = 0
     Copy->>Copy: DELETE FROM settings WHERE key = 'known_browser_secret'
@@ -521,9 +522,15 @@ sequenceDiagram
 
 - **The snapshot includes all WAL data.** A raw file copy would miss unflushed writes.
 - **No session and no unused invite is in the file**, and its system log is masked: every
-  invite's address written as `/invite/[token]`, the token of every unused invite replaced
-  wherever a line holds it, a request link's `token=` masked, and an old failed sign-in line
-  at a name that was no account rewritten to hold only the name's length (card 2193).
+  invite's address written as `/invite/[token]`, a request link's `token=` masked, and an old
+  failed sign-in line at a name that was no account rewritten to hold only the name's length
+  (card 2193). Since card 2849 an invite's token is kept only as its SHA-256 (a 32-byte BLOB),
+  so the used invites the file holds carry no token, and there is no unused token for the mask
+  to look for elsewhere in a line: that pass is gone.
+- **A restore of a backup made before card 2849** brings its used invites in with each token
+  that was held as mailed replaced by 32 random bytes, as migration 0068 does, so no token as
+  mailed reaches the running database. See
+  [Invite Tokens Stored as Hashes](authentication-security.md#invite-tokens-stored-as-hashes-card-2849).
 - **The key remembered browsers are signed with is not in the file** (the row
   `known_browser_secret` of `settings`, card 2194), and a restore never brings it in from a
   backup of any age (`rowsToRestore()` in `src/lib/server/db/restore.ts`). Whoever held it

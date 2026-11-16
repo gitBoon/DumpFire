@@ -6,6 +6,8 @@
  * takes cards out of a milestone of another board; 0060, milestone 22, which
  * commits every card that is not upstream; 0066, card 2769, which lets the
  * accounts there at the release set up two-step sign-in on their password).
+ * A file that does both is declared as one that loses rows: 0068, card 2849,
+ * deletes every unused invite and replaces the token of every used one.
  *
  * The rehearsal (copy.rehearsal.ts) fails on any table that has fewer rows
  * after the runner than before. A file named here is allowed to take rows from
@@ -71,7 +73,13 @@ export const ONE_OFFS: readonly OneOff[] = Object.freeze([
 		keepsRows: true
 	},
 	{ file: '0067_end_sessions_for_two_step.sql', table: 'sessions', change: 'every row deleted' },
-	{ file: '0067_end_sessions_for_two_step.sql', table: 'settings', change: 'the remembered-browser secret deleted' }
+	{ file: '0067_end_sessions_for_two_step.sql', table: 'settings', change: 'the remembered-browser secret deleted' },
+	// Card 2849: invite tokens stored as hashes, in the release of two-step sign-in.
+	{
+		file: '0068_end_plain_invite_tokens.sql',
+		table: 'invite_tokens',
+		change: "every unused invite deleted and every used invite's token replaced"
+	}
 ]);
 
 /** The first file the rule covers. Files before it were written before the rule. */

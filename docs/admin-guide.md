@@ -1,9 +1,9 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.100
+version: 1.101
 status: As-Built
-date: 2026-11-13
+date: 2026-11-16
 tags:
   - people-directory
   - api-keys
@@ -34,7 +34,8 @@ tags:
   - two-step-sign-in
   - mfa-reset
   - enrolment-links
-description: "Administration guide covering what an API key, an administrator's included, may and may not do with a decision (card 2682), who may do what on the admin page, the twenty-nine actions that ask for your password again and the sign-out after three wrong ones, the Options column every delivery board has, ideas boards and when to use options, user management and what a password reset ends, switches off and pauses, SMTP setup, team configuration, what a backup holds and what a restore does, archive management, what each delete removes and who it tells, Reset and Vacuum, attachments, each user's mail switches, what the activity log records and the words its panels use, the Audit page's filters, a board beneath one of its own cards and how to put it right, the people directory and what an administrator's API key may change in it, what a backup and the export hold of two-step sign-in and what a restore does with second factors (card 2768), resetting an account's two-step sign-in with 🛡️ and its link shown once, 📧 refused for an account with a second factor, the host's reset for the superadmin and changing the key (card 2773), what people see of two-step sign-in and how to help someone paused, locked or with a set-up left unfinished, the release that turns it on (stop every instance, a real App URL, reviewing API keys, resetting administrators first, and the Users panel's 'may set up on password until' line) (card 2769), and system settings"
+  - invites
+description: "Administration guide covering what an API key, an administrator's included, may and may not do with a decision (card 2682), who may do what on the admin page, the twenty-nine actions that ask for your password again and the sign-out after three wrong ones, the Options column every delivery board has, ideas boards and when to use options, user management and what a password reset ends, switches off and pauses, SMTP setup, team configuration, what a backup holds and what a restore does, archive management, what each delete removes and who it tells, Reset and Vacuum, attachments, each user's mail switches, what the activity log records and the words its panels use, the Audit page's filters, a board beneath one of its own cards and how to put it right, the people directory and what an administrator's API key may change in it, what a backup and the export hold of two-step sign-in and what a restore does with second factors (card 2768), resetting an account's two-step sign-in with 🛡️ and its link shown once, 📧 refused for an account with a second factor, the host's reset for the superadmin and changing the key (card 2773), what people see of two-step sign-in and how to help someone paused, locked or with a set-up left unfinished, the release that turns it on (stop every instance, a real App URL, reviewing API keys, resetting administrators first, and the Users panel's 'may set up on password until' line) (card 2769), invites kept only as a fingerprint of their link and the waiting ones ended and sent again at that release (card 2849), and system settings"
 ---
 
 # Admin Operations Guide
@@ -207,7 +208,7 @@ For 📧 the first line is the server's message: "The invite was made, but its m
 
 **When no invite can be mailed at all.** With no mail host, or with a mail user name saved and no password (what an Import Backup leaves until the password is typed again: a backup does not hold it), 📧 and Create User with no password are refused before anything is made, and any earlier invite to the account still works: `The invite was not made: the mail password has not been entered on this server; an administrator enters it under 📧 Email / SMTP. Any earlier invite to this account still works.` Create User says `Password must be at least 8 characters (…)` with the same reason; give a password, or type the mail password under Email / SMTP and try again. While a link's dialog is open, every 📧 and Create User stay greyed until **Done**, and 📋 Copy has the focus.
 
-- **The link is a password.** Whoever opens it sets the account's password, then sets up two-step sign-in with their own phone, and is signed in as that user (card 2769), as the dialog says. Send it by a way only they read (not a shared channel), and do not open it yourself: opening it shows the form, and setting a password with it ends every session and key of the account. It is shown once, only to you, and is cleared when you press **Done**; it is in no toast, no address and no history. 📋 Copy puts it on the clipboard, which Windows' clipboard history keeps, and syncs to your other devices when that is on.
+- **The link is a password.** Whoever opens it sets the account's password, then sets up two-step sign-in with their own phone, and is signed in as that user (card 2769), as the dialog says. Send it by a way only they read (not a shared channel), and do not open it yourself: opening it shows the form, and setting a password with it ends every session and key of the account. It is shown once, only to you, and is cleared when you press **Done**; it is in no toast, no address and no history. DumpFire keeps only a one-way fingerprint of the link (its SHA-256, card 2849), never the link itself, so nobody can show it to you again, and reading the database does not give anyone a working link: if it is lost, send a new invite with 📧, which ends the old one. 📋 Copy puts it on the clipboard, which Windows' clipboard history keeps, and syncs to your other devices when that is on.
 - **One invite at a time.** While an invite is out, every 📧 and Create User are greyed for the second or two it takes, and the pressed 📧 reads "…": a second press used to send a second invite, which ends the first one's link.
 - **No link shown.** If, while the mail was out, you were signed out or made an ordinary user, the account became one you may no longer manage, or another invite was sent for it, no link is given: "The invite was made, but its mail could not be sent, and its link cannot be shown to you now. Send a new invite with 📧 once mail works."
 - **The trail.** Each time, one `[WARN] [AUTH]` line on the Audit page's Live Console names the account and you, by id, and says whether the link was given: `Invite for user 12 was issued by user 3; its mail was not sent (the mail server could not be reached), and its link was given in the answer to their request`. It holds no link. The link works for seven days whether or not its holder stays an administrator, so when an administrator leaves, search the system log for "its link was given" lines naming them, and send each account named a new invite with 📧, which ends the old link.
@@ -364,7 +365,7 @@ flowchart TD
 
 ### The Release That Turns On Two-Step Sign-In
 
-The update that brings card 2769 signs everybody out once and forgets every browser that has signed in before. Nobody has an authenticator yet, so everybody sets one up at their next sign-in. The host's steps and checks are in [Deployment](deployment.md#the-release-that-turns-on-two-step-sign-in-card-2769).
+The update that brings card 2769 signs everybody out once and forgets every browser that has signed in before. Nobody has an authenticator yet, so everybody sets one up at their next sign-in. It also ends every invite still waiting to be used (card 2849, which keeps an invite's link only as a fingerprint from then on): those links stop working, and you send again the ones still wanted. The host's steps and checks are in [Deployment](deployment.md#the-release-that-turns-on-two-step-sign-in-card-2769).
 
 **Before it:**
 
@@ -372,8 +373,11 @@ The update that brings card 2769 signs everybody out once and forgets every brow
 2. **Check the App URL** under Application Settings, where mail is set up: it must be this server's real address, not empty and not `http://localhost:3000`. The release mails each person a set-up link made from it.
 3. **Review the API keys, and revoke any nobody recognises.** No page lists another account's keys: the host's read-only query lists them all ([Deployment](deployment.md#the-release-that-turns-on-two-step-sign-in-card-2769), check W3). Each holder revokes their own on the Account page; 🔑 on a row ends every key of that account. Keys keep working through the release, so a key made by someone who had a password is how they would stay in.
 4. **Consider resetting every administrator's two-step sign-in**, and any account whose password may be known: 🛡️ for an administrator (it is the superadmin's to do), and the host's command for the superadmin. A reset account needs the link you give it, and can never be set up on its password alone.
+5. **Keep the list of invites still waiting.** The host lists them, with the account each was for, before the update ([Deployment](deployment.md#the-release-that-turns-on-two-step-sign-in-card-2769), check W15). It is the only time they can be listed: the update ends them.
 
 **After it:**
+
+- **Every invite sent before the update and not yet used no longer works.** Its link shows "This invite link no longer works…". Send again with 📧 each one on the list from step 5 that is still wanted; the new link works as before. Used invites, accounts and API keys are untouched.
 
 - **Where no mail host is configured**, every account that existed at the release with no authenticator and no set-up link may set one up on its password alone, for 14 days. Whoever holds that password can do it first. After the 14 days it needs a link from you. The Users panel shows, under each such account not yet set up, "may set up on password until `<date>` UTC", and your own row shows yours. 🛡️ on one ends its leave at once and gives it a link instead. A set-up begun on the password is refused at its last step if the 14 days end, or a mail host is set up, meanwhile.
 - **Clearing the mail settings within the 14 days is your decision to reopen this.** It turns every account still marked back to setting up on its password alone, until the 14 days end. Leave the mail set up, or reset the accounts you are unsure of.
@@ -773,7 +777,7 @@ A backup is the whole database, as one `.db` file, with these things taken out:
 | Every board, card, comment, user, team and setting | **Sessions.** Nobody is signed in by a backup, whoever reads it |
 | Every user's password hash, so that a restore can sign them in again | **Invites that have not been used.** An invite's link sets a password |
 | The mail server, port and user name, and each backup destination's name, type, host, bucket, folder, user names and ids | Attachment files: see [Attachments](#attachments) |
-| Invites that have been used, API keys (as hashes), the system log, with every invite's token in it masked | **The key remembered browsers are signed with** (card 2194). A restore forgets every remembered browser |
+| Invites that have been used, held only as hashes (card 2849), API keys (as hashes), the system log, with every invite's address in it masked | **The key remembered browsers are signed with** (card 2194). A restore forgets every remembered browser |
 | Every task request and its messages | **Every request's link** (card 2158). A link opens its request's thread, replies as the requester and confirms the request, and never expires: every request is in the backup with no link, and a restore gives each a new one |
 | Every webhook, with its address | **The key the public request form signs with** (card 2158). A restore makes a new one |
 | | **The mail password** (card 2169) |
@@ -1295,6 +1299,7 @@ Until each browser signs in again, every request it makes with its old cookie wr
 `WARN` line under `AUTH`, `Session validation failed — token not in DB (deleted or never issued)`. A few
 for each browser are expected that day; they stop as people sign in.
 The update that brings migration 0054 ends every invite not yet used, once: see [Every Unused Invite Ended Once](authentication-security.md#every-unused-invite-ended-once-by-migration-0054); send again with 📧 the ones still wanted.
+The update that brings migration 0068 (card 2849, with two-step sign-in) does the same again, and from then on an invite is kept only as a fingerprint of its link: see [Invite Tokens Stored as Hashes](authentication-security.md#invite-tokens-stored-as-hashes-card-2849). If the server has been put back to an older version for a while, the first start after coming forward may write one `[WARN] [AUTH]` line. Where it holds `Ended N invite(s) held in plain, written by an older image: their links no longer work. Send again, from User Management, the invites still wanted.`, send again with 📧 the invites the older version sent that are still wanted. A part that says `Replaced the token of M used invite(s) held in plain, written by an older image, with 32 random bytes.` is about spent invites, and needs nothing from you.
 
 **The sign-in and password lines**, all under `AUTH`, on the Audit page's Live Console and at `GET /api/logs`:
 

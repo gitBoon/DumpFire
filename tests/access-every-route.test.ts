@@ -115,6 +115,7 @@ import {
 	userXp
 } from '$lib/server/db/schema';
 import { SESSION_COOKIE_NAME, type Credential, type SessionUser } from '$lib/server/auth';
+import { inviteHashOf } from './helpers/fixtures';
 import { CONFIRMATION_HEADER, STEP_UP_ACTIONS, STEP_UP_FIELD, issueImportConfirmation } from '$lib/server/step-up';
 import { canEditBoard, canViewBoard, getBoardRole } from '$lib/server/board-access';
 import { appendEvent, SYSTEM_ACTOR } from '$lib/server/decision-record';
@@ -3466,9 +3467,11 @@ describe('who may manage which account', () => {
 			expect(res.status, JSON.stringify(res.body)).toBe(200);
 			const tokens = db.select().from(inviteTokens).where(eq(inviteTokens.userId, account.id)).all();
 			expect(tokens).toHaveLength(1);
-			// The link mailed is the token that was saved, and it goes to the account's own address.
+			// The link mailed is the token whose hash was saved (card 2849), and it
+			// goes to the account's own address.
 			expect(sent.emails.map((mail) => mail.to)).toEqual([account.email]);
-			expect(sent.emails[0].html).toContain(`/invite/${tokens[0].token}`);
+			const mailed = sent.emails[0].html.match(/\/invite\/([\w-]+)/)![1];
+			expect(inviteHashOf(mailed)).toEqual(tokens[0].tokenHash);
 		}
 		expect(db.select().from(inviteTokens).all()).toHaveLength(2);
 	});

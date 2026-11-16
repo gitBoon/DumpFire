@@ -18,7 +18,14 @@ import { addressKey, addressOf, UNKNOWN_ADDRESS } from '$lib/server/client-addre
 import { isNavigation, notSignedIn, secured, sendTo, whereSent } from '$lib/server/gate-answers';
 import { refusalSeen, refuseCrossSiteWrite } from '$lib/server/same-origin';
 import { pathToLog } from '$lib/server/secret-paths';
-import { checkMfaKeyAtStart, maskLiveLog, refuseUserlessBesideAnother, removeSettingsOfNonAdministrators, reportInstallation } from '$lib/server/startup-checks';
+import {
+	checkMfaKeyAtStart,
+	endPlainInvites,
+	maskLiveLog,
+	refuseUserlessBesideAnother,
+	removeSettingsOfNonAdministrators,
+	reportInstallation
+} from '$lib/server/startup-checks';
 import { ensureFormSecret } from '$lib/server/request-tokens';
 import { startChallengeSweep } from '$lib/server/sign-in-challenges';
 
@@ -80,6 +87,16 @@ maskLiveLog();
 // sent to such a destination first. It cannot throw. See
 // $lib/server/startup-checks.ts.
 removeSettingsOfNonAdministrators();
+
+// End every unused invite an older image kept in plain, and give every used
+// one held in plain 32 random bytes in place of its token (card 2849). An
+// image from before the card, started here after going back, keeps an
+// invite's token as mailed, and a link it keeps as mailed would work again if
+// that older image were started again. Going back is safe for the invites
+// this image issued: each is a BLOB, which that image's lookup by the
+// address, as text, never matches. A second start changes nothing, and it
+// cannot throw. See $lib/server/startup-checks.ts.
+endPlainInvites();
 
 // Start the backup, report and snapshot schedulers, the decision reminder and
 // the attachment file sweep, or leave all five off. SCHEDULERS=on or =off

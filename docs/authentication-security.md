@@ -1,9 +1,9 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.113
+version: 1.114
 status: As-Built
-date: 2026-11-13
+date: 2026-11-16
 tags:
   - decision-reminders
   - authentication
@@ -67,7 +67,9 @@ tags:
   - release-mail
   - security-notices
   - iso-27001
-description: "Deep-dive into DumpFire's authentication system, what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the twenty-nine destructive actions that ask for the current password again (step-up), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, the accepted risks and the ISO 27001 rows)"
+  - token-hashing
+  - migration-0068
+description: "Deep-dive into DumpFire's authentication system, what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the twenty-nine destructive actions that ask for the current password again (step-up), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, the accepted risks and the ISO 27001 rows)"
 ---
 
 # Authentication & Security
@@ -1162,6 +1164,141 @@ that keeps the rows of `users`, and 0067 as deleting the rows of `sessions` and 
 row of `settings`. Nothing repeats them at start-up or after a restore. See
 [Two-Step Sign-In](#two-step-sign-in-card-2769) and
 [The Release That Turns On Two-Step Sign-In](deployment.md#the-release-that-turns-on-two-step-sign-in-card-2769).
+
+### Invite Tokens Stored as Hashes (Card 2849)
+
+An invite's link carries a random token (`crypto.randomUUID()`, 122 random bits). Until card
+2849 the server kept that token exactly as it was mailed, so whoever could read the database
+file, its WAL, its free pages or a cold copy could open any waiting invite. Since card 2769 a
+working invite sets the account's password **and** registers an authenticator, which is the whole
+account. So two-step sign-in is not released without this card.
+
+**The server now keeps only the token's SHA-256, as the raw 32-byte digest, a BLOB value**, in
+the existing `invite_tokens.token` column, whose declared type stays `TEXT` (no change to the
+schema; see [Invites](data-model.md#invites-invite_tokens-migration-0068)). When a link is
+opened, the server hashes the token in the address and looks for that digest. The token exists
+only in the mail and, when the mail fails, in the link the issuing administrator is shown once
+(see [Passwords, Sessions and Invites Change Together](#passwords-sessions-and-invites-change-together)).
+All of it is in `src/lib/server/invites.ts`: `issueInvite()` stores the digest and returns the
+token, and `usableInvite(token)` looks the digest up; no caller hashes anything itself.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as Administrator
+    participant R as Invite route<br/>(POST /api/users, /api/users/[id]/invite)
+    participant DB as invite_tokens
+    participant M as Mail, or the one-time dialog
+    participant H as Holder's browser
+    participant P as /invite/[token]
+    A->>R: 📧, or Create User with no password
+    R->>R: token = crypto.randomUUID()
+    R->>DB: endUnusedInvites, then INSERT token = SHA-256(token) as a 32-byte BLOB, used 0, expires in 7 days
+    Note over DB: the digest only, never the token
+    R->>M: <base>/invite/<token> in the mail
+    M-->>A: the link in the answer only if the mail failed and the three checks hold
+    H->>P: GET /invite/<token>
+    Note over P: the log writes GET /invite/[token]
+    P->>DB: usableInvite: WHERE token = SHA-256(token) BLOB, used 0, not expired, no factor, not superadmin
+    P-->>H: the form, or the one dead-link answer
+    H->>P: POST password (hashed before the transaction)
+    P->>DB: one transaction: usableInvite again, password set, used = 1 for the row read (by its digest), endAccountAccess
+    P-->>H: 303 to /login/enrol with a set-up challenge (grant invite), no session
+```
+
+| Where | Holds after card 2849 |
+|---|---|
+| `invite_tokens.token`, unused row | The token's SHA-256, a 32-byte BLOB |
+| `invite_tokens.token`, used row | The same, or 32 random bytes (`randomblob(32)`) for a row that migration 0068, the start-up sweep or a restore of an older backup rewrote |
+| The mail, and the dialog of a failed mail | The token, in the link |
+| `system_logs` | `/invite/[token]`, never the token |
+| A backup | Used rows only, in hash form |
+| The free pages of the live file | No live token from the release on; older ones are dead after 0068 |
+| A cold copy taken before 0068 | The invites waiting when it was taken, in plain (below) |
+
+**Exactly what is hashed.** The string SvelteKit gives as `params.token` (already URL-decoded),
+as UTF-8, with nothing trimmed, case-folded or checked for shape: the text comparison it replaced
+did neither. A token upper-cased is a dead link. The invite page still gives one answer,
+"This invite link no longer works…", for every reason (used, expired, replaced, never was): a
+deleted invite cannot be told from one that never existed, and naming the reason would tell an
+attacker which tokens existed. No prefix separates the hash by purpose, as recovery codes have:
+an invite token is 122 random bits and its digest lives only in its own table.
+
+**Why a BLOB, not hex text.** SQLite never treats a TEXT value as equal to a BLOB, and a link's
+address can only ever be text. An image from before card 2849 compares the column with the
+address text, so it can never match a stored digest: whoever reads the file and types what they
+read into an address gets the dead-link page, on this image or an older one. Stored as hex text,
+the same hash would have been a working link on the older image. **"In hash form"** means
+`typeof(token) = 'blob' AND length(token) = 32`; any other value is held in plain.
+
+| What | After the start that applies 0068 |
+|---|---|
+| Invites not yet used, expired or not | Deleted. Each link shows the page for a link that no longer works. Send again, from User Management, the ones still wanted: the host lists them before the deploy, the only time they can be listed |
+| Invites already used | Kept, marked used, with the token replaced by `randomblob(32)` |
+| Accounts, sessions, API keys, enrolment links, requesters' links | Untouched by 0068 |
+
+`0068_end_plain_invite_tokens.sql` is two statements: `DELETE FROM invite_tokens WHERE used =
+0`, then `UPDATE invite_tokens SET token = randomblob(32) WHERE used <> 0`. Hashing the waiting
+rows in place was not chosen: SQLite has no SHA-256, and an `UPDATE` in place leaves the old
+value in the file's free pages and WAL, still working (the same effect as the 925 copies under
+[What a Backup Holds](#what-a-backup-holds-and-what-a-restore-brings-in)). Ending them makes
+those leftovers worthless. Used rows are no credential (`usableInvite` needs `used = 0`, and
+nothing sets it back), but no row is to keep a token as it was mailed. It is declared to the
+rehearsal as a one-off that loses rows of `invite_tokens`.
+
+```mermaid
+stateDiagram-v2
+    [*] --> ThisImage: release, 0068 run (unused ended, used replaced)
+    ThisImage --> OlderImage: going back (no step needed: a stored BLOB never matches an address)
+    OlderImage --> ThisImage: coming forward, endPlainInvites at start ends what the older image wrote in plain
+    note right of OlderImage: writes and matches invites as text
+```
+
+**Going back, and coming forward.** Going back to an older image needs nothing done for the
+invites this image issued: they stop working there, because the older image never matches a
+BLOB. Deleting the waiting invites first is still tidy (`DELETE FROM invite_tokens WHERE used =
+0`, with the server stopped), but it is not required. **A cold copy taken before 0068 is
+different**: it holds the invites that were waiting when it was taken, in plain, and the older
+image started on it makes them work again; send them again, or delete them, as
+"Going back to the previous image" under
+[The Release That Turns On Two-Step Sign-In](deployment.md#the-release-that-turns-on-two-step-sign-in-card-2769)
+says. An
+invite the older image issues is stored in plain. Coming forward, **`endPlainInvites()`** (in
+`src/lib/server/startup-checks.ts`, called from `hooks.server.ts` after the migrations, beside
+`removeSettingsOfNonAdministrators()`) deletes, at every start, every unused invite not in hash
+form, and gives every used one not in hash form 32 random bytes. The two are one transaction, so
+a replacement that fails takes the deletes back with it. It writes one `WARN` line under `AUTH`,
+built from what changed, when it changed anything: "Ended N invite(s) held in plain, written by
+an older image: their links no longer work. Send again, from User Management, the invites still
+wanted." when it ended any, followed by "Replaced the token of M used invite(s) held in plain,
+written by an older image, with 32 random bytes." when it replaced any (either part alone when
+only one applies). It writes nothing when nothing changed, and never throws: a failure is one
+`WARN` line, "Invites held in plain by an older image could not be ended: … They do not work on
+this image, and would work again on the older one.", and the server starts. It is outside the
+runner and the rehearsal, because it deletes rows. At the release itself it finds nothing: 0068
+has run.
+
+**A restore.** A backup holds no unused invite, and a restore brings none in. A backup made
+before card 2849 holds each used invite's token as it was mailed; `rowsToRestore()` gives such a
+row 32 random bytes as it reads it (`inHashForm()` in `invites.ts` says which rows are already
+hashes), so a plain token never reaches the live file. After the copy, inside the restore's
+transaction, 0068's `UPDATE` is run again on any used row not in hash form, as a backstop, uncaught
+so that a failure rolls the restore back. A row already in hash form comes in as it is.
+
+**The log.** `maskSecretsInLog()` no longer looks for each unused invite's token wherever a line
+holds it: there is no token in the database to look for. An invite's address is still masked as
+`/invite/[token]` by the gate, in `handleError`, at every start and in every backup's copy, and a
+mail server's refusal is masked by `maskMailText`. No code writes a token anywhere but in an
+address, and every token a line written before the card can hold was ended by 0068. A bare token
+in a line is left as it is, on purpose.
+
+Covered by `tests/invite-hashes.test.ts` (the digest written and the token in no row; the
+stored value as an address is a dead link; an upper-cased token is a dead link; an older image's
+lookup, the column compared with text, finds nothing for the token, the hash in hex or the stored
+bytes read as text; the issue and use log lines hold no 16 characters of the token; the sweep, its
+line, its single transaction and its failure), and by
+`tests/migrations.test.ts` (0068) and `tests/backups.test.ts` (an older backup's used invites,
+and the bare token left in the log). See [Testing](testing.md).
 
 ### An Open Stream and Its Session
 
@@ -2371,9 +2508,10 @@ then is a session made. An invite and the first-run set-up lead to the same set-
 never to a session of their own.
 
 The release that brings it ends every session and forgets every remembered browser once
-(migrations 0066 and 0067). It is never released without card 2773 (the reset and the host's
-command, built) and card 2849 (invite tokens stored as hashes): an invite is now a grant to set
-up the second factor. Every running instance is stopped before the release starts, production
+(migrations 0066 and 0067), and ends every invite still waiting (0068). It is never released
+without card 2773 (the reset and the host's command, built) and card 2849 (invite tokens stored
+as hashes, built: see [Invite Tokens Stored as Hashes](#invite-tokens-stored-as-hashes-card-2849)):
+an invite is now a grant to set up the second factor. Every running instance is stopped before the release starts, production
 needs `MFA_KEY_FILE`, and where mail is set up the App URL or `ORIGIN` must be the real address.
 The steps are in [The Release That Turns On Two-Step Sign-In](deployment.md#the-release-that-turns-on-two-step-sign-in-card-2769).
 
@@ -2899,6 +3037,11 @@ flowchart TD
 - **The remembered-browser MAC's domain** is `known-browser:2:` (`MAC_DOMAIN` in
   `src/lib/server/known-browsers.ts`). A cookie signed under `known-browser:1:`, by an older image
   even with a secret it made again after 0067, is not remembered.
+- **Invites** (card 2849). An invite this image issued is stored as a BLOB digest, which the
+  older image, comparing the column with the address text, never matches: it is a dead link
+  there. An invite the older image issues is stored in plain, and `endPlainInvites()` ends it at
+  this image's next start. See
+  [Invite Tokens Stored as Hashes](#invite-tokens-stored-as-hashes-card-2849).
 - **So a rollback past this card is a security event**: the older image accepts password-only
   sign-in while it runs. Rolling forward again refuses whatever it made. Stop every instance
   before the release, and never run two images side by side across it.
@@ -3067,7 +3210,9 @@ Delete any that nobody recognises.
 - **One invite per account.** `issueInvite(userId)` in `src/lib/server/invites.ts` deletes
   every invite of the account not yet used, expired or not (`endUnusedInvites()`, which
   `endAccountAccess()` and a change of email or role call too), writes the new one with its
-  seven days (`INVITE_LIFETIME_MS`), and returns the token. Both routes that issue an invite
+  seven days (`INVITE_LIFETIME_MS`), and returns the token. Only the token's SHA-256 is written,
+  as a 32-byte BLOB (card 2849): the token is kept nowhere, so a lost link cannot be shown again
+  and a new invite is sent instead. Both routes that issue an invite
   call it, inside the transaction that checks the account may be invited, and it throws if
   no transaction is open. So an account has at most one invite that works, the newest, and
   the administrator who sends one is told "Invite sent to {email}. Any earlier invite to
@@ -3847,7 +3992,7 @@ session's expiry moves on every time it is used.
 | The file an export downloads | none | none | none: every request is there, with no link | none | all |
 | The copy a scheduled backup, or "Run Now", uploads | none | none | none | none | all |
 | The running database, after a backup | as they were | as they were | as they were | as it was | as they were |
-| The running database, after a restore of any backup | none: everybody is signed out | none: of the backup's invites, only those already used come in | every request given a new one: every link mailed before stops working | none: a new one is made at first use | the backup's |
+| The running database, after a restore of any backup | none: everybody is signed out | none: of the backup's invites, only those already used come in, and one a backup made before card 2849 held in plain is given 32 random bytes | every request given a new one: every link mailed before stops working | none: a new one is made at first use | the backup's |
 
 - **One function makes both copies**, `generateBackupData()` in `src/lib/server/backup.ts`:
   the copy is made with `VACUUM INTO`, opened with no journal, cleared of every session and
@@ -3858,8 +4003,10 @@ session's expiry moves on every time it is used.
   the gate wrote that address down for every request to it, where any administrator could
   read it from `GET /api/logs`. The gate now writes `/invite/[token]` in its place (only the
   path is ever written, never the query, so a request link's `?token=` is not written down
-  at all), and a backup masks the same in every line the log already held, and replaces the
-  token of any unused invite wherever else a line holds it. A line that holds a request
+  at all), and a backup masks the same in every line the log already held. Until card 2849 it
+  also replaced the token of any unused invite wherever else a line held it; invites are now
+  kept only as hashes, so there is no token to look for, and that pass is gone (see
+  [Invite Tokens Stored as Hashes](#invite-tokens-stored-as-hashes-card-2849)). A line that holds a request
   link's `token=` all the same, written some other way, has that masked too, and an old
   failed sign-in line at a name that was no account loses the name typed (see
   [What a Failed Sign-in Writes](#what-a-failed-sign-in-writes)). **The running
@@ -3872,7 +4019,9 @@ session's expiry moves on every time it is used.
 - **Deleting the rows is not enough.** The pages they were on stay in the file until it is
   written again: after a plain `DELETE` of 400 sessions the count was 0 and their ids were
   in the file 925 times. The test looks for a known session id and a known invite token in
-  the bytes of the file, and does not count rows.
+  the bytes of the file, and does not count rows. An `UPDATE` in place leaves the old value
+  behind the same way, which is why card 2849 ended the invites waiting at its release rather
+  than hash them where they were.
 - **A restore brings in neither, whatever the backup's age** (`rowsToRestore()` in
   `src/lib/server/db/restore.ts`). Without that, every backup made before this would bring
   its sessions back as live ones. So an import signs everybody out, whoever started it
@@ -7199,7 +7348,7 @@ unfinished is recovered on the host with `node scripts/mfa-reset.mjs <name>`.
 | `src/lib/server/otpauth.ts` | `base32()`, `otpauthUri()`, `secretInGroups()` and `qrDataUri()`, the QR code drawn by `uqr` as a `data:` image (card 2769). Pure |
 | `src/routes/login/verify/+page.server.ts`, `src/routes/login/enrol/+page.server.ts`, `src/routes/enrol/[token]/+page.server.ts` | The code page, the set-up page and a set-up link's page (card 2769). Each action awaits only its form, then hands the values on |
 | `src/lib/components/SignInReport.svelte` | The report after a right code or a confirm: wrong codes since the last sign-in, the banner, the account's keys and webhooks (card 2769) |
-| `src/lib/server/invites.ts` | `issueInvite()`, the one way an invite is issued, which ends the account's earlier invites; `endUnusedInvites()`, which ends them when a password is set and when an account's email or role changes; `INVITE_LIFETIME_MS`; `usableInvite()`, the one place that decides an invite works, which since card 2773 refuses one for an account with a second factor |
+| `src/lib/server/invites.ts` | `issueInvite()`, the one way an invite is issued, which ends the account's earlier invites; `endUnusedInvites()`, which ends them when a password is set and when an account's email or role changes; `INVITE_LIFETIME_MS`; `usableInvite()`, the one place that decides an invite works, which since card 2773 refuses one for an account with a second factor and since card 2849 looks the token up by its SHA-256, a 32-byte BLOB, which is all that is stored; and what "in hash form" means, shared by the start-up sweep and the restore. See [Invite Tokens Stored as Hashes](#invite-tokens-stored-as-hashes-card-2849) |
 | `src/lib/server/board-access.ts` | Board-level role resolution and permission checks; `isAdmin()` |
 | `src/lib/server/route-guards.ts` | Per-route guards that resolve the board from the row and throw 401/404/403; `requireManagedAccount()`, `requireTeamManager()` and `requireSuperadmin()`, which look at no board; `requireAdmin()` and `refuseOwnAccount()`, which read no row (card 2253); `requireSubBoardLink()`, who may put a board under a card |
 | `src/lib/server/sub-boards.ts` | `wouldLoop()`, whether putting a board under a card would make a loop, by a walk that ends on a loop already in the data; `linkableBoards()`, what the board page offers to link |
@@ -7230,7 +7379,7 @@ unfinished is recovered on the host with `node scripts/mfa-reset.mjs <name>`.
 | `src/lib/server/decision-links.ts` | A decision's personal links (card 2675): `issueLink()`, `revokeLinks()`, `participantForLink()`, the one place a link is checked, and `reachOf()` and `mayHoldLink()`, who is mailed and who may hold a link, and `mailedLinkOf()` (card 2721), whether a mail with no link may point a holder at their latest email's |
 | `src/lib/server/decision-register.ts` | The register, a person's record and the record view (card 2680): `visibleWhere` (the register held to `requireDecision(…, 'view')`), `visibleDecisionIdsOf()`, `registerQueryOf()` (the filters by allow-list), the person record's three audiences with its scope read first, and `recordEntryOf()`, which builds each event's detail from `RECORD_DETAIL` alone |
 | `src/lib/server/decision-cards.ts` | What is read of card-decision links (card 2680): `linkedCardsFor()` (cards on boards the viewer can open), `readCardDecisions()` (decisions the viewer may view), and `decisionLinksOfCardsUnchecked()`, which checks no access and whose callers a test pins |
-| `src/lib/server/secret-paths.ts` | The paths that carry a secret, `/invite/[token]`, `/decision-link/[token]` (card 2675) and `/enrol/[token]` (card 2773), written to the log masked; `maskSecretsInLog()`, which masks what the log already holds, in a backup's copy and in the running log at start, and `maskFailedSignIn()`, which takes the name typed out of an old failed sign-in line (card 2193) |
+| `src/lib/server/secret-paths.ts` | The paths that carry a secret, `/invite/[token]`, `/decision-link/[token]` (card 2675) and `/enrol/[token]` (card 2773), written to the log masked; `maskSecretsInLog()`, which masks what the log already holds, in a backup's copy and in the running log at start (since card 2849 by those paths alone: there is no invite token in the database to look for), and `maskFailedSignIn()`, which takes the name typed out of an old failed sign-in line (card 2193) |
 | `src/lib/server/mfa-key.ts` | The key that protects authenticator secrets (card 2768): `loadMfaKey()` and the cached `mfaKeyLoad()` and `currentMfaKey()`, read at the first call and never at import; `productionRules()`; the key file's checks, its atomic making outside production, and whether it is inside the database's folder; `keyFromBytes()`, the AES key, key id and key check; `mfaStartVerdict()`, with `reseal` for a change of key; `loadPreviousMfaKey()`, the old key named by `MFA_KEY_FILE_PREVIOUS`, never kept (card 2773). See [Second-Factor Secrets at Rest](#second-factor-secrets-at-rest-card-2768) and [Changing the Key at Start](#changing-the-key-at-start) |
 | `src/lib/server/mfa-crypto.ts` | `sealWith()` and `openSealed()`, AES-256-GCM bound to `factorAad()` or `enrolAad()`; `newFactorUid()`; `sha256Hex()`. Pure |
 | `src/lib/server/totp.ts` | Authenticator codes (RFC 6238 over RFC 4226): `hotp()`, `stepAt()`, `matchingStep()` (the current step and the one before, both compared in constant time), `newTotpSecret()`. Pure |
@@ -7239,11 +7388,11 @@ unfinished is recovered on the host with `node scripts/mfa-reset.mjs <name>`.
 | `src/routes/api/users/[id]/mfa/reset/+server.ts` | An administrator's reset of another account's two-step sign-in (card 2773): the refusals before the password and in the transaction, the notice after the commit, and the three checks before the link is put in the answer. See [The Administrator's Reset](#the-administrators-reset) |
 | `scripts/mfa-reset.mjs` | The host's reset of an account's two-step sign-in by its username (card 2773), standalone, in the image at `/app/scripts/`. See [The Host's Command](#the-hosts-command) |
 | `src/lib/server/mfa-backup.ts` | What a restore does with second factors (card 2768): `readMfaHere()`, `restoreMfaRows()`, `readBackupMfaKeyCheck()` (the backup's key check from its table storage), `MFA_ROWS_NOT_RESTORED` and `mfaWithoutFactorSentence()` |
-| `src/lib/server/backup.ts` | `generateBackupData()`, the one copy an export and a scheduled backup both send, cleared of sessions, unused invites, pending sign-ins and enrolment links (card 2768), the key remembered browsers are signed with, every request's link and the request form's key, and every secret, then sealed (`withoutSecrets()`); `runBackup()` does not try a destination whose credentials are not entered |
+| `src/lib/server/backup.ts` | `generateBackupData()`, the one copy an export and a scheduled backup both send, cleared of sessions, unused invites (the used ones it keeps hold only hashes since card 2849), pending sign-ins and enrolment links (card 2768), the key remembered browsers are signed with, every request's link and the request form's key, and every secret, then sealed (`withoutSecrets()`); `runBackup()` does not try a destination whose credentials are not entered |
 | `src/lib/server/backup-secrets.ts` | What a backup leaves out because it is a secret, and what is done about the gaps (card 2169): `clearSecrets()`, `readSecretsHere()`, `fillSecretGaps()`, `credentialsMissing()`, `secretsToEnter()` and the two sentences; the seal: `backupSealKey()`, `sealOf()`, `sealCopy()`, `sealVerifies()`, `keepSealKey()`, and the checks made before it, `unsealedBecause()`, `backupFailsCheck()`, `strayInternalObjects()`; `fromTableStorage()`, how a table is read for the seal and the restore |
-| `src/lib/server/db/restore.ts` | What a restore brings in and what it never does, the new link it gives every request, every decision link it ends and records (`RestoreResult.decisionLinksCleared`) and its refusal of a decision record copied in part (card 2675), and the secrets it keeps from this server (`RestoreResult.secrets`), only for a backup whose seal verifies (`RestoreResult.sealVerified`, and why not, `RestoreResult.unsealed`); `rowsToRestore()`, each table read `NOT INDEXED`; `backupLacksSuperadmin()` |
+| `src/lib/server/db/restore.ts` | What a restore brings in and what it never does, the new link it gives every request, every decision link it ends and records (`RestoreResult.decisionLinksCleared`) and its refusal of a decision record copied in part (card 2675), and the secrets it keeps from this server (`RestoreResult.secrets`), only for a backup whose seal verifies (`RestoreResult.sealVerified`, and why not, `RestoreResult.unsealed`); `rowsToRestore()`, each table read `NOT INDEXED`, which since card 2849 gives a used invite an older backup held in plain 32 random bytes as it reads it, with 0068's `UPDATE` repeated after the copy as a backstop; `backupLacksSuperadmin()` |
 | `src/lib/server/email.ts` | `linkBaseUrl()`: the address a mailed link begins with, from configuration alone |
-| `src/lib/server/startup-checks.ts` | The eight lines the server writes at start: no superadmin, `ORIGIN` still the image's placeholder, and a board beneath one of its own cards (card 2142), which a restore of a backup that brings one writes at once too, with each control character in a board's name or a card's title printed as a space, so that a name holding a line break cannot split the line and forge one after it (with the logger's `printable()`, card 2214); and three about the database (card 2083): the new-database line (a new, empty database was made at this start, the alarm on an installation that had data, since set-up is then open to whoever comes first), the off-volume line (the database is in the container's own file system), and the other-database line (a database at `/app/dumpfire.db` beside the one in use); and the line that `SIGN_IN_ONE_AT_A_TIME` is off (card 2194), and `reportCspMode()`'s line that `CSP_MODE` is `report-only` or neither mode (card 2162), each to the console whatever `LOG_LEVEL` is; `refuseUserlessBesideAnother()`, which stops the server before it listens when the database in use has no users while another is beside it; `checkMfaKeyAtStart()` and `MfaKeyError` (card 2768), straight after it, which stop the server when the MFA key does not load or is not the key the stored second factors were made with; and `maskLiveLog()`, which masks the running log's tokens and old failed sign-in names at start |
+| `src/lib/server/startup-checks.ts` | The eight lines the server writes at start: no superadmin, `ORIGIN` still the image's placeholder, and a board beneath one of its own cards (card 2142), which a restore of a backup that brings one writes at once too, with each control character in a board's name or a card's title printed as a space, so that a name holding a line break cannot split the line and forge one after it (with the logger's `printable()`, card 2214); and three about the database (card 2083): the new-database line (a new, empty database was made at this start, the alarm on an installation that had data, since set-up is then open to whoever comes first), the off-volume line (the database is in the container's own file system), and the other-database line (a database at `/app/dumpfire.db` beside the one in use); and the line that `SIGN_IN_ONE_AT_A_TIME` is off (card 2194), and `reportCspMode()`'s line that `CSP_MODE` is `report-only` or neither mode (card 2162), each to the console whatever `LOG_LEVEL` is; `refuseUserlessBesideAnother()`, which stops the server before it listens when the database in use has no users while another is beside it; `checkMfaKeyAtStart()` and `MfaKeyError` (card 2768), straight after it, which stop the server when the MFA key does not load or is not the key the stored second factors were made with; and `maskLiveLog()`, which masks the running log's tokens and old failed sign-in names at start; and `endPlainInvites()` (card 2849), which at every start ends each unused invite an older image stored in plain and gives each used one 32 random bytes, in one transaction, with one `WARN` line built from what changed |
 | `src/lib/server/rate-limit.ts` | In-memory rate limiter, counting in a fixed window from each key's first attempt (`checkRateLimit`), an amount in the same way (`takeAllowance`, the day's report mail of card 2182), and wrong passwords at one account in an idle window (`signInWait`, `countWrongSignIn`, `forgetWrongSignIns`, card 2177); sign-in's count by address with the account each attempt was at (`countSignInAttempt`, `refundSignInAttempts`, `keepSignInAttemptCounted`, card 2226); and the sign-ins in flight at one key (`enterSignIn`, `leaveSignIn`, card 2194); `accountKey()`, the `user:<id>` key the password step and the second step both count under (card 2769) |
 | `src/lib/server/uploads.ts` | Where attachment files are, which stored file names are refused, `writeUploadFile()` and `removeUploadFile()` for both trees' uploads, and the headers an attachment is served with: `attachmentHeaders()` (the web tree, inline only when an image's bytes match) and `downloadHeaders()` (`/api/v1`, always a download, `no-store`) |
 | `src/lib/server/image-check.ts` | Whether bytes are a PNG, JPEG, GIF or WebP image (card 2754): `imageTypeOf()`, `sniffImage()`, and `checkImage()`, the walk by allow-list that strips metadata and refuses animation, trailing data and more than 8000 px or 40 MP. No imports |

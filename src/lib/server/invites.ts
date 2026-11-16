@@ -1,9 +1,11 @@
 /**
  * invites.ts — the one way an invite is issued.
  *
- * Whoever holds an invite sets the account's password with it and is signed
- * in, and is asked for nothing else. So an account has at most one invite that
- * works: the newest. Issuing one deletes every invite of the account that has
+ * Whoever holds an invite sets the account's password with it, and is led on
+ * to setting up two-step sign-in, with no session until that is done (card
+ * 2769): the invite is the whole of what is asked of them before their
+ * authenticator is theirs. So an account has at most one invite that works:
+ * the newest. Issuing one deletes every invite of the account that has
  * not been used, expired or not. The invite page tells whoever holds an older
  * link that it no longer works.
  *
@@ -18,7 +20,19 @@
  * may have gone to an address the account no longer has, or been sent before
  * the account was made an administrator. All of them end through
  * `endUnusedInvites`, so "an invite that has not been used" is written once.
+ *
+ * An invite's token is kept only as its SHA-256, the digest's 32 bytes as a
+ * BLOB (card 2849), and looked up by that hash: whoever reads the database
+ * file reads no link that works. The column is still declared TEXT, and an
+ * image from before the card compares it with the address, which is text:
+ * SQLite never takes a BLOB to equal text, so a stored hash is no link on that
+ * image either. The token itself is only in the mail and, when the mail
+ * fails, in the link the issuing administrator is given once. Migration 0068
+ * ended every unused invite held in plain at the release and replaced the
+ * token of every used one, and `endPlainInvites` (startup-checks.ts) does
+ * both, at every start, to any an older image writes after going back.
  */
+import { createHash } from 'node:crypto';
 import { and, eq, gt, sql } from 'drizzle-orm';
 import { db, sqlite } from './db';
 import { inviteTokens, users } from './db/schema';
@@ -28,11 +42,44 @@ import { stamp, toStamp } from '$lib/timestamps';
 export const INVITE_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
+ * The form an invite's token is kept in: its SHA-256, the 32 bytes of the
+ * digest and not hex (card 2849; the code review, CR1), so that the stored
+ * value is a BLOB and no text, an address included, is ever equal to it. The
+ * token itself is only in the mail and, when the mail fails, the issuing
+ * administrator's one-time link.
+ */
+export function inviteTokenHash(token: string): Buffer {
+	return createHash('sha256').update(token).digest();
+}
+
+/** Whether a value read from `invite_tokens.token` is in the form `inviteTokenHash` gives. */
+export function inHashForm(value: unknown): value is Buffer {
+	return Buffer.isBuffer(value) && value.length === 32;
+}
+
+/**
+ * The rows held in some other form: an invite whose token is not a BLOB of 32
+ * bytes was written by an image from before card 2849, which kept the token
+ * as text. The type is asked first: text of 32 characters is not a hash. SQL,
+ * for the start-up sweep and the restore to share.
+ */
+export const NOT_IN_HASH_FORM = "(typeof(token) <> 'blob' OR length(token) <> 32)";
+
+/**
+ * Every used invite held in plain given the form migration 0068 gives one: 32
+ * random bytes, the form of a hash and the hash of nothing. A row already in
+ * hash form is left as it is. Run by the restore over an older backup's rows,
+ * after they are copied, and by the start-up sweep over an older image's.
+ */
+export const REPLACE_PLAIN_USED_INVITES = `UPDATE invite_tokens SET token = randomblob(32) WHERE used <> 0 AND ${NOT_IN_HASH_FORM}`;
+
+/**
  * Issue an invite for the account: delete its invites that have not been used,
  * write a new one that expires in `INVITE_LIFETIME_MS`, and return its token,
- * which is what the mail's link carries. An invite that was used is left: it
- * is spent, and `used` is how the page and the backup tell it from a waiting
- * one.
+ * which is what the mail's link carries. Only the token's hash is written
+ * (`inviteTokenHash`): the token is returned, and kept nowhere. An invite that
+ * was used is left: it is spent, and `used` is how the page and the backup
+ * tell it from a waiting one.
  *
  * Inside the caller's transaction, the one that checked the account may be
  * invited, and with the mail sent once it is committed. It throws if no
@@ -50,7 +97,7 @@ export function issueInvite(userId: number): string {
 
 	const token = crypto.randomUUID();
 	const expiresAt = stamp(new Date(Date.now() + INVITE_LIFETIME_MS));
-	db.insert(inviteTokens).values({ token, userId, expiresAt }).run();
+	db.insert(inviteTokens).values({ tokenHash: inviteTokenHash(token), userId, expiresAt }).run();
 
 	return token;
 }
@@ -100,6 +147,11 @@ export function endUnusedInvites(userId: number): number {
  * also needs their authenticator, and an administrator who means to give the
  * account back resets its two-step sign-in first. Asked in the one query, so
  * the page, its form before hashing and its transaction all refuse it.
+ *
+ * `token` is the token as it is in the address, and its hash is looked up
+ * exactly (card 2849, decision 5): nothing is trimmed or case-folded, as the
+ * text comparison it replaced did neither. The row returned carries the hash,
+ * as `tokenHash`, and never the token.
  */
 export function usableInvite(token: string) {
 	// The stored form, as `issueInvite` writes the expiry (card 2095).
@@ -108,7 +160,7 @@ export function usableInvite(token: string) {
 		.from(inviteTokens)
 		.innerJoin(users, eq(users.id, inviteTokens.userId))
 		.where(and(
-			eq(inviteTokens.token, token),
+			eq(inviteTokens.tokenHash, inviteTokenHash(token)),
 			eq(inviteTokens.used, false),
 			gt(inviteTokens.expiresAt, now),
 			// Written out with the table names: Drizzle writes a column of a query

@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.74
+version: 1.75
 status: As-Built
-date: 2026-11-13
+date: 2026-11-16
 tags:
   - database
   - schema
@@ -38,7 +38,10 @@ tags:
   - two-step-sign-in
   - mfa
   - recovery-codes
-description: "Complete database schema documentation with ER diagram, table descriptions, relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), and how migrations and schema reconciliation bring every database to the model"
+  - migration-0068
+  - invites
+  - token-hashing
+description: "Complete database schema documentation with ER diagram, table descriptions, relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), invite tokens kept only as SHA-256 hashes (migration 0068, card 2849: every invite held in plain ended once), and how migrations and schema reconciliation bring every database to the model"
 ---
 
 # DumpFire Data Model
@@ -69,6 +72,14 @@ erDiagram
         text created_at
         int wrong_password_count "0062: NOT NULL DEFAULT 0; 3 ends the session"
         int two_step "0066: NOT NULL DEFAULT 0; 1 made after a second factor"
+    }
+
+    invite_tokens {
+        text token PK "declared TEXT; holds the 32-byte SHA-256 of the token sent, as a BLOB (card 2849)"
+        int user_id FK
+        text expires_at
+        int used
+        text created_at
     }
 
     teams {
@@ -389,6 +400,7 @@ erDiagram
 
     users ||--o{ setting_setters : "put it there"
     users ||--o{ sessions : "has"
+    users ||--o{ invite_tokens : "invited by (hash only)"
     users ||--o{ mfa_factors : "second factors (0065)"
     users ||--o{ mfa_recovery_codes : "recovery codes (0065)"
     users ||--o{ sign_in_challenges : "pending sign-ins (0065)"
@@ -1381,6 +1393,70 @@ erDiagram
 - **`sign_in_challenges.remembered_nonce`** (0065) is no longer written: the lane is all that is
   used of the remembered browser. The column stays.
 - **`mfa_recovery_resumes_at`** stays unused: recovery codes have no account-wide pause.
+
+### Invites (`invite_tokens`, migration 0068)
+
+An invite is the link an administrator's 📧, or Create User with no password, mails to an
+account so that its holder sets the password and then sets up two-step sign-in. The table was
+made by `0001_dear_pandemic.sql` and `0015_add_invite_tokens.sql`; its shape has not changed
+since. **Since card 2849 (2026-11-16) the `token` column holds only the SHA-256 of the token
+sent, as the raw 32-byte digest, a BLOB value.** The column is still declared `TEXT`: SQLite
+keeps whatever type of value is written, so the schema, `expected-schema.ts` and the model check
+do not change. The token itself is only in the mail and, when the mail fails, in the link the
+issuing administrator is shown once. The code is `src/lib/server/invites.ts`; why, and what
+happens at the release and on going back, is in
+[Invite Tokens Stored as Hashes](authentication-security.md#invite-tokens-stored-as-hashes-card-2849).
+
+```mermaid
+erDiagram
+    users ||--o{ invite_tokens : "invited by"
+    invite_tokens {
+        text token PK "declared TEXT, NOT NULL; holds a 32-byte BLOB, the SHA-256 of the token sent"
+        int user_id FK "NOT NULL, CASCADE, indexed"
+        text expires_at "NOT NULL; issue + 7 days, stored form"
+        int used "NOT NULL DEFAULT 0; 1 once a password is set with it"
+        text created_at "NOT NULL DEFAULT datetime('now')"
+    }
+```
+
+| Column | What is stored | How it is protected, and who writes it |
+|---|---|---|
+| `token` | The SHA-256 digest of the token, 32 bytes, as a BLOB. A used row that migration 0068, a restore of an older backup or the start-up sweep rewrote holds 32 random bytes instead (`randomblob(32)`), the shape of a hash and the hash of nothing | Never the token. `issueInvite()` writes the digest and returns the token for the mail; `usableInvite(token)` looks up the digest of the token as it is in the address, exactly, with nothing trimmed or case-folded, and compares BLOB with BLOB. In the Drizzle model the property is `tokenHash: bytesInText('token')`, a `customType` read and written as a `Buffer` and declared `text`; the column keeps its name and its declared type so that an older image still reads the table and the model's shape is unchanged |
+| `user_id` | The account invited | `ON DELETE CASCADE`; `idx_invite_tokens_user_id` (0053) |
+| `expires_at` | Seven days after issue (`INVITE_LIFETIME_MS`), in the stored form of a moment | Read as the moment it names (`toStamp`) |
+| `used` | 1 once a password has been set with the invite | The invite page marks the row it read by its hash, inside the transaction that sets the password. Nothing sets it back. A used row is kept: `used` is how the page and the backup tell a spent invite from a waiting one |
+| `created_at` | When the invite was issued | `datetime('now')` |
+
+- **Why a BLOB and not hex text.** SQLite never treats a TEXT value as equal to a BLOB, and the
+  address of a link can only ever be text. An image from before card 2849 compares the column
+  with the address text, so it can never match a stored digest: whoever reads the database file
+  and puts what they read in an address gets the page for a link that no longer works, on this
+  image and on an older one. A hash stored as hex text would have been a working link on the
+  older image.
+- **"In hash form"** means `typeof(token) = 'blob' AND length(token) = 32`. Any other value (an
+  older image's UUID text, a backup's plain token) is held in plain.
+- **One invite that works per account.** `issueInvite()` deletes the account's unused invites
+  (`endUnusedInvites()`) before it writes the new one; setting a password, and a change of the
+  account's email address or role, end them too.
+- **No DDL changed for the hash.** `invite_tokens` stays one of the six reconciled tables (below),
+  and a rebuild copies the BLOB values as they are. A rename to `token_hash` was not made: the
+  previous image skips reconciliation on a database that records a file it lacks, and would then
+  find no `token` column, so its invite page, both invite routes and every backup would fail.
+- **What 0068 did once** (`0068_end_plain_invite_tokens.sql`): every unused invite deleted, and
+  every used invite's token replaced by `randomblob(32)`. Every invite waiting at the release
+  stops working and is sent again; no row keeps a token as it was mailed. Hashing the rows in
+  place was not possible (SQLite has no SHA-256) and would have left each live token in the
+  file's free pages.
+- **The start-up sweep** (`endPlainInvites()` in `src/lib/server/startup-checks.ts`, called from
+  `hooks.server.ts` after the migrations). In one transaction it deletes every unused row not in
+  hash form, and gives every used row not in hash form 32 random bytes, as 0068 does. Such a row
+  is one an image from before card 2849 wrote after going back. It is outside the runner and the
+  rehearsal, as `removeSettingsOfNonAdministrators()` is, because it deletes rows.
+- **Backups and restores.** A backup holds no unused invite, so only used rows, in hash form. A
+  restore of a backup made before card 2849, whose used rows hold their tokens as mailed, gives
+  each such row 32 random bytes as it reads it (`rowsToRestore()`, asking `inHashForm()` from
+  `invites.ts`), so a plain token never reaches the live file; 0068's `UPDATE` is run again after
+  the copy, inside the restore's transaction, as a backstop.
 
 ## Cascade Behaviour
 
@@ -3043,8 +3119,9 @@ an older build and brought forward, can bring the other two. Every write keeps a
 count at any other start means some write does not.
 
 A migration file may hold a one-off change to stored data as well as structure, as 0053
-ends every session once, 0054 every invite not yet used, and 0055 gives every task request
-a new link. Such a statement comes after the structural ones, under a header
+ends every session once, 0054 every invite not yet used, 0055 gives every task request
+a new link, and 0068 ends every invite not yet used again and replaces every used invite's
+token. Such a statement comes after the structural ones, under a header
 comment that says what it changes, why, that it runs once on each database and what people
 will see; it does nothing harmful on an empty table; and it is declared, by file and table,
 in `tests/rehearsal/one-offs.ts`, so that the rehearsal reports the loss as expected. One
@@ -3112,6 +3189,31 @@ A rehearsal of a run that applies both notes three things: `settings` has one ro
 setting), `users` had `mfa_password_enrol` set in its rows by 0066, and the declared losses of
 `sessions` and of the secret's row. See
 [Every Session and Remembered Browser Ended Once, by Migration 0067](authentication-security.md#every-session-and-remembered-browser-ended-once-by-migration-0067).
+
+**Migration 0068 ends every invite held in plain** (card 2849, 2026-11-16), in the same release
+as 0066 and 0067: two-step sign-in is not released without it. From this release an invite's
+token is kept only as its SHA-256 digest, a 32-byte BLOB (see
+[Invites](#invites-invite_tokens-migration-0068)).
+
+- **`0068_end_plain_invite_tokens.sql`**, two statements and no structure: `DELETE FROM
+  invite_tokens WHERE used = 0`, then `UPDATE invite_tokens SET token = randomblob(32) WHERE
+  used <> 0`. Declared once in `tests/rehearsal/one-offs.ts`,
+  for `invite_tokens`, without `keepsRows`, because it loses rows as well as rewriting them
+  ("every unused invite deleted and every used invite's token replaced"). Its header says why
+  (a working invite now also sets up the account's authenticator, and hashing in place would
+  leave each live token in the file's free pages and WAL), what people see (an invite sent
+  before the deploy and not yet used shows the page for a link that no longer works, and is sent
+  again), that it is harmless on a new database, that it runs once and the start-up sweep
+  (`endPlainInvites`) deals with what an older image writes afterwards, that a restore of a
+  backup made before it gives the used rows the same replacement, and that an older image,
+  which compares the column with the address text, never matches a stored BLOB, while a copy of
+  the file made before 0068 ran holds the invites waiting then, which work again there (see
+  [The Release That Turns On Two-Step Sign-In](deployment.md#the-release-that-turns-on-two-step-sign-in-card-2769)).
+
+A rehearsal of a run that applies 0068 over a database with unused invites notes
+`invite_tokens had N row(s) and has M: every unused invite deleted and every used invite's token
+replaced by 0068_end_plain_invite_tokens.sql, a one-off declared in tests/rehearsal/one-offs.ts`.
+Where a run applies 0054 as well, the note names 0054, the first of the two to run.
 
 ### Two Lineages Share 0001 to 0005
 
@@ -3200,7 +3302,7 @@ tables ever rebuilt. The list is fixed in code (`RECONCILED_TABLES`):
 | `categories` | `board_id` | `NOT NULL`, `ON DELETE CASCADE` | nullable, `ON DELETE SET NULL` |
 | `settings` | `key` | `TEXT PRIMARY KEY` that accepts NULL | `NOT NULL` |
 | `user_xp` | `name` | `TEXT PRIMARY KEY` that accepts NULL | `NOT NULL` |
-| `invite_tokens` | `token` | `TEXT PRIMARY KEY` that accepts NULL | `NOT NULL` |
+| `invite_tokens` | `token` (since card 2849 it holds the token's SHA-256 as a 32-byte BLOB, and keeps its name and its declared `TEXT` type for an older image; a rebuild copies the values as they are) | `TEXT PRIMARY KEY` that accepts NULL | `NOT NULL` |
 
 SQLite cannot alter a `NOT NULL`, a primary key or a foreign key in place, so a table
 that differs is rebuilt: a new one is created, the rows are copied, the old one is

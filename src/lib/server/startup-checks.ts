@@ -50,11 +50,13 @@
  * `MFA_KEY_FILE_PREVIOUS` set it changes the key (card 2773): every factor of
  * the old key is sealed again under the new one before the server listens.
  *
- * And two things that are changed at start, beside them: `maskLiveLog`, which
- * masks the secrets an older gate wrote into the system log, and
+ * And three things that are changed at start, beside them: `maskLiveLog`,
+ * which masks the secrets an older gate wrote into the system log;
  * `removeSettingsOfNonAdministrators`, which removes the mail settings, App
  * URL and backup destinations set by someone who is no longer an
- * administrator (card 2406).
+ * administrator (card 2406); and `endPlainInvites`, which ends the unused
+ * invites an older image kept in plain and replaces the token of the used ones
+ * (card 2849).
  */
 import { readFileSync } from 'node:fs';
 import { posix } from 'node:path';
@@ -66,6 +68,7 @@ import { PLACEHOLDER_ORIGIN, configuredOrigin, getAppUrl } from './email';
 // quotes, and the line printed past LOG_LEVEL below does not go through `emit`.
 import { createLogger, isLogged, printable } from './logger';
 import { maskSecretsInLog } from './secret-paths';
+import { NOT_IN_HASH_FORM, REPLACE_PLAIN_USED_INVITES } from './invites';
 import { signInsOneAtATime } from './known-browsers';
 import { cspMode } from './gate-answers';
 import { boardsInLoops } from './sub-boards';
@@ -600,7 +603,7 @@ function readFactorsAtStart(): FactorAtStart[] {
 }
 
 /**
- * Mask, in the running database's own system log, every invite's token and
+ * Mask, in the running database's own system log, every invite's address and
  * request link's token a line holds, and the name typed at every failed
  * sign-in at a name that was no account (card 2193), by the rule a backup's
  * copy is masked with (`maskSecretsInLog`, in secret-paths.ts). Returns how
@@ -613,8 +616,8 @@ function readFactorsAtStart(): FactorAtStart[] {
  * So an installation that ran the older gate has its log masked at its first
  * start on this one, and every start after finds nothing to change: masked
  * text is not masked again. The log holds at most 50,000 lines, and the only
- * lines rewritten are those holding an unused invite's token, or an invite's
- * address or a `token=` not masked yet, or a failed sign-in's name as typed.
+ * lines rewritten are those holding an invite's address or a `token=` not
+ * masked yet, or a failed sign-in's name as typed.
  *
  * It never throws: a log that cannot be masked is no reason not to start. It
  * is said at WARN, and the server starts.
@@ -661,6 +664,59 @@ export function removeSettingsOfNonAdministrators(): number | null {
 			log.warn(
 				`The settings of setters who are no longer administrators could not be checked: ${(err as Error)?.message ?? err}. ` +
 					'Mail and backups may still go where such a person set them.'
+			);
+		} catch {
+			// Nothing more to be done about it.
+		}
+		return null;
+	}
+}
+
+/**
+ * End every invite not yet used that is held in plain (card 2849, plan
+ * decision 9), give every used one held in plain 0068's replacement token,
+ * and return how many rows that changed, or null when it could not be done.
+ * Called once, from hooks.server.ts, after the migrations.
+ *
+ * From card 2849 an invite's token is kept only as its SHA-256, 32 bytes as a
+ * BLOB. An image from before it, started on this database after going back,
+ * keeps the token as mailed, as text: this image never matches it, but it is
+ * readable, and it would work again if that older image were started again.
+ * Its link shows the page for a link that no longer works. A used one is no
+ * credential, but no row is to hold a token as it was mailed, so it is given
+ * 0068's replacement and keeps its row, marked used. At the release this
+ * finds nothing: 0068 has run.
+ *
+ * Both in one transaction, so that a replacement that fails takes the deletes
+ * back with it. One WARN line under AUTH, built from what changed, when it
+ * changed any; nothing when it did not, so a second start says nothing. It
+ * never throws: a failure is said at WARN, and the server starts.
+ */
+export function endPlainInvites(): number | null {
+	try {
+		const [ended, replaced] = sqlite.transaction(() => [
+			sqlite.prepare(`DELETE FROM invite_tokens WHERE used = 0 AND ${NOT_IN_HASH_FORM}`).run().changes,
+			sqlite.prepare(REPLACE_PLAIN_USED_INVITES).run().changes
+		])();
+		const said: string[] = [];
+		if (ended > 0) {
+			said.push(
+				`Ended ${ended} invite(s) held in plain, written by an older image: their links no longer work. ` +
+					'Send again, from User Management, the invites still wanted.'
+			);
+		}
+		if (replaced > 0) {
+			said.push(
+				`Replaced the token of ${replaced} used invite(s) held in plain, written by an older image, with 32 random bytes.`
+			);
+		}
+		if (said.length > 0) authLog.warn(said.join(' '));
+		return ended + replaced;
+	} catch (err) {
+		try {
+			authLog.warn(
+				`Invites held in plain by an older image could not be ended: ${(err as Error)?.message ?? err}. ` +
+					'They do not work on this image, and would work again on the older one.'
 			);
 		} catch {
 			// Nothing more to be done about it.

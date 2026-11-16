@@ -68,6 +68,8 @@ import { CHALLENGE_COOKIE } from '$lib/server/sign-in-challenges';
 import { reportSignInsNotOneAtATime } from '$lib/server/startup-checks';
 import { addressKey } from '$lib/server/client-address';
 import { passwordChecks } from '$lib/server/passwords';
+import { usableInvite } from '$lib/server/invites';
+import { inviteHashOf } from './helpers/fixtures';
 import { handle, handleError } from '../src/hooks.server';
 import { api, routeMethods, routePatterns } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
@@ -2693,9 +2695,11 @@ describe('the security headers', () => {
 		'give an invite’s and a request link’s answers no index, no cache and no address in a Referer, on the page and its data (2698)',
 		async () => {
 			const token = 'invite-token-for-the-headers-2698';
+			// As this image keeps it: the hash of the token (card 2849). The form is reached by the token.
 			sqlite
 				.prepare('INSERT INTO invite_tokens (token, user_id, expires_at, used) VALUES (?, ?, ?, 0)')
-				.run(token, user.id, '2099-01-01 00:00:00');
+				.run(inviteHashOf(token), user.id, '2099-01-01 00:00:00');
+			expect(usableInvite(token)).toMatchObject({ userId: user.id });
 			const LINKED = { ...FIVE, 'referrer-policy': 'no-referrer', 'x-robots-tag': 'noindex, nofollow', 'cache-control': 'no-store' };
 			// The invite's page has a form action: its origin alone is named (decision 2).
 			const FORM_LINKED = { ...LINKED, 'referrer-policy': 'strict-origin' };
@@ -2763,7 +2767,7 @@ describe('the security headers', () => {
 				}
 			}
 			// The native post was let through to the action, which used the invite.
-			expect(sqlite.prepare('SELECT used FROM invite_tokens WHERE token = ?').get(token)).toEqual({ used: 1 });
+			expect(sqlite.prepare('SELECT used FROM invite_tokens WHERE token = ?').get(inviteHashOf(token))).toEqual({ used: 1 });
 		},
 		60_000
 	);
@@ -3293,9 +3297,11 @@ describe('what the gate writes to the system log', () => {
 
 	it('is an invite’s address with its token masked, in the line and in what is kept with it', async () => {
 		const token = 'invite-token-that-sets-a-password-7c41e9';
+		// As this image keeps it: the hash of the token (card 2849). The form is reached by the token.
 		sqlite
 			.prepare('INSERT INTO invite_tokens (token, user_id, expires_at, used) VALUES (?, ?, ?, 0)')
-			.run(token, user.id, '2099-01-01 00:00:00');
+			.run(inviteHashOf(token), user.id, '2099-01-01 00:00:00');
+		expect(usableInvite(token)).toMatchObject({ userId: user.id });
 		const kept: LogEntry[] = [];
 		const unsubscribe = subscribeToLogs((entry) => kept.push(entry));
 

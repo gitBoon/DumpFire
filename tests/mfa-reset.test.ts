@@ -66,7 +66,7 @@ import { parseStamp, stamp } from '$lib/timestamps';
 import { api } from './helpers/api';
 import { action, pageLoad } from './helpers/actions';
 import { effects, type Effects } from './helpers/effects';
-import { FIXTURE_PASSWORD_HASH, makeApiKey, makeSession, makeSmtp, makeUser, resetDb, stepUp } from './helpers/fixtures';
+import { FIXTURE_PASSWORD_HASH, inviteHashOf, makeApiKey, makeSession, makeSmtp, makeUser, resetDb, stepUp } from './helpers/fixtures';
 import { diffSnapshots, expectUnchanged, snapshotDb } from './helpers/snapshot';
 
 const BASE = 'https://dumpfire.example.test';
@@ -97,9 +97,9 @@ function giveChallenge(userId: number): void {
 		.run();
 }
 
-/** An invite of the account that has not been used, good for a week. */
+/** An invite of the account that has not been used, good for a week: stored as its hash, the token returned (card 2849). */
 function giveInvite(userId: number, token = `invite-${userId}-${randomBytes(4).toString('hex')}`): string {
-	db.insert(inviteTokens).values({ token, userId, expiresAt: stamp(new Date(Date.now() + ENROLMENT_LINK_LIFETIME_MS)) }).run();
+	db.insert(inviteTokens).values({ tokenHash: inviteHashOf(token), userId, expiresAt: stamp(new Date(Date.now() + ENROLMENT_LINK_LIFETIME_MS)) }).run();
 	return token;
 }
 
@@ -505,7 +505,7 @@ describe('an invite, for an account that holds a second factor', () => {
 		expect(res).toMatchObject({ type: 'failure', status: 400 });
 		expect((res as { data: { error: string } }).data.error).toMatch(DEAD);
 		expect(userRow(holder.id).passwordHash).toBe(FIXTURE_PASSWORD_HASH);
-		expect(db.select().from(inviteTokens).where(eq(inviteTokens.token, token)).get()!.used).toBe(false);
+		expect(db.select().from(inviteTokens).where(eq(inviteTokens.tokenHash, inviteHashOf(token))).get()!.used).toBe(false);
 	});
 });
 

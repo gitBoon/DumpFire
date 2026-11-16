@@ -39,6 +39,7 @@ import {
 	userXp,
 	type Card
 } from '$lib/server/db/schema';
+import { inviteHashOf } from './helpers/fixtures';
 import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { issueFormToken, resetFormSecretCache, verifyFormToken } from '$lib/server/request-tokens';
 import { api, type ApiResult } from './helpers/api';
@@ -155,7 +156,7 @@ function everything(): Everything {
 
 	db.insert(userXp).values({ name: owner.username, xp: 100 }).run();
 	db.insert(sessions).values({ id: 'session-of-admin', userId: admin.id, expiresAt: '2099-01-01 00:00:00' }).run();
-	db.insert(inviteTokens).values({ token: 'invite', userId: member.id, expiresAt: '2099-01-01 00:00:00' }).run();
+	db.insert(inviteTokens).values({ tokenHash: inviteHashOf('invite'), userId: member.id, expiresAt: '2099-01-01 00:00:00' }).run();
 	db.insert(apiKeys).values({ keyHash: 'hash', keyPrefix: 'df_', name: 'Key', userId: owner.id }).run();
 	db.insert(boardFavourites).values({ userId: owner.id, boardId: A.board.id }).run();
 	db.insert(reportSchedules).values({ userId: owner.id, name: 'Weekly', scope: 'board', scopeId: A.board.id }).run();

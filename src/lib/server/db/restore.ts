@@ -12,6 +12,7 @@
  * exists on both sides.
  */
 import type Database from 'better-sqlite3';
+import { randomBytes } from 'node:crypto';
 import { dev } from '$app/environment';
 import { schedulerSetting } from '../schedulers';
 import { putBackFromTrash, type UploadFile } from '../uploads';
@@ -38,6 +39,7 @@ import {
 import { MFA_KEY_CHECK_SETTING, currentMfaKey, type MfaKey } from '../mfa-key';
 import { MFA_ROWS_NOT_RESTORED, readMfaHere, restoreMfaRows, type MfaRestore } from '../mfa-backup';
 import { createLogger } from '../logger';
+import { REPLACE_PLAIN_USED_INVITES, inHashForm } from '../invites';
 
 const log = createLogger('AUTH');
 
@@ -509,7 +511,13 @@ export function rowsToRestore(backup: Database.Database, table: string): Record<
 			(column) => column.name === 'used'
 		);
 		if (!hasUsed) return [];
-		return backup.prepare(fromTableStorage(backup, table, 'used != 0')).all() as Record<string, unknown>[];
+		// A backup made before card 2849 holds each used invite's token as it
+		// was mailed. It is given 0068's 32 random bytes here, as it is read, so
+		// that no plain token reaches the live file, not even to be written over
+		// (the code review, CR3). A token in hash form is kept.
+		return (backup.prepare(fromTableStorage(backup, table, 'used != 0')).all() as Record<string, unknown>[]).map((row) =>
+			'token' in row && !inHashForm(row.token) ? { ...row, token: randomBytes(32) } : row
+		);
 	}
 	return backup.prepare(fromTableStorage(backup, table)).all() as Record<string, unknown>[];
 }
@@ -718,6 +726,12 @@ export function defaultOutside(
  *   and for `columns` that is a column of a board gone and every card on it
  *   left pointing at nothing. A decision's tables are given no default: the
  *   row is left out, and the restore refused, as below (card 2675's F8).
+ * - A backup taken before card 2849 holds each used invite's token as it was
+ *   mailed. Each is given 32 random bytes as the rows are read
+ *   (`rowsToRestore`), so that none reaches the live file, and 0068's
+ *   `UPDATE` is repeated after the copy inside the transaction as a backstop
+ *   (`REPLACE_PLAIN_USED_INVITES`, in invites.ts). Rows already in hash form
+ *   are left.
  *
  * A row that still cannot be copied is left out and reported in `errors`, and
  * the restore goes on, on one condition: nothing depends on that row. Before
@@ -731,7 +745,8 @@ export function defaultOutside(
  * Two kinds of row are never copied, though the backup has them: a session,
  * and an invite that has not been used (`rowsToRestore`). Both tables are
  * cleared like any other, so a restore signs everybody out, whoever started
- * it included, and ends every invite that was waiting here.
+ * it included, and ends every invite that was waiting here. A used invite is
+ * copied, and one a backup held in plain is given 0068's token (above).
  *
  * Every task request is given a new link (card 2158). Once the rows are
  * copied, inside the transaction, every `task_requests.access_token` is
@@ -1065,6 +1080,11 @@ function restoreInOneSnapshot(
 			) {
 				requestLinksReplaced = live.prepare(REPLACE_REQUEST_LINKS).run().changes;
 			}
+
+			// Every used invite held in plain given 0068's form: see above. Not
+			// caught, so that a restore that could not do it is rolled back, and
+			// brings in no token a backup held.
+			if (tables.includes('invite_tokens')) live.prepare(REPLACE_PLAIN_USED_INVITES).run();
 
 			// Every personal decision link ended, and recorded on its decision
 			// (card 2675, decision 13): see above. Not caught, so that a restore

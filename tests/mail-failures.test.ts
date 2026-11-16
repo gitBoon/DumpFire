@@ -33,6 +33,7 @@ import { inTransaction } from '$lib/server/db/transaction';
 import { inviteTokens, sessions, settings, users } from '$lib/server/db/schema';
 import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { issueInvite } from '$lib/server/invites';
+import { inviteHashOf } from './helpers/fixtures';
 import { getRecentLogs } from '$lib/server/logger';
 import { mailProblem, mailStatus, sendEmailWithAttachment } from '$lib/server/email';
 import { notifyRequesterConfirm, notifyUserAssigned } from '$lib/server/notifications';
@@ -56,13 +57,17 @@ const tokenOf = (link: string) => link.slice(link.lastIndexOf('/') + 1);
 /** The cookie of a session of `user`'s, as the gate would have let the request in with. */
 const signedIn = (user: SessionUser) => ({ cookie: `${SESSION_COOKIE_NAME}=${makeSession(user)}` });
 
+/** The account's unused invites, as their tokens' hashes: all the database holds (card 2849). */
 const unusedInvites = (userId: number) =>
 	db
-		.select({ token: inviteTokens.token })
+		.select({ tokenHash: inviteTokens.tokenHash })
 		.from(inviteTokens)
 		.where(and(eq(inviteTokens.userId, userId), eq(inviteTokens.used, false)))
 		.all()
-		.map((row) => row.token);
+		.map((row) => row.tokenHash);
+
+/** An invite's link as an answer gives it: the token is checked against the stored hash. */
+const INVITE_URL = expect.stringMatching(/^https:\/\/kanban\.example\.test\/invite\/[0-9a-f-]{36}$/);
 
 /**
  * Whether `text` holds the token, or any 16 characters of it, in any case,
@@ -144,18 +149,20 @@ describe('an invite whose mail is refused (M1 to M4)', () => {
 		const res = await resend(admin, invitee.id);
 		quiet.mockRestore();
 
-		const [token] = unusedInvites(invitee.id);
+		const [stored] = unusedInvites(invitee.id);
 		expect(unusedInvites(invitee.id)).toHaveLength(1);
 		expect(res.status).toBe(200);
 		expect(res.body).toEqual({
 			success: true,
 			mailSent: false,
 			mailProblem: 'the mail server refused the sign-in',
-			inviteUrl: `${APP}/invite/${token}`,
+			inviteUrl: INVITE_URL,
 			message:
 				'The invite was made, but its mail to ana@example.test could not be sent: the mail server refused the sign-in. ' +
 				'Give ana the link yourself. Any earlier invite to this account no longer works.'
 		});
+		// The link of the invite stored, which holds its token's hash (card 2849).
+		expect(inviteHashOf(tokenOf(res.body.inviteUrl))).toEqual(stored);
 		expect(res.body.message).not.toContain('Invite sent');
 		// A credential: kept by nothing on the way (N5).
 		expect(res.headers.get('cache-control')).toBe('no-store');
@@ -188,7 +195,7 @@ describe('an invite whose mail is refused (M1 to M4)', () => {
 		expect(res.headers.get('cache-control')).toBeNull();
 		expect(sent!.emails).toHaveLength(1);
 		expect(sent!.emails[0]).toMatchObject({ to: 'ana@example.test', subject: INVITE_SUBJECT, inTransaction: false });
-		expect(tokenOf(linkIn(sent!.emails[0].html))).toBe(unusedInvites(invitee.id)[0]);
+		expect(inviteHashOf(tokenOf(linkIn(sent!.emails[0].html)))).toEqual(unusedInvites(invitee.id)[0]);
 	});
 
 	it('makes a user with no password, says their mail was not sent and gives the link; and with mail working, says it went (M4)', async () => {
@@ -198,14 +205,15 @@ describe('an invite whose mail is refused (M1 to M4)', () => {
 		quiet.mockRestore();
 
 		expect(made.status).toBe(201);
-		const [token] = unusedInvites(made.body.id);
+		const [stored] = unusedInvites(made.body.id);
 		expect(made.body).toMatchObject({
 			username: 'newbie',
 			invited: true,
 			mailSent: false,
 			mailProblem: 'the mail server refused the sign-in',
-			inviteUrl: `${APP}/invite/${token}`
+			inviteUrl: INVITE_URL
 		});
+		expect(inviteHashOf(tokenOf(made.body.inviteUrl))).toEqual(stored);
 		expect(made.headers.get('cache-control')).toBe('no-store');
 
 		refusal = () => undefined;
@@ -536,7 +544,7 @@ describe('a mail user with no password, as a restore leaves the settings (review
 		expect(res.body.message).toBe(
 			`The invite was not made: ${NO_PASSWORD}. Any earlier invite to this account still works.`
 		);
-		expect(unusedInvites(invitee.id)).toEqual([earlier]);
+		expect(unusedInvites(invitee.id)).toEqual([inviteHashOf(earlier)]);
 		expect(sent!.all.filter((effect) => effect.kind === 'email')).toEqual([]);
 		expect(sent!.refusedMail).toEqual([]);
 	});
@@ -640,14 +648,15 @@ describe('the link of a mail that failed, asked about again before it is given (
 			reads.restore();
 		}
 
-		const [token] = unusedInvites(invitee.id);
+		const [stored] = unusedInvites(invitee.id);
 		expect(res.status).toBe(200);
 		expect(res.body).toMatchObject({
 			success: true,
 			mailSent: false,
 			mailProblem: 'mail is not set up on this server',
-			inviteUrl: `${APP}/invite/${token}`
+			inviteUrl: INVITE_URL
 		});
+		expect(inviteHashOf(tokenOf(res.body.inviteUrl))).toEqual(stored);
 		expect(sent!.all.filter((effect) => effect.kind === 'email')).toEqual([]);
 		expect(sent!.refusedMail).toEqual([]);
 		expect(mailStatus()).toMatchObject({ sent: 0, failed: 0, lastFailure: null });

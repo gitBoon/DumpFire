@@ -157,6 +157,8 @@ const TEST_FILES = [
 	'image-retention.test.ts',
 	'import-working-copy.test.ts',
 	'internal-refusals.test.ts',
+	// Card 2849: invite tokens stored as hashes, and the start-up sweep of those held in plain.
+	'invite-hashes.test.ts',
 	'kanban-column-header.svelte.test.ts',
 	'live-streams.test.ts',
 	'load-access-reads.test.ts',

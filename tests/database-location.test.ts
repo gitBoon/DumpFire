@@ -575,14 +575,14 @@ describe('a database with no users while another is beside it', () => {
 	});
 
 	it('is asked by the server as it starts, after the migrations and before anything else', () => {
-		const hooks = readFileSync(join(process.cwd(), 'src', 'hooks.server.ts'), 'utf8');
+		const hooks = readFileSync(join(process.cwd(), 'src', 'hooks.server.ts'), 'utf8').replace(/\r\n/g, '\n');
 		const at = (call: string) => hooks.indexOf(`\n${call}`);
 
 		expect(at('runMigrations();')).toBeGreaterThan(-1);
 		expect(at('refuseUserlessBesideAnother();')).toBeGreaterThan(at('runMigrations();'));
 		// The MFA key check (card 2768) straight after it, and before everything else.
 		expect(at('checkMfaKeyAtStart();')).toBeGreaterThan(at('refuseUserlessBesideAnother();'));
-		for (const later of ['cleanExpiredSessions();', 'maskLiveLog();', 'startSchedulers();', 'reportInstallation();']) {
+		for (const later of ['cleanExpiredSessions();', 'maskLiveLog();', 'endPlainInvites();', 'startSchedulers();', 'reportInstallation();']) {
 			expect(at(later), later).toBeGreaterThan(at('refuseUserlessBesideAnother();'));
 			expect(at(later), later).toBeGreaterThan(at('checkMfaKeyAtStart();'));
 		}

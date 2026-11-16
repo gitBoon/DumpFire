@@ -89,6 +89,8 @@ import { db, sqlite } from '$lib/server/db';
 import { runMigrations } from '$lib/server/db/migrate';
 import { NO_SUPERADMIN_IN_BACKUP, RestoreError, SIGNED_OUT, backupLacksSuperadmin, restoreFromBackup, rowsToRestore } from '$lib/server/db/restore';
 import { inviteTokens, taskRequests } from '$lib/server/db/schema';
+import { inTransaction } from '$lib/server/db/transaction';
+import { issueInvite } from '$lib/server/invites';
 import { KNOWN_BROWSER_SECRET_KEY } from '$lib/server/known-browsers';
 import { REQUEST_FORM_SECRET_KEY, issueFormToken, resetFormSecretCache, verifyFormToken } from '$lib/server/request-tokens';
 import { maskLiveLog, reportInstallation, reportNoSuperadmin } from '$lib/server/startup-checks';
@@ -97,6 +99,7 @@ import {
 	FIXTURE_PASSWORD,
 	FIXTURE_PASSWORD_HASH,
 	importConfirmation,
+	inviteHashOf,
 	makeBoard,
 	makeCard,
 	makeDecision,
@@ -248,8 +251,9 @@ beforeEach(() => {
 	memberSession = makeSession(member);
 	db.insert(inviteTokens)
 		.values([
-			{ token: UNUSED_INVITE, userId: member.id, expiresAt: '2099-01-01 00:00:00', used: false },
-			{ token: USED_INVITE, userId: admin.id, expiresAt: '2099-01-01 00:00:00', used: true }
+			// As this image keeps them: the hash of the token mailed (card 2849).
+			{ tokenHash: inviteHashOf(UNUSED_INVITE), userId: member.id, expiresAt: '2099-01-01 00:00:00', used: false },
+			{ tokenHash: inviteHashOf(USED_INVITE), userId: admin.id, expiresAt: '2099-01-01 00:00:00', used: true }
 		])
 		.run();
 	makeCard(makeBoard({ owner: member, name: 'A board' }).cols['To Do'], { title: 'A card' });
@@ -303,7 +307,7 @@ function opening(bytes: Buffer): Database.Database {
 const column = <T>(database: Database.Database, sql: string) =>
 	(database.prepare(sql).all() as Record<string, T>[]).map((row) => Object.values(row)[0]);
 
-/** What signs somebody in, as the running database holds it. */
+/** What signs somebody in, as the running database holds it: an invite as its token's hash (card 2849). */
 const signInsHere = () => ({
 	sessions: column<string>(sqlite, 'SELECT id FROM sessions ORDER BY id'),
 	invites: column<string>(sqlite, 'SELECT token FROM invite_tokens ORDER BY token')
@@ -320,19 +324,22 @@ const requestKeysHere = () => ({
  * the bytes: a deleted row's text is still in a file that was not vacuumed.
  */
 function expectNoSignIns(bytes: Buffer): void {
-	const has = (text: string) => bytes.includes(Buffer.from(text));
+	const has = (text: string | Buffer) => bytes.includes(Buffer.from(text));
 
 	expect(has(chiefSession), 'the id of a live session').toBe(false);
 	expect(has(memberSession), 'the id of a live session').toBe(false);
 	expect(has(UNUSED_INVITE), 'an invite that has not been used').toBe(false);
+	expect(has(inviteHashOf(UNUSED_INVITE)), 'the row of an invite that has not been used').toBe(false);
+	// No invite's token at all: the database holds none (card 2849).
+	expect(has(USED_INVITE), 'the token of an invite that was used').toBe(false);
 	// Card 2158: no request's link, and not the key the form signs with, nor its name.
 	expect(has(REQUEST_LINK), 'a request’s link').toBe(false);
 	expect(has(FORM_KEY), 'the key the request form signs with').toBe(false);
 	expect(has(REQUEST_FORM_SECRET_KEY), 'the name of the form key’s setting').toBe(false);
 
-	// It is the whole database otherwise: an invite that was used, and every
-	// user, with the hash a restore needs to sign them in again.
-	expect(has(USED_INVITE)).toBe(true);
+	// It is the whole database otherwise: an invite that was used, as its hash,
+	// and every user, with the hash a restore needs to sign them in again.
+	expect(has(inviteHashOf(USED_INVITE))).toBe(true);
 	for (const user of [chief, admin, member]) expect(has(user.email), user.username).toBe(true);
 	expect(has(FIXTURE_PASSWORD_HASH)).toBe(true);
 	expect(has('A card')).toBe(true);
@@ -340,7 +347,7 @@ function expectNoSignIns(bytes: Buffer): void {
 	const backup = opening(bytes);
 	expect(backup.pragma('integrity_check', { simple: true })).toBe('ok');
 	expect(column(backup, 'SELECT id FROM sessions')).toEqual([]);
-	expect(column(backup, 'SELECT token FROM invite_tokens')).toEqual([USED_INVITE]);
+	expect(column(backup, 'SELECT token FROM invite_tokens')).toEqual([inviteHashOf(USED_INVITE)]);
 	expect(column(backup, 'SELECT username FROM users ORDER BY id')).toEqual(['chief', 'administrator', 'member']);
 	// The request is there, with no link to it.
 	expect(backup.prepare('SELECT title, access_token FROM task_requests').all()).toEqual([{ title: 'A request', access_token: null }]);
@@ -437,11 +444,11 @@ describe('a backup', () => {
 		withoutSecrets(copied, cleared);
 		const written = readFileSync(cleared);
 		expect(written.includes(Buffer.from(memberSession))).toBe(false);
-		expect(written.includes(Buffer.from(UNUSED_INVITE))).toBe(false);
+		expect(written.includes(Buffer.from(inviteHashOf(UNUSED_INVITE)))).toBe(false);
 		expect(written.includes(Buffer.from(REQUEST_LINK))).toBe(false);
 		expect(written.includes(Buffer.from('d'.repeat(64)))).toBe(false);
 		expect(written.includes(Buffer.from(FORM_KEY))).toBe(false);
-		expect(written.includes(Buffer.from(USED_INVITE))).toBe(true);
+		expect(written.includes(Buffer.from(inviteHashOf(USED_INVITE)))).toBe(true);
 		// The copy it was given is not what is read: its pages are as they were.
 		// And nothing else beside them: no journal is left behind.
 		expect(readdirSync(dir).sort()).toEqual(['cleared.db', 'copied.db', 'deleted-only.db']);
@@ -489,8 +496,9 @@ describe('a backup', () => {
 	it('holds no invite token the system log wrote down, even from before the gate masked it', async () => {
 		// The gate writes an invite's address with its token masked now. Opened
 		// through the gate, then, and written into the log as an older version
-		// wrote it: in the line, in what is kept with it, and in another line
-		// that names the token on its own.
+		// wrote it: in the line, and in what is kept with it. A token on its own
+		// in a line is not looked for since card 2849 (see "the running
+		// database's system log, at start").
 		const level = process.env.LOG_LEVEL;
 		process.env.LOG_LEVEL = 'INFO';
 		vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -504,7 +512,6 @@ describe('a backup', () => {
 			"INSERT INTO system_logs (timestamp, level, context, message, meta) VALUES ('2026-10-01 00:00:00', ?, 'HTTP', ?, ?)"
 		);
 		old.run('INFO', `GET /invite/${UNUSED_INVITE} → 200 (3ms)`, JSON.stringify({ method: 'GET', path: `/invite/${UNUSED_INVITE}`, status: 200 }));
-		old.run('WARN', `An invite was looked for that is ${UNUSED_INVITE}`, null);
 		old.run('INFO', `GET /invite/${USED_INVITE} → 200 (3ms)`, null);
 		const invitesLogged = () => JSON.stringify(sqlite.prepare("SELECT message, meta FROM system_logs WHERE message LIKE '%invite%'").all());
 		const live = invitesLogged();
@@ -520,7 +527,6 @@ describe('a backup', () => {
 		expect(lines.map((line) => line.replace(/ \(\d+ms\)$/, ''))).toEqual([
 			'GET /invite/[token] → 200',
 			'GET /invite/[token] → 200',
-			'An invite was looked for that is [token]',
 			'GET /invite/[token] → 200'
 		]);
 		// And the running database's log is as it was.
@@ -540,6 +546,7 @@ function backupWithSignIns(): Database.Database {
 		INSERT INTO sessions (id, user_id, expires_at) VALUES
 			('session-of-ann-in-the-backup', 1, '2099-01-01T00:00:00.000Z'),
 			('session-of-bob-in-the-backup', 2, '2099-01-01T00:00:00.000Z');
+		-- In plain, on purpose: a backup made before card 2849 holds its invites as mailed.
 		INSERT INTO invite_tokens (token, user_id, expires_at, used) VALUES
 			('unused-invite-in-the-backup', 2, '2099-01-01T00:00:00.000Z', 0),
 			('used-invite-in-the-backup', 2, '2099-01-01T00:00:00.000Z', 1);
@@ -554,15 +561,18 @@ describe('a restore', () => {
 		live.exec(`
 			INSERT INTO users (id, username, email, password_hash, role) VALUES (9, 'here', 'here@example.test', 'x', 'superadmin');
 			INSERT INTO sessions (id, user_id, expires_at) VALUES ('session-that-was-here', 9, '2099-01-01T00:00:00.000Z');
-			INSERT INTO invite_tokens (token, user_id, expires_at, used) VALUES ('invite-that-was-here', 9, '2099-01-01T00:00:00.000Z', 0);
 		`);
+		live
+			.prepare("INSERT INTO invite_tokens (token, user_id, expires_at, used) VALUES (?, 9, '2099-01-01T00:00:00.000Z', 0)")
+			.run(inviteHashOf('invite-that-was-here'));
 		const backup = backupWithSignIns();
 
 		const result = restoreFromBackup(live, backup);
 
 		expect(result.errors).toEqual([]);
 		expect(column(live, 'SELECT id FROM sessions')).toEqual([]);
-		expect(column(live, 'SELECT token FROM invite_tokens')).toEqual(['used-invite-in-the-backup']);
+		// The used one, with 0068's token in place of the one it was mailed with (card 2849).
+		expect(column(live, 'SELECT used FROM invite_tokens')).toEqual([1]);
 		expect(result.restored.sessions).toBeUndefined();
 		expect(result.restored.invite_tokens).toBe(1);
 		// Everything else is the backup's.
@@ -570,6 +580,41 @@ describe('a restore', () => {
 		expect(column(live, 'SELECT name FROM boards')).toEqual(['From the backup']);
 		// And the backup was only read.
 		expect(column(backup, 'SELECT id FROM sessions')).toHaveLength(2);
+	});
+
+	// Card 2849. A backup made before it holds each used invite's token as it
+	// was mailed; one made since holds hashes. 0068's replacement is repeated
+	// on the rows held in plain, and a row in hash form is left.
+	it('gives each used invite a backup held in plain 0068’s 32 random bytes as it is read, and leaves one in hash form', () => {
+		const live = migratedDb();
+		live.exec(`INSERT INTO users (id, username, email, password_hash, role) VALUES (9, 'here', 'here@example.test', 'x', 'superadmin')`);
+		const backup = backupWithSignIns();
+		const inHashForm = inviteHashOf('used-invite-made-since');
+		backup.prepare("INSERT INTO invite_tokens (token, user_id, expires_at, used) VALUES (?, 1, '2099-01-01T00:00:00.000Z', 1)").run(inHashForm);
+		const isHashForm = (value: unknown) => Buffer.isBuffer(value) && value.length === 32;
+
+		// Replaced as the rows are read (the code review, CR3): a plain token never
+		// reaches the live file, not even to be written over.
+		const read = rowsToRestore(backup, 'invite_tokens');
+		expect(read.map((row) => isHashForm(row.token))).toEqual([true, true]);
+		expect(read.map((row) => row.token)).toContainEqual(inHashForm);
+
+		const result = restoreFromBackup(live, backup);
+
+		expect(result.errors).toEqual([]);
+		expect(result.restored.invite_tokens).toBe(2);
+		const rows = live.prepare('SELECT token, user_id AS userId, used FROM invite_tokens ORDER BY user_id DESC').all() as {
+			token: unknown;
+		}[];
+		expect(rows).toEqual([
+			{ token: expect.anything(), userId: 2, used: 1 },
+			{ token: inHashForm, userId: 1, used: 1 }
+		]);
+		expect(isHashForm(rows[0].token)).toBe(true);
+		const everything = JSON.stringify(live.prepare('SELECT * FROM invite_tokens').all());
+		expect(everything).not.toContain('used-invite-in-the-backup');
+		expect(everything).not.toContain('unused-invite-in-the-backup');
+		expect(live.serialize().includes(Buffer.from('used-invite-in-the-backup'))).toBe(false);
 	});
 
 	// Card 2194: a backup made before the key was left out of backups still
@@ -897,7 +942,9 @@ describe('a restore', () => {
 
 		expect(res.status).toBe(200);
 		expect(answer.message).toContain(SIGNED_OUT);
-		expect(signInsHere()).toEqual({ sessions: [], invites: ['used-invite-in-the-backup'] });
+		// The used invite, with 0068's token in place of the one it was mailed with (card 2849).
+		expect(signInsHere().sessions).toEqual([]);
+		expect(sqlite.prepare('SELECT typeof(token) AS type, length(token) AS bytes FROM invite_tokens').all()).toEqual([{ type: 'blob', bytes: 32 }]);
 		// The cookie it was sent with names nothing now, and is taken away.
 		expect(res.headers.get('set-cookie')).toMatch(new RegExp(`^${SESSION_COOKIE_NAME}=;`));
 		// And the same cookie is no longer a way in.
@@ -1378,7 +1425,6 @@ describe('the running database’s system log, at start', () => {
 		const meta = (path: string) => JSON.stringify({ method: 'GET', path, status: 200 });
 		old.run(`GET /invite/${UNUSED_INVITE} → 200 (3ms)`, meta(`/invite/${UNUSED_INVITE}`));
 		old.run(`GET /request/7/reply?token=${REQUEST_LINK_TOKEN} → 200 (2ms)`, meta(`/request/7/reply?token=${REQUEST_LINK_TOKEN}&from=mail`));
-		old.run(`An invite was looked for that is ${UNUSED_INVITE}`, null);
 		old.run('GET /boards → 200 (1ms)', meta('/boards'));
 		expect(everyLine()).toContain(UNUSED_INVITE);
 		expect(everyLine()).toContain(REQUEST_LINK_TOKEN);
@@ -1388,15 +1434,30 @@ describe('the running database’s system log, at start', () => {
 		expect(sqlite.prepare('SELECT message, meta FROM system_logs ORDER BY id').all()).toEqual([
 			{ message: 'GET /invite/[token] → 200 (3ms)', meta: meta('/invite/[token]') },
 			{ message: 'GET /request/7/reply?token=[token] → 200 (2ms)', meta: meta('/request/7/reply?token=[token]&from=mail') },
-			{ message: 'An invite was looked for that is [token]', meta: null },
 			{ message: 'GET /boards → 200 (1ms)', meta: meta('/boards') }
 		]);
 		// Only the log: the invite itself is as it was.
-		expect(signInsHere().invites).toEqual([USED_INVITE, UNUSED_INVITE]);
+		expect(signInsHere().invites).toEqual([inviteHashOf(USED_INVITE), inviteHashOf(UNUSED_INVITE)].sort(Buffer.compare));
 
 		const masked = everyLine();
 		expect(maskLiveLog()).toBe(0);
 		expect(everyLine()).toBe(masked);
+	});
+
+	// Card 2849. An invite is kept only as its hash, so there is no token to
+	// look for, and no code writes one into a line but in an address, which
+	// the rule above masks. A bare token in a line is left, on purpose.
+	it('leaves a line that holds an unused invite’s token on its own, not in an address, as it was', () => {
+		const token = inTransaction(() => issueInvite(member.id));
+		sqlite
+			.prepare("INSERT INTO system_logs (timestamp, level, context, message) VALUES ('2026-10-01 00:00:00', 'WARN', 'AUTH', ?)")
+			.run(`An invite was looked for that is ${token}`);
+		const before = everyLine();
+
+		expect(maskLiveLog()).toBe(0);
+
+		expect(everyLine()).toBe(before);
+		expect(column<string>(sqlite, "SELECT message FROM system_logs WHERE context = 'AUTH'")).toEqual([`An invite was looked for that is ${token}`]);
 	});
 
 	it('has the names typed at failed sign-ins taken out, the whole of each, and a second start changes nothing', () => {
@@ -1415,10 +1476,12 @@ describe('the running database’s system log, at start', () => {
 	});
 
 	it('is masked by what the server calls as it starts, after the migrations', () => {
-		const hooks = readFileSync(join(process.cwd(), 'src', 'hooks.server.ts'), 'utf8');
+		const hooks = readFileSync(join(process.cwd(), 'src', 'hooks.server.ts'), 'utf8').replace(/\r\n/g, '\n');
 
 		expect(hooks.indexOf('\nrunMigrations();')).toBeGreaterThan(-1);
 		expect(hooks.indexOf('\nmaskLiveLog();')).toBeGreaterThan(hooks.indexOf('\nrunMigrations();'));
+		// And the invites an older image kept in plain ended (card 2849).
+		expect(hooks.indexOf('\nendPlainInvites();')).toBeGreaterThan(hooks.indexOf('\nrunMigrations();'));
 	});
 
 	it('cannot keep the server from starting: a failure is said at WARN, and nothing is thrown', () => {

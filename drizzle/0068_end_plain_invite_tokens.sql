@@ -1,0 +1,46 @@
+-- Every invite token held in plain ended once, for invite tokens stored as hashes (card 2849, 2026-11-16).
+--
+-- From this release an invite's token is kept only as its SHA-256, the
+-- digest's 32 bytes as a BLOB (src/lib/server/invites.ts), and is looked up
+-- by that hash. The column is still declared TEXT: SQLite keeps a BLOB as a
+-- BLOB in it, and never takes a BLOB to equal text. Every row written before
+-- it holds the token as it was mailed. Since card 2769 a working invite also
+-- sets up the account's authenticator, so whoever could read the database
+-- file could take the account whole. SQLite has no SHA-256, and hashing the
+-- rows in place at start would leave each live token in the file's free
+-- pages and its WAL, still working.
+--
+-- A one-off change to data, two statements. First, every invite not yet
+-- used is deleted, expired or not. Second, every used invite keeps its row,
+-- marked used, and its token is replaced by 32 random bytes, a BLOB: the form
+-- of a hash, and the hash of nothing. A used invite
+-- works for nothing, but no row is to hold a token as it was mailed.
+--
+-- What people see: an invite sent before the deploy and not yet used no
+-- longer works; its link shows the page for a link that no longer works. An
+-- administrator sends again, from User Management, the ones still wanted:
+-- docs/deployment.md lists them before the deploy, which is the only time
+-- they can be listed. Accounts, sessions, API keys, enrolment links and
+-- requesters' links are untouched.
+--
+-- Harmless where it finds nothing: a new database has no invites. Declared
+-- to the rehearsal in tests/rehearsal/one-offs.ts, which then expects
+-- `invite_tokens` to lose its unused rows.
+--
+-- Runs once. The runner records this file by name and never runs it again.
+-- An invite an older image writes after going back is ended at start-up
+-- (endPlainInvites in src/lib/server/startup-checks.ts).
+--
+-- A backup made before this file holds no unused invite, and holds each used
+-- one's token as mailed: a restore gives those rows this file's replacement
+-- (restoreFromBackup), so it brings no token back.
+--
+-- Going back to an older image keeps the rows. That image compares this
+-- column with the address, which is text, and a stored hash is a BLOB, so no
+-- invite this release issued is a link there. A copy of the file made before
+-- this one ran is another matter: it holds the invites that were waiting
+-- then, as mailed, and they work again on the older image.
+
+DELETE FROM `invite_tokens` WHERE `used` = 0;
+--> statement-breakpoint
+UPDATE `invite_tokens` SET `token` = randomblob(32) WHERE `used` <> 0;

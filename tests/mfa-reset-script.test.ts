@@ -32,7 +32,7 @@ import { ENROLMENT_LINK_LIFETIME_MS, addTotpFactor, resetTwoStep, storeRecoveryC
 import { newRecoveryCodes } from '$lib/server/recovery-codes';
 import { newTotpSecret } from '$lib/server/totp';
 import { isStamp, parseStamp, stamp } from '$lib/timestamps';
-import { makeApiKey, makeSession, makeUser, resetDb } from './helpers/fixtures';
+import { inviteHashOf, makeApiKey, makeSession, makeUser, resetDb } from './helpers/fixtures';
 
 const SCRIPT = join(process.cwd(), 'scripts', 'mfa-reset.mjs');
 
@@ -132,8 +132,8 @@ function seedAccount(username: string) {
 		.values({ tokenHash: sha256Hex(`older link of ${username}`), userId: user.id, issuedBy: 'admin-reset', expiresAt: stamp(new Date(Date.now() + 60_000)) })
 		.run();
 	const week = stamp(new Date(Date.now() + ENROLMENT_LINK_LIFETIME_MS));
-	db.insert(inviteTokens).values({ token: `unused-${username}-${randomBytes(4).toString('hex')}`, userId: user.id, expiresAt: week }).run();
-	db.insert(inviteTokens).values({ token: `used-${username}-${randomBytes(4).toString('hex')}`, userId: user.id, expiresAt: week, used: true }).run();
+	db.insert(inviteTokens).values({ tokenHash: inviteHashOf(`unused-${username}-${randomBytes(4).toString('hex')}`), userId: user.id, expiresAt: week }).run();
+	db.insert(inviteTokens).values({ tokenHash: inviteHashOf(`used-${username}-${randomBytes(4).toString('hex')}`), userId: user.id, expiresAt: week, used: true }).run();
 	makeApiKey(user);
 	const later = stamp(new Date(Date.now() + 60 * 60 * 1000));
 	db.update(users)

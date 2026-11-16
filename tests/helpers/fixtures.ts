@@ -625,6 +625,14 @@ export function makeOption(decision: Decision, opts: Partial<typeof decisionOpti
 		.get();
 }
 
+/**
+ * The SHA-256 an invite's token is stored as (card 2849): its 32 bytes, a
+ * BLOB, so that no text an address can be is ever equal to it.
+ */
+export function inviteHashOf(token: string): Buffer {
+	return createHash('sha256').update(token).digest();
+}
+
 /** The SHA-256 a personal link's token is stored as (card 2675, decision 9). */
 export function linkHashOf(token: string): string {
 	return createHash('sha256').update(token).digest('hex');

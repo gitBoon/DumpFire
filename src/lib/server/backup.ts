@@ -104,7 +104,7 @@ export function saveBackupConfig(config: BackupConfig): void {
 /**
  * Write to `to` the database file at `from` with everything taken out of it
  * that signs somebody in by being held, and every secret: every session, and every invite that
- * has not been used, wherever it is written; and the key remembered browsers
+ * has not been used (kept as a hash since card 2849); and the key remembered browsers
  * are signed with (known-browsers.ts), which a restore is meant to lose.
  *
  * A session's id is the whole of what its cookie carries, and an unused
@@ -128,10 +128,9 @@ export function saveBackupConfig(config: BackupConfig): void {
  * An invite's token is also the last part of its address, and the system log
  * wrote that address down for every request to it until the gate masked it
  * (`pathToLog`, in secret-paths.ts). So the log's lines are masked here too,
- * as the gate masks them now, and any line that still holds the token of an
- * unused invite anywhere else has it replaced (`maskSecretsInLog`): an
- * installation whose log already holds tokens makes backups that do not. The
- * running database's log is masked by the same rule once at every start.
+ * as the gate masks them now (`maskSecretsInLog`): an installation whose log
+ * already holds tokens makes backups that do not. The running database's log
+ * is masked by the same rule once at every start.
  *
  * Deleting the rows is not enough. The pages they were on are still in the
  * file, with the ids in them: after a plain DELETE of 400 sessions, their ids
@@ -189,9 +188,8 @@ export function withoutSecrets(from: string, to: string, key: Buffer = backupSea
 		const has = (table: string) =>
 			!!copy.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
 
-		// The log first, while the unused invites whose tokens it looks for are
-		// still there to be asked. The same rule the running log is masked with
-		// at start: see maskSecretsInLog.
+		// The log first: the same rule the running log is masked with at start
+		// (see maskSecretsInLog).
 		maskSecretsInLog(copy);
 		if (has('sessions')) copy.prepare('DELETE FROM sessions').run();
 		if (has('invite_tokens')) copy.prepare('DELETE FROM invite_tokens WHERE used = 0').run();

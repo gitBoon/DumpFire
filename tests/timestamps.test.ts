@@ -23,6 +23,7 @@ import { apiKeys, cards, inviteTokens, milestones, reportSchedules, sessions, to
 import { inTransaction } from '$lib/server/db/transaction';
 import { SESSION_COOKIE_NAME, cleanExpiredSessions, createSession, findApiKey, markApiKeyUsed, validateSession } from '$lib/server/auth';
 import { issueInvite } from '$lib/server/invites';
+import { inviteHashOf } from './helpers/fixtures';
 import { createLogger, getRecentLogs } from '$lib/server/logger';
 import { buildActivityReport, getCardBoardHistory } from '$lib/server/activity-report';
 import { formatDate, generateBoardReport, generateReportPdf, readReportWindow, runDueReportSchedules } from '$lib/server/reports';
@@ -598,7 +599,7 @@ describe('the comparisons of table B keep their answer on the boundary day', () 
 			expect(findApiKey(key), `key ${expiresAt}`).toBeNull();
 
 			const invite = inTransaction(() => issueInvite(owner.id));
-			db.update(inviteTokens).set({ expiresAt }).where(eq(inviteTokens.token, invite)).run();
+			db.update(inviteTokens).set({ expiresAt }).where(eq(inviteTokens.tokenHash, inviteHashOf(invite))).run();
 			const page = await pageLoad(`/invite/${invite}`);
 			expect(page.type === 'data' && page.data.valid, `invite ${expiresAt}`).toBe(false);
 		}
@@ -609,7 +610,7 @@ describe('the comparisons of table B keep their answer on the boundary day', () 
 			db.update(sessions).set({ expiresAt }).where(eq(sessions.id, token)).run();
 			db.update(apiKeys).set({ expiresAt }).run();
 			const invite = inTransaction(() => issueInvite(owner.id));
-			db.update(inviteTokens).set({ expiresAt }).where(eq(inviteTokens.token, invite)).run();
+			db.update(inviteTokens).set({ expiresAt }).where(eq(inviteTokens.tokenHash, inviteHashOf(invite))).run();
 
 			expect(findApiKey(key)?.user.id, `key ${expiresAt}`).toBe(owner.id);
 			const page = await pageLoad(`/invite/${invite}`);

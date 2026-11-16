@@ -1,4 +1,5 @@
 import {
+	customType,
 	sqliteTable,
 	text,
 	integer,
@@ -564,8 +565,22 @@ export const boardFavourites = sqliteTable('board_favourites', {
 	index('idx_board_favourites_board_id').on(table.boardId)
 ]);
 
+/**
+ * A column declared TEXT whose values are bytes: a BLOB in each row, read and
+ * written as a Buffer. SQLite keeps a BLOB as a BLOB in a column of any
+ * affinity, and never takes one to equal text (card 2849).
+ */
+const bytesInText = customType<{ data: Buffer; driverData: Buffer }>({
+	dataType: () => 'text'
+});
+
 export const inviteTokens = sqliteTable('invite_tokens', {
-	token: text('token').primaryKey(),
+	// The SHA-256 of the token sent, its 32 bytes as a BLOB (card 2849). The
+	// column keeps its name and its declared type, so that an older image still
+	// reads the table, and the shape the model checks is unchanged. That image
+	// compares the column with the address, which is text, so no hash here is
+	// ever a link to it (plan decision 1; the code review, CR1).
+	tokenHash: bytesInText('token').primaryKey(),
 	userId: integer('user_id')
 		.notNull()
 		.references(() => users.id, { onDelete: 'cascade' }),

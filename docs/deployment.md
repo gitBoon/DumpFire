@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.112
+version: 1.113
 status: As-Built
-date: 2026-11-13
+date: 2026-11-16
 tags:
   - decision-reminders
   - docker
@@ -46,7 +46,9 @@ tags:
   - migration-0066
   - migration-0067
   - release-mail
-description: "Docker deployment, the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, and production configuration for DumpFire"
+  - migration-0068
+  - invites
+description: "Docker deployment, the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, and production configuration for DumpFire"
 ---
 
 # DumpFire Deployment Guide
@@ -1044,7 +1046,7 @@ And one more straight after it (card 2768): the key that protects authenticator 
 6. **Timestamps.** Every timestamp column (every TEXT column whose name ends in `_at`, and `system_logs.timestamp`) is brought to the one stored form, `YYYY-MM-DD HH:MM:SS` in UTC (card 2095). A value in ISO 8601, in the stored form with a fraction, or a bare date is rewritten to the same moment, to the second; a value in no form it can read is left as it is and reported at `ERROR`, at every start until it is dealt with. It runs in a transaction of its own: a failure is rolled back, logged at `ERROR`, and tried again at the next start, and the server starts. Like step 4, it is skipped when the database records a migration this image has no file for, and the `ERROR` line of step 4 says so. A start that converts anything says so in one `WARN` line, which is expected once after the update that brings card 2095 and after an Import Backup of an older backup, and at no other time.
 7. **Schema check.** The whole database is compared with the model. Every difference is logged in one `ERROR` line. Nothing is changed and the server starts.
 
-Expired sessions are then cleared, the system log is pruned to its retention, the backup, report and snapshot schedulers, the decision reminder and the attachment file sweep start (where `SCHEDULERS` lets them), and the server listens. On a database that is already up to date, steps 1 to 7 change nothing and log nothing.
+Expired sessions are then cleared, the system log is pruned to its retention, the running log is masked (`maskLiveLog`), the settings of anyone no longer an administrator are removed, every invite an older image stored in plain is ended (`endPlainInvites`, card 2849: one `[WARN] [AUTH]` line when there were any), the backup, report and snapshot schedulers, the decision reminder and the attachment file sweep start (where `SCHEDULERS` lets them), and the server listens. On a database that is already up to date, steps 1 to 7 change nothing and log nothing.
 
 Last, thirteen things about the installation are said in the log if they are so. None stops the server, and none changes anything: there are user accounts and none of them is the superadmin (`[CRITICAL] [STARTUP]`, see [If Nobody Can Sign In as the Superadmin](#if-nobody-can-sign-in-as-the-superadmin)); `ORIGIN` is still the address the image is built with and no App URL is set (`[WARN] [STARTUP]`, see [Where a Mailed Link's Address Comes From](#where-a-mailed-links-address-comes-from)); and a board hangs beneath one of its own cards, a loop left by a move made before card 2141, the legacy JSON import or a restored backup (`[WARN] [STARTUP]`, naming up to 20 such boards with the card each hangs from, see [A board beneath one of its own cards](admin-guide.md#a-board-beneath-one-of-its-own-cards) in the admin guide). The third reads the boards once and finds the loops in memory, so it costs next to nothing however deep the boards nest, and an import of a backup that brings a loop writes the same line at once, as `[WARN] [IMPORT]`, without waiting for the next start. The other three are about the database (card 2083), each a `[WARN] [STARTUP]` line: there was no database file, or an empty one, before this start opened it (`No database was at <path>: a new, empty one was created at this start.`, said once by a new installation, and the alarm on one that had data: stop the container before anyone opens the site); the folder the database is in is the container's own file system and not a mounted volume, at every start; and a database file is at `/app/dumpfire.db` beside the image's `/app/data/dumpfire.db`, which has data and is the one in use, at every start, naming both with their sizes and when each was last written. The seventh is that `SIGN_IN_ONE_AT_A_TIME` is `off` (card 2194), a `[WARN] [STARTUP]` line at every start while it is, written to the console whatever `LOG_LEVEL` is, as are the first two about the database: it is meant to be set for one sign-in and removed (see [If an Attack Keeps an Owner Out](#if-an-attack-keeps-an-owner-out)). The eighth is that `CSP_MODE` is `report-only`, or holds a value that is neither mode (card 2162), a `[WARN] [STARTUP]` line at every start while it does, written to the console whatever `LOG_LEVEL` is: `report-only` is meant for the policy's first deploy and then removed (see [The Update That Brings the Content-Security-Policy](#the-update-that-brings-the-content-security-policy)). The ninth is the secrets a backup does not hold that this installation still lacks (card 2169), one `[WARN] [STARTUP]` line naming them. The tenth is each entry of `WEBHOOK_ALLOW_INSIDE` that is ignored (card 2161), one `[WARN] [STARTUP]` line each, naming the entry and why: it is said here, once, because the list is read at every registration and every delivery, where a line would be written once for each webhook judged (see [Where a Webhook May Send](#where-a-webhook-may-send)). The eleventh is each board with more webhooks than the 10 a board may have (card 2201), in one `[WARN] [STARTUP]` line naming the first 20 by id and count, never an address: such a board was filled before the cap, keeps every webhook, and none can be added to it until it has fewer than 10. The twelfth is each webhook that is on and is refused as its address is written (an address inside the network that `WEBHOOK_ALLOW_INSIDE` does not name, a user name or password, or an address that is not http or https), in one `[WARN] [STARTUP]` line naming the first 20 by webhook and board, with why, never the path: it is not sent at any event, and no name is looked up for it. The thirteenth is each SFTP backup destination with no confirmed host key (card 2250), in one `[WARN] [STARTUP]` line naming the first 20 and then `; and N more`: no backup is sent to it until its key is confirmed with Test and Confirm, and where failure mail is off nothing else says so (see [An SFTP Destination's Host Key, Confirmed and Checked at Every Connect](#an-sftp-destinations-host-key-confirmed-and-checked-at-every-connect)). The last four are written at `WARN` like any line, so `LOG_LEVEL` at `ERROR` or above drops them. The first two about the database (no database file before this start, and the folder not on a mounted volume) are written to the console whatever `LOG_LEVEL` is, even `ERROR`, because the checks after a deploy look for them in `docker logs`; with `LOG_LEVEL` at `ERROR` or `CRITICAL` they are printed but not kept in `system_logs`, as for any line. The second knows a container's own file system from `/proc/self/mountinfo`: the mount that holds the folder is the root and an overlay (`overlay`, as Docker has it, `fuse-overlayfs`, as rootless Podman has it, or `aufs`), or it is `tmpfs`. A container on another storage driver (`btrfs`, `zfs`, `vfs`) is not recognised and nothing is said, and where there is no `/proc/self/mountinfo` (Windows, macOS) nothing is said either. An in-memory database has no folder and is not looked at. A check that cannot be made is said on the console, one line for each such check, and the server starts all the same.
 
@@ -1533,6 +1535,8 @@ What to do:
 ### Going Back to the Previous Image
 
 > **An image from before card 2776 runs as root.** Back on one, it writes root's files to the volume. Before coming forward again to an image that runs as `node`, give the volume to uid 1000 once more: check U1 of [The Update That Runs the Server as a User Who Is Not Root](#the-update-that-runs-the-server-as-a-user-who-is-not-root).
+
+> **Past the release of two-step sign-in (cards 2769 and 2849)** going back is a security event, and a cold copy taken before migration 0068 brings back the invites that were waiting when it was taken. Read "Going back to the previous image" under [The Release That Turns On Two-Step Sign-In](#the-release-that-turns-on-two-step-sign-in-card-2769) first.
 
 | Situation | What to do | What is lost |
 |-----------|------------|--------------|
@@ -5925,8 +5929,9 @@ before card 2776 has run on the volume since: make it, and start the container a
 
 ### The Release That Turns On Two-Step Sign-In (Card 2769)
 
-**Card 2769 (build card B2 of card 2669).** Migrations `0066_add_mfa_password_enrol.sql` and
-`0067_end_sessions_for_two_step.sql`, three new pages (`/login/verify`, `/login/enrol`,
+**Card 2769 (build card B2 of card 2669), with card 2849.** Migrations
+`0066_add_mfa_password_enrol.sql`, `0067_end_sessions_for_two_step.sql` and (card 2849)
+`0068_end_plain_invite_tokens.sql`, three new pages (`/login/verify`, `/login/enrol`,
 `/enrol/[token]`) and one new runtime dependency (`uqr` 0.1.3, see
 [SBOM Analysis](sbom-analysis.md)). API v1 does not change. From this release **a right password
 no longer signs anyone in**: every account proves an authenticator code or a recovery code, or
@@ -5936,7 +5941,9 @@ sets an authenticator up, before a session exists. How it works is in
 **Release rules.**
 
 - **Never released without card 2773** (the reset and the host's command, built) **and card
-  2849** (invite tokens stored as hashes): an invite is now a grant to set up the second factor.
+  2849** (invite tokens stored as hashes, built: migration 0068 and the start-up sweep below):
+  an invite is now a grant to set up the second factor. See
+  [Invite Tokens Stored as Hashes](authentication-security.md#invite-tokens-stored-as-hashes-card-2849).
 - **`MFA_KEY_FILE` in place** (card 2768): see
   [The Key That Protects Authenticator Secrets](#the-key-that-protects-authenticator-secrets).
 - **Stop every instance before the release starts**, and never run two images side by side
@@ -5949,6 +5956,10 @@ sets an authenticator up, before a session exists. How it works is in
 
 - **Everybody is signed out once, and every remembered browser is forgotten** (0067). The first
   sign-in from any browser is a new browser's.
+- **Every invite not yet used is ended** (0068, card 2849). Its link shows the page for a link
+  that no longer works. Send again, from User Management (📧), the ones check W15 listed that are
+  still wanted. Used invites keep their row with the token replaced. From this release an
+  invite's token is kept only as its SHA-256, so the database holds no working link.
 - **At their next sign-in nobody has an authenticator yet**, so each account sets one up, by one
   of these, decided at the right password:
 
@@ -6007,16 +6018,35 @@ two-step sign-in first**, and any account whose password may be known: 🛡️ f
 superadmin. A reset account needs its link, which you hand over yourself, and is never set up on
 its password.
 
+**Check W15: the invites the deploy ends** (card 2849; numbered after the others, and taken
+here, before W5 stops the server). 0068 deletes every invite not yet used, so this lists them,
+with the account each was for. **Take it before the deploy**: after it, nothing on the server
+can list them, and only the cold copy still holds them.
+
+```bash
+q "SELECT u.username, u.email, i.created_at, i.expires_at FROM invite_tokens i JOIN users u ON u.id = i.user_id WHERE i.used = 0 ORDER BY i.created_at"
+```
+
+One row for each invite not yet used, expired or not, times in UTC. Nothing to rule on: keep the
+list. One whose `expires_at` has passed was dead already. Send each one still to come again from
+User Management (📧) once the deploy is done.
+
 **Check W5: stop every instance.** `docker ps --filter ancestor=dumpfire` (or your image's name)
 lists nothing running before the new image starts. Include staging copies that share the
 database.
 
 #### What changes at the first start
 
-- **Two lines from the runner**: `Applied migration: 0066_add_mfa_password_enrol.sql` and
-  `Applied migration: 0067_end_sessions_for_two_step.sql`. Both are declared to the rehearsal
-  (0066 keeps the rows of `users`; 0067 deletes the rows of `sessions` and one of `settings`).
+- **Three lines from the runner**: `Applied migration: 0066_add_mfa_password_enrol.sql`,
+  `Applied migration: 0067_end_sessions_for_two_step.sql` and
+  `Applied migration: 0068_end_plain_invite_tokens.sql`. All three are declared to the rehearsal
+  (0066 keeps the rows of `users`; 0067 deletes the rows of `sessions` and one of `settings`;
+  0068 deletes the unused rows of `invite_tokens` and replaces the used rows' tokens).
 - **Every session ends**, and the remembered-browser secret is deleted.
+- **Every invite not yet used is deleted**, and every used invite's token is replaced by 32
+  random bytes. The start-up sweep that follows the migrations (`endPlainInvites`) finds
+  nothing at this start, so it writes no line (neither `Ended … invite(s) held in plain` nor
+  `Replaced the token of … used invite(s)`).
 - **`two_step_released_at`** is written to `settings`: the 14 days start.
 
 #### After the deploy
@@ -6032,6 +6062,8 @@ database.
 | W12 | `curl -H "Authorization: Bearer <a key>" https://<host>/api/v1/boards` | `200` | `401` |
 | W13 | Browser tools on `/login/verify` | `Cache-Control: no-store`, `Referrer-Policy: strict-origin`; the challenge cookie `HttpOnly; SameSite=Strict; Path=/`, named `__Host-dumpfire_challenge` over HTTPS | Cacheable, or the cookie readable from script |
 | W14 | Admin → Users, where no mail host is set up | "may set up on password until `<date>` UTC" under each account W7 shows 1 that has not set up yet, 14 days after W6's time, your own row included. With a mail host set up, no such line | No date, one on an account that has set up, or one while a mail host is set up |
+| W16 | `q "SELECT hash FROM __drizzle_migrations WHERE hash LIKE '0068%'"`, `q "SELECT COUNT(*) n FROM invite_tokens WHERE used = 0"` and `q "SELECT COUNT(*) n FROM invite_tokens WHERE typeof(token) <> 'blob' OR length(token) <> 32"`; and the start's log | 0068 recorded; both counts 0 straight after the start; no line from the sweep (`Ended …` or `Replaced the token of …`) | 0068 missing, an unused invite left from before, any token not a 32-byte BLOB, or the sweep's line at the release |
+| W17 | Where you hold the link of an invite W15 listed, open it. Then send that account its new invite (📧), as W15 says, and `q "SELECT typeof(token) t, length(token) n FROM invite_tokens WHERE used = 0"` | The old link shows "This invite link no longer works…". The new invite's row is `blob` and 32 | The old link shows the password form, or the new row is not a 32-byte BLOB |
 
 **A session an older image made is refused.** One `WARN` line, "Session made without a second
 factor (an older image, or from before two-step sign-in) — refused and deleted", for each such
@@ -6040,11 +6072,61 @@ session, and its browser is sent to sign in.
 #### Going back to the previous image
 
 **Going back past this card is a security event.** The older image signs people in on a password
-alone for as long as it runs. Nothing is done to the database: the columns and the setting stay,
+alone for as long as it runs. Nothing has to be done to the database (for the invites, see below):
+the columns and the setting stay,
 unread, and its model check reports them at every start (`[ERROR] [DB]`, expected). Authenticators
 set up meanwhile stay stored, and the older image ignores them. A reset made on the older image
 (🛡️ or the host's command, from card 2773 on) leaves the account's mark at 1 but issues a link,
 which this image reads as closing setting up on the password for that account.
+
+**Invites, going back** (card 2849). Nothing has to be done. Every invite this image issued is
+stored as its SHA-256 digest, a 32-byte BLOB, and the older image compares the column with the
+address text: SQLite never treats a TEXT value as equal to a BLOB, so none of them works there,
+and nothing read from the database file makes a working link. Those invites are simply dead on
+the older image; send again (📧, on the older image) the ones still wanted. Ending the waiting
+invites before the older image starts is still tidy, and optional (check W18 below).
+
+**Check W18 (optional): end the waiting invites before going back.** With every container
+stopped, against the file the older image will open:
+
+```bash
+docker stop dumpfire
+docker run --rm --network none -v dumpfire-data:/app/data -e DB_PATH=/app/data/dumpfire.db \
+  dumpfire:rollback node -e "
+const db = require('better-sqlite3')(process.env.DB_PATH, { fileMustExist: true });
+console.log(db.prepare('DELETE FROM invite_tokens WHERE used = 0').run().changes + ' unused invite(s) deleted');
+db.close();
+"
+```
+
+Change the volume and `DB_PATH` to match the installation, as in
+[Taking and Returning the Cold Copy](#taking-and-returning-the-cold-copy).
+
+**A cold copy taken before 0068 is not the same** (where the new image never printed
+`Listening on` and the copy is put back). It holds the invites that were waiting when it was
+taken, as they were mailed, and the older image started on it makes every one of them work
+again. Those are the invites W15 listed. Either send them again as usual, or, if any of their
+mails may have gone astray, run W18's command against the returned copy before
+`dumpfire:rollback` starts, and send again the ones still wanted.
+
+**Invites, coming forward again.** 0068 is already recorded and is not run again. An invite the
+older image issued is stored in plain, as it was mailed. At every start this image runs
+`endPlainInvites()` after the migrations: in one transaction it deletes every unused invite not
+in hash form (anything but a 32-byte BLOB) and gives every used one not in hash form 32 random
+bytes, then writes one `[WARN] [AUTH]` line, built from what changed, when it changed anything:
+`Ended N invite(s) held in plain, written by an older image: their links no longer work. Send again, from User Management, the invites still wanted.`
+when it ended any, then
+`Replaced the token of M used invite(s) held in plain, written by an older image, with 32 random bytes.`
+when it replaced any; either part alone when only one applies. Send again (📧) the ones still
+wanted. A second start writes nothing. If instead it writes `Invites held in plain by an older image
+could not be ended: …`, the server still starts; those invites do not work on this image, and
+the same two statements can be run by hand with the server stopped, as W18's command runs its
+one:
+
+```sql
+DELETE FROM invite_tokens WHERE used = 0 AND NOT (typeof(token) = 'blob' AND length(token) = 32);
+UPDATE invite_tokens SET token = randomblob(32) WHERE used <> 0 AND NOT (typeof(token) = 'blob' AND length(token) = 32);
+```
 
 **Coming forward again**, 0066 and 0067 are already recorded and are not run, so nothing ends
 the older image's sessions by migration. This image refuses them instead: each was written with
@@ -6293,7 +6375,7 @@ The limit is not the only ceiling. An import does this, in order:
 
 1. Reads the whole upload into memory.
 2. Writes it to `dumpfire.db.restore-temp` beside the database, in `/app/data` in the image, readable by its owner alone (card 2776; it was `.restore-temp.db` in the server's working directory, `/app`), and opens that.
-3. Writes a safety copy of the running database, every table as one JSON text, to `.pre-restore-safety.json` in the same folder, readable by its owner alone. It leaves out the `known_browser_secret` row of `settings`, the key remembered browsers are signed with, which no backup holds either.
+3. Writes a safety copy of the running database, every table as one JSON text, to `.pre-restore-safety.json` in the same folder, readable by its owner alone. It leaves out the `known_browser_secret` row of `settings`, the key remembered browsers are signed with, which no backup holds either. An invite's `token`, a 32-byte hash since card 2849, is written there as `{"type":"Buffer","data":[…]}`: the hash's bytes, never a token.
 4. Replaces the rows.
 
 So the server needs memory for the whole backup and, at the same moment, for the running database as JSON, which is larger than the database's own file because every row repeats its column names. That JSON is one piece of text, and Node 22 cannot make one longer than 536,870,888 characters, about 512 MB: a running database whose rows come to more than that as JSON cannot be imported over. The import then fails with "Restore failed: Invalid string length" and nothing is changed. That, and the memory the container is allowed, are the practical ceiling, and both are reached well before a backup of 512 MB is. Neither has been measured on a large database: try an import of production's size on an instance that is not production before it is needed.

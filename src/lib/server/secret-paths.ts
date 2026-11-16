@@ -125,15 +125,19 @@ export const SECRET_PATH_MARKERS: readonly string[] = [...SECRET_IN_PATH.map(({ 
  * Mask every secret in the `system_logs` of `database`, and return how many
  * changes that made: 0 when there was nothing to mask.
  *
- * Three things, in this order:
+ * Two things, in this order:
  *
- *   - The token of every invite not yet used, wherever a line holds it,
- *     becomes `[token]`. Asked of `invite_tokens`, so a token the log wrote
- *     some other way than in an address is found too.
  *   - Every line is masked as `maskSecretPaths` masks it: an invite's
  *     address, whatever its token, and a request link's `token=`.
  *   - Every old failed sign-in line at a name that was no account loses the
  *     name, as `maskFailedSignIn` takes it out.
+ *
+ * An invite's token is kept only as its hash (card 2849), so there is no
+ * token here to look for: an invite's address is masked by the first rule,
+ * and a bare token in a line is not looked for. No code writes one anywhere
+ * but in an address, and every token a line written before the card can hold
+ * is dead after migration 0068, which ended every unused invite and replaced
+ * the token of every used one.
  *
  * Only a line that would change is written, so a second run over the same
  * log changes nothing. The log is capped at 50,000 lines (logger.ts), and a
@@ -151,15 +155,6 @@ export function maskSecretsInLog(database: Database.Database): number {
 	if (!has('system_logs')) return 0;
 
 	let changes = 0;
-	if (has('invite_tokens')) {
-		const unused = database.prepare('SELECT token FROM invite_tokens WHERE used = 0').pluck().all() as string[];
-		const replace = database.prepare(
-			"UPDATE system_logs SET message = replace(message, @token, '[token]'), meta = replace(meta, @token, '[token]') " +
-				'WHERE instr(message, @token) > 0 OR instr(meta, @token) > 0'
-		);
-		for (const token of unused) if (token) changes += replace.run({ token }).changes;
-	}
-
 	database.function('mask_secret_paths', (text: unknown) => (typeof text === 'string' ? maskSecretPaths(text) : text));
 	const holds = SECRET_PATH_MARKERS.map(() => 'instr(message, ?) > 0 OR instr(meta, ?) > 0').join(' OR ');
 	changes += database
