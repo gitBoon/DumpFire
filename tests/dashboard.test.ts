@@ -26,6 +26,7 @@ import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 
 import type * as Svelte from 'svelte';
 
 import DashboardPage from '../src/routes/+page.svelte';
+import { CODE, codeFieldIn } from './helpers/step-up-code';
 
 // The page's data is read again after a write, and a new board is opened: here each is only counted.
 const navigation = vi.hoisted(() => ({ invalidateAll: vi.fn(async () => {}), goto: vi.fn(async () => {}) }));
@@ -225,6 +226,9 @@ function type(box: HTMLInputElement, text: string) {
 	flushSync();
 }
 
+/** Types `CODE` into the code field beside the password within `within` (card 2770). */
+const typeCode = (within: ParentNode) => type(codeFieldIn(within)!, CODE);
+
 /** Right-clicks a board's row in its grouping, as the boards table hears it. */
 function rightClick(target: HTMLElement, name: string) {
 	const row = [...target.querySelectorAll<HTMLElement>('.board-row-group > .board-row')].find((each) =>
@@ -273,12 +277,13 @@ describe('the dashboard, mounted with its parts', () => {
 		expect(document.activeElement).toBe(field);
 		expect(buttonNamed(confirm, 'Delete Board').disabled).toBe(true);
 		type(field, 'my-own-password');
+		typeCode(confirm);
 		buttonNamed(confirm, 'Delete Board').click();
 		flushSync();
 		expect(target.querySelector('[role="dialog"][aria-label="Delete Board"]')).not.toBeNull();
 		await settle();
 
-		expect(asked('DELETE /api/boards/1').map((request) => request.body)).toEqual([{ currentPassword: 'my-own-password' }]);
+		expect(asked('DELETE /api/boards/1').map((request) => request.body)).toEqual([{ currentPassword: 'my-own-password', currentCode: CODE }]);
 		expect(target.querySelector('[role="dialog"][aria-label="Delete Board"]')).toBeNull();
 		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
 	});
@@ -295,6 +300,7 @@ describe('the dashboard, mounted with its parts', () => {
 		const confirm = target.querySelector<HTMLElement>('[role="dialog"][aria-label="Delete Board"]')!;
 		const field = confirm.querySelector<HTMLInputElement>('input[type="password"]')!;
 		type(field, 'a-wrong-one');
+		typeCode(confirm);
 		buttonNamed(confirm, 'Delete Board').click();
 		await settle();
 

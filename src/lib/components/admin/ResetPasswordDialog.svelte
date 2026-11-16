@@ -18,7 +18,7 @@
 	import { NO_ANSWER, showToast } from '$lib/admin/send';
 	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
 	import { toasts } from '$lib/stores/toast';
-	import { stepUpRefusal } from '$lib/step-up-words';
+	import { proofTyped, stepUpRefusal } from '$lib/step-up-words';
 
 	/** What the admin page's load gave it, passed on as it is: the accounts and who is signed in. */
 	let { data }: { data: PageData } = $props();
@@ -31,6 +31,11 @@
 	 * again, card 2701). Cleared once sent.
 	 */
 	let resetPasswordCurrent = $state('');
+	/**
+	 * The sign-in code typed beside it (card 2770), on both rows, held and
+	 * cleared as the password is. Your own row's route reads it from card 2771.
+	 */
+	let resetCodeCurrent = $state('');
 	/**
 	 * The server's refusal of that password, said in the dialog until the next
 	 * try (card 2701), its field focused again (`CurrentPasswordField`).
@@ -74,6 +79,7 @@
 		resetPasswordUserId = userId;
 		resetPasswordValue = '';
 		resetPasswordCurrent = '';
+		resetCodeCurrent = '';
 		resetRefusal = null;
 		resetKeysRead = false;
 		const opening = ++resetOpenings;
@@ -93,11 +99,13 @@
 
 	async function resetPassword() {
 		if (!resetPasswordUserId || !resetPasswordValue || resetPasswordValue.length < 8) return;
-		if (!resetPasswordCurrent) return;
+		if (!proofTyped(resetPasswordCurrent, resetCodeCurrent)) return;
 		const started = toasts.navigation();
 		// Sent, and cleared from the dialog: typed again after a refusal.
 		const currentPassword = resetPasswordCurrent;
+		const currentCode = resetCodeCurrent;
 		resetPasswordCurrent = '';
+		resetCodeCurrent = '';
 		resetRefusal = null;
 		let res: Response;
 		try {
@@ -105,12 +113,12 @@
 				? await fetch('/api/account/password', {
 						method: 'PUT',
 						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({ currentPassword, newPassword: resetPasswordValue })
+						body: JSON.stringify({ currentPassword, currentCode, newPassword: resetPasswordValue })
 					})
 				: await fetch(`/api/users/${resetPasswordUserId}/password`, {
 						method: 'PUT',
 						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({ password: resetPasswordValue, currentPassword })
+						body: JSON.stringify({ password: resetPasswordValue, currentPassword, currentCode })
 					});
 		} catch {
 			// The dialog stays open: whether the password was set is not known.
@@ -129,6 +137,7 @@
 			resetPasswordUserId = null;
 			resetPasswordValue = '';
 			resetPasswordCurrent = '';
+			resetCodeCurrent = '';
 			if (own) {
 				showToast('Password changed');
 			} else {
@@ -170,7 +179,7 @@
 				<p>This is your own account. Enter your current password and a new one. Your other sessions will be signed out.</p>
 				<!-- Sent with no endApiKeys, so the keys are kept. The Account page offers the choice. -->
 				<p>Your API keys and the webhooks you set up keep working. To end the keys and switch off those webhooks too, change your password on the <a href="/account">Account page</a>.</p>
-				<CurrentPasswordField label="Current password" bind:value={resetPasswordCurrent} refusal={resetRefusal} />
+				<CurrentPasswordField label="Current password" bind:value={resetPasswordCurrent} bind:code={resetCodeCurrent} refusal={resetRefusal} />
 			{:else}
 				<p>Enter a new password for {resetTarget?.username || 'user'}.</p>
 				{#if resetTargetKeys !== null && resetTargetKeys > 0}
@@ -184,12 +193,12 @@
 				{/if}
 				<p>They are signed out everywhere, every API key they have stops working, any invite not yet used stops working, the webhooks they set up are switched off and their report schedules are paused.</p>
 				<!-- The administrator's own password, which a reset asks for again (card 2701). -->
-				<CurrentPasswordField bind:value={resetPasswordCurrent} refusal={resetRefusal} />
+				<CurrentPasswordField bind:value={resetPasswordCurrent} bind:code={resetCodeCurrent} refusal={resetRefusal} />
 			{/if}
 			<input type="password" placeholder="New password (min 8 chars)" aria-label="New password" bind:value={resetPasswordValue} class="form-input" style="width: 100%; margin: 0 0 var(--space-md);" autocomplete="new-password" />
 			<div class="modal-actions">
-				<button class="btn-ghost" onclick={() => { resetPasswordUserId = null; resetPasswordCurrent = ''; resetRefusal = null; }}>Cancel</button>
-				<button class="btn-primary" onclick={resetPassword} disabled={resetPasswordValue.length < 8 || !resetPasswordCurrent}>{resettingOwnPassword ? 'Change Password' : 'Reset Password'}</button>
+				<button class="btn-ghost" onclick={() => { resetPasswordUserId = null; resetPasswordCurrent = ''; resetCodeCurrent = ''; resetRefusal = null; }}>Cancel</button>
+				<button class="btn-primary" onclick={resetPassword} disabled={resetPasswordValue.length < 8 || !proofTyped(resetPasswordCurrent, resetCodeCurrent)}>{resettingOwnPassword ? 'Change Password' : 'Reset Password'}</button>
 			</div>
 		</div>
 	</div>

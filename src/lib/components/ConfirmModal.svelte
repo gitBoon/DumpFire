@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { keepTab, takeFocus } from '$lib/dialog-focus';
-	import { NO_ANSWER_TRY_AGAIN, STEP_UP_MISSING, STEP_UP_SIGNED_OUT } from '$lib/step-up-words';
+	import { NO_ANSWER_TRY_AGAIN, NO_PROOF, proofTyped, STEP_UP_MISSING, STEP_UP_SIGNED_OUT, type StepUpProof } from '$lib/step-up-words';
 	import CurrentPasswordField from './CurrentPasswordField.svelte';
 
 	let {
@@ -18,20 +18,20 @@
 		confirmText?: string;
 		confirmDanger?: boolean;
 		/**
-		 * Ask for the caller's own password, for an action that asks for it
-		 * again (card 2701, decision 13): a labelled field, Confirm off until
-		 * something is typed, and Enter in it confirms.
+		 * Ask for the caller's own password and a sign-in code, for an action
+		 * that asks for them again (cards 2701 and 2770): labelled fields,
+		 * Confirm off until both are typed, and Enter confirms once they are.
 		 */
 		askPassword?: boolean;
 		/**
-		 * Confirm pressed, handed the password typed ('' with no field). It may
+		 * Confirm pressed, handed the proof typed (`NO_PROOF` with no field). It may
 		 * be awaited (card 2701, D6): while it runs both buttons are off and
 		 * Confirm says it is working, so one press sends one request. Text given
 		 * back is the server's refusal, and the dialog stays open and shows it,
-		 * the field cleared and focused; anything else, and the caller closes the
+		 * both fields cleared, the password focused; anything else, and the caller closes the
 		 * dialog. One that throws, or is rejected, is said as no answer.
 		 */
-		onConfirm: (password: string) => void | Promise<string | null | void>;
+		onConfirm: (proof: StepUpProof) => void | Promise<string | null | void>;
 		onCancel: () => void;
 	} = $props();
 
@@ -50,6 +50,8 @@
 	 * decision 12).
 	 */
 	let password = $state('');
+	/** The code typed beside it (card 2770), held and cleared as the password is. */
+	let code = $state('');
 	/**
 	 * The server asked for the password where the dialog showed no field: a
 	 * column whose cards are all archived, which the page cannot see (decision
@@ -67,6 +69,8 @@
 	 * in, and the page goes to sign in (`$lib/signed-out.ts`).
 	 */
 	let ended = $derived(refusal === STEP_UP_SIGNED_OUT);
+	/** Both the password and a code that is not blank are typed (card 2770, S1). */
+	let typed = $derived(proofTyped(password, code));
 
 	// Cancel takes the focus as the dialog opens, so Enter straight after it
 	// cancels rather than pressing the page's button behind it again; or the
@@ -90,29 +94,32 @@
 		keepTab(e, dialog, field ?? cancelButton);
 	}
 
-	/** Cancel: the password typed goes with the dialog. */
+	/** Cancel: the password and code typed go with the dialog. */
 	function cancel() {
 		password = '';
+		code = '';
 		onCancel();
 	}
 
 	/**
-	 * Confirm: the caller's `onConfirm`, handed the password, which is cleared
-	 * here as it goes. A refusal it gives back is shown, and the focus put in
+	 * Confirm: the caller's `onConfirm`, handed the proof, both fields cleared
+	 * here as it goes. Nothing is sent while either is blank, whatever key or
+	 * button asked (card 2770, S1). A refusal it gives back is shown, and the focus put in
 	 * the field to type again (`CurrentPasswordField`); a 400 asking for a
 	 * password the dialog did not ask for shows the field. An `onConfirm` that
 	 * throws, or whose promise is rejected, is said as no answer (the code
 	 * review's F9), the field focused to try again.
 	 */
 	async function confirm() {
-		if (waiting || ended || (asking && !password)) return;
-		const typed = password;
+		if (waiting || ended || (asking && !typed)) return;
+		const proof: StepUpProof = asking ? { currentPassword: password, currentCode: code } : NO_PROOF;
 		password = '';
+		code = '';
 		refusal = null;
 		waiting = true;
 		let answer: string | null | void;
 		try {
-			answer = await onConfirm(typed);
+			answer = await onConfirm(proof);
 		} catch {
 			answer = NO_ANSWER_TRY_AGAIN;
 		} finally {
@@ -147,8 +154,8 @@
 			<p class="confirm-message" id={messageId}>{message}</p>
 		{/if}
 		{#if asking}
-			<!-- The caller's own password (card 2701), with the server's refusal of it: a password manager may fill it. -->
-			<CurrentPasswordField bind:value={password} bind:this={passwordField} {refusal} readonly={waiting} onEnter={confirm} />
+			<!-- The caller's own password and a sign-in code (cards 2701, 2770), with the server's refusal: a password manager may fill it. -->
+			<CurrentPasswordField bind:value={password} bind:code bind:this={passwordField} {refusal} readonly={waiting} onEnter={confirm} />
 		{:else if refusal}
 			<p class="confirm-refusal" id={refusalId} role="alert">{refusal}</p>
 		{/if}
@@ -157,7 +164,7 @@
 			<button
 				class={confirmDanger ? 'btn-confirm-danger' : 'btn-primary'}
 				onclick={confirm}
-				disabled={waiting || ended || (asking && !password)}
+				disabled={waiting || ended || (asking && !typed)}
 				aria-busy={waiting ? 'true' : undefined}
 			>
 				{waiting ? 'Working…' : confirmText}

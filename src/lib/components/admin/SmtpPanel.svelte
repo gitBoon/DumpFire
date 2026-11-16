@@ -19,7 +19,7 @@
 	import { answerBody, failureMessage } from '$lib/api';
 	import { NO_ANSWER } from '$lib/admin/send';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
-	import { ASKS_FOR_PASSWORD, stepUpRefusal } from '$lib/step-up-words';
+	import { ASKS_FOR_PASSWORD, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
 
 	/** Who is signed in: Send Test goes to their address when no other is typed. */
 	let { currentUser }: { currentUser: PageData['currentUser'] } = $props();
@@ -139,7 +139,7 @@
 	 * refusal of the password is given back for the dialog to show; anything
 	 * else closes it, and is said below the panel as before.
 	 */
-	async function saveSmtp(currentPassword: string): Promise<string | void> {
+	async function saveSmtp(proof: StepUpProof): Promise<string | void> {
 		smtpSaving = true;
 		stopMessageTimer();
 		smtpMessage = '';
@@ -153,7 +153,8 @@
 					host: smtpHost, port: smtpPort, allowInsecure: smtpAllowInsecure,
 					user: smtpUser, pass: smtpPass,
 					fromAddress: smtpFromAddress, fromName: smtpFromName,
-					currentPassword
+					currentPassword: proof.currentPassword,
+					currentCode: proof.currentCode
 				})
 			});
 			if (res.ok) {

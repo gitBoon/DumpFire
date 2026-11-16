@@ -26,6 +26,7 @@
 	import TeamsPanel from '$lib/components/admin/TeamsPanel.svelte';
 	import DangerZonePanel from '$lib/components/admin/DangerZonePanel.svelte';
 	import { holdFocus } from '$lib/dialog-focus';
+	import type { StepUpProof } from '$lib/step-up-words';
 
 	let { data }: { data: PageData } = $props();
 
@@ -40,11 +41,11 @@
 	let superadminName = $derived(data.users.find((u) => u.role === 'superadmin')?.username ?? null);
 
 	/**
-	 * What Confirm runs, handed the password typed ('' where none was asked):
+	 * What Confirm runs, handed the proof typed (`NO_PROOF` where none was asked):
 	 * text it gives back is the server's refusal of the password, which the
 	 * dialog shows, staying open (card 2701, D6).
 	 */
-	type ConfirmedAction = (password: string) => Promise<string | null | void>;
+	type ConfirmedAction = (proof: StepUpProof) => Promise<string | null | void>;
 
 	/** Confirm modal state for destructive admin actions. */
 	let confirmAction = $state<{ show: boolean; title: string; message: string; action: ConfirmedAction; askPassword: boolean }>({
@@ -61,8 +62,8 @@
 	}
 
 	/** Confirm pressed: the action runs with the dialog open, which closes once it gives back no refusal. */
-	async function confirmed(password: string): Promise<string | void> {
-		const refusal = await confirmAction.action(password);
+	async function confirmed(proof: StepUpProof): Promise<string | void> {
+		const refusal = await confirmAction.action(proof);
 		if (typeof refusal === 'string') return refusal;
 		confirmAction.show = false;
 	}

@@ -11,6 +11,7 @@
  */
 
 import * as api from '$lib/api';
+import type { StepUpProof } from '$lib/step-up-words';
 import type { ColumnType } from '$lib/types';
 
 // ─── Board Identity ──────────────────────────────────────────────────────────
@@ -95,8 +96,9 @@ export async function updateColumn(colId: number, updates: Record<string, unknow
 
 /**
  * Deletes a column via the API, with the caller's own password where it holds
- * a card (card 2701, decision 18). Returns the answer, for the caller to check.
+ * a card, and a sign-in code (cards 2701 decision 18, 2770). Returns the
+ * answer, for the caller to check.
  */
-export async function deleteColumn(colId: number, boardId: number, currentPassword?: string): Promise<Response> {
-	return api.deleteColumn(colId, boardId, currentPassword);
+export async function deleteColumn(colId: number, boardId: number, proof?: StepUpProof): Promise<Response> {
+	return api.deleteColumn(colId, boardId, proof);
 }

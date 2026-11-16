@@ -30,7 +30,17 @@ import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import type * as Svelte from 'svelte';
 import ConfirmModal from '$lib/components/ConfirmModal.svelte';
-import { NO_ANSWER_TRY_AGAIN, STEP_UP_MISSING, STEP_UP_SIGNED_OUT, STEP_UP_WRONG } from '$lib/step-up-words';
+import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
+import { NO_ANSWER_TRY_AGAIN, NO_PROOF, STEP_UP_MISSING, STEP_UP_SIGNED_OUT, STEP_UP_WRONG, type StepUpProof } from '$lib/step-up-words';
+import { CODE, codeFieldIn, proofOf } from './helpers/step-up-code';
+
+// A bare 'svelte' gives the server's runtime, whose flushSync does nothing: the client's, by its path, for the
+// components' own imports too (card 2770's CR1, the code switch drawn before it takes the focus).
+vi.mock('svelte', async () => {
+	const { join } = await import('node:path');
+	const { pathToFileURL } = await import('node:url');
+	return await import(/* @vite-ignore */ pathToFileURL(join(process.cwd(), 'node_modules/svelte/src/index-client.js')).href);
+});
 
 // The browser's `mount`, loaded by its path: a bare 'svelte' gives the server's (see the XP bars' file).
 const clientEntry = pathToFileURL(join(process.cwd(), 'node_modules/svelte/src/index-client.js')).href;
@@ -186,12 +196,26 @@ function type(box: HTMLInputElement, text: string) {
 	flushSync();
 }
 
+/** Types `CODE` into the dialog's code field (card 2770). */
+const typeCode = (within: HTMLElement) => type(codeFieldIn(within)!, CODE);
+
+/** The switch between the authenticator's code and a recovery code (card 2770). */
+const codeSwitch = (target: HTMLElement) => target.querySelector<HTMLButtonElement>('.code-switch');
+
+/** Enter pressed in a box, bubbling as a real one does; gives back the event, to read whether its default was taken. */
+function enterIn(box: HTMLElement): KeyboardEvent {
+	const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+	box.dispatchEvent(enter);
+	flushSync();
+	return enter;
+}
+
 /** An `onConfirm` whose answer the case gives when it likes: what it was handed, and how to answer. */
 function heldConfirm() {
-	const handed: string[] = [];
+	const handed: StepUpProof[] = [];
 	const answers: Array<{ resolve: (answer: string | null | void) => void; reject: (fault: unknown) => void }> = [];
-	const fn = vi.fn((password: string) => {
-		handed.push(password);
+	const fn = vi.fn((proof: StepUpProof) => {
+		handed.push(proof);
 		return new Promise<string | null | void>((resolve, reject) => answers.push({ resolve, reject }));
 	});
 	return {
@@ -223,6 +247,7 @@ describe('the confirm dialog asks for the caller’s password (card 2701, case 2
 		expect(onConfirm).not.toHaveBeenCalled();
 
 		type(field, 'my-own-password');
+		typeCode(target);
 		expect(confirmButton(target).disabled).toBe(false);
 	});
 
@@ -231,12 +256,11 @@ describe('the confirm dialog asks for the caller’s password (card 2701, case 2
 		const target = open({ askPassword: true, onConfirm: asked.fn });
 		const field = passwordField(target)!;
 		type(field, 'my-own-password');
-		const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
-		field.dispatchEvent(enter);
-		flushSync();
+		typeCode(target);
+		const enter = enterIn(field);
 
 		expect(enter.defaultPrevented).toBe(true);
-		expect(asked.handed).toEqual(['my-own-password']);
+		expect(asked.handed).toEqual([proofOf('my-own-password')]);
 		// Cleared once sent: it is held nowhere but the request.
 		expect(field.value).toBe('');
 		asked.answer();
@@ -246,22 +270,147 @@ describe('the confirm dialog asks for the caller’s password (card 2701, case 2
 	it('clears what was typed on Cancel, sending nothing', () => {
 		const target = open({ askPassword: true });
 		type(passwordField(target)!, 'my-own-password');
+		typeCode(target);
 		cancelButton(target).click();
 		flushSync();
 
 		expect(onCancel).toHaveBeenCalledTimes(1);
 		expect(onConfirm).not.toHaveBeenCalled();
 		expect(passwordField(target)!.value).toBe('');
+		// Card 2770: the code goes with it.
+		expect(codeFieldIn(target)!.value).toBe('');
 	});
 
 	it('shows no field, and hands onConfirm an empty text, where it is not asked for: the dialogs that ask nothing are as they were', () => {
 		const target = open();
 		expect(passwordField(target)).toBeNull();
+		expect(codeFieldIn(target)).toBeNull();
 		expect(confirmButton(target).disabled).toBe(false);
 		confirmButton(target).click();
 		flushSync();
 		expect(onConfirm).toHaveBeenCalledTimes(1);
-		expect(onConfirm.mock.calls[0]).toEqual(['']);
+		// Card 2770: the proof of a dialog that asked for nothing.
+		expect(onConfirm.mock.calls[0]).toEqual([NO_PROOF]);
+	});
+});
+
+describe('the confirm dialog asks for a sign-in code beside the password (card 2770)', () => {
+	it('shows a labelled code field after the password, Confirm off with the password alone or a code of spaces, on with both; Tab from the password reaches it (T1)', () => {
+		const target = open({ askPassword: true });
+		const field = passwordField(target)!;
+		const code = codeFieldIn(target)!;
+
+		expect(code).not.toBeNull();
+		expect(target.querySelector<HTMLLabelElement>(`label[for="${code.id}"]`)?.textContent?.trim()).toBe('Code from your authenticator app');
+		expect(code.getAttribute('autocomplete')).toBe('one-time-code');
+		expect(code.getAttribute('inputmode')).toBe('numeric');
+		expect(code.getAttribute('maxlength')).toBe('7');
+		// After the password in the page, and so the next stop of a Tab from it.
+		expect(field.compareDocumentPosition(code) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+		const inputs = [...target.querySelectorAll<HTMLElement>('input, button')];
+		expect(inputs[inputs.indexOf(field) + 1]).toBe(code);
+		expect(tab()).toBe(false);
+
+		type(field, 'my-own-password');
+		expect(confirmButton(target).disabled).toBe(true);
+		type(code, '   ');
+		expect(confirmButton(target).disabled).toBe(true);
+		type(code, CODE);
+		expect(confirmButton(target).disabled).toBe(false);
+	});
+
+	it('hands the proof as typed, both fields empty after; Enter in the password with the code blank moves to the code and sends nothing, Enter in the code confirms; on the bare field too (T2)', async () => {
+		const asked = heldConfirm();
+		const target = open({ askPassword: true, onConfirm: asked.fn });
+		const field = passwordField(target)!;
+		const code = codeFieldIn(target)!;
+		type(field, 'my-own-password');
+
+		expect(enterIn(field).defaultPrevented).toBe(true);
+		expect(document.activeElement).toBe(code);
+		expect(asked.fn).not.toHaveBeenCalled();
+
+		type(code, '123 456');
+		expect(enterIn(code).defaultPrevented).toBe(true);
+		expect(asked.handed).toEqual([{ currentPassword: 'my-own-password', currentCode: '123 456' }]);
+		expect(field.value).toBe('');
+		expect(code.value).toBe('');
+		asked.answer();
+		await macrotask();
+		close();
+
+		// The bare field, with no `onEnter` (UX7): Enter in the password still moves to the code.
+		const bare = document.createElement('div');
+		document.body.appendChild(bare);
+		const component = mount(CurrentPasswordField, { target: bare, props: { value: '', code: '' } as never });
+		flushSync();
+		const bareField = passwordField(bare)!;
+		bareField.focus();
+		expect(enterIn(bareField).defaultPrevented).toBe(true);
+		expect(document.activeElement).toBe(codeFieldIn(bare));
+		unmount(component);
+	});
+
+	it('the switch turns the same field to a recovery code, emptied and focused at once, handed as typed, and back; off while the answer is awaited (T3)', async () => {
+		const asked = heldConfirm();
+		const target = open({ askPassword: true, onConfirm: asked.fn });
+		const code = codeFieldIn(target)!;
+		const label = () => target.querySelector<HTMLLabelElement>(`label[for="${code.id}"]`)?.textContent?.trim();
+		type(code, '12');
+
+		expect(codeSwitch(target)!.textContent!.trim()).toBe('Use a recovery code instead');
+		// What the field says of its keyboard at the moment it takes the focus (the code review's CR1).
+		const atFocus: Array<{ autocomplete: string | null; inputmode: string | null; maxlength: string | null; value: string }> = [];
+		const onFocus = () =>
+			atFocus.push({ autocomplete: code.getAttribute('autocomplete'), inputmode: code.getAttribute('inputmode'), maxlength: code.getAttribute('maxlength'), value: code.value });
+		code.addEventListener('focus', onFocus);
+		codeSwitch(target)!.click();
+		// Focused in the click's own handler, before any flush of the case's: a phone keeps its keyboard up, and opens the right one.
+		expect(document.activeElement).toBe(code);
+		expect(atFocus).toEqual([{ autocomplete: 'off', inputmode: 'text', maxlength: null, value: '' }]);
+		code.removeEventListener('focus', onFocus);
+		flushSync();
+		expect(codeFieldIn(target)).toBe(code);
+		expect(code.value).toBe('');
+		expect(label()).toBe('Recovery code');
+		expect(code.getAttribute('autocomplete')).toBe('off');
+		expect(code.getAttribute('inputmode')).toBe('text');
+		expect(code.hasAttribute('maxlength')).toBe(false);
+		expect(codeSwitch(target)!.textContent!.trim()).toBe('Use a code from your authenticator app instead');
+
+		type(passwordField(target)!, 'my-own-password');
+		type(code, 'abcd-efgh-ijkl-mnop');
+		confirmButton(target).click();
+		flushSync();
+		expect(asked.handed).toEqual([{ currentPassword: 'my-own-password', currentCode: 'abcd-efgh-ijkl-mnop' }]);
+		// Off while the answer is awaited.
+		expect(codeSwitch(target)!.disabled).toBe(true);
+		asked.answer(STEP_UP_WRONG);
+		await macrotask();
+		flushSync();
+		expect(codeSwitch(target)!.disabled).toBe(false);
+
+		codeSwitch(target)!.click();
+		flushSync();
+		expect(label()).toBe('Code from your authenticator app');
+		expect(code.getAttribute('autocomplete')).toBe('one-time-code');
+		expect(code.getAttribute('inputmode')).toBe('numeric');
+		expect(code.getAttribute('maxlength')).toBe('7');
+	});
+
+	it('opened again after closing in recovery mode, is back in the authenticator mode with the field empty (T4)', () => {
+		let target = open({ askPassword: true });
+		codeSwitch(target)!.click();
+		flushSync();
+		type(codeFieldIn(target)!, 'abcd');
+		expect(codeFieldIn(target)!.getAttribute('autocomplete')).toBe('off');
+		close();
+
+		target = open({ askPassword: true });
+		const code = codeFieldIn(target)!;
+		expect(code.value).toBe('');
+		expect(code.getAttribute('autocomplete')).toBe('one-time-code');
+		expect(target.querySelector<HTMLLabelElement>(`label[for="${code.id}"]`)?.textContent?.trim()).toBe('Code from your authenticator app');
 	});
 });
 
@@ -270,6 +419,7 @@ describe('the confirm dialog waits for its answer and keeps a refusal in it (car
 		const asked = heldConfirm();
 		const target = open({ askPassword: true, onConfirm: asked.fn });
 		type(passwordField(target)!, 'my-own-password');
+		typeCode(target);
 		confirmButton(target).click();
 		flushSync();
 
@@ -279,6 +429,7 @@ describe('the confirm dialog waits for its answer and keeps a refusal in it (car
 		expect(confirmButton(target).textContent!.trim()).toBe('Working…');
 		expect(confirmButton(target).getAttribute('aria-busy')).toBe('true');
 		type(passwordField(target)!, 'again');
+		typeCode(target);
 		confirmButton(target).click();
 		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
 		flushSync();
@@ -297,6 +448,7 @@ describe('the confirm dialog waits for its answer and keeps a refusal in it (car
 		const target = open({ askPassword: true, onConfirm: asked.fn });
 		const field = passwordField(target)!;
 		type(field, 'my-own-password');
+		typeCode(target);
 		confirmButton(target).click();
 		flushSync();
 		asked.fail(new TypeError('Failed to fetch'));
@@ -306,6 +458,8 @@ describe('the confirm dialog waits for its answer and keeps a refusal in it (car
 		expect(target.querySelector('[role="alert"]')?.textContent).toBe(NO_ANSWER_TRY_AGAIN);
 		expect(target.querySelector('[role="dialog"]')).not.toBeNull();
 		expect(field.value).toBe('');
+		// Card 2770: the code is cleared with it.
+		expect(codeFieldIn(target)!.value).toBe('');
 		expect(document.activeElement).toBe(field);
 		expect(onCancel).not.toHaveBeenCalled();
 	});
@@ -314,6 +468,7 @@ describe('the confirm dialog waits for its answer and keeps a refusal in it (car
 		const asked = heldConfirm();
 		const target = open({ askPassword: true, onConfirm: asked.fn });
 		type(passwordField(target)!, 'a-wrong-one');
+		typeCode(target);
 		confirmButton(target).click();
 		flushSync();
 		asked.answer(STEP_UP_SIGNED_OUT);
@@ -322,6 +477,9 @@ describe('the confirm dialog waits for its answer and keeps a refusal in it (car
 
 		expect(target.querySelector('[role="alert"]')?.textContent).toBe(STEP_UP_SIGNED_OUT);
 		expect(passwordField(target)!.disabled).toBe(true);
+		// Card 2770: the code field and its switch are off too.
+		expect(codeFieldIn(target)!.disabled).toBe(true);
+		expect(codeSwitch(target)!.disabled).toBe(true);
 		expect(confirmButton(target).disabled).toBe(true);
 	});
 
@@ -330,6 +488,7 @@ describe('the confirm dialog waits for its answer and keeps a refusal in it (car
 		const target = open({ askPassword: true, onConfirm: asked.fn });
 		const field = passwordField(target)!;
 		type(field, 'a-wrong-one');
+		typeCode(target);
 		confirmButton(target).click();
 		flushSync();
 		asked.answer(STEP_UP_WRONG);
@@ -340,16 +499,20 @@ describe('the confirm dialog waits for its answer and keeps a refusal in it (car
 		expect(alert?.textContent).toBe(STEP_UP_WRONG);
 		expect(target.querySelector('[role="dialog"]')).not.toBeNull();
 		expect(field.value).toBe('');
+		// Card 2770: the code is cleared too, and named by the same alert.
+		expect(codeFieldIn(target)!.value).toBe('');
+		expect(codeFieldIn(target)!.getAttribute('aria-describedby')).toBe(alert!.id);
 		expect(document.activeElement).toBe(field);
 		expect(field.getAttribute('aria-describedby')).toBe(alert!.id);
 		expect(confirmButton(target).disabled).toBe(true);
 
 		type(field, 'the-right-one');
+		type(codeFieldIn(target)!, '654321');
 		confirmButton(target).click();
 		flushSync();
 		// The last refusal goes as the next Confirm is sent.
 		expect(target.querySelector('[role="alert"]')).toBeNull();
-		expect(asked.handed).toEqual(['a-wrong-one', 'the-right-one']);
+		expect(asked.handed).toEqual([proofOf('a-wrong-one'), { currentPassword: 'the-right-one', currentCode: '654321' }]);
 		asked.answer();
 		await macrotask();
 	});
@@ -359,12 +522,13 @@ describe('the confirm dialog waits for its answer and keeps a refusal in it (car
 		const closing = vi.fn();
 		const target = open({
 			askPassword: true,
-			onConfirm: async (password: string) => {
-				await asked.fn(password);
+			onConfirm: async (proof: StepUpProof) => {
+				await asked.fn(proof);
 				closing();
 			}
 		});
 		type(passwordField(target)!, 'the-right-one');
+		typeCode(target);
 		confirmButton(target).click();
 		asked.answer(null);
 		await macrotask();
@@ -384,7 +548,7 @@ describe('the confirm dialog waits for its answer and keeps a refusal in it (car
 		expect(passwordField(target)).toBeNull();
 		confirmButton(target).click();
 		flushSync();
-		expect(asked.handed).toEqual(['']);
+		expect(asked.handed).toEqual([NO_PROOF]);
 		asked.answer(STEP_UP_MISSING);
 		await macrotask();
 		flushSync();
@@ -394,10 +558,15 @@ describe('the confirm dialog waits for its answer and keeps a refusal in it (car
 		expect(document.activeElement).toBe(field);
 		expect(target.querySelector('[role="alert"]')?.textContent).toBe(STEP_UP_MISSING);
 		expect(confirmButton(target).disabled).toBe(true);
+		// Card 2770: both fields shown, and Confirm off until both are typed.
+		expect(codeFieldIn(target)).not.toBeNull();
 		type(field, 'my-own-password');
+		expect(confirmButton(target).disabled).toBe(true);
+		typeCode(target);
+		expect(confirmButton(target).disabled).toBe(false);
 		confirmButton(target).click();
 		flushSync();
-		expect(asked.handed).toEqual(['', 'my-own-password']);
+		expect(asked.handed).toEqual([NO_PROOF, proofOf('my-own-password')]);
 		asked.answer();
 		await macrotask();
 	});

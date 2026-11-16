@@ -32,7 +32,7 @@
 	import { holdFocus } from '$lib/dialog-focus';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
-	import { ASKS_FOR_PASSWORD, CONFIRMATION_HEADER, stepUpRefusal } from '$lib/step-up-words';
+	import { ASKS_FOR_PASSWORD, CONFIRMATION_HEADER, proofTyped, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
 
 	/** This instance's default way to restore, from the page's load. */
 	let { importOutsideDefault }: { importOutsideDefault: 'keep' | 'off' } = $props();
@@ -191,14 +191,14 @@
 	 * decision 17), and the file saved from the answer. A refusal of the
 	 * password is given back for the dialog to show; anything else closes it.
 	 */
-	async function exportDatabase(currentPassword: string): Promise<string | void> {
+	async function exportDatabase(proof: StepUpProof): Promise<string | void> {
 		exporting = true;
 		const started = toasts.navigation();
 		try {
 			const res = await fetch('/api/admin/export', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ currentPassword })
+				body: JSON.stringify({ currentPassword: proof.currentPassword, currentCode: proof.currentCode })
 			});
 			const refusal = await stepUpRefusal(res);
 			if (refusal !== null) return refusal;
@@ -250,6 +250,8 @@
 	 * cancelled.
 	 */
 	let importPassword = $state('');
+	/** The sign-in code typed beside it (card 2770), held and cleared as the password is. */
+	let importCode = $state('');
 	/** The confirm's refusal, said in the dialog until the next Confirm. */
 	let importRefusal = $state<string | null>(null);
 	/** The confirm is on its way: Confirm and Cancel are off, so one press sends one request. */
@@ -312,6 +314,7 @@
 		importFile = { file, body };
 		importOutside = importOutsideDefault;
 		importPassword = '';
+		importCode = '';
 		importRefusal = null;
 		showImportDialog = true;
 	}
@@ -320,6 +323,7 @@
 	function cancelImportDialog() {
 		if (importConfirming) return;
 		importPassword = '';
+		importCode = '';
 		importRefusal = null;
 		importFile = null;
 		showImportDialog = false;
@@ -334,9 +338,11 @@
 	 */
 	async function confirmImport() {
 		const chosen = importFile;
-		if (!importPassword || importConfirming || !chosen) return;
+		if (!proofTyped(importPassword, importCode) || importConfirming || !chosen) return;
 		const currentPassword = importPassword;
+		const currentCode = importCode;
 		importPassword = '';
+		importCode = '';
 		importRefusal = null;
 		importConfirming = true;
 		try {
@@ -345,7 +351,7 @@
 				res = await fetch('/api/admin/import/confirm', {
 					method: 'POST',
 					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ currentPassword })
+					body: JSON.stringify({ currentPassword, currentCode })
 				});
 			} catch {
 				importRefusal = 'No answer from the server, so the import was not confirmed. Nothing was sent: try again.';
@@ -594,14 +600,14 @@
 				{/if}
 			</div>
 			<!-- The caller's own password (card 2701), sent alone to the confirm; the backup is uploaded once it is accepted. -->
-			<CurrentPasswordField bind:value={importPassword} refusal={importRefusal} readonly={importConfirming} onEnter={confirmImport} />
+			<CurrentPasswordField bind:value={importPassword} bind:code={importCode} refusal={importRefusal} readonly={importConfirming} onEnter={confirmImport} />
 			<p class="import-default-note">{ASKS_FOR_PASSWORD} Confirm checks it, and then sends the backup.</p>
 			<div class="modal-actions">
 				<button class="btn-ghost" onclick={cancelImportDialog} disabled={importConfirming}>Cancel</button>
 				<button
 					class="btn-danger-solid"
 					onclick={confirmImport}
-					disabled={!importPassword || importConfirming}
+					disabled={!proofTyped(importPassword, importCode) || importConfirming}
 					aria-busy={importConfirming ? 'true' : undefined}
 				>{importConfirming ? 'Working…' : 'Confirm'}</button>
 			</div>

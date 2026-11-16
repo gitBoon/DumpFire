@@ -106,10 +106,12 @@ import { endsTheSession, watchForSignOut, type Fetch } from '$lib/signed-out';
 import {
 	CONFIRMATION_HEADER,
 	CONFIRMATION_REFUSED,
+	STEP_UP_CODE_FIELD,
 	STEP_UP_FIELD,
 	STEP_UP_MISSING,
 	STEP_UP_SIGNED_OUT,
 	STEP_UP_WRONG,
+	proofTyped,
 	refusalWatch,
 	stepUpRefusal
 } from '$lib/step-up-words';
@@ -118,6 +120,7 @@ import type { CardType, ColumnType } from '$lib/types';
 import { isOptionsColumn, isUpstreamColumn } from '$lib/column-role';
 import { isCardBlocked, subBoardIncompleteCount } from '$lib/utils/card-utils';
 import { makeUser, resetDb } from './helpers/fixtures';
+import { CODE } from './helpers/step-up-code';
 
 const ROOT = process.cwd();
 
@@ -1099,7 +1102,7 @@ describe('the admin page, src/routes/admin/+page.svelte', () => {
 
 	it('offers no second removal of a backup destination while the first is being saved', () => {
 		// Two quick removals, the first refused, put the first's list back over the second's.
-		const button = everywhere.split('\n').filter((line) => line.includes('removeDestination(dest.name, password)'));
+		const button = everywhere.split('\n').filter((line) => line.includes('removeDestination(dest.name, proof)'));
 		expect(button).toHaveLength(1);
 		expect(scheduledMarkup).toContain(button[0]);
 		expect(button[0]).toContain('disabled={backupSaving}');
@@ -1487,7 +1490,7 @@ describe('the admin page’s password dialog, src/lib/components/admin/ResetPass
 
 		expect(around(line).at(-1)).toEqual({ condition: 'resettingOwnPassword', inElse: false });
 		// Card 2701 (C2): a reset of another account's asks for the administrator's own password too.
-		expect(bodiesSent(functionNamed(page, 'resetPassword'))).toEqual([['currentPassword', 'newPassword'], ['password', 'currentPassword']]);
+		expect(bodiesSent(functionNamed(page, 'resetPassword'))).toEqual([['currentPassword', 'currentCode', 'newPassword'], ['password', 'currentPassword', 'currentCode']]);
 	});
 
 	it('says beforehand how many API keys a reset ends, from the count the page was loaded with', () => {
@@ -3750,15 +3753,19 @@ describe('every page write says it is JSON, read from the source and failing clo
 // 400 every time. Every `fetch` and `jsonRequest` of the client's files is read
 // as `METHOD /route` (each `${…}` of a path standing for `[id]`, the query left
 // off), and each that is on the list, its keys read with every `[param]` as
-// `[id]` (card 2697, Q11), must send `currentPassword` in a literal body, but a
+// `[id]` (card 2697, Q11), must send `currentPassword` in a literal body, and
+// beside it `currentCode` taken from the dialog's proof (card 2770, D7), but a
 // send to an action that asks only with named keys whose body holds none of
 // them (`ASKS_ONLY_WITH`, Q21); the import's upload, whose body is the file,
 // its confirmation in the `X-DumpFire-Confirmation` header. One whose address
 // or method cannot be read fails, unless it is one of the named few that are
 // no listed action.
 
-/** What a page sends, read from a `fetch` or `jsonRequest` call: `METHOD /route`, and its body's and headers' keys. */
-type ListedSend = { at: string; action: string | null; bodyKeys: string[] | null; headerKeys: string[] };
+/**
+ * What a page sends, read from a `fetch` or `jsonRequest` call: `METHOD /route`, its body's and headers' keys,
+ * and whether its body's `currentCode` is the one the dialog's proof holds (card 2770, D7).
+ */
+type ListedSend = { at: string; action: string | null; bodyKeys: string[] | null; headerKeys: string[]; codeFromProof: boolean };
 
 /** The routes an address may be, `${…}` read as `[id]` and the query left off; null where it is not plainly text. */
 function routesOf(input: ts.Expression | undefined): string[] | null {
@@ -3804,12 +3811,56 @@ function keysOf(given: ts.Expression | undefined): string[] | null {
 	return keys;
 }
 
-/** The keys of the object a `body: JSON.stringify({ … })` sends, or null where it is not that. */
-function bodyKeysOf(body: ts.Expression | undefined): string[] | null {
-	if (body === undefined) return null;
+/** Whether an expression is `undefined` itself, the one value a sender may put where it sends no code. */
+const isUndefined = (given: ts.Expression) => {
+	const node = bare(given);
+	return ts.isIdentifier(node) && node.text === 'undefined';
+};
+
+/**
+ * Whether a body's `currentCode` value is the one the dialog's proof holds
+ * (card 2770, D7, the plan review's S2): an identifier named `currentCode`, a
+ * property access (`.` or `?.`) named `currentCode`, `X || undefined` or
+ * `X ?? undefined`, or `c ? X : undefined` and `c ? undefined : X`, with `X`
+ * from the proof, parentheses and `as` taken off. Anything else is not: a
+ * literal, `undefined` alone, a call, or a name such as `code` (Google
+ * Drive's own code, sent beside it).
+ */
+function fromTheProof(given: ts.Expression): boolean {
+	const node = bare(given);
+	if (ts.isIdentifier(node)) return node.text === STEP_UP_CODE_FIELD;
+	if (ts.isPropertyAccessExpression(node)) return node.name.text === STEP_UP_CODE_FIELD;
+	if (ts.isBinaryExpression(node)) {
+		const or = node.operatorToken.kind === ts.SyntaxKind.BarBarToken || node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken;
+		return or && isUndefined(node.right) && fromTheProof(node.left);
+	}
+	if (ts.isConditionalExpression(node)) {
+		return (fromTheProof(node.whenTrue) && isUndefined(node.whenFalse)) || (isUndefined(node.whenTrue) && fromTheProof(node.whenFalse));
+	}
+	return false;
+}
+
+/** Whether an object literal's `currentCode` is from the proof (`fromTheProof`): false where it has none, or is not an object literal. */
+function codeFromProofIn(given: ts.Expression | undefined): boolean {
+	if (given === undefined) return false;
+	const node = bare(given);
+	if (!ts.isObjectLiteralExpression(node)) return false;
+	return node.properties.some(
+		(property) =>
+			keyOf(property) === STEP_UP_CODE_FIELD &&
+			(ts.isShorthandPropertyAssignment(property) || (ts.isPropertyAssignment(property) && fromTheProof(property.initializer)))
+	);
+}
+
+/**
+ * The keys of the object a `body: JSON.stringify({ … })` sends, or null where
+ * it is not that; and whether its `currentCode` is from the proof (card 2770).
+ */
+function bodyKeysOf(body: ts.Expression | undefined): { keys: string[] | null; codeFromProof: boolean } {
+	if (body === undefined) return { keys: null, codeFromProof: false };
 	const node = bare(body);
-	if (!ts.isCallExpression(node) || node.expression.getText() !== 'JSON.stringify') return null;
-	return keysOf(node.arguments[0]);
+	if (!ts.isCallExpression(node) || node.expression.getText() !== 'JSON.stringify') return { keys: null, codeFromProof: false };
+	return { keys: keysOf(node.arguments[0]), codeFromProof: codeFromProofIn(node.arguments[0]) };
 }
 
 /**
@@ -3846,10 +3897,12 @@ function listedSendsIn(file: string, source: string): ListedSend[] {
 				const routes = routesOf(node.arguments[0]);
 				let methods: string[] | null = null;
 				let bodyKeys: string[] | null = null;
+				let codeFromProof = false;
 				let headerKeys: string[] = [];
 				if (node.expression.getText() === 'jsonRequest') {
 					methods = methodsOf(node.arguments[1]);
 					bodyKeys = node.arguments[2] === undefined ? [] : keysOf(node.arguments[2]);
+					codeFromProof = codeFromProofIn(node.arguments[2]);
 					headerKeys = ['Content-Type'];
 				} else {
 					const init = node.arguments[1] && bare(node.arguments[1]);
@@ -3862,13 +3915,13 @@ function listedSendsIn(file: string, source: string): ListedSend[] {
 							if (key === null) methods = null;
 							const value = ts.isPropertyAssignment(property) ? property.initializer : undefined;
 							if (key === 'method') methods = methodsOf(value);
-							if (key === 'body') bodyKeys = bodyKeysOf(value);
+							if (key === 'body') ({ keys: bodyKeys, codeFromProof } = bodyKeysOf(value));
 							if (key === 'headers') headerKeys = headerKeysOf(value) ?? [];
 						}
 					}
 				}
-				if (routes === null || methods === null) found.push({ at, action: null, bodyKeys, headerKeys });
-				else for (const method of methods) for (const route of routes) found.push({ at, action: `${method} ${route}`, bodyKeys, headerKeys });
+				if (routes === null || methods === null) found.push({ at, action: null, bodyKeys, headerKeys, codeFromProof });
+				else for (const method of methods) for (const route of routes) found.push({ at, action: `${method} ${route}`, bodyKeys, headerKeys, codeFromProof });
 			}
 			ts.forEachChild(node, visit);
 		};
@@ -3915,7 +3968,11 @@ const ASKS_ONLY_WITH: Readonly<Record<string, readonly string[]>> = {
 	'PUT /api/people/[id]': ['email', 'userId']
 };
 
-/** The sends of a source that would be refused for want of the password or the confirmation, and those that cannot be read. */
+/**
+ * The sends of a source that would be refused for want of the password, the
+ * code beside it (or one not from the proof, card 2770) or the confirmation,
+ * and those that cannot be read.
+ */
 function unaskedIn(sends: ListedSend[]): string[] {
 	const listed = new Map(Object.keys(STEP_UP_ACTIONS).map((key) => [asSent(key), key]));
 	return sends.flatMap((send) => {
@@ -3928,7 +3985,11 @@ function unaskedIn(sends: ListedSend[]): string[] {
 		if (key === undefined) return [];
 		const onlyWith = ASKS_ONLY_WITH[key];
 		if (onlyWith !== undefined && send.bodyKeys !== null && !send.bodyKeys.some((field) => onlyWith.includes(field))) return [];
-		return send.bodyKeys?.includes(STEP_UP_FIELD) ? [] : [`${send.at}: no ${STEP_UP_FIELD} for ${key}`];
+		const faults: string[] = [];
+		if (!send.bodyKeys?.includes(STEP_UP_FIELD)) faults.push(`no ${STEP_UP_FIELD} for ${key}`);
+		if (!send.bodyKeys?.includes(STEP_UP_CODE_FIELD)) faults.push(`no ${STEP_UP_CODE_FIELD} for ${key}`);
+		else if (!send.codeFromProof) faults.push(`${STEP_UP_CODE_FIELD} not from the proof for ${key}`);
+		return faults.map((fault) => `${send.at}: ${fault}`);
 	});
 }
 
@@ -3964,12 +4025,19 @@ describe('every page write of an action that asks for the password sends it, rea
 
 		expect(unaskedIn(listedSendsIn('src/lib/x.ts', source))).toEqual([
 			"src/lib/x.ts › (top) › fetch('/api/admin/purge-archived'): no currentPassword for POST /api/admin/purge-archived",
+			"src/lib/x.ts › (top) › fetch('/api/admin/purge-archived'): no currentCode for POST /api/admin/purge-archived",
 			'src/lib/x.ts › (top) › fetch(`/api/boards/${id}`): no currentPassword for DELETE /api/boards/[id]',
+			'src/lib/x.ts › (top) › fetch(`/api/boards/${id}`): no currentCode for DELETE /api/boards/[id]',
 			'src/lib/x.ts › (top) › fetch(`/api/users/${id}`): no currentPassword for PUT /api/users/[id]',
+			'src/lib/x.ts › (top) › fetch(`/api/users/${id}`): no currentCode for PUT /api/users/[id]',
 			'src/lib/x.ts › (top) › jsonRequest(`/api/columns/${colId}`): no currentPassword for DELETE /api/columns/[id]',
+			'src/lib/x.ts › (top) › jsonRequest(`/api/columns/${colId}`): no currentCode for DELETE /api/columns/[id]',
 			'src/lib/x.ts › (top) › fetch(`/api/decisions/${id}/participants/${p}/address`): no currentPassword for PUT /api/decisions/[id]/participants/[participantId]/address',
+			'src/lib/x.ts › (top) › fetch(`/api/decisions/${id}/participants/${p}/address`): no currentCode for PUT /api/decisions/[id]/participants/[participantId]/address',
 			'src/lib/x.ts › (top) › fetch(`/api/people/${id}`): no currentPassword for PUT /api/people/[id]',
-			'src/lib/x.ts › (top) › fetch(`/api/people/${id}`): no currentPassword for PUT /api/people/[id]'
+			'src/lib/x.ts › (top) › fetch(`/api/people/${id}`): no currentCode for PUT /api/people/[id]',
+			'src/lib/x.ts › (top) › fetch(`/api/people/${id}`): no currentPassword for PUT /api/people/[id]',
+			'src/lib/x.ts › (top) › fetch(`/api/people/${id}`): no currentCode for PUT /api/people/[id]'
 		]);
 	});
 
@@ -3993,20 +4061,48 @@ describe('every page write of an action that asks for the password sends it, rea
 
 	it('(d) lets through a listed write with the password, a conditional one, an import with its confirmation, and every read', () => {
 		const source = [
-			"fetch('/api/admin/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword }) });",
-			"fetch('/api/admin/backup', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ destinations: d ? list : undefined, currentPassword: d ? currentPassword : undefined }) });",
+			"fetch('/api/admin/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword, currentCode }) });",
+			"fetch('/api/admin/backup', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ destinations: d ? list : undefined, currentPassword: d ? currentPassword : undefined, currentCode: d ? currentCode : undefined }) });",
 			"fetch(`/api/admin/import?outside=${o}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-DumpFire-Confirmation': c }, body });",
 			"fetch(`/api/admin/import?outside=${o}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', [CONFIRMATION_HEADER]: c }, body });",
 			"fetch('/api/admin/backup');",
 			"fetch(`/api/users/${id}`);",
-			"jsonRequest(`/api/boards/${boardId}`, 'DELETE', { currentPassword });",
+			"jsonRequest(`/api/boards/${boardId}`, 'DELETE', { currentPassword, currentCode });",
 			// Card 2697 (Q21): a person's status alone asks nothing; an address sent with the password.
 			"fetch(`/api/people/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) });",
-			"fetch(`/api/people/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, currentPassword }) });",
-			"fetch(`/api/decisions/${d}/participants/${p}/account`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ account, currentPassword }) });"
+			"fetch(`/api/people/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, currentPassword, currentCode: proof.currentCode }) });",
+			"fetch(`/api/decisions/${d}/participants/${p}/account`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ account, currentPassword, currentCode: proof?.currentCode || undefined }) });"
 		].join('\n');
 
 		expect(unaskedIn(listedSendsIn('src/lib/x.ts', source))).toEqual([]);
+	});
+
+	// Card 2770 (D7, T7): the code is sent beside the password, and only the one the dialog's proof holds.
+	it('(e) reports a listed write with no currentCode or one not from the proof, and lets through each one from it', () => {
+		const send = (body: string) => `fetch('/api/admin/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(${body}) });`;
+		const reported = [
+			'{ currentPassword }',
+			'{ currentPassword, currentCode: undefined }',
+			"{ currentPassword, currentCode: '' }",
+			// Google Drive's own code, which the Connect sends beside the step-up's (S2).
+			'{ code, state, currentPassword, currentCode: code }'
+		];
+		const passed = [
+			'{ currentPassword, currentCode }',
+			'{ currentPassword: proof.currentPassword, currentCode: proof.currentCode }',
+			'{ currentPassword, currentCode: c ? currentCode : undefined }',
+			'{ currentPassword, currentCode: proof?.currentCode || undefined }'
+		];
+
+		expect(unaskedIn(listedSendsIn('src/lib/x.ts', reported.map(send).join('\n')))).toEqual([
+			"src/lib/x.ts › (top) › fetch('/api/admin/reset'): no currentCode for POST /api/admin/reset",
+			"src/lib/x.ts › (top) › fetch('/api/admin/reset'): currentCode not from the proof for POST /api/admin/reset",
+			"src/lib/x.ts › (top) › fetch('/api/admin/reset'): currentCode not from the proof for POST /api/admin/reset",
+			"src/lib/x.ts › (top) › fetch('/api/admin/reset'): currentCode not from the proof for POST /api/admin/reset"
+		]);
+		expect(unaskedIn(listedSendsIn('src/lib/x.ts', passed.map(send).join('\n')))).toEqual([]);
+		// And the real source, every listed send of every page.
+		expect(unaskedIn(sends)).toEqual([]);
 	});
 });
 
@@ -6243,7 +6339,7 @@ describe('the admin page’s invite whose mail was not sent, src/lib/components/
 		expect(functionNamed(tree, 'askResetTwoStep').body!.statements[0].getText()).toBe('if (inviteInFlight !== null || inviteLink !== null) return;');
 		// And Create waits for the caller's own password too (card 2701).
 		expect(markup).toContain(
-			'onclick={createUser} disabled={creatingUser || inviteInFlight !== null || inviteLink !== null || !newUsername || !newEmail || !newUserCurrentPassword}>'
+			'onclick={createUser} disabled={creatingUser || inviteInFlight !== null || inviteLink !== null || !newUsername || !newEmail || !proofTyped(newUserCurrentPassword, newUserCurrentCode)}>'
 		);
 	});
 
@@ -6337,7 +6433,7 @@ describe('the Google Drive Connect’s paste box, src/lib/components/admin/GDriv
 		expect(fn.getText()).toContain("const code = address?.searchParams.get('code');");
 		expect(fn.getText()).toContain("const state = address?.searchParams.get('state');");
 		// With the caller's own password (card 2701).
-		expect(fn.getText()).toContain('body: JSON.stringify({ code, state, destName: gdriveConnecting, currentPassword })');
+		expect(fn.getText()).toContain('body: JSON.stringify({ code, state, destName: gdriveConnecting, currentPassword, currentCode })');
 		// The pasted text is no longer sent as the code when it is not an address.
 		expect(fn.getText()).not.toContain('not a URL, use as-is');
 	});
@@ -6417,8 +6513,9 @@ describe('the Google Drive Connect’s paste box, src/lib/components/admin/GDriv
 			'loadBackupConfig',
 			'tick',
 			'focused',
+			'proofTyped',
 			"let gdriveConnecting = '', gdriveAuthCode = 'old paste', gdriveAuthUrl = '', gdriveBlocked = false, gdriveAttempt = 0, gdriveExchanging = false;\n" +
-				"let gdrivePassword = '', gdriveRefusal = null;\n" +
+				"let gdrivePassword = '', gdriveStepUpCode = '', gdriveRefusal = null;\n" +
 				'const gdrivePasswordField = { focus: focused };\n' +
 				"const PASTE_WHOLE_ADDRESS = 'Paste the whole address.';\n" +
 				`${js}\n` +
@@ -6428,17 +6525,19 @@ describe('the Google Drive Connect’s paste box, src/lib/components/admin/GDriv
 				'\tstate: () => ({ connecting: gdriveConnecting, code: gdriveAuthCode, authUrl: gdriveAuthUrl, blocked: gdriveBlocked }),\n' +
 				'\tpaste: (text) => { gdriveAuthCode = text; },\n' +
 				'\ttypePassword: (text) => { gdrivePassword = text; },\n' +
-				'\tpassword: () => ({ typed: gdrivePassword, refusal: gdriveRefusal }),\n' +
+				'\ttypeCode: (text) => { gdriveStepUpCode = text; },\n' +
+				'\tpassword: () => ({ typed: gdrivePassword, code: gdriveStepUpCode, refusal: gdriveRefusal }),\n' +
 				'\texchange: () => exchangeGDriveCode(),\n' +
 				'\texchanging: () => gdriveExchanging\n' +
 				'};'
-		)(fetch, window, showToast, { navigation: () => 7 }, failureMessage, answerBody, sentAsking, loadBackupConfig, async () => {}, focused) as {
+		)(fetch, window, showToast, { navigation: () => 7 }, failureMessage, answerBody, sentAsking, loadBackupConfig, async () => {}, focused, proofTyped) as {
 			connect: (name: string) => Promise<void>;
 			cancel: () => void;
 			state: () => { connecting: string; code: string; authUrl: string; blocked: boolean };
 			paste: (text: string) => void;
 			typePassword: (text: string) => void;
-			password: () => { typed: string; refusal: string | null };
+			typeCode: (text: string) => void;
+			password: () => { typed: string; code: string; refusal: string | null };
 			exchange: () => Promise<void>;
 			exchanging: () => boolean;
 		};
@@ -6595,6 +6694,7 @@ describe('the Google Drive Connect’s paste box, src/lib/components/admin/GDriv
 		await done;
 		page.paste(`http://localhost/?state=${state}&code=c-${state}`);
 		page.typePassword('my-own-password');
+		page.typeCode(CODE);
 	}
 
 	it('ends the exchange at a Cancel, and an exchange answering after a Cancel leaves the next Connect’s box and its GET alone (the card 2266 review)', async () => {
@@ -6648,11 +6748,12 @@ describe('the Google Drive Connect’s paste box, src/lib/components/admin/GDriv
 		const refused = page.exchange();
 		// Cleared from the box as it is sent.
 		expect(page.password().typed).toBe('');
+		expect(page.password().code).toBe('');
 
 		page.posts[0]('Password is incorrect. Nothing was changed.');
 		await refused;
 		expect(page.state()).toEqual({ connecting: 'Drive', code: 'http://localhost/?state=s1&code=c-s1', authUrl: CONSENT, blocked: false });
-		expect(page.password()).toEqual({ typed: '', refusal: 'Password is incorrect. Nothing was changed.' });
+		expect(page.password()).toEqual({ typed: '', code: '', refusal: 'Password is incorrect. Nothing was changed.' });
 		expect(page.exchanging()).toBe(false);
 		// The focus is put back by the field the refusal is handed to (`CurrentPasswordField`, the code
 		// review's F7), held mounted in tests/confirm-modal.svelte.test.ts; the script does not reach for it.
@@ -6662,13 +6763,14 @@ describe('the Google Drive Connect’s paste box, src/lib/components/admin/GDriv
 
 		// Typed again, the same address is sent, and connects.
 		page.typePassword('my-own-password');
+		page.typeCode(CODE);
 		const again = page.exchange();
 		page.posts[1](Response.json({ success: true }));
 		await again;
 		expect(page.sentAsking).toHaveBeenCalledTimes(2);
 		expect(page.showToast.mock.calls).toEqual([['Google Drive connected!']]);
 		expect(page.state()).toEqual({ connecting: '', code: '', authUrl: '', blocked: false });
-		expect(page.password()).toEqual({ typed: '', refusal: null });
+		expect(page.password()).toEqual({ typed: '', code: '', refusal: null });
 	});
 
 	it('says "Opening Google’s sign-in page…" until the address is known, the blocked sentence only when blocked, and offers the link in both other states (card 2266)', () => {
@@ -6695,8 +6797,8 @@ describe('the Google Drive Connect’s paste box, src/lib/components/admin/GDriv
 
 		// The paste box and its Connect wait for the address.
 		expect(box).toMatch(/<input\s+type="text"\s+placeholder="Paste the whole address, starting http:\/\/localhost\/\?state=…"\s+bind:value=\{gdriveAuthCode\}\s+disabled=\{!gdriveAuthUrl\}/);
-		// And for the caller's own password (card 2701).
-		expect(box).toContain('disabled={!gdriveAuthUrl || !gdriveAuthCode.trim() || !gdrivePassword || gdriveExchanging}');
+		// And for the caller's own password (card 2701) and a sign-in code (card 2770).
+		expect(box).toContain('disabled={!gdriveAuthUrl || !gdriveAuthCode.trim() || !proofTyped(gdrivePassword, gdriveStepUpCode) || gdriveExchanging}');
 		expect(box).toContain('<button class="btn-ghost" onclick={closeGDriveConnect}>Cancel</button>');
 	});
 
@@ -6712,6 +6814,8 @@ describe('the Google Drive Connect’s paste box, src/lib/components/admin/GDriv
 			'gdriveExchanging = false;',
 			// Card 2701: the caller's password and its refusal go with the box.
 			"gdrivePassword = '';",
+			// Card 2770: and the code typed beside it.
+			"gdriveStepUpCode = '';",
 			'gdriveRefusal = null;'
 		]);
 		// Nowhere else is the box closed by hand.
@@ -6831,7 +6935,7 @@ describe('the SFTP host key on the admin page, src/lib/components/admin/Schedule
 		expect(typeGone).not.toContain('check.presented');
 		// One Confirm on the page, in the first branch.
 		expect(markup.match(/[cC]onfirmHostKey\(/g)).toHaveLength(1);
-		expect(functionNamed(tree, 'askConfirmHostKey').getText()).toContain('(password) => confirmHostKey(name, key, password)');
+		expect(functionNamed(tree, 'askConfirmHostKey').getText()).toContain('(proof: StepUpProof) => confirmHostKey(name, key, proof)');
 	});
 
 	it('saves with Confirm exactly the key shown, as the destination’s hostKey, and tests again once it is saved (decision 3)', () => {
@@ -6842,8 +6946,8 @@ describe('the SFTP host key on the admin page, src/lib/components/admin/Schedule
 		expect(text).toContain('backupDestinations = updated;');
 		// With the caller's own password (card 2701); once saved, the Test is
 		// started and not awaited, so the confirm closes first (its code review's F2).
-		expect(text.indexOf('saveBackupConfig(was, currentPassword)')).toBeGreaterThan(-1);
-		expect(text.indexOf('void testSavedKey(name, updated[idx]);')).toBeGreaterThan(text.indexOf('saveBackupConfig(was, currentPassword)'));
+		expect(text.indexOf('saveBackupConfig(was, proof)')).toBeGreaterThan(-1);
+		expect(text.indexOf('void testSavedKey(name, updated[idx]);')).toBeGreaterThan(text.indexOf('saveBackupConfig(was, proof)'));
 		expect(callsOf(fn, 'testDestination')).toHaveLength(0);
 		// The Test is of the destination as the server now holds it, read again
 		// after the save (the review's M3): its secret masked, its key as stored.

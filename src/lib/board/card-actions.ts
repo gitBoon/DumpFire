@@ -7,6 +7,7 @@
 
 import * as api from '$lib/api';
 import { firstOpenColumn, isCompleteColumnTitle } from '$lib/column-role';
+import type { StepUpProof } from '$lib/step-up-words';
 import type { CardType, ColumnType, SubBoardType } from '$lib/types';
 import { categoryToCopy, colourToCopy, dueDateToCopy, priorityToCopy } from '$lib/utils/card-utils';
 
@@ -328,7 +329,7 @@ export function findSubBoardName(boardId: number, columns: ColumnType[]): string
 	return 'this sub-board';
 }
 
-/** Deletes a sub-board via the API, with the caller's own password (card 2701). Returns the answer, for the caller to check. */
-export async function deleteSubBoard(boardId: number, currentPassword: string): Promise<Response> {
-	return api.deleteBoardApi(boardId, currentPassword);
+/** Deletes a sub-board via the API, with the caller's own password and a sign-in code (cards 2701, 2770). Returns the answer, for the caller to check. */
+export async function deleteSubBoard(boardId: number, proof: StepUpProof): Promise<Response> {
+	return api.deleteBoardApi(boardId, proof);
 }

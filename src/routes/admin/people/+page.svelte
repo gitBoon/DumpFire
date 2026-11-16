@@ -25,7 +25,7 @@
 	import { invalidateAll } from '$app/navigation';
 	import { answerBody } from '$lib/api';
 	import { sent, sentAsking, showToast } from '$lib/admin/send';
-	import { ASKS_FOR_PASSWORD } from '$lib/step-up-words';
+	import { ASKS_FOR_PASSWORD, type StepUpProof } from '$lib/step-up-words';
 
 	type Person = PageData['people'][number];
 	type Group = PageData['groups'][number];
@@ -66,7 +66,7 @@
 		message: string;
 		confirmText: string;
 		askPassword?: boolean;
-		action: (password: string) => Promise<string | void>;
+		action: (proof: StepUpProof) => Promise<string | void>;
 	} | null>(null);
 
 	/** The person whose Mark left or Mark active is out: a second press meanwhile sends nothing. */
@@ -108,13 +108,13 @@
 			message: deletePersonMessage(person),
 			confirmText: 'Delete',
 			askPassword: true,
-			action: async (password) => {
+			action: async (proof: StepUpProof) => {
 				const res = await sentAsking(
 					() =>
 						fetch(`/api/people/${person.id}`, {
 							method: 'DELETE',
 							headers: { 'Content-Type': 'application/json' },
-							body: JSON.stringify({ currentPassword: password })
+							body: JSON.stringify({ currentPassword: proof.currentPassword, currentCode: proof.currentCode })
 						}),
 					'The person was not deleted'
 				);
@@ -279,7 +279,7 @@
 		message={confirmAction.message}
 		confirmText={confirmAction.confirmText}
 		askPassword={confirmAction.askPassword ?? false}
-		onConfirm={async (password) => confirmAction?.action(password)}
+		onConfirm={async (proof: StepUpProof) => confirmAction?.action(proof)}
 		onCancel={() => (confirmAction = null)}
 	/>
 {/if}

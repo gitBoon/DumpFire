@@ -32,6 +32,33 @@ export type StepUpCode = NonNullable<App.Error['stepUp']>;
 /** The body field the caller's current password is sent in. Not `password`, which two listed routes use for another. */
 export const STEP_UP_FIELD = 'currentPassword';
 
+/**
+ * The body field the code from the caller's authenticator app, or one of the
+ * caller's recovery codes, is sent in beside the password (card 2770, the MFA
+ * plan's D6). Never `code`, which Google Drive's Connect sends for Google's
+ * own code. Sent as typed: the server's rules read it.
+ */
+export const STEP_UP_CODE_FIELD = 'currentCode';
+
+/**
+ * What a dialog that asks hands its caller (card 2770, D1): the password and
+ * the code typed, each sent under its own literal key, never spread into a
+ * body (the page-failures scan reads the keys).
+ */
+export type StepUpProof = { currentPassword: string; currentCode: string };
+
+/** The proof of a dialog that asked for nothing: both empty. */
+export const NO_PROOF: Readonly<StepUpProof> = Object.freeze({ currentPassword: '', currentCode: '' });
+
+/**
+ * Whether a dialog that asks may send: a password typed and a code that is
+ * not blank (card 2770, the plan review's S1). The one rule of every send
+ * guard and button that sends a proof, so that Enter cannot get round one.
+ */
+export function proofTyped(currentPassword: string, currentCode: string): boolean {
+	return currentPassword !== '' && currentCode.trim() !== '';
+}
+
 /** The answer to a listed request with no current password, an empty one, or one that is not text. */
 export const STEP_UP_MISSING = 'Enter your password to confirm this. Nothing was changed.';
 
@@ -72,7 +99,7 @@ export const PASSWORD_CHANGED_MEANWHILE =
 export const CONFIRMATION_HEADER = 'x-dumpfire-confirmation';
 
 /** What the pages say beside an action that asks. */
-export const ASKS_FOR_PASSWORD = 'You will be asked for your password.';
+export const ASKS_FOR_PASSWORD = 'You will be asked for your password and a code from your authenticator app.';
 
 /** What a dialog says when its Confirm got no answer at all (the code review's F9). */
 export const NO_ANSWER_TRY_AGAIN = 'No answer from the server. Try again.';

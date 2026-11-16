@@ -5,7 +5,7 @@
  * boilerplate (headers, JSON.stringify, method) from component code.
  * Each function returns the fetch Response or parsed JSON as appropriate.
  */
-import { ASKS_FOR_PASSWORD } from './step-up-words';
+import { ASKS_FOR_PASSWORD, type StepUpProof } from './step-up-words';
 
 // ─── Internal Helpers ────────────────────────────────────────────────────────
 
@@ -380,11 +380,16 @@ export async function updateColumn(colId: number, updates: Record<string, unknow
 
 /**
  * Deletes a column and all its cards. A column that holds a card, archived
- * ones included, asks for the caller's own password, `currentPassword` (card
- * 2701, decision 18); an empty one asks none, and it is left out.
+ * ones included, asks for the caller's own password, `currentPassword`, and a
+ * sign-in code, `currentCode` (cards 2701 decision 18, 2770); an empty one
+ * asks none, and both are left out.
  */
-export async function deleteColumn(colId: number, boardId: number, currentPassword?: string): Promise<Response> {
-	return jsonRequest(`/api/columns/${colId}`, 'DELETE', { boardId, currentPassword: currentPassword || undefined });
+export async function deleteColumn(colId: number, boardId: number, proof?: StepUpProof): Promise<Response> {
+	return jsonRequest(`/api/columns/${colId}`, 'DELETE', {
+		boardId,
+		currentPassword: proof?.currentPassword || undefined,
+		currentCode: proof?.currentCode || undefined
+	});
 }
 
 /**
@@ -545,10 +550,11 @@ export function deliveryBoardWarning(name: string, columns: readonly string[]): 
 
 /**
  * Deletes a board and all its columns/cards/subtasks. Asks for the caller's
- * own password, `currentPassword` (card 2701).
+ * own password, `currentPassword`, and a sign-in code, `currentCode` (cards
+ * 2701, 2770).
  */
-export async function deleteBoardApi(boardId: number, currentPassword: string): Promise<Response> {
-	return jsonRequest(`/api/boards/${boardId}`, 'DELETE', { currentPassword });
+export async function deleteBoardApi(boardId: number, proof: StepUpProof): Promise<Response> {
+	return jsonRequest(`/api/boards/${boardId}`, 'DELETE', { currentPassword: proof.currentPassword, currentCode: proof.currentCode });
 }
 
 // ─── Categories ──────────────────────────────────────────────────────────────

@@ -26,7 +26,7 @@
 	import { sentAsking, showToast } from '$lib/admin/send';
 	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
 	import { holdFocus } from '$lib/dialog-focus';
-	import { ASKS_FOR_PASSWORD } from '$lib/step-up-words';
+	import { ASKS_FOR_PASSWORD, proofTyped } from '$lib/step-up-words';
 
 	let {
 		data,
@@ -53,6 +53,8 @@
 
 	/** The caller's own password: held here alone, and cleared once sent. */
 	let currentPassword = $state('');
+	/** The sign-in code typed beside it (card 2770), held and cleared as the password is. */
+	let stepUpCode = $state('');
 	/** The server's refusal of the last password sent, shown beside the field. */
 	let refusal = $state<string | null>(null);
 
@@ -72,10 +74,12 @@
 	}
 
 	async function add() {
-		if (ticked.length === 0 || currentPassword === '' || saving) return;
+		if (ticked.length === 0 || !proofTyped(currentPassword, stepUpCode) || saving) return;
 		saving = true;
 		const password = currentPassword;
+		const currentCode = stepUpCode;
 		currentPassword = '';
+		stepUpCode = '';
 		refusal = null;
 		try {
 			const res = await sentAsking(
@@ -83,7 +87,7 @@
 					fetch('/api/people/from-accounts', {
 						method: 'POST',
 						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({ userIds: ticked, currentPassword: password })
+						body: JSON.stringify({ userIds: ticked, currentPassword: password, currentCode })
 					}),
 				'No one was added'
 			);
@@ -142,12 +146,12 @@
 			<!-- The code review's part B, S1: each person made is given an account and its address. -->
 			<p class="dialog-hint">Each account's address decides where that person's decision mail and personal links go. {ASKS_FOR_PASSWORD}</p>
 			<div class="password-row">
-				<CurrentPasswordField bind:value={currentPassword} {refusal} readonly={saving} onEnter={add} />
+				<CurrentPasswordField bind:value={currentPassword} bind:code={stepUpCode} {refusal} readonly={saving} onEnter={add} />
 			</div>
 		{/if}
 		<div class="modal-actions">
 			<button class="btn-ghost" onclick={onClose}>Cancel</button>
-			<button class="btn-primary" onclick={add} disabled={ticked.length === 0 || currentPassword === ''} aria-busy={saving ? 'true' : undefined}>
+			<button class="btn-primary" onclick={add} disabled={ticked.length === 0 || !proofTyped(currentPassword, stepUpCode)} aria-busy={saving ? 'true' : undefined}>
 				Add {ticked.length} {ticked.length === 1 ? 'person' : 'people'}
 			</button>
 		</div>

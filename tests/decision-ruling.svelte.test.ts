@@ -62,6 +62,7 @@ import RulingForm from '$lib/components/decision/RulingForm.svelte';
 import { CONCERN_WHO_SEES, RELEASE_INFERENCE, RESULTS_READ_AGAIN, STALE_REVISION } from '$lib/decision-words';
 import DecisionPage from '../src/routes/decisions/[id]/+page.svelte';
 import ResultsPage from '../src/routes/decisions/[id]/results/+page.svelte';
+import { CODE, codeFieldIn } from './helpers/step-up-code';
 
 const clientEntry = pathToFileURL(join(process.cwd(), 'node_modules/svelte/src/index-client.js')).href;
 const { flushSync, mount, unmount }: typeof Svelte = await import(/* @vite-ignore */ clientEntry);
@@ -127,6 +128,8 @@ function typeInto(field: HTMLInputElement | HTMLTextAreaElement, value: string) 
 	field.dispatchEvent(new Event('input', { bubbles: true }));
 	flushSync();
 }
+/** Types `CODE` into the code field beside the password within `within` (card 2770). */
+const typeCode = (within: ParentNode) => typeInto(codeFieldIn(within)!, CODE);
 function choose(radio: HTMLInputElement) {
 	radio.checked = true;
 	radio.dispatchEvent(new Event('change', { bubbles: true }));
@@ -270,6 +273,7 @@ describe('RulingForm (43)', () => {
 		rule(target);
 		expect(passwordIn()).not.toBeNull();
 		typeInto(passwordIn()!, 'my password');
+		typeCode(dialog()!);
 		answer('POST /api/decisions/7/rule', 200, { decision: {}, revision: 'rev-2' });
 		confirmButton().click();
 		await settle();
@@ -278,7 +282,7 @@ describe('RulingForm (43)', () => {
 			{
 				what: 'POST /api/decisions/7/rule',
 				headers: JSON_TYPE,
-				body: JSON.stringify({ optionId: null, reason: 'Neither works.', conditions: '', revision: 'rev-1', openQuestionsConfirmed: true, currentPassword: 'my password' })
+				body: JSON.stringify({ optionId: null, reason: 'Neither works.', conditions: '', revision: 'rev-1', openQuestionsConfirmed: true, currentPassword: 'my password', currentCode: CODE })
 			}
 		]);
 		expect(dialog()).toBeNull();
@@ -291,6 +295,7 @@ describe('RulingForm (43)', () => {
 		typeInto(reasonOf(target), 'Plan A.');
 		rule(target);
 		typeInto(passwordIn()!, 'a wrong one');
+		typeCode(dialog()!);
 		answer('POST /api/decisions/7/rule', 403, WRONG);
 		confirmButton().click();
 		await settle();
@@ -299,6 +304,7 @@ describe('RulingForm (43)', () => {
 		expect(textOf(dialog()!.querySelector('[role="alert"]')!)).toBe(WRONG.message);
 
 		typeInto(passwordIn()!, 'my password');
+		typeCode(dialog()!);
 		answer('POST /api/decisions/7/rule', 409, { message: 'Someone has changed this decision since you opened it: reload the page' });
 		confirmButton().click();
 		await settle();
@@ -339,6 +345,7 @@ describe('RulingForm (43)', () => {
 		flushSync();
 		rule(target);
 		typeInto(passwordIn()!, 'my password');
+		typeCode(dialog()!);
 		answer('POST /api/decisions/7/rule', 409, { message: STALE_REVISION });
 		confirmButton().click();
 		await settle();
@@ -357,13 +364,14 @@ describe('RulingForm (43)', () => {
 		flushSync();
 		rule(target);
 		typeInto(passwordIn()!, 'my password');
+		typeCode(dialog()!);
 		answer('POST /api/decisions/7/rule', 200, { decision: {}, revision: 'rev-3' });
 		confirmButton().click();
 		await settle();
 
 		expect(sent.map((request) => JSON.parse(request.body as string))).toEqual([
-			{ optionId: 12, reason: 'B lasts longer.', conditions: 'Reviewed in a year.', revision: 'rev-1', openQuestionsConfirmed: true, currentPassword: 'my password' },
-			{ optionId: 12, reason: 'B lasts longer.', conditions: 'Reviewed in a year.', revision: 'rev-2', openQuestionsConfirmed: true, currentPassword: 'my password' }
+			{ optionId: 12, reason: 'B lasts longer.', conditions: 'Reviewed in a year.', revision: 'rev-1', openQuestionsConfirmed: true, currentPassword: 'my password', currentCode: CODE },
+			{ optionId: 12, reason: 'B lasts longer.', conditions: 'Reviewed in a year.', revision: 'rev-2', openQuestionsConfirmed: true, currentPassword: 'my password', currentCode: CODE }
 		]);
 		expect(onRuled).toHaveBeenCalledTimes(1);
 	});
@@ -377,6 +385,7 @@ describe('RulingForm (43)', () => {
 		typeInto(reasonOf(target), 'Plan A.');
 		rule(target);
 		typeInto(passwordIn()!, 'my password');
+		typeCode(dialog()!);
 		answer('POST /api/decisions/7/rule', 409, { message: STALE_REVISION });
 		confirmButton().click();
 		await settle();
@@ -556,12 +565,13 @@ describe('the release on the results page (44)', () => {
 		expect(textOf(dialog()!)).toContain('2 comments are left out.');
 		expect(passwordIn()).not.toBeNull();
 		typeInto(passwordIn()!, 'my password');
+		typeCode(dialog()!);
 		answer('POST /api/decisions/7/release', 200, { decision: {}, revision: 'rev-2' });
 		confirmButton().click();
 		await settle();
 
 		expect(sent).toEqual([
-			{ what: 'POST /api/decisions/7/release', headers: JSON_TYPE, body: JSON.stringify({ revision: 'rev-1', omit: ['key-2', 'key-b'], currentPassword: 'my password' }) }
+			{ what: 'POST /api/decisions/7/release', headers: JSON_TYPE, body: JSON.stringify({ revision: 'rev-1', omit: ['key-2', 'key-b'], currentPassword: 'my password', currentCode: CODE }) }
 		]);
 		expect(navigation.invalidateAll).toHaveBeenCalled();
 		const region = target.querySelector<HTMLElement>('[data-said="done"]')!;
@@ -574,6 +584,7 @@ describe('the release on the results page (44)', () => {
 		release(target).click();
 		flushSync();
 		typeInto(passwordIn()!, 'a wrong one');
+		typeCode(dialog()!);
 		answer('POST /api/decisions/7/release', 403, WRONG);
 		confirmButton().click();
 		await settle();
@@ -582,6 +593,7 @@ describe('the release on the results page (44)', () => {
 
 		const TOO_FEW = 'Fewer than 3 people responded: releasing their comments could show who said what';
 		typeInto(passwordIn()!, 'my password');
+		typeCode(dialog()!);
 		answer('POST /api/decisions/7/release', 409, { message: TOO_FEW });
 		confirmButton().click();
 		await settle();
@@ -603,6 +615,7 @@ describe('the release on the results page (44)', () => {
 			release(target).click();
 			flushSync();
 			typeInto(passwordIn()!, 'my password');
+			typeCode(dialog()!);
 			answer('POST /api/decisions/7/release', status, body);
 			confirmButton().click();
 			await settle();
@@ -615,8 +628,8 @@ describe('the release on the results page (44)', () => {
 
 		await releaseOnce(200, { decision: {}, revision: 'rev-3' });
 		expect(sent.map((request) => JSON.parse(request.body as string))).toEqual([
-			{ revision: 'rev-1', omit: ['key-b'], currentPassword: 'my password' },
-			{ revision: 'rev-2', omit: ['key-b'], currentPassword: 'my password' }
+			{ revision: 'rev-1', omit: ['key-b'], currentPassword: 'my password', currentCode: CODE },
+			{ revision: 'rev-2', omit: ['key-b'], currentPassword: 'my password', currentCode: CODE }
 		]);
 	});
 
@@ -635,6 +648,7 @@ describe('the release on the results page (44)', () => {
 			release(target).click();
 			flushSync();
 			typeInto(passwordIn()!, 'my password');
+			typeCode(dialog()!);
 			answer('POST /api/decisions/7/release', status, body);
 			confirmButton().click();
 			await settle();
@@ -652,8 +666,8 @@ describe('the release on the results page (44)', () => {
 
 		await releaseOnce(200, { decision: {}, revision: 'rev-3' });
 		expect(sent.map((request) => JSON.parse(request.body as string))).toEqual([
-			{ revision: 'rev-1', omit: ['key-1', 'key-b'], currentPassword: 'my password' },
-			{ revision: 'rev-2', omit: ['key-1'], currentPassword: 'my password' }
+			{ revision: 'rev-1', omit: ['key-1', 'key-b'], currentPassword: 'my password', currentCode: CODE },
+			{ revision: 'rev-2', omit: ['key-1'], currentPassword: 'my password', currentCode: CODE }
 		]);
 	});
 
@@ -667,6 +681,7 @@ describe('the release on the results page (44)', () => {
 		release(target).click();
 		flushSync();
 		typeInto(passwordIn()!, 'my password');
+		typeCode(dialog()!);
 		answer('POST /api/decisions/7/release', 409, { message: STALE_REVISION });
 		confirmButton().click();
 		await settle();

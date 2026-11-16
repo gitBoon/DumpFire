@@ -64,7 +64,7 @@
 	import { BULK_HOLD_MS, type Release } from '$lib/board/refresh-schedule';
 	import type { BoardContentsData } from '$lib/board/contents-answer';
 	// A delete that asks for the caller's own password, watched for its refusal of it (card 2701).
-	import { refusalWatch } from '$lib/step-up-words';
+	import { refusalWatch, type StepUpProof } from '$lib/step-up-words';
 	import { NARROW_WIDTH, OPTION_AGING_DAYS, openingView, optionsAging, readBoardView, readOptionsOpen, resolveListColumn, scrollPastFoldedStrip, viewFromUrl, withViewParams, writeBoardView, writeOptionsOpen, type BoardViewChoice } from '$lib/board/board-view';
 
 	// Components
@@ -896,12 +896,12 @@
 			'Delete Column',
 			api.columnDeleteWarning(colTitle, holds),
 			'Delete Column',
-			async (password: string) => {
+			async (proof: StepUpProof) => {
 				const started = toasts.navigation();
 				const release = boardState.hold();
 				try {
 					const asked = refusalWatch();
-					const failure = await api.deleteFailure(() => asked.watch(boardActions.deleteColumn(colId, data.board.id, password)), 'column');
+					const failure = await api.deleteFailure(() => asked.watch(boardActions.deleteColumn(colId, data.board.id, proof)), 'column');
 					const refusal = asked.refusal();
 					if (refusal !== null) return refusal;
 					if (failure) {
@@ -974,22 +974,22 @@
 
 	let confirmState = $state<{
 		show: boolean; title: string; message: string;
-		confirmText: string; onConfirm: (password: string) => unknown; danger: boolean; asks: Asks;
+		confirmText: string; onConfirm: (proof: StepUpProof) => unknown; danger: boolean; asks: Asks;
 	}>({ show: false, title: '', message: '', confirmText: '', onConfirm: () => {}, danger: true, asks: 'never' });
 
 	/** `danger` false for a question whose yes deletes nothing (the Options conversion). */
-	function showConfirm(title: string, message: string, confirmText: string, onConfirm: (password: string) => unknown, danger = true, asks: Asks = 'never') {
+	function showConfirm(title: string, message: string, confirmText: string, onConfirm: (proof: StepUpProof) => unknown, danger = true, asks: Asks = 'never') {
 		confirmState = { show: true, title, message, confirmText, onConfirm, danger, asks };
 	}
 
 	/** Confirm pressed: as `asks` says, closed first, or once the delete gives back no refusal of the password. */
-	async function confirmed(password: string): Promise<string | void> {
+	async function confirmed(proof: StepUpProof): Promise<string | void> {
 		if (confirmState.asks === 'never') {
 			confirmState.show = false;
-			confirmState.onConfirm(password);
+			confirmState.onConfirm(proof);
 			return;
 		}
-		const refusal = await confirmState.onConfirm(password);
+		const refusal = await confirmState.onConfirm(proof);
 		if (typeof refusal === 'string') return refusal;
 		confirmState.show = false;
 	}
@@ -1158,13 +1158,13 @@
 			'Delete Sub-board',
 			api.boardDeleteWarning(sbName),
 			'Delete',
-			async (password: string) => {
+			async (proof: StepUpProof) => {
 				const started = toasts.navigation();
 				const release = boardState.hold();
 				const asked = refusalWatch();
 				let failure: string | null;
 				try {
-					failure = await api.deleteFailure(() => asked.watch(cardActions.deleteSubBoard(boardId, password)), 'sub-board');
+					failure = await api.deleteFailure(() => asked.watch(cardActions.deleteSubBoard(boardId, proof)), 'sub-board');
 				} finally {
 					release();
 				}
@@ -1192,13 +1192,13 @@
 	 * (slice B3), which closes itself and then calls this.
 	 */
 	function confirmDeleteThisSubBoard() {
-		showConfirm('Delete Sub-board', api.boardDeleteWarning(boardName), 'Delete', async (password: string) => {
+		showConfirm('Delete Sub-board', api.boardDeleteWarning(boardName), 'Delete', async (proof: StepUpProof) => {
 			const parentHref = boardState.breadcrumbs[boardState.breadcrumbs.length - 1]?.href || '/';
 			const started = toasts.navigation();
 			const release = boardState.hold();
 			try {
 				const asked = refusalWatch();
-				const failure = await api.deleteFailure(() => asked.watch(api.deleteBoardApi(data.board.id, password)), 'sub-board');
+				const failure = await api.deleteFailure(() => asked.watch(api.deleteBoardApi(data.board.id, proof)), 'sub-board');
 				// The password refused (card 2701): said in the dialog, which stays open.
 				const refusal = asked.refusal();
 				if (refusal !== null) return refusal;

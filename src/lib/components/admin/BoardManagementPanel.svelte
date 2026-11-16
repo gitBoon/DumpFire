@@ -12,7 +12,7 @@
 	import { invalidateAll } from '$app/navigation';
 	import { boardDeleteWarning, clearCardsWarning } from '$lib/api';
 	import { sentAsking, showToast } from '$lib/admin/send';
-	import { ASKS_FOR_PASSWORD } from '$lib/step-up-words';
+	import { ASKS_FOR_PASSWORD, type StepUpProof } from '$lib/step-up-words';
 
 	let {
 		data,
@@ -28,16 +28,16 @@
 		confirm: (
 			title: string,
 			message: string,
-			action: (password: string) => Promise<string | null | void>,
+			action: (proof: StepUpProof) => Promise<string | null | void>,
 			options?: { askPassword?: boolean }
 		) => void;
 	} = $props();
 
 	// ─── Board Management ─────────────────────────────────────────────────
 
-	async function deleteBoard(id: number, currentPassword: string): Promise<string | void> {
+	async function deleteBoard(id: number, proof: StepUpProof): Promise<string | void> {
 		const res = await sentAsking(
-			() => fetch(`/api/boards/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword }) }),
+			() => fetch(`/api/boards/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword: proof.currentPassword, currentCode: proof.currentCode }) }),
 			'Failed to delete board'
 		);
 		if (typeof res === 'string') return res;
@@ -46,9 +46,9 @@
 		showToast('Board deleted');
 	}
 
-	async function clearBoardCards(id: number, currentPassword: string): Promise<string | void> {
+	async function clearBoardCards(id: number, proof: StepUpProof): Promise<string | void> {
 		const res = await sentAsking(
-			() => fetch(`/api/admin/boards/${id}/clear-cards`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword }) }),
+			() => fetch(`/api/admin/boards/${id}/clear-cards`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword: proof.currentPassword, currentCode: proof.currentCode }) }),
 			'Failed to clear cards'
 		);
 		if (typeof res === 'string') return res;
@@ -57,9 +57,9 @@
 		showToast('All cards cleared from board');
 	}
 
-	async function clearBoardCategories(id: number, currentPassword: string): Promise<string | void> {
+	async function clearBoardCategories(id: number, proof: StepUpProof): Promise<string | void> {
 		const res = await sentAsking(
-			() => fetch(`/api/admin/boards/${id}/clear-categories`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword }) }),
+			() => fetch(`/api/admin/boards/${id}/clear-categories`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword: proof.currentPassword, currentCode: proof.currentCode }) }),
 			'Failed to clear categories'
 		);
 		if (typeof res === 'string') return res;
@@ -90,14 +90,14 @@
 						</div>
 					</div>
 					<div class="board-actions">
-						<button class="btn-ghost action-btn" onclick={() => confirm('Clear Cards', clearCardsWarning(board.name), (password) => clearBoardCards(board.id, password), { askPassword: true })}>
+						<button class="btn-ghost action-btn" onclick={() => confirm('Clear Cards', clearCardsWarning(board.name), (proof: StepUpProof) => clearBoardCards(board.id, proof), { askPassword: true })}>
 							<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M1 3h10M3 3V2a1 1 0 011-1h4a1 1 0 011 1v1m-6 0v7a1 1 0 001 1h4a1 1 0 001-1V3" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg>
 							Clear Cards
 						</button>
-						<button class="btn-ghost action-btn" onclick={() => confirm('Clear Categories', `Remove all categories from "${board.name}"? ${ASKS_FOR_PASSWORD}`, (password) => clearBoardCategories(board.id, password), { askPassword: true })}>
+						<button class="btn-ghost action-btn" onclick={() => confirm('Clear Categories', `Remove all categories from "${board.name}"? ${ASKS_FOR_PASSWORD}`, (proof: StepUpProof) => clearBoardCategories(board.id, proof), { askPassword: true })}>
 							Clear Cats
 						</button>
-						<button class="btn-ghost action-btn danger" onclick={() => confirm('Delete Board', boardDeleteWarning(board.name), (password) => deleteBoard(board.id, password), { askPassword: true })}>
+						<button class="btn-ghost action-btn danger" onclick={() => confirm('Delete Board', boardDeleteWarning(board.name), (proof: StepUpProof) => deleteBoard(board.id, proof), { askPassword: true })}>
 							Delete
 						</button>
 					</div>

@@ -25,7 +25,7 @@
 <script lang="ts">
 	import { sentAsking, showToast } from '$lib/admin/send';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
-	import { ASKS_FOR_PASSWORD } from '$lib/step-up-words';
+	import { ASKS_FOR_PASSWORD, type StepUpProof } from '$lib/step-up-words';
 
 	// ─── Application Settings ────────────────────────────────────────────
 
@@ -74,7 +74,7 @@
 	 * the password is given back for the dialog to show; anything else closes
 	 * it, a refusal of the App URL said in a toast as before.
 	 */
-	async function saveAppUrl(currentPassword: string): Promise<string | void> {
+	async function saveAppUrl(proof: StepUpProof): Promise<string | void> {
 		appUrlSaving = true;
 		try {
 			const res = await sentAsking(
@@ -82,7 +82,7 @@
 					fetch('/api/admin/smtp', {
 						method: 'PUT',
 						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({ appUrl, currentPassword })
+						body: JSON.stringify({ appUrl, currentPassword: proof.currentPassword, currentCode: proof.currentCode })
 					}),
 				'Failed to save App URL'
 			);

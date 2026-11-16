@@ -13,7 +13,7 @@
 	 * that comment (F4).
 	 * Its dialog says what a release lets anyone work out
 	 * (`RELEASE_INFERENCE`), asks for the caller's password and sends
-	 * `{ revision, omit, currentPassword }` as JSON, `omit` the keys of the
+	 * `{ revision, omit, currentPassword, currentCode }` as JSON (card 2770), `omit` the keys of the
 	 * comments left out. A refusal of the password stays in the dialog
 	 * (`stepUpRefusal`); any other refusal is said in the status region, in
 	 * the server's words, and the focus goes back to the control. Card 2734
@@ -39,7 +39,7 @@
 	import RulingForm from '$lib/components/decision/RulingForm.svelte';
 	import { RELEASE_INFERENCE, RESULTS_READ_AGAIN, shownMoment, STALE_REVISION, STATUS_WORDS } from '$lib/decision-words';
 	import type { PreviewComment, ReleasePreview } from '$lib/decision-view-types';
-	import { ASKS_FOR_PASSWORD, stepUpRefusal } from '$lib/step-up-words';
+	import { ASKS_FOR_PASSWORD, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
 	import { theme, themeIcon } from '$lib/stores/theme';
 
 	let { data }: { data: PageData } = $props();
@@ -65,12 +65,12 @@
 		statusRegion?.focus();
 	}
 
-	async function release(typed: string): Promise<string | void> {
+	async function release(proof: StepUpProof): Promise<string | void> {
 		try {
 			const res = await fetch(`/api/decisions/${data.decision.id}/release`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ revision: data.revision, omit: leftOut, currentPassword: typed })
+				body: JSON.stringify({ revision: data.revision, omit: leftOut, currentPassword: proof.currentPassword, currentCode: proof.currentCode })
 			});
 			const refusal = await stepUpRefusal(res);
 			if (refusal !== null) return refusal;

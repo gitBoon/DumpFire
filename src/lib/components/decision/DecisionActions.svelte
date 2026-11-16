@@ -36,9 +36,11 @@
     from `shownStatus`; the server decides who at the write.
   - **Withdraw** needs a reason; on a decision that was ever opened its
     confirmation asks for the caller's password (`withdrawAsks`) and sends
-    `{ reason, currentPassword }`, on a draft it sends `{ reason }`.
+    `{ reason, currentPassword, currentCode }` (card 2770), on a draft it
+    sends `{ reason }`.
   - **Delete** confirms; on a decision that was ever opened it asks for the
-    password (`deleteAsks`) and sends `{ currentPassword }`, on a draft `{}`.
+    password (`deleteAsks`) and sends `{ currentPassword, currentCode }`, on
+    a draft `{}`.
 
   Every write says it is JSON (card 2700). A refusal of the password is told
   by its code (`stepUpRefusal`) and keeps the dialog open, the field cleared;
@@ -64,7 +66,7 @@
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import { CLOSES_HELP, closesField, type Refusal, type Warning } from '$lib/decision-readiness';
 	import { openForInput } from '$lib/decision-rules';
-	import { ASKS_FOR_PASSWORD, stepUpRefusal } from '$lib/step-up-words';
+	import { ASKS_FOR_PASSWORD, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
 
 	type Actions = PageData['actions'];
 	type Summary = NonNullable<PageData['republishSummary']>;
@@ -278,15 +280,16 @@
 		}
 	}
 
-	async function withdraw(typed: string): Promise<string | void> {
+	async function withdraw(proof: StepUpProof): Promise<string | void> {
 		// Whatever was typed is sent (the code review's part B, S4): the dialog asks where the page says the
 		// server will (Q29), and also once the server has said so, on a page gone stale; with nothing typed, none.
-		const currentPassword = typed !== '' ? typed : undefined;
+		const currentPassword = proof.currentPassword || undefined;
+		const currentCode = proof.currentCode || undefined;
 		try {
 			const res = await fetch(`/api/decisions/${decisionId}/withdraw`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ reason, currentPassword })
+				body: JSON.stringify({ reason, currentPassword, currentCode })
 			});
 			return await answered(res, 'The decision was not withdrawn.', 'Withdrawn.');
 		} catch {
@@ -295,14 +298,15 @@
 		}
 	}
 
-	async function remove(typed: string): Promise<string | void> {
+	async function remove(proof: StepUpProof): Promise<string | void> {
 		// Whatever was typed is sent (S4): a decision that holds a record asks (Q9), as the page or the server says.
-		const currentPassword = typed !== '' ? typed : undefined;
+		const currentPassword = proof.currentPassword || undefined;
+		const currentCode = proof.currentCode || undefined;
 		try {
 			const res = await fetch(`/api/decisions/${decisionId}`, {
 				method: 'DELETE',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ currentPassword })
+				body: JSON.stringify({ currentPassword, currentCode })
 			});
 			return await answered(res, 'The decision was not deleted.', 'Deleted.', () => goto(boardId === null ? '/' : `/board/${boardId}/decisions`));
 		} catch {

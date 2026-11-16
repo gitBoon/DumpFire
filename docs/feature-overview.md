@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.80
+version: 1.81
 status: As-Built
-date: 2026-11-13
+date: 2026-11-16
 tags:
   - decision-reminders
   - features
@@ -317,8 +317,8 @@ Above the editor sit the decision's lifecycle controls (card 2697). Each shows o
 - **Re-publish** — publishes the edited text as a new version, with a note saying what changed. **Ask everyone again** asks everyone consulted for their view again, sends anyone consulted whom this round's ask has not reached (their invitation held back or not delivered) the invitation instead, and tells everyone informed of the change, as nothing is asked of them; **Tell them only** tells everyone consulted whom this round's ask reached, and everyone informed, of the change, and sends nothing to anyone consulted it has not reached (card 2739); while such a person's invitation is still being sent, Tell them only waits for the 10-minute mail rest, so a new version never overtakes it. A note under the choice says this. Tell them only is off, with the reason, when an option has been added or removed since the last version: everyone consulted is then asked again, and people kept informed are told
 - **Save first** — Open, Re-publish and Send me a dry run each send the saved copy, so they are off ("Save your changes first") while the editor has unsaved changes
 - **Close** — stops taking responses now. **Extend** sets a new closing time, at most a year ahead, in UTC, and opens it again. It never brings the closing time earlier (card 2682): a time no later than the current one is refused, "closesAt must be later than the decision's current closing time: Extend never brings it earlier", so sending the time the panel shows unchanged is refused too
-- **Withdraw** — ends the decision, with a reason. Once it has been opened, every participant is told your reason, and you are asked for your password first; a draft that was never opened is withdrawn with no password and nobody is told
-- **Delete** — a draft or a withdrawn decision. A draft never opened is deleted straight after you confirm; one that was opened holds a record of who was told what, so deleting it asks for your password and removes that record for good
+- **Withdraw** — ends the decision, with a reason. Once it has been opened, every participant is told your reason, and you are asked for your password and a code from your authenticator app first; a draft that was never opened is withdrawn with no password and nobody is told
+- **Delete** — a draft or a withdrawn decision. A draft never opened is deleted straight after you confirm; one that was opened holds a record of who was told what, so deleting it asks for your password and a code and removes that record for good
 - **How much can be sent** — you can open or re-publish 10 decisions a day; one person is mailed about one decision at most 5 times a day (the withdrawal and the ruling are always sent), and not twice within 10 minutes
 - **Delivery** — once a decision has been opened, its author, decider and administrators see how each participant's latest mail went, any reason they were not mailed, and when their link last ended. **Resend** sends someone their invitation again (a new link with it), or says from when it can
 - **Who is told** — opening, re-publishing, withdrawing and resending mail participants. Close, Extend, Delete, the preview and a dry run tell nobody but you
@@ -333,9 +333,9 @@ stateDiagram-v2
     Open --> Open: Re-publish (ask again or tell)
     Open --> Closed: Close, or the closing time passes
     Closed --> Open: Extend, or Re-publish asking again
-    Open --> Withdrawn: Withdraw (your password, everyone told)
-    Closed --> Withdrawn: Withdraw (your password, everyone told)
-    Withdrawn --> [*]: Delete (your password once opened)
+    Open --> Withdrawn: Withdraw (your password and code, everyone told)
+    Closed --> Withdrawn: Withdraw (your password and code, everyone told)
+    Withdrawn --> [*]: Delete (your password and code once opened)
 ```
 
 ```mermaid
@@ -378,17 +378,17 @@ sequenceDiagram
 Once people have answered, the decider rules (card 2679, from 4 November 2026).
 
 - **The results** — **Results and ruling**, in the editor and on the decision's page, opens `/decisions/<id>/results` for the decider and DumpFire's administrators, and nobody else: how each option is doing in the current round (earlier rounds kept apart and closed), each response with its person's name and comments, who has not answered yet, anyone removed, open questions, and any concerns raised after the ruling. On a phone each table stacks into labelled rows
-- **Ruling** — on the results page, the decider picks an option or "None of these", says why (required) and adds any conditions, each up to 4,000 characters. If the choice is not the most chosen, the form warns that it goes against the responses, which only the decider and administrators are shown. Ruling before the closing time lists the people who have not answered, who are recorded as cut off. So does ruling on a decision you closed for input before its closing time: the form says it was closed early and names them, and the ruling is recorded as early. Anyone the round's request never got to (their mail was not sent because their address changed or they had left, or it was never delivered, and they never opened the question) is marked "never reached by this round's request" on the form, in the results page's Not responded list and on the ruling's Cut off line, and the record says so on their cut-off, so people who were never asked are not mistaken for people who did not answer. Only a request or a look while the decision was open for input counts: someone added after you closed it early, or who first opened it while it was closed, is marked never reached, and a person removed and brought back counts only from their return. The ruling's Early line says whether you ruled while the decision was open or after closing it before its closing time. With questions still open, a box must be ticked first. **Rule…** asks for your password, and every participant is then mailed the ruling, its reason and its conditions, with no figures, and told they can raise a concern for 90 days. If the page's figures have changed since you opened it, the ruling is refused and you reload
+- **Ruling** — on the results page, the decider picks an option or "None of these", says why (required) and adds any conditions, each up to 4,000 characters. If the choice is not the most chosen, the form warns that it goes against the responses, which only the decider and administrators are shown. Ruling before the closing time lists the people who have not answered, who are recorded as cut off. So does ruling on a decision you closed for input before its closing time: the form says it was closed early and names them, and the ruling is recorded as early. Anyone the round's request never got to (their mail was not sent because their address changed or they had left, or it was never delivered, and they never opened the question) is marked "never reached by this round's request" on the form, in the results page's Not responded list and on the ruling's Cut off line, and the record says so on their cut-off, so people who were never asked are not mistaken for people who did not answer. Only a request or a look while the decision was open for input counts: someone added after you closed it early, or who first opened it while it was closed, is marked never reached, and a person removed and brought back counts only from their return. The ruling's Early line says whether you ruled while the decision was open or after closing it before its closing time. With questions still open, a box must be ticked first. **Rule…** asks for your password and a code from your authenticator app, and every participant is then mailed the ruling, its reason and its conditions, with no figures, and told they can raise a concern for 90 days. If the page's figures have changed since you opened it, the ruling is refused and you reload
 - **The ruled banner** — everyone who can see the decision then reads "Ruled by <decider>: Option B: <title>" (or "None of these"), the reason and the conditions at the top of its page. No time is shown, nor whether it went against the responses or was early. The closing time is no longer shown once it is ruled, so nobody can tell from the page whether the ruling came early
-- **Releasing the results** — after ruling, the decider may release the totals and the comments, without names, to everyone who can see the decision. The results page shows exactly what will be shown first, with **Leave out** by each comment. Figures that could single someone out read "withheld", with no number: a count of 1 or 2, a count within 2 of everyone, and a mean score whose scores could single someone out; whenever any is withheld, so is the number who answered. Beside a release of a decision it supersedes, or that supersedes it, the number who answered is always withheld and never one count alone. Comments carry no name or time and are sorted by their text. **Release results…** warns "Once released, anyone who can see this decision can work out from the totals whether the ruling followed the most chosen option. This cannot be undone.", asks for your password, and mails nobody. It is refused when fewer than 3 people answered, when anyone answered before the page said results could be released, when the decision has been superseded, or when a decision it supersedes, or that supersedes it, released results from almost the same people
+- **Releasing the results** — after ruling, the decider may release the totals and the comments, without names, to everyone who can see the decision. The results page shows exactly what will be shown first, with **Leave out** by each comment. Figures that could single someone out read "withheld", with no number: a count of 1 or 2, a count within 2 of everyone, and a mean score whose scores could single someone out; whenever any is withheld, so is the number who answered. Beside a release of a decision it supersedes, or that supersedes it, the number who answered is always withheld and never one count alone. Comments carry no name or time and are sorted by their text. **Release results…** warns "Once released, anyone who can see this decision can work out from the totals whether the ruling followed the most chosen option. This cannot be undone.", asks for your password and a code, and mails nobody. It is refused when fewer than 3 people answered, when anyone answered before the page said results could be released, when the decision has been superseded, or when a decision it supersedes, or that supersedes it, released results from almost the same people
 - **Raising a concern** — a participant, consulted or informed, signed in or by their link, can raise a concern about the ruling on its page for 90 days, up to 5 of them and at least 10 minutes apart. The form says "The decider and DumpFire's administrators see your concern with your name. A release of the results never includes concerns." and lists your own. The decider is mailed that a concern arrived, with neither your name nor your words, at most once a day about you
 - **Superseding** — the decider, the board's Product Owner at the time of the ruling, or an administrator can **Supersede…** a ruled decision from its page: a new draft opens in the editor with the content that was ruled on and fresh option letters, and no participants, who are picked again. Someone made Product Owner after the ruling cannot. The new draft's decider cannot be changed; to have another decider, withdraw it and supersede again. The old decision is marked superseded only when the new one is ruled by one of those three; the two pages then link to each other, naming the other only to people who can see it ("an earlier decision" or "a later decision" otherwise, and always by a personal link)
 
 ```mermaid
 stateDiagram-v2
-    Open --> Ruled: Rule (decider, your password; early cuts off who has not answered)
-    Closed --> Ruled: Rule (decider, your password; early, cutting off who has not answered, if closed before its closing time)
-    Ruled --> Ruled: Release results (decider, your password, one way)
+    Open --> Ruled: Rule (decider, your password and code; early cuts off who has not answered)
+    Closed --> Ruled: Rule (decider, your password and code; early, cutting off who has not answered, if closed before its closing time)
+    Ruled --> Ruled: Release results (decider, your password and code, one way)
     Ruled --> Ruled: A participant raises a concern (90 days)
     Ruled --> Superseded: the superseding draft is ruled by the decider, Product Owner or an administrator
     note right of Ruled
@@ -404,10 +404,10 @@ sequenceDiagram
     participant S as DumpFire
     actor P as Participants and board readers
     D->>R: read the tally, choose, give a reason
-    R->>S: Rule… with your password
+    R->>S: Rule… with your password and code
     S-->>P: the ruling mail; the ruled banner on the page
     D->>R: preview the release, leave out a comment
-    R->>S: Release results… with your password
+    R->>S: Release results… with your password and code
     S-->>P: totals and comments, no names, small figures blurred
     P->>S: a concern (participants only)
     S-->>D: "A participant raised a concern" (no name, no text)

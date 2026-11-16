@@ -49,6 +49,7 @@ import DecisionActions from '$lib/components/decision/DecisionActions.svelte';
 import DecisionEditor from '$lib/components/decision/DecisionEditor.svelte';
 import PreviewPage from '../src/routes/decisions/[id]/preview/+page.svelte';
 import { STEP_UP_MISSING } from '$lib/step-up-words';
+import { CODE, codeFieldIn } from './helpers/step-up-code';
 
 // The browser's `mount`, loaded by its path (see the XP bars' file).
 const clientEntry = pathToFileURL(join(process.cwd(), 'node_modules/svelte/src/index-client.js')).href;
@@ -309,11 +310,19 @@ describe("DeliveryPanel's administrator's actions (43)", () => {
 	const press = (row: HTMLElement, label: string) => [...row.querySelectorAll<HTMLButtonElement>('button')].find((b) => textOf(b) === label)!.click();
 	const dialog = () => document.querySelector<HTMLElement>('.confirm-modal');
 	const passwordField = () => dialog()!.querySelector<HTMLInputElement>('input[type="password"]')!;
+	/** Types `CODE` into the code field beside the password within `within` (card 2770). */
+	function typeCode(within: ParentNode) {
+		const field = codeFieldIn(within)!;
+		field.value = CODE;
+		field.dispatchEvent(new Event('input', { bubbles: true }));
+		flushSync();
+	}
 	function confirmWith(password: string) {
 		const field = passwordField();
 		field.value = password;
 		field.dispatchEvent(new Event('input', { bubbles: true }));
 		flushSync();
+		typeCode(dialog()!);
 		dialog()!.querySelectorAll<HTMLButtonElement>('.confirm-actions button')[1].click();
 	}
 
@@ -349,7 +358,7 @@ describe("DeliveryPanel's administrator's actions (43)", () => {
 		expect(sent.at(-1)).toEqual({
 			what: 'PUT /api/decisions/7/participants/1/account',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ account: 'person', currentPassword: 'my password' })
+			body: JSON.stringify({ account: 'person', currentPassword: 'my password', currentCode: CODE })
 		});
 		expect(dialog()).toBeNull();
 
@@ -360,7 +369,7 @@ describe("DeliveryPanel's administrator's actions (43)", () => {
 		expect(sent.at(-1)).toEqual({
 			what: 'PUT /api/decisions/7/participants/2/account',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ account: 'none', currentPassword: 'my password' })
+			body: JSON.stringify({ account: 'none', currentPassword: 'my password', currentCode: CODE })
 		});
 
 		press(rowOf(panel, 2), "Use the directory's address");
@@ -371,7 +380,7 @@ describe("DeliveryPanel's administrator's actions (43)", () => {
 		expect(sent.at(-1)).toEqual({
 			what: 'PUT /api/decisions/7/participants/2/address',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ currentPassword: 'my password' })
+			body: JSON.stringify({ currentPassword: 'my password', currentCode: CODE })
 		});
 		expect(onSaved.mock.calls).toEqual([['after 1/account'], ['after 2/account'], ['after 2/address']]);
 	});
@@ -458,6 +467,8 @@ describe('DecisionActions (51 to 54)', () => {
 		field.dispatchEvent(new Event('input', { bubbles: true }));
 		flushSync();
 	}
+	/** Types `CODE` into the code field beside the password within `within` (card 2770). */
+	const typeCode = (within: ParentNode) => typeInto(codeFieldIn(within)!, CODE);
 	const submit = (target: HTMLElement, panel: string) => {
 		target.querySelector<HTMLFormElement>(`[data-panel="${panel}"]`)!.requestSubmit();
 		flushSync();
@@ -683,12 +694,13 @@ describe('DecisionActions (51 to 54)', () => {
 			submit(opened.target, 'withdraw');
 			expect(passwordIn()).not.toBeNull();
 			typeInto(passwordIn()!, 'my password');
+			typeCode(dialog()!);
 			confirmButton().click();
 			await settle();
 			expect(sent.at(-1)).toEqual({
 				what: 'POST /api/decisions/7/withdraw',
 				headers: JSON_TYPE,
-				body: JSON.stringify({ reason: 'No longer needed.', currentPassword: 'my password' })
+				body: JSON.stringify({ reason: 'No longer needed.', currentPassword: 'my password', currentCode: CODE })
 			});
 			expect(opened.onSaved).toHaveBeenCalledWith('rev-2');
 
@@ -719,9 +731,10 @@ describe('DecisionActions (51 to 54)', () => {
 			control(once.target, 'delete')!.click();
 			flushSync();
 			typeInto(passwordIn()!, 'a wrong one');
+			typeCode(dialog()!);
 			confirmButton().click();
 			await settle();
-			expect(sent.at(-1)).toEqual({ what: 'DELETE /api/decisions/7', headers: JSON_TYPE, body: JSON.stringify({ currentPassword: 'a wrong one' }) });
+			expect(sent.at(-1)).toEqual({ what: 'DELETE /api/decisions/7', headers: JSON_TYPE, body: JSON.stringify({ currentPassword: 'a wrong one', currentCode: CODE }) });
 			// A refused password keeps the dialog open, the field cleared, the words in it.
 			expect(dialog()).not.toBeNull();
 			expect(passwordIn()!.value).toBe('');
@@ -746,12 +759,13 @@ describe('DecisionActions (51 to 54)', () => {
 			// Told to ask: the field is shown, and the password typed into it goes.
 			expect(passwordIn()).not.toBeNull();
 			typeInto(passwordIn()!, 'my password');
+			typeCode(dialog()!);
 			confirmButton().click();
 			await settle();
 			expect(sent.at(-1)).toEqual({
 				what: 'POST /api/decisions/7/withdraw',
 				headers: JSON_TYPE,
-				body: JSON.stringify({ reason: 'No longer needed.', currentPassword: 'my password' })
+				body: JSON.stringify({ reason: 'No longer needed.', currentPassword: 'my password', currentCode: CODE })
 			});
 			expect(withdrawing.onSaved).toHaveBeenCalledWith('rev-2');
 			expect(dialog()).toBeNull();
@@ -765,9 +779,10 @@ describe('DecisionActions (51 to 54)', () => {
 			await settle();
 			expect(sent.at(-1)!.body).toBe('{}');
 			typeInto(passwordIn()!, 'my password');
+			typeCode(dialog()!);
 			confirmButton().click();
 			await settle();
-			expect(sent.at(-1)).toEqual({ what: 'DELETE /api/decisions/7', headers: JSON_TYPE, body: JSON.stringify({ currentPassword: 'my password' }) });
+			expect(sent.at(-1)).toEqual({ what: 'DELETE /api/decisions/7', headers: JSON_TYPE, body: JSON.stringify({ currentPassword: 'my password', currentCode: CODE }) });
 			expect(navigation.goto).toHaveBeenCalledWith('/board/3/decisions');
 		});
 

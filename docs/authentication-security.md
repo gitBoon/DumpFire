@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.115
+version: 1.116
 status: As-Built
 date: 2026-11-16
 tags:
@@ -1009,6 +1009,28 @@ is `sent` with `{ giveBackPasswordRefusal: true }` (F8): one implementation. A s
 `fetch` and `jsonRequest` of the client's files as `METHOD /route` and fails, closed, on a
 listed one with no `currentPassword` in a literal body, an import with no confirmation header, or
 a `GET` of the export.
+
+**The code on the pages** (card 2770; the server's check is card 2771's, released together, so
+until then the server reads no `currentCode`). Every dialog that asks for the password asks for
+a second proof under it: a code from the authenticator app, or a recovery code by a switch
+("Use a recovery code instead"), in the one field, as the sign-in's second step does
+(`/login/verify`): `inputmode="numeric"`, `autocomplete="one-time-code"` and `maxlength="7"` in
+the authenticator mode, a text field with no length limit in the recovery mode, the field
+emptied and focused when the mode is switched, and each opening of a dialog starting in the
+authenticator mode. It lives in `CurrentPasswordField`, whose `code` is a required bindable, so
+`svelte-check` refuses a dialog that forgets it. `ConfirmModal`'s `onConfirm` is handed a
+`StepUpProof`, `{ currentPassword, currentCode }` (`NO_PROOF`, both empty, where it showed no
+field), and every callback that takes it is typed so. The code is sent as typed (the server
+alone normalises it) in a literal `currentCode` body key beside `currentPassword`, never by a
+spread. **A blank code sends nothing, by any route:** the button is off until the password is
+typed and the code is not blank, and every send function carries the same guard, so Enter
+cannot get round the button; Enter in the password field moves to the code field while it is
+empty. Both fields are emptied on every send, on Cancel and on any refusal (the focus to the
+password: the server never says which was wrong), held in component state only, never in a
+store, a toast, storage or a log. The scan (case 28) now also fails a listed write that has no
+`currentCode` in its body, or whose `currentCode` does not come from the proof (`undefined`,
+`''`, or Google's OAuth `code`); it checks that the value is named `currentCode` and does not trace the source further, since every send site takes it from the dialog's proof. One shared rule, `proofTyped()` in `src/lib/step-up-words.ts`, decides "both filled" for every button and send guard. The recovery switch updates the field's keyboard attributes before it focuses the field. The Account page's forms and the three `/api/account` routes
+are not part of this card: they move to card 2771.
 
 **The password in transit and at rest.** It is never logged (no body reader logs a body, and the
 lines name the user and the action), never echoed (every refusal is fixed text), held to the
@@ -7539,8 +7561,8 @@ unfinished is recovered on the host with `node scripts/mfa-reset.mjs <name>`.
 | `src/lib/server/auth.ts` | Session CRUD, API key generation and validation; `createSession()`, which writes `two_step = 1`, and `findSession()`, which refuses any other value as `one-step` (card 2769); `endAccountAccess()`, what setting a password ends; `stillAuthenticated()`, the key or session asked again inside a write's transaction, which answers the account as it is now and sets `locals.user` to it (`null` for a public route with nobody signed in; `401` and an ERROR line for a handler reached with no credential recorded, outside vitest); `checkCurrentPassword()`, the count of current-password guesses on the session's row, one check in flight per session and the sign-out at the third (card 2701), `refuseWrongPassword()`, the route's answer to one, and `whilePasswordHolds()`, its write only while the hash checked is still stored; `secureCookies()`, the `Secure` rule of the remembered browser's cookie (`COOKIE_SECURE` when set, otherwise production), which the session cookie's `httpsOnlyCookie()` takes with an `https:` request; `openSessionUser()`, which each open live stream asks at each heartbeat, and `sessionStillOpen()`, the same question without the account; and, since card 2775, `sessionTokenHash()`, `SESSION_LIMITS`, the one deadline, `slidesSession()` (which requests move the expiry), `openSession()` (the session's user and deadline, for the streams) and `sessionEndTimer()` (a stream's timer to that deadline), `readSessionCookie()`, `httpsOnlyCookie()` and the cookie helpers, `endSessionsSent()` (sign-out), `endSessionsOf()` (a role change) and `replacementStart()` (a password change) |
 | `src/lib/server/cookie-header.ts` | `cookieValues()`, every value of a cookie name in the raw header; `onlyCookieValue()`, exactly one value in the shape given, and `sendsCookie()`, whether the name is sent at all, both built on it; used by the session cookie and the sign-in challenge cookie (card 2775) |
 | `src/lib/server/step-up.ts` | The current password asked again before a destructive action (card 2701): `STEP_UP_ACTIONS`, `confirmStepUp()`, `requirePasswordUnchanged()`, and the import's confirmation, `issueImportConfirmation()` and `takeImportConfirmation()`. See [Step-up Before Destructive Actions](#step-up-before-destructive-actions-card-2701) |
-| `src/lib/step-up-words.ts` | The step-up's words and codes, which the server answers with and the pages read: `STEP_UP_FIELD`, the refusals, `PASSWORD_CHANGED_MEANWHILE`, `CONFIRMATION_HEADER`, `StepUpCode`, and `stepUpRefusal()`, `refusalWatch()` and `isStepUpSignOut()`, which tell a refusal of the password from any other by its `stepUp` code |
-| `src/lib/components/CurrentPasswordField.svelte` | The one field for the caller's own password, asked again (card 2701's code review, F7): label, `autocomplete="current-password"`, the refusal in an alert, `aria-invalid` and `aria-describedby`, the focus on a refusal, and no field to type in once the session is signed out |
+| `src/lib/step-up-words.ts` | The step-up's words and codes, which the server answers with and the pages read: `STEP_UP_FIELD`, the refusals, `PASSWORD_CHANGED_MEANWHILE`, `CONFIRMATION_HEADER`, `StepUpCode`, `STEP_UP_CODE_FIELD` (`currentCode`), the `StepUpProof` type and `NO_PROOF` (card 2770), and `stepUpRefusal()`, `refusalWatch()` and `isStepUpSignOut()`, which tell a refusal of the password from any other by its `stepUp` code |
+| `src/lib/components/CurrentPasswordField.svelte` | The one field for the caller's own password, asked again (card 2701's code review, F7): label, `autocomplete="current-password"`, the refusal in an alert, `aria-invalid` and `aria-describedby`, the focus on a refusal, and no field to type in once the session is signed out; since card 2770 also the code field under it, with its recovery-code switch and a required bindable `code` |
 | `src/lib/server/write-as.ts` | Who the caller is, asked again at the write (card 2253): `writeAs(locals, (caller) => …)`, the one transaction every write handler writes in, beginning with `stillAuthenticated()`; `stillCallerNow(locals)`, the same question in a transaction of its own, for the nine handlers whose work cannot run in one (the export the ninth, card 2701); `inWrite()`, the first statement of every service write, refused unless a `writeAs` callback is running, and `ServiceOptions`, what every service write is handed beside the caller (card 2012). See [Asked Again at the Write](#asked-again-at-the-write-card-2253) |
 | `src/lib/server/passwords.ts` | Every bcrypt hash and check, on worker threads in two lanes (card 2191): `checkPassword()`, `makePasswordHash()`, `CheckNotMade`, `callerHasGone()`, `passwordChecks()`, `BCRYPT_ROUNDS` and `DUMMY_HASH`. The only importer of bcryptjs |
 | `src/lib/server/known-browsers.ts` | Browsers that have signed in before (card 2194): `rememberBrowser()`, `rememberedNonce()`, the key in `settings` and `resetKnownBrowserSecretCache()`, and `signInsOneAtATime()`, which reads `SIGN_IN_ONE_AT_A_TIME`; the MAC's domain, `known-browser:2:` since card 2769 |

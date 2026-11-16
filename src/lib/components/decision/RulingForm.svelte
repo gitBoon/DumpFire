@@ -16,7 +16,7 @@
   - With questions still open, Rule is off until the box saying so is ticked.
   - Rule… opens a dialog that asks for the caller's password and sends
     `{ optionId, reason, conditions, revision, openQuestionsConfirmed,
-    currentPassword }` as JSON. A refusal of the password stays in the dialog
+    currentPassword, currentCode }` as JSON (card 2770). A refusal of the password stays in the dialog
     (`stepUpRefusal`); any other refusal closes it and is said in the status
     region, in the server's words, and the focus goes back to Rule. A ruling
     taken is handed up (`onRuled`), whose page says it in its own region, as
@@ -36,7 +36,7 @@
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import { againstOf, DECISION_TEXT_MAX } from '$lib/decision-rules';
 	import { NOT_REACHED_WORDS, RESULTS_READ_AGAIN, STALE_REVISION } from '$lib/decision-words';
-	import { ASKS_FOR_PASSWORD, stepUpRefusal } from '$lib/step-up-words';
+	import { ASKS_FOR_PASSWORD, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
 
 	let {
 		decisionId,
@@ -119,12 +119,12 @@
 		confirming = true;
 	}
 
-	async function rule(typed: string): Promise<string | void> {
+	async function rule(proof: StepUpProof): Promise<string | void> {
 		try {
 			const res = await fetch(`/api/decisions/${decisionId}/rule`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ optionId, reason, conditions, revision, openQuestionsConfirmed: confirmedOpen, currentPassword: typed })
+				body: JSON.stringify({ optionId, reason, conditions, revision, openQuestionsConfirmed: confirmedOpen, currentPassword: proof.currentPassword, currentCode: proof.currentCode })
 			});
 			const refusal = await stepUpRefusal(res);
 			if (refusal !== null) return refusal;

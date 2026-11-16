@@ -14,7 +14,7 @@
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import { toasts } from '$lib/stores/toast';
 	import { PURGE_WARNING, cardDeleteWarning, deleteFailure, failureMessage } from '$lib/api';
-	import { stepUpRefusal } from '$lib/step-up-words';
+	import { stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
 	import { parseStamp } from '$lib/timestamps';
 
 	let { data }: { data: PageData } = $props();
@@ -31,12 +31,12 @@
 	// show (card 2701: Purge All).
 	let confirmState = $state<{
 		show: boolean; title: string; message: string; confirmText: string;
-		onConfirm: (password: string) => void | Promise<string | null | void>; askPassword: boolean;
+		onConfirm: (proof: StepUpProof) => void | Promise<string | null | void>; askPassword: boolean;
 	}>({
 		show: false, title: '', message: '', confirmText: '', onConfirm: () => {}, askPassword: false
 	});
 
-	function showConfirm(title: string, message: string, confirmText: string, onConfirm: (password: string) => void | Promise<string | null | void>, askPassword = false) {
+	function showConfirm(title: string, message: string, confirmText: string, onConfirm: (proof: StepUpProof) => void | Promise<string | null | void>, askPassword = false) {
 		confirmState = { show: true, title, message, confirmText, onConfirm, askPassword };
 	}
 
@@ -117,7 +117,7 @@
 			'Purge All Archived Cards',
 			PURGE_WARNING,
 			'Purge All',
-			async (currentPassword) => {
+			async (proof: StepUpProof) => {
 				purging = true;
 				const started = toasts.navigation();
 				try {
@@ -126,7 +126,7 @@
 						res = await fetch('/api/admin/purge-archived', {
 							method: 'POST',
 							headers: { 'Content-Type': 'application/json' },
-							body: JSON.stringify({ currentPassword })
+							body: JSON.stringify({ currentPassword: proof.currentPassword, currentCode: proof.currentCode })
 						});
 					} catch {
 						confirmState.show = false;

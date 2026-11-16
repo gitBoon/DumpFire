@@ -14,7 +14,7 @@
 	import { invalidateAll } from '$app/navigation';
 	import { PURGE_DESCRIPTION, PURGE_WARNING, RESET_WARNING, failureMessage } from '$lib/api';
 	import { sent, sentAsking, showToast } from '$lib/admin/send';
-	import { ASKS_FOR_PASSWORD, stepUpRefusal } from '$lib/step-up-words';
+	import { ASKS_FOR_PASSWORD, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
 
 	let {
 		isSuperadmin,
@@ -30,20 +30,20 @@
 		confirm: (
 			title: string,
 			message: string,
-			action: (password: string) => Promise<string | null | void>,
+			action: (proof: StepUpProof) => Promise<string | null | void>,
 			options?: { askPassword?: boolean }
 		) => void;
 		/** The page's: what a reset has to say that must be read, shown in its notice. */
 		resetNotice: { title: string; message: string; problems: string[]; redirect: string | null } | null;
 	} = $props();
 
-	async function resetDatabase(currentPassword: string): Promise<string | void> {
+	async function resetDatabase(proof: StepUpProof): Promise<string | void> {
 		let res: Response;
 		try {
 			res = await fetch('/api/admin/reset', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ currentPassword })
+				body: JSON.stringify({ currentPassword: proof.currentPassword, currentCode: proof.currentCode })
 			});
 		} catch {
 			resetNotice = {
@@ -90,9 +90,9 @@
 		showToast('Database vacuumed. Unused space was reclaimed.');
 	}
 
-	async function resetAllXp(currentPassword: string): Promise<string | void> {
+	async function resetAllXp(proof: StepUpProof): Promise<string | void> {
 		const res = await sentAsking(
-			() => fetch('/api/admin/reset-xp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword }) }),
+			() => fetch('/api/admin/reset-xp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword: proof.currentPassword, currentCode: proof.currentCode }) }),
 			'Failed to reset XP'
 		);
 		if (typeof res === 'string') return res;
@@ -102,11 +102,11 @@
 
 	let purgingArchived = $state(false);
 
-	async function purgeArchivedCards(currentPassword: string): Promise<string | void> {
+	async function purgeArchivedCards(proof: StepUpProof): Promise<string | void> {
 		purgingArchived = true;
 		try {
 			const res = await sentAsking(
-				() => fetch('/api/admin/purge-archived', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword }) }),
+				() => fetch('/api/admin/purge-archived', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword: proof.currentPassword, currentCode: proof.currentCode }) }),
 				'Failed to purge archived cards'
 			);
 			if (typeof res === 'string') return res;

@@ -29,7 +29,8 @@
   F2), so the panel copies none of them. Each changes which credential
   answers for the participant, or where their record mail and next link go,
   so each goes through `ConfirmModal` asking for the caller's own password,
-  sending `{ account, currentPassword }` or `{ currentPassword }` alone. A
+  sending `{ account, currentPassword, currentCode }` or `{ currentPassword,
+  currentCode }` alone (card 2770). A
   refusal of the password keeps the dialog open, its words in it and the
   field cleared; any other refusal is said on the row, and the dialog closes.
 
@@ -42,7 +43,7 @@
 	import type { PageData } from '../../../routes/decisions/[id]/edit/$types';
 	import { failureMessage } from '$lib/api';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
-	import { ASKS_FOR_PASSWORD, stepUpRefusal } from '$lib/step-up-words';
+	import { ASKS_FOR_PASSWORD, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
 
 	type Participant = PageData['participants'][number];
 	/** What the server offers the administrator on a participant's row: an administrator's alone. */
@@ -167,21 +168,22 @@
 	 * given back for the dialog to show; any other answer closes it, a refusal
 	 * said on the row.
 	 */
-	async function confirmAction(a: Asking, currentPassword: string): Promise<string | void> {
+	async function confirmAction(a: Asking, proof: StepUpProof): Promise<string | void> {
+		const { currentPassword, currentCode } = proof;
 		let res: Response;
 		try {
 			if (a.action === 'address') {
 				res = await fetch(`/api/decisions/${decisionId}/participants/${a.participantId}/address`, {
 					method: 'PUT',
 					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ currentPassword })
+					body: JSON.stringify({ currentPassword, currentCode })
 				});
 			} else {
 				const account = a.action === 'attach' ? 'person' : 'none';
 				res = await fetch(`/api/decisions/${decisionId}/participants/${a.participantId}/account`, {
 					method: 'PUT',
 					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ account, currentPassword })
+					body: JSON.stringify({ account, currentPassword, currentCode })
 				});
 			}
 		} catch {
@@ -280,7 +282,7 @@
 		confirmText={confirmTitle(a)}
 		confirmDanger={false}
 		askPassword
-		onConfirm={(password) => confirmAction(a, password)}
+		onConfirm={(proof: StepUpProof) => confirmAction(a, proof)}
 		onCancel={() => (asking = null)}
 	/>
 {/if}

@@ -25,7 +25,7 @@
 	import { sentAsking, showToast } from '$lib/admin/send';
 	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
 	import { holdFocus } from '$lib/dialog-focus';
-	import { ASKS_FOR_PASSWORD } from '$lib/step-up-words';
+	import { ASKS_FOR_PASSWORD, proofTyped } from '$lib/step-up-words';
 
 	type DirectoryPerson = PageData['people'][number];
 
@@ -56,6 +56,8 @@
 
 	/** The caller's own password, asked for with a change of address or account: held here alone, and cleared once sent. */
 	let currentPassword = $state('');
+	/** The sign-in code typed beside it (card 2770), held and cleared as the password is. */
+	let stepUpCode = $state('');
 	/** The server's refusal of the last password sent, shown beside the field. */
 	let refusal = $state<string | null>(null);
 
@@ -69,7 +71,18 @@
 	 */
 	let asks = $derived(start === null || emailChanged || accountChanged);
 
-	let canSave = $derived(fullName.trim() !== '' && email.trim() !== '' && (!asks || currentPassword !== ''));
+	let canSave = $derived(fullName.trim() !== '' && email.trim() !== '' && (!asks || proofTyped(currentPassword, stepUpCode)));
+
+	/**
+	 * The address or the account changed back, so that nothing asks: the
+	 * password and code typed for it go, as the field goes (card 2770, the code
+	 * review's CR2). In the inputs' own handlers, which run after `bind:value`.
+	 */
+	function forgetProofIfNotAsked() {
+		if (asks) return;
+		currentPassword = '';
+		stepUpCode = '';
+	}
 
 	function toggleGroup(groupId: number, on: boolean) {
 		groupIds = on ? [...groupIds, groupId] : groupIds.filter((id) => id !== groupId);
@@ -79,7 +92,9 @@
 		if (!canSave || saving) return;
 		saving = true;
 		const password = currentPassword;
+		const currentCode = stepUpCode;
 		currentPassword = '';
+		stepUpCode = '';
 		refusal = null;
 		try {
 			const res = await sentAsking(
@@ -94,7 +109,8 @@
 							userId: accountChanged ? (userId === '' ? null : Number(userId)) : undefined,
 							// Only groups still in the page's data: one another administrator deleted is dropped, not sent to be refused.
 							groupIds: groupIds.filter((id) => data.groups.some((g) => g.id === id)),
-							currentPassword: asks ? password : undefined
+							currentPassword: asks ? password : undefined,
+							currentCode: asks ? currentCode : undefined
 						})
 					}),
 				start ? 'The person was not saved' : 'The person was not added'
@@ -126,7 +142,7 @@
 			</label>
 			<label class="dialog-field">
 				<span>Email</span>
-				<input type="email" class="form-input" bind:value={email} maxlength="254" />
+				<input type="email" class="form-input" bind:value={email} maxlength="254" oninput={forgetProofIfNotAsked} />
 			</label>
 			<label class="dialog-field">
 				<span>Job title</span>
@@ -134,7 +150,7 @@
 			</label>
 			<label class="dialog-field">
 				<span>Account</span>
-				<select class="form-input" bind:value={userId}>
+				<select class="form-input" bind:value={userId} onchange={forgetProofIfNotAsked}>
 					<option value="">None</option>
 					{#each linkable as account (account.id)}
 						<option value={String(account.id)}>{account.emoji} {account.username} ({account.email})</option>
@@ -164,7 +180,7 @@
 					{start ? "A new address or account changes where this person's decision mail and personal links go." : "This person's address and account decide where their decision mail and personal links go."}
 					{ASKS_FOR_PASSWORD}
 				</p>
-				<CurrentPasswordField bind:value={currentPassword} {refusal} readonly={saving} onEnter={save} />
+				<CurrentPasswordField bind:value={currentPassword} bind:code={stepUpCode} {refusal} readonly={saving} onEnter={save} />
 			{/if}
 		</div>
 		<div class="modal-actions">

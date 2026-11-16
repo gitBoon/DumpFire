@@ -42,6 +42,7 @@ import PersonDialog from '$lib/components/admin/people/PersonDialog.svelte';
 import FromAccountsDialog from '$lib/components/admin/people/FromAccountsDialog.svelte';
 import PeoplePage from '../src/routes/admin/people/+page.svelte';
 import { STEP_UP_WRONG } from '$lib/step-up-words';
+import { CODE, codeFieldIn } from './helpers/step-up-code';
 
 // The browser's `mount`, loaded by its path (see the XP bars' file).
 const clientEntry = pathToFileURL(join(process.cwd(), 'node_modules/svelte/src/index-client.js')).href;
@@ -131,6 +132,13 @@ function typePassword(target: HTMLElement, value: string) {
 	field.dispatchEvent(new Event('input', { bubbles: true }));
 	flushSync();
 }
+/** Types `CODE` into the code field beside the password within `within` (card 2770). */
+function typeCode(within: ParentNode) {
+	const field = codeFieldIn(within)!;
+	field.value = CODE;
+	field.dispatchEvent(new Event('input', { bubbles: true }));
+	flushSync();
+}
 const saveButton = (target: HTMLElement) => [...target.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent!.trim() === 'Save')!;
 
 describe('PersonDialog (61)', () => {
@@ -153,13 +161,14 @@ describe('PersonDialog (61)', () => {
 		expect(passwordField(target)).not.toBeNull();
 		expect(saveButton(target).disabled).toBe(true);
 		typePassword(target, 'my password');
+		typeCode(target);
 		saveButton(target).click();
 		await settle();
 
 		expect(sent).toEqual([
 			{
 				what: 'PUT /api/people/5',
-				body: { fullName: 'Pat Doe', email: 'Pat.Moved@Example.Test', jobTitle: 'Analyst', groupIds: [], currentPassword: 'my password' }
+				body: { fullName: 'Pat Doe', email: 'Pat.Moved@Example.Test', jobTitle: 'Analyst', groupIds: [], currentPassword: 'my password', currentCode: CODE }
 			}
 		]);
 	});
@@ -173,10 +182,27 @@ describe('PersonDialog (61)', () => {
 		flushSync();
 		expect(passwordField(target)).not.toBeNull();
 		typePassword(target, 'my password');
+		typeCode(target);
 		saveButton(target).click();
 		await settle();
 
-		expect(sent).toEqual([{ what: 'PUT /api/people/5', body: { fullName: 'Pat Doe', jobTitle: 'Analyst', userId: 9, groupIds: [], currentPassword: 'my password' } }]);
+		expect(sent).toEqual([{ what: 'PUT /api/people/5', body: { fullName: 'Pat Doe', jobTitle: 'Analyst', userId: 9, groupIds: [], currentPassword: 'my password', currentCode: CODE } }]);
+	});
+
+	// Card 2770 (S1): Enter gets round no button; the dialog's own rule sends nothing without the code.
+	it('sends nothing on Enter in the code field while the code is blank, a changed address and the password typed (T6)', async () => {
+		const { target, onClose } = drawDialog();
+
+		type(target, 'Email', 'pat.moved@example.test');
+		typePassword(target, 'my password');
+		const code = codeFieldIn(target)!;
+		code.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+		flushSync();
+		await settle();
+
+		expect(sent).toEqual([]);
+		expect(saveButton(target).disabled).toBe(true);
+		expect(onClose).not.toHaveBeenCalled();
 	});
 
 	it('keeps the dialog open on a refused password, its words shown and the field cleared', async () => {
@@ -185,6 +211,7 @@ describe('PersonDialog (61)', () => {
 
 		type(target, 'Email', 'pat.moved@example.test');
 		typePassword(target, 'a wrong one');
+		typeCode(target);
 		saveButton(target).click();
 		await settle();
 
@@ -208,13 +235,14 @@ describe('PersonDialog (61)', () => {
 		expect(passwordField(target)).not.toBeNull();
 		expect(add().disabled).toBe(true);
 		typePassword(target, 'my password');
+		typeCode(target);
 		add().click();
 		await settle();
 
 		expect(sent).toEqual([
 			{
 				what: 'POST /api/people',
-				body: { fullName: 'Ann Lee', email: 'ann.lee@example.test', jobTitle: '', userId: null, groupIds: [], currentPassword: 'my password' }
+				body: { fullName: 'Ann Lee', email: 'ann.lee@example.test', jobTitle: '', userId: null, groupIds: [], currentPassword: 'my password', currentCode: CODE }
 			}
 		]);
 		expect(onClose).toHaveBeenCalled();
@@ -239,17 +267,19 @@ describe('FromAccountsDialog (S1)', () => {
 		flushSync();
 		expect(add().disabled).toBe(true);
 		typePassword(target, 'a wrong one');
+		typeCode(target);
 		add().click();
 		await settle();
-		expect(sent).toEqual([{ what: 'POST /api/people/from-accounts', body: { userIds: [9], currentPassword: 'a wrong one' } }]);
+		expect(sent).toEqual([{ what: 'POST /api/people/from-accounts', body: { userIds: [9], currentPassword: 'a wrong one', currentCode: CODE } }]);
 		expect(onClose).not.toHaveBeenCalled();
 		expect(passwordField(target)!.value).toBe('');
 		expect(target.querySelector('[role="alert"]')!.textContent!.trim()).toBe(STEP_UP_WRONG);
 
 		typePassword(target, 'my password');
+		typeCode(target);
 		add().click();
 		await settle();
-		expect(sent.at(-1)).toEqual({ what: 'POST /api/people/from-accounts', body: { userIds: [9], currentPassword: 'my password' } });
+		expect(sent.at(-1)).toEqual({ what: 'POST /api/people/from-accounts', body: { userIds: [9], currentPassword: 'my password', currentCode: CODE } });
 		expect(onClose).toHaveBeenCalled();
 	});
 });
@@ -268,10 +298,11 @@ describe('the People page (S1)', () => {
 		const confirm = dialog.querySelectorAll<HTMLButtonElement>('.confirm-actions button')[1];
 		expect(confirm.disabled).toBe(true);
 		typePassword(dialog, 'my password');
+		typeCode(dialog);
 		confirm.click();
 		await settle();
 
-		expect(sent).toEqual([{ what: 'DELETE /api/people/5', body: { currentPassword: 'my password' } }]);
+		expect(sent).toEqual([{ what: 'DELETE /api/people/5', body: { currentPassword: 'my password', currentCode: CODE } }]);
 		expect(document.querySelector('.confirm-modal')).toBeNull();
 		expect(navigation.invalidateAll).toHaveBeenCalled();
 	});

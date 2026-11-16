@@ -35,7 +35,7 @@
 	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import { toasts } from '$lib/stores/toast';
-	import { ASKS_FOR_PASSWORD, stepUpRefusal } from '$lib/step-up-words';
+	import { ASKS_FOR_PASSWORD, proofTyped, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
 	import ResetPasswordDialog from './ResetPasswordDialog.svelte';
 
 	/** The settings an account had set that a role change or a delete removes, or would (card 2397): `SettingsRemoved` on the server. */
@@ -61,7 +61,7 @@
 		confirm: (
 			title: string,
 			message: string,
-			action: (password: string) => Promise<string | null | void>,
+			action: (proof: StepUpProof) => Promise<string | null | void>,
 			options?: { askPassword?: boolean }
 		) => void;
 		/** The mail panel's own read of what mail has done, which the page draws for every administrator (card 2395). */
@@ -106,6 +106,8 @@
 	 * 2701): cleared once sent, and never kept beyond the form.
 	 */
 	let newUserCurrentPassword = $state('');
+	/** The sign-in code typed beside it (card 2770), held and cleared as the password is. */
+	let newUserCurrentCode = $state('');
 	/** The server's refusal of that password, said in the form beside its field until the next Create (card 2701). */
 	let newUserRefusal = $state<string | null>(null);
 	let creatingUser = $state(false);
@@ -130,7 +132,7 @@
 	const INVITE_REFUSED = 'This account uses two-step sign-in. Reset it first, then send the invite';
 
 	async function createUser() {
-		if (!newUsername.trim() || !newEmail.trim() || !newUserCurrentPassword) return;
+		if (!newUsername.trim() || !newEmail.trim() || !proofTyped(newUserCurrentPassword, newUserCurrentCode)) return;
 		// Password required if non-empty, must be 8+ chars
 		if (newPassword && newPassword.length < 8) {
 			showToast('Password must be at least 8 characters', 'error');
@@ -145,7 +147,9 @@
 		// refusal of it is said in the form, beside its field, and it is typed
 		// again.
 		const currentPassword = newUserCurrentPassword;
+		const currentCode = newUserCurrentCode;
 		newUserCurrentPassword = '';
+		newUserCurrentCode = '';
 		newUserRefusal = null;
 		try {
 			// A refusal is read with failureMessage: a proxy's page in place of
@@ -162,7 +166,8 @@
 							role: newUserRole,
 							// Left out when blank: an invite is issued.
 							password: newPassword || undefined,
-							currentPassword
+							currentPassword,
+							currentCode
 						})
 					}),
 				'Failed to create user'
@@ -352,7 +357,7 @@
 		const role = chosenRole.get(userId);
 		if (role === undefined) return;
 		const ask = (said: string) =>
-			confirm('Change Role', said, (password) => changeUserRole(userId, username, password), { askPassword: true });
+			confirm('Change Role', said, (proof: StepUpProof) => changeUserRole(userId, username, proof), { askPassword: true });
 		if (role !== 'user') {
 			ask(`Make ${username} ${role === 'admin' ? 'an administrator' : `a ${role}`}? ${ASKS_FOR_PASSWORD}`);
 			return;
@@ -380,7 +385,7 @@
 	 * removed settings the account had set (card 2397), a warning that stays
 	 * says what, and the page reads the panels that show it again.
 	 */
-	async function changeUserRole(userId: number, username: string, currentPassword: string): Promise<string | void> {
+	async function changeUserRole(userId: number, username: string, proof: StepUpProof): Promise<string | void> {
 		const newRole = chosenRole.get(userId);
 		if (changingRole.has(userId) || newRole === undefined) return;
 		if (newRole === storedUserRole(userId)) {
@@ -396,7 +401,7 @@
 				res = await fetch(`/api/users/${userId}`, {
 					method: 'PUT',
 					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ role: newRole, currentPassword })
+					body: JSON.stringify({ role: newRole, currentPassword: proof.currentPassword, currentCode: proof.currentCode })
 				});
 			} catch {
 				putBack();
@@ -448,11 +453,11 @@
 			.map((team) => team.name);
 	}
 
-	async function deleteUser(userId: number, currentPassword: string): Promise<string | void> {
+	async function deleteUser(userId: number, proof: StepUpProof): Promise<string | void> {
 		const started = toasts.navigation();
 		const username = data.users.find((u) => u.id === userId)?.username ?? 'the account';
 		const res = await sentAsking(
-			() => fetch(`/api/users/${userId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword }) }),
+			() => fetch(`/api/users/${userId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword: proof.currentPassword, currentCode: proof.currentCode }) }),
 			'Failed to delete user'
 		);
 		if (typeof res === 'string') return res;
@@ -487,7 +492,7 @@
 		} finally {
 			markAsking(userId, false);
 		}
-		confirm('Delete User', deleteWarning(userId, username, held), (password) => deleteUser(userId, password), { askPassword: true });
+		confirm('Delete User', deleteWarning(userId, username, held), (proof: StepUpProof) => deleteUser(userId, proof), { askPassword: true });
 	}
 
 	/**
@@ -502,7 +507,7 @@
 		confirm(
 			'Send Invite',
 			`Send ${username} a new invite? Whoever opens its link sets the account's password, and an invite sent earlier stops working. ${ASKS_FOR_PASSWORD}`,
-			(password) => resendInvite(userId, password, control),
+			(proof: StepUpProof) => resendInvite(userId, proof, control),
 			{ askPassword: true }
 		);
 	}
@@ -516,13 +521,13 @@
 	 * refusal of the password is given back for the confirm to show (card
 	 * 2701). Either way the mail panel is read again, so it shows this mail.
 	 */
-	async function resendInvite(userId: number, currentPassword: string, control?: HTMLElement): Promise<string | void> {
+	async function resendInvite(userId: number, proof: StepUpProof, control?: HTMLElement): Promise<string | void> {
 		if (inviteInFlight !== null || inviteLink !== null) return;
 		const started = toasts.navigation();
 		inviteInFlight = userId;
 		try {
 			const res = await sentAsking(
-				() => fetch(`/api/users/${userId}/invite`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword }) }),
+				() => fetch(`/api/users/${userId}/invite`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword: proof.currentPassword, currentCode: proof.currentCode }) }),
 				'Failed to send invite'
 			);
 			if (typeof res === 'string') return res;
@@ -562,7 +567,7 @@
 		confirm(
 			'Reset Two-Step Sign-In',
 			`Reset ${username}'s two-step sign-in? Their authenticator and recovery codes stop working, they are signed out everywhere, and you are given a link, once, to pass on to them yourself. ${ASKS_FOR_PASSWORD}`,
-			(password) => resetTwoStepOf(userId, username, password, control),
+			(proof: StepUpProof) => resetTwoStepOf(userId, username, proof, control),
 			{ askPassword: true }
 		);
 	}
@@ -575,14 +580,14 @@
 	 * page's data is read again, so `twoStep` is, and 📧 is offered again. A
 	 * refusal of the password is given back for the confirm to show.
 	 */
-	async function resetTwoStepOf(userId: number, username: string, currentPassword: string, control?: HTMLElement): Promise<string | void> {
+	async function resetTwoStepOf(userId: number, username: string, proof: StepUpProof, control?: HTMLElement): Promise<string | void> {
 		if (inviteInFlight !== null || inviteLink !== null) return;
 		const started = toasts.navigation();
 		inviteInFlight = userId;
 		twoStepInFlight = userId;
 		try {
 			const res = await sentAsking(
-				() => fetch(`/api/users/${userId}/mfa/reset`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword }) }),
+				() => fetch(`/api/users/${userId}/mfa/reset`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword: proof.currentPassword, currentCode: proof.currentCode }) }),
 				'Failed to reset two-step sign-in'
 			);
 			if (typeof res === 'string') return res;
@@ -625,7 +630,7 @@
 				<input type="password" placeholder="Password (blank = send invite)" bind:value={newPassword} class="form-input" autocomplete="new-password" />
 			</div>
 			<!-- The caller's own, which making an account asks for again (card 2701), with the server's refusal of it. -->
-			<CurrentPasswordField bind:value={newUserCurrentPassword} refusal={newUserRefusal} onEnter={createUser} />
+			<CurrentPasswordField bind:value={newUserCurrentPassword} bind:code={newUserCurrentCode} refusal={newUserRefusal} onEnter={createUser} />
 			<p class="form-hint">{ASKS_FOR_PASSWORD} Making an account asks for yours, so that a browser left signed in cannot.</p>
 			<div class="form-row">
 				<EmojiPicker value={newUserEmoji} onSelect={(e) => (newUserEmoji = e)} />
@@ -633,10 +638,10 @@
 					<option value="user">User</option>
 					{#if isSuperadmin}<option value="admin">Admin</option>{/if}
 				</select>
-				<button class="btn-primary btn-sm" onclick={createUser} disabled={creatingUser || inviteInFlight !== null || inviteLink !== null || !newUsername || !newEmail || !newUserCurrentPassword}>
+				<button class="btn-primary btn-sm" onclick={createUser} disabled={creatingUser || inviteInFlight !== null || inviteLink !== null || !newUsername || !newEmail || !proofTyped(newUserCurrentPassword, newUserCurrentCode)}>
 					{creatingUser ? 'Creating...' : 'Create'}
 				</button>
-				<button class="btn-ghost btn-sm" onclick={() => { showCreateUser = false; newUserCurrentPassword = ''; newUserRefusal = null; }}>Cancel</button>
+				<button class="btn-ghost btn-sm" onclick={() => { showCreateUser = false; newUserCurrentPassword = ''; newUserCurrentCode = ''; newUserRefusal = null; }}>Cancel</button>
 			</div>
 		</div>
 	{/if}
