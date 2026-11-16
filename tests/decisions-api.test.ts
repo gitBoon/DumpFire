@@ -69,7 +69,8 @@ import {
 	makeSmtp,
 	makeUser,
 	makeVersion,
-	resetDb
+	resetDb,
+	sessionCredential
 } from './helpers/fixtures';
 
 type Row = Record<string, unknown>;
@@ -144,7 +145,7 @@ const asKey = <T>(user: SessionUser, write: (caller: SessionUser | null) => T): 
 
 /** Call a write as a page's route would, inside writeAs let in with a real session of `user`. */
 const asSession = <T>(user: SessionUser, write: (caller: SessionUser | null) => T): T =>
-	writeAs({ user, credential: { kind: 'session', token: makeSession(user) } } as App.Locals, write as never) as T;
+	writeAs({ user, credential: sessionCredential(makeSession(user)) } as App.Locals, write as never) as T;
 
 /** What a call was answered with: 'passed', or the refusal's status and words. */
 function outcome(run: () => unknown): 'passed' | { status: number; message: string } {

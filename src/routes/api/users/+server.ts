@@ -158,7 +158,7 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 	// After the commit, and awaited: an effect never starts inside a
 	// transaction, and the answer says whether the mail went.
 	const outcome = await sendInviteEmail(account.email, account.username, invite.token, invite.baseUrl);
-	const mail = inviteMailAnswer({ outcome, cookies, actorId, accountId: account.id, token: invite.token, baseUrl: invite.baseUrl });
+	const mail = inviteMailAnswer({ outcome, credential: locals.credential, actorId, accountId: account.id, token: invite.token, baseUrl: invite.baseUrl });
 
 	if (mail.mailSent) return json({ ...account, invited: true, mailSent: true }, { status: 201 });
 	if (mail.inviteUrl === null) {

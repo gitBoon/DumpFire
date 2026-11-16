@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.75
+version: 1.76
 status: As-Built
 date: 2026-11-16
 tags:
@@ -41,7 +41,7 @@ tags:
   - migration-0068
   - invites
   - token-hashing
-description: "Complete database schema documentation with ER diagram, table descriptions, relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), invite tokens kept only as SHA-256 hashes (migration 0068, card 2849: every invite held in plain ended once), and how migrations and schema reconciliation bring every database to the model"
+description: "Complete database schema documentation with ER diagram, table descriptions, relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), invite tokens kept only as SHA-256 hashes (migration 0068, card 2849: every invite held in plain ended once), session codes kept only as SHA-256 hashes in the existing sessions.id column with no migration (card 2775), and how migrations and schema reconciliation bring every database to the model"
 ---
 
 # DumpFire Data Model
@@ -66,10 +66,10 @@ erDiagram
     }
 
     sessions {
-        text id PK
+        text id PK "declared TEXT; holds the 32-byte SHA-256 of the session's code, as a BLOB (card 2775)"
         int user_id FK
-        text expires_at
-        text created_at
+        text expires_at "the idle limit: now + 12 h (3 days for a user), never past the total limit"
+        text created_at "starts the total limit: 24 h (7 days for a user)"
         int wrong_password_count "0062: NOT NULL DEFAULT 0; 3 ends the session"
         int two_step "0066: NOT NULL DEFAULT 0; 1 made after a second factor"
     }
@@ -1359,6 +1359,7 @@ erDiagram
     }
     sessions {
         int two_step "0066: NOT NULL DEFAULT 0. 1 = made after a second factor; any other refused"
+        blob id "card 2775, no migration: the SHA-256 of the session's code, 32 bytes, in the same TEXT column"
     }
     sign_in_challenges {
         text enrol_grant "0066: password, link, invite or setup; NULL for verify"
@@ -1372,7 +1373,9 @@ erDiagram
 | Column or row | What it holds | Written by |
 |---|---|---|
 | `users.mfa_password_enrol` | 1 when the account may set up its authenticator on its password alone, honoured only where no mail host is configured, within 14 days of `two_step_released_at`, and while the account holds no enrolment link but release-mail ones (the accepted risk R1) | 0066: 1 for every account with no second factor and no enrolment link row, expired or not. Set to 0 by an enrolment's confirm, `resetTwoStep()`, `scripts/mfa-reset.mjs`, by a restore for every account not this server's, and by a working-copy restore for every account (`switchOffOutside()` in `src/lib/server/db/restore.ts`). 0 for every account made since, the superadmin at set-up included |
-| `sessions.two_step` | 1 when the session was made after a second factor | `createSession()` writes 1. 0066 left every session there at 0, and an older image, which writes no value, leaves 0: `findSession()` refuses such a row and `validateSession()` deletes it |
+| `sessions.two_step` | 1 when the session was made after a second factor | `createSession()` writes 1. 0066 left every session there at 0, and an older image, which writes no value, leaves 0. Since card 2775 an older image's row is also in plain (see below), which this image never finds and `endPlainSessions()` deletes at start; `findSession()` still refuses a hashed row with any other value and `validateSession()` deletes it, as defence in depth |
+| `sessions.id` | The SHA-256 of the session's code, 32 bytes, a BLOB, in the column that kept its name and declared `TEXT` (card 2775). Never the code itself | `createSession()` (`sessionTokenHash()`); looked up by `findSession()` through the model's `tokenHash` property |
+| `sessions.created_at` | When the session was made; it starts the total limit (24 hours for an administrator, 7 days for a user). Already `NOT NULL DEFAULT (datetime('now'))`, so no column was added | `createSession()`; kept by a password change's replacement session |
 | `sign_in_challenges.enrol_grant` | What lets an enrol challenge set up a factor: `password`, `link`, `invite` or `setup`. NULL on a verify challenge | `issueChallenge()` |
 | `sign_in_challenges.enrolment_link_hash` | The SHA-256 of the enrolment link an enrol challenge came from, taken with the factor at confirm | `issueChallenge()`, for a link challenge |
 | `settings.two_step_released_at` | The moment 0066 ran, in the stored form of a moment. A missing or unreadable value is read as the 14 days over | 0066 (`INSERT … ON CONFLICT DO NOTHING`). Restored as any setting, so a backup made before 0066 restores with none |
@@ -1384,6 +1387,20 @@ erDiagram
   restore, and the same accounts then have this server's value back (`GUESSING` and `HISTORY` in
   `src/lib/server/mfa-backup.ts`); a working copy then sets it to 0 for every account. A backup
   holds no session, so `two_step` never travels.
+
+### Session codes kept as hashes (card 2775, no migration)
+
+Card 2775 changes what `sessions.id` holds and adds no migration and no DDL. The column keeps
+its name and its declared type (`text PRIMARY KEY NOT NULL`); the model's property is
+`tokenHash`, declared with the same custom type as `invite_tokens.token` (`bytesInText`, moved
+above `users` in `schema.ts`). Every session is written as the 32-byte SHA-256 of its code, a
+BLOB, which SQLite never takes to equal text, so an older image comparing the column with a
+cookie never matches a stored hash. Migration 0067 ends every session at the release, so every
+row from then on is in hash form; `endPlainSessions()` deletes any other row at every start,
+before the clean-up, whatever an older image wrote. `sessions` is still not a reconciled table
+(`expected-schema.ts` is unchanged), no table has a foreign key to `sessions.id`, and a backup
+holds no session. How a session's two limits are judged is in
+[Idle and Total Limits](authentication-security.md#idle-and-total-limits).
 - **`enrolment_links.issued_by`** gains a value: `release-mail`, for the link a sign-in mails
   (card 2769), beside `admin-reset` and `host-reset` (card 2773). Issuing a link deletes the
   account's earlier ones, but the release mail's: it issues its link beside them

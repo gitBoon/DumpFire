@@ -35,7 +35,7 @@ import { addFromAccounts, createGroup, createPerson, deleteGroup, deletePerson, 
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { writeAs, type ServiceOptions } from '$lib/server/write-as';
 import { api, type ApiResult } from './helpers/api';
-import { FIXTURE_PASSWORD_HASH, makeApiKey, makeSession, makeUser, resetDb } from './helpers/fixtures';
+import { FIXTURE_PASSWORD_HASH, makeApiKey, makeSession, makeUser, resetDb, sessionCredential } from './helpers/fixtures';
 import { gate, gateApiRoutes } from './helpers/gate';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 
@@ -110,7 +110,7 @@ const keysOf = (item: Row) => Object.keys(item).sort();
 const eventCount = () => countOf('decision_events');
 
 /** The locals a gate hands on for a real session of the user. */
-const sessionLocals = (user: SessionUser): App.Locals => ({ user, credential: { kind: 'session', token: makeSession(user) } });
+const sessionLocals = (user: SessionUser): App.Locals => ({ user, credential: sessionCredential(makeSession(user)) });
 
 /** `fn`'s refusal, as the status and the message, or what it answered. */
 function outcome<T>(fn: () => T): { status: number; message: string } | { answered: T } {
@@ -337,7 +337,7 @@ describe('the service refuses a key what the People page alone does', () => {
 	it('logs every rename, on the People page, from the old name to the new; the message as before (14)', async () => {
 		const finance = makeGroup('Finance');
 		const ann = makePerson('Ann Lee', 'ann.lee@example.test', { groupIds: [finance] });
-		const credential = { kind: 'session' as const, token: makeSession(admin) };
+		const credential = sessionCredential(makeSession(admin));
 
 		const person = await api('PUT', `/api/people/${ann}`, { user: admin, credential, body: { fullName: 'Ann Leigh' } });
 		expect(person.status, JSON.stringify(person.body)).toBe(200);

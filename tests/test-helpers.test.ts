@@ -34,12 +34,14 @@ import {
 	makeComment,
 	makeDependency,
 	makeMilestone,
+	makeSession,
 	makeSmtp,
 	makeSubBoard,
 	makeSubtask,
 	makeUser,
 	makeWebhook,
-	resetDb
+	resetDb,
+	sessionHashOf
 } from './helpers/fixtures';
 import { sendAround } from './helpers/held-body';
 import { readBudget, ReadBudgetSpent, watchReads } from './helpers/reads';
@@ -478,9 +480,13 @@ describe('action(), the caller for form actions', () => {
 			data: { error: expect.stringMatching(/^This invite link no longer works\./) }
 		});
 
+		// No caller, so no credential: the cookie is cleared and no session is
+		// deleted, another's left as it was (card 2775).
+		const kept = makeSession(makeUser());
 		const out = await action('/logout', { cookies: { [SESSION_COOKIE_NAME]: 'not-a-session' } });
 		expect(out).toMatchObject({ type: 'redirect', location: '/login' });
 		expect(out.deletedCookies).toEqual([SESSION_COOKIE_NAME]);
+		expect(db.select().from(sessions).all().map((row) => row.tokenHash)).toEqual([sessionHashOf(kept)]);
 	});
 
 	// Card 2769, plan case T44 (decision 29): an action that reads the raw header,

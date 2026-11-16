@@ -34,6 +34,7 @@ import {
 	labels,
 	milestones,
 	people,
+	sessions,
 	settings,
 	subtasks,
 	teamMembers,
@@ -62,7 +63,15 @@ import {
 	type Team,
 	type WorkDependency
 } from '$lib/server/db/schema';
-import { SESSION_COOKIE_NAME, createSession, forgetChecksInFlight, generateApiKey, whilePasswordHolds, type SessionUser } from '$lib/server/auth';
+import {
+	SESSION_COOKIE_NAME,
+	createSession,
+	forgetChecksInFlight,
+	generateApiKey,
+	whilePasswordHolds,
+	type Credential,
+	type SessionUser
+} from '$lib/server/auth';
 import { forgetUnreadablePrefsWarnings } from '$lib/server/notifications';
 import { ensureFormSecret } from '$lib/server/request-tokens';
 import { CONFIRMATION_HEADER, STEP_UP_FIELD, forgetImportConfirmations, issueImportConfirmation } from '$lib/server/step-up';
@@ -202,13 +211,15 @@ export function makeApiKey(user: SessionUser, name?: string): string {
 }
 
 /**
- * A session for a user, made as a login makes one. Returns the token the
+ * A session for a user, made as a login makes one, with the limits of the
+ * user's role and only its hash stored (card 2775). Returns the code the
  * session cookie carries: send it as `Cookie: dumpfire_session=<token>`, the
- * name being `SESSION_COOKIE_NAME`. Random, as `makeApiKey` is, and needed
- * only by a request sent through the gate.
+ * name being `SESSION_COOKIE_NAME` under the tests (`__Host-dumpfire_session`
+ * under `COOKIE_SECURE=true` or over `https:`). Random, as `makeApiKey` is.
+ * `api()` turns the cookie into the credential the gate would record.
  */
 export function makeSession(user: SessionUser): string {
-	return createSession(user.id);
+	return createSession(user.id).token;
 }
 
 /**
@@ -256,7 +267,7 @@ export function importConfirmation(user: SessionUser, token?: string): Record<st
 	const hash = db.select({ passwordHash: users.passwordHash }).from(users).where(eq(users.id, user.id)).get()!.passwordHash;
 	return {
 		cookie: `${SESSION_COOKIE_NAME}=${session}`,
-		[CONFIRMATION_HEADER]: issueImportConfirmation(session, user.id, hash)
+		[CONFIRMATION_HEADER]: issueImportConfirmation(sessionHashOf(session), user.id, hash)
 	};
 }
 
@@ -631,6 +642,24 @@ export function makeOption(decision: Decision, opts: Partial<typeof decisionOpti
  */
 export function inviteHashOf(token: string): Buffer {
 	return createHash('sha256').update(token).digest();
+}
+
+/**
+ * The SHA-256 a session's code is stored as (card 2775): its 32 bytes, a
+ * BLOB, in `sessions.id`, which the model calls `tokenHash`.
+ */
+export function sessionHashOf(token: string): Buffer {
+	return createHash('sha256').update(token).digest();
+}
+
+/** The session row of the code `token`, found by its hash, or undefined for none. */
+export function sessionRow(token: string) {
+	return db.select().from(sessions).where(eq(sessions.tokenHash, sessionHashOf(token))).get();
+}
+
+/** What the gate records in `locals.credential` for a request with the session of the code `token`. */
+export function sessionCredential(token: string): Credential {
+	return { kind: 'session', hash: sessionHashOf(token) };
 }
 
 /** The SHA-256 a personal link's token is stored as (card 2675, decision 9). */

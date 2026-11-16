@@ -120,7 +120,9 @@ import {
 	makeTeam,
 	makeUser,
 	makeWebhook,
-	resetDb
+	resetDb,
+	sessionHashOf,
+	sessionCredential
 } from './helpers/fixtures';
 import { fakeEvent, FROM_THE_PAGE } from './helpers/gate';
 import { sendAround } from './helpers/held-body';
@@ -202,7 +204,7 @@ function outcome<T>(fn: () => T): { status: number; message: string } | { answer
 }
 
 /** The locals a gate would hand on, for a session's token or an API key's row. */
-const sessionLocals = (user: SessionUser, token: string): App.Locals => ({ user, credential: { kind: 'session', token } });
+const sessionLocals = (user: SessionUser, token: string): App.Locals => ({ user, credential: sessionCredential(token) });
 const keyRow = (key: string) => db.select().from(apiKeys).all().find((row) => key.startsWith(row.keyPrefix))!;
 const keyLocals = (user: SessionUser, key: string): App.Locals => ({ user, credential: { kind: 'api key', id: keyRow(key).id } });
 
@@ -286,11 +288,11 @@ describe('stillAuthenticated', () => {
 
 		const token = makeSession(user);
 		const deleted = sessionLocals(user, token);
-		db.delete(sessions).where(eq(sessions.id, token)).run();
+		db.delete(sessions).where(eq(sessions.tokenHash, sessionHashOf(token))).run();
 		expect(outcome(() => inTransaction(() => stillAuthenticated(deleted)))).toEqual(NOT);
 
 		const old = makeSession(user);
-		db.update(sessions).set({ expiresAt: stamp(new Date(Date.now() - 60_000)) }).where(eq(sessions.id, old)).run();
+		db.update(sessions).set({ expiresAt: stamp(new Date(Date.now() - 60_000)) }).where(eq(sessions.tokenHash, sessionHashOf(old))).run();
 		expect(outcome(() => inTransaction(() => stillAuthenticated(sessionLocals(user, old))))).toEqual(NOT);
 
 		const other = makeUser();
@@ -341,7 +343,7 @@ describe('writeAs', () => {
 		const user = makeUser();
 		const token = makeSession(user);
 		const locals = sessionLocals(user, token);
-		db.delete(sessions).where(eq(sessions.id, token)).run();
+		db.delete(sessions).where(eq(sessions.tokenHash, sessionHashOf(token))).run();
 
 		const write = vi.fn(() => 'written');
 		expect(outcome(() => writeAs(locals, write))).toEqual({ status: 401, message: 'Not authenticated' });
@@ -449,7 +451,7 @@ describe('inWrite', () => {
 		expect(() => inTransaction(() => inWrite())).toThrow(OUTSIDE);
 
 		// Refused before the callback: the write is never run, and nothing is left set.
-		db.delete(sessions).where(eq(sessions.id, token)).run();
+		db.delete(sessions).where(eq(sessions.tokenHash, sessionHashOf(token))).run();
 		expect(outcome(() => writeAs(locals, () => inWrite()))).toEqual({ status: 401, message: 'Not authenticated' });
 		expect(() => inTransaction(() => inWrite())).toThrow(OUTSIDE);
 	});
@@ -487,13 +489,13 @@ describe('inWrite', () => {
 		const owner = makeUser({ username: 'owner' });
 		makeBoard({ owner, name: 'Owned' });
 		const token = makeSession(owner);
-		db.delete(sessions).where(eq(sessions.id, token)).run();
+		db.delete(sessions).where(eq(sessions.tokenHash, sessionHashOf(token))).run();
 		const before = snapshotDb();
 
 		// No column 999: a 404 would say so to a caller who is no longer signed in.
 		const res = await api('POST', '/api/cards', {
 			user: owner,
-			credential: { kind: 'session', token },
+			credential: sessionCredential(token),
 			body: { columnId: 999, title: 'Too late' }
 		});
 
@@ -503,7 +505,7 @@ describe('inWrite', () => {
 		// And the same request with the session open is the 404.
 		const open = await api('POST', '/api/cards', {
 			user: owner,
-			credential: { kind: 'session', token: makeSession(owner) },
+			credential: sessionCredential(makeSession(owner)),
 			body: { columnId: 999, title: 'In time' }
 		});
 		expect(open.status).toBe(404);
@@ -525,7 +527,7 @@ describe('the report schedules and the webhooks decide with the account as it is
 		const user = makeUser({ username: `was-${role}`, role });
 		const token = makeSession(user);
 		db.update(users).set({ role: to }).where(eq(users.id, user.id)).run();
-		return { user, credential: { kind: 'session' as const, token } };
+		return { user, credential: sessionCredential(token) };
 	};
 
 	it('POST /api/report-schedules: an all-boards schedule by an administrator lowered to user is refused 403, and nothing written', async () => {
@@ -582,7 +584,7 @@ describe('the report schedules and the webhooks decide with the account as it is
 		db.delete(apiKeys).run();
 		const before = snapshotDb();
 
-		const schedule = await api('DELETE', `/api/report-schedules/${scheduleId}`, { user: owner, credential: { kind: 'session', token } });
+		const schedule = await api('DELETE', `/api/report-schedules/${scheduleId}`, { user: owner, credential: sessionCredential(token) });
 		expect(schedule.status).toBe(401);
 		expect(schedule.body).toEqual({ message: 'Not authenticated' });
 
@@ -597,7 +599,7 @@ describe('the report schedules and the webhooks decide with the account as it is
 	it('lets each through, by the account as it is now, when nothing has changed', async () => {
 		const owner = makeUser({ username: 'owner' });
 		const { board } = makeBoard({ owner, name: 'Owned' });
-		const credential = { kind: 'session' as const, token: makeSession(owner) };
+		const credential = sessionCredential(makeSession(owner));
 
 		const made = await api('POST', '/api/report-schedules', {
 			user: owner,
@@ -691,7 +693,7 @@ describe('the cards and what is on them ask at the write (slice 2253-2)', () => 
 			let before: DbSnapshot | undefined;
 
 			const res = await sendAround(c.method, c.path(s), { session: s.session }, c.body(s), () => {
-				db.delete(sessions).where(eq(sessions.id, s.session)).run();
+				db.delete(sessions).where(eq(sessions.tokenHash, sessionHashOf(s.session))).run();
 				before = snapshotDb();
 			});
 
@@ -726,7 +728,7 @@ describe('the cards and what is on them ask at the write (slice 2253-2)', () => 
 	/** The owner by their session, and for a route that asks for the current password again, the password and the session's cookie. */
 	const sentBy = (s: Scene, confirming?: boolean) => ({
 		user: s.owner,
-		credential: { kind: 'session' as const, token: s.session },
+		credential: sessionCredential(s.session),
 		...(confirming ? { body: { currentPassword: FIXTURE_PASSWORD }, headers: { cookie: `${SESSION_COOKIE_NAME}=${s.session}` } } : {})
 	});
 	const upload = () => {
@@ -739,7 +741,7 @@ describe('the cards and what is on them ask at the write (slice 2253-2)', () => 
 		const s = scene();
 		const archived = makeCard(s.cols['To Do'], { archivedAt: stamp() });
 		const attachment = makeAttachment(s.card, { uploadedBy: s.owner });
-		const credential = { kind: 'session' as const, token: s.session };
+		const credential = sessionCredential(s.session);
 		db.delete(sessions).run();
 		const before = snapshotDb();
 
@@ -762,7 +764,7 @@ describe('the cards and what is on them ask at the write (slice 2253-2)', () => 
 		const s = scene();
 		const archived = makeCard(s.cols['To Do'], { archivedAt: stamp() });
 		const attachment = makeAttachment(s.card, { uploadedBy: s.owner });
-		const credential = { kind: 'session' as const, token: s.session };
+		const credential = sessionCredential(s.session);
 
 		const uploaded = await api('POST', `/api/cards/${s.card.id}/attachments`, { user: s.owner, credential, body: upload() });
 		expect(uploaded.status).toBe(200);
@@ -775,7 +777,7 @@ describe('the cards and what is on them ask at the write (slice 2253-2)', () => 
 	it('decides with the account as it is now: an administrator lowered to user, on a board they are not on, is refused 403, and nothing written', async () => {
 		const s = scene();
 		const admin = makeUser({ username: 'was-admin', role: 'admin' });
-		const credential = { kind: 'session' as const, token: makeSession(admin) };
+		const credential = sessionCredential(makeSession(admin));
 		db.update(users).set({ role: 'user' }).where(eq(users.id, admin.id)).run();
 		const before = snapshotDb();
 
@@ -888,7 +890,7 @@ describe('the boards, groupings, teams, goals and templates ask at the write (sl
 
 			try {
 				const res = await sendAround(c.method, c.path(s), { session: s.session }, c.body(s), () => {
-					db.delete(sessions).where(eq(sessions.id, s.session)).run();
+					db.delete(sessions).where(eq(sessions.tokenHash, sessionHashOf(s.session))).run();
 					before = snapshotDb();
 				});
 				await sent.settle();
@@ -934,7 +936,7 @@ describe('the boards, groupings, teams, goals and templates ask at the write (sl
 	/** The owner by their session, and for a route that asks for the current password again, the password and the session's cookie. */
 	const sentBy = (s: Scene, confirming?: boolean) => ({
 		user: s.owner,
-		credential: { kind: 'session' as const, token: s.session },
+		credential: sessionCredential(s.session),
 		...(confirming ? { body: { currentPassword: FIXTURE_PASSWORD }, headers: { cookie: `${SESSION_COOKIE_NAME}=${s.session}` } } : {})
 	});
 
@@ -963,7 +965,7 @@ describe('the boards, groupings, teams, goals and templates ask at the write (sl
 	it('decides with the account as it is now: an administrator lowered to user, on nothing of the owner\'s, is refused as a user is, and nothing written', async () => {
 		const s = scene();
 		const admin = makeUser({ username: 'was-admin', role: 'admin' });
-		const credential = { kind: 'session' as const, token: makeSession(admin) };
+		const credential = sessionCredential(makeSession(admin));
 		db.update(users).set({ role: 'user' }).where(eq(users.id, admin.id)).run();
 		const before = snapshotDb();
 		const sent = effects();
@@ -1186,7 +1188,7 @@ describe('the accounts, users, requests and reports ask at the write (slice 2253
 
 			try {
 				const res = await sendAround(c.method, c.path(s), { session }, c.body(s), () => {
-					db.delete(sessions).where(eq(sessions.id, session)).run();
+					db.delete(sessions).where(eq(sessions.tokenHash, sessionHashOf(session))).run();
 					before = snapshotDb();
 				});
 				await sent.settle();
@@ -1225,7 +1227,7 @@ describe('the accounts, users, requests and reports ask at the write (slice 2253
 		['DELETE', `/api/requests/${s.request.id}`, 'admin'],
 		['DELETE', `/api/users/${s.member.id}`, 'admin', true]
 	];
-	const asWho = (s: Scene, who: Who) => ({ user: s[who], credential: { kind: 'session' as const, token: s.sessions[who] } });
+	const asWho = (s: Scene, who: Who) => ({ user: s[who], credential: sessionCredential(s.sessions[who]) });
 	/** `asWho`, and for a route that asks for the current password again, the password and the session's cookie. */
 	const sentAs = (s: Scene, who: Who, confirming?: boolean) => ({
 		...asWho(s, who),
@@ -1275,7 +1277,7 @@ describe('the accounts, users, requests and reports ask at the write (slice 2253
 		expect(res.body).toMatchObject({ success: true });
 		// The session it came by has ended, and one new session replaces it.
 		const left = db.select().from(sessions).where(eq(sessions.userId, s.owner.id)).all();
-		expect(left.map((row) => row.id)).not.toContain(s.sessions.owner);
+		expect(left.map((row) => row.tokenHash)).not.toContainEqual(sessionHashOf(s.sessions.owner));
 		expect(left).toHaveLength(1);
 		// Which is why nothing may ask after the change: a writeAs with the
 		// session the request came by is refused now.
@@ -1290,7 +1292,7 @@ describe('the accounts, users, requests and reports ask at the write (slice 2253
 		let before: DbSnapshot | undefined;
 
 		const res = await sendAround('PUT', '/api/account/password', { session: s.sessions.owner }, { currentPassword: PASSWORD, newPassword: NEW_PASSWORD }, () => {
-			db.delete(sessions).where(eq(sessions.id, s.sessions.owner)).run();
+			db.delete(sessions).where(eq(sessions.tokenHash, sessionHashOf(s.sessions.owner))).run();
 			before = snapshotDb();
 		});
 
@@ -1360,7 +1362,7 @@ describe('the accounts, users, requests and reports ask at the write (slice 2253
 	it("decides with the account as it is now: an administrator lowered to user is refused as a user is, and the superadmin lowered to administrator as an administrator is; nothing written, nothing sent", async () => {
 		const s = scene();
 		const lowered = (user: SessionUser, to: string) => {
-			const credential = { kind: 'session' as const, token: makeSession(user) };
+			const credential = sessionCredential(makeSession(user));
 			db.update(users).set({ role: to }).where(eq(users.id, user.id)).run();
 			return { user, credential };
 		};
@@ -1455,7 +1457,7 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 	};
 	type Scene = ReturnType<typeof scene>;
 	type Who = 'chief' | 'admin';
-	const asWho = (s: Scene, who: Who) => ({ user: s[who], credential: { kind: 'session' as const, token: s.sessions[who] } });
+	const asWho = (s: Scene, who: Who) => ({ user: s[who], credential: sessionCredential(s.sessions[who]) });
 	/**
 	 * The same, for a route that asks for the current password again (card
 	 * 2701): with it in the body, and the session's cookie, which a wrong one
@@ -1469,7 +1471,7 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 
 	/** Connect's first half, as the page asks it, in this session: the state of the consent address. */
 	const begin = async (s: Scene, token = s.sessions.chief) => {
-		const res = await api('GET', '/api/admin/backup/gdrive/auth?dest=G', { user: s.chief, credential: { kind: 'session', token } });
+		const res = await api('GET', '/api/admin/backup/gdrive/auth?dest=G', { user: s.chief, credential: sessionCredential(token) });
 		expect(res.status).toBe(200);
 		return new URL(res.body.authUrl).searchParams.get('state');
 	};
@@ -1522,7 +1524,7 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 			let linesBefore: unknown[] = [];
 
 			const res = await sendAround(c.method, c.path, { session: s.sessions.chief }, body, () => {
-				db.delete(sessions).where(eq(sessions.id, s.sessions.chief)).run();
+				db.delete(sessions).where(eq(sessions.tokenHash, sessionHashOf(s.sessions.chief))).run();
 				before = snapshotDb();
 				linesBefore = lines();
 			});
@@ -1662,7 +1664,7 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 
 	describe('a Google Drive Connect refused at its write, after Google has answered and a folder was made', () => {
 		it.each([
-			['the session ends', (s: Scene) => void db.delete(sessions).where(eq(sessions.id, s.sessions.chief)).run(), 401, 'Not authenticated'],
+			['the session ends', (s: Scene) => void db.delete(sessions).where(eq(sessions.tokenHash, sessionHashOf(s.sessions.chief))).run(), 401, 'Not authenticated'],
 			// An administrator's since card 2395: refused when the account is no longer one.
 			['the superadmin is made an ordinary user', (s: Scene) => void db.update(users).set({ role: 'user' }).where(eq(users.id, s.chief.id)).run(), 403, 'Forbidden']
 		])('removes the folder it made and saves nothing when %s while Google answers', async (_case, meanwhile, status, message) => {
@@ -1819,7 +1821,7 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 			}
 
 			const plain = makeUser({ username: 'plain' });
-			const asPlain = { user: plain, credential: { kind: 'session' as const, token: makeSession(plain) } };
+			const asPlain = { user: plain, credential: sessionCredential(makeSession(plain)) };
 			const before = snapshotDb();
 			const linesBefore = lines();
 			const sent = effects();
@@ -1868,7 +1870,7 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 		it('lets the superadmin made an administrator through the mail and backup settings, and refuses them the export, the import and Reset Everything', async () => {
 			const s = scene();
 			db.update(users).set({ role: 'admin' }).where(eq(users.id, s.chief.id)).run();
-			const asLowered = { user: { ...s.chief, role: 'admin' }, credential: { kind: 'session' as const, token: s.sessions.chief } };
+			const asLowered = { user: { ...s.chief, role: 'admin' }, credential: sessionCredential(s.sessions.chief) };
 
 			const before = snapshotDb();
 			for (const { method, path, body } of SUPERADMIN_ROUTES) {
@@ -2083,7 +2085,7 @@ describe('the boards side of /api/v1 asks at the write (slice 2253-6)', () => {
 
 	it('refuses 401, and writes nothing, each request with a body handed a session that has ended', async () => {
 		const s = scene();
-		const credential = { kind: 'session' as const, token: s.session };
+		const credential = sessionCredential(s.session);
 		db.delete(sessions).run();
 		const before = snapshotDb();
 		const sent = effects();
@@ -2112,7 +2114,7 @@ describe('the boards side of /api/v1 asks at the write (slice 2253-6)', () => {
 	it('refuses 401, in the words for each, and changes nothing, a delete whose API key or session has ended', async () => {
 		const s = scene();
 		const keyCredential = { kind: 'api key' as const, id: keyRow(s.key).id };
-		const sessionCredential = { kind: 'session' as const, token: s.session };
+		const endedSession = sessionCredential(s.session);
 		db.delete(apiKeys).run();
 		db.delete(sessions).run();
 		const before = snapshotDb();
@@ -2122,7 +2124,7 @@ describe('the boards side of /api/v1 asks at the write (slice 2253-6)', () => {
 		for (const path of UNHELD(s)) {
 			const byKey = await api('DELETE', path, { user: s.owner, credential: keyCredential });
 			expect({ path, status: byKey.status, body: byKey.body }).toEqual({ path, status: 401, body: { message: 'Invalid or expired API key' } });
-			const bySession = await api('DELETE', path, { user: s.owner, credential: sessionCredential });
+			const bySession = await api('DELETE', path, { user: s.owner, credential: endedSession });
 			expect({ path, status: bySession.status, body: bySession.body }).toEqual({ path, status: 401, body: { message: 'Not authenticated' } });
 		}
 		await sent.settle();
@@ -2478,7 +2480,7 @@ describe('the cards side of /api/v1 asks at the write (slice 2253-7)', () => {
 
 	it('refuses 401, and writes nothing, each request with a body handed a session that has ended', async () => {
 		const s = scene();
-		const credential = { kind: 'session' as const, token: s.session };
+		const credential = sessionCredential(s.session);
 		db.delete(sessions).run();
 		const before = snapshotDb();
 		const sent = effects();
@@ -2509,7 +2511,7 @@ describe('the cards side of /api/v1 asks at the write (slice 2253-7)', () => {
 	it('refuses 401, in the words for each, and changes nothing, a delete whose API key or session has ended', async () => {
 		const s = scene();
 		const keyCredential = { kind: 'api key' as const, id: keyRow(s.key).id };
-		const sessionCredential = { kind: 'session' as const, token: s.session };
+		const endedSession = sessionCredential(s.session);
 		db.delete(apiKeys).run();
 		db.delete(sessions).run();
 		const before = snapshotDb();
@@ -2519,7 +2521,7 @@ describe('the cards side of /api/v1 asks at the write (slice 2253-7)', () => {
 		for (const path of UNHELD(s)) {
 			const byKey = await api('DELETE', path, { user: s.owner, credential: keyCredential });
 			expect({ path, status: byKey.status, body: byKey.body }).toEqual({ path, status: 401, body: { message: 'Invalid or expired API key' } });
-			const bySession = await api('DELETE', path, { user: s.owner, credential: sessionCredential });
+			const bySession = await api('DELETE', path, { user: s.owner, credential: endedSession });
 			expect({ path, status: bySession.status, body: bySession.body }).toEqual({ path, status: 401, body: { message: 'Not authenticated' } });
 		}
 		await sent.settle();
@@ -2752,7 +2754,7 @@ describe('the gate records a credential, or null, on every request it hands on',
 		const token = makeSession(user);
 		expect(await handedOn('/api/requests', '/api/requests')).toEqual(each(null));
 		expect(await handedOn('/api/requests', '/api/requests', { cookie: `${SESSION_COOKIE_NAME}=${token}` })).toEqual(
-			each({ kind: 'session', token })
+			each(sessionCredential(token))
 		);
 	});
 
@@ -2760,7 +2762,7 @@ describe('the gate records a credential, or null, on every request it hands on',
 		const user = makeUser();
 		const token = makeSession(user);
 		expect(await handedOn('/api/cards', '/api/cards', { cookie: `${SESSION_COOKIE_NAME}=${token}` })).toEqual(
-			each({ kind: 'session', token })
+			each(sessionCredential(token))
 		);
 	});
 });
@@ -2780,13 +2782,13 @@ describe("the report mail asks again after its PDF is made, before it sends (R1)
 		const token = makeSession(owner);
 		makeSmtp();
 		const sent = effects();
-		pdf.afterMade = () => void db.delete(sessions).where(eq(sessions.id, token)).run();
+		pdf.afterMade = () => void db.delete(sessions).where(eq(sessions.tokenHash, sessionHashOf(token))).run();
 
 		let res;
 		try {
 			res = await api('POST', '/api/reports/email', {
 				user: owner,
-				credential: { kind: 'session', token },
+				credential: sessionCredential(token),
 				body: { scope: 'board', scopeId: board.id, periodStart: '2026-10-01', periodEnd: '2026-10-08', recipients: ['a@example.test'] }
 			});
 		} finally {
@@ -2809,7 +2811,7 @@ describe("the report mail asks again after its PDF is made, before it sends (R1)
 		try {
 			res = await api('POST', '/api/reports/email', {
 				user: owner,
-				credential: { kind: 'session', token },
+				credential: sessionCredential(token),
 				body: { scope: 'board', scopeId: board.id, periodStart: '2026-10-01', periodEnd: '2026-10-08', recipients: ['a@example.test'] }
 			});
 			await sent.settle();
@@ -2843,7 +2845,7 @@ describe("the report mail asks again after its PDF is made, before it sends (R1)
 		try {
 			const res = await api('POST', '/api/reports/email', {
 				user: opts.reader,
-				credential: { kind: 'session', token },
+				credential: sessionCredential(token),
 				body: { periodStart: '2026-10-01', periodEnd: '2026-10-08', recipients: ['a@example.test'], ...opts.body }
 			});
 			await sent.settle();

@@ -3,7 +3,7 @@ import { db } from '$lib/server/db';
 import { afterCommit } from '$lib/server/db/transaction';
 import { users } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
-import { SESSION_COOKIE_NAME, checkCurrentPassword, refuseWrongPassword, whilePasswordHolds } from '$lib/server/auth';
+import { checkCurrentPassword, refuseWrongPassword, sessionHashIn, whilePasswordHolds } from '$lib/server/auth';
 import { endUnusedInvites } from '$lib/server/invites';
 import { createLogger } from '$lib/server/logger';
 import { endPendingSignIns } from '$lib/server/mfa-store';
@@ -26,8 +26,9 @@ const log = createLogger('AUTH');
  */
 export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 	// The wrong passwords are counted against the session that sent them,
-	// which only a session reaches this route with.
-	const session = cookies.get(SESSION_COOKIE_NAME);
+	// which only a session reaches this route with: by its hash, as the gate
+	// found it (card 2775).
+	const session = sessionHashIn(locals.credential);
 	requireUser(locals.user);
 	if (!session) throw error(401, 'Not authenticated');
 

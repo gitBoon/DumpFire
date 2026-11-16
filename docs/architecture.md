@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.121
+version: 1.122
 status: As-Built
-date: 2026-11-13
+date: 2026-11-16
 tags:
   - people-directory
   - decision-reminders
@@ -233,8 +233,9 @@ away, and the security headers it puts on every answer, are in
 `src/lib/server/gate-answers.ts`.
 
 Loading the module is also what starts the server's own work, once, before the first
-request: `runMigrations()`, `cleanExpiredSessions()`, `initLogMaintenance()` and
-`startSchedulers()`.
+request: `runMigrations()`, `endPlainSessions()` (card 2775: it deletes any session an older
+image stored in plain, and runs before the clean-up so that each is counted),
+`cleanExpiredSessions()`, `initLogMaintenance()` and `startSchedulers()`.
 
 ```mermaid
 flowchart TD
@@ -414,7 +415,7 @@ once.
   type before reading it, and reads the rest as bytes, never as JSON, so the body guard's
   `400` never reaches it. Its password is confirmed first, at `POST /api/admin/import/confirm`
   (card 2701): the import takes that single-use confirmation from its
-  `X-DumpFire-Confirmation` header and the session cookie, never from the request, before a byte
+  `X-DumpFire-Confirmation` header and the session's hash in `locals.credential` (401 "Not authenticated" without one; card 2775), never from the request, before a byte
   of the upload is read, and is `403` without one this session was issued in the last 60
   seconds. The page picks the backup first and sends the upload as soon as the confirm answers,
   so nothing is uploaded before the password is accepted (card 2701's code review, F1). See [Step-up Before Destructive Actions](authentication-security.md#step-up-before-destructive-actions-card-2701). Its outer `catch` first rethrows an error SvelteKit made, so that a
@@ -692,7 +693,11 @@ flowchart LR
 
 A session cookie is made only after a second factor. A right password opens a ten-minute
 pending sign-in (a *challenge*), and the code page or the set-up page finishes it. `validateSession()`
-refuses a session not marked `two_step = 1`. API keys are untouched: the gate authenticates
+refuses a session not marked `two_step = 1`. Since card 2775 the database holds only the
+SHA-256 of a session's code, a session ends at the earlier of an idle and a total limit set by
+the account's role (see
+[Idle and Total Limits](authentication-security.md#idle-and-total-limits)), and the cookie is
+`__Host-dumpfire_session` over HTTPS. API keys are untouched: the gate authenticates
 `/api/v1/*` by the `Authorization` header alone, before it reads any cookie.
 
 ```mermaid
@@ -845,7 +850,7 @@ sequenceDiagram
 
 ### An open stream and its session
 
-The gate looks at a request's session once, when it arrives, and a stream is one request that stays open. So each of the three streams (`/api/events`, `/api/boards/[id]/events` and `/api/logs/stream`) reads its session cookie when it is opened, and asks at each heartbeat it already sends (every 30 seconds; 25 for the log) whether that session is still open: there, not expired, and with an account. When it is not, the stream stops listening, stops its heartbeat and closes, and sends nothing more. Each asks `openSessionUser()` in `src/lib/server/auth.ts`, which gives the session's account as it is now. The two streams let in for an administrator's role end as well when the role they were let in for has changed: the log stream when the account is no longer an administrator, and `/api/events` when it has become one or stopped being one, since that decides which boards' events it sends. The board stream ends as well when its board has gone or the account can no longer open it, and says so first (card 2170, below). `openSessionUser()` and `sessionStillOpen()` share one private function with `validateSession()`, so that what counts as an open session is decided in one place. Unlike `validateSession()` they write nothing, log nothing and do not move the session's expiry on: an open tab would otherwise keep its session alive for ever.
+The gate looks at a request's session once, when it arrives, and a stream is one request that stays open. So each of the three streams (`/api/events`, `/api/boards/[id]/events` and `/api/logs/stream`) takes the session's hash from the gate (`locals.credential`; the session code itself goes no further than the gate, card 2775) when it is opened, and asks at each heartbeat it already sends (every 30 seconds; 25 for the log) whether that session is still open: there, not past its deadline (the earlier of its expiry and its start plus the total limit of the account's role now), and with an account; `openSession()` also gives the deadline, and `sessionEndTimer()` closes the stream at it, armed at open and re-armed at each heartbeat. When it is not, the stream stops listening, stops its heartbeat and closes, and sends nothing more. Each asks `openSessionUser()` in `src/lib/server/auth.ts`, which gives the session's account as it is now. The two streams let in for an administrator's role end as well when the role they were let in for has changed: the log stream when the account is no longer an administrator, and `/api/events` when it has become one or stopped being one, since that decides which boards' events it sends. The board stream ends as well when its board has gone or the account can no longer open it, and says so first (card 2170, below). `openSessionUser()` and `sessionStillOpen()` share one private function with `validateSession()`, so that what counts as an open session is decided in one place. Unlike `validateSession()` they write nothing, log nothing and do not move the session's expiry on: an open tab would otherwise keep its session alive for ever.
 
 ```mermaid
 sequenceDiagram

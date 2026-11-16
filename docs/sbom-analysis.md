@@ -1,9 +1,9 @@
 ---
 title: "SBOM Analysis: DumpFire"
 category: "Identity & Security"
-version: 1.6
+version: 1.7
 status: As-Built
-date: 2026-11-13
+date: 2026-11-16
 tags:
   - sbom
   - licensing
@@ -34,7 +34,7 @@ DumpFire is a self-hosted, real-time **Kanban board** built for teams on a local
 
 **Data Layer (SQLite + Drizzle ORM):** All data is stored in a single SQLite file via `better-sqlite3` (a synchronous, native N-API binding). Schema management and queries use `drizzle-orm` with `drizzle-kit` for migration generation. WAL mode is enabled for concurrent read performance.
 
-**Authentication & Security:** User passwords are hashed with `bcryptjs` (BSD-3-Clause, pure JS). Session-based auth with 30-day sliding windows, API key bearer tokens, and rate limiting are implemented in server hooks. Security headers (X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy, X-XSS-Protection) are applied globally, and every page carries a Content-Security-Policy with a nonce per page (card 2162).
+**Authentication & Security:** User passwords are hashed with `bcryptjs` (BSD-3-Clause, pure JS). Session-based auth, the session code kept only as its SHA-256, with an idle and a total limit by role (administrators 12 hours idle and 24 hours in all, users 3 days and 7 days; card 2775), API key bearer tokens, and rate limiting are implemented in server hooks. Security headers (X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy, X-XSS-Protection) are applied globally, and every page carries a Content-Security-Policy with a nonce per page (card 2162).
 
 **Cloud Backup Providers:** The backup system supports four destination providers via dedicated SDK integrations:
 

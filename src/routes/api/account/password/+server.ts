@@ -4,12 +4,13 @@ import { afterCommit } from '$lib/server/db/transaction';
 import { users } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import {
-	SESSION_COOKIE_NAME,
 	checkCurrentPassword,
 	createSession,
 	endAccountAccess,
 	namingIds,
 	refuseWrongPassword,
+	replacementStart,
+	sessionHashIn,
 	setSessionCookie,
 	whilePasswordHolds
 } from '$lib/server/auth';
@@ -24,10 +25,11 @@ import type { RequestHandler } from './$types';
 const log = createLogger('AUTH');
 
 /** PUT — Change own password. Requires current password verification. */
-export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
+export const PUT: RequestHandler = async ({ request, locals, cookies, url }) => {
 	// The wrong passwords are counted against the session that sent them,
-	// which only a session reaches this route with.
-	const session = cookies.get(SESSION_COOKIE_NAME);
+	// which only a session reaches this route with: by its hash, as the gate
+	// found it (card 2775).
+	const session = sessionHashIn(locals.credential);
 	requireUser(locals.user);
 	if (!session) throw error(401, 'Not authenticated');
 
@@ -80,9 +82,18 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 	// awaited, and a session can end meanwhile. Asked before the sessions end
 	// below, the session this request came by among them; nothing in this
 	// request asks it after that, when it has gone.
-	const { accountId, newToken, apiKeysEnded, webhooksSwitchedOff } = await whilePasswordHolds(user.id, user.passwordHash, () =>
+	const { accountId, newSession, apiKeysEnded, webhooksSwitchedOff } = await whilePasswordHolds(user.id, user.passwordHash, () =>
 		writeAs(locals, (caller) => {
-			const userId = requireUser(caller).id;
+			const me = requireUser(caller);
+			const userId = me.id;
+
+			// The replacement keeps the start of the session it replaces, so
+			// that a password alone does not restart the total limit (card
+			// 2775, decision 7). A start that cannot be read, or less than a
+			// minute left of the total limit (the code review's CS2), is
+			// refused before anything is written, and no session is made.
+			const startedAt = replacementStart(session, me.role);
+			if (startedAt === null) error(401, 'Not authenticated');
 
 			// Update password
 			db.update(users)
@@ -112,11 +123,17 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 				)
 			);
 
-			// Create a fresh session so the current user stays logged in
-			return { accountId: userId, newToken: createSession(userId), apiKeysEnded: ended.apiKeys, webhooksSwitchedOff: ended.webhooks };
+			// Create a fresh session so the current user stays logged in, with
+			// the start of the one it replaces.
+			return {
+				accountId: userId,
+				newSession: createSession(userId, { startedAt }),
+				apiKeysEnded: ended.apiKeys,
+				webhooksSwitchedOff: ended.webhooks
+			};
 		}));
 
-	setSessionCookie(cookies, newToken);
+	setSessionCookie(cookies, newSession, url);
 	// The new hash ended every remembered browser of the account; this one,
 	// which made the change, is remembered again (card 2194).
 	rememberBrowser(cookies, accountId, newHash);

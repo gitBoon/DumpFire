@@ -131,7 +131,8 @@ import {
 	makeUser,
 	makeVersion,
 	resetDb,
-	stepUp
+	stepUp,
+	sessionHashOf
 } from './helpers/fixtures';
 import { gate, gateRoutes } from './helpers/gate';
 
@@ -1412,7 +1413,7 @@ describe("the administrator's account and address actions ask for the password (
 	const WRONG = 'not the password';
 
 	/** The session's count of wrong current passwords. */
-	const countOf = (token: string) => db.select({ count: sessions.wrongPasswordCount }).from(sessions).where(eq(sessions.id, token)).get()?.count;
+	const countOf = (token: string) => db.select({ count: sessions.wrongPasswordCount }).from(sessions).where(eq(sessions.tokenHash, sessionHashOf(token))).get()?.count;
 	/** The session a request made by `stepUp` carries. */
 	const tokenOf = (made: { headers: Record<string, string> }) => made.headers.cookie.slice(`${SESSION_COOKIE_NAME}=`.length);
 	const participantRow = (id: number) => db.select().from(decisionParticipants).where(eq(decisionParticipants.id, id)).get()!;
@@ -1777,7 +1778,7 @@ describe("readEditPage's republishSummary against republishDecision telling only
 describe('deleting and withdrawing a decision that was ever opened ask for the password (50, 62)', () => {
 	const WRONG = 'not the password';
 	/** The session's count of wrong current passwords. */
-	const countOf = (token: string) => db.select({ count: sessions.wrongPasswordCount }).from(sessions).where(eq(sessions.id, token)).get()?.count;
+	const countOf = (token: string) => db.select({ count: sessions.wrongPasswordCount }).from(sessions).where(eq(sessions.tokenHash, sessionHashOf(token))).get()?.count;
 	/** The session a request made by `stepUp` carries. */
 	const tokenOf = (made: { headers: Record<string, string> }) => made.headers.cookie.slice(`${SESSION_COOKIE_NAME}=`.length);
 	/** A request as `user` with no password: their session, and `body` alone. */

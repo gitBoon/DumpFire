@@ -41,7 +41,7 @@ import { db, sqlite } from './db';
 import { apiKeys, boards, mfaFactors, mfaRecoveryCodes, users, webhooks, type User } from './db/schema';
 import { afterCommit, inTransaction } from './db/transaction';
 import { registerStampFunctions } from './db/timestamps';
-import { createSession, setSessionCookie } from './auth';
+import { createSession, setSessionCookie, type NewSession } from './auth';
 import { rememberBrowser } from './known-browsers';
 import { accountKey, countSignInAttempt, forgetWrongSignIns, refundSignInAttempts } from './rate-limit';
 import { currentMfaKey } from './mfa-key';
@@ -563,7 +563,7 @@ function bannerRaisedSinceSignIn(user: Pick<User, 'securityBanner' | 'securityBa
  * The part of a sign-in written with the session, inside the caller's
  * transaction, once the second factor is right: the challenge taken (one row,
  * or it throws), the last sign-in written and the wrong codes since it set
- * back to 0, and the session made. Answers the session's token, the account
+ * back to 0, and the session made. Answers the new session, the account
  * as it was, and the report for the decision 16 page when there is anything
  * to report: wrong codes since the last sign-in, or the security banner
  * raised since then (CR14). The banner itself stays set, for card 2772: a
@@ -575,7 +575,7 @@ export function finishSignIn(
 	now: number,
 	address: string | null,
 	stage?: string
-): { token: string; user: User; report: SignInReport | null } {
+): { session: NewSession; user: User; report: SignInReport | null } {
 	takeChallenge(challenge.token_hash, purpose, now, stage);
 	const user = db.select().from(users).where(eq(users.id, challenge.user_id)).get();
 	if (!user) throw new Error('A challenge was taken for an account that is not there.');
@@ -585,7 +585,7 @@ export function finishSignIn(
 		.set({ lastSignInAt: stamp(new Date(now)), lastSignInFrom: address, failedCodesSinceSignIn: 0 })
 		.where(eq(users.id, user.id))
 		.run();
-	return { token: createSession(user.id), user, report };
+	return { session: createSession(user.id), user, report };
 }
 
 /**
@@ -630,14 +630,14 @@ function openChallenge(
  * there is one; otherwise throws the redirect home.
  */
 function signedInAnswer(
-	signedIn: { token: string; user: User; report: SignInReport | null; lane: Lane },
+	signedIn: { session: NewSession; user: User; report: SignInReport | null; lane: Lane },
 	secondStep: string,
 	from: { address: string | null; countedAs: string },
 	cookies: Cookies,
 	url: URL
 ): VerifyReport {
-	const { token, user, report, lane } = signedIn;
-	setSessionCookie(cookies, token);
+	const { session, user, report, lane } = signedIn;
+	setSessionCookie(cookies, session, url);
 	rememberBrowser(cookies, user.id, user.passwordHash);
 	deleteChallengeCookie(cookies, url);
 	log.info(`User "${user.username}" logged in`, { secondStep }, { userId: user.id, ip: from.address });
@@ -669,7 +669,7 @@ type Outcome =
 	| { kind: 'expired' | 'password changed' | 'no code' | 'locked' | 'no factor' | 'malformed' | 'step spent' | 'too many' }
 	| { kind: 'paused'; minutes: number }
 	| { kind: 'wrong'; recovery: boolean }
-	| { kind: 'signed in'; token: string; user: User; report: SignInReport | null; lane: Lane; by: 'authenticator' | 'recovery code' };
+	| { kind: 'signed in'; session: NewSession; user: User; report: SignInReport | null; lane: Lane; by: 'authenticator' | 'recovery code' };
 
 /**
  * Check a code against the challenge this browser holds (4.5), in one
@@ -1035,7 +1035,7 @@ export function enrolCode(input: EnrolInput, cookies: Cookies, url: URL): EnrolF
 export function enrolConfirm(input: EnrolInput, cookies: Cookies, url: URL): EnrolFailure | VerifyReport {
 	const now = Date.now();
 
-	type Confirmed = { kind: 'enrolled'; token: string; user: User; report: SignInReport | null; grant: string; lane: Lane };
+	type Confirmed = { kind: 'enrolled'; session: NewSession; user: User; report: SignInReport | null; grant: string; lane: Lane };
 	const outcome = inTransaction((): { kind: 'refused'; why: string; userId: number | null } | { kind: 'not ready' | 'unavailable' } | Confirmed => {
 		const challenge = liveChallenge(input.token, 'enrol', now);
 		if (!challenge) return { kind: 'refused', why: 'no live set-up', userId: null };
@@ -1083,7 +1083,7 @@ export function enrolConfirm(input: EnrolInput, cookies: Cookies, url: URL): Enr
 		db.update(users).set({ mfaPasswordEnrol: 0 }).where(eq(users.id, user.id)).run();
 		return {
 			kind: 'enrolled',
-			token: finished.token,
+			session: finished.session,
 			user: finished.user,
 			report: finished.report,
 			grant: challenge.enrol_grant ?? 'unknown',

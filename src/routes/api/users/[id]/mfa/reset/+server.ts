@@ -1,9 +1,9 @@
-import { error, json, type Cookies } from '@sveltejs/kit';
+import { error, json } from '@sveltejs/kit';
 import { and, eq, gt } from 'drizzle-orm';
 import { db } from '$lib/server/db';
 import { afterCommit } from '$lib/server/db/transaction';
 import { enrolmentLinks } from '$lib/server/db/schema';
-import { whilePasswordHolds, type SessionUser } from '$lib/server/auth';
+import { whilePasswordHolds, type Credential, type SessionUser } from '$lib/server/auth';
 import { MAIL_PROBLEM_WORDS, NO_LINK_ADDRESS, isSmtpConfigured, linkBaseUrl, smtpPasswordMissing } from '$lib/server/email';
 import { CALLER_NOT_GIVEN, callerStillManages } from '$lib/server/invite-link';
 import { sha256Hex } from '$lib/server/mfa-crypto';
@@ -160,7 +160,7 @@ export const POST: RequestHandler = async ({ params, request, locals, url, cooki
 		invitesEnded: reset.invites
 	};
 	const told = mailSent ? ` ${target.username} was sent a notice that holds no link.` : '';
-	const notGiven = whyNotGiven(cookies, actor.id, target.id, sha256Hex(reset.token));
+	const notGiven = whyNotGiven(locals.credential, actor.id, target.id, sha256Hex(reset.token));
 
 	if (notGiven !== null) {
 		log.warn(
@@ -204,8 +204,8 @@ export const POST: RequestHandler = async ({ params, request, locals, url, cooki
  * by reads only. The first two are invite-link.ts's own, shared (card 2773's
  * review, C-I1); the third, of the enrolment link, is this route's.
  */
-function whyNotGiven(cookies: Cookies, actorId: number, accountId: number, tokenHash: string): keyof typeof NOT_GIVEN | null {
-	const callerCheck = callerStillManages(cookies, actorId, accountId);
+function whyNotGiven(credential: Credential | null | undefined, actorId: number, accountId: number, tokenHash: string): keyof typeof NOT_GIVEN | null {
+	const callerCheck = callerStillManages(credential, actorId, accountId);
 	if (callerCheck !== null) return callerCheck;
 
 	const link = db

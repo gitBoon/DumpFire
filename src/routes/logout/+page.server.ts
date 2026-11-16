@@ -1,7 +1,7 @@
 import { redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { eq } from 'drizzle-orm';
-import { deleteSession, clearSessionCookie, SESSION_COOKIE_NAME } from '$lib/server/auth';
+import { deleteSession, clearSessionCookie, endSessionsSent, sessionHashIn } from '$lib/server/auth';
 import { db } from '$lib/server/db';
 import { users } from '$lib/server/db/schema';
 import { rememberBrowser } from '$lib/server/known-browsers';
@@ -24,12 +24,15 @@ export const load: PageServerLoad = async ({ request, locals, getClientAddress }
 };
 
 export const actions: Actions = {
-	default: async ({ cookies, request, locals, getClientAddress }) => {
+	default: async ({ cookies, request, locals, url, getClientAddress }) => {
 		let ip: string | null = null;
 		try { ip = getClientAddress(); } catch { /* unavailable */ }
 
-		const token = cookies.get(SESSION_COOKIE_NAME);
-		if (token) {
+		// The session the gate found, by its hash (card 2775). The route is
+		// reached with none as well (the code review's CS3): a browser sending
+		// two session cookies is signed in by neither.
+		const session = sessionHashIn(locals.credential);
+		if (session) {
 			// A browser that signs out is a browser that signed in, and is
 			// remembered for the account (card 2194, the review's R5), with
 			// the account's hash read before the session ends: so that a browser
@@ -40,9 +43,15 @@ export const actions: Actions = {
 				const account = db.select({ passwordHash: users.passwordHash }).from(users).where(eq(users.id, locals.user.id)).get();
 				if (account) rememberBrowser(cookies, locals.user.id, account.passwordHash);
 			}
-			deleteSession(token, 'user logout');
-			clearSessionCookie(cookies);
+			deleteSession(session, 'user logout');
 		}
+		// And every session the cookie of the name in force names, each value
+		// in a code's shape, so that a cookie planted beside the real one does
+		// not leave the real session open (CS3).
+		endSessionsSent(request, url, 'user logout');
+		// The cookie is cleared whether or not a session was found or ended, by
+		// the name in force, with Path=/ and Secure where cookies are HTTPS-only.
+		clearSessionCookie(cookies, url);
 
 		log.info('User logged out', {
 			userAgent: request.headers.get('user-agent') || 'unknown'

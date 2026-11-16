@@ -17,7 +17,7 @@
  * is never stored by the browser or a proxy.
  */
 import { error, json } from '@sveltejs/kit';
-import { SESSION_COOKIE_NAME } from '$lib/server/auth';
+import { sessionHashIn } from '$lib/server/auth';
 import { readBody } from '$lib/server/request-body';
 import { requireSuperadmin } from '$lib/server/route-guards';
 import {
@@ -38,7 +38,11 @@ export const POST: RequestHandler = async ({ request, locals, cookies }) => {
 	// Issued as the account is now, asked again after the check was awaited:
 	// still the superadmin, and still the account whose password was checked.
 	// It writes nothing; the transaction is the question alone.
-	const session = cookies.get(SESSION_COOKIE_NAME) ?? '';
+	// The confirmation is keyed by the session's hash, as the gate found it
+	// (card 2775). confirmStepUp has refused a request with no session; this
+	// refuses it in the same words.
+	const session = sessionHashIn(locals.credential);
+	if (!session) error(401, 'Not authenticated');
 	const confirmation = writeAs(locals, (caller) => {
 		const superadmin = requireSuperadmin(caller);
 		if (superadmin.id !== userId) error(403, { message: CONFIRMATION_REFUSED, stepUp: 'confirmation' });

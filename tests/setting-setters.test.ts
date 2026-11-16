@@ -48,7 +48,7 @@ import { load as loadAdminPage } from '../src/routes/admin/+page.server';
 import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { api } from './helpers/api';
 import { sendAround } from './helpers/held-body';
-import { FIXTURE_PASSWORD, importConfirmation, makeSession, makeUser, resetDb } from './helpers/fixtures';
+import { FIXTURE_PASSWORD, importConfirmation, makeSession, makeUser, resetDb, sessionCredential } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb, type DbSnapshot } from './helpers/snapshot';
 
 /** The three destinations of the scene: chief's, ann's and one saved before 0059. */
@@ -74,8 +74,12 @@ const RULE =
 	'Lowering Keep Last, removing a destination, switching the schedule or the failure mail off, or changing who receives the failure mail needs the superadmin.';
 const RENAMED = '(a destination renamed, or saved as another type, is the old one removed)';
 
-type Who = { user: SessionUser; credential: { kind: 'session'; token: string } };
-const as = (user: SessionUser): Who => ({ user, credential: { kind: 'session', token: makeSession(user) } });
+/** A caller and the session they came by: its code, for the cookie, and the credential the gate records for it. */
+type Who = { user: SessionUser; credential: ReturnType<typeof sessionCredential>; code: string };
+const as = (user: SessionUser): Who => {
+	const code = makeSession(user);
+	return { user, credential: sessionCredential(code), code };
+};
 
 /**
  * `as(user)` asking an account route that asks for the current password
@@ -85,10 +89,10 @@ const as = (user: SessionUser): Who => ({ user, credential: { kind: 'session', t
 const confirmedAs = (user: SessionUser, body: Record<string, unknown> = {}) => confirmed(as(user), body);
 
 /** `who`, made already, asking a route that asks for the current password again (card 2701), as `confirmedAs`. */
-const confirmed = (who: Who, body: Record<string, unknown> = {}) => ({
+const confirmed = ({ code, ...who }: Who, body: Record<string, unknown> = {}) => ({
 	...who,
 	body: { ...body, currentPassword: FIXTURE_PASSWORD },
-	headers: { cookie: `${SESSION_COOKIE_NAME}=${who.credential.token}` }
+	headers: { cookie: `${SESSION_COOKIE_NAME}=${code}` }
 });
 
 /**

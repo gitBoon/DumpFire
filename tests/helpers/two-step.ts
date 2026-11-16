@@ -15,7 +15,7 @@
  * on its password alone (decision 25): `resetDb` empties `settings`, and with
  * no such row the window is over.
  */
-import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
+import { sessionCookieName, type SessionUser } from '$lib/server/auth';
 import { db } from '$lib/server/db';
 import { settings } from '$lib/server/db/schema';
 import { addTotpFactor, storeRecoveryCodes } from '$lib/server/mfa-store';
@@ -73,9 +73,12 @@ export async function passwordStep(
 	return { res, challenge: res.cookies[CHALLENGE_COOKIE]?.value };
 }
 
+/** The address `verify` sends the second step to: the session cookie it sets is named for it (card 2775). */
+export const VERIFY_AT = new URL('http://localhost/login/verify');
+
 /** A code, or a recovery code, at `/login/verify` against the challenge `token`. */
 export function verify(token: string | undefined, form: Record<string, string>, opts: { ip?: string } = {}): Promise<ActionResult> {
-	return action('/login/verify', { form, ip: opts.ip, cookies: token === undefined ? {} : { [CHALLENGE_COOKIE]: token } });
+	return action(VERIFY_AT.href, { form, ip: opts.ip, cookies: token === undefined ? {} : { [CHALLENGE_COOKIE]: token } });
 }
 
 /**
@@ -90,7 +93,8 @@ export async function signInFully(
 	const { res: password, challenge } = await passwordStep(user, opts);
 	if (password.type !== 'redirect' || challenge === undefined) throw new Error(`The password step answered ${JSON.stringify(password)}`);
 	const res = await verify(challenge, { code: codeFor(factor.secret) }, opts);
-	const session = res.cookies[SESSION_COOKIE_NAME]?.value;
+	// By the name in force for the action's address, as the action sets it (card 2775).
+	const session = res.cookies[sessionCookieName(VERIFY_AT)]?.value;
 	if (session === undefined) throw new Error(`The code was not accepted: ${JSON.stringify(res)}`);
 	return { session, res };
 }

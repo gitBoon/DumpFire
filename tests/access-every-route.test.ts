@@ -115,7 +115,7 @@ import {
 	userXp
 } from '$lib/server/db/schema';
 import { SESSION_COOKIE_NAME, type Credential, type SessionUser } from '$lib/server/auth';
-import { inviteHashOf } from './helpers/fixtures';
+import { inviteHashOf, sessionHashOf, sessionCredential } from './helpers/fixtures';
 import { CONFIRMATION_HEADER, STEP_UP_ACTIONS, STEP_UP_FIELD, issueImportConfirmation } from '$lib/server/step-up';
 import { canEditBoard, canViewBoard, getBoardRole } from '$lib/server/board-access';
 import { appendEvent, SYSTEM_ACTOR } from '$lib/server/decision-record';
@@ -2533,7 +2533,7 @@ async function call(method: Method, pattern: string, req: Req, who: Who): Promis
 	try {
 		return await api(method, path, { user: w[who], body: sent, headers: { ...headers, cookie: `${SESSION_COOKIE_NAME}=${token}` } });
 	} finally {
-		db.delete(sessions).where(eq(sessions.id, token)).run();
+		db.delete(sessions).where(eq(sessions.tokenHash, sessionHashOf(token))).run();
 	}
 }
 
@@ -3048,8 +3048,8 @@ function credentialOf(pattern: string, who: Exclude<Who, 'nobody'>): {
 	const token = makeSession(w[who]);
 	return {
 		held: { session: token },
-		locals: { kind: 'session', token },
-		end: () => void db.delete(sessions).where(eq(sessions.id, token)).run(),
+		locals: sessionCredential(token),
+		end: () => void db.delete(sessions).where(eq(sessions.tokenHash, sessionHashOf(token))).run(),
 		words: 'Not authenticated'
 	};
 }
@@ -3069,7 +3069,7 @@ const FOR_THE_WALK = 'issued for the walk';
 function walkedAs(key: string, req: Exclude<Req, string>, who: Exclude<Who, 'nobody'>, credential: ReturnType<typeof credentialOf>): Exclude<Req, string> {
 	const headers =
 		req.headers?.[CONFIRMATION_HEADER] === FOR_THE_WALK && 'session' in credential.held
-			? { ...req.headers, [CONFIRMATION_HEADER]: issueImportConfirmation(credential.held.session, w[who].id, PASSWORD_HASH) }
+			? { ...req.headers, [CONFIRMATION_HEADER]: issueImportConfirmation(sessionHashOf(credential.held.session), w[who].id, PASSWORD_HASH) }
 			: req.headers;
 	return { ...req, body: withPassword(key, req.body), headers };
 }

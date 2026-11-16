@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.113
+version: 1.114
 status: As-Built
 date: 2026-11-16
 tags:
@@ -48,7 +48,7 @@ tags:
   - release-mail
   - migration-0068
   - invites
-description: "Docker deployment, the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, and production configuration for DumpFire"
+description: "Docker deployment, the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, the shorter sessions and hashed session codes that ride in that release (card 2775, checks W19, W20 and W22), and production configuration for DumpFire"
 ---
 
 # DumpFire Deployment Guide
@@ -5944,6 +5944,9 @@ sets an authenticator up, before a session exists. How it works is in
   2849** (invite tokens stored as hashes, built: migration 0068 and the start-up sweep below):
   an invite is now a grant to set up the second factor. See
   [Invite Tokens Stored as Hashes](authentication-security.md#invite-tokens-stored-as-hashes-card-2849).
+- **Card 2775** (session codes stored as hashes, limits by role, the `__Host-` cookie) **ships in
+  this release.** It has no migration of its own and relies on 0067's sign-out of everybody. See
+  [Session Codes Stored as Hashes, and Limits by Role](authentication-security.md#session-codes-stored-as-hashes-and-limits-by-role-card-2775).
 - **`MFA_KEY_FILE` in place** (card 2768): see
   [The Key That Protects Authenticator Secrets](#the-key-that-protects-authenticator-secrets).
 - **Stop every instance before the release starts**, and never run two images side by side
@@ -5956,6 +5959,14 @@ sets an authenticator up, before a session exists. How it works is in
 
 - **Everybody is signed out once, and every remembered browser is forgotten** (0067). The first
   sign-in from any browser is a new browser's.
+- **Shorter sessions** (card 2775). The once-only sign-out is 0067's, already listed above. From
+  the release an administrator is signed out after 12 hours unused and after 24 hours in any
+  case, and every other account after 3 days unused and after 7 days in any case, each time
+  asked for the password and the authenticator code again. Only a save or a full page load
+  counts as use. A tab left open does not keep a session alive, and neither does a click on a
+  link inside the app, which fetches data without loading a page. Changing someone's role signs them out. Over HTTPS the cookie is
+  `__Host-dumpfire_session`; a browser's old `dumpfire_session` cookie is ignored and deleted at
+  its first request.
 - **Every invite not yet used is ended** (0068, card 2849). Its link shows the page for a link
   that no longer works. Send again, from User Management (📧), the ones check W15 listed that are
   still wanted. Used invites keep their row with the token replaced. From this release an
@@ -6043,6 +6054,8 @@ database.
   (0066 keeps the rows of `users`; 0067 deletes the rows of `sessions` and one of `settings`;
   0068 deletes the unused rows of `invite_tokens` and replaces the used rows' tokens).
 - **Every session ends**, and the remembered-browser secret is deleted.
+- **No `Ended … session(s) held in plain` line** (card 2775): 0067 has emptied `sessions`, so the
+  start-up sweep `endPlainSessions()` that runs before the clean-up finds nothing.
 - **Every invite not yet used is deleted**, and every used invite's token is replaced by 32
   random bytes. The start-up sweep that follows the migrations (`endPlainInvites`) finds
   nothing at this start, so it writes no line (neither `Ended … invite(s) held in plain` nor
@@ -6064,10 +6077,20 @@ database.
 | W14 | Admin → Users, where no mail host is set up | "may set up on password until `<date>` UTC" under each account W7 shows 1 that has not set up yet, 14 days after W6's time, your own row included. With a mail host set up, no such line | No date, one on an account that has set up, or one while a mail host is set up |
 | W16 | `q "SELECT hash FROM __drizzle_migrations WHERE hash LIKE '0068%'"`, `q "SELECT COUNT(*) n FROM invite_tokens WHERE used = 0"` and `q "SELECT COUNT(*) n FROM invite_tokens WHERE typeof(token) <> 'blob' OR length(token) <> 32"`; and the start's log | 0068 recorded; both counts 0 straight after the start; no line from the sweep (`Ended …` or `Replaced the token of …`) | 0068 missing, an unused invite left from before, any token not a 32-byte BLOB, or the sweep's line at the release |
 | W17 | Where you hold the link of an invite W15 listed, open it. Then send that account its new invite (📧), as W15 says, and `q "SELECT typeof(token) t, length(token) n FROM invite_tokens WHERE used = 0"` | The old link shows "This invite link no longer works…". The new invite's row is `blob` and 32 | The old link shows the password form, or the new row is not a 32-byte BLOB |
+| W19 | After W8, `q "SELECT typeof(id) t, length(id) n, created_at, expires_at FROM sessions"`; and the start's log | Each row `blob`, 32; an administrator's `expires_at` about 12 h after `created_at`, a user's about 3 days; no `[WARN] [AUTH] Ended … session(s) held in plain` line at the release | A text id, an expiry 30 days out, or that line at the release |
+| W20 | Browser tools, after signing in over HTTPS | One cookie `__Host-dumpfire_session`: `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/`, no `Domain`, expiring 24 h after sign-in for an administrator; no `dumpfire_session` left | No prefix, a `Domain`, or a 30-day expiry |
+| W22 | Audit page, Live Console: `Session created for user …` | Its meta has `sessionRef` (8 hex characters) and no `tokenPrefix` | A `tokenPrefix`, or anything longer |
 
-**A session an older image made is refused.** One `WARN` line, "Session made without a second
-factor (an older image, or from before two-step sign-in) — refused and deleted", for each such
-session, and its browser is sent to sign in.
+(W21 was folded into W19; the number is not used. W18 is the optional check under
+[Going back to the previous image](#going-back-to-the-previous-image).)
+
+**A session an older image made is stored in plain and is never found by this image** (card
+2775). At every start `endPlainSessions()` deletes it, before the clean-up of ended sessions,
+with one `[WARN] [AUTH] Ended N session(s) held in plain, written by an older image: those
+browsers sign in again.` line, and its browser is sent to sign in. At the release itself the
+line is not written, since 0067 has emptied the table. The `A hashed session row with
+two_step 0 — refused and deleted` `WARN` can still appear, for a hashed row with `two_step` 0,
+which no image writes.
 
 #### Going back to the previous image
 
@@ -6128,9 +6151,34 @@ DELETE FROM invite_tokens WHERE used = 0 AND NOT (typeof(token) = 'blob' AND len
 UPDATE invite_tokens SET token = randomblob(32) WHERE used <> 0 AND NOT (typeof(token) = 'blob' AND length(token) = 32);
 ```
 
+**Sessions, going back** (card 2775). Nothing has to be done. Every session this image made is a
+32-byte BLOB, which the older image's lookup by the cookie's text never matches, so everyone
+signs in again on the older image. That is already part of the security event of going back.
+The sessions this image made survive the rollback untouched: the older image cannot read them,
+so its sign-outs and role changes do not end them. Rolling forward again inside the idle window
+lets a browser that kept its cookie back in, even if the person signed out on the older image.
+
+**Sessions, coming forward.** The older image writes its sessions in plain, and this image never
+finds one by hash. `endPlainSessions()` deletes them at the next start, before the clean-up,
+with the `Ended N session(s) held in plain` line described above, and those browsers sign in
+again. If instead it writes `Sessions held in plain by an older image could not be ended: …`, the
+server still starts, those sessions do not sign anyone in on this image (they would on the older
+one), and the same statement can be run by hand with the server stopped, with the same
+predicate as `SESSION_NOT_IN_HASH_FORM` in `src/lib/server/auth.ts`:
+
+```sql
+DELETE FROM sessions WHERE (typeof(id) <> 'blob' OR length(id) <> 32);
+```
+
+**Check W23 (going back and coming forward): end every session on the way forward.** If you went
+back and are coming forward again, run `DELETE FROM sessions;` with the server stopped, before
+this image starts. It ends the sessions this image made before the rollback, which would
+otherwise work again inside their idle window, including for a person who signed out on the
+older image. Expect everyone to sign in again; a fault if anyone is still signed in.
+
 **Coming forward again**, 0066 and 0067 are already recorded and are not run, so nothing ends
-the older image's sessions by migration. This image refuses them instead: each was written with
-`two_step` 0 and is deleted at its next request, and each remembered-browser cookie the older
+the older image's sessions by migration. This image refuses them instead: each is in plain and
+never found, so it is deleted at the next start, and each remembered-browser cookie the older
 image signed is under the old MAC domain and not remembered. So everybody it signed in signs in
 again with the second step. The 14 days still count from the first release. Treat everything
 done while the older image ran as done by whoever held a password: review the Audit page and the

@@ -134,7 +134,7 @@ export const POST: RequestHandler = async ({ params, request, locals, url, cooki
 	// transaction, and the answer says whether the mail went.
 	const { target, token, baseUrl, actorId } = issued;
 	const outcome = await sendInviteEmail(target.email, target.username, token, baseUrl);
-	const mail = inviteMailAnswer({ outcome, cookies, actorId, accountId: target.id, token, baseUrl });
+	const mail = inviteMailAnswer({ outcome, credential: locals.credential, actorId, accountId: target.id, token, baseUrl });
 	const earlier = 'Any earlier invite to this account no longer works.';
 
 	if (mail.mailSent) {

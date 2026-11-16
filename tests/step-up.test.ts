@@ -116,7 +116,9 @@ import {
 	makeUser,
 	makeWebhook,
 	resetDb,
-	stepUp
+	stepUp,
+	sessionHashOf,
+	sessionCredential
 } from './helpers/fixtures';
 import { FROM_THE_PAGE, gate } from './helpers/gate';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
@@ -170,7 +172,7 @@ const tokenOf = (sent: { headers: Record<string, string> }) => sent.headers.cook
 
 /** The session's count of wrong current passwords, or undefined once it has gone. */
 const countOf = (token: string) =>
-	db.select({ count: sessions.wrongPasswordCount }).from(sessions).where(eq(sessions.id, token)).get()?.count;
+	db.select({ count: sessions.wrongPasswordCount }).from(sessions).where(eq(sessions.tokenHash, sessionHashOf(token))).get()?.count;
 
 /** The archived card is still there: nothing was purged. */
 const archivedLeft = () => db.select().from(cards).all().filter((card) => card.archivedAt !== null).length;
@@ -243,7 +245,7 @@ function standInGoogle() {
  * the page begins one: what the code is then sent with, the state among it.
  */
 async function connecting(who: Scene['admin'], confirmed: ReturnType<typeof stepUp>) {
-	const credential = { kind: 'session' as const, token: tokenOf(confirmed) };
+	const credential = sessionCredential(tokenOf(confirmed));
 	const begun = await api('GET', '/api/admin/backup/gdrive/auth?dest=G', { user: who, credential });
 	expect(begun.status).toBe(200);
 	const state = new URL(begun.body.authUrl).searchParams.get('state');
@@ -736,7 +738,7 @@ describe('everything refusable without the password is refused first (case 4)', 
 		const res = await api('POST', '/api/admin/purge-archived', {
 			...confirmed,
 			user: { ...s.member, role: 'admin' },
-			credential: { kind: 'session', token }
+			credential: sessionCredential(token)
 		});
 
 		expect(answer(res)).toEqual({ status: 403, body: { message: 'Forbidden' } });
@@ -1064,7 +1066,9 @@ describe("the count of wrong passwords on the session's row (cases 9 to 16)", ()
 			forgetImportConfirmations();
 			resetAllRateLimits();
 		}],
-		['a day gone by', () => vi.setSystemTime(Date.now() + 24 * 60 * 60 * 1000)]
+		// Eleven hours: inside an administrator's idle limit of twelve, which
+		// would end the session itself (card 2775).
+		['eleven hours gone by', () => vi.setSystemTime(Date.now() + 11 * 60 * 60 * 1000)]
 	])('keeps the count for the session’s whole life: two wrong, %s, and the third signs out', async (_between, meanwhile) => {
 		vi.useFakeTimers({ toFake: ['Date'] });
 		const s = scene();
@@ -1124,7 +1128,7 @@ describe("the count of wrong passwords on the session's row (cases 9 to 16)", ()
 		const s = scene();
 		const confirmed = stepUp(s.admin);
 		const token = tokenOf(confirmed);
-		db.update(sessions).set({ wrongPasswordCount: 3 }).where(eq(sessions.id, token)).run();
+		db.update(sessions).set({ wrongPasswordCount: 3 }).where(eq(sessions.tokenHash, sessionHashOf(token))).run();
 
 		const res = await api('POST', '/api/admin/purge-archived', confirmed);
 
@@ -1174,7 +1178,7 @@ describe("the count of wrong passwords on the session's row (cases 9 to 16)", ()
 		const s = scene();
 		const confirmed = stepUp(s.admin, {}, WRONG);
 		const token = tokenOf(confirmed);
-		db.update(sessions).set({ wrongPasswordCount: 2 }).where(eq(sessions.id, token)).run();
+		db.update(sessions).set({ wrongPasswordCount: 2 }).where(eq(sessions.tokenHash, sessionHashOf(token))).run();
 		const free = fillFirstLane(s.admin.id);
 
 		const res = await api('POST', '/api/admin/purge-archived', confirmed);
@@ -1215,7 +1219,7 @@ describe("the count of wrong passwords on the session's row (cases 9 to 16)", ()
 
 		const pending = api('POST', '/api/admin/purge-archived', confirmed);
 		await vi.waitFor(() => expect(stub.compared).toBe(1));
-		deleteSession(token, 'signed out elsewhere');
+		deleteSession(sessionHashOf(token), 'signed out elsewhere');
 		release();
 
 		expect(answer(await pending)).toEqual({ status: 403, body: SIGNED_OUT });
@@ -1250,7 +1254,7 @@ describe('the password in the log and the answers (case 17)', () => {
 		];
 		const confirmed = await api('POST', '/api/admin/import/confirm', stepUp(s.chief));
 		const ended = stepUp(s.admin, {}, guess);
-		db.update(sessions).set({ wrongPasswordCount: 3 }).where(eq(sessions.id, tokenOf(ended))).run();
+		db.update(sessions).set({ wrongPasswordCount: 3 }).where(eq(sessions.tokenHash, sessionHashOf(tokenOf(ended)))).run();
 		answers.push(await api('POST', '/api/admin/purge-archived', ended));
 
 		expect(answers.map((res) => res.status)).toEqual([200, 403, 403]);
@@ -1284,8 +1288,8 @@ describe("the import's confirmation (cases 18 to 20)", () => {
 		[
 			'used',
 			(s: Scene, token: string) => {
-				const confirmation = issueImportConfirmation(token, s.chief.id, FIXTURE_PASSWORD_HASH);
-				takeImportConfirmation(confirmation, token);
+				const confirmation = issueImportConfirmation(sessionHashOf(token), s.chief.id, FIXTURE_PASSWORD_HASH);
+				takeImportConfirmation(confirmation, sessionHashOf(token));
 				return { [CONFIRMATION_HEADER]: confirmation };
 			}
 		],
@@ -1293,14 +1297,14 @@ describe("the import's confirmation (cases 18 to 20)", () => {
 			'expired, 61 seconds on',
 			(s: Scene, token: string) => {
 				vi.useFakeTimers({ toFake: ['Date'] });
-				const confirmation = issueImportConfirmation(token, s.chief.id, FIXTURE_PASSWORD_HASH);
+				const confirmation = issueImportConfirmation(sessionHashOf(token), s.chief.id, FIXTURE_PASSWORD_HASH);
 				vi.setSystemTime(Date.now() + 61 * 1000);
 				return { [CONFIRMATION_HEADER]: confirmation };
 			}
 		],
 		[
 			"another session's",
-			(s: Scene) => ({ [CONFIRMATION_HEADER]: issueImportConfirmation(makeSession(s.chief), s.chief.id, FIXTURE_PASSWORD_HASH) })
+			(s: Scene) => ({ [CONFIRMATION_HEADER]: issueImportConfirmation(sessionHashOf(makeSession(s.chief)), s.chief.id, FIXTURE_PASSWORD_HASH) })
 		]
 	])('refuses an import whose confirmation is %s 403, before a byte of the upload is read, and changes nothing', async (_what, confirming) => {
 		const s = scene();
@@ -1333,7 +1337,7 @@ describe("the import's confirmation (cases 18 to 20)", () => {
 		],
 		[
 			'the confirmation is another account’s, issued on this session',
-			(s: Scene, token: string) => ({ [CONFIRMATION_HEADER]: issueImportConfirmation(token, s.admin.id, FIXTURE_PASSWORD_HASH) })
+			(s: Scene, token: string) => ({ [CONFIRMATION_HEADER]: issueImportConfirmation(sessionHashOf(token), s.admin.id, FIXTURE_PASSWORD_HASH) })
 		]
 	])('refuses an import when %s: 403, nothing restored', async (_what, confirming) => {
 		const s = scene();
@@ -1348,7 +1352,7 @@ describe("the import's confirmation (cases 18 to 20)", () => {
 
 		expect(answer(res)).toEqual({ status: 403, body: REFUSED });
 		// Refused once the upload was in: the confirmation was taken, and is gone.
-		expect(() => takeImportConfirmation(headers[CONFIRMATION_HEADER], token)).toThrow();
+		expect(() => takeImportConfirmation(headers[CONFIRMATION_HEADER], sessionHashOf(token))).toThrow();
 		expect(readdirSync(dir)).toEqual([]);
 		expect(countOf(token)).toBe(0);
 		expect(db.select({ name: boards.name }).from(boards).all().map((board) => board.name)).toEqual([
@@ -1376,7 +1380,7 @@ describe("the import's confirmation (cases 18 to 20)", () => {
 			body: REFUSED
 		});
 		expect(read).not.toHaveBeenCalled();
-		expect(takeImportConfirmation(second.body.confirmation, token)).toEqual({ userId: s.chief.id, hash: FIXTURE_PASSWORD_HASH });
+		expect(takeImportConfirmation(second.body.confirmation, sessionHashOf(token))).toEqual({ userId: s.chief.id, hash: FIXTURE_PASSWORD_HASH });
 	});
 });
 

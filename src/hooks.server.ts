@@ -1,12 +1,15 @@
 import { runMigrations } from '$lib/server/db/migrate';
 import {
 	validateSession,
-	SESSION_COOKIE_NAME,
 	hasAnyUsers,
 	cleanExpiredSessions,
 	findApiKey,
 	markApiKeyUsed,
-	openSessionUser
+	oldSessionCookieDeletion,
+	openSessionUser,
+	readSessionCookie,
+	sessionTokenHash,
+	slidesSession
 } from '$lib/server/auth';
 import { startSchedulers } from '$lib/server/schedulers';
 import { json, text, type Handle, type HandleServerError, type RequestEvent } from '@sveltejs/kit';
@@ -21,6 +24,7 @@ import { pathToLog } from '$lib/server/secret-paths';
 import {
 	checkMfaKeyAtStart,
 	endPlainInvites,
+	endPlainSessions,
 	maskLiveLog,
 	refuseUserlessBesideAnother,
 	removeSettingsOfNonAdministrators,
@@ -63,7 +67,17 @@ checkMfaKeyAtStart();
 // A bare call: a database that cannot take it stops the server here.
 ensureFormSecret();
 
-// Clean expired sessions periodically (on startup)
+// End every session an older image kept in plain (card 2775). An image from
+// before the card, started here after going back, keeps a session's code as
+// the cookie holds it, and that code would sign its holder in again if the
+// older image were started again. Going back is safe for the sessions this
+// image made: each is a BLOB, which that image's lookup by the cookie, as
+// text, never matches. Before the clean-up, so that every plain session is
+// counted. A second start changes nothing, and it cannot throw. See
+// $lib/server/startup-checks.ts.
+endPlainSessions();
+
+// Delete the sessions whose deadline has passed, at start.
 cleanExpiredSessions();
 
 // Sweep expired sign-in challenges now and every five minutes (card 2769,
@@ -140,6 +154,11 @@ const PUBLIC_ROUTES = new Set([
 	// A set-up link's page (card 2769, decision 19): it asks nothing, and
 	// leaves the link for the sign-in that follows, which asks the password.
 	'/enrol/[token]',
+	// Sign-out (card 2775, the code review's CS3): reached with no session
+	// too, so that a browser sending two session cookies, which signs in with
+	// neither, can still end both. Its POST passes the same-origin check above
+	// and SvelteKit's own; its GET only sends the browser home.
+	'/logout',
 	'/docs',
 	'/invite/[token]',
 	'/request',
@@ -391,14 +410,15 @@ async function handleRequest(event: RequestEvent, resolve: ResolveFn, path: stri
 	if (crossSite) return crossSite;
 
 	// ── 1c. Read session cookie and attach user to locals ─────────────
-	const token = event.cookies.get(SESSION_COOKIE_NAME);
-	if (token) {
-		event.locals.user = validateSession(token);
-	} else {
-		event.locals.user = null;
-	}
-	// The session the account was found by, as the key is kept above.
-	event.locals.credential = token && event.locals.user ? { kind: 'session', token } : null;
+	// One value of the name in force, in a code's shape, or none (card 2775).
+	// The code goes no further than here. Only the holder's own use slides the
+	// session: a navigation, or a write, which has passed the check above
+	// (the code review's CS1). A page's own reads are checked and slide nothing.
+	const token = readSessionCookie(event.request, event.url);
+	const found = token === undefined ? null : validateSession(token, { slide: slidesSession(event.request) });
+	event.locals.user = found?.user ?? null;
+	// The session the account was found by, as its hash, as the key is kept above.
+	event.locals.credential = found ? { kind: 'session', hash: found.hash } : null;
 
 	// Decided on the route's id, which a path that is no route has not got.
 	const routeId = event.route.id;
@@ -592,7 +612,11 @@ export const handle: Handle = async ({ event, resolve }) => {
 	// a read that writes nothing and slides no expiry (`openSessionUser`):
 	// whose session a forged write rode on is what an investigation asks.
 	const seen = refusalSeen(response);
-	const userId = seen === undefined ? (event.locals.user?.id ?? null) : (openSessionUser(event.cookies.get(SESSION_COOKIE_NAME))?.id ?? null);
+	const sentCode = seen === undefined ? undefined : readSessionCookie(event.request, event.url);
+	const userId =
+		seen === undefined
+			? (event.locals.user?.id ?? null)
+			: (openSessionUser(sentCode === undefined ? undefined : sessionTokenHash(sentCode))?.id ?? null);
 	const fields = { userId, ip };
 	const meta = { method, path: sent, status, ...(location === null ? {} : { location }), durationMs, ...seen };
 	const line = `${method} ${sent} → ${status}${location === null ? '' : ` redirect to ${location}`} (${durationMs}ms)`;
@@ -600,6 +624,14 @@ export const handle: Handle = async ({ event, resolve }) => {
 	if (status >= 500) log.error(line, meta, fields);
 	else if (status >= 400) log.warn(line, meta, fields);
 	else log.info(line, meta, fields);
+
+	// A session cookie of the plain name, sent where cookies are HTTPS-only,
+	// names a session ended at the release: deleted on this answer, whoever
+	// made it (card 2775, decision 13). The gate's own answers never pass
+	// through `event.cookies`, so the header is added here, where every logged
+	// answer passes.
+	const oldCookie = oldSessionCookieDeletion(event.request, event.url);
+	if (oldCookie !== null) response.headers.append('set-cookie', oldCookie);
 
 	// A remote call's route is the one its caller named in a header (see
 	// noRemoteFunctions), so it is headed as no route at all: naming a page

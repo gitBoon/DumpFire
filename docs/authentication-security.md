@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.114
+version: 1.115
 status: As-Built
 date: 2026-11-16
 tags:
@@ -69,7 +69,7 @@ tags:
   - iso-27001
   - token-hashing
   - migration-0068
-description: "Deep-dive into DumpFire's authentication system, what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the twenty-nine destructive actions that ask for the current password again (step-up), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, the accepted risks and the ISO 27001 rows)"
+description: "Deep-dive into DumpFire's authentication system, what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the twenty-nine destructive actions that ask for the current password again (step-up), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, session codes kept only as SHA-256 hashes with the idle and total limits by role, the __Host- cookie and a role change ending the account's sessions (card 2775), the accepted risks and the ISO 27001 rows)"
 ---
 
 # Authentication & Security
@@ -85,7 +85,7 @@ flowchart TD
 
     PathCheck -->|"Yes"| OpenApi{"/api/v1/openapi.json ?"}
     PathCheck -->|"No"| WriteCheck{"GET or HEAD ?"}
-    WriteCheck -->|"Yes"| CookieAuth["Read session cookie\ndumpfire_session"]
+    WriteCheck -->|"Yes"| CookieAuth["Read session cookie\n__Host-dumpfire_session over HTTPS,\nelse dumpfire_session"]
     WriteCheck -->|"No: a write"| OwnPage{"From DumpFire's own page?\nsee Writes From DumpFire's Own Pages Alone"}
     OwnPage -->|"No"| R403x["403 or 415 JSON message\nno session read"]
     OwnPage -->|"Yes"| CookieAuth
@@ -105,9 +105,9 @@ flowchart TD
     KnownRoute -->|"Yes"| ApiResolve["Resolve request\nAny failure that is not JSON\nis answered again as JSON"]
 
     CookieAuth -->|"No cookie"| UsersExist{"Any users?"}
-    CookieAuth -->|"Has cookie"| ValidateSession["Lookup session\nCheck expiry"]
+    CookieAuth -->|"Has cookie"| ValidateSession["Look up the session by the\nSHA-256 of its code\nCheck the deadline"]
     ValidateSession -->|"Invalid / expired"| UsersExist
-    ValidateSession -->|"Valid"| SlideExpiry["Slide expiry forward\n+30 days"]
+    ValidateSession -->|"Valid"| SlideExpiry["Slide expiry forward by the idle limit,\nnever past the total limit\n(only a write or a full page load:\nslidesSession)"]
     SlideExpiry --> AttachUser["Attach user to locals"]
 
     UsersExist -->|"No"| SetupOnly{"/setup ?"}
@@ -1022,42 +1022,74 @@ toast or in storage. Case 17 searches every log row and answer of a run for it.
 
 | Property | Value |
 |----------|-------|
-| Cookie name | `dumpfire_session` |
+| Cookie name | `__Host-dumpfire_session` where cookies are HTTPS-only (`COOKIE_SECURE`, or production) or the request came over HTTPS; otherwise `dumpfire_session`. See [Session Codes Stored as Hashes, and Limits by Role](#session-codes-stored-as-hashes-and-limits-by-role-card-2775) |
+| How it is read | By the gate alone, from the raw `Cookie` header: exactly one value of the name in force, shaped as a UUID, or none. Two values of the name, or a value no session code can have, is no session |
 | Token format | `crypto.randomUUID()` |
-| Duration | 30 days sliding window |
-| Storage | `sessions` table in SQLite |
+| Duration | One deadline per session: the earlier of its expiry (idle limit) and its start plus the total limit. Administrators and the superadmin 12 hours idle, 24 hours in total; users 3 days idle, 7 days in total. Judged on the account's role at every check. A start or expiry more than 60 seconds beyond what the role allows counts as passed |
+| What moves the expiry | Only `slidesSession(request)`: a write (a request that is not `GET` or `HEAD`, which has passed the same-origin write check), or a `GET` or `HEAD` with `Sec-Fetch-Mode: navigate`. Every other request is checked, with every refusal, but never slides: background polls, live-event re-reads, a stream's checks, an `EventSource` open or reconnect. A client-side navigation inside the app (a link click, which is a data fetch) no longer counts as activity; a write or a full page load does. A tab left open on its own does not keep a session alive |
+| Storage | `sessions` table in SQLite: `id` holds the SHA-256 of the code, 32 bytes as a BLOB, never the code |
 | Wrong current passwords | `sessions.wrong_password_count` (migration 0062, card 2701): one added for each password compared (a check refused unchecked, in flight or busy, adds none), set to 0 by a right one, and the third wrong one ends the session. See [Guessing a Current Password](#guessing-a-current-password) |
 | Made after a second factor | `sessions.two_step` (migration 0066, card 2769): `createSession()` writes 1; a session with any other value is refused and deleted. See [Older Images and Instances](#older-images-and-instances) |
-| Flags | `httpOnly`, `sameSite: lax`, `secure` in production |
+| Flags | `httpOnly`, `sameSite: lax`, `secure` where cookies are HTTPS-only or the request is HTTPS; `Path=/`, never a `Domain`; `Max-Age` runs to the session's total limit |
 
-### Sliding Window
+### Idle and Total Limits
 
-Every valid session access extends the expiry by 30 days. This means active users never get logged out, while inactive sessions expire naturally.
+A session has two limits, and the shorter wins. The **idle limit** moves on: every valid use of
+the session by a write or a full page load (`slidesSession()`; polls, streams and in-app
+navigations do not count) sets the expiry to now plus the idle limit. The **total limit** does not move: the session ends that long after it was made,
+however busy it has been. There is one deadline, the earlier of `expires_at` and
+`created_at` plus the total limit, and a session past it is refused as `'expired'`. The
+`expired` log line names `createdAt`, so the log shows which limit ended it.
+
+| Role | Idle limit | Total limit |
+|------|-----------|-------------|
+| `user` | 3 days | 7 days |
+| Any other role (`admin`, `superadmin`, an unknown value) | 12 hours | 24 hours |
+
+The limits are constants in `src/lib/server/auth.ts` (`SESSION_LIMITS`), not settings, so a
+session policy cannot be lengthened from the page. Any role but `user` takes the shorter pair,
+so an unknown value fails short. The role is the account's **now**, not the role it had at
+sign-in. A start in the future by more than 60 seconds, or an expiry more than the role's idle
+limit plus 60 seconds away (a role raised on the host, where no code runs, leaves the longer
+expiry already written), counts as passed. The 60 seconds is the same grace
+`known-browsers.ts` gives a clock that steps back a little.
 
 ```mermaid
 sequenceDiagram
     participant Browser
-    participant Server
+    participant Gate as Gate (hooks.server.ts)
     participant DB
 
-    Browser->>Server: Request with session cookie
-    Server->>DB: SELECT session WHERE id = token
-    DB-->>Server: Session found
-    Server->>Server: toStamp(expires_at) names a moment after now, else closed
-    Server->>DB: UPDATE session SET expires_at = now + 30d
-    Server->>DB: SELECT user WHERE id = session.userId
-    DB-->>Server: User record
-    Server-->>Browser: Response with user context
+    Browser->>Gate: Request with session cookie
+    Gate->>Gate: code = the one UUID-shaped value of the name in force
+    Gate->>Gate: hash = SHA-256(code), 32 bytes
+    Gate->>DB: SELECT session WHERE id = hash (a BLOB)
+    DB-->>Gate: Session found
+    Gate->>DB: SELECT user WHERE id = session.userId
+    DB-->>Gate: User record, with its role now
+    Gate->>Gate: deadline = min(expires_at, created_at + total limit of the role now), each read with toStamp
+    alt deadline passed, or a start or expiry that cannot be believed
+        Gate-->>Browser: not signed in ('expired' logged with sessionRef and createdAt)
+    else open
+        opt slidesSession(request): a write, or a navigate
+            Gate->>DB: UPDATE expires_at = min(now + idle limit, created_at + total limit)
+        end
+        Gate-->>Browser: Response with user context
+    end
 ```
 
-The expiry is read as the moment it names, with `toStamp` from `src/lib/timestamps.ts`, and
-not compared with now as text. A session whose expiry names no moment, such as `zzz`,
-`2099-02-30 08:00:00` or an hour of 24, is closed, where text comparison sorted it after now
-and kept it open for good. API keys and invites are read the same way (the review of cards
-2095, 2106 and 2107, item S2); `tests/timestamps.test.ts` holds all three. The sweep of
-expired sessions at each start, `cleanExpiredSessions()`, deletes by the same rule (an expiry
-that names no moment, or one at or before now), through the `stamp_of` SQL function
-`registerStampFunctions` gives the connection.
+The expiry and the start are read as the moments they name, with `toStamp` from
+`src/lib/timestamps.ts`, and not compared with now as text. A session whose start or expiry
+names no moment, such as `zzz`, `2099-02-30 08:00:00` or an hour of 24, is closed, where text
+comparison sorted it after now and kept it open for good. API keys and invites are read the
+same way (the review of cards 2095, 2106 and 2107, item S2); `tests/timestamps.test.ts` holds
+all three. The sweep of ended sessions at each start, `cleanExpiredSessions()`, deletes by the
+same rule in SQL (an expiry that names no moment or is at or before now; a start that names no
+moment, is more than 60 seconds ahead, or is further back than the role's total limit; an
+expiry beyond the role's idle limit plus 60 seconds), through the `stamp_of` SQL function
+`registerStampFunctions` gives the connection, with the role read from the account in a `CASE`.
+It runs only at start, so rows that have ended wait there for a restart; each holds only a
+hash, so that is tidiness and not exposure.
 
 ### Every Session Ended Once, by Migration 0053
 
@@ -1300,6 +1332,154 @@ line, its single transaction and its failure), and by
 `tests/migrations.test.ts` (0068) and `tests/backups.test.ts` (an older backup's used invites,
 and the bare token left in the log). See [Testing](testing.md).
 
+### Session Codes Stored as Hashes, and Limits by Role (Card 2775)
+
+When someone signs in, the browser is given a long random code (`crypto.randomUUID()`, 122 random
+bits) in a cookie, and the server recognises them by it. Until card 2775 the server kept that code
+exactly as the browser held it, so whoever could read the database file, its WAL, a cold copy or
+a restore's safety copy held a working session of everyone signed in, past both the password and
+the authenticator, and a session slid for 30 days with no total limit, renewed even by a tab left
+open. Card 2869 (session ids stored in plain, raised in the review of card 2849) is folded into
+this card. It has no migration of its own: migration 0067 ends every session at the release that
+brings it (see [Two-Step Sign-In](#two-step-sign-in-card-2769)), and the start-up sweep below
+ends any session left in plain.
+
+**The server now keeps only the code's SHA-256, the raw 32-byte digest, a BLOB value**, in the
+existing `sessions.id` column, whose declared type stays `TEXT` (no change to the schema or to
+`expected-schema.ts`; see [Sessions](data-model.md#session-codes-kept-as-hashes-card-2775-no-migration)). `sessionTokenHash()` in
+`src/lib/server/auth.ts` makes it, and the model's property is `tokenHash`. SQLite never takes a
+BLOB to equal text, so an older image that compares the column with a cookie never matches a
+stored hash. The code keeps its form (a UUID: 122 bits make an unsalted SHA-256 unguessable, as
+for invites).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as Browser
+    participant G as Gate (hooks.server.ts)
+    participant A as auth.ts
+    participant S as sessions
+    participant U as users
+    participant R as Route or stream
+    B->>G: request, Cookie: __Host-dumpfire_session=code
+    G->>A: readSessionCookie(request, url)
+    Note over G,A: the name in force alone (HTTPS-only cookies or an https: request); exactly one value, UUID-shaped, else none
+    G->>A: validateSession(code, slide only if slidesSession(request))
+    A->>A: hash = SHA-256(code), 32 bytes
+    A->>S: SELECT WHERE id = hash (a BLOB: text never matches)
+    alt no row
+        A-->>G: null, WARN 'missing' with sessionRef
+    else two_step is not 1
+        A->>S: DELETE, WARN 'one-step'
+        A-->>G: null
+    else account gone
+        A->>S: DELETE, WARN 'orphaned'
+        A-->>G: null
+    else deadline passed
+        A->>U: the role, read with the account
+        Note over A: deadline = min(expires_at, created_at + total limit of the role now).<br/>Passed also if created_at is unreadable or over 60 s ahead,<br/>or expires_at is over the idle limit of the role now + 60 s ahead
+        A-->>G: null, INFO 'expired' with sessionRef and createdAt
+    else open
+        opt slidesSession(request): a write, or a navigate
+            A->>S: UPDATE expires_at = min(now + idle limit, created_at + total limit)
+        end
+        A-->>G: user and hash
+    end
+    G->>R: locals.user, locals.credential = session hash
+    Note over R: the code itself goes no further than the gate
+    G-->>B: the answer, and on HTTPS a deletion of any plain dumpfire_session the browser sent
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> Release: 0067 deletes every session
+    Release --> ThisImage: every session written as a 32-byte hash
+    ThisImage --> OlderImage: going back
+    OlderImage --> ThisImage: coming forward, endPlainSessions deletes every plain row, one WARN, before the clean-up
+```
+
+An older image looks a session up by text, finds no hashed row, and so asks everyone to sign in;
+it writes plain ids, which this image never finds and sweeps at the next start (see
+[Older Images and Instances](#older-images-and-instances)).
+
+**Why these choices**
+
+- **Deadline, one rule.** The earlier of `expires_at` and `created_at` plus the total limit of the
+  role now, read by `findSession()`, the slide, `createSession()` and `cleanExpiredSessions()`
+  alike, and refused as `'expired'` (there is no separate "too old" refusal). `created_at` already
+  existed, so no column was added. See [Idle and Total Limits](#idle-and-total-limits) for the
+  numbers and the 60-second grace.
+- **A role change ends the account's sessions.** An administrator changing someone's role ends
+  that account's sessions in the transaction that already ends its invites and pending sign-ins
+  (see [When an Account's Email or Role Changes](#when-an-accounts-email-or-role-changes)). A user
+  made an administrator would otherwise keep the 3-day idle window already written into their
+  session until the expiry check refused it. An email change ends no session.
+- **Changing your own password keeps the session's start.** The replacement session takes the
+  start of the one it replaces, so a password alone, with no second factor, cannot restart the
+  24-hour or 7-day clock. `replacementStart(hash, role)` returns null when there is no session,
+  the start cannot be read, or less than 60 seconds of the role's total limit is left; the change
+  is then refused 401 "Not authenticated" before any write. `createSession()` throws inside the
+  transaction when the start plus the total limit is already past, and `setSessionCookie()` never
+  throws: its `Max-Age` is the larger of 1 and the whole seconds left, rounded up.
+- **Signing out ends every session the browser sent.** `/logout` is a public route, and its
+  `POST` still passes the gate's same-origin check. The action deletes the gate's session, then
+  `endSessionsSent(request, url, 'user logout')` hashes every UUID-shaped value of the session
+  cookie name in force and deletes those rows (one `Session deleted (user logout)` `INFO` line
+  each), and it always clears the cookie. Whenever two or more values of the name in force
+  arrive, the gate writes a `WARN` under AUTH, `Session cookie sent N times — no session read from
+  it`, with `sessionRefs` in its meta and no `userId`. An import's confirmation with no session
+  hash is refused 401 "Not authenticated".
+- **Only a write or a full page load keeps a session alive.** `slidesSession(request)` is true
+  for a request that is not `GET` or `HEAD` (it has passed the same-origin write check) or for a
+  `GET`/`HEAD` with `Sec-Fetch-Mode: navigate`. Every other request is checked, with every
+  refusal, but never slides: the dashboard's toast poll (30 seconds), the inbox's and reply
+  page's polls (5 seconds), live-event re-reads, a stream's verdict probe, and an `EventSource`
+  open or reconnect. A client-side navigation inside the app (a link click, which is a data
+  fetch) no longer counts as activity. There is no header to spoof.
+- **The `__Host-` cookie.** Whenever cookies are HTTPS-only (`secureCookies()`) **or the request
+  came over `https:`**, the cookie is named `__Host-dumpfire_session`, which a browser accepts
+  only from this exact site, over HTTPS, with `Path=/` and no `Domain`; otherwise
+  `dumpfire_session`. It is the same rule as the sign-in challenge cookie, now one function
+  (`httpsOnlyCookie()`) both use, so the two always agree. A deletion of a `__Host-` cookie must
+  carry `Secure` and `Path=/`, or the browser ignores it. `Max-Age` is computed from the new
+  session itself (its start and role) to its total limit, never a default, and the cookie is set
+  only at sign-in.
+- **One value, read by the gate alone.** The raw `Cookie` header must hold exactly one value of
+  the name in force, shaped as a UUID (`readSessionCookie()` over `onlyCookieValue()` in
+  `src/lib/server/cookie-header.ts`, the challenge cookie's rule moved to a shared module). A
+  planted second cookie or a value no session code can have is no session.
+- **The raw code stays in the gate.** `locals.credential` holds `{ kind: 'session', hash }`.
+  The live streams, `stillAuthenticated`, sign-out, the current-password check and its in-flight
+  set, step-up's import confirmations and Drive Connect all work from that hash. A source scan
+  holds that no file but `auth.ts` names the cookie and none but `hooks.server.ts` reads it.
+- **The old cookie is deleted where the gate builds the answer.** A browser that still sends the
+  plain `dumpfire_session` over HTTPS has it deleted on every answer, including the gate's own
+  redirects and 401s, which never pass through SvelteKit's cookie handling: the gate appends the
+  deletion header itself where every logged answer passes. A static asset's answer is left; the
+  next page deletes it.
+- **A start-up sweep.** `endPlainSessions()` in `src/lib/server/startup-checks.ts` deletes every
+  session not in hash form (`typeof(id) <> 'blob' OR length(id) <> 32`), writes one
+  `[WARN] [AUTH] Ended N session(s) held in plain, written by an older image: those browsers sign
+  in again.` line, never throws, and runs from `hooks.server.ts` **before** `cleanExpiredSessions()`
+  so that an expired plain row is counted and not deleted silently. It finds nothing at the
+  release, since 0067 has emptied the table.
+- **The log names a session by `sessionRef`**, the first 8 hex characters of the stored hash, which
+  says nothing about the code, matches the row (`hex(id) LIKE 'ab12cd34%'`) and keeps the
+  "deleted or expired?" investigation the log was for. The old `tokenPrefix` (the code's first 8
+  characters) is gone from every line; lines already in the log name sessions 0067 ended.
+- **`'one-step'` stays as defence in depth** (card 2769's refusal of a session made without a
+  second factor), now reached only by a hashed row with `two_step` 0, which no image writes.
+
+| Where | Holds |
+|-------|-------|
+| `sessions.id` | SHA-256 of the code, 32 bytes, a BLOB |
+| The browser | The code, in `__Host-dumpfire_session` (HTTPS) or `dumpfire_session` |
+| The gate, one request | The code, read from the header, hashed once |
+| `locals.credential`, streams, the in-flight set, import confirmations, Drive Connect | The hash (or its hex), never the code |
+| `system_logs` | `sessionRef` (8 hex characters of the hash) |
+| A backup | No session: a backup deletes every session in its copy and a restore brings none in |
+| Free pages of the live file | Plain ids that 0067 and the sweep deleted: dead, since no row is found for them by hash |
+
 ### An Open Stream and Its Session
 
 The gate asks about a session once, when a request arrives. The three live streams are each
@@ -1310,9 +1490,14 @@ or a password change left every open tab of that session receiving card titles a
 what, and an administrator's audit console receiving the system log, until the tab was
 closed.
 
-Each now reads its session cookie when it is opened and asks at every heartbeat it sends
-(30 seconds; 25 for the log) whether that session is still there, has not expired and has
-an account. If not, the stream ends and sends nothing more. Each asks `openSessionUser()` in
+Each now takes the session's hash from the gate (`locals.credential`; the code itself goes no
+further than the gate) when it is opened and asks at every heartbeat it sends
+(30 seconds; 25 for the log) whether that session is still there, has not reached its deadline
+(see [Idle and Total Limits](#idle-and-total-limits)) and has
+an account. If not, the stream ends and sends nothing more. Each also ends **at the session's
+deadline itself**: `openSession(hash)` gives the user and the deadline, and `sessionEndTimer(end)`
+is armed when the stream opens and re-armed at each heartbeat, so a stream does not wait for
+the next heartbeat after the deadline. Each asks `openSession()` in
 `src/lib/server/auth.ts`, which gives the account as it is now. The log stream and
 `/api/events`, which are let in for what the account's role was when they opened, end as well
 when that role has changed. The board stream ends as well when its board has gone or that
@@ -1920,7 +2105,7 @@ and counts nothing. The code is
 |---|---|
 | Name | `dumpfire_known_<user id>`, one for each account the browser has signed in to |
 | Value | `<issued at>.<nonce>.<mac>`: the time of issue in seconds, 16 random bytes in hex, and `HMAC-SHA256(key, "known-browser:2:<user id>:<issued at>:<nonce>:<the account's password hash>")` in hex. About 110 bytes. The domain was `known-browser:1:` until card 2769: a cookie signed under it, by an older image, is not remembered (see [Older Images and Instances](#older-images-and-instances)) |
-| Options | `Path=/login`, `HttpOnly`, `SameSite=Strict`, `Secure` by the session cookie's rule (`COOKIE_SECURE` when set, otherwise in production: `secureCookies()` in `auth.ts`), `Max-Age` a year |
+| Options | `Path=/login`, `HttpOnly`, `SameSite=Strict`, `Secure` by `secureCookies()` in `auth.ts` (`COOKIE_SECURE` when set, otherwise in production; unlike the session cookie, it does not also follow the request's scheme), `Max-Age` a year |
 | Good when | It parses, was issued no more than 365 days ago and not more than a minute in the future, and its MAC matches, compared in constant time, with the account's hash as it is now. Anything else is answered as no cookie at all |
 
 **When a browser is remembered.** A new cookie (a new time and nonce) is set to the browser
@@ -3023,17 +3208,23 @@ this image accepting what it makes (decision 24):
 
 ```mermaid
 flowchart TD
-    O["An older image or instance<br/>runs after 0066 and 0067"] --> S1["It makes a session:<br/>two_step stays 0, the column's default"]
+    O["An older image or instance<br/>runs after 0066 and 0067"] --> S1["It makes a session:<br/>two_step stays 0, and the id is the code in plain"]
     O --> S2["It remembers a browser:<br/>MAC under known-browser:1:"]
-    S1 --> T["This image: findSession answers one-step,<br/>validateSession deletes it, one WARN"]
+    S1 --> T["This image: finds no row for it by hash;<br/>endPlainSessions deletes it at the next start, one WARN"]
     S2 --> U["This image: the MAC does not match<br/>under known-browser:2:, not remembered"]
 ```
 
 - **`sessions.two_step`.** `createSession()` writes 1, and is called only by `finishSignIn()`
   and by a change of one's own password from a session (`tests/two-step-sign-in.test.ts` T45).
-  `findSession()` answers `one-step` for any other value, before the expiry, and
-  `validateSession()` deletes the row and writes one `WARN` line: "Session made without a second
-  factor (an older image, or from before two-step sign-in) — refused and deleted".
+  Since card 2775 an older image's session is stored in plain (the code itself in `id`), which
+  this image never finds by hash, so it signs nobody in; `endPlainSessions()` deletes every such
+  row at this image's next start, before the clean-up, with one `WARN` line (see
+  [Session Codes Stored as Hashes, and Limits by Role](#session-codes-stored-as-hashes-and-limits-by-role-card-2775)).
+  The `one-step` refusal stays as defence in depth: `findSession()` answers it for a hashed row
+  with any other `two_step`, before the deadline, and `validateSession()` deletes the row and
+  writes one `WARN` line: "A hashed session row with two_step 0 — refused and deleted". No image
+  writes such a row now. Sessions this image made are 32-byte BLOBs to an older image, whose
+  lookup by the cookie's text never matches them.
 - **The remembered-browser MAC's domain** is `known-browser:2:` (`MAC_DOMAIN` in
   `src/lib/server/known-browsers.ts`). A cookie signed under `known-browser:1:`, by an older image
   even with a secret it made again after 0067, is not remembered.
@@ -3084,12 +3275,12 @@ Every request that changes who can sign in makes its writes in one transaction (
 
 | Request | Changes together, or not at all | The account's invites not yet used | The account's API keys |
 |---------|---------------------------------|------------------------------------|------------------------|
-| Change your own password (`PUT /api/account/password`) | The new password, the end of every session the user has, and the new session that keeps this browser signed in | All end | Kept, unless the body says `endApiKeys: true`, which the Account page's box sends |
+| Change your own password (`PUT /api/account/password`) | The new password, the end of every session the user has, and the new session that keeps this browser signed in, which keeps the start of the one it replaces (card 2775), so the total limit does not restart | All end | Kept, unless the body says `endApiKeys: true`, which the Account page's box sends |
 | An administrator sets a user's password (`PUT /api/users/:id/password`) | The new password and the end of every session that user has. Nobody sets their own password by this route, an administrator included: the caller's own id is answered 403 and told to use the Account page | All end | All end |
 | Create a user (`POST /api/users`) | The user and, where no password was given, their invite. The invite email is sent after the commit, and waited for (card 2196) | A new account has none | A new account has none |
 | Send an invite again (`POST /api/users/:id/invite`) | The new invite. The email is sent after the commit, and waited for (card 2196). Refused `409` for an account with a second factor (card 2773) | All earlier ones end | Kept |
 | An administrator resets an account's two-step sign-in (`POST /api/users/:id/mfa/reset`, card 2773) | Its second factors and recovery codes deleted, its wrong-code counts set back, the end of every session, pending sign-in and enrolment link, and one new enrolment link. The password is not changed. The notice mail is sent after the commit, and waited for | All end | Kept |
-| An administrator changes an account's email or role (`PUT /api/users/:id`) | The change, and the end of the account's invites when its email or role is changed | All end, when the email or role written differs from the one stored | Kept |
+| An administrator changes an account's email or role (`PUT /api/users/:id`) | The change, the end of the account's invites when its email or role is changed, and the end of the account's sessions when its role is changed (card 2775) | All end, when the email or role written differs from the one stored | Kept |
 | Change your own email (`PUT /api/account/email`) | The new address and the end of the account's invites | All end, when the address differs from the one stored | Kept |
 | Use an invite (`/invite/:token`) | The password, the invite marked used, the end of every session, pending sign-in and enrolment link the account had, and one set-up challenge (card 2769). No session: the set-up's confirm makes it | All others end | All end |
 | First-run set-up (`/setup`) | The superadmin, made with `mfa_password_enrol = 0`, and one set-up challenge (card 2769). No session | | |
@@ -3111,7 +3302,7 @@ holder's own change** (card 2168).
 ```mermaid
 flowchart TD
     Set["A password is set"] --> How{"How?"}
-    How -->|"own change, with the current password<br/>(Account page, or the admin page's own row)"| Own["Every session ends, and this browser gets a new one<br/>Every unused invite ends<br/>API keys end, and the webhooks the account set are switched off,<br/>only if the Account page's box is ticked (not by default)<br/>Report schedules are left on"]
+    How -->|"own change, with the current password<br/>(Account page, or the admin page's own row)"| Own["Every session ends, and this browser gets a new one<br/>(it keeps the old one's start)<br/>Every unused invite ends<br/>API keys end, and the webhooks the account set are switched off,<br/>only if the Account page's box is ticked (not by default)<br/>Report schedules are left on"]
     How -->|"an administrator's reset of an ordinary user,<br/>or the superadmin's of an administrator or a user"| Reset["Every session ends<br/>Every unused invite ends<br/>Every API key ends<br/>Every webhook the account set is switched off<br/>Every report schedule of the account is paused"]
     How -->|"an invite is used"| Invite["The invite is marked used<br/>Every other unused invite ends<br/>Every session ends, and the user is signed in afresh<br/>Every API key ends<br/>Every webhook the account set is switched off<br/>Every report schedule of the account is paused"]
     Own --> One["endAccountAccess(userId, { apiKeys, reportSchedules }),<br/>in the transaction that sets the password"]
@@ -3341,13 +3532,20 @@ flowchart TD
     Change["PUT /api/users/:id<br/>or PUT /api/account/email"] --> Differs{"Does the email or the role written<br/>differ from the one stored?"}
     Differs -->|"no: the same email in other case,<br/>the role it has, a username, an emoji"| Keep["Nothing ends: invitesEnded 0"]
     Differs -->|"yes"| End["endUnusedInvites(userId) and endPendingSignIns(userId),<br/>then the account is written, in one transaction"]
-    End --> Line["After the commit: one INFO line under AUTH"]
+    End --> RoleArm{"Did the role change?"}
+    RoleArm -->|"yes (card 2775)"| Sessions["endSessionsOf(userId): every session of the account ends,<br/>in the same transaction"]
+    RoleArm -->|"no: the email alone"| NoSessions["No session ends"]
+    Sessions --> Line["After the commit: one INFO line under AUTH"]
+    NoSessions --> Line
     End --> Dead["An earlier link: This invite link no longer works ..."]
 ```
 
 - **"Actually changes."** The value written differs from the one stored, an email compared in
   lower case, as it is stored. A change of username or emoji ends nothing, and no change ends
-  a session or an API key: an email change is not a password change.
+  an API key: an email change is not a password change. An email change ends no session; a role
+  change ends every session of the account (card 2775), because a session carries the idle
+  window of the role it was made under, and OWASP's guidance is to renew the session on any
+  change of privilege. Nobody changes their own role by this route.
 - **Pending sign-ins and enrolment links end too** (card 2768): every sign-in of the account
   waiting for its second factor and every link to set up its authenticator, deleted by
   `endPendingSignIns(userId)` beside `endUnusedInvites(userId)`, before the account is written.
@@ -3367,7 +3565,9 @@ flowchart TD
 - **The system log.** One `INFO` line under `AUTH` after the commit, when something changed:
   `User A changed the email address and role of user N — ended I unused invite(s)` (naming
   whichever of the two changed), or `User N changed their email address — ended I unused
-  invite(s)`. No address is written.
+  invite(s)`. When the role changed and the account had sessions, the line ends ` and M
+  session(s)` (only when M is above 0), and its meta carries `sessionsEnded`. No address is
+  written.
 
 Invites waiting at the update that brings migration 0054 were ended by it, whatever their
 account: see [Every Unused Invite Ended Once](#every-unused-invite-ended-once-by-migration-0054).
@@ -7336,7 +7536,8 @@ unfinished is recovered on the host with `node scripts/mfa-reset.mjs <name>`.
 
 | File | Purpose |
 |------|---------|
-| `src/lib/server/auth.ts` | Session CRUD, API key generation and validation; `createSession()`, which writes `two_step = 1`, and `findSession()`, which refuses any other value as `one-step` (card 2769); `endAccountAccess()`, what setting a password ends; `stillAuthenticated()`, the key or session asked again inside a write's transaction, which answers the account as it is now and sets `locals.user` to it (`null` for a public route with nobody signed in; `401` and an ERROR line for a handler reached with no credential recorded, outside vitest); `checkCurrentPassword()`, the count of current-password guesses on the session's row, one check in flight per session and the sign-out at the third (card 2701), `refuseWrongPassword()`, the route's answer to one, and `whilePasswordHolds()`, its write only while the hash checked is still stored; `secureCookies()`, the `Secure` rule of the session cookie and the remembered browser's; `openSessionUser()`, which each open live stream asks at each heartbeat, and `sessionStillOpen()`, the same question without the account |
+| `src/lib/server/auth.ts` | Session CRUD, API key generation and validation; `createSession()`, which writes `two_step = 1`, and `findSession()`, which refuses any other value as `one-step` (card 2769); `endAccountAccess()`, what setting a password ends; `stillAuthenticated()`, the key or session asked again inside a write's transaction, which answers the account as it is now and sets `locals.user` to it (`null` for a public route with nobody signed in; `401` and an ERROR line for a handler reached with no credential recorded, outside vitest); `checkCurrentPassword()`, the count of current-password guesses on the session's row, one check in flight per session and the sign-out at the third (card 2701), `refuseWrongPassword()`, the route's answer to one, and `whilePasswordHolds()`, its write only while the hash checked is still stored; `secureCookies()`, the `Secure` rule of the remembered browser's cookie (`COOKIE_SECURE` when set, otherwise production), which the session cookie's `httpsOnlyCookie()` takes with an `https:` request; `openSessionUser()`, which each open live stream asks at each heartbeat, and `sessionStillOpen()`, the same question without the account; and, since card 2775, `sessionTokenHash()`, `SESSION_LIMITS`, the one deadline, `slidesSession()` (which requests move the expiry), `openSession()` (the session's user and deadline, for the streams) and `sessionEndTimer()` (a stream's timer to that deadline), `readSessionCookie()`, `httpsOnlyCookie()` and the cookie helpers, `endSessionsSent()` (sign-out), `endSessionsOf()` (a role change) and `replacementStart()` (a password change) |
+| `src/lib/server/cookie-header.ts` | `cookieValues()`, every value of a cookie name in the raw header; `onlyCookieValue()`, exactly one value in the shape given, and `sendsCookie()`, whether the name is sent at all, both built on it; used by the session cookie and the sign-in challenge cookie (card 2775) |
 | `src/lib/server/step-up.ts` | The current password asked again before a destructive action (card 2701): `STEP_UP_ACTIONS`, `confirmStepUp()`, `requirePasswordUnchanged()`, and the import's confirmation, `issueImportConfirmation()` and `takeImportConfirmation()`. See [Step-up Before Destructive Actions](#step-up-before-destructive-actions-card-2701) |
 | `src/lib/step-up-words.ts` | The step-up's words and codes, which the server answers with and the pages read: `STEP_UP_FIELD`, the refusals, `PASSWORD_CHANGED_MEANWHILE`, `CONFIRMATION_HEADER`, `StepUpCode`, and `stepUpRefusal()`, `refusalWatch()` and `isStepUpSignOut()`, which tell a refusal of the password from any other by its `stepUp` code |
 | `src/lib/components/CurrentPasswordField.svelte` | The one field for the caller's own password, asked again (card 2701's code review, F7): label, `autocomplete="current-password"`, the refusal in an alert, `aria-invalid` and `aria-describedby`, the focus on a refusal, and no field to type in once the session is signed out |
@@ -7392,7 +7593,7 @@ unfinished is recovered on the host with `node scripts/mfa-reset.mjs <name>`.
 | `src/lib/server/backup-secrets.ts` | What a backup leaves out because it is a secret, and what is done about the gaps (card 2169): `clearSecrets()`, `readSecretsHere()`, `fillSecretGaps()`, `credentialsMissing()`, `secretsToEnter()` and the two sentences; the seal: `backupSealKey()`, `sealOf()`, `sealCopy()`, `sealVerifies()`, `keepSealKey()`, and the checks made before it, `unsealedBecause()`, `backupFailsCheck()`, `strayInternalObjects()`; `fromTableStorage()`, how a table is read for the seal and the restore |
 | `src/lib/server/db/restore.ts` | What a restore brings in and what it never does, the new link it gives every request, every decision link it ends and records (`RestoreResult.decisionLinksCleared`) and its refusal of a decision record copied in part (card 2675), and the secrets it keeps from this server (`RestoreResult.secrets`), only for a backup whose seal verifies (`RestoreResult.sealVerified`, and why not, `RestoreResult.unsealed`); `rowsToRestore()`, each table read `NOT INDEXED`, which since card 2849 gives a used invite an older backup held in plain 32 random bytes as it reads it, with 0068's `UPDATE` repeated after the copy as a backstop; `backupLacksSuperadmin()` |
 | `src/lib/server/email.ts` | `linkBaseUrl()`: the address a mailed link begins with, from configuration alone |
-| `src/lib/server/startup-checks.ts` | The eight lines the server writes at start: no superadmin, `ORIGIN` still the image's placeholder, and a board beneath one of its own cards (card 2142), which a restore of a backup that brings one writes at once too, with each control character in a board's name or a card's title printed as a space, so that a name holding a line break cannot split the line and forge one after it (with the logger's `printable()`, card 2214); and three about the database (card 2083): the new-database line (a new, empty database was made at this start, the alarm on an installation that had data, since set-up is then open to whoever comes first), the off-volume line (the database is in the container's own file system), and the other-database line (a database at `/app/dumpfire.db` beside the one in use); and the line that `SIGN_IN_ONE_AT_A_TIME` is off (card 2194), and `reportCspMode()`'s line that `CSP_MODE` is `report-only` or neither mode (card 2162), each to the console whatever `LOG_LEVEL` is; `refuseUserlessBesideAnother()`, which stops the server before it listens when the database in use has no users while another is beside it; `checkMfaKeyAtStart()` and `MfaKeyError` (card 2768), straight after it, which stop the server when the MFA key does not load or is not the key the stored second factors were made with; and `maskLiveLog()`, which masks the running log's tokens and old failed sign-in names at start; and `endPlainInvites()` (card 2849), which at every start ends each unused invite an older image stored in plain and gives each used one 32 random bytes, in one transaction, with one `WARN` line built from what changed |
+| `src/lib/server/startup-checks.ts` | The eight lines the server writes at start: no superadmin, `ORIGIN` still the image's placeholder, and a board beneath one of its own cards (card 2142), which a restore of a backup that brings one writes at once too, with each control character in a board's name or a card's title printed as a space, so that a name holding a line break cannot split the line and forge one after it (with the logger's `printable()`, card 2214); and three about the database (card 2083): the new-database line (a new, empty database was made at this start, the alarm on an installation that had data, since set-up is then open to whoever comes first), the off-volume line (the database is in the container's own file system), and the other-database line (a database at `/app/dumpfire.db` beside the one in use); and the line that `SIGN_IN_ONE_AT_A_TIME` is off (card 2194), and `reportCspMode()`'s line that `CSP_MODE` is `report-only` or neither mode (card 2162), each to the console whatever `LOG_LEVEL` is; `refuseUserlessBesideAnother()`, which stops the server before it listens when the database in use has no users while another is beside it; `checkMfaKeyAtStart()` and `MfaKeyError` (card 2768), straight after it, which stop the server when the MFA key does not load or is not the key the stored second factors were made with; and `maskLiveLog()`, which masks the running log's tokens and old failed sign-in names at start; and `endPlainInvites()` (card 2849), which at every start ends each unused invite an older image stored in plain and gives each used one 32 random bytes, in one transaction, with one `WARN` line built from what changed; and `endPlainSessions()` (card 2775), which at every start, before the clean-up of ended sessions, deletes each session an older image stored in plain, with one `WARN` line |
 | `src/lib/server/rate-limit.ts` | In-memory rate limiter, counting in a fixed window from each key's first attempt (`checkRateLimit`), an amount in the same way (`takeAllowance`, the day's report mail of card 2182), and wrong passwords at one account in an idle window (`signInWait`, `countWrongSignIn`, `forgetWrongSignIns`, card 2177); sign-in's count by address with the account each attempt was at (`countSignInAttempt`, `refundSignInAttempts`, `keepSignInAttemptCounted`, card 2226); and the sign-ins in flight at one key (`enterSignIn`, `leaveSignIn`, card 2194); `accountKey()`, the `user:<id>` key the password step and the second step both count under (card 2769) |
 | `src/lib/server/uploads.ts` | Where attachment files are, which stored file names are refused, `writeUploadFile()` and `removeUploadFile()` for both trees' uploads, and the headers an attachment is served with: `attachmentHeaders()` (the web tree, inline only when an image's bytes match) and `downloadHeaders()` (`/api/v1`, always a download, `no-store`) |
 | `src/lib/server/image-check.ts` | Whether bytes are a PNG, JPEG, GIF or WebP image (card 2754): `imageTypeOf()`, `sniffImage()`, and `checkImage()`, the walk by allow-list that strips metadata and refuses animation, trailing data and more than 8000 px or 40 MP. No imports |

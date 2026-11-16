@@ -47,6 +47,7 @@ import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { failureAsJson, guardBody, isJsonAnswer, jsonInPlaceOf } from '$lib/server/api-errors';
 import { FRAMEABLE_ROUTES, SECURITY_HEADERS, preferredType, secured } from '$lib/server/gate-answers';
 import { subscribeToLogs, type LogEntry } from '$lib/server/logger';
+import { stamp } from '$lib/timestamps';
 import {
 	countSignInAttempt,
 	countWrongSignIn,
@@ -69,7 +70,7 @@ import { reportSignInsNotOneAtATime } from '$lib/server/startup-checks';
 import { addressKey } from '$lib/server/client-address';
 import { passwordChecks } from '$lib/server/passwords';
 import { usableInvite } from '$lib/server/invites';
-import { inviteHashOf } from './helpers/fixtures';
+import { inviteHashOf, sessionHashOf } from './helpers/fixtures';
 import { handle, handleError } from '../src/hooks.server';
 import { api, routeMethods, routePatterns } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
@@ -1123,8 +1124,10 @@ describe('a browser that has signed in here before', () => {
 		expect(out.res.status).toBe(303);
 		const again = setCookie(out.res, knownBrowserCookie(user.id));
 		expect(attributesOf(again!)).toEqual(['httponly', `max-age=${365 * 24 * 60 * 60}`, 'path=/login', 'samesite=strict']);
+		// With no session, the action is reached all the same (card 2775, CS3):
+		// it remembers nobody, and clears the session cookie whatever was sent.
 		const [none] = await logOut();
-		expect(none.res.headers.getSetCookie()).toEqual([]);
+		expect(none.res.headers.getSetCookie()).toEqual([`${SESSION_COOKIE_NAME}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax`]);
 
 		await fiveWrong();
 		expect(await threeTogether(user.username, known), 'the cookie it had').toEqual(EACH_AT_ONCE);
@@ -1856,8 +1859,12 @@ describe('a body sent with no Content-Type', () => {
 describe('a write that is not from DumpFire’s own page', () => {
 	const REFUSED = { message: CROSS_SITE_REFUSED };
 	const NOT_SAID_JSON = { message: JSON_ONLY };
-	/** Every session's expiry, set where a slide would move it from. */
-	const HELD = '2099-01-01 00:00:00';
+	/**
+	 * Every session's expiry, set where a slide would move it from: an hour on,
+	 * inside every role's idle limit, which a slide moves further (card 2775:
+	 * an expiry further out than the role allows is passed).
+	 */
+	let HELD: string;
 
 	let sent: Effects;
 	let userToken: string;
@@ -1871,6 +1878,7 @@ describe('a write that is not from DumpFire’s own page', () => {
 		sent = effects();
 		userToken = makeSession(user);
 		chiefToken = makeSession(chief);
+		HELD = stamp(new Date(Date.now() + 60 * 60 * 1000));
 		sqlite.prepare('UPDATE sessions SET expires_at = ?').run(HELD);
 		const made = makeBoard({ owner: user });
 		boardId = made.board.id;
@@ -1885,7 +1893,7 @@ describe('a write that is not from DumpFire’s own page', () => {
 
 	/** A session's cookie, and no other header. */
 	const cookieOf = (token: string) => ({ cookie: `${SESSION_COOKIE_NAME}=${token}` });
-	const expiryOf = (token: string) => (sqlite.prepare('SELECT expires_at AS at FROM sessions WHERE id = ?').get(token) as { at: string }).at;
+	const expiryOf = (token: string) => (sqlite.prepare('SELECT expires_at AS at FROM sessions WHERE id = ?').get(sessionHashOf(token)) as { at: string }).at;
 
 	/** The refusal, exactly, with its security header; nothing changed, no session slid and nothing sent. */
 	function expectRefusal(res: Answer, status: number, body: unknown, before: DbSnapshot, token?: string): void {
@@ -2809,6 +2817,8 @@ describe('the routes a caller who is not signed in is let through to', () => {
 		'/login/enrol',
 		// Card 2769: a set-up link's page, which asks nothing and leaves the link for the sign-in.
 		'/enrol/[token]',
+		// Card 2775 (CS3): sign-out, reached with no session too, so that two session cookies are both ended.
+		'/logout',
 		'/docs',
 		'/invite/[token]',
 		'/request',
@@ -3161,10 +3171,11 @@ describe('a fault, written down by handleError', () => {
 	it('in the gate itself: written down once, not twice, and answered 500', async () => {
 		vi.spyOn(console, 'error').mockImplementation(() => {});
 		writes = failingWrite();
-		// The first write is the session's expiry, slid forward as it is looked up.
+		// The first write is the session's expiry, slid forward as it is looked
+		// up: a navigation is its holder's use, which slides it (card 2775, CS1).
 		writes.failNth(1);
 
-		const res = await send('GET', '/api/boards', { headers: { ...asUser, accept: '*/*' } });
+		const res = await send('GET', '/api/boards', { headers: { ...asUser, accept: '*/*', 'sec-fetch-mode': 'navigate' } });
 
 		expect(writes.fired).toBe(true);
 		expectJson(res, 500, { message: 'Internal Error' });

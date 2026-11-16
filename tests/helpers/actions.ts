@@ -21,7 +21,7 @@
 import { readdirSync } from 'node:fs';
 import { join, sep } from 'node:path';
 import { isActionFailure, isHttpError, isRedirect, type RequestEvent } from '@sveltejs/kit';
-import type { SessionUser } from '$lib/server/auth';
+import { SESSION_COOKIE_NAME, sessionTokenHash, type Credential, type SessionUser } from '$lib/server/auth';
 
 type ActionModule = {
 	actions?: Record<string, (event: RequestEvent) => unknown>;
@@ -83,7 +83,12 @@ export type ActionOptions = {
 	form?: Record<string, string> | FormData;
 	/** Who is calling. `null` (the default) is an anonymous caller. */
 	user?: SessionUser | null;
-	/** Cookies the browser sends with the form: through `cookies.get`, and in the `Cookie` header. */
+	/**
+	 * Cookies the browser sends with the form: through `cookies.get`, and in the
+	 * `Cookie` header. A session cookie (`SESSION_COOKIE_NAME`) sent with a
+	 * `user` is recorded as the gate records it, as the session's hash in
+	 * `locals.credential` (card 2775), which sign-out reads.
+	 */
 	cookies?: Record<string, string>;
 	headers?: Record<string, string>;
 	/** The address the request appears to come from. */
@@ -135,11 +140,15 @@ export async function action(path: string, opts: ActionOptions = {}): Promise<Ac
 	const jar = new Map<string, string>(Object.entries(opts.cookies ?? {}));
 	const set: Record<string, CookieChange> = {};
 	const deleted: string[] = [];
+	const sessionCode = jar.get(SESSION_COOKIE_NAME);
 	const event = {
 		request,
 		url,
 		params: found.params,
-		locals: { user: opts.user ?? null },
+		locals:
+			sessionCode && opts.user
+				? { user: opts.user, credential: { kind: 'session', hash: sessionTokenHash(sessionCode) } satisfies Credential }
+				: { user: opts.user ?? null },
 		route: { id: found.page.pattern },
 		cookies: {
 			get: (cookie: string) => jar.get(cookie),

@@ -30,18 +30,22 @@
  *     api('PUT', '/api/account/email', { user, body, headers: { cookie: `${SESSION_COOKIE_NAME}=my-laptop` } });
  *
  * The cookie is not looked up: the handler is given `user` as its caller, as
- * the gate would give it the session's account.
+ * the gate would give it the session's account. With a `user`, it is turned
+ * into the credential the gate records for it, the session's hash (card 2775), unless
+ * the test gives a credential: the handlers that ask for the current password
+ * read the session from `locals.credential`, never from the cookie. So
+ * `stillAuthenticated` checks that session for real.
  *
- * Nor is a credential set: `locals.credential` is left undefined, as for a
- * request no gate let in, unless the test gives one. A handler that tells two
+ * With no session cookie and no credential given, `locals.credential` is left
+ * undefined, as for a request no gate let in. A handler that tells two
  * sessions of one account apart is given each in turn (card 2251):
  *
- *     api('GET', '/api/admin/backup/gdrive/auth?dest=G', { user, credential: { kind: 'session', token: 'laptop' } });
+ *     api('GET', '/api/admin/backup/gdrive/auth?dest=G', { user, credential: sessionCredential('laptop') });
  */
 import { readdirSync } from 'node:fs';
 import { join, sep } from 'node:path';
 import { isHttpError, isRedirect, type RequestEvent } from '@sveltejs/kit';
-import type { Credential, SessionUser } from '$lib/server/auth';
+import { SESSION_COOKIE_NAME, sessionTokenHash, type Credential, type SessionUser } from '$lib/server/auth';
 import { guardBody } from '$lib/server/api-errors';
 
 type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -163,8 +167,10 @@ export type ApiOptions = {
 	ip?: string;
 	/**
 	 * What the gate let the request in with, set as `locals.credential`: a
-	 * session's token, an API key's row id, or null for neither. Left out, it is
-	 * undefined, as for a request no gate let in.
+	 * session's hash, an API key's row id, or null for neither. Left out, it is
+	 * the hash of the session cookie the request sends (`SESSION_COOKIE_NAME`)
+	 * when it has a `user`, as the gate records one only with the account it
+	 * found, and undefined, as for a request no gate let in, otherwise.
 	 */
 	credential?: Credential | null;
 };
@@ -205,11 +211,19 @@ export async function api(method: Method, path: string, opts: ApiOptions = {}): 
 		const at = pair.indexOf('=');
 		if (at > 0) cookieJar.set(pair.slice(0, at).trim(), pair.slice(at + 1).trim());
 	}
+	// The session cookie, as the gate records it: its hash (card 2775).
+	const sessionCode = cookieJar.get(SESSION_COOKIE_NAME);
+	const credential: Credential | null | undefined =
+		'credential' in opts
+			? opts.credential
+			: sessionCode && opts.user
+				? { kind: 'session', hash: sessionTokenHash(sessionCode) }
+				: undefined;
 	const event = {
 		request,
 		url,
 		params: found.params,
-		locals: 'credential' in opts ? { user: opts.user ?? null, credential: opts.credential } : { user: opts.user ?? null },
+		locals: credential !== undefined ? { user: opts.user ?? null, credential } : { user: opts.user ?? null },
 		route: { id: found.route.pattern },
 		cookies: {
 			get: (name: string) => cookieJar.get(name),

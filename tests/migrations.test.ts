@@ -46,7 +46,7 @@ import { RestoreError, restoreFromBackup } from '$lib/server/db/restore';
 import { generateBackupData } from '$lib/server/backup';
 import { buildActivityReport } from '$lib/server/activity-report';
 import { api, routeMethods } from './helpers/api';
-import { importConfirmation, makeBoard, makeCard, makeSession, makeUser, resetDb } from './helpers/fixtures';
+import { importConfirmation, makeBoard, makeCard, makeSession, makeUser, resetDb, sessionHashOf } from './helpers/fixtures';
 import { afterEachTimestampCheck } from './helpers/timestamps';
 import production from './fixtures/production-schema-2026-10-12.json';
 import { compare, stateOf, type Findings, type State } from './rehearsal/compare';
@@ -3745,6 +3745,7 @@ describe('timestamps brought to the stored form at every start (card 2095)', () 
 		runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
 		database.exec(`
 			INSERT INTO users (id, username, email, password_hash) VALUES (1, 'ann', 'ann@example.test', 'x');
+			-- In plain, on purpose: a database from before card 2775, which these migrations meet.
 			INSERT INTO sessions (id, user_id, expires_at) VALUES ('s', 1, '2026-10-21T09:00:00.000+01:00');
 			INSERT INTO api_keys (user_id, name, key_hash, key_prefix, expires_at) VALUES (1, 'k', 'h', 'df_1', 'zzz');
 		`);
@@ -5896,6 +5897,7 @@ describe('0053, which ends every session once (card 2106)', () => {
 			INSERT INTO users (id, username, email, password_hash) VALUES
 				(1, 'ann', 'ann@example.test', 'x'),
 				(2, 'bob', 'bob@example.test', 'x');
+			-- In plain, on purpose: a database from before card 2775, which these migrations meet.
 			INSERT INTO sessions (id, user_id, expires_at) VALUES
 				('session-of-ann', 1, '2099-01-01 00:00:00'),
 				('session-of-bob', 2, '2099-01-01 00:00:00');
@@ -5935,6 +5937,7 @@ describe('0053, which ends every session once (card 2106)', () => {
 	it('deletes nothing at the next start, and a session made after it survives that start', () => {
 		const database = signedIn();
 		runMigrations({ database, migrationsDir: REAL_MIGRATIONS });
+		// In plain, on purpose: a database from before card 2775, which these migrations meet.
 		database.exec(
 			"INSERT INTO sessions (id, user_id, expires_at) VALUES ('signed-in-again', 1, '2099-01-01 00:00:00')"
 		);
@@ -5974,11 +5977,13 @@ describe('0053, which ends every session once (card 2106)', () => {
 		try {
 			const user = makeUser();
 			const token = makeSession(user);
-			expect(sqlite.prepare('SELECT COUNT(*) AS n FROM sessions WHERE id = ?').get(token)).toEqual({ n: 1 });
+			expect(sqlite.prepare('SELECT COUNT(*) AS n FROM sessions WHERE id = ?').get(sessionHashOf(token))).toEqual({ n: 1 });
 
 			const bytes = generateBackupData();
 
 			expect(bytes.includes(Buffer.from(token)), 'the id of a live session').toBe(false);
+			// Nor its row, which holds the code's hash (card 2775).
+			expect(bytes.includes(sessionHashOf(token)), 'the row of a live session').toBe(false);
 			// It is a backup of this database: the user is in it.
 			expect(bytes.includes(Buffer.from(user.email))).toBe(true);
 		} finally {
@@ -7512,6 +7517,7 @@ describe("0062, which adds each session's count of wrong current passwords (card
 		database.exec(`
 			INSERT INTO users (id, username, email, password_hash, role, created_at) VALUES
 				(1, 'ann', 'ann@example.test', 'x', 'superadmin', '${STAMP}'), (2, 'bob', 'bob@example.test', 'x', 'user', '${STAMP}');
+			-- In plain, on purpose: a database from before card 2775, which these migrations meet.
 			INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES
 				('ann-laptop', 1, '2026-12-04 09:00:00', '${STAMP}'),
 				('ann-phone', 1, '2026-12-04 09:00:00', '${STAMP}'),
@@ -7819,6 +7825,7 @@ describe('0065, which adds the tables and users columns of two-step sign-in (car
 		database.exec(`
 			INSERT INTO users (id, username, email, password_hash, role, created_at) VALUES
 				(1, 'ann', 'ann@example.test', 'x', 'superadmin', '${STAMP}'), (2, 'bob', 'bob@example.test', 'x', 'user', '${STAMP}');
+			-- In plain, on purpose: a database from before card 2775, which these migrations meet.
 			INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES ('ann-laptop', 1, '2026-12-05 09:00:00', '${STAMP}');
 		`);
 		runBackfills(database);
@@ -7892,6 +7899,7 @@ describe('0066 and 0067, which release two-step sign-in: the leave to set up on 
 			INSERT INTO enrolment_links (token_hash, user_id, issued_by, created_at, expires_at) VALUES
 				('hash-of-bob-link', 2, 'admin-reset', '${STAMP}', '${LATER}'),
 				('hash-of-cat-link', 3, 'admin-reset', '${STAMP}', '${EARLIER}');
+			-- In plain, on purpose: a database from before card 2775, which these migrations meet.
 			INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES
 				('ann-laptop', 1, '${LATER}', '${STAMP}'),
 				('dan-phone', 4, '${LATER}', '${STAMP}');
@@ -8055,6 +8063,7 @@ describe('0066 and 0067, which release two-step sign-in: the leave to set up on 
 		});
 
 		// Signed in again after it, with a second factor: the next start deletes nothing.
+		// In plain, on purpose: a database from before card 2775, which these migrations meet.
 		database.exec(`INSERT INTO sessions (id, user_id, expires_at, created_at, two_step) VALUES ('signed-in-again', 1, '${LATER}', '${STAMP}', 1)`);
 		const after = contentsOf(database);
 		expect(runMigrations({ database, migrationsDir: REAL_MIGRATIONS }).applied).toEqual([]);

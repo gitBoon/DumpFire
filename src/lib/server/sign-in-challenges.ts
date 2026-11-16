@@ -44,7 +44,8 @@ import type { Cookies } from '@sveltejs/kit';
 import { sqlite } from './db';
 import { afterCommit, inTransaction } from './db/transaction';
 import { registerStampFunctions } from './db/timestamps';
-import { secureCookies } from './auth';
+import { httpsOnlyCookie } from './auth';
+import { onlyCookieValue } from './cookie-header';
 import { sha256Hex } from './mfa-crypto';
 import { openEnrolment, sealEnrolment } from './mfa-store';
 import { sendSecurityNotice } from './notifications';
@@ -68,14 +69,9 @@ export const CHALLENGE_SECONDS = 600;
 /** A token as it is made: 32 bytes, base64url. Anything else is no token. */
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 
-/** Whether the challenge cookie is Secure, and so `__Host-`, for a request to `url`. */
-export function challengeCookieSecure(url: URL): boolean {
-	return secureCookies() || url.protocol === 'https:';
-}
-
 /** The challenge cookie's name in force for a request to `url`: the only name that is read. */
 export function challengeCookieName(url: URL): string {
-	return challengeCookieSecure(url) ? SECURE_CHALLENGE_COOKIE : CHALLENGE_COOKIE;
+	return httpsOnlyCookie(url) ? SECURE_CHALLENGE_COOKIE : CHALLENGE_COOKIE;
 }
 
 /**
@@ -90,14 +86,7 @@ export function readChallengeToken(request: Request, url: URL): string | null {
 
 /** The one cookie named `name` in the request's raw `Cookie` header, holding a token as one is made; null otherwise. */
 function onlyToken(request: Request, name: string): string | null {
-	const header = request.headers.get('cookie');
-	if (!header) return null;
-	const values: string[] = [];
-	for (const pair of header.split(';')) {
-		const at = pair.indexOf('=');
-		if (at !== -1 && pair.slice(0, at).trim() === name) values.push(pair.slice(at + 1).trim());
-	}
-	return values.length === 1 && TOKEN.test(values[0]) ? values[0] : null;
+	return onlyCookieValue(request, name, TOKEN);
 }
 
 /** Send this browser the challenge cookie. */
@@ -106,14 +95,14 @@ export function setChallengeCookie(cookies: Cookies, url: URL, token: string): v
 		path: '/',
 		httpOnly: true,
 		sameSite: 'strict',
-		secure: challengeCookieSecure(url),
+		secure: httpsOnlyCookie(url),
 		maxAge: CHALLENGE_SECONDS
 	});
 }
 
 /** Delete the challenge cookie, by the name in force, with Path=/ and the same Secure. */
 export function deleteChallengeCookie(cookies: Cookies, url: URL): void {
-	cookies.delete(challengeCookieName(url), { path: '/', secure: challengeCookieSecure(url) });
+	cookies.delete(challengeCookieName(url), { path: '/', secure: httpsOnlyCookie(url) });
 }
 
 // ─── The set-up link's cookie (decision 19) ─────────────────────────────────
@@ -139,7 +128,7 @@ export function setEnrolLinkCookie(cookies: Cookies, url: URL, token: string): v
 		path: '/login',
 		httpOnly: true,
 		sameSite: 'strict',
-		secure: challengeCookieSecure(url),
+		secure: httpsOnlyCookie(url),
 		maxAge: ENROL_LINK_COOKIE_SECONDS
 	});
 }
@@ -151,7 +140,7 @@ export function readEnrolLinkToken(request: Request): string | null {
 
 /** Delete the link cookie, with its Path and the same Secure. */
 export function deleteEnrolLinkCookie(cookies: Cookies, url: URL): void {
-	cookies.delete(ENROL_LINK_COOKIE, { path: '/login', secure: challengeCookieSecure(url) });
+	cookies.delete(ENROL_LINK_COOKIE, { path: '/login', secure: httpsOnlyCookie(url) });
 }
 
 // ─── The row ────────────────────────────────────────────────────────────────

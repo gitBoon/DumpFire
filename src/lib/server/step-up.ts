@@ -47,14 +47,14 @@
  *
  * The password is never logged or echoed: every refusal is fixed text, and
  * nothing here keeps it beyond the request. The confirmations are kept as
- * SHA-256 digests, beside the digest of their session's token.
+ * SHA-256 digests, beside their session's hash (card 2775).
  */
 import { createHash, randomBytes } from 'node:crypto';
 import { error, type Cookies } from '@sveltejs/kit';
 import { eq } from 'drizzle-orm';
 import { db } from './db';
 import { users } from './db/schema';
-import { SESSION_COOKIE_NAME, checkCurrentPassword, refuseWrongPassword, type SessionUser } from './auth';
+import { checkCurrentPassword, refuseWrongPassword, sessionHashIn, type SessionUser } from './auth';
 import { createLogger } from './logger';
 import { readText, type RequestBody } from './request-body';
 import { requireUser } from './route-guards';
@@ -171,7 +171,8 @@ type NotAPromise<T> = T extends PromiseLike<unknown> ? never : T;
  *       no password. Its answer is `actor`.
  *   (b) `currentPassword`: text of 1 to 1,024 characters, or 400
  *       `STEP_UP_MISSING`. Nothing is counted.
- *   (c) the session's cookie, or 401; and the account's hash, which must be a
+ *   (c) the session the gate let the request in with (its hash, from
+ *       `locals.credential`), or 401; and the account's hash, which must be a
  *       bcrypt hash, or 403 `STEP_UP_NO_PASSWORD` with a WARN line. Nothing
  *       is counted.
  *   (d) the check, counted on the session's row, one at a time, the third
@@ -200,7 +201,8 @@ export async function confirmStepUp<U>(
 	}
 	const password = readText(body, STEP_UP_FIELD, { required: true, min: 1, max: LONGEST_PASSWORD });
 
-	const session = cookies.get(SESSION_COOKIE_NAME);
+	// The session the gate let the request in with, as its hash (card 2775).
+	const session = sessionHashIn(locals.credential);
 	if (!session) error(401, 'Not authenticated');
 
 	const account = db.select({ passwordHash: users.passwordHash }).from(users).where(eq(users.id, caller.id)).get();
@@ -237,7 +239,7 @@ export function requirePasswordUnchanged(userId: number, hash: string, refusal: 
 
 // ─── The import's confirmation ──────────────────────────────────────────────
 
-/** A confirmation as it is kept: the digest of its session's token, whose it is, the hash checked, and when it ends. */
+/** A confirmation as it is kept: its session's hash in hex, whose it is, the hash checked, and when it ends. */
 type Held = { session: string; userId: number; hash: string; endsAt: number };
 
 /** The confirmations not yet taken, by the SHA-256 of each. One per session. */
@@ -246,15 +248,17 @@ const confirmations = new Map<string, Held>();
 const digest = (text: string) => createHash('sha256').update(text).digest('hex');
 
 /**
- * A confirmation for one import from `session` by the account `userId`, whose
- * password was checked against `hash`: 32 random bytes, base64url, good for
+ * A confirmation for one import from the session whose hash is `session`
+ * (card 2775: the SHA-256 the confirmation was keyed by before) by the
+ * account `userId`, whose password was checked against `hash`: 32 random
+ * bytes, base64url, good for
  * `CONFIRMATION_SECONDS`. Only its SHA-256 is kept. A new one replaces the
  * session's last; the expired are swept out as each is issued, and at most
  * `MOST_CONFIRMATIONS` are kept, the oldest going first.
  */
-export function issueImportConfirmation(session: string, userId: number, hash: string): string {
+export function issueImportConfirmation(session: Buffer, userId: number, hash: string): string {
 	const now = Date.now();
-	const ofSession = digest(session);
+	const ofSession = session.toString('hex');
 	for (const [key, held] of confirmations) {
 		if (held.endsAt <= now || held.session === ofSession) confirmations.delete(key);
 	}
@@ -266,18 +270,19 @@ export function issueImportConfirmation(session: string, userId: number, hash: s
 
 /**
  * Take the confirmation `sent` (the header's text) for an import from
- * `session` (the session cookie's token): never the request, so that the
- * body is not read here. It is removed whatever it is, and refused 403
+ * `session` (the hash of the session the gate let the request in with):
+ * never the request, so that the body is not read here. It is removed
+ * whatever it is, and refused 403
  * `CONFIRMATION_REFUSED` when it is missing, unknown, used, expired or
  * another session's. Matched on the session alone: the account it was issued
  * to is answered, for the import to compare with the caller as they are once
  * the upload is in, and the hash, for `requirePasswordUnchanged`.
  */
-export function takeImportConfirmation(sent: string | null, session: string | undefined): { userId: number; hash: string } {
+export function takeImportConfirmation(sent: string | null, session: Buffer | undefined): { userId: number; hash: string } {
 	const key = sent ? digest(sent) : undefined;
 	const held = key === undefined ? undefined : confirmations.get(key);
 	if (key !== undefined) confirmations.delete(key);
-	if (!held || session === undefined || held.session !== digest(session) || held.endsAt <= Date.now()) {
+	if (!held || session === undefined || held.session !== session.toString('hex') || held.endsAt <= Date.now()) {
 		error(403, { message: CONFIRMATION_REFUSED, stepUp: 'confirmation' });
 	}
 	return { userId: held.userId, hash: held.hash };

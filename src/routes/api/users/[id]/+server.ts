@@ -7,7 +7,7 @@ import { eq } from 'drizzle-orm';
 import { readAccountFields, requireAssignableRole, requireUnusedAccountFields } from '$lib/server/account-fields';
 import { pathId, readBody } from '$lib/server/request-body';
 import { requireAdmin, requireManagedAccount } from '$lib/server/route-guards';
-import { whilePasswordHolds, type SessionUser } from '$lib/server/auth';
+import { endSessionsOf, whilePasswordHolds, type SessionUser } from '$lib/server/auth';
 import { confirmStepUp } from '$lib/server/step-up';
 import { writeAs } from '$lib/server/write-as';
 import { endUnusedInvites } from '$lib/server/invites';
@@ -177,14 +177,26 @@ export const PUT: RequestHandler = async ({ params, request, locals, cookies }) 
 			const { actor, target, updates, changed } = refusals(caller);
 
 			// The invites, the pending sign-ins and the enrolment links (card
-			// 2768) end before the account is written.
+			// 2768) end before the account is written. A change of role ends
+			// the account's sessions too (card 2775, decision 6): a session's
+			// limits follow its role, and a change of privilege renews it. An
+			// email change alone ends none.
 			const invitesEnded = changed.length > 0 ? endUnusedInvites(target.id) : 0;
 			if (changed.length > 0) endPendingSignIns(target.id);
+			const roleChanged = changed.includes('role');
+			const sessionsEnded = roleChanged ? endSessionsOf(target.id) : 0;
 			if (changed.length > 0) {
 				afterCommit(() =>
 					log.info(
-						`User ${actor.id} changed the ${changed.join(' and ')} of user ${target.id} — ended ${invitesEnded} unused invite(s)`,
-						{ targetUserId: target.id, changed, ...(changed.includes('role') ? { role: updates.role } : {}), invitesEnded },
+						`User ${actor.id} changed the ${changed.join(' and ')} of user ${target.id} — ended ${invitesEnded} unused invite(s)` +
+							(sessionsEnded > 0 ? ` and ${sessionsEnded} session(s)` : ''),
+						{
+							targetUserId: target.id,
+							changed,
+							...(roleChanged ? { role: updates.role } : {}),
+							invitesEnded,
+							...(roleChanged ? { sessionsEnded } : {})
+						},
 						{ userId: actor.id }
 					)
 				);

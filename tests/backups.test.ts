@@ -107,7 +107,9 @@ import {
 	makeSession,
 	makeUser,
 	resetDb,
-	stepUp
+	stepUp,
+	sessionHashOf,
+	sessionCredential
 } from './helpers/fixtures';
 import { FROM_THE_PAGE, gate, gateApiRoutes } from './helpers/gate';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
@@ -328,6 +330,9 @@ function expectNoSignIns(bytes: Buffer): void {
 
 	expect(has(chiefSession), 'the id of a live session').toBe(false);
 	expect(has(memberSession), 'the id of a live session').toBe(false);
+	// Nor the row of one: a session is kept as its code's hash (card 2775).
+	expect(has(sessionHashOf(chiefSession)), 'the row of a live session').toBe(false);
+	expect(has(sessionHashOf(memberSession)), 'the row of a live session').toBe(false);
 	expect(has(UNUSED_INVITE), 'an invite that has not been used').toBe(false);
 	expect(has(inviteHashOf(UNUSED_INVITE)), 'the row of an invite that has not been used').toBe(false);
 	// No invite's token at all: the database holds none (card 2849).
@@ -437,7 +442,8 @@ describe('a backup', () => {
 		expect(copy.prepare('SELECT COUNT(*) AS n FROM task_requests WHERE access_token IS NOT NULL').get()).toEqual({ n: 0 });
 		const pages = copy.serialize();
 		copy.close();
-		expect(pages.includes(Buffer.from(memberSession))).toBe(true);
+		// A session's row holds its code's hash (card 2775): deleted, still on its page.
+		expect(pages.includes(sessionHashOf(memberSession))).toBe(true);
 		// A request's link too (card 2158): set to NULL, and still on its page.
 		expect(pages.includes(Buffer.from('d'.repeat(64)))).toBe(true);
 
@@ -543,6 +549,7 @@ function backupWithSignIns(): Database.Database {
 		INSERT INTO users (id, username, email, password_hash, role) VALUES
 			(1, 'ann', 'ann@example.test', 'x', 'superadmin'),
 			(2, 'bob', 'bob@example.test', 'x', 'user');
+		-- In plain, on purpose: a backup made before card 2775 holds its sessions as the cookie held them.
 		INSERT INTO sessions (id, user_id, expires_at) VALUES
 			('session-of-ann-in-the-backup', 1, '2099-01-01T00:00:00.000Z'),
 			('session-of-bob-in-the-backup', 2, '2099-01-01T00:00:00.000Z');
@@ -560,6 +567,7 @@ describe('a restore', () => {
 		const live = migratedDb();
 		live.exec(`
 			INSERT INTO users (id, username, email, password_hash, role) VALUES (9, 'here', 'here@example.test', 'x', 'superadmin');
+			-- In plain, on purpose: a database from before card 2775; a restore clears its sessions whatever their form.
 			INSERT INTO sessions (id, user_id, expires_at) VALUES ('session-that-was-here', 9, '2099-01-01T00:00:00.000Z');
 		`);
 		live
@@ -1130,6 +1138,7 @@ describe('a restore', () => {
 		const live = migratedDb();
 		live.exec(`
 			INSERT INTO users (id, username, email, password_hash, role) VALUES (9, 'here', 'here@example.test', 'x', 'superadmin');
+			-- In plain, on purpose: a database from before card 2775; a restore clears its sessions whatever their form.
 			INSERT INTO sessions (id, user_id, expires_at) VALUES ('session-that-was-here', 9, '2099-01-01T00:00:00.000Z');
 		`);
 
@@ -1190,9 +1199,12 @@ describe('a restore', () => {
 		expect(res.message).toContain(`${SIGNED_OUT} The superadmin is now ann.`);
 		expect(res.superadmins).toEqual(['ann']);
 
-		// And with no users at all, that set-up is open.
+		// And with no users at all, that set-up is open. The restore ended every
+		// session, so the superadmin signs in again first: the import checks the
+		// session it is sent with (card 2775).
 		const empty = migratedDb();
 		empty.exec("INSERT INTO boards (id, name) VALUES (1, 'From the backup')");
+		chiefSession = makeSession(chief);
 		const none = await importing(async () => {
 			const answer = await api('POST', '/api/admin/import?outside=keep', {
 				user: chief,
@@ -1232,6 +1244,8 @@ describe('a restore', () => {
 		try {
 			clean = await importDb(backupWithSignIns());
 			afterClean = loopLines();
+			// The restore ended every session: signed in again (card 2775).
+			chiefSession = makeSession(chief);
 			looped = await importDb(withLoop);
 		} finally {
 			if (level === undefined) delete process.env.LOG_LEVEL;
@@ -3919,11 +3933,16 @@ describe('Google Drive asks only for the files DumpFire makes (card 2188)', () =
 			await meanwhile?.();
 			return { tokens, res: null };
 		}) as never);
-	/** Connect's first half, as the page asks it: the consent address, read. */
+	/**
+	 * Connect's first half, as the page asks it: the consent address, read. The
+	 * superadmin's from the session each test begins with, which the second
+	 * half is sent from too (card 2775: the second half's password is counted
+	 * on the session the gate names), unless a test names another caller.
+	 */
 	const begin = async (opts: { user?: SessionUser; credential?: Credential | null; dest?: string } = {}) => {
 		const res = await api('GET', `/api/admin/backup/gdrive/auth?dest=${opts.dest ?? 'G'}`, {
 			user: opts.user ?? chief,
-			...('credential' in opts ? { credential: opts.credential } : {})
+			...('credential' in opts ? { credential: opts.credential } : opts.user ? {} : { credential: sessionCredential(chiefSession) })
 		});
 		expect(res.status, JSON.stringify(res.body)).toBe(200);
 		return { res, address: new URL(res.body.authUrl), state: new URL(res.body.authUrl).searchParams.get('state') };
@@ -3988,6 +4007,9 @@ describe('Google Drive asks only for the files DumpFire makes (card 2188)', () =
 		vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-10-22T23:59:59.900Z') });
 		let res: Awaited<ReturnType<typeof connect>>;
 		try {
+			// Signed in on that clock: a session whose start is ahead of it has
+			// passed (card 2775).
+			chiefSession = makeSession(chief);
 			res = await connect();
 		} finally {
 			vi.useRealTimers();
@@ -4117,8 +4139,8 @@ describe('Google Drive asks only for the files DumpFire makes (card 2188)', () =
 		let deputy: SessionUser;
 		beforeEach(() => {
 			deputy = makeUser({ username: 'deputy', role: 'superadmin' });
-			LAPTOP = { kind: 'session', token: makeSession(chief) };
-			PHONE = { kind: 'session', token: makeSession(chief) };
+			LAPTOP = sessionCredential(makeSession(chief));
+			PHONE = sessionCredential(makeSession(chief));
 		});
 
 		/** What `run` answers, and the lines at WARN and above written meanwhile: the tests keep ERROR and above otherwise. */
@@ -4255,7 +4277,7 @@ describe('Google Drive asks only for the files DumpFire makes (card 2188)', () =
 			store(G);
 			exchange({ refresh_token: 'rt-new', scope: DRIVE_FILE_SCOPE });
 			const tokens = Array.from({ length: 21 }, () => makeSession(chief));
-			const session = (n: number): Credential => ({ kind: 'session', token: tokens[n] });
+			const session = (n: number): Credential => sessionCredential(tokens[n]);
 			const states: (string | null)[] = [];
 			for (let n = 0; n <= 20; n++) states.push((await begin({ credential: session(n) })).state);
 

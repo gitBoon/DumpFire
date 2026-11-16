@@ -92,9 +92,9 @@ const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
 
 /**
  * What may be called before the body is read: what reads no row. A refusal,
- * the id in the path, the session the gate has already read, and the
- * session's cookie, which the routes that ask for a password count wrong
- * ones against.
+ * the id in the path, the session the gate has already read, and that
+ * session's hash in the credential the gate recorded (`sessionHashIn`, card
+ * 2775), which the routes that ask for a password count wrong ones against.
  */
 const READS_NO_ROW = [
 	'error',
@@ -106,7 +106,7 @@ const READS_NO_ROW = [
 	'requireAdmin',
 	'refuseOwnAccount',
 	'isAdmin',
-	'cookies.get',
+	'sessionHashIn',
 	// Card 2677, decision 24: same-origin JSON only, from the request's headers and its address alone.
 	'requireSameOriginJson'
 ];

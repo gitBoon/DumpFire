@@ -32,6 +32,17 @@ import { sql } from 'drizzle-orm';
 // A `time_of_day` is a wall-clock time, read in the row's `time_zone`; neither
 // is a moment (card 2159).
 
+/**
+ * A column declared TEXT whose values are bytes: a BLOB in each row, read and
+ * written as a Buffer. SQLite keeps a BLOB as a BLOB in a column of any
+ * affinity, and never takes one to equal text (card 2849). Declared before
+ * the first table that uses it (`sessions`, card 2775): a `const` is not
+ * there before its line.
+ */
+const bytesInText = customType<{ data: Buffer; driverData: Buffer }>({
+	dataType: () => 'text'
+});
+
 // ─── Users & Auth ────────────────────────────────────────────────────────────
 
 export const users = sqliteTable('users', {
@@ -76,11 +87,18 @@ export const users = sqliteTable('users', {
 });
 
 export const sessions = sqliteTable('sessions', {
-	id: text('id').primaryKey(), // UUID token
+	// The SHA-256 of the session's code, its 32 bytes as a BLOB (card 2775, as
+	// invite_tokens.token, card 2849). The column keeps its name and declared
+	// type, so the model's shape is unchanged; an image from before the card
+	// compares it with the cookie, which is text, so no stored hash is a
+	// session to it.
+	tokenHash: bytesInText('id').primaryKey(),
 	userId: integer('user_id')
 		.notNull()
 		.references(() => users.id, { onDelete: 'cascade' }),
 	expiresAt: text('expires_at').notNull(),
+	// When the session was made: it starts the total limit (card 2775,
+	// SESSION_LIMITS in auth.ts).
 	createdAt: text('created_at')
 		.notNull()
 		.default(sql`(datetime('now'))`),
@@ -89,8 +107,9 @@ export const sessions = sqliteTable('sessions', {
 	// ended (migration 0062, card 2701; checkCurrentPassword in auth.ts).
 	wrongPasswordCount: integer('wrong_password_count').notNull().default(0),
 	// 1 when the session was made after a second factor (migration 0066, card
-	// 2769). createSession writes 1; findSession refuses and deletes a row with
-	// 0, which is what an older image, writing without the column, leaves.
+	// 2769). createSession writes 1; findSession refuses and deletes a hashed
+	// row with 0. An older image's sessions are held in plain, so this image
+	// never finds them, and endPlainSessions sweeps them at start (card 2775).
 	twoStep: integer('two_step').notNull().default(0)
 }, (table) => [
 	index('idx_sessions_user_id').on(table.userId)
@@ -564,15 +583,6 @@ export const boardFavourites = sqliteTable('board_favourites', {
 	primaryKey({ columns: [table.userId, table.boardId] }),
 	index('idx_board_favourites_board_id').on(table.boardId)
 ]);
-
-/**
- * A column declared TEXT whose values are bytes: a BLOB in each row, read and
- * written as a Buffer. SQLite keeps a BLOB as a BLOB in a column of any
- * affinity, and never takes one to equal text (card 2849).
- */
-const bytesInText = customType<{ data: Buffer; driverData: Buffer }>({
-	dataType: () => 'text'
-});
 
 export const inviteTokens = sqliteTable('invite_tokens', {
 	// The SHA-256 of the token sent, its 32 bytes as a BLOB (card 2849). The

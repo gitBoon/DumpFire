@@ -106,7 +106,9 @@ import {
 	makeSmtp,
 	makeUser,
 	makeWebhook,
-	resetDb
+	resetDb,
+	sessionHashOf,
+	sessionCredential
 } from './helpers/fixtures';
 import { FROM_THE_PAGE, gate } from './helpers/gate';
 import { sendAround } from './helpers/held-body';
@@ -172,11 +174,11 @@ const userRow = (id: number) => db.select().from(users).where(eq(users.id, id)).
 const hashOf = (id: number) => userRow(id).passwordHash;
 const sessionsOf = (id: number) =>
 	db
-		.select({ id: sessions.id })
+		.select({ hash: sessions.tokenHash })
 		.from(sessions)
 		.where(eq(sessions.userId, id))
 		.all()
-		.map((s) => s.id);
+		.map((s) => s.hash);
 /** The account's pending sign-ins (card 2769), each as its token's hash, its purpose and what let it set up a factor. */
 const challengesOf = (id: number) =>
 	(
@@ -194,10 +196,14 @@ const challengesOf = (id: number) =>
  */
 const from = (id: string) => ({ cookie: `${SESSION_COOKIE_NAME}=${id}` });
 
-/** A session that is good for another day, made after a second factor as createSession makes every one (card 2769). */
+/**
+ * A session that is good for another hour, made after a second factor as createSession makes every one (card 2769),
+ * and kept as its code's hash (card 2775). An hour is inside every role's idle limit: an expiry further out than
+ * the role allows is refused.
+ */
 function makeSession(user: SessionUser, id: string): void {
 	db.insert(sessions)
-		.values({ id, userId: user.id, expiresAt: stamp(new Date(Date.now() + 24 * 60 * 60 * 1000)), twoStep: 1 })
+		.values({ tokenHash: sessionHashOf(id), userId: user.id, expiresAt: stamp(new Date(Date.now() + 60 * 60 * 1000)), twoStep: 1 })
 		.run();
 }
 
@@ -307,7 +313,7 @@ async function expectRefused(request: () => Promise<ApiResult>, status: number):
 
 /** A session's count of wrong current passwords (card 2701), or undefined once the session has gone. */
 const countOf = (session: string) =>
-	db.select({ count: sessions.wrongPasswordCount }).from(sessions).where(eq(sessions.id, session)).get()?.count;
+	db.select({ count: sessions.wrongPasswordCount }).from(sessions).where(eq(sessions.tokenHash, sessionHashOf(session))).get()?.count;
 
 /** What the column a request counts a current password on is called in a snapshot, and in `eachWriteInTurn`'s `apart`. */
 const COUNTED = 'sessions.wrong_password_count';
@@ -340,7 +346,7 @@ async function expectRefusedAndCounted(request: () => Promise<ApiResult>, status
 }
 
 /** The rowid a session's row has, as a snapshot names it. */
-const rowOf = (session: string) => (sqlite.prepare('SELECT rowid AS n FROM sessions WHERE id = ?').get(session) as { n: number }).n;
+const rowOf = (session: string) => (sqlite.prepare('SELECT rowid AS n FROM sessions WHERE id = ?').get(sessionHashOf(session)) as { n: number }).n;
 
 // ─── Changing your own password ─────────────────────────────────────────────
 
@@ -366,7 +372,8 @@ async function changeOwn(user: SessionUser | null, body: unknown, session = 'my-
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify(body)
 		}),
-		locals: { user },
+		// The session as the gate records it, by its hash (card 2775), which the route reads.
+		locals: user ? { user, credential: sessionCredential(session) } : { user },
 		cookies: {
 			get: (cookie: string) => (cookie === SESSION_COOKIE_NAME ? session : undefined),
 			set: (cookie: string, value: string, options: Record<string, unknown>) => {
@@ -427,10 +434,11 @@ describe('PUT /api/account/password', () => {
 				// cookie, which names the one session there now is.
 				const mine = sessionsOf(me.id);
 				expect(mine).toHaveLength(1);
-				expect(mine).not.toContain('my-laptop');
-				expect(mine).not.toContain('my-phone');
-				expect(res.cookie).toEqual({ value: mine[0], inTransaction: false });
-				expect(sessionsOf(other.id)).toEqual(['theirs']);
+				expect(mine).not.toContainEqual(sessionHashOf('my-laptop'));
+				expect(mine).not.toContainEqual(sessionHashOf('my-phone'));
+				expect(res.cookie).toEqual({ value: expect.any(String), inTransaction: false });
+				expect(sessionHashOf(res.cookie!.value)).toEqual(mine[0]);
+				expect(sessionsOf(other.id)).toEqual([sessionHashOf('theirs')]);
 
 				// The invite would set the password again; the keys were not asked about.
 				expect(invitesOf(me.id)).toEqual([]);
@@ -468,12 +476,12 @@ describe('PUT /api/account/password', () => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({ success: true, apiKeysEnded: 2, webhooksSwitchedOff: 0 });
 				expect(await matches(NEW, hashOf(me.id))).toBe(true);
-				expect(sessionsOf(me.id)).toEqual([res.cookie!.value]);
+				expect(sessionsOf(me.id)).toEqual([sessionHashOf(res.cookie!.value)]);
 				expect(invitesOf(me.id)).toEqual([]);
 				expect(keysOf(me.id)).toEqual([]);
 
 				// Nobody else's.
-				expect(sessionsOf(other.id)).toEqual(['theirs']);
+				expect(sessionsOf(other.id)).toEqual([sessionHashOf('theirs')]);
 				expect(invitesOf(other.id)).toEqual([[inviteHashOf('their-invite'), false]]);
 				expect(keysOf(other.id)).toEqual(['their script']);
 			}
@@ -555,16 +563,16 @@ describe('PUT /api/account/password', () => {
 		const wrong = await expectRefusedAndCounted(() => changeOwn(me, { currentPassword: 'not it', newPassword: NEW }), 403, 'my-laptop');
 		expect(wrong.body.message).toBe('Current password is incorrect');
 		expect((wrong as OwnResult).cookie).toBeUndefined();
-		expect(sessionsOf(me.id)).toEqual(['my-laptop', 'my-phone']);
+		expect(sessionsOf(me.id)).toEqual([sessionHashOf('my-laptop'), sessionHashOf('my-phone')]);
 	});
 
 	it('refuses 409 when the password was changed elsewhere after it was checked, and leaves that change alone', async () => {
 		const { me } = signedInTwice();
 		const elsewhere = await makePasswordHash('changed elsewhere', 'known');
 		const before = snapshotDb();
-		// The first read is the one the current password is checked against.
+		// The second read is the one the current password is checked against: the first is the session's account, read as writeAs checks the session (card 2775).
 		const reads = watchReads('users', (nth) => {
-			if (nth === 1) db.update(users).set({ passwordHash: elsewhere }).where(eq(users.id, me.id)).run();
+			if (nth === 2) db.update(users).set({ passwordHash: elsewhere }).where(eq(users.id, me.id)).run();
 		});
 
 		try {
@@ -579,9 +587,9 @@ describe('PUT /api/account/password', () => {
 		}
 
 		// Looked at before the transaction, and read again inside it.
-		expect(reads.inTransaction).toEqual([false, true]);
+		expect(reads.inTransaction).toEqual([true, false, true]);
 		expect(hashOf(me.id)).toBe(elsewhere);
-		expect(sessionsOf(me.id)).toEqual(['my-laptop', 'my-phone']);
+		expect(sessionsOf(me.id)).toEqual([sessionHashOf('my-laptop'), sessionHashOf('my-phone')]);
 		expectUnchanged({ ...before, users: snapshotDb().users });
 	});
 
@@ -589,7 +597,7 @@ describe('PUT /api/account/password', () => {
 		const { me } = signedInTwice();
 		const rehashed = await makePasswordHash(OLD, 'known');
 		const reads = watchReads('users', (nth) => {
-			if (nth === 1) db.update(users).set({ passwordHash: rehashed }).where(eq(users.id, me.id)).run();
+			if (nth === 2) db.update(users).set({ passwordHash: rehashed }).where(eq(users.id, me.id)).run();
 		});
 
 		try {
@@ -631,7 +639,7 @@ describe('PUT /api/account/password', () => {
 		expect(bcrypt.compared).toBe(1);
 		// The change stands, and nothing else changed.
 		expect(hashOf(me.id)).toBe(first);
-		expect(sessionsOf(me.id)).toEqual(['my-laptop', 'my-phone']);
+		expect(sessionsOf(me.id)).toEqual([sessionHashOf('my-laptop'), sessionHashOf('my-phone')]);
 		expectUnchanged({ ...before, users: snapshotDb().users });
 
 		// The session's count is what one right password leaves, none: two
@@ -646,7 +654,7 @@ describe('PUT /api/account/password', () => {
 			body: { message: STEP_UP_SIGNED_OUT, signedOut: true, stepUp: 'signed-out' },
 			cleared: true
 		});
-		expect(sessionsOf(me.id)).toEqual(['my-phone']);
+		expect(sessionsOf(me.id)).toEqual([sessionHashOf('my-phone')]);
 	});
 });
 
@@ -703,7 +711,7 @@ describe('PUT /api/users/:id/password', () => {
 				expect(keysOf(target.id)).toEqual([]);
 
 				// The administrator's and the bystander's are theirs, and stay.
-				expect(sessionsOf(admin.id)).toEqual(['the-admin']);
+				expect(sessionsOf(admin.id)).toEqual([sessionHashOf('the-admin')]);
 				expect(keysOf(admin.id)).toEqual(['admin key']);
 				expect(keysOf(bystander.id)).toEqual(['bystander key']);
 			}
@@ -742,7 +750,7 @@ describe('PUT /api/users/:id/password', () => {
 		expect(sessionsOf(s.admin.id)).toEqual([]);
 		expect(keysOf(s.admin.id)).toEqual([]);
 		// The target's are not the administrator's.
-		expect(sessionsOf(s.target.id)).toEqual(['target-laptop', 'target-phone']);
+		expect(sessionsOf(s.target.id)).toEqual([sessionHashOf('target-laptop'), sessionHashOf('target-phone')]);
 		expect(keysOf(s.target.id)).toEqual(['target key']);
 		expect(invitesOf(s.target.id)).toEqual([[inviteHashOf('target-invite'), false]]);
 	});
@@ -802,11 +810,12 @@ describe('PUT /api/users/:id/password', () => {
 
 	it('refuses when the user became a superadmin after they were looked at', async () => {
 		const s = scene();
-		// The third read is the administrator's own hash, read for their password
-		// once the user has been looked at twice (card 2701): the change lands
+		// The fifth read is the administrator's own hash, read for their password
+		// once the user has been looked at twice (card 2701), and the session's
+		// account read as writeAs checks the session (card 2775): the change lands
 		// after both looks, and before the transaction that sets the password.
 		const reads = watchReads('users', (nth) => {
-			if (nth === 3) db.update(users).set({ role: 'superadmin' }).where(eq(users.id, s.target.id)).run();
+			if (nth === 5) db.update(users).set({ role: 'superadmin' }).where(eq(users.id, s.target.id)).run();
 		});
 
 		try {
@@ -821,9 +830,9 @@ describe('PUT /api/users/:id/password', () => {
 		// Looked at before the password (outside, then read only in a transaction
 		// of its own), the hash read, and read again in the transaction that would
 		// set it: the stored hash held, then the user.
-		expect(reads.inTransaction).toEqual([false, true, false, true, true]);
+		expect(reads.inTransaction).toEqual([true, false, true, true, false, true, true, true]);
 		expect(hashOf(s.target.id)).toBe(OLD_HASH);
-		expect(sessionsOf(s.target.id)).toEqual(['target-laptop', 'target-phone']);
+		expect(sessionsOf(s.target.id)).toEqual([sessionHashOf('target-laptop'), sessionHashOf('target-phone')]);
 	});
 });
 
@@ -958,11 +967,12 @@ describe('POST /api/users', () => {
 		const s = scene();
 		// The name and the address are looked for before the administrator's
 		// own password is asked for (card 2701), read only in a transaction of
-		// their own, by the first two reads. The third is the administrator's
+		// their own, by the first reads, each with the session's account (card
+		// 2775). The fourth is the administrator's
 		// hash, read for their password: the name is taken then, once it has
 		// been looked for and found unused.
 		const reads = watchReads('users', (nth) => {
-			if (nth === 3) makeUser({ username: 'newbie' });
+			if (nth === 4) makeUser({ username: 'newbie' });
 		});
 
 		let res: ApiResult;
@@ -976,7 +986,7 @@ describe('POST /api/users', () => {
 		expect(res.body.message).toBe('Username already taken');
 		// Looked for twice, the hash read, and in the transaction that creates the
 		// user, once the stored hash has held, found by the first read of the name.
-		expect(reads.inTransaction).toEqual([true, true, false, true, true]);
+		expect(reads.inTransaction).toEqual([true, true, true, false, true, true, true]);
 		expect(db.select().from(users).all().filter((u) => u.username === 'newbie')).toHaveLength(1);
 		expect(db.select().from(inviteTokens).all()).toEqual([]);
 	});
@@ -1125,7 +1135,7 @@ describe('the invite page', () => {
 				expect(res.cookies[SESSION_COOKIE_NAME]).toBeUndefined();
 				expect(challengesOf(invitee.id)).toEqual([[tokenHashOf(res.cookies[CHALLENGE_COOKIE].value), 'enrol', 'invite']]);
 
-				expect(sessionsOf(bystander.id)).toEqual(['theirs']);
+				expect(sessionsOf(bystander.id)).toEqual([sessionHashOf('theirs')]);
 				expect(invitesOf(bystander.id)).toEqual([[inviteHashOf('their-invite'), false]]);
 				expect(keysOf(bystander.id)).toEqual(['their key']);
 			}
@@ -1210,7 +1220,7 @@ describe('the invite page', () => {
 		// Not hashed for, and the superadmin's password, session and key are as they were.
 		expect(bcrypt.inTransaction).toEqual([]);
 		expect(hashOf(chief.id)).toBe(OLD_HASH);
-		expect(sessionsOf(chief.id)).toEqual(['chief-laptop']);
+		expect(sessionsOf(chief.id)).toEqual([sessionHashOf('chief-laptop')]);
 		expect((await meWithKey(key)).status).toBe(200);
 	});
 
@@ -1656,21 +1666,24 @@ describe('what taking an account back switches off (card 2168)', () => {
 		});
 
 		it('refuses 401 a report schedule made or switched on with a session the reset ended, and writes nothing', async () => {
+			// Sent through the gate, which reads only a code in a UUID's shape (card 2775).
+			const LAPTOP = '00000000-0000-4000-8000-000000000001';
+			const PHONE = '00000000-0000-4000-8000-000000000002';
 			const s = scene();
 			const resetTarget = () => reset(s.admin, s.target.id);
 
-			makeSession(s.target, 'target-laptop');
-			const made = await sendAround('POST', '/api/report-schedules', { session: 'target-laptop' }, SCHEDULE(s.board.id), resetTarget);
+			makeSession(s.target, LAPTOP);
+			const made = await sendAround('POST', '/api/report-schedules', { session: LAPTOP }, SCHEDULE(s.board.id), resetTarget);
 			expect(made).toEqual({ status: 401, body: { message: 'Not authenticated' } });
 			const after = schedulesOf(s.target.id);
 			expect(after).toHaveLength(2);
 
 			// Signed in again after the first reset, for the change.
-			makeSession(s.target, 'target-phone');
+			makeSession(s.target, PHONE);
 			const changed = await sendAround(
 				'PUT',
 				`/api/report-schedules/${s.schedules.theirs}`,
-				{ session: 'target-phone' },
+				{ session: PHONE },
 				{ enabled: true },
 				resetTarget
 			);
@@ -1680,9 +1693,11 @@ describe('what taking an account back switches off (card 2168)', () => {
 		});
 
 		it('lets each through, sent the same way, when nothing ended meanwhile', async () => {
+			// Sent through the gate, which reads only a code in a UUID's shape (card 2775).
+			const LAPTOP = '00000000-0000-4000-8000-000000000001';
 			const s = scene();
 			const key = makeApiKey(s.target);
-			const session = 'target-laptop';
+			const session = LAPTOP;
 			makeSession(s.target, session);
 			const nothing = async () => {};
 
@@ -1783,9 +1798,9 @@ describe('POST /api/account/api-keys', () => {
 	it('refuses 409 when the password was changed elsewhere after it was checked, and makes no key', async () => {
 		const { me } = scene();
 		const elsewhere = await makePasswordHash('changed elsewhere', 'known');
-		// The first read is the one the password is checked against.
+		// The second read is the one the password is checked against: the first is the session's account, read as writeAs checks the session (card 2775).
 		const reads = watchReads('users', (nth) => {
-			if (nth === 1) db.update(users).set({ passwordHash: elsewhere }).where(eq(users.id, me.id)).run();
+			if (nth === 2) db.update(users).set({ passwordHash: elsewhere }).where(eq(users.id, me.id)).run();
 		});
 
 		let res: ApiResult;
@@ -1799,7 +1814,7 @@ describe('POST /api/account/api-keys', () => {
 		expect(res.status).toBe(409);
 		expect(res.body).toEqual({ message: PASSWORD_CHANGED_MEANWHILE, stepUp: 'changed' });
 		// Looked at before the transaction, and read again inside it.
-		expect(reads.inTransaction).toEqual([false, true]);
+		expect(reads.inTransaction).toEqual([true, false, true]);
 		expect(keysOf(me.id)).toEqual([]);
 	});
 
@@ -1896,7 +1911,7 @@ describe('PUT /api/users/:id', () => {
 				await expectDeadLink('waiting');
 
 				// An email change is not a password change: nobody is signed out.
-				expect(sessionsOf(target.id)).toEqual(['my-laptop']);
+				expect(sessionsOf(target.id)).toEqual([sessionHashOf('my-laptop')]);
 				expect(hashOf(target.id)).toBe(OLD_HASH);
 			}
 		});
@@ -2003,7 +2018,7 @@ describe('PUT /api/account/email', () => {
 				await expectDeadLink('waiting');
 
 				// The session that asked is still good.
-				expect(sessionStillOpen('my-laptop')).toBe(true);
+				expect(sessionStillOpen(sessionHashOf('my-laptop'))).toBe(true);
 			}
 		});
 
@@ -2045,9 +2060,9 @@ describe('PUT /api/account/email', () => {
 
 	it('refuses an address taken after the password was checked, inside the transaction that writes it', async () => {
 		const { target, bystander } = withInvites();
-		// The first read is the one the password is checked against.
+		// The second read is the one the password is checked against: the first is the session's account, read as writeAs checks the session (card 2775).
 		const reads = watchReads('users', (nth) => {
-			if (nth === 1) db.update(users).set({ email: 'moved@example.test' }).where(eq(users.id, bystander.id)).run();
+			if (nth === 2) db.update(users).set({ email: 'moved@example.test' }).where(eq(users.id, bystander.id)).run();
 		});
 
 		let res: ApiResult;
@@ -2060,7 +2075,7 @@ describe('PUT /api/account/email', () => {
 		expect(res.status).toBe(409);
 		expect(res.body.message).toBe('Email is already in use');
 		// Read again inside it, and the address looked for there.
-		expect(reads.inTransaction).toEqual([false, true, true]);
+		expect(reads.inTransaction).toEqual([true, false, true, true, true]);
 		expect(userRow(target.id).email).toBe('target@example.test');
 		expect(invitesOf(target.id)).toHaveLength(3);
 	});
@@ -2083,10 +2098,12 @@ describe('the system log, when an email or a role changes', () => {
 			// Nothing changes, so nothing is said.
 			expect((await api('PUT', `/api/users/${target.id}`, confirmed({ role: 'admin' }))).status).toBe(200);
 			inTransaction(() => issueInvite(target.id));
+			// The role change ended the target's session (card 2775): they sign in again.
+			makeSession({ ...target, role: 'admin' }, 'signed-in-again');
 			const moved = await api('PUT', '/api/account/email', {
 				user: { ...target, role: 'admin' },
 				body: { newEmail: 'again@example.test', password: OLD },
-				headers: from('my-laptop')
+				headers: from('signed-in-again')
 			});
 			expect(moved.status).toBe(200);
 		} finally {
@@ -2096,15 +2113,15 @@ describe('the system log, when an email or a role changes', () => {
 		}
 
 		const lines = sqlite
-			.prepare("SELECT level, context, message, meta, user_id AS userId FROM system_logs WHERE message LIKE '%unused invite(s)'")
+			.prepare("SELECT level, context, message, meta, user_id AS userId FROM system_logs WHERE message LIKE '%unused invite(s)%'")
 			.all() as { level: string; context: string; message: string; meta: string; userId: number }[];
 		expect(lines.map((line) => [line.level, line.context, line.message, line.userId, JSON.parse(line.meta)])).toEqual([
 			[
 				'INFO',
 				'AUTH',
-				`User ${chief.id} changed the email address and role of user ${target.id} — ended 2 unused invite(s)`,
+				`User ${chief.id} changed the email address and role of user ${target.id} — ended 2 unused invite(s) and 1 session(s)`,
 				chief.id,
-				{ targetUserId: target.id, changed: ['email address', 'role'], role: 'admin', invitesEnded: 2 }
+				{ targetUserId: target.id, changed: ['email address', 'role'], role: 'admin', invitesEnded: 2, sessionsEnded: 1 }
 			],
 			['INFO', 'AUTH', `User ${target.id} changed their email address — ended 1 unused invite(s)`, target.id, { invitesEnded: 1 }]
 		]);
@@ -2196,12 +2213,14 @@ describe('wrong current passwords', () => {
 
 		const third = await send(route, me, 'not it');
 		expect({ status: third.status, body: third.body }).toEqual({ status: 403, body: SIGNED_OUT });
-		expect(sessionsOf(me.id)).toEqual(['my-phone']);
+		expect(sessionsOf(me.id)).toEqual([sessionHashOf('my-phone')]);
 		bcrypt.inTransaction.length = 0;
 
-		// The same answer for the right one: the session is gone, and nothing is checked.
-		const after = await expectRefused(() => send(route, me, OLD), 403);
-		expect(after.body).toEqual(SIGNED_OUT);
+		// The right one after it: the session is gone, so the request is refused
+		// 401 as the gate refuses it, by the session's hash (card 2775), and
+		// nothing is checked.
+		const after = await expectRefused(() => send(route, me, OLD), 401);
+		expect(after.body).toEqual({ message: 'Not authenticated' });
 		expect(bcrypt.inTransaction).toEqual([]);
 		expect(hashOf(me.id)).toBe(OLD_HASH);
 	});
@@ -2236,18 +2255,23 @@ describe('wrong current passwords', () => {
 
 		const third = await send(KEY, me, 'not it');
 		expect({ status: third.status, body: third.body }).toEqual({ status: 403, body: SIGNED_OUT });
+		// Ended: refused 401 on every route, as the gate refuses an ended session (card 2775).
 		for (const route of ASKING) {
-			expect((await expectRefused(() => send(route, me, OLD), 403)).body).toEqual(SIGNED_OUT);
+			expect((await expectRefused(() => send(route, me, OLD), 401)).body).toEqual({ message: 'Not authenticated' });
 		}
-		expect(sessionsOf(me.id)).toEqual(['my-phone']);
+		expect(sessionsOf(me.id)).toEqual([sessionHashOf('my-phone')]);
 	});
 
 	it("keeps a count for each session: the account's other browser is not held up, and changes the password with the right one", async () => {
+		// Sent through the gate, which reads only a code in a UUID's shape (card 2775).
+		const FIRST = '00000000-0000-4000-8000-000000000001';
+		const SECOND = '00000000-0000-4000-8000-000000000002';
+		const THEIRS = '00000000-0000-4000-8000-000000000003';
 		const me = withPassword(makeUser({ username: 'me' }));
 		const other = withPassword(makeUser({ username: 'other' }));
-		makeSession(me, 'first-browser');
-		makeSession(me, 'second-browser');
-		makeSession(other, 'their-browser');
+		makeSession(me, FIRST);
+		makeSession(me, SECOND);
+		makeSession(other, THEIRS);
 		// Through the gate, which finds the account from the session cookie.
 		const change = (session: string, currentPassword: string) =>
 			gate('PUT', '/api/account/password', {
@@ -2256,24 +2280,24 @@ describe('wrong current passwords', () => {
 			});
 
 		// Another account's wrong guesses are counted for their session alone.
-		for (let n = 1; n <= 2; n++) expect((await change('their-browser', 'not it')).status).toBe(403);
+		for (let n = 1; n <= 2; n++) expect((await change(THEIRS, 'not it')).status).toBe(403);
 
-		for (let n = 1; n <= 2; n++) expect((await change('first-browser', 'not it')).status).toBe(403);
-		const third = await change('first-browser', 'not it');
+		for (let n = 1; n <= 2; n++) expect((await change(FIRST, 'not it')).status).toBe(403);
+		const third = await change(FIRST, 'not it');
 		expect(third.status).toBe(403);
 		expect(await third.json()).toEqual(SIGNED_OUT);
 		// Ended: the gate refuses the next request from it, whatever it carries.
-		expect((await change('first-browser', OLD)).status).toBe(401);
+		expect((await change(FIRST, OLD)).status).toBe(401);
 		expect(hashOf(me.id)).toBe(OLD_HASH);
 
 		// The account's other browser is not held up. Changing the password
 		// there signs every other one out, which is how the owner of an account
 		// takes it back.
-		expect((await change('second-browser', OLD)).status).toBe(200);
+		expect((await change(SECOND, OLD)).status).toBe(200);
 		expect(await matches(NEW, hashOf(me.id))).toBe(true);
-		expect(sessionStillOpen('first-browser')).toBe(false);
-		expect(sessionStillOpen('their-browser')).toBe(true);
-		expect(countOf('their-browser')).toBe(2);
+		expect(sessionStillOpen(sessionHashOf(FIRST))).toBe(false);
+		expect(sessionStillOpen(sessionHashOf(THEIRS))).toBe(true);
+		expect(countOf(THEIRS)).toBe(2);
 	});
 
 	it('clears the count on the right password', async () => {
@@ -2292,9 +2316,9 @@ describe('wrong current passwords', () => {
 		const { me } = signedIn();
 		await wrong(EMAIL, me, 1);
 		const elsewhere = await makePasswordHash('changed elsewhere', 'known');
-		// The first read is the one the password is checked against.
+		// The second read is the one the password is checked against: the first is the session's account, read as writeAs checks the session (card 2775).
 		const reads = watchReads('users', (nth) => {
-			if (nth === 1) db.update(users).set({ passwordHash: elsewhere }).where(eq(users.id, me.id)).run();
+			if (nth === 2) db.update(users).set({ passwordHash: elsewhere }).where(eq(users.id, me.id)).run();
 		});
 
 		const bcryptBefore = bcrypt.inTransaction.length;
@@ -2309,7 +2333,7 @@ describe('wrong current passwords', () => {
 		// session's count never saw would be a free guess.
 		expect(res.status).toBe(409);
 		expect(res.body).toEqual({ message: PASSWORD_CHANGED_MEANWHILE, stepUp: 'changed' });
-		expect(reads.inTransaction).toEqual([false, true]);
+		expect(reads.inTransaction).toEqual([true, false, true]);
 		// One bcrypt call in this request, the check, outside a transaction.
 		expect(bcrypt.inTransaction.slice(bcryptBefore)).toEqual([false]);
 		expect(userRow(me.id).email).toBe('me@example.test');
@@ -2353,8 +2377,9 @@ describe('wrong current passwords', () => {
 		try {
 			await wrong(EMAIL, me, 2);
 			expect((await send(EMAIL, me, 'not it')).body).toEqual(SIGNED_OUT);
-			// Ended: one more, from the same session, is answered alike and says nothing more.
-			expect((await send(EMAIL, me, 'not it')).body).toEqual(SIGNED_OUT);
+			// Ended: one more, from the same session, is refused as the gate
+			// refuses it (card 2775), and says nothing more.
+			expect((await send(EMAIL, me, 'not it')).body).toEqual({ message: 'Not authenticated' });
 		} finally {
 			quiet.mockRestore();
 			if (level === undefined) delete process.env.LOG_LEVEL;

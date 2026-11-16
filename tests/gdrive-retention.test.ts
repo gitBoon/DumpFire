@@ -58,7 +58,7 @@ import type { DestinationConfig } from '$lib/server/backup-destinations';
 import { sqlite } from '$lib/server/db';
 import { api } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
-import { FIXTURE_PASSWORD, makeSession, makeSmtp, makeUser, resetDb } from './helpers/fixtures';
+import { FIXTURE_PASSWORD, makeSession, makeSmtp, makeUser, resetDb, sessionCredential } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 
@@ -70,7 +70,7 @@ function confirmedFrom(user: SessionUser) {
 	const token = makeSession(user);
 	return {
 		user,
-		credential: { kind: 'session' as const, token },
+		credential: sessionCredential(token),
 		body: { currentPassword: FIXTURE_PASSWORD },
 		headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` }
 	};
@@ -509,7 +509,7 @@ describe('Backup History is read without writing, and Run Now does not hold back
 		const days = Array.from({ length: 12 }, (_, i) => `dumpfire-backup-2026-04-${String(i + 1).padStart(2, '0')}T00-00-00.db`);
 		days.forEach((name, i) => logged(name, new Date(Date.UTC(2026, 3, i + 1))));
 		const admin = makeUser({ role: 'admin' });
-		const credential = { kind: 'session' as const, token: makeSession(admin) };
+		const credential = sessionCredential(makeSession(admin));
 		const before = snapshotDb();
 
 		const res = await api('GET', '/api/admin/backup', { user: admin, credential });
@@ -569,7 +569,7 @@ describe('Backup History keeps the newest 30 runs, and the last scheduled run wh
 		});
 	const historyAnswered = async () => {
 		const admin = makeUser({ role: 'admin' });
-		const res = await api('GET', '/api/admin/backup', { user: admin, credential: { kind: 'session', token: makeSession(admin) } });
+		const res = await api('GET', '/api/admin/backup', { user: admin, credential: sessionCredential(makeSession(admin)) });
 		expect(res.status).toBe(200);
 		return res.body.history.map((row: { filename: string }) => row.filename) as string[];
 	};

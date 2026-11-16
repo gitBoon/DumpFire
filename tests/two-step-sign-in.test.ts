@@ -31,7 +31,15 @@ import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
 import { mfaFactors, sessions, settings, users, webhooks } from '$lib/server/db/schema';
 import { inTransaction } from '$lib/server/db/transaction';
-import { SESSION_COOKIE_NAME, createSession, openSessionUser, sessionStillOpen, validateSession } from '$lib/server/auth';
+import {
+	SECURE_SESSION_COOKIE_NAME,
+	SESSION_COOKIE_NAME,
+	createSession,
+	openSessionUser,
+	sessionCookieName,
+	sessionStillOpen,
+	validateSession
+} from '$lib/server/auth';
 import {
 	KNOWN_BROWSER_SECRET_KEY,
 	knownBrowserCookie,
@@ -74,8 +82,8 @@ import { parseStamp, stamp } from '$lib/timestamps';
 import { action, pageLoad } from './helpers/actions';
 import { effects, type Effects } from './helpers/effects';
 import { gate } from './helpers/gate';
-import { FIXTURE_PASSWORD, FIXTURE_PASSWORD_HASH, makeApiKey, makeBoard, makeSession, makeSmtp, makeUser, resetDb } from './helpers/fixtures';
-import { codeFor, giveFactor, openReleaseWindow, passwordStep, signInFully, verify, wrongCodeFor, type GivenFactor } from './helpers/two-step';
+import { FIXTURE_PASSWORD, FIXTURE_PASSWORD_HASH, makeApiKey, makeBoard, makeSession, makeSmtp, makeUser, resetDb, sessionHashOf, sessionRow } from './helpers/fixtures';
+import { VERIFY_AT, codeFor, giveFactor, openReleaseWindow, passwordStep, signInFully, verify, wrongCodeFor, type GivenFactor } from './helpers/two-step';
 
 /** Run while the password is being checked (T42): a password set meanwhile. */
 const duringCheck = vi.hoisted(() => ({ run: null as null | (() => void) }));
@@ -122,27 +130,28 @@ function warnings<T>(fn: () => T): { result: T; warned: string[] } {
 	}
 }
 
-const sessionRow = (token: string) => db.select().from(sessions).where(eq(sessions.id, token)).get();
-
 describe('sessions made without a second factor (decision 24)', () => {
 	it('T6: a session row with two_step 0 is refused, deleted, and said once at WARN; createSession writes 1', () => {
 		const user = makeUser();
 
 		// What createSession makes: two_step 1, and open.
-		const made = createSession(user.id);
+		const made = createSession(user.id).token;
 		expect(sessionRow(made)?.twoStep).toBe(1);
-		expect(validateSession(made)?.id).toBe(user.id);
+		expect(validateSession(made)?.user.id).toBe(user.id);
 
-		// What an older image writes after the release: no value for the column, so its default, 0.
+		// A row with no value for the column, so its default, 0. An older image's
+		// own rows are held in plain, which this image never finds and sweeps at
+		// start (card 2775, decision 17); held as a hash, it reaches the
+		// refusal, kept as defence in depth.
 		const token = 'session-of-an-older-image';
 		sqlite
 			.prepare('INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)')
-			.run(token, user.id, stamp(new Date(Date.now() + 24 * 60 * 60 * 1000)), stamp());
+			.run(sessionHashOf(token), user.id, stamp(new Date(Date.now() + 60 * 60 * 1000)), stamp());
 		expect(sessionRow(token)?.twoStep).toBe(0);
 
 		// Refused by every reader, which write nothing.
-		expect(sessionStillOpen(token)).toBe(false);
-		expect(openSessionUser(token)).toBeNull();
+		expect(sessionStillOpen(sessionHashOf(token))).toBe(false);
+		expect(openSessionUser(sessionHashOf(token))).toBeNull();
 		expect(sessionRow(token)).toBeDefined();
 
 		// The gate's reader refuses it, deletes it, and says so once.
@@ -151,7 +160,7 @@ describe('sessions made without a second factor (decision 24)', () => {
 		expect(sessionRow(token)).toBeUndefined();
 		expect(warned).toHaveLength(1);
 		expect(warned[0]).toContain('[WARN] [AUTH]');
-		expect(warned[0]).toContain('without a second factor');
+		expect(warned[0]).toContain('A hashed session row with two_step 0 — refused and deleted');
 		expect(warned[0]).not.toContain(token);
 
 		// The session made after a second factor is untouched.
@@ -237,7 +246,8 @@ describe('the second step (slice 2)', () => {
 
 	/** Signed in: a session cookie, and home, or the report of decision 16. */
 	function expectSignedIn(res: Awaited<ReturnType<typeof verify>>): void {
-		expect(res.cookies[SESSION_COOKIE_NAME]?.value, JSON.stringify(res)).toBeDefined();
+		// Named for the address the second step was sent to (VERIFY_AT, card 2775).
+		expect(res.cookies[sessionCookieName(VERIFY_AT)]?.value, JSON.stringify(res)).toBeDefined();
 		if (res.type === 'redirect') expect(res.location).toBe('/');
 		else expect(res).toMatchObject({ type: 'success', data: { signedIn: true } });
 	}
@@ -351,7 +361,7 @@ describe('the second step (slice 2)', () => {
 
 		expect(res).toMatchObject({ type: 'redirect', status: 303, location: '/' });
 		const token = res.cookies[SESSION_COOKIE_NAME].value;
-		expect(db.select().from(sessions).where(eq(sessions.id, token)).get()).toMatchObject({ userId: user.id, twoStep: 1 });
+		expect(db.select().from(sessions).where(eq(sessions.tokenHash, sessionHashOf(token))).get()).toMatchObject({ userId: user.id, twoStep: 1 });
 		const known = res.cookies[knownBrowserCookie(user.id)];
 		expect(known.options).toMatchObject({ path: '/login', httpOnly: true, sameSite: 'strict' });
 		const sending = { get: (name: string) => (name === knownBrowserCookie(user.id) ? known.value : undefined) };
@@ -716,14 +726,45 @@ describe('the second step (slice 2)', () => {
 
 		// The same token under the plain name is not read.
 		expect(await verify(set.value, { code: codeFor(factor.secret) })).toMatchObject({ status: 400, data: { error: SIGN_IN_EXPIRED } });
-		const signedIn = await action('/login/verify', { form: { code: codeFor(factor.secret) }, cookies: { [SECURE_CHALLENGE_COOKIE]: set.value } });
+		const signedIn = await action(VERIFY_AT.href, { form: { code: codeFor(factor.secret) }, cookies: { [SECURE_CHALLENGE_COOKIE]: set.value } });
 		expectSignedIn(signedIn);
 		expect(signedIn.deletedCookies).toContain(SECURE_CHALLENGE_COOKIE);
 
-		delete process.env.COOKIE_SECURE;
-		const overHttps = await action('https://localhost/login', { form: { identity: user.username, password: FIXTURE_PASSWORD } });
-		expect(overHttps.cookies[SECURE_CHALLENGE_COOKIE].options).toEqual({ path: '/', httpOnly: true, sameSite: 'strict', secure: true, maxAge: 600 });
-		expect(overHttps.cookies[CHALLENGE_COOKIE]).toBeUndefined();
+		// The session cookie follows the same rule (card 2775): an
+		// administrator's full sign-in, on a frozen clock, sets one
+		// `__Host-dumpfire_session`, Secure, HttpOnly, SameSite=Lax, Path=/, no
+		// Domain, kept for the administrator's total limit of 24 hours, and no
+		// cookie of the plain name.
+		const admin = makeUser({ role: 'admin' });
+		const adminFactor = giveFactor(admin);
+		const SESSION_SET = { path: '/', httpOnly: true, sameSite: 'lax', secure: true, maxAge: 86400 };
+		vi.useFakeTimers({ toFake: ['Date'] });
+		try {
+			vi.setSystemTime(new Date('2026-11-16T09:00:00.000Z'));
+			const secure = await passwordStep(admin);
+			const adminIn = await action('/login/verify', {
+				form: { code: codeFor(adminFactor.secret) },
+				cookies: { [SECURE_CHALLENGE_COOKIE]: secure.res.cookies[SECURE_CHALLENGE_COOKIE].value }
+			});
+			expect(adminIn.cookies[SECURE_SESSION_COOKIE_NAME]?.options).toEqual(SESSION_SET);
+			expect(adminIn.cookies[SESSION_COOKIE_NAME]).toBeUndefined();
+
+			delete process.env.COOKIE_SECURE;
+			const overHttps = await action('https://localhost/login', { form: { identity: user.username, password: FIXTURE_PASSWORD } });
+			expect(overHttps.cookies[SECURE_CHALLENGE_COOKIE].options).toEqual({ path: '/', httpOnly: true, sameSite: 'strict', secure: true, maxAge: 600 });
+			expect(overHttps.cookies[CHALLENGE_COOKIE]).toBeUndefined();
+
+			vi.setSystemTime(new Date('2026-11-16T09:01:00.000Z'));
+			const adminOverHttps = await action('https://localhost/login', { form: { identity: admin.username, password: FIXTURE_PASSWORD } });
+			const httpsIn = await action('https://localhost/login/verify', {
+				form: { code: codeFor(adminFactor.secret) },
+				cookies: { [SECURE_CHALLENGE_COOKIE]: adminOverHttps.cookies[SECURE_CHALLENGE_COOKIE].value }
+			});
+			expect(httpsIn.cookies[SECURE_SESSION_COOKIE_NAME]?.options).toEqual(SESSION_SET);
+			expect(httpsIn.cookies[SESSION_COOKIE_NAME]).toBeUndefined();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it('T35: the first wrong code after the right password mails a notice and raises the banner; on a second challenge within the hour, none', async () => {

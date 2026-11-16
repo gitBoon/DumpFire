@@ -26,10 +26,9 @@
  * failed and whether its link was given, naming the two accounts by id and
  * holding no link and no token: the trail that an administrator held a link.
  */
-import type { Cookies } from '@sveltejs/kit';
 import { eq } from 'drizzle-orm';
 import { mayManageAccount } from '$lib/account-rule';
-import { SESSION_COOKIE_NAME, openSessionUser } from './auth';
+import { openSessionUser, sessionHashIn, type Credential } from './auth';
 import { isAdmin } from './board-access';
 import { db } from './db';
 import { users } from './db/schema';
@@ -67,11 +66,12 @@ const NOT_GIVEN = {
  * only: the caller's session is still open and an administrator's, and the
  * caller, as their account is now, may still manage the account, read
  * afresh. Answers the first that fails, or null when both hold; each caller
- * then asks its own third check, of its own link.
+ * then asks its own third check, of its own link. The session is the one the
+ * gate let the request in with, by its hash (card 2775).
  */
-export function callerStillManages(cookies: Cookies, actorId: number, accountId: number): keyof typeof CALLER_NOT_GIVEN | null {
+export function callerStillManages(credential: Credential | null | undefined, actorId: number, accountId: number): keyof typeof CALLER_NOT_GIVEN | null {
 	// Only a session reaches an internal route: a key is taken only under /api/v1/.
-	const caller = openSessionUser(cookies.get(SESSION_COOKIE_NAME));
+	const caller = openSessionUser(sessionHashIn(credential));
 	if (!caller || caller.id !== actorId || !isAdmin(caller)) return 'session';
 
 	const account = db.select({ id: users.id, role: users.role }).from(users).where(eq(users.id, accountId)).get();
@@ -91,17 +91,17 @@ export function callerStillManages(cookies: Cookies, actorId: number, accountId:
  */
 export function inviteMailAnswer(opts: {
 	outcome: MailOutcome;
-	cookies: Cookies;
+	credential: Credential | null | undefined;
 	actorId: number;
 	accountId: number;
 	token: string;
 	baseUrl: string;
 }): InviteMailAnswer {
-	const { outcome, cookies, actorId, accountId, token, baseUrl } = opts;
+	const { outcome, credential, actorId, accountId, token, baseUrl } = opts;
 	if (outcome.sent) return { mailSent: true };
 
 	const mailProblem = MAIL_PROBLEM_WORDS[outcome.problem];
-	const notGiven = whyNotGiven(cookies, actorId, accountId, token);
+	const notGiven = whyNotGiven(credential, actorId, accountId, token);
 	const said = `Invite for user ${accountId} was issued by user ${actorId}; its mail was not sent (${mailProblem}), and its link was`;
 
 	if (notGiven !== null) {
@@ -114,8 +114,8 @@ export function inviteMailAnswer(opts: {
 }
 
 /** The first of R-S1's checks that fails, or null when all three hold. */
-function whyNotGiven(cookies: Cookies, actorId: number, accountId: number, token: string): keyof typeof NOT_GIVEN | null {
-	const callerCheck = callerStillManages(cookies, actorId, accountId);
+function whyNotGiven(credential: Credential | null | undefined, actorId: number, accountId: number, token: string): keyof typeof NOT_GIVEN | null {
+	const callerCheck = callerStillManages(credential, actorId, accountId);
 	if (callerCheck !== null) return callerCheck;
 
 	const invite = usableInvite(token);

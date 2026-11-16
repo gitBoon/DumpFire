@@ -4,7 +4,7 @@ import { subscribe } from '$lib/server/events';
 import { error } from '@sveltejs/kit';
 import { eq } from 'drizzle-orm';
 import { canViewBoard } from '$lib/server/board-access';
-import { SESSION_COOKIE_NAME, openSessionUser } from '$lib/server/auth';
+import { openSession, sessionEndTimer, sessionHashIn } from '$lib/server/auth';
 import { db } from '$lib/server/db';
 import { boards } from '$lib/server/db/schema';
 import { requireBoard } from '$lib/server/route-guards';
@@ -32,11 +32,12 @@ const log = createLogger('AUTH');
  * are never used again, so a stream on a deleted board can receive nothing
  * more, and ending it loses nothing.
  */
-export const GET: RequestHandler = async ({ params, locals, cookies }) => {
+export const GET: RequestHandler = async ({ params, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 	const userId = locals.user.id;
 	// Only a session reaches this route: a key is taken only under /api/v1/.
-	const token = cookies.get(SESSION_COOKIE_NAME);
+	// Its hash, as the gate found it (card 2775), is asked at each heartbeat.
+	const session = sessionHashIn(locals.credential);
 
 	const boardId = pathId(params.id, 'board');
 
@@ -74,8 +75,12 @@ export const GET: RequestHandler = async ({ params, locals, cookies }) => {
 				try {
 					// The session first: a stream whose session has ended sends
 					// nothing more, the heartbeat included.
-					const now = openSessionUser(token);
-					if (!now) return end();
+					const open = openSession(session);
+					if (!open) return end();
+					const now = open.user;
+					// The deadline as it is now: a request of the holder's may
+					// have moved it on (card 2775).
+					untilDeadline.arm(open.deadline);
 					// Then the board, and whether the account as it is now can
 					// open it. If not, the page is told to re-read, on this
 					// stream alone, and the stream ends.
@@ -106,8 +111,14 @@ export const GET: RequestHandler = async ({ params, locals, cookies }) => {
 				ended = true;
 				unsubscribe();
 				clearInterval(heartbeat);
+				untilDeadline.clear();
 				try { controller.close(); } catch { /* already closed or cancelled */ }
 			};
+
+			// And at the session's deadline, not at the heartbeat after it
+			// (card 2775, the code review's CS4).
+			const untilDeadline = sessionEndTimer(end);
+			untilDeadline.arm(openSession(session)?.deadline);
 
 			// Store cleanup for cancel()
 			cleanup = end;

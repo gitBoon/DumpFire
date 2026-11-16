@@ -79,7 +79,7 @@ import { parseStamp, stamp } from '$lib/timestamps';
 import { action, pageLoad, type ActionResult } from './helpers/actions';
 import { api } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
-import { FIXTURE_PASSWORD_HASH, makeApiKey, makeBoard, makeSession, makeSmtp, makeUser, resetDb, stepUp } from './helpers/fixtures';
+import { FIXTURE_PASSWORD_HASH, makeApiKey, makeBoard, makeSession, makeSmtp, makeUser, resetDb, stepUp, sessionHashOf } from './helpers/fixtures';
 import { gate } from './helpers/gate';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 import { codeFor, giveFactor, openReleaseWindow, passwordStep, verify, wrongCodeFor } from './helpers/two-step';
@@ -303,7 +303,7 @@ describe('setting up on the password (slice 3)', () => {
 		expect(db.select().from(inviteTokens).all()).toEqual([]);
 
 		const session = res.cookies[SESSION_COOKIE_NAME].value;
-		expect(db.select().from(sessions).where(eq(sessions.id, session)).get()).toMatchObject({ userId: user.id, twoStep: 1 });
+		expect(db.select().from(sessions).where(eq(sessions.tokenHash, sessionHashOf(session))).get()).toMatchObject({ userId: user.id, twoStep: 1 });
 		expect(res.cookies[knownBrowserCookie(user.id)]).toBeDefined();
 		expect(res.deletedCookies).toContain(CHALLENGE_COOKIE);
 		// The two lines of the set-up itself (beside the session's own).
@@ -377,7 +377,7 @@ describe('setting up after an invite or the first-run set-up (slice 3)', () => {
 		await view(token);
 		const done = await enrol(token, 'confirm');
 		expect(done).toMatchObject({ type: 'redirect', location: '/' });
-		expect(db.select().from(sessions).where(eq(sessions.id, done.cookies[SESSION_COOKIE_NAME].value)).get()).toMatchObject({
+		expect(db.select().from(sessions).where(eq(sessions.tokenHash, sessionHashOf(done.cookies[SESSION_COOKIE_NAME].value))).get()).toMatchObject({
 			userId: user.id,
 			twoStep: 1
 		});
@@ -686,7 +686,7 @@ describe('set-up links and their page (slice 4)', () => {
 		const res = await enrol(token, 'confirm');
 
 		expect(res).toMatchObject({ type: 'success', status: 200, data: { signedIn: true, report: { wrongCodes: 3, banner: null } } });
-		expect(db.select().from(sessions).where(eq(sessions.id, res.cookies[SESSION_COOKIE_NAME].value)).get()).toMatchObject({
+		expect(db.select().from(sessions).where(eq(sessions.tokenHash, sessionHashOf(res.cookies[SESSION_COOKIE_NAME].value))).get()).toMatchObject({
 			userId: user.id,
 			twoStep: 1
 		});

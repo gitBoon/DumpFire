@@ -134,8 +134,11 @@ const sentElsewhere = new WeakMap<Response, string>();
  *     `+server.ts` anywhere else.
  *   - Anything else is a 303 with `Location`, and no body.
  *
- * The gate sends nobody anywhere with a cookie set, so there are none to
- * carry over, as SvelteKit's catch carries them.
+ * The gate sends nobody anywhere with a cookie set through `event.cookies`,
+ * so there are none to carry over, as SvelteKit's catch carries them. The
+ * one header it adds itself, on every answer it logs, this one included, is
+ * the deletion of a session cookie of the plain name sent where cookies are
+ * HTTPS-only (card 2775, `oldSessionCookieDeletion` in auth.ts).
  */
 export function sendTo(event: RequestEvent, location: string): Response {
 	let answer: Response;

@@ -63,11 +63,12 @@ const random = () => randomBytes(32).toString('base64url');
 
 /**
  * The session or key a request came with, as it is held here: a session by
- * the SHA-256 of its token. A request with neither, one no gate let in, is
- * bound to its account alone, as `stillAuthenticated` treats it.
+ * the SHA-256 of its code, which is the hash the gate holds (card 2775). A
+ * request with neither, one no gate let in, is bound to its account alone,
+ * as `stillAuthenticated` treats it.
  */
 function holderOf(credential: Credential | null | undefined): string {
-	if (credential?.kind === 'session') return `session ${createHash('sha256').update(credential.token).digest('hex')}`;
+	if (credential?.kind === 'session') return `session ${credential.hash.toString('hex')}`;
 	if (credential?.kind === 'api key') return `api key ${credential.id}`;
 	return 'account';
 }

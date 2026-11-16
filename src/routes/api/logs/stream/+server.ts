@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { createLogger, getRecentLogs, subscribeToLogs, type LogEntry } from '$lib/server/logger';
-import { SESSION_COOKIE_NAME, openSessionUser } from '$lib/server/auth';
+import { openSession, sessionEndTimer, sessionHashIn } from '$lib/server/auth';
 import { isAdmin } from '$lib/server/board-access';
 
 const log = createLogger('AUTH');
@@ -20,7 +20,7 @@ const log = createLogger('AUTH');
  *
  * Requires admin or superadmin role.
  */
-export const GET: RequestHandler = async ({ locals, cookies }) => {
+export const GET: RequestHandler = async ({ locals }) => {
 	if (!locals.user || !isAdmin(locals.user)) {
 		// Returned, not thrown: the caller is an EventSource, which asks for an
 		// event stream, and a thrown error is answered to that as an HTML page.
@@ -28,11 +28,13 @@ export const GET: RequestHandler = async ({ locals, cookies }) => {
 	}
 	const userId = locals.user.id;
 	// Only a session reaches this route: a key is taken only under /api/v1/.
-	const token = cookies.get(SESSION_COOKIE_NAME);
+	// Its hash, as the gate found it (card 2775), is asked at each heartbeat.
+	const session = sessionHashIn(locals.credential);
 
 	const encoder = new TextEncoder();
 	let unsubscribe: (() => void) | null = null;
 	let heartbeat: ReturnType<typeof setInterval> | null = null;
+	let untilDeadline: ReturnType<typeof sessionEndTimer> | null = null;
 	let closed = false;
 
 	const stream = new ReadableStream({
@@ -42,8 +44,15 @@ export const GET: RequestHandler = async ({ locals, cookies }) => {
 				closed = true;
 				unsubscribe?.();
 				if (heartbeat) clearInterval(heartbeat);
+				untilDeadline?.clear();
 				try { controller.close(); } catch { /* already closed */ }
 			};
+
+			// Ended at the session's deadline, not at the heartbeat after it
+			// (card 2775, the code review's CS4).
+			untilDeadline = sessionEndTimer(cleanup);
+			untilDeadline.arm(openSession(session)?.deadline);
+			if (closed) return;
 
 			const send = (entry: LogEntry) => {
 				if (closed) return;
@@ -65,8 +74,12 @@ export const GET: RequestHandler = async ({ locals, cookies }) => {
 					// The session first: a stream whose session has ended, or
 					// whose account is no longer an administrator, sends nothing
 					// more, the heartbeat included.
-					if (!isAdmin(openSessionUser(token))) return cleanup();
+					const open = openSession(session);
+					if (!open || !isAdmin(open.user)) return cleanup();
 					checked = true;
+					// The deadline as it is now: a request of the holder's may
+					// have moved it on (card 2775).
+					untilDeadline?.arm(open.deadline);
 					controller.enqueue(encoder.encode(': ping\n\n'));
 				} catch (err) {
 					// The client has gone, or the session could not be checked.
@@ -83,6 +96,7 @@ export const GET: RequestHandler = async ({ locals, cookies }) => {
 			closed = true;
 			unsubscribe?.();
 			if (heartbeat) clearInterval(heartbeat);
+			untilDeadline?.clear();
 		}
 	});
 

@@ -204,6 +204,8 @@ const TEST_FILES = [
 	'report-schedules.test.ts',
 	'request-body.test.ts',
 	'schedulers.test.ts',
+	// Card 2775: session codes stored as hashes, limits by role, and the __Host- cookie.
+	'session-hardening.test.ts',
 	'setting-setters.test.ts',
 	'sftp-host-key.test.ts',
 	'share-window.svelte.test.ts',

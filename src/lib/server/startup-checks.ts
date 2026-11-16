@@ -50,13 +50,14 @@
  * `MFA_KEY_FILE_PREVIOUS` set it changes the key (card 2773): every factor of
  * the old key is sealed again under the new one before the server listens.
  *
- * And three things that are changed at start, beside them: `maskLiveLog`,
+ * And four things that are changed at start, beside them: `maskLiveLog`,
  * which masks the secrets an older gate wrote into the system log;
  * `removeSettingsOfNonAdministrators`, which removes the mail settings, App
  * URL and backup destinations set by someone who is no longer an
- * administrator (card 2406); and `endPlainInvites`, which ends the unused
+ * administrator (card 2406); `endPlainInvites`, which ends the unused
  * invites an older image kept in plain and replaces the token of the used ones
- * (card 2849).
+ * (card 2849); and `endPlainSessions`, which ends the sessions an older image
+ * kept in plain (card 2775).
  */
 import { readFileSync } from 'node:fs';
 import { posix } from 'node:path';
@@ -69,6 +70,7 @@ import { PLACEHOLDER_ORIGIN, configuredOrigin, getAppUrl } from './email';
 import { createLogger, isLogged, printable } from './logger';
 import { maskSecretsInLog } from './secret-paths';
 import { NOT_IN_HASH_FORM, REPLACE_PLAIN_USED_INVITES } from './invites';
+import { SESSION_NOT_IN_HASH_FORM } from './auth';
 import { signInsOneAtATime } from './known-browsers';
 import { cspMode } from './gate-answers';
 import { boardsInLoops } from './sub-boards';
@@ -717,6 +719,42 @@ export function endPlainInvites(): number | null {
 			authLog.warn(
 				`Invites held in plain by an older image could not be ended: ${(err as Error)?.message ?? err}. ` +
 					'They do not work on this image, and would work again on the older one.'
+			);
+		} catch {
+			// Nothing more to be done about it.
+		}
+		return null;
+	}
+}
+
+/**
+ * End every session held in plain (card 2775, plan decision 3), and return
+ * how many, or null when it could not be done. Called once, from
+ * hooks.server.ts, after the migrations and before `cleanExpiredSessions`,
+ * so that an expired one is counted here and not deleted unsaid.
+ *
+ * From card 2775 a session's code is kept only as its SHA-256, 32 bytes as a
+ * BLOB. An image from before it, started on this database after going back,
+ * keeps the code as the cookie holds it, as text: this image never matches
+ * it, but it would sign its holder in again if that older image were started
+ * again. At the release this finds nothing: 0067 has ended every session.
+ *
+ * One WARN line under AUTH when it ended any; nothing when it did not, so a
+ * second start says nothing. It never throws: a failure is said at WARN, and
+ * the server starts.
+ */
+export function endPlainSessions(): number | null {
+	try {
+		const ended = sqlite.prepare(`DELETE FROM sessions WHERE ${SESSION_NOT_IN_HASH_FORM}`).run().changes;
+		if (ended > 0) {
+			authLog.warn(`Ended ${ended} session(s) held in plain, written by an older image: those browsers sign in again.`);
+		}
+		return ended;
+	} catch (err) {
+		try {
+			authLog.warn(
+				`Sessions held in plain by an older image could not be ended: ${(err as Error)?.message ?? err}. ` +
+					'They do not sign anyone in on this image, and would on the older one.'
 			);
 		} catch {
 			// Nothing more to be done about it.

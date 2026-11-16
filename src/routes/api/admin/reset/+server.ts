@@ -1,7 +1,7 @@
 import { error, isHttpError, json } from '@sveltejs/kit';
 import { sqlite } from '$lib/server/db';
 import { restorableTables } from '$lib/server/db/restore';
-import { SESSION_COOKIE_NAME, whilePasswordHolds, type SessionUser } from '$lib/server/auth';
+import { clearSessionCookie, whilePasswordHolds, type SessionUser } from '$lib/server/auth';
 import { readBody } from '$lib/server/request-body';
 import { resetFormSecretCache, writeFormSecret } from '$lib/server/request-tokens';
 import { resetKnownBrowserSecretCache } from '$lib/server/known-browsers';
@@ -51,7 +51,7 @@ const messageOf = (err: unknown) => (err instanceof Error ? err.message : String
  * checked before the transaction, which runs only while the stored hash is
  * the one it was checked against (step-up.ts).
  */
-export const POST: RequestHandler = async ({ request, locals, cookies }) => {
+export const POST: RequestHandler = async ({ request, locals, cookies, url }) => {
 	requireSuperadmin(locals.user);
 	const body = await readBody(request);
 
@@ -154,7 +154,7 @@ export const POST: RequestHandler = async ({ request, locals, cookies }) => {
 	);
 
 	// Clear the session cookie so the caller is logged out
-	cookies.delete(SESSION_COOKIE_NAME, { path: '/' });
+	clearSessionCookie(cookies, url);
 
 	return json({ success: true, redirect: '/setup', trash });
 };

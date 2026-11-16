@@ -582,10 +582,12 @@ describe('a database with no users while another is beside it', () => {
 		expect(at('refuseUserlessBesideAnother();')).toBeGreaterThan(at('runMigrations();'));
 		// The MFA key check (card 2768) straight after it, and before everything else.
 		expect(at('checkMfaKeyAtStart();')).toBeGreaterThan(at('refuseUserlessBesideAnother();'));
-		for (const later of ['cleanExpiredSessions();', 'maskLiveLog();', 'endPlainInvites();', 'startSchedulers();', 'reportInstallation();']) {
+		for (const later of ['endPlainSessions();', 'cleanExpiredSessions();', 'maskLiveLog();', 'endPlainInvites();', 'startSchedulers();', 'reportInstallation();']) {
 			expect(at(later), later).toBeGreaterThan(at('refuseUserlessBesideAnother();'));
 			expect(at(later), later).toBeGreaterThan(at('checkMfaKeyAtStart();'));
 		}
+		// The sweep of sessions held in plain before the clean-up, so that each is counted (card 2775, S5).
+		expect(at('cleanExpiredSessions();')).toBeGreaterThan(at('endPlainSessions();'));
 	});
 });
 

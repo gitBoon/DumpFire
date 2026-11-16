@@ -72,7 +72,7 @@
  */
 
 import { error, isHttpError, json } from '@sveltejs/kit';
-import { SESSION_COOKIE_NAME } from '$lib/server/auth';
+import { clearSessionCookie, sessionHashIn } from '$lib/server/auth';
 import { getDbPath, sqlite } from '$lib/server/db';
 import { importFiles } from '$lib/server/db/location';
 import { convertedList, totalConverted } from '$lib/server/db/timestamps';
@@ -266,11 +266,12 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 
 	// The superadmin's password, confirmed first at /api/admin/import/confirm
 	// (card 2701, decision 8): the upload is the body, and cannot carry it. The
-	// confirmation is taken here, from its header and the session cookie, and
+	// confirmation is taken here, from its header and the session's hash as the
+	// gate found it (card 2775), and
 	// never from the request itself, before any of the upload is read. Missing,
 	// unknown, used, expired or another session's, it is refused 403 and
 	// nothing is read.
-	const confirmed = takeImportConfirmation(request.headers.get(CONFIRMATION_HEADER), cookies.get(SESSION_COOKIE_NAME));
+	const confirmed = takeImportConfirmation(request.headers.get(CONFIRMATION_HEADER), sessionHashIn(locals.credential));
 
 	try {
 		const buffer = Buffer.from(await request.arrayBuffer());
@@ -343,7 +344,7 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 			}
 			// No session came in with the backup, and the one this request was
 			// made with went with the rest: its cookie names nothing now.
-			cookies.delete(SESSION_COOKIE_NAME, { path: '/' });
+			clearSessionCookie(cookies, url);
 			// The settings are the backup's now, less the key the public
 			// request form signs with, which no restore brings in (card 2158):
 			// the row that was here went with the rest. The copy of it in
@@ -587,7 +588,7 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 				if (err.committed) {
 					resetFormSecretCache();
 					resetKnownBrowserSecretCache();
-					cookies.delete(SESSION_COOKIE_NAME, { path: '/' });
+					clearSessionCookie(cookies, url);
 				}
 				errors = err.errors;
 				// The one that committed replaced every request's link and kept

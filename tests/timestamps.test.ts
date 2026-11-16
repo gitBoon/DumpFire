@@ -23,7 +23,7 @@ import { apiKeys, cards, inviteTokens, milestones, reportSchedules, sessions, to
 import { inTransaction } from '$lib/server/db/transaction';
 import { SESSION_COOKIE_NAME, cleanExpiredSessions, createSession, findApiKey, markApiKeyUsed, validateSession } from '$lib/server/auth';
 import { issueInvite } from '$lib/server/invites';
-import { inviteHashOf } from './helpers/fixtures';
+import { inviteHashOf, sessionHashOf } from './helpers/fixtures';
 import { createLogger, getRecentLogs } from '$lib/server/logger';
 import { buildActivityReport, getCardBoardHistory } from '$lib/server/activity-report';
 import { formatDate, generateBoardReport, generateReportPdf, readReportWindow, runDueReportSchedules } from '$lib/server/reports';
@@ -227,6 +227,7 @@ describe('normaliseTimestamps', () => {
 		];
 		const card = database.prepare('INSERT INTO cards (column_id, title, completed_at, created_at) VALUES (1, ?, ?, ?)');
 		shapes.forEach((shape, i) => card.run(`card ${i}`, shape, shape));
+		// A session held in plain, as a database from before card 2775 holds one: only its expiry is read here.
 		database.prepare("INSERT INTO sessions (id, user_id, expires_at) VALUES ('s', 1, '2026-10-21T08:00:00.000Z')").run();
 		database.prepare("INSERT INTO system_logs (timestamp, level, context, message) VALUES ('2026-10-14T08:00:00.000Z', 'INFO', 'T', 'm')").run();
 
@@ -349,6 +350,7 @@ describe('normaliseTimestamps', () => {
 		const database = migratedDb();
 		withRows(database);
 		database.prepare("INSERT INTO cards (column_id, title, completed_at) VALUES (1, 'c', '2026-10-14T08:00:00.000Z')").run();
+		// A session held in plain, as a database from before card 2775 holds one: only its expiry is read here.
 		database.prepare("INSERT INTO sessions (id, user_id, expires_at) VALUES ('s', 1, '2026-10-21T08:00:00.000Z')").run();
 		database.exec(`CREATE TRIGGER refuse BEFORE UPDATE ON sessions BEGIN SELECT RAISE(ABORT, 'refused by a trigger'); END`);
 
@@ -503,7 +505,7 @@ describe('what the server modules write', () => {
 		const milestone = makeMilestone({ board, cards: [card], createdBy: owner });
 
 		// A session made and slid, an API key used, an invite issued.
-		const token = createSession(owner.id);
+		const token = createSession(owner.id).token;
 		expect(validateSession(token)).not.toBeNull();
 		makeApiKey(owner);
 		markApiKeyUsed(db.select().from(apiKeys).get()!.id);
@@ -543,19 +545,19 @@ describe('what the server modules write', () => {
 describe('the comparisons of table B keep their answer on the boundary day', () => {
 	it('a session that expires later today is open, and is not cleared as expired', () => {
 		const owner = makeUser();
-		const token = createSession(owner.id);
+		const token = createSession(owner.id).token;
 		const later = stamp(new Date(Date.now() + 60 * 60 * 1000));
-		db.update(sessions).set({ expiresAt: later }).where(eq(sessions.id, token)).run();
+		db.update(sessions).set({ expiresAt: later }).where(eq(sessions.tokenHash, sessionHashOf(token))).run();
 
 		cleanExpiredSessions();
 		expect(db.select().from(sessions).all()).toHaveLength(1);
-		expect(validateSession(token)?.id).toBe(owner.id);
+		expect(validateSession(token)?.user.id).toBe(owner.id);
 	});
 
 	it('a session that expired a second ago is closed', () => {
 		const owner = makeUser();
-		const token = createSession(owner.id);
-		db.update(sessions).set({ expiresAt: stamp(new Date(Date.now() - 1000)) }).where(eq(sessions.id, token)).run();
+		const token = createSession(owner.id).token;
+		db.update(sessions).set({ expiresAt: stamp(new Date(Date.now() - 1000)) }).where(eq(sessions.tokenHash, sessionHashOf(token))).run();
 		vi.spyOn(console, 'log').mockImplementation(() => {});
 
 		expect(validateSession(token)).toBeNull();
@@ -591,8 +593,8 @@ describe('the comparisons of table B keep their answer on the boundary day', () 
 		vi.setSystemTime(new Date('2026-10-14T10:00:00Z'));
 		allowOtherTimestampForms();
 		for (const expiresAt of ['zzz', '2099-02-30 08:00:00', '2099-10-14 24:00:00', '2026-10-14T09:00:00.000Z']) {
-			const token = createSession(owner.id);
-			db.update(sessions).set({ expiresAt }).where(eq(sessions.id, token)).run();
+			const token = createSession(owner.id).token;
+			db.update(sessions).set({ expiresAt }).where(eq(sessions.tokenHash, sessionHashOf(token))).run();
 			expect(validateSession(token), `session ${expiresAt}`).toBeNull();
 
 			db.update(apiKeys).set({ expiresAt }).run();
@@ -606,8 +608,8 @@ describe('the comparisons of table B keep their answer on the boundary day', () 
 
 		// One that names a moment still to come is still open, in either form.
 		for (const expiresAt of ['2026-10-14 11:00:00', '2026-10-14T11:00:00.000Z']) {
-			const token = createSession(owner.id);
-			db.update(sessions).set({ expiresAt }).where(eq(sessions.id, token)).run();
+			const token = createSession(owner.id).token;
+			db.update(sessions).set({ expiresAt }).where(eq(sessions.tokenHash, sessionHashOf(token))).run();
 			db.update(apiKeys).set({ expiresAt }).run();
 			const invite = inTransaction(() => issueInvite(owner.id));
 			db.update(inviteTokens).set({ expiresAt }).where(eq(inviteTokens.tokenHash, inviteHashOf(invite))).run();
@@ -615,7 +617,7 @@ describe('the comparisons of table B keep their answer on the boundary day', () 
 			expect(findApiKey(key)?.user.id, `key ${expiresAt}`).toBe(owner.id);
 			const page = await pageLoad(`/invite/${invite}`);
 			expect(page.type === 'data' && page.data.valid, `invite ${expiresAt}`).toBe(true);
-			expect(validateSession(token)?.id, `session ${expiresAt}`).toBe(owner.id);
+			expect(validateSession(token)?.user.id, `session ${expiresAt}`).toBe(owner.id);
 		}
 	});
 
@@ -628,12 +630,15 @@ describe('the comparisons of table B keep their answer on the boundary day', () 
 		vi.useFakeTimers({ toFake: ['Date'] });
 		vi.setSystemTime(new Date('2026-10-14T10:00:00Z'));
 		allowOtherTimestampForms();
-		const closed = ['zzz', '2099-02-30 08:00:00', '2099-10-14 24:00:00', '2026-10-14T09:00:00.000Z', '2026-10-14 09:59:59'];
-		const open = ['2026-10-14 11:00:00', '2026-10-14T11:00:00.000Z', '2099-01-01'];
+		// `2099-01-01` names a moment, and is closed all the same: an expiry
+		// further out than the role's idle limit allows has passed (card 2775, S7).
+		const closed = ['zzz', '2099-02-30 08:00:00', '2099-10-14 24:00:00', '2026-10-14T09:00:00.000Z', '2026-10-14 09:59:59', '2099-01-01'];
+		// A date alone is its first moment: 16 October, inside a user's idle limit of three days.
+		const open = ['2026-10-14 11:00:00', '2026-10-14T11:00:00.000Z', '2026-10-16'];
 		const tokens = new Map<string, string>();
 		for (const expiresAt of [...closed, ...open]) {
-			const token = createSession(owner.id);
-			db.update(sessions).set({ expiresAt }).where(eq(sessions.id, token)).run();
+			const token = createSession(owner.id).token;
+			db.update(sessions).set({ expiresAt }).where(eq(sessions.tokenHash, sessionHashOf(token))).run();
 			tokens.set(token, expiresAt);
 		}
 

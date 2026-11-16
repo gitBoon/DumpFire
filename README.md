@@ -22,7 +22,7 @@ Built with SvelteKit 5 (Runes), Drizzle ORM, and better-sqlite3.
 - Archive and restore: an archived card comes back whole. A permanent delete takes the card's subtasks, comments, dependency links and sub-boards with it, and its attachment files are kept in a trash for 30 days
 
 ### Multi-User & Access Control
-- User registration with bcrypt-hashed passwords and session-based auth (30-day sliding window)
+- User registration with bcrypt-hashed passwords and session-based auth (sessions end after 12 hours unused and 24 hours in all for administrators, 3 days and 7 days for users)
 - Three user roles: **Superadmin**, **Admin**, and **User**
 - Team management — group users into teams and assign boards to entire teams at once
 - Per-board access control with **Owner**, **Editor**, and **Viewer** roles

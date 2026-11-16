@@ -2769,8 +2769,13 @@ describe('the accounts, administration, teams, reports and requests that card 21
 	type Case = [route: string, who: Who, path: (w: World) => string, body: (w: World) => unknown, message: string];
 	const long = (n: number) => 'x'.repeat(n);
 	const at = (path: string) => () => path;
-	/** The routes that ask for the current password read a session cookie; it is not looked up. */
-	const SESSION = { cookie: `${SESSION_COOKIE_NAME}=a-session` };
+	/**
+	 * The cookie of a session made for `user`: the routes that ask for the
+	 * current password count it on the session, which the gate's credential
+	 * names by its hash and the write checks (card 2775). Made before the
+	 * snapshot a case compares with.
+	 */
+	const sessionOf = (user: SessionUser) => ({ cookie: `${SESSION_COOKIE_NAME}=${makeSession(user)}` });
 	const PRIORITY = 'priority must be one of: low, medium, high, critical';
 	const TIME = (name: string) => `${name} must be a time written HH:MM, from 00:00 to 23:59`;
 	const key = (more: object = {}) => ({ name: 'my script', password: 'the password', ...more });
@@ -2957,9 +2962,10 @@ describe('the accounts, administration, teams, reports and requests that card 21
 	it.each(CASES)('%s refuses what it cannot use (%#)', async (route, who, path, body, message) => {
 		const w = world();
 		const method = route.split(' ')[0] as Method;
+		const headers = sessionOf(w[who]);
 		const before = snapshotDb();
 
-		const res = await api(method, path(w), { user: w[who], body: body(w), headers: SESSION });
+		const res = await api(method, path(w), { user: w[who], body: body(w), headers });
 
 		expect(res.status, JSON.stringify(res.body)).toBe(400);
 		expect(res.body).toEqual({ message });
@@ -3002,9 +3008,10 @@ describe('the accounts, administration, teams, reports and requests that card 21
 	it('looks for what the path names, and checks the caller, before it reads a field (R1)', async () => {
 		const w = world();
 		const admin2 = makeUser({ username: 'admin2', role: 'admin' });
+		const sessions = new Map([w.admin, w.outsider, w.owner].map((user) => [user.id, sessionOf(user)]));
 		const before = snapshotDb();
 		const answered = async (method: Method, path: string, user: SessionUser, body: unknown) =>
-			(await api(method, path, { user, body, headers: SESSION })).status;
+			(await api(method, path, { user, body, headers: sessions.get(user.id) })).status;
 
 		// Each body is wrong, and the caller may not touch the row: the 403 or the 404 comes first.
 		expect(await answered('PUT', `/api/users/${admin2.id}`, w.admin, { username: 5 })).toBe(403);

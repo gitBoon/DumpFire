@@ -2,7 +2,7 @@ import type { RequestHandler } from './$types';
 import { error } from '@sveltejs/kit';
 import { subscribeGlobal } from '$lib/server/events';
 import { canViewBoard, isAdmin } from '$lib/server/board-access';
-import { SESSION_COOKIE_NAME, openSessionUser } from '$lib/server/auth';
+import { openSession, sessionEndTimer, sessionHashIn } from '$lib/server/auth';
 import { createLogger } from '$lib/server/logger';
 
 const log = createLogger('AUTH');
@@ -22,11 +22,12 @@ const log = createLogger('AUTH');
  * decides which boards' events it is sent: the page asks again, and the
  * stream it then opens follows the account's role as it is now.
  */
-export const GET: RequestHandler = async ({ locals, cookies }) => {
+export const GET: RequestHandler = async ({ locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
 	const user = locals.user;
 	// Only a session reaches this route: a key is taken only under /api/v1/.
-	const token = cookies.get(SESSION_COOKIE_NAME);
+	// Its hash, as the gate found it (card 2775), is asked at each heartbeat.
+	const session = sessionHashIn(locals.credential);
 	// Decided once, here: every board's events for an administrator. The
 	// heartbeat ends the stream when the account's role no longer gives this.
 	const openedAsAdmin = isAdmin(user);
@@ -80,9 +81,12 @@ export const GET: RequestHandler = async ({ locals, cookies }) => {
 					// The session first: a stream whose session has ended, or
 					// whose account has gained or lost the administrator's
 					// role, sends nothing more, the heartbeat included.
-					const now = openSessionUser(token);
-					if (!now || isAdmin(now) !== openedAsAdmin) return end();
+					const open = openSession(session);
+					if (!open || isAdmin(open.user) !== openedAsAdmin) return end();
 					checked = true;
+					// The deadline as it is now: a request of the holder's may
+					// have moved it on (card 2775).
+					untilDeadline.arm(open.deadline);
 					// Each board is asked again at its next event.
 					access.clear();
 					controller.enqueue(encoder.encode(': heartbeat\n\n'));
@@ -104,8 +108,14 @@ export const GET: RequestHandler = async ({ locals, cookies }) => {
 				ended = true;
 				unsubscribe();
 				clearInterval(heartbeat);
+				untilDeadline.clear();
 				try { controller.close(); } catch { /* already closed or cancelled */ }
 			};
+
+			// And at the session's deadline, not at the heartbeat after it
+			// (card 2775, the code review's CS4).
+			const untilDeadline = sessionEndTimer(end);
+			untilDeadline.arm(openSession(session)?.deadline);
 
 			// Store cleanup for cancel()
 			cleanup = end;

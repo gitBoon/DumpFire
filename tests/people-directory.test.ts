@@ -16,7 +16,7 @@ import { sqlite } from '$lib/server/db';
 import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { STEP_UP_FIELD } from '$lib/server/step-up';
 import { api, type ApiResult } from './helpers/api';
-import { FIXTURE_PASSWORD, addBoardMember, makeBoard, makeSession, makeTeam, makeUser, resetDb, shareBoardWithTeam } from './helpers/fixtures';
+import { FIXTURE_PASSWORD, addBoardMember, makeBoard, makeSession, makeTeam, makeUser, resetDb, shareBoardWithTeam, sessionHashOf } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 
 type Row = Record<string, unknown>;
@@ -57,7 +57,7 @@ async function send(method: 'POST' | 'PUT' | 'DELETE', path: string, body?: unkn
 	try {
 		return await api(method, path, { user: admin, body: { [STEP_UP_FIELD]: FIXTURE_PASSWORD, ...(body ?? {}) }, headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` } });
 	} finally {
-		sqlite.prepare('DELETE FROM sessions WHERE id = ?').run(token);
+		sqlite.prepare('DELETE FROM sessions WHERE id = ?').run(sessionHashOf(token));
 	}
 }
 

@@ -83,7 +83,8 @@ import {
 	makeUser,
 	makeVersion,
 	resetDb,
-	stepUp
+	stepUp,
+	sessionHashOf
 } from './helpers/fixtures';
 import { gate, gateRoutes } from './helpers/gate';
 
@@ -2386,7 +2387,7 @@ describe('the rule and release routes', () => {
 	const WRONG = 'not the password';
 	/** The session's count of wrong current passwords. */
 	const countOf = (made: { headers: Record<string, string> }) =>
-		db.select({ count: sessions.wrongPasswordCount }).from(sessions).where(eq(sessions.id, made.headers.cookie.slice(`${SESSION_COOKIE_NAME}=`.length))).get()?.count;
+		db.select({ count: sessions.wrongPasswordCount }).from(sessions).where(eq(sessions.tokenHash, sessionHashOf(made.headers.cookie.slice(`${SESSION_COOKIE_NAME}=`.length)))).get()?.count;
 	const unasked = (user: SessionUser, body: Record<string, unknown>) => ({ ...stepUp(user), body });
 
 	it('asks the ruling’s password after every other refusal, then rules with the right one (10)', async () => {

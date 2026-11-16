@@ -37,13 +37,17 @@ vi.mock('$lib/server/auth', async (importOriginal) => {
 	const real = await importOriginal<typeof import('$lib/server/auth')>();
 	return {
 		...real,
-		sessionStillOpen: (token: string | undefined) => {
+		sessionStillOpen: (hash: Buffer | undefined) => {
 			if (check.fails) throw new Error('disk I/O error');
-			return real.sessionStillOpen(token);
+			return real.sessionStillOpen(hash);
 		},
-		openSessionUser: (token: string | undefined) => {
+		openSessionUser: (hash: Buffer | undefined) => {
 			if (check.fails) throw new Error('disk I/O error');
-			return real.openSessionUser(token);
+			return real.openSessionUser(hash);
+		},
+		openSession: (hash: Buffer | undefined) => {
+			if (check.fails) throw new Error('disk I/O error');
+			return real.openSession(hash);
 		}
 	};
 });
@@ -69,7 +73,8 @@ import { boardMembers, boards, boardTeams, columns, sessions, teamMembers, users
 import { deleteBoard } from '$lib/server/deletes';
 import { emit } from '$lib/server/events';
 import { error as logError } from '$lib/server/logger';
-import { addBoardMember, makeBoard, makeCard, makeSession, makeTeam, makeUser, resetDb, shareBoardWithTeam } from './helpers/fixtures';
+import { stamp } from '$lib/timestamps';
+import { addBoardMember, makeBoard, makeCard, makeSession, makeTeam, makeUser, resetDb, shareBoardWithTeam, sessionHashOf } from './helpers/fixtures';
 import { api } from './helpers/api';
 import { gate, gateApiRoutes } from './helpers/gate';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
@@ -171,7 +176,7 @@ const ENDINGS: { what: string; end: (user: SessionUser, token: string) => void }
 	{
 		what: 'the session expires where it stands',
 		end: (_user, token) =>
-			db.update(sessions).set({ expiresAt: '2020-01-01 00:00:00' }).where(eq(sessions.id, token)).run()
+			db.update(sessions).set({ expiresAt: '2020-01-01 00:00:00' }).where(eq(sessions.tokenHash, sessionHashOf(token))).run()
 	},
 	{
 		// The cascade deletes the sessions with the account. A database made
@@ -272,7 +277,7 @@ describe('a stream whose session is still open', () => {
 			const other = makeSession(user);
 			const reader = await open(stream, token);
 
-			db.delete(sessions).where(eq(sessions.id, other)).run();
+			db.delete(sessions).where(eq(sessions.tokenHash, sessionHashOf(other))).run();
 			vi.advanceTimersByTime(stream.every);
 			const mark = newMark();
 			stream.send(mark);
@@ -287,10 +292,11 @@ describe('a stream whose session is still open', () => {
 			const user = stream.who();
 			const token = makeSession(user);
 			const reader = await open(stream, token);
-			// Put where a moved expiry would show, whatever the clock reads.
-			const opened = '2099-01-01 00:00:00';
-			db.update(sessions).set({ expiresAt: opened }).where(eq(sessions.id, token)).run();
-			const expiry = () => db.select().from(sessions).where(eq(sessions.id, token)).get()?.expiresAt;
+			// Put where a moved expiry would show: an hour on, inside every
+			// role's idle limit (card 2775), where a slide would move it further.
+			const opened = stamp(new Date(Date.now() + 60 * 60 * 1000));
+			db.update(sessions).set({ expiresAt: opened }).where(eq(sessions.tokenHash, sessionHashOf(token))).run();
+			const expiry = () => db.select().from(sessions).where(eq(sessions.tokenHash, sessionHashOf(token))).get()?.expiresAt;
 
 			vi.advanceTimersByTime(stream.every * 3);
 			const mark = newMark();
@@ -308,6 +314,32 @@ describe('a stream whose session is still open', () => {
 
 /** Give the account `role`, as the users route does. */
 const setRole = (user: SessionUser, role: string) => db.update(users).set({ role }).where(eq(users.id, user.id)).run();
+
+describe("a stream and its session's deadline (card 2775, CS4)", () => {
+	it('/api/events ends at the deadline itself, before any heartbeat, on a fake clock', async () => {
+		// The clock, the deadline's timer and the heartbeat all faked, so that
+		// the deadline is reached with no heartbeat in between.
+		vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+		const token = makeSession(w.viewer);
+		// Ten seconds on: well before the first heartbeat, at thirty.
+		db.update(sessions).set({ expiresAt: stamp(new Date(Date.now() + 10_000)) }).where(eq(sessions.tokenHash, sessionHashOf(token))).run();
+		const res = await gate('GET', '/api/events', { headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` } });
+		expect(res.status).toBe(200);
+		const reader = res.body!.getReader();
+		readers.push(reader);
+
+		vi.advanceTimersByTime(9_000);
+		vi.advanceTimersByTime(1_000);
+		const mark = newMark();
+		onBoard(mark);
+
+		const { ended, received } = await readUntil(reader, mark);
+		expect(ended).toBe(true);
+		expect(received).not.toContain(mark);
+		// Only the heartbeat sent as it opened: none ran before the end.
+		expect(count(received, ': heartbeat')).toBe(1);
+	});
+});
 
 describe('a stream and a change of role', () => {
 	const [EVENTS, BOARD, LOG] = STREAMS;
@@ -337,8 +369,11 @@ describe('a stream and a change of role', () => {
 			expect(ended).toBe(true);
 			expect(received).not.toContain(mark);
 			expect(count(received, stream.beat)).toBe(stream.beatsAtOpen);
-			// The session is open still: it was the role that ended the stream.
-			expect(sessionStillOpen(token)).toBe(true);
+			// It was the role that ended the stream. The session of an
+			// administrator made a user is open still; that of a user made an
+			// administrator by a write on the host has an expiry beyond an
+			// administrator's idle limit, and has passed too (card 2775, S7).
+			expect(sessionStillOpen(sessionHashOf(token))).toBe(becomes === 'user');
 		});
 	}
 
@@ -432,7 +467,7 @@ describe('a stream and access to its board', () => {
 			expect(received.endsWith(ACCESS_EVENT)).toBe(true);
 			// Not the heartbeat that found it: the session is open still.
 			expect(count(received, BOARD.beat)).toBe(BOARD.beatsAtOpen);
-			expect(sessionStillOpen(token)).toBe(true);
+			expect(sessionStillOpen(sessionHashOf(token))).toBe(true);
 		});
 	}
 
@@ -574,9 +609,9 @@ describe('sessionStillOpen', () => {
 	it('is true of an open session only, and writes and logs nothing', () => {
 		const live = makeSession(w.viewer);
 		const deleted = makeSession(w.viewer);
-		db.delete(sessions).where(eq(sessions.id, deleted)).run();
+		db.delete(sessions).where(eq(sessions.tokenHash, sessionHashOf(deleted))).run();
 		const expired = makeSession(w.viewer);
-		db.update(sessions).set({ expiresAt: '2020-01-01 00:00:00' }).where(eq(sessions.id, expired)).run();
+		db.update(sessions).set({ expiresAt: '2020-01-01 00:00:00' }).where(eq(sessions.tokenHash, sessionHashOf(expired))).run();
 		const orphan = makeSession(w.owner);
 		withoutForeignKeys(() => db.delete(users).where(eq(users.id, w.owner.id)).run());
 
@@ -584,10 +619,10 @@ describe('sessionStillOpen', () => {
 		process.env.LOG_LEVEL = 'DEBUG';
 		const before = snapshotDb();
 
-		expect(sessionStillOpen(live)).toBe(true);
-		expect(sessionStillOpen(deleted)).toBe(false);
-		expect(sessionStillOpen(expired)).toBe(false);
-		expect(sessionStillOpen(orphan)).toBe(false);
+		expect(sessionStillOpen(sessionHashOf(live))).toBe(true);
+		expect(sessionStillOpen(sessionHashOf(deleted))).toBe(false);
+		expect(sessionStillOpen(sessionHashOf(expired))).toBe(false);
+		expect(sessionStillOpen(sessionHashOf(orphan))).toBe(false);
 		expect(sessionStillOpen(undefined)).toBe(false);
 
 		// The live session's expiry is where it was, and the orphan is still
@@ -600,9 +635,9 @@ describe('openSessionUser', () => {
 	it("gives an open session's account as it is now, null for any other, and writes and logs nothing", () => {
 		const live = makeSession(w.admin);
 		const deleted = makeSession(w.admin);
-		db.delete(sessions).where(eq(sessions.id, deleted)).run();
+		db.delete(sessions).where(eq(sessions.tokenHash, sessionHashOf(deleted))).run();
 		const expired = makeSession(w.admin);
-		db.update(sessions).set({ expiresAt: '2020-01-01 00:00:00' }).where(eq(sessions.id, expired)).run();
+		db.update(sessions).set({ expiresAt: '2020-01-01 00:00:00' }).where(eq(sessions.tokenHash, sessionHashOf(expired))).run();
 		const orphan = makeSession(w.owner);
 		withoutForeignKeys(() => db.delete(users).where(eq(users.id, w.owner.id)).run());
 		// Changed since the session was made, and read as it is now.
@@ -611,10 +646,10 @@ describe('openSessionUser', () => {
 		process.env.LOG_LEVEL = 'DEBUG';
 		const before = snapshotDb();
 
-		expect(openSessionUser(live)).toEqual({ ...w.admin, role: 'user' });
-		expect(openSessionUser(deleted)).toBeNull();
-		expect(openSessionUser(expired)).toBeNull();
-		expect(openSessionUser(orphan)).toBeNull();
+		expect(openSessionUser(sessionHashOf(live))).toEqual({ ...w.admin, role: 'user' });
+		expect(openSessionUser(sessionHashOf(deleted))).toBeNull();
+		expect(openSessionUser(sessionHashOf(expired))).toBeNull();
+		expect(openSessionUser(sessionHashOf(orphan))).toBeNull();
 		expect(openSessionUser(undefined)).toBeNull();
 
 		expectUnchanged(before);

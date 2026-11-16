@@ -4,7 +4,7 @@
  * arriving: a password reset, a key deleted, a session ended, a role lowered.
  *
  *     const res = await sendAround('POST', '/api/report-schedules', { session }, body, async () => {
- *         db.delete(sessions).where(eq(sessions.id, session)).run();
+ *         db.delete(sessions).where(eq(sessions.tokenHash, sessionHashOf(session))).run();
  *     });
  *     expect(res).toEqual({ status: 401, body: { message: 'Not authenticated' } });
  *
@@ -45,7 +45,11 @@ export function heldBody(value: unknown) {
 	return { body, wasAsked, release };
 }
 
-/** How the request is let in: an API key, sent as a Bearer header, or a session's token, sent as its cookie. */
+/**
+ * How the request is let in: an API key, sent as a Bearer header, or a
+ * session's code, sent as its cookie, which the gate reads and hashes (card
+ * 2775). A code sent through the gate is a UUID, as one is made.
+ */
 export type HeldCredential = { key: string } | { session: string };
 
 /**
