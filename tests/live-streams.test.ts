@@ -37,10 +37,6 @@ vi.mock('$lib/server/auth', async (importOriginal) => {
 	const real = await importOriginal<typeof import('$lib/server/auth')>();
 	return {
 		...real,
-		sessionStillOpen: (hash: Buffer | undefined) => {
-			if (check.fails) throw new Error('disk I/O error');
-			return real.sessionStillOpen(hash);
-		},
 		openSessionUser: (hash: Buffer | undefined) => {
 			if (check.fails) throw new Error('disk I/O error');
 			return real.openSessionUser(hash);
@@ -67,7 +63,7 @@ vi.mock('$lib/server/board-access', async (importOriginal) => {
 });
 
 import { and, eq } from 'drizzle-orm';
-import { SESSION_COOKIE_NAME, openSessionUser, sessionStillOpen, type SessionUser } from '$lib/server/auth';
+import { SESSION_COOKIE_NAME, openSessionUser, type SessionUser } from '$lib/server/auth';
 import { db, sqlite } from '$lib/server/db';
 import { boardMembers, boards, boardTeams, columns, sessions, teamMembers, users, type Board } from '$lib/server/db/schema';
 import { deleteBoard } from '$lib/server/deletes';
@@ -373,7 +369,7 @@ describe('a stream and a change of role', () => {
 			// administrator made a user is open still; that of a user made an
 			// administrator by a write on the host has an expiry beyond an
 			// administrator's idle limit, and has passed too (card 2775, S7).
-			expect(sessionStillOpen(sessionHashOf(token))).toBe(becomes === 'user');
+			expect(openSessionUser(sessionHashOf(token)) !== null).toBe(becomes === 'user');
 		});
 	}
 
@@ -467,7 +463,7 @@ describe('a stream and access to its board', () => {
 			expect(received.endsWith(ACCESS_EVENT)).toBe(true);
 			// Not the heartbeat that found it: the session is open still.
 			expect(count(received, BOARD.beat)).toBe(BOARD.beatsAtOpen);
-			expect(sessionStillOpen(sessionHashOf(token))).toBe(true);
+			expect(openSessionUser(sessionHashOf(token))).not.toBeNull();
 		});
 	}
 
@@ -603,32 +599,6 @@ describe('a check that cannot be made', () => {
 			expect(JSON.parse(said[0].meta)).toMatchObject({ route: stream.route, error: 'Error: disk I/O error' });
 		});
 	}
-});
-
-describe('sessionStillOpen', () => {
-	it('is true of an open session only, and writes and logs nothing', () => {
-		const live = makeSession(w.viewer);
-		const deleted = makeSession(w.viewer);
-		db.delete(sessions).where(eq(sessions.tokenHash, sessionHashOf(deleted))).run();
-		const expired = makeSession(w.viewer);
-		db.update(sessions).set({ expiresAt: '2020-01-01 00:00:00' }).where(eq(sessions.tokenHash, sessionHashOf(expired))).run();
-		const orphan = makeSession(w.owner);
-		withoutForeignKeys(() => db.delete(users).where(eq(users.id, w.owner.id)).run());
-
-		// Any line it logged, at any level, would be a row of system_logs.
-		process.env.LOG_LEVEL = 'DEBUG';
-		const before = snapshotDb();
-
-		expect(sessionStillOpen(sessionHashOf(live))).toBe(true);
-		expect(sessionStillOpen(sessionHashOf(deleted))).toBe(false);
-		expect(sessionStillOpen(sessionHashOf(expired))).toBe(false);
-		expect(sessionStillOpen(sessionHashOf(orphan))).toBe(false);
-		expect(sessionStillOpen(undefined)).toBe(false);
-
-		// The live session's expiry is where it was, and the orphan is still
-		// there: deleting it is the gate's, which logs it.
-		expectUnchanged(before);
-	});
 });
 
 describe('openSessionUser', () => {

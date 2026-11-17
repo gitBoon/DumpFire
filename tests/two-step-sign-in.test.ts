@@ -37,7 +37,6 @@ import {
 	createSession,
 	openSessionUser,
 	sessionCookieName,
-	sessionStillOpen,
 	validateSession
 } from '$lib/server/auth';
 import {
@@ -150,7 +149,6 @@ describe('sessions made without a second factor (decision 24)', () => {
 		expect(sessionRow(token)?.twoStep).toBe(0);
 
 		// Refused by every reader, which write nothing.
-		expect(sessionStillOpen(sessionHashOf(token))).toBe(false);
 		expect(openSessionUser(sessionHashOf(token))).toBeNull();
 		expect(sessionRow(token)).toBeDefined();
 

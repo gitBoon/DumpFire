@@ -87,7 +87,7 @@ import { inTransaction } from '$lib/server/db/transaction';
 import { apiKeys, inviteTokens, reportSchedules, sessions, taskRequests, users } from '$lib/server/db/schema';
 import { MASTER_PREF, NOTIFICATION_PREFS } from '$lib/notification-prefs';
 import { shouldNotifyUser } from '$lib/server/notifications';
-import { PASSWORD_CHANGED_MEANWHILE, sessionStillOpen, SESSION_COOKIE_NAME, STEP_UP_SIGNED_OUT, type SessionUser } from '$lib/server/auth';
+import { PASSWORD_CHANGED_MEANWHILE, openSessionUser, SESSION_COOKIE_NAME, STEP_UP_SIGNED_OUT, type SessionUser } from '$lib/server/auth';
 import { PASSWORDS_BUSY, checkPassword, makePasswordHash } from '$lib/server/passwords';
 import { holdsFactor } from '$lib/server/mfa-store';
 import { STEP_UP_MISSING, STEP_UP_WRONG } from '$lib/step-up-words';
@@ -2117,7 +2117,7 @@ describe('PUT /api/account/email', () => {
 				await expectDeadLink('waiting');
 
 				// The session that asked is still good.
-				expect(sessionStillOpen(sessionHashOf('my-laptop'))).toBe(true);
+				expect(openSessionUser(sessionHashOf('my-laptop'))).not.toBeNull();
 			}
 		});
 
@@ -2426,8 +2426,8 @@ describe('wrong current passwords', () => {
 		// takes it back.
 		expect((await change(SECOND, OLD)).status).toBe(200);
 		expect(await matches(NEW, hashOf(me.id))).toBe(true);
-		expect(sessionStillOpen(sessionHashOf(FIRST))).toBe(false);
-		expect(sessionStillOpen(sessionHashOf(THEIRS))).toBe(true);
+		expect(openSessionUser(sessionHashOf(FIRST))).toBeNull();
+		expect(openSessionUser(sessionHashOf(THEIRS))).not.toBeNull();
 		expect(countOf(THEIRS)).toBe(2);
 	});
 

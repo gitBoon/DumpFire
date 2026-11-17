@@ -38,7 +38,6 @@ import {
 	cleanExpiredSessions,
 	createSession,
 	openSessionUser,
-	sessionStillOpen,
 	validateSession,
 	type SessionUser
 } from '$lib/server/auth';
@@ -193,7 +192,6 @@ describe('the limits of a session, by the role of its account', () => {
 		}
 
 		vi.setSystemTime(T0 + 24 * HOUR + 1000);
-		expect(sessionStillOpen(sessionHashOf(token))).toBe(false);
 		expect(openSessionUser(sessionHashOf(token))).toBeNull();
 		const from = lastLogId();
 		expect(validateSession(token)).toBeNull();

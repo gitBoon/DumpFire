@@ -619,9 +619,9 @@ type FoundSession =
  * expiry that cannot be believed (`deadlineOf`) has passed. One rule and one
  * refusal, `expired`, for the idle limit and the total alike.
  *
- * Two reads, and nothing written or logged. `validateSession`,
- * `sessionStillOpen`, `openSessionUser` and `stillAuthenticated` all ask it,
- * so that what counts as an open session is decided in one place.
+ * Two reads, and nothing written or logged. `validateSession`, `openSession`
+ * (and through it `openSessionUser`) and `stillAuthenticated` all ask it, so
+ * that what counts as an open session is decided in one place.
  */
 function findSession(hash: Buffer): FoundSession {
 	const session = db.select()
@@ -727,33 +727,18 @@ function sessionUserOf(user: User): SessionUser {
 }
 
 /**
- * Whether the session with this hash is still open: there, before its
- * deadline, and with an account. False for no hash at all.
- *
- * Written for the live streams, which are let in once by the gate and then
- * stay open, so that a sign-out, a password change or a reset stops what an
- * open tab receives. Each stream now asks `openSessionUser` at its heartbeat,
- * the board stream too since card 2170, which answers this and gives the
- * account as well. Unlike `validateSession` it writes and logs nothing. It does not move the
- * expiry on, or an open tab would keep its session alive for ever, and it
- * leaves an orphaned session for the gate to delete.
- */
-export function sessionStillOpen(hash: Buffer | undefined): boolean {
-	return hash !== undefined && findSession(hash).open;
-}
-
-/**
  * The account of the session with this hash as it is now, if the session is
- * still open as `sessionStillOpen` asks it; null if not, or for no hash.
+ * open (`findSession`); null if not, or for no hash.
  *
  * For a live stream let in for what its account was when it opened: the
  * system log for an administrator, every board's events for one, and a
- * board's events for someone who can open it. It asks this at each heartbeat
- * in place of `sessionStillOpen`, and ends when the session has gone or what
+ * board's events for someone who can open it. It asks this at each heartbeat,
+ * and ends when the session has gone or what
  * it was let in for has (the role, or for the board stream access to the
  * board, card 2170), so that an administrator made an ordinary user, or
  * someone taken off a board, stops receiving within one heartbeat.
- * Like `sessionStillOpen` it writes and logs nothing.
+ * It writes and logs nothing, does not move the expiry on, and leaves an
+ * orphaned session for the gate to delete.
  */
 export function openSessionUser(hash: Buffer | undefined): SessionUser | null {
 	return openSession(hash)?.user ?? null;
