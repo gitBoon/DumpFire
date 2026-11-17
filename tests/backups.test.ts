@@ -1389,9 +1389,13 @@ describe('the line in the system log when there are users and no superadmin', ()
 		// Once for each check that reads the database: the superadmin's, the
 		// boards in a loop (card 2142), the secrets still to enter (card 2169),
 		// the boards over the webhook cap (card 2201), the webhooks refused
-		// as written (the webhook review, O1), and the SFTP destinations with no
-		// confirmed host key (card 2250). The ORIGIN check reads none here.
+		// as written (the webhook review, O1), the SFTP destinations with no
+		// confirmed host key (card 2250), the App URL saved and not used (card
+		// 2847), and the App URL in use not saved by the superadmin (its code
+		// review, CS2). The ORIGIN check reads none here.
 		expect(said.mock.calls.map(([line]) => String(line))).toEqual([
+			'[STARTUP] A check of the installation could not be made: the database is not to be had',
+			'[STARTUP] A check of the installation could not be made: the database is not to be had',
 			'[STARTUP] A check of the installation could not be made: the database is not to be had',
 			'[STARTUP] A check of the installation could not be made: the database is not to be had',
 			'[STARTUP] A check of the installation could not be made: the database is not to be had',

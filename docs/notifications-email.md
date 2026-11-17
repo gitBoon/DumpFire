@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.73
+version: 1.74
 status: As-Built
 date: 2026-11-17
 tags:
@@ -119,7 +119,13 @@ administrator or the superadmin (`GET`, `PUT` and `POST /api/admin/smtp` ask `re
 they were the superadmin's alone until card 2395, 2026-10-21, at the owner's request).
 Whoever sets the mail server sees every mail the app sends, invite links and password-reset
 links included, the superadmin's among them, and the App URL, saved by the same route,
-decides where every link in a mail points. Since card 2397 (2026-10-22) who pointed mail where
+decides where every link in a mail points. Since card 2847 a save that would change the App
+URL is the superadmin's alone (`403` to any other administrator, before the password), and
+where the server's configuration names its address (`APP_URL`, or an `ORIGIN` that is not the
+image's `http://localhost:3000`) the App URL must be on it (`400` otherwise) and a stored one
+that is not is not used: the environment wins (see
+[Where a Mailed Link's Address Comes From](authentication-security.md#where-a-mailed-links-address-comes-from)).
+The mail server stays every administrator's (card 2906 asks the owner). Since card 2397 (2026-10-22) who pointed mail where
 it goes, and apart from them who set the App URL to its address, is recorded, by place, in
 `setting_setters` (migration 0059), and that account made a user, or deleted, takes them away:
 see [When the Mail's Setter Is Demoted](#when-the-mails-setter-is-demoted). The system log

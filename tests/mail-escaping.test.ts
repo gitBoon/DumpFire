@@ -332,7 +332,14 @@ describe('every mail in notifications.ts', () => {
 	});
 
 	/** Each mail, sent with the marker in every text it is handed or finds in a row. */
-	const MAILS: { name: string; link: boolean; send: () => void }[] = [
+	/**
+	 * The same address saved as the App URL setting, as a link reads it since
+	 * card 2847's code review (CS1): stored and used as the address it parses
+	 * to, so the quote is `%22` before any escaping.
+	 */
+	const BASE_FROM_SETTING = 'https://dumpfire.example.test/a%22b';
+	/** `link`: whether the mail carries a link, and `'setting'` where it is made on the App URL setting alone. */
+	const MAILS: { name: string; link: boolean | 'setting'; send: () => void }[] = [
 		{
 			name: 'notifyCardMoved',
 			link: true,
@@ -489,7 +496,7 @@ describe('every mail in notifications.ts', () => {
 		{
 			// Card 2679 (decision 3): the decider's notice of a concern, its link made on the App URL setting alone (S6).
 			name: 'notifyDecisionConcern',
-			link: true,
+			link: 'setting',
 			send: () => {
 				db.insert(settings).values({ key: 'app_url', value: BASE }).run();
 				notifications.notifyDecisionConcern(recipient.id, 1, MARKER, 2);
@@ -498,7 +505,7 @@ describe('every mail in notifications.ts', () => {
 		{
 			// Card 2678 (decision 5): the author's or decider's notice of a question, its link made on the App URL setting alone.
 			name: 'notifyDecisionQuestion',
-			link: true,
+			link: 'setting',
 			send: () => {
 				db.insert(settings).values({ key: 'app_url', value: BASE }).run();
 				notifications.notifyDecisionQuestion(recipient.id, 1, MARKER, 2);
@@ -507,7 +514,7 @@ describe('every mail in notifications.ts', () => {
 		{
 			// Card 2678 (decision 5): the asker's notice of an answer, to their account, linking to the decision's page.
 			name: 'notifyQuestionAnswered (account)',
-			link: true,
+			link: 'setting',
 			send: () => {
 				db.insert(settings).values({ key: 'app_url', value: BASE }).run();
 				notifications.notifyQuestionAnswered({ userId: recipient.id }, 1, MARKER);
@@ -553,12 +560,14 @@ describe('every mail in notifications.ts', () => {
 			expect(mail.html).not.toContain(MARKER);
 			expect(mail.html).toContain(MARKER_ESCAPED);
 			expect(mail.html).not.toContain('a"b');
-			if (link) expect(mail.html).toContain(`href="${BASE_ESCAPED}/`);
+			if (link) expect(mail.html).toContain(`href="${link === 'setting' ? BASE_FROM_SETTING : BASE_ESCAPED}/`);
 		}
 	});
 });
 
 describe('a link built from the App URL setting', () => {
+	// Since card 2847's code review (CS1) the setting is used as the address it parses to, so the quote is `%22`
+	// before the href is written: it can end the href neither way.
 	it('is escaped in the href, so a quote in the setting cannot end it', async () => {
 		db.insert(settings).values({ key: 'app_url', value: 'https://dumpfire.example.test/a"b' }).run();
 		const owner = makeUser();
@@ -572,7 +581,7 @@ describe('a link built from the App URL setting', () => {
 		expect(res.status).toBe(201);
 		const mail = onlyMail();
 		expect(mail.to).toBe(owner.email);
-		expect(mail.html).toContain(`href="https://dumpfire.example.test/a&quot;b/board/${board.id}?card=${card.id}"`);
+		expect(mail.html).toContain(`href="https://dumpfire.example.test/a%22b/board/${board.id}?card=${card.id}"`);
 		expect(mail.html).not.toContain('a"b');
 	});
 });

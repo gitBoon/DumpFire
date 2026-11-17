@@ -32,7 +32,8 @@
  *
  * The link's address (decision 13) is the host's own configuration first:
  * `APP_URL`, then `ORIGIN` unless it is the image's placeholder, then the App
- * URL setting, which any administrator can change and is said so; failing
+ * URL setting, which the superadmin alone can change since card 2847 (any
+ * administrator before, so a row may still be theirs) and is said so; failing
  * all three, the path alone, to put the server's address in front of. It
  * says which it used. The link goes to stdout only, and never to the log.
  *
@@ -99,6 +100,29 @@ function appUrlAsRead(value) {
 	return url && !/^https?:\/\//i.test(url) ? `http://${url}` : url;
 }
 
+/**
+ * The App URL setting as it may be used, or null for none or for text that is
+ * no plain web address: `appUrlNormalised` in email.ts (card 2847's code
+ * review, CS1). Refused: a backslash or a control character, a user name or
+ * password, a query or fragment, a path beginning `//`, anything but http or
+ * https. Otherwise the address's origin and path, trailing slashes stripped,
+ * so the link printed is the address that was judged.
+ * @param {string} value
+ */
+function appUrlNormalised(value) {
+	const read = appUrlAsRead(value);
+	if (read === '' || /[\p{Cc}\\]/u.test(read)) return null;
+	let url;
+	try {
+		url = new URL(read);
+	} catch {
+		return null;
+	}
+	if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+	if (url.username || url.password || url.search || url.hash || url.pathname.startsWith('//')) return null;
+	return (url.origin + url.pathname).replace(/\/+$/, '');
+}
+
 /** `ORIGIN` as the node adapter reads it, or null: `configuredOrigin` in email.ts. @param {string | undefined} value */
 function configuredOrigin(value) {
 	if (value === undefined) return null;
@@ -112,7 +136,7 @@ function configuredOrigin(value) {
 
 /**
  * Where the link's address comes from (decision 13): the host's own
- * configuration before a setting any administrator can change, and never the
+ * configuration before a setting an account can change, and never the
  * image's placeholder `ORIGIN`. Null for none.
  *
  * @param {Database.Database} database
@@ -128,13 +152,18 @@ function linkAddress(database) {
 	const row = /** @type {{ value: string | null } | undefined} */ (
 		database.prepare("SELECT value FROM settings WHERE key = 'app_url'").get()
 	);
-	const setting = appUrlAsRead(row?.value ?? '');
+	// Read as the server reads it (card 2847's code review): a row that is no
+	// plain web address is not used, and the link falls to the path alone.
+	// It is used only where the host configures no address, so no origin is
+	// there to hold it to.
+	const setting = appUrlNormalised(row?.value ?? '');
 	if (setting) {
 		return {
 			base: setting,
 			said:
-				"The link's address is from the App URL setting. Warning: an administrator set it, and any administrator " +
-				"can change it. Check it is this server's address before you pass the link on, or set APP_URL on the host."
+				"The link's address is from the App URL setting. Warning: an administrator set it (the superadmin alone " +
+				"since card 2847, any administrator before). Check it is this server's address before you pass the link " +
+				'on, or set APP_URL on the host.'
 		};
 	}
 	return null;

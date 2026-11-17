@@ -11,10 +11,12 @@ import {
 	sendTestEmail,
 	getAppUrl,
 	setAppUrl,
-	appUrlAsRead,
 	appUrlEnvSet,
 	appUrlFrom,
-	appUrlRowReadsAsNone,
+	appUrlNormalised,
+	appUrlOnEnvironment,
+	appUrlRowNotUsed,
+	environmentOrigins,
 	type SmtpConfig
 } from '$lib/server/email';
 import { readBody, readBoolean, readEmail, readNumber, readText, readUrl } from '$lib/server/request-body';
@@ -34,9 +36,28 @@ const log = createLogger('SMTP');
 // either can read an invite or a password reset meant for somebody else, the
 // superadmin's included, and either sets a password. The stored password is
 // still never answered, and is kept only for the server it was saved for.
+// Since card 2847 a save that would change the App URL is the superadmin's
+// alone (403 to anyone else, before the password), and where the server's
+// configuration names its address (APP_URL, or an ORIGIN that is not the
+// image's default) the App URL must be on it (400): the host's word wins.
+// The mail server stays every administrator's (card 2906 asks the owner).
 // Who moved the mail settings (host, port, user, way out) to where they are,
 // and who set the App URL to its address, is recorded (card 2397,
 // setting-setters.ts): that account made a user, or deleted, takes them away.
+
+/**
+ * What a save that would change the App URL is refused with when the caller
+ * is not the superadmin (card 2847): before the password, nothing counted.
+ */
+const APP_URL_NEEDS_SUPERADMIN = 'Setting the App URL needs the superadmin: every link in a mail begins with it. Nothing was saved.';
+
+/**
+ * What an App URL that is no plain web address is refused with (card 2847's
+ * code review, CS1): `appUrlNormalised` answered null for it.
+ */
+const APP_URL_NOT_PLAIN =
+	'The App URL must be a plain web address: http or https, a host and a path, with no user name, password, query, ' +
+	'fragment, backslash or control character, and no path beginning //. Nothing was saved.';
 
 /** The settings a save is logged by (card 2396), in the order its line names them. */
 const MAIL_FIELDS = ['host', 'port', 'allowInsecure', 'user', 'pass', 'fromAddress', 'fromName', 'appUrl'] as const;
@@ -153,7 +174,18 @@ export const GET: RequestHandler = async ({ locals }) => {
  *                                 save stores nothing, so one that came from
  *                                 `APP_URL` stays the environment's. Also
  *                                 stored over a row that reads as none, such
- *                                 as one of spaces alone (its review)
+ *                                 as one of spaces alone (its review), or is
+ *                                 ignored (card 2847). A save that would store
+ *                                 it is the superadmin's alone (403 to anyone
+ *                                 else), and must be on an origin of
+ *                                 `environmentOrigins()` where it names any
+ *                                 (400), empty text excepted (card 2847).
+ *                                 Stored as `appUrlNormalised` makes it, the
+ *                                 string the origin is checked on; text that
+ *                                 is no plain web address (credentials, a
+ *                                 query or fragment, a backslash or control
+ *                                 character, a path beginning //) is 400
+ *                                 (its code review, CS1)
  *
  * A body with none of them is `400 No valid fields to update`, as the backup
  * settings answer one: `{}` was answered 200 and saved nothing.
@@ -218,10 +250,33 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 		if (fromName !== undefined) config.fromName = fromName;
 		// `kanban.example.com` was stored as typed and read as `http://` (card
 		// 2117's second fix pass): it is stored as it is read.
-		const appUrl = readUrl(body, 'appUrl', { allowEmpty: true, complete: true });
-		if (Object.keys(config).length === 0 && appUrl === undefined) throw error(400, 'No valid fields to update');
+		const sentAppUrl = readUrl(body, 'appUrl', { allowEmpty: true, complete: true });
+		if (Object.keys(config).length === 0 && sentAppUrl === undefined) throw error(400, 'No valid fields to update');
 
-		return { setBy, setById, setByRole, before, placesBefore, here, config, allowInsecure, pass, appUrl };
+		// One string is checked, stored and mailed (card 2847's code review,
+		// CS1): the address's origin and path, or a refusal for text that is
+		// no plain web address, whoever sends it.
+		const appUrl = sentAppUrl === undefined ? undefined : appUrlNormalised(sentAppUrl);
+		if (appUrl === null) throw error(400, APP_URL_NOT_PLAIN);
+
+		// Whether the save would store the App URL (card 2401): read so, it
+		// differs from the one in effect, or the stored row is not used (spaces
+		// alone, or ignored as off the server's own address). The panel sends
+		// back what the GET filled it with, which never counts as a change.
+		const appUrlChanges = appUrl !== undefined && (appUrl !== appUrlNormalised(before.appUrl) || appUrlRowNotUsed());
+		if (appUrl !== undefined && appUrlChanges) {
+			// The superadmin's alone (card 2847, D1): every link in a mail begins
+			// with it, the superadmin's own invites and set-up links included.
+			if (setByRole !== 'superadmin') throw error(403, APP_URL_NEEDS_SUPERADMIN);
+			// And on the server's own address where its configuration names one
+			// (D2), the superadmin's too: the host's word wins over any account's.
+			const origins = environmentOrigins();
+			if (appUrl !== '' && !appUrlOnEnvironment(appUrl, origins)) {
+				throw error(400, `The App URL must be on this server's own address (${origins.join(', ')}), which its configuration sets. Nothing was saved.`);
+			}
+		}
+
+		return { setBy, setById, setByRole, before, placesBefore, here, config, allowInsecure, pass, appUrl, appUrlChanges };
 	};
 
 	// The caller's password, asked for again (card 2701), once every refusal
@@ -237,7 +292,7 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 	// and 2395), and runs only while the caller's stored hash is the one their
 	// password was checked against.
 	const { wayOutChangedTo, setBy, setById, changes } = await whilePasswordHolds(userId, hash, () => writeAs(locals, (caller) => {
-		const { setBy, setById, setByRole, before, placesBefore, here, config, allowInsecure, pass, appUrl } = readSave(caller);
+		const { setBy, setById, setByRole, before, placesBefore, here, config, allowInsecure, pass, appUrl, appUrlChanges } = readSave(caller);
 
 		saveSmtpConfig(config);
 
@@ -247,8 +302,9 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 		// of `APP_URL`. Empty text where a setting is stored is stored, and is
 		// none, so `APP_URL` applies again; so is any where a stored row reads as
 		// none (a row of spaces alone), which still hides `APP_URL` (card 2401's
-		// review).
-		if (appUrl !== undefined && (appUrlAsRead(appUrl) !== before.appUrl || appUrlRowReadsAsNone())) setAppUrl(appUrl);
+		// review), or is ignored as off the server's own address (card 2847).
+		// `readSave` has refused it to anyone but the superadmin.
+		if (appUrl !== undefined && appUrlChanges) setAppUrl(appUrl);
 
 		// The saver is now who set where mail goes (card 2397, as its reviews
 		// ruled): the host, port, user or way out moved to a place nobody is

@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.127
+version: 1.128
 status: As-Built
 date: 2026-11-17
 tags:
@@ -759,7 +759,7 @@ reason, and pinned both ways against the handlers (`tests/step-up.test.ts`, case
 | `PUT /api/admin/backup`, **with `destinations`** | admin | Where every later backup is sent |
 | `POST /api/admin/backup` (Run Now) | admin | The whole database to every destination, now |
 | `POST /api/admin/backup/gdrive/auth` (Connect) | admin | Binds a destination to a Google account of the caller's choosing |
-| `PUT /api/admin/smtp` | admin | The mail server invites and resets go through, and the App URL their links point at |
+| `PUT /api/admin/smtp` | admin | The mail server invites and resets go through, and (the superadmin alone, card 2847) the App URL their links point at |
 | `PUT /api/decisions/[id]/participants/[participantId]/account` (card 2697) | admin | Which credential answers for a participant on a decision's record: an account, or a personal link mailed in its place |
 | `PUT /api/decisions/[id]/participants/[participantId]/address` (card 2697) | admin | Ends a participant's personal link and moves where their record mail and next link go |
 | `PUT /api/people/[id]`, **with `email` or `userId`** (card 2697) | admin | Where a person's decision mail and personal links go, or which account answers for them |
@@ -3251,7 +3251,9 @@ for statement, in raw SQL in one `BEGIN IMMEDIATE` transaction, with `issued_by`
   `APP_URL`; then `ORIGIN` unless it is the image's placeholder `http://localhost:3000`; then the
   `app_url` setting, with a warning that an administrator set it; else the path alone, to put the
   server's address in front of. Each is read as `appUrlAsRead()` and `configuredOrigin()` read
-  them. This is the reverse of `linkBaseUrl()`'s order for the admin route, deliberately: the
+  them, and the setting, since card 2847's code review, as `appUrlNormalised()` reads it (a copy
+  in the script): one that is no plain web address is not used, and the path alone is printed.
+  This is the reverse of `linkBaseUrl()`'s order for the admin route, deliberately: the
   host is more trusted than the setting.
 - **Refusals**, each with nothing changed: no username, or more than one argument (exit 2); run
   as root on POSIX, since root-owned `-wal` and `-shm` files would stop the server, which runs as
@@ -4795,11 +4797,11 @@ Google or a test mail leaves the process (card 2253). An administrator made a us
 is on its way is refused there, with nothing saved and nothing sent. The secrets are masked
 exactly as before for every reader, and nothing in them asks who the reader is.
 
-| Who | The mail settings, the App URL, Send Test | The backup settings, Run Now, Test, Connect | Export, import, Reset Everything |
-|-----|------|------|------|
-| An ordinary user | ❌ `403 Forbidden` | ❌ `403 Forbidden` | ❌ `403 This belongs to the superadmin…` |
-| An administrator | ✅ (❌ before card 2395) | ✅ (❌ before card 2395) | ❌ `403 This belongs to the superadmin…` |
-| The superadmin | ✅ | ✅ | ✅ |
+| Who | The mail settings, Send Test | The App URL | The backup settings, Run Now, Test, Connect | Export, import, Reset Everything |
+|-----|------|------|------|------|
+| An ordinary user | ❌ `403 Forbidden` | ❌ `403 Forbidden` | ❌ `403 Forbidden` | ❌ `403 This belongs to the superadmin…` |
+| An administrator | ✅ (❌ before card 2395) | ❌ `403` (✅ from card 2395 to card 2847) | ✅ (❌ before card 2395) | ❌ `403 This belongs to the superadmin…` |
+| The superadmin | ✅ | ✅ | ✅ | ✅ |
 
 **Owner to know.** These were the superadmin's because each is the user list by another way,
 and that is still so:
@@ -4812,7 +4814,11 @@ and that is still so:
 - **An administrator who sets the mail server sees every mail the app sends**, invite links
   and password-reset links included, the superadmin's among them: whoever reads such a link
   sets that account's password. The App URL is saved by the same route and decides where
-  every link in a mail points. Since card 2396 each save that changes the mail settings or
+  every link in a mail points; since card 2847 it is the superadmin's alone, and held to the
+  address the server's configuration names (see
+  [Where a Mailed Link's Address Comes From](#where-a-mailed-links-address-comes-from)), so
+  this paragraph is now about the mail server alone (card 2906 asks the owner whether to make
+  that the superadmin's too). Since card 2396 each save that changes the mail settings or
   the App URL is one line under `SMTP` naming who, with the old and new values (the user
   name and the password as `user changed` and `password changed` alone), always a `WARN`. It
   is logged, not prevented.
@@ -5712,9 +5718,61 @@ An invite, a request's confirmation and reply links, the requester's progress ma
 the "View Task" link in a notification all begin with the server's own address. One
 function gives it, `linkBaseUrl()` in `src/lib/server/email.ts`, and every caller asks it:
 
-1. the App URL setting, which any administrator sets (the superadmin alone until card 2395);
+1. the App URL setting, which the superadmin alone sets (since card 2847; any administrator
+   from card 2395 until then), and only where it is on an origin the server's configuration
+   names, if that names any (`environmentOrigins()`: `APP_URL`'s, and `ORIGIN`'s unless it is
+   the image's `http://localhost:3000`);
 2. the `APP_URL` environment variable;
 3. `ORIGIN`, the address the server was started with, read as the node adapter reads it.
+
+**The App URL is the superadmin's, and the host's configuration wins (card 2847).** Every link
+in a mail begins with it, so an administrator who pointed it at a server of their own could
+collect the password and code of whoever followed a link, the superadmin's included.
+`PUT /api/admin/smtp` refuses a save that would store it (one that, read as a link reads it,
+differs from the App URL in effect, clearing included, or that writes over a row not used) to
+anyone but the superadmin: `403` "Setting the App URL needs the superadmin: every link in a
+mail begins with it. Nothing was saved.", in the step-up's guard, before the password, nothing
+counted. A save that sends back the App URL in effect unchanged, and every mail setting, stay
+every administrator's. Where the configuration names an address, a non-empty App URL on
+another origin is refused `400` "The App URL must be on this server's own address
+(`<origins>`), which its configuration sets. Nothing was saved.", the superadmin's too. And at
+read, `getAppUrl()` does not use a stored row on another origin (saved before this card, or
+brought by an import): links take `APP_URL`'s, or `ORIGIN`'s, and the GET answers `appUrlFrom`
+as if no row were stored. The start says so once at `WARN`: "The App URL saved on the admin
+page, `<url>`, is not used: it is not on this server's own address (`<origins>`), which its
+configuration sets. Links in mail begin with `<base>`. The superadmin can clear it under
+Application Settings." (`reportAppUrlNotUsed()`; not said where card 2850's line was said this
+start about the same row, `https:` on the host of an `http:` `ORIGIN`). The superadmin's empty
+save clears such a row (`appUrlRowNotUsed()`). A change is the existing `Mail settings changed:
+appUrl from "…" to "…" (set by "…")` line at `WARN`; no other line is added. The Application
+Settings panel shows the App URL read-only to other administrators, with no Save, and says
+"Setting the App URL belongs to the superadmin, `<name>`: every link in a mail begins with
+it." The mail server itself stays every administrator's (card 2395); whether to change that is
+card 2906, for the owner to rule.
+
+**One string is checked, stored and used (the card's code review, CS1).** The origin was
+checked on the parsed address while the text was stored and mailed as typed, so
+`https://host.example.com\@evil.example`, a line break before `@host`,
+`https://evil%2f@host.example.com` or `https://host.example.com//evil.example` passed the
+check and sent readers elsewhere. `appUrlNormalised()` in `email.ts` is used on save and on
+read: the text read as a link reads it, parsed, and refused (`400` "The App URL must be a
+plain web address: http or https, a host and a path, with no user name, password, query,
+fragment, backslash or control character, and no path beginning //. Nothing was saved.",
+whoever saves it) or, stored before, not used, where it holds a backslash or a control
+character, a user name or password, a query or fragment, or a path beginning `//`. What is
+stored and answered is the address's origin and path, trailing slashes stripped, so
+`HTTPS://Host.example.com/` is `https://host.example.com`. The start's not-used line quotes
+such a row as JSON (`"https://evil.example\n@host…"`), so no control character reaches the
+log as one, and says "it is not a plain web address".
+
+**An App URL in use that the superadmin did not save is said at start (CS2).** With no
+address configured, a row an administrator saved before card 2847 is still used. Where the
+row is in use and card 2397's record (`settingsHeldBy`) names an account other than the
+superadmin, or none, the start writes one `WARN` line, `reportAppUrlSetByOther()`: "The App URL
+`<url>` was saved by "`<name>`" (or "no recorded account"), not the superadmin; check it, or
+clear it and save it again as the superadmin." Saving the same address again records nothing,
+as the setting does not move, so it is cleared and saved again; the superadmin's move takes the
+place over.
 
 Nothing a request says is used in a built server: not `Host`, not `X-Forwarded-Host`, not
 the address it was sent to. With no App URL set, a link used to take its host from
@@ -5726,7 +5784,9 @@ and the token sets the account's password. Under `vite dev` alone, where there i
 ```mermaid
 flowchart TD
     Mail["A mail that carries a link"] --> Setting{"App URL set?"}
-    Setting -->|"yes"| Use["The link begins with it"]
+    Setting -->|"yes"| OnEnv{"On an origin of APP_URL or a real ORIGIN,\nor neither configured? (card 2847)"}
+    OnEnv -->|"yes"| Use["The link begins with it"]
+    OnEnv -->|"no: not used, said at start"| Env
     Setting -->|"no"| Env{"APP_URL set?"}
     Env -->|"yes"| Use
     Env -->|"no"| Origin{"ORIGIN set?"}

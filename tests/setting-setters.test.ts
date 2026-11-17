@@ -42,7 +42,8 @@ import Database from 'better-sqlite3';
 import { generateBackupData } from '$lib/server/backup';
 import { db, sqlite } from '$lib/server/db';
 import { settingSetters, settings, users } from '$lib/server/db/schema';
-import { settingsHeldBy } from '$lib/server/setting-setters';
+import { mailPlacesNow, recordMailSetters, settingsHeldBy } from '$lib/server/setting-setters';
+import { setAppUrl } from '$lib/server/email';
 import { removeSettingsOfNonAdministrators } from '$lib/server/startup-checks';
 import { load as loadAdminPage } from '../src/routes/admin/+page.server';
 import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
@@ -108,6 +109,19 @@ const setters = () =>
 			...held.destinations.map((name) => ({ setting: `backup_destination:${name}`, userId }))
 		])
 		.sort((a, b) => (a.setting < b.setting ? -1 : a.setting > b.setting ? 1 : 0));
+/**
+ * An administrator's App URL save, as one was recorded before card 2847 made
+ * the App URL the superadmin's (PUT /api/admin/smtp now refuses it 403): the
+ * row written and its setter recorded by the route's own rule
+ * (`recordMailSetters`, as an administrator's move), so that what card 2397
+ * removes on a demotion is still held for such rows. Writes no log line.
+ */
+function appUrlSavedBefore2847(user: SessionUser, url: string): void {
+	const before = mailPlacesNow();
+	setAppUrl(url);
+	recordMailSetters(before, { id: user.id, superadmin: false }, false);
+}
+
 /** The setter rows as stored, each place an account was recorded for. */
 const rows = () => sqlite.prepare('SELECT setting, user_id AS userId FROM setting_setters ORDER BY setting, user_id').all();
 const lines = () =>
@@ -379,8 +393,8 @@ describe('who last changed each setting is recorded (card 2397)', () => {
 		expect((await api('PUT', '/api/admin/smtp', confirmedAs(ann, { host: 'smtp.ann.example', fromAddress: 'a@example.test' }))).status).toBe(200);
 		expect(setters()).toEqual([{ setting: 'mail', userId: ann.id }]);
 
-		// The App URL alone: its own row, and the mail settings stay ann's.
-		expect((await api('PUT', '/api/admin/smtp', confirmedAs(bob, { appUrl: 'https://bob.example' }))).status).toBe(200);
+		// The App URL alone: its own row, and the mail settings stay ann's. Bob's, as saved before card 2847.
+		appUrlSavedBefore2847(bob, 'https://bob.example');
 		expect(setters()).toEqual([
 			{ setting: 'app_url', userId: bob.id },
 			{ setting: 'mail', userId: ann.id }
@@ -420,20 +434,23 @@ describe('who last changed each setting is recorded (card 2397)', () => {
 	});
 
 	it('makes nobody the App URL’s setter by clearing it', async () => {
-		await api('PUT', '/api/admin/smtp', confirmedAs(bob, { appUrl: 'https://bob.example' }));
+		appUrlSavedBefore2847(bob, 'https://bob.example');
 
-		const res = await api('PUT', '/api/admin/smtp', confirmedAs(ann, { appUrl: '' }));
+		// Cleared by the superadmin, whose alone it is since card 2847.
+		const res = await api('PUT', '/api/admin/smtp', confirmedAs(chief, { appUrl: '' }));
 
 		expect(res.status).toBe(200);
 		expect(setting('app_url')).toBe('');
-		// Bob's row stays, for the address he set; none is ann's, and a cleared App URL is nobody's.
+		// Bob's row stays, for the address he set; none is chief's, and a cleared App URL is nobody's.
 		expect(rows()).toEqual([{ setting: 'app_url', userId: bob.id }]);
 		expect(setters()).toEqual([]);
 	});
 
 	it('records nothing for a save that changes nothing, as a mail reads it', async () => {
-		await api('PUT', '/api/admin/smtp', confirmedAs(ann, { host: 'smtp.ann.example', appUrl: 'https://ann.example' }));
+		await api('PUT', '/api/admin/smtp', confirmedAs(ann, { host: 'smtp.ann.example' }));
+		appUrlSavedBefore2847(ann, 'https://ann.example');
 
+		// The App URL sent back unchanged is no change, and so not refused to an administrator (card 2847).
 		const res = await api('PUT', '/api/admin/smtp', confirmedAs(bob, { host: 'smtp.ann.example', port: 587, appUrl: 'https://ann.example' }));
 
 		expect(res.status).toBe(200);
@@ -522,9 +539,11 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 		const mail = await api(
 			'PUT',
 			'/api/admin/smtp',
-			confirmedAs(ann, { host: 'smtp.ann.example', port: 2525, user: 'ann-mailer', pass: 'ann-mail-secret', fromAddress: 'a@example.test', appUrl: 'https://ann.example' })
+			confirmedAs(ann, { host: 'smtp.ann.example', port: 2525, user: 'ann-mailer', pass: 'ann-mail-secret', fromAddress: 'a@example.test' })
 		);
 		expect(mail.status).toBe(200);
+		// Her App URL, as an administrator could save one before card 2847.
+		appUrlSavedBefore2847(ann, 'https://ann.example');
 		expect((await api('PUT', '/api/admin/backup', confirmedAs(ann, { destinations: [...(await shown(as(ann))), ANNS] }))).status).toBe(200);
 		expect((await api('PUT', '/api/admin/backup', confirmedAs(bob, { destinations: [...(await shown(as(bob))), BOBS] }))).status).toBe(200);
 		expect(setters()).toEqual([
@@ -697,8 +716,10 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 				{ setting: 'mail', userId: chief.id }
 			]);
 			for (const { port, prefix, appUrl } of moves) {
-				const moved = await api('PUT', '/api/admin/smtp', confirmedAs(ann, { port, appUrl }));
+				const moved = await api('PUT', '/api/admin/smtp', confirmedAs(ann, { port }));
 				expect(moved.status, JSON.stringify(moved.body)).toBe(200);
+				// Her App URL moves as an administrator's were recorded before card 2847.
+				appUrlSavedBefore2847(ann, appUrl);
 				const dests = (await shown(as(ann))).map((d) => (d.name === 'Keyless' ? { ...d, prefix } : d));
 				const saved = await api('PUT', '/api/admin/backup', confirmedAs(ann, { destinations: dests }));
 				expect(saved.status, JSON.stringify(saved.body)).toBe(200);
@@ -768,8 +789,9 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 	// The card 2397 review: an App URL cleared since its setter saved it was reported, and logged, as
 	// removed. Its second review: the cleared row is not at the place bob set, so it is not his and stays.
 	it('leaves an App URL cleared since its setter saved it, and drops the setter’s row: no field in the answer, no line', async () => {
-		await api('PUT', '/api/admin/smtp', confirmedAs(bob, { appUrl: 'https://bob.example' }));
-		await api('PUT', '/api/admin/smtp', confirmedAs(ann, { appUrl: '' }));
+		appUrlSavedBefore2847(bob, 'https://bob.example');
+		// Cleared by the superadmin, whose alone it is since card 2847.
+		expect((await api('PUT', '/api/admin/smtp', confirmedAs(chief, { appUrl: '' }))).status).toBe(200);
 		expect(rows()).toEqual([{ setting: 'app_url', userId: bob.id }]);
 		const linesBefore = lines().length;
 
@@ -849,8 +871,11 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 
 		it('gives a place an administrator visited first to another administrator who moves there with the password typed, and to the superadmin who moves there with none', async () => {
 			expect((await smtp(chief, { host: 'smtp.chief.example', port: 587, pass: 'chief-secret', appUrl: 'https://chief.example' })).status).toBe(200);
-			expect((await smtp(ann, { port: 2526, pass: 'garbage', appUrl: 'https://first.example' })).status).toBe(200);
-			expect((await smtp(ann, { port: 587, pass: 'garbage', appUrl: 'https://chief.example' })).status).toBe(200);
+			// Ann's App URL moves as an administrator's were recorded before card 2847.
+			expect((await smtp(ann, { port: 2526, pass: 'garbage' })).status).toBe(200);
+			appUrlSavedBefore2847(ann, 'https://first.example');
+			expect((await smtp(ann, { port: 587, pass: 'garbage' })).status).toBe(200);
+			appUrlSavedBefore2847(ann, 'https://chief.example');
 
 			// Bob, an administrator, with the password typed: the mail at 2526 is his, not ann's.
 			expect((await smtp(bob, { port: 2526, pass: 'bobs-real-secret' })).status).toBe(200);
@@ -892,11 +917,14 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 				const dests = (await shown(as(ann))).map((d) => (d.name === 'Keyless' ? { ...d, prefix } : d));
 				expect((await api('PUT', '/api/admin/backup', confirmedAs(ann, { destinations: dests }))).status).toBe(200);
 			};
-			expect((await smtp(ann, { port: 26, appUrl: 'https://ann.example' })).status).toBe(200);
+			// Ann's App URL moves as an administrator's were recorded before card 2847.
+			expect((await smtp(ann, { port: 26 })).status).toBe(200);
+			appUrlSavedBefore2847(ann, 'https://ann.example');
 			await prefixed('b/');
 			expect(setters().map((s) => s.userId)).toEqual([ann.id, ann.id, ann.id]);
 
-			expect((await smtp(ann, { port: 25, appUrl: 'https://legacy.example' })).status).toBe(200);
+			expect((await smtp(ann, { port: 25 })).status).toBe(200);
+			appUrlSavedBefore2847(ann, 'https://legacy.example');
 			await prefixed('a/');
 
 			expect(setters()).toEqual([]);

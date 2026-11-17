@@ -3,9 +3,9 @@
   every link in a mail begins with (card 2281, slice C1a: moved from
   src/routes/admin/+page.svelte).
 
-  Every administrator's since card 2395, with the mail settings it is saved
-  with: the page draws it for each of them, and it reads the App URL itself
-  as it opens.
+  Drawn for every administrator since card 2395, with the mail settings it
+  is saved with: the page draws it for each of them, and it reads the App
+  URL itself as it opens.
 
   Card 2401: the GET says where the App URL comes from, and the line under
   the field says it: an App URL from APP_URL was shown as if saved, and Save
@@ -21,11 +21,25 @@
   Card 2701: Save asks for the caller's own password, in the app's confirm
   dialog: it decides where the links in invites point, and it is saved
   through the mail settings' route, which asks for it.
+
+  Card 2847: setting it is the superadmin's alone, and the route refuses any
+  other administrator. For them the field is read-only, there is no Save, and
+  a line says whose it is and why; the where-from lines stay.
 -->
 <script lang="ts">
 	import { sentAsking, showToast } from '$lib/admin/send';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import { ASKS_FOR_PASSWORD, type StepUpProof } from '$lib/step-up-words';
+
+	let {
+		isSuperadmin = false,
+		superadminName = null
+	}: {
+		/** Whether the reader is the superadmin, who alone may set the App URL (card 2847). */
+		isSuperadmin?: boolean;
+		/** The superadmin's name, for the line another administrator is shown; null if no account is one. */
+		superadminName?: string | null;
+	} = $props();
 
 	// ─── Application Settings ────────────────────────────────────────────
 
@@ -106,12 +120,27 @@
 	<div class="form-row" style="align-items: flex-end">
 		<div style="flex: 2; display: flex; flex-direction: column; gap: 4px">
 			<label style="font-size: 0.72rem; font-weight: 600; color: var(--text-secondary)">Application URL</label>
-			<input type="url" placeholder="https://kanban.example.com" bind:value={appUrl} class="form-input" />
+			<input
+				type="url"
+				placeholder="https://kanban.example.com"
+				bind:value={appUrl}
+				class="form-input"
+				readonly={!isSuperadmin}
+				aria-disabled={isSuperadmin ? undefined : 'true'}
+			/>
 		</div>
-		<button class="btn-primary btn-sm" onclick={() => (askingToSave = true)} disabled={appUrlSaving || appUrlFrom === null} style="flex: none">
-			{appUrlSaving ? 'Saving...' : 'Save'}
-		</button>
+		{#if isSuperadmin}
+			<button class="btn-primary btn-sm" onclick={() => (askingToSave = true)} disabled={appUrlSaving || appUrlFrom === null} style="flex: none">
+				{appUrlSaving ? 'Saving...' : 'Save'}
+			</button>
+		{/if}
 	</div>
+	{#if !isSuperadmin}
+		<!-- Card 2847: the superadmin's alone; no Save, so no dialog asks for a password the server would only refuse. -->
+		<p class="app-url-superadmin" style="font-size: 0.68rem; color: var(--text-secondary); margin-top: var(--space-xs)">
+			🔒 Setting the App URL belongs to the superadmin{#if superadminName}, <strong>{superadminName}</strong>{/if}: every link in a mail begins with it.
+		</p>
+	{/if}
 	{#if appUrlUnread}
 		<p class="app-url-unread" style="font-size: 0.68rem; color: var(--accent-amber); margin-top: var(--space-xs)">
 			⚠️ The page could not read the App URL settings: reload the page before saving.
@@ -135,7 +164,7 @@
 	{/if}
 	{#if appUrlFrom !== null && !appUrl}
 		<p style="font-size: 0.68rem; color: var(--accent-amber); margin-top: var(--space-xs)">
-			⚠️ No App URL set. Links in mail begin with the address the server was started with (ORIGIN), and never with what a request says. If that is not the address people reach this server at, set it here.
+			⚠️ No App URL set. Links in mail begin with the address the server was started with (ORIGIN), and never with what a request says. If that is not the address people reach this server at, {isSuperadmin ? 'set it here' : 'ask the superadmin to set it'}.
 		</p>
 	{/if}
 </section>

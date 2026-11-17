@@ -28,7 +28,8 @@ import { inviteTokens, settings, taskRequests, type Board, type Card, type Colum
 import { NO_LINK_ADDRESS, PLACEHOLDER_ORIGIN, configuredOrigin, linkBaseUrl } from '$lib/server/email';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { issueFormToken } from '$lib/server/request-tokens';
-import { reportInstallation, reportPlaceholderOrigin } from '$lib/server/startup-checks';
+import { reportAppUrlNotUsed, reportAppUrlSetByOther, reportInstallation, reportPlaceholderOrigin } from '$lib/server/startup-checks';
+import { mailPlacesNow, recordMailSetters } from '$lib/server/setting-setters';
 import { api, type ApiResult } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
 import { FIXTURE_PASSWORD, addBoardMember, makeBoard, makeCard, makeSmtp, makeUser, resetDb, stepUp } from './helpers/fixtures';
@@ -223,11 +224,13 @@ const SOURCES: { name: string; arrange: () => void; base: string }[] = [
 	{
 		name: 'the App URL setting',
 		arrange: () => {
-			setAppUrl('https://dumpfire.example.test');
+			// On ORIGIN's origin, with a path of its own: since card 2847 a setting
+			// on another origin than the configuration names is not used.
+			setAppUrl('https://from-origin.example.test/dumpfire');
 			process.env.APP_URL = 'https://from-app-url.example.test';
 			process.env.ORIGIN = 'https://from-origin.example.test';
 		},
-		base: 'https://dumpfire.example.test'
+		base: 'https://from-origin.example.test/dumpfire'
 	},
 	{
 		name: 'APP_URL, with no App URL set',
@@ -283,8 +286,9 @@ describe('linkBaseUrl, the one function that decides', () => {
 			expect(linkBaseUrl(FROM, isDev)).toBe('https://from-origin.example.test');
 			process.env.APP_URL = 'https://from-app-url.example.test';
 			expect(linkBaseUrl(FROM, isDev)).toBe('https://from-app-url.example.test');
-			setAppUrl('https://dumpfire.example.test');
-			expect(linkBaseUrl(FROM, isDev)).toBe('https://dumpfire.example.test');
+			// On an origin the configuration names (card 2847).
+			setAppUrl('https://from-origin.example.test/dumpfire');
+			expect(linkBaseUrl(FROM, isDev)).toBe('https://from-origin.example.test/dumpfire');
 
 			db.delete(settings).run();
 			delete process.env.APP_URL;
@@ -507,5 +511,140 @@ describe('the line in the system log when ORIGIN is still the address the image 
 		process.env.ORIGIN = PLACEHOLDER_ORIGIN;
 
 		expect(linkBaseUrl(new URL(at('/')), false)).toBe(PLACEHOLDER_ORIGIN);
+	});
+});
+
+// Card 2847, D3: a saved App URL on another origin than the configuration names is not used, and the start says so.
+describe('the line in the system log when the App URL saved is not used (card 2847)', () => {
+	const lines = () =>
+		sqlite.prepare("SELECT level, message FROM system_logs WHERE context = 'STARTUP' ORDER BY id").all() as {
+			level: string;
+			message: string;
+		}[];
+	const rowIs = (value: string) => {
+		sqlite.prepare("DELETE FROM settings WHERE key = 'app_url'").run();
+		setAppUrl(value);
+	};
+
+	beforeEach(() => {
+		process.env.LOG_LEVEL = 'WARN';
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+	});
+
+	it('is one WARN line as the server starts naming the row, the configured origins and where links begin; none where the row is used, nothing is configured, or card 2850’s line applies', () => {
+		rowIs('https://elsewhere.example.test');
+		process.env.ORIGIN = 'https://origin.example.test';
+		// With a superadmin, so that this is all there is to say.
+		makeUser({ username: 'chief', role: 'superadmin' });
+
+		reportInstallation();
+
+		expect(lines()).toEqual([
+			{
+				level: 'WARN',
+				message:
+					"The App URL saved on the admin page, https://elsewhere.example.test, is not used: it is not on this server's own address " +
+					'(https://origin.example.test), which its configuration sets. Links in mail begin with https://origin.example.test. ' +
+					'The superadmin can clear it under Application Settings.'
+			}
+		]);
+
+		// On the configured origin: used, and nothing to say.
+		rowIs('https://origin.example.test/board');
+		expect(reportAppUrlNotUsed()).toBe(false);
+		// Nothing configured, the image's placeholder ORIGIN included: the setting is the only word on the address.
+		rowIs('https://elsewhere.example.test');
+		delete process.env.ORIGIN;
+		expect(reportAppUrlNotUsed()).toBe(false);
+		process.env.ORIGIN = PLACEHOLDER_ORIGIN;
+		expect(reportAppUrlNotUsed()).toBe(false);
+		// An https App URL on the host of an http ORIGIN, where card 2850's line was said this start: that line names it.
+		rowIs('https://host.example.test');
+		process.env.ORIGIN = 'http://host.example.test';
+		expect(reportAppUrlNotUsed(true)).toBe(false);
+
+		expect(lines()).toHaveLength(1);
+	});
+
+	// The code review, CS3: it was kept back on the hosts alone, also where COOKIE_SECURE had kept card 2850's line back.
+	it('is said where card 2850’s line is not, COOKIE_SECURE keeping it back, and only card 2850’s is said where it is', () => {
+		rowIs('https://host.example.test');
+		process.env.ORIGIN = 'http://host.example.test';
+		makeUser({ username: 'chief', role: 'superadmin' });
+		const secure = process.env.COOKIE_SECURE;
+		process.env.COOKIE_SECURE = 'true';
+		try {
+			reportInstallation();
+		} finally {
+			if (secure === undefined) delete process.env.COOKIE_SECURE;
+			else process.env.COOKIE_SECURE = secure;
+		}
+
+		expect(lines()).toEqual([
+			{
+				level: 'WARN',
+				message:
+					"The App URL saved on the admin page, https://host.example.test, is not used: it is not on this server's own address " +
+					'(http://host.example.test), which its configuration sets. Links in mail begin with http://host.example.test. ' +
+					'The superadmin can clear it under Application Settings.'
+			}
+		]);
+
+		sqlite.prepare('DELETE FROM system_logs').run();
+		delete process.env.COOKIE_SECURE;
+		reportInstallation();
+		expect(lines().map((line) => line.message)).toEqual([expect.stringMatching(/^ORIGIN is http:\/\/host\.example\.test but the App URL is https:\/\/host\.example\.test:/)]);
+	});
+
+	// The code review, CS1: a row that is no plain web address is said quoted, so no control character reaches the log as one.
+	it('quotes a saved App URL that is no plain web address', () => {
+		rowIs('https://evil.example\n@host.example.test');
+		expect(reportAppUrlNotUsed()).toBe(true);
+		expect(lines().map((line) => line.message)).toEqual([
+			'The App URL saved on the admin page, "https://evil.example\\n@host.example.test", is not used: it is not a plain web address. ' +
+				'Links in mail begin with no address: none is configured. The superadmin can clear it under Application Settings.'
+		]);
+	});
+});
+
+// The code review, CS2: with no address configured, a row an administrator saved before card 2847 still steers every link.
+describe('the line in the system log when the App URL in use was not saved by the superadmin (card 2847)', () => {
+	const lines = () =>
+		(sqlite.prepare("SELECT message FROM system_logs WHERE context = 'STARTUP' ORDER BY id").all() as { message: string }[]).map((line) => line.message);
+	/** The App URL row, and who is recorded as having set it, as the route records a save (card 2397). */
+	const savedBy = (who: SessionUser, url: string) => {
+		const before = mailPlacesNow();
+		setAppUrl(url);
+		recordMailSetters(before, { id: who.id, superadmin: who.role === 'superadmin' }, false);
+	};
+	const ASK = 'not the superadmin; check it, or clear it and save it again as the superadmin.';
+
+	beforeEach(() => {
+		process.env.LOG_LEVEL = 'WARN';
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+	});
+
+	it('names the account recorded, or none, and says nothing of the superadmin’s or of one not used', () => {
+		const chief = makeUser({ username: 'chief', role: 'superadmin' });
+		savedBy(admin, 'https://admins.example.test');
+
+		// Said as the server starts, with nothing configured, so the row is in use.
+		reportInstallation();
+		expect(lines()).toEqual([`The App URL https://admins.example.test was saved by "admin", ${ASK}`]);
+
+		sqlite.prepare("DELETE FROM setting_setters WHERE setting = 'app_url'").run();
+		expect(reportAppUrlSetByOther()).toBe(true);
+		expect(lines()[1]).toBe(`The App URL https://admins.example.test was saved by no recorded account, ${ASK}`);
+
+		// Not in use: ORIGIN names another address (the not-used line says that one).
+		process.env.ORIGIN = 'https://origin.example.test';
+		expect(reportAppUrlSetByOther()).toBe(false);
+		delete process.env.ORIGIN;
+
+		// The superadmin's: nothing to say.
+		sqlite.prepare("DELETE FROM settings WHERE key = 'app_url'").run();
+		savedBy(chief, 'https://chiefs.example.test');
+		expect(reportAppUrlSetByOther()).toBe(false);
+		expect(lines()).toHaveLength(2);
 	});
 });

@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.128
+version: 1.129
 status: As-Built
 date: 2026-11-17
 tags:
@@ -1239,7 +1239,7 @@ The page keeps its props, `isSuperadmin` and `superadminName`, the `{#if isSuper
 | Component (`src/lib/components/admin/`) | Drawn for | What it holds |
 |---|---|---|
 | `AdminOverview.svelte` | every administrator | Database Overview: the counts of boards, columns, cards, categories, users and teams, and the database's size |
-| `AppUrlPanel.svelte` | every administrator (the superadmin until card 2395) | The App URL; reads its own setting when drawn (its local `data`, which hid the page's, is `settings`), says under the field where it comes from (`appUrlFrom`: saved, `APP_URL` or none; `appUrlEnvSet` says whether clearing a saved one goes back to `APP_URL` or to `ORIGIN`) and reads it again after a save (card 2401); Save waits for the read, and a failed read is said under the field (its review) |
+| `AppUrlPanel.svelte` | every administrator (the superadmin until card 2395); set by the superadmin alone since card 2847, read-only to other administrators (`isSuperadmin`, `superadminName`: no Save, and a line saying whose it is) | The App URL; reads its own setting when drawn (its local `data`, which hid the page's, is `settings`), says under the field where it comes from (`appUrlFrom`: saved, `APP_URL` or none; `appUrlEnvSet` says whether clearing a saved one goes back to `APP_URL` or to `ORIGIN`) and reads it again after a save (card 2401); Save waits for the read, and a failed read is said under the field (its review) |
 | `BackupRestorePanel.svelte` | the superadmin | Export, the import, its dialog and its report; `importOutsideDefault` |
 | `ScheduledBackupsPanel.svelte` | every administrator (the superadmin until card 2395) | The schedule, the destinations and their Test and Confirm, Run Now; reads its own settings when drawn; draws the two forms, the history and the Drive box. Takes `isSuperadmin` from the page (card 2398): for an administrator, 🗑️ and the schedule's Disabled are `aria-disabled` and say the rule, and a lower Keep Last is put back, nothing sent; the edit form says under the name that renaming needs the superadmin. A refused save reads the settings again quietly, so the controls show what the server holds (card 2398's review) |
 | `DestinationForm.svelte` | every administrator, within the scheduled backups panel | The add and edit forms kept verbatim behind `mode`, their fields bound from the panel so Edit and Add behave as before |

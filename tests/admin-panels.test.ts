@@ -1274,6 +1274,31 @@ describe('the App URL panel, mounted', () => {
 		expect(target.querySelector<HTMLInputElement>('input[type="url"]')!.value).toBe('https://kanban.example.com');
 	});
 
+	it('is read-only to an administrator, with no Save and a line naming the superadmin, and has Save for the superadmin (card 2847)', async () => {
+		const target = draw(AppUrlPanel, { isSuperadmin: false, superadminName: 'chief' });
+		await settle();
+
+		const field = target.querySelector<HTMLInputElement>('input[type="url"]')!;
+		expect(field.value).toBe('https://kanban.example.com');
+		expect(field.readOnly).toBe(true);
+		expect(field.getAttribute('aria-disabled')).toBe('true');
+		expect([...target.querySelectorAll('button')].map((button) => button.textContent!.trim())).toEqual([]);
+		expect(target.querySelector('.app-url-superadmin')!.textContent!.replace(/\s+/g, ' ').trim()).toBe(
+			'🔒 Setting the App URL belongs to the superadmin, chief: every link in a mail begins with it.'
+		);
+		expect(target.querySelector('.app-url-superadmin strong')!.textContent).toBe('chief');
+		// Read, and nothing sent besides.
+		expect(sent.map((request) => request.what)).toEqual(['GET /api/admin/smtp']);
+
+		unmount(drawn!.component);
+		drawn!.target.remove();
+		const own = draw(AppUrlPanel, { isSuperadmin: true, superadminName: 'chief' });
+		await settle();
+		expect(own.querySelector<HTMLInputElement>('input[type="url"]')!.readOnly).toBe(false);
+		expect(buttonNamed(own, 'Save')).toBeDefined();
+		expect(own.querySelector('.app-url-superadmin')).toBeNull();
+	});
+
 	// Card 2401: an App URL from APP_URL was shown as if it were saved.
 	// Its review: what clearing a saved App URL goes back to, APP_URL or ORIGIN, is said by whether APP_URL is set.
 	const FROM = {
@@ -1290,7 +1315,8 @@ describe('the App URL panel, mounted', () => {
 		['none', false, '', null, true]
 	] as const)('says under the field where the App URL comes from: %s, APP_URL set %s (card 2401)', async (appUrlFrom, appUrlEnvSet, appUrl, line, warned) => {
 		answer = (what) => (what === 'GET /api/admin/smtp' ? Response.json({ configured: false, appUrl, appUrlFrom, appUrlEnvSet }) : undefined);
-		const target = draw(AppUrlPanel);
+		// The superadmin's panel, with Save (card 2847).
+		const target = draw(AppUrlPanel, { isSuperadmin: true });
 		await settle();
 
 		expect(target.querySelector<HTMLInputElement>('input[type="url"]')!.value).toBe(appUrl);
@@ -1303,7 +1329,8 @@ describe('the App URL panel, mounted', () => {
 	it('hides where the App URL comes from while the field holds another, and shows it again once it holds the one read (card 2401 review)', async () => {
 		answer = (what) =>
 			what === 'GET /api/admin/smtp' ? Response.json({ configured: false, appUrl: 'https://env.example.com', appUrlFrom: 'environment', appUrlEnvSet: true }) : undefined;
-		const target = draw(AppUrlPanel);
+		// The superadmin's panel, with Save (card 2847).
+		const target = draw(AppUrlPanel, { isSuperadmin: true });
 		await settle();
 		const field = target.querySelector<HTMLInputElement>('input[type="url"]')!;
 
@@ -1317,7 +1344,8 @@ describe('the App URL panel, mounted', () => {
 	it('keeps Save off until the App URL is read, and off with the reason where it could not be (card 2401 review)', async () => {
 		const get = held(() => Response.json({ message: 'Server error' }, { status: 500 }));
 		answer = (what) => (what === 'GET /api/admin/smtp' ? get.answered : undefined);
-		const target = draw(AppUrlPanel);
+		// The superadmin's panel, with Save (card 2847).
+		const target = draw(AppUrlPanel, { isSuperadmin: true });
 		await settle();
 
 		// On its way: nothing to save from, and nothing said yet.
@@ -1337,7 +1365,8 @@ describe('the App URL panel, mounted', () => {
 
 	it('keeps Save off with the reason where the server cannot be reached (card 2401 review)', async () => {
 		answer = (what) => (what === 'GET /api/admin/smtp' ? Promise.reject(new TypeError('Failed to fetch')) : undefined);
-		const target = draw(AppUrlPanel);
+		// The superadmin's panel, with Save (card 2847).
+		const target = draw(AppUrlPanel, { isSuperadmin: true });
 		await settle();
 
 		expect(buttonNamed(target, 'Save').disabled).toBe(true);
@@ -1356,7 +1385,8 @@ describe('the App URL panel, mounted', () => {
 					: { configured: true, appUrl: 'https://env.example.com', appUrlFrom: 'environment' }
 			);
 		};
-		const target = draw(AppUrlPanel);
+		// The superadmin's panel, with Save (card 2847).
+		const target = draw(AppUrlPanel, { isSuperadmin: true });
 		await settle();
 		const field = target.querySelector<HTMLInputElement>('input[type="url"]')!;
 
@@ -1387,7 +1417,8 @@ describe('the App URL panel, mounted', () => {
 					? Response.json({ message: 'Password is incorrect. Nothing was changed.', stepUp: 'wrong' }, { status: 403 })
 					: Response.json({ success: true })
 				: undefined;
-		const target = draw(AppUrlPanel);
+		// The superadmin's panel, with Save (card 2847).
+		const target = draw(AppUrlPanel, { isSuperadmin: true });
 		await settle();
 		buttonNamed(target, 'Save').click();
 		flushSync();

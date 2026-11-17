@@ -35,7 +35,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { db, sqlite } from '$lib/server/db';
 import { settings } from '$lib/server/db/schema';
-import { TLS_FAULT_HINT, appUrlAsRead, sendEmail, sendEmailWithAttachment, sendTestEmail } from '$lib/server/email';
+import { TLS_FAULT_HINT, appUrlAsRead, linkBaseUrl, sendEmail, sendEmailWithAttachment, sendTestEmail } from '$lib/server/email';
 import { eq } from 'drizzle-orm';
 import { api } from './helpers/api';
 import { FIXTURE_PASSWORD, makeSession, makeUser, resetDb, stepUp, stepUpCode, stepUpFactor } from './helpers/fixtures';
@@ -418,13 +418,14 @@ describe('the line a save of the mail settings writes (card 2396)', () => {
 		['fromAddress', { fromAddress: 'new@example.test' }, 'WARN', 'fromAddress from "board@example.test" to "new@example.test"', { field: 'fromAddress', from: 'board@example.test', to: 'new@example.test' }],
 		['fromName', { fromName: 'The "New" Board' }, 'WARN', 'fromName from "The Board" to "The \\"New\\" Board"', { field: 'fromName', from: 'The Board', to: 'The "New" Board' }],
 		['appUrl', { appUrl: 'https://kanban.example.test' }, 'WARN', 'appUrl from "" to "https://kanban.example.test"', { field: 'appUrl', from: '', to: 'https://kanban.example.test' }]
-	] as const)('logs %s changed, naming the administrator who saved it', async (_field, change, lineLevel, words, meta) => {
-		const deputy = makeUser({ username: 'deputy', role: 'admin' });
-		const res = await api('PUT', '/api/admin/smtp', stepUp(deputy, { ...PANEL, ...change }));
+	] as const)('logs %s changed, naming the administrator who saved it', async (field, change, lineLevel, words, meta) => {
+		// The App URL is the superadmin's since card 2847: chief saves it, an administrator the rest.
+		const saver = field === 'appUrl' ? chief : makeUser({ username: 'deputy', role: 'admin' });
+		const res = await api('PUT', '/api/admin/smtp', stepUp(saver, { ...PANEL, ...change }));
 
 		expect(res.status, JSON.stringify(res.body)).toBe(200);
 		expect(mailLines()).toEqual([
-			{ level: lineLevel, context: 'SMTP', message: `Mail settings changed: ${words} (set by "deputy")`, meta: { changes: [meta] }, user_id: deputy.id }
+			{ level: lineLevel, context: 'SMTP', message: `Mail settings changed: ${words} (set by "${saver.username}")`, meta: { changes: [meta] }, user_id: saver.id }
 		]);
 	});
 
@@ -543,10 +544,11 @@ describe('where the App URL comes from, and a save that leaves it as it is (card
 				setRow('');
 				process.env.APP_URL = ENV;
 			}, { appUrl: ENV, appUrlFrom: 'environment' }],
+			// On APP_URL's origin, so that it is used (card 2847: one on another origin is not).
 			['a row and APP_URL', () => {
-				setRow('saved.example.test');
+				setRow(`${ENV}/x/`);
 				process.env.APP_URL = ENV;
-			}, { appUrl: 'http://saved.example.test', appUrlFrom: 'setting' }],
+			}, { appUrl: `${ENV}/x`, appUrlFrom: 'setting' }],
 			['a row of spaces and APP_URL', () => {
 				setRow('   ');
 				process.env.APP_URL = ENV;
@@ -576,16 +578,18 @@ describe('where the App URL comes from, and a save that leaves it as it is (card
 	});
 
 	it('rewrites nothing for a stored App URL saved as it is, and stores one typed over it, APP_URL’s included', async () => {
-		process.env.APP_URL = ENV;
+		// APP_URL on the row's origin, so that the row is used (card 2847).
+		const variable = 'http://saved.example.test/app';
+		process.env.APP_URL = variable;
 		// Stored with no scheme, before card 2117: read as `http://`.
 		setRow('saved.example.test');
 
 		expect((await save({ appUrl: 'http://saved.example.test/' })).status).toBe(200);
 		expect(stored().app_url).toBe('saved.example.test');
 
-		expect((await save({ appUrl: ENV })).status).toBe(200);
-		expect(stored().app_url).toBe(ENV);
-		expect(await answered()).toEqual({ appUrl: ENV, appUrlFrom: 'setting' });
+		expect((await save({ appUrl: variable })).status).toBe(200);
+		expect(stored().app_url).toBe(variable);
+		expect(await answered()).toEqual({ appUrl: variable, appUrlFrom: 'setting' });
 	});
 
 	it('gives way to APP_URL when the stored App URL is saved empty, and logs the change', async () => {
@@ -594,12 +598,13 @@ describe('where the App URL comes from, and a save that leaves it as it is (card
 		const quiet = [vi.spyOn(console, 'log').mockImplementation(() => {}), vi.spyOn(console, 'warn').mockImplementation(() => {})];
 		try {
 			process.env.APP_URL = ENV;
-			setRow('https://saved.example.test');
+			// On APP_URL's origin, so that it is used until it is cleared (card 2847).
+			setRow(`${ENV}/saved`);
 
 			expect((await save({ appUrl: '' })).status).toBe(200);
 			expect(await answered()).toEqual({ appUrl: ENV, appUrlFrom: 'environment' });
 			const lines = sqlite.prepare("SELECT message FROM system_logs WHERE message LIKE 'Mail settings changed:%'").all() as { message: string }[];
-			expect(lines.map((line) => line.message)).toEqual([`Mail settings changed: appUrl from "https://saved.example.test" to "${ENV}" (set by "chief")`]);
+			expect(lines.map((line) => line.message)).toEqual([`Mail settings changed: appUrl from "${ENV}/saved" to "${ENV}" (set by "chief")`]);
 		} finally {
 			for (const spy of quiet) spy.mockRestore();
 			if (level === undefined) delete process.env.LOG_LEVEL;
@@ -643,12 +648,14 @@ describe('where the App URL comes from, and a save that leaves it as it is (card
 		expect(appUrlAsRead('Http://kanban.example.test')).toBe('Http://kanban.example.test');
 		expect(appUrlAsRead('kanban.example.test')).toBe('http://kanban.example.test');
 
+		// Since card 2847's code review (CS1) a saved App URL is used, and stored, as the address it parses to:
+		// the scheme and host in small letters.
 		setRow('HTTPS://Saved.example.test');
-		expect(await answered()).toEqual({ appUrl: 'HTTPS://Saved.example.test', appUrlFrom: 'setting' });
+		expect(await answered()).toEqual({ appUrl: 'https://saved.example.test', appUrlFrom: 'setting' });
 
 		expect((await save({ appUrl: 'HTTPS://Typed.example.test/' })).status).toBe(200);
-		expect(stored().app_url).toBe('HTTPS://Typed.example.test');
-		expect(await answered()).toEqual({ appUrl: 'HTTPS://Typed.example.test', appUrlFrom: 'setting' });
+		expect(stored().app_url).toBe('https://typed.example.test');
+		expect(await answered()).toEqual({ appUrl: 'https://typed.example.test', appUrlFrom: 'setting' });
 
 		db.delete(settings).where(eq(settings.key, 'app_url')).run();
 		process.env.APP_URL = 'HTTPS://Env.example.test';
@@ -664,6 +671,146 @@ describe('where the App URL comes from, and a save that leaves it as it is (card
 		expect((await save({ appUrl: '' })).status).toBe(200);
 		expect(stored().app_url).toBe('');
 		expect(await answered()).toEqual({ appUrl: ENV, appUrlFrom: 'environment' });
+	});
+});
+
+/**
+ * Card 2847. Every link in a mail begins with the App URL, and any
+ * administrator could point it at a server of their own. Now a save that
+ * would store it is the superadmin's alone, refused to anyone else before the
+ * password; where the server's configuration names its address (`APP_URL`,
+ * or an `ORIGIN` that is not the image's default) the App URL must be on it,
+ * the superadmin's too; and a stored one that is not is not used.
+ */
+describe('the App URL is the superadmin’s (card 2847)', () => {
+	const NEEDS_SUPERADMIN = 'Setting the App URL needs the superadmin: every link in a mail begins with it. Nothing was saved.';
+	const VARIABLES = ['APP_URL', 'ORIGIN', 'LOG_LEVEL'] as const;
+	let environment: Record<string, string | undefined>;
+	let quiet: ReturnType<typeof vi.spyOn>[];
+	beforeEach(() => {
+		environment = Object.fromEntries(VARIABLES.map((name) => [name, process.env[name]]));
+		delete process.env.APP_URL;
+		delete process.env.ORIGIN;
+		process.env.LOG_LEVEL = 'WARN';
+		quiet = [vi.spyOn(console, 'log').mockImplementation(() => {}), vi.spyOn(console, 'warn').mockImplementation(() => {})];
+	});
+	afterEach(() => {
+		for (const spy of quiet) spy.mockRestore();
+		for (const name of VARIABLES) {
+			if (environment[name] === undefined) delete process.env[name];
+			else process.env[name] = environment[name];
+		}
+	});
+
+	const setRow = (value: string) => db.insert(settings).values({ key: 'app_url', value }).onConflictDoUpdate({ target: settings.key, set: { value } }).run();
+	const answered = async () => {
+		const res = await api('GET', '/api/admin/smtp', { user: chief });
+		expect(res.status).toBe(200);
+		return { appUrl: res.body.appUrl, appUrlFrom: res.body.appUrlFrom };
+	};
+	/** The lines a save of the App URL wrote (card 2396's), oldest first. */
+	const appUrlLines = () =>
+		(sqlite.prepare("SELECT message FROM system_logs WHERE message LIKE 'Mail settings changed: appUrl%' ORDER BY id").all() as { message: string }[]).map(
+			(line) => line.message
+		);
+
+	it('refuses an administrator’s change of the App URL, new or cleared, before the password; leaves them the rest; saves the superadmin’s, with the line naming both values', async () => {
+		const deputy = makeUser({ username: 'deputy', role: 'admin' });
+		setRow('https://kanban.example.test');
+
+		for (const appUrl of ['https://elsewhere.example.test', '']) {
+			// Its session, factor and code made before the snapshot.
+			const request = stepUp(deputy, { appUrl });
+			const before = snapshotDb();
+
+			const res = await api('PUT', '/api/admin/smtp', request);
+
+			expect(res.status, appUrl).toBe(403);
+			expect(res.body.message).toBe(NEEDS_SUPERADMIN);
+			// Nothing written: not the App URL, nor the session's count or the code's step, which a compare writes.
+			expectUnchanged(before);
+		}
+		expect(appUrlLines()).toEqual([]);
+
+		// The App URL in effect sent back unchanged, and a mail setting alone: still every administrator's.
+		expect((await api('PUT', '/api/admin/smtp', stepUp(deputy, { appUrl: 'https://kanban.example.test/' }))).status).toBe(200);
+		expect((await api('PUT', '/api/admin/smtp', stepUp(deputy, { ...PANEL, fromName: 'The Deputy' }))).status).toBe(200);
+		expect(stored()).toMatchObject({ app_url: 'https://kanban.example.test', smtp_from_name: 'The Deputy' });
+
+		// The superadmin's change: saved, and said at WARN with the old value and the new (card 2396's line).
+		expect((await save({ appUrl: 'https://new.example.test' })).status).toBe(200);
+		expect(stored().app_url).toBe('https://new.example.test');
+		expect(appUrlLines()).toEqual(['Mail settings changed: appUrl from "https://kanban.example.test" to "https://new.example.test" (set by "chief")']);
+	});
+
+	it.each([
+		{ name: 'APP_URL', env: { APP_URL: 'https://env.example.test' }, origins: 'https://env.example.test', allowed: 'https://ENV.example.test/board' },
+		{ name: 'ORIGIN alone', env: { ORIGIN: 'https://origin.example.test' }, origins: 'https://origin.example.test', allowed: 'https://origin.example.test/board' },
+		{ name: "ORIGIN the image's placeholder alone", env: { ORIGIN: 'http://localhost:3000' }, origins: null, allowed: 'https://other.example.test' }
+	])('with $name configured, refuses an App URL on another origin, the superadmin’s too, and saves one on it', async ({ env, origins, allowed }) => {
+		Object.assign(process.env, env);
+
+		if (origins !== null) {
+			const before = snapshotDb();
+			const res = await save({ appUrl: 'https://other.example.test' });
+			expect(res.status).toBe(400);
+			expect(res.body.message).toBe(`The App URL must be on this server's own address (${origins}), which its configuration sets. Nothing was saved.`);
+			// Refused before the password: nothing counted, no code spent.
+			expectUnchanged(before);
+		}
+
+		const res = await save({ appUrl: allowed });
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		// Stored as the address it parses to, the string its origin was checked on (the code review, CS1).
+		expect(stored().app_url).toBe((new URL(allowed).origin + new URL(allowed).pathname).replace(/\/+$/, ''));
+	});
+
+	// The code review, CS1: the origin was checked on the parsed address while the text was stored and mailed as typed.
+	it.each([
+		['a backslash before @', 'https://host.example.test\\@evil.example'],
+		['a line break before @', 'https://evil.example\n@host.example.test'],
+		['a user name with an encoded slash', 'https://evil%2f@host.example.test'],
+		['a path beginning //', 'https://host.example.test//evil.example']
+	])('refuses an App URL with %s, the superadmin’s too, with nothing written', async (_name, appUrl) => {
+		process.env.ORIGIN = 'https://host.example.test';
+		const before = snapshotDb();
+
+		const res = await save({ appUrl });
+
+		expect(res.status).toBe(400);
+		expect(res.body.message).toBe(
+			'The App URL must be a plain web address: http or https, a host and a path, with no user name, password, query, ' +
+				'fragment, backslash or control character, and no path beginning //. Nothing was saved.'
+		);
+		expectUnchanged(before);
+	});
+
+	it('does not use a stored App URL that is no plain web address, whatever is configured (the code review, CS1)', async () => {
+		for (const row of ['https://host.example.test\\@evil.example', 'https://evil%2f@host.example.test', 'https://host.example.test//evil.example', 'https://host.example.test/?next=evil']) {
+			setRow(row);
+			delete process.env.ORIGIN;
+			expect(linkBaseUrl(undefined, false), row).toBeNull();
+			process.env.ORIGIN = 'https://host.example.test';
+			expect(linkBaseUrl(undefined, false), row).toBe('https://host.example.test');
+			expect(await answered(), row).toEqual({ appUrl: '', appUrlFrom: 'none' });
+		}
+	});
+
+	it('does not use a stored App URL on another origin than the configuration names, and the superadmin’s empty save clears it', async () => {
+		setRow('https://elsewhere.example.test');
+
+		process.env.APP_URL = 'https://app.example.test';
+		expect(linkBaseUrl(undefined, false)).toBe('https://app.example.test');
+		expect(await answered()).toEqual({ appUrl: 'https://app.example.test', appUrlFrom: 'environment' });
+
+		delete process.env.APP_URL;
+		process.env.ORIGIN = 'https://origin.example.test';
+		expect(linkBaseUrl(undefined, false)).toBe('https://origin.example.test');
+		expect(await answered()).toEqual({ appUrl: '', appUrlFrom: 'none' });
+
+		// The empty save matches the App URL in effect (none), and is stored all the same over the row not used.
+		expect((await save({ appUrl: '' })).status).toBe(200);
+		expect(stored().app_url).toBe('');
 	});
 });
 

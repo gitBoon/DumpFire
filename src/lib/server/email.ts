@@ -153,24 +153,127 @@ export function appUrlAsRead(value: string): string {
 	return url && !/^https?:\/\//i.test(url) ? `http://${url}` : url;
 }
 
+/** The origin of an http or https address, or null for text that is no such address. */
+function httpOrigin(address: string): string | null {
+	try {
+		const url = new URL(address);
+		return url.protocol === 'http:' || url.protocol === 'https:' ? url.origin : null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * The origins this server's configuration names as its own address (card
+ * 2847, D2): `APP_URL`'s, as a link reads it, where it is set, and `ORIGIN`'s,
+ * as the adapter reads it, where it is set and is not `PLACEHOLDER_ORIGIN`,
+ * the image's default, which is nobody's real address. Empty where neither
+ * is: the App URL setting is then the only word on the address.
+ */
+export function environmentOrigins(): string[] {
+	const origins: string[] = [];
+	const fromAppUrl = httpOrigin(appUrlAsRead(process.env.APP_URL || ''));
+	if (fromAppUrl !== null) origins.push(fromAppUrl);
+	const origin = configuredOrigin();
+	if (origin !== null && origin !== PLACEHOLDER_ORIGIN && !origins.includes(origin)) origins.push(origin);
+	return origins;
+}
+
+/**
+ * Whether an App URL, as a link reads it, may be used (card 2847): always
+ * where the configuration names no address, and otherwise only on one of its
+ * origins. The host's configuration wins over a setting any account saves.
+ */
+export function appUrlOnEnvironment(url: string, origins: string[] = environmentOrigins()): boolean {
+	if (origins.length === 0) return true;
+	const origin = httpOrigin(url);
+	return origin !== null && origins.includes(origin);
+}
+
+/**
+ * An App URL as it is checked, stored and used, one string for all three
+ * (card 2847's code review, CS1): empty text for none; otherwise, read as a
+ * link reads it (`appUrlAsRead`), the origin and path of the address it
+ * parses to, trailing slashes stripped. Null for text that is no plain web
+ * address: one that does not parse as http or https, holds a backslash or a
+ * control character, a user name or password, a query or a fragment, or a
+ * path that begins `//`. The origin check judged the parsed address while the
+ * text was stored and mailed as typed, so `https://host\@evil` or a line break
+ * before `@host` passed it and sent readers elsewhere.
+ */
+export function appUrlNormalised(value: string): string | null {
+	const read = appUrlAsRead(value);
+	if (read === '') return '';
+	if (/[\p{Cc}\\]/u.test(read)) return null;
+	let url: URL;
+	try {
+		url = new URL(read);
+	} catch {
+		return null;
+	}
+	if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+	if (url.username || url.password || url.search || url.hash || url.pathname.startsWith('//')) return null;
+	return (url.origin + url.pathname).replace(/\/+$/, '');
+}
+
+/** The App URL setting as a link reads it, used or not, or null for no row or one that reads as none. */
+export function storedAppUrlText(): string | null {
+	return appUrlAsRead(getSetting('app_url') || '') || null;
+}
+
+/** The App URL setting as it would be used (`appUrlNormalised`), or null for no row, one that reads as none, or one that is no plain web address. */
+export function storedAppUrl(): string | null {
+	const text = storedAppUrlText();
+	return text === null ? null : appUrlNormalised(text) || null;
+}
+
+/**
+ * Whether a stored App URL is ignored: on another origin than the server's
+ * configuration names (card 2847, D3), saved before that card by any
+ * administrator or brought by an import; or, since its code review (CS1), no
+ * plain web address. Said once at start (`reportAppUrlNotUsed`).
+ */
+export function appUrlIgnored(): boolean {
+	if (storedAppUrlText() === null) return false;
+	const stored = storedAppUrl();
+	return stored === null || !appUrlOnEnvironment(stored);
+}
+
 /**
  * Get the configured app URL (no trailing slash): the App URL setting, or
  * failing that the `APP_URL` environment variable.
+ *
+ * A setting on another origin than the server's configuration names
+ * (`environmentOrigins`) is not used (card 2847, D3): `APP_URL`'s is
+ * answered, or null, so that `linkBaseUrl` falls to `ORIGIN`. A row that
+ * reads as none (spaces alone) still answers null, as before. A row that is
+ * no plain web address is not used either, and one that is is answered as
+ * `appUrlNormalised` makes it, the string the origin was checked on (CS1).
  */
 export function getAppUrl(): string | null {
-	return appUrlAsRead(getSetting('app_url') || process.env.APP_URL || '') || null;
+	const stored = getSetting('app_url');
+	if (stored) {
+		if (!appUrlAsRead(stored)) return null;
+		const normal = appUrlNormalised(stored);
+		if (normal && appUrlOnEnvironment(normal)) return normal;
+	}
+	return appUrlAsRead(process.env.APP_URL || '') || null;
 }
 
 /**
  * Where the App URL `getAppUrl()` answers comes from (card 2401): the
- * setting, which wins whenever a row holds any text; `APP_URL`, where no row
- * does (an empty row is none); or neither. A row of spaces alone is `none`,
- * as `getAppUrl()` answers null for it. The admin panel says which, so that
- * an App URL from the environment is not taken for one saved.
+ * setting, which wins whenever a row holds any text it uses; `APP_URL`, where
+ * no row does (an empty row is none) or the row is ignored (card 2847); or
+ * neither. A row of spaces alone is `none`, as `getAppUrl()` answers null for
+ * it. The admin panel says which, so that an App URL from the environment is
+ * not taken for one saved.
  */
 export function appUrlFrom(): 'setting' | 'environment' | 'none' {
 	const stored = getSetting('app_url');
-	if (stored) return appUrlAsRead(stored) ? 'setting' : 'none';
+	if (stored) {
+		if (!appUrlAsRead(stored)) return 'none';
+		if (!appUrlIgnored()) return 'setting';
+	}
 	return appUrlEnvSet() ? 'environment' : 'none';
 }
 
@@ -185,14 +288,16 @@ export function appUrlEnvSet(): boolean {
 }
 
 /**
- * Whether the App URL setting holds text that reads as none, such as a row of
- * spaces alone saved before card 2117's rule (card 2401's review). Such a row
- * still hides `APP_URL`, so an empty save writes over it although the App URL
- * in effect reads the same.
+ * Whether the App URL setting holds a row that is not used: text that reads
+ * as none, such as a row of spaces alone saved before card 2117's rule (card
+ * 2401's review), which still hides `APP_URL`; or, since card 2847, a row on
+ * another origin than the server's configuration names, which is ignored. A
+ * save writes over either although the App URL in effect reads the same, so
+ * that the superadmin's empty save clears it.
  */
-export function appUrlRowReadsAsNone(): boolean {
+export function appUrlRowNotUsed(): boolean {
 	const stored = getSetting('app_url');
-	return !!stored && !appUrlAsRead(stored);
+	return !!stored && (!appUrlAsRead(stored) || appUrlIgnored());
 }
 
 /** Save the app URL setting. Empty text is none: `APP_URL` then applies again. */
@@ -227,7 +332,9 @@ export function configuredOrigin(value: string | undefined = process.env.ORIGIN)
  *
  * In order:
  *
- *   1. the App URL setting;
+ *   1. the App URL setting, the superadmin's (card 2847), and only where it
+ *      is on an origin the server's configuration names, if it names any
+ *      (`getAppUrl`);
  *   2. the `APP_URL` environment variable;
  *   3. `ORIGIN`, the address the server was started with, as the adapter
  *      reads it.

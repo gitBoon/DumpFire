@@ -139,9 +139,9 @@
 	<main class="admin-content">
 		<AdminOverview {data} />
 
-		<!-- Every administrator's since card 2395: the App URL. Drawn again once the mail settings or the App URL an account had set are removed with it (card 2397). -->
+		<!-- The App URL: shown to every administrator since card 2395, set by the superadmin alone since card 2847. Drawn again once the mail settings or the App URL an account had set are removed with it (card 2397). -->
 		{#key mailRead}
-		<AppUrlPanel />
+		<AppUrlPanel {isSuperadmin} {superadminName} />
 		{/key}
 
 		<!-- The superadmin's alone: export and import (and Reset Everything, in the danger zone).

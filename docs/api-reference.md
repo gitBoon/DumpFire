@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.132
+version: 1.133
 status: As-Built
 date: 2026-11-17
 tags:
@@ -366,9 +366,9 @@ either.
 
 ### Changes on 2026-11-17
 
-Five changes are dated 2026-11-17: card 2751's, which changes no `/api/v1` route (first);
+Six changes are dated 2026-11-17: card 2751's, which changes no `/api/v1` route (first);
 card 2772's, which is **breaking** for API keys made before its release; that of cards
-2770 and 2771, which is not (after it); and cards 2888's and 2851's, which change no
+2770 and 2771, which is not (after it); and cards 2888's, 2851's and 2847's, which change no
 `/api/v1` route (last).
 
 **Report schedules and report mail ask for the password and a code (card 2751). The v1 API
@@ -579,6 +579,28 @@ cannot reach.
 - Without `password`, nothing changes: the invite, its mail and `inviteUrl` as before.
 
 See [Set-Up Links and Their Page](authentication-security.md#set-up-links-and-their-page).
+
+**The App URL is the superadmin's, and the server's configured address wins (card 2847). The v1
+API does not change**: `PUT /api/admin/smtp` is the web application's own route, a session's.
+
+- A save that would store `appUrl` (one that, read as a link reads it, differs from the App URL
+  in effect, clearing included) by anyone but the superadmin is refused `403` "Setting the App
+  URL needs the superadmin: every link in a mail begins with it. Nothing was saved.", before the
+  password is compared, so nothing is counted. `appUrl` sent back unchanged, and every mail
+  field, stay every administrator's.
+- Where `APP_URL` is set, or `ORIGIN` is set to anything but `http://localhost:3000`, a non-empty
+  `appUrl` on another origin is refused `400` "The App URL must be on this server's own address
+  (`<origins>`), which its configuration sets. Nothing was saved.", the superadmin's too.
+- A stored App URL on another origin is not used: `GET /api/admin/smtp` answers the App URL in
+  effect (`APP_URL`'s, or empty) and `appUrlFrom` as if none were stored, and links use the
+  configured address. The superadmin's empty save clears it.
+- `appUrl` is stored and answered as the address it parses to (origin and path, trailing
+  slashes stripped: `HTTPS://Host/` is `https://host`), and one with a user name, password,
+  query, fragment, backslash or control character, or a path beginning `//`, is refused `400`
+  "The App URL must be a plain web address: …", whoever sends it; such a row stored before is
+  not used (the card's code review).
+
+See [Where a Mailed Link's Address Comes From](authentication-security.md#where-a-mailed-links-address-comes-from).
 
 ### Changes on 2026-11-13
 

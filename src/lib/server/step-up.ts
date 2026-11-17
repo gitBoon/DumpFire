@@ -179,7 +179,7 @@ export const STEP_UP_ACTIONS = Object.freeze({
 	'PUT /api/admin/backup': "With destinations: can send every later backup to a destination of the caller's choosing",
 	'POST /api/admin/backup': 'Sends the whole database to every destination now',
 	'POST /api/admin/backup/gdrive/auth': "Binds a backup destination to a Google account of the caller's choosing",
-	'PUT /api/admin/smtp': 'Chooses the mail server invites and resets go through, and the App URL their links point at',
+	'PUT /api/admin/smtp': 'Chooses the mail server invites and resets go through, and (the superadmin alone) the App URL their links point at',
 	// Card 2697 (Q9, Q21): what decides where a decision's record mail and personal links go, and who answers for a participant.
 	'PUT /api/decisions/[id]/participants/[participantId]/account':
 		"Changes which credential answers for a participant on a decision's record: an account, or a personal link mailed in its place",

@@ -1057,7 +1057,9 @@ describe('what it says and what it changes', () => {
 		expect(mail.subject).toBe(`Reminder: your view is asked by ${closesAt} UTC: ${title}`);
 		expect(mail.html).toContain('Pick &lt;b&gt;x&lt;/b&gt; a&quot;b');
 		expect(mail.html).toContain('Dee &lt;b&gt;Cider&lt;/b&gt; &quot;q&quot;');
-		expect(mail.html).toContain(`href="https://kanban.example.test/a&quot;b&lt;i&gt;/decisions/${decision.id}"`);
+		// Since card 2847's code review (CS1) the App URL setting is used as the address it parses to: `"`, `<` and `>`
+		// are percent-encoded in its path before the href is escaped.
+		expect(mail.html).toContain(`href="https://kanban.example.test/a%22b%3Ci%3E/decisions/${decision.id}"`);
 		expect(mail.html).not.toContain('<b>');
 		expect(mail.html).not.toContain('<i>');
 		expect(mail.html).not.toContain(participants[1].p.name);

@@ -329,6 +329,25 @@ describe('scripts/mfa-reset.mjs', () => {
 		expect(fileLinks().find((link) => link.userId === holder.id)?.tokenHash).toBe(sha256Hex(token));
 	});
 
+	// Card 2847's code review (CS1): the setting is read as the server reads it, and one that is no plain web address is not used.
+	it.each([
+		['a backslash before @', 'https://setting.example.test\\@evil.example'],
+		['a user name with an encoded slash', 'https://evil%2f@setting.example.test']
+	])('takes no address from an App URL setting with %s: the path alone, with the instruction (card 2847)', (_name, value) => {
+		seedAccount('holder');
+		db.insert(settings).values({ key: 'app_url', value }).run();
+		writeCopy();
+
+		const ran = run(['holder'], { ORIGIN: 'http://localhost:3000' });
+
+		expect(ran.status, ran.stderr).toBe(0);
+		expect(ran.stdout).not.toContain('evil');
+		expect(ran.stdout).not.toContain("The link's address is from the App URL setting");
+		expect(ran.stdout).toContain("put your server's address in front of this path");
+		const { line, token } = printedLink(ran.stdout);
+		expect(line).toBe(`/enrol/${token}`);
+	});
+
 	// Card 2769, its security review's CS1: a sign-in left at its second step,
 	// which the reset ends, is said; no notice is mailed from the host.
 	it('T100 (card 2769): a reset that ends a sign-in left at its second step writes one WARN line saying so', () => {

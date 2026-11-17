@@ -805,9 +805,12 @@ describe('PUT /api/admin/smtp', () => {
 		// goes and what its link points at: the superadmin's alone until card
 		// 2395, every administrator's since. Nobody signed in is refused 403 by
 		// the handler, as every administrator route answers; the gate answers
-		// them 401 first.
+		// them 401 first. The App URL is the superadmin's again since card
+		// 2847 (tests/mail-settings.test.ts), so the administrator saves the
+		// mail settings alone.
+		const { appUrl: _appUrl, ...mailOnly } = NEW;
 		await expectRefused(() => api('PUT', '/api/admin/smtp', { user: s.owner, body: NEW }), 403);
 		await expectRefused(() => api('PUT', '/api/admin/smtp', { body: NEW }), 403);
-		expect((await api('PUT', '/api/admin/smtp', stepUp(s.admin, NEW))).status).toBe(200);
+		expect((await api('PUT', '/api/admin/smtp', stepUp(s.admin, mailOnly))).status).toBe(200);
 	});
 });

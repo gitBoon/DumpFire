@@ -1,5 +1,5 @@
 /**
- * startup-checks.ts — fourteen things about an installation that are said in the
+ * startup-checks.ts — sixteen things about an installation that are said in the
  * system log when the server starts, because nothing else would say them.
  *
  * None stops the server and none changes anything. They are looked for by
@@ -39,7 +39,12 @@
  * off nothing else says so. The fourteenth, in a built server only, is an
  * `http:` `ORIGIN` behind an `https:` App URL (card 2850): every request is
  * then taken as plain HTTP, so cookies go without Secure and sign-in forms
- * from the https address are refused.
+ * from the https address are refused. The fifteenth is a stored App URL that
+ * is not used because it is not on the address the server's configuration
+ * names, or is no plain web address (card 2847 and its code review): links
+ * go to the configured address instead. The sixteenth is a stored App URL in
+ * use that the superadmin is not recorded as having set (its code review,
+ * CS2): an administrator could save it until card 2847.
  *
  * And two that do stop the server, after the migrations and before it
  * listens: `refuseUserlessBesideAnother`, when the database in use has no
@@ -72,7 +77,19 @@ import { posix } from 'node:path';
 import { dev } from '$app/environment';
 import { createdAtStart, getDbPath, otherDatabaseAtStart, sqlite } from './db';
 import { DatabaseLocationError, described, heldInContainerLayer, type OtherDatabase } from './db/location';
-import { PLACEHOLDER_ORIGIN, configuredOrigin, getAppUrl, isSmtpConfigured, smtpPasswordMissing } from './email';
+import {
+	PLACEHOLDER_ORIGIN,
+	appUrlFrom,
+	appUrlIgnored,
+	configuredOrigin,
+	environmentOrigins,
+	getAppUrl,
+	isSmtpConfigured,
+	linkBaseUrl,
+	smtpPasswordMissing,
+	storedAppUrl,
+	storedAppUrlText
+} from './email';
 import { securityNoticeSent, type NoticeSchedule } from './notifications';
 import { reportCovers } from './reports';
 import { schedulerSetting } from './schedulers';
@@ -91,7 +108,7 @@ import { boardsInLoops } from './sub-boards';
 import { secretsToEnter, secretsToEnterSentence, unconfirmedHostKeys } from './backup-secrets';
 import { parseAllowInside } from './webhook-address';
 import { activeWebhooksRefused, boardsOverWebhookCap, MAX_WEBHOOKS_PER_BOARD } from './webhooks';
-import { removeSettingsOfFormerAdministrators } from './setting-setters';
+import { removeSettingsOfFormerAdministrators, settingsHeldBy } from './setting-setters';
 import {
 	MFA_KEY_CHECK_SETTING,
 	loadPreviousMfaKey,
@@ -155,6 +172,80 @@ export function reportPlaceholderOrigin(origin: string | undefined = process.env
 		`ORIGIN is ${PLACEHOLDER_ORIGIN}, the address the image is built with, and no App URL is set, so every ` +
 			`link in a mail will begin with ${PLACEHOLDER_ORIGIN}. If this server is reached at another address, ` +
 			'start it with ORIGIN set to that address, or set the App URL on the admin page under Application Settings.'
+	);
+	return true;
+}
+
+/**
+ * One WARN line when the App URL saved on the admin page is not used because
+ * it is not on the address the server's configuration names (`APP_URL`, or an
+ * `ORIGIN` that is not the image's default; card 2847, D3). Returns whether it
+ * was said.
+ *
+ * Such a row was saved before card 2847 made the App URL the superadmin's and
+ * held it to the configured address, or was brought by an import. Links now
+ * begin with the configured address; nothing else says why the saved one is
+ * not used.
+ *
+ * Its code review: a row that is no plain web address (CS1, `appUrlNormalised`)
+ * is not used either, and is said with its text quoted as JSON, so that no
+ * control character it holds reaches the log as one. And not said only where
+ * card 2850's line was said this start about this row (`plainOriginSaid`, and
+ * no App URL in use, so that line named the saved one): that line names it
+ * already (CS3). A narrower test than the hosts alone, which also kept this
+ * line back where `COOKIE_SECURE` had kept that one back.
+ */
+export function reportAppUrlNotUsed(plainOriginSaid: boolean = false): boolean {
+	const text = storedAppUrlText();
+	if (text === null || !appUrlIgnored()) return false;
+
+	const base = linkBaseUrl(undefined, false) ?? 'no address: none is configured';
+	const stored = storedAppUrl();
+	if (stored === null) {
+		log.warn(
+			`The App URL saved on the admin page, ${JSON.stringify(text)}, is not used: it is not a plain web address. ` +
+				`Links in mail begin with ${base}. The superadmin can clear it under Application Settings.`
+		);
+		return true;
+	}
+	if (plainOriginSaid && getAppUrl() === null) return false;
+
+	log.warn(
+		`The App URL saved on the admin page, ${stored}, is not used: it is not on this server's own address ` +
+			`(${environmentOrigins().join(', ')}), which its configuration sets. Links in mail begin with ` +
+			`${base}. The superadmin can clear it under Application Settings.`
+	);
+	return true;
+}
+
+/**
+ * One WARN line when the App URL saved on the admin page is in use and the
+ * account recorded as having set it (card 2397, `settingsHeldBy`) is not the
+ * superadmin, or none is recorded (card 2847's code review, CS2). Returns
+ * whether it was said.
+ *
+ * Before card 2847 any administrator could save it, and where the server's
+ * configuration names no address (no `APP_URL`, and no `ORIGIN` but the
+ * image's default) such a row is still used, steering every link in a mail.
+ * Saving the same address again records nothing (the setting does not move),
+ * so the line asks for it to be cleared and saved again by the superadmin,
+ * whose move takes the place over.
+ */
+export function reportAppUrlSetByOther(): boolean {
+	if (appUrlFrom() !== 'setting') return false;
+	const url = getAppUrl();
+	if (url === null) return false;
+
+	let setter: number | null = null;
+	for (const [id, held] of settingsHeldBy()) if (held.appUrl) setter = id;
+	const superadmin = sqlite.prepare("SELECT id FROM users WHERE role = 'superadmin' ORDER BY id LIMIT 1").get() as { id: number } | undefined;
+	if (setter !== null && superadmin !== undefined && setter === superadmin.id) return false;
+
+	const account =
+		setter === null ? undefined : (sqlite.prepare('SELECT username FROM users WHERE id = ?').get(setter) as { username: string } | undefined);
+	const by = account === undefined ? 'no recorded account' : `"${printable(account.username)}"`;
+	log.warn(
+		`The App URL ${url} was saved by ${by}, not the superadmin; check it, or clear it and save it again as the superadmin.`
 	);
 	return true;
 }
@@ -1086,7 +1177,10 @@ export function reportUnconfirmedHostKeys(): boolean {
  */
 export function reportPlainOriginBehindHttps(isDev: boolean = dev, origin: string | undefined = process.env.ORIGIN): boolean {
 	if (isDev) return false;
-	const appUrl = getAppUrl();
+	// The App URL in use, or else the one saved: since card 2847 a saved one on
+	// another origin than `ORIGIN` (here the scheme differs) is not used, and
+	// this line still names what was set.
+	const appUrl = getAppUrl() ?? storedAppUrl();
 	if (!appUrl || !/^https:\/\//i.test(appUrl)) return false;
 	const plain = configuredOrigin(origin);
 	if (!plain || !plain.startsWith('http:')) return false;
@@ -1101,7 +1195,7 @@ export function reportPlainOriginBehindHttps(isDev: boolean = dev, origin: strin
 }
 
 /**
- * Say all fourteen, if they are so. Called once, from hooks.server.ts, as the
+ * Say all sixteen, if they are so. Called once, from hooks.server.ts, as the
  * server loads.
  *
  * It never throws, whatever goes wrong in looking: a fault here must not be
@@ -1109,6 +1203,8 @@ export function reportPlainOriginBehindHttps(isDev: boolean = dev, origin: strin
  * on the console and nowhere else.
  */
 export function reportInstallation(): void {
+	// Whether card 2850's line was said: card 2847's not-used line is then not said of the same row (its code review, CS3).
+	let plainOriginSaid = false;
 	for (const check of [
 		reportNoSuperadmin,
 		() => reportPlaceholderOrigin(),
@@ -1123,7 +1219,9 @@ export function reportInstallation(): void {
 		reportWebhooksOverCap,
 		reportWebhooksRefused,
 		reportUnconfirmedHostKeys,
-		() => reportPlainOriginBehindHttps()
+		() => (plainOriginSaid = reportPlainOriginBehindHttps()),
+		() => reportAppUrlNotUsed(plainOriginSaid),
+		reportAppUrlSetByOther
 	]) {
 		try {
 			check();

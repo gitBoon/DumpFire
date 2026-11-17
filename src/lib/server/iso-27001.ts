@@ -149,16 +149,17 @@ export const CHECKLIST: readonly IsoItem[] = [
 		applicability: 'supports',
 		status: 'partly-met',
 		how:
-			'Export, import and Reset Everything are the superadmin\'s alone, as are lowering Keep Last, removing a backup destination and switching the failure mail off. ' +
-			'Any administrator can still set the App URL that every mailed link begins with. ' +
+			'Export, import and Reset Everything are the superadmin\'s alone, as are lowering Keep Last, removing a backup destination and switching the failure mail off, ' +
+			'and, since card 2847, setting the App URL that every mailed link begins with, which must also be on the address the server\'s configuration names where it names one. ' +
 			'Any administrator can still add a backup destination of their own and Run Now, which sends it a full copy of the database, and whoever sets the mail server reads every mail (card 2906, to be ruled).',
 		evidence: [
 			{ path: 'src/routes/api/admin/export/+server.ts', symbol: 'requireSuperadmin' },
 			{ path: 'src/lib/server/route-guards.ts', symbol: 'requireSuperadmin' },
+			{ path: 'src/routes/api/admin/smtp/+server.ts', symbol: 'APP_URL_NEEDS_SUPERADMIN' },
 			{ path: ADMIN_DOC, anchor: 'who-may-do-what' }
 		],
 		owner: 'DumpFire',
-		gapCards: [2847, 2906],
+		gapCards: [2906],
 		organisationalPart: 'Assign roles so that no one person holds duties that conflict.'
 	},
 	organisational('A.5.4', 'annex-a', 'Management responsibilities'),
@@ -393,7 +394,8 @@ export const CHECKLIST: readonly IsoItem[] = [
 		how:
 			'There are three roles. The superadmin\'s database operations ask for the password and an authenticator code at every step-up. ' +
 			'Administrators\' sessions have shorter limits, and the superadmin\'s two-step reset can only be done from the host. ' +
-			'Still open: any administrator can set the App URL that every mailed link begins with, and an API key acts with its owner\'s full rights, an administrator\'s included, with no step-up. ' +
+			'The App URL that every mailed link begins with is the superadmin\'s alone, and held to the address the server\'s configuration names (card 2847). ' +
+			'Still open: an API key acts with its owner\'s full rights, an administrator\'s included, with no step-up. ' +
 			'Any administrator can still add a backup destination of their own and Run Now, which sends it a full copy of the database, and whoever sets the mail server reads every mail (card 2906, to be ruled).',
 		evidence: [
 			{ path: 'src/lib/server/step-up.ts', symbol: 'confirmStepUp' },
@@ -402,7 +404,7 @@ export const CHECKLIST: readonly IsoItem[] = [
 			{ path: 'scripts/mfa-reset.mjs' }
 		],
 		owner: 'DumpFire',
-		gapCards: [2847, 2703, 2906]
+		gapCards: [2703, 2906]
 	},
 	{
 		ref: 'A.8.3',
