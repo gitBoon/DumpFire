@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.111
+version: 1.112
 status: As-Built
 date: 2026-11-17
 tags:
@@ -598,7 +598,7 @@ flowchart TD
 The groups list shows each group's name, description and how many of its people are active.
 
 - **+ Add group** opens a form: **Name** (1 to 100 characters), **Description** (up to 1,000), and the people to tick, from a list you can search by name or address, active people first and those who left marked "left". **Edit** opens the same form for a group. The people ticked replace the group's people.
-- **A name is used once, in any case.** "finance" beside "Finance" is refused with `409` "Group name already in use: Finance". A group may be renamed to its own name in other capitals.
+- **A name is used once, in any case of any letter.** "finance" beside "Finance", and "ÉCOLE" or "école" beside "École", are refused with `409` "Group name already in use: Finance" (or "…: École"). A group may be renamed to its own name in other capitals.
 - **Adding a group is two steps**, the group and then its people. If the people are refused after the group was added, the group is kept and the form stays open on it; **Save** again sends only the people.
 - **Delete** asks first and cannot be undone. Only the group and its memberships go; its people stay in the directory. Decision records keep the group names they recorded.
 

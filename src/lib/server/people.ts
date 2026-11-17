@@ -62,8 +62,9 @@
  * review, S4): Mark active, here, is the deliberate act that brings them back.
  */
 import { error } from '@sveltejs/kit';
-import { and, eq, inArray, ne, sql } from 'drizzle-orm';
+import { and, eq, inArray, ne } from 'drizzle-orm';
 import { db } from './db';
+import { foldEquals } from './db/fold-case';
 import { people, peopleChanges, peopleGroupMembers, peopleGroups, users, type PeopleGroup, type Person } from './db/schema';
 import type { SessionUser } from './auth';
 import { afterCommit } from './db/transaction';
@@ -440,7 +441,7 @@ export function addFromAccounts(caller: SessionUser | null, at: Record<string, n
 			continue;
 		}
 		const email = account.email.toLowerCase();
-		const match = db.select({ id: people.id }).from(people).where(sql`lower(${people.email}) = ${email}`).get();
+		const match = db.select({ id: people.id }).from(people).where(foldEquals(people.email, email)).get();
 		if (match) {
 			skipped.push({ userId, reason: `address matches person ${match.id}; link by hand` });
 			continue;
@@ -843,7 +844,8 @@ function clearLinks(personId: number, reason: RevokeReason, actor: SessionUser, 
 }
 
 /**
- * A 409 for an address another person has, compared lower-cased. `except` is
+ * A 409 for an address another person has, compared in any case of any letter
+ * (card 2890). `except` is
  * the person being changed. The answer, an administrator's only, names the
  * holder and the account they are linked to, if any; never the address.
  */
@@ -852,7 +854,7 @@ function requireUnusedEmail(email: string, except?: number): void {
 		.select({ id: people.id, fullName: people.fullName, username: users.username })
 		.from(people)
 		.leftJoin(users, eq(users.id, people.userId))
-		.where(and(sql`lower(${people.email}) = ${email.toLowerCase()}`, except === undefined ? undefined : ne(people.id, except)))
+		.where(and(foldEquals(people.email, email), except === undefined ? undefined : ne(people.id, except)))
 		.get();
 	if (holder) {
 		const linked = holder.username != null ? ` (linked to account ${holder.username})` : '';
@@ -873,12 +875,12 @@ function requireLinkable(userId: number, except?: number): { id: number; usernam
 	return account;
 }
 
-/** A 409 for a group name another group has, in any case. `except` is the group being renamed. */
+/** A 409 for a group name another group has, in any case of any letter (card 2890). `except` is the group being renamed. */
 function requireUnusedGroupName(name: string, except?: number): void {
 	const holder = db
 		.select({ id: peopleGroups.id, name: peopleGroups.name })
 		.from(peopleGroups)
-		.where(and(sql`lower(${peopleGroups.name}) = ${name.toLowerCase()}`, except === undefined ? undefined : ne(peopleGroups.id, except)))
+		.where(and(foldEquals(peopleGroups.name, name), except === undefined ? undefined : ne(peopleGroups.id, except)))
 		.get();
 	if (holder) error(409, `Group name already in use: ${holder.name}`);
 }

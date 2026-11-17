@@ -211,6 +211,17 @@ describe('POST /api/people', () => {
 		);
 	});
 
+	it('refuses, 409, an address stored with a capital beyond A to Z, sent in its folded form (card 2890, 2)', async () => {
+		// Written directly, as a restored, hand-edited backup could hold it: the application stores every address lowered.
+		makePerson('Élodie Roux', 'Élodie@example.test');
+
+		await expectRefused(
+			() => send('POST', '/api/people', { fullName: 'Another', email: 'élodie@example.test' }),
+			409,
+			'Email already in the directory: Élodie Roux'
+		);
+	});
+
 	it('refuses, 400, a group that does not exist, naming it, and adds nobody (3)', async () => {
 		const finance = makeGroup('Finance');
 
@@ -449,6 +460,19 @@ describe('POST /api/people/from-accounts', () => {
 		expect(peopleLines().map((line) => line.message)).toEqual(['1 people added from accounts, 2 skipped (by admin)']);
 	});
 
+	it('skips an account whose address matches a person stored with a capital beyond A to Z, and makes nobody (card 2890, 3)', async () => {
+		// The person written directly, unfolded; the account's address as the application stores it, lowered.
+		const elodie = makePerson('Élodie Roux', 'Élodie@example.test');
+		const account = makeUser({ username: 'elodie' });
+		sqlite.prepare("UPDATE users SET email = 'élodie@example.test' WHERE id = ?").run(account.id);
+
+		const res = await send('POST', '/api/people/from-accounts', { userIds: [account.id] });
+
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		expect(res.body).toEqual({ created: 0, skipped: [{ userId: account.id, reason: `address matches person ${elodie}; link by hand` }] });
+		expect(sqlite.prepare('SELECT COUNT(*) AS n FROM people WHERE user_id = ?').get(account.id)).toEqual({ n: 0 });
+	});
+
 	it('refuses, 400, a list with one id that is no account, and makes and links nothing (14)', async () => {
 		await expectRefused(
 			() => send('POST', '/api/people/from-accounts', { userIds: [fresh.id, matching.id, 999] }),
@@ -471,6 +495,14 @@ describe('POST /api/people-groups', () => {
 		makeGroup('Finance');
 
 		await expectRefused(() => send('POST', '/api/people-groups', { name: 'finance' }), 409, 'Group name already in use: Finance');
+	});
+
+	it('refuses, 409, a name with a capital beyond A to Z in another case and typed exactly (card 2890, 1)', async () => {
+		makeGroup('École');
+
+		await expectRefused(() => send('POST', '/api/people-groups', { name: 'ÉCOLE' }), 409, 'Group name already in use: École');
+		// Typed exactly: before card 2890 the check missed it and the UNIQUE index answered 500.
+		await expectRefused(() => send('POST', '/api/people-groups', { name: 'École' }), 409, 'Group name already in use: École');
 	});
 });
 

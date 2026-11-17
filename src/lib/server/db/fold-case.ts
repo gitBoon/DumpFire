@@ -13,6 +13,10 @@
  * The connection is opened once, and a restore copies rows into it rather
  * than opening another (`db/restore.ts`), so the one registration covers the
  * server, the tests' in-memory database and what a restore leaves.
+ *
+ * Its users: `foldsTo` for the searches (card 2843), and `foldEquals` for
+ * the people directory's three uniqueness checks, a group's name and a
+ * person's address (card 2890, `people.ts`).
  */
 import type Database from 'better-sqlite3';
 import { sql, type SQL, type SQLWrapper } from 'drizzle-orm';
@@ -29,4 +33,9 @@ export function registerFoldCase(database: Database.Database): void {
  */
 export function foldsTo(column: SQLWrapper, text: string): SQL {
 	return sql`instr(fold_case(${column}), fold_case(${text})) > 0`;
+}
+
+/** `column` is `text` in any case of any letter (card 2890): both sides folded by `fold_case`, `text` a bound parameter. */
+export function foldEquals(column: SQLWrapper, text: string): SQL {
+	return sql`fold_case(${column}) = fold_case(${text})`;
 }
