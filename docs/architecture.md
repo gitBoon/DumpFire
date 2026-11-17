@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.129
+version: 1.130
 status: As-Built
 date: 2026-11-17
 tags:
@@ -1339,7 +1339,7 @@ sequenceDiagram
     S->>DB: UPDATE people SET user_id = 7, updated_at
     S->>DB: clearLinks(linked): UPDATE decision_participants … RETURNING id
     S->>DB: INSERT decision_events link_revoked { reason: 'linked' }, one per row
-    S->>Q: log.info('PEOPLE', 'Person 12 "Ann Lee" linked to account 7 "ann"; 2 decision links cleared (by admin)')
+    S->>Q: log.info('PEOPLE', 'Person 12 "Ann Lee" linked to account 7 "ann"#59; 2 decision links cleared (by admin)')
     W->>DB: COMMIT
     W->>Q: the log line written
     R-->>D: 200, the person
@@ -1520,7 +1520,7 @@ sequenceDiagram
     loop each message, in order
         Q->>Q: stillToSend (decision, row, address, link or account)
         alt decision gone
-            Q->>Q: WARN line; nothing sent or written
+            Q->>Q: WARN line, nothing sent or written
         else superseded
             Q->>R: inTransaction: mail_outcome { delivered: false, problem: superseded }
         else still to send
@@ -1624,8 +1624,8 @@ sequenceDiagram
     participant Ct as decision-content
     Pg->>Rt: { revision, title, closesAt, voteMode, content }
     Rt->>Sv: caller, { decisionId }, body, { source: 'ui' }
-    Sv->>Sv: requireDecision(edit); the body (400: no revision, closed shape, changed past closesAt)
-    Sv->>Sv: requireTransition, the revision, the status rule (409; unchanged values pass)
+    Sv->>Sv: requireDecision(edit), the body (400: no revision, closed shape, changed past closesAt)
+    Sv->>Sv: requireTransition, the revision, the status rule (409, unchanged values pass)
     Sv->>Ct: option rows in step (insert with nextLabel, reorder, delete unpublished)
     Sv->>Ct: changedSections: agent flags when source is 'api'
     Sv-->>Rt: decision, options
@@ -1634,7 +1634,7 @@ sequenceDiagram
     alt saved
         Pg->>Pg: take the answer (option ids, labels), the next revision, invalidateAll()
     else 400 or 409
-        Pg->>Pg: keep the edits, say the server's words; Reload on a 409
+        Pg->>Pg: keep the edits, say the server's words, Reload on a 409
     end
 ```
 
@@ -1844,7 +1844,7 @@ sequenceDiagram
     participant Sv as decision-response-writes.ts (writeAs)
     participant Rec as decision-record
     M->>Gt: GET /decision-link/[token]
-    Gt->>Pg: public route; logged as /decision-link/[token]
+    Gt->>Pg: public route, logged as /decision-link/[token]
     Pg->>V: readLinkPage(token, signedInAs)
     V->>Lk: hash, unique index, linkUsable, reachOf
     alt refused: unknown, expired, revoked, unreachable
@@ -1853,7 +1853,7 @@ sequenceDiagram
         Pg-->>P: 404 in one set of words, or 429 with the wait in words
     else the participant and the decision
         V-->>Pg: DecisionPageData (no account ids, no board name)
-        Pg-->>P: the page; no-referrer, noindex, no-store; no Set-Cookie
+        Pg-->>P: the page, no-referrer, noindex, no-store, no Set-Cookie
         Note over Pg,Rec: the GET writes nothing
     end
     Note over P: the first trusted tap, click, key press or wheel turn while visible
@@ -2087,9 +2087,9 @@ sequenceDiagram
     S-->>R: checked hash (400 missing, 403 wrong, counted)
     R->>W: whilePasswordHolds(writeAs(ruleDecision))
     W->>G: the same guard, in the transaction
-    W->>W: appendRuling; ruled; cut_off { reached } if early; old decision superseded if the ruler may
+    W->>W: appendRuling, ruled, cut_off { reached } if early, old decision superseded if the ruler may
     W->>M: queueRecordMails 'ruling' (told_ruling now)
-    W->>W: decision_ruled; live event
+    W->>W: decision_ruled, live event
     R-->>P: { decision, revision }
 ```
 
@@ -2106,7 +2106,7 @@ sequenceDiagram
     R->>G: confirmStepUp asks it first
     Note over G: 403 not the decider, 409 not stored ruled,<br/>409 released, fewer than 3, an old statement,<br/>a chain release 1 or 2 people apart,<br/>409 stale revision, 400 unknown omit key
     R->>W: whilePasswordHolds(writeAs(releaseResults))
-    W->>W: results_released_at, _by; event { upToResponseId, omitted }; activity; live event
+    W->>W: results_released_at, _by, event { upToResponseId, omitted }, activity, live event
     R-->>P: { decision, revision }
     V->>V: pageOf: releasedOf, frozen, cells of 1, 2 or everyone withheld, no names
 ```
@@ -2265,14 +2265,14 @@ sequenceDiagram
     participant T as afterCommit queue
     P->>F: types a question (1 to 2,000)
     F->>R: { question } or { token, question }
-    R->>R: requireSameOriginJson; by link, the address to count
+    R->>R: requireSameOriginJson, and by link, the address to count
     R->>W: writeAs(caller, { source: 'ui' })
-    Note over W: 401, 404, 403; 400 text; 409 status;<br/>409 caps; 429 rest; 429 per caller
-    W->>W: appendQuestion; question_asked { questionId, notices }
+    Note over W: 401, 404, 403, 400 text, 409 status,<br/>409 caps, 429 rest, 429 per caller
+    W->>W: appendQuestion, question_asked { questionId, notices }
     W->>T: each who may answer now, not the asker
     Note over T: sent only after the outermost commit
     R-->>F: { question: OwnQuestion }
-    F->>F: status region; invalidateAll; focus to the heading
+    F->>F: status region, invalidateAll, focus to the heading
 ```
 
 ```mermaid
@@ -2409,15 +2409,15 @@ sequenceDiagram
     participant DB as SQLite
     Page->>Route: PUT, Content-Type JSON, no body
     Route->>Svc: writeAs(locals, caller => linkCard(caller, {decisionId, cardId, relation:'relates'}, null, {source:'ui'}))
-    Svc->>Svc: requireDecision 404/403; requireCard 404/403
-    Svc->>Svc: TRANSITIONS 409; archived card 409; relation not allowed 400
-    Svc->>DB: link there? same relation: unchanged; another: UPDATE relation
+    Svc->>Svc: requireDecision 404/403, requireCard 404/403
+    Svc->>Svc: TRANSITIONS 409, archived card 409, relation not allowed 400
+    Svc->>DB: link there? same relation: unchanged, another: UPDATE relation
     Svc->>DB: caps 100 a decision, 20 a card: 409 (a new link only)
     Svc->>DB: INSERT decision_card_links
     Svc->>DB: decision_card_linked on the card's board, cardId, "a decision"
     Route->>Route: linkedCardsFor(caller, decision)
     Route-->>Page: 200 { outcome, linkedCards }
-    Page->>Page: draws the answer; invalidateAll(); focus to the search box
+    Page->>Page: draws the answer, invalidateAll(), focus to the search box
 ```
 
 Deleting a linked decision (only a withdrawn one can be: a draft is never linked):

@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.74
+version: 1.75
 status: As-Built
 date: 2026-11-17
 tags:
@@ -954,7 +954,7 @@ sequenceDiagram
         R->>N: report-schedules-running, one per owner, by securityNoticeSent
     end
     N->>N: mail host set up and its password entered? Else nothing
-    N-)M: sendEmail; the schedule route does not wait
+    N-)M: sendEmail, the schedule route does not wait
     M--)N: taken or not
     opt the first start
         N--)R: every notice answered: did each go?
@@ -1338,10 +1338,10 @@ sequenceDiagram
     participant D as Decider's inbox
     P->>Rt: { comment } (or { token, comment })
     Rt->>Sv: raiseConcern / raiseConcernByLink
-    Sv->>Sv: 400 comment; 409 superseded, not ruled, past 90 days, sixth; 429 within 10 minutes
+    Sv->>Sv: 400 comment, 409 superseded / not ruled / past 90 days / sixth, 429 within 10 minutes
     Sv->>Rc: appendResponse kind 'concern'
     Sv->>Sv: noticeOf: no_decider, no_link_address, prefs_off, no_mail_host, held or asked
-    Sv->>Rc: concern_raised { responseId, notice }; seen { stage: 'ruling' } once
+    Sv->>Rc: concern_raised { responseId, notice }, seen { stage: 'ruling' } once
     Note over Sv,Nt: commit
     Nt->>D: only for asked: no name, no text, a link to the results
 ```
@@ -1430,12 +1430,12 @@ sequenceDiagram
     P->>W: a question
     W->>W: questionNoticesOf: no_link_address, prefs_off, no_mail_host, held or asked
     W->>Q: notifyDecisionQuestion for each asked (never the asker's own account)
-    Note over Q: commit, then sent; dropped on any rollback
+    Note over Q: commit, then sent, dropped on any rollback
     Q-->>A: "A participant asked a question about …" (no name, no text)
     D->>X: an answer, a publish or a replacement
     X->>X: answerNoticeOf: awaiting_review (a key's draft), not_reached, …, asked
     X->>Q: notifyQuestionAnswered
-    Q-->>P: "Your question about … has been answered" (a link holder's: no link; the latest-email line only under mailedLinkOf)
+    Q-->>P: "Your question about … has been answered" (a link holder's: no link, the latest-email line only under mailedLinkOf)
 ```
 
 Covered by `tests/decision-questions.test.ts` (cases 6, 12, 13 to 16, 19 to 21, and card 2721's

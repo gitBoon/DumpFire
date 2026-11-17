@@ -144,6 +144,8 @@ const TEST_FILES = [
 	// Milestone 22, slice S3: archiving or deleting an option is a discard, by every route; the upstream figures.
 	'discard.test.ts',
 	'docs-format.test.ts',
+	// Card 2892: no sequence diagram under docs/ holds a semicolon or a bare # in a message.
+	'docs-mermaid.test.ts',
 	'error-shape.test.ts',
 	'gate.test.ts',
 	'gdrive-retention.test.ts',

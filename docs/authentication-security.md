@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.128
+version: 1.129
 status: As-Built
 date: 2026-11-17
 tags:
@@ -481,7 +481,7 @@ sequenceDiagram
     C->>G: POST, PUT, PATCH or DELETE, body still arriving
     G->>G: locals.credential = null, then the key or session found:<br/>locals.user and locals.credential set
     G->>H: handed on
-    H->>H: quick check, binding no name (requireUser(locals.user);)<br/>await the body
+    H->>H: quick check, binding no name (requireUser(locals.user))<br/>await the body
     A->>DB: password reset, key deleted, sign-out or role lowered, committed
     C->>H: the rest of the body
     H->>W: writeAs(locals, (caller) => the write)
@@ -1949,7 +1949,7 @@ sequenceDiagram
     participant R as Route or stream
     B->>G: request, Cookie: __Host-dumpfire_session=code
     G->>A: readSessionCookie(request, url)
-    Note over G,A: the name in force alone (HTTPS-only cookies or an https: request); exactly one value, UUID-shaped, else none
+    Note over G,A: the name in force alone (HTTPS-only cookies or an https: request), exactly one value, UUID-shaped, else none
     G->>A: validateSession(code, slide only if slidesSession(request))
     A->>A: hash = SHA-256(code), 32 bytes
     A->>S: SELECT WHERE id = hash (a BLOB: text never matches)
@@ -3849,12 +3849,12 @@ sequenceDiagram
     P->>R: username, email, password, currentPassword, currentCode
     R->>R: fields, role, unused name, link address (503 if none), then the step-up
     R->>DB: one transaction: caller asked again, insert user, issueEnrolmentLink(admin-create)
-    R->>R: after commit: INFO line; enrolmentLinkNotGiven (reads only)
+    R->>R: after commit, INFO line, enrolmentLinkNotGiven (reads only)
     alt all three hold
         R-->>P: 201, enrolmentUrl, no-store
         P->>P: InviteLinkDialog, kind new-account
     else one fails
-        R-->>P: 201, enrolmentUrl null, words; WARN line
+        R-->>P: 201, enrolmentUrl null, words, WARN line
         P->>P: error toast with the words
     end
 ```
@@ -4950,7 +4950,7 @@ user and team routes.
       X->>G: consents with their own account (state x, or none)
       X-->>S: "paste this address": code c2 with state x
       S->>D: POST code c2, state x
-      D-->>S: 400, x is not a state this session started; nothing sent to Google
+      D-->>S: 400, x is not a state this session started, nothing sent to Google
   ```
 
 - **The Connect `GET` can be reached from another site** (card 2251). A cross-site
@@ -5013,7 +5013,7 @@ user and team routes.
       M-->>D: presents its own key SHA256:NEW in the key exchange
       Note over D: hostVerifier: SHA256:NEW is not SHA256:OLD, answers false
       D--xM: "Host denied", the connection ends before ssh-userauth
-      Note over D: no password or key sent; the Test, the run<br/>and one ERROR line name both keys
+      Note over D: no password or key sent, the Test, the run<br/>and one ERROR line name both keys
   ```
 
 - **Not prevented: the first look, and a confirmation not checked** (card 2250). The Test
@@ -6308,7 +6308,7 @@ sequenceDiagram
     R->>R: Content-Type 415, takeUploadCount 429 (no body read)
     R->>R: read the body (413 past 5 MB)
     R->>W: takeUploadBytes: key 401, 100 MB a day 429
-    R->>R: checkImage: 415, 400; metadata stripped
+    R->>R: checkImage: 415, 400, metadata stripped
     R->>R: writeUploadFile uuid.ext
     R->>W: attachImage: key 401, requireCard edit 404, 403 again,<br/>retention 409, 20 images 409, row and entry
     W-->>R: committed, or refused and the file removed
@@ -7419,7 +7419,7 @@ sequenceDiagram
         alt within 20 in 15 minutes
             L-->>P: 404, DEAD_DECISION_LINK
         else past it
-            L-->>P: 429 (Retry-After on the routes; the wait in words on the page)
+            L-->>P: 429 (Retry-After on the routes, the wait in words on the page)
         end
     end
     Note over G,P: every answer: no-referrer, noindex, no-store
@@ -7563,7 +7563,7 @@ sequenceDiagram
     G-->>S: the comments left out
     S-->>R: the password checked (400 missing, 403 wrong, counted)
     R->>W: whilePasswordHolds(writeAs(releaseResults))
-    W->>W: results_released_at, _by; results_released { upToResponseId, omitted }
+    W->>W: results_released_at, _by, results_released { upToResponseId, omitted }
     R-->>D: { decision, revision }
 ```
 
@@ -7677,11 +7677,11 @@ sequenceDiagram
     participant X as publishAnswer
     participant P as Participants
     K->>W: { answer } source api
-    W->>W: recordAnswer, agent drafted; question_answered { notice: awaiting_review }
-    Note over P: the question still shows as open;<br/>nothing of the draft is given
-    A->>X: Publish (source ui; 403 by key)
+    W->>W: recordAnswer, agent drafted, question_answered { notice: awaiting_review }
+    Note over P: the question still shows as open,<br/>nothing of the draft is given
+    A->>X: Publish (source ui, 403 by key)
     X->>X: recordDraftPublished WHERE draft pending (409 on no change)
-    X->>P: answer shown with "reviewed by a person"; the asker mailed after the commit
+    X->>P: answer shown with "reviewed by a person", the asker mailed after the commit
 ```
 
 ### The Register, Records and Card Links (card 2680)

@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.85
+version: 1.86
 status: As-Built
 date: 2026-11-17
 tags:
@@ -410,7 +410,7 @@ sequenceDiagram
     actor P as Participants and board readers
     D->>R: read the tally, choose, give a reason
     R->>S: Rule… with your password and code
-    S-->>P: the ruling mail; the ruled banner on the page
+    S-->>P: the ruling mail, the ruled banner on the page
     D->>R: preview the release, leave out a comment
     R->>S: Release results… with your password and code
     S-->>P: totals and comments, no names, small figures blurred

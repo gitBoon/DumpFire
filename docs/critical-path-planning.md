@@ -1,7 +1,7 @@
 ---
 title: "Critical-Path Planning"
 category: Architecture
-version: 1.25
+version: 1.26
 status: As-Built
 date: 2026-11-17
 tags:
@@ -518,7 +518,7 @@ sequenceDiagram
     participant Notify as "notifications.ts"
     participant SSE as "events.ts"
 
-    User->>Route: Move card #1686 to Complete
+    User->>Route: Move card 1686 to Complete
     Route->>DB: BEGIN IMMEDIATE
     Route->>DB: Every move of the request:<br/>column, completedAt, XP, activity entry
     Route->>Plan: recordUnblocked([1686, ...], actorUserId)
@@ -528,7 +528,7 @@ sequenceDiagram
         loop each dependent
             Plan->>Plan: Complete already, or another blocker still open?
             alt open, and every blocker complete
-                Plan->>DB: Insert system comment<br/>"Unblocked: #1686 … completed"
+                Plan->>DB: Insert system comment<br/>"Unblocked: #35;1686 … completed"
             else
                 Plan->>Plan: Skip
             end
