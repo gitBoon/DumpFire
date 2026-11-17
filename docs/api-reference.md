@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.133
+version: 1.134
 status: As-Built
 date: 2026-11-17
 tags:
@@ -30,7 +30,9 @@ tags:
   - two-step-sign-in
   - api-key-deadline
   - breaking-change
-description: "REST API reference for DumpFire's external v1 API: authentication, the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
+  - milestones
+  - cross-board
+description: "REST API reference for DumpFire's external v1 API: authentication, the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), the milestone list's touching=true for the cross-board goals holding a board's cards (card 2891, OpenAPI 1.9.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
 ---
 
 # External API Reference
@@ -366,14 +368,31 @@ either.
 
 ### Changes on 2026-11-17
 
-Six changes are dated 2026-11-17: card 2751's, which changes no `/api/v1` route (first);
-card 2772's, which is **breaking** for API keys made before its release; that of cards
-2770 and 2771, which is not (after it); and cards 2888's, 2851's and 2847's, which change no
-`/api/v1` route (last).
+Seven changes are dated 2026-11-17: card 2891's, additive, which takes the OpenAPI document
+to `1.9.0` (first); card 2751's, which changes no `/api/v1` route; card 2772's, which is
+**breaking** for API keys made before its release; that of cards 2770 and 2771, which is not
+(after it); and cards 2888's, 2851's and 2847's, which change no `/api/v1` route (last).
+
+**The milestone list of a board can also list the cross-board goals that hold its cards (card
+2891, additive; OpenAPI document version `1.9.0`, with a dated note at the top of its
+description).** `GET /api/v1/milestones?boardId=N` still lists only board N's own goals: a goal
+that spans boards is not among them, even one whose cards are all on N. Add `&touching=true`
+and each goal that spans boards and has a card on N that is not archived is listed too, as the
+plan page reached from a board lists them; still only the goals the key's user can see, so a
+goal with a card on a board they cannot open is not listed, and a board they cannot open lists
+nothing (`[]`), as before.
+
+- **`touching` is `true` or `false`**: anything else is `400` `touching must be true or false`,
+  and `touching=true` without `boardId` is `400` `touching needs boardId`. Without it, or with
+  `false`, the answer is exactly as before.
+- **An older server ignores it**: before this release `touching` is not read, so the request is
+  answered with board N's own goals alone and no error. The wrapper's `milestones -BoardId N
+  -Touching` sends it, and refuses `-Touching` without `-BoardId` before sending.
+- The internal twin `GET /api/milestones` does not take it. No migration, and nothing to set.
 
 **Report schedules and report mail ask for the password and a code (card 2751). The v1 API
-does not change**: still `1.8.0`, and no `/api/v1` operation, answer or schema is different. No
-v1 route makes or changes a report schedule or mails a report, and a key cannot reach the
+does not change**: still `1.8.0` (`1.9.0` since card 2891), and no `/api/v1` operation,
+answer or schema is different. No v1 route makes or changes a report schedule or mails a report, and a key cannot reach the
 internal routes below. These are DumpFire's own internal routes, which the Reports page calls;
 the change is stricter, so a script that calls them as a signed-in session must now send
 `currentPassword` and `currentCode`.
@@ -4294,7 +4313,9 @@ changed by anyone who can edit that board, so any of its editors may make it cro
 with `boardId: null`. After, only its creator or an administrator can change it, and only
 someone who can open every board its cards are on can see it (with no cards, only its
 creator). The plan page does the same with its Board select, asked first in a dialog that
-says so; the wrapper with `update-milestone -MilestoneId N -BoardId none`.
+says so; the wrapper with `update-milestone -MilestoneId N -BoardId none`. A goal made
+cross-board is no longer listed by `GET /api/v1/milestones?boardId=N`; since card 2891 it is
+with `&touching=true`, while it has a card on N that is not archived.
 
 ```mermaid
 flowchart TD

@@ -10,9 +10,17 @@ import type { RequestHandler } from './$types';
 /**
  * GET /api/v1/milestones — list milestones the caller can see.
  *
- * `?boardId=` limits to one board's milestones; `?status=open|closed` filters.
- * Cross-board milestones (boardId null) are always included unless a boardId
- * filter is given, because that is the case the filter is asking about.
+ * `?status=open|closed` filters. Without `?boardId=`, every goal the caller
+ * can see is listed, cross-board ones (boardId null) among them. With it, only
+ * the goals whose own board is that board ('scoped'): a cross-board goal is
+ * not listed, even one whose cards are all on the board. `&touching=true`
+ * adds those ('touching', card 2891): each cross-board goal with a card not
+ * archived on the board, as the plan page reached from a board lists them.
+ * Either way only the goals the caller may open (`goalsShownTo`), so a board
+ * the caller cannot open lists nothing.
+ *
+ * `touching` is `true` or `false`, and `true` needs a `boardId`: anything else
+ * is a 400, as a bad `status` is, not the scoped list read silently.
  */
 export const GET: RequestHandler = async ({ url, locals }) => {
 	if (!locals.user) throw error(401, 'Not authenticated');
@@ -25,7 +33,13 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	// An id, as an id in the path is read: `2.5` and `5abc` named no board.
 	const boardId = readQueryId(url.searchParams.get('boardId'), 'board', 'Invalid boardId');
 
-	return json(listMilestones(locals.user, boardId, status));
+	const touching = url.searchParams.get('touching') ?? undefined;
+	if (touching && !['true', 'false'].includes(touching)) {
+		throw error(400, 'touching must be true or false');
+	}
+	if (touching === 'true' && boardId === undefined) throw error(400, 'touching needs boardId');
+
+	return json(listMilestones(locals.user, boardId, status, touching === 'true' ? 'touching' : 'scoped'));
 };
 
 /**

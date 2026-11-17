@@ -34,7 +34,7 @@ const spec = {
 	openapi: '3.1.0',
 	info: {
 		title: 'DumpFire API',
-		version: '1.8.0',
+		version: '1.9.0',
 		description:
 			'REST API for the DumpFire Kanban board. Automate card creation, movement, assignments, and more.\n\n' +
 			'**Failures.** Every failure DumpFire answers under /api/v1/ is JSON with a `message` that says why, as in ' +
@@ -42,6 +42,12 @@ const spec = {
 			'(404, {"message": "Not found"}) and a method the route does not have (405, with an Allow header naming the ones it has). ' +
 			'Some failures carry more beside the message: a 429 has `retryAfterSecs`, the 409 for a dependency that would close a loop has `cycle`, ' +
 			'and the 409 for a batch that was refused lists every item of it that was at fault.\n\n' +
+			'**Changed on 2026-11-17 (version 1.9.0).** GET /api/v1/milestones takes touching=true with boardId (card 2891): ' +
+			'(1) with boardId alone the list is as before, the milestones of that board, and no milestone that spans boards; ' +
+			'touching=true adds each milestone that spans boards and has a card on that board that is not archived, as the plan page reached from a board lists them, ' +
+			'still only those the key\'s user can see, so a board they cannot see lists nothing; ' +
+			'(2) touching is true or false: any other value is 400 {"message": "touching must be true or false"}, and touching=true without boardId is 400 {"message": "touching needs boardId"}; ' +
+			'(3) nothing else changed: a request without touching is answered as before, and no other operation, field or status changed.\n\n' +
 			'**Changed on 2026-11-17 (version 1.8.0), breaking.** API keys made before this release stop working 60 days after it unless kept on the Account page (card 2772): ' +
 			'(1) every key that exists when this version is installed, with no expiry or an expiry later than the deadline, is given a deadline 60 days after the installation, the same moment for every such key; ' +
 			'from that moment it is answered 401 {"message": "Invalid or expired API key"}, as an expired key is, by every operation; ' +
@@ -7116,7 +7122,15 @@ const spec = {
 						in: 'query',
 						schema: { type: 'integer', minimum: 1 },
 						description:
-							'Only the milestones that belong to this board, which is an id: anything else is 400 Invalid boardId. A milestone that spans boards is not among them, even when it has cards on the board.'
+							'Only the milestones that belong to this board, which is an id: anything else is 400 Invalid boardId. A milestone that spans boards is not among them, even when it has cards on the board, unless touching=true is sent with it.'
+					},
+					{
+						name: 'touching',
+						in: 'query',
+						schema: { type: 'boolean', default: false },
+						description:
+							'With boardId: true also lists each milestone that spans boards and has a card on that board that is not archived, as the plan page reached from a board does; only those the key\'s user can see, so a board they cannot see still lists nothing. ' +
+							'true or false: anything else is 400 "touching must be true or false", and true without boardId is 400 "touching needs boardId". Since version 1.9.0 (card 2891).'
 					},
 					{
 						name: 'status',
@@ -7152,7 +7166,7 @@ const spec = {
 						}
 					},
 					'400': {
-						description: 'status is neither open nor closed, or boardId is not a whole number of 1 or more',
+						description: 'status is neither open nor closed, boardId is not a whole number of 1 or more, touching is neither true nor false ("touching must be true or false"), or touching=true is sent without boardId ("touching needs boardId")',
 						content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' }, example: { message: 'status must be open or closed' } } }
 					},
 					'401': { $ref: '#/components/responses/Unauthorized' },

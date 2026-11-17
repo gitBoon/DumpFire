@@ -254,9 +254,11 @@ A `502`, `503` or `504` is not DumpFire's either: see [Writes, Failures and Retr
 
 ### Changes on 2026-11-17
 
-Three changes are dated 2026-11-17: card 2751's, which changes no `/api/v1` route (first); card 2772's, which is **breaking** for API keys made before its release; and that of cards 2770 and 2771, which is not (after it).
+Four changes are dated 2026-11-17: card 2891's, additive, which takes the OpenAPI document to `1.9.0` (first); card 2751's, which changes no `/api/v1` route; card 2772's, which is **breaking** for API keys made before its release; and that of cards 2770 and 2771, which is not (after it).
 
-**Report schedules and report mail ask for the password and a code (card 2751). The v1 API does not change**: still `1.8.0`, and no `/api/v1` operation, answer or schema is different; no v1 route makes or changes a report schedule or mails a report, and a key cannot reach the internal routes below. What changes are the web application's own internal routes, which the Reports page calls; a script calling them as a signed-in session must now send `currentPassword` and `currentCode`.
+**The milestone list of a board can also list the cross-board goals that hold its cards** (card 2891, additive; the OpenAPI document is version **1.9.0**, with a dated note at the top of its description). `GET /milestones?boardId=N` still lists only board N's own goals; add `&touching=true` and each goal that spans boards and has a card on N that is not archived is listed too, as the plan page reached from a board lists them, still only the goals the key's user can see (a board they cannot open lists nothing, `[]`, as before). `touching` is `true` or `false`: anything else is `400` `touching must be true or false`, and `touching=true` without `boardId` is `400` `touching needs boardId`; without it the answer is exactly as before. A server before this release ignores `touching` and answers board N's own goals alone, without an error. See [List Milestones](#list-milestones).
+
+**Report schedules and report mail ask for the password and a code (card 2751). The v1 API does not change**: still `1.8.0` (`1.9.0` since card 2891), and no `/api/v1` operation, answer or schema is different; no v1 route makes or changes a report schedule or mails a report, and a key cannot reach the internal routes below. What changes are the web application's own internal routes, which the Reports page calls; a script calling them as a signed-in session must now send `currentPassword` and `currentCode`.
 
 - **What asks**: `POST /api/report-schedules`, always (to any address, the caller's own, or none); `PUT /api/report-schedules/[id]` when the change adds an address (one of the list sent not in the stored list, both read as the scheduler reads them; on or off), turns the schedule on (`enabled: true` on one that is off), or widens its `statusFilter` (any new filter while the stored one is not `all`); and `POST /api/reports/email`, always, for every address. Three more listed step-up actions, **forty** in all.
 - **What asks nothing**: a `PUT` that renames, re-times, removes an address, narrows the filter or turns the schedule off; `enabled: true` on a schedule already on; `DELETE /api/report-schedules/[id]`; `GET /api/report-schedules`; and `POST /api/reports`.
@@ -2028,6 +2030,14 @@ GET /api/v1/milestones
 
 **Query parameters:** `boardId`, a whole number of 1 or more (`400` `Invalid boardId`
 otherwise), and `status` (`open` | `closed`; another is `400` `status must be open or closed`).
+
+`boardId` lists the goals of that board only: a goal that spans boards is not among them, even
+one whose cards are all on it (list without `boardId` to see it, with `boardId: null`). Since
+1.9.0 (card 2891), `touching=true` beside `boardId` adds each goal that spans boards and has a
+card on that board that is not archived, only those the key's user can see; `touching` is
+`true` or `false` (`400` `touching must be true or false` otherwise), and `true` without
+`boardId` is `400` `touching needs boardId`. The wrapper sends it with
+`milestones -BoardId N -Touching`.
 
 **Response:**
 ```json
