@@ -182,6 +182,14 @@
 			</p>
 		</section>
 
+		<!-- The ISO 27001:2022 checklist (card 2670): its own page, every administrator's, read-only. -->
+		<section class="admin-card glass fade-in-up" style="animation-delay: 320ms">
+			<h2>📋 ISO 27001:2022 Checklist</h2>
+			<p class="section-desc" style="margin-bottom: 0">
+				Every Annex A control and clauses 4 to 10, with how far DumpFire meets each, its evidence and the cards that close what is open. <a href="/admin/iso-27001">Open the checklist</a>
+			</p>
+		</section>
+
 		<!-- SMTP Configuration: every administrator's since card 2395. Drawn again with the App URL panel (card 2397). -->
 		{#key mailRead}
 		<SmtpPanel bind:this={smtpPanel} currentUser={data.currentUser} />

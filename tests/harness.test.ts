@@ -161,6 +161,8 @@ const TEST_FILES = [
 	'internal-refusals.test.ts',
 	// Card 2849: invite tokens stored as hashes, and the start-up sweep of those held in plain.
 	'invite-hashes.test.ts',
+	// Card 2670: the ISO 27001:2022 checklist's source, its page's load and the page.
+	'iso-27001.test.ts',
 	'kanban-column-header.svelte.test.ts',
 	'live-streams.test.ts',
 	'load-access-reads.test.ts',

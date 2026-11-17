@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.126
+version: 1.127
 status: As-Built
 date: 2026-11-17
 tags:
+  - card-2670
+  - iso-27001
   - people-directory
   - decision-reminders
   - schedulers
@@ -1345,6 +1347,28 @@ sequenceDiagram
 ```
 
 **The Product Owner in Share Board** (plan 4.4). `GET /api/boards/:id/share` answers `productOwner` (`{ userId, username, emoji }` or `null`, never an address) to every caller it answers, and `productOwnerCandidates` only where `seesAddresses` (the board's owner or an administrator), the same callers `updateBoard` lets change it. The candidates are the board's possible editors alone (its creator, its `board_members`, the members of the teams in `board_teams`, every administrator), each asked `roleOnBoard` with the board row read once and kept where it is `owner`, `editor` or `admin`, so they cannot drift from `canEditBoard`; each is `{ id, username, emoji }` by username. `ShareModal.svelte` draws a select of None and the candidates where `canManage`, with the stored one marked "(cannot edit this board)" where it is no longer a candidate, and **Save** (`aria-disabled` until the choice differs) sends `updateBoard(boardId, { productOwnerUserId })`, that is `PUT /api/boards/:id`; a refusal puts the select back and shows the server's words on the window's error line. An unsaved choice survives a re-read only while the stored owner is unchanged and the choice is still offered. Without `canManage` it shows "Product Owner: *name*" or "None".
+
+### The ISO 27001 checklist page
+
+`/admin/iso-27001` (card 2670, plan `docs/planning/card-2670-iso-27001-checklist.md`) is a read-only page of its own, linked from a section of `/admin` after the people directory's. It lists every Annex A control of ISO/IEC 27001:2022 and clauses 4 to 10, each with its applicability (`app`, `supports` or `organisational`), its status, how DumpFire meets it, its evidence (paths, heading anchors and names in the repository), the organisation's part, its owner and the cards that close what is open. Its method is in [ISO 27001 Checklist: Method](iso-27001-checklist.md).
+
+- **The source is server-only.** Every item is in `src/lib/server/iso-27001.ts` (`CHECKLIST`, `CHECKED_ON`, `summarise`), and nothing else holds a copy. It names DumpFire's known weaknesses and the files they are in, and a module the page imported would be in a script under `/_app/`, which passes the gate untouched; under `$lib/server` SvelteKit refuses to build it into client code, so it reaches a browser only through the load.
+- **The load** (`src/routes/admin/iso-27001/+page.server.ts`) asks again itself, as `/admin/people` does, although `ADMIN_ROUTES` covers it: no user, `303` to `/login`; not an administrator, `303` to `/`. It answers `{ items, summary, checkedOn }`, where `summary` counts the application's side (`app` and `supports` items) apart from the organisation's (`organisational` items).
+- **The page** (`+page.svelte`) draws the two summary blocks, three filters held in the component's state (status; applicability, with "Application" for `app` and `supports` together; theme, with "Clauses 4-10"), and the table, which scrolls inside its own box. It writes nothing and fetches nothing. Card numbers and paths are text, never links. It has no component under `src/lib/components/admin/`, so `tests/page-failures.test.ts`'s three lists are unchanged.
+
+```mermaid
+flowchart LR
+    subgraph Server["Server only"]
+        M["src/lib/server/iso-27001.ts<br/>CHECKLIST, CHECKED_ON, summarise()"]
+        L["iso-27001/+page.server.ts<br/>no user: /login; not admin: /"]
+    end
+    G["hooks.server.ts gate<br/>ADMIN_ROUTES"] --> L
+    M --> L
+    L -->|"items, summary, checkedOn"| P["+page.svelte<br/>summary, filters, table"]
+    A["/admin: the checklist's section"] --> P
+    T["tests/iso-27001.test.ts"] -.-> M
+    C["A gap card's commit"] -.->|"gapCards, status, CHECKED_ON"| M
+```
 
 ### The decision service and its record
 

@@ -5528,6 +5528,8 @@ describe('every page load, to a caller who cannot open a board (card 2130)', () 
 		'page /admin': { paths: () => ['/admin'] },
 		// Every person's and every account's address (card 2674, plan case 25).
 		'page /admin/people': { paths: () => ['/admin/people'] },
+		// The ISO 27001 checklist (card 2670, A4): DumpFire's known gaps, administrators' alone.
+		'page /admin/iso-27001': { paths: () => ['/admin/iso-27001'] },
 		'page /all': { paths: () => ['/all'] },
 		'page /archived': { paths: () => ['/archived'] },
 		'page /audit': { paths: () => ['/audit'] },

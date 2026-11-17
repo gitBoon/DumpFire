@@ -1,10 +1,12 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.108
+version: 1.109
 status: As-Built
 date: 2026-11-17
 tags:
+  - card-2670
+  - iso-27001
   - card-2751
   - card-2870
   - report-schedules
@@ -55,6 +57,7 @@ flowchart LR
     Admin --> Users["User Management"]
     Admin --> Teams["Team Management"]
     Admin --> People["People Directory\n(/admin/people)"]
+    Admin --> Iso["ISO 27001:2022 Checklist\n(/admin/iso-27001, read-only)"]
     Admin --> Boards["Board Management"]
     Admin --> Danger["Danger Zone:\npurge, vacuum, XP"]
     Admin --> Settings["Application Settings\n(the App URL)"]
@@ -94,6 +97,7 @@ The superadmin is the account made when DumpFire was set up, and there is one. A
 | User Management, within [whose account they may manage](#modifying-users) | ✅ | ✅ |
 | Team Management | ✅ | ✅ |
 | [People Directory](#people-directory) (`/admin/people`, card 2674) | ✅ | ✅ |
+| [ISO 27001:2022 Checklist](#the-iso-270012022-checklist) (`/admin/iso-27001`, card 2670), read-only | ✅ | ✅ |
 | Danger Zone: Purge Archived Cards, Vacuum Database, Reset All XP | ✅ | ✅ |
 | The system log and the audit trail (`/audit`) | ✅ | ✅ |
 | **Application Settings**: the App URL | ✅ (since card 2395) | ✅ |
@@ -731,6 +735,20 @@ flowchart LR
 ```
 
 **What the directory and a restore do to personal links.** Mark left, linking or unlinking an account, a new address and **Delete** in the people directory each cancel the person's personal decision links ([above](#linking-a-person-to-an-account)), and so does deleting the account a person is linked to, which marks them Left ([Deleting a User](#deleting-a-user)). An **Import Backup** cancels every personal decision link there is ([Restoring from Backup](#restoring-from-backup)): the import's message and the Backup panel say how many, "2 personal decision links cancelled: a link mailed before this restore no longer works, and the decision's author, decider or an administrator can send its holder a new one with Resend." Each cancelled link is recorded on its decision.
+
+---
+
+## The ISO 27001:2022 Checklist
+
+Every administrator, and the superadmin, can open **📋 ISO 27001:2022 Checklist** from its section on the admin page (`/admin/iso-27001`, card 2670). It is read-only: nothing on it can be changed from the page. It lists every Annex A control of ISO/IEC 27001:2022 and clauses 4 to 10, and for each one:
+
+- **Applicability**: *DumpFire* where the application implements the control, *Supports* where it does part and the organisation the rest (the "organisation's part" column says what), and *Organisational* where it is the organisation's alone: people, premises, policy, suppliers and every clause 4 to 10.
+- **Status**: *Met*, *Partly met* or *Not met* for DumpFire's items; *Organisational* for the organisation's; *Not applicable* only where the organisation has excluded a control in its Statement of Applicability.
+- **How DumpFire meets it**, the **evidence** (files, document headings and names in the code, as text), and the **gap cards** that close what is still open, as card numbers (`#2898`) on the DumpFire board that builds DumpFire. A partly met item names a gap card or an accepted risk.
+
+The two blocks at the top count **In the application** and **The organisation's** apart, and never add them up: ISO 27001 certifies an organisation's management system, not software. The page is an input to your Statement of Applicability, not the statement itself and not a certificate. The date at the top is the day the statuses were last checked against the code. Filter by status, applicability ("Application" shows DumpFire's and Supports items together) and theme ("Clauses 4-10" shows the clauses). How the checklist is kept, and what each status means, is in [ISO 27001 Checklist: Method](iso-27001-checklist.md).
+
+The page names DumpFire's known weaknesses and the files they are in, which is why it is for administrators only and is never in a script the browser can fetch without signing in.
 
 ---
 

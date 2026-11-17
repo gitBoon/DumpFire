@@ -1,10 +1,12 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.123
+version: 1.124
 status: As-Built
 date: 2026-11-17
 tags:
+  - card-2670
+  - iso-27001
   - card-2751
   - card-2870
   - request-links
@@ -3977,6 +3979,11 @@ code, a secret or a link.
 | R4 | An older image started after the release makes sessions and cookies on a password alone that it would accept | This image refuses both; the deployment guide makes a rollback a security event |
 
 ### ISO/IEC 27001:2022
+
+These two rows are part of the ISO register, which is the administrators' checklist page,
+`/admin/iso-27001` (card 2670), drawn from `src/lib/server/iso-27001.ts`: there each control
+also names what is still open and the card that closes it. Its method is in
+[ISO 27001 Checklist: Method](iso-27001-checklist.md).
 
 | Control | How two-step sign-in meets it |
 |---|---|
