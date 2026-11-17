@@ -1,10 +1,10 @@
-import { json } from '@sveltejs/kit';
+import { error, json } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { afterCommit } from '$lib/server/db/transaction';
 import { users } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { endAccountAccess, namingIds, whilePasswordHolds, type SessionUser } from '$lib/server/auth';
-import { makePasswordHash } from '$lib/server/passwords';
+import { LONGEST_PASSWORD, PASSWORD_TOO_LONG, makePasswordHash } from '$lib/server/passwords';
 import { refuseOwnAccount, requireAdmin, requireManagedAccount, requireUser } from '$lib/server/route-guards';
 import { confirmStepUp } from '$lib/server/step-up';
 import { writeAs } from '$lib/server/write-as';
@@ -61,6 +61,8 @@ export const PUT: RequestHandler = async ({ params, request, locals, cookies }) 
 	requireTarget(writeAs(locals, (caller) => requireUser(caller)));
 	const SHORT = 'Password must be at least 8 characters';
 	const password = readText(body, 'password', { required: true, min: 8, says: { missing: SHORT, empty: SHORT, invalid: SHORT } });
+	// No longer than the step-up will read of it (card 2888).
+	if (password.length > LONGEST_PASSWORD) throw error(400, PASSWORD_TOO_LONG);
 
 	// The caller's own password, asked for again (card 2701): setting another
 	// account's is a takeover. The account is asked again first, read only, so

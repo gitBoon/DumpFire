@@ -88,7 +88,7 @@ import { apiKeys, inviteTokens, reportSchedules, sessions, taskRequests, users }
 import { MASTER_PREF, NOTIFICATION_PREFS } from '$lib/notification-prefs';
 import { shouldNotifyUser } from '$lib/server/notifications';
 import { PASSWORD_CHANGED_MEANWHILE, openSessionUser, SESSION_COOKIE_NAME, STEP_UP_SIGNED_OUT, type SessionUser } from '$lib/server/auth';
-import { PASSWORDS_BUSY, checkPassword, makePasswordHash } from '$lib/server/passwords';
+import { LONGEST_PASSWORD, PASSWORD_TOO_LONG, PASSWORDS_BUSY, checkPassword, makePasswordHash } from '$lib/server/passwords';
 import { holdsFactor } from '$lib/server/mfa-store';
 import { STEP_UP_MISSING, STEP_UP_WRONG } from '$lib/step-up-words';
 import { endUnusedInvites, issueInvite } from '$lib/server/invites';
@@ -611,6 +611,30 @@ describe('PUT /api/account/password', () => {
 		expect(sessionsOf(me.id)).toEqual([sessionHashOf('my-laptop'), sessionHashOf('my-phone')]);
 	});
 
+	it('refuses a new password over 1,024 characters before the current one is checked; one of 1,024 then confirms the next change (card 2888)', async () => {
+		const { me } = signedInTwice();
+		const tooLong = 'x'.repeat(LONGEST_PASSWORD + 1);
+		const longest = 'y'.repeat(LONGEST_PASSWORD);
+
+		const refused = await expectNothingWritten(() => changeOwn(me, { currentPassword: OLD, newPassword: tooLong }));
+		expect(refused.status).toBe(400);
+		expect(refused.body.message).toBe(PASSWORD_TOO_LONG);
+		expect(refused.cookie).toBeUndefined();
+		// Refused in the step-up's guard: nothing hashed, compared or counted.
+		expect(bcrypt.inTransaction).toEqual([]);
+		expect(countOf('my-laptop')).toBe(0);
+
+		const set = await changeOwn(me, { currentPassword: OLD, newPassword: longest });
+		expect(set.status).toBe(200);
+		expect(await matches(longest, hashOf(me.id))).toBe(true);
+
+		// The step-up reads all of it: the password just set confirms the next change, from the session it made.
+		stepUpCode(me);
+		const back = await changeOwn(me, { currentPassword: longest, newPassword: NEW }, set.cookie!.value);
+		expect(back.status).toBe(200);
+		expect(await matches(NEW, hashOf(me.id))).toBe(true);
+	});
+
 	it('refuses 409 when the password was changed elsewhere after it was checked, and leaves that change alone', async () => {
 		const { me } = signedInTwice();
 		const elsewhere = await makePasswordHash('changed elsewhere', 'known');
@@ -860,6 +884,19 @@ describe('PUT /api/users/:id/password', () => {
 		expect(countOf('the-admin')).toBe(0);
 	});
 
+	it('refuses a password over 1,024 characters before the step-up, and sets one of 1,024 (card 2888)', async () => {
+		const s = scene();
+		const longest = 'y'.repeat(LONGEST_PASSWORD);
+
+		const refused = await expectRefused(() => reset(s.admin, s.target.id, 'x'.repeat(LONGEST_PASSWORD + 1)), 400);
+		expect(refused.body.message).toBe(PASSWORD_TOO_LONG);
+		expect(bcrypt.inTransaction).toEqual([]);
+		expect(countOf('the-admin')).toBe(0);
+
+		expect((await reset(s.admin, s.target.id, longest)).status).toBe(200);
+		expect(await matches(longest, hashOf(s.target.id))).toBe(true);
+	});
+
 	it('refuses when the user became a superadmin after they were looked at', async () => {
 		const s = scene();
 		// The fifth read is the administrator's own hash, read for their password
@@ -1004,6 +1041,22 @@ describe('POST /api/users', () => {
 		// each, was checked for none (card 2701): nothing is counted.
 		expect(bcrypt.inTransaction).toEqual([]);
 		expect([countOf('the-admin'), countOf('the-chief')]).toEqual([0, 0]);
+	});
+
+	it('refuses a password over 1,024 characters before the step-up, and makes the user with one of 1,024 (card 2888)', async () => {
+		const s = scene();
+		const good = { username: 'newbie', email: 'newbie@example.test' };
+		const longest = 'y'.repeat(LONGEST_PASSWORD);
+
+		const refused = await expectRefused(() => create(s.admin, { ...good, password: 'x'.repeat(LONGEST_PASSWORD + 1) }), 400);
+		expect(refused.body.message).toBe(PASSWORD_TOO_LONG);
+		expect(bcrypt.inTransaction).toEqual([]);
+		expect(countOf('the-admin')).toBe(0);
+
+		const made = await create(s.admin, { ...good, password: longest });
+		expect(made.status).toBe(201);
+		expect(made.body).toMatchObject({ username: 'newbie', invited: false });
+		expect(await matches(longest, hashOf(made.body.id))).toBe(true);
 	});
 
 	it('with no mail set up, refuses a user with no password before anything else about them', async () => {
@@ -1365,6 +1418,23 @@ describe('the invite page', () => {
 		expect(bcrypt.inTransaction).toEqual([]);
 		expect(invite().used).toBe(false);
 		expect(hashOf(invitee.id)).toBe(FIXTURE_PASSWORD_HASH);
+	});
+
+	it('refuses a password over 1,024 characters with the invite still good, and sets one of 1,024 (card 2888)', async () => {
+		const { invitee } = invited();
+		const tooLong = 'x'.repeat(LONGEST_PASSWORD + 1);
+		const longest = 'y'.repeat(LONGEST_PASSWORD);
+
+		const refused = await expectNothingWritten(() => use({ password: tooLong, confirmPassword: tooLong }));
+		expect(refused).toMatchObject({ type: 'failure', status: 400, data: { error: `${PASSWORD_TOO_LONG}.` } });
+		expect(refused.cookies).toEqual({});
+		expect(bcrypt.inTransaction).toEqual([]);
+		expect(invite().used).toBe(false);
+
+		const res = await use({ password: longest, confirmPassword: longest });
+		expect(res).toMatchObject({ type: 'redirect', status: 303, location: '/login/enrol' });
+		expect(challengesOf(invitee.id)).toEqual([[tokenHashOf(res.cookies[CHALLENGE_COOKIE].value), 'enrol', 'invite']]);
+		expect(await matches(longest, hashOf(invitee.id))).toBe(true);
 	});
 });
 
@@ -2742,6 +2812,26 @@ describe('the setup page', () => {
 		expect(late).toMatchObject({ type: 'redirect', status: 303, location: '/' });
 		expect(late.cookies).toEqual({});
 		expect(bcrypt.inTransaction).toEqual([]);
+	});
+
+	it('refuses a password over 1,024 characters with the name and email kept, and makes the superadmin with one of 1,024 (card 2888)', async () => {
+		const tooLong = 'x'.repeat(LONGEST_PASSWORD + 1);
+		const longest = 'y'.repeat(LONGEST_PASSWORD);
+
+		const refused = await expectNothingWritten(() => setUp({ ...form(), password: tooLong, confirmPassword: tooLong }));
+		expect(refused).toMatchObject({
+			type: 'failure',
+			status: 400,
+			data: { error: PASSWORD_TOO_LONG, username: 'first', email: 'first@Example.test' }
+		});
+		expect(bcrypt.inTransaction).toEqual([]);
+
+		const res = await setUp({ ...form(), password: longest, confirmPassword: longest });
+		expect(res).toMatchObject({ type: 'redirect', status: 303, location: '/login/enrol' });
+		const made = db.select().from(users).all();
+		expect(made).toHaveLength(1);
+		expect(made[0].role).toBe('superadmin');
+		expect(await matches(longest, made[0].passwordHash)).toBe(true);
 	});
 });
 

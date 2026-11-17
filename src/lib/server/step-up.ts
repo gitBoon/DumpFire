@@ -67,6 +67,7 @@ import { checkCurrentProof, refuseWrongPassword, sessionHashIn, type ProofCode, 
 import { addressOf } from './client-address';
 import { createLogger } from './logger';
 import { sendSecurityNotice } from './notifications';
+import { LONGEST_PASSWORD } from './passwords';
 import { canonicalRecoveryCode } from './recovery-codes';
 import { readText, type RequestBody } from './request-body';
 import { requireUser } from './route-guards';
@@ -125,9 +126,6 @@ export {
 	STEP_UP_SIGNED_OUT,
 	STEP_UP_WRONG
 };
-
-/** The most characters a current password is read to: bcrypt reads the first 72 bytes anyway. */
-const LONGEST_PASSWORD = 1024;
 
 /**
  * The code sent beside the password, by its form (card 2771, D2), or null for
@@ -239,7 +237,8 @@ type NotAPromise<T> = T extends PromiseLike<unknown> ? never : T;
  *   (a) `guard`, in a `writeAs` that writes nothing: the session still open,
  *       the account as it is now, and every refusal of the route's that needs
  *       no password. Its answer is `actor`.
- *   (b) `currentPassword`: text of 1 to 1,024 characters, or 400
+ *   (b) `currentPassword`: text of 1 to 1,024 characters (`LONGEST_PASSWORD`,
+ *       the most any password may be set to: card 2888), or 400
  *       `STEP_UP_MISSING`. Then `currentCode` (card 2771, D1): text, or 400
  *       `STEP_UP_MISSING`; in one of the two forms (`readStepUpCode`), or 400
  *       `STEP_UP_CODE_MALFORMED`. Nothing is counted.

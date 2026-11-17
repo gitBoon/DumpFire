@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.130
+version: 1.131
 status: As-Built
 date: 2026-11-17
 tags:
@@ -366,9 +366,10 @@ either.
 
 ### Changes on 2026-11-17
 
-Three changes are dated 2026-11-17: card 2751's, which changes no `/api/v1` route (first);
-card 2772's, which is **breaking** for API keys made before its release; and that of cards
-2770 and 2771, which is not (after it).
+Four changes are dated 2026-11-17: card 2751's, which changes no `/api/v1` route (first);
+card 2772's, which is **breaking** for API keys made before its release; that of cards
+2770 and 2771, which is not (after it); and card 2888's, which changes no `/api/v1` route
+(last).
 
 **Report schedules and report mail ask for the password and a code (card 2751). The v1 API
 does not change**: still `1.8.0`, and no `/api/v1` operation, answer or schema is different. No
@@ -552,6 +553,15 @@ them as a signed-in session must send the code too.
   /api/v1/milestones/<id>, or Spans every board on its plan page), or move the card.`, where it
   read `… Make the milestone cross-board, or move the card.` The status (`409`), the shape and
   the top-level `message` are unchanged; the single attach keeps its words.
+
+**A new password over 1,024 characters is refused (card 2888). The v1 API does not change**: no
+`/api/v1` route sets a password. Three internal routes, `PUT /api/account/password`
+(`newPassword`), `PUT /api/users/{id}/password` and `POST /api/users` (`password`, when one is
+sent), answer `400` "Password must be at most 1,024 characters" for one longer, before the
+step-up, so nothing is hashed, compared or counted. 1,024 is the most the step-up reads of a
+current password (`LONGEST_PASSWORD`), so a password set longer could never confirm an action.
+The invite and first-run set-up pages refuse the same. Sign-in is unchanged: it has no maximum
+([Password Hashing](authentication-security.md#password-hashing)).
 
 ### Changes on 2026-11-13
 

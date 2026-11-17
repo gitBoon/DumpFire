@@ -59,6 +59,19 @@ const log = createLogger('AUTH');
 export const BCRYPT_ROUNDS = 12;
 
 /**
+ * The most characters a password may be set to, and the most the step-up
+ * reads of a current one (card 2888). One number for both, so that nobody can
+ * set a password no step-up will then read. Every route that sets a password
+ * refuses a longer one before anything is hashed. Sign-in has no maximum: it
+ * keeps the first `KEPT_CHARACTERS` and checks them, as before. Counted as
+ * `.length` (UTF-16 units), as `readText`'s `max` counts.
+ */
+export const LONGEST_PASSWORD = 1024;
+
+/** The words a password over `LONGEST_PASSWORD` is refused with, wherever it is set (card 2888). */
+export const PASSWORD_TOO_LONG = `Password must be at most ${LONGEST_PASSWORD.toLocaleString('en-GB')} characters`;
+
+/**
  * What a sign-in at a name that is no account checks its password against
  * (card 2192), so that it costs the one check a wrong password at an account
  * costs, and the time it takes does not tell which names are accounts. The

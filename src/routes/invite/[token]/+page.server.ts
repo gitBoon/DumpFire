@@ -5,7 +5,7 @@ import { afterCommit, inTransaction } from '$lib/server/db/transaction';
 import { apiKeys, inviteTokens, reportSchedules, users, webhooks } from '$lib/server/db/schema';
 import { and, eq, count } from 'drizzle-orm';
 import { endAccountAccess, namingIds } from '$lib/server/auth';
-import { CheckNotMade, PASSWORDS_BUSY, callerHasGone, makePasswordHash } from '$lib/server/passwords';
+import { CheckNotMade, LONGEST_PASSWORD, PASSWORD_TOO_LONG, PASSWORDS_BUSY, callerHasGone, makePasswordHash } from '$lib/server/passwords';
 import { createLogger } from '$lib/server/logger';
 import { usableInvite } from '$lib/server/invites';
 import { currentMfaKey } from '$lib/server/mfa-key';
@@ -91,6 +91,11 @@ export const actions: Actions = {
 
 		if (!password || password.length < 8) {
 			return fail(400, { error: 'Password must be at least 8 characters.' });
+		}
+
+		// No longer than the step-up will read of it (card 2888).
+		if (password.length > LONGEST_PASSWORD) {
+			return fail(400, { error: `${PASSWORD_TOO_LONG}.` });
 		}
 
 		if (password !== confirmPassword) {

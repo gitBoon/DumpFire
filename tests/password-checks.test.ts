@@ -524,4 +524,14 @@ describe('the source', () => {
 		// card 2771; and the six hashes (two in the new-user route).
 		expect(calls.length).toBeGreaterThanOrEqual(9);
 	});
+
+	// Card 2888: one maximum, the step-up's, for every password set, so that a
+	// route added later cannot set one the step-up will not read.
+	it('holds every file that hashes a new password to LONGEST_PASSWORD', () => {
+		const setters = sources.filter(
+			(file) => file !== 'src/lib/server/passwords.ts' && readFileSync(join(process.cwd(), file), 'utf8').includes('makePasswordHash(')
+		);
+		expect(setters.length).toBeGreaterThanOrEqual(5);
+		expect(setters.filter((file) => !readFileSync(join(process.cwd(), file), 'utf8').includes('LONGEST_PASSWORD'))).toEqual([]);
+	});
 });

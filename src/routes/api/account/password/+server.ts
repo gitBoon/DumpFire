@@ -12,7 +12,7 @@ import {
 	setSessionCookie,
 	whilePasswordHolds
 } from '$lib/server/auth';
-import { makePasswordHash } from '$lib/server/passwords';
+import { LONGEST_PASSWORD, PASSWORD_TOO_LONG, makePasswordHash } from '$lib/server/passwords';
 import { forgetPendingAdd } from '$lib/server/pending-authenticators';
 import { rememberBrowser } from '$lib/server/known-browsers';
 import { createLogger } from '$lib/server/logger';
@@ -43,7 +43,8 @@ export const PUT: RequestHandler = async ({ request, locals, cookies, url }) => 
 	// holder has just proved they hold the password, and ending keys stops
 	// every script that uses them; anything but true or false is refused
 	// rather than read as one or the other), and the new password, text of 8
-	// characters or more. The guard asks who is asking as their account is now
+	// to 1,024 characters (`LONGEST_PASSWORD`, card 2888: the most the step-up
+	// will read of it next time). The guard asks who is asking as their account is now
 	// (card 2253); it decides nothing: the transaction that writes asks again,
 	// before the session this request came by ends there.
 	const SHORT = 'New password must be at least 8 characters';
@@ -55,6 +56,7 @@ export const PUT: RequestHandler = async ({ request, locals, cookies, url }) => 
 		requireUser(caller);
 		const endApiKeys = readBoolean(body, 'endApiKeys', {}) ?? false;
 		const newPassword = readText(body, 'newPassword', { required: true, min: 8, says: { missing: SHORT, empty: SHORT, invalid: SHORT } });
+		if (newPassword.length > LONGEST_PASSWORD) error(400, PASSWORD_TOO_LONG);
 		return { endApiKeys, newPassword };
 	});
 

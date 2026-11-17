@@ -2,7 +2,7 @@ import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { users } from '$lib/server/db/schema';
 import { whilePasswordHolds, type SessionUser } from '$lib/server/auth';
-import { makePasswordHash } from '$lib/server/passwords';
+import { LONGEST_PASSWORD, PASSWORD_TOO_LONG, makePasswordHash } from '$lib/server/passwords';
 import { issueInvite } from '$lib/server/invites';
 import { inviteMailAnswer } from '$lib/server/invite-link';
 import { readAccountFields, requireAssignableRole, requireUnusedAccountFields } from '$lib/server/account-fields';
@@ -61,6 +61,11 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 
 	if (password && password.length < 8) {
 		throw error(400, 'Password must be at least 8 characters');
+	}
+
+	// No longer than the step-up will read of it (card 2888).
+	if (password && password.length > LONGEST_PASSWORD) {
+		throw error(400, PASSWORD_TOO_LONG);
 	}
 
 	// A mail user with no password, as a restore leaves the settings (card

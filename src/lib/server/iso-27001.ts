@@ -242,10 +242,12 @@ export const CHECKLIST: readonly IsoItem[] = [
 		how:
 			'Passwords are hashed with bcrypt at cost 12. Authenticator secrets are sealed with AES-256-GCM under a key kept outside the database. ' +
 			'Session ids, invite tokens, API keys, recovery codes, sign-in challenges, decision links and (since card 2870) requester links are held only as SHA-256 hashes. ' +
-			'Still open: the longest new password allowed differs by route; the mail password, backup destination credentials, webhook secrets and the server\'s own signing keys are stored in plain in the live database; ' +
+			'Every route that sets a password refuses one over 1,024 characters, the most the step-up reads (card 2888). ' +
+			'Still open: the mail password, backup destination credentials, webhook secrets and the server\'s own signing keys are stored in plain in the live database; ' +
 			'and a settled request\'s links never expire.',
 		evidence: [
 			{ path: 'src/lib/server/passwords.ts', symbol: 'BCRYPT_ROUNDS' },
+			{ path: 'src/lib/server/passwords.ts', symbol: 'LONGEST_PASSWORD' },
 			{ path: 'src/lib/server/mfa-crypto.ts', symbol: 'aes-256-gcm' },
 			{ path: 'src/lib/server/mfa-key.ts' },
 			{ path: 'src/lib/server/db/schema.ts', symbol: 'tokenHash' },
@@ -256,7 +258,7 @@ export const CHECKLIST: readonly IsoItem[] = [
 			{ path: AUTH_DOC, anchor: 'isoiec-270012022' }
 		],
 		owner: 'DumpFire',
-		gapCards: [2888, 2898, 2902]
+		gapCards: [2898, 2902]
 	},
 	{
 		ref: 'A.5.18',

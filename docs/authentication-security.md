@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.125
+version: 1.126
 status: As-Built
 date: 2026-11-17
 tags:
@@ -1118,7 +1118,8 @@ body sent to `PUT /api/account/email` or `POST /api/account/api-keys`. The passw
 
 **The password in transit and at rest.** It is never logged (no body reader logs a body, and the
 lines name the user and the action), never echoed (every refusal is fixed text), held to the
-512 KB body limit and to 1,024 characters by its reader (bcrypt reads 72 bytes), and kept in a
+512 KB body limit and to 1,024 characters by its reader (bcrypt reads 72 bytes; no password
+can be set longer: see [Password Hashing](#password-hashing), card 2888), and kept in a
 request's local variables alone: the confirmation map holds digests, and the in-flight set
 session ids. Strings cannot be wiped in JavaScript. On the page it is in the dialog's state
 while it is open, and cleared on Cancel, as it is sent and on a refusal; it is never put in a
@@ -1511,7 +1512,8 @@ or 1 for a recovery code.
   `name`, `expiresAt` and the ten-key limit (`400` "Maximum of 10 API keys per user"). Their own
   words ("Password is incorrect", "Current password is incorrect", "Password is required") are
   gone: they answer the step-up's refusals with their codes. A current password over 1,024
-  characters is now `400` there too (card 2888).
+  characters is now `400` there too, and no route sets a longer one (card 2888: see
+  [Password Hashing](#password-hashing)).
 - **One importer.** `checkCurrentProof` and `refuseWrongPassword` are named in `src` only in
   `auth.ts` (their declarations) and `step-up.ts` (the import and the call);
   `checkCurrentPassword` is named nowhere; `checkPassword` is called only in
@@ -2169,6 +2171,20 @@ See the sequence in [Architecture](architecture.md#an-open-stream-and-its-sessio
   awaited, and a transaction cannot await. A password is hashed before the transaction that
   stores it, and a current password checked before the transaction it allows (see
   `whilePasswordHolds`, below)
+- **The longest password** (card 2888): 1,024 characters (`LONGEST_PASSWORD` in
+  `passwords.ts`, counted as `.length`), the most the step-up reads of a current password.
+  Every route that sets a password refuses a longer one with `400` "Password must be at most
+  1,024 characters" (`PASSWORD_TOO_LONG`), beside its 8-character check and before anything is
+  hashed, compared or counted: your own change (`PUT /api/account/password`, in the step-up's
+  guard), an administrator's reset (`PUT /api/users/{id}/password`), an administrator's create
+  with a chosen password (`POST /api/users`), an invite (`/invite/{token}`, with a full stop,
+  as its other refusals) and first-run set-up (`/setup`). Before it, a longer password could be
+  set, and then no step-up and no change of one's own password would take it. No page sets a
+  `maxlength`, which would cut a paste short without a word. A test that reads `src/` holds
+  that every file that calls `makePasswordHash(` names `LONGEST_PASSWORD`. **Sign-in has no
+  maximum**: it keeps the first 256 characters and checks them, as before; bcrypt reads 72
+  bytes, so a cap there protects nothing and would lock out an account that set a longer
+  password before the release (an administrator's reset puts such an account right)
 
 ### Off the Server's Thread (card 2191)
 
