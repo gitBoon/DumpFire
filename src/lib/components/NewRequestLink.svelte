@@ -14,6 +14,12 @@
 	 * signed in the account's email as it is now (card 2171), which is why the
 	 * page says so. Its answer is one sentence, the same whether or not anything
 	 * was sent, and that sentence is what is shown.
+	 *
+	 * A request's links also end 90 days after it is settled, declined or its
+	 * work completed (card 2902), and no new one is sent for it then. The answer
+	 * cannot say so without telling anyone who asks that the request exists, so
+	 * the page says it beforehand in general words, with the way back for a
+	 * request made signed in: its author reads it through their account.
 	 */
 	import { failureMessage } from '$lib/api';
 
@@ -21,7 +27,9 @@
 
 	/** What the page says before anything is asked. */
 	const LINK_GONE =
-		"This link no longer works. Enter the email address you made the request with (if you made it while signed in to DumpFire, your account's email address as it is now), and a new link will be sent to it.";
+		"This link no longer works. Enter the email address you made the request with (if you made it while signed in to DumpFire, your account's email address as it is now), and a new link will be sent to it. " +
+		'A request settled (declined, or its work completed) more than 90 days ago is closed: its links no longer work and no new one is sent. ' +
+		'If you made it while signed in to DumpFire, sign in and open this page again to read it.';
 
 	let email = $state('');
 	let asking = $state(false);

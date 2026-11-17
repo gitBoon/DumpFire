@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.112
+version: 1.113
 status: As-Built
 date: 2026-11-17
 tags:
@@ -840,7 +840,7 @@ A backup is the whole database, as one `.db` file, with these things taken out:
 | Every user's password hash, so that a restore can sign them in again | **Invites that have not been used.** An invite's link sets a password |
 | The mail server, port and user name, and each backup destination's name, type, host, bucket, folder, user names and ids | Attachment files: see [Attachments](#attachments) |
 | Invites that have been used, held only as hashes (card 2849), API keys (as hashes), the system log, with every invite's address in it masked | **The key remembered browsers are signed with** (card 2194). A restore forgets every remembered browser |
-| Every task request and its messages | **Every request's link** (card 2158). A link opens its request's thread, replies as the requester and confirms the request, and never expires: every request is in the backup with no link (since card 2870 the links are kept only as hashes, and the backup holds none of those either), and a restore ends every link and brings none in |
+| Every task request and its messages | **Every request's link** (card 2158). A link opens its request's thread, replies as the requester and confirms the request, and ends 90 days after the request is settled (declined, or its card completed; card 2902): every request is in the backup with no link (since card 2870 the links are kept only as hashes, and the backup holds none of those either), and a restore ends every link and brings none in |
 | Every webhook, with its address | **The key the public request form signs with** (card 2158). A restore makes a new one |
 | | **The mail password** (card 2169) |
 | | **Each backup destination's credentials** (card 2169): an SFTP password or private key, an S3 secret access key, a Google Drive client secret and refresh token or a service account's private key, a OneDrive client secret |

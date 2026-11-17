@@ -6,7 +6,7 @@ import { NO_LINK_ADDRESS, isSmtpConfigured, linkBaseUrl, smtpPasswordMissing } f
 import { notifyRequesterNewLink } from '$lib/server/notifications';
 import { checkRateLimit } from '$lib/server/rate-limit';
 import { addressToCount } from '$lib/server/client-address';
-import { hasLapsed, issueRequestLinkFor, requesterAddress } from '$lib/server/request-access';
+import { issueRequestLinkFor, linkEnded, requesterAddress } from '$lib/server/request-access';
 import { CANNOT_SEND_LINK, NO_MAIL_PASSWORD, requestConfirmUrl, requestReplyUrl } from '$lib/server/request-tokens';
 import { readBody, readText } from '$lib/server/request-body';
 import { createLogger } from '$lib/server/logger';
@@ -71,7 +71,10 @@ const comparable = (address: string) => address.trim().toLowerCase();
  * The answer tells nobody whether a request exists or whose it is. It is 202
  * with the same sentence for a wrong address, a request that is not there, an
  * id that is not a number, an unconfirmed request older than the form lets
- * one live, and a mail past a limit, as for a link that is sent. Everything a
+ * one live, a request settled more than 90 days ago, whose links have ended
+ * and for which no new one is sent (`linkEnded`, card 2902), and a mail past
+ * a limit, as for a link that is sent: the answer never says a request is
+ * closed, which would tell a stranger that it exists. Everything a
  * match leads to, the limits counted, the mail settings read, the mail made
  * and handed on and the INFO line, is done after the answer (`setImmediate`,
  * the review's S3), so the answer does the same work either way, and is
@@ -96,7 +99,8 @@ const comparable = (address: string) => address.trim().toLowerCase();
  *
  * Nothing is written before the answer. After it, when a mail is about to go,
  * one asked-for link is written (card 2870), and only once the request, read
- * again in that link's own transaction, is still there, has not lapsed and
+ * again in that link's own transaction, is still there, its links have not
+ * ended and
  * still has the address matched (`issueRequestLinkFor`, the code review's
  * CS1): a restore or an account's new email committed between the answer and
  * the mail would otherwise send a link to a thread that is no longer that
@@ -147,8 +151,9 @@ export const POST: RequestHandler = async ({ params, request, locals, url, getCl
 	// made signed in (card 2171), the address given for one made without.
 	const address = found ? requesterAddress(found) : null;
 	const unconfirmed = found?.status === 'unverified';
-	// One the form would have cleared by now is not there (R3).
-	const tooOld = !!found && hasLapsed(found);
+	// One the form would have cleared by now is not there (R3), and nor is one
+	// settled more than 90 days ago, whose links have ended (card 2902).
+	const tooOld = !!found && linkEnded(found);
 
 	if (found && address !== null && !tooOld && comparable(given) === comparable(address)) {
 		// After the answer (S3): see the comment above. By its id and the

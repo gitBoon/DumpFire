@@ -2030,8 +2030,13 @@ describe('a request’s pages, for a link that no longer works (card 2158)', () 
 		// now (card 2171), so the page says which address to give.
 		expect(form).toContain(
 			'"This link no longer works. Enter the email address you made the request with (if you made it while signed ' +
-				'in to DumpFire, your account\'s email address as it is now), and a new link will be sent to it."'
+				'in to DumpFire, your account\'s email address as it is now), and a new link will be sent to it. " +'
 		);
+		// Card 2902: a request settled more than 90 days ago is closed, said in general words before anything is asked.
+		expect(form).toContain(
+			"'A request settled (declined, or its work completed) more than 90 days ago is closed: its links no longer work and no new one is sent. ' +"
+		);
+		expect(form).toContain("'If you made it while signed in to DumpFire, sign in and open this page again to read it.';");
 		expect(form).toContain('fetch(`/api/requests/${requestId}/link`');
 		expect(form).toContain('body: JSON.stringify({ email: email.trim() })');
 		expect(markup).toContain('Send me a new link');

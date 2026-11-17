@@ -44,6 +44,7 @@ import { sha256Hex } from '$lib/server/mfa-crypto';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { END_PLAIN_REQUEST_LINKS, REQUEST_MAIL_LINKS_KEPT, issueFormToken, issueRequestLink } from '$lib/server/request-tokens';
 import { endPlainRequestLinks } from '$lib/server/startup-checks';
+import { stamp } from '$lib/timestamps';
 import { api } from './helpers/api';
 import { gate } from './helpers/gate';
 import { makeBoard, makeCard, makeUser, resetDb, type BoardFixture } from './helpers/fixtures';
@@ -271,6 +272,61 @@ describe('a new link asked for', () => {
 			level: 'INFO',
 			message: `A new link to request ${request.id} was not mailed: the request changed after the link was asked for`
 		});
+	});
+});
+
+describe('a settled request’s links end 90 days after it was settled (card 2902)', () => {
+	const DAY = 24 * 60 * 60 * 1000;
+	const daysAgo = (days: number) => stamp(new Date(Date.now() - days * DAY));
+	/** A link of request `id`'s own, issued as a mail's is. */
+	const linkOf = (id: number) => inTransaction(() => issueRequestLink(id, 'mail'));
+	const settle = (id: number, days: number) => sqlite.prepare('UPDATE task_requests SET resolved_at = ? WHERE id = ?').run(daysAgo(days), id);
+	const complete = (cardId: number, at: string | null) => sqlite.prepare('UPDATE cards SET completed_at = ? WHERE id = ?').run(at, cardId);
+
+	it('opens a declined request up to 90 days after the decline, and not after', async () => {
+		const request = pendingRequest('rejected');
+		const t = linkOf(request.id);
+
+		settle(request.id, 89);
+		expect(await opens(request.id, t)).toBe(200);
+		settle(request.id, 91);
+		expect(await opens(request.id, t)).toBe(404);
+	});
+
+	it('opens an accepted request while its card is open, however old; not 90 days after the card is completed; and again once it is reopened', async () => {
+		const card = makeCard(A.cols['To Do'], { title: 'Please add an export' });
+		const request = pendingRequest('accepted', card.id);
+		const t = linkOf(request.id);
+		settle(request.id, 400);
+
+		expect(await opens(request.id, t)).toBe(200);
+		complete(card.id, daysAgo(91));
+		expect(await opens(request.id, t)).toBe(404);
+		complete(card.id, null);
+		expect(await opens(request.id, t)).toBe(200);
+	});
+
+	it('closes an accepted request whose card was deleted 90 days after it was accepted', async () => {
+		const request = pendingRequest('accepted', null);
+		const t = linkOf(request.id);
+		settle(request.id, 91);
+
+		expect(await opens(request.id, t)).toBe(404);
+	});
+
+	it('mails no new link for a closed request, and answers the one sentence', async () => {
+		const request = pendingRequest('rejected');
+		settle(request.id, 91);
+
+		const asked = await api('POST', `/api/requests/${request.id}/link`, { body: { email: REQUESTER } });
+		await afterTheAnswer();
+
+		expect({ status: asked.status, body: asked.body }).toEqual({
+			status: 202,
+			body: { message: 'If that is the address the request was made with, a new link has been sent to it.' }
+		});
+		expect(mail.sent).toEqual([]);
+		expect(linkRows(request.id)).toEqual([]);
 	});
 });
 

@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.131
+version: 1.132
 status: As-Built
 date: 2026-11-17
 tags:
@@ -5369,7 +5369,8 @@ session's expiry moves on every time it is used.
   still a file to keep where few can read it.
 - **No request's link, and not the form's key** (cards 2158 and 2870). A request's link lets
   whoever holds it read every message of that request's thread, the ones written after the
-  copy was made included, reply as the requester and confirm it, and it never expires. Since
+  copy was made included, reply as the requester and confirm it, and it lasts until 90 days
+  after its request is settled, or for as long as the request stays open (card 2902). Since
   card 2870 the links are kept only as hashes, in `request_links`, and the copy holds none:
   `withoutSecrets()` deletes every `request_links` row, sets the retired
   `task_requests.access_token` to `NULL` (as it is in the live file; the unique index takes
@@ -8037,7 +8038,10 @@ What each control is for:
   signed-in account is answered `404` too, where it was `403` ("Access denied", or
   "Invalid or missing link token" on a reply): since card 2260 an unconfirmed request is
   not there to anyone signed in without its link. One rule says when it has
-  lapsed (`hasLapsed` in `request-access.ts`), and every route that takes the link asks it.
+  lapsed (`hasLapsed` in `request-access.ts`), and every route that takes the link asks it,
+  through `linkEnded`, which since card 2902 also ends a settled request's links 90 days after
+  it was settled (see
+  [Requester Links Stored as Hashes](#requester-links-stored-as-hashes-card-2870)).
 - **Confirmation is a button, not a link.** The emailed link opens a page; the request
   is confirmed by the POST the button makes. Mail scanners open links before the
   recipient does, and a link that confirmed on sight would let a request made with
@@ -8114,7 +8118,8 @@ What each control is for:
   the mail, one `ask` link is written in a transaction of its own (`issueRequestLinkFor()` in
   `request-access.ts`, card 2870), which ends none of the links mails carried. That
   transaction reads the request again by its id and writes the link only if it is still
-  there, has not lapsed and `requesterAddress()` of it is still the address matched (case and
+  there, its links have not ended (`linkEnded`: lapsed, or settled more than 90 days ago, card
+  2902) and `requesterAddress()` of it is still the address matched (case and
   surrounding spaces ignored); the mail's address, title and kind are the ones read there. A
   restore or an account's new email committed between the answer and the mail would otherwise
   send a link to a thread that is no longer that address's (the card 2870 code review, CS1).
@@ -8210,8 +8215,37 @@ Until card 2870 each task request had one token, kept exactly as it was mailed i
 `task_requests.access_token`, and the server rebuilt the link from it for every later mail.
 Whoever could read the database file, its WAL, its free pages, a cold copy or a restore's safety
 copy could read every request thread, the requester's address included, reply as the requester
-and confirm an unconfirmed request; and a settled request's link never expires (card 2902). A
-backup has held no request token since card 2158.
+and confirm an unconfirmed request; and a settled request's link never expired, until card 2902
+(below). A backup has held no request token since card 2158.
+
+**A settled request's links end 90 days after it was settled** (card 2902). `linkEnded(request)`
+in `request-access.ts` is the one rule: true for an unconfirmed request that has lapsed
+(`hasLapsed`, card 2243), or for one settled before `settledCutoff()`, `SETTLED_LINK_DAYS`
+(90) days ago. Settled is: **declined**, at `resolved_at`; **accepted with its card completed**,
+at the card's `completed_at` (a card reopened clears it, and the request is open again);
+**accepted with its card gone** (`resolved_card_id` null), at `resolved_at`, the sooner to
+close. Pending, unconfirmed and accepted with its card open are not settled, and keep their
+links (within the caps below). `linkCheck`, the new-link ask and the link that ask issues
+(`issueRequestLinkFor`) all ask it, so a closed request's link is answered `404` as one that is
+not there, and no new link is mailed for it: the ask still answers its one `202` sentence,
+which never says a request is closed, since that would tell anyone who asks that request N
+exists. The dead-link page says it beforehand in general words, "A request settled (declined,
+or its work completed) more than 90 days ago is closed: its links no longer work and no new one
+is sent. If you made it while signed in to DumpFire, sign in and open this page again to read
+it." (`NewRequestLink.svelte`). A request made signed in is still read through its author's
+account (`canReadRequest`). The link rows stay in `request_links` until the request is deleted,
+opening nothing. Every date is one already stored: no migration.
+
+```mermaid
+flowchart TD
+    T["A request link's token"] --> R["requestIdOfLink: resolved by hash first"]
+    R --> M{"Its request id is the path's?"}
+    M -->|no| N404["404, as not there"]
+    M -->|yes| L{"linkEnded(request)"}
+    L -->|"unconfirmed over 7 days"| N404
+    L -->|"settled over 90 days"| N404
+    L -->|no| OK["Opens the thread"]
+```
 
 **The server now keeps only the SHA-256 of each link's token, in hex, in a table of its own,
 `request_links`** (migration 0070; see
@@ -8238,7 +8272,7 @@ sequenceDiagram
     Note over H,M: the same for a team reply and a progress mail (mail, issueRequestLinkNow)<br/>and for a new-link ask (ask, issueRequestLinkFor: the request read again first)
     R->>H: GET /api/requests/:id?token=… (any live one)
     H->>DB: SELECT request_id WHERE token_hash = sha256Hex(token)<br/>(always, before the request is read)
-    H->>H: let in only if request_id is the path's id and the request has not lapsed
+    H->>H: let in only if request_id is the path's id and its links have not ended
     H-->>R: the thread, or 404 for every refusal alike
 ```
 
@@ -8299,7 +8333,8 @@ erDiagram
   `linkCheck(token)` calls `requestIdOfLink(token)` at once, one statement prepared once,
   `SELECT request_id FROM request_links WHERE token_hash = ?`, whatever the id and whether or
   not that request exists, and only then does the route read the row. It lets in only when the
-  `request_id` found is the path's id and the request has not lapsed (`hasLapsed`, card 2243),
+  `request_id` found is the path's id and its links have not ended (`linkEnded`: lapsed, card
+  2243, or settled more than 90 days ago, card 2902),
   so one request's link opens no other and the time an answer takes says nothing of which
   requests exist. A token that is not a non-empty string is hashed as `''` and looked up all the
   same, and opens nothing. The request read (`GET /api/requests/[id]`), its thread
@@ -8332,8 +8367,8 @@ erDiagram
     (the card 2870 code review, CR1 and CS4). The mail is built and sent after the commit.
   - **The new-link ask** issues an `ask` link with `issueRequestLinkFor()` from `mailNewLink`,
     after the answer and once the limits allow the mail, in a transaction that first reads
-    the request again and issues nothing if it is gone, has lapsed or no longer has the
-    address matched (CS1).
+    the request again and issues nothing if it is gone, its links have ended (`linkEnded`,
+    card 2902) or it no longer has the address matched (CS1).
   - **The confirmation's answer** issues nothing: its `replyUrl` carries the token it was
     posted, already the requester's and already proven.
 - **Backup and restore** (decision 10). A backup's copy deletes every `request_links` row and
@@ -9074,7 +9109,7 @@ unfinished is recovered on the host with `node scripts/mfa-reset.mjs <name>`.
 | `src/lib/server/planning.ts` | Besides the plan: the viewer every reader of a dependency or a plan must pass, and `withhold()`, which shows work on a board the viewer cannot open as "A card on a board you cannot open" |
 | `src/lib/server/webhooks.ts` | `presentWebhook(hook, reveal)`, which leaves a webhook's `url` and `secret` out of every answer but the owner's, an administrator's and the one to the request that made it, and `setBy` out of every answer; `deliver()` on the webhooks' own agents; the cap of 10 a board |
 | `src/lib/server/webhook-address.ts` | Where a webhook may send (card 2161): `insideReason()`, `addressRefusal()`, `guardedLookup()`, `allowInside()` for `WEBHOOK_ALLOW_INSIDE`, and `readWebhookUrl()`, the registration's `400` |
-| `src/lib/server/request-access.ts` | Who may read, answer and resolve a task request; `requesterAddress()`, the one address a requester is mailed at and the team is shown (card 2171); `linkCheck()`, which resolves a link's token by its hash before the request is read and opens only the request it was issued for (card 2870); `issueRequestLinkFor()`, the new-link ask's link, written only once the request, read again in the same transaction, is still there, has not lapsed and still has the address matched (card 2870's code review, CS1) |
+| `src/lib/server/request-access.ts` | Who may read, answer and resolve a task request; `requesterAddress()`, the one address a requester is mailed at and the team is shown (card 2171); `linkCheck()`, which resolves a link's token by its hash before the request is read and opens only the request it was issued for (card 2870); `linkEnded()`, the one rule for when a request's links open nothing and no new one is issued: lapsed unconfirmed (`hasLapsed`), or settled more than `SETTLED_LINK_DAYS` (90) days ago, declined at `resolved_at`, accepted at its card's `completed_at` or, with its card gone, at `resolved_at` (card 2902); `issueRequestLinkFor()`, the new-link ask's link, written only once the request, read again in the same transaction, is still there, its links have not ended and it still has the address matched (card 2870's code review, CS1) |
 | `src/lib/server/request-tokens.ts` | Form tokens, and a requester's links for callers without an account (card 2870): `issueRequestLink()`, which writes only the token's SHA-256 in hex to `request_links`, keeps the newest 20 `mail` and 3 `ask` links of the request and throws outside a transaction; `issueRequestLinkNow()`, the same in a transaction of its own or a savepoint, for the progress mail; `requestIdOfLink()`, the one prepared lookup by hash, run before the request is read; `END_PLAIN_REQUEST_LINKS`; `CANNOT_SEND_LINK` and `NO_MAIL_PASSWORD`, shared by the form and the new-link route. See [Requester Links Stored as Hashes](#requester-links-stored-as-hashes-card-2870) |
 | `src/routes/api/requests/[id]/link/+server.ts` | The new link a requester asks for when theirs no longer works (card 2158): one answer for every ask, a new `ask` link (card 2870) issued after the answer and mailed only to the request's address (`requesterAddress()`, card 2171), within three limits (`mayMail()`); a `503` in plain words, its reason in the log |
 | `src/hooks.server.ts` | Request-level auth guard and the list of public routes; `locals.credential`, set to `null` as the first statement of `handle` and then to the key or session found, which `stillAuthenticated()` reads at the write; the v1 rate limit, the JSON answer to every failure under `/api/v1/`, and `handleError` |

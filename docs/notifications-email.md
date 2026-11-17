@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.76
+version: 1.77
 status: As-Built
 date: 2026-11-17
 tags:
@@ -621,7 +621,7 @@ down. The failure shows on the panel and in the log.
 | User Mentioned | A user named as `@username` in a comment who can open the card's board (card 2198), never the author | `email_mentions` | `{author} mentioned you: {title}` |
 | Board Shared | Target user | `email_board_shared` | `Board shared: {boardName}` |
 | Request Confirmation | Requester (no account) | — | `Confirm your request: {title}` |
-| A New Link (card 2158) | Requester, at the request's address (for a request made signed in, the account's email as it is now: card 2171), when they ask for it from a link that no longer works: at most three an hour to one address, and for a request not yet confirmed within the form's three confirmation mails an hour to it; at most 30 an hour in all; worked out and sent after the answer, and only when the request, read again as its link is written, is still there with the same address and has not lapsed (the card 2870 code review, CS1). It carries a new link of its own, one of at most three asked-for links the request keeps, and ends no link another mail carried (card 2870); it says "A new link to this request was asked for with your email address. Use the button below to open it.", with "Confirm my request" or "View the conversation". See [The Public Request Form](authentication-security.md#the-public-request-form) | — | `A new link to your request: {title}` |
+| A New Link (card 2158) | Requester, at the request's address (for a request made signed in, the account's email as it is now: card 2171), when they ask for it from a link that no longer works: at most three an hour to one address, and for a request not yet confirmed within the form's three confirmation mails an hour to it; at most 30 an hour in all; worked out and sent after the answer, and only when the request, read again as its link is written, is still there with the same address and its links have not ended (the card 2870 code review, CS1): never for an unconfirmed request that has lapsed, nor for one settled more than 90 days ago (card 2902), whose ask is answered the same sentence and mailed nothing. It carries a new link of its own, one of at most three asked-for links the request keeps, and ends no link another mail carried (card 2870); it says "A new link to this request was asked for with your email address. Use the button below to open it.", with "Confirm my request" or "View the conversation". See [The Public Request Form](authentication-security.md#the-public-request-form) | — | `A new link to your request: {title}` |
 | Task Request | Target user/team | `email_requests` | `New request: {title}` |
 | Request Accepted | Requester | — | `Request accepted: {title}` |
 | Request Rejected | Requester | — | `Request declined: {title}` |
@@ -1727,6 +1727,14 @@ that must be confirmed `503` "New links cannot be sent just now. Please contact 
 sent you the link." (why in a `[WARN] [REQUESTS]` line), and a team reply is saved and mails
 nothing. See
 [Requester Links Stored as Hashes](authentication-security.md#requester-links-stored-as-hashes-card-2870).
+
+**A settled request's links end 90 days after it was settled** (card 2902): declined, at its
+decline; accepted, when its card is completed (open again if the card is reopened), or at its
+acceptance if the card was deleted. Its links then open nothing, as a link that is not there,
+and a new link asked for is not mailed, though the ask answers its usual sentence. Open requests
+keep their links. The page an ended link opens says, in general words, that a request settled
+more than 90 days ago is closed and no new link is sent, and that one made signed in can be read
+by signing in (`linkEnded` in `request-access.ts`).
 
 ```mermaid
 flowchart TD

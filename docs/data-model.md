@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.82
+version: 1.83
 status: As-Built
 date: 2026-11-17
 tags:
@@ -1554,7 +1554,12 @@ A requester without an account reaches their request through a link mailed to th
 card 2870 (2026-11-17) every such link has a row of its own in `request_links`, holding only the
 SHA-256 of its token as lower-case hex.** The token itself is only in the mail. Each mail that
 carries a link (the confirmation, a team reply, a progress mail) issues a new one, and so does a
-new link the requester asks for; earlier links go on working within the caps below. The code is
+new link the requester asks for; earlier links go on working within the caps below. A row stays
+until its request is deleted (cascade), and **opens nothing once its request has been settled 90
+days** (card 2902): declined, from `task_requests.resolved_at`; accepted, from its card's
+`cards.completed_at` (null again when the card is reopened), or from `resolved_at` when
+`resolved_card_id` is null (the card deleted). The rule is `linkEnded()` in
+`src/lib/server/request-access.ts`, and it adds no column. The code is
 `src/lib/server/request-tokens.ts`; why, and what happens at the release and on going back, is
 in [Requester Links Stored as Hashes](authentication-security.md#requester-links-stored-as-hashes-card-2870).
 

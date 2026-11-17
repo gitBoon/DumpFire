@@ -14,7 +14,7 @@
 import { error } from '@sveltejs/kit';
 import { and, eq } from 'drizzle-orm';
 import { db } from './db';
-import { taskRequests, teamMembers, users, type TaskRequest } from './db/schema';
+import { cards, taskRequests, teamMembers, users, type TaskRequest } from './db/schema';
 import { isAdmin } from './board-access';
 import type { SessionUser } from './auth';
 import { inTransaction } from './db/transaction';
@@ -42,11 +42,56 @@ export function unconfirmedCutoff(now: number = Date.now()): string {
  * still a row, and every route that takes its link treats it as not there
  * (card 2243): the confirmation link confirmed it, the team was mailed and it
  * entered the inbox however old the link was. Strictly older, as the form's
- * delete reads it. Only an unconfirmed request lapses; a settled one keeps its
- * link for good.
+ * delete reads it. Only an unconfirmed request lapses; when a settled one's
+ * links end is `linkEnded`'s (card 2902).
  */
 export function hasLapsed(request: Pick<TaskRequest, 'status' | 'createdAt'>, now?: number): boolean {
 	return request.status === 'unverified' && request.createdAt < unconfirmedCutoff(now);
+}
+
+/**
+ * How long a settled request's links go on opening it, in days after it was
+ * settled (card 2902): an old mail, forwarded or found in a mailbox years
+ * later, no longer opens the thread. A request still open keeps its links.
+ */
+export const SETTLED_LINK_DAYS = 90;
+
+/** The moment before which a settled request's links have ended, in the stored form. */
+export function settledCutoff(now: number = Date.now()): string {
+	return stamp(new Date(now - SETTLED_LINK_DAYS * 24 * 60 * 60 * 1000));
+}
+
+/**
+ * When the request was settled, in the stored form, or null while it is open
+ * (card 2902, decision 2). Declined: when it was declined (`resolvedAt`).
+ * Accepted: when its card was completed (`completedAt`), and null while the
+ * card is open, a card reopened clearing it; with its card gone (deleted, so
+ * `resolvedCardId` is null, or a row not found), when it was accepted, the
+ * sooner of the two to close. Pending and unconfirmed requests are open.
+ */
+function settledAt(request: Pick<TaskRequest, 'status' | 'resolvedAt' | 'resolvedCardId'>): string | null {
+	if (request.status === 'rejected') return request.resolvedAt;
+	if (request.status !== 'accepted') return null;
+	if (request.resolvedCardId === null) return request.resolvedAt;
+	const card = db.select({ completedAt: cards.completedAt }).from(cards).where(eq(cards.id, request.resolvedCardId)).get();
+	return card ? card.completedAt : request.resolvedAt;
+}
+
+/**
+ * True when a request's links open nothing and no new one is issued for it:
+ * an unconfirmed request that has lapsed (`hasLapsed`, card 2243), or one
+ * settled more than `SETTLED_LINK_DAYS` ago (card 2902). The one rule for the
+ * link check, the new-link ask and the link that ask issues. A link of such a
+ * request is answered as one that is not there; its row stays in
+ * `request_links` until the request is deleted, opening nothing.
+ */
+export function linkEnded(
+	request: Pick<TaskRequest, 'status' | 'createdAt' | 'resolvedAt' | 'resolvedCardId'>,
+	now?: number
+): boolean {
+	if (hasLapsed(request, now)) return true;
+	const settled = settledAt(request);
+	return settled !== null && settled < settledCutoff(now);
 }
 
 /**
@@ -54,12 +99,13 @@ export function hasLapsed(request: Pick<TaskRequest, 'status' | 'createdAt'>, no
  * decision 6): the token is looked up by its hash now, before the caller
  * reads the request, whether or not that request exists. The check it gives
  * back is true if the token is a live link to that request and the link still
- * opens it: the link of a lapsed request opens nothing, and is answered as
- * one that is not there (card 2243). One request's link opens no other.
+ * opens it: the link of a lapsed request, or of one settled more than 90 days
+ * ago (`linkEnded`, card 2902), opens nothing, and is answered as one that is
+ * not there (card 2243). One request's link opens no other.
  */
 export function linkCheck(token: unknown): (request: TaskRequest) => boolean {
 	const linked = requestIdOfLink(token);
-	return (request) => linked === request.id && !hasLapsed(request);
+	return (request) => linked === request.id && !linkEnded(request);
 }
 
 /**
@@ -132,7 +178,8 @@ export interface IssuedRequestLink {
  *
  * In one transaction of its own (`inTransaction`), the request is read again
  * by its id, and the link is written (`issueRequestLink`) only if it is still
- * there, has not lapsed (`hasLapsed`), and `requesterAddress` of it is still
+ * there, its links have not ended (`linkEnded`: lapsed, or settled more than
+ * 90 days ago, card 2902), and `requesterAddress` of it is still
  * `expectedAddress`, case and surrounding spaces ignored, as the ask compares
  * them. Otherwise nothing is written and it returns null: no link, so no mail.
  * What the mail says, its address, title and kind, is taken from that read.
@@ -141,7 +188,7 @@ export function issueRequestLinkFor(requestId: number, expectedAddress: string, 
 	const comparable = (address: string) => address.trim().toLowerCase();
 	return inTransaction(() => {
 		const request = db.select().from(taskRequests).where(eq(taskRequests.id, requestId)).get();
-		if (!request || hasLapsed(request)) return null;
+		if (!request || linkEnded(request)) return null;
 		const address = requesterAddress(request);
 		if (address === null || comparable(address) !== comparable(expectedAddress)) return null;
 		return {

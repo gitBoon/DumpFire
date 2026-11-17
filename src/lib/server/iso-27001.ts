@@ -244,8 +244,8 @@ export const CHECKLIST: readonly IsoItem[] = [
 			'Passwords are hashed with bcrypt at cost 12. Authenticator secrets are sealed with AES-256-GCM under a key kept outside the database. ' +
 			'Session ids, invite tokens, API keys, recovery codes, sign-in challenges, decision links and (since card 2870) requester links are held only as SHA-256 hashes. ' +
 			'Every route that sets a password refuses one over 1,024 characters, the most the step-up reads (card 2888). ' +
-			'Still open: the mail password, backup destination credentials, webhook secrets and the server\'s own signing keys are stored in plain in the live database; ' +
-			'and a settled request\'s links never expire.',
+			'Requester links end 90 days after their request is settled (card 2902). ' +
+			'Still open: the mail password, backup destination credentials, webhook secrets and the server\'s own signing keys are stored in plain in the live database.',
 		evidence: [
 			{ path: 'src/lib/server/passwords.ts', symbol: 'BCRYPT_ROUNDS' },
 			{ path: 'src/lib/server/passwords.ts', symbol: 'LONGEST_PASSWORD' },
@@ -255,11 +255,12 @@ export const CHECKLIST: readonly IsoItem[] = [
 			{ path: 'src/lib/server/db/schema.ts', symbol: 'keyHash' },
 			{ path: 'src/lib/server/db/schema.ts', symbol: 'linkTokenHash' },
 			{ path: 'src/lib/server/request-tokens.ts', symbol: 'request_links' },
+			{ path: 'src/lib/server/request-access.ts', symbol: 'SETTLED_LINK_DAYS' },
 			{ path: AUTH_DOC, anchor: 'requester-links-stored-as-hashes-card-2870' },
 			{ path: AUTH_DOC, anchor: 'isoiec-270012022' }
 		],
 		owner: 'DumpFire',
-		gapCards: [2898, 2902]
+		gapCards: [2898]
 	},
 	{
 		ref: 'A.5.18',
@@ -328,18 +329,20 @@ export const CHECKLIST: readonly IsoItem[] = [
 		applicability: 'supports',
 		status: 'partly-met',
 		how:
-			'People, accounts and task requests can be deleted. A backup holds no session, unused invite or requester link, and requester links are held only as hashes (card 2870). ' +
+			'People, accounts and task requests can be deleted. A backup holds no session, unused invite or requester link, and requester links are held only as hashes (card 2870) ' +
+			'and end 90 days after their request is settled (card 2902). ' +
 			'A requester\'s address is never written to the system log: a mail to them that fails names the request (card 2896). ' +
-			'Still open: a settled request\'s links never expire, and what DumpFire holds about one person cannot be exported or erased in one step.',
+			'Still open: what DumpFire holds about one person cannot be exported or erased in one step.',
 		evidence: [
 			{ path: 'src/routes/api/people/[id]/+server.ts', symbol: 'DELETE' },
 			{ path: 'src/routes/api/users/[id]/+server.ts', symbol: 'DELETE' },
 			{ path: 'src/routes/api/requests/[id]/+server.ts', symbol: 'DELETE' },
 			{ path: BACKUP_DOC, anchor: 'what-a-backup-holds' },
-			{ path: 'src/lib/server/email.ts', symbol: 'requesterLabel' }
+			{ path: 'src/lib/server/email.ts', symbol: 'requesterLabel' },
+			{ path: 'src/lib/server/request-access.ts', symbol: 'SETTLED_LINK_DAYS' }
 		],
 		owner: 'DumpFire',
-		gapCards: [2902, 2909],
+		gapCards: [2909],
 		organisationalPart: 'Lawful basis, privacy notices, data subject requests and records of processing.'
 	},
 	organisational('A.5.35', 'annex-a', 'Independent review of information security'),
