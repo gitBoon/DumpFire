@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.76
+version: 1.77
 status: As-Built
-date: 2026-11-16
+date: 2026-11-17
 tags:
   - database
   - schema
@@ -2567,6 +2567,12 @@ of about zero.
     right. See [Migrations and Schema Reconciliation](#migrations-and-schema-reconciliation).
     The test suite checks after every test that every such column holds a real moment in the
     stored form, by the same `is_stamp`, or NULL (`tests/helpers/timestamps.ts`).
+  - **Searches fold every letter's case.** The shared connection is given one more function
+    where it is opened (`src/lib/server/db/fold-case.ts`, card 2843): `fold_case(v)`,
+    deterministic, JavaScript's `toLowerCase()` for text, NULL for NULL, any other value
+    unchanged. A title or name search compares `instr(fold_case(column), fold_case(text)) > 0`
+    (`foldsTo`), since `lower()` and `LIKE` fold A to Z alone. It is a function on the
+    connection, not schema: nothing is stored folded.
   - **An expiry is read as the moment it names.** A session's, an API key's and an invite's
     expiry is read with `toStamp` before it is compared with now, and one that names no
     moment counts as passed: compared as text, `zzz` sorted after every stamp and never

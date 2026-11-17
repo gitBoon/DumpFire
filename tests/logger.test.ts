@@ -186,6 +186,28 @@ describe('a stored name in a line written by a route', () => {
 	});
 });
 
+// Card 2842: GET /api/logs matched `q` with a LIKE built from the text, so %
+// and _ were wildcards, and LIKE folds A to Z alone. Each row stores a line the
+// text is in and a decoy it matched only as a pattern, or does not hold.
+describe('GET /api/logs: q is matched as typed, in any case of any letter (card 2842)', () => {
+	it.each<[string, string, string, string]>([
+		['a percent sign', '50%', 'Coverage 50% done', 'Coverage 500 done'],
+		['an underscore', 'a_b', 'Renamed a_b', 'Renamed axb'],
+		['a quote', "it's", "Said it's broken", 'Said its broken'],
+		['a letter beyond A to Z in another case', 'ÉCOLE', 'Back to école', 'Back to ecole']
+	])('as %s', async (_name, text, line, decoy) => {
+		const admin = makeUser({ username: 'admin', role: 'admin' });
+		const insert = sqlite.prepare("INSERT INTO system_logs (timestamp, level, context, message) VALUES ('2026-11-17 09:00:00', 'INFO', 'SEARCH', ?)");
+		insert.run(line);
+		insert.run(decoy);
+
+		const res = await api('GET', `/api/logs?context=SEARCH&q=${encodeURIComponent(text)}`, { user: admin });
+
+		expect(res.status, JSON.stringify(res.body)).toBe(200);
+		expect((res.body.data as { message: string }[]).map((entry) => entry.message)).toEqual([line]);
+	});
+});
+
 describe('startup-checks.ts', () => {
 	it('uses the logger’s cleaner and keeps no copy of its own, and cleans the line it prints past LOG_LEVEL', () => {
 		const source = readFileSync(join(process.cwd(), 'src/lib/server/startup-checks.ts'), 'utf8');

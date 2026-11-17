@@ -704,6 +704,19 @@ describe('the person select', () => {
 		expect(register(makeUser({ role: 'admin' }), 'who=renamed').people).toEqual([{ id: pat.id, name: 'Patricia Renamed' }]);
 	});
 
+	// Card 2843: SQLite's lower() folds A to Z alone, so a name beginning Ł was never found by its lower case.
+	it.each(['administrator', 'decider'] as const)('…%s: who finds a name in any case of any letter (card 2843)', (branch) => {
+		const caller = makeUser({ username: 'caller', ...(branch === 'administrator' ? { role: 'admin' as const } : {}) });
+		const lukasz = makePerson({ fullName: 'Łukasz Øster' });
+		if (branch === 'decider') {
+			const board = makeBoard({ owner: makeUser() }).board;
+			addBoardMember(board, caller, 'editor');
+			join(decisionOn(board, { decider: caller }), lukasz);
+		}
+
+		expect(register(caller, `who=${encodeURIComponent('łukasz')}`).people).toEqual([{ id: lukasz.id, name: 'Łukasz Øster' }]);
+	});
+
 	it('gives the caller’s own person id for My record, and nobody else’s; null with no person (code review F1)', () => {
 		const pat = makeUser({ username: 'pat' });
 		const own = personOf(pat, 'Pat Page');
@@ -730,6 +743,23 @@ describe('the title filter, the query and the pages', () => {
 		expect(found("'")).toEqual([titled["Dana's call"]]);
 		expect(found('upper case')).toEqual([titled['UPPER Case']]);
 		expect(found('  budget  ')).toEqual(sorted([titled['Budget 50% cut'], titled['Budget 50 x']]));
+	});
+
+	// Card 2843: the title was lowered by SQLite (A to Z alone) and the text by JavaScript, so École was never found.
+	it('matches a title in any case of any letter (card 2843)', () => {
+		const reader = makeUser();
+		const board = makeBoard({ owner: reader }).board;
+		const ecole = decisionOn(board, { title: "École d'été" }).id;
+		decisionOn(board, { title: "Ecole d'ete" });
+		const found = (q: string) => idsOf(register(reader, `tab=all&q=${encodeURIComponent(q)}`));
+
+		expect(found('école')).toEqual([ecole]);
+		expect(found('ÉCOLE')).toEqual([ecole]);
+	});
+
+	it('fold_case: NULL is NULL and a number is unchanged (card 2843)', () => {
+		expect(sqlite.prepare('SELECT fold_case(NULL) AS folded').get()).toEqual({ folded: null });
+		expect(sqlite.prepare('SELECT fold_case(42) AS folded').get()).toEqual({ folded: 42 });
 	});
 
 	it('drops a malformed tab, status, board, person or before in page mode (40)', () => {

@@ -605,6 +605,8 @@ describe('db/index.ts', () => {
 					order.push(`driver ${path}`);
 				}
 				pragma() {}
+				// db/index.ts registers fold_case on the connection it opens (card 2843).
+				function() {}
 			}
 		}));
 		vi.doMock('drizzle-orm/better-sqlite3', () => ({ drizzle: () => ({}) }));

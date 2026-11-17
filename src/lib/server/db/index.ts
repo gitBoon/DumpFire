@@ -3,6 +3,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import * as schema from './schema';
 import { join } from 'node:path';
 import { DatabaseLocationError, checkDatabaseLocation, type OtherDatabase } from './location';
+import { registerFoldCase } from './fold-case';
 
 const DB_PATH = process.env.DB_PATH || join(process.cwd(), 'dumpfire.db');
 
@@ -27,6 +28,8 @@ sqlite.pragma('journal_mode = WAL');
 sqlite.pragma('synchronous = NORMAL');
 sqlite.pragma('foreign_keys = ON');
 sqlite.pragma('cache_size = -64000'); // 64MB cache
+// Searches fold every letter's case by it (card 2843, db/fold-case.ts).
+registerFoldCase(sqlite);
 
 export const db = drizzle(sqlite, { schema });
 export { sqlite };

@@ -568,8 +568,8 @@ describe('the picker’s search, GET /api/cards/search', () => {
 
 	// Card 2718: the title was matched with a LIKE built from the text, so %
 	// and _ were wildcards. Each row makes a card the text is in and one it
-	// matched only as a pattern; the last is a contract the change keeps (LIKE
-	// matched A to Z in any case).
+	// matched only as a pattern; the fourth is a contract the change keeps (LIKE
+	// matched A to Z in any case), and the fifth card 2843's.
 	describe('matches the text as typed (card 2718)', () => {
 		const search = async (user: SessionUser, query: string) =>
 			((await api('GET', `/api/cards/search?${query}`, { user })).body as { id: number; kind: string }[]).map((r) => [r.kind, r.id]);
@@ -578,7 +578,9 @@ describe('the picker’s search, GET /api/cards/search', () => {
 			['a percent sign', '50%', 'Coverage 50% done', 'Coverage 500 done'],
 			['an underscore', 'a_b', 'Rename a_b', 'Rename axb'],
 			['a quote', "it's", "Fix it's broken", 'Fix its broken'],
-			['letters in another case', 'DEPLOY', 'Deploy the page', 'Deplo the page']
+			['letters in another case', 'DEPLOY', 'Deploy the page', 'Deplo the page'],
+			// Card 2843: lower() folded A to Z alone, so école did not find École.
+			['a letter beyond A to Z in another case', 'école', 'École de Paris', 'Ecole de Paris']
 		])('as %s', async (_name, text, title, decoy) => {
 			const me = makeUser({ username: 'me' });
 			const board = makeBoard({ owner: me, name: 'Mine' });

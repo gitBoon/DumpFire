@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.122
+version: 1.123
 status: As-Built
-date: 2026-11-16
+date: 2026-11-17
 tags:
   - people-directory
   - decision-reminders
@@ -3373,6 +3373,7 @@ Every moment DumpFire stores is `YYYY-MM-DD HH:MM:SS`, in UTC, to the whole seco
 |---|---|
 | `src/lib/timestamps.ts` | Plain functions with no imports, used by the server and the pages alike. `stamp(date)` gives the stored form, and every write from JavaScript goes through it. `toStamp(input, edge)` reads what a caller sends: the stored form, ISO 8601 with or without a fraction, `Z` or an offset, or a date, 00:00:00 as a lower bound and 23:59:59 as an upper one; anything else is `null`, which a route answers `400` naming the parameter. `parseStamp(value)` gives the `Date` a stored value names, read as UTC: every page, report and metric parses through it, never with `new Date()`, which reads the stored form as local time. `toIso(value)` gives ISO 8601 with `Z`. `isStamp(value)` says whether a value is a real moment in the stored form, which a pattern cannot: `2026-02-30 08:00:00` has the shape |
 | `src/lib/server/db/timestamps.ts` | `timestampColumns(database)`: every TEXT column whose name ends in `_at`, and `system_logs.timestamp`. `normaliseTimestamps(database)`: converts every value in a shape it reads to the stored form, where SQLite's `strftime` and `toStamp` read it as the same moment, in one immediate transaction, and reports every value that is not a real moment in the stored form. `registerStampFunctions(database)` gives the connection `is_stamp` and `stamp_of` from `src/lib/timestamps.ts` for that SQL, so SQL and code read a moment by one rule; the suite's check after every test calls it too. The runner calls it at every start after the backfills, and the restore after every import |
+| `src/lib/server/db/fold-case.ts` | `registerFoldCase(database)` gives the connection `fold_case(v)`, deterministic: JavaScript's `toLowerCase()` for text, NULL for NULL, any other value unchanged; `db/index.ts` calls it once where the shared connection is opened, which a restore copies rows into rather than reopening. `foldsTo(column, text)` is `instr(fold_case(column), fold_case(text)) > 0`: the text as typed, no character a wildcard, in any case of any letter, where SQLite's `lower()` and `LIKE` fold A to Z alone. The decision register's title filter and person select, the card search and `GET /api/logs?q=` match by it (cards 2843 and 2842) |
 | `src/lib/server/v1-json.ts` | `json(data, init)`, which every `/api/v1/` handler answers with, and `onTheWire(data)`, which `dispatchWebhook` applies to a webhook's `data`, a copy built with `Object.fromEntries` so that a key named `__proto__` stays a key: a string under a key ending `At` or `_at`, or named `timestamp`, `from` or `to`, that is exactly in the stored form goes out as ISO 8601 with `Z`. A date and a user's text are never touched |
 
 ```mermaid

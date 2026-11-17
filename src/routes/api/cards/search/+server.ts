@@ -21,11 +21,11 @@
  * which a join through `columns` would otherwise turn into results grouped by
  * board.
  *
- * The title is matched as typed (card 2718): `instr` of both sides lowered by
- * SQLite, where it was a `LIKE` built from the text, so `%` and `_` were
- * wildcards and "50%" found "500 tests". `lower()` folds A to Z alone, as
- * `LIKE` did, so what matched in another case still does, and a title in
- * letters beyond them is matched exactly as it was.
+ * The title is matched as typed (card 2718): `instr` of both sides folded,
+ * where it was a `LIKE` built from the text, so `%` and `_` were wildcards and
+ * "50%" found "500 tests". Both sides are folded by `fold_case` (card 2843,
+ * `db/fold-case.ts`), in any case of any letter: `lower()` folded A to Z
+ * alone, so `école` did not find `École`.
  *
  * `?editable=1` keeps only cards on boards the caller can edit
  * (`editableBoardIds`), for a picker whose choice is an edit of the card's
@@ -35,15 +35,16 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { cards, columns, boards, subtasks } from '$lib/server/db/schema';
-import { eq, isNull, and, inArray, ne, asc, sql, type SQL } from 'drizzle-orm';
+import { eq, isNull, and, inArray, ne, asc, type SQL } from 'drizzle-orm';
 import type { SQLiteColumn } from 'drizzle-orm/sqlite-core';
+import { foldsTo } from '$lib/server/db/fold-case';
 import { editableBoardIds, getAccessibleBoardIds } from '$lib/server/board-access';
 import { readQueryId } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
-/** `column` holds `text` as typed, in any case of A to Z: no character of it is a wildcard. */
+/** `column` holds `text` as typed, in any case of any letter: no character of it is a wildcard. */
 function holds(column: SQLiteColumn, text: string): SQL {
-	return sql`instr(lower(${column}), lower(${text})) > 0`;
+	return foldsTo(column, text);
 }
 
 export const GET: RequestHandler = async ({ url, locals }) => {

@@ -39,6 +39,7 @@
 import { error } from '@sveltejs/kit';
 import { and, asc, count, desc, eq, inArray, isNotNull, isNull, lt, max, ne, or, sql, type SQL } from 'drizzle-orm';
 import { db } from './db';
+import { foldsTo } from './db/fold-case';
 import {
 	boards,
 	decisionOptions,
@@ -308,7 +309,7 @@ function deciderPeopleOf(user: SessionUser, scope: Scope, opts: { nameMatch?: st
 		.select({ id: newest.personId, name: decisionParticipants.name })
 		.from(newest)
 		.innerJoin(decisionParticipants, eq(decisionParticipants.id, newest.newestId))
-		.where(opts.nameMatch === undefined ? undefined : sql`instr(lower(${decisionParticipants.name}), ${opts.nameMatch}) > 0`)
+		.where(opts.nameMatch === undefined ? undefined : foldsTo(decisionParticipants.name, opts.nameMatch))
 		.orderBy(asc(decisionParticipants.name), asc(newest.personId))
 		.limit(opts.limit)
 		.all()
@@ -375,7 +376,8 @@ function filtersWhere(user: SessionUser, scope: Scope, query: RegisterQuery): SQ
 	// D1: a board the caller cannot open matches nothing, as an id of no board does; dropping it would widen the list.
 	if (query.board !== null) parts.push(scope.admin || scope.accessible.has(query.board) ? eq(decisions.boardId, query.board) : sql`false`);
 	if (query.person !== null) parts.push(personScopeWhere(user, scope, query.person));
-	if (query.q !== null) parts.push(sql`instr(lower(${decisions.title}), ${query.q.toLowerCase()}) > 0`);
+	// Card 2843: any case of any letter, both sides folded by `fold_case` (`lower()` folds A to Z alone).
+	if (query.q !== null) parts.push(foldsTo(decisions.title, query.q));
 	return and(...parts);
 }
 
@@ -606,17 +608,18 @@ function boardSelectOf(user: SessionUser, scope: Scope): { id: number; name: str
  */
 function personSelectOf(user: SessionUser, scope: Scope, query: RegisterQuery, own: { id: number; fullName: string } | null): { id: number; name: string }[] {
 	if (query.who === null && query.person === null) return [];
-	const needle = query.who?.toLowerCase();
+	// Card 2843: matched in any case of any letter, by `fold_case` in SQL and `toLowerCase` here, the same rule.
+	const needle = query.who ?? undefined;
 	if (scope.admin) {
 		return db
 			.select({ id: people.id, name: people.fullName })
 			.from(people)
-			.where(needle !== undefined ? sql`instr(lower(${people.fullName}), ${needle}) > 0` : eq(people.id, query.person!))
+			.where(needle !== undefined ? foldsTo(people.fullName, needle) : eq(people.id, query.person!))
 			.orderBy(asc(people.fullName), asc(people.id))
 			.limit(PEOPLE_MATCHES_MAX)
 			.all();
 	}
-	const ownRow = own !== null && (needle !== undefined ? own.fullName.toLowerCase().includes(needle) : own.id === query.person) ? [{ id: own.id, name: own.fullName }] : [];
+	const ownRow = own !== null && (needle !== undefined ? own.fullName.toLowerCase().includes(needle.toLowerCase()) : own.id === query.person) ? [{ id: own.id, name: own.fullName }] : [];
 	const decided = deciderPeopleOf(user, scope, {
 		...(needle !== undefined ? { nameMatch: needle } : { personId: query.person! }),
 		limit: PEOPLE_MATCHES_MAX + 1

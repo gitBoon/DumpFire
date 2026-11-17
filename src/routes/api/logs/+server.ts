@@ -1,15 +1,21 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { systemLogs } from '$lib/server/db/schema';
-import { eq, desc, and, gte, lte, like } from 'drizzle-orm';
+import { eq, desc, and, gte, lte } from 'drizzle-orm';
+import { foldsTo } from '$lib/server/db/fold-case';
 import { readLimit, readOffset, readQueryDate, refuseReversedRange } from '$lib/server/request-body';
 import type { RequestHandler } from './$types';
 
 /**
  * GET /api/logs — Query the persisted system log history.
  *
- * Filters: ?level=INFO &context=AUTH &q=text (LIKE on message)
+ * Filters: ?level=INFO &context=AUTH &q=text (in the message)
  *          &from=ISO &to=ISO &limit=N (default 200, max 1000) &offset=N
+ *
+ * `q` is matched as typed, in any case of any letter (card 2842): `instr` of
+ * both sides folded by `fold_case` (card 2843, `db/fold-case.ts`). It was a
+ * `LIKE` built from the text, so `%` and `_` were wildcards and `50%` found
+ * `500`.
  *
  * `from` and `to` are each a date or a timestamp (`400 from is not a date`),
  * read as `readQueryDate` reads them; a bare `to` includes its whole day. A
@@ -44,7 +50,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	const conditions = [];
 	if (level) conditions.push(eq(systemLogs.level, level.toUpperCase()));
 	if (context) conditions.push(eq(systemLogs.context, context.toUpperCase()));
-	if (q) conditions.push(like(systemLogs.message, `%${q}%`));
+	if (q) conditions.push(foldsTo(systemLogs.message, q));
 	if (from) conditions.push(gte(systemLogs.timestamp, from));
 	if (to) conditions.push(lte(systemLogs.timestamp, to));
 
