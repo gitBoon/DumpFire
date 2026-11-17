@@ -56,6 +56,10 @@ const NO_MAIL_PASSWORD = `Password must be at least 8 characters (${MAIL_PROBLEM
  *
  * It asks for the caller's own password again, in `currentPassword` (card
  * 2701, step-up.ts), after every refusal that needs none.
+ *
+ * Every account made is logged once committed, one `INFO` line under `AUTH`
+ * naming it, its role, how it signs in first and who made it, never its
+ * address, its password or any link (card 2905).
  */
 export const POST: RequestHandler = async ({ request, locals, url, cookies }) => {
 	requireAdmin(locals.user);
@@ -167,31 +171,34 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 			.returning({ id: users.id, username: users.username, email: users.email, emoji: users.emoji, role: users.role, createdAt: users.createdAt })
 			.get();
 
-		// If no password was provided and SMTP is ready, issue an invite, mailed
+		// How the account signs in first: one of the two, never both or neither.
+		// If no password was provided and SMTP is ready, an invite, mailed
 		// below. A new user has no earlier invite to end, but an invite is issued
 		// one way, in invites.ts, so its lifetime and its rule are written once.
-		const invite = password ? null : { token: issueInvite(account.id), baseUrl: linkFrom };
-
 		// With a password the administrator chose, the account's set-up link,
 		// made with it or not at all (card 2851, D1): since two-step sign-in an
 		// account cannot sign in until it has set up an authenticator. Never
 		// mailed (card 2773, decision 6): the administrator gives it with the
-		// password. Said once committed, naming the two accounts and never the
-		// link or its token.
-		const enrolToken = password ? issueEnrolmentLink(account.id, 'admin-create') : null;
-		if (enrolToken !== null) {
-			// The caller's name, read here: the callback's caller is never kept past it (card 2253).
-			const actorName = requireUser(caller).username;
-			afterCommit(() =>
-				log.info(
-					`Account ${account.id} ("${account.username}") made by "${actorName}" with a password they chose; an enrolment link was issued`,
-					{ accountId: account.id, issuedBy: 'admin-create' },
-					{ userId: actorId }
-				)
-			);
-		}
+		// password.
+		const first = password
+			? { invite: null, enrolToken: issueEnrolmentLink(account.id, 'admin-create') }
+			: { invite: { token: issueInvite(account.id), baseUrl: linkFrom }, enrolToken: null };
 
-		return { account, invite, enrolToken, actorId, linkFrom };
+		// Every account made is said once committed, in one line (card 2905; card
+		// 2851's line for a chosen password is this one): naming the account, its
+		// role, how it signs in first and who made it, never its address, its
+		// password, its invite or its set-up link. The caller's name is read
+		// here: the callback's caller is never kept past it (card 2253).
+		const actorName = requireUser(caller).username;
+		const as = finalRole === 'admin' ? 'an administrator' : 'a user';
+		const how = first.enrolToken !== null ? 'with a password they chose; an enrolment link was issued' : 'with an invite to set their password';
+		const meta =
+			first.enrolToken !== null
+				? { accountId: account.id, role: finalRole, firstSignIn: 'set-up-link', issuedBy: 'admin-create' }
+				: { accountId: account.id, role: finalRole, firstSignIn: 'invite' };
+		afterCommit(() => log.info(`Account ${account.id} ("${account.username}") made by "${actorName}" as ${as}, ${how}`, meta, { userId: actorId }));
+
+		return { account, ...first, actorId, linkFrom };
 	}));
 
 	const { account, invite, enrolToken, actorId, linkFrom } = created;
@@ -231,8 +238,8 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 			{ status: 201, headers: { 'Cache-Control': 'no-store' } }
 		);
 	}
-	if (invite === null) return json({ ...account, invited: false }, { status: 201 });
 
+	// With no set-up link the account has its invite (`first`, above).
 	// After the commit, and awaited: an effect never starts inside a
 	// transaction, and the answer says whether the mail went.
 	const outcome = await sendInviteEmail(account.email, account.username, invite.token, invite.baseUrl);

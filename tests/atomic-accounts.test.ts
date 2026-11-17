@@ -1012,6 +1012,44 @@ describe('POST /api/users', () => {
 		expectHashedOutsideTransaction();
 	});
 
+	it('logs an invited account once, with its role and who made it, and nothing secret (card 2905)', async () => {
+		const { chief } = scene();
+		const level = process.env.LOG_LEVEL;
+		process.env.LOG_LEVEL = 'INFO';
+		const quiet = vi.spyOn(console, 'log').mockImplementation(() => {});
+		const sent = effects();
+		let res: ApiResult;
+		let mailed: string;
+		try {
+			res = await create(chief, { username: 'deputy', email: 'deputy@example.test', role: 'admin' });
+			await sent.settle();
+			expect(sent.emails).toHaveLength(1);
+			mailed = sent.emails[0].html.match(/\/invite\/([\w-]+)/)![1];
+		} finally {
+			sent.restore();
+			quiet.mockRestore();
+			if (level === undefined) delete process.env.LOG_LEVEL;
+			else process.env.LOG_LEVEL = level;
+		}
+		expect(res.status, JSON.stringify(res.body)).toBe(201);
+		expect(res.body).toMatchObject({ role: 'admin', invited: true, mailSent: true });
+
+		const lines = sqlite.prepare("SELECT level, context, message, meta, user_id AS userId FROM system_logs WHERE message LIKE 'Account %'").all();
+		expect(lines).toEqual([
+			{
+				level: 'INFO',
+				context: 'AUTH',
+				message: `Account ${res.body.id} ("deputy") made by "chief" as an administrator, with an invite to set their password`,
+				meta: JSON.stringify({ accountId: res.body.id, role: 'admin', firstSignIn: 'invite' }),
+				userId: chief.id
+			}
+		]);
+		// No line holds the address or the invite's token.
+		const everything = JSON.stringify(sqlite.prepare('SELECT message, meta FROM system_logs').all());
+		expect(everything).not.toContain('deputy@example.test');
+		expect(everything).not.toContain(mailed);
+	});
+
 	it('with a password, makes the user and their set-up link together, or neither, answers the link once and mails nobody (card 2851)', async () => {
 		const run = await eachWriteInTurn({
 			build: scene,
@@ -1058,8 +1096,8 @@ describe('POST /api/users', () => {
 		const lines = sqlite.prepare("SELECT message, meta, user_id AS userId FROM system_logs WHERE message LIKE 'Account %'").all();
 		expect(lines).toEqual([
 			{
-				message: `Account ${res.body.id} ("deputy") made by "chief" with a password they chose; an enrolment link was issued`,
-				meta: JSON.stringify({ accountId: res.body.id, issuedBy: 'admin-create' }),
+				message: `Account ${res.body.id} ("deputy") made by "chief" as a user, with a password they chose; an enrolment link was issued`,
+				meta: JSON.stringify({ accountId: res.body.id, role: 'user', firstSignIn: 'set-up-link', issuedBy: 'admin-create' }),
 				userId: chief.id
 			}
 		]);

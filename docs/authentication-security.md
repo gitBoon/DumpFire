@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.129
+version: 1.130
 status: As-Built
 date: 2026-11-17
 tags:
@@ -3828,9 +3828,12 @@ chose (`POST /api/users` with `password`) gets its link in the transaction that 
 are made together or not at all. Before it, such an account's first right password was answered
 `NEEDS_LINK` until someone pressed 🛡️ on its row. The link is never mailed (card 2773, decision
 6): the administrator gives it with the password. Once committed, one `INFO` line under `AUTH`,
-filed under the caller: `Account <id> ("<name>") made by "<admin>" with a password they chose;
-an enrolment link was issued`, its meta `{ accountId, issuedBy: 'admin-create' }`, never the link
-or its token. Then the reset's three checks, `enrolmentLinkNotGiven()`: all holding, the answer
+filed under the caller: `Account <id> ("<name>") made by "<admin>" as a user, with a password
+they chose; an enrolment link was issued` (`as an administrator` for one made `admin`), its meta
+`{ accountId, role, firstSignIn: 'set-up-link', issuedBy: 'admin-create' }`, never the link or its
+token. Since card 2905 this is the one line every account made writes (see
+[Making an account is logged](#making-an-account-is-logged-card-2905)), so this path still writes
+one. Then the reset's three checks, `enrolmentLinkNotGiven()`: all holding, the answer
 is `201` with `enrolmentUrl` (`<base>/enrol/<token>`) and `message`, `Cache-Control: no-store`,
 and the Users panel shows it once in `InviteLinkDialog` under its own words ("🔑 Their set-up
 link", `kind: 'new-account'`); one failing, the account and its link stand, `enrolmentUrl` is
@@ -3857,6 +3860,39 @@ sequenceDiagram
         R-->>P: 201, enrolmentUrl null, words, WARN line
         P->>P: error toast with the words
     end
+```
+
+#### Making an account is logged (card 2905)
+
+Every account made writes one `INFO` line under `AUTH`, said once its transaction commits (a
+refused or rolled-back create writes none), so the Audit page and the system log can say who made
+which account and when. No line holds the account's address, its password, an invite's token or a
+set-up link.
+
+| Where | Line | Meta | Filed under |
+|---|---|---|---|
+| `POST /api/users`, no password (an invite) | `Account <id> ("<name>") made by "<admin>" as a user, with an invite to set their password` (`as an administrator` for one made `admin`) | `{ accountId, role, firstSignIn: 'invite' }` | the caller |
+| `POST /api/users`, a password the administrator chose | `Account <id> ("<name>") made by "<admin>" as a user, with a password they chose; an enrolment link was issued` (card 2851's line) | `{ accountId, role, firstSignIn: 'set-up-link', issuedBy: 'admin-create' }` | the caller |
+| The first-run set-up (`/setup`) | `Account <id> ("<name>") made by the first-run set-up as the superadmin; two-step sign-in is set up next` | `{ accountId, role: 'superadmin', firstSignIn: 'setup' }` | the new account (nobody is signed in) |
+
+The line does not say whether an invite's mail went: it is said at the commit, before the mail is
+handed on, and a failed invite mail writes its own `WARN` (`inviteMailAnswer`). Deleting an account
+already writes one `INFO` naming it and who deleted it (`deletes.ts`), so both ends of an
+account's life are logged. In `POST /api/users` the transaction returns the account's first
+sign-in as one of the two, an invite or a set-up link, so the branch that answered `invited: false`
+with neither (which no request could reach) is gone.
+
+```mermaid
+sequenceDiagram
+    participant A as Administrator or set-up page
+    participant R as POST /api/users or /setup
+    participant DB as Database
+    participant L as System log
+    A->>R: create the account
+    R->>DB: one transaction: insert user, then its invite, set-up link or set-up challenge
+    DB-->>R: committed
+    R->>L: afterCommit, one INFO line under AUTH, no address, password or link
+    R-->>A: the usual answer
 ```
 
 ### The Release, Risk R1 and the Release Mail
@@ -4648,6 +4684,10 @@ flowchart TD
   invite(s)`. When the role changed and the account had sessions, the line ends ` and M
   session(s)` (only when M is above 0), and its meta carries `sessionsEnded`. No address is
   written.
+- **Making an account** (`POST /api/users`, and the first-run set-up) writes one `INFO` line
+  under `AUTH` after the commit, naming the account, its role, how it signs in first and who made
+  it, never its address, password, token or link (card 2905): see
+  [Making an account is logged](#making-an-account-is-logged-card-2905).
 
 Invites waiting at the update that brings migration 0054 were ended by it, whatever their
 account: see [Every Unused Invite Ended Once](#every-unused-invite-ended-once-by-migration-0054).

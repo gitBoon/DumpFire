@@ -397,6 +397,27 @@ describe('setting up after an invite or the first-run set-up (slice 3)', () => {
 		expect(db.select().from(sessions).all()).toEqual([]);
 	});
 
+	it('the first-run set-up logs the superadmin it makes once, and no address (card 2905)', async () => {
+		resetDb();
+
+		const { result: res } = await logged(() =>
+			action('/setup', { form: { username: 'first', email: 'first@example.test', password: PASSWORD, confirmPassword: PASSWORD } })
+		);
+
+		expect(res).toMatchObject({ type: 'redirect', status: 303, location: '/login/enrol' });
+		const made = db.select().from(users).get()!;
+		expect(sqlite.prepare("SELECT level, context, message, meta, user_id AS userId FROM system_logs WHERE message LIKE 'Account %'").all()).toEqual([
+			{
+				level: 'INFO',
+				context: 'AUTH',
+				message: `Account ${made.id} ("first") made by the first-run set-up as the superadmin; two-step sign-in is set up next`,
+				meta: JSON.stringify({ accountId: made.id, role: 'superadmin', firstSignIn: 'setup' }),
+				userId: made.id
+			}
+		]);
+		expect(JSON.stringify(sqlite.prepare('SELECT message, meta FROM system_logs').all())).not.toContain('first@example.test');
+	});
+
 	it('T59: with mail set up, a set-up mails one notice naming the time, the address, the keys and the webhooks, and no secret, code or link', async () => {
 		makeApiKey(user, 'Deploy key');
 		const { board } = makeBoard({ owner: user, name: 'Ops' });

@@ -3,11 +3,14 @@ import type { Actions, PageServerLoad } from './$types';
 import { hasAnyUsers } from '$lib/server/auth';
 import { CheckNotMade, LONGEST_PASSWORD, PASSWORD_TOO_LONG, PASSWORDS_BUSY, callerHasGone, makePasswordHash } from '$lib/server/passwords';
 import { db } from '$lib/server/db';
-import { inTransaction } from '$lib/server/db/transaction';
+import { afterCommit, inTransaction } from '$lib/server/db/transaction';
 import { users } from '$lib/server/db/schema';
+import { createLogger } from '$lib/server/logger';
 import { currentMfaKey } from '$lib/server/mfa-key';
 import { readChallengeToken } from '$lib/server/sign-in-challenges';
 import { NO_MFA_KEY, goToSetUp, issueSetUpChallenge } from '$lib/server/second-step';
+
+const log = createLogger('AUTH');
 
 export const load: PageServerLoad = async () => {
 	if (hasAnyUsers()) {
@@ -96,6 +99,16 @@ export const actions: Actions = {
 				})
 				.returning()
 				.get();
+
+			// Said once committed, as every account made is (card 2905): never its
+			// address or password. Nobody is signed in, so the account is its own.
+			afterCommit(() =>
+				log.info(
+					`Account ${user.id} ("${user.username}") made by the first-run set-up as the superadmin; two-step sign-in is set up next`,
+					{ accountId: user.id, role: 'superadmin', firstSignIn: 'setup' },
+					{ userId: user.id }
+				)
+			);
 
 			// No session: only setting up two-step sign-in signs in (card 2769).
 			return issueSetUpChallenge(user.id, passwordHash, previousToken, 'setup');
