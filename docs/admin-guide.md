@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.107
+version: 1.108
 status: As-Built
 date: 2026-11-17
 tags:
@@ -69,6 +69,8 @@ flowchart LR
 Every action on this page that asks first (Clear Cards, Clear Categories, Delete Board, Delete User, Delete Team, Remove Destination, Purge Archived Cards, Vacuum Database, Reset All XP, Reset Everything), and the Archived page's Delete Permanently and Purge All, asks in the app's confirm dialog, the one the boards, All Tasks and the Teams page use (card 2362, 2026-10-21; each page had a dialog of its own before). As it opens, **Cancel** has the keyboard's focus, so Enter straight after cancels; **Tab** and **Shift+Tab** stay in the dialog; **Escape** cancels; and as it closes the focus goes back to the button that opened it. To confirm by keyboard, press Tab, then Enter. A click on the dark overlay around it does nothing. A dialog that asks for your password (card 2701: see [Your Password, Asked Again](#your-password-asked-again)) gives the focus to its **Your password** field instead, and asks for a code from your authenticator app under it (card 2770); Enter in the password field moves to the code field while that is empty, and Enter in the code field confirms once both are filled. It stays open, buttons greyed, until the answer comes: open still, with the server's words, for a wrong password, and closed for any other answer.
 
 The **Import Database** dialog and Google Drive's **Connect** box keep their own look and behave the same way: Cancel has the focus, Tab stays in them (in the import, through the chosen way to restore, the password field, the code field and its switch, Cancel and Confirm), and Escape is Cancel. The invite link's dialog and the reset's notice have one button and no way out but it. As each opens its button has the focus (the invite link's **📋 Copy**), and Tab and Shift+Tab stay in it (card 2365, 2026-10-21; Tab walked the page behind them, and the reset's notice took no focus). The invite link's dialog does not close on Escape: the link is shown once, and only **Done** lets it go. After Done the focus goes to **+ Add User** when the link came from Create, or to the row's 📧 when it came from there (Create itself has gone with its form by then). The link of a two-step sign-in reset is shown in the same dialog, with its own words, and after Done the focus goes back to the row's 🛡️ (card 2773, see [Resetting Two-Step Sign-In](#resetting-two-step-sign-in)). The reset's notice closes on Escape when its button is **Close** (a reset that failed and changed nothing); after a reset that was done its one way out is **Continue to set-up**, and Escape does nothing.
+
+The 🔑 password dialog (another account's **Reset Password**, or **Change Your Password** on your own row) holds the keyboard the same way (card 2886, 2026-11-17; before it the focus stayed on 🔑 behind it, Tab walked the page and Escape did nothing). As it opens the focus is in **Your password** (**Current password** on your own row); Tab and Shift+Tab stay in it; Escape is Cancel, clearing what was typed; and as it closes, by Cancel, Escape or a finished reset, the focus goes back to that row's 🔑. Enter in the password field moves to the code field while that is empty, and Enter in the code field, or in the password once a code is typed, moves on to the new password. Enter never sends a reset: a reset ends every session, API key and webhook of the account, so **Reset Password** (or **Change Password**) is pressed on purpose.
 
 ```mermaid
 stateDiagram-v2

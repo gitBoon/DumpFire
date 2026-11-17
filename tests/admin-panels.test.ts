@@ -1992,6 +1992,69 @@ describe('the password dialog, mounted', () => {
 
 		expect(asked('PUT /api/account/password').map((request) => request.body)).toEqual([{ currentPassword: 'the-old-one', currentCode: CODE, newPassword: 'a-new-password' }]);
 	});
+
+	// Card 2886 (plan section 5, case 1; D1, D2, F1): the dialog held no focus, kept no Tab, took no Escape and had no name.
+	it('holds the focus as the other admin dialogs do: the password focused, Tab kept inside, Escape is Cancel, the focus back on 🔑, and named', async () => {
+		const target = draw(UsersPanel, { data: pageData, isSuperadmin: true, confirm: vi.fn(), loadMailStatus: vi.fn(), inviteLink: null });
+		const opener = target.querySelectorAll<HTMLButtonElement>('button[title="Reset password"]')[1];
+		opener.focus();
+		opener.click();
+		await settle();
+
+		const dialog = target.querySelector<HTMLElement>('[role="dialog"]')!;
+		expect(dialog.getAttribute('aria-label')).toBe('Reset Password');
+		const password = dialog.querySelector<HTMLInputElement>('input[autocomplete="current-password"]')!;
+		expect(document.activeElement).toBe(password);
+		// Reset Password is off with nothing typed, so Cancel is the last stop.
+		const cancel = buttonNamed(dialog, 'Cancel');
+		cancel.focus();
+		expect(tab()).toBe(true);
+		expect(document.activeElement).toBe(password);
+		expect(tab(true)).toBe(true);
+		expect(document.activeElement).toBe(cancel);
+		// From the page behind, Tab comes back into the dialog.
+		opener.focus();
+		expect(tab()).toBe(true);
+		expect(document.activeElement).toBe(password);
+
+		escape();
+		expect([...target.querySelectorAll('h2')].map((heading) => heading.textContent)).not.toContain('🔑 Reset Password');
+		await settle();
+		expect(document.activeElement).toBe(opener);
+		expect(sent.filter((request) => request.what.startsWith('PUT '))).toEqual([]);
+	});
+
+	// Card 2886 (plan section 5, case 2; D3): Enter in the code field did nothing on either row.
+	it('moves the focus on to the new password with Enter in the code field, and in the password once a code is typed, on both rows, sending nothing', async () => {
+		const target = draw(UsersPanel, { data: pageData, isSuperadmin: true, confirm: vi.fn(), loadMailStatus: vi.fn(), inviteLink: null });
+		const enter = (box: HTMLInputElement) => {
+			box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+			flushSync();
+		};
+		for (const [row, heading] of [[0, '🔑 Change Your Password'], [1, '🔑 Reset Password']] as const) {
+			target.querySelectorAll<HTMLButtonElement>('button[title="Reset password"]')[row].click();
+			await settle();
+			const dialog = target.querySelector<HTMLElement>('[role="dialog"]')!;
+			expect(dialog.querySelector('h2')?.textContent, heading).toBe(heading);
+			const password = dialog.querySelector<HTMLInputElement>('input[autocomplete="current-password"]')!;
+			const code = codeFieldIn(dialog)!;
+			const newPassword = dialog.querySelector<HTMLInputElement>('input[placeholder="New password (min 8 chars)"]')!;
+
+			type(password, MINE);
+			enter(password);
+			expect(document.activeElement, heading).toBe(code);
+			typeCode(dialog);
+			enter(code);
+			expect(document.activeElement, heading).toBe(newPassword);
+			password.focus();
+			enter(password);
+			expect(document.activeElement, heading).toBe(newPassword);
+
+			buttonNamed(dialog, 'Cancel').click();
+			await settle();
+		}
+		expect(sent.filter((request) => request.what.startsWith('PUT '))).toEqual([]);
+	});
 });
 
 describe('every dialog with a password field of its own waits for the sign-in code too (card 2770, T5)', () => {

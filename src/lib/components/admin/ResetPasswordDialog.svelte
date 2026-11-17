@@ -10,6 +10,13 @@
   Card 2701: a reset of another account's password asks for the
   administrator's own too, as their own change always did; a refusal of it is
   said in the dialog, which stays open with the field cleared and focused.
+
+  Card 2886: the dialog holds the keyboard as the other admin dialogs do
+  (`$lib/dialog-focus`'s `holdFocus`): the focus in the password as it opens,
+  Tab kept inside, Escape presses Cancel, and the focus back on 🔑 as it closes.
+  Enter in the code field (and in the password, once a code is typed) moves
+  the focus on to the new password; it never sends. It names itself, as the
+  others do.
 -->
 <script lang="ts">
 	import type { PageData } from '../../../routes/admin/$types';
@@ -17,6 +24,7 @@
 	import { answerBody, failureMessage } from '$lib/api';
 	import { NO_ANSWER, showToast } from '$lib/admin/send';
 	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
+	import { holdFocus } from '$lib/dialog-focus';
 	import { toasts } from '$lib/stores/toast';
 	import { passwordKeptAfter, proofTyped, stepUpRefusal } from '$lib/step-up-words';
 
@@ -94,6 +102,22 @@
 		// Only if the dialog is still open on the same account, and was not
 		// opened again meanwhile.
 		if (opening === resetOpenings && resetPasswordUserId === userId) resetKeysRead = true;
+	}
+
+	/**
+	 * Cancel, which Escape presses (card 2886): one way to close the dialog
+	 * sending nothing. Its handler stays in the markup, where it clears the
+	 * password, the code and the refusal; the script sets no account but in
+	 * `openResetDialog` and a finished reset (`tests/page-failures.test.ts`).
+	 */
+	let cancelButton = $state<HTMLButtonElement>();
+
+	/** The new-password box, where Enter in the code field moves the focus (card 2886). */
+	let newPasswordInput = $state<HTMLInputElement>();
+
+	/** Enter in the code field, or in the password once a code is typed: on to the new password, never a send. */
+	function toNewPassword() {
+		newPasswordInput?.focus();
 	}
 
 	/** `1 session`, `2 API keys`: a count with its noun. */
@@ -175,16 +199,16 @@
 <!-- Password Reset Modal (inline) -->
 {#if resetPasswordUserId}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<div class="modal-overlay" role="dialog" aria-modal="true">
+	<div class="modal-overlay" role="dialog" aria-modal="true" aria-label={resettingOwnPassword ? 'Change Your Password' : 'Reset Password'}>
 		<!-- svelte-ignore a11y_click_events_have_key_events -->
-		<div class="modal-content" onclick={(e) => e.stopPropagation()} role="document">
+		<div class="modal-content" onclick={(e) => e.stopPropagation()} role="document" use:holdFocus={{ first: 'input:not(:disabled)', onEscape: () => cancelButton?.click() }}>
 			<h2>🔑 {resettingOwnPassword ? 'Change Your Password' : 'Reset Password'}</h2>
 			{#if resettingOwnPassword}
 				<!-- Their own account: the password they have is asked for, as on the Account page. -->
 				<p>This is your own account. Enter your current password, a code from your authenticator app, and a new one. Your other sessions will be signed out.</p>
 				<!-- Sent with no endApiKeys, so the keys are kept. The Account page offers the choice. -->
 				<p>Your API keys and the webhooks you set up keep working. To end the keys and switch off those webhooks too, change your password on the <a href="/account">Account page</a>.</p>
-				<CurrentPasswordField label="Current password" bind:value={resetPasswordCurrent} bind:code={resetCodeCurrent} refusal={resetRefusal} />
+				<CurrentPasswordField label="Current password" bind:value={resetPasswordCurrent} bind:code={resetCodeCurrent} refusal={resetRefusal} onEnter={toNewPassword} />
 			{:else}
 				<p>Enter a new password for {resetTarget?.username || 'user'}.</p>
 				{#if resetTargetKeys !== null && resetTargetKeys > 0}
@@ -198,11 +222,11 @@
 				{/if}
 				<p>They are signed out everywhere, every API key they have stops working, any invite not yet used stops working, the webhooks they set up are switched off and their report schedules are paused.</p>
 				<!-- The administrator's own password, which a reset asks for again (card 2701). -->
-				<CurrentPasswordField bind:value={resetPasswordCurrent} bind:code={resetCodeCurrent} refusal={resetRefusal} />
+				<CurrentPasswordField bind:value={resetPasswordCurrent} bind:code={resetCodeCurrent} refusal={resetRefusal} onEnter={toNewPassword} />
 			{/if}
-			<input type="password" placeholder="New password (min 8 chars)" aria-label="New password" bind:value={resetPasswordValue} class="form-input" style="width: 100%; margin: 0 0 var(--space-md);" autocomplete="new-password" />
+			<input type="password" placeholder="New password (min 8 chars)" aria-label="New password" bind:value={resetPasswordValue} bind:this={newPasswordInput} class="form-input" style="width: 100%; margin: 0 0 var(--space-md);" autocomplete="new-password" />
 			<div class="modal-actions">
-				<button class="btn-ghost" onclick={() => { resetPasswordUserId = null; resetPasswordCurrent = ''; resetCodeCurrent = ''; resetRefusal = null; }}>Cancel</button>
+				<button class="btn-ghost" bind:this={cancelButton} onclick={() => { resetPasswordUserId = null; resetPasswordCurrent = ''; resetCodeCurrent = ''; resetRefusal = null; }}>Cancel</button>
 				<button class="btn-primary" onclick={resetPassword} disabled={resetPasswordValue.length < 8 || !proofTyped(resetPasswordCurrent, resetCodeCurrent)}>{resettingOwnPassword ? 'Change Password' : 'Reset Password'}</button>
 			</div>
 		</div>
