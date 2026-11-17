@@ -21,7 +21,7 @@ import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { takeReportMail } from '$lib/server/reports';
 import { api, type ApiResult } from './helpers/api';
 import { effects } from './helpers/effects';
-import { makeBoard, makeSmtp, makeUser, resetDb, type BoardFixture } from './helpers/fixtures';
+import { makeBoard, makeSmtp, makeUser, resetDb, stepUp, type BoardFixture } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 
 let user: SessionUser;
@@ -62,12 +62,13 @@ async function refused(request: () => Promise<ApiResult>, status: number, messag
 	}
 }
 
-/** A schedule of `owner`'s, made through the route. */
+/**
+ * A schedule of `owner`'s, made through the route, with the password and a
+ * code (card 2751). The refusals below send neither: each is made before the
+ * password is asked for.
+ */
 async function makeSchedule(owner: SessionUser, board: BoardFixture): Promise<number> {
-	const res = await api('POST', '/api/report-schedules', {
-		user: owner,
-		body: { name: 'Weekly', scope: 'board', scopeId: board.board.id, frequency: 'weekly' }
-	});
+	const res = await api('POST', '/api/report-schedules', stepUp(owner, { name: 'Weekly', scope: 'board', scopeId: board.board.id, frequency: 'weekly' }));
 	expect(res.status).toBe(201);
 	return res.body.id;
 }

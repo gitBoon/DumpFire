@@ -1,10 +1,12 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.118
+version: 1.119
 status: As-Built
 date: 2026-11-17
 tags:
+  - card-2751
+  - report-schedules
   - decision-reminders
   - docker
   - deployment
@@ -51,7 +53,7 @@ tags:
   - migration-0069
   - api-key-deadline
   - card-2772
-description: "Docker deployment, the release that gives older API keys a deadline (card 2772: migration 0069 and the date it fixes, the read-only query to tell key holders before the deploy and the one for keys still unkept after it, Keep this key, Reset Everything leaving no key or setting, the release order after 2771, why going back past it is a security event, and its hands-on checks), the release that asks for the code at every step-up (cards 2770 and 2771, shipped together: no migration, reload every open tab, scripts calling the internal account routes send currentPassword and currentCode, without the MFA key only recovery codes confirm, and its hands-on checks), the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, the shorter sessions and hashed session codes that ride in that release (card 2775, checks W19, W20 and W22), and production configuration for DumpFire"
+description: "Docker deployment, the release that gives older API keys a deadline (card 2772: migration 0069 and the date it fixes, the read-only query to tell key holders before the deploy and the one for keys still unkept after it, Keep this key, Reset Everything leaving no key or setting, the release order after 2771, why going back past it is a security event, and its hands-on checks), the release that asks for the code at every step-up (cards 2770 and 2771, shipped together: no migration, reload every open tab, scripts calling the internal account routes send currentPassword and currentCode, without the MFA key only recovery codes confirm, and its hands-on checks), the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, the shorter sessions and hashed session codes that ride in that release (card 2775, checks W19, W20 and W22), the release that asks for the password before report mail and tells each owner of the report schedules running once at its first start (card 2751), and production configuration for DumpFire"
 ---
 
 # DumpFire Deployment Guide
@@ -1017,7 +1019,7 @@ flowchart TD
     Check --> Users{"No user accounts, and a database\nat /app/dumpfire.db beside it?"}
     Users -->|"No"| Key{"Does the MFA key load, and is it\nthe key the stored second factors\nwere made with? (card 2768)"}
     Key -->|"Yes"| FormKey["Make the request form's signing key\nwhere there is none (card 2750)"]
-    FormKey --> Listen["Schedulers start,\nand 'Listening on' is printed"]
+    FormKey --> Listen["Report schedules that are on announced to\ntheir owners, once (card 2751), then the\nschedulers start, and 'Listening on' is printed"]
     Key -->|"No"| KeyRefuse["Write one CRITICAL AUTH line\non the console, naming the reason"]
     KeyRefuse --> Exit
     Users -->|"Yes"| Both["Write one CRITICAL DB line\non the console, naming both files"]
@@ -1050,7 +1052,7 @@ And one more straight after it (card 2768): the key that protects authenticator 
 6. **Timestamps.** Every timestamp column (every TEXT column whose name ends in `_at`, and `system_logs.timestamp`) is brought to the one stored form, `YYYY-MM-DD HH:MM:SS` in UTC (card 2095). A value in ISO 8601, in the stored form with a fraction, or a bare date is rewritten to the same moment, to the second; a value in no form it can read is left as it is and reported at `ERROR`, at every start until it is dealt with. It runs in a transaction of its own: a failure is rolled back, logged at `ERROR`, and tried again at the next start, and the server starts. Like step 4, it is skipped when the database records a migration this image has no file for, and the `ERROR` line of step 4 says so. A start that converts anything says so in one `WARN` line, which is expected once after the update that brings card 2095 and after an Import Backup of an older backup, and at no other time.
 7. **Schema check.** The whole database is compared with the model. Every difference is logged in one `ERROR` line. Nothing is changed and the server starts.
 
-Expired sessions are then cleared, the system log is pruned to its retention, the running log is masked (`maskLiveLog`), the settings of anyone no longer an administrator are removed, every invite an older image stored in plain is ended (`endPlainInvites`, card 2849: one `[WARN] [AUTH]` line when there were any), the backup, report and snapshot schedulers, the decision reminder and the attachment file sweep start (where `SCHEDULERS` lets them), and the server listens. On a database that is already up to date, steps 1 to 7 change nothing and log nothing.
+Expired sessions are then cleared, the system log is pruned to its retention, the running log is masked (`maskLiveLog`), the settings of anyone no longer an administrator are removed, every invite an older image stored in plain is ended (`endPlainInvites`, card 2849: one `[WARN] [AUTH]` line when there were any), at the first start after card 2751 each owner of a report schedule that is on is told of theirs, once (`announceReportSchedules`, not awaited, and only where `SCHEDULERS` lets the schedulers run: one `[WARN] [REPORTS]` line for each such schedule naming its addresses, one mail to each owner, then, once every mail went, the `report_schedules_announced` row of `settings`; see [The Release That Asks for the Password Before Report Mail](#the-release-that-asks-for-the-password-before-report-mail-card-2751)), the backup, report and snapshot schedulers, the decision reminder and the attachment file sweep start (where `SCHEDULERS` lets them), and the server listens. On a database that is already up to date, steps 1 to 7 change nothing and log nothing.
 
 Last, fourteen things about the installation are said in the log if they are so. None stops the server, and none changes anything: there are user accounts and none of them is the superadmin (`[CRITICAL] [STARTUP]`, see [If Nobody Can Sign In as the Superadmin](#if-nobody-can-sign-in-as-the-superadmin)); `ORIGIN` is still the address the image is built with and no App URL is set (`[WARN] [STARTUP]`, see [Where a Mailed Link's Address Comes From](#where-a-mailed-links-address-comes-from)); and a board hangs beneath one of its own cards, a loop left by a move made before card 2141, the legacy JSON import or a restored backup (`[WARN] [STARTUP]`, naming up to 20 such boards with the card each hangs from, see [A board beneath one of its own cards](admin-guide.md#a-board-beneath-one-of-its-own-cards) in the admin guide). The third reads the boards once and finds the loops in memory, so it costs next to nothing however deep the boards nest, and an import of a backup that brings a loop writes the same line at once, as `[WARN] [IMPORT]`, without waiting for the next start. The other three are about the database (card 2083), each a `[WARN] [STARTUP]` line: there was no database file, or an empty one, before this start opened it (`No database was at <path>: a new, empty one was created at this start.`, said once by a new installation, and the alarm on one that had data: stop the container before anyone opens the site); the folder the database is in is the container's own file system and not a mounted volume, at every start; and a database file is at `/app/dumpfire.db` beside the image's `/app/data/dumpfire.db`, which has data and is the one in use, at every start, naming both with their sizes and when each was last written. The seventh is that `SIGN_IN_ONE_AT_A_TIME` is `off` (card 2194), a `[WARN] [STARTUP]` line at every start while it is, written to the console whatever `LOG_LEVEL` is, as are the first two about the database: it is meant to be set for one sign-in and removed (see [If an Attack Keeps an Owner Out](#if-an-attack-keeps-an-owner-out)). The eighth is that `CSP_MODE` is `report-only`, or holds a value that is neither mode (card 2162), a `[WARN] [STARTUP]` line at every start while it does, written to the console whatever `LOG_LEVEL` is: `report-only` is meant for the policy's first deploy and then removed (see [The Update That Brings the Content-Security-Policy](#the-update-that-brings-the-content-security-policy)). The ninth is the secrets a backup does not hold that this installation still lacks (card 2169), one `[WARN] [STARTUP]` line naming them. The tenth is each entry of `WEBHOOK_ALLOW_INSIDE` that is ignored (card 2161), one `[WARN] [STARTUP]` line each, naming the entry and why: it is said here, once, because the list is read at every registration and every delivery, where a line would be written once for each webhook judged (see [Where a Webhook May Send](#where-a-webhook-may-send)). The eleventh is each board with more webhooks than the 10 a board may have (card 2201), in one `[WARN] [STARTUP]` line naming the first 20 by id and count, never an address: such a board was filled before the cap, keeps every webhook, and none can be added to it until it has fewer than 10. The twelfth is each webhook that is on and is refused as its address is written (an address inside the network that `WEBHOOK_ALLOW_INSIDE` does not name, a user name or password, or an address that is not http or https), in one `[WARN] [STARTUP]` line naming the first 20 by webhook and board, with why, never the path: it is not sent at any event, and no name is looked up for it. The thirteenth is each SFTP backup destination with no confirmed host key (card 2250), in one `[WARN] [STARTUP]` line naming the first 20 and then `; and N more`: no backup is sent to it until its key is confirmed with Test and Confirm, and where failure mail is off nothing else says so (see [An SFTP Destination's Host Key, Confirmed and Checked at Every Connect](#an-sftp-destinations-host-key-confirmed-and-checked-at-every-connect)). The fourteenth, in a built server only, is an `ORIGIN` that is set and `http:` while the App URL (the setting, else `APP_URL`) is `https:`, where `COOKIE_SECURE` and `NODE_ENV` leave plain-HTTP cookies without `Secure` (card 2850), one `[WARN] [STARTUP]` line: `ORIGIN is <origin> but the App URL is <app url>: every request is taken as plain HTTP, so cookies are not marked Secure and sign-in forms from the https address are refused. Start the server with ORIGIN set to the https address.` The adapter takes every request's address from `ORIGIN` when it is set, so behind an HTTPS proxy every request then counts as plain HTTP (see [Every Cookie DumpFire Sets](authentication-security.md#every-cookie-dumpfire-sets-card-2850)). The last five are written at `WARN` like any line, so `LOG_LEVEL` at `ERROR` or above drops them. The first two about the database (no database file before this start, and the folder not on a mounted volume) are written to the console whatever `LOG_LEVEL` is, even `ERROR`, because the checks after a deploy look for them in `docker logs`; with `LOG_LEVEL` at `ERROR` or `CRITICAL` they are printed but not kept in `system_logs`, as for any line. The second knows a container's own file system from `/proc/self/mountinfo`: the mount that holds the folder is the root and an overlay (`overlay`, as Docker has it, `fuse-overlayfs`, as rootless Podman has it, or `aufs`), or it is `tmpfs`. A container on another storage driver (`btrfs`, `zfs`, `vfs`) is not recognised and nothing is said, and where there is no `/proc/self/mountinfo` (Windows, macOS) nothing is said either. An in-memory database has no folder and is not looked at. A check that cannot be made is said on the console, one line for each such check, and the server starts all the same.
 
@@ -1088,6 +1090,7 @@ What stops a start, and what is only reported:
 | A timestamp column holds a value in no form the conversion can read | `[ERROR] [DB] Timestamp column(s) hold values in no form this build can read, and they were left as they are: <table.column n (such as "…")>. …`, at every start until it is dealt with | Yes, with those values as they are. Correct each to `YYYY-MM-DD HH:MM:SS` in UTC, or clear it where the column allows NULL |
 | The conversion failed | `[ERROR] [DB] Timestamps could not be brought to the stored form (YYYY-MM-DD HH:MM:SS, UTC), and none was changed: <why>. Start-up continues on the values as they are, and the next start tries again.` | Yes; nothing was converted. Until a start converts them, a report schedule whose next run is held in ISO 8601 runs up to a day late, because that comparison with now is made as text; a session's, an API key's or an invite's expiry is read as the moment it names, so each ends on time |
 | The database differs from the model anywhere | `[ERROR] [DB]`, at every start | Yes; nothing is changed |
+| The first start after card 2751, with report schedules that are on | `[WARN] [REPORTS] Report schedule <id> "<name>" of "<owner>" (user <id>) is on at this release, a report of <what it covers>, sent to: <addresses>`, one for each, at that start only; with no mail set up, also `[WARN] [REPORTS] <n> owner(s) of report schedules that are on were not told of them, as mail is not set up: "<owner>", …`; with a mail that did not go, `[WARN] [REPORTS] <n> owner(s) of report schedules that are on were not told of them, as the mail did not go: "<owner>", … The next start tells every owner again.`, and the next start says it all again. Where the schedulers do not run (the dev server, `SCHEDULERS=off`), only `[INFO] [REPORTS] The owners of report schedules that are on were not told of them, as the schedulers are off (…)`, at every such start | Yes. Each owner is mailed "Your DumpFire report schedules" once. A failure is `[WARN] [REPORTS] The owners of report schedules that are on could not be told of them: … The next start tries again.` See [The Release That Asks for the Password Before Report Mail](#the-release-that-asks-for-the-password-before-report-mail-card-2751) |
 | There are user accounts and none of them is the superadmin | `[CRITICAL] [STARTUP]`, at every start until one is | Yes. Nobody can export, import or reset the database until one is made from the host (the backup and mail settings are every administrator's since card 2395) |
 | `ORIGIN` is `http://localhost:3000` and no App URL is set | `[WARN] [STARTUP]`, at every start | Yes; links in mail begin with `http://localhost:3000` |
 | A board hangs beneath one of its own cards | `[WARN] [STARTUP]`, at every start until it is repaired, and `[WARN] [IMPORT]` at once after an import that brings one | Yes. The board is on no dashboard and its card cannot be completed; opening it is safe. See [A board beneath one of its own cards](admin-guide.md#a-board-beneath-one-of-its-own-cards) |
@@ -6192,7 +6195,7 @@ API keys (W3) again.
 
 **Cards 2770 and 2771 (build cards B3a and B3b of card 2669).** From this release every action
 that asks for the current password again (the thirty-two step-up actions of that release,
-thirty-seven since card 2772, the Account page's email, password and Generate Key forms among
+thirty-seven since card 2772, forty since card 2751, the Account page's email, password and Generate Key forms among
 them) asks for a code from the authenticator app,
 or a recovery code, beside it, and the server checks both: the action runs only when both are
 right. How it works is in
@@ -6377,6 +6380,115 @@ list, H1 to H14):
 | K6 | **Make new recovery codes** | Ten shown once; closes only on "I have saved these codes"; an old code refused at sign-in | Codes in the page source after reload |
 | K7 | A wrong code at sign-in, then My Account | The warning at the top; **That was me** clears it; a new wrong code shows it again | Not shown again within the hour |
 | K8 | Import a backup made before 0069 | The answer says "*n* API key(s) from before two-step sign-in were given this server's deadline, …" | No sentence; keys without a deadline |
+
+### The Release That Asks for the Password Before Report Mail (Card 2751)
+
+**Card 2751 (card 2702's F1), built 2026-11-17.** Making a report schedule, a change to one that
+adds an address, turns it on or widens its status filter, and a report emailed by hand from the
+Reports page now ask for the password and a code (three more step-up actions, forty in all). At
+the first start after the release, each owner of a schedule that is on is mailed once, listing
+theirs. How it works is in
+[Report Schedules and Report Mail](authentication-security.md#report-schedules-and-report-mail-card-2751);
+the plan is `docs/planning/card-2751-report-mail-step-up.md`.
+
+**Release rules.**
+
+- **Order.** After card 2772 (it builds on its thirty-seven); in the same deploy is fine.
+- **No migration and no setting.** The one-off's flag is a `settings` row written at start,
+  `report_schedules_announced`.
+- **Set up mail before the deploy** (Admin, 📧 Email / SMTP, with its password entered on this
+  server). At the first start, `announceReportSchedules()` writes one `[WARN] [REPORTS]` line for
+  each report schedule that is on, naming its owner, what it covers and every address (at `WARN`,
+  so that `LOG_LEVEL=WARN` keeps them), then mails each owner "Your DumpFire report schedules":
+  each of theirs that is on, what it covers and its addresses, that from this release a change
+  that sends to a new address asks for the password and a code, and to delete any they do not
+  recognise. The start does not wait for the mail. **With no mail set up nobody is mailed**: one
+  `[WARN] [REPORTS]` line names the owners not told, and the flag is written all the same, so
+  the `WARN` lines are the only record. Read them on the Audit page and tell each owner
+  yourself.
+- **Once, and only once every mail went.** The flag is written once the mail server has taken
+  every owner's mail; a mail that did not go leaves it unwritten, with one `[WARN] [REPORTS]`
+  line naming the owners not told, and the next start says it all again, to every owner. The
+  flag makes every later start say nothing. A restore of a backup made before the release
+  carries no flag, so the next start announces again. A failure is one `[WARN] [REPORTS]` line,
+  and the next start tries again. The server starts whatever happens.
+- **Not from a rehearsal or a dev copy.** Where the schedulers do not run (`SCHEDULERS=off`, or
+  the dev server without `SCHEDULERS=on`), nobody is mailed and no flag is written: one `[INFO]
+  [REPORTS]` line says so, and the first start that runs the schedulers announces.
+- **Reload every open Reports tab** after the deploy. An old page sends no password: its
+  **Email**, **+ New Schedule** and the switch turning a schedule on are answered `400` "Enter
+  your password and a code from your authenticator app to confirm this. Nothing was changed.",
+  with nothing saved or sent. Say so in the release notice.
+- **Schedules keep running.** The scheduler is unchanged, and a scheduled run asks nothing.
+- **`/api/v1`, API keys and the OpenAPI document are unchanged** (still `1.8.0`): no v1 route
+  makes or changes a schedule or mails a report. A script that calls the internal routes as a
+  signed-in session sends `currentPassword` and `currentCode` (see
+  [Changes on 2026-11-17](api-reference.md#changes-on-2026-11-17)).
+
+To list the schedules that are on before the deploy (read-only, with the container's own reader
+as in the 2769 release above):
+
+```sql
+SELECT u.username, u.email, s.id, s.name, s.scope, s.scope_id, s.recipients
+FROM report_schedules s JOIN users u ON u.id = s.user_id
+WHERE s.enabled = 1
+ORDER BY u.username, s.id;
+```
+
+```mermaid
+flowchart TD
+    Mail{"Mail set up, with its<br/>password entered?"} -->|"yes"| D["Deploy, no migration"]
+    Mail -->|"no"| Fix["Set it up first, or tell<br/>the owners by hand afterwards"]
+    Fix --> D
+    D --> Flag{"settings has<br/>report_schedules_announced?"}
+    Flag -->|"yes"| Quiet["Nothing said"]
+    Flag -->|"no"| Run{"Schedulers run here?"}
+    Run -->|"no: SCHEDULERS=off, dev"| Skip["One INFO line, no mail,<br/>no flag"]
+    Run -->|"yes"| Info["One WARN line under REPORTS<br/>for each schedule that is on,<br/>its addresses named"]
+    Info --> Notice{"Mail set up?"}
+    Notice -->|"yes"| Sent["Each owner mailed:<br/>Your DumpFire report schedules"]
+    Notice -->|"no"| Warn["One WARN line naming<br/>the owners not told"]
+    Sent --> Went{"Every mail went?"}
+    Went -->|"yes"| Write["Write the flag"]
+    Went -->|"no"| Again["One WARN line naming the owners<br/>not told; no flag, next start again"]
+    Warn --> Write
+    Skip --> Off["Schedulers stay off"]
+    Again --> Sched
+    Write --> Sched["Schedulers start: every schedule<br/>runs as before"]
+    Quiet --> Sched
+```
+
+**What people notice.**
+
+- **Reports → Email** and **+ New Schedule** have a **Your password** box and a code box, with
+  "You will be asked for your password and a code from your authenticator app."; both are
+  emptied when the dialog or form closes.
+- **Switching a schedule on** opens **Turn on this schedule?**, naming every address it will
+  email, with a **Turn on** button; switching one off asks nothing. A schedule the server would
+  refuse (a time it cannot read, more than 10 addresses) says why and opens nothing.
+- **A mail to the owner** each time a schedule of theirs is made, given an address, switched on
+  or widened. A report emailed by hand sends none; the system log names the addresses it reached.
+- **A report that reached some addresses** keeps the rest in the box and says "Enter your
+  password and a new code to send again."
+
+**Hands-on checks** (on the dev server or a staging copy, mail set up or the mail log read,
+signed in with an authenticator; the plan's section 6 has the full list, H1 to H15):
+
+| # | Do | Expect | Fault if |
+|---|---|---|---|
+| M1 | Before deploying, make two schedules (one on, one off) on the old image; deploy and start | One `WARN` line for the one that is on; one mail "Your DumpFire report schedules" listing it alone. Restart: nothing more | No mail; the off one listed; a second mail |
+| M2 | Reports, **Email** to an outside address, then to your own address alone | Send stays off until a password and a code are typed; each asks; sent with the right ones; `INFO` "Report … was mailed by … to: …" | Sent without asking |
+| M3 | The same with a wrong code | "Your password or code was not right. Nothing was changed." in the dialog; nothing sent | A mail leaves |
+| M4 | **+ New Schedule**, no addresses, password and code | Created; a mail "A report schedule was made…" | No mail |
+| M5 | Switch a schedule **off**, then **on** | Off at once; on opens "Turn on this schedule?" naming its addresses; a right answer turns it on, with a mail | On without asking |
+| M6 | With the session in a REST client: `PUT /api/report-schedules/<id>` adding an address; then `{ "statusFilter": "all" }` on one stored `completed`; then the stored list less one | `400` "Enter your password and a code…" twice; then `200` | `200` for either of the first two |
+| M7 | A Reports tab opened before the deploy: **Email** | `400` "Enter your password…" in the dialog; nothing sent | Sent |
+| M8 | A schedule made before the deploy, due now | Sent at its time | Not sent |
+
+**Going back.** An older image asks nothing for these routes, which is the state before this
+release; nothing was migrated. It keeps the flag unread, and rolling forward again does not
+announce again: schedules made or changed on the older image meanwhile are not announced, so
+check them with the query above.
 
 ## Changing the Schema
 

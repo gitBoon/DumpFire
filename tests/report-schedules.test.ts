@@ -28,11 +28,12 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
-import { reportSchedules } from '$lib/server/db/schema';
+import { reportSchedules, settings } from '$lib/server/db/schema';
 import { EXPECTED_SCHEMA } from '$lib/server/db/expected-schema';
 import type { SessionUser } from '$lib/server/auth';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { claimScheduleRun, getPeriodForSchedule, initReportScheduler, runDueReportSchedules } from '$lib/server/reports';
+import { REPORT_SCHEDULES_ANNOUNCED, announceReportSchedules } from '$lib/server/startup-checks';
 import {
 	canonicalTimeZone,
 	DEFAULT_SCHEDULE_TIME_ZONE,
@@ -42,7 +43,7 @@ import {
 import { stamp } from '$lib/timestamps';
 import { api } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
-import { makeBoard, makeSmtp, makeUser, resetDb, type BoardFixture } from './helpers/fixtures';
+import { makeBoard, makeSmtp, makeUser, resetDb, stepUp, type BoardFixture } from './helpers/fixtures';
 
 /** The process zones every zone answer is checked under. */
 const PROCESS_ZONES = ['UTC', 'Europe/London', 'America/New_York'];
@@ -446,15 +447,224 @@ describe('initReportScheduler, as the server starts', () => {
 	});
 });
 
-// ─── The routes ──────────────────────────────────────────────────────────────
+// ─── The schedules running at the release (card 2751, S1, D14) ──────────────
 
-const make = (body: Record<string, unknown> = {}) =>
-	api('POST', '/api/report-schedules', {
-		user: owner,
-		body: { name: 'Weekly', scope: 'board', scopeId: A.board.id, frequency: 'weekly', dayOfWeek: 4, timeOfDay: '09:00', ...body }
+describe('announceReportSchedules, at the first start after card 2751', () => {
+	let level: string | undefined;
+	beforeEach(() => {
+		// The suite logs ERROR and above; the INFO and WARN lines are what is under test.
+		level = process.env.LOG_LEVEL;
+		process.env.LOG_LEVEL = 'INFO';
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+		vi.spyOn(console, 'warn').mockImplementation(() => {});
+	});
+	afterEach(() => {
+		if (level === undefined) delete process.env.LOG_LEVEL;
+		else process.env.LOG_LEVEL = level;
 	});
 
+	/** The REPORTS lines at `level`, with their user. */
+	const linesAt = (at: 'INFO' | 'WARN') =>
+		sqlite.prepare("SELECT message, user_id AS userId FROM system_logs WHERE context = 'REPORTS' AND level = ? ORDER BY id").all(at) as {
+			message: string;
+			userId: number | null;
+		}[];
+	/** The per-schedule WARN lines (CS3), without the one that names owners not told. */
+	const scheduleLines = () => linesAt('WARN').filter((line) => line.message.startsWith('Report schedule '));
+	const flag = () => db.select().from(settings).where(eq(settings.key, REPORT_SCHEDULES_ANNOUNCED)).get();
+	const RUNNING = 'Your DumpFire report schedules';
+	/** A start of a built server whose schedulers run; the suite's own SCHEDULERS=off is the skip (CS2). */
+	const announce = () => announceReportSchedules('on', false);
+
+	/** Two owners: three schedules on (one with no address, one named in HTML) and one off. */
+	function owners() {
+		const other = makeUser({ username: 'other' });
+		const B = makeBoard({ owner: other, name: 'Ops' });
+		const weekly = stored({ name: 'Weekly', recipients: 'a@example.test, b@example.test' });
+		const empty = stored({ name: 'Empty', recipients: '' });
+		const marked = stored({ userId: other.id, scopeId: B.board.id, name: '<b>Marked</b>', recipients: 'c@example.test' });
+		const off = stored({ name: 'Off', recipients: 'off@example.test', enabled: false });
+		return { other, weekly, empty, marked, off };
+	}
+
+	// T13.
+	it('T13. writes one WARN line naming the addresses of each schedule that is on, tells each owner once of theirs, and writes the flag', async () => {
+		const { other, weekly, empty, marked } = owners();
+
+		expect(await announce()).toBe(2);
+		await sent.settle();
+
+		expect(linesAt('INFO')).toEqual([]);
+		expect(linesAt('WARN')).toEqual([
+			{ message: `Report schedule ${weekly} "Weekly" of "${owner.username}" (user ${owner.id}) is on at this release, a report of the board "Sales", sent to: a@example.test, b@example.test`, userId: owner.id },
+			{ message: `Report schedule ${empty} "Empty" of "${owner.username}" (user ${owner.id}) is on at this release, a report of the board "Sales", sent to: no address`, userId: owner.id },
+			{ message: `Report schedule ${marked} "<b>Marked</b>" of "other" (user ${other.id}) is on at this release, a report of the board "Ops", sent to: c@example.test`, userId: other.id }
+		]);
+		expect(sent.emails.map((mail) => ({ to: mail.to, subject: mail.subject }))).toEqual([
+			{ to: owner.email, subject: RUNNING },
+			{ to: other.email, subject: RUNNING }
+		]);
+		const [mine, theirs] = sent.emails;
+		expect(mine.html).toContain('Weekly, a report of the board &quot;Sales&quot;, emailed to: a@example.test, b@example.test');
+		expect(mine.html).toContain('Empty, a report of the board &quot;Sales&quot;, emailed to: no address yet');
+		expect(theirs.html).toContain('&lt;b&gt;Marked&lt;/b&gt;, a report of the board &quot;Ops&quot;, emailed to: c@example.test');
+		expect(theirs.html).not.toContain('<b>Marked</b>');
+		// The schedule that is off is in neither.
+		for (const mail of sent.emails) expect(mail.html).not.toContain('off@example.test');
+		expect(linesAt('WARN').some((line) => line.message.includes('"Off"'))).toBe(false);
+		expect(flag()).toEqual({ key: REPORT_SCHEDULES_ANNOUNCED, value: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/) });
+	});
+
+	// T14.
+	it('T14. does nothing at a later start: no line, no notice, and answers 0', async () => {
+		owners();
+		expect(await announce()).toBe(2);
+		await sent.settle();
+		sent.clear();
+		const said = linesAt('WARN').length;
+
+		expect(await announce()).toBe(0);
+		await sent.settle();
+
+		expect(linesAt('WARN')).toHaveLength(said);
+		expect(linesAt('INFO')).toEqual([]);
+		expect(sent.all).toEqual([]);
+	});
+
+	// T15.
+	it('T15. with no mail set up, writes the schedule lines and one WARN line naming the two owners not told, sends nothing, and writes the flag', async () => {
+		const { other } = owners();
+		db.delete(settings).where(eq(settings.key, 'smtp_host')).run();
+
+		expect(await announce()).toBe(2);
+		await sent.settle();
+
+		expect(scheduleLines()).toHaveLength(3);
+		expect(linesAt('WARN').filter((line) => !line.message.startsWith('Report schedule '))).toEqual([
+			{
+				message:
+					`2 owner(s) of report schedules that are on were not told of them, as mail is not set up: "${owner.username}", "${other.username}". ` +
+					'The WARN lines above name each schedule and its addresses.',
+				userId: null
+			}
+		]);
+		expect(sent.all).toEqual([]);
+		expect(flag()).toBeDefined();
+	});
+
+	// The review's CS1: the flag waits on every notice.
+	it('writes the flag only once every notice has been answered, and not while one is still out', async () => {
+		owners();
+		sent.restore();
+		/** Whether the flag was there as each notice was handed to the mail server. */
+		const flaggedWhileOut: boolean[] = [];
+		sent = effects({
+			mailRefusal: () => {
+				flaggedWhileOut.push(flag() !== undefined);
+				return undefined;
+			}
+		});
+
+		const done = announce();
+		// The lines are written and every notice begun before it first waits; the flag is not.
+		expect(scheduleLines()).toHaveLength(3);
+		expect(flag()).toBeUndefined();
+
+		expect(await done).toBe(2);
+		await sent.settle();
+
+		expect(flaggedWhileOut).toEqual([false, false]);
+		expect(sent.emails).toHaveLength(2);
+		expect(flag()).toBeDefined();
+	});
+
+	// The review's CS1: a notice that did not go leaves the flag unwritten, and the next start says it again.
+	it('leaves the flag unwritten, with one WARN line naming the owner not told, when a notice does not go, and the next start tells every owner again', async () => {
+		const { other } = owners();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		sent.restore();
+		sent = effects({ refuseMailTo: [other.email] });
+
+		expect(await announce()).toBeNull();
+		await sent.settle();
+
+		expect(sent.emails.map((mail) => mail.to)).toEqual([owner.email]);
+		expect(sent.refusedMail.map((mail) => mail.to)).toEqual([other.email]);
+		expect(linesAt('WARN').filter((line) => !line.message.startsWith('Report schedule '))).toEqual([
+			{
+				message:
+					`1 owner(s) of report schedules that are on were not told of them, as the mail did not go: "${other.username}". ` +
+					'The WARN lines above name each schedule and its addresses. The next start tells every owner again.',
+				userId: null
+			}
+		]);
+		expect(flag()).toBeUndefined();
+
+		// The next start, the mail server taking both.
+		sent.restore();
+		sent = effects();
+		expect(await announce()).toBe(2);
+		await sent.settle();
+		expect(sent.emails.map((mail) => ({ to: mail.to, subject: mail.subject }))).toEqual([
+			{ to: owner.email, subject: RUNNING },
+			{ to: other.email, subject: RUNNING }
+		]);
+		expect(flag()).toBeDefined();
+	});
+
+	// The review's CS2: where the schedulers do not run, nobody is mailed and the flag waits for a start where they do.
+	it('with SCHEDULERS=off, or under the dev server, writes one INFO line, sends nothing, and writes no flag', async () => {
+		owners();
+
+		for (const [value, isDev, reason] of [
+			['off', false, 'SCHEDULERS=off'],
+			// Empty is unset: `undefined` would take the parameter's default, the suite's own setting.
+			['', true, 'this is the dev server'],
+			// The suite's own setting, as hooks.server.ts reads it.
+			[process.env.SCHEDULERS, false, 'SCHEDULERS=off']
+		] as const) {
+			sqlite.prepare("DELETE FROM system_logs WHERE context = 'REPORTS'").run();
+			expect(await announceReportSchedules(value, isDev)).toBeNull();
+			await sent.settle();
+
+			expect(linesAt('INFO')).toEqual([
+				{
+					message:
+						`The owners of report schedules that are on were not told of them, as the schedulers are off (${reason}). ` +
+						'The first start that runs the schedulers tells them.',
+					userId: null
+				}
+			]);
+			expect(linesAt('WARN')).toEqual([]);
+			expect(sent.all).toEqual([]);
+			expect(flag()).toBeUndefined();
+		}
+	});
+});
+
+// ─── The routes ──────────────────────────────────────────────────────────────
+
+const makeBody = (body: Record<string, unknown>) => ({
+	name: 'Weekly',
+	scope: 'board',
+	scopeId: A.board.id,
+	frequency: 'weekly',
+	dayOfWeek: 4,
+	timeOfDay: '09:00',
+	...body
+});
+
+/** A schedule made, with the password and a code (card 2751), the proof built for each call. */
+const make = (body: Record<string, unknown> = {}) => api('POST', '/api/report-schedules', stepUp(owner, makeBody(body)));
+
+/** Sent with neither: refused before the password is asked for (card 2751, D5). */
+const makePlain = (body: Record<string, unknown> = {}) => api('POST', '/api/report-schedules', { user: owner, body: makeBody(body) });
+
+/** A change that asks nothing, or is refused before the password is asked for. */
 const change = (id: number, body: Record<string, unknown>) => api('PUT', `/api/report-schedules/${id}`, { user: owner, body });
+
+/** A change that turns a schedule on, with the password and a code (card 2751, D3). */
+const changeAsking = (id: number, body: Record<string, unknown>) => api('PUT', `/api/report-schedules/${id}`, stepUp(owner, body));
 
 describe('POST /api/report-schedules, in the schedule’s zone', () => {
 	beforeEach(() => {
@@ -487,10 +697,10 @@ describe('POST /api/report-schedules, in the schedule’s zone', () => {
 		expect(made.body.timeZone).toBe('Europe/London');
 
 		for (const timeZone of ['Mars/Base', 5, '', '+01:00']) {
-			const refused = await make({ timeZone });
+			const refused = await makePlain({ timeZone });
 			expect(refused.status, JSON.stringify(timeZone)).toBe(400);
 		}
-		expect((await make({ timeOfDay: '9' })).status).toBe(400);
+		expect((await makePlain({ timeOfDay: '9' })).status).toBe(400);
 		expect(db.select().from(reportSchedules).all()).toHaveLength(1);
 	});
 });
@@ -523,13 +733,18 @@ describe('PUT /api/report-schedules/[id], when the next run moves', () => {
 
 		// A week on, past the run it missed (Thursday 15 October).
 		vi.setSystemTime(new Date('2026-10-21T12:00:00Z'));
-		const on = await change(id, { enabled: true });
+		const on = await changeAsking(id, { enabled: true });
 
 		expect(on.status).toBe(200);
 		expect(on.body).toMatchObject({ enabled: true, nextRunAt: '2026-10-22 08:00:00' });
 		await runDueReportSchedules(new Date());
 		await sent.settle();
-		expect(sent.emails).toEqual([]);
+		// No report: the owner's notices of the schedule made and turned on are all (card 2751, D13).
+		expect(sent.emails.map((mail) => ({ to: mail.to, subject: mail.subject }))).toEqual([
+			{ to: owner.email, subject: 'A report schedule was made on your DumpFire account' },
+			{ to: owner.email, subject: 'A report schedule of yours was changed on DumpFire' }
+		]);
+		expect(sent.emails[1].html).toContain('was turned on on');
 	});
 
 	// 21.
@@ -548,7 +763,7 @@ describe('PUT /api/report-schedules/[id], when the next run moves', () => {
 		expect(row(id).enabled).toBe(false);
 
 		// The review's S-N3: sent a time that can be read, it is turned on again.
-		const mended = await change(id, { enabled: true, timeOfDay: '10:00' });
+		const mended = await changeAsking(id, { enabled: true, timeOfDay: '10:00' });
 		expect(mended.status).toBe(200);
 		// Monday (the default day) at 10:00 UTC, from Wednesday 14 October.
 		expect(mended.body).toMatchObject({ enabled: true, timeOfDay: '10:00', nextRunAt: '2026-10-19 10:00:00' });

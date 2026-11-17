@@ -4,7 +4,8 @@
  * Three kinds of count, each per key (an address, a session, an account):
  *
  *   - `checkRateLimit` counts attempts, and `takeAllowance` counts an amount
- *     (the addresses a report is mailed to, card 2182), each in a fixed
+ *     (the addresses a report is mailed to, card 2182; `allowanceState` reads
+ *     it with nothing taken, card 2751), each in a fixed
  *     window, not a sliding one: the window starts at a key's first attempt
  *     and the count starts again from nothing when it ends, however many
  *     attempts were refused in it. So nearly twice `maxAttempts` can be made
@@ -144,6 +145,40 @@ export function takeAllowance(
 	}
 	entry.count += n;
 	return { taken: true };
+}
+
+/**
+ * `key`'s allowance as it stands at `now`, read with nothing taken and
+ * nothing stored (card 2751, S4): what its window has taken (`used`, never
+ * more than `max`), the seconds until that window ends (`retryAfterSecs`),
+ * and how many requests have been refused in it (`refused`). A window that
+ * has ended, or none, reads `used: 0`, `refused: 0` and the whole of
+ * `windowMs`, and no window is opened: a check made before a request is
+ * known to go ahead must not start the day that `takeAllowance` would.
+ */
+export function allowanceState(
+	key: string,
+	max: number,
+	windowMs: number,
+	now: number
+): { used: number; retryAfterSecs: number; refused: number } {
+	const entry = store.get(key);
+	if (!entry || now > entry.resetAt) return { used: 0, retryAfterSecs: Math.ceil(windowMs / 1000), refused: 0 };
+	return { used: Math.min(entry.count, max), retryAfterSecs: Math.ceil((entry.resetAt - now) / 1000), refused: entry.refused ?? 0 };
+}
+
+/**
+ * Count a refusal of `key`'s allowance made by a check with nothing taken
+ * (`allowanceState`, card 2751), on its window while it lasts at `now`, as
+ * `takeAllowance` counts its own; and say whether it was the window's first,
+ * for one line in the log a window. With no window that lasts there is
+ * nothing to refuse: nothing is stored, and the answer is false.
+ */
+export function noteAllowanceRefused(key: string, now: number): boolean {
+	const entry = store.get(key);
+	if (!entry || now > entry.resetAt) return false;
+	entry.refused = (entry.refused ?? 0) + 1;
+	return entry.refused === 1;
 }
 
 // ─── Wrong passwords at one account (card 2177) ─────────────────────────────

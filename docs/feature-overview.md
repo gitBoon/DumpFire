@@ -1,10 +1,11 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.83
+version: 1.84
 status: As-Built
 date: 2026-11-17
 tags:
+  - card-2751
   - decision-reminders
   - features
   - overview
@@ -544,6 +545,8 @@ Use the **Include** filter to choose what the report lists:
 ### Scheduled Reports
 
 Set up automatic weekly or monthly reports delivered to up to 10 email addresses each, any addresses, with up to 20 schedules an account. Each schedule remembers its own detail level and Include filter. A schedule is sent at a time of day written `HH:MM` (09:00 when it is left empty), on a day of the week or a day of the month from 1 to 28, and each recipient must be an email address: one that is not is refused when the schedule is saved, and when a report is emailed by hand, rather than left out. The recipients may be put one to a line, or separated by commas, `;` or spaces, as in the report's email dialog; each address is sent one mail, once, and a schedule saves them separated by commas. A report emailed by hand goes to up to 10 addresses at a time, and one account's report mail reaches at most 100 addresses a day (24 hours from its first), the schedules it makes, turns on or re-times, and the addresses a change of a schedule's list adds, included. Every report mail names the account that sent it or set it up (card 2182). A report's period must not end before it begins.
+
+**Report mail asks for your password and a code** (card 2751). A schedule keeps emailing a board's activity after you have closed the browser and after your password changes, so making a schedule, adding an address to one, switching one on, and widening what it reports (its **Include** filter, from anything but **All work**) ask for your password and a code from your authenticator app, and so does emailing a report by hand. Your own address and your company's addresses are asked for the same way. Switching a schedule off, deleting it, and **Use my time zone** ask nothing. Switching one on opens **Turn on this schedule?**, which names every address it will email. You get an email whenever a schedule of yours is made, given an address, switched on or widened, so a change you did not make does not go unseen, and the system log names every address such a schedule is sent to, and every address a report emailed by hand reached. Schedules made before this release keep running, and once, at the release, each owner is emailed a list of every schedule of theirs that is running, to delete any they do not recognise. API keys cannot reach any of this.
 
 ### Charts
 

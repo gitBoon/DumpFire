@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.129
+version: 1.130
 status: As-Built
 date: 2026-11-17
 tags:
@@ -30,7 +30,7 @@ tags:
   - two-step-sign-in
   - api-key-deadline
   - breaking-change
-description: "REST API reference for DumpFire's external v1 API: authentication, the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
+description: "REST API reference for DumpFire's external v1 API: authentication, the deadline of a key made before two-step sign-in and Keep this key (card 2772, breaking, OpenAPI 1.8.0), how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (since card 2751 the report schedule and report mail routes too, v1 unchanged) (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
 ---
 
 # External API Reference
@@ -366,8 +366,53 @@ either.
 
 ### Changes on 2026-11-17
 
-Two changes are dated 2026-11-17: card 2772's, which is **breaking** for API keys made before
-its release, and that of cards 2770 and 2771, which is not (after it).
+Three changes are dated 2026-11-17: card 2751's, which changes no `/api/v1` route (first);
+card 2772's, which is **breaking** for API keys made before its release; and that of cards
+2770 and 2771, which is not (after it).
+
+**Report schedules and report mail ask for the password and a code (card 2751). The v1 API
+does not change**: still `1.8.0`, and no `/api/v1` operation, answer or schema is different. No
+v1 route makes or changes a report schedule or mails a report, and a key cannot reach the
+internal routes below. These are DumpFire's own internal routes, which the Reports page calls;
+the change is stricter, so a script that calls them as a signed-in session must now send
+`currentPassword` and `currentCode`.
+
+- **What asks.** `POST /api/report-schedules`, always (to any address, the caller's own, or
+  none). `PUT /api/report-schedules/[id]` when the change adds an address (one of the list sent
+  not in the stored list, both read as the scheduler reads them: a swap adds one; on or off),
+  turns the schedule on (`enabled: true` on one that is off), or widens its `statusFilter` (any
+  new filter while the stored one, as the scheduler reads it, is not `all`). `POST
+  /api/reports/email`, always, for every address. Three more listed step-up actions, **forty**
+  in all ([Step-up Before Destructive Actions](authentication-security.md#step-up-before-destructive-actions-card-2701)).
+- **What asks nothing**: a `PUT` that renames, re-times (frequency, day, time, `timeZone`),
+  removes an address, narrows the filter (from `all`, or not at all), or turns the schedule
+  off; `enabled: true` on a schedule already on; `DELETE /api/report-schedules/[id]`;
+  `GET /api/report-schedules`; and `POST /api/reports` (the PDF itself).
+- **Every refusal that needs no password comes first, in its old order and words**, with
+  nothing counted and no code spent: the fields, the addresses and their caps (`400`), what a
+  report or schedule covers (`403`, `404`; the email route now refuses a board or grouping that
+  is not there, or none of whose boards the caller can open, `403` "Failed to generate report
+  or no access", before the password), the twenty schedules (`409`), the `503` with no mail set
+  up, and the day's 100 addresses (`429`), read with nothing taken. Then the step-up's answers:
+  `400` `missing` or `code-malformed`, `403` `wrong`, and the rest, as for every listed action.
+  A refusal after the password (a `429` lost to a race, access lost meanwhile, the password
+  changed) leaves the code spent.
+- **The email asks again before every send.** The session, the caller's access and the password
+  are checked before each mail. Refused before any mail has gone (the first, or a later one when
+  the mail server refused every address before it), the answer is that refusal (`401`, `403`, or
+  `403` `{ "stepUp": "changed" }`) and nothing more is sent. Refused once a mail has gone, the
+  sending stops: each address left is in `results` as `{ "email", "success": false, "message":
+  "Not sent: sending stopped because the session ended, access changed or the password changed
+  while the report was being sent" }`, and the answer is the partial `200`, its `message` ending
+  with those words. When the mail server also refused an address, the `message` names both
+  reasons, each after its addresses: `Not sent to b@x.test: The mail server did not accept it. …
+  Not sent to c@x.test: Not sent: sending stopped …`.
+- **Recorded.** A schedule made or changed so writes an `INFO` line naming every address it is
+  sent to and mails its owner (`report-schedule-set`); a report emailed by hand writes an `INFO`
+  line naming the addresses it reached. The answers are unchanged.
+- No migration, and nothing to set. Reload every Reports tab opened before the release: an old
+  page sends no password and is answered `400` `missing`, with nothing saved or sent. See
+  [Report Schedules and Report Mail](authentication-security.md#report-schedules-and-report-mail-card-2751).
 
 **Breaking: API keys made before card 2772's release stop working 60 days after it unless
 kept** (card 2772; OpenAPI document version **1.8.0**, with a dated note at the top of its
@@ -422,7 +467,7 @@ from its deadline on, as an expired key is.
     CS1): `200` `{ "success": true }`, the warning, its time and the latest signal's cleared;
     `409` "There is no warning to dismiss."; `409` "A newer warning arrived. Read it, then
     dismiss it again." for any other moment.
-  - **Five more listed actions**, thirty-seven in all: the keep, the start, the remove, the
+  - **Five more listed actions**, thirty-seven in all (forty since card 2751): the keep, the start, the remove, the
     recovery codes and the banner. Their own fields are refused before the password, nothing
     counted.
   - **The step-up's count is weighted**: an attempt with an authenticator code counts once for
@@ -448,7 +493,7 @@ no code. These are DumpFire's own internal routes, which its pages call; a scrip
 them as a signed-in session must send the code too.
 
 - **`currentCode` is required on every listed internal route**: the thirty-two actions (of that
-  release; thirty-seven since card 2772) of
+  release; thirty-seven since card 2772, forty since card 2751) of
   [Step-up Before Destructive Actions](authentication-security.md#step-up-before-destructive-actions-card-2701),
   the import's confirmation (`POST /api/admin/import/confirm`) and the export
   (`POST /api/admin/export`) among them. It is a code from the account's authenticator app, or

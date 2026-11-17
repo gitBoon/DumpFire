@@ -23,6 +23,7 @@ import { isNavigation, notSignedIn, secured, sendTo, whereSent } from '$lib/serv
 import { refusalSeen, refuseCrossSiteWrite } from '$lib/server/same-origin';
 import { pathToLog } from '$lib/server/secret-paths';
 import {
+	announceReportSchedules,
 	checkMfaKeyAtStart,
 	endPlainInvites,
 	endPlainSessions,
@@ -117,6 +118,19 @@ removeSettingsOfNonAdministrators();
 // address, as text, never matches. A second start changes nothing, and it
 // cannot throw. See $lib/server/startup-checks.ts.
 endPlainInvites();
+
+// Tell each owner of a report schedule that is on, once, at the first start
+// after card 2751, which of theirs are running, with every address each is
+// sent to: one made before the release asked for no password, and may have
+// been made by someone holding the owner's session. One WARN line a schedule,
+// then the notices, then, once every notice went, a settings row that says it
+// was done, so a second start says nothing. Only where the schedulers run, by
+// the same decision as startSchedulers: a rehearsal or a dev copy mails nobody.
+// Not awaited, so the start does not wait on the mail server; the lines are
+// written and the notices begun before it first waits, so before the
+// schedulers start, and the owners hear of a schedule before its next run. It
+// never rejects. See $lib/server/startup-checks.ts.
+void announceReportSchedules();
 
 // Start the backup, report and snapshot schedulers, the decision reminder and
 // the attachment file sweep, or leave all five off. SCHEDULERS=on or =off

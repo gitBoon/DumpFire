@@ -3237,8 +3237,8 @@ describe('the accounts, administration, teams, reports and requests that card 21
 	it('reads what the rules allow as they say: a number written as text, trimmed, empty text as its default', async () => {
 		const w = world();
 
-		// A schedule's empty time is 09:00, as the scheduler reads it.
-		const made = await api('POST', '/api/report-schedules', { user: w.owner, body: schedule(w, { name: ' Monday ', timeOfDay: '', dayOfWeek: '1' }) });
+		// A schedule's empty time is 09:00, as the scheduler reads it. Made with the password and a code (card 2751).
+		const made = await api('POST', '/api/report-schedules', stepUp(w.owner, schedule(w, { name: ' Monday ', timeOfDay: '', dayOfWeek: '1' })));
 		expect(made.status, JSON.stringify(made.body)).toBe(201);
 		expect(made.body).toMatchObject({ name: 'Monday', timeOfDay: '09:00', dayOfWeek: 1, detailLevel: 'detailed', statusFilter: 'all' });
 
@@ -3574,7 +3574,7 @@ describe('the review fixes to card 2117’s slices 2 to 5 (version 1.7)', () => 
 
 		it('sends a schedule’s recipients as addresses separated by commas, and its name trimmed', () => {
 			const page = source('src/routes/reports/+page.svelte');
-			const create = page.slice(page.indexOf('async function createSchedule()'), page.indexOf('async function toggleSchedule'));
+			const create = page.slice(page.indexOf('async function createSchedule()'), page.indexOf('async function turnScheduleOn'));
 
 			// A line or a `;` between two addresses, which the box takes, is refused: `recipients holds "a@x.test\nb@x.test", ...`.
 			expect(create).toMatch(/recipients: schedRecipients\s*\.split\(\/\[,;\\n\]\/\)\s*\.map\(\(e\) => e\.trim\(\)\)\s*\.filter\(\(e\) => e\.length > 0\)\s*\.join\(', '\)/);
@@ -3686,17 +3686,19 @@ describe('the second fix pass to card 2117’s slices 2 to 5 (version 1.8)', () 
 		expect(text(' ;\n, ')).toEqual(handed(''));
 		expect(text('a@example.test; nobody')).toEqual(refused('to holds "nobody", which is not an email address'));
 
-		// A report schedule, made and changed, as the reports page and the API send one.
+		// A report schedule, made and changed, as the reports page and the API send one: each with the password and a
+		// code, as each makes or adds addresses (card 2751).
 		const w = world();
-		const made = await api('POST', '/api/report-schedules', {
-			user: w.owner,
-			body: { name: 'Weekly', scope: 'board', scopeId: w.boardId, frequency: 'weekly', recipients: 'a@example.test\nb@example.test; c@example.test' }
-		});
+		const made = await api(
+			'POST',
+			'/api/report-schedules',
+			stepUp(w.owner, { name: 'Weekly', scope: 'board', scopeId: w.boardId, frequency: 'weekly', recipients: 'a@example.test\nb@example.test; c@example.test' })
+		);
 		expect(made.status, JSON.stringify(made.body)).toBe(201);
 		const recipients = () => db.select({ recipients: reportSchedules.recipients }).from(reportSchedules).get()!.recipients;
 		expect(recipients()).toBe('a@example.test, b@example.test, c@example.test');
 		const id = db.select({ id: reportSchedules.id }).from(reportSchedules).get()!.id;
-		const changed = await api('PUT', `/api/report-schedules/${id}`, { user: w.owner, body: { recipients: 'x@example.test;y@example.test' } });
+		const changed = await api('PUT', `/api/report-schedules/${id}`, stepUp(w.owner, { recipients: 'x@example.test;y@example.test' }));
 		expect(changed.status, JSON.stringify(changed.body)).toBe(200);
 		expect(recipients()).toBe('x@example.test, y@example.test');
 	});

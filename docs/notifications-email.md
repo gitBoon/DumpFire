@@ -1,10 +1,12 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.71
+version: 1.72
 status: As-Built
 date: 2026-11-17
 tags:
+  - card-2751
+  - report-schedules
   - card-2772
   - notifications
   - email
@@ -21,7 +23,7 @@ tags:
   - two-step-sign-in
   - security-notices
   - release-mail
-description: "Complete guide to DumpFire's notification pipeline: SMTP email, SSE real-time events, webhooks (where one may send, who may change one, at most 10 a board), user preferences, the decision closing-date reminder, and two-step sign-in's mail (card 2769: the security notices, ten since card 2772 added factor-added, factor-removed and codes-regenerated, the hourly limit on the stolen-password signals, the enrolled notice's keys and webhooks, and the release's set-up link, awaited and at most one a day)"
+description: "Complete guide to DumpFire's notification pipeline: SMTP email, SSE real-time events, webhooks (where one may send, who may change one, at most 10 a board), user preferences, the decision closing-date reminder, and two-step sign-in's mail (card 2769: the security notices, ten since card 2772 added factor-added, factor-removed and codes-regenerated, twelve since card 2751 added report-schedule-set and report-schedules-running, the hourly limit on the stolen-password signals, the enrolled notice's keys and webhooks, and the release's set-up link, awaited and at most one a day), and report mail behind the password and a code (card 2751: the limits refused before it, every send asked again, the INFO lines naming the addresses, the two report schedule notices)"
 ---
 
 # Notifications & Email System
@@ -831,6 +833,8 @@ says what to do if it was not the owner. **None holds a code, a secret, a token 
 | `factor-added` (card 2772) | `An authenticator was added to your DumpFire account` | An authenticator added on the Account page. "An authenticator, *name* (added *date* UTC), was added to your DumpFire account on *time* from *address*. It now signs in to your account with your password, as your other authenticators do." | None |
 | `factor-removed` (card 2772) | `An authenticator was removed from your DumpFire account` | An authenticator removed on the Account page. Says every other browser was signed out, that it was confirmed with the password and a code ("if it was not you, both are known to someone else"), lists the account's live API keys and webhooks that are on, then "Revoke any you do not recognise. If the device was lost, also change your password." | None |
 | `codes-regenerated` (card 2772) | `New recovery codes were made for your DumpFire account` | A new set of recovery codes made on the Account page. "A new set of ten recovery codes was made for your DumpFire account on *time* from *address*. The old codes no longer work." | None |
+| `report-schedule-set` (card 2751) | `A report schedule was made on your DumpFire account`; for a change, `A report schedule of yours was changed on DumpFire` | A report schedule made, given an address, turned on or widened, each confirmed with the password and a code. Names what was done, when and from where, the schedule's name, what it covers and every address it is sent to. See [Report Schedule Notices](#report-schedule-notices-card-2751) | None |
+| `report-schedules-running` (card 2751) | `Your DumpFire report schedules` | Once, at the first start after card 2751's release, to each owner of a report schedule that is on, listing each of theirs that is on. See [Report Schedule Notices](#report-schedule-notices-card-2751) | Once |
 
 Card 2772's three are each confirmed with the password and a code (a step-up), and sent after
 the commit of the write they report. An authenticator's name is its holder's own text: it is
@@ -875,9 +879,81 @@ with this link, change the password straight away and tell an administrator.
   it.
 
 Both functions are in `tests/mail-escaping.test.ts`: every notice with markup in the username,
-the address and the keys' and webhooks' names, and the release mail with its link (`link:
+the address and the keys' and webhooks' names (and, since card 2751, a schedule's name, what it
+covers and its addresses), and the release mail with its link (`link:
 true`). The administrator's reset notice of card 2773 (`sendMfaResetNotice()`) is apart from
 these, and holds no link either.
+
+### Report Schedule Notices (Card 2751)
+
+Since card 2751 a report schedule made, given an address, turned on or widened asks for the
+password and a code (see
+[Report Schedules and Report Mail](authentication-security.md#report-schedules-and-report-mail-card-2751)).
+A phished or shoulder-surfed step-up would still make one, so its owner is told. Both notices
+are `sendSecurityNotice()` kinds, under the same rules as the others: sent only with a mail host
+set up and its password entered, never awaited, no preference turns them off, and no link, code
+or secret in them. Each schedule is named as `SecurityNoticeDetail.schedules` holds it
+(`{ name, covers, addresses }`, `NoticeSchedule`): "*name*, a report of *what it covers*,
+emailed to: *every address*" ("no address yet" for none), where what it covers is `the board
+"Sales"`, `the grouping "North"` or `every board` (`reportCovers()` in `reports.ts`; one since
+deleted is named by its id). The name, what it covers and every address are text typed, each
+escaped.
+
+- **`report-schedule-set`**, sent after the commit of the write (`reportScheduleSet()` in
+  `reports.ts`, in `afterCommit`), to the schedule's owner, with the caller's address.
+  `SecurityNoticeDetail.change` says what was done: `made`, `added` (the new addresses),
+  `turnedOn`, `widenedTo` (the filter's words, such as `All work`). The body reads "A report
+  schedule of yours was *made* / *given a new address (c@x.test)* / *turned on* / *widened to
+  All work* on *time* from *address*." (several joined with "and"), says it emails a report of
+  board activity on its timetable whether or not you are signed in, lists the schedule, says it
+  was confirmed with your password and a code from your authenticator app, and ends "If this was
+  not you, someone can confirm changes as you: change your password and tell an administrator."
+  No notice is sent for a report emailed by hand: its `INFO` line is the record.
+- **`report-schedules-running`**, sent once, at the first start after the release, by
+  `announceReportSchedules()` in `startup-checks.ts`, to each owner of a schedule that is on. It
+  lists each of theirs that is on, says each emails a report on its timetable whether or not you
+  are signed in, that from this release making a schedule, adding an address to one, turning one
+  on or widening what it reports asks for your password and a code, and to delete any schedule
+  you do not recognise on the Reports page; it ends "If you do not recognise one of these, delete
+  it, change your password, and tell an administrator." It names no time or address. It is sent
+  with `securityNoticeSent()`, the same notice as `sendSecurityNotice()` but resolving to whether
+  the mail server took it, and every owner's is awaited (`Promise.allSettled`). With no mail set
+  up nothing is sent and one `WARN` line names the owners not told; the `WARN` line written for
+  each schedule is the record. Only once every notice went (or with no mail set up) is
+  `settings.report_schedules_announced` written, with `INSERT OR IGNORE`, so it is never sent
+  again (but after a restore of a backup made before the release); a notice that did not go
+  leaves it unwritten, one `WARN` line names the owners not told, and the next start sends it to
+  every owner again. Where the schedulers do not run (the dev server, `SCHEDULERS=off`) nothing
+  is sent and nothing written, so a rehearsal mails nobody. See
+  [Deployment](deployment.md#the-release-that-asks-for-the-password-before-report-mail-card-2751).
+
+```mermaid
+sequenceDiagram
+    participant R as Schedule route, or the first start
+    participant DB as SQLite
+    participant L as REPORTS log
+    participant N as sendSecurityNotice
+    participant M as Mail server
+    alt a schedule made, given an address, turned on or widened
+        R->>DB: the write commits, inside whilePasswordHolds
+        R->>L: INFO, the schedule, what it covers, every address
+        R->>N: report-schedule-set, with change
+    else the first start after the release, where the schedulers run
+        R->>DB: no report_schedules_announced row
+        R->>L: WARN for each schedule that is on
+        R->>N: report-schedules-running, one per owner, by securityNoticeSent
+    end
+    N->>N: mail host set up and its password entered? Else nothing
+    N-)M: sendEmail; the schedule route does not wait
+    M--)N: taken or not
+    opt the first start
+        N--)R: every notice answered: did each go?
+        R->>DB: INSERT OR IGNORE report_schedules_announced, only if every one went
+    end
+```
+
+Both are rows of `tests/mail-escaping.test.ts`'s loop over every notice (T20, T21), each schedule
+field a marker that must come out escaped.
 
 ### Decision Record Mails (card 2675)
 
@@ -1695,18 +1771,44 @@ they are also read as the mailer reads them, at most 10 distinct addresses a cal
 day from one account, each address sent one mail once: see
 [Who a Report Can Be Mailed To](#who-a-report-can-be-mailed-to).
 
+**Behind the password and a code (card 2751).** Every call asks for the caller's current
+password and a code from their authenticator app (`currentPassword`, `currentCode`), whatever
+the addresses, the caller's own and the company's among them, through the step-up every listed
+action asks with. Every refusal below that needs neither is made first, in the step-up's guard
+(`readReportMail`), so none costs a check or a guess: the fields, the addresses and their cap,
+an all-boards report by an administrator alone, what the report covers (`reportScopeOpen()`,
+the rule every report opens with: `403` "Failed to generate report or no access" for a board or
+grouping that is not there or none of whose boards the caller can open), the `503` with no mail
+set up, and the day's 100, **read with nothing taken** (`checkReportMail()`: an ended window is
+not begun again by it). A wrong password or code is `403`, and nothing is built or sent. The
+addresses are taken from the day's 100 once the password is checked and the report built.
+Before **every** send the session, the caller's access and the password are asked again: refused
+before any mail has gone (the first, or a later one when the mail server refused every address
+before it), the answer is that refusal and nothing more is sent; once a mail has gone, the
+sending stops and each address left is answered "Not sent: sending stopped because the session
+ended, access changed or the password changed while the report was being sent". Once the
+sending is done one `INFO` line under `REPORTS`, the sender as its user, names the addresses
+reached and any not: `Report "Sales" was mailed by pat (ID: 7) to: a@x.test; not to: b@x.test`.
+See [Report Schedules and Report Mail](authentication-security.md#report-schedules-and-report-mail-card-2751).
+
 ```mermaid
 flowchart TD
     Post["POST /api/reports/email"] --> Fields["Fields and recipients read.<br/>A recipient that is no address: 400"]
     Fields --> Cap{"More than 10 distinct<br/>addresses? (card 2182)"}
     Cap -->|"yes"| R400["400: at most 10 at a time.<br/>Nothing looked at, nothing counted"]
-    Cap -->|"no"| Data["Report data, the caller checked:<br/>403 if they cannot read it"]
-    Data --> Smtp{"Mail set up?<br/>isSmtpConfigured()"}
+    Cap -->|"no"| Scope["All-boards by an administrator,<br/>reportScopeOpen: 403 if they cannot read it"]
+    Scope --> Smtp{"Mail set up?<br/>isSmtpConfigured()"}
     Smtp -->|"no"| R503["503: Mail is not set up on this server,<br/>so the report was not sent.<br/>No PDF built, nothing sent"]
-    Smtp -->|"yes"| Allow{"The day's 100 addresses:<br/>do these fit? (card 2182)"}
+    Smtp -->|"yes"| Allow{"The day's 100 addresses:<br/>do these fit? (card 2182)<br/>read, nothing taken (card 2751)"}
     Allow -->|"no"| R429["429: nothing taken,<br/>no PDF built, nothing sent"]
-    Allow -->|"yes, taken"| Pdf["The PDF built once"]
-    Pdf --> Each["sendEmailWithAttachment() to each recipient:<br/>its true or false is that recipient's success"]
+    Allow -->|"yes"| StepUp{"Password and code?<br/>(card 2751)"}
+    StepUp -->|"missing or wrong"| R4xx["400 or 403: nothing built, nothing sent"]
+    StepUp -->|"right"| Data["Report built as the caller now (403 if null),<br/>the addresses taken from the day's 100"]
+    Data --> Pdf["The PDF built once"]
+    Pdf --> Each["Before each recipient: session, access, password<br/>asked again. Then sendEmailWithAttachment():<br/>its true or false is that recipient's success"]
+    Each -->|"refused before the first"| R403["401 or 403, nothing sent"]
+    Each -->|"refused before a later one"| Stop["The rest answered STOPPED"]
+    Stop --> Count
     Each --> Count{"How many sent?"}
     Count -->|"all"| R200["200: Report sent to N recipient(s)"]
     Count -->|"some"| R200s["200: Report sent to S of N recipients.<br/>Not sent to the rest, named"]
@@ -1719,6 +1821,8 @@ flowchart TD
 | `200`, all sent | `Report sent to <n> recipient(s)` | `{ email, success: true }` for each |
 | `200`, some sent | `Report sent to <s> of <n> recipients. Not sent to <addresses>. The mail server did not accept it. An administrator can see the reason in the system log.` | Each recipient, a failure with `success: false` and the `message` `The mail server did not accept it. An administrator can see the reason in the system log.` |
 | `502`, none sent | `The report was not sent. The mail server did not accept it. An administrator can see the reason in the system log.` | As above, every one a failure |
+| `200`, the sending stopped (card 2751) | `Report sent to <s> of <n> recipients. Not sent to <addresses>. Not sent: sending stopped because the session ended, access changed or the password changed while the report was being sent` | Each address after the stop `{ email, success: false, message: "Not sent: sending stopped because …" }` |
+| `200`, some refused and the sending stopped (card 2751, CR3) | `Report sent to <s> of <n> recipients. Not sent to <refused>: The mail server did not accept it. An administrator can see the reason in the system log. Not sent to <stopped>: Not sent: sending stopped because …` | Each refused address with the mail server's words, each after the stop with STOPPED's |
 
 - **The mail server's own reason is not in the answer.** `email.ts` writes it to the system
   log, an `ERROR` line under `EMAIL` for each address, which an administrator reads on the
@@ -1735,8 +1839,10 @@ flowchart TD
 - **A report that reached some recipients is `200`, not a failure status**, so that nothing
   in between offers to send it again: the ones who had it would get it twice. The Reports
   page shows it as a failure all the same, keeps the dialog open, and leaves only the
-  addresses not reached in the box, saying so, so that Send goes to those alone. A `503` or
-  a `502` is shown in the dialog with the box as it was.
+  addresses not reached in the box, saying so, so that Send goes to those alone; since card
+  2751 it adds "Enter your password and a new code to send again.", as both fields were
+  cleared when it was sent and the code is spent. A `503` or a `502` is shown in the dialog
+  with the box as it was.
 - **Each answer is written with its own status**, as `tests/error-shape.test.ts` requires
   of a failure answered with `json()`.
 
@@ -1760,7 +1866,12 @@ neither more nor less. See
 the account behind it: the one emailed by hand says "Sent by `<username>` via DumpFire",
 and a scheduled one now says "Set up by `<username>`" above "— DumpFire Automated Reports",
 the username escaped as every text in a mail is. The gate's line for each request names the
-account on the Audit page too. What is bounded is how many.
+account on the Audit page too. What is bounded is how many, and, since card 2751, who may set
+it going: a schedule made, given an address, turned on or widened, and a report emailed by
+hand, ask for the password and a code, each limit below refused before them with nothing
+counted or taken. A schedule made or changed so writes an `INFO` line naming every address
+it is sent to, and its owner gets the `report-schedule-set` notice
+([Report Schedule Notices](#report-schedule-notices-card-2751)).
 
 | Limit | Where | Refused |
 |-------|-------|---------|
@@ -1838,9 +1949,19 @@ take, and a take that would pass 100 is refused whole and takes nothing. So "100
 addresses within minutes.
 
 - **The report emailed by hand** takes its addresses after the body, the cap, the caller's
-  access and the `503` for a server with no mail set up, and before the PDF is built. A call
-  refused for any of those spends nothing. What it takes is not given back when the mail
-  server refuses a send: the attempt was made.
+  access, the `503` for a server with no mail set up and (card 2751) the password and the code,
+  once the report is built and before the PDF is. A call refused for any of those spends
+  nothing. What it takes is not given back when the mail server refuses a send, or the sending
+  stops: the attempt was made.
+- **Asked before the password, with nothing taken** (card 2751). The step-up's guard of each
+  route that asks (`POST /api/reports/email`, `POST /api/report-schedules`, and a
+  `PUT /api/report-schedules/{id}` that adds an address, turns the schedule on or widens its
+  filter) asks `checkReportMail(user, n, spend)`, which reads the account's window with
+  `allowanceState()` in `rate-limit.ts`, storing nothing: a window that has ended reads as
+  nothing used, and is not begun again by the read. Over the limit it answers the same `429`
+  in the same words, and counts the refusal on the live window (`noteAllowanceRefused()`), so
+  the one `WARN` line below is still written once a window. `takeReportMail` takes at the
+  write as before; both refuse through one function, `refuseReportMail`.
 - **A schedule pays when it is made, turned on or re-timed while on**, because each of those can bring
   a send forward. A schedule made for the next minute is sent at the scheduler's next tick,
   and deleting it makes room for another: by the plan's probe, one account mailed 10, 20,
@@ -2903,12 +3024,12 @@ What is not sent:
 | `src/lib/notification-prefs.ts` | The one list of mail preferences: `MASTER_PREF`, `NOTIFICATION_PREFS`, `defaultPrefs()`. Read by the account page, the preferences route and the mail alike (card 2146) |
 | `src/lib/escape-html.ts` | `escapeHtml()`: the one function every mail puts its texts and links through |
 | `src/lib/report-recipients.ts` | `reportRecipients()` and `MAX_REPORT_RECIPIENTS`: the one reading of who a mailed report goes to, used by the email route, the schedule routes, the scheduler and the Reports page (card 2182) |
-| `src/lib/server/reports.ts` | `takeReportMail()` and `REPORT_MAILS_PER_DAY`: the day's 100 addresses an account's report mail may reach; the scheduler, which switches off a schedule kept with more than 10 |
+| `src/lib/server/reports.ts` | `takeReportMail()` and `REPORT_MAILS_PER_DAY`: the day's 100 addresses an account's report mail may reach; `checkReportMail()`, the same asked with nothing taken (card 2751); `reportScopeOpen()`, `reportCovers()` and `reportScheduleSet()`, the schedule's `INFO` line and its owner's `report-schedule-set` notice (card 2751); the scheduler, which switches off a schedule kept with more than 10 |
 | `src/lib/server/events.ts` | SSE event emitter with board and global subscriptions |
 | `src/lib/board/sse.ts`, `src/routes/board/[id]/+layout.svelte` | The board page's stream, opened as the page mounts and closed as it goes; the layout makes the page afresh for each board, so the stream follows the board shown (card 2184) |
 | `src/lib/server/webhooks.ts` | Webhook dispatch on board events: `dispatchWebhook()`, each webhook in its own `try` (card 2145); `deliver()` on the webhooks' own agents (card 2161), its `WARN`s one line per webhook and kind of refusal per hour; `refusalAsWritten()` and `activeWebhooksRefused()`, for delivery and the start-up line; `presentWebhook()`, with `lastDelivery`; each webhook's last result held in memory, `deliveryResultFor()`, `forgetDelivery()` and `deliveryReason()` (card 2178); `MAX_WEBHOOKS_PER_BOARD`, `refuseWebhookOverCap()` and `boardsOverWebhookCap()` (card 2201) |
 | `src/lib/server/webhook-address.ts` | Where a webhook may send (card 2161): `insideReason()`, `addressRefusal()`, `allowInside()` and `parseAllowInside()` for `WEBHOOK_ALLOW_INSIDE`, `guardedLookup()`, `readWebhookUrl()` |
-| `src/lib/server/startup-checks.ts` | Among its thirteen start-up lines, the ignored entries of `WEBHOOK_ALLOW_INSIDE`, the boards over the webhook cap, and the webhooks that are on and refused as written |
+| `src/lib/server/startup-checks.ts` | Among its thirteen start-up lines, the ignored entries of `WEBHOOK_ALLOW_INSIDE`, the boards over the webhook cap, and the webhooks that are on and refused as written; and `announceReportSchedules()` (card 2751), once at the first start after that card, the `report-schedules-running` notices |
 | `src/lib/server/logActivity.ts` | Writes the activity entry and queues the webhook for it: `ACTION_TO_EVENT`, which entry sends which event (the two `milestone.*` since card 2343). `WebhookEvent` and `WEBHOOK_EVENTS`, the events a webhook may ask for, are in `webhooks.ts` |
 | `src/lib/server/milestones.ts`, `src/lib/server/deletes.ts` | `logCardInOrOut()`, a card put in a goal or taken out (card 2343); `logCardLeftGoal()`, a card that leaves one because of another change, called by the move, the goal delete and `recordLeftGoals()` in the deletes (card 2381). `archiveCard()` and `deleteCard()` in `deletes.ts` write `card_discarded` for an option archived or deleted (milestone 22, card 2461) |
 | `src/lib/server/db/transaction.ts` | `afterCommit()`: holds every notification until the write it reports is committed |

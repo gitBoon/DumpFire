@@ -1,10 +1,12 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.121
+version: 1.122
 status: As-Built
 date: 2026-11-17
 tags:
+  - card-2751
+  - report-schedules
   - card-2772
   - several-authenticators
   - account-two-step
@@ -76,7 +78,7 @@ tags:
   - migration-0068
   - current-code
   - card-2771
-description: "Deep-dive into DumpFire's authentication system, what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the thirty-seven actions that ask for the current password and a code from the authenticator app again (step-up; the code checked since card 2771: its form, the factor checked before the password is compared, one count for either part, the code spent with the count cleared in one transaction, the stolen-password signal on a right password with a wrong code, and the Account page's email, password and key forms on the same check), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, session codes kept only as SHA-256 hashes with the idle and total limits by role, the __Host- cookie and a role change ending the account's sessions (card 2775), the accepted risks and the ISO 27001 rows), and the Account page's two-step section (card 2772: up to three authenticators, every one tried at sign-in and at a step-up with the guessing bounds held by weighting, adding one through a step-up and the new phone's code with the pending add held in memory, removing one but never the last, new recovery codes, the warning at the top of the page cleared only as shown, and migration 0069's deadline for API keys made before two-step sign-in with Keep this key, closing risk R2)"
+description: "Deep-dive into DumpFire's authentication system, what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the forty actions that ask for the current password and a code from the authenticator app again (step-up; the code checked since card 2771: its form, the factor checked before the password is compared, one count for either part, the code spent with the count cleared in one transaction, the stolen-password signal on a right password with a wrong code, and the Account page's email, password and key forms on the same check), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, session codes kept only as SHA-256 hashes with the idle and total limits by role, the __Host- cookie and a role change ending the account's sessions (card 2775), the accepted risks and the ISO 27001 rows), and the Account page's two-step section (card 2772: up to three authenticators, every one tried at sign-in and at a step-up with the guessing bounds held by weighting, adding one through a step-up and the new phone's code with the pending add held in memory, removing one but never the last, new recovery codes, the warning at the top of the page cleared only as shown, and migration 0069's deadline for API keys made before two-step sign-in with Keep this key, closing risk R2), and report schedules and report mail behind the step-up (card 2751: a schedule made, given an address, turned on or widened and every report emailed by hand ask for the password and a code, every refusal that needs neither made first with the day's allowance read and nothing taken, every send of a report asked again, an INFO line naming the addresses and a notice to the owner, the one-off notice at the first start of the schedules already running, and the residual and risks it leaves)"
 ---
 
 # Authentication & Security
@@ -536,7 +538,7 @@ sequenceDiagram
   | `POST /api/admin/vacuum` | `VACUUM` cannot run in a transaction | `sqlite.exec('VACUUM')`. The check is the first statement (no body), with no quick check before it |
   | `POST /api/admin/import` | the restore opens its own transaction, and files are written first | the temporary copy. Asked once the upload is in, before the upload's copy (`dumpfire.db.restore-temp` beside the database since card 2776, `.restore-temp.db` before) and `.pre-restore-safety.json` are written, so a refusal leaves neither; nothing is asked after the restore, whose database is the backup's |
   | `POST /api/reports` | it reads only, after a body | the first `generate*Report` |
-  | `POST /api/reports/email` | mail leaves the process | the first `generate*Report`, and, **asked a second time** after the PDF is made, the sends. The second check decides again what the mail relies on: scope `all` asks `isAdmin` (`403 Only admins can generate all-boards reports`), scope `board` `canViewBoard`, and scope `category` that every board of the grouping in the PDF is still one the sender can open (`403 Failed to generate report or no access`). A refusal sends nothing; the day's allowance it took stays taken |
+  | `POST /api/reports/email` | mail leaves the process | the first `generate*Report`, asked after the password and the code are checked (card 2751), and, **asked again before every send** once the PDF is made, each send. That check decides again what the mail relies on: scope `all` asks `isAdmin` (`403 Only admins can generate all-boards reports`), scope `board` `canViewBoard`, and scope `category` that every board of the grouping in the PDF is still one the sender can open (`403 Failed to generate report or no access`), and `requirePasswordUnchanged` that the password has not changed since it was checked (`403`, `stepUp: 'changed'`). Refused before any mail has gone, the first address refused by the mail server included, the answer is that refusal and nothing is sent; refused after one has gone, the sending stops, each address left is answered `STOPPED`, and the answer is a partial `200`. The day's allowance taken stays taken |
   | `POST /api/admin/backup` | the backup leaves the process | `runBackup` |
   | `POST /api/admin/backup/test` | a stored secret leaves the process | `createDestination`; the Test's ERROR lines are filed under the administrator the check answers |
   | `POST /api/admin/backup/gdrive/auth` | the code goes to Google | `getToken`. The Connect's save after Google answers is a `writeAs`: refused there (the session ended, or the account was made an ordinary user, while Google answered) it is `401` or `403`, with the folder it made removed and nothing saved, not `200 { success: false }`. A Connect refused at its first check takes no state |
@@ -771,8 +773,11 @@ reason, and pinned both ways against the handlers (`tests/step-up.test.ts`, case
 | `DELETE /api/account/two-step/authenticators/[id]` (card 2772) | anyone signed in, for their own authenticator | Removes an authenticator, and ends the account's other sessions |
 | `POST /api/account/two-step/recovery-codes` (card 2772) | anyone signed in, for their own account | Replaces the account's recovery codes, each of which signs in in place of a code |
 | `DELETE /api/account/two-step/banner` (card 2772) | anyone signed in, for their own account | Clears the warning that someone entered the account's password with a wrong code |
+| `POST /api/report-schedules` (card 2751) | anyone signed in, for their own schedule | Makes a report schedule: board activity mailed to the addresses it names on a timetable, after this session has ended. Every create asks, to the caller's own address or to none |
+| `PUT /api/report-schedules/[id]`, **with an address added, turned on, or its status filter widened** (card 2751) | the schedule's owner | Starts or widens a timetable that mails board activity outside |
+| `POST /api/reports/email` (card 2751) | anyone signed in who can read the report | Mails a report of board activity to the addresses given. Every send asks, whatever the addresses |
 
-The list is thirty-seven: card 2701's eighteen (the import among them, standing as its
+The list is forty: card 2701's eighteen (the import among them, standing as its
 confirmation), card 2697's eight: the five its plan listed, and the three People writes its
 code review's part B added on 2026-11-04, S1, so that every People write that sets or ends an
 address or an account asks ([Decision Access and Personal Links](#decision-access-and-personal-links)),
@@ -783,13 +788,18 @@ card 2679's two, the ruling and the release, which ask every time
 page's email, password and key forms, which asked for the password with checks of their own
 and now ask through the step-up like every other, and card 2772's five, the Account page's
 Keep this key and its Two-step sign-in section's add, remove, new recovery codes and That was me
-([Managing Two-Step Sign-In on the Account Page](#managing-two-step-sign-in-on-the-account-page-card-2772)).
+([Managing Two-Step Sign-In on the Account Page](#managing-two-step-sign-in-on-the-account-page-card-2772)),
+and card 2751's three, a report schedule made, a change to one that adds an address, turns it on
+or widens its status filter, and a report emailed by hand
+([Report Schedules and Report Mail (Card 2751)](#report-schedules-and-report-mail-card-2751)).
 The new phone's code that finishes an add (`POST /api/account/two-step/authenticators/confirm`)
 is not listed: the step-up was asked at the start, and that code is the proof of the new device. The
 conditional ones test their field with `Object.hasOwn`, as the body readers do
 (`request-body.ts`), or the row: a user change of `username` or `emoji` alone, a backup save of
 the schedule, retention or failure mail alone, an empty column's delete, a People save of name,
-job title, groups or status alone, and the delete or the withdrawal of a decision never opened
+job title, groups or status alone, the delete or the withdrawal of a decision never opened, and
+a report schedule change that adds no address, does not turn it on and does not widen its
+status filter (a rename, a re-timing, an address removed, a narrower filter, turning it off),
 ask nothing. Left out,
 each with its reason in the plan: Vacuum, a destination's Test, the mail's Send Test and the GET
 that starts a Connect (no data changed or sent), team and sharing
@@ -829,8 +839,11 @@ worked out at run time, the SQL verb held in a variable, the table renamed away 
 its new name, a query builder or a drizzle-orm call's result held in a variable or handed on, the
 database handle held in a variable or handed on, and the migrations. Two key cases are card 2703's: revoking one key
 leaves the webhooks it made sending, and an owner's or administrator's key reads a webhook's
-secret. A stolen session's other ways out are their own cards: report mail to any address, and
-a paused webhook that sends again when its setter is given the board back.
+secret. A stolen session's other ways out are their own cards: a paused webhook that sends
+again when its setter is given the board back; and report mail to any address, which card 2702
+found (its F1) and card 2751 closed: a schedule made, given an address, turned on or widened,
+and a report emailed by hand, now ask for the password and a code
+([Report Schedules and Report Mail (Card 2751)](#report-schedules-and-report-mail-card-2751)).
 
 **The order, per route** (decisions 3 and 4). The quick role refusal on `locals.user` and the
 path id; `readBody` (a body is now required, so a listed request with none is `400` from
@@ -1105,6 +1118,275 @@ request's local variables alone: the confirmation map holds digests, and the in-
 session ids. Strings cannot be wiped in JavaScript. On the page it is in the dialog's state
 while it is open, and cleared on Cancel, as it is sent and on a refusal; it is never put in a
 toast or in storage. Case 17 searches every log row and answer of a run for it.
+
+### Report Schedules and Report Mail (Card 2751)
+
+**Card 2751 (2026-11-17), card 2702's F1.** Until it, anyone holding a signed-in browser could
+set up a weekly report of a board to be emailed to any address, or email a report once,
+without typing anything. A schedule keeps sending after the browser is closed and after the
+password is changed, so it was the real way to keep copying a board's activity out. Three
+routes are now on `STEP_UP_ACTIONS` (forty in all) and ask for the password and a code through
+`confirmStepUp`, as every listed action does. The plan is
+`docs/planning/card-2751-report-mail-step-up.md`.
+
+**What asks.**
+
+- **`POST /api/report-schedules`**: every schedule made, to the caller's own address, to the
+  company's, or to none.
+- **`PUT /api/report-schedules/[id]`**, when the change does one of three things, decided on the
+  row as stored:
+  - **adds an address**: an address of the list sent that is not in the stored list, both read by
+    `reportRecipients` (lower-cased, each once, order ignored, a part that is not an address never
+    counted). A swap adds one. It asks whether the schedule is on or off: an address added while
+    it is off would be mailed once it is turned on;
+  - **turns it on**: `enabled: true` on a schedule that is off. `enabled: true` sent back for one
+    already on is no change;
+  - **widens its status filter**: a `statusFilter` sent that is not the stored one, while the
+    stored one, read as the scheduler reads it (`parseStatusFilter`), is not `all`. The narrow
+    filters (`completed`, `in_progress`, `todo`) are disjoint parts of `all`, so any move from one
+    of them mails cards the owner did not confirm; a move from `all` to a narrow one mails fewer,
+    and asks nothing.
+
+  Nothing else asks: a rename, a re-timing (the Reports page's **Use my time zone** among them),
+  an address removed, a narrower filter, turning it off. `PUT` reads no scope, period or detail
+  level, so nothing else can widen what is sent.
+- **`POST /api/reports/email`**: every report emailed by hand, whatever its addresses.
+
+**No exemption for your own or the company's addresses.** An address at the organisation's own
+domain can still be one a thief reads (a forwarding rule, an alias, a shared mailbox, a leaver's
+mailbox), and no setting names the organisation's domains, so every address asks alike. Any
+future exemption must be decided **after** the password and code are checked: decided in the
+guard, it would answer differently for an address that belongs to an account, and so tell a
+session which addresses are accounts'. Every answer made before the password was checked for
+that: none tells a session anything it could not learn without one.
+
+**Every refusal that needs no password, first.** Each route's guard, in a `writeAs` that writes
+nothing, makes every refusal the route made before, in the same order and words, so that none
+costs a check or a guess:
+
+- `POST /api/report-schedules`: `readNewSchedule(user, body)`, what it reports on (`404`,
+  `403`), each field (`400`), its addresses and their cap of 10 (`400`), its timing (`400`) and
+  the account's twenty (`409`); then `checkReportMail` for the new schedule's addresses (`429`).
+- `PUT /api/report-schedules/[id]`: `readScheduleChange(user, scheduleId, body)`, the schedule
+  (`404`), each field (`400`), the cap (`400`), turning one over the cap on (`400`) and the
+  timing (`400`); it answers `{ schedule, updates, added, turnedOn, widened, take }`, `take`
+  being what the change takes from the day's report mail; then `checkReportMail` on `take`.
+- `POST /api/reports/email`: `readReportMail(user, body)`, the fields (`400`), the addresses and
+  their cap (`400`), an all-boards report by an administrator alone (`403`), `scopeId` for a
+  board or a grouping (`400`), what the report covers (`403` "Failed to generate report or no
+  access"), mail set up (`503`) and `checkReportMail` (`429`).
+
+**The day's allowance, read with nothing taken.** `takeAllowance` opens a new window when the
+last has ended, so a check made with it would start the day. The guard never calls it.
+`checkReportMail(user, n, spend)` in `src/lib/server/reports.ts` reads the time once and asks
+`allowanceState(key, max, windowMs, now)` in `src/lib/server/rate-limit.ts`, which answers
+`{ used, retryAfterSecs, refused }` and stores nothing: a window that has ended, or none, reads
+`used: 0`, `refused: 0` and the whole window, and no window is opened. `refused` is how many
+requests the live window has refused, by a take or a check. Over the limit, the refusal is
+`refuseReportMail`'s, the same `429` words `takeReportMail` answers with, and
+`noteAllowanceRefused(key, now)` counts it on the live window and says whether it was the
+window's first, for the one `WARN` line a window. The take itself is `takeReportMail`, at the
+write, last, with nothing awaited before it.
+
+**One scope rule.** `reportScopeOpen(user, scope, scopeId)` in `reports.ts` decides whether a
+report can be had: a board that exists and the caller can open; a grouping that exists with a
+board in it the caller can open; every board for an administrator. The three generators open
+with it, so the email's guard and every report built, the scheduler's among them, decide alike.
+
+**A schedule change is decided in one transaction.** `PUT` runs `readScheduleChange` in one
+`writeAs`: when nothing is added, turned on or widened, it takes what the change takes and
+writes there, and answers. Otherwise it writes nothing and returns; the handler calls
+`confirmStepUp`, then `whilePasswordHolds` runs a `writeAs` that reads the change again, takes
+and writes. Both schedule routes write inside `whilePasswordHolds` and are on
+`check-at-the-write`'s `CURRENT_PASSWORD` list.
+
+**Every send of a report asked again.** After the password, `POST /api/reports/email` asks
+`stillCallerNow`, refuses an all-boards report to a caller no longer an administrator, builds the
+report as the caller now stands (`null` is `403`), takes the addresses from the day's 100, and
+builds the PDF. Then, **before every send**, with nothing awaited between the checks and the
+send: `stillCallerNow`, the access re-checks (an all-boards report by an administrator, a board's
+by someone who can open it, a grouping's by someone who can still open every board in it the
+PDF holds) and `requirePasswordUnchanged(userId, hash, 'changed')`. Refused before any mail has
+gone (the first send, or a later one when every address before it was refused by the mail
+server), the answer is that refusal (`401`, `403`, or `403` `PASSWORD_CHANGED_MEANWHILE` with
+`stepUp: 'changed'`) and nothing more is sent: a mail server's refusal is no reason to hide it
+(code review CR3). Refused once a mail has gone, the sending stops: each address left is
+answered `{ success: false, message: STOPPED }`, STOPPED being "Not sent: sending stopped because
+the session ended, access changed or the password changed while the report was being sent", and
+the answer is the partial `200`, its message ending with STOPPED in place of the mail server's
+words; when some addresses were refused by the mail server and others stopped, it names both
+reasons, each after its addresses (`Not sent to b@x.test: The mail server did not accept it. …
+Not sent to c@x.test: Not sent: sending stopped …`). `502` when no address was reached. The route is on
+`PASSWORD_UNCHANGED_ONLY` and stays on `STILL_CALLER_NOW`. A refusal after the check (the access
+re-check, a `429` lost to a race, the hash moved) leaves the code spent, as for every step-up.
+
+**What is recorded.** After the commit (`afterCommit`), `reportScheduleSet` writes one `INFO` line
+under `REPORTS`, the owner as its user, and sends the owner's notice:
+
+```
+Report schedule 12 "Weekly sales" was made, a report of the board "Sales", sent to: a@x.test, b@x.test
+Report schedule 12 "Weekly sales" was given addresses, turned on, a report of the board "Sales", sent to: a@x.test, b@x.test, c@x.test; added: c@x.test
+Report schedule 12 "Weekly sales" was widened to All work, a report of the grouping "North", sent to: a@x.test
+```
+
+The notice, `report-schedule-set`, names what was done (made, given a new address or new
+addresses, turned on, widened to a filter), when and from which address, the schedule's name,
+what it covers and every address it is sent to, that it was confirmed with the password and a
+code, and "If this was not you, someone can confirm changes as you: change your password and
+tell an administrator." Every value is escaped. A report emailed by hand writes one `INFO` line
+under `REPORTS` once its sends are done, the sender as its user:
+`Report "Sales" was mailed by pat (ID: 7) to: a@x.test; not to: b@x.test` (the `not to` part only
+where some were not reached). It sends no notice. These two kinds of line are at `INFO`: an
+installation with `LOG_LEVEL` above `INFO` (`WARN` or `ERROR`) does not write them, and keeps
+only the owner's notice and, for the release's announcement below, its `WARN` lines (code review
+CS3). See [Report Schedule Notices](notifications-email.md#report-schedule-notices-card-2751).
+
+```mermaid
+flowchart TD
+    R["Request with a session"] --> Q["requireUser, readBody"]
+    Q --> K{"Route"}
+    K -->|"POST /api/report-schedules"| G1["guard: readNewSchedule, checkReportMail"]
+    K -->|"PUT /api/report-schedules/id"| T["one writeAs: readScheduleChange"]
+    T -->|"nothing added, not turned on, not widened"| W0["take, write there, 200"]
+    T -->|"asks"| G2["guard: readScheduleChange, checkReportMail on take"]
+    K -->|"POST /api/reports/email"| G3["guard: readReportMail: fields, cap, all-boards,<br/>reportScopeOpen, mail set up, checkReportMail"]
+    G1 --> S["confirmStepUp: password and code, counted"]
+    G2 --> S
+    G3 --> S
+    S -->|"missing, wrong, spent"| X["400 or 403, nothing written or sent"]
+    S -->|"proven"| H{"Write"}
+    H -->|"schedules"| WP["whilePasswordHolds, writeAs: read again, take, write.<br/>afterCommit: INFO line, owner's notice"]
+    H -->|"email"| E["stillCallerNow, report as the caller now,<br/>takeReportMail, PDF"]
+    E --> L["each address: stillCallerNow, access,<br/>requirePasswordUnchanged, send"]
+    L -->|"refused before any mail has gone"| X2["401 or 403, nothing sent"]
+    L -->|"refused once one has gone"| P["the rest answered STOPPED, partial 200"]
+    L --> I["INFO line naming the addresses reached"]
+```
+
+**At the first start after the release.** A schedule made before card 2751 asked for no password,
+and may have been made by someone holding its owner's session. `announceReportSchedules()` in
+`src/lib/server/startup-checks.ts`, called once from `hooks.server.ts` after `endPlainInvites()`
+and before the schedulers start, tells each owner of a schedule that is on which of theirs are
+running. It is `async` and not awaited (`void announceReportSchedules()`), so the start does not
+wait on the mail server; its lines are written, and every notice begun, before it first waits,
+so before the schedulers start:
+
+- When `settings` holds `report_schedules_announced`, it does nothing and resolves to 0.
+- Only where the schedulers run, by the same decision `startSchedulers()` makes
+  (`schedulerSetting(process.env.SCHEDULERS, dev)`, code review CS2): under the dev server unless
+  `SCHEDULERS=on`, or with `SCHEDULERS=off`, one `INFO` line under `REPORTS` ("The owners of report
+  schedules that are on were not told of them, as the schedulers are off (SCHEDULERS=off). The
+  first start that runs the schedulers tells them."), nothing is sent, no flag is written, and it
+  resolves to `null`. A rehearsal or a dev copy of production's data mails nobody.
+- Otherwise, for every schedule that is on, one `WARN` line under `REPORTS`, the owner as its
+  user, at `WARN` so that `LOG_LEVEL=WARN` keeps them (code review CS3): `Report schedule 12
+  "Weekly sales" of "pat" (user 7) is on at this release, a report of the board "Sales", sent to:
+  a@x.test, b@x.test`. Then one `report-schedules-running` notice to each owner ("Your DumpFire
+  report schedules"), listing each of theirs that is on with what it covers and its addresses,
+  saying that from this release making a schedule, adding an address to one, turning one on or
+  widening what it reports asks for the password and a code, and to delete any schedule not
+  recognised. Each notice is sent with `securityNoticeSent()`, which resolves to whether the mail
+  server took it, and every one is awaited (`Promise.allSettled`). Only when every one went is
+  the flag written, its value the moment as an ISO date, with `INSERT OR IGNORE`, as two
+  instances may both get there (code review CS1). A schedule that is off is in neither.
+- A notice that did not go leaves the flag unwritten: one `WARN` line names the owners not told
+  (`1 owner(s) of report schedules that are on were not told of them, as the mail did not go:
+  "sam". The WARN lines above name each schedule and its addresses. The next start tells every
+  owner again.`), and it resolves to `null`. The next start says it all again, to every owner,
+  those told the first time included. A start that stops before the flag says it again too,
+  never not at all.
+- With no mail set up (no host, or its password not entered on this server) no notice is sent:
+  one `WARN` line under `REPORTS` says how many owners, and which, were not told
+  (`2 owner(s) of report schedules that are on were not told of them, as mail is not set up:
+  "pat", "sam". The WARN lines above name each schedule and its addresses.`), and the flag is
+  written all the same: the lines are the record.
+- It never rejects: a failure is one `WARN` line ("The owners of report schedules that are on could
+  not be told of them: … The next start tries again."), it resolves to `null`, the flag is not
+  written and the server runs on.
+- A restore of a backup made before the release carries no flag, so the next start announces
+  again. Reset Everything leaves no schedules.
+
+```mermaid
+sequenceDiagram
+    participant H as hooks.server.ts at start
+    participant A as announceReportSchedules
+    participant D as SQLite
+    participant N as securityNoticeSent
+    H->>A: once, not awaited, after endPlainInvites, before the schedulers
+    A->>D: settings report_schedules_announced?
+    alt present
+        A-->>H: 0, nothing said
+    else the schedulers do not run here
+        A->>A: one INFO line, no mail, no flag
+        A-->>H: null
+    else absent
+        A->>D: every schedule that is on, with its owner
+        A->>A: one WARN line per schedule, its addresses named
+        A->>N: one report-schedules-running notice per owner, all begun
+        N-->>A: each: did the mail server take it?
+        alt every one went, or mail is not set up
+            A->>D: INSERT OR IGNORE the flag, the moment as an ISO date
+            A-->>H: how many owners
+        else one did not go
+            A->>A: one WARN line naming the owners not told
+            A-->>H: null, the next start tries again
+        end
+    end
+```
+
+**What it leaves.**
+
+- **Content added to what a schedule covers (accepted residual).** What a schedule on a grouping,
+  or on every board, covers is decided at each run: a board moved into the grouping, a sub-board
+  made, or the owner given a board widens what it mails with no step-up, and a board schedule's
+  sub-boards likewise. Storing the boards approved at the step-up and reporting on those alone is
+  **card 2897**.
+- **A schedule made before the release by a stolen session** keeps sending until its owner deletes
+  it, an administrator resets the password, or the owner loses access; the first-start notice is
+  what tells the owner.
+- **The owner's own password change and an administrator's two-step reset do not pause it**:
+  **card 2894**, widened to every recovery path.
+- **A session with no password can still drain the owner's daily allowance.** Re-timing a schedule
+  that is on asks nothing but takes all its addresses: ten re-times of a 10-address schedule use
+  the 100, each bringing a send forward to the approved addresses, and the owner's own asked
+  actions are then refused `429` in the guard until the day is up. This was so before; it is
+  recorded, not changed.
+- **The step-up proves the password and a code were at hand, not that the owner meant the
+  change**: a phished or shoulder-surfed step-up still makes a schedule. The owner's notice is
+  what catches it.
+- **A session can still read and download whatever its account can open** (`POST
+  /api/reports`): this closes the lasting channel and mail sent in DumpFire's name, not reading.
+- **Other channels, not session-to-address bypasses.** An anonymous task request with an address
+  of the session's choosing, accepted onto a board it can edit, gets that one card's progress
+  mail and completion PDF; and board and team membership are not on `STEP_UP_ACTIONS`, so a
+  session can give an attacker's account read access, which then mails from its own account.
+  Both left as they are.
+- **What the log still does not name**: the scheduled run's addresses (its line gives a count),
+  and the changes that ask nothing (an address removed, a rename, a re-timing, turning it off, a
+  delete): **card 2895**.
+
+**The Reports page.** The **Email** dialog and the **New Schedule** form each draw
+`CurrentPasswordField` with "You will be asked for your password and a code from your
+authenticator app." beside it; Send and Create stay off until both are typed (`proofTyped`), the
+addresses are checked in the page before the password and the code are copied into constants
+and cleared, and every close path (the backdrop, ✕, Cancel, the dialog's own close after a send,
+and the PDF preview's close, which closes the dialog drawn in it) clears both and the refusal. A
+report that reached some addresses keeps those not reached in the box and adds "Enter your
+password and a new code to send again." The schedule switch turns one off at once (`{ enabled:
+false }`, asking nothing); turning one on (`askTurnOn`) opens **Turn on this schedule?**, naming
+every address it will email ("It has no addresses yet, so nothing is emailed until some are
+added." for none), with a **Turn on** button that is not red, which sends `{ enabled: true,
+currentPassword, currentCode }` (`turnScheduleOn`); a schedule the server would refuse whatever
+was typed (a timing it cannot date, more than 10 addresses) gets the reason in a toast and no
+dialog. A tab loaded before the release sends no password and is refused `400` `missing`, nothing
+saved or sent: reload it. API keys reach none of these routes: `/api/v1` and the OpenAPI document
+are unchanged.
+
+Covered by `tests/step-up.test.ts` (T1 to T5 in case 3's loop, T7 to T9 in case 4, T6 in case 6,
+and case 1, forty), `tests/write-as.test.ts` (T10, T11), `tests/report-recipients.test.ts`
+(T12), `tests/report-schedules.test.ts` (T13 to T15), `tests/page-failures.test.ts` (T16 to
+T19), `tests/mail-escaping.test.ts` (T20, T21), with rows in `check-at-the-write.test.ts` and
+`access-every-route.test.ts`.
 
 ### The Code Beside the Password (Card 2771)
 
@@ -2033,7 +2315,7 @@ Covered by `tests/password-checks.test.ts` and `tests/atomic-accounts.test.ts`.
 
 ### Guessing a Current Password
 
-Thirty-seven actions ask a caller who is already signed in for their current password and, since
+Forty actions ask a caller who is already signed in for their current password and, since
 card 2771 (2026-11-17), a code from their authenticator app or a recovery code: the actions of
 [Step-up Before Destructive Actions](#step-up-before-destructive-actions-card-2701), among
 them the Account page's three, changing your email (`PUT /api/account/email`), changing your
@@ -3689,7 +3971,7 @@ code, a secret or a link.
 
 | Control | How two-step sign-in meets it |
 |---|---|
-| A.8.5 Secure authentication | Two factors for every interactive sign-in: a password, then an authenticator code or a recovery code, before any session. No switch turns it off. Wrong codes are counted in the database, per challenge and per lane, with pauses and a lock that survive restarts. API keys are non-interactive credentials (R2). The code is asked for again, and checked, before every step-up action (cards 2770 and 2771, released together): the thirty-seven destructive, privilege-changing, exfiltrating and credential-issuing actions, the Account page's email, password and key forms and (card 2772) its two-step section and Keep this key among them. Every authenticator of an account is tried, at sign-in and at a step-up, with the guessing bounds held (card 2772) |
+| A.8.5 Secure authentication | Two factors for every interactive sign-in: a password, then an authenticator code or a recovery code, before any session. No switch turns it off. Wrong codes are counted in the database, per challenge and per lane, with pauses and a lock that survive restarts. API keys are non-interactive credentials (R2). The code is asked for again, and checked, before every step-up action (cards 2770 and 2771, released together): the forty destructive, privilege-changing, exfiltrating and credential-issuing actions, the Account page's email, password and key forms, (card 2772) its two-step section and Keep this key, and (card 2751) report schedules and report mail among them. Every authenticator of an account is tried, at sign-in and at a step-up, with the guessing bounds held (card 2772) |
 | A.5.17 Authentication information | Secrets sealed under a key kept out of the database; challenge tokens, link tokens and recovery codes kept only as hashes; nothing secret logged or answered. The owner is mailed at every enrolment, recovery-code use, pause, lock and likely stolen password, and shown the last sign-in and their keys |
 
 Covered by `tests/two-step-sign-in.test.ts`, `tests/two-step-enrol.test.ts`, and the pins in
@@ -3983,7 +4265,7 @@ user *n*", `WARN` on removal (above), `INFO` "Recovery codes regenerated by user
 Covered by `tests/account-two-step.test.ts` (T17 to T29), with rows in
 `tests/access-every-route.test.ts`, `tests/request-body.test.ts`,
 `tests/check-at-the-write.test.ts`, `tests/page-failures.test.ts`, `tests/step-up.test.ts` (case
-1, thirty-seven) and `tests/mail-escaping.test.ts`.
+1, thirty-seven; forty since card 2751) and `tests/mail-escaping.test.ts`.
 
 ## Passwords, Sessions and Invites Change Together
 
@@ -5390,7 +5672,10 @@ designed (the review of 2026-10-15): the sender needs it to send to the rest aga
 mail server's own reason stays in the system log. Since card 2182 a call names at most 10
 addresses and one account's report mail reaches at most 100 in a 24-hour window counted
 from its first take (so up to 200 across one window's end and the next's start), which
-bounds what one account can learn so. See
+bounds what one account can learn so. Since card 2751 each call also asks for the password and
+a code, so a session alone learns nothing this way; an address the sending stopped before is
+answered with the STOPPED words, not the mail server's (see
+[Report Schedules and Report Mail](#report-schedules-and-report-mail-card-2751)). See
 [A Report Emailed on Demand](notifications-email.md#a-report-emailed-on-demand) and
 [Who a Report Can Be Mailed To](notifications-email.md#who-a-report-can-be-mailed-to).
 
@@ -7682,7 +7967,9 @@ a schedule, at most 20 schedules an account, and at most 100 addresses a day fro
 account, by hand, by the schedules it makes, turns on or re-times, and by the addresses a
 change of a schedule's list adds, together (a day being 24 hours from the first, so up to
 200 across one day's end and the next's start); and every
-report mail names the account behind it, "Sent by" or "Set up by". See
+report mail names the account behind it, "Sent by" or "Set up by". Since card 2751 a schedule
+made, given an address, turned on or widened, and a report emailed by hand, also ask for the
+password and a code. See
 [Who a Report Can Be Mailed To](notifications-email.md#who-a-report-can-be-mailed-to).
 
 The caller's address is asked so that it cannot throw (`addressToCount()` in
@@ -8357,7 +8644,7 @@ unfinished is recovered on the host with `node scripts/mfa-reset.mjs <name>`.
 |------|---------|
 | `src/lib/server/auth.ts` | Session CRUD, API key generation and validation; `createSession()`, which writes `two_step = 1`, and `findSession()`, which refuses any other value as `one-step` (card 2769); `endAccountAccess()`, what setting a password ends; `stillAuthenticated()`, the key or session asked again inside a write's transaction, which answers the account as it is now and sets `locals.user` to it (`null` for a public route with nobody signed in; `401` and an ERROR line for a handler reached with no credential recorded, outside vitest); `checkCurrentProof()` (`checkCurrentPassword()` until card 2771), the count of current-password and code guesses on the session's row, one check in flight per session, the account's factor checked before the password (step 2b), the code verified and spent with the count cleared in one transaction, and the sign-out at the third (cards 2701 and 2771), `refuseWrongPassword()`, the route's answer to one, and `whilePasswordHolds()`, its write only while the hash checked is still stored; `httpsOnlyCookie()`, the one `Secure` rule of every cookie the server sets (an `https:` request always; otherwise `COOKIE_SECURE` when set, else `NODE_ENV=production`), with `secureCookies()`, its environment half, private since card 2850; `openSessionUser()`, which each open live stream asks at each heartbeat; and, since card 2775, `sessionTokenHash()`, `SESSION_LIMITS`, the one deadline, `slidesSession()` (which requests move the expiry), `openSession()` (the session's user and deadline, for the streams) and `sessionEndTimer()` (a stream's timer to that deadline), `readSessionCookie()`, `httpsOnlyCookie()` and the cookie helpers, `endSessionsSent()` (sign-out), `endSessionsOf()` (a role change) and `replacementStart()` (a password change); since card 2772 `endOtherSessions()` (every session of the account but one, for the removal of an authenticator), `deadlinePassed()` and `keyEnded()`, the one rule of a key's end that `keyHolder()` and `keysAndWebhooksOf()` ask, and `checkCurrentProof()`'s weight, every authenticator tried at 2b and again in the transaction (`matchFactors()`) |
 | `src/lib/server/cookie-header.ts` | `cookieValues()`, every value of a cookie name in the raw header; `onlyCookieValue()`, exactly one value in the shape given, and `sendsCookie()`, whether the name is sent at all, both built on it; used by the session cookie and the sign-in challenge cookie (card 2775) |
-| `src/lib/server/step-up.ts` | The current password and a code asked again before a destructive action (cards 2701 and 2771): `STEP_UP_ACTIONS` (thirty-seven, card 2772's five among them), `confirmStepUp()`, `readStepUpCode()` (the code's form), the INFO, recovery WARN and the two notices after the check, `requirePasswordUnchanged()`, and the import's confirmation, `issueImportConfirmation()` and `takeImportConfirmation()`. See [Step-up Before Destructive Actions](#step-up-before-destructive-actions-card-2701) and [The Code Beside the Password](#the-code-beside-the-password-card-2771) |
+| `src/lib/server/step-up.ts` | The current password and a code asked again before a destructive action (cards 2701 and 2771): `STEP_UP_ACTIONS` (forty, card 2772's five and card 2751's three among them), `confirmStepUp()`, `readStepUpCode()` (the code's form), the INFO, recovery WARN and the two notices after the check, `requirePasswordUnchanged()`, and the import's confirmation, `issueImportConfirmation()` and `takeImportConfirmation()`. See [Step-up Before Destructive Actions](#step-up-before-destructive-actions-card-2701) and [The Code Beside the Password](#the-code-beside-the-password-card-2771) |
 | `src/lib/step-up-words.ts` | The step-up's words and codes, which the server answers with and the pages read: `STEP_UP_FIELD`, the refusals, `PASSWORD_CHANGED_MEANWHILE`, `CONFIRMATION_HEADER`, `StepUpCode`, `STEP_UP_CODE_FIELD` (`currentCode`), the `StepUpProof` type and `NO_PROOF` (card 2770), `STEP_UP_CODE_MALFORMED`, `STEP_UP_CODE_SPENT`, `STEP_UP_NO_FACTOR`, `STEP_UP_FACTOR_UNUSABLE` and `passwordKeptAfter()` (card 2771), and `stepUpRefusal()`, `refusalWatch()` and `isStepUpSignOut()`, which tell a refusal of the password from any other by its `stepUp` code |
 | `src/lib/components/CurrentPasswordField.svelte` | The one field for the caller's own password, asked again (card 2701's code review, F7): label, `autocomplete="current-password"`, the refusal in an alert, `aria-invalid` and `aria-describedby`, the focus on a refusal, and no field to type in once the session is signed out; since card 2770 also the code field under it, with its recovery-code switch and a required bindable `code`; since card 2771 the focus goes to the code field on the refusals that keep the password (`code-spent`, `code-malformed`, `factor-unusable`); since card 2772 the line under the code field that says what a wrong answer costs with two or three authenticators (the layout's `authenticators`) |
 | `src/lib/server/account-two-step.ts` | The Account page's Two-step sign-in section and the warning at its top (card 2772): `authenticatorLabel()`, `newPhoneCode()`, `mayStartAdding()`, `startAdding()`, `finishAdding()`, `removable()`, `removeFactor()`, `regenerateRecoveryCodes()`, `dismissable()`, `dismissBanner()`, `twoStepView()`, and the words of every refusal. See [Managing Two-Step Sign-In on the Account Page](#managing-two-step-sign-in-on-the-account-page-card-2772) |
@@ -8416,8 +8703,8 @@ unfinished is recovered on the host with `node scripts/mfa-reset.mjs <name>`.
 | `src/lib/server/backup-secrets.ts` | What a backup leaves out because it is a secret, and what is done about the gaps (card 2169): `clearSecrets()`, `readSecretsHere()`, `fillSecretGaps()`, `credentialsMissing()`, `secretsToEnter()` and the two sentences; the seal: `backupSealKey()`, `sealOf()`, `sealCopy()`, `sealVerifies()`, `keepSealKey()`, and the checks made before it, `unsealedBecause()`, `backupFailsCheck()`, `strayInternalObjects()`; `fromTableStorage()`, how a table is read for the seal and the restore |
 | `src/lib/server/db/restore.ts` | What a restore brings in and what it never does, the new link it gives every request, every decision link it ends and records (`RestoreResult.decisionLinksCleared`) and its refusal of a decision record copied in part (card 2675), and the secrets it keeps from this server (`RestoreResult.secrets`), only for a backup whose seal verifies (`RestoreResult.sealVerified`, and why not, `RestoreResult.unsealed`); `rowsToRestore()`, each table read `NOT INDEXED`, which since card 2849 gives a used invite an older backup held in plain 32 random bytes as it reads it, with 0068's `UPDATE` repeated after the copy as a backstop; since card 2772 0069's `UPDATE` repeated for a backup made before it, with this server's API key deadline (`RestoreResult.apiKeyDeadlines`); `backupLacksSuperadmin()` |
 | `src/lib/server/email.ts` | `linkBaseUrl()`: the address a mailed link begins with, from configuration alone |
-| `src/lib/server/startup-checks.ts` | `reportInstallation()`, the fourteen checks the server makes at start, each a line when it finds something (the secrets a backup lacks, `WEBHOOK_ALLOW_INSIDE` entries ignored, boards over the webhook cap, webhooks refused and SFTP destinations without a confirmed host key are described under their own cards); among them: no superadmin, `ORIGIN` still the image's placeholder, and a board beneath one of its own cards (card 2142), which a restore of a backup that brings one writes at once too, with each control character in a board's name or a card's title printed as a space, so that a name holding a line break cannot split the line and forge one after it (with the logger's `printable()`, card 2214); and three about the database (card 2083): the new-database line (a new, empty database was made at this start, the alarm on an installation that had data, since set-up is then open to whoever comes first), the off-volume line (the database is in the container's own file system), and the other-database line (a database at `/app/dumpfire.db` beside the one in use); and the line that `SIGN_IN_ONE_AT_A_TIME` is off (card 2194), and `reportCspMode()`'s line that `CSP_MODE` is `report-only` or neither mode (card 2162), each to the console whatever `LOG_LEVEL` is; `reportPlainOriginBehindHttps()` (card 2850), one `WARN` in a built server whose App URL is `https:` while `ORIGIN` is set and `http:` and plain-HTTP cookies would not be `Secure` (see [Every Cookie DumpFire Sets](#every-cookie-dumpfire-sets-card-2850)); `refuseUserlessBesideAnother()`, which stops the server before it listens when the database in use has no users while another is beside it; `checkMfaKeyAtStart()` and `MfaKeyError` (card 2768), straight after it, which stop the server when the MFA key does not load or is not the key the stored second factors were made with; and `maskLiveLog()`, which masks the running log's tokens and old failed sign-in names at start; and `endPlainInvites()` (card 2849), which at every start ends each unused invite an older image stored in plain and gives each used one 32 random bytes, in one transaction, with one `WARN` line built from what changed; and `endPlainSessions()` (card 2775), which at every start, before the clean-up of ended sessions, deletes each session an older image stored in plain, with one `WARN` line |
-| `src/lib/server/rate-limit.ts` | In-memory rate limiter, counting in a fixed window from each key's first attempt (`checkRateLimit`), an amount in the same way (`takeAllowance`, the day's report mail of card 2182), and wrong passwords at one account in an idle window (`signInWait`, `countWrongSignIn`, `forgetWrongSignIns`, card 2177); sign-in's count by address with the account each attempt was at (`countSignInAttempt`, `refundSignInAttempts`, `keepSignInAttemptCounted`, card 2226); and the sign-ins in flight at one key (`enterSignIn`, `leaveSignIn`, card 2194); `accountKey()`, the `user:<id>` key the password step and the second step both count under (card 2769) |
+| `src/lib/server/startup-checks.ts` | `reportInstallation()`, the fourteen checks the server makes at start, each a line when it finds something (the secrets a backup lacks, `WEBHOOK_ALLOW_INSIDE` entries ignored, boards over the webhook cap, webhooks refused and SFTP destinations without a confirmed host key are described under their own cards); among them: no superadmin, `ORIGIN` still the image's placeholder, and a board beneath one of its own cards (card 2142), which a restore of a backup that brings one writes at once too, with each control character in a board's name or a card's title printed as a space, so that a name holding a line break cannot split the line and forge one after it (with the logger's `printable()`, card 2214); and three about the database (card 2083): the new-database line (a new, empty database was made at this start, the alarm on an installation that had data, since set-up is then open to whoever comes first), the off-volume line (the database is in the container's own file system), and the other-database line (a database at `/app/dumpfire.db` beside the one in use); and the line that `SIGN_IN_ONE_AT_A_TIME` is off (card 2194), and `reportCspMode()`'s line that `CSP_MODE` is `report-only` or neither mode (card 2162), each to the console whatever `LOG_LEVEL` is; `reportPlainOriginBehindHttps()` (card 2850), one `WARN` in a built server whose App URL is `https:` while `ORIGIN` is set and `http:` and plain-HTTP cookies would not be `Secure` (see [Every Cookie DumpFire Sets](#every-cookie-dumpfire-sets-card-2850)); `refuseUserlessBesideAnother()`, which stops the server before it listens when the database in use has no users while another is beside it; `checkMfaKeyAtStart()` and `MfaKeyError` (card 2768), straight after it, which stop the server when the MFA key does not load or is not the key the stored second factors were made with; and `maskLiveLog()`, which masks the running log's tokens and old failed sign-in names at start; and `endPlainInvites()` (card 2849), which at every start ends each unused invite an older image stored in plain and gives each used one 32 random bytes, in one transaction, with one `WARN` line built from what changed; and `endPlainSessions()` (card 2775), which at every start, before the clean-up of ended sessions, deletes each session an older image stored in plain, with one `WARN` line; and `announceReportSchedules()` (card 2751), once, at the first start after that card, after `endPlainInvites()` and before the schedulers: one `INFO` line for each report schedule that is on, naming its addresses, one `report-schedules-running` notice to each owner, then `settings.report_schedules_announced` (see [Report Schedules and Report Mail](#report-schedules-and-report-mail-card-2751)) |
+| `src/lib/server/rate-limit.ts` | In-memory rate limiter, counting in a fixed window from each key's first attempt (`checkRateLimit`), an amount in the same way (`takeAllowance`, the day's report mail of card 2182; `allowanceState` reads it with nothing taken and no window opened, and `noteAllowanceRefused` counts a refusal made by such a read, for the step-up's guard, card 2751), and wrong passwords at one account in an idle window (`signInWait`, `countWrongSignIn`, `forgetWrongSignIns`, card 2177); sign-in's count by address with the account each attempt was at (`countSignInAttempt`, `refundSignInAttempts`, `keepSignInAttemptCounted`, card 2226); and the sign-ins in flight at one key (`enterSignIn`, `leaveSignIn`, card 2194); `accountKey()`, the `user:<id>` key the password step and the second step both count under (card 2769) |
 | `src/lib/server/uploads.ts` | Where attachment files are, which stored file names are refused, `writeUploadFile()` and `removeUploadFile()` for both trees' uploads, and the headers an attachment is served with: `attachmentHeaders()` (the web tree, inline only when an image's bytes match) and `downloadHeaders()` (`/api/v1`, always a download, `no-store`) |
 | `src/lib/server/image-check.ts` | Whether bytes are a PNG, JPEG, GIF or WebP image (card 2754): `imageTypeOf()`, `sniffImage()`, and `checkImage()`, the walk by allow-list that strips metadata and refuses animation, trailing data and more than 8000 px or 40 MP. No imports |
 | `src/lib/server/upload-allowance.ts` | A key's user's image uploads (card 2754): `takeUploadCount()`, 30 an hour, and `takeUploadBytes()`, 100 MB a day, both by user; `UploadAllowanceRefused` |

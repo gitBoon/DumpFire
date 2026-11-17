@@ -60,14 +60,20 @@
  * administrator (card 2406); `endPlainInvites`, which ends the unused
  * invites an older image kept in plain and replaces the token of the used ones
  * (card 2849); and `endPlainSessions`, which ends the sessions an older image
- * kept in plain (card 2775).
+ * kept in plain (card 2775). And one thing said once, at the first start
+ * after card 2751: `announceReportSchedules`, which tells each owner of a
+ * report schedule that is on which of theirs are running.
  */
 import { readFileSync } from 'node:fs';
 import { posix } from 'node:path';
 import { dev } from '$app/environment';
 import { createdAtStart, getDbPath, otherDatabaseAtStart, sqlite } from './db';
 import { DatabaseLocationError, described, heldInContainerLayer, type OtherDatabase } from './db/location';
-import { PLACEHOLDER_ORIGIN, configuredOrigin, getAppUrl } from './email';
+import { PLACEHOLDER_ORIGIN, configuredOrigin, getAppUrl, isSmtpConfigured, smtpPasswordMissing } from './email';
+import { securityNoticeSent, type NoticeSchedule } from './notifications';
+import { reportCovers } from './reports';
+import { schedulerSetting } from './schedulers';
+import { reportRecipients } from '$lib/report-recipients';
 // `printable` is the logger's cleaner (card 2214), which `emit` applies to
 // every line as well. Names are still put through it where they sit inside
 // quotes, and the line printed past LOG_LEVEL below does not go through `emit`.
@@ -96,6 +102,7 @@ import { readMfaKeyCheck } from './mfa-store';
 
 const log = createLogger('STARTUP');
 const authLog = createLogger('AUTH');
+const reportsLog = createLogger('REPORTS');
 
 /**
  * One CRITICAL line when there are user accounts and none of them is the
@@ -723,6 +730,119 @@ export function endPlainInvites(): number | null {
 			authLog.warn(
 				`Invites held in plain by an older image could not be ended: ${(err as Error)?.message ?? err}. ` +
 					'They do not work on this image, and would work again on the older one.'
+			);
+		} catch {
+			// Nothing more to be done about it.
+		}
+		return null;
+	}
+}
+
+/** The `settings` key that says the report schedules running at the release were announced (card 2751, D14). */
+export const REPORT_SCHEDULES_ANNOUNCED = 'report_schedules_announced';
+
+/**
+ * Tell each owner of a report schedule that is on, once, which of theirs are
+ * running (card 2751, S1, D14). Resolves to how many owners there were once
+ * the flag is written, 0 when it was already there, and null when it was not
+ * written, so that the next start does it again. Called once, from
+ * hooks.server.ts, after `endPlainInvites` and before the schedulers start,
+ * and not awaited: the start does not wait on the mail server. The lines are
+ * written, and every notice begun, before it first waits.
+ *
+ * A schedule made before the release was made with no password, perhaps by
+ * someone holding the owner's session, and keeps sending. So, at the first
+ * start: one WARN line under REPORTS for each schedule that is on, its owner
+ * as the line's user, naming the owner, the schedule, what it covers and
+ * every address (WARN, so that LOG_LEVEL=WARN keeps them, CS3); then one
+ * `report-schedules-running` notice to each owner, listing theirs; then, once
+ * every notice has been answered and every one went,
+ * `settings.report_schedules_announced`, the date, is written, with `INSERT
+ * OR IGNORE`, as two instances may both get there. With it there, nothing is
+ * done and 0 is returned. A notice that did not go leaves the flag unwritten
+ * (CS1): one WARN line names the owners not told, and the next start says it
+ * all again, to every owner. A start that stops before the flag says it again
+ * too, never not at all. A restore of a backup from before the release has no
+ * flag, and the next start says it again.
+ *
+ * Only where the schedulers run, by the decision `startSchedulers` makes
+ * (CS2): under the dev server, or with SCHEDULERS=off, one INFO line says it
+ * was not done, nothing is sent and no flag is written, so that a rehearsal
+ * or a dev copy of production's data mails nobody, and the first start that
+ * runs the schedulers says it.
+ *
+ * With no mail set up no notice is sent: one WARN line says how many owners,
+ * and which, were not told, the lines above being the record, and the flag
+ * is written all the same. It never rejects: a failure is said at WARN, the
+ * flag is not written, and the next start tries again.
+ */
+export async function announceReportSchedules(
+	value: string | undefined = process.env.SCHEDULERS,
+	isDev: boolean = dev
+): Promise<number | null> {
+	try {
+		if (sqlite.prepare('SELECT 1 FROM settings WHERE key = ?').get(REPORT_SCHEDULES_ANNOUNCED)) return 0;
+		const setting = schedulerSetting(value, isDev);
+		if (!setting.run) {
+			reportsLog.info(
+				`The owners of report schedules that are on were not told of them, as the schedulers are off (${setting.reason}). ` +
+					'The first start that runs the schedulers tells them.'
+			);
+			return null;
+		}
+		const running = sqlite
+			.prepare(
+				`SELECT s.id, s.user_id AS userId, s.name, s.scope, s.scope_id AS scopeId, s.recipients, u.username
+				 FROM report_schedules s JOIN users u ON u.id = s.user_id
+				 WHERE s.enabled = 1 ORDER BY s.user_id, s.id`
+			)
+			.all() as { id: number; userId: number; name: string; scope: string; scopeId: number | null; recipients: string; username: string }[];
+		const owners = new Map<number, { username: string; schedules: NoticeSchedule[] }>();
+		for (const schedule of running) {
+			const covers = reportCovers(schedule.scope, schedule.scopeId);
+			const addresses = reportRecipients(schedule.recipients).addresses;
+			reportsLog.warn(
+				`Report schedule ${schedule.id} "${schedule.name}" of "${schedule.username}" (user ${schedule.userId}) is on at this release, ` +
+					`a report of ${covers}, sent to: ${addresses.length === 0 ? 'no address' : addresses.join(', ')}`,
+				{ scheduleId: schedule.id },
+				{ userId: schedule.userId }
+			);
+			const owner = owners.get(schedule.userId) ?? { username: schedule.username, schedules: [] };
+			owner.schedules.push({ name: schedule.name, covers, addresses });
+			owners.set(schedule.userId, owner);
+		}
+		const at = new Date();
+		const named = (list: { username: string }[]) => list.map((owner) => `"${owner.username}"`).join(', ');
+		if (owners.size > 0 && (!isSmtpConfigured() || smtpPasswordMissing())) {
+			reportsLog.warn(
+				`${owners.size} owner(s) of report schedules that are on were not told of them, as mail is not set up: ` +
+					`${named([...owners.values()])}. The WARN lines above name each schedule and its addresses.`
+			);
+		} else {
+			// Every notice begun before the first wait; each answers whether it went, and never rejects.
+			const told = [...owners].map(([userId, owner]) =>
+				securityNoticeSent(userId, 'report-schedules-running', { at, address: null, schedules: owner.schedules })
+			);
+			const answers = await Promise.allSettled(told);
+			const notTold = [...owners.values()].filter((_, i) => {
+				const answer = answers[i];
+				return answer.status !== 'fulfilled' || answer.value !== true;
+			});
+			if (notTold.length > 0) {
+				reportsLog.warn(
+					`${notTold.length} owner(s) of report schedules that are on were not told of them, as the mail did not go: ` +
+						`${named(notTold)}. The WARN lines above name each schedule and its addresses. The next start tells every owner again.`
+				);
+				return null;
+			}
+		}
+		sqlite.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)').run(REPORT_SCHEDULES_ANNOUNCED, at.toISOString());
+		return owners.size;
+	} catch (err) {
+		try {
+			reportsLog.warn(
+				`The owners of report schedules that are on could not be told of them: ${(err as Error)?.message ?? err}. ` +
+					'The next start tries again.'
 			);
 		} catch {
 			// Nothing more to be done about it.

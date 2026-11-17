@@ -92,13 +92,14 @@ import {
 import { SUPERADMIN_ONLY } from '$lib/server/route-guards';
 import { SECRET_MASK } from '$lib/server/backup-secrets';
 import { hashSync } from 'bcryptjs';
-import { stillAuthenticated, SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
+import { PASSWORD_CHANGED_MEANWHILE, stillAuthenticated, SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { inTransaction } from '$lib/server/db/transaction';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { issueFormToken, newRequestToken } from '$lib/server/request-tokens';
 import { cardDir } from '$lib/server/uploads';
 import { inWrite, stillCallerNow, writeAs, writingWithKey } from '$lib/server/write-as';
 import { stamp } from '$lib/timestamps';
+import { STEP_UP_MISSING } from '$lib/step-up-words';
 import { handle } from '../src/hooks.server';
 import { api } from './helpers/api';
 import { effects } from './helpers/effects';
@@ -123,6 +124,7 @@ import {
 	resetDb,
 	sessionHashOf,
 	sessionCredential,
+	stepUp,
 	stepUpCode,
 	stepUpFactor
 } from './helpers/fixtures';
@@ -603,12 +605,9 @@ describe('the report schedules and the webhooks decide with the account as it is
 		const { board } = makeBoard({ owner, name: 'Owned' });
 		const credential = sessionCredential(makeSession(owner));
 
-		const made = await api('POST', '/api/report-schedules', {
-			user: owner,
-			credential,
-			body: { name: 'Weekly', scope: 'board', scopeId: board.id, frequency: 'weekly' }
-		});
-		expect(made.status).toBe(201);
+		// With the password and a code (card 2751), from a session of the owner's own.
+		const made = await api('POST', '/api/report-schedules', stepUp(owner, { name: 'Weekly', scope: 'board', scopeId: board.id, frequency: 'weekly' }));
+		expect(made.status, JSON.stringify(made.body)).toBe(201);
 		expect((await api('PUT', `/api/report-schedules/${made.body.id}`, { user: owner, credential, body: { enabled: false } })).status).toBe(200);
 		expect((await api('DELETE', `/api/report-schedules/${made.body.id}`, { user: owner, credential })).status).toBe(200);
 
@@ -1077,7 +1076,20 @@ describe('the accounts, users, requests and reports ask at the write (slice 2253
 	 * whom, what it answers when nothing ends meanwhile, and the mail it then
 	 * sends (not counted for the new link, which is mailed after the answer).
 	 */
-	const HELD: { shape: string; method: Method; path: (s: Scene) => string; body: (s: Scene) => unknown; who: Who; allowed: number; mails?: number }[] = [
+	const HELD: {
+		shape: string;
+		method: Method;
+		path: (s: Scene) => string;
+		body: (s: Scene) => Record<string, unknown>;
+		who: Who;
+		allowed: number;
+		mails?: number;
+		/**
+		 * It asks for the current password and a code (card 2751): sent with both, the code made just before it is
+		 * sent, where it is let through. Its refusal of an ended session comes first, and is sent with neither.
+		 */
+		asks?: true;
+	}[] = [
 		{
 			shape: "a change to the caller's own account (PUT /api/account/emoji)",
 			method: 'PUT',
@@ -1194,7 +1206,8 @@ describe('the accounts, users, requests and reports ask at the write (slice 2253
 			body: (s) => ({ scope: 'board', scopeId: s.board.id, ...PERIOD, recipients: ['a@example.test'] }),
 			who: 'owner',
 			allowed: 200,
-			mails: 1
+			mails: 1,
+			asks: true
 		}
 	];
 
@@ -1225,9 +1238,12 @@ describe('the accounts, users, requests and reports ask at the write (slice 2253
 			const s = scene();
 			const sent = effects();
 			try {
-				const res = await sendAround(c.method, c.path(s), { session: s.sessions[c.who] }, c.body(s), () => {});
+				// The owner's password is the scene's own.
+				const password = c.who === 'owner' ? PASSWORD : FIXTURE_PASSWORD;
+				const body = c.asks ? { ...c.body(s), currentPassword: password, currentCode: stepUpCode(s[c.who]) } : c.body(s);
+				const res = await sendAround(c.method, c.path(s), { session: s.sessions[c.who] }, body, () => {});
 				await sent.settle();
-				expect(res.status).toBe(c.allowed);
+				expect(res.status, JSON.stringify(res.body)).toBe(c.allowed);
 				if (c.mails !== undefined) expect(sent.emails).toHaveLength(c.mails);
 			} finally {
 				sent.restore();
@@ -2693,7 +2709,14 @@ describe('a write that reaches its handler with no credential recorded by the ga
 	it('is let through under the tests, as a handler called directly is (the control)', async () => {
 		const admin = makeUser({ role: 'admin' });
 
-		expect((await api('POST', '/api/report-schedules', { user: admin, body: SCHEDULE })).status).toBe(201);
+		// The same request as the two below: the guard's writeAs lets it through with no credential under the tests,
+		// and the route then asks for the password and a code (card 2751), which is reached only past the guard.
+		const plain = await api('POST', '/api/report-schedules', { user: admin, body: SCHEDULE });
+		expect(plain.status).toBe(400);
+		expect(plain.body).toEqual({ message: STEP_UP_MISSING, stepUp: 'missing' });
+
+		// With them, it is made.
+		expect((await api('POST', '/api/report-schedules', stepUp(admin, SCHEDULE))).status).toBe(201);
 	});
 
 	it('is refused 401 outside the tests, with exactly one ERROR line naming the request, and nothing written', async () => {
@@ -2819,23 +2842,32 @@ describe("the report mail asks again after its PDF is made, before it sends (R1)
 	 * `POST /api/reports/email` builds its PDF with an await, and only then
 	 * sends: a session ended while the PDF was made must send no mail. The
 	 * route asks `stillCallerNow` after its body and again before the send
-	 * (slice 2253-4); this was pinned with `it.fails` until it did.
+	 * (slice 2253-4); this was pinned with `it.fails` until it did. Since card
+	 * 2751 it asks for the password and a code, from the session it is sent
+	 * with (`stepUp`), and asks again before every send (S5), the password's
+	 * hash among what it asks.
 	 */
+	const MAIL = (boardId: number, recipients = ['a@example.test']) => ({
+		scope: 'board',
+		scopeId: boardId,
+		periodStart: '2026-10-01',
+		periodEnd: '2026-10-08',
+		recipients
+	});
+	/** The session a `stepUp` request is sent with, as its cookie names it. */
+	const tokenIn = (sent: ReturnType<typeof stepUp>) => sent.headers.cookie.slice(`${SESSION_COOKIE_NAME}=`.length);
+
 	it('sends no mail, and answers 401, when the session ends after the PDF is made', { timeout: 30_000 }, async () => {
 		const owner = makeUser({ username: 'owner' });
 		const { board } = makeBoard({ owner, name: 'Reported' });
-		const token = makeSession(owner);
+		const asked = stepUp(owner, MAIL(board.id));
 		makeSmtp();
 		const sent = effects();
-		pdf.afterMade = () => void db.delete(sessions).where(eq(sessions.tokenHash, sessionHashOf(token))).run();
+		pdf.afterMade = () => void db.delete(sessions).where(eq(sessions.tokenHash, sessionHashOf(tokenIn(asked)))).run();
 
 		let res;
 		try {
-			res = await api('POST', '/api/reports/email', {
-				user: owner,
-				credential: sessionCredential(token),
-				body: { scope: 'board', scopeId: board.id, periodStart: '2026-10-01', periodEnd: '2026-10-08', recipients: ['a@example.test'] }
-			});
+			res = await api('POST', '/api/reports/email', asked);
 		} finally {
 			sent.restore();
 		}
@@ -2848,17 +2880,12 @@ describe("the report mail asks again after its PDF is made, before it sends (R1)
 	it('sends the mail when the session is still open after the PDF is made (the control)', { timeout: 30_000 }, async () => {
 		const owner = makeUser({ username: 'owner' });
 		const { board } = makeBoard({ owner, name: 'Reported' });
-		const token = makeSession(owner);
 		makeSmtp();
 		const sent = effects();
 
 		let res;
 		try {
-			res = await api('POST', '/api/reports/email', {
-				user: owner,
-				credential: sessionCredential(token),
-				body: { scope: 'board', scopeId: board.id, periodStart: '2026-10-01', periodEnd: '2026-10-08', recipients: ['a@example.test'] }
-			});
+			res = await api('POST', '/api/reports/email', stepUp(owner, MAIL(board.id)));
 			await sent.settle();
 		} finally {
 			sent.restore();
@@ -2866,6 +2893,127 @@ describe("the report mail asks again after its PDF is made, before it sends (R1)
 
 		expect(res.status).toBe(200);
 		expect(sent.emails).toHaveLength(1);
+	});
+
+	// Card 2751 (T10, D8): the password changed after the check, before the first send.
+	it('T10. sends no mail, and answers 403 changed, when the password changes after the PDF is made', { timeout: 30_000 }, async () => {
+		const owner = makeUser({ username: 'owner' });
+		const { board } = makeBoard({ owner, name: 'Reported' });
+		const asked = stepUp(owner, MAIL(board.id));
+		makeSmtp();
+		const sent = effects();
+		pdf.afterMade = () => void db.update(users).set({ passwordHash: hashSync('a new password', 4) }).where(eq(users.id, owner.id)).run();
+
+		let res;
+		try {
+			res = await api('POST', '/api/reports/email', asked);
+			await sent.settle();
+		} finally {
+			sent.restore();
+		}
+
+		expect([res.status, res.body]).toEqual([403, { message: PASSWORD_CHANGED_MEANWHILE, stepUp: 'changed' }]);
+		expect(sent.emails).toEqual([]);
+	});
+
+	// Card 2751 (T11, S5): the password changed after the first mail has gone: the rest is not sent, and said so.
+	it('T11. stops after the first mail, and says the second was not sent, when the password changes between them', { timeout: 30_000 }, async () => {
+		const owner = makeUser({ username: 'owner' });
+		const { board } = makeBoard({ owner, name: 'Reported' });
+		const asked = stepUp(owner, MAIL(board.id, ['a@example.test', 'b@example.test']));
+		makeSmtp();
+		// The hash moved as the first mail is handed to the mail server.
+		const sent = effects({
+			mailRefusal: (mail) => {
+				if (mail.to === 'a@example.test') db.update(users).set({ passwordHash: hashSync('a new password', 4) }).where(eq(users.id, owner.id)).run();
+				return undefined;
+			}
+		});
+
+		let res;
+		try {
+			res = await api('POST', '/api/reports/email', asked);
+			await sent.settle();
+		} finally {
+			sent.restore();
+		}
+
+		const STOPPED =
+			'Not sent: sending stopped because the session ended, access changed or the password changed while the report was being sent';
+		expect([res.status, res.body]).toEqual([
+			200,
+			{
+				message: `Report sent to 1 of 2 recipients. Not sent to b@example.test. ${STOPPED}`,
+				results: [
+					{ email: 'a@example.test', success: true },
+					{ email: 'b@example.test', success: false, message: STOPPED }
+				]
+			}
+		]);
+		expect(sent.emails.map((mail) => mail.to)).toEqual(['a@example.test']);
+	});
+
+	/** What an address the mail server refused is answered. */
+	const REFUSED = 'The mail server did not accept it. An administrator can see the reason in the system log.';
+	const STOPPED_WORDS =
+		'Not sent: sending stopped because the session ended, access changed or the password changed while the report was being sent';
+
+	/** The report mailed to `to`, the password changed as `changedAt` is handed to the mail server, and `refuse` refused by it. */
+	const mailedWhileChanged = async (to: string[], changedAt: string, refuse: string[]) => {
+		const owner = makeUser({ username: 'owner' });
+		const { board } = makeBoard({ owner, name: 'Reported' });
+		const asked = stepUp(owner, MAIL(board.id, to));
+		makeSmtp();
+		// The mail server's refusal is logged at ERROR, which the suite prints.
+		const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
+		onTestFinished(() => quiet.mockRestore());
+		const sent = effects({
+			mailRefusal: (mail) => {
+				if (mail.to === changedAt) db.update(users).set({ passwordHash: hashSync('a new password', 4) }).where(eq(users.id, owner.id)).run();
+				return refuse.includes(mail.to) ? new Error('550 Mailbox unavailable') : undefined;
+			}
+		});
+		try {
+			const res = await api('POST', '/api/reports/email', asked);
+			await sent.settle();
+			return { res, mailed: sent.emails.map((mail) => mail.to), refused: sent.refusedMail.map((mail) => mail.to) };
+		} finally {
+			sent.restore();
+		}
+	};
+
+	// The review's CR3: with no mail gone, a refusal at the next check is the answer, not a 502 that hides it.
+	it('T11b. answers the refusal, 403 changed, when the first address is refused by the mail server and the password changes meanwhile', { timeout: 30_000 }, async () => {
+		const { res, mailed, refused } = await mailedWhileChanged(['a@example.test', 'b@example.test'], 'a@example.test', ['a@example.test']);
+
+		expect([res.status, res.body]).toEqual([403, { message: PASSWORD_CHANGED_MEANWHILE, stepUp: 'changed' }]);
+		expect(mailed).toEqual([]);
+		expect(refused).toEqual(['a@example.test']);
+	});
+
+	// The review's CR3: a partial answer with an address refused and others stopped names both reasons.
+	it('T11c. names both reasons, each by its addresses, when one address is refused and the rest are stopped', { timeout: 30_000 }, async () => {
+		const { res, mailed, refused } = await mailedWhileChanged(
+			['a@example.test', 'b@example.test', 'c@example.test'],
+			'b@example.test',
+			['b@example.test']
+		);
+
+		expect([res.status, res.body]).toEqual([
+			200,
+			{
+				message:
+					`Report sent to 1 of 3 recipients. Not sent to b@example.test: ${REFUSED} ` +
+					`Not sent to c@example.test: ${STOPPED_WORDS}`,
+				results: [
+					{ email: 'a@example.test', success: true },
+					{ email: 'b@example.test', success: false, message: REFUSED },
+					{ email: 'c@example.test', success: false, message: STOPPED_WORDS }
+				]
+			}
+		]);
+		expect(mailed).toEqual(['a@example.test']);
+		expect(refused).toEqual(['b@example.test']);
 	});
 
 	/**
@@ -2882,17 +3030,14 @@ describe("the report mail asks again after its PDF is made, before it sends (R1)
 		body: Record<string, unknown>;
 		meanwhile?: () => void;
 	}) => {
-		const token = makeSession(opts.reader);
+		// With the password and a code, from a session of the reader's (card 2751).
+		const asked = stepUp(opts.reader, { periodStart: '2026-10-01', periodEnd: '2026-10-08', recipients: ['a@example.test'], ...opts.body });
 		// Mail set up once a test, whichever call comes first.
 		if (!db.select().from(settings).where(eq(settings.key, 'smtp_host')).get()) makeSmtp();
 		const sent = effects();
 		pdf.afterMade = opts.meanwhile ?? null;
 		try {
-			const res = await api('POST', '/api/reports/email', {
-				user: opts.reader,
-				credential: sessionCredential(token),
-				body: { periodStart: '2026-10-01', periodEnd: '2026-10-08', recipients: ['a@example.test'], ...opts.body }
-			});
+			const res = await api('POST', '/api/reports/email', asked);
 			await sent.settle();
 			return { status: res.status, body: res.body, mails: sent.emails.length };
 		} finally {

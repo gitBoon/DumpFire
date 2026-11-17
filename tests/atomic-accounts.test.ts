@@ -1778,10 +1778,23 @@ describe('what taking an account back switches off (card 2168)', () => {
 			expect(made.status).toBe(201);
 			const changed = await sendAround('PUT', `/api/v1/webhooks/${s.hooks.alreadyOff}`, { key }, { active: true }, nothing);
 			expect(changed.status).toBe(200);
-			const scheduled = await sendAround('POST', '/api/report-schedules', { session }, SCHEDULE(s.board.id), nothing);
-			expect(scheduled.status).toBe(201);
-			const resumed = await sendAround('PUT', `/api/report-schedules/${s.schedules.alreadyPaused}`, { session }, { enabled: true }, nothing);
-			expect(resumed.status).toBe(200);
+			// Each with the password and a code (card 2751), the code made just before each is sent.
+			const scheduled = await sendAround(
+				'POST',
+				'/api/report-schedules',
+				{ session },
+				{ ...SCHEDULE(s.board.id), currentPassword: OLD, currentCode: stepUpCode(s.target) },
+				nothing
+			);
+			expect(scheduled.status, JSON.stringify(scheduled.body)).toBe(201);
+			const resumed = await sendAround(
+				'PUT',
+				`/api/report-schedules/${s.schedules.alreadyPaused}`,
+				{ session },
+				{ enabled: true, currentPassword: OLD, currentCode: stepUpCode(s.target) },
+				nothing
+			);
+			expect(resumed.status, JSON.stringify(resumed.body)).toBe(200);
 		});
 	});
 });

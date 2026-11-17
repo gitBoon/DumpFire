@@ -21,7 +21,8 @@ import { escapeHtml } from '$lib/escape-html';
 import { isSmtpConfigured, sendEmailWithAttachment } from './email';
 import type { SessionUser } from './auth';
 import { createLogger } from './logger';
-import { takeAllowance } from './rate-limit';
+import { sendSecurityNotice, type SecurityNoticeDetail } from './notifications';
+import { allowanceState, noteAllowanceRefused, takeAllowance } from './rate-limit';
 import { readId, readQueryDate, readText, type RequestBody } from './request-body';
 import { MAX_REPORT_RECIPIENTS, reportRecipients } from '$lib/report-recipients';
 import { parseStamp, stamp, toStamp, type Stamp } from '$lib/timestamps';
@@ -712,6 +713,43 @@ function assigneeNameFor(userId: number | null): string | null {
 	return u?.username ?? `User #${userId}`;
 }
 
+/**
+ * Whether `user` may have a report of `scope` (card 2751, S6): a board that
+ * is there and that they can open; a grouping that is there with a board in
+ * it they can open; every board for an administrator. The one rule the three
+ * generators open with, so that a route that asks before it builds one (the
+ * report mail, before the password) and every report built, the scheduler's
+ * among them, decide alike. Reads only.
+ */
+export function reportScopeOpen(user: SessionUser, scope: (typeof REPORT_SCOPES)[number], scopeId: number | null): boolean {
+	if (scope === 'all') return user.role === 'admin' || user.role === 'superadmin';
+	if (scopeId === null) return false;
+	if (scope === 'board') {
+		return canViewBoard(user, scopeId) && db.select({ id: boards.id }).from(boards).where(eq(boards.id, scopeId)).get() !== undefined;
+	}
+	const cat = db.select({ id: boardCategories.id }).from(boardCategories).where(eq(boardCategories.id, scopeId)).get();
+	if (!cat) return false;
+	const canOpen = openerFor(user);
+	return db.select({ id: boards.id }).from(boards).where(eq(boards.categoryId, scopeId)).all().some((b) => canOpen(b.id));
+}
+
+/**
+ * What a schedule or a report covers, as a log line and a notice name it
+ * (card 2751, D13): `the board "Sales"`, `the grouping "North"`, or `every
+ * board`. One that is gone is named by its id.
+ */
+export function reportCovers(scope: string, scopeId: number | null): string {
+	if (scope === 'board' && scopeId !== null) {
+		const board = db.select({ name: boards.name }).from(boards).where(eq(boards.id, scopeId)).get();
+		return board ? `the board "${board.name}"` : `board ${scopeId}, which is gone`;
+	}
+	if (scope === 'category' && scopeId !== null) {
+		const cat = db.select({ name: boardCategories.name }).from(boardCategories).where(eq(boardCategories.id, scopeId)).get();
+		return cat ? `the grouping "${cat.name}"` : `grouping ${scopeId}, which is gone`;
+	}
+	return 'every board';
+}
+
 export function generateBoardReport(
 	boardId: number, periodStart: string, periodEnd: string, user: SessionUser,
 	statusFilter: ReportStatusFilter = 'all',
@@ -719,7 +757,8 @@ export function generateBoardReport(
 	timeZone?: string,
 	asOf?: Date
 ): ReportData | null {
-	if (!canViewBoard(user, boardId)) return null;
+	// The one rule (card 2751, S6): a board that is there, which the reader can open.
+	if (!reportScopeOpen(user, 'board', boardId)) return null;
 	const board = db.select().from(boards).where(eq(boards.id, boardId)).get();
 	if (!board) return null;
 	// Include the sub-boards the reader can open, recursively (card 2150)
@@ -735,6 +774,8 @@ export function generateCategoryReport(
 	timeZone?: string,
 	asOf?: Date
 ): ReportData | null {
+	// The one rule (card 2751, S6): a grouping that is there, with a board in it the reader can open.
+	if (!reportScopeOpen(user, 'category', categoryId)) return null;
 	const cat = db.select().from(boardCategories).where(eq(boardCategories.id, categoryId)).get();
 	if (!cat) return null;
 	const canOpen = openerFor(user);
@@ -753,7 +794,8 @@ export function generateAllBoardsReport(
 	timeZone?: string,
 	asOf?: Date
 ): ReportData | null {
-	if (user.role !== 'admin' && user.role !== 'superadmin') return null;
+	// The one rule (card 2751, S6): every board, for an administrator.
+	if (!reportScopeOpen(user, 'all', null)) return null;
 	// Start from top-level boards only, then expand to include sub-boards
 	// An administrator opens every board, so nothing is left out; asked all
 	// the same, so that the three reports walk by one rule.
@@ -1620,11 +1662,47 @@ export type ReportMailSpend = 'email' | 'new schedule' | 'changed schedule' | 'n
  * both fit in the last of the allowance. Nothing is given back when a mail
  * server refuses a send, or a schedule is deleted.
  *
- * The first refusal in each window is one WARN line naming the account.
+ * The first refusal in each window is one WARN line naming the account
+ * (`refuseReportMail`).
  */
 export function takeReportMail(user: Pick<SessionUser, 'id' | 'username'>, n: number, spend: ReportMailSpend): void {
-	const took = takeAllowance(`report-mail:${user.id}`, n, REPORT_MAILS_PER_DAY, DAY_MS);
+	const took = takeAllowance(reportMailKey(user), n, REPORT_MAILS_PER_DAY, DAY_MS);
 	if (took.taken) return;
+	refuseReportMail(user, n, spend, took);
+}
+
+/** The key an account's report mail for the day is counted under. */
+const reportMailKey = (user: Pick<SessionUser, 'id'>) => `report-mail:${user.id}`;
+
+/**
+ * Whether `n` addresses would fit in `user`'s report mail for the day, asked
+ * with nothing taken and no day begun (card 2751, S4): the step-up's guard
+ * asks it before the password, so that a request the day's limit will refuse
+ * costs no check and no guess, and `takeReportMail` takes at the write. The
+ * time is read once. Over the limit it refuses as `takeReportMail` does, in
+ * the same words, the refusal counted on the day's window.
+ */
+export function checkReportMail(user: Pick<SessionUser, 'id' | 'username'>, n: number, spend: ReportMailSpend): void {
+	if (n <= 0) return;
+	const now = Date.now();
+	const key = reportMailKey(user);
+	const state = allowanceState(key, REPORT_MAILS_PER_DAY, DAY_MS, now);
+	if (state.used + n <= REPORT_MAILS_PER_DAY) return;
+	refuseReportMail(user, n, spend, { used: state.used, retryAfterSecs: state.retryAfterSecs, firstRefusal: noteAllowanceRefused(key, now) });
+}
+
+/**
+ * Refuse a request that would take `n` of `user`'s report mail past the day's
+ * limit: 429 in the words of what it is (`spend`), with what the day has
+ * used and how long until it is up, and, for the window's first refusal, one
+ * WARN line naming the account. Shared by the check and the take (card 2751).
+ */
+function refuseReportMail(
+	user: Pick<SessionUser, 'id' | 'username'>,
+	n: number,
+	spend: ReportMailSpend,
+	took: { used: number; retryAfterSecs: number; firstRefusal: boolean }
+): never {
 	if (took.firstRefusal) {
 		// The account as the line's user, so the Audit page finds it by user.
 		log.warn(
@@ -1646,6 +1724,34 @@ export function takeReportMail(user: Pick<SessionUser, 'id' | 'username'>, n: nu
 		`Report mail can reach at most ${REPORT_MAILS_PER_DAY} addresses a day from one account, and this schedule's ${n}${spend === 'new recipients' ? ' new addresses' : ''} would make ${wouldMake}. ` +
 			`The schedule was not ${spend === 'new schedule' ? 'saved' : 'changed'}. Try again in ${retry}.`
 	);
+}
+
+/** What a write that asked for the password did to a schedule (card 2751, D13), as its line and its notice name it. */
+export type ScheduleChange = NonNullable<SecurityNoticeDetail['change']>;
+
+/**
+ * Say what a write that asked for the password did to a schedule, once it is
+ * committed (card 2751, S3, D13): one INFO line under REPORTS, the owner as
+ * its user, naming the schedule, what it covers and every address it is sent
+ * to (and the addresses added), and the owner's `report-schedule-set` notice,
+ * from `address`. Called in `afterCommit`, never awaited.
+ */
+export function reportScheduleSet(schedule: ReportScheduleRow, change: ScheduleChange, address: string | null): void {
+	const addresses = reportRecipients(schedule.recipients).addresses;
+	const covers = reportCovers(schedule.scope, schedule.scopeId);
+	const did = [
+		change.made ? 'made' : '',
+		change.added ? 'given addresses' : '',
+		change.turnedOn ? 'turned on' : '',
+		change.widenedTo ? `widened to ${change.widenedTo}` : ''
+	].filter(Boolean);
+	log.info(
+		`Report schedule ${schedule.id} "${schedule.name}" was ${did.join(', ')}, a report of ${covers}, sent to: ` +
+			`${addresses.length === 0 ? 'no address' : addresses.join(', ')}${change.added ? `; added: ${change.added.join(', ')}` : ''}`,
+		{ scheduleId: schedule.id },
+		{ userId: schedule.userId }
+	);
+	sendSecurityNotice(schedule.userId, 'report-schedule-set', { at: new Date(), address, schedules: [{ name: schedule.name, covers, addresses }], change });
 }
 
 /** Why a schedule whose list is over the cap cannot be turned on, or was switched off (decision 6). */

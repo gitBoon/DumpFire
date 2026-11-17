@@ -29,11 +29,12 @@ import { db, sqlite } from '$lib/server/db';
 import { reportSchedules } from '$lib/server/db/schema';
 import type { SessionUser } from '$lib/server/auth';
 import { MAX_REPORT_RECIPIENTS, reportRecipients } from '$lib/report-recipients';
-import { resetAllRateLimits, takeAllowance } from '$lib/server/rate-limit';
+import { allowanceState, resetAllRateLimits, takeAllowance } from '$lib/server/rate-limit';
+import { STEP_UP_WRONG } from '$lib/server/step-up';
 import { runDueReportSchedules } from '$lib/server/reports';
 import { api } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
-import { makeBoard, makeSmtp, makeUser, resetDb, type BoardFixture } from './helpers/fixtures';
+import { makeBoard, makeSmtp, makeUser, resetDb, stepUp, type BoardFixture } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 
 let owner: SessionUser;
@@ -59,20 +60,31 @@ afterEach(() => {
 /** `n` distinct addresses, `a1@x.test` onwards, or from `start`. */
 const addresses = (n: number, start = 1) => Array.from({ length: n }, (_, i) => `a${start + i}@x.test`);
 
+/*
+ * Card 2751: the report mail, a schedule made, and a change that adds an
+ * address, turns one on or widens its filter ask for the password and a code.
+ * Each request comes in two forms. The plain one sends neither: for a refusal
+ * made before the password is asked for, which it proves is made first (it
+ * would be 400 `missing` otherwise), and for a change that asks nothing. The
+ * asking one builds the proof for each call, just before it is sent.
+ */
+const mailBody = (recipients: unknown, scopeId = A.board.id) => ({ scope: 'board', scopeId, periodStart: '2026-10-01', periodEnd: '2026-10-08', recipients });
+const scheduleBody = (recipients: string, extra: Record<string, unknown> = {}) => ({ name: 'Weekly', scope: 'board', scopeId: A.board.id, frequency: 'weekly', recipients, ...extra });
+
 const email = (recipients: unknown, caller = owner, scopeId = A.board.id) =>
-	api('POST', '/api/reports/email', {
-		user: caller,
-		body: { scope: 'board', scopeId, periodStart: '2026-10-01', periodEnd: '2026-10-08', recipients }
-	});
+	api('POST', '/api/reports/email', { user: caller, body: mailBody(recipients, scopeId) });
+const emailAsking = (recipients: unknown, caller = owner, scopeId = A.board.id) =>
+	api('POST', '/api/reports/email', stepUp(caller, mailBody(recipients, scopeId)));
 
 const schedule = (recipients: string, caller = owner, extra: Record<string, unknown> = {}) =>
-	api('POST', '/api/report-schedules', {
-		user: caller,
-		body: { name: 'Weekly', scope: 'board', scopeId: A.board.id, frequency: 'weekly', recipients, ...extra }
-	});
+	api('POST', '/api/report-schedules', { user: caller, body: scheduleBody(recipients, extra) });
+const scheduleAsking = (recipients: string, caller = owner, extra: Record<string, unknown> = {}) =>
+	api('POST', '/api/report-schedules', stepUp(caller, scheduleBody(recipients, extra)));
 
 const change = (id: number, body: Record<string, unknown>, caller = owner) =>
 	api('PUT', `/api/report-schedules/${id}`, { user: caller, body });
+const changeAsking = (id: number, body: Record<string, unknown>, caller = owner) =>
+	api('PUT', `/api/report-schedules/${id}`, stepUp(caller, body));
 
 /** A schedule written straight to the table, as one made before there was a cap. */
 function stored(recipients: string, values: Partial<typeof reportSchedules.$inferInsert> = {}): number {
@@ -158,17 +170,17 @@ describe('POST /api/reports/email: at most 10 addresses at a time', () => {
 		expect(sent.all).toEqual([]);
 		expectUnchanged(before);
 
-		const ten = await email(addresses(10));
+		const ten = await emailAsking(addresses(10));
 		expect(ten.status).toBe(200);
 		expect(sent.emails.map((m) => m.to)).toEqual(addresses(10));
 	});
 
 	it('sends an address written twice, in either case, once; and counts eleven entries that are ten addresses as ten', { timeout: 30_000 }, async () => {
-		expect((await email(['a@x.test', 'A@x.test'])).status).toBe(200);
+		expect((await emailAsking(['a@x.test', 'A@x.test'])).status).toBe(200);
 		expect(sent.emails.map((m) => m.to)).toEqual(['a@x.test']);
 
 		sent.clear();
-		expect((await email([...addresses(10), 'A1@X.TEST'])).status).toBe(200);
+		expect((await emailAsking([...addresses(10), 'A1@X.TEST'])).status).toBe(200);
 		expect(sent.emails).toHaveLength(10);
 	});
 
@@ -198,7 +210,7 @@ describe('POST /api/reports/email: at most 100 addresses a day from one account'
 				expect((await email(['a@x.test'], owner, theirs.board.id)).status).toBe(403);
 
 				for (let call = 0; call < 10; call++) {
-					const res = await email(addresses(10, call * 10 + 1));
+					const res = await emailAsking(addresses(10, call * 10 + 1));
 					expect(res.status, `call ${call + 1}`).toBe(200);
 				}
 				expect(sent.emails).toHaveLength(100);
@@ -232,13 +244,34 @@ describe('POST /api/reports/email: at most 100 addresses a day from one account'
 			expect(JSON.parse(warnedMeta())).toEqual({ used: 100, asked: 1, retryAfterSecs: 86400 });
 
 			// Another account's allowance is its own.
-			expect((await email(['b@x.test'], other, B.board.id)).status).toBe(200);
+			expect((await emailAsking(['b@x.test'], other, B.board.id)).status).toBe(200);
 
 			// A day and a second after the first send, the window has ended.
 			vi.setSystemTime(new Date('2026-10-15T09:00:01.000Z'));
-			expect((await email(['c@x.test'])).status).toBe(200);
+			expect((await emailAsking(['c@x.test'])).status).toBe(200);
 		}
 	);
+
+	// Card 2751 (T12, S4): the guard reads the day's allowance before the password with nothing taken, and opens
+	// no new day for a window that has ended: a request refused at the password spends none of the next day.
+	it('T12. reads an ended day with nothing taken before the password: a wrong password is 403, and no day is begun', async () => {
+		vi.useFakeTimers({ toFake: ['Date'] });
+		vi.setSystemTime(new Date('2026-10-14T09:00:00.000Z'));
+		const key = `report-mail:${owner.id}`;
+		const DAY = 24 * 60 * 60 * 1000;
+		expect(takeAllowance(key, 100, 100, DAY)).toEqual({ taken: true });
+
+		// The day is up: a day and a second after it began.
+		vi.setSystemTime(new Date('2026-10-15T09:00:01.000Z'));
+		const wrong = await api('POST', '/api/reports/email', stepUp(owner, mailBody(['a@x.test']), 'not the password'));
+		expect([wrong.status, wrong.body]).toEqual([403, { message: STEP_UP_WRONG, stepUp: 'wrong' }]);
+
+		// Nothing taken, and no window opened: an hour on, a day begun at the request would have 23 hours left.
+		vi.setSystemTime(new Date('2026-10-15T10:00:01.000Z'));
+		expect(allowanceState(key, 100, DAY, Date.now())).toEqual({ used: 0, retryAfterSecs: 86400, refused: 0 });
+		await sent.settle();
+		expect(sent.all).toEqual([]);
+	});
 });
 
 describe('report schedules: 10 addresses each, 20 an account', () => {
@@ -253,13 +286,13 @@ describe('report schedules: 10 addresses each, 20 an account', () => {
 		expectUnchanged(before);
 
 		// Separated as the scheduler separates them, and kept as it will send them.
-		const made = await schedule(`${addresses(9).join('; ')}\nA1@x.test a10@x.test`);
+		const made = await scheduleAsking(`${addresses(9).join('; ')}\nA1@x.test a10@x.test`);
 		expect(made.status, JSON.stringify(made.body)).toBe(201);
 		expect(row(made.body.id).recipients).toBe(addresses(10).join(', '));
 	});
 
 	it('refuses a 21st schedule of one account, and not another account’s first', async () => {
-		for (let n = 1; n <= 20; n++) expect((await schedule(`s${n}@x.test`)).status).toBe(201);
+		for (let n = 1; n <= 20; n++) expect((await scheduleAsking(`s${n}@x.test`)).status).toBe(201);
 
 		const before = snapshotDb();
 		const refused = await schedule('s21@x.test');
@@ -269,11 +302,11 @@ describe('report schedules: 10 addresses each, 20 an account', () => {
 
 		const other = makeUser();
 		const B = makeBoard({ owner: other });
-		expect((await schedule('t@x.test', other, { scopeId: B.board.id })).status).toBe(201);
+		expect((await scheduleAsking('t@x.test', other, { scopeId: B.board.id })).status).toBe(201);
 	});
 
 	it('refuses a change to 11, and turning on a schedule kept with 12 unless the same change sends 10', async () => {
-		const made = await schedule(addresses(3).join(', '));
+		const made = await scheduleAsking(addresses(3).join(', '));
 		const before = snapshotDb();
 		const over = await change(made.body.id, { recipients: addresses(11).join(', ') });
 		expect(over.status).toBe(400);
@@ -295,7 +328,7 @@ describe('report schedules: 10 addresses each, 20 an account', () => {
 		// The row sent back as it is, to switch it off, is taken.
 		expect((await change(kept, { recipients: row(kept).recipients, enabled: false })).status).toBe(200);
 
-		const fixed = await change(kept, { recipients: addresses(10).join(', '), enabled: true });
+		const fixed = await changeAsking(kept, { recipients: addresses(10).join(', '), enabled: true });
 		expect(fixed.status, JSON.stringify(fixed.body)).toBe(200);
 		expect(row(kept)).toMatchObject({ enabled: true, recipients: addresses(10).join(', ') });
 	});
@@ -312,7 +345,7 @@ describe('report schedules: 10 addresses each, 20 an account', () => {
 	it('takes each schedule made, turned on or re-timed from the day’s 100, and nothing for any other change (R1)', async () => {
 		const ids: number[] = [];
 		for (let n = 0; n < 10; n++) {
-			const made = await schedule(addresses(10, n * 10 + 1).join(', '));
+			const made = await scheduleAsking(addresses(10, n * 10 + 1).join(', '));
 			expect(made.status, `schedule ${n + 1}`).toBe(201);
 			ids.push(made.body.id);
 		}
@@ -431,17 +464,21 @@ describe('a schedule made, run and deleted, over and over (R1)', () => {
 
 		// Three rounds: made for the next minute, sent at that minute, deleted.
 		for (let round = 1; round <= 3; round++) {
-			const made = await schedule(addresses(10, round * 100).join(', '), owner, { dayOfWeek: start.getUTCDay(), timeOfDay: at(round) });
+			const made = await scheduleAsking(addresses(10, round * 100).join(', '), owner, { dayOfWeek: start.getUTCDay(), timeOfDay: at(round) });
 			expect(made.status, `round ${round}`).toBe(201);
 			vi.setSystemTime(new Date(Date.UTC(2026, 9, 14, 9, round, 30)));
 			await runDueReportSchedules(new Date());
 			expect((await api('DELETE', `/api/report-schedules/${made.body.id}`, { user: owner })).status).toBe(200);
 		}
-		expect(sent.emails).toHaveLength(30);
+		// The reports, the owner's notice of each schedule made aside (card 2751, D13).
+		expect(sent.emails.filter((mail) => mail.to !== owner.email)).toHaveLength(30);
+		expect(sent.emails.filter((mail) => mail.to === owner.email).map((mail) => mail.subject)).toEqual(
+			Array(3).fill('A report schedule was made on your DumpFire account')
+		);
 
 		// Seven more made; the eleventh is refused, however many were deleted.
 		for (let n = 4; n <= 10; n++) {
-			expect((await schedule(addresses(10, n * 100).join(', '))).status, `schedule ${n}`).toBe(201);
+			expect((await scheduleAsking(addresses(10, n * 100).join(', '))).status, `schedule ${n}`).toBe(201);
 		}
 		expect((await schedule(addresses(10, 1100).join(', '))).status).toBe(429);
 		expect(db.select().from(reportSchedules).all()).toHaveLength(7);
@@ -464,14 +501,14 @@ describe('a schedule’s list changed', () => {
 
 	it('is held to the day’s 100: a schedule made empty and given ten, over and over, is refused at the eleventh', async () => {
 		for (let round = 1; round <= 10; round++) {
-			const made = await schedule('');
+			const made = await scheduleAsking('');
 			expect(made.status, `round ${round}`).toBe(201);
-			expect((await change(made.body.id, { recipients: addresses(10, round * 100).join(', ') })).status, `round ${round}`).toBe(200);
+			expect((await changeAsking(made.body.id, { recipients: addresses(10, round * 100).join(', ') })).status, `round ${round}`).toBe(200);
 			expect((await api('DELETE', `/api/report-schedules/${made.body.id}`, { user: owner })).status).toBe(200);
 		}
 		expect(used()).toBe(100);
 
-		const made = await schedule('');
+		const made = await scheduleAsking('');
 		expect(made.status).toBe(201);
 		const before = snapshotDb();
 		const refused = await change(made.body.id, { recipients: addresses(10, 1100).join(', ') });
@@ -485,15 +522,15 @@ describe('a schedule’s list changed', () => {
 	});
 
 	it('takes only the addresses a change adds: one, then ten, takes nine', async () => {
-		const made = await schedule('a1@x.test');
+		const made = await scheduleAsking('a1@x.test');
 		expect(used()).toBe(1);
 
-		expect((await change(made.body.id, { recipients: addresses(10).join(', ') })).status).toBe(200);
+		expect((await changeAsking(made.body.id, { recipients: addresses(10).join(', ') })).status).toBe(200);
 		expect(used()).toBe(10);
 	});
 
 	it('takes nothing for the stored list sent back in another order or case, or cut down', async () => {
-		const made = await schedule(addresses(10).join(', '));
+		const made = await scheduleAsking(addresses(10).join(', '));
 		expect(used()).toBe(10);
 
 		const reordered = addresses(10).reverse().map((address) => address.toUpperCase()).join('; ');

@@ -542,7 +542,9 @@ const STILL_CALLER_NOW: Record<string, { reason: string; guards: RegExp[] }> = {
 		guards: [/^generate\w*Report$/]
 	},
 	'src/routes/api/reports/email/+server.ts POST': {
-		reason: 'Mail leaves the process, after a PDF built with an await: checked again before the send.',
+		reason:
+			'Mail leaves the process, after a PDF built with an await: checked after the password, and again before every send ' +
+			'(card 2751, S5), with the password held unchanged there too.',
 		guards: [/^generate\w*Report$/, /^sendEmailWithAttachment$/]
 	},
 	'src/routes/api/admin/backup/+server.ts POST': { reason: 'The backup leaves the process.', guards: [/^runBackup$/] },
@@ -680,7 +682,10 @@ const CURRENT_PASSWORD = [
 	'src/routes/api/decisions/[id]/withdraw/+server.ts POST',
 	// Card 2679 (decision 2): the ruling and the release of its results.
 	'src/routes/api/decisions/[id]/rule/+server.ts POST',
-	'src/routes/api/decisions/[id]/release/+server.ts POST'
+	'src/routes/api/decisions/[id]/release/+server.ts POST',
+	// Card 2751 (D8): a report schedule made, and a change that adds an address, turns one on or widens its filter.
+	'src/routes/api/report-schedules/+server.ts POST',
+	'src/routes/api/report-schedules/[id]/+server.ts PUT'
 ];
 
 /**
@@ -3933,14 +3938,17 @@ const PROOF_DEFINED_IN: Record<string, string> = {
 /**
  * The handlers that ask for the current password but hold what they guard with
  * `requirePasswordUnchanged` alone, since it cannot run in a transaction: the
- * import's restore, the export's copy and a backup run. They are not on
+ * import's restore, the export's copy, a backup run and the report mail's
+ * sends (card 2751). They are not on
  * CURRENT_PASSWORD, whose (d) holds a handler to `whilePasswordHolds`, and may
  * not use it.
  */
 const PASSWORD_UNCHANGED_ONLY = [
 	'src/routes/api/admin/import/+server.ts POST',
 	'src/routes/api/admin/export/+server.ts POST',
-	'src/routes/api/admin/backup/+server.ts POST'
+	'src/routes/api/admin/backup/+server.ts POST',
+	// Card 2751 (D8, S5): the report mail, whose every send is held to the hash checked.
+	'src/routes/api/reports/email/+server.ts POST'
 ];
 
 /** By proof, the handlers that may use it, and the lists they are on, for the findings. */

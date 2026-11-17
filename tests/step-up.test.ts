@@ -72,6 +72,7 @@ import { db, sqlite } from '$lib/server/db';
 import { afterCommit } from '$lib/server/db/transaction';
 import {
 	apiKeys,
+	boardCategories,
 	boards,
 	cards,
 	categories,
@@ -82,6 +83,7 @@ import {
 	mfaFactors,
 	mfaRecoveryCodes,
 	people,
+	reportSchedules,
 	sessions,
 	settings,
 	userXp,
@@ -342,7 +344,7 @@ const linkRevokedReasons = (participantId: number) =>
 // ─── 1 and 2. The list, and the routes that ask ──────────────────────────────
 
 describe('the list of what asks, pinned against the routes (cases 1 and 2)', () => {
-	it("is the thirty-seven actions: decision 2's eighteen (the import among them, as its confirmation), card 2697's eight, card 2679's two, card 2773's one, card 2771's three and card 2772's five, each with why it asks", () => {
+	it("is the forty actions: decision 2's eighteen (the import among them, as its confirmation), card 2697's eight, card 2679's two, card 2773's one, card 2771's three, card 2772's five and card 2751's three, each with why it asks", () => {
 		expect(Object.keys(STEP_UP_ACTIONS).sort()).toEqual(
 			[
 				'POST /api/admin/reset',
@@ -389,9 +391,14 @@ describe('the list of what asks, pinned against the routes (cases 1 and 2)', () 
 				'POST /api/account/two-step/authenticators',
 				'DELETE /api/account/two-step/authenticators/[id]',
 				'POST /api/account/two-step/recovery-codes',
-				'DELETE /api/account/two-step/banner'
+				'DELETE /api/account/two-step/banner',
+				// Card 2751 (D1, D2): a report schedule made, one given an address, turned on or widened, and the report mail.
+				'POST /api/report-schedules',
+				'PUT /api/report-schedules/[id]',
+				'POST /api/reports/email'
 			].sort()
 		);
+		expect(Object.keys(STEP_UP_ACTIONS)).toHaveLength(40);
 		for (const [action, why] of Object.entries(STEP_UP_ACTIONS)) expect(why.trim().length, action).toBeGreaterThan(20);
 		expect(Object.isFrozen(STEP_UP_ACTIONS)).toBe(true);
 	});
@@ -467,6 +474,41 @@ describe('the list of what asks, pinned against the routes (cases 1 and 2)', () 
 
 // ─── 3. Each listed action: missing, wrong, right ────────────────────────────
 
+/** Card 2751: the mail a report row sends, recorded, with mail set up; its INFO lines written. */
+let mailed: ReturnType<typeof effects> | undefined;
+
+/** Mail set up and recorded, and lines at INFO written, for a report row (card 2751), as the invite row records its mail. */
+function mailing(): void {
+	makeSmtp();
+	const recorded = effects();
+	mailed = recorded;
+	onTestFinished(() => recorded.restore());
+	logAt('INFO');
+}
+
+/** A report schedule of `owner`'s on the scene's board (card 2751): weekly at 09:00 UTC, as `values` says otherwise. */
+function scheduleOf(owner: { id: number }, board: { id: number }, values: Partial<typeof reportSchedules.$inferInsert>): number {
+	return db
+		.insert(reportSchedules)
+		.values({ userId: owner.id, name: 'Weekly', scope: 'board', scopeId: board.id, timeZone: 'UTC', ...values })
+		.returning()
+		.get().id;
+}
+
+/**
+ * Card 2751 (D13): once its mail has gone, the one `report-schedule-set` notice
+ * to `owner`, and the one INFO line naming the schedule's addresses, the
+ * owner as its user.
+ */
+async function toldOfSchedule(owner: { id: number; email: string }, subject: string, line: RegExp): Promise<void> {
+	await mailed!.settle();
+	const notices = mailed!.emails.filter((mail) => mail.to === owner.email && /report schedule/.test(mail.subject));
+	expect(notices.map((mail) => mail.subject)).toEqual([subject]);
+	expect(linesStarting('INFO', 'Report schedule ').map(({ message, userId }) => ({ userId, line: line.test(message) }))).toEqual([
+		{ userId: owner.id, line: true }
+	]);
+}
+
 describe('each admin action asks for the current password (case 3)', () => {
 	const ACTIONS: {
 		action: StepUpAction;
@@ -491,7 +533,8 @@ describe('each admin action asks for the current password (case 3)', () => {
 		 * from a session of its own.
 		 */
 		counts?: readonly [number, number | 'signed out'];
-		done: (res: ApiResult, s: Scene) => void;
+		/** Awaited: a report row (card 2751) waits for the mail started after its commit. */
+		done: (res: ApiResult, s: Scene) => void | Promise<void>;
 	}[] = [
 		{
 			action: 'POST /api/admin/reset',
@@ -839,6 +882,100 @@ describe('each admin action asks for the current password (case 3)', () => {
 						.get()
 				).toEqual({ banner: null, at: null, latest: null });
 			}
+		},
+		// Card 2751 (T1): a schedule made, to the caller's own address alone, asks all the same (ruling 4).
+		{
+			action: 'POST /api/report-schedules',
+			who: 'admin',
+			path: () => '/api/report-schedules',
+			body: (s) => ({ name: 'Weekly', scope: 'board', scopeId: s.board.id, frequency: 'weekly', recipients: s.admin.email }),
+			status: 201,
+			setup: mailing,
+			done: async (res, s) => {
+				expect(res.body).toMatchObject({ name: 'Weekly', recipients: s.admin.email, enabled: true, userId: s.admin.id });
+				await toldOfSchedule(
+					s.admin,
+					'A report schedule was made on your DumpFire account',
+					new RegExp(`^Report schedule ${res.body.id} "Weekly" was made, a report of the board "Cleared", sent to: ${s.admin.email}$`)
+				);
+			}
+		},
+		// Card 2751 (T2): an address added to a schedule that is off asks, and it stays off (D2).
+		{
+			action: 'PUT /api/report-schedules/[id]',
+			who: 'admin',
+			method: 'PUT',
+			path: () => `/api/report-schedules/${madeFor!}`,
+			body: () => ({ recipients: 'a@x.test, b@x.test' }),
+			setup: (s) => {
+				mailing();
+				madeFor = scheduleOf(s.admin, s.board, { enabled: false, recipients: 'a@x.test' });
+			},
+			done: async (res, s) => {
+				expect(res.body).toMatchObject({ id: madeFor, recipients: 'a@x.test, b@x.test', enabled: false });
+				await toldOfSchedule(
+					s.admin,
+					'A report schedule of yours was changed on DumpFire',
+					/^Report schedule \d+ "Weekly" was given addresses, a report of the board "Cleared", sent to: a@x\.test, b@x\.test; added: b@x\.test$/
+				);
+			}
+		},
+		// Card 2751 (T3): turning one on asks (D3), and works its next run out.
+		{
+			action: 'PUT /api/report-schedules/[id]',
+			who: 'admin',
+			method: 'PUT',
+			path: () => `/api/report-schedules/${madeFor!}`,
+			body: () => ({ enabled: true }),
+			setup: (s) => {
+				mailing();
+				madeFor = scheduleOf(s.admin, s.board, { enabled: false, recipients: 'a@x.test', nextRunAt: null });
+			},
+			done: async (res, s) => {
+				expect(res.body).toMatchObject({ id: madeFor, enabled: true, nextRunAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2} 09:00:00$/) });
+				await toldOfSchedule(
+					s.admin,
+					'A report schedule of yours was changed on DumpFire',
+					/^Report schedule \d+ "Weekly" was turned on, a report of the board "Cleared", sent to: a@x\.test$/
+				);
+			}
+		},
+		// Card 2751 (T4): the report mail asks for every address; nothing reaches it before the right ones.
+		{
+			action: 'POST /api/reports/email',
+			who: 'admin',
+			path: () => '/api/reports/email',
+			body: (s) => ({ scope: 'board', scopeId: s.board.id, periodStart: '2026-10-01', periodEnd: '2026-10-14', recipients: ['someone@example.test'] }),
+			setup: mailing,
+			done: async (res, s) => {
+				expect(res.body).toMatchObject({ message: 'Report sent to 1 recipient(s)' });
+				await mailed!.settle();
+				// The one mail to the address, sent by the right ones: the wrong ones reached nobody there.
+				expect(mailed!.emails.filter((mail) => mail.to === 'someone@example.test').map((mail) => mail.subject)).toEqual(['DumpFire Report: Cleared']);
+				expect(linesStarting('INFO', 'Report "').map(({ message, userId }) => ({ message, userId }))).toEqual([
+					{ message: `Report "Cleared" was mailed by admin (ID: ${s.admin.id}) to: someone@example.test`, userId: s.admin.id }
+				]);
+			}
+		},
+		// Card 2751 (T5): a status filter widened, from Completed only to All work, asks (S2).
+		{
+			action: 'PUT /api/report-schedules/[id]',
+			who: 'admin',
+			method: 'PUT',
+			path: () => `/api/report-schedules/${madeFor!}`,
+			body: () => ({ statusFilter: 'all' }),
+			setup: (s) => {
+				mailing();
+				madeFor = scheduleOf(s.admin, s.board, { statusFilter: 'completed', recipients: 'a@x.test' });
+			},
+			done: async (res, s) => {
+				expect(res.body).toMatchObject({ id: madeFor, statusFilter: 'all', enabled: true });
+				await toldOfSchedule(
+					s.admin,
+					'A report schedule of yours was changed on DumpFire',
+					/^Report schedule \d+ "Weekly" was widened to All work, a report of the board "Cleared", sent to: a@x\.test$/
+				);
+			}
 		}
 	];
 
@@ -890,7 +1027,7 @@ describe('each admin action asks for the current password (case 3)', () => {
 						: confirmed
 			);
 			expect(right.status, JSON.stringify(right.body)).toBe(status);
-			done(right, s);
+			await done(right, s);
 		}
 	);
 
@@ -1027,6 +1164,31 @@ describe('everything refusable without the password is refused first (case 4)', 
 		expect(db.select({ count: sessions.wrongPasswordCount }).from(sessions).all()).toEqual([{ count: 0 }]);
 		expectUnchanged({ ...before, sessions: snapshotDb().sessions });
 	});
+
+	// Card 2751 (T7 to T9, D6): what a report covers, by the one rule every report opens with, asked in the
+	// guard: an administrator, who opens every board, is refused a scope that is not there or holds no board.
+	it.each([
+		{ what: 'T7. a board id that is no board', scope: 'board', scopeId: () => 9999 },
+		{ what: 'T8. a grouping with no board in it', scope: 'category', scopeId: () => db.insert(boardCategories).values({ name: 'Empty' }).returning().get().id },
+		{ what: 'T9. a grouping id that is no grouping', scope: 'category', scopeId: () => 9999 }
+	])('POST /api/reports/email by an administrator on $what, with a wrong password, is refused by the guard: 403, nothing counted', async ({ scope, scopeId }) => {
+		const s = scene();
+		// Mail set up: past the guard, the next answer would be the password's.
+		makeSmtp();
+		const wrong = stepUp(
+			s.admin,
+			{ scope, scopeId: scopeId(), periodStart: '2026-10-01', periodEnd: '2026-10-14', recipients: ['someone@example.test'] },
+			WRONG
+		);
+		const before = snapshotDb();
+
+		const res = await api('POST', '/api/reports/email', wrong);
+
+		expect(answer(res)).toEqual({ status: 403, body: { message: 'Failed to generate report or no access' } });
+		expect(stub.compared).toBe(0);
+		expect(countOf(tokenOf(wrong))).toBe(0);
+		expectUnchanged({ ...before, sessions: snapshotDb().sessions });
+	});
 });
 
 // ─── 5. What is read with no row is read before the password ─────────────────
@@ -1159,6 +1321,19 @@ describe('what asks only when it carries what it guards (case 6)', () => {
 		} else {
 			expectUnchanged(before);
 		}
+	});
+
+	// Card 2751 (T6, D2): a narrower filter asks nothing; written in the transaction that decided.
+	it('T6. PUT /api/report-schedules/[id] narrowing a schedule from All work to Completed only, with no password, is its success', async () => {
+		const s = scene();
+		const id = scheduleOf(s.admin, s.board, { statusFilter: 'all', recipients: 'a@x.test' });
+		const token = makeSession(s.admin);
+
+		const res = await api('PUT', `/api/report-schedules/${id}`, { user: s.admin, body: { statusFilter: 'completed' }, headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` } });
+
+		expect(answer(res)).toEqual({ status: 200, body: expect.objectContaining({ id, statusFilter: 'completed', recipients: 'a@x.test' }) });
+		expect(stub.compared).toBe(0);
+		expect(countOf(token)).toBe(0);
 	});
 
 	// Case 60 (d): a refusal that needs no password is made before one is looked at.

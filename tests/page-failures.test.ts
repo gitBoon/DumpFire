@@ -248,8 +248,21 @@ describe('the reports page, src/routes/reports/+page.svelte', () => {
 			const fn = functionNamed(page, name);
 			const sent = callsOf(fn, 'fetch');
 			expect(sent.map((call) => call.arguments[0].getText()), name).toEqual([`'${url}'`, `'${url}'`]);
-			expect(sent[0].arguments[1].getText(), name).toContain('JSON.stringify({ ...request, timeZone: browserZone ?? undefined })');
-			expect(sent[1].arguments[1].getText(), name).toContain('body: JSON.stringify(request)');
+			if (name === 'generateReport') {
+				expect(sent[0].arguments[1].getText(), name).toContain('JSON.stringify({ ...request, timeZone: browserZone ?? undefined })');
+				expect(sent[1].arguments[1].getText(), name).toContain('body: JSON.stringify(request)');
+			} else {
+				// Card 2751 (E2): each body written out whole, with the password and the code, case 28 reading
+				// both; the first with the zone, the second without it, the same proof (the zone's refusal is
+				// made before the password, so the code is not spent).
+				const FIELDS = ['scope', 'scopeId', 'periodStart', 'periodEnd', 'recipients', 'detailLevel', 'statusFilter', 'assigneeUserId'];
+				expect(bodiesSent(fn), name).toEqual([
+					[...FIELDS, 'timeZone', 'currentPassword', 'currentCode'],
+					[...FIELDS, 'currentPassword', 'currentCode']
+				]);
+				expect(sent[0].arguments[1].getText(), name).toContain('timeZone: browserZone ?? undefined');
+				expect(sent.map((call) => call.arguments[1].getText().includes('...')), name).toEqual([false, false]);
+			}
 			// The second only when the first was refused for its zone.
 			expect(ts.findAncestor(sent[1], ts.isIfStatement)!.expression.getText(), name).toBe('await refusesZone(res)');
 			// Said only for a report that was made.
@@ -267,6 +280,168 @@ describe('the reports page, src/routes/reports/+page.svelte', () => {
 		expect(markup).not.toContain("schedule.recipients.split(',')");
 		expect(markup).toContain('{sentTo.length} recipients: the most is {MAX_REPORT_RECIPIENTS}, so it is not sent');
 		expect(markup).toContain(`<div class="over-cap-addresses">{sentTo.join(', ')}</div>`);
+	});
+
+	// Card 2751 (D11): emailing a report, making a schedule and turning one on ask for the password and a code.
+	const source = readFileSync(join(ROOT, 'src/routes/reports/+page.svelte'), 'utf8');
+	const markup = source.slice(source.indexOf('</script>'));
+	const right = (assignment: ts.BinaryExpression) => assignment.right.getText();
+
+	it.each([
+		{
+			fn: 'sendReportEmail',
+			password: 'emailPassword',
+			code: 'emailCode',
+			refusal: 'emailRefusal',
+			inFlight: 'emailSending',
+			addresses: 'reportRecipients(emailRecipients)',
+			bodies: 2,
+			hint: 'email-hint',
+			button: 'disabled={emailSending || !emailRecipients.trim() || !proofTyped(emailPassword, emailCode)}',
+			closer: 'closeEmailModal',
+			shown: 'showEmailModal',
+			// The backdrop, its X and Cancel; the close after a send that reached everyone; and the preview's Close.
+			closes: { markup: ['onclick={closeEmailModal}', 'onclick={closeEmailModal}', 'onclick={closeEmailModal}'], script: ['sendReportEmail', 'closePdfPreview'] }
+		},
+		{
+			fn: 'createSchedule',
+			password: 'schedPassword',
+			code: 'schedCode',
+			refusal: 'schedRefusal',
+			inFlight: 'schedCreating',
+			addresses: 'reportRecipients(schedRecipients)',
+			bodies: 1,
+			hint: 'form-hint',
+			button: 'disabled={!proofTyped(schedPassword, schedCode) || schedCreating}',
+			closer: 'closeNewSchedule',
+			shown: 'showNewSchedule',
+			// The form's Cancel, and its close once the schedule is made.
+			closes: { markup: ['onclick={() => (showNewSchedule ? closeNewSchedule() : (showNewSchedule = true))}'], script: ['createSchedule'] }
+		}
+	])(
+		'T16, T17. $fn asks in CurrentPasswordField, checks its addresses before it copies both into currentPassword and currentCode and clears them, sends both in every body written out whole, and clears all three on every close',
+		({ fn, password, code, refusal, inFlight, addresses, bodies, hint, button, closer, shown, closes }) => {
+			const sending = functionNamed(page, fn);
+
+			// The field, bound to the form's own password and code, given its refusal, with ASKS_FOR_PASSWORD under it.
+			expect(markup).toMatch(
+				new RegExp(
+					`<CurrentPasswordField\\s+label="Your password"\\s+bind:value=\\{${password}\\}\\s+bind:code=\\{${code}\\}\\s+refusal=\\{${refusal}\\}[^>]*/>\\s*<span class="${hint}">\\{ASKS_FOR_PASSWORD\\}</span>`
+				)
+			);
+			// Its button and its send guard, one rule, and its in-flight flag: one press sends one request.
+			expect(markup).toContain(button);
+			const guard = sending.body!.statements[0];
+			expect(ts.isIfStatement(guard) && guard.thenStatement.getText()).toBe('return;');
+			expect(ts.isIfStatement(guard) && guard.expression.getText()).toContain(`!proofTyped(${password}, ${code})`);
+			expect(ts.isIfStatement(guard) && guard.expression.getText()).toMatch(new RegExp(`\\|\\| ${inFlight}$`));
+
+			// The addresses read, and a list the server would refuse said, before the copy (E12); both copied into
+			// constants named as the body sends them, and both fields cleared, before the first fetch, in neither branch.
+			const text = sending.getText();
+			const copied = text.indexOf(`const currentPassword = ${password};`);
+			expect(copied).toBeGreaterThan(-1);
+			expect(text).toContain(`const currentCode = ${code};`);
+			expect(text.indexOf(addresses)).toBeGreaterThan(-1);
+			expect(text.indexOf(addresses)).toBeLessThan(copied);
+			const fetchAt = callsOf(sending, 'fetch')[0].getStart();
+			for (const field of [password, code]) {
+				const cleared = assignmentsTo(sending, field).filter((assignment) => right(assignment) === "''");
+				expect(cleared, field).toHaveLength(1);
+				expect(cleared[0].getStart(), field).toBeLessThan(fetchAt);
+				expect(branchOf(cleared[0]), field).toBeNull();
+			}
+			// Every body a literal with no spread (E2), carrying both.
+			const sent = callsOf(sending, 'JSON.stringify');
+			expect(sent).toHaveLength(bodies);
+			for (const call of sent) {
+				const body = call.arguments[0];
+				expect(ts.isObjectLiteralExpression(body) && body.properties.some(ts.isSpreadAssignment)).toBe(false);
+			}
+			expect(bodiesSent(sending).map((keys) => keys.slice(-2))).toEqual(Array(bodies).fill(['currentPassword', 'currentCode']));
+
+			// A refusal of the password or the code: read first, said in the field, the password from passwordKeptAfter,
+			// the code never put back; any other refusal by failureMessage.
+			const read = callsOf(sending, 'stepUpRefusal');
+			expect(read.map(branchOf)).toEqual(['failed']);
+			expect(read[0].getStart()).toBeLessThan(callsOf(sending, 'failureMessage')[0].getStart());
+			expect(assignmentsTo(sending, password).map(right)).toEqual(["''", 'passwordKeptAfter(refusal, currentPassword)']);
+			expect(assignmentsTo(sending, code).map(right)).toEqual(["''"]);
+			expect(assignmentsTo(sending, refusal).map(right)).toEqual(['null', 'refusal']);
+
+			// The three cleared on every close (E11): one function closes it, clearing them, and nothing else does.
+			const closing = functionNamed(page, closer);
+			expect(assignmentsTo(closing, shown).map(right)).toEqual(['false']);
+			for (const field of [password, code]) expect(assignmentsTo(closing, field).map(right)).toEqual(["''"]);
+			expect(assignmentsTo(closing, refusal).map(right)).toEqual(['null']);
+			const hidden = assignmentsTo(page, shown).filter((assignment) => right(assignment) === 'false');
+			expect(hidden.map((assignment) => ts.findAncestor(assignment, ts.isFunctionDeclaration)?.name?.text)).toEqual([closer]);
+			expect(markup).not.toContain(`${shown} = false`);
+			for (const handler of new Set(closes.markup)) expect(markup.split(handler).length - 1, handler).toBe(closes.markup.filter((h) => h === handler).length);
+			for (const name of closes.script) expect(callsOf(functionNamed(page, name), `${closer}`).length, name).toBe(1);
+			expect(page.getText()).toMatch(/import \{ ASKS_FOR_PASSWORD, passwordKeptAfter, proofTyped, stepUpRefusal, type StepUpProof \} from '\$lib\/step-up-words';/);
+		}
+	);
+
+	// Card 2751's code review, CS4: the password, code and refusal are not kept behind a tab that does not show them.
+	it('closes the new schedule form, its password, code and refusal with it, when the Schedules tab is left', () => {
+		const showing = functionNamed(page, 'showTab');
+		const closing = callsOf(showing, 'closeNewSchedule');
+		expect(closing).toHaveLength(1);
+		expect(ts.findAncestor(closing[0], ts.isIfStatement)?.expression.getText()).toBe("tab !== 'schedules'");
+		// Every change of tab goes through it.
+		expect(assignmentsTo(page, 'activeTab').map((assignment) => ts.findAncestor(assignment, ts.isFunctionDeclaration)?.name?.text)).toEqual(['showTab']);
+		expect(markup).not.toMatch(/activeTab\s*=[^=]/);
+		expect(markup).toContain("onclick={() => showTab('generate')}");
+		expect(markup).toContain("onclick={() => showTab('schedules')}");
+	});
+
+	// Card 2751 (D11, E8 to E10): on asks in a Turn on dialog naming every address; off asks nothing.
+	it('T19. turns a schedule on in the Turn on dialog, opens nothing for one the server would refuse, and turns one off with enabled: false alone', () => {
+		// The switch: off at once, on through the dialog.
+		expect(markup).toContain('onclick={() => (schedule.enabled ? turnScheduleOff(schedule.id) : askTurnOn(schedule))}');
+
+		// No dialog for a timing the server cannot date or a list over the most: the reason in a toast, first.
+		const asking = functionNamed(page, 'askTurnOn');
+		const opened = assignmentsTo(asking, 'turningOn');
+		expect(opened.map(right)).toEqual(['schedule']);
+		expect(asking.getText()).toContain('const fault = timingFault(schedule);');
+		expect(asking.getText()).toContain('const count = reportRecipients(schedule.recipients).addresses.length;');
+		const refusedFirst = asking.body!.statements.filter(ts.isIfStatement);
+		expect(refusedFirst.map((statement) => statement.expression.getText())).toEqual(['fault', 'count > MAX_REPORT_RECIPIENTS']);
+		for (const statement of refusedFirst) {
+			expect(callsOf(statement, 'toasts.add').map((call) => call.arguments[1].getText())).toEqual(["'error'"]);
+			expect(endsByReturning(statement.thenStatement)).toBe(true);
+			expect(statement.getStart()).toBeLessThan(opened[0].getStart());
+		}
+
+		// The dialog: Turn on, not red, asking for the password and a code.
+		expect(markup).toMatch(
+			/\{#if turningOn\}\s*\{@const schedule = turningOn\}\s*<ConfirmModal\s+title="Turn on this schedule\?"\s+message=\{turnOnMessage\(schedule\)\}\s+confirmText="Turn on"\s+confirmDanger=\{false\}\s+askPassword\s+onConfirm=\{\(proof\) => turnScheduleOn\(schedule\.id, proof\)\}\s+onCancel=\{\(\) => \(turningOn = null\)\}\s*\/>\s*\{\/if\}/
+		);
+		// Its words: every address, or that there is none yet; then that it asks.
+		const words = functionNamed(page, 'turnOnMessage').getText();
+		expect(words).toContain('const sentTo = reportRecipients(schedule.recipients).addresses;');
+		expect(words).toContain("`It will email its report to: ${sentTo.join(', ')}. `");
+		expect(words).toContain("'It has no addresses yet, so nothing is emailed until some are added. '");
+		expect(words).toContain('return `${to}${ASKS_FOR_PASSWORD}`;');
+
+		// On: enabled: true with the dialog's proof; a refusal of it given back to the dialog, any other in a toast.
+		const on = functionNamed(page, 'turnScheduleOn');
+		expect(on.getText()).toContain('JSON.stringify({ enabled: true, currentPassword: proof.currentPassword, currentCode: proof.currentCode })');
+		const read = callsOf(on, 'stepUpRefusal');
+		expect(read.map(branchOf)).toEqual(['failed']);
+		expect(on.getText()).toContain('if (refusal !== null) return refusal;');
+		const told = callsOf(on, 'failureMessage');
+		expect(told.map(sideOf)).toEqual(['failed']);
+		expect(read[0].getStart()).toBeLessThan(told[0].getStart());
+		expect(callsOf(on, 'toasts.add').map(sideOf)).toEqual(['failed', 'failed']);
+
+		// Off: enabled: false alone, which asks nothing.
+		const off = functionNamed(page, 'turnScheduleOff');
+		expect(bodiesSent(off)).toEqual([['enabled']]);
+		expect(off.getText()).toContain('body: JSON.stringify({ enabled: false })');
+		expect(callsOf(off, 'stepUpRefusal')).toEqual([]);
 	});
 });
 
@@ -2861,9 +3036,12 @@ const WRITES: Record<string, Write[]> = {
 	],
 	'src/routes/reports/+page.svelte': [
 		{ name: 'generateReport', reads: 'failureMessage' },
-		{ name: 'sendReportEmail', reads: 'failureMessage' },
-		{ name: 'createSchedule', reads: 'failureMessage', done: ['showNewSchedule = false', "schedName = ''", 'await invalidateAll()'] },
-		{ name: 'toggleSchedule', reads: 'failureMessage', done: ['await invalidateAll()'] },
+		// Card 2751 (D11): a refusal of the password or the code is read first, by `stepUpRefusal`, and said in the field.
+		{ name: 'sendReportEmail', reads: 'failureMessage', via: 'stepUpRefusal' },
+		{ name: 'createSchedule', reads: 'failureMessage', via: 'stepUpRefusal', done: ['closeNewSchedule()', "schedName = ''", 'await invalidateAll()'] },
+		// Card 2751 (E8): on asks in the Turn on dialog, its refusal of the password given back to it; off asks nothing.
+		{ name: 'turnScheduleOn', reads: 'failureMessage', via: 'stepUpRefusal', done: ['await invalidateAll()'] },
+		{ name: 'turnScheduleOff', reads: 'failureMessage', done: ['await invalidateAll()'] },
 		// Card 2159: a schedule's time read in the viewer's zone from now on.
 		{ name: 'useMyTimeZone', reads: 'failureMessage', done: ['await invalidateAll()'] },
 		{ name: 'deleteSchedule', reads: 'deleteFailure', done: ['await invalidateAll()'] }
@@ -3864,7 +4042,15 @@ describe('every page write says it is JSON, read from the source and failing clo
  * What a page sends, read from a `fetch` or `jsonRequest` call: `METHOD /route`, its body's and headers' keys,
  * and whether its body's `currentCode` is the one the dialog's proof holds (card 2770, D7).
  */
-type ListedSend = { at: string; action: string | null; bodyKeys: string[] | null; headerKeys: string[]; codeFromProof: boolean };
+type ListedSend = {
+	at: string;
+	action: string | null;
+	bodyKeys: string[] | null;
+	headerKeys: string[];
+	codeFromProof: boolean;
+	/** The body's keys whose value is the literal `false` (card 2751, D11), for `NOT_ASKED_WHEN_FALSE`. */
+	falseKeys: string[];
+};
 
 /** The routes an address may be, `${…}` read as `[id]` and the query left off; null where it is not plainly text. */
 function routesOf(input: ts.Expression | undefined): string[] | null {
@@ -3952,14 +4138,28 @@ function codeFromProofIn(given: ts.Expression | undefined): boolean {
 }
 
 /**
- * The keys of the object a `body: JSON.stringify({ … })` sends, or null where
- * it is not that; and whether its `currentCode` is from the proof (card 2770).
+ * The keys of an object literal whose value is the literal `false`, as
+ * written (card 2751, D11): a shorthand, or any other expression, is not.
  */
-function bodyKeysOf(body: ts.Expression | undefined): { keys: string[] | null; codeFromProof: boolean } {
-	if (body === undefined) return { keys: null, codeFromProof: false };
+function falseKeysOf(given: ts.Expression | undefined): string[] {
+	if (given === undefined) return [];
+	const node = bare(given);
+	if (!ts.isObjectLiteralExpression(node)) return [];
+	return node.properties.flatMap((property) =>
+		ts.isPropertyAssignment(property) && bare(property.initializer).kind === ts.SyntaxKind.FalseKeyword ? [keyOf(property) ?? ''] : []
+	);
+}
+
+/**
+ * The keys of the object a `body: JSON.stringify({ … })` sends, or null where
+ * it is not that; whether its `currentCode` is from the proof (card 2770); and
+ * its keys sent as the literal `false` (card 2751).
+ */
+function bodyKeysOf(body: ts.Expression | undefined): { keys: string[] | null; codeFromProof: boolean; falseKeys: string[] } {
+	if (body === undefined) return { keys: null, codeFromProof: false, falseKeys: [] };
 	const node = bare(body);
-	if (!ts.isCallExpression(node) || node.expression.getText() !== 'JSON.stringify') return { keys: null, codeFromProof: false };
-	return { keys: keysOf(node.arguments[0]), codeFromProof: codeFromProofIn(node.arguments[0]) };
+	if (!ts.isCallExpression(node) || node.expression.getText() !== 'JSON.stringify') return { keys: null, codeFromProof: false, falseKeys: [] };
+	return { keys: keysOf(node.arguments[0]), codeFromProof: codeFromProofIn(node.arguments[0]), falseKeys: falseKeysOf(node.arguments[0]) };
 }
 
 /**
@@ -3997,11 +4197,13 @@ function listedSendsIn(file: string, source: string): ListedSend[] {
 				let methods: string[] | null = null;
 				let bodyKeys: string[] | null = null;
 				let codeFromProof = false;
+				let falseKeys: string[] = [];
 				let headerKeys: string[] = [];
 				if (node.expression.getText() === 'jsonRequest') {
 					methods = methodsOf(node.arguments[1]);
 					bodyKeys = node.arguments[2] === undefined ? [] : keysOf(node.arguments[2]);
 					codeFromProof = codeFromProofIn(node.arguments[2]);
+					falseKeys = falseKeysOf(node.arguments[2]);
 					headerKeys = ['Content-Type'];
 				} else {
 					const init = node.arguments[1] && bare(node.arguments[1]);
@@ -4014,13 +4216,15 @@ function listedSendsIn(file: string, source: string): ListedSend[] {
 							if (key === null) methods = null;
 							const value = ts.isPropertyAssignment(property) ? property.initializer : undefined;
 							if (key === 'method') methods = methodsOf(value);
-							if (key === 'body') ({ keys: bodyKeys, codeFromProof } = bodyKeysOf(value));
+							if (key === 'body') ({ keys: bodyKeys, codeFromProof, falseKeys } = bodyKeysOf(value));
 							if (key === 'headers') headerKeys = headerKeysOf(value) ?? [];
 						}
 					}
 				}
-				if (routes === null || methods === null) found.push({ at, action: null, bodyKeys, headerKeys, codeFromProof });
-				else for (const method of methods) for (const route of routes) found.push({ at, action: `${method} ${route}`, bodyKeys, headerKeys, codeFromProof });
+				if (routes === null || methods === null) found.push({ at, action: null, bodyKeys, headerKeys, codeFromProof, falseKeys });
+				else
+					for (const method of methods)
+						for (const route of routes) found.push({ at, action: `${method} ${route}`, bodyKeys, headerKeys, codeFromProof, falseKeys });
 			}
 			ts.forEachChild(node, visit);
 		};
@@ -4064,7 +4268,18 @@ const asSent = (key: string) => key.replace(/\[[^\]]+\]/g, '[id]');
  * read still fails closed.
  */
 const ASKS_ONLY_WITH: Readonly<Record<string, readonly string[]>> = {
-	'PUT /api/people/[id]': ['email', 'userId']
+	'PUT /api/people/[id]': ['email', 'userId'],
+	// Card 2751 (D2, D11): a schedule's change asks when it adds an address, turns it on or widens its filter.
+	'PUT /api/report-schedules/[id]': ['recipients', 'enabled', 'statusFilter']
+};
+
+/**
+ * Of `ASKS_ONLY_WITH`'s keys, those that ask nothing when sent as the literal
+ * `false` (card 2751, D11): turning a schedule off. A shorthand, or any other
+ * expression, is read as one that may be `true`, and asks: failing closed.
+ */
+const NOT_ASKED_WHEN_FALSE: Readonly<Record<string, readonly string[]>> = {
+	'PUT /api/report-schedules/[id]': ['enabled']
 };
 
 /**
@@ -4093,7 +4308,12 @@ function unaskedIn(sends: ListedSend[]): string[] {
 		const key = listed.get(send.action);
 		if (key === undefined) return [];
 		const onlyWith = ASKS_ONLY_WITH[key];
-		if (onlyWith !== undefined && send.bodyKeys !== null && !send.bodyKeys.some((field) => onlyWith.includes(field))) return [];
+		if (onlyWith !== undefined && send.bodyKeys !== null) {
+			// A key sent as the literal `false` that asks nothing so (card 2751) is as if it were not sent.
+			const whenFalse = NOT_ASKED_WHEN_FALSE[key] ?? [];
+			const asking = (field: string) => onlyWith.includes(field) && !(whenFalse.includes(field) && send.falseKeys.includes(field));
+			if (!send.bodyKeys.some(asking)) return [];
+		}
 		const faults: string[] = [];
 		if (!send.bodyKeys?.includes(STEP_UP_FIELD)) faults.push(`no ${STEP_UP_FIELD} for ${key}`);
 		if (!send.bodyKeys?.includes(STEP_UP_CODE_FIELD)) faults.push(`no ${STEP_UP_CODE_FIELD} for ${key}`);
@@ -4269,6 +4489,23 @@ describe('every page write of an action that asks for the password sends it, rea
 			"src/lib/x.ts › (top) › fetch('/api/account/api-keys'): no currentCode for POST /api/account/api-keys",
 			"src/lib/x.ts › (top) › fetch('/api/account/api-keys'): password is no longer read by POST /api/account/api-keys"
 		]);
+	});
+
+	// Card 2751 (D11, T18): a schedule's change asks by its keys, and `enabled` asks unless it is the literal false.
+	it('(g) T18. reports a schedule change sending recipients, a filter or enabled other than as false with no password, and lets through enabled: false, a name and one with the proof', () => {
+		const send = (body: string) =>
+			"fetch(`/api/report-schedules/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(" + body + ') });';
+		const reported = ['{ recipients }', '{ statusFilter }', '{ enabled }', '{ enabled: !on }'];
+		const passed = ['{ enabled: false }', '{ name }', '{ timeZone: browserZone }', '{ enabled: true, currentPassword: proof.currentPassword, currentCode: proof.currentCode }'];
+		const at = 'src/lib/x.ts › (top) › fetch(`/api/report-schedules/${id}`)';
+
+		expect(unaskedIn(listedSendsIn('src/lib/x.ts', reported.map(send).join('\n')))).toEqual(
+			reported.flatMap(() => [
+				`${at}: no currentPassword for PUT /api/report-schedules/[id]`,
+				`${at}: no currentCode for PUT /api/report-schedules/[id]`
+			])
+		);
+		expect(unaskedIn(listedSendsIn('src/lib/x.ts', passed.map(send).join('\n')))).toEqual([]);
 	});
 });
 

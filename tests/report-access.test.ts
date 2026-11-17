@@ -50,6 +50,7 @@ import {
 	makeSubBoard,
 	makeUser,
 	resetDb,
+	stepUp,
 	type BoardFixture
 } from './helpers/fixtures';
 import { FROM_THE_PAGE, gate } from './helpers/gate';
@@ -135,10 +136,12 @@ async function downloaded(reader: SessionUser, { scope, scopeId }: Scope): Promi
 async function mailed(reader: SessionUser, { scope, scopeId }: Scope): Promise<Buffer> {
 	makeSmtp();
 	sent = effects();
-	const res = await api('POST', '/api/reports/email', {
-		user: reader,
-		body: { scope, scopeId, periodStart: PERIOD_START, periodEnd: periodEnd(), recipients: ['outside@example.test'] }
-	});
+	// With the password and a code (card 2751): it is sent.
+	const res = await api(
+		'POST',
+		'/api/reports/email',
+		stepUp(reader, { scope, scopeId, periodStart: PERIOD_START, periodEnd: periodEnd(), recipients: ['outside@example.test'] })
+	);
 	expect(res.status).toBe(200);
 	return attached(sent);
 }

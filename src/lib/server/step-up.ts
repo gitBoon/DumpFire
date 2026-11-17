@@ -5,8 +5,9 @@
  * Card 2700 stopped a forged request from another site reaching DumpFire's
  * writes. This asks a real session to prove itself again before the writes
  * that destroy data in bulk or for good, create, remove or change an
- * account's credentials, role or address, or send the database, or the mail
- * invites go through, somewhere the caller chooses. Whoever holds a signed-in
+ * account's credentials, role or address, or send the database, the mail
+ * invites go through, or a board's activity (card 2751), somewhere the caller
+ * chooses. Whoever holds a signed-in
  * browser (an unlocked machine, a copied cookie) or runs script in a page can
  * otherwise do each of them with no further proof. The list is
  * `STEP_UP_ACTIONS`, each with why it asks.
@@ -208,7 +209,12 @@ export const STEP_UP_ACTIONS = Object.freeze({
 	'POST /api/account/two-step/authenticators': 'Begins adding an authenticator: a second factor that signs in as the account',
 	'DELETE /api/account/two-step/authenticators/[id]': "Removes an authenticator, and ends the account's other sessions",
 	'POST /api/account/two-step/recovery-codes': "Replaces the account's recovery codes, each of which signs in in place of a code",
-	'DELETE /api/account/two-step/banner': "Clears the warning that someone entered the account's password with a wrong code"
+	'DELETE /api/account/two-step/banner': "Clears the warning that someone entered the account's password with a wrong code",
+	// Card 2751 (D1, D2): what mails board activity out, on a timetable that outlives the session, or once.
+	'POST /api/report-schedules': 'Makes a report schedule: board activity mailed to the addresses it names on a timetable, after this session has ended',
+	'PUT /api/report-schedules/[id]':
+		'With an address added, turned on, or its status filter widened: starts or widens a timetable that mails board activity outside',
+	'POST /api/reports/email': 'Mails a report of board activity to the addresses given'
 } as const);
 
 /** A key of `STEP_UP_ACTIONS`. */

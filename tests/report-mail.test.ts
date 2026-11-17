@@ -29,7 +29,7 @@ import { runDueReportSchedules, runDueReportSchedulesOnce } from '$lib/server/re
 import { stamp } from '$lib/timestamps';
 import { api } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
-import { makeBoard, makeSmtp, makeUser, resetDb, type BoardFixture } from './helpers/fixtures';
+import { makeBoard, makeSmtp, makeUser, resetDb, stepUp, type BoardFixture } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 
 /** What the answer says of a recipient the mail server refused. */
@@ -57,11 +57,14 @@ function mailServer(refuse: string[] = []): Effects {
 	return sent;
 }
 
-const email = (recipients: string[]) =>
-	api('POST', '/api/reports/email', {
-		user: owner,
-		body: { scope: 'board', scopeId: A.board.id, periodStart: '2026-10-01', periodEnd: '2026-10-08', recipients }
-	});
+/** The report of board A, mailed to `recipients`. */
+const mailing = (recipients: string[]) => ({ scope: 'board', scopeId: A.board.id, periodStart: '2026-10-01', periodEnd: '2026-10-08', recipients });
+
+/** Mailed with the password and a code (card 2751), the proof built for each call. */
+const email = (recipients: string[]) => api('POST', '/api/reports/email', stepUp(owner, mailing(recipients)));
+
+/** Mailed with neither, for a refusal made before the password is asked for (card 2751, D5). */
+const emailPlain = (recipients: string[]) => api('POST', '/api/reports/email', { user: owner, body: mailing(recipients) });
 
 describe('POST /api/reports/email', () => {
 	it('answers 200 when every recipient was sent the report', { timeout: 30_000 }, async () => {
@@ -125,7 +128,8 @@ describe('POST /api/reports/email', () => {
 		const built = vi.spyOn(PDFDocument.prototype, 'end');
 		const before = snapshotDb();
 
-		const res = await email(['a@example.test']);
+		// Refused before the password is asked for: sent with none (card 2751).
+		const res = await emailPlain(['a@example.test']);
 
 		expect(res.status).toBe(503);
 		expect(res.body).toEqual({

@@ -1,10 +1,11 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.80
+version: 1.81
 status: As-Built
 date: 2026-11-17
 tags:
+  - card-2751
   - database
   - schema
   - drizzle
@@ -43,7 +44,7 @@ tags:
   - api-key-deadline
   - invites
   - token-hashing
-description: "Complete database schema documentation with ER diagram, table descriptions, relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), invite tokens kept only as SHA-256 hashes (migration 0068, card 2849: every invite held in plain ended once), session codes kept only as SHA-256 hashes in the existing sessions.id column with no migration (card 2775), and how migrations and schema reconciliation bring every database to the model"
+description: "Complete database schema documentation with ER diagram, table descriptions, relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), invite tokens kept only as SHA-256 hashes (migration 0068, card 2849: every invite held in plain ended once), session codes kept only as SHA-256 hashes in the existing sessions.id column with no migration (card 2775), the settings row that says the report schedules running at card 2751's release were announced (no migration), and how migrations and schema reconciliation bring every database to the model"
 ---
 
 # DumpFire Data Model
@@ -1498,6 +1499,43 @@ erDiagram
   `invites.ts`), so a plain token never reaches the live file; 0068's `UPDATE` is run again after
   the copy, inside the restore's transaction, as a backstop.
 
+### Report schedules announced once (card 2751, no migration)
+
+From card 2751 a report schedule made, given an address, turned on or widened asks for the
+password and a code. A schedule made before it asked for neither, so at the first start after
+the release each owner of a schedule that is on is told of theirs, once
+([Report Schedules and Report Mail](authentication-security.md#report-schedules-and-report-mail-card-2751)).
+
+| Row | What it holds | Written by |
+|---|---|---|
+| `settings.report_schedules_announced` | The moment the announcement was made, as an ISO 8601 string (`new Date().toISOString()`, such as `2026-11-17T09:00:00.000Z`), not the stored form of a moment: only its presence is read | `announceReportSchedules()` in `src/lib/server/startup-checks.ts` (`REPORT_SCHEDULES_ANNOUNCED`), an `INSERT OR IGNORE` (two instances may both get there), after one `WARN` line for each schedule that is on and once every owner's notice has been answered and every one went (or mail is not set up); not written when a notice did not go, when it fails, or where the schedulers do not run (the dev server, `SCHEDULERS=off`), so a later start does it again |
+
+- **Read**: `SELECT 1 FROM settings WHERE key = 'report_schedules_announced'` at every start,
+  where the schedulers run or not; present, nothing is done. The schedules that are on are read with their owners
+  (`report_schedules` joined to `users`, `enabled = 1`); nothing in `report_schedules` is changed.
+- **No migration, no column, no index.** It is a row of `settings`, which holds text, so no
+  timestamp conversion touches it, and no rehearsal declares it (it is written at start, outside
+  the runner).
+- **Backups and restores.** A backup holds `settings`, this row with it once it is written; a
+  restore of a backup made before the release brings none, so the next start announces again.
+  **Reset Everything** empties `settings` and `report_schedules` alike: the next start finds no
+  flag and announces whatever schedules are on by then, and writes the row.
+
+```mermaid
+erDiagram
+    users ||--o{ report_schedules : "owns"
+    report_schedules {
+        int id PK
+        int user_id FK
+        int enabled "1: announced at the first start"
+        text recipients "every address named in the WARN line and the notice"
+    }
+    settings {
+        text key PK "report_schedules_announced"
+        text value "ISO 8601 moment, presence alone read"
+    }
+```
+
 ## Cascade Behaviour
 
 | Parent | Child | On Delete |
@@ -2891,9 +2929,10 @@ stateDiagram-v2
   2026-11-04: only a compare counts). Since card 2772 an attempt with an authenticator code
   adds the number of the account's authenticators it was tried against (`+ w` in the same
   statement, taken before the compare), and a count of 3 or more ends the session. The
-  thirty-seven step-up actions share it, the Account page's three forms among them since card
-  2771 and its two-step section and Keep this key since card 2772 (card 2701's eighteen, card
-  2697's eight, card 2679's two, card 2773's one, card 2771's three and card 2772's five). It replaced a count in memory with a 15-minute window, so a
+  forty step-up actions share it, the Account page's three forms among them since card
+  2771, its two-step section and Keep this key since card 2772, and report schedules and
+  report mail since card 2751 (card 2701's eighteen, card 2697's eight, card 2679's two, card
+  2773's one, card 2771's three, card 2772's five and card 2751's three). It replaced a count in memory with a 15-minute window, so a
   restart no longer clears it. `sessions` is not a reconciled table, so the file alone adds the
   column; every existing session reads 0 and no row is changed, so nothing is declared to the
   rehearsal. No backup holds a session row and no restore brings one in, so neither carries a

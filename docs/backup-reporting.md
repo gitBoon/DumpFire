@@ -1,10 +1,12 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.41
+version: 1.42
 status: As-Built
 date: 2026-11-17
 tags:
+  - card-2751
+  - step-up
   - api-key-deadline
   - migration-0069
   - backup
@@ -19,7 +21,7 @@ tags:
   - attachments
   - image-retention
   - invites
-description: "Scheduled backup system with multi-destination support, what a backup holds (no attachment files; invites only used ones, as hashes, and an older backup's plain tokens replaced on restore), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery"
+description: "Scheduled backup system with multi-destination support, what a backup holds (no attachment files; invites only used ones, as hashes, and an older backup's plain tokens replaced on restore), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery, report schedules and report mail behind the password and a code (card 2751)"
 ---
 
 # Backup & Reporting System
@@ -1339,6 +1341,49 @@ Configured per-user via the Reports page:
 | `statusFilter` | all/completed/in_progress/todo | Which slice to list (see Status Filter); stored in `report_schedules.status_filter`, migration `0041` |
 | `enabled` | boolean | Active toggle |
 
+**What asks for the password and a code (card 2751).** A schedule mails a board's activity on
+its timetable after the session that made it has ended, and after its owner's password changes,
+so starting one or widening one asks for the owner's current password and a code from their
+authenticator app, as every step-up action does:
+
+- **Making a schedule** (`POST /api/report-schedules`), always: to the owner's own address, to
+  the company's, or to none.
+- **A change** (`PUT /api/report-schedules/{id}`) that **adds an address** (one not in the
+  stored list, both read as the scheduler reads them; a swap adds one; whether the schedule is on
+  or off), **turns it on**, or **widens its status filter** (any new filter while the stored one,
+  as the scheduler reads it, is not `all`: the narrow filters are disjoint parts of `all`).
+- **Nothing else**: a rename, a re-timing (**Use my time zone** among them), an address removed,
+  a narrower filter, turning it off, deleting it.
+
+Every refusal below that needs no password is made first, in the same words, with the day's
+100 read and nothing taken, so none of them costs a check or a guess. A change that asks
+nothing is decided and written in one transaction on the stored row; one that asks writes
+nothing until the password and the code are checked, then is read and written again while the
+password holds. Each schedule made, given an address, turned on or widened writes one `INFO`
+line under `REPORTS` naming it, what it covers and every address it is sent to, and mails its
+owner the `report-schedule-set` notice
+([Report Schedule Notices](notifications-email.md#report-schedule-notices-card-2751)). On the
+Reports page, **+ New Schedule** has the password and code fields; the switch turns a schedule
+off at once, and on through **Turn on this schedule?**, which names every address it will
+email and asks for both. See
+[Report Schedules and Report Mail](authentication-security.md#report-schedules-and-report-mail-card-2751).
+
+**Schedules that existed before card 2751** keep running: the scheduler is unchanged, and a run
+asks nothing. At the first start after the release each owner of a schedule that is on is
+mailed once, "Your DumpFire report schedules", listing each of theirs that is on with what it
+covers and its addresses, and asked to delete any not recognised; each is also one `WARN` line
+in the log, which is the record where mail is not set up. A mail that did not go is tried again,
+to every owner, at the next start; a start where the schedulers do not run (`SCHEDULERS=off`, the
+dev server) mails nobody
+(`announceReportSchedules()`, `settings.report_schedules_announced`; see
+[Deployment](deployment.md#the-release-that-asks-for-the-password-before-report-mail-card-2751)).
+
+**What a schedule covers can still grow without a step-up (accepted residual).** A schedule on a
+grouping or on every board covers what is in it at each run: a board moved into the grouping, a
+sub-board made, or the owner given a board widens what it mails, and a board schedule's
+sub-boards likewise. Storing the boards approved at the step-up, and reporting on those alone,
+is card 2897.
+
 **A time in a zone (card 2159).** A schedule's time is a wall-clock time in its own zone, so
 "weekly on Monday at 09:00 Europe/London" is sent at 09:00 in London all year: 08:00 UTC in
 British summer time, 09:00 UTC in winter. It used to be set with `setHours` on the server's
@@ -1410,7 +1455,11 @@ A report emailed by hand from the Reports page is held to the same reading: at m
 distinct addresses a call (`400` `A report can be emailed to at most 10 addresses at a time,
 and this names 12. Nothing was sent.`, before the board is looked at), and the account's
 100 a day, counted in a 24-hour window from its first (`429` `Reports can be emailed to at most 100 addresses a day from one account,
-and this would make 104. Try again in 5 hour(s).`, taken before the PDF is built). See
+and this would make 104. Try again in 5 hour(s).`, taken before the PDF is built). Since card
+2751 it also asks for the password and a code, for every address, each of those refusals made
+before them; the session, the sender's access and the password are asked again before every
+send, and a refusal once a mail has gone stops the sending, the rest answered "Not sent:
+sending stopped because …". See
 [A Report Emailed on Demand](notifications-email.md#a-report-emailed-on-demand).
 
 ### Schedule Execution
@@ -1597,8 +1646,9 @@ Individual card reports can be generated for completion notifications. These inc
 | `src/lib/server/ssh-host-key.ts` | ~160 | An SFTP destination's host key, read, stored and checked (card 2250): `readHostKey()`, `confirmedHostKey()`, `fingerprintOf()`, `typeOf()`, `pinFor()`, `serverKeyFile()`, `HOST_KEY_NOT_CONFIRMED` and `HOST_KEY_REFUSAL`; it connects to nothing |
 | `src/lib/drive-scope.ts` | ~40 | `DRIVE_FILE_SCOPE`, `driveScopeIsNarrow()` and `dumpfireFolderName()`, read by the server and the admin page (card 2188) |
 | `src/lib/server/gdrive-connect.ts` | ~120 | The Google Drive Connects under way, in memory: `startConnect()` (state and PKCE challenge), `takeConnect()` (once, bound to the session, account and destination, ten minutes), `forgetConnects()` for the tests (card 2251) |
-| `src/lib/server/reports.ts` | ~1,900 | Report data collection, status filter, PDF rendering, schedule management, `runDueReportSchedules()`, `claimScheduleRun()` and the timer's `runDueReportSchedulesOnce()`; `takeReportMail()`, the day's 100 addresses (card 2182) |
-| `src/routes/api/reports/email/+server.ts` | ~170 | A report emailed on demand, and its answer |
+| `src/lib/server/reports.ts` | ~2,160 | Report data collection, status filter, PDF rendering, schedule management, `runDueReportSchedules()`, `claimScheduleRun()` and the timer's `runDueReportSchedulesOnce()`; `takeReportMail()`, the day's 100 addresses (card 2182); `checkReportMail()`, the same read with nothing taken, `reportScopeOpen()`, the one rule the generators and the email's guard open with, `reportCovers()` and `reportScheduleSet()`, a schedule's `INFO` line and its owner's notice (card 2751) |
+| `src/routes/api/reports/email/+server.ts` | ~300 | A report emailed on demand, and its answer; `readReportMail()`, every refusal before the password and a code, and the checks before every send (card 2751) |
+| `src/routes/api/report-schedules/+server.ts`, `src/routes/api/report-schedules/[id]/+server.ts` | ~240, ~290 | List, make, change and delete a schedule; `readNewSchedule()` and `readScheduleChange()`, every refusal before the password and a code, and what a change asks for (card 2751) |
 | `src/lib/report-schedule-time.ts` | ~210 | `nextRunAfter()`, `canonicalTimeZone()`, `readTimeOfDay()` and `DEFAULT_SCHEDULE_TIME_ZONE`: when a schedule is next sent, in its own zone, for the routes, the scheduler and the page (cards 2144 and 2159) |
 | `src/lib/report-recipients.ts` | ~70 | `reportRecipients()` and `MAX_REPORT_RECIPIENTS`: the one reading of a list of recipients, for the routes, the scheduler and the page (card 2182) |
 | `src/lib/server/snapshots.ts` | ~85 | Daily card count snapshots for the CFD (burndowns use card timestamps) |

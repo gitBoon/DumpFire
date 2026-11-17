@@ -1565,14 +1565,16 @@ const TABLE: Record<string, Case | Case[]> = {
 
 	// ── Reports ───────────────────────────────────────────────────────────
 	'GET /api/report-schedules': signedIn(() => '/api/report-schedules'),
+	// Card 2751 (D12): it asks for the password and a code, so the viewer, who holds no factor in the world (the
+	// invite's and the reset's target), is given one for these rows alone.
 	'POST /api/report-schedules': [
-		view((w) =>
-			json('/api/report-schedules', { name: 'Weekly', scope: 'board', scopeId: w.A.board.id, frequency: 'weekly' })
-		),
+		view((w) => json('/api/report-schedules', { name: 'Weekly', scope: 'board', scopeId: w.A.board.id, frequency: 'weekly' }), {
+			setup: (w) => stepUpFactor(w.viewer)
+		}),
 		// A grouping is for whoever can open a board under it, to be reported the boards they can open.
 		view(
 			(w) => json('/api/report-schedules', { name: 'Weekly', scope: 'category', scopeId: w.groupingOfA.id, frequency: 'weekly' }),
-			{ of: 'a grouping of boards' }
+			{ of: 'a grouping of boards', setup: (w) => stepUpFactor(w.viewer) }
 		),
 		signedIn(
 			(w) => json('/api/report-schedules', { name: 'Weekly', scope: 'category', scopeId: w.grouping.id, frequency: 'weekly' }),
@@ -1605,16 +1607,30 @@ const TABLE: Record<string, Case | Case[]> = {
 		}),
 		admin(() => json('/api/reports', { scope: 'all', ...WEEK }), { of: 'every board', writesNothing: REPORT_READS })
 	],
+	// Card 2751 (D12): it asks for the password and a code, so the viewer is given a factor for these rows alone.
 	'POST /api/reports/email': [
 		view(
 			(w) =>
 				json('/api/reports/email', { scope: 'board', scopeId: w.A.board.id, ...WEEK, recipients: ['someone@example.test'] }),
-			{ setup: makeSmtp, writesNothing: REPORT_MAILED }
+			{
+				setup: (w) => {
+					makeSmtp();
+					stepUpFactor(w.viewer);
+				},
+				writesNothing: REPORT_MAILED
+			}
 		),
 		view(
 			(w) =>
 				json('/api/reports/email', { scope: 'category', scopeId: w.groupingOfA.id, ...WEEK, recipients: ['someone@example.test'] }),
-			{ of: 'a grouping of boards', setup: makeSmtp, writesNothing: REPORT_MAILED }
+			{
+				of: 'a grouping of boards',
+				setup: (w) => {
+					makeSmtp();
+					stepUpFactor(w.viewer);
+				},
+				writesNothing: REPORT_MAILED
+			}
 		),
 		signedIn(
 			(w) =>

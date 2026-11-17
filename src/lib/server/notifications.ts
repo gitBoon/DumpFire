@@ -434,7 +434,13 @@ export type SecurityNotice =
 	// Card 2772 (D8): the Account page's two-step section.
 	| 'factor-added'
 	| 'factor-removed'
-	| 'codes-regenerated';
+	| 'codes-regenerated'
+	// Card 2751 (D13, D14): a report schedule made or widened, and the schedules running at the release.
+	| 'report-schedule-set'
+	| 'report-schedules-running';
+
+/** A report schedule as a notice names it (card 2751): its name, what it covers, and every address it is sent to. */
+export type NoticeSchedule = { name: string; covers: string; addresses: string[] };
 
 /**
  * What a security notice names: when (said in UTC) and from which address, as
@@ -444,7 +450,8 @@ export type SecurityNotice =
  * the number typed, card 2772, E3), until when code entry is paused, how
  * many recovery codes are left, the account's live API keys and the
  * webhooks it set that are on (S2), and the authenticator added or removed:
- * its name, the holder's own text, and when it was added (card 2772, S9).
+ * its name, the holder's own text, and when it was added (card 2772, S9);
+ * and the report schedules and what was done to one (card 2751).
  */
 export type SecurityNoticeDetail = {
 	at: Date;
@@ -456,6 +463,18 @@ export type SecurityNoticeDetail = {
 	webhooks?: { board: string; host: string; createdAt: string }[];
 	/** The authenticator's name and when it was added, in the stored form (card 2772). */
 	authenticator?: { label: string; createdAt: string };
+	/**
+	 * The report schedules the notice is about (card 2751): the one made or
+	 * widened, for `report-schedule-set`; every one of the account's that is
+	 * on, for `report-schedules-running`.
+	 */
+	schedules?: NoticeSchedule[];
+	/**
+	 * What was done to the schedule, for `report-schedule-set` (card 2751,
+	 * D13): made, or the changes that asked: the addresses added, turned on,
+	 * its status filter widened (to the filter's words).
+	 */
+	change?: { made?: true; added?: string[]; turnedOn?: true; widenedTo?: string };
 	/**
 	 * The notice is of a step-up, a change confirmed with the password and a
 	 * code (card 2771, D12), not of a sign-in: `recovery-code-used` and
@@ -477,16 +496,32 @@ export type SecurityNoticeDetail = {
  * removed, and a new set of recovery codes, on the Account page (card 2772,
  * D8), each confirmed with the password and a code; a removal lists the
  * account's live API keys and webhooks, to revoke any not recognised (S4).
+ * A report schedule made, given an address, turned on or widened (card 2751,
+ * D13), with the schedule's name, what it covers and every address; and,
+ * once at the release, every schedule of the account's that is on (D14).
  *
  * Nothing is sent unless a mail host is set up and its password is not
  * missing. Called once the write it follows from is committed, and never
  * awaited: a sign-in is not held up by the mail server. They cannot be
- * switched off: they are about the account itself.
+ * switched off: they are about the account itself. `securityNoticeSent` is
+ * the same notice for a caller that waits on it.
  */
 export function sendSecurityNotice(userId: number, notice: SecurityNotice, detail: SecurityNoticeDetail): void {
-	if (!isSmtpConfigured() || smtpPasswordMissing()) return;
+	void securityNoticeSent(userId, notice, detail);
+}
+
+/**
+ * Send a security notice, as `sendSecurityNotice` does, and say whether it
+ * went: true once the mail server took it; false when no mail is set up, the
+ * account is gone, or the mail did not go (said at ERROR). It never rejects.
+ * The mail is begun before it returns, as `sendSecurityNotice`'s is. For the
+ * announcement at the release (card 2751, CS1), which writes its flag only
+ * when every notice went.
+ */
+export function securityNoticeSent(userId: number, notice: SecurityNotice, detail: SecurityNoticeDetail): Promise<boolean> {
+	if (!isSmtpConfigured() || smtpPasswordMissing()) return Promise.resolve(false);
 	const owner = db.select({ email: users.email, username: users.username }).from(users).where(eq(users.id, userId)).get();
-	if (!owner) return;
+	if (!owner) return Promise.resolve(false);
 
 	const when = detail.at.toUTCString();
 	const from = detail.address === null ? '' : ` from ${escapeHtml(detail.address)}`;
@@ -509,6 +544,21 @@ export function sendSecurityNotice(userId: number, notice: SecurityNotice, detai
 		`</p><p style="color: #334155; line-height: 1.6;">${heading}</p>` +
 		(items.length === 0 ? '<p style="color: #64748b;">None.</p>' : `<ul style="color: #334155;">${items.join('')}</ul>`) +
 		'<p style="color: #334155; line-height: 1.6;">';
+	// Card 2751: each report schedule by its name, what it covers and every address it is sent to, each escaped.
+	const addressWords = (addresses: string[]) => (addresses.length === 0 ? 'no address yet' : addresses.map(escapeHtml).join(', '));
+	const schedules = (detail.schedules ?? []).map(
+		(schedule) =>
+			`<li>${escapeHtml(schedule.name)}, a report of ${escapeHtml(schedule.covers)}, emailed to: ${addressWords(schedule.addresses)}</li>`
+	);
+	const change = detail.change ?? {};
+	const changed = [
+		change.made ? 'made' : '',
+		change.added ? `given ${change.added.length === 1 ? 'a new address' : 'new addresses'} (${addressWords(change.added)})` : '',
+		change.turnedOn ? 'turned on' : '',
+		change.widenedTo ? `widened to ${escapeHtml(change.widenedTo)}` : ''
+	].filter(Boolean);
+	const changedWords =
+		changed.length <= 1 ? (changed[0] ?? 'changed') : `${changed.slice(0, -1).join(', ')} and ${changed[changed.length - 1]}`;
 	const words: Record<SecurityNotice, { subject: string; title: string; body: string; after: string }> = {
 		enrolled: {
 			subject: 'Two-step sign-in was set up for your DumpFire account',
@@ -600,6 +650,28 @@ export function sendSecurityNotice(userId: number, notice: SecurityNotice, detai
 				`A new set of ten recovery codes was made for your DumpFire account on ${escapeHtml(when)}${from}. ` +
 				'The old codes no longer work.',
 			after: notYou
+		},
+		// Card 2751 (D13): confirmed with the password and a code; the schedule's name and addresses are text typed, escaped.
+		'report-schedule-set': {
+			subject: change.made ? 'A report schedule was made on your DumpFire account' : 'A report schedule of yours was changed on DumpFire',
+			title: change.made ? 'A report schedule was made' : 'A report schedule was changed',
+			body:
+				`A report schedule of yours was ${changedWords} on ${escapeHtml(when)}${from}. ` +
+				'It emails a report of board activity on its timetable, whether or not you are signed in.' +
+				listed('The schedule:', schedules) +
+				'This was confirmed with your password and a code from your authenticator app.',
+			after: 'If this was not you, someone can confirm changes as you: change your password and tell an administrator.'
+		},
+		// Card 2751 (D14): once, at the first start after the release, to each owner of a schedule that is on.
+		'report-schedules-running': {
+			subject: 'Your DumpFire report schedules',
+			title: 'Your report schedules',
+			body:
+				'These report schedules of yours are on. Each emails a report of board activity on its timetable, whether or not you are signed in.' +
+				listed('Your schedules that are on:', schedules) +
+				'From this release, making a schedule, adding an address to one, turning one on or widening what it reports asks for ' +
+				'your password and a code from your authenticator app. Delete any schedule here you do not recognise, on the Reports page.',
+			after: 'If you do not recognise one of these, delete it, change your password, and tell an administrator.'
 		}
 	};
 	const { subject, title, body, after } = words[notice];
@@ -612,7 +684,13 @@ export function sendSecurityNotice(userId: number, notice: SecurityNotice, detai
 		</p>
 	`);
 
-	sendEmail(owner.email, subject, html).catch((err) => log.error(`Security notice (${notice}) failed for user ${userId}`, err));
+	return sendEmail(owner.email, subject, html).then(
+		(outcome) => outcome.sent,
+		(err) => {
+			log.error(`Security notice (${notice}) failed for user ${userId}`, err);
+			return false;
+		}
+	);
 }
 
 /**

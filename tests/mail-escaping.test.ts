@@ -35,7 +35,7 @@ import * as notifications from '$lib/server/notifications';
 import { initReportScheduler } from '$lib/server/reports';
 import { api } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
-import { addBoardMember, assignCard, makeBoard, makeCard, makeSmtp, makeUser, resetDb } from './helpers/fixtures';
+import { addBoardMember, assignCard, makeBoard, makeCard, makeSmtp, makeUser, resetDb, stepUp } from './helpers/fixtures';
 
 /** What the stand-in destination's upload fails with: as another server might answer. */
 const UPLOAD_FAILURE = vi.hoisted(() => '<b>refused</b>');
@@ -94,11 +94,9 @@ describe('the report emailed by hand', () => {
 		({ board } = makeBoard({ owner: sender, name: LINK }));
 	});
 
+	// With the password and a code (card 2751): it is sent.
 	const email = (body: Record<string, unknown>) =>
-		api('POST', '/api/reports/email', {
-			user: sender,
-			body: { periodStart: '2026-10-01', periodEnd: '2026-10-14', recipients: ['someone@example.test'], ...body }
-		});
+		api('POST', '/api/reports/email', stepUp(sender, { periodStart: '2026-10-01', periodEnd: '2026-10-14', recipients: ['someone@example.test'], ...body }));
 
 	it("escapes a board's name and the sender's username, and keeps the name as typed in the subject", async () => {
 		const res = await email({ scope: 'board', scopeId: board.id });
@@ -362,7 +360,11 @@ describe('every mail in notifications.ts', () => {
 			'unfinished-sign-in',
 			'factor-added',
 			'factor-removed',
-			'codes-regenerated'
+			'codes-regenerated',
+			// Card 2751 (T20, T21): a report schedule made or widened, and the schedules running at the release, each
+			// schedule's name, what it covers and its addresses text typed.
+			'report-schedule-set',
+			'report-schedules-running'
 		] as const).map(
 			(notice) => ({
 				name: `sendSecurityNotice (${notice})`,
@@ -377,11 +379,26 @@ describe('every mail in notifications.ts', () => {
 						codesLeft: 2,
 						apiKeys: [{ name: MARKER, createdAt: MARKER, lastUsedAt: MARKER }],
 						webhooks: [{ board: MARKER, host: MARKER, createdAt: MARKER }],
-						authenticator: { label: MARKER, createdAt: MARKER }
+						authenticator: { label: MARKER, createdAt: MARKER },
+						schedules: [{ name: MARKER, covers: MARKER, addresses: [MARKER, MARKER] }],
+						change: { added: [MARKER], turnedOn: true, widenedTo: MARKER }
 					});
 				}
 			})
 		),
+		// Card 2751's code review (CS1): the same notice, waited on, as the announcement at the release sends it.
+		{
+			name: 'securityNoticeSent (report-schedules-running)',
+			link: false,
+			send: () => {
+				db.update(users).set({ username: MARKER }).where(eq(users.id, recipient.id)).run();
+				void notifications.securityNoticeSent(recipient.id, 'report-schedules-running', {
+					at: new Date(),
+					address: null,
+					schedules: [{ name: MARKER, covers: MARKER, addresses: [MARKER, MARKER] }]
+				});
+			}
+		},
 		// Card 2769 (decision 23): the release mail, with the set-up link and the address of the sign-in as received.
 		{
 			name: 'sendReleaseLinkMail',

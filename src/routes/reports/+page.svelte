@@ -4,6 +4,13 @@
 	 *
 	 * Two tabs: Generate (one-off PDF with preview) and Schedules (recurring email delivery).
 	 * No history — PDFs are ephemeral, never stored.
+	 *
+	 * Emailing a report, making a schedule and turning one on ask for the
+	 * password and a code (card 2751, D11): the email dialog and the new
+	 * schedule's form in `CurrentPasswordField`, turning one on in a Turn on
+	 * dialog (`ConfirmModal` with `askPassword`). Each copies both into the
+	 * request and clears them before it is sent, and clears them on every way
+	 * it is closed; a refusal of either is said in the field.
 	 */
 	import type { PageData } from './$types';
 	import { invalidateAll } from '$app/navigation';
@@ -13,7 +20,10 @@
 	import { page } from '$app/stores';
 	import { deleteFailure, failureMessage } from '$lib/api';
 	import Toast from '$lib/components/Toast.svelte';
+	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
+	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
 	import { toasts } from '$lib/stores/toast';
+	import { ASKS_FOR_PASSWORD, passwordKeptAfter, proofTyped, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
 	import { MAX_REPORT_RECIPIENTS, reportRecipients } from '$lib/report-recipients';
 	import { parseStamp } from '$lib/timestamps';
 	import { calendarPeriod, canonicalTimeZone, isCalendarPreset, nextRunAfter } from '$lib/report-schedule-time';
@@ -216,6 +226,8 @@
 			URL.revokeObjectURL(pdfUrl);
 			pdfUrl = null;
 		}
+		// The email dialog goes with the preview it is drawn in, and what was typed in it.
+		closeEmailModal();
 	}
 
 	// ─── Email Modal ────────────────────────────────────────────────────
@@ -223,15 +235,34 @@
 	let emailRecipients = $state('');
 	let emailSending = $state(false);
 	let emailResult = $state<{ message: string; type: 'success' | 'error' } | null>(null);
+	/** The current password and the code, which emailing a report asks for (card 2751). Cleared as each attempt is sent. */
+	let emailPassword = $state('');
+	let emailCode = $state('');
+	/** A refusal of the password or the code, in the field's alert. */
+	let emailRefusal = $state<string | null>(null);
+
+	/**
+	 * Close the email dialog, whichever way it is closed (card 2751, E11): the
+	 * password, the code and a refusal go with it, so that none is there when
+	 * it is opened again.
+	 */
+	function closeEmailModal() {
+		showEmailModal = false;
+		emailResult = null;
+		emailPassword = '';
+		emailCode = '';
+		emailRefusal = null;
+	}
 
 	async function sendReportEmail() {
-		if (!emailRecipients.trim()) return;
-		emailSending = true;
+		if (!emailRecipients.trim() || !proofTyped(emailPassword, emailCode) || emailSending) return;
 		emailResult = null;
 
 		// Read as the server reads it (card 2182): commas, semicolons, spaces or
 		// lines between addresses, each sent once. A part that is not an
-		// address is said here, and not left out without a word.
+		// address is said here, and not left out without a word. Before the
+		// password is copied and cleared (card 2751, E12): it is kept for the
+		// list put right.
 		const { addresses: recipients, notAddresses } = reportRecipients(emailRecipients);
 		if (notAddresses.length > 0) {
 			const named = notAddresses.map((part) => `"${part}"`).join(', ');
@@ -239,43 +270,64 @@
 				message: `${named} ${notAddresses.length === 1 ? 'is not an email address' : 'are not email addresses'}. Nothing was sent.`,
 				type: 'error'
 			};
-			emailSending = false;
 			return;
 		}
 		if (recipients.length === 0) {
 			emailResult = { message: 'Please enter at least one email address', type: 'error' };
-			emailSending = false;
 			return;
 		}
 
+		emailSending = true;
+		emailRefusal = null;
+		// Copied and cleared before the send: the fields hold neither once it has gone.
+		const currentPassword = emailPassword;
+		const currentCode = emailCode;
+		emailPassword = '';
+		emailCode = '';
 		try {
 			const { start, end } = getPeriodDates();
-			const request = {
-				scope: genScope,
-				scopeId: genScopeId,
-				periodStart: start,
-				periodEnd: end,
-				recipients,
-				detailLevel: genDetailLevel,
-				statusFilter: genStatusFilter,
-				assigneeUserId: genAssignee === 'all' ? null : Number(genAssignee)
-			};
+			const assigneeUserId = genAssignee === 'all' ? null : Number(genAssignee);
+			// Each body written out whole, with the password and the code (card 2751, E2).
 			let res = await fetch('/api/reports/email', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				// The day the Overdue figure counts from is the viewer's (card 2258).
-				body: JSON.stringify({ ...request, timeZone: browserZone ?? undefined })
+				body: JSON.stringify({
+					scope: genScope,
+					scopeId: genScopeId,
+					periodStart: start,
+					periodEnd: end,
+					recipients,
+					detailLevel: genDetailLevel,
+					statusFilter: genStatusFilter,
+					assigneeUserId,
+					// The day the Overdue figure counts from is the viewer's (card 2258).
+					timeZone: browserZone ?? undefined,
+					currentPassword,
+					currentCode
+				})
 			});
 			// A zone the server does not know: asked once more without it, in UTC.
 			// The route reads every field before it sends, so the refused one
-			// reached nobody.
+			// reached nobody; and before the password, so the code is not spent,
+			// and is sent again.
 			let zoneLeftOut = false;
 			if (await refusesZone(res)) {
 				zoneLeftOut = true;
 				res = await fetch('/api/reports/email', {
 					method: 'POST',
 					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify(request)
+					body: JSON.stringify({
+						scope: genScope,
+						scopeId: genScopeId,
+						periodStart: start,
+						periodEnd: end,
+						recipients,
+						detailLevel: genDetailLevel,
+						statusFilter: genStatusFilter,
+						assigneeUserId,
+						currentPassword,
+						currentCode
+					})
 				});
 			}
 			if (res.ok) {
@@ -292,17 +344,25 @@
 				if (notSent.length > 0) {
 					emailRecipients = notSent.join(', ');
 					emailResult = {
-						message: `${data.message} Only ${notSent.length === 1 ? 'the address' : 'the addresses'} not reached ${notSent.length === 1 ? 'is' : 'are'} left in the box, to send to again.`,
+						message: `${data.message} Only ${notSent.length === 1 ? 'the address' : 'the addresses'} not reached ${notSent.length === 1 ? 'is' : 'are'} left in the box. Enter your password and a new code to send again.`,
 						type: 'error'
 					};
 				} else {
 					emailResult = { message: data.message, type: 'success' };
-					setTimeout(() => { showEmailModal = false; emailResult = null; emailRecipients = ''; }, 2500);
+					setTimeout(() => { closeEmailModal(); emailRecipients = ''; }, 2500);
 				}
 			} else {
-				// As for the report above: the body of a failure is read as JSON
-				// only by failureMessage, which has a plain text for one that is not.
-				emailResult = { message: await failureMessage(res, 'Failed to send'), type: 'error' };
+				// A refusal of the password or the code, in the field; any other in
+				// the dialog's line. As for the report above: the body of a failure
+				// is read as JSON only by failureMessage, which has a plain text for
+				// one that is not.
+				const refusal = await stepUpRefusal(res);
+				if (refusal !== null) {
+					emailRefusal = refusal;
+					emailPassword = passwordKeptAfter(refusal, currentPassword);
+				} else {
+					emailResult = { message: await failureMessage(res, 'Failed to send'), type: 'error' };
+				}
 			}
 		} catch (e: any) {
 			emailResult = { message: e.message || 'Failed to send', type: 'error' };
@@ -323,6 +383,13 @@
 	let schedDetailLevel = $state<'summary' | 'detailed'>('detailed');
 	let schedStatusFilter = $state<StatusFilter>('all');
 	let schedCreating = $state(false);
+	/** The current password and the code, which making a schedule asks for (card 2751). Cleared as each attempt is sent. */
+	let schedPassword = $state('');
+	let schedCode = $state('');
+	/** A refusal of the password or the code, in the field's alert. */
+	let schedRefusal = $state<string | null>(null);
+	/** The schedule the Turn on dialog is open for (card 2751, E8), or null. */
+	let turningOn = $state<PageData['schedules'][number] | null>(null);
 
 	/**
 	 * The viewer's own time zone, as the browser gives it (card 2159). Read on
@@ -363,8 +430,43 @@
 	// nothing, and creating one closed the form and emptied it as if it had
 	// been saved.
 
+	/**
+	 * Close the new schedule's form, by its Cancel or once it is saved (card
+	 * 2751, E11): the password, the code and a refusal go with it.
+	 */
+	function closeNewSchedule() {
+		showNewSchedule = false;
+		schedPassword = '';
+		schedCode = '';
+		schedRefusal = null;
+	}
+
 	async function createSchedule() {
+		if (!proofTyped(schedPassword, schedCode) || schedCreating) return;
+		// Read as the server reads them (card 2182), before the password is
+		// copied and cleared (card 2751, E12): a list the server would refuse is
+		// said here, the password kept for the list put right.
+		const { addresses, notAddresses } = reportRecipients(schedRecipients);
+		if (notAddresses.length > 0) {
+			const named = notAddresses.map((part) => `"${part}"`).join(', ');
+			toasts.add(`${named} ${notAddresses.length === 1 ? 'is not an email address' : 'are not email addresses'}. The schedule was not created.`, 'error');
+			return;
+		}
+		if (addresses.length > MAX_REPORT_RECIPIENTS) {
+			toasts.add(
+				`A schedule can be sent to at most ${MAX_REPORT_RECIPIENTS} addresses, and this names ${addresses.length}. The schedule was not created.`,
+				'error'
+			);
+			return;
+		}
+
 		schedCreating = true;
+		schedRefusal = null;
+		// Copied and cleared before the send: the fields hold neither once it has gone.
+		const currentPassword = schedPassword;
+		const currentCode = schedCode;
+		schedPassword = '';
+		schedCode = '';
 		const started = toasts.navigation();
 		try {
 			let res: Response;
@@ -393,7 +495,9 @@
 							.join(', '),
 						periodDays: schedPeriodDays,
 						detailLevel: schedDetailLevel,
-						statusFilter: schedStatusFilter
+						statusFilter: schedStatusFilter,
+						currentPassword,
+						currentCode
 					})
 				});
 			} catch {
@@ -401,11 +505,18 @@
 				return;
 			}
 			if (!res.ok) {
-				// The form stays as it was filled in, to be put right and sent again.
+				// A refusal of the password or the code, in the field; any other in a
+				// toast. The form stays as it was filled in, to be put right and sent again.
+				const refusal = await stepUpRefusal(res);
+				if (refusal !== null) {
+					schedRefusal = refusal;
+					schedPassword = passwordKeptAfter(refusal, currentPassword);
+					return;
+				}
 				toasts.add(await failureMessage(res, 'The schedule was not created.'), 'error', started);
 				return;
 			}
-			showNewSchedule = false;
+			closeNewSchedule();
 			schedName = '';
 			schedRecipients = '';
 			await invalidateAll();
@@ -414,14 +525,46 @@
 		}
 	}
 
-	async function toggleSchedule(scheduleId: number, enabled: boolean) {
+	/**
+	 * Turn a schedule on, with the password and the code the Turn on dialog
+	 * hands it (card 2751, D3, E8). A refusal of either is given back to the
+	 * dialog, which shows it; any other closes the dialog and is said in a
+	 * toast.
+	 */
+	async function turnScheduleOn(scheduleId: number, proof: StepUpProof): Promise<string | void> {
 		const started = toasts.navigation();
 		let res: Response;
 		try {
 			res = await fetch(`/api/report-schedules/${scheduleId}`, {
 				method: 'PUT',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ enabled })
+				body: JSON.stringify({ enabled: true, currentPassword: proof.currentPassword, currentCode: proof.currentCode })
+			});
+		} catch {
+			turningOn = null;
+			toasts.add('No answer from the server. The schedule may not have been changed.', 'error', started);
+			return;
+		}
+		if (!res.ok) {
+			const refusal = await stepUpRefusal(res);
+			if (refusal !== null) return refusal;
+			turningOn = null;
+			toasts.add(await failureMessage(res, 'The schedule was not changed.'), 'error', started);
+			return;
+		}
+		turningOn = null;
+		await invalidateAll();
+	}
+
+	/** Turn a schedule off: it asks for nothing (card 2751, D3). */
+	async function turnScheduleOff(scheduleId: number) {
+		const started = toasts.navigation();
+		let res: Response;
+		try {
+			res = await fetch(`/api/report-schedules/${scheduleId}`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ enabled: false })
 			});
 		} catch {
 			toasts.add('No answer from the server. The schedule may not have been changed.', 'error', started);
@@ -432,6 +575,40 @@
 			return;
 		}
 		await invalidateAll();
+	}
+
+	/**
+	 * Offer to turn a schedule on (card 2751, E8, E10): the Turn on dialog,
+	 * which asks for the password and a code. For one the server would refuse
+	 * whatever was typed, a timing it cannot date or more addresses than the
+	 * most, the reason is said and nothing is asked.
+	 */
+	function askTurnOn(schedule: PageData['schedules'][number]) {
+		const fault = timingFault(schedule);
+		if (fault) {
+			toasts.add(`This schedule cannot be turned on: ${fault}. Delete it and make it again.`, 'error');
+			return;
+		}
+		const count = reportRecipients(schedule.recipients).addresses.length;
+		if (count > MAX_REPORT_RECIPIENTS) {
+			toasts.add(
+				`This schedule cannot be turned on: it is sent to ${count} addresses, and the most is ${MAX_REPORT_RECIPIENTS}. ` +
+					'Copy the ones to keep into a new schedule, then delete this one.',
+				'error'
+			);
+			return;
+		}
+		turningOn = schedule;
+	}
+
+	/** What the Turn on dialog says (card 2751, E9): every address it will email, or that it has none yet, and that it asks. */
+	function turnOnMessage(schedule: PageData['schedules'][number]): string {
+		const sentTo = reportRecipients(schedule.recipients).addresses;
+		const to =
+			sentTo.length > 0
+				? `It will email its report to: ${sentTo.join(', ')}. `
+				: 'It has no addresses yet, so nothing is emailed until some are added. ';
+		return `${to}${ASKS_FOR_PASSWORD}`;
 	}
 
 	/**
@@ -527,6 +704,16 @@
 	}
 
 	let activeTab = $state<'generate' | 'schedules'>('generate');
+
+	/**
+	 * Show a tab. Leaving Schedules closes the new schedule's form, its
+	 * password, code and refusal with it (card 2751, CS4): they are not kept
+	 * behind a tab that does not show them.
+	 */
+	function showTab(tab: 'generate' | 'schedules') {
+		if (tab !== 'schedules') closeNewSchedule();
+		activeTab = tab;
+	}
 </script>
 
 <svelte:head>
@@ -560,13 +747,13 @@
 
 	<!-- Email Modal -->
 	{#if showEmailModal}
-	<div class="email-modal-backdrop" onclick={() => { showEmailModal = false; emailResult = null; }}>
+	<div class="email-modal-backdrop" onclick={closeEmailModal}>
 		<!-- svelte-ignore a11y_click_events_have_key_events -->
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div class="email-modal" onclick={(e) => e.stopPropagation()}>
 			<div class="email-modal-header">
 				<h3>Email Report</h3>
-				<button class="btn-ghost" onclick={() => { showEmailModal = false; emailResult = null; }}>
+				<button class="btn-ghost" onclick={closeEmailModal}>
 					<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
 				</button>
 			</div>
@@ -582,13 +769,23 @@
 					placeholder="name@example.com, team@example.com"
 					rows="3"
 				></textarea>
+				<!-- Every address asks, your own and your company's among them (card 2751, D4). -->
+				<CurrentPasswordField
+					label="Your password"
+					bind:value={emailPassword}
+					bind:code={emailCode}
+					refusal={emailRefusal}
+					readonly={emailSending}
+					onEnter={sendReportEmail}
+				/>
+				<span class="email-hint">{ASKS_FOR_PASSWORD}</span>
 				{#if emailResult}
 					<div class="email-result {emailResult.type}">{emailResult.message}</div>
 				{/if}
 			</div>
 			<div class="email-modal-footer">
-				<button class="btn-ghost" onclick={() => { showEmailModal = false; emailResult = null; }}>Cancel</button>
-				<button class="btn-primary" onclick={sendReportEmail} disabled={emailSending || !emailRecipients.trim()}>
+				<button class="btn-ghost" onclick={closeEmailModal}>Cancel</button>
+				<button class="btn-primary" onclick={sendReportEmail} disabled={emailSending || !emailRecipients.trim() || !proofTyped(emailPassword, emailCode)}>
 					{#if emailSending}
 						Sending...
 					{:else}
@@ -624,11 +821,11 @@
 
 	<!-- Tab Bar -->
 	<div class="tab-bar">
-		<button class="tab-btn" class:active={activeTab === 'generate'} onclick={() => activeTab = 'generate'}>
+		<button class="tab-btn" class:active={activeTab === 'generate'} onclick={() => showTab('generate')}>
 			<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
 			Generate
 		</button>
-		<button class="tab-btn" class:active={activeTab === 'schedules'} onclick={() => activeTab = 'schedules'}>
+		<button class="tab-btn" class:active={activeTab === 'schedules'} onclick={() => showTab('schedules')}>
 			<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.3"/><path d="M7 4.5V7l2 1.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
 			Schedules
 			{#if data.schedules.length > 0}
@@ -751,7 +948,7 @@
 						<h2 class="panel-heading">Scheduled Reports</h2>
 						<p class="panel-desc">Automatically generate and email PDF reports on a recurring schedule.</p>
 					</div>
-					<button class="btn-primary" onclick={() => showNewSchedule = !showNewSchedule}>
+					<button class="btn-primary" onclick={() => (showNewSchedule ? closeNewSchedule() : (showNewSchedule = true))}>
 						{showNewSchedule ? '✕ Cancel' : '+ New Schedule'}
 					</button>
 				</div>
@@ -857,7 +1054,21 @@
 								<span class="form-hint">{statusFilterHint(schedStatusFilter)}</span>
 							</div>
 						</div>
-						<button class="btn-primary" onclick={createSchedule} disabled={schedCreating}>
+						<!-- Making a schedule asks, whoever it is sent to (card 2751, D1). -->
+						<div class="form-row">
+							<div class="form-group full-width">
+								<CurrentPasswordField
+									label="Your password"
+									bind:value={schedPassword}
+									bind:code={schedCode}
+									refusal={schedRefusal}
+									readonly={schedCreating}
+									onEnter={createSchedule}
+								/>
+								<span class="form-hint">{ASKS_FOR_PASSWORD}</span>
+							</div>
+						</div>
+						<button class="btn-primary" onclick={createSchedule} disabled={!proofTyped(schedPassword, schedCode) || schedCreating}>
 							{schedCreating ? 'Creating…' : 'Create Schedule'}
 						</button>
 					</div>
@@ -919,7 +1130,7 @@
 									<button
 										class="toggle-btn"
 										class:active={schedule.enabled}
-										onclick={() => toggleSchedule(schedule.id, !schedule.enabled)}
+										onclick={() => (schedule.enabled ? turnScheduleOff(schedule.id) : askTurnOn(schedule))}
 										title={schedule.enabled ? 'Disable' : 'Enable'}
 									>
 										{schedule.enabled ? '✅' : '⏸️'}
@@ -941,6 +1152,20 @@
 		{/if}
 	</div>
 </div>
+{/if}
+
+<!-- Turn on asks for the password and a code, naming every address the schedule emails (card 2751, D11). -->
+{#if turningOn}
+	{@const schedule = turningOn}
+	<ConfirmModal
+		title="Turn on this schedule?"
+		message={turnOnMessage(schedule)}
+		confirmText="Turn on"
+		confirmDanger={false}
+		askPassword
+		onConfirm={(proof) => turnScheduleOn(schedule.id, proof)}
+		onCancel={() => (turningOn = null)}
+	/>
 {/if}
 
 <Toast />
