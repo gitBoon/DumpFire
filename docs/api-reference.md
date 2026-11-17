@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.131
+version: 1.132
 status: As-Built
 date: 2026-11-17
 tags:
@@ -366,10 +366,10 @@ either.
 
 ### Changes on 2026-11-17
 
-Four changes are dated 2026-11-17: card 2751's, which changes no `/api/v1` route (first);
+Five changes are dated 2026-11-17: card 2751's, which changes no `/api/v1` route (first);
 card 2772's, which is **breaking** for API keys made before its release; that of cards
-2770 and 2771, which is not (after it); and card 2888's, which changes no `/api/v1` route
-(last).
+2770 and 2771, which is not (after it); and cards 2888's and 2851's, which change no
+`/api/v1` route (last).
 
 **Report schedules and report mail ask for the password and a code (card 2751). The v1 API
 does not change**: still `1.8.0`, and no `/api/v1` operation, answer or schema is different. No
@@ -562,6 +562,23 @@ step-up, so nothing is hashed, compared or counted. 1,024 is the most the step-u
 current password (`LONGEST_PASSWORD`), so a password set longer could never confirm an action.
 The invite and first-run set-up pages refuse the same. Sign-in is unchanged: it has no maximum
 ([Password Hashing](authentication-security.md#password-hashing)).
+
+**A user made with a password gets their set-up link in the answer (card 2851). The v1 API does
+not change**: `POST /api/users` is the web application's own route, a session's, which a key
+cannot reach.
+
+- **With `password`**, the account's enrolment link for two-step sign-in is issued in the
+  transaction that makes it, and the `201` adds `enrolmentUrl` (`<base>/enrol/<token>`) and
+  `message`, answered with `Cache-Control: no-store`; the link is never mailed. When the
+  caller's session has ended, they may no longer manage the account, or the link is no longer
+  the account's by the time it is answered, the account stands and `enrolmentUrl` is `null`,
+  with a `message` that says to press 🛡️ on the row for a new link. `invited` stays `false`.
+- **With no link address** (no App URL, `APP_URL` or `ORIGIN`, on a built server), every create
+  is now refused `503` `NO_LINK_ADDRESS` before the caller's password is compared, a create with
+  a password included, which used to succeed and make an account nobody could set up.
+- Without `password`, nothing changes: the invite, its mail and `inviteUrl` as before.
+
+See [Set-Up Links and Their Page](authentication-security.md#set-up-links-and-their-page).
 
 ### Changes on 2026-11-13
 

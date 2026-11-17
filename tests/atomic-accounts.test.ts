@@ -84,12 +84,14 @@ import { isHttpError, type Cookies, type RequestEvent } from '@sveltejs/kit';
 import { eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
 import { inTransaction } from '$lib/server/db/transaction';
-import { apiKeys, inviteTokens, reportSchedules, sessions, taskRequests, users } from '$lib/server/db/schema';
+import { apiKeys, enrolmentLinks, inviteTokens, reportSchedules, sessions, taskRequests, users } from '$lib/server/db/schema';
 import { MASTER_PREF, NOTIFICATION_PREFS } from '$lib/notification-prefs';
 import { shouldNotifyUser } from '$lib/server/notifications';
 import { PASSWORD_CHANGED_MEANWHILE, openSessionUser, SESSION_COOKIE_NAME, STEP_UP_SIGNED_OUT, type SessionUser } from '$lib/server/auth';
 import { LONGEST_PASSWORD, PASSWORD_TOO_LONG, PASSWORDS_BUSY, checkPassword, makePasswordHash } from '$lib/server/passwords';
-import { holdsFactor } from '$lib/server/mfa-store';
+import { ENROLMENT_LINK_LIFETIME_MS, holdsFactor, usableEnrolmentLink } from '$lib/server/mfa-store';
+import { sha256Hex } from '$lib/server/mfa-crypto';
+import { subscribeToLogs } from '$lib/server/logger';
 import { STEP_UP_MISSING, STEP_UP_WRONG } from '$lib/step-up-words';
 import { endUnusedInvites, issueInvite } from '$lib/server/invites';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
@@ -942,6 +944,15 @@ describe('POST /api/users', () => {
 		return { admin, chief, plain };
 	};
 
+	/** An account's enrolment links (card 2851), each as its token's hash and who issued it. */
+	const enrolmentLinksOf = (id: number) =>
+		db
+			.select()
+			.from(enrolmentLinks)
+			.where(eq(enrolmentLinks.userId, id))
+			.all()
+			.map((link) => [link.tokenHash, link.issuedBy]);
+
 	/** The user made by `by`, with their own current password (card 2701), from their session. */
 	const create = (by: SessionUser | null, body: Record<string, unknown>) =>
 		api('POST', '/api/users', {
@@ -1001,7 +1012,7 @@ describe('POST /api/users', () => {
 		expectHashedOutsideTransaction();
 	});
 
-	it('with a password, makes the user alone and mails nobody', async () => {
+	it('with a password, makes the user and their set-up link together, or neither, answers the link once and mails nobody (card 2851)', async () => {
 		const run = await eachWriteInTurn({
 			build: scene,
 			request: ({ chief }) =>
@@ -1009,15 +1020,93 @@ describe('POST /api/users', () => {
 			apart: [...STEP_UP_APART],
 			afterSuccess: async (_s, res: ApiResult) => {
 				expect(res.status).toBe(201);
-				expect(res.body).toMatchObject({ username: 'deputy', role: 'admin', invited: false });
+				expect(res.body).toMatchObject({ username: 'deputy', role: 'admin', invited: false, message: expect.stringContaining('set-up link') });
 				expect(await matches(NEW, hashOf(res.body.id))).toBe(true);
 				expect(db.select().from(inviteTokens).all()).toEqual([]);
+
+				// The link, once, kept by nothing on the way; stored as its hash alone, for seven days.
+				expect(res.headers.get('cache-control')).toBe('no-store');
+				const token = (res.body.enrolmentUrl as string).match(/^http:\/\/localhost\/enrol\/([A-Za-z0-9_-]{43})$/)![1];
+				expect(enrolmentLinksOf(res.body.id)).toEqual([[sha256Hex(token), 'admin-create']]);
+				const expires = parseStamp(db.select().from(enrolmentLinks).get()!.expiresAt)!.getTime();
+				expect(Math.abs(expires - Date.now() - ENROLMENT_LINK_LIFETIME_MS)).toBeLessThan(60_000);
+				expect(usableEnrolmentLink(token)).toMatchObject({ userId: res.body.id, username: 'deputy' });
 			}
 		});
 
-		// The superadmin's own password counted, their code spent and the count cleared (cards 2701 and 2771), then the user.
-		expect(shape(run.writes)).toEqual([...STEP_UP_WRITES, 'insert into users']);
+		// The superadmin's own password counted, their code spent and the count cleared (cards 2701 and 2771), then
+		// the user and its link: the delete finds nothing, as a link is issued one way, which ends any earlier one.
+		expect(shape(run.writes)).toEqual([...STEP_UP_WRITES, 'insert into users', 'delete from enrolment_links', 'insert into enrolment_links']);
 		expect(run.effects).toEqual([]);
+
+		// Said once at INFO, naming the account and who made it, and never the link or its token.
+		resetDb();
+		resetAllRateLimits();
+		const { chief } = scene();
+		const level = process.env.LOG_LEVEL;
+		process.env.LOG_LEVEL = 'INFO';
+		const quiet = vi.spyOn(console, 'log').mockImplementation(() => {});
+		let res: ApiResult;
+		try {
+			res = await create(chief, { username: 'deputy', email: 'deputy@example.test', password: NEW });
+		} finally {
+			quiet.mockRestore();
+			if (level === undefined) delete process.env.LOG_LEVEL;
+			else process.env.LOG_LEVEL = level;
+		}
+		expect(res.status).toBe(201);
+		const lines = sqlite.prepare("SELECT message, meta, user_id AS userId FROM system_logs WHERE message LIKE 'Account %'").all();
+		expect(lines).toEqual([
+			{
+				message: `Account ${res.body.id} ("deputy") made by "chief" with a password they chose; an enrolment link was issued`,
+				meta: JSON.stringify({ accountId: res.body.id, issuedBy: 'admin-create' }),
+				userId: chief.id
+			}
+		]);
+		const token = (res.body.enrolmentUrl as string).split('/enrol/')[1];
+		expect(JSON.stringify(sqlite.prepare('SELECT message, meta FROM system_logs').all())).not.toContain(token);
+	});
+
+	it('withholds the set-up link when the caller can no longer manage the account by the time it is answered (card 2851)', async () => {
+		const s = scene();
+		// The caller's session ends just after the commit: as the INFO line is said, before the link is answered.
+		const level = process.env.LOG_LEVEL;
+		process.env.LOG_LEVEL = 'INFO';
+		const quiet = [vi.spyOn(console, 'log').mockImplementation(() => {}), vi.spyOn(console, 'warn').mockImplementation(() => {})];
+		const stop = subscribeToLogs((entry) => {
+			if (entry.message.includes('with a password they chose')) db.delete(sessions).where(eq(sessions.tokenHash, sessionHashOf('the-admin'))).run();
+		});
+		let res: ApiResult;
+		try {
+			res = await create(s.admin, { username: 'newbie', email: 'newbie@example.test', password: NEW });
+		} finally {
+			stop();
+			for (const spy of quiet) spy.mockRestore();
+			if (level === undefined) delete process.env.LOG_LEVEL;
+			else process.env.LOG_LEVEL = level;
+		}
+
+		// The account and its link stand; the link is not in the answer, which says to press 🛡️.
+		expect(res.status).toBe(201);
+		expect(res.body).toMatchObject({ username: 'newbie', invited: false, enrolmentUrl: null });
+		expect(res.body.message).toContain('🛡️');
+		expect(res.headers.get('cache-control')).toBe('no-store');
+		expect(enrolmentLinksOf(res.body.id)).toEqual([[expect.any(String), 'admin-create']]);
+
+		const warned = sqlite.prepare("SELECT message, meta, user_id AS userId FROM system_logs WHERE level = 'WARN'").all() as {
+			message: string;
+			meta: string;
+			userId: number;
+		}[];
+		expect(warned).toEqual([
+			{
+				message:
+					`The enrolment link of user ${res.body.id}, issued when user ${s.admin.id} made the account, was not given to them: ` +
+					"the caller's session has ended, or is no longer an administrator's",
+				meta: JSON.stringify({ accountId: res.body.id, check: 'session' }),
+				userId: s.admin.id
+			}
+		]);
 	});
 
 	it('answers as it did for each refusal, with nothing written', async () => {

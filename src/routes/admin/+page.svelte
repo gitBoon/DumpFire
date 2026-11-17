@@ -91,7 +91,7 @@
 	 * The link of a two-step sign-in reset is held here too, with `kind:
 	 * 'mfa-reset'` (card 2773): the same dialog, its own words.
 	 */
-	let inviteLink = $state<{ url: string; username: string; message: string; returnTo?: HTMLElement; kind?: 'invite' | 'mfa-reset' } | null>(null);
+	let inviteLink = $state<{ url: string; username: string; message: string; returnTo?: HTMLElement; kind?: 'invite' | 'mfa-reset' | 'new-account' } | null>(null);
 
 	/** The mail panel, whose read of what mail has done the users panel asks for after an invite. */
 	let smtpPanel = $state<ReturnType<typeof SmtpPanel>>();

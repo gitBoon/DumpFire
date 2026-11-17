@@ -388,10 +388,18 @@ describe('a server with no address configured', () => {
 		expect(sent.emails).toEqual([]);
 	});
 
-	it('still creates a user who is given a password: there is no link to make', async () => {
-		const res = await api('POST', at('/api/users'), confirmed({ username: 'newcomer', email: 'newcomer@example.test', password: 'a long password' }));
+	// Card 2851: a user given a password needs a set-up link for two-step sign-in, which has no address either.
+	it('refuses a user who is given a password too, before the password is compared: there is no set-up link to make', async () => {
+		const request = confirmed({ username: 'newcomer', email: 'newcomer@example.test', password: 'a long password' });
+		const before = snapshotDb();
 
-		expect(res.status).toBe(201);
+		const res = await api('POST', at('/api/users'), request);
+		await sent.settle();
+
+		expect(res.status).toBe(503);
+		expect(res.body.message).toBe(NO_LINK_ADDRESS);
+		// Nothing written: no user and no link, and not the session's count or the code's step either, which a compare writes.
+		expectUnchanged(before);
 		expect(sent.emails).toEqual([]);
 	});
 

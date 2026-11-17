@@ -1,7 +1,7 @@
 ---
 title: "Admin Operations Guide"
 category: Admin & Tools
-version: 1.109
+version: 1.110
 status: As-Built
 date: 2026-11-17
 tags:
@@ -203,7 +203,7 @@ flowchart TD
 4. An invite email is sent automatically (if SMTP is configured), and the page waits for it: usually a second or two. "User created — invite email sent!" means the mail server accepted it
 5. The user clicks the link to set their password, and is taken straight on to set up two-step sign-in with an authenticator app (card 2769). Only finishing that signs them in
 
-**An account with no authenticator needs an invite or a set-up link to sign in** (card 2769). An account made with a password you chose has none, and its password alone answers "Two-step sign-in is now required, and this account needs a set-up link…". Give it one with 🛡️ (see [Resetting Two-Step Sign-In](#resetting-two-step-sign-in)), or create it with no password so that it gets an invite. **An invite is spent when the password is set**, before set-up is finished: someone who sets their password and then leaves the set-up page needs a new invite (📧) or a 🛡️ link.
+**An account with no authenticator needs an invite or a set-up link to sign in** (card 2769). **An account made with a password you chose gets its set-up link as it is made** (card 2851): instead of the toast, a dialog opens, **🔑 Their set-up link**, with the link and 📋 Copy. Give the person the link and the password yourself, by a way only they read: the link is shown once, here, is never emailed, and works for seven days. They open it, sign in with the password and set up their authenticator app. If it is lost, or you could not be shown it (the dialog's words say so in the corner instead), give a new one with 🛡️ on their row (see [Resetting Two-Step Sign-In](#resetting-two-step-sign-in)). With no App URL, `APP_URL` or `ORIGIN` set there is no address to make any link from, and Create User is refused whether or not you typed a password. **An invite is spent when the password is set**, before set-up is finished: someone who sets their password and then leaves the set-up page needs a new invite (📧) or a 🛡️ link.
 
 **When an invite's mail is not sent** (card 2196). Create User with no password, and 📧 on a user's row, wait for the invite's mail. If the mail server refuses it or does not answer, the invite is still made, and a dialog opens instead of the toast. "Not sent" means "not confirmed sent": a mail server can take the whole message and the connection then drop before it says so, and then the person receives the mail as well as you being given its link. Either one works; the first used sets the password:
 
@@ -303,7 +303,7 @@ The same rule holds for the rest of the Admin page. **Restoring a backup** repla
 
 ### Resetting Two-Step Sign-In
 
-Someone who has lost the phone their authenticator app is on, and has no recovery code left, asks an administrator to reset their two-step sign-in (card 2773). **Someone with a recovery code left needs no administrator** since card 2772: see [Helping someone replace a phone](#helping-someone-replace-or-lose-a-phone) below. 🛡️ is also how you give a set-up link to an account that has no authenticator and needs one: an account made with a password you chose, one past its 14 days after the release, or one whose set-up was abandoned (card 2769).
+Someone who has lost the phone their authenticator app is on, and has no recovery code left, asks an administrator to reset their two-step sign-in (card 2773). **Someone with a recovery code left needs no administrator** since card 2772: see [Helping someone replace a phone](#helping-someone-replace-or-lose-a-phone) below. 🛡️ is also how you give a set-up link to an account that has no authenticator and needs one: one past its 14 days after the release, one whose set-up was abandoned (card 2769), or one made with a password whose set-up link was lost (card 2851).
 
 **🛡️ Reset two-step sign-in** is on every row that has 📧: the accounts you may manage, by the same rule as 🔑 and 📧 (an ordinary user's for an administrator; an administrator's or an ordinary user's for the superadmin), never your own and never the superadmin's. It asks first, and for your password and a code (one of the [forty](#your-password-asked-again)):
 

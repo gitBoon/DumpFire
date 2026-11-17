@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.127
+version: 1.128
 status: As-Built
 date: 2026-11-17
 tags:
@@ -1248,7 +1248,7 @@ The page keeps its props, `isSuperadmin` and `superadminName`, the `{#if isSuper
 | `BoardManagementPanel.svelte` | every administrator | Clear a board's cards or categories, or delete it, each through the page's `confirm` |
 | `UsersPanel.svelte` | every administrator | The accounts: create, invite, role, delete, resend; sets the page's `inviteLink` and asks the mail panel to read again after an invite (`loadMailStatus`); draws `ResetPasswordDialog`. Before a delete, and before a role change to User, names what the account's `settingsSet` (from the page's load) says would go, the role change asking first in the page's confirm only where something would (card 2397's review). Where a role change or a delete answers `settingsRemoved` (card 2397), says what went in a ⚠️ warning toast that stays and hands it to the page's `settingsRemoved`, which moves `mailRead` on for the mail settings or the App URL (the App URL and mail panels' `{#key}` blocks) and `destinationsRead` for destinations (Scheduled Backups'), so a panel whose settings did not change keeps what is open in it |
 | `ResetPasswordDialog.svelte` | every administrator | The password reset, opened by 🔑 through `bind:this` |
-| `InviteLinkDialog.svelte` | every administrator | An invite link whose mail was not sent, bound to the page's `inviteLink` (its `isSuperadmin` prop went with card 2395: it points every reader to Email / SMTP); carries its own copies of the modal rules, being drawn after `.admin-page` |
+| `InviteLinkDialog.svelte` | every administrator | A link shown once, in three kinds: an invite link whose mail was not sent, a two-step sign-in reset's link (`kind: 'mfa-reset'`, card 2773), and the set-up link of an account made with a password (`kind: 'new-account'`, card 2851); bound to the page's `inviteLink` (its `isSuperadmin` prop went with card 2395: it points every reader to Email / SMTP); carries its own copies of the modal rules, being drawn after `.admin-page` |
 | `TeamsPanel.svelte` | every administrator | Teams and their members |
 | `SmtpPanel.svelte` | every administrator (the superadmin until card 2395) | The mail settings and Send Test; reads its own settings when drawn; exports `loadMailStatus`, which the page hands the users panel as a callback; takes `currentUser` |
 | `DangerZonePanel.svelte` | every administrator; Reset Everything inside its own `{#if isSuperadmin}` | Purge Archived Cards, Vacuum, Reset All XP and Reset Everything, each through the page's `confirm`; sets the page's `resetNotice` |

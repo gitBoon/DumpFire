@@ -1487,6 +1487,52 @@ describe('the users panel, mounted', () => {
 		expect(navigation.invalidateAll).toHaveBeenCalledTimes(1);
 	});
 
+	it('shows the set-up link of a user made with a password in the dialog, under its own words (card 2851)', async () => {
+		const message = 'carol was made. Give them their set-up link yourself, with the password you chose: it is shown once, and works for seven days.';
+		answer = (what) =>
+			what === 'POST /api/users'
+				? Response.json({ username: 'carol', invited: false, enrolmentUrl: 'http://localhost/enrol/t4', message }, { status: 201 })
+				: undefined;
+		const link = { value: null as unknown };
+		const target = draw(UsersPanel, bound({ data: pageData, isSuperadmin: true, confirm: vi.fn(), loadMailStatus: vi.fn() }, 'inviteLink', link));
+
+		buttonNamed(target, '+ Add User').click();
+		flushSync();
+		type(target.querySelector<HTMLInputElement>('input[placeholder="Username"]')!, 'carol');
+		type(target.querySelector<HTMLInputElement>('input[placeholder="Email"]')!, 'carol@example.com');
+		type(target.querySelector<HTMLInputElement>('input[autocomplete="new-password"]')!, 'a long password');
+		type(target.querySelector<HTMLInputElement>('input[autocomplete="current-password"]')!, MINE);
+		typeCode(document);
+		buttonNamed(target, 'Create').click();
+		flushSync();
+		await settle();
+
+		expect(asked('POST /api/users').map((request) => (request.body as { password?: string }).password)).toEqual(['a long password']);
+		expect(link.value).toEqual({
+			url: 'http://localhost/enrol/t4',
+			username: 'carol',
+			message,
+			returnTo: buttonNamed(target, '+ Add User'),
+			kind: 'new-account'
+		});
+
+		// Drawn as the page draws it, from the link the panel handed back.
+		const dialog = draw(InviteLinkDialog, { inviteLink: link.value }).querySelector<HTMLElement>('[role="alertdialog"]')!;
+		flushSync();
+		expect(dialog.getAttribute('aria-label')).toBe("The new account's set-up link");
+		expect(dialog.querySelector('h2')!.textContent).toBe('🔑 Their set-up link');
+		expect(dialog.querySelector('code')!.textContent).toBe('http://localhost/enrol/t4');
+		expect(dialog.querySelector('#invite-link-said')!.textContent).toBe(message);
+		expect(dialog.querySelector('#invite-link-warning')!.textContent).toBe(
+			'Give carol this link yourself, with the password you chose, by a way only they read: it is shown once, here. It works for seven ' +
+				'days, and stops working if their password is set again or their two-step sign-in is reset. Whoever opens it and knows the ' +
+				"password sets up the authenticator of carol's account. Do not open it yourself."
+		);
+		expect(dialog.textContent).toContain('It is not shown again. If it is lost, give a new one with 🛡️ on their row.');
+		expect(document.activeElement).toBe(buttonNamed(dialog, '📋 Copy'));
+		expect(dialog.textContent).not.toContain('invite');
+	});
+
 	it('says a refusal of the caller’s password in Add User beside its field, labelled and focused, with no toast; the form stays (card 2701, F7)', async () => {
 		answer = (what) =>
 			what === 'POST /api/users' ? Response.json({ message: 'Password is incorrect. Nothing was changed.', stepUp: 'wrong' }, { status: 403 }) : undefined;

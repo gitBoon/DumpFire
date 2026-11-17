@@ -78,9 +78,10 @@
 		 * dialog shows, and the control the focus goes back to after Done (card
 		 * 2365's review: + Add User for Create, or the row's 📧). A two-step
 		 * sign-in reset's link is handed back the same way, with `kind:
-		 * 'mfa-reset'` (card 2773).
+		 * 'mfa-reset'` (card 2773), and a new account's set-up link, made with a
+		 * password, with `kind: 'new-account'` (card 2851).
 		 */
-		inviteLink: { url: string; username: string; message: string; returnTo?: HTMLElement; kind?: 'invite' | 'mfa-reset' } | null;
+		inviteLink: { url: string; username: string; message: string; returnTo?: HTMLElement; kind?: 'invite' | 'mfa-reset' | 'new-account' } | null;
 	} = $props();
 
 	/**
@@ -114,7 +115,8 @@
 
 	/**
 	 * The one invite out at a time (card 2196, R-S5): the account a 📧 was
-	 * pressed for, or 'new' for Create User with no password. While it is set
+	 * pressed for, or 'new' for Create User (an invite with no password, a
+	 * set-up link with one: card 2851). While it is set
 	 * every 📧 and Create User are disabled, and the pressed 📧 reads "…". An
 	 * invite now waits for its mail, a second or two, and a second press used
 	 * to issue a second invite, which ends the first one's link.
@@ -141,8 +143,9 @@
 		if (inviteInFlight !== null || inviteLink !== null) return;
 		const started = toasts.navigation();
 		creatingUser = true;
-		// With no password an invite is issued, and its mail waited for.
-		if (!newPassword) inviteInFlight = 'new';
+		// With no password an invite is issued, and its mail waited for; with
+		// one, a set-up link the dialog shows (card 2851). One link at a time.
+		inviteInFlight = 'new';
 		// The caller's own password goes with the request and no further: a
 		// refusal of it is said in the form, beside its field, and it is typed
 		// again.
@@ -184,6 +187,18 @@
 			const made = typeof result?.username === 'string' ? result.username : newUsername.trim();
 			newUsername = ''; newEmail = ''; newPassword = ''; newUserRole = 'user'; newUserEmoji = '👤';
 			await invalidateAll();
+			// Made with a password: its set-up link for two-step sign-in, shown
+			// once in the dialog, or the server's words when it was withheld
+			// (card 2851).
+			if (typeof result?.enrolmentUrl === 'string') {
+				const said = typeof result.message === 'string' ? result.message : `User ${made} was made.`;
+				inviteLink = { url: result.enrolmentUrl, username: made, message: said, returnTo: addUserButton, kind: 'new-account' };
+				return;
+			}
+			if (result?.enrolmentUrl === null && typeof result.message === 'string') {
+				showToast(result.message, 'error', started);
+				return;
+			}
 			// The user was made either way. Its invite mail not sent: the link,
 			// for the caller to pass on (card 2196), and never "invite email sent!".
 			if (result?.mailSent === false) {

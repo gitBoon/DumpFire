@@ -4,7 +4,11 @@ import { users } from '$lib/server/db/schema';
 import { whilePasswordHolds, type SessionUser } from '$lib/server/auth';
 import { LONGEST_PASSWORD, PASSWORD_TOO_LONG, makePasswordHash } from '$lib/server/passwords';
 import { issueInvite } from '$lib/server/invites';
-import { inviteMailAnswer } from '$lib/server/invite-link';
+import { ENROLMENT_LINK_NOT_GIVEN, enrolmentLinkNotGiven, inviteMailAnswer } from '$lib/server/invite-link';
+import { afterCommit } from '$lib/server/db/transaction';
+import { createLogger } from '$lib/server/logger';
+import { sha256Hex } from '$lib/server/mfa-crypto';
+import { ENROLMENT_LINK_PATH, issueEnrolmentLink } from '$lib/server/mfa-store';
 import { readAccountFields, requireAssignableRole, requireUnusedAccountFields } from '$lib/server/account-fields';
 import { readBody } from '$lib/server/request-body';
 import { listUsersFor } from '$lib/server/list-access';
@@ -14,6 +18,8 @@ import { requireAdmin, requireUser } from '$lib/server/route-guards';
 import { confirmStepUp } from '$lib/server/step-up';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
+
+const log = createLogger('AUTH');
 
 /**
  * GET — every user, for the share dialog's picker: `id`, `username` and
@@ -39,6 +45,14 @@ const NO_MAIL_PASSWORD = `Password must be at least 8 characters (${MAIL_PROBLEM
  * and `inviteUrl`, the link for the caller to pass on by hand, left out when
  * the checks of invite-link.ts no longer hold. `invited` used to be the whole
  * answer, and the page said "invite email sent!" whether or not it went.
+ *
+ * With a password the administrator chose, the account's set-up link for
+ * two-step sign-in is issued in the transaction that makes it (`issued_by`
+ * `admin-create`, card 2851) and given once in the answer, never mailed:
+ * `enrolmentUrl` and `message`, answered with no-store, or `enrolmentUrl:
+ * null` when card 2773's three checks no longer hold once it is committed.
+ * With no link address (no App URL, `APP_URL` or `ORIGIN`) every create is
+ * refused `503`: the account could get neither an invite nor a set-up link.
  *
  * It asks for the caller's own password again, in `currentPassword` (card
  * 2701, step-up.ts), after every refusal that needs none.
@@ -97,7 +111,9 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 	const { userId, hash } = await confirmStepUp(locals, cookies, body, 'POST /api/users', (caller) => {
 		roleFor(caller);
 		requireUnused();
-		if (!password && linkBaseUrl(url) === null) throw error(503, NO_LINK_ADDRESS);
+		// Every new account needs a link: an invite with no password, a set-up
+		// link with one (card 2851). With no address there is neither.
+		if (linkBaseUrl(url) === null) throw error(503, NO_LINK_ADDRESS);
 	});
 
 	// Hashing takes about a quarter of a second, on a worker thread, and is
@@ -109,7 +125,8 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 		: await makePasswordHash(crypto.randomUUID(), 'known'); // Random placeholder — user must set via invite
 
 	// One transaction: the name and address are checked as unused in the one
-	// that creates the user, and the user and their invite are made together.
+	// that creates the user, and the user and their invite, or their set-up
+	// link (card 2851), are made together.
 	// A failure between the two used to leave a user with a password nobody
 	// knows and no invite to set one. The mail is sent once it is committed.
 	// The hash was awaited, so the session is asked again, and the role
@@ -129,12 +146,13 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 			throw error(400, NO_MAIL_PASSWORD);
 		}
 
-		// An invite is a link, and the address it begins with is this server's
-		// configuration and never what the request says: see linkBaseUrl. With
-		// none there is no invite to send, and the user is not made: they would
-		// have a password nobody knows and no way to set one.
-		const inviteFrom = password ? null : linkBaseUrl(url);
-		if (!password && inviteFrom === null) {
+		// An invite and a set-up link are links, and the address they begin with
+		// is this server's configuration and never what the request says: see
+		// linkBaseUrl. With none the user is not made: with no password they
+		// would have one nobody knows and no way to set it; with one, no way to
+		// set up two-step sign-in, without which they cannot sign in (card 2851).
+		const linkFrom = linkBaseUrl(url);
+		if (linkFrom === null) {
 			throw error(503, NO_LINK_ADDRESS);
 		}
 
@@ -152,12 +170,67 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 		// If no password was provided and SMTP is ready, issue an invite, mailed
 		// below. A new user has no earlier invite to end, but an invite is issued
 		// one way, in invites.ts, so its lifetime and its rule are written once.
-		const invite = inviteFrom !== null ? { token: issueInvite(account.id), baseUrl: inviteFrom } : null;
+		const invite = password ? null : { token: issueInvite(account.id), baseUrl: linkFrom };
 
-		return { account, invite, actorId };
+		// With a password the administrator chose, the account's set-up link,
+		// made with it or not at all (card 2851, D1): since two-step sign-in an
+		// account cannot sign in until it has set up an authenticator. Never
+		// mailed (card 2773, decision 6): the administrator gives it with the
+		// password. Said once committed, naming the two accounts and never the
+		// link or its token.
+		const enrolToken = password ? issueEnrolmentLink(account.id, 'admin-create') : null;
+		if (enrolToken !== null) {
+			// The caller's name, read here: the callback's caller is never kept past it (card 2253).
+			const actorName = requireUser(caller).username;
+			afterCommit(() =>
+				log.info(
+					`Account ${account.id} ("${account.username}") made by "${actorName}" with a password they chose; an enrolment link was issued`,
+					{ accountId: account.id, issuedBy: 'admin-create' },
+					{ userId: actorId }
+				)
+			);
+		}
+
+		return { account, invite, enrolToken, actorId, linkFrom };
 	}));
 
-	const { account, invite, actorId } = created;
+	const { account, invite, enrolToken, actorId, linkFrom } = created;
+	if (enrolToken !== null) {
+		// Card 2773's three checks (decision 15), by reads only, before the link
+		// is put in the answer: the caller's session still open and an
+		// administrator's, the caller still allowed to manage the account, the
+		// link still the account's. One failing, the account stands and the
+		// link is withheld.
+		const notGiven = enrolmentLinkNotGiven(locals.credential, actorId, account.id, sha256Hex(enrolToken));
+		if (notGiven !== null) {
+			log.warn(
+				`The enrolment link of user ${account.id}, issued when user ${actorId} made the account, was not given to them: ${ENROLMENT_LINK_NOT_GIVEN[notGiven]}`,
+				{ accountId: account.id, check: notGiven },
+				{ userId: actorId }
+			);
+			return json(
+				{
+					...account,
+					invited: false,
+					enrolmentUrl: null,
+					message: `${account.username} was made, but their set-up link cannot be shown to you now. Press 🛡️ on their row to issue a new one.`
+				},
+				{ status: 201, headers: { 'Cache-Control': 'no-store' } }
+			);
+		}
+		return json(
+			{
+				...account,
+				invited: false,
+				enrolmentUrl: `${linkFrom}${ENROLMENT_LINK_PATH}${enrolToken}`,
+				message:
+					`${account.username} was made. Give them their set-up link yourself, with the password you chose: it is ` +
+					'shown once, and works for seven days.'
+			},
+			// The answer holds a credential: kept by nothing on the way.
+			{ status: 201, headers: { 'Cache-Control': 'no-store' } }
+		);
+	}
 	if (invite === null) return json({ ...account, invited: false }, { status: 201 });
 
 	// After the commit, and awaited: an effect never starts inside a

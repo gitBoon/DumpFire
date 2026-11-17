@@ -12,6 +12,10 @@
   (card 2773, decision 8), with `kind: 'mfa-reset'` on the link: the same
   📋 Copy and Done, with its own label, heading, warning and footer. With no
   `kind`, or `'invite'`, every word is the invite's, as before.
+
+  And the set-up link of an account an administrator has just made with a
+  password they chose (card 2851), with `kind: 'new-account'`: given with
+  that password, its own words again.
 -->
 <script lang="ts">
 	import { holdFocus } from '$lib/dialog-focus';
@@ -21,13 +25,16 @@
 	}: {
 		/**
 		 * The page's: set by the users panel, cleared here with Done. `returnTo` is the control the focus goes back to after Done.
-		 * `kind` says whose link it is: an invite's (the default), or a two-step sign-in reset's (card 2773).
+		 * `kind` says whose link it is: an invite's (the default), a two-step sign-in reset's (card 2773), or the set-up link of an
+		 * account just made with a password (card 2851).
 		 */
-		inviteLink: { url: string; username: string; message: string; returnTo?: HTMLElement; kind?: 'invite' | 'mfa-reset' } | null;
+		inviteLink: { url: string; username: string; message: string; returnTo?: HTMLElement; kind?: 'invite' | 'mfa-reset' | 'new-account' } | null;
 	} = $props();
 
-	/** A two-step sign-in reset's link (card 2773), whose words are its own; anything else is an invite's. */
+	/** A two-step sign-in reset's link (card 2773), whose words are its own; anything else is an invite's or a new account's. */
 	let isReset = $derived(inviteLink?.kind === 'mfa-reset');
+	/** A new account's set-up link (card 2851), given with the password the administrator chose. */
+	let isNewAccount = $derived(inviteLink?.kind === 'new-account');
 
 	/** What 📋 Copy did: said on the button, so the link is never put in a toast. */
 	let inviteLinkCopy = $state<'idle' | 'copied' | 'failed'>('idle');
@@ -62,17 +69,22 @@
 <!-- The link of an invite whose mail was not sent (card 2196, decision 9): shown once, to the administrator who issued it, and gone on Done. No way out of it but Done, so no Escape: the link would be lost.
      It holds the keyboard as the page's other dialogs do (card 2365: Tab walked the page behind it): Copy has the focus as it opens, Tab stays in it, and the focus goes back as it closes to the control the users panel names (+ Add User, or the row's 📧). -->
 {#if inviteLink}
-	<div class="modal-overlay" role="alertdialog" aria-modal="true" aria-label={isReset ? "The two-step sign-in reset's link" : 'The invite mail was not sent'} aria-describedby="invite-link-said invite-link-warning">
+	<div class="modal-overlay" role="alertdialog" aria-modal="true" aria-label={isReset ? "The two-step sign-in reset's link" : isNewAccount ? "The new account's set-up link" : 'The invite mail was not sent'} aria-describedby="invite-link-said invite-link-warning">
 		<div class="modal-content confirm-modal" role="document" style="max-width: 560px" use:holdFocus={{ first: '.invite-link-row button', returnTo: backTo(inviteLink) }}>
 			{#if isReset}
 				<!-- Card 2773, decision 6: the link is never mailed, so this is the one place it is given, to the administrator who reset the account. -->
 				<h2>🛡️ Two-step sign-in was reset</h2>
+			{:else if isNewAccount}
+				<!-- Card 2851: never mailed either (card 2773, decision 6); given here, once, with the password the administrator chose. -->
+				<h2>🔑 Their set-up link</h2>
 			{:else}
 				<h2>📧 The invite mail was not sent</h2>
 			{/if}
 			<p id="invite-link-said" style="margin-bottom: var(--space-sm)">{inviteLink.message}</p>
 			{#if isReset}
 				<p id="invite-link-warning" style="margin-bottom: var(--space-sm)">Give {inviteLink.username} this link yourself, by a way only they read: it is shown once, here. It works for seven days, and stops working if their two-step sign-in is reset again. Whoever opens it sets up the authenticator of {inviteLink.username}'s account, and the account still needs its password. Do not open it yourself.</p>
+			{:else if isNewAccount}
+				<p id="invite-link-warning" style="margin-bottom: var(--space-sm)">Give {inviteLink.username} this link yourself, with the password you chose, by a way only they read: it is shown once, here. It works for seven days, and stops working if their password is set again or their two-step sign-in is reset. Whoever opens it and knows the password sets up the authenticator of {inviteLink.username}'s account. Do not open it yourself.</p>
 			{:else}
 				<p id="invite-link-warning" style="margin-bottom: var(--space-sm)">Give this link to {inviteLink.username} yourself, by a way only they read. Whoever opens it can set the password of {inviteLink.username}'s account, then sets up its two-step sign-in and is signed in as them. It works once, for seven days, and stops working if another invite is sent to this account. Do not open it yourself.</p>
 			{/if}
@@ -83,6 +95,8 @@
 			</div>
 			{#if isReset}
 				<p>It is not shown again. If it is lost, reset {inviteLink.username}'s two-step sign-in again with 🛡️, which issues a new link and ends this one.</p>
+			{:else if isNewAccount}
+				<p>It is not shown again. If it is lost, give a new one with 🛡️ on their row.</p>
 			{:else}
 				<!-- The mail panel is every administrator's since card 2395, so it is below for whoever sees this. -->
 				<p>It is not shown again. If it is lost, send a new invite with 📧. Why it failed is under Email / SMTP below.</p>

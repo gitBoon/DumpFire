@@ -25,13 +25,19 @@
  * once mail works. Either way one `WARN` line says that the mail of an invite
  * failed and whether its link was given, naming the two accounts by id and
  * holding no link and no token: the trail that an administrator held a link.
+ *
+ * The routes that give an enrolment link in their answer ask the same three
+ * of it, the third of the link (`enrolmentLinkNotGiven`, card 2773's decision
+ * 15, shared by the two-step reset and, since card 2851, the create with a
+ * password).
  */
-import { eq } from 'drizzle-orm';
+import { and, eq, gt } from 'drizzle-orm';
 import { mayManageAccount } from '$lib/account-rule';
+import { stamp } from '$lib/timestamps';
 import { openSessionUser, sessionHashIn, type Credential } from './auth';
 import { isAdmin } from './board-access';
 import { db } from './db';
-import { users } from './db/schema';
+import { enrolmentLinks, users } from './db/schema';
 import { MAIL_PROBLEM_WORDS, type MailOutcome } from './email';
 import { usableInvite } from './invites';
 import { createLogger } from './logger';
@@ -111,6 +117,44 @@ export function inviteMailAnswer(opts: {
 
 	log.warn(`${said} given in the answer to their request`, { accountId, problem: outcome.problem }, { userId: actorId });
 	return { mailSent: false, mailProblem, inviteUrl: `${baseUrl}/invite/${token}` };
+}
+
+/**
+ * Why an enrolment link was withheld from an answer, by the check of card
+ * 2773's decision 15 that failed: the two-step reset's (POST
+ * /api/users/[id]/mfa/reset) and, since card 2851, the one issued with an
+ * account an administrator makes with a password (POST /api/users).
+ */
+export const ENROLMENT_LINK_NOT_GIVEN = {
+	...CALLER_NOT_GIVEN,
+	link: "the link is no longer the account's"
+} as const;
+
+/**
+ * The first of decision 15's checks that fails for an enrolment link about to
+ * be put in an answer, or null when all three hold, by reads only. The first
+ * two are `callerStillManages` (card 2773's review, C-I1); the third, that
+ * the link (by its token's hash) is still live and still the account's. One
+ * function for both routes that give such a link (card 2851), so that the two
+ * cannot come to say different things of the same failure.
+ */
+export function enrolmentLinkNotGiven(
+	credential: Credential | null | undefined,
+	actorId: number,
+	accountId: number,
+	tokenHash: string
+): keyof typeof ENROLMENT_LINK_NOT_GIVEN | null {
+	const callerCheck = callerStillManages(credential, actorId, accountId);
+	if (callerCheck !== null) return callerCheck;
+
+	const link = db
+		.select({ userId: enrolmentLinks.userId })
+		.from(enrolmentLinks)
+		.where(and(eq(enrolmentLinks.tokenHash, tokenHash), gt(enrolmentLinks.expiresAt, stamp())))
+		.get();
+	if (!link || link.userId !== accountId) return 'link';
+
+	return null;
 }
 
 /** The first of R-S1's checks that fails, or null when all three hold. */

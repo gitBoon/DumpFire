@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.126
+version: 1.127
 status: As-Built
 date: 2026-11-17
 tags:
@@ -3133,7 +3133,8 @@ The sessions, invites, pending sign-ins and links end through
 `endAccountAccess(userId, { apiKeys: false, reportSchedules: false })`, and the link is issued
 after it, since that deletes the account's links. **The link** (`issueEnrolmentLink()`, also
 inside the caller's transaction): its token is 32 random bytes as base64url; only its SHA-256 is
-stored, in `enrolment_links` with `issued_by` (`admin-reset` here), `created_at` and an
+stored, in `enrolment_links` with `issued_by` (`admin-reset` here; `admin-create` for a new
+account's, card 2851; `host-reset` and `release-mail` elsewhere), `created_at` and an
 `expires_at` seven days on (`ENROLMENT_LINK_LIFETIME_MS`); issuing deletes the account's earlier
 links first, so an account has one link that works and a leaked older one stops. Its address is
 `<base>/enrol/<token>` (`ENROLMENT_LINK_PATH`), `<base>` being `linkBaseUrl()`'s, as a mailed
@@ -3173,7 +3174,9 @@ token, and every text in it is escaped. The reset stands whether or not it goes.
 was out: the caller's session is still open, theirs, and an administrator's; they may still
 manage the account (these two are `callerStillManages()` in `invite-link.ts`, the one helper the
 invite route and this route both ask); and the link, by its hash, is still the account's and
-unexpired, this route's own check. If one
+unexpired. All three are `enrolmentLinkNotGiven()` in `invite-link.ts` (its words
+`ENROLMENT_LINK_NOT_GIVEN`), moved there from this route by card 2851 so that the create's
+set-up link asks the same ([Set-Up Links and Their Page](#set-up-links-and-their-page)). If one
 fails, the reset stands, `enrolmentUrl` is `null`, the message says "…'s two-step sign-in was
 reset, but its link cannot be shown to you now. Run the reset again to issue a new one.", and
 one `WARN` line under `AUTH` says why: `The enrolment link of user <id>, issued by user <id>'s
@@ -3816,6 +3819,43 @@ account the link is for opens an enrol challenge that names the link. A link is 
 `usableEnrolmentLink()` in `src/lib/server/mfa-store.ts` and taken only at confirm. Its page
 carries `no-referrer`, and its address is masked in the log (see
 [The Enrolment Link's Path Is Masked](#the-enrolment-links-path-is-masked)).
+
+**A new account's link (card 2851).** An account an administrator makes with a password they
+chose (`POST /api/users` with `password`) gets its link in the transaction that makes it:
+`issueEnrolmentLink(account.id, 'admin-create')` after the insert, so the account and its link
+are made together or not at all. Before it, such an account's first right password was answered
+`NEEDS_LINK` until someone pressed 🛡️ on its row. The link is never mailed (card 2773, decision
+6): the administrator gives it with the password. Once committed, one `INFO` line under `AUTH`,
+filed under the caller: `Account <id> ("<name>") made by "<admin>" with a password they chose;
+an enrolment link was issued`, its meta `{ accountId, issuedBy: 'admin-create' }`, never the link
+or its token. Then the reset's three checks, `enrolmentLinkNotGiven()`: all holding, the answer
+is `201` with `enrolmentUrl` (`<base>/enrol/<token>`) and `message`, `Cache-Control: no-store`,
+and the Users panel shows it once in `InviteLinkDialog` under its own words ("🔑 Their set-up
+link", `kind: 'new-account'`); one failing, the account and its link stand, `enrolmentUrl` is
+`null`, the message says to press 🛡️ on the row for a new one, and one `WARN` line says why:
+`The enrolment link of user <id>, issued when user <id> made the account, was not given to them:
+<reason>`. With no link address (no App URL, `APP_URL` or `ORIGIN`, on a built server) every
+create is refused `503` `NO_LINK_ADDRESS` before the password is compared: such an account could
+be given neither an invite nor a set-up link.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant P as Users panel
+    participant R as POST /api/users
+    participant DB as Database
+    P->>R: username, email, password, currentPassword, currentCode
+    R->>R: fields, role, unused name, link address (503 if none), then the step-up
+    R->>DB: one transaction: caller asked again, insert user, issueEnrolmentLink(admin-create)
+    R->>R: after commit: INFO line; enrolmentLinkNotGiven (reads only)
+    alt all three hold
+        R-->>P: 201, enrolmentUrl, no-store
+        P->>P: InviteLinkDialog, kind new-account
+    else one fails
+        R-->>P: 201, enrolmentUrl null, words; WARN line
+        P->>P: error toast with the words
+    end
+```
 
 ### The Release, Risk R1 and the Release Mail
 

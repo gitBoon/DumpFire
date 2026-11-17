@@ -1,11 +1,8 @@
 import { error, json } from '@sveltejs/kit';
-import { and, eq, gt } from 'drizzle-orm';
-import { db } from '$lib/server/db';
 import { afterCommit } from '$lib/server/db/transaction';
-import { enrolmentLinks } from '$lib/server/db/schema';
-import { whilePasswordHolds, type Credential, type SessionUser } from '$lib/server/auth';
+import { whilePasswordHolds, type SessionUser } from '$lib/server/auth';
 import { MAIL_PROBLEM_WORDS, NO_LINK_ADDRESS, isSmtpConfigured, linkBaseUrl, smtpPasswordMissing } from '$lib/server/email';
-import { CALLER_NOT_GIVEN, callerStillManages } from '$lib/server/invite-link';
+import { ENROLMENT_LINK_NOT_GIVEN, enrolmentLinkNotGiven } from '$lib/server/invite-link';
 import { sha256Hex } from '$lib/server/mfa-crypto';
 import { ENROLMENT_LINK_PATH, resetTwoStep } from '$lib/server/mfa-store';
 import { sendMfaResetNotice } from '$lib/server/notifications';
@@ -14,16 +11,9 @@ import { confirmStepUp } from '$lib/server/step-up';
 import { writeAs } from '$lib/server/write-as';
 import { pathId, readBody } from '$lib/server/request-body';
 import { createLogger } from '$lib/server/logger';
-import { stamp } from '$lib/timestamps';
 import type { RequestHandler } from './$types';
 
 const log = createLogger('AUTH');
-
-/** Why the link was withheld from the answer, by the check of decision 15 that failed. */
-const NOT_GIVEN = {
-	...CALLER_NOT_GIVEN,
-	link: "the link is no longer the account's"
-} as const;
 
 /**
  * POST — Reset another account's two-step sign-in (card 2773): its
@@ -45,7 +35,8 @@ const NOT_GIVEN = {
  * changed the account's address. The account's address is sent a notice
  * that holds no link (decision 7), once the reset is committed, and awaited;
  * then three things are read again before the link is put in the answer
- * (decision 15, as invite-link.ts does): the caller's session is still open
+ * (decision 15, `enrolmentLinkNotGiven` in invite-link.ts, shared with the
+ * create's link since card 2851): the caller's session is still open
  * and an administrator's, the caller may still manage the account, and the
  * link is still the account's. If one fails the reset stands, the link is
  * withheld, and the answer says to run the reset again.
@@ -160,11 +151,11 @@ export const POST: RequestHandler = async ({ params, request, locals, url, cooki
 		invitesEnded: reset.invites
 	};
 	const told = mailSent ? ` ${target.username} was sent a notice that holds no link.` : '';
-	const notGiven = whyNotGiven(locals.credential, actor.id, target.id, sha256Hex(reset.token));
+	const notGiven = enrolmentLinkNotGiven(locals.credential, actor.id, target.id, sha256Hex(reset.token));
 
 	if (notGiven !== null) {
 		log.warn(
-			`The enrolment link of user ${target.id}, issued by user ${actor.id}'s reset, was not given to them: ${NOT_GIVEN[notGiven]}`,
+			`The enrolment link of user ${target.id}, issued by user ${actor.id}'s reset, was not given to them: ${ENROLMENT_LINK_NOT_GIVEN[notGiven]}`,
 			{ accountId: target.id, check: notGiven },
 			{ userId: actor.id }
 		);
@@ -198,22 +189,3 @@ export const POST: RequestHandler = async ({ params, request, locals, url, cooki
 		{ headers: { 'Cache-Control': 'no-store' } }
 	);
 };
-
-/**
- * The first of decision 15's checks that fails, or null when all three hold,
- * by reads only. The first two are invite-link.ts's own, shared (card 2773's
- * review, C-I1); the third, of the enrolment link, is this route's.
- */
-function whyNotGiven(credential: Credential | null | undefined, actorId: number, accountId: number, tokenHash: string): keyof typeof NOT_GIVEN | null {
-	const callerCheck = callerStillManages(credential, actorId, accountId);
-	if (callerCheck !== null) return callerCheck;
-
-	const link = db
-		.select({ userId: enrolmentLinks.userId })
-		.from(enrolmentLinks)
-		.where(and(eq(enrolmentLinks.tokenHash, tokenHash), gt(enrolmentLinks.expiresAt, stamp())))
-		.get();
-	if (!link || link.userId !== accountId) return 'link';
-
-	return null;
-}

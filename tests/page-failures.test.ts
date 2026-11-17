@@ -6647,6 +6647,13 @@ describe('the admin page’s invite whose mail was not sent, src/lib/components/
 		expect(set.length).toBeGreaterThan(0);
 		for (const assignment of set) {
 			expect(sideOf(assignment)).toBe('ok');
+			// Card 2851: Create User with a password sets it to the new account's set-up link, under its own test.
+			if (name === 'createUser' && assignment.right.getText().includes('enrolmentUrl')) {
+				const under = ts.findAncestor(assignment, (node) => ts.isIfStatement(node) && node.expression.getText() === "typeof result?.enrolmentUrl === 'string'");
+				expect(under, assignment.getText()).toBeDefined();
+				expect(assignment.right.getText()).toContain("kind: 'new-account'");
+				continue;
+			}
 			const under = ts.findAncestor(assignment, (node) => ts.isIfStatement(node) && node.expression.getText().includes('mailSent === false'));
 			expect(under, assignment.getText()).toBeDefined();
 			expect(assignment.right.getText()).toContain('inviteUrl');
@@ -6688,7 +6695,7 @@ describe('the admin page’s invite whose mail was not sent, src/lib/components/
 		expect(allMarkup).not.toMatch(/inviteLink\s*=[^=]/);
 		// The page holds it, and hands it to the panel that sets it and the dialog that shows it.
 		expect(pageSource).toContain(
-			"let inviteLink = $state<{ url: string; username: string; message: string; returnTo?: HTMLElement; kind?: 'invite' | 'mfa-reset' } | null>(null);"
+			"let inviteLink = $state<{ url: string; username: string; message: string; returnTo?: HTMLElement; kind?: 'invite' | 'mfa-reset' | 'new-account' } | null>(null);"
 		);
 		expect(pageSource.split('\n').filter((line) => line.includes('<UsersPanel ') && line.includes(' bind:inviteLink '))).toHaveLength(1);
 		// Card 2395: it no longer needs to know whether the reader is the superadmin.
@@ -6731,7 +6738,8 @@ describe('the admin page’s invite whose mail was not sent, src/lib/components/
 		}
 		expect(statementsOf(functionNamed(tree, 'resendInvite'), 'inviteInFlight = userId')).toHaveLength(1);
 		expect(statementsOf(functionNamed(tree, 'resetTwoStepOf'), 'inviteInFlight = userId')).toHaveLength(1);
-		expect(functionNamed(tree, 'createUser').getText()).toContain("if (!newPassword) inviteInFlight = 'new';");
+		// Card 2851: for every create, a set-up link with a password as an invite without one.
+		expect(statementsOf(functionNamed(tree, 'createUser'), "inviteInFlight = 'new'")).toHaveLength(1);
 
 		// Card 2701: 📧 asks first, for the caller's password, through the page's confirm, and asks nothing while an invite is out.
 		// Card 2773: aria-disabled for an account that uses two-step sign-in, beside 🛡️, gated the same way.
