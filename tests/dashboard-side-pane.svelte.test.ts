@@ -229,10 +229,10 @@ describe('the dashboard display choice in its cookie (card 2526)', () => {
 	it('writes the cookie from the browser, per user: URI-encoded JSON, for the whole site, a year, Lax, not HttpOnly', () => {
 		const choice: DashboardDisplay = { hiddenPanels: ['health', 'xp'], paneHidden: true, showCompletedBoards: false, showCompletedSubs: true };
 		expect(dashboardDisplayCookie(1)).toBe('dumpfire-dashboard-display-1');
-		expect(dashboardDisplayCookieText(1, choice)).toBe(
+		expect(dashboardDisplayCookieText(1, choice, false)).toBe(
 			`dumpfire-dashboard-display-1=${encodeURIComponent(JSON.stringify(choice))}; Path=/; Max-Age=31536000; SameSite=Lax`
 		);
-		expect(dashboardDisplayCookieText(1, choice)).not.toMatch(/HttpOnly/i);
+		expect(dashboardDisplayCookieText(1, choice, false)).not.toMatch(/HttpOnly/i);
 		writeDashboardDisplay(1, choice);
 		expect(parseDashboardDisplay(cookie('dumpfire-dashboard-display-1'))).toEqual(choice);
 		// Another viewer on the same browser has their own.
@@ -240,6 +240,13 @@ describe('the dashboard display choice in its cookie (card 2526)', () => {
 		// With no viewer nothing is written.
 		writeDashboardDisplay(null, defaultDisplay());
 		expect(document.cookie.split('; ')).toHaveLength(1);
+	});
+
+	it('marks the cookie Secure when the page is served over HTTPS (card 2850)', () => {
+		const choice: DashboardDisplay = { hiddenPanels: ['health'], paneHidden: false, showCompletedBoards: true, showCompletedSubs: false };
+		expect(dashboardDisplayCookieText(1, choice, true)).toBe(
+			`dumpfire-dashboard-display-1=${encodeURIComponent(JSON.stringify(choice))}; Path=/; Max-Age=31536000; SameSite=Lax; Secure`
+		);
 	});
 
 	it('says nothing when the cookie cannot be written', () => {

@@ -1,5 +1,5 @@
 /**
- * startup-checks.ts — thirteen things about an installation that are said in the
+ * startup-checks.ts — fourteen things about an installation that are said in the
  * system log when the server starts, because nothing else would say them.
  *
  * None stops the server and none changes anything. They are looked for by
@@ -36,7 +36,10 @@
  * owner may not know why until an event's line says so. The thirteenth is
  * each SFTP backup destination with no confirmed host key (card 2250): no
  * backup is sent to it until its key is confirmed, and where failure mail is
- * off nothing else says so.
+ * off nothing else says so. The fourteenth, in a built server only, is an
+ * `http:` `ORIGIN` behind an `https:` App URL (card 2850): every request is
+ * then taken as plain HTTP, so cookies go without Secure and sign-in forms
+ * from the https address are refused.
  *
  * And two that do stop the server, after the migrations and before it
  * listens: `refuseUserlessBesideAnother`, when the database in use has no
@@ -61,6 +64,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { posix } from 'node:path';
+import { dev } from '$app/environment';
 import { createdAtStart, getDbPath, otherDatabaseAtStart, sqlite } from './db';
 import { DatabaseLocationError, described, heldInContainerLayer, type OtherDatabase } from './db/location';
 import { PLACEHOLDER_ORIGIN, configuredOrigin, getAppUrl } from './email';
@@ -70,7 +74,7 @@ import { PLACEHOLDER_ORIGIN, configuredOrigin, getAppUrl } from './email';
 import { createLogger, isLogged, printable } from './logger';
 import { maskSecretsInLog } from './secret-paths';
 import { NOT_IN_HASH_FORM, REPLACE_PLAIN_USED_INVITES } from './invites';
-import { SESSION_NOT_IN_HASH_FORM } from './auth';
+import { SESSION_NOT_IN_HASH_FORM, httpsOnlyCookie } from './auth';
 import { signInsOneAtATime } from './known-browsers';
 import { cspMode } from './gate-answers';
 import { boardsInLoops } from './sub-boards';
@@ -873,7 +877,37 @@ export function reportUnconfirmedHostKeys(): boolean {
 }
 
 /**
- * Say all thirteen, if they are so. Called once, from hooks.server.ts, as the
+ * One WARN line in a built server whose App URL is `https:` while `ORIGIN`
+ * is set and `http:`, and a plain-HTTP request would get no Secure cookie
+ * (card 2850, decision 4). Returns whether it was said.
+ *
+ * With `ORIGIN` set, the node adapter takes every request's address from it,
+ * whatever the proxy in front says. So behind an HTTPS proxy every request
+ * counts as plain HTTP: a sign-in form posted from the https address is
+ * refused by the framework's origin check, and the cookies set elsewhere (the
+ * set-up link's, a password change's) go without Secure unless
+ * `COOKIE_SECURE` or `NODE_ENV` asks for it. With `ORIGIN` `https:` every
+ * cookie is Secure, and with it unset the scheme is the proxy's to say, so
+ * neither is judged here. Not under the dev server, which is plain HTTP.
+ */
+export function reportPlainOriginBehindHttps(isDev: boolean = dev, origin: string | undefined = process.env.ORIGIN): boolean {
+	if (isDev) return false;
+	const appUrl = getAppUrl();
+	if (!appUrl || !/^https:\/\//i.test(appUrl)) return false;
+	const plain = configuredOrigin(origin);
+	if (!plain || !plain.startsWith('http:')) return false;
+	if (httpsOnlyCookie(new URL(plain))) return false;
+
+	log.warn(
+		`ORIGIN is ${plain} but the App URL is ${appUrl}: every request is taken as plain HTTP, so cookies are not ` +
+			'marked Secure and sign-in forms from the https address are refused. Start the server with ORIGIN set to ' +
+			'the https address.'
+	);
+	return true;
+}
+
+/**
+ * Say all fourteen, if they are so. Called once, from hooks.server.ts, as the
  * server loads.
  *
  * It never throws, whatever goes wrong in looking: a fault here must not be
@@ -894,7 +928,8 @@ export function reportInstallation(): void {
 		() => reportWebhookAllowInside(),
 		reportWebhooksOverCap,
 		reportWebhooksRefused,
-		reportUnconfirmedHostKeys
+		reportUnconfirmedHostKeys,
+		() => reportPlainOriginBehindHttps()
 	]) {
 		try {
 			check();

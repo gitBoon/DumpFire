@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.119
+version: 1.120
 status: As-Built
 date: 2026-11-17
 tags:
@@ -1212,7 +1212,7 @@ code), `tests/check-at-the-write.test.ts` (T12), `tests/page-failures.test.ts` (
 
 | Property | Value |
 |----------|-------|
-| Cookie name | `__Host-dumpfire_session` where cookies are HTTPS-only (`COOKIE_SECURE`, or production) or the request came over HTTPS; otherwise `dumpfire_session`. See [Session Codes Stored as Hashes, and Limits by Role](#session-codes-stored-as-hashes-and-limits-by-role-card-2775) |
+| Cookie name | `__Host-dumpfire_session` where cookies are HTTPS-only (`COOKIE_SECURE`, or production; `COOKIE_SECURE=false` never removes it from an HTTPS request) or the request came over HTTPS; otherwise `dumpfire_session`. See [Session Codes Stored as Hashes, and Limits by Role](#session-codes-stored-as-hashes-and-limits-by-role-card-2775) |
 | How it is read | By the gate alone, from the raw `Cookie` header: exactly one value of the name in force, shaped as a UUID, or none. Two values of the name, or a value no session code can have, is no session |
 | Token format | `crypto.randomUUID()` |
 | Duration | One deadline per session: the earlier of its expiry (idle limit) and its start plus the total limit. Administrators and the superadmin 12 hours idle, 24 hours in total; users 3 days idle, 7 days in total. Judged on the account's role at every check. A start or expiry more than 60 seconds beyond what the role allows counts as passed |
@@ -1221,6 +1221,68 @@ code), `tests/check-at-the-write.test.ts` (T12), `tests/page-failures.test.ts` (
 | Wrong current passwords | `sessions.wrong_password_count` (migration 0062, card 2701): one added for each password compared (a check refused unchecked, in flight, busy, or at step 2b, adds none), set to 0 only by a right password with a right code (card 2771), and the third wrong answer, either part, ends the session. See [Guessing a Current Password](#guessing-a-current-password) |
 | Made after a second factor | `sessions.two_step` (migration 0066, card 2769): `createSession()` writes 1; a session with any other value is refused and deleted. See [Older Images and Instances](#older-images-and-instances) |
 | Flags | `httpOnly`, `sameSite: lax`, `secure` where cookies are HTTPS-only or the request is HTTPS; `Path=/`, never a `Domain`; `Max-Age` runs to the session's total limit |
+
+### Every Cookie DumpFire Sets (card 2850)
+
+Every cookie the server sets or deletes is `Secure` by one rule, `httpsOnlyCookie(url)` in
+`src/lib/server/auth.ts`, and takes the `__Host-` name by the same rule where it has one:
+
+1. A request that came over `https:` is always `Secure`, whatever `COOKIE_SECURE` says.
+2. Otherwise `COOKIE_SECURE` decides when it is set (exactly `true` is on, anything else off).
+3. Otherwise `NODE_ENV` exactly `production` (a missing or misspelt `NODE_ENV` is not).
+
+So `COOKIE_SECURE=false` affects plain-HTTP requests only. It is what keeps a plain-HTTP LAN
+install of the image working (the image sets `NODE_ENV=production`, and a browser drops a
+`Secure` cookie set by an `http:` address other than localhost), and it cannot take `Secure`
+off a cookie sent over HTTPS. The environment's half, `secureCookies()`, is private to
+`auth.ts`, so no new cookie can use it alone; `tests/secure-cookies.test.ts` (T5) reads the
+source and fails on any `cookies.set` or `cookies.delete` whose `secure` is not
+`httpsOnlyCookie(url)`.
+
+| Cookie | Set / deleted by | `Secure` | Name prefix |
+|---|---|---|---|
+| `__Host-dumpfire_session` / `dumpfire_session` | `setSessionCookie()`, `clearSessionCookie()` (`auth.ts`) | `httpsOnlyCookie(url)` | `__Host-` by the same rule |
+| Deletion of a plain-name session cookie (a `Set-Cookie` header the gate appends, not `event.cookies`) | `oldSessionCookieDeletion()` (`auth.ts`), appended in `hooks.server.ts` | Literal `Secure`, sent only when `httpsOnlyCookie(url)` | None (it deletes the plain name) |
+| `__Host-dumpfire_challenge` / `dumpfire_challenge` | `sign-in-challenges.ts` | `httpsOnlyCookie(url)` | `__Host-` by the same rule |
+| `dumpfire_enrol_link` | `sign-in-challenges.ts` (set on the GET of `/enrol/[token]`) | `httpsOnlyCookie(url)` | None: `Path=/login` rules out `__Host-` |
+| `dumpfire_known_<user id>` | `rememberBrowser()` (`known-browsers.ts`), which takes the request's URL as a required argument | `httpsOnlyCookie(url)` (card 2850; it was the environment alone before) | None: `Path=/login` rules out `__Host-` |
+| `dumpfire-dashboard-display-<user id>` (written by the browser) | `writeDashboardDisplay()` (`src/lib/dashboard/side-pane.ts`) | `Secure` when `location.protocol` is `https:` (card 2850; never before) | None |
+
+```mermaid
+flowchart TD
+    Set["A cookie is set or deleted"] --> Where{"Set by the server<br/>or by the page?"}
+    Where -->|"page (display cookie)"| Page{"location.protocol<br/>is https:?"}
+    Page -->|yes| PSec["; Secure"]
+    Page -->|no| PPlain["no Secure"]
+    Where -->|server| Proto{"url.protocol is https:?<br/>(ORIGIN's scheme, or the<br/>proxy header when ORIGIN is unset)"}
+    Proto -->|yes| Sec["Secure<br/>+ __Host- name where the cookie has one"]
+    Proto -->|"no, or no request"| CS{"COOKIE_SECURE set?"}
+    CS -->|"yes"| CSv{"= true?"}
+    CSv -->|yes| Sec
+    CSv -->|no| Plain["not Secure, plain name"]
+    CS -->|no| NE{"NODE_ENV = production?"}
+    NE -->|yes| Sec
+    NE -->|no| Plain
+```
+
+**What `url.protocol` is behind a proxy.** The node adapter builds each request's URL from
+`ORIGIN` when it is set, whatever the proxy forwards, and from `PROTOCOL_HEADER` and
+`HOST_HEADER` only when it is not (`base: origin || get_origin(req.headers)` in its handler).
+Without `ORIGIN`, a request counts as `https:` unless the proxy's header says `http`. So with
+`ORIGIN=https://kanban.example.com` every cookie is `Secure`, and the image, which always sets
+`ORIGIN`, takes its scheme from `ORIGIN` alone.
+
+**The start-up warning.** A built server whose App URL (the setting, else `APP_URL`) is `https:`
+while `ORIGIN` is set and `http:`, and where a plain-HTTP request would get no `Secure`, writes
+one `WARN` at start (`reportPlainOriginBehindHttps()` in `startup-checks.ts`): `ORIGIN is <origin>
+but the App URL is <app url>: every request is taken as plain HTTP, so cookies are not marked
+Secure and sign-in forms from the https address are refused. Start the server with ORIGIN set to
+the https address.` Every request is then plain HTTP to the server: the framework's origin check
+refuses the sign-in forms posted from the https address, and the set-up link's and a password
+change's cookies go without `Secure`. No line is written under the dev server, with `ORIGIN`
+`https:` (every cookie is `Secure`), with `ORIGIN` unset (the proxy decides the scheme per
+request, which cannot be judged at start), or when `COOKIE_SECURE` or `NODE_ENV` already makes
+plain-HTTP cookies `Secure`.
 
 ### Idle and Total Limits
 
@@ -1629,7 +1691,7 @@ it writes plain ids, which this image never finds and sweeps at the next start (
   page's polls (5 seconds), live-event re-reads, a stream's verdict probe, and an `EventSource`
   open or reconnect. A client-side navigation inside the app (a link click, which is a data
   fetch) no longer counts as activity. There is no header to spoof.
-- **The `__Host-` cookie.** Whenever cookies are HTTPS-only (`secureCookies()`) **or the request
+- **The `__Host-` cookie.** Whenever cookies are HTTPS-only (`COOKIE_SECURE`, or production) **or the request
   came over `https:`**, the cookie is named `__Host-dumpfire_session`, which a browser accepts
   only from this exact site, over HTTPS, with `Path=/` and no `Domain`; otherwise
   `dumpfire_session`. It is the same rule as the sign-in challenge cookie, now one function
@@ -2321,7 +2383,7 @@ and counts nothing. The code is
 |---|---|
 | Name | `dumpfire_known_<user id>`, one for each account the browser has signed in to |
 | Value | `<issued at>.<nonce>.<mac>`: the time of issue in seconds, 16 random bytes in hex, and `HMAC-SHA256(key, "known-browser:2:<user id>:<issued at>:<nonce>:<the account's password hash>")` in hex. About 110 bytes. The domain was `known-browser:1:` until card 2769: a cookie signed under it, by an older image, is not remembered (see [Older Images and Instances](#older-images-and-instances)) |
-| Options | `Path=/login`, `HttpOnly`, `SameSite=Strict`, `Secure` by `secureCookies()` in `auth.ts` (`COOKIE_SECURE` when set, otherwise in production; unlike the session cookie, it does not also follow the request's scheme), `Max-Age` a year |
+| Options | `Path=/login`, `HttpOnly`, `SameSite=Strict`, `Secure` by `httpsOnlyCookie()` in `auth.ts`, as the session cookie (always over HTTPS; otherwise `COOKIE_SECURE` when set, else in production; card 2850, see [Every Cookie DumpFire Sets](#every-cookie-dumpfire-sets-card-2850)), `Max-Age` a year |
 | Good when | It parses, was issued no more than 365 days ago and not more than a minute in the future, and its MAC matches, compared in constant time, with the account's hash as it is now. Anything else is answered as no cookie at all |
 
 **When a browser is remembered.** A new cookie (a new time and nonce) is set to the browser
@@ -3046,7 +3108,7 @@ take, and there is no "check in flight" to guard (decision 6). A source scan in
 
 | Cookie | Name | Options | Holds |
 |---|---|---|---|
-| The challenge | `__Host-dumpfire_challenge` when `secureCookies()` is true or the request came over `https:`; `dumpfire_challenge` otherwise | `HttpOnly`, `SameSite=Strict`, `Path=/`, `Max-Age=600`, no `Domain`, `Secure` with the prefix | The token |
+| The challenge | `__Host-dumpfire_challenge` when `httpsOnlyCookie()` is true (the request came over `https:`, or `COOKIE_SECURE` or production asks for it); `dumpfire_challenge` otherwise | `HttpOnly`, `SameSite=Strict`, `Path=/`, `Max-Age=600`, no `Domain`, `Secure` with the prefix | The token |
 | A set-up link | `dumpfire_enrol_link` | `HttpOnly`, `SameSite=Strict`, `Path=/login`, `Max-Age=3600`, `Secure` as the challenge's. No prefix: `__Host-` needs `Path=/` | The link's raw token |
 
 - **Read from the raw `Cookie` header**, by the name in force alone: exactly one pair of that
@@ -7772,7 +7834,7 @@ unfinished is recovered on the host with `node scripts/mfa-reset.mjs <name>`.
 
 | File | Purpose |
 |------|---------|
-| `src/lib/server/auth.ts` | Session CRUD, API key generation and validation; `createSession()`, which writes `two_step = 1`, and `findSession()`, which refuses any other value as `one-step` (card 2769); `endAccountAccess()`, what setting a password ends; `stillAuthenticated()`, the key or session asked again inside a write's transaction, which answers the account as it is now and sets `locals.user` to it (`null` for a public route with nobody signed in; `401` and an ERROR line for a handler reached with no credential recorded, outside vitest); `checkCurrentProof()` (`checkCurrentPassword()` until card 2771), the count of current-password and code guesses on the session's row, one check in flight per session, the account's factor checked before the password (step 2b), the code verified and spent with the count cleared in one transaction, and the sign-out at the third (cards 2701 and 2771), `refuseWrongPassword()`, the route's answer to one, and `whilePasswordHolds()`, its write only while the hash checked is still stored; `secureCookies()`, the `Secure` rule of the remembered browser's cookie (`COOKIE_SECURE` when set, otherwise production), which the session cookie's `httpsOnlyCookie()` takes with an `https:` request; `openSessionUser()`, which each open live stream asks at each heartbeat; and, since card 2775, `sessionTokenHash()`, `SESSION_LIMITS`, the one deadline, `slidesSession()` (which requests move the expiry), `openSession()` (the session's user and deadline, for the streams) and `sessionEndTimer()` (a stream's timer to that deadline), `readSessionCookie()`, `httpsOnlyCookie()` and the cookie helpers, `endSessionsSent()` (sign-out), `endSessionsOf()` (a role change) and `replacementStart()` (a password change) |
+| `src/lib/server/auth.ts` | Session CRUD, API key generation and validation; `createSession()`, which writes `two_step = 1`, and `findSession()`, which refuses any other value as `one-step` (card 2769); `endAccountAccess()`, what setting a password ends; `stillAuthenticated()`, the key or session asked again inside a write's transaction, which answers the account as it is now and sets `locals.user` to it (`null` for a public route with nobody signed in; `401` and an ERROR line for a handler reached with no credential recorded, outside vitest); `checkCurrentProof()` (`checkCurrentPassword()` until card 2771), the count of current-password and code guesses on the session's row, one check in flight per session, the account's factor checked before the password (step 2b), the code verified and spent with the count cleared in one transaction, and the sign-out at the third (cards 2701 and 2771), `refuseWrongPassword()`, the route's answer to one, and `whilePasswordHolds()`, its write only while the hash checked is still stored; `httpsOnlyCookie()`, the one `Secure` rule of every cookie the server sets (an `https:` request always; otherwise `COOKIE_SECURE` when set, else `NODE_ENV=production`), with `secureCookies()`, its environment half, private since card 2850; `openSessionUser()`, which each open live stream asks at each heartbeat; and, since card 2775, `sessionTokenHash()`, `SESSION_LIMITS`, the one deadline, `slidesSession()` (which requests move the expiry), `openSession()` (the session's user and deadline, for the streams) and `sessionEndTimer()` (a stream's timer to that deadline), `readSessionCookie()`, `httpsOnlyCookie()` and the cookie helpers, `endSessionsSent()` (sign-out), `endSessionsOf()` (a role change) and `replacementStart()` (a password change) |
 | `src/lib/server/cookie-header.ts` | `cookieValues()`, every value of a cookie name in the raw header; `onlyCookieValue()`, exactly one value in the shape given, and `sendsCookie()`, whether the name is sent at all, both built on it; used by the session cookie and the sign-in challenge cookie (card 2775) |
 | `src/lib/server/step-up.ts` | The current password and a code asked again before a destructive action (cards 2701 and 2771): `STEP_UP_ACTIONS` (thirty-two), `confirmStepUp()`, `readStepUpCode()` (the code's form), the INFO, recovery WARN and the two notices after the check, `requirePasswordUnchanged()`, and the import's confirmation, `issueImportConfirmation()` and `takeImportConfirmation()`. See [Step-up Before Destructive Actions](#step-up-before-destructive-actions-card-2701) and [The Code Beside the Password](#the-code-beside-the-password-card-2771) |
 | `src/lib/step-up-words.ts` | The step-up's words and codes, which the server answers with and the pages read: `STEP_UP_FIELD`, the refusals, `PASSWORD_CHANGED_MEANWHILE`, `CONFIRMATION_HEADER`, `StepUpCode`, `STEP_UP_CODE_FIELD` (`currentCode`), the `StepUpProof` type and `NO_PROOF` (card 2770), `STEP_UP_CODE_MALFORMED`, `STEP_UP_CODE_SPENT`, `STEP_UP_NO_FACTOR`, `STEP_UP_FACTOR_UNUSABLE` and `passwordKeptAfter()` (card 2771), and `stepUpRefusal()`, `refusalWatch()` and `isStepUpSignOut()`, which tell a refusal of the password from any other by its `stepUp` code |
@@ -7829,7 +7891,7 @@ unfinished is recovered on the host with `node scripts/mfa-reset.mjs <name>`.
 | `src/lib/server/backup-secrets.ts` | What a backup leaves out because it is a secret, and what is done about the gaps (card 2169): `clearSecrets()`, `readSecretsHere()`, `fillSecretGaps()`, `credentialsMissing()`, `secretsToEnter()` and the two sentences; the seal: `backupSealKey()`, `sealOf()`, `sealCopy()`, `sealVerifies()`, `keepSealKey()`, and the checks made before it, `unsealedBecause()`, `backupFailsCheck()`, `strayInternalObjects()`; `fromTableStorage()`, how a table is read for the seal and the restore |
 | `src/lib/server/db/restore.ts` | What a restore brings in and what it never does, the new link it gives every request, every decision link it ends and records (`RestoreResult.decisionLinksCleared`) and its refusal of a decision record copied in part (card 2675), and the secrets it keeps from this server (`RestoreResult.secrets`), only for a backup whose seal verifies (`RestoreResult.sealVerified`, and why not, `RestoreResult.unsealed`); `rowsToRestore()`, each table read `NOT INDEXED`, which since card 2849 gives a used invite an older backup held in plain 32 random bytes as it reads it, with 0068's `UPDATE` repeated after the copy as a backstop; `backupLacksSuperadmin()` |
 | `src/lib/server/email.ts` | `linkBaseUrl()`: the address a mailed link begins with, from configuration alone |
-| `src/lib/server/startup-checks.ts` | The eight lines the server writes at start: no superadmin, `ORIGIN` still the image's placeholder, and a board beneath one of its own cards (card 2142), which a restore of a backup that brings one writes at once too, with each control character in a board's name or a card's title printed as a space, so that a name holding a line break cannot split the line and forge one after it (with the logger's `printable()`, card 2214); and three about the database (card 2083): the new-database line (a new, empty database was made at this start, the alarm on an installation that had data, since set-up is then open to whoever comes first), the off-volume line (the database is in the container's own file system), and the other-database line (a database at `/app/dumpfire.db` beside the one in use); and the line that `SIGN_IN_ONE_AT_A_TIME` is off (card 2194), and `reportCspMode()`'s line that `CSP_MODE` is `report-only` or neither mode (card 2162), each to the console whatever `LOG_LEVEL` is; `refuseUserlessBesideAnother()`, which stops the server before it listens when the database in use has no users while another is beside it; `checkMfaKeyAtStart()` and `MfaKeyError` (card 2768), straight after it, which stop the server when the MFA key does not load or is not the key the stored second factors were made with; and `maskLiveLog()`, which masks the running log's tokens and old failed sign-in names at start; and `endPlainInvites()` (card 2849), which at every start ends each unused invite an older image stored in plain and gives each used one 32 random bytes, in one transaction, with one `WARN` line built from what changed; and `endPlainSessions()` (card 2775), which at every start, before the clean-up of ended sessions, deletes each session an older image stored in plain, with one `WARN` line |
+| `src/lib/server/startup-checks.ts` | `reportInstallation()`, the fourteen checks the server makes at start, each a line when it finds something (the secrets a backup lacks, `WEBHOOK_ALLOW_INSIDE` entries ignored, boards over the webhook cap, webhooks refused and SFTP destinations without a confirmed host key are described under their own cards); among them: no superadmin, `ORIGIN` still the image's placeholder, and a board beneath one of its own cards (card 2142), which a restore of a backup that brings one writes at once too, with each control character in a board's name or a card's title printed as a space, so that a name holding a line break cannot split the line and forge one after it (with the logger's `printable()`, card 2214); and three about the database (card 2083): the new-database line (a new, empty database was made at this start, the alarm on an installation that had data, since set-up is then open to whoever comes first), the off-volume line (the database is in the container's own file system), and the other-database line (a database at `/app/dumpfire.db` beside the one in use); and the line that `SIGN_IN_ONE_AT_A_TIME` is off (card 2194), and `reportCspMode()`'s line that `CSP_MODE` is `report-only` or neither mode (card 2162), each to the console whatever `LOG_LEVEL` is; `reportPlainOriginBehindHttps()` (card 2850), one `WARN` in a built server whose App URL is `https:` while `ORIGIN` is set and `http:` and plain-HTTP cookies would not be `Secure` (see [Every Cookie DumpFire Sets](#every-cookie-dumpfire-sets-card-2850)); `refuseUserlessBesideAnother()`, which stops the server before it listens when the database in use has no users while another is beside it; `checkMfaKeyAtStart()` and `MfaKeyError` (card 2768), straight after it, which stop the server when the MFA key does not load or is not the key the stored second factors were made with; and `maskLiveLog()`, which masks the running log's tokens and old failed sign-in names at start; and `endPlainInvites()` (card 2849), which at every start ends each unused invite an older image stored in plain and gives each used one 32 random bytes, in one transaction, with one `WARN` line built from what changed; and `endPlainSessions()` (card 2775), which at every start, before the clean-up of ended sessions, deletes each session an older image stored in plain, with one `WARN` line |
 | `src/lib/server/rate-limit.ts` | In-memory rate limiter, counting in a fixed window from each key's first attempt (`checkRateLimit`), an amount in the same way (`takeAllowance`, the day's report mail of card 2182), and wrong passwords at one account in an idle window (`signInWait`, `countWrongSignIn`, `forgetWrongSignIns`, card 2177); sign-in's count by address with the account each attempt was at (`countSignInAttempt`, `refundSignInAttempts`, `keepSignInAttemptCounted`, card 2226); and the sign-ins in flight at one key (`enterSignIn`, `leaveSignIn`, card 2194); `accountKey()`, the `user:<id>` key the password step and the second step both count under (card 2769) |
 | `src/lib/server/uploads.ts` | Where attachment files are, which stored file names are refused, `writeUploadFile()` and `removeUploadFile()` for both trees' uploads, and the headers an attachment is served with: `attachmentHeaders()` (the web tree, inline only when an image's bytes match) and `downloadHeaders()` (`/api/v1`, always a download, `no-store`) |
 | `src/lib/server/image-check.ts` | Whether bytes are a PNG, JPEG, GIF or WebP image (card 2754): `imageTypeOf()`, `sniffImage()`, and `checkImage()`, the walk by allow-list that strips metadata and refuses animation, trailing data and more than 8000 px or 40 MP. No imports |

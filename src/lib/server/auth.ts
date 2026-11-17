@@ -1033,21 +1033,28 @@ export function stopSessionSweep(): void {
 // ─── Cookie Utilities ────────────────────────────────────────────────────────
 
 /**
- * Whether a cookie this server sets is sent over HTTPS only: `COOKIE_SECURE`
- * when it is set, and otherwise in production. The remembered browser's rule
- * (known-browsers.ts); the session and challenge cookies take
- * `httpsOnlyCookie`, which adds a request that came over HTTPS.
+ * The environment's half of the cookie rule, for a request that did not come
+ * over HTTPS (or for no request): `COOKIE_SECURE` when it is set (exactly
+ * `true` is on, anything else off), and otherwise `NODE_ENV` exactly
+ * `production`. Private since card 2850: every cookie takes `httpsOnlyCookie`,
+ * which an HTTPS request makes Secure whatever this says.
  */
-export function secureCookies(): boolean {
+function secureCookies(): boolean {
 	return process.env.COOKIE_SECURE !== undefined
 		? process.env.COOKIE_SECURE === 'true'
 		: process.env.NODE_ENV === 'production';
 }
 
 /**
- * Whether a cookie this server sets for a request to `url` is HTTPS-only:
- * the challenge cookie's rule (2769 decision 27), and the session cookie's
- * (card 2775). `secureCookies()` alone for no request.
+ * Whether a cookie this server sets for a request to `url` is HTTPS-only (it
+ * takes `Secure`, and the `__Host-` name where it has one): the one rule for
+ * every cookie the server sets or deletes (card 2850; the challenge cookie's
+ * since 2769 decision 27, the session cookie's since card 2775). An `https:`
+ * request is always HTTPS-only, whatever `COOKIE_SECURE` says, so
+ * `COOKIE_SECURE=false` affects plain-HTTP requests only (a LAN install,
+ * whose browser drops a Secure cookie). Otherwise `COOKIE_SECURE` decides
+ * when it is set, and `NODE_ENV=production` when it is not;
+ * `secureCookies()` alone for no request.
  */
 export function httpsOnlyCookie(url: URL | null): boolean {
 	return secureCookies() || url?.protocol === 'https:';

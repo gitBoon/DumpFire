@@ -41,7 +41,7 @@ import type { Cookies } from '@sveltejs/kit';
 import { eq } from 'drizzle-orm';
 import { db } from './db';
 import { settings } from './db/schema';
-import { secureCookies } from './auth';
+import { httpsOnlyCookie } from './auth';
 import { FREE_WRONG_SIGN_INS, wrongSignInsAt } from './rate-limit';
 import { createLogger } from './logger';
 
@@ -120,13 +120,21 @@ function macOf(secret: string, userId: number, issuedAt: number, nonce: string, 
  * password hash is now `passwordHash`: a new cookie, with a new time and
  * nonce, whatever it held before. Called once the browser is signed in (a
  * sign-in, an invite's use, set-up, the holder's own password change) or
- * signs out.
+ * signs out. `url` is the request's address: the cookie is Secure by the
+ * session cookie's rule, `httpsOnlyCookie(url)` (card 2850); null outside a
+ * request, which leaves it to the environment.
  *
  * Called after the change is committed, so it never fails the request: a
  * secret that cannot be had is said at WARN, and the browser is not
  * remembered.
  */
-export function rememberBrowser(cookies: Cookies, userId: number, passwordHash: string, now: number = Date.now()): void {
+export function rememberBrowser(
+	cookies: Cookies,
+	userId: number,
+	passwordHash: string,
+	url: URL | null,
+	now: number = Date.now()
+): void {
 	let secret: string | null;
 	try {
 		secret = knownBrowserSecret(true);
@@ -145,7 +153,8 @@ export function rememberBrowser(cookies: Cookies, userId: number, passwordHash: 
 		path: '/login',
 		httpOnly: true,
 		sameSite: 'strict',
-		secure: secureCookies(),
+		// Secure as the session cookie is: over HTTPS always (card 2850).
+		secure: httpsOnlyCookie(url),
 		maxAge: KNOWN_BROWSER_SECONDS
 	});
 }

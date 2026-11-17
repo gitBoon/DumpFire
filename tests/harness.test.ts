@@ -204,6 +204,8 @@ const TEST_FILES = [
 	'report-schedules.test.ts',
 	'request-body.test.ts',
 	'schedulers.test.ts',
+	// Card 2850: one Secure rule for every cookie, and the start-up warning for an http ORIGIN behind https.
+	'secure-cookies.test.ts',
 	// Card 2775: session codes stored as hashes, limits by role, and the __Host- cookie.
 	'session-hardening.test.ts',
 	'setting-setters.test.ts',

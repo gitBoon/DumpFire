@@ -130,7 +130,7 @@ export const PUT: RequestHandler = async ({ request, locals, cookies, url }) => 
 	setSessionCookie(cookies, newSession, url);
 	// The new hash ended every remembered browser of the account; this one,
 	// which made the change, is remembered again (card 2194).
-	rememberBrowser(cookies, accountId, newHash);
+	rememberBrowser(cookies, accountId, newHash, url);
 
 	return json({ success: true, apiKeysEnded, webhooksSwitchedOff });
 };

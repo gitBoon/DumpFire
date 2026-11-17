@@ -169,7 +169,7 @@ docker run -d \
 | `DB_PATH` | Path to the SQLite database file inside the container. Keep it on the volume mounted at `/app/data`: the uploads are in the folder `uploads` beside it. The examples give it although the image sets it, so that they are right for an image built before it did. At the image's path, a server that finds no database there while it can see one at `/app/dumpfire.db` or elsewhere in `/app/data` refuses to start rather than create an empty one: see [docs/deployment.md](docs/deployment.md#start-up-sequence) | `/app/data/dumpfire.db` in the image; `dumpfire.db` in the working directory for a server started any other way |
 | **`ORIGIN`** | **Public URL for CSRF protection — must exactly match how users access the app (including protocol and port).** If this is wrong, all form submissions will fail with 403. | `http://localhost:3000` |
 | `PORT` | Port the server listens on | `3000` |
-| `COOKIE_SECURE` | Set to `false` to allow session cookies over plain HTTP (see [HTTPS & Reverse Proxies](#https--reverse-proxies)) | `true` in production |
+| `COOKIE_SECURE` | Set to `false` to allow session cookies over plain HTTP (see [HTTPS & Reverse Proxies](#https--reverse-proxies)). A request that comes over HTTPS always gets `Secure` cookies, whatever this says | `true` in production |
 | `BODY_SIZE_LIMIT` | The largest upload the server accepts: a database backup, on import. Bytes, or a number followed by `K`, `M` or `G`; `512MB` is not accepted and stops the server starting. The app narrows it again for every other route | `512M` in the image |
 
 ---
@@ -295,7 +295,7 @@ certbot certonly --standalone -d kanban.yourdomain.com
 
 #### Running without HTTPS
 
-If you're running on a **trusted local network** and don't need HTTPS (e.g. home lab, LAN-only access), set `COOKIE_SECURE=false` so the session cookie works over plain HTTP:
+If you're running on a **trusted local network** and don't need HTTPS (e.g. home lab, LAN-only access), set `COOKIE_SECURE=false` so the session cookie works over plain HTTP. It changes plain-HTTP requests only: a request that comes over HTTPS always gets `Secure` cookies, whatever `COOKIE_SECURE` says.
 
 ```yaml
 # docker-compose.yml

@@ -172,7 +172,7 @@ describe('remembered browsers (decision 24)', () => {
 
 		// This image's cookie, which also makes the secret.
 		let value = '';
-		rememberBrowser({ set: (_name: string, v: string) => (value = v) } as never, user.id, user.passwordHash);
+		rememberBrowser({ set: (_name: string, v: string) => (value = v) } as never, user.id, user.passwordHash, null);
 		const sending = (cookie: string) => ({ get: (name: string) => (name === knownBrowserCookie(user.id) ? cookie : undefined) });
 		const [issuedAt, nonce] = value.split('.');
 		expect(rememberedNonce(sending(value), user)).toBe(nonce);

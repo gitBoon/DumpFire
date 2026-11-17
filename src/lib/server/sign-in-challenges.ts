@@ -10,8 +10,9 @@
  * that names no moment has passed.
  *
  * The cookie (decision 27) is `__Host-dumpfire_challenge`, Secure, whenever
- * cookies are HTTPS-only here (`secureCookies()`) or the request itself came
- * over `https:`, and `dumpfire_challenge` otherwise: HttpOnly, SameSite=Strict,
+ * the request is HTTPS-only by the one cookie rule (`httpsOnlyCookie`, card
+ * 2850): it came over `https:`, or `COOKIE_SECURE` or `NODE_ENV` asks for it,
+ * and `dumpfire_challenge` otherwise: HttpOnly, SameSite=Strict,
  * Path=/, ten minutes, no Domain. It is read from the raw `Cookie` header, by
  * the name in force alone: one pair of that name is the token, none or more
  * than one is no challenge, and a cookie of the other name is ignored. It is

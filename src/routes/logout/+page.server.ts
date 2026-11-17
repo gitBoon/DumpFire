@@ -41,7 +41,7 @@ export const actions: Actions = {
 			// open session, which is what `locals.user` is here.
 			if (locals.user) {
 				const account = db.select({ passwordHash: users.passwordHash }).from(users).where(eq(users.id, locals.user.id)).get();
-				if (account) rememberBrowser(cookies, locals.user.id, account.passwordHash);
+				if (account) rememberBrowser(cookies, locals.user.id, account.passwordHash, url);
 			}
 			deleteSession(session, 'user logout');
 		}

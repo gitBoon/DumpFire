@@ -146,7 +146,7 @@ beforeEach(() => {
 	// browser is remembered, a write of its own after the request's
 	// transaction, and then kept in memory (card 2194). Made here, so that
 	// each request's writes are its own whichever test runs first.
-	rememberBrowser({ set: () => {} } as unknown as Cookies, 0, '');
+	rememberBrowser({ set: () => {} } as unknown as Cookies, 0, '', null);
 	bcrypt.inTransaction.length = 0;
 	bcrypt.afterCompare = undefined;
 	bcrypt.compared = 0;
@@ -164,7 +164,7 @@ const remembers = (cookie: { name: string; value: string }, id: number) =>
 /** A cookie that remembers a browser for `user`'s account as it is now. */
 function rememberedFor(user: SessionUser): { name: string; value: string } {
 	let made: { name: string; value: string } | undefined;
-	rememberBrowser({ set: (name: string, value: string) => (made = { name, value }) } as unknown as Cookies, user.id, hashOf(user.id));
+	rememberBrowser({ set: (name: string, value: string) => (made = { name, value }) } as unknown as Cookies, user.id, hashOf(user.id), null);
 	return made!;
 }
 

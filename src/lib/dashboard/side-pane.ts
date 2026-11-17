@@ -94,17 +94,19 @@ export function parseDashboardDisplay(raw: string | null | undefined): Dashboard
 /**
  * The cookie that holds the choice, as `document.cookie` takes it: the
  * URI-encoded JSON, for the whole site, kept a year, sent on a link from
- * another site but not on its requests (Lax).
+ * another site but not on its requests (Lax), and Secure when `secure` is
+ * true: the page is served over HTTPS (card 2850).
  */
-export function dashboardDisplayCookieText(userId: number, display: DashboardDisplay): string {
-	return `${dashboardDisplayCookie(userId)}=${encodeURIComponent(JSON.stringify(display))}; Path=/; Max-Age=${COOKIE_MAX_AGE}; SameSite=Lax`;
+export function dashboardDisplayCookieText(userId: number, display: DashboardDisplay, secure: boolean): string {
+	const text = `${dashboardDisplayCookie(userId)}=${encodeURIComponent(JSON.stringify(display))}; Path=/; Max-Age=${COOKIE_MAX_AGE}; SameSite=Lax`;
+	return secure ? `${text}; Secure` : text;
 }
 
 /** Remembers the choice, in the browser. With no viewer, or cookies that cannot be written, it remembers nothing, and says nothing. */
 export function writeDashboardDisplay(userId: number | null | undefined, display: DashboardDisplay): void {
 	if (typeof userId !== 'number') return;
 	try {
-		document.cookie = dashboardDisplayCookieText(userId, display);
+		document.cookie = dashboardDisplayCookieText(userId, display, location.protocol === 'https:');
 	} catch {
 		// Blocked, or no document (the server): the dashboard still changes, and opens with the defaults on reload.
 	}

@@ -638,7 +638,7 @@ function signedInAnswer(
 ): VerifyReport {
 	const { session, user, report, lane } = signedIn;
 	setSessionCookie(cookies, session, url);
-	rememberBrowser(cookies, user.id, user.passwordHash);
+	rememberBrowser(cookies, user.id, user.passwordHash, url);
 	deleteChallengeCookie(cookies, url);
 	log.info(`User "${user.username}" logged in`, { secondStep }, { userId: user.id, ip: from.address });
 	if (lane === 'other') {
