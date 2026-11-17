@@ -686,7 +686,9 @@ type MailMessage = {
  * and stands for the address wherever the mail server's words quote it, in
  * `detail` too: a decision's record mail passes `participant <id> of decision
  * <id>`, so that no participant's address is logged (card 2675's code review,
- * S7). Every other mail logs its address as before.
+ * S7), and every mail to a task request's requester passes `the requester of
+ * request <id>` (`requesterLabel`, card 2896). Every other mail, to an
+ * account holder, logs its address as before.
  */
 async function deliverMail(
 	message: MailMessage,
@@ -730,6 +732,14 @@ async function deliverMail(
 		if (!test) warnIfTlsFault(err, detail);
 		return { sent: false, problem, detail };
 	}
+}
+
+/**
+ * What a mail to a task request's requester is called in the log in place of
+ * their address (card 2896): `deliverMail`'s `recipient`, in one spelling.
+ */
+export function requesterLabel(requestId: number): string {
+	return `the requester of request ${requestId}`;
 }
 
 /** `text` with every occurrence of `address`, in any case, replaced by `[<label>]`. */
@@ -800,14 +810,17 @@ export async function sendTestEmail(to: string): Promise<void> {
 }
 
 /**
- * Send an email with a file attachment. Used for scheduled PDF reports.
+ * Send an email with a file attachment. Used for scheduled PDF reports, and
+ * for a requester's completion mail, which passes `opts.recipient` so that
+ * its address is not logged (`requesterLabel`, card 2896).
  * Silently no-ops if SMTP is not configured.
  */
 export async function sendEmailWithAttachment(
 	to: string,
 	subject: string,
 	html: string,
-	attachment: { filename: string; content: Buffer; contentType: string }
+	attachment: { filename: string; content: Buffer; contentType: string },
+	opts: { recipient?: string } = {}
 ): Promise<boolean> {
 	const outcome = await deliverMail({
 		to,
@@ -818,6 +831,6 @@ export async function sendEmailWithAttachment(
 			content: attachment.content,
 			contentType: attachment.contentType
 		}]
-	});
+	}, { recipient: opts.recipient });
 	return outcome.sent;
 }

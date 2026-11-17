@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.130
+version: 1.131
 status: As-Built
 date: 2026-11-17
 tags:
@@ -3068,6 +3068,14 @@ No log line, start-up line, refusal or answer holds the key file's contents or a
 from it but a key id, an authenticator secret, a ciphertext, a nonce, additional data, a
 recovery code or its hash, or a token. The key file's refusals name its path and a reason, never
 what it holds. The unreadable-factor lines name factor and user ids and key ids.
+
+Nor does any line hold the address of a task request's requester (card 2896): a mail to them
+that fails is logged as `Failed to send email to the requester of request <id>: <subject>`, and
+the mail server's words, where they quote the address, as `[the requester of request <id>]`
+(`requesterLabel` in `email.ts`, the same `recipient` a decision's record mail passes). A failed
+mail to an account holder still names their address, which the Users page shows the same
+administrators. See
+[When a Mail Fails](notifications-email.md#when-a-mail-fails).
 
 ## A Lost Authenticator: the Reset, the Host's Command and a Change of Key (Card 2773)
 

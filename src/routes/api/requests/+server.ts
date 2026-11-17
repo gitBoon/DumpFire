@@ -265,7 +265,7 @@ export const POST: RequestHandler = async ({ request, locals, url, getClientAddr
 		if (confirmFrom !== null) {
 			// Its first link, issued here with the request (card 2870): only its
 			// hash is kept, and the token travels only in the mail.
-			notifyRequesterConfirm(email!, created.title, requestConfirmUrl(confirmFrom, created.id, issueRequestLink(created.id, 'mail')));
+			notifyRequesterConfirm(created.id, email!, created.title, requestConfirmUrl(confirmFrom, created.id, issueRequestLink(created.id, 'mail')));
 		} else {
 			notifyTaskRequest(targetType, targetId, created.title, name, safePriority, baseUrl);
 		}

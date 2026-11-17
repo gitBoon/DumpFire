@@ -1,7 +1,7 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.75
+version: 1.76
 status: As-Built
 date: 2026-11-17
 tags:
@@ -424,7 +424,9 @@ support required STARTTLS", which nodemailer 10 names so (the review-fix pass's 
 failure or a timeout says what it says, with no sentence. Every mail's failure, Send Test's
 included, is one `ERROR` line under `EMAIL` written by `deliverMail` (`Failed to send email to
 <to>: <subject>`, or, for a decision's record mail, `Failed to send email to participant <id>
-of decision <id>: <subject>`, card 2675's S7); the SMTP route's own line for Send Test is gone
+of decision <id>: <subject>`, card 2675's S7, and for any of the seven mails to a task request's
+requester, `Failed to send email to the requester of request <id>: <subject>`, card 2896, so that
+no requester's address is logged; a mail to an account holder names its address); the SMTP route's own line for Send Test is gone
 (card 2196's N2). When it is
 the certificate or STARTTLS, `deliverMail` also writes one `WARN` line under `EMAIL`, `Mail is
 not being sent: <the error, masked>. <the sentence above>`, at most once in ten minutes in a
@@ -578,7 +580,10 @@ in any case (an invite's `/invite/<token>`, a decision's `/decision-link/<token>
 link's `?token=` become `[token]`); then every run of 32 or more base64url characters (a decision
 link's token is 43) and every run of 16 or more hex digits and hyphens, in any case, becomes
 `[token]`. A decision's record mail also has its recipient's address, wherever the server's words
-quote it, written `[participant <id> of decision <id>]` (`trySendEmail`'s `recipient`, S7); every
+quote it, written `[participant <id> of decision <id>]` (`trySendEmail`'s `recipient`, S7), and a
+requester's mail its requester's, written `[the requester of request <id>]` (`requesterLabel`,
+passed by `notifications.ts` to `trySendEmail` and to `sendEmailWithAttachment`'s `recipient`,
+card 2896), in any case, so the mail panel's last failure holds it masked too; every
 other mail is unchanged. A refusal can quote the link URL-encoded, in capitals,
 with HTML entities, or split across two reply lines after `/invite/`; each leaves the token's own
 characters as they are, which the second rule finds (an invite's token is a UUID, a request's 64
@@ -1739,6 +1744,17 @@ Each reply the requester sends through that link mails every member the request 
 addressed to, so the requester may send 20 replies to one request in an hour, and the 21st
 is refused `429` with nothing saved and nothing mailed. A reply from the team starts the
 count again. See [Authentication & Security](authentication-security.md#the-public-request-form).
+
+**A failed mail to a requester never logs their address** (card 2896). Each of the seven mails
+to a requester (the confirmation, a team reply, a new link, accepted, declined, and the progress
+and completion mails below) is sent with `recipient` `the requester of request <id>`
+(`requesterLabel` in `email.ts`), so `deliverMail`'s `ERROR` line reads `Failed to send email to
+the requester of request <id>: <subject>`, the mail server's words name `[the requester of
+request <id>]` where they quoted the address, and the rare line written when the send cannot
+start (`Accept mail to the requester of request <id> failed` and its like) names the request
+too. Each function takes the request's id first: `notifyRequesterAccepted(requestId, email,
+title, resolverName)` and the same for `Rejected`, `Confirm`, `Message` and `NewLink`. A
+requester who made the request signed in is labelled the same.
 
 ### Requester Progress Notifications
 

@@ -426,27 +426,27 @@ describe('every mail in notifications.ts', () => {
 			link: true,
 			send: () => notifications.notifyCommentAdded(board.id, card.id, MARKER, MARKER, MARKER, actor.id, BASE)
 		},
-		{ name: 'notifyRequesterAccepted', link: false, send: () => notifications.notifyRequesterAccepted(REQUESTER, MARKER, MARKER) },
+		{ name: 'notifyRequesterAccepted', link: false, send: () => notifications.notifyRequesterAccepted(1, REQUESTER, MARKER, MARKER) },
 		{
 			name: 'notifyRequesterRejected',
 			link: false,
-			send: () => notifications.notifyRequesterRejected(REQUESTER, MARKER, MARKER, MARKER)
+			send: () => notifications.notifyRequesterRejected(1, REQUESTER, MARKER, MARKER, MARKER)
 		},
 		{
 			name: 'notifyRequesterConfirm',
 			link: true,
-			send: () => notifications.notifyRequesterConfirm(REQUESTER, MARKER, `${BASE}/request/1/confirm?token=${TOKEN}`)
+			send: () => notifications.notifyRequesterConfirm(1, REQUESTER, MARKER, `${BASE}/request/1/confirm?token=${TOKEN}`)
 		},
 		{
 			name: 'notifyRequesterMessage',
 			link: true,
-			send: () => notifications.notifyRequesterMessage(REQUESTER, MARKER, MARKER, MARKER, `${BASE}/request/1/reply?token=${TOKEN}`)
+			send: () => notifications.notifyRequesterMessage(1, REQUESTER, MARKER, MARKER, MARKER, `${BASE}/request/1/reply?token=${TOKEN}`)
 		},
 		{
 			// Card 2158: the link a requester asks for, to replace one that no longer works.
 			name: 'notifyRequesterNewLink',
 			link: true,
-			send: () => notifications.notifyRequesterNewLink(REQUESTER, MARKER, `${BASE}/request/1/reply?token=${TOKEN}`, false)
+			send: () => notifications.notifyRequesterNewLink(1, REQUESTER, MARKER, `${BASE}/request/1/reply?token=${TOKEN}`, false)
 		},
 		{
 			name: 'notifyAdminMessage',

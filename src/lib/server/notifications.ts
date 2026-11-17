@@ -28,6 +28,7 @@ import { MASTER_PREF, type NotificationPref } from '$lib/notification-prefs';
 import {
 	MAIL_PROBLEM_WORDS,
 	linkBaseUrl,
+	requesterLabel,
 	sendEmailWithAttachment,
 	isSmtpConfigured,
 	smtpPasswordMissing,
@@ -60,11 +61,13 @@ const log = createLogger('NOTIFY');
  *
  * A mail that fails resolves `sent: false` and is logged, once, by
  * `email.ts`. The `.catch` beside each send below is for an error before the
- * send, never for a mail that failed.
+ * send, never for a mail that failed. `opts.recipient` names the recipient in
+ * that line in place of the address: a requester's mail passes
+ * `requesterLabel` (card 2896).
  */
-function sendEmail(to: string, subject: string, html: string): Promise<MailOutcome> {
+function sendEmail(to: string, subject: string, html: string, opts: { recipient?: string } = {}): Promise<MailOutcome> {
 	return new Promise((resolve, reject) => {
-		afterCommit(() => trySendEmail(to, subject, html).then(resolve, reject));
+		afterCommit(() => trySendEmail(to, subject, html, opts).then(resolve, reject));
 	});
 }
 
@@ -869,9 +872,16 @@ export function notifyCommentAdded(boardId: number, cardId: number, cardTitle: s
 }
 
 // ─── Request Conversation Notifications ──────────────────────────────────────
+//
+// A requester's address is never written to the system log (card 2896): each
+// mail to a requester, here and in the progress mails below, passes
+// `requesterLabel(requestId)` as its recipient, so that `deliverMail`'s
+// failure line, and the mail server's words in it, name the request, and each
+// catch line names the request too. A mail to an account holder keeps its
+// address.
 
 /** Notify the requester when their request is accepted. */
-export function notifyRequesterAccepted(email: string, requestTitle: string, resolverName: string) {
+export function notifyRequesterAccepted(requestId: number, email: string, requestTitle: string, resolverName: string) {
 	if (!isSmtpConfigured() || !email) return;
 
 	const html = emailTemplate('Request Accepted ✅', `
@@ -883,11 +893,13 @@ export function notifyRequesterAccepted(email: string, requestTitle: string, res
 		</div>
 	`);
 
-	sendEmail(email, `Request accepted: ${requestTitle}`, html).catch(err => log.error(`Accept notification failed for ${email}`, err));
+	sendEmail(email, `Request accepted: ${requestTitle}`, html, { recipient: requesterLabel(requestId) }).catch(err =>
+		log.error(`Accept mail to ${requesterLabel(requestId)} failed`, err)
+	);
 }
 
 /** Notify the requester when their request is rejected. */
-export function notifyRequesterRejected(email: string, requestTitle: string, resolverName: string, reason?: string) {
+export function notifyRequesterRejected(requestId: number, email: string, requestTitle: string, resolverName: string, reason?: string) {
 	if (!isSmtpConfigured() || !email) return;
 
 	const reasonBlock = reason
@@ -904,7 +916,9 @@ export function notifyRequesterRejected(email: string, requestTitle: string, res
 		</div>
 	`);
 
-	sendEmail(email, `Request declined: ${requestTitle}`, html).catch(err => log.error(`Reject notification failed for ${email}`, err));
+	sendEmail(email, `Request declined: ${requestTitle}`, html, { recipient: requesterLabel(requestId) }).catch(err =>
+		log.error(`Decline mail to ${requesterLabel(requestId)} failed`, err)
+	);
 }
 
 /** Notify the requester when an admin sends a conversation message. */
@@ -918,7 +932,7 @@ export function notifyRequesterRejected(email: string, requestTitle: string, res
  * It says how long the link lasts: `UNVERIFIED_LIFETIME_DAYS`, written in
  * words, after which the link is refused and the request cleared (card 2243).
  */
-export function notifyRequesterConfirm(email: string, requestTitle: string, confirmUrl: string) {
+export function notifyRequesterConfirm(requestId: number, email: string, requestTitle: string, confirmUrl: string) {
 	if (!isSmtpConfigured() || !email) return;
 
 	const html = emailTemplate('Confirm Your Request', `
@@ -935,7 +949,9 @@ export function notifyRequesterConfirm(email: string, requestTitle: string, conf
 		</div>
 	`);
 
-	sendEmail(email, `Confirm your request: ${requestTitle}`, html).catch(err => log.error(`Request-confirmation email failed for ${email}`, err));
+	sendEmail(email, `Confirm your request: ${requestTitle}`, html, { recipient: requesterLabel(requestId) }).catch(err =>
+		log.error(`Confirmation mail to ${requesterLabel(requestId)} failed`, err)
+	);
 }
 
 /**
@@ -945,7 +961,7 @@ export function notifyRequesterConfirm(email: string, requestTitle: string, conf
  * email address, which anyone who knew the address could reproduce. Null
  * where the server has no address to build it from, and then nothing is sent.
  */
-export function notifyRequesterMessage(email: string, requestTitle: string, senderName: string, message: string, replyUrl: string | null) {
+export function notifyRequesterMessage(requestId: number, email: string, requestTitle: string, senderName: string, message: string, replyUrl: string | null) {
 	if (!isSmtpConfigured() || !email) return;
 	if (noLinkAddress(replyUrl, 'The mail to a requester about a reply to their request')) return;
 
@@ -964,7 +980,9 @@ export function notifyRequesterMessage(email: string, requestTitle: string, send
 		</div>
 	`);
 
-	sendEmail(email, `Message on request: ${requestTitle}`, html).catch(err => log.error(`Requester-message notification failed for ${email}`, err));
+	sendEmail(email, `Message on request: ${requestTitle}`, html, { recipient: requesterLabel(requestId) }).catch(err =>
+		log.error(`Reply mail to ${requesterLabel(requestId)} failed`, err)
+	);
 }
 
 /**
@@ -979,7 +997,7 @@ export function notifyRequesterMessage(email: string, requestTitle: string, send
  * (`requestConfirmUrl`), the thread's link otherwise (`requestReplyUrl`).
  * @param unconfirmed Which of the two it is: the button says so.
  */
-export function notifyRequesterNewLink(email: string, requestTitle: string, link: string, unconfirmed: boolean) {
+export function notifyRequesterNewLink(requestId: number, email: string, requestTitle: string, link: string, unconfirmed: boolean) {
 	if (!isSmtpConfigured() || !email) return;
 
 	const html = emailTemplate('A New Link to Your Request', `
@@ -993,8 +1011,8 @@ export function notifyRequesterNewLink(email: string, requestTitle: string, link
 		</div>
 	`);
 
-	sendEmail(email, `A new link to your request: ${requestTitle}`, html).catch((err) =>
-		log.error(`New-link mail to the requester of "${requestTitle}" failed`, err)
+	sendEmail(email, `A new link to your request: ${requestTitle}`, html, { recipient: requesterLabel(requestId) }).catch((err) =>
+		log.error(`New-link mail to ${requesterLabel(requestId)} failed`, err)
 	);
 }
 
@@ -1148,7 +1166,7 @@ export function notifyRequesterProgress(event: RequesterProgressEvent): void {
 	// transaction of its own.
 	const token = issueRequestLinkNow(request.id, 'mail');
 	const replyUrl = requestReplyUrl(baseUrl, request.id, token);
-	afterCommit(() => sendRequesterProgress(event, request.title, address, replyUrl));
+	afterCommit(() => sendRequesterProgress(event, request.id, request.title, address, replyUrl));
 }
 
 /**
@@ -1158,6 +1176,7 @@ export function notifyRequesterProgress(event: RequesterProgressEvent): void {
  */
 async function sendRequesterProgress(
 	event: RequesterProgressEvent,
+	requestId: number,
 	requestTitle: string,
 	address: string,
 	replyUrl: string
@@ -1258,9 +1277,10 @@ async function sendRequesterProgress(
 					address,
 					config.subject,
 					html,
-					{ filename, content: pdfBuffer, contentType: 'application/pdf' }
+					{ filename, content: pdfBuffer, contentType: 'application/pdf' },
+					{ recipient: requesterLabel(requestId) }
 				).catch(err =>
-					log.error(`Requester completion PDF email failed for ${address}`, err)
+					log.error(`Completion mail with its PDF to ${requesterLabel(requestId)} failed`, err)
 				);
 				return;
 			}
@@ -1270,8 +1290,8 @@ async function sendRequesterProgress(
 		}
 	}
 
-	sendEmail(address, config.subject, html).catch(err =>
-		log.error(`Requester progress notification (${action}) failed for ${address}`, err)
+	sendEmail(address, config.subject, html, { recipient: requesterLabel(requestId) }).catch(err =>
+		log.error(`Progress mail (${action}) to ${requesterLabel(requestId)} failed`, err)
 	);
 }
 

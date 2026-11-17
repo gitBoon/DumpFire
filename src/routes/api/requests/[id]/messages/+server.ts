@@ -195,7 +195,7 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 		// is saved. With the mail password missing every mail would fail, and
 		// no link was issued for one (S5).
 		if (replyUrl !== null || baseUrl === null) {
-			notifyRequesterMessage(requester, taskReq.title, sName, message, replyUrl);
+			notifyRequesterMessage(taskReq.id, requester, taskReq.title, sName, message, replyUrl);
 		}
 	} else if (sType === 'requester') {
 		// Requester replied → notify inbox targets

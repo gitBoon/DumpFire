@@ -27,6 +27,8 @@
  * sections 6 and 8.6).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { and, eq } from 'drizzle-orm';
 import { db, sqlite } from '$lib/server/db';
 import { inTransaction } from '$lib/server/db/transaction';
@@ -36,7 +38,15 @@ import { issueInvite } from '$lib/server/invites';
 import { inviteHashOf } from './helpers/fixtures';
 import { getRecentLogs } from '$lib/server/logger';
 import { mailProblem, mailStatus, sendEmailWithAttachment } from '$lib/server/email';
-import { notifyRequesterConfirm, notifyUserAssigned } from '$lib/server/notifications';
+import {
+	notifyRequesterAccepted,
+	notifyRequesterConfirm,
+	notifyRequesterMessage,
+	notifyRequesterNewLink,
+	notifyRequesterProgress,
+	notifyRequesterRejected,
+	notifyUserAssigned
+} from '$lib/server/notifications';
 import { load as loadInvitePage } from '../src/routes/invite/[token]/+page.server';
 import { api, type ApiResult } from './helpers/api';
 import { effects, type Effects, type OfferedMail } from './helpers/effects';
@@ -312,7 +322,7 @@ describe('nothing secret is logged when a refusal quotes the link (M5a to M5h)',
 		};
 
 		const spoken = await logging(async () => {
-			notifyRequesterConfirm('someone@example.test', 'A new laptop', `${APP}/request/7/confirm?token=${requestToken}`);
+			notifyRequesterConfirm(7, 'someone@example.test', 'A new laptop', `${APP}/request/7/confirm?token=${requestToken}`);
 			await vi.waitFor(() => expect(mailStatus().failed).toBe(1));
 		});
 
@@ -334,6 +344,75 @@ describe('nothing secret is logged when a refusal quotes the link (M5a to M5h)',
 		expect(holdsPieceOf(JSON.stringify(spoken.result.body), token)).toBe(false);
 		expect(spoken.result.body.message).toBe('Failed to send test email: Mail command failed: 550 5.1.1 [token] rejected');
 		expectNowhere(spoken, token);
+	});
+});
+
+describe('a requester mail that fails names the request, not the address (card 2896)', () => {
+	const ADDRESS = 'some.one@example.test';
+	const TITLE = 'A new laptop';
+	let requestId: number;
+	let cardId: number;
+
+	beforeEach(() => {
+		const { cols } = makeBoard({ owner: admin });
+		cardId = makeCard(cols['To Do'], { title: TITLE }).id;
+		requestId = (
+			sqlite
+				.prepare(
+					"INSERT INTO task_requests (target_type, target_id, requester_name, requester_email, title, status, resolved_card_id) VALUES ('user', ?, 'Some One', ?, ?, 'accepted', ?) RETURNING id"
+				)
+				.get(admin.id, ADDRESS, TITLE, cardId) as { id: number }
+		).id;
+		// The mail server refuses the address, quoting it in other capitals.
+		refusal = () => refused('EENVELOPE', '550 5.1.1 <Some.One@Example.test>: Recipient address rejected', { responseCode: 550 });
+	});
+
+	const progress = (action: 'comment' | 'completed') => () =>
+		notifyRequesterProgress({ cardId, action, summary: 'chief commented', actorName: 'chief', baseUrl: APP });
+
+	it.each([
+		['the confirmation', `Confirm your request: ${TITLE}`, () => notifyRequesterConfirm(requestId, ADDRESS, TITLE, `${APP}/request/${requestId}/confirm?token=${'b4'.repeat(32)}`)],
+		['a reply from the team', `Message on request: ${TITLE}`, () => notifyRequesterMessage(requestId, ADDRESS, TITLE, 'chief', 'Which model?', `${APP}/request/${requestId}/reply?token=${'c5'.repeat(32)}`)],
+		['a new link', `A new link to your request: ${TITLE}`, () => notifyRequesterNewLink(requestId, ADDRESS, TITLE, `${APP}/request/${requestId}/reply?token=${'d6'.repeat(32)}`, false)],
+		['accepted', `Request accepted: ${TITLE}`, () => notifyRequesterAccepted(requestId, ADDRESS, TITLE, 'chief')],
+		['declined', `Request declined: ${TITLE}`, () => notifyRequesterRejected(requestId, ADDRESS, TITLE, 'chief', 'Not this year')],
+		['progress, a comment', `New comment on your request: ${TITLE}`, progress('comment')],
+		['progress, completed with its PDF', `Your request is complete: ${TITLE} ✅`, progress('completed')]
+	])('%s', async (_mail, subject, send) => {
+		const label = `the requester of request ${requestId}`;
+		// The recent-log buffer outlives a test: only this row's entries are read.
+		const earlier = new Set(getRecentLogs().map((entry) => entry.id));
+		const spoken = await logging(async () => {
+			send();
+			await vi.waitFor(() => expect(mailStatus().failed).toBe(1), { timeout: 10_000 });
+		});
+
+		const failed = spoken.rows.filter((row) => row.level === 'ERROR');
+		expect(failed).toHaveLength(1);
+		expect(failed[0]).toMatchObject({ context: 'EMAIL', message: `Failed to send email to ${label}: ${subject}` });
+		expect(JSON.parse(failed[0].meta!).detail).toBe(`550 5.1.1 <[${label}]>: Recipient address rejected`);
+		expect(mailStatus().lastFailure!.detail).toBe(`550 5.1.1 <[${label}]>: Recipient address rejected`);
+		// The mail was offered to the address: only the log is without it.
+		expect(sent!.refusedMail.map((mail) => mail.to)).toEqual([ADDRESS]);
+		for (const row of spoken.rows) expect(`${row.message} ${row.meta ?? ''}`.toLowerCase()).not.toContain(ADDRESS);
+		expect(spoken.console.toLowerCase()).not.toContain(ADDRESS);
+		expect(JSON.stringify(getRecentLogs().filter((entry) => !earlier.has(entry.id))).toLowerCase()).not.toContain(ADDRESS);
+	});
+
+	it('writes no log line in the requester mails of notifications.ts with the address in it', () => {
+		const source = readFileSync(join(process.cwd(), 'src/lib/server/notifications.ts'), 'utf8').replace(/\r\n/g, '\n');
+		const start = source.indexOf('// ─── Request Conversation Notifications');
+		const end = source.indexOf('// ─── Dependency Notifications');
+		expect(start).toBeGreaterThan(0);
+		expect(end).toBeGreaterThan(start);
+		const section = source.slice(start, end);
+		// The seven sends' catch lines are in it, and the progress mail's builder.
+		expect(section).toContain('async function sendRequesterProgress(');
+		expect(section.match(/requesterLabel\(requestId\)/g)!.length).toBeGreaterThanOrEqual(14);
+		// Each `log.` call, to its closing parenthesis on the same line or the next.
+		const calls = section.match(/log\.\w+\(`[^`]*`/g) ?? [];
+		expect(calls.length).toBeGreaterThanOrEqual(7);
+		expect(calls.filter((call) => /\$\{(email|address)\}/.test(call))).toEqual([]);
 	});
 });
 

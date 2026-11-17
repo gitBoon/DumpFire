@@ -215,7 +215,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals, url }) =>
 
 			// Notify requester via email
 			if (requester !== null) {
-				notifyRequesterAccepted(requester, existing.title, user.username);
+				notifyRequesterAccepted(existing.id, requester, existing.title, user.username);
 			}
 
 			// After "Request accepted", so that mail starts first: the live update,
@@ -236,7 +236,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals, url }) =>
 
 			// Notify requester via email
 			if (requester !== null) {
-				notifyRequesterRejected(requester, existing.title, user.username, rejectReason || undefined);
+				notifyRequesterRejected(existing.id, requester, existing.title, user.username, rejectReason || undefined);
 			}
 
 			return { ...answered(existing, user), requesterEmail: requester, status: 'rejected' };

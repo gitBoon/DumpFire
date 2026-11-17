@@ -329,15 +329,17 @@ export const CHECKLIST: readonly IsoItem[] = [
 		status: 'partly-met',
 		how:
 			'People, accounts and task requests can be deleted. A backup holds no session, unused invite or requester link, and requester links are held only as hashes (card 2870). ' +
-			'Still open: a requester\'s address is written to the system log when a mail to them fails, and a settled request\'s links never expire.',
+			'A requester\'s address is never written to the system log: a mail to them that fails names the request (card 2896). ' +
+			'Still open: a settled request\'s links never expire, and what DumpFire holds about one person cannot be exported or erased in one step.',
 		evidence: [
 			{ path: 'src/routes/api/people/[id]/+server.ts', symbol: 'DELETE' },
 			{ path: 'src/routes/api/users/[id]/+server.ts', symbol: 'DELETE' },
 			{ path: 'src/routes/api/requests/[id]/+server.ts', symbol: 'DELETE' },
-			{ path: BACKUP_DOC, anchor: 'what-a-backup-holds' }
+			{ path: BACKUP_DOC, anchor: 'what-a-backup-holds' },
+			{ path: 'src/lib/server/email.ts', symbol: 'requesterLabel' }
 		],
 		owner: 'DumpFire',
-		gapCards: [2896, 2902],
+		gapCards: [2902, 2909],
 		organisationalPart: 'Lawful basis, privacy notices, data subject requests and records of processing.'
 	},
 	organisational('A.5.35', 'annex-a', 'Independent review of information security'),
@@ -554,16 +556,19 @@ export const CHECKLIST: readonly IsoItem[] = [
 		title: 'Data masking',
 		theme: 'technological',
 		applicability: 'supports',
-		status: 'partly-met',
+		status: 'met',
 		how:
-			'Stored secrets are masked in every settings answer, and invite addresses are masked in the system log. ' +
-			'Still open: a requester\'s address is written to the log when a mail to them fails.',
+			'Stored secrets are masked in every settings answer, invite addresses are masked in the system log, and a token in a mail server\'s words is masked before they are logged. ' +
+			'The address of anyone outside the organisation is never logged: a failed mail to a task request\'s requester names the request (card 2896), and one to a decision participant names the participant, in the mail server\'s words too. ' +
+			'An account holder\'s address is still named on a failed mail to them, as the Users page already shows it to the same administrators.',
 		evidence: [
 			{ path: 'src/lib/server/backup-secrets.ts', symbol: 'SECRET_MASK' },
-			{ path: ADMIN_DOC, anchor: 'what-a-backup-holds' }
+			{ path: ADMIN_DOC, anchor: 'what-a-backup-holds' },
+			{ path: 'src/lib/server/email.ts', symbol: 'withoutAddress' },
+			{ path: 'src/lib/server/email.ts', symbol: 'maskMailText' }
 		],
 		owner: 'DumpFire',
-		gapCards: [2896],
+		gapCards: [],
 		organisationalPart: 'Decide what is masked, and where.'
 	},
 	{

@@ -201,7 +201,7 @@ function mailNewLink(requestId: number, address: string, unconfirmed: boolean, b
 			? requestConfirmUrl(baseUrl, requestId, issued.token)
 			: requestReplyUrl(baseUrl, requestId, issued.token);
 		// Not awaited, as every notification is not.
-		notifyRequesterNewLink(issued.address, issued.title, link, issued.unconfirmed);
+		notifyRequesterNewLink(requestId, issued.address, issued.title, link, issued.unconfirmed);
 		log.info(`A new link to request ${requestId} was mailed to its requester's address`);
 	} catch (err) {
 		log.error(`A new link to request ${requestId} could not be mailed`, err);
