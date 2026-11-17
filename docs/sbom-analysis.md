@@ -1,9 +1,9 @@
 ---
 title: "SBOM Analysis: DumpFire"
 category: "Identity & Security"
-version: 1.7
+version: 1.8
 status: As-Built
-date: 2026-11-16
+date: 2026-11-17
 tags:
   - sbom
   - licensing
@@ -19,12 +19,12 @@ tags:
   - devalue
   - uqr
   - qr-code
-description: "Software Bill of Materials and open-source posture analysis for the DumpFire Kanban board application, with the changes of 2026-10-15 (jsdom for the tests, dompurify raised to 3.4.17, the Inter font bundled under the SIL Open Font License 1.1) and of 2026-10-18 (nodemailer 8.0.7 to 10.1.1, @types/nodemailer removed; @sveltejs/kit 2.60.1 to 2.70.3, svelte 5.55.7 to 5.57.2, @sveltejs/adapter-node 5.5.4 to 5.5.7, devalue 5.8.1 to 5.9.4, qs 6.15.1 to 6.16.0 by an override) and of 2026-11-13 (uqr 0.1.3, MIT, no dependencies, pinned exactly, for two-step sign-in's QR code, and why not qrcode)"
+description: "Software Bill of Materials and open-source posture analysis for the DumpFire Kanban board application, with the changes of 2026-10-15 (jsdom for the tests, dompurify raised to 3.4.17, the Inter font bundled under the SIL Open Font License 1.1) and of 2026-10-18 (nodemailer 8.0.7 to 10.1.1, @types/nodemailer removed; @sveltejs/kit 2.60.1 to 2.70.3, svelte 5.55.7 to 5.57.2, @sveltejs/adapter-node 5.5.4 to 5.5.7, devalue 5.8.1 to 5.9.4, qs 6.15.1 to 6.16.0 by an override) and of 2026-11-13 (uqr 0.1.3, MIT, no dependencies, pinned exactly, for two-step sign-in's QR code, and why not qrcode) and of 2026-11-17 (nodemailer 10.1.1 to 10.4.0, qs 6.16.0 to 6.16.2, @azure/identity 4.13.1 to 4.14.1 with @azure/msal-node 5.2.1 to 7.2.1, @aws-sdk/client-s3 3.1047.0 to 3.1165.0, which drops fast-xml-parser; five new overrides hold transitive releases to card 2227's seven-day rule)"
 ---
 
 # SBOM Analysis: DumpFire
 
-Based on production dependency analysis via `license-checker` and `npm audit` (scanned 2026-05-15, post-update), here is an architectural summary and open-source posture analysis of the DumpFire application. The counts and tables of sections 2 to 6 are that scan's. What changed on 2026-10-15 (cards 2202 and 2203) is in [section 9](#9-changes-on-2026-10-15), and what changed on 2026-10-18 (card 2227) in [section 10](#10-changes-on-2026-10-18), and on 2026-11-13 (card 2769) in [section 11](#11-changes-on-2026-11-13); each is folded into the rows it touches below.
+Based on production dependency analysis via `license-checker` and `npm audit` (scanned 2026-05-15, post-update), here is an architectural summary and open-source posture analysis of the DumpFire application. The counts and tables of sections 2 to 6 are that scan's. What changed on 2026-10-15 (cards 2202 and 2203) is in [section 9](#9-changes-on-2026-10-15), and what changed on 2026-10-18 (card 2227) in [section 10](#10-changes-on-2026-10-18), and on 2026-11-13 (card 2769) in [section 11](#11-changes-on-2026-11-13), and on 2026-11-17 (card 2852) in [section 12](#12-changes-on-2026-11-17); each is folded into the rows it touches below.
 
 ## 1. Application Summary
 
@@ -38,7 +38,7 @@ DumpFire is a self-hosted, real-time **Kanban board** built for teams on a local
 
 **Cloud Backup Providers:** The backup system supports four destination providers via dedicated SDK integrations:
 
-- **Amazon S3** — `@aws-sdk/client-s3` (the largest dependency subtree at ~50 packages)
+- **Amazon S3** — `@aws-sdk/client-s3` (the largest dependency subtree, ~50 packages until 2026-11-17 and 24 since: section 12)
 - **Google Drive** — `googleapis` + `google-auth-library`
 - **Microsoft OneDrive** — `@azure/identity` + `@microsoft/microsoft-graph-client`
 - **SFTP/SCP** — `ssh2-sftp-client` + `ssh2`
@@ -86,7 +86,7 @@ Eight packages use dual/multi-licence or non-standard SPDX identifiers. Each has
 | tweetnacl | 0.14.5 | Unlicense | ✅ Compliant | Public domain dedication. No restrictions whatsoever. Used by `ssh2` for cryptographic primitives. |
 | png-js | 1.1.0 | MIT* | ✅ Compliant | The asterisk indicates the licence was inferred from the LICENSE file rather than package metadata. Confirmed MIT on GitHub. |
 | url-template | 2.0.8 | BSD* | ✅ Compliant | Inferred BSD-3-Clause from the LICENSE file. Used by `googleapis-common`. |
-| nodemailer | 10.1.1 | MIT-0 | ✅ Compliant | MIT No Attribution — even more permissive than standard MIT. No attribution requirement. |
+| nodemailer | 10.4.0 | MIT-0 | ✅ Compliant | MIT No Attribution — even more permissive than standard MIT. No attribution requirement. |
 | lightningcss | 1.32.0 | MPL-2.0 | ✅ Dev-only | Mozilla Public Licence 2.0 (file-level copyleft). Dev-only CSS build tool, **not bundled** into production. No compliance impact. |
 | lightningcss-win32-x64-msvc | 1.32.0 | MPL-2.0 | ✅ Dev-only | Native binary for lightningcss. Same MPL-2.0, same dev-only status. |
 
@@ -137,7 +137,7 @@ The following tables list all 237 production-scoped packages compiled into the p
 
 | Package | Version | Licence | Integration |
 |---|---|---|---|
-| nodemailer | 10.1.1 | MIT-0 | Linked — SMTP email transport, with its own type declarations (8.0.7 until 2026-10-18: section 10) |
+| nodemailer | 10.4.0 | MIT-0 | Linked — SMTP email transport, with its own type declarations (8.0.7 until 2026-10-18: section 10; 10.1.1 until 2026-11-17: section 12) |
 
 ### Markdown & Sanitisation (MIT + MPL-2.0/Apache-2.0)
 
@@ -185,33 +185,35 @@ The following tables list all 237 production-scoped packages compiled into the p
 |---|---|---|
 | svelte-dnd-action | 0.9.69 | Bundled — drag-and-drop for Svelte |
 
-### AWS SDK — S3 Backups (Apache-2.0, ~50 packages)
+### AWS SDK — S3 Backups (Apache-2.0, 24 packages since 2026-11-17, ~50 before)
 
 All `@aws-sdk/*`, `@smithy/*`, and `@aws-crypto/*` packages are Apache-2.0, published by AWS. Key packages:
 
 | Package | Version | Integration |
 |---|---|---|
-| @aws-sdk/client-s3 | 3.1047.0 | Linked — S3 object storage client |
-| @aws-sdk/core | 3.974.10 | Linked — SDK core |
-| @aws-sdk/credential-provider-node | 3.972.41 | Linked — credential chain |
-| @aws-sdk/middleware-sdk-s3 | 3.972.39 | Linked — S3 middleware |
-| @aws-sdk/xml-builder | 3.972.24 | Linked — XML serialisation |
-| @smithy/core | 3.24.2 | Linked — Smithy runtime |
-| @smithy/types | 4.14.1 | Linked — type definitions |
-| @smithy/node-http-handler | 4.7.2 | Linked — HTTP handler |
-| @smithy/signature-v4 | 5.4.2 | Linked — request signing |
-| @aws-crypto/sha256-js | 5.2.0 | Linked — SHA-256 hashing |
+| @aws-sdk/client-s3 | 3.1165.0 | Linked — S3 object storage client (3.1047.0 until 2026-11-17: section 12) |
+| @aws-sdk/core | 3.981.0 | Linked — SDK core |
+| @aws-sdk/credential-provider-node | 3.972.96 | Linked — credential chain; held by an override (section 12) |
+| @aws-sdk/middleware-sdk-s3 | 3.972.89 | Linked — S3 middleware |
+| @aws-sdk/xml-builder | 3.972.43 | Linked — XML serialisation, without `fast-xml-parser` since 2026-11-17 (section 12) |
+| @aws-sdk/checksums | 3.1002.5 | Linked — request and response checksums (new on 2026-11-17) |
+| @smithy/core | 3.40.0 | Linked — Smithy runtime; held by an override (section 12) |
+| @smithy/types | 4.20.0 | Linked — type definitions |
+| @smithy/node-http-handler | 4.14.2 | Linked — HTTP handler |
+| @smithy/signature-v4 | 5.7.5 | Linked — request signing |
 
-*Plus additional `@aws-sdk/*`, `@smithy/*`, and `@aws-crypto/*` middleware, utility, and provider packages — all Apache-2.0.*
+The `@aws-crypto/*` packages (5.2.0) left the tree on 2026-11-17 with 3.1165.0 (section 12).
+
+*Plus additional `@aws-sdk/*` and `@smithy/*` middleware, utility, and provider packages — all Apache-2.0.*
 
 ### Azure SDK — OneDrive Backups (MIT)
 
 | Package | Version | Integration |
 |---|---|---|
-| @azure/identity | 4.13.1 | Linked — Azure AD authentication |
-| @azure/msal-node | 5.2.1 | Linked — MSAL token acquisition |
+| @azure/identity | 4.14.1 | Linked — Azure AD authentication (4.13.1 until 2026-11-17: section 12) |
+| @azure/msal-node | 7.2.1 | Linked — MSAL token acquisition; held by an override, with its own `@azure/msal-common` 16.16.1 (5.2.1 until 2026-11-17: section 12) |
 | @azure/msal-browser | 5.10.1 | Linked — browser auth flows |
-| @azure/msal-common | 16.6.1 | Linked — shared MSAL core |
+| @azure/msal-common | 16.6.1 | Linked — shared MSAL core, `@azure/msal-browser`'s (msal-node has 16.16.1 since 2026-11-17) |
 | @azure/core-rest-pipeline | 1.23.0 | Linked — HTTP pipeline |
 | @azure/core-auth | 1.10.1 | Linked — auth abstractions |
 | @azure/core-client | 1.10.1 | Linked — client base |
@@ -282,7 +284,7 @@ All `@aws-sdk/*`, `@smithy/*`, and `@aws-crypto/*` packages are Apache-2.0, publ
 | fast-deep-equal | 3.1.3 | MIT | Linked — deep equality |
 | json-bigint | 1.0.0 | MIT | Linked — BigInt JSON |
 | bignumber.js | 9.3.1 | MIT | Linked — arbitrary precision |
-| qs | 6.16.0 | BSD-3-Clause | Linked — query string parsing, through googleapis-common; held at 6.16.0 by an override since 2026-10-18 (6.15.1 before: section 10) |
+| qs | 6.16.2 | BSD-3-Clause | Linked — query string parsing, through googleapis-common; held by an override since 2026-10-18, at 6.16.0 (6.15.1 before: section 10) and at 6.16.2 since 2026-11-17 (section 12) |
 | bowser | 2.14.1 | MIT | Linked — browser detection |
 | buffer | 5.7.1 | MIT | Linked — Buffer polyfill |
 | readable-stream | 3.6.2 | MIT | Linked — streams polyfill |
@@ -350,11 +352,12 @@ All 15 advisories identified in the pre-update scan have been resolved:
 
 **Security Posture:** The application implements defence-in-depth with security headers (X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy, X-XSS-Protection), CSRF protection via SvelteKit's ORIGIN checking, rate limiting on API endpoints (60 req/min), and bcrypt password hashing.
 
-**Dependency Overrides:** Three npm `overrides` are configured in `package.json` to address upstream lag in transitive dependencies:
+**Dependency Overrides:** Eight npm `overrides` are configured in `package.json` to address upstream lag in transitive dependencies:
 
 - `@sveltejs/kit → cookie: ^0.7.2` — SvelteKit still pins `cookie@^0.6.0`; the override forces the patched version.
 - `@esbuild-kit/core-utils → esbuild: ^0.25.0` — `drizzle-kit` uses a deprecated `@esbuild-kit` chain with an old esbuild; the override forces the patched version.
-- `qs: 6.16.0` (since 2026-10-18, card 2227) — `googleapis-common` 8.0.x asks for `qs@^6.7.0`, which a fresh resolution would answer with 6.16.1, four days old on the day; the override holds it at 6.16.0, past the three advisories `npm audit` listed against 6.15.x (section 10).
+- `qs: 6.16.2` (since 2026-10-18, card 2227, at 6.16.0; raised to 6.16.2 on 2026-11-17, card 2852) — `googleapis-common` 8.0.x asks for `qs@^6.7.0`, which a fresh resolution would answer with the newest 6.x whatever its age; the override holds it at 6.16.2, past the three advisories `npm audit` listed against 6.15.x (section 10) and the `arrayFormat: 'comma'` one against 6.16.0 (section 12).
+- `@azure/msal-node: 7.2.1`, `@aws-sdk/credential-provider-node: 3.972.96`, `@aws-sdk/credential-provider-ini: 3.973.29`, `@aws-sdk/credential-provider-login: 3.972.91` and `@smithy/core: 3.40.0` (since 2026-11-17, card 2852) — the caret ranges `@azure/identity` 4.14.1 and `@aws-sdk/client-s3` 3.1165.0 ask for resolved to releases published after 2026-11-10, inside card 2227's seven days; each override holds the package at the newest release on or before that date, inside every range that asks for it (section 12). Like `qs`'s, they block later fixes to those packages until they are raised or removed: revisit them with the next update of either SDK.
 
 These overrides are safe because the packages maintain backwards-compatible APIs across these minor version ranges.
 
@@ -684,3 +687,175 @@ flowchart LR
   `googleapis-common`). None is in `uqr`, which brings no other package, so the count without it
   is the same seven. They are advisories published since section 10's clean run, outside card
   2769, and are covered by card 2852.
+
+## 12. Changes on 2026-11-17
+
+Card 2852 clears the seven production advisories `npm audit --omit=dev` listed on 2026-11-17
+(section 11's seven). Card 2227's rule holds for every release the new lock takes, direct and
+transitive: published on or before 2026-11-10, seven days before the build, checked with
+`npm view <package> time --json`. Where a caret range resolved to a newer release, an override
+holds the package at the newest release that is old enough (below). The production tree goes
+from 237 entries to 211: 31 packages leave, 4 arrive (`@aws-sdk/checksums`, `@azure/core-process`,
+`is-in-ssh`, `powershell-utils`), a second `@azure/msal-common` is nested beneath `@azure/msal-node`,
+and `@aws/lambda-invoke-store` moves beneath `@aws-sdk/core`.
+
+**`nodemailer` 10.1.1 → 10.4.0** (`package.json` `10.1.1` → `10.4.0`, pinned exactly as before;
+MIT-0; no dependencies). 10.4.0 was published on 2026-11-07. The three advisories, all moderate
+and all in `addressparser`, which reads every `from` and `to` that `sendMail` is given, run to
+10.1.3: GHSA-8c8m-p3m8-cjg8 (a nested comment ends early, releasing the rest of the comment as
+a recipient), GHSA-m943-m63m-w62w (a `;` inside a quoted string or comment ends an address group
+early, turning display text into a recipient) and GHSA-85x2-q946-cp5h (a `>` inside a quoted
+local part ends an angle-addr early, delivering to a domain the header does not name). Reached
+in principle: DumpFire's addresses come from accounts, People records and the mail settings,
+typed by signed-in users and administrators, not by an anonymous visitor. 10.4.1 and 10.5.0
+were published on 2026-11-10 and also fall inside the rule; 10.4.0 is the release the plan
+named, and the changelog below is read to it. Lock integrity
+`sha512-fyy6r4Q5euRJ9Qr3Cts9K7SZrfe9zmz9oLOYiAR02MEJRDRci+99y0OoYBYBgpLffOqkkjXrB/d26VfiMje/kA==`.
+
+**`qs` 6.16.0 → 6.16.2** (`overrides`: `"qs": "6.16.0"` → `"qs": "6.16.2"`; BSD-3-Clause).
+Published on 2026-10-27. GHSA-6pq8-jhm2-2vcw (moderate, 6.7.0 to 6.16.0): `qs.stringify` with
+`arrayFormat: 'comma'` throws an uncaught `TypeError` on an array element whose own `toString`
+is not callable, a denial of service. Not reached: `googleapis-common` is the only package that
+uses `qs`, and does not stringify with the `comma` format for the Drive calls DumpFire makes. The
+override stays exact and on the 6.16 line, a fixes-only step; 6.17.0 and 6.17.1 (2026-10-27 and
+2026-10-28) are inside the rule but a minor version up, for the next googleapis update. Lock
+integrity
+`sha512-VYdnB5S7/0IeXzBacUtwNAaM6d7Y/PgYnNC7bJCI6meqA/OgnsQbZMtVW8Dt2D1PHgbHGtYmhSoEIgvt7xZ2ZA==`.
+
+**`@azure/identity` 4.13.1 → 4.14.1, and `@azure/msal-node` 5.2.1 → 7.2.1** (`package.json`
+`^4.13.1` → `^4.14.1`; `overrides`: `"@azure/msal-node": "7.2.1"`; MIT). `@azure/identity`
+4.14.1 was published on 2026-10-29 and asks for `@azure/msal-node@^7.1.0`, which resolved to
+7.2.2, published on 2026-11-12; the override holds it at 7.2.1 (2026-11-06), whose exact
+`@azure/msal-common` 16.16.1 (2026-11-06) is nested beneath it. `@azure/msal-browser` 5.10.1
+keeps its own `@azure/msal-common` 16.6.1 at the top. GHSA-xcx6-jx8p-x3h5 (high,
+`@azure/msal-node` 5.0.0-beta.0 to 7.0.2, and `@azure/identity` 4.13.1 to 4.14.0 through it):
+MSAL Node's authorization code flow can disclose its parameters to an attacker-controlled
+endpoint. Not reached: OneDrive backup signs in with `ClientSecretCredential`, the client
+credentials flow (`src/lib/server/backup-destinations.ts`), never the authorization code flow.
+4.14.1 also raises `open` 10.2.0 → 11.0.4, which brings `bundle-name`, `default-browser`,
+`wsl-utils`, `is-in-ssh` and `powershell-utils` (all MIT) and adds `@azure/core-process` 1.0.0
+(MIT); `open` serves the interactive browser credential, which DumpFire does not use. Lock
+integrity of `@azure/identity`
+`sha512-HHuuFrmN1uuF9D5A6aAo5eHzNFNX4Q+P4SksZqDKse5YaJFFy/zDLG3wXHEV2FVGgetZ3QM8jGURNBtnQYf1NQ==`,
+of `@azure/msal-node`
+`sha512-6mntsfCNq7H1eAPSZik74jT3C5at4nRqiVk7OC+D5Hy3Pe3s76uwE4+J0xvDvlVPmoX2kasf3mSwUmzeq9rW/A==`.
+
+**`@aws-sdk/client-s3` 3.1047.0 → 3.1165.0, and `fast-xml-parser` 5.7.3 removed**
+(`package.json` `^3.1047.0` → `^3.1165.0`; Apache-2.0). 3.1165.0 was published on 2026-11-09;
+it was installed by its exact version, since `^3.1165.0` alone resolves to 3.1170.0
+(2026-11-16). GHSA-474x-hrwr-fgx4 (low, `fast-xml-parser` up to 5.11.2, and
+`@aws-sdk/xml-builder` 3.894.0 to 3.972.30 through it): quadratic CPU on unterminated stop-node
+tags, reached only on XML from the S3 endpoint an administrator configures. `@aws-sdk/xml-builder`
+3.972.43 (2026-11-09) no longer depends on `fast-xml-parser`, which leaves the tree together with
+`fast-xml-builder`, `strnum`, `path-expression-matcher`, `xml-naming` and `@nodable/entities`, so
+the plan's fallback override (`fast-xml-parser` 5.12.0) was not needed. The SDK line also folds
+its middleware into `@aws-sdk/core` and the new `@aws-sdk/checksums`: the `@aws-crypto/*`
+packages, thirteen `@aws-sdk/middleware-*` and `util-*` packages, `@aws-sdk/crc64-nvme`,
+`@aws-sdk/region-config-resolver` and three `@smithy/*` 2.x utilities leave, and the AWS
+subtree goes from 48 packages to 24. Lock integrity of `@aws-sdk/client-s3`
+`sha512-6wcKobhqnJ89AEyHwvUAa8YTB2sLA4ISsSG6Ysn38XG8mHwtGfcMUrXKekshf2xKGCCA+88uoe3TXf9/BLshUg==`,
+of `@aws-sdk/xml-builder`
+`sha512-rG8QVx4DOrJWptsogu1Aq+CDsnPKaBrAlJpKLxrJrIDXAq1ElnW0yQjjBnlWSXll0cDakCG6UDvaqwz0A9d9Og==`.
+
+**Overrides added for the seven-day rule.** The first install resolved five releases published
+after 2026-11-10 (and `@azure/msal-common` 16.16.2, 2026-11-12, which msal-node 7.2.2 pins). Each is held at the newest release on or before that date, which every range
+that asks for it still admits:
+
+| Package | Resolved (published) | Held at (published) | Asked for by | Lock integrity |
+|---|---|---|---|---|
+| `@azure/msal-node` | 7.2.2 (2026-11-12) | 7.2.1 (2026-11-06) | `@azure/identity` `^7.1.0` | `sha512-6mntsfCNq7H1eAPSZik74jT3C5at4nRqiVk7OC+D5Hy3Pe3s76uwE4+J0xvDvlVPmoX2kasf3mSwUmzeq9rW/A==` |
+| `@aws-sdk/credential-provider-node` | 3.972.97 (2026-11-11) | 3.972.96 (2026-11-10) | `client-s3` `^3.972.95` | `sha512-tBunyyRnxMvKsCn/pu1QrIxUYZ4Z25LkV8zGkFGpSE/YmI2W4m8SLQzloG/hZlelGP2vLRGtIQc5w1+DoXCK1A==` |
+| `@aws-sdk/credential-provider-ini` | 3.973.30 (2026-11-11) | 3.973.29 (2026-11-10) | `credential-provider-node` `^3.973.29` | `sha512-/idO4bVjw34b1OiNxDqFNr3BsPg9dRm1iS6XM/rTqA33RfUgTuwBCFFCz/TwxNHkrQ45tp+RpKE8P609Ino8XQ==` |
+| `@aws-sdk/credential-provider-login` | 3.972.92 (2026-11-11) | 3.972.91 (2026-11-10) | `credential-provider-ini` `^3.972.91` | `sha512-MujcVZc7mnodrsp85NX0QpnQrt7kY6zbVUl+TcvzJEZzgEQkRj4iopj0kNs3uXJUArpkA64Rxa0ga86qdx0gag==` |
+| `@smithy/core` | 3.41.0 (2026-11-16) | 3.40.0 (2026-11-10) | the SDK packages, `^3.33.2` to `^3.40.0` | `sha512-DssGno52pzZ5m6RlDtyKuBIpZNPg9pqgs0CnNDKz9IatxCsmvNmJNn5Zn6rf77MthZo9wf89OvZFhTY/RwxhxQ==` |
+
+The lock was then resolved again from the one before this card with the overrides already in
+`package.json`, so that each overridden package sits once at the top of `node_modules`: added
+to a lock that already held the newer releases, npm nested a copy of `@smithy/core` under each
+of fifteen packages that ask for it. Like `qs`'s, these overrides are exact and block later fixes
+to those packages: revisit them with the next update of either SDK.
+
+**Every other release the lock changes**, each published on or before 2026-11-10:
+
+| Package | Before → after | Published |
+|---|---|---|
+| `@aws-sdk/core` | 3.974.10 → 3.981.0 | 2026-11-10 |
+| `@aws-sdk/credential-provider-env` | 3.972.36 → 3.972.84 | 2026-11-10 |
+| `@aws-sdk/credential-provider-http` | 3.972.38 → 3.972.86 | 2026-11-10 |
+| `@aws-sdk/credential-provider-process` | 3.972.36 → 3.972.84 | 2026-11-10 |
+| `@aws-sdk/credential-provider-sso` | 3.972.40 → 3.973.28 | 2026-11-10 |
+| `@aws-sdk/credential-provider-web-identity` | 3.972.40 → 3.972.90 | 2026-11-10 |
+| `@aws-sdk/middleware-sdk-s3` | 3.972.39 → 3.972.89 | 2026-11-10 |
+| `@aws-sdk/nested-clients` | 3.997.8 → 3.998.3 | 2026-11-10 |
+| `@aws-sdk/signature-v4-multi-region` | 3.996.26 → 3.996.52 | 2026-11-09 |
+| `@aws-sdk/token-providers` | 3.1047.0 → 3.1166.0 | 2026-11-10 |
+| `@aws-sdk/types` | 3.973.8 → 3.975.1 | 2026-11-09 |
+| `@aws-sdk/checksums` | new, 3.1002.5 | 2026-11-10 |
+| `@aws/lambda-invoke-store` | 0.2.4 → 0.3.0 (now beneath `@aws-sdk/core`) | 2026-07-01 |
+| `@smithy/credential-provider-imds` | 4.3.2 → 4.5.2 | 2026-08-15 |
+| `@smithy/fetch-http-handler` | 5.4.2 → 5.8.1 | 2026-11-05 |
+| `@smithy/node-http-handler` | 4.7.2 → 4.14.2 | 2026-11-04 |
+| `@smithy/signature-v4` | 5.4.2 → 5.7.5 | 2026-10-29 |
+| `@smithy/types` | 4.14.1 → 4.20.0 | 2026-11-04 |
+| `@azure/core-process` | new, 1.0.0 | 2026-08-13 |
+| `@azure/msal-common` (msal-node's) | new beneath msal-node, 16.16.1 | 2026-11-06 |
+| `open` | 10.2.0 → 11.0.4 | 2026-09-14 |
+| `bundle-name` | 4.1.0 → 4.1.1 | 2026-09-25 |
+| `default-browser` | 5.5.0 → 5.5.1 | 2026-08-16 |
+| `wsl-utils` | 0.1.0 → 1.0.1 | 2026-09-30 |
+| `is-in-ssh` | new, 1.0.0 | 2025-11-12 |
+| `powershell-utils` | new, 0.2.1 | 2026-08-29 |
+
+Several AWS releases are from the evening of 2026-11-10 (19:40 UTC), the last that the rule
+admits. Every new package is MIT or Apache-2.0, so the licence picture of sections 2 and 3 is
+unchanged.
+
+**nodemailer's `CHANGELOG.md` read, 10.1.2 to 10.4.0**, for what `src/lib/server/email.ts`
+relies on (`createTransport` with `host`, `port`, `secure`, `requireTLS`, `auth`,
+`tls.rejectUnauthorized`, `name` and the three timeouts; `sendMail` with a
+`"name" <address>` sender; the error codes `mailProblem` and `isTlsFault` read):
+
+- No change to a transport option, to STARTTLS or to TLS: `smtp-connection` and
+  `smtp-transport` differ from 10.1.1 only by the additions below and formatting.
+- 10.1.2 bounds the work a message can make the mailer do, and keeps a message's own `auth`
+  from setting where the transport's credentials go (only `type`, `user`, `pass`,
+  `accessToken`, `refreshToken` and `expires` may come from a message). DumpFire passes no
+  `auth` with a message.
+- 10.1.3 to 10.1.7: the `addressparser` fixes behind the three advisories, plus linear-time
+  `References` formatting and parameter encoding. A well-formed `"name" <address>` reads as
+  before.
+- 10.2.0: `info.serverMessageId`, `err.permanent`, `pendingCount()` on a pool, LMTP refusals in
+  `rejectedErrors`, all additive. 10.3.0 and 10.3.1: the `otp` option (OTP-Token header) and its
+  error code `EOTP`, the only new error code; DumpFire sets no `otp`. 10.4.0:
+  `close({ force: true })` for a pool, which DumpFire does not use.
+- Every error code `mailProblem` maps (`ETLS`, `EREQUIRETLS`, `EAUTH`, `EENVELOPE`,
+  `EMESSAGE`, `ECONNECTION`, `EDNS`, `ETIMEDOUT`, `ESOCKET`) is still raised, as are the
+  "Missing credentials" `EAUTH` and the "EHLO failed but HELO does not support required
+  STARTTLS" message.
+
+**`npm audit --omit=dev`, before** (2026-11-17):
+
+```
+@azure/msal-node  5.0.0-beta.0 - 7.0.2   high      GHSA-xcx6-jx8p-x3h5
+  @azure/identity  4.13.1 - 4.14.0 || 4.15.0-beta.1
+fast-xml-parser  <=5.11.2                low       GHSA-474x-hrwr-fgx4
+  @aws-sdk/xml-builder  3.894.0 - 3.972.30
+nodemailer  3.0.0 - 10.1.3               moderate  GHSA-8c8m-p3m8-cjg8, GHSA-m943-m63m-w62w,
+                                                   GHSA-85x2-q946-cp5h
+qs  6.7.0 - 6.16.0                       moderate  GHSA-6pq8-jhm2-2vcw
+  googleapis-common
+7 vulnerabilities (2 low, 3 moderate, 2 high)
+```
+
+**After:**
+
+```
+found 0 vulnerabilities
+```
+
+The full `npm audit`, dev packages included, lists seven, none in what the image ships and
+none moved by this card: `@sveltejs/kit` (and `@sveltejs/adapter-node`), `esbuild`, `nanoid`,
+`postcss`, `source-map-js` and `vite`, all build or test tooling.
+
+**Tests.** `npx vitest run`: 144 files, 12,311 tests passed and 5 skipped. `npx svelte-check
+--threshold error`: 0 errors, 0 warnings.

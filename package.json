@@ -38,8 +38,8 @@
 		"vitest": "^5.0.4"
 	},
 	"dependencies": {
-		"@aws-sdk/client-s3": "^3.1047.0",
-		"@azure/identity": "^4.13.1",
+		"@aws-sdk/client-s3": "^3.1165.0",
+		"@azure/identity": "^4.14.1",
 		"@microsoft/microsoft-graph-client": "^3.0.7",
 		"@types/pdfkit": "^0.17.6",
 		"bcryptjs": "^3.0.3",
@@ -49,7 +49,7 @@
 		"drizzle-orm": "^0.45.2",
 		"googleapis": "^171.4.0",
 		"marked": "^18.0.3",
-		"nodemailer": "10.1.1",
+		"nodemailer": "10.4.0",
 		"pdfkit": "^0.18.0",
 		"ssh2-sftp-client": "^12.1.1",
 		"svelte-dnd-action": "^0.9.69",
@@ -62,6 +62,11 @@
 		"@esbuild-kit/core-utils": {
 			"esbuild": "^0.25.0"
 		},
-		"qs": "6.16.0"
+		"qs": "6.16.2",
+		"@azure/msal-node": "7.2.1",
+		"@aws-sdk/credential-provider-node": "3.972.96",
+		"@aws-sdk/credential-provider-ini": "3.973.29",
+		"@aws-sdk/credential-provider-login": "3.972.91",
+		"@smithy/core": "3.40.0"
 	}
 }

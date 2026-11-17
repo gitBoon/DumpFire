@@ -1,9 +1,9 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.69
+version: 1.70
 status: As-Built
-date: 2026-11-13
+date: 2026-11-17
 tags:
   - notifications
   - email
@@ -360,7 +360,7 @@ flowchart TD
     Fail -->|"secure-connection, not Send Test"| Warn["WARN Mail is not being sent,<br/>at most once in 10 minutes"]
 ```
 
-The options handed to nodemailer (10.1.1):
+The options handed to nodemailer (10.4.0 since card 2852; 10.1.1 before):
 
 | Option | Port 465 | Any other port | Any other port, way out ticked |
 |---|---|---|---|

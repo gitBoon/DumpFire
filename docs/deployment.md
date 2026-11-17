@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.114
+version: 1.115
 status: As-Built
-date: 2026-11-16
+date: 2026-11-17
 tags:
   - decision-reminders
   - docker
@@ -2607,7 +2607,7 @@ Four cards and one upgrade go out in one image, and this is the one note for the
 - **Card 2190** keeps a saved secret only for the settings it was saved with: the mail password only while the host, port, user name and the way out are as saved; a backup destination's secret only for the one saved destination that is the same in type, name and every setting that is not secret. Otherwise a save or a test is refused, `400`, naming what to type again.
 - **Card 2187** masks every backup destination secret in the admin page's answer, the Google Drive refresh token included, which it carried as stored; one list of secret fields serves the answer, the save and the test.
 - **Card 2188** has Google Drive asked for `drive.file` (DumpFire's own files) in place of the whole of Drive. Connections made before keep working, with the whole of Drive, until narrowed by hand (below). Connect makes a folder of its own for a destination with no Folder ID, checks one that is set, and records the scope Google granted; the row shows `⚠️ Connected · all of Drive` for every connection made before.
-- **Card 2227's nodemailer upgrade**: nodemailer 8.0.7 to 10.1.1, which needs Node 20 or newer (the image is `node:22-slim`). See [the SBOM analysis](sbom-analysis.md).
+- **Card 2227's nodemailer upgrade**: nodemailer 8.0.7 to 10.1.1, which needs Node 20 or newer (the image is `node:22-slim`). See [the SBOM analysis](sbom-analysis.md). Raised to 10.4.0 on 2026-11-17 (card 2852), for three address-parsing advisories; no option changed.
 
 ```mermaid
 flowchart TD
