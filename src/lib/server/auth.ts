@@ -967,7 +967,8 @@ export function endAccountAccess(userId: number, opts: { apiKeys: boolean; repor
  * session that names no moment was closed at its next use but never cleared
  * (the second P6 review). The role is read from the account, `user` or any
  * other, as `sessionLimitsFor` reads it. A session held in plain is gone
- * before this runs (`endPlainSessions`, at start).
+ * before this runs (`endPlainSessions`, at start). Run at start and then
+ * every five minutes (`startSessionSweep`, card 2883).
  */
 export function cleanExpiredSessions(): void {
 	const nowMs = Date.now();
@@ -994,6 +995,39 @@ export function cleanExpiredSessions(): void {
 	if (result.changes > 0) {
 		log.info(`Cleaned up ${result.changes} expired session(s)`);
 	}
+}
+
+/** How often ended sessions are cleared on their own: every five minutes. */
+export const SESSION_SWEEP_EVERY_MS = 5 * 60 * 1000;
+
+let sessionSweepTimer: ReturnType<typeof setInterval> | null = null;
+
+/** The clean-up, as the timer runs it: a failure is logged and goes no further. */
+function sweepSessionsNow(): void {
+	try {
+		cleanExpiredSessions();
+	} catch (err) {
+		log.error('Ended sessions could not be cleared', err);
+	}
+}
+
+/**
+ * Clear ended sessions every five minutes (card 2883), so that a row whose
+ * deadline has passed does not wait for a restart. Only arms the timer: the
+ * start-up clean-up is the bare `cleanExpiredSessions()` call before it in
+ * hooks.server.ts, which calls this once, after that clean-up. A second call
+ * starts no second timer. The timer does not keep the process alive.
+ */
+export function startSessionSweep(): void {
+	if (sessionSweepTimer !== null) return;
+	sessionSweepTimer = setInterval(sweepSessionsNow, SESSION_SWEEP_EVERY_MS);
+	sessionSweepTimer.unref?.();
+}
+
+/** Stop the timer `startSessionSweep` started (for tests). */
+export function stopSessionSweep(): void {
+	if (sessionSweepTimer !== null) clearInterval(sessionSweepTimer);
+	sessionSweepTimer = null;
 }
 
 // ─── Cookie Utilities ────────────────────────────────────────────────────────

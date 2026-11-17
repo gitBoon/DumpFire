@@ -9,7 +9,8 @@ import {
 	openSessionUser,
 	readSessionCookie,
 	sessionTokenHash,
-	slidesSession
+	slidesSession,
+	startSessionSweep
 } from '$lib/server/auth';
 import { startSchedulers } from '$lib/server/schedulers';
 import { json, text, type Handle, type HandleServerError, type RequestEvent } from '@sveltejs/kit';
@@ -77,13 +78,18 @@ ensureFormSecret();
 // $lib/server/startup-checks.ts.
 endPlainSessions();
 
-// Delete the sessions whose deadline has passed, at start.
+// Delete the sessions whose deadline has passed, at start, and then every five
+// minutes (card 2883), so that ended rows do not wait for a restart.
 cleanExpiredSessions();
 
 // Sweep expired sign-in challenges now and every five minutes (card 2769,
 // CS1): a verify challenge left unfinished raises its account's banner and
 // mails the owner without waiting for some later sign-in to sweep it.
 startChallengeSweep();
+
+// Clear ended sessions every five minutes (card 2883). Only the timer: the
+// start-up clean-up is the call above.
+startSessionSweep();
 
 // Start log retention maintenance (prune old system_logs entries)
 initLogMaintenance();

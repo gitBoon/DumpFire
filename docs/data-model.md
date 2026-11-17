@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.78
+version: 1.79
 status: As-Built
 date: 2026-11-17
 tags:
@@ -1397,7 +1397,8 @@ above `users` in `schema.ts`). Every session is written as the 32-byte SHA-256 o
 BLOB, which SQLite never takes to equal text, so an older image comparing the column with a
 cookie never matches a stored hash. Migration 0067 ends every session at the release, so every
 row from then on is in hash form; `endPlainSessions()` deletes any other row at every start,
-before the clean-up, whatever an older image wrote. `sessions` is still not a reconciled table
+before the clean-up, which runs at start and every five minutes (card 2883), whatever an older
+image wrote. `sessions` is still not a reconciled table
 (`expected-schema.ts` is unchanged), no table has a foreign key to `sessions.id`, and a backup
 holds no session. How a session's two limits are judged is in
 [Idle and Total Limits](authentication-security.md#idle-and-total-limits).

@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.118
+version: 1.119
 status: As-Built
 date: 2026-11-17
 tags:
@@ -1273,13 +1273,16 @@ The expiry and the start are read as the moments they name, with `toStamp` from
 names no moment, such as `zzz`, `2099-02-30 08:00:00` or an hour of 24, is closed, where text
 comparison sorted it after now and kept it open for good. API keys and invites are read the
 same way (the review of cards 2095, 2106 and 2107, item S2); `tests/timestamps.test.ts` holds
-all three. The sweep of ended sessions at each start, `cleanExpiredSessions()`, deletes by the
+all three. The sweep of ended sessions, at start and then every five minutes
+(`startSessionSweep()`, card 2883), `cleanExpiredSessions()`, deletes by the
 same rule in SQL (an expiry that names no moment or is at or before now; a start that names no
 moment, is more than 60 seconds ahead, or is further back than the role's total limit; an
 expiry beyond the role's idle limit plus 60 seconds), through the `stamp_of` SQL function
 `registerStampFunctions` gives the connection, with the role read from the account in a `CASE`.
-It runs only at start, so rows that have ended wait there for a restart; each holds only a
-hash, so that is tidiness and not exposure.
+A row that has ended now waits at most five minutes, not for a restart (each holds only a
+hash, so that was tidiness and not exposure). The timer does not keep the process alive, and a
+run that fails writes one `ERROR` line, `Ended sessions could not be cleared`, and is tried
+again at the next run.
 
 ### Every Session Ended Once, by Migration 0053
 

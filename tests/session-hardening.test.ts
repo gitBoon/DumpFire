@@ -35,9 +35,12 @@ import { sessions, users } from '$lib/server/db/schema';
 import {
 	SECURE_SESSION_COOKIE_NAME,
 	SESSION_COOKIE_NAME,
+	SESSION_SWEEP_EVERY_MS,
 	cleanExpiredSessions,
 	createSession,
 	openSessionUser,
+	startSessionSweep,
+	stopSessionSweep,
 	validateSession,
 	type SessionUser
 } from '$lib/server/auth';
@@ -341,6 +344,65 @@ describe('the clean-up of ended sessions', () => {
 
 		const left = sessionRows().map((row) => row.id);
 		expect(left).toEqual([sessionHashOf('admin 23 hours old'), sessionHashOf('user 2 days old')]);
+	});
+
+	it('2883-T1: a tick deletes a session past its deadline and keeps a live one, and says so once', () => {
+		vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'], now: T0 });
+		const user = makeUser();
+		const at = (ms: number) => stamp(new Date(T0 + ms));
+		const write = sqlite.prepare('INSERT INTO sessions (id, user_id, expires_at, created_at, two_step) VALUES (?, ?, ?, ?, 1)');
+		write.run(sessionHashOf('ends in a minute'), user.id, at(60 * 1000), at(-HOUR));
+		write.run(sessionHashOf('ends in an hour'), user.id, at(HOUR), at(-HOUR));
+		const from = lastLogId();
+
+		// The timer the gate's start-up began, if a case before this one loaded it, is replaced by one on the fake clock.
+		stopSessionSweep();
+		startSessionSweep();
+		try {
+			vi.advanceTimersByTime(SESSION_SWEEP_EVERY_MS);
+			expect(sessionRows().map((row) => row.id)).toEqual([sessionHashOf('ends in an hour')]);
+			expect(linesUnder('AUTH', from)).toEqual([{ level: 'INFO', message: 'Cleaned up 1 expired session(s)', meta: null }]);
+
+			const again = lastLogId();
+			vi.advanceTimersByTime(SESSION_SWEEP_EVERY_MS);
+			expect(sessionRows().map((row) => row.id)).toEqual([sessionHashOf('ends in an hour')]);
+			expect(linesUnder('AUTH', again)).toEqual([]);
+		} finally {
+			stopSessionSweep();
+		}
+	});
+
+	it('2883-T2: a tick whose clean-up fails says so and the timer keeps running', () => {
+		vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'], now: T0 });
+		const user = makeUser();
+		sqlite
+			.prepare('INSERT INTO sessions (id, user_id, expires_at, created_at, two_step) VALUES (?, ?, ?, ?, 1)')
+			.run(sessionHashOf('ended'), user.id, stamp(new Date(T0 - 1000)), stamp(new Date(T0 - HOUR)));
+		const prepare = sqlite.prepare.bind(sqlite);
+		let failed = false;
+		vi.spyOn(sqlite, 'prepare').mockImplementation(((source: string) => {
+			if (!failed && source.startsWith('DELETE FROM sessions')) {
+				failed = true;
+				throw new Error('the disk is full');
+			}
+			return prepare(source);
+		}) as typeof sqlite.prepare);
+		const from = lastLogId();
+
+		stopSessionSweep();
+		startSessionSweep();
+		try {
+			expect(() => vi.advanceTimersByTime(SESSION_SWEEP_EVERY_MS)).not.toThrow();
+			expect(linesUnder('AUTH', from).map(({ level, message }) => ({ level, message }))).toEqual([
+				{ level: 'ERROR', message: 'Ended sessions could not be cleared' }
+			]);
+			expect(sessionRows().map((row) => row.id)).toEqual([sessionHashOf('ended')]);
+
+			vi.advanceTimersByTime(SESSION_SWEEP_EVERY_MS);
+			expect(sessionRows()).toEqual([]);
+		} finally {
+			stopSessionSweep();
+		}
 	});
 });
 

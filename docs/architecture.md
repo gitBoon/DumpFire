@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Architecture Overview"
 category: Architecture
-version: 1.124
+version: 1.125
 status: As-Built
 date: 2026-11-17
 tags:
@@ -235,7 +235,10 @@ away, and the security headers it puts on every answer, are in
 Loading the module is also what starts the server's own work, once, before the first
 request: `runMigrations()`, `endPlainSessions()` (card 2775: it deletes any session an older
 image stored in plain, and runs before the clean-up so that each is counted),
-`cleanExpiredSessions()`, `initLogMaintenance()` and `startSchedulers()`.
+`cleanExpiredSessions()`, `startChallengeSweep()` (card 2769: it sweeps expired sign-in
+challenges now and every five minutes), `startSessionSweep()` (card 2883: it runs the clean-up
+of ended sessions every five minutes after that first run), `initLogMaintenance()` and
+`startSchedulers()`.
 
 ```mermaid
 flowchart TD
