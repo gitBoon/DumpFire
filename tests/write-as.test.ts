@@ -122,7 +122,9 @@ import {
 	makeWebhook,
 	resetDb,
 	sessionHashOf,
-	sessionCredential
+	sessionCredential,
+	stepUpCode,
+	stepUpFactor
 } from './helpers/fixtures';
 import { fakeEvent, FROM_THE_PAGE } from './helpers/gate';
 import { sendAround } from './helpers/held-body';
@@ -725,11 +727,17 @@ describe('the cards and what is on them ask at the write (slice 2253-2)', () => 
 		['DELETE', `/api/cards/${s.other.id}?permanent=true`],
 		['DELETE', `/api/cards/${s.card.id}`]
 	];
-	/** The owner by their session, and for a route that asks for the current password again, the password and the session's cookie. */
+	/**
+	 * The owner by their session, and for a route that asks for the current
+	 * password again, the password, a code made as it is sent (card 2771) and
+	 * the session's cookie.
+	 */
 	const sentBy = (s: Scene, confirming?: boolean) => ({
 		user: s.owner,
 		credential: sessionCredential(s.session),
-		...(confirming ? { body: { currentPassword: FIXTURE_PASSWORD }, headers: { cookie: `${SESSION_COOKIE_NAME}=${s.session}` } } : {})
+		...(confirming
+			? { body: { currentPassword: FIXTURE_PASSWORD, currentCode: stepUpCode(s.owner) }, headers: { cookie: `${SESSION_COOKIE_NAME}=${s.session}` } }
+			: {})
 	});
 	const upload = () => {
 		const form = new FormData();
@@ -743,6 +751,8 @@ describe('the cards and what is on them ask at the write (slice 2253-2)', () => 
 		const attachment = makeAttachment(s.card, { uploadedBy: s.owner });
 		const credential = sessionCredential(s.session);
 		db.delete(sessions).run();
+		// The factor the code is made from, before the rows are compared (card 2771).
+		stepUpFactor(s.owner);
 		const before = snapshotDb();
 
 		for (const [method, path, confirming] of UNHELD(s, archived.id, attachment.id)) {
@@ -933,16 +943,24 @@ describe('the boards, groupings, teams, goals and templates ask at the write (sl
 		['DELETE', `/api/milestones/${s.milestone.id}`],
 		['DELETE', `/api/boards/${s.board.id}`, true]
 	];
-	/** The owner by their session, and for a route that asks for the current password again, the password and the session's cookie. */
+	/**
+	 * The owner by their session, and for a route that asks for the current
+	 * password again, the password, a code made as it is sent (card 2771) and
+	 * the session's cookie.
+	 */
 	const sentBy = (s: Scene, confirming?: boolean) => ({
 		user: s.owner,
 		credential: sessionCredential(s.session),
-		...(confirming ? { body: { currentPassword: FIXTURE_PASSWORD }, headers: { cookie: `${SESSION_COOKIE_NAME}=${s.session}` } } : {})
+		...(confirming
+			? { body: { currentPassword: FIXTURE_PASSWORD, currentCode: stepUpCode(s.owner) }, headers: { cookie: `${SESSION_COOKIE_NAME}=${s.session}` } }
+			: {})
 	});
 
 	it('refuses 401, and changes nothing, a request with no body whose session has ended', async () => {
 		const s = scene();
 		db.delete(sessions).run();
+		// The factor the code is made from, before the rows are compared (card 2771).
+		stepUpFactor(s.owner);
 		const before = snapshotDb();
 
 		for (const [method, path, confirming] of UNHELD(s)) {
@@ -1073,7 +1091,8 @@ describe('the accounts, users, requests and reports ask at the write (slice 2253
 			shape: 'a key made with the current password, refused before the password is checked (POST /api/account/api-keys)',
 			method: 'POST',
 			path: () => '/api/account/api-keys',
-			body: () => ({ name: 'Late', password: PASSWORD }),
+			// The current password and a code, through the step-up (card 2771).
+			body: (s) => ({ name: 'Late', currentPassword: PASSWORD, currentCode: stepUpCode(s.owner) }),
 			who: 'owner',
 			allowed: 201,
 			mails: 0
@@ -1082,7 +1101,7 @@ describe('the accounts, users, requests and reports ask at the write (slice 2253
 			shape: 'an address changed with the current password (PUT /api/account/email)',
 			method: 'PUT',
 			path: () => '/api/account/email',
-			body: () => ({ newEmail: 'moved@example.test', password: PASSWORD }),
+			body: (s) => ({ newEmail: 'moved@example.test', currentPassword: PASSWORD, currentCode: stepUpCode(s.owner) }),
 			who: 'owner',
 			allowed: 200,
 			mails: 0
@@ -1091,8 +1110,8 @@ describe('the accounts, users, requests and reports ask at the write (slice 2253
 			shape: 'an account made, its hash awaited between two checks (POST /api/users)',
 			method: 'POST',
 			path: () => '/api/users',
-			// With the administrator's current password (card 2701).
-			body: () => ({ username: 'late', email: 'late@example.test', password: NEW_PASSWORD, currentPassword: FIXTURE_PASSWORD }),
+			// With the administrator's current password (card 2701) and a code (card 2771).
+			body: (s) => ({ username: 'late', email: 'late@example.test', password: NEW_PASSWORD, currentPassword: FIXTURE_PASSWORD, currentCode: stepUpCode(s.admin) }),
 			who: 'admin',
 			allowed: 201,
 			mails: 0
@@ -1110,7 +1129,7 @@ describe('the accounts, users, requests and reports ask at the write (slice 2253
 			shape: "another account's password set, its hash awaited between two checks (PUT /api/users/:id/password)",
 			method: 'PUT',
 			path: (s) => `/api/users/${s.member.id}/password`,
-			body: () => ({ password: NEW_PASSWORD, currentPassword: FIXTURE_PASSWORD }),
+			body: (s) => ({ password: NEW_PASSWORD, currentPassword: FIXTURE_PASSWORD, currentCode: stepUpCode(s.admin) }),
 			who: 'admin',
 			allowed: 200,
 			mails: 0
@@ -1228,11 +1247,11 @@ describe('the accounts, users, requests and reports ask at the write (slice 2253
 		['DELETE', `/api/users/${s.member.id}`, 'admin', true]
 	];
 	const asWho = (s: Scene, who: Who) => ({ user: s[who], credential: sessionCredential(s.sessions[who]) });
-	/** `asWho`, and for a route that asks for the current password again, the password and the session's cookie. */
+	/** `asWho`, and for a route that asks for the current password again, the password, a code (card 2771) and the session's cookie. */
 	const sentAs = (s: Scene, who: Who, confirming?: boolean) => ({
 		...asWho(s, who),
 		...(confirming
-			? { body: { currentPassword: FIXTURE_PASSWORD }, headers: { cookie: `${SESSION_COOKIE_NAME}=${s.sessions[who]}` } }
+			? { body: { currentPassword: FIXTURE_PASSWORD, currentCode: stepUpCode(s[who]) }, headers: { cookie: `${SESSION_COOKIE_NAME}=${s.sessions[who]}` } }
 			: {})
 	});
 
@@ -1240,6 +1259,8 @@ describe('the accounts, users, requests and reports ask at the write (slice 2253
 		const s = scene();
 		const requests = UNHELD(s);
 		db.delete(sessions).run();
+		// The factor the code is made from, before the rows are compared (card 2771).
+		stepUpFactor(s.admin);
 		const before = snapshotDb();
 		const sent = effects();
 		onTestFinished(() => sent.restore());
@@ -1271,7 +1292,13 @@ describe('the accounts, users, requests and reports ask at the write (slice 2253
 	it('lets the password change through: its writes ask before the session it came by ends, and nothing in it asks after', { timeout: 30_000 }, async () => {
 		const s = scene();
 
-		const res = await sendAround('PUT', '/api/account/password', { session: s.sessions.owner }, { currentPassword: PASSWORD, newPassword: NEW_PASSWORD }, () => {});
+		const res = await sendAround(
+			'PUT',
+			'/api/account/password',
+			{ session: s.sessions.owner },
+			{ currentPassword: PASSWORD, currentCode: stepUpCode(s.owner), newPassword: NEW_PASSWORD },
+			() => {}
+		);
 
 		expect(res.status).toBe(200);
 		expect(res.body).toMatchObject({ success: true });
@@ -1291,7 +1318,7 @@ describe('the accounts, users, requests and reports ask at the write (slice 2253
 		const s = scene();
 		let before: DbSnapshot | undefined;
 
-		const res = await sendAround('PUT', '/api/account/password', { session: s.sessions.owner }, { currentPassword: PASSWORD, newPassword: NEW_PASSWORD }, () => {
+		const res = await sendAround('PUT', '/api/account/password', { session: s.sessions.owner }, { currentPassword: PASSWORD, currentCode: stepUpCode(s.owner), newPassword: NEW_PASSWORD }, () => {
 			db.delete(sessions).where(eq(sessions.tokenHash, sessionHashOf(s.sessions.owner))).run();
 			before = snapshotDb();
 		});
@@ -1460,12 +1487,12 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 	const asWho = (s: Scene, who: Who) => ({ user: s[who], credential: sessionCredential(s.sessions[who]) });
 	/**
 	 * The same, for a route that asks for the current password again (card
-	 * 2701): with it in the body, and the session's cookie, which a wrong one
-	 * would be counted on.
+	 * 2701): with it in the body, and a code made as it is sent (card 2771),
+	 * and the session's cookie, which a wrong one would be counted on.
 	 */
 	const confirmedAs = (s: Scene, who: Who, body: Record<string, unknown> = {}) => ({
 		...asWho(s, who),
-		body: { ...body, currentPassword: FIXTURE_PASSWORD },
+		body: { ...body, currentPassword: FIXTURE_PASSWORD, currentCode: stepUpCode(s[who]) },
 		headers: { cookie: `${SESSION_COOKIE_NAME}=${s.sessions[who]}` }
 	});
 
@@ -1496,21 +1523,34 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 	 * when nothing ends meanwhile, and what it then sends out. A backup run
 	 * makes its destination twice: to upload, and to keep to the retention.
 	 * Run Now, the Connect and the mail save carry the current password, which
-	 * they ask for again (card 2701).
+	 * they ask for again (card 2701), and the code of `who`, the superadmin
+	 * unless said (card 2771).
 	 */
-	const HELD: { shape: string; method: 'POST' | 'PUT'; path: string; body: (s: Scene) => unknown; out: Partial<typeof NOTHING_OUT> }[] = [
+	const HELD: { shape: string; method: 'POST' | 'PUT'; path: string; body: (s: Scene, who?: Who) => unknown; out: Partial<typeof NOTHING_OUT> }[] = [
 		// Keep Last raised from 7: lowering it is the superadmin's alone since card 2398.
 		{ shape: 'the backup settings saved, their lines after the commit (PUT /api/admin/backup)', method: 'PUT', path: '/api/admin/backup', body: () => ({ retention: 9 }), out: {} },
-		{ shape: 'a backup run, which leaves the process (POST /api/admin/backup)', method: 'POST', path: '/api/admin/backup', body: () => ({ destination: 'Bucket', currentPassword: FIXTURE_PASSWORD }), out: { uploads: 1, made: 2 } },
+		{
+			shape: 'a backup run, which leaves the process (POST /api/admin/backup)',
+			method: 'POST',
+			path: '/api/admin/backup',
+			body: (s, who = 'chief') => ({ destination: 'Bucket', currentPassword: FIXTURE_PASSWORD, currentCode: stepUpCode(s[who]) }),
+			out: { uploads: 1, made: 2 }
+		},
 		{ shape: "a destination tested, its secret leaving with it (POST /api/admin/backup/test)", method: 'POST', path: '/api/admin/backup/test', body: () => BUCKET, out: { made: 1 } },
 		{
 			shape: 'a Google Drive Connect, its code sent to Google (POST /api/admin/backup/gdrive/auth)',
 			method: 'POST',
 			path: '/api/admin/backup/gdrive/auth',
-			body: async (s) => ({ code: 'the-code', state: await begin(s), destName: 'G', currentPassword: FIXTURE_PASSWORD }),
+			body: async (s) => ({ code: 'the-code', state: await begin(s), destName: 'G', currentPassword: FIXTURE_PASSWORD, currentCode: stepUpCode(s.chief) }),
 			out: { exchanged: 1 }
 		},
-		{ shape: 'the mail settings saved (PUT /api/admin/smtp)', method: 'PUT', path: '/api/admin/smtp', body: () => ({ fromName: 'Late', currentPassword: FIXTURE_PASSWORD }), out: {} },
+		{
+			shape: 'the mail settings saved (PUT /api/admin/smtp)',
+			method: 'PUT',
+			path: '/api/admin/smtp',
+			body: (s, who = 'chief') => ({ fromName: 'Late', currentPassword: FIXTURE_PASSWORD, currentCode: stepUpCode(s[who]) }),
+			out: {}
+		},
 		{ shape: 'a test mail, which leaves the process (POST /api/admin/smtp)', method: 'POST', path: '/api/admin/smtp', body: () => ({ to: 'late@example.test' }), out: { mails: 1 } }
 	];
 
@@ -1571,6 +1611,9 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 		const s = scene();
 		const requests = UNHELD(s);
 		db.delete(sessions).run();
+		// The factors the codes are made from, before the rows are compared (card 2771).
+		stepUpFactor(s.admin);
+		stepUpFactor(s.chief);
 		const before = snapshotDb();
 
 		for (const [method, path, who] of requests) {
@@ -1583,6 +1626,8 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 
 	it("still writes the reset's failure line, and answers 500 with nothing cleared, when a database fault fails its first transaction (the slices 5–7 review)", async () => {
 		const s = scene();
+		// Made before the rows are compared and the transactions fail: it writes the factor (card 2771).
+		const confirmed = confirmedAs(s, 'chief');
 		const before = snapshotDb();
 		// Every transaction does its work and then fails, as a COMMIT that cannot be written.
 		const real = sqlite.transaction.bind(sqlite) as (fn: (...args: unknown[]) => unknown) => unknown;
@@ -1592,7 +1637,7 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 				throw new Error('disk I/O error');
 			})) as never);
 
-		const res = await api('POST', '/api/admin/reset', confirmedAs(s, 'chief'));
+		const res = await api('POST', '/api/admin/reset', confirmed);
 		vi.mocked(sqlite.transaction).mockRestore();
 
 		expect({ status: res.status, body: res.body }).toEqual({ status: 500, body: { message: 'The reset failed and nothing was cleared: disk I/O error' } });
@@ -1763,8 +1808,8 @@ describe("the superadmin's and administrators' routes ask at the write (slice 22
 		/** A request of HELD as the administrator sends it: the Connect's state is one their own session began. */
 		const adminBody = async (c: (typeof HELD)[number], s: Scene) =>
 			c.path === '/api/admin/backup/gdrive/auth'
-				? { code: 'the-code', state: await beginAs(s, 'admin'), destName: 'G', currentPassword: FIXTURE_PASSWORD }
-				: c.body(s);
+				? { code: 'the-code', state: await beginAs(s, 'admin'), destName: 'G', currentPassword: FIXTURE_PASSWORD, currentCode: stepUpCode(s.admin) }
+				: c.body(s, 'admin');
 		/** The superadmin's three: what an administrator is still refused. */
 		const SUPERADMIN_ROUTES: { method: 'GET' | 'POST'; path: string; body?: unknown }[] = [
 			// A POST since card 2701, which asks for the superadmin's password.

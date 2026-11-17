@@ -35,7 +35,7 @@ import { generateBackupData } from '$lib/server/backup';
 import { backupSealKey, sealCopy } from '$lib/server/backup-secrets';
 import { mfaWithoutFactorSentence } from '$lib/server/mfa-backup';
 import { inTransaction } from '$lib/server/db/transaction';
-import { SESSION_COOKIE_NAME, endAccountAccess } from '$lib/server/auth';
+import { endAccountAccess } from '$lib/server/auth';
 import { MFA_KEY_CHECK_SETTING, currentMfaKey, keyFromBytes, loadMfaKey, type FactorAtStart, type KeyLoad, type MfaKey } from '$lib/server/mfa-key';
 import { factorAad, newFactorUid, sealWith, sha256Hex } from '$lib/server/mfa-crypto';
 import { newTotpSecret, stepAt } from '$lib/server/totp';
@@ -54,7 +54,7 @@ import { MfaKeyError, checkMfaKeyAtStart } from '$lib/server/startup-checks';
 import { stamp } from '$lib/timestamps';
 import { api } from './helpers/api';
 import { failingWrite } from './helpers/failing-write';
-import { FIXTURE_PASSWORD, importConfirmation, makeSession, makeUser, resetDb, stepUp } from './helpers/fixtures';
+import { importConfirmation, makeUser, resetDb, stepUp } from './helpers/fixtures';
 import { watchReads } from './helpers/reads';
 import { allowOtherTimestampForms } from './helpers/timestamps';
 
@@ -463,11 +463,8 @@ describe('what an account change ends', () => {
 		pendingFor(user.id, 2);
 		pendingFor(other.id, 1);
 
-		const res = await api('PUT', '/api/account/email', {
-			user,
-			body: { newEmail: 'moved@example.test', password: FIXTURE_PASSWORD },
-			headers: { cookie: `${SESSION_COOKIE_NAME}=${makeSession(user)}` }
-		});
+		// The current password and a code, through the step-up (card 2771).
+		const res = await api('PUT', '/api/account/email', stepUp(user, { newEmail: 'moved@example.test' }));
 
 		expect(res.status).toBe(200);
 		expect(pendingOf(user.id)).toEqual({ challenges: 0, links: 0 });

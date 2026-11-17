@@ -89,6 +89,7 @@ import {
 	decisionParticipants,
 	decisions,
 	inviteTokens,
+	mfaFactors,
 	milestones,
 	people,
 	peopleGroupMembers,
@@ -117,6 +118,7 @@ import {
 import { SESSION_COOKIE_NAME, type Credential, type SessionUser } from '$lib/server/auth';
 import { inviteHashOf, sessionHashOf, sessionCredential } from './helpers/fixtures';
 import { CONFIRMATION_HEADER, STEP_UP_ACTIONS, STEP_UP_FIELD, issueImportConfirmation } from '$lib/server/step-up';
+import { STEP_UP_CODE_FIELD } from '$lib/step-up-words';
 import { canEditBoard, canViewBoard, getBoardRole } from '$lib/server/board-access';
 import { appendEvent, SYSTEM_ACTOR } from '$lib/server/decision-record';
 import { resultsRevisionFor } from '$lib/server/decision-results';
@@ -160,6 +162,8 @@ import {
 	makeWebhook,
 	resetDb,
 	shareBoardWithTeam,
+	stepUpCode,
+	stepUpFactor,
 	testUploadsDir
 } from './helpers/fixtures';
 import { gate, gateRoutes } from './helpers/gate';
@@ -380,6 +384,11 @@ function world(): World {
 	// The last user made, so that nobody else's id moves for there being one.
 	const chief = makeUser({ username: 'chief', role: 'superadmin' });
 	db.update(users).set({ passwordHash: PASSWORD_HASH }).run();
+	// The factor each caller's step-up code is made from (card 2771), given
+	// here, before any snapshot. Not `viewer`'s: it is the account the invite
+	// and the two-step reset are sent for, and an account that holds a factor
+	// is not invited (card 2773).
+	for (const caller of [owner, editor, guest, outsider, both, editsB, editsA, admin, chief]) stepUpFactor(caller);
 
 	const A = side(owner, editor, MARK);
 	addBoardMember(A.board, editor, 'editor');
@@ -1088,11 +1097,12 @@ const unlinking = (fromWaiting: (w: World) => Req, fromBlocking: (w: World) => R
 const TABLE: Record<string, Case | Case[]> = {
 	// ── The caller's own account ──────────────────────────────────────────
 	'GET /api/account/api-keys': signedIn(() => '/api/account/api-keys'),
-	// A key is made with the caller's current password, which every user here has.
-	'POST /api/account/api-keys': signedIn(() => withSession('/api/account/api-keys', { name: 'A new key', password: PASSWORD })),
+	// A key is made with the caller's current password, which every user here has, and their code: both added by
+	// `withPassword`, as the route asks through the step-up (card 2771).
+	'POST /api/account/api-keys': signedIn(() => withSession('/api/account/api-keys', { name: 'A new key' })),
 	'DELETE /api/account/api-keys/[id]': own('owner', ['outsider', 'editor'], (w) => `/api/account/api-keys/${w.keyId}`),
 	'PUT /api/account/email': signedIn(() =>
-		withSession('/api/account/email', { newEmail: 'somewhere-else@example.test', password: PASSWORD })
+		withSession('/api/account/email', { newEmail: 'somewhere-else@example.test' })
 	),
 	'PUT /api/account/emoji': signedIn(() => json('/api/account/emoji', { emoji: '🦊' })),
 	'GET /api/account/notifications': signedIn(() => '/api/account/notifications'),
@@ -2502,16 +2512,36 @@ function expectPathOf(pattern: string, path: string): void {
 }
 
 /**
+ * The code `who` confirms a step-up with (card 2771): their factor's, given
+ * where the world is built, or none for a caller who holds no factor (nobody
+ * signed in, and `viewer`), which no step-up of theirs reaches.
+ */
+function codeOf(who: Who): Record<string, string> {
+	if (who === 'nobody') return {};
+	const held = db.select({ id: mfaFactors.id }).from(mfaFactors).where(eq(mfaFactors.userId, w[who].id)).get();
+	return held === undefined ? {} : { [STEP_UP_CODE_FIELD]: stepUpCode(w[who]) };
+}
+
+/**
  * The body a request is sent with: for a route on `STEP_UP_ACTIONS` (card
  * 2701), with the caller's current password added, every user's here being
- * `PASSWORD`, so that a row states only what differs. A row's own field of the
- * name is kept; a request with no body is given one.
+ * `PASSWORD`, and their code (card 2771), so that a row states only what
+ * differs. A row's own field of the name is kept; a request with no body is
+ * given one.
  */
-function withPassword(key: string, body: unknown): unknown {
+function withPassword(key: string, body: unknown, who: Who): unknown {
 	if (!(key in STEP_UP_ACTIONS)) return body;
-	if (body === undefined) return { [STEP_UP_FIELD]: PASSWORD };
+	if (body === undefined) return { [STEP_UP_FIELD]: PASSWORD, ...codeOf(who) };
 	if (typeof body !== 'object' || body === null || body instanceof FormData || body instanceof Uint8Array) return body;
-	return { [STEP_UP_FIELD]: PASSWORD, ...body };
+	return { [STEP_UP_FIELD]: PASSWORD, ...codeOf(who), ...body };
+}
+
+/** The columns of `who`'s factor a step-up spends, as they are now: put back by `call` after the request (card 2771). */
+function spentOf(who: Exclude<Who, 'nobody'>): () => void {
+	const factors = db.select({ id: mfaFactors.id, lastStep: mfaFactors.lastStep, lastUsedAt: mfaFactors.lastUsedAt }).from(mfaFactors).where(eq(mfaFactors.userId, w[who].id)).all();
+	return () => {
+		for (const { id, ...spent } of factors) db.update(mfaFactors).set(spent).where(eq(mfaFactors.id, id)).run();
+	};
 }
 
 /**
@@ -2525,15 +2555,17 @@ async function call(method: Method, pattern: string, req: Req, who: Who): Promis
 	const { path, body, headers } = parts(req);
 	expectPathOf(pattern, path);
 	const key = `${method} ${pattern}`;
-	const sent = withPassword(key, body);
+	const sent = withPassword(key, body, who);
 	if (who === 'nobody' || (headers?.cookie !== CALLERS_COOKIE && !(key in STEP_UP_ACTIONS))) {
 		return api(method, path, { user: who === 'nobody' ? null : w[who], body: sent, headers: asCaller(headers, who) });
 	}
 	const token = makeSession(w[who]);
+	const putBack = spentOf(who);
 	try {
 		return await api(method, path, { user: w[who], body: sent, headers: { ...headers, cookie: `${SESSION_COOKIE_NAME}=${token}` } });
 	} finally {
 		db.delete(sessions).where(eq(sessions.tokenHash, sessionHashOf(token))).run();
+		putBack();
 	}
 }
 
@@ -3071,7 +3103,7 @@ function walkedAs(key: string, req: Exclude<Req, string>, who: Exclude<Who, 'nob
 		req.headers?.[CONFIRMATION_HEADER] === FOR_THE_WALK && 'session' in credential.held
 			? { ...req.headers, [CONFIRMATION_HEADER]: issueImportConfirmation(sessionHashOf(credential.held.session), w[who].id, PASSWORD_HASH) }
 			: req.headers;
-	return { ...req, body: withPassword(key, req.body), headers };
+	return { ...req, body: withPassword(key, req.body, who), headers };
 }
 
 /**
@@ -3332,12 +3364,20 @@ describe('who may manage which account', () => {
 	/**
 	 * `by`'s request with `body`: each of these routes asks for the caller's own
 	 * current password again (card 2701), the account change when it carries a
-	 * role or an email, so it is sent, with the cookie of their session. A
-	 * refusal is made before it is checked, and counts nothing.
+	 * role or an email, so it is sent, with the cookie of their session, and
+	 * their code where they hold a factor (card 2771): `admin2` holds none, as
+	 * the superadmin invites them. A refusal is made before it is checked, and
+	 * counts nothing.
 	 */
 	const confirmed = (by: SessionUser, body: Record<string, unknown> = {}) => ({
 		user: by,
-		body: { ...body, [STEP_UP_FIELD]: PASSWORD },
+		body: {
+			...body,
+			[STEP_UP_FIELD]: PASSWORD,
+			...(db.select({ id: mfaFactors.id }).from(mfaFactors).where(eq(mfaFactors.userId, by.id)).get() === undefined
+				? {}
+				: { [STEP_UP_CODE_FIELD]: stepUpCode(by) })
+		},
 		headers: (sessionOf.has(by.id) ? { cookie: `${SESSION_COOKIE_NAME}=${sessionOf.get(by.id)}` } : {}) as Record<string, string>
 	});
 
@@ -3391,6 +3431,9 @@ describe('who may manage which account', () => {
 			});
 
 			it('lets an administrator manage an ordinary user', async () => {
+				// The step-up checks the caller's code (card 2771): `admin2` is given a factor here only, as the
+				// other tests here invite them, which an account that holds one is refused.
+				stepUpFactor(admin2);
 				const res = await send(admin2, w.viewer);
 				expect(res.status, JSON.stringify(res.body)).toBe(200);
 			});

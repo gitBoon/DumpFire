@@ -24,19 +24,26 @@
  * `confirmStepUp` runs the guard first, read only, in a `writeAs` of its own:
  * the session still open, the role as it is now, and every refusal the write
  * would make that needs no password, so that none of them costs a check or a
- * guess. Then `currentPassword` (400 `STEP_UP_MISSING`, nothing counted), the
- * account's hash (403 `STEP_UP_NO_PASSWORD` for one that is no bcrypt hash,
- * nothing counted), and the check, counted on the session's row: a wrong one
- * is 403 `STEP_UP_WRONG`, and the third ends the session (`checkCurrentPassword`
- * and `refuseWrongPassword` in auth.ts). A right one is an INFO line naming
- * who and for what. The write then runs in `whilePasswordHolds`, so that it
- * commits only while the stored hash is the one checked; what cannot run in
- * a transaction asks `requirePasswordUnchanged` instead, with nothing awaited
- * before what it guards.
+ * guess. Then `currentPassword` and `currentCode` (400 `STEP_UP_MISSING`,
+ * nothing counted), the code's form (400 `STEP_UP_CODE_MALFORMED`, nothing
+ * counted: card 2771), the account's hash (403 `STEP_UP_NO_PASSWORD` for one
+ * that is no bcrypt hash, nothing counted), and the check, counted on the
+ * session's row: the account's second factor first (no factor, one that
+ * cannot be opened, a code whose step is spent: refused, nothing counted),
+ * then the password, then the code, spent with the count cleared; a wrong
+ * password or a wrong code is 403 `STEP_UP_WRONG`, never saying which, and
+ * the third ends the session (`checkCurrentProof` and `refuseWrongPassword`
+ * in auth.ts). A right one is an INFO line naming who, with which code, and
+ * for what; a recovery code a WARN line and a notice to the owner, and a
+ * wrong code after a right password the owner's banner and a notice. The
+ * write then runs in `whilePasswordHolds`, so that it commits only while the
+ * stored hash is the one checked; what cannot run in a transaction asks
+ * `requirePasswordUnchanged` instead, with nothing awaited before what it
+ * guards. A refusal there leaves the code spent (card 2771, S4).
  *
- * Every refusal of the password made here or in auth.ts's check carries its
- * code in `stepUp` (`App.Error`; the code review's F3), which the pages read
- * in place of the words.
+ * Every refusal of the password or the code made here or in auth.ts's check
+ * carries its code in `stepUp` (`App.Error`; the code review's F3), which the
+ * pages read in place of the words.
  *
  * The import's body is the upload, so its password cannot be in it: it is
  * confirmed first, at `POST /api/admin/import/confirm`, which answers a
@@ -45,8 +52,8 @@
  * `X-DumpFire-Confirmation` header, and takes it before a byte of the upload
  * is read (`takeImportConfirmation`).
  *
- * The password is never logged or echoed: every refusal is fixed text, and
- * nothing here keeps it beyond the request. The confirmations are kept as
+ * The password and the code are never logged or echoed: every refusal is
+ * fixed text, and nothing here keeps either beyond the request. The confirmations are kept as
  * SHA-256 digests, beside their session's hash (card 2775).
  */
 import { createHash, randomBytes } from 'node:crypto';
@@ -54,8 +61,12 @@ import { error, type Cookies } from '@sveltejs/kit';
 import { eq } from 'drizzle-orm';
 import { db } from './db';
 import { users } from './db/schema';
-import { checkCurrentPassword, refuseWrongPassword, sessionHashIn, type SessionUser } from './auth';
+import { getRequestEvent } from '$app/server';
+import { checkCurrentProof, refuseWrongPassword, sessionHashIn, type ProofCode, type SessionUser } from './auth';
+import { addressOf } from './client-address';
 import { createLogger } from './logger';
+import { sendSecurityNotice } from './notifications';
+import { canonicalRecoveryCode } from './recovery-codes';
 import { readText, type RequestBody } from './request-body';
 import { requireUser } from './route-guards';
 import { writeAs } from './write-as';
@@ -63,9 +74,14 @@ import {
 	CONFIRMATION_HEADER,
 	CONFIRMATION_REFUSED,
 	PASSWORD_CHANGED_MEANWHILE,
+	STEP_UP_CODE_FIELD,
+	STEP_UP_CODE_MALFORMED,
+	STEP_UP_CODE_SPENT,
+	STEP_UP_FACTOR_UNUSABLE,
 	STEP_UP_FIELD,
 	STEP_UP_IN_FLIGHT,
 	STEP_UP_MISSING,
+	STEP_UP_NO_FACTOR,
 	STEP_UP_NO_PASSWORD,
 	STEP_UP_SIGNED_OUT,
 	STEP_UP_WRONG
@@ -77,11 +93,14 @@ const log = createLogger('AUTH');
  * The field, the answers and the import's header, kept in `$lib/step-up-words`
  * (the pages read them too: a confirm dialog knows a refusal of the password by
  * its words) and answered from here with the rest: `STEP_UP_FIELD`, the body
- * field (not `password`, which two listed routes use for another);
- * `STEP_UP_MISSING`, no current password, an empty one or one that is not
- * text; `STEP_UP_WRONG`, a wrong one; `STEP_UP_NO_PASSWORD`, an account whose
- * stored hash is no bcrypt hash (decision 9: none exists today);
- * `STEP_UP_IN_FLIGHT` and `STEP_UP_SIGNED_OUT`, auth.ts's;
+ * field (not `password`, which two listed routes use for another), and
+ * `STEP_UP_CODE_FIELD`, the code's (card 2771); `STEP_UP_MISSING`, no current
+ * password or no code, an empty one or one that is not text;
+ * `STEP_UP_CODE_MALFORMED`, a code in neither form; `STEP_UP_WRONG`, a wrong
+ * password or code; `STEP_UP_NO_PASSWORD`, an account whose stored hash is no
+ * bcrypt hash (decision 9: none exists today); `STEP_UP_IN_FLIGHT`,
+ * `STEP_UP_SIGNED_OUT`, `STEP_UP_NO_FACTOR`, `STEP_UP_FACTOR_UNUSABLE` and
+ * `STEP_UP_CODE_SPENT`, auth.ts's;
  * `CONFIRMATION_REFUSED`, an import whose confirmation is missing, unknown,
  * used, expired, another session's or no longer good;
  * `PASSWORD_CHANGED_MEANWHILE`, the stored hash moved between the check and
@@ -92,9 +111,14 @@ export {
 	CONFIRMATION_HEADER,
 	CONFIRMATION_REFUSED,
 	PASSWORD_CHANGED_MEANWHILE,
+	STEP_UP_CODE_FIELD,
+	STEP_UP_CODE_MALFORMED,
+	STEP_UP_CODE_SPENT,
+	STEP_UP_FACTOR_UNUSABLE,
 	STEP_UP_FIELD,
 	STEP_UP_IN_FLIGHT,
 	STEP_UP_MISSING,
+	STEP_UP_NO_FACTOR,
 	STEP_UP_NO_PASSWORD,
 	STEP_UP_SIGNED_OUT,
 	STEP_UP_WRONG
@@ -102,6 +126,35 @@ export {
 
 /** The most characters a current password is read to: bcrypt reads the first 72 bytes anyway. */
 const LONGEST_PASSWORD = 1024;
+
+/** The most characters a code is read to (card 2771, S7): longer is malformed before any pattern is tried. */
+const LONGEST_CODE = 64;
+
+/**
+ * The code sent beside the password, by its form (card 2771, D2), or null for
+ * one in neither: at most `LONGEST_CODE` characters, then, trimmed with every
+ * space dropped, exactly six ASCII digits (the authenticator's, `123 456`
+ * among them), or a recovery code as `canonicalRecoveryCode` reads one. A
+ * six-digit text is never a recovery code (sixteen characters), so the two
+ * cannot both match. Pure: nothing read or counted.
+ */
+export function readStepUpCode(sent: string): ProofCode | null {
+	if (sent.length > LONGEST_CODE) return null;
+	const trimmed = sent.trim();
+	const digits = trimmed.replace(/ /g, '');
+	if (/^[0-9]{6}$/.test(digits)) return { kind: 'authenticator', digits };
+	if (canonicalRecoveryCode(trimmed) !== null) return { kind: 'recovery', typed: trimmed };
+	return null;
+}
+
+/** The address of the request being answered, as a security notice names it, or null outside one. */
+function requestAddress(): string | null {
+	try {
+		return addressOf(getRequestEvent());
+	} catch {
+		return null;
+	}
+}
 
 /**
  * The actions that ask for the current password, by `METHOD /route/id` as
@@ -144,7 +197,11 @@ export const STEP_UP_ACTIONS = Object.freeze({
 	'POST /api/decisions/[id]/withdraw': "Once opened: ends a decision for good and mails every participant the caller's words",
 	// Card 2679 (decision 2): a ruling, permanent and mailed to everyone, and the one-way release of its results.
 	'POST /api/decisions/[id]/rule': 'Rules on a decision for good, and mails every participant the ruling and its reason',
-	'POST /api/decisions/[id]/release': "Shows a ruled decision's totals and comments, for good, to everyone who can see it"
+	'POST /api/decisions/[id]/release': "Shows a ruled decision's totals and comments, for good, to everyone who can see it",
+	// Card 2771 (D7): the Account page's three forms, which asked for the password on their own.
+	'PUT /api/account/password': "Changes the account's own password, which ends its other sessions and invites",
+	'PUT /api/account/email': "Moves the address the account's invites, resets and security notices go to",
+	'POST /api/account/api-keys': 'Makes an API key: a credential that outlives a password change unless it is ended'
 } as const);
 
 /** A key of `STEP_UP_ACTIONS`. */
@@ -163,22 +220,31 @@ const BCRYPT_HASH = /^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/;
 type NotAPromise<T> = T extends PromiseLike<unknown> ? never : T;
 
 /**
- * Ask the caller of a listed action for their current password, after every
- * refusal that needs none, and answer what the write needs to be held to it.
+ * Ask the caller of a listed action for their current password and a code,
+ * after every refusal that needs neither, and answer what the write needs to
+ * be held to it.
  *
  *   (a) `guard`, in a `writeAs` that writes nothing: the session still open,
  *       the account as it is now, and every refusal of the route's that needs
  *       no password. Its answer is `actor`.
  *   (b) `currentPassword`: text of 1 to 1,024 characters, or 400
- *       `STEP_UP_MISSING`. Nothing is counted.
+ *       `STEP_UP_MISSING`. Then `currentCode` (card 2771, D1): text, or 400
+ *       `STEP_UP_MISSING`; in one of the two forms (`readStepUpCode`), or 400
+ *       `STEP_UP_CODE_MALFORMED`. Nothing is counted.
  *   (c) the session the gate let the request in with (its hash, from
  *       `locals.credential`), or 401; and the account's hash, which must be a
  *       bcrypt hash, or 403 `STEP_UP_NO_PASSWORD` with a WARN line. Nothing
  *       is counted.
  *   (d) the check, counted on the session's row, one at a time, the third
- *       wrong one ending the session: 403 `STEP_UP_WRONG`, 403 signed out, or
- *       429 (`checkCurrentPassword`, `refuseWrongPassword`).
- *   (e) an INFO line naming who confirmed, and for what.
+ *       wrong one ending the session: the second factor first (403
+ *       `no-factor`, 503 `factor-unusable`, 400 `code-spent`, nothing
+ *       counted), then 403 `STEP_UP_WRONG` for a wrong password or code, 403
+ *       signed out, or 429 (`checkCurrentProof`, `refuseWrongPassword`). A
+ *       right password with a wrong code that raised the owner's banner sends
+ *       the `wrong-code` notice (D6).
+ *   (e) an INFO line naming who confirmed, with which code, and for what; for
+ *       a recovery code, a WARN line with the codes left and the
+ *       `recovery-code-used` notice (D12, D13).
  *
  * It answers the hash the password was checked against, which the write is
  * then held to (`whilePasswordHolds`, `requirePasswordUnchanged`). Not the
@@ -201,6 +267,16 @@ export async function confirmStepUp<U>(
 	}
 	const password = readText(body, STEP_UP_FIELD, { required: true, min: 1, max: LONGEST_PASSWORD });
 
+	// The code, read straight after (card 2771, D1 and D2): missing, empty or
+	// not text, and then one in neither form, refused before anything is
+	// counted or the session read.
+	const typed = Object.hasOwn(body, STEP_UP_CODE_FIELD) ? body[STEP_UP_CODE_FIELD] : undefined;
+	if (typeof typed !== 'string' || typed === '') {
+		error(400, { message: STEP_UP_MISSING, stepUp: 'missing' });
+	}
+	const code = readStepUpCode(typed);
+	if (code === null) error(400, { message: STEP_UP_CODE_MALFORMED, stepUp: 'code-malformed' });
+
 	// The session the gate let the request in with, as its hash (card 2775).
 	const session = sessionHashIn(locals.credential);
 	if (!session) error(401, 'Not authenticated');
@@ -216,9 +292,20 @@ export async function confirmStepUp<U>(
 		error(403, { message: STEP_UP_NO_PASSWORD, stepUp: 'no-password' });
 	}
 
-	refuseWrongPassword(cookies, await checkCurrentPassword(session, caller.id, password, account.passwordHash, action), STEP_UP_WRONG);
+	const proven = await checkCurrentProof(session, caller.id, password, code, account.passwordHash, action);
+	// Committed by now: the owner told of a right password with a wrong code,
+	// as at sign-in, whatever the answer (card 2771, D6). Never awaited.
+	if (proven.signalled) sendSecurityNotice(caller.id, 'wrong-code', { at: new Date(), address: requestAddress(), confirming: true });
+	refuseWrongPassword(cookies, proven, STEP_UP_WRONG);
 
-	log.info(`Password confirmed by ${caller.username} (ID: ${caller.id}) for ${action}`, { action }, { userId: caller.id });
+	if (proven.by === 'recovery code') {
+		const left = proven.codesLeft ?? 0;
+		log.info(`Password and a recovery code confirmed by ${caller.username} (ID: ${caller.id}) for ${action}`, { action }, { userId: caller.id });
+		log.warn(`A recovery code confirmed ${action} for ${caller.username} (ID: ${caller.id}): ${left} left`, { action }, { userId: caller.id });
+		sendSecurityNotice(caller.id, 'recovery-code-used', { at: new Date(), address: requestAddress(), codesLeft: left, confirming: true });
+	} else {
+		log.info(`Password and code confirmed by ${caller.username} (ID: ${caller.id}) for ${action}`, { action }, { userId: caller.id });
+	}
 	return { actor, userId: caller.id, hash: account.passwordHash };
 }
 

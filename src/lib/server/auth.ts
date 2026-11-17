@@ -18,18 +18,28 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { db, sqlite } from './db';
 import { afterCommit, inTransaction } from './db/transaction';
-import { users, sessions, apiKeys, webhooks, reportSchedules, type Session, type User } from './db/schema';
-import { and, eq, sql } from 'drizzle-orm';
+import { users, sessions, apiKeys, webhooks, reportSchedules, mfaFactors, mfaRecoveryCodes, type Session, type User } from './db/schema';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { error, type Cookies } from '@sveltejs/kit';
 import { getRequestEvent } from '$app/server';
 import { endUnusedInvites } from './invites';
-import { endPendingSignIns } from './mfa-store';
+import { endPendingSignIns, factorSecret, spendRecoveryCode, spendStep } from './mfa-store';
+import { raiseSignal } from './sign-in-challenges';
+import { matchingStep } from './totp';
 import { FIRST_LANE_CHECKS_PER_ACCOUNT, enterSignIn, firstLaneChecksAt, leaveSignIn } from './rate-limit';
 import { PASSWORDS_BUSY, checkPassword } from './passwords';
 import { createLogger } from './logger';
 import { parseStamp, stamp, toStamp, type Stamp } from '$lib/timestamps';
 import { cookieValues, onlyCookieValue, sendsCookie } from './cookie-header';
-import { PASSWORD_CHANGED_MEANWHILE, STEP_UP_IN_FLIGHT, STEP_UP_MISSING, STEP_UP_SIGNED_OUT } from '$lib/step-up-words';
+import {
+	PASSWORD_CHANGED_MEANWHILE,
+	STEP_UP_CODE_SPENT,
+	STEP_UP_FACTOR_UNUSABLE,
+	STEP_UP_IN_FLIGHT,
+	STEP_UP_MISSING,
+	STEP_UP_NO_FACTOR,
+	STEP_UP_SIGNED_OUT
+} from '$lib/step-up-words';
 import { registerStampFunctions } from './db/timestamps';
 import { pathToLog } from './secret-paths';
 
@@ -119,28 +129,49 @@ export type SessionUser = {
 	role: string;
 };
 
-// ─── Checking a Current Password ────────────────────────────────────────────
+// ─── Checking a Current Password and Its Code ───────────────────────────────
 
 /**
- * How many wrong current passwords end the session that sent them (card 2701,
- * decision 6): the usual bound, sudo's. The real user loses only the session,
- * and signs in again.
+ * How many wrong answers end the session that sent them (card 2701, decision
+ * 6; card 2771, D4): a wrong current password or a wrong code, counted alike.
+ * The usual bound, sudo's. The real user loses only the session, and signs in
+ * again.
  */
 export const WRONG_CURRENT_PASSWORDS_SIGN_OUT = 3;
 
 /**
  * The answer to a check from a session that already has one under way (card
  * 2701, decision 5), and the answer once a session has been ended by its third
- * wrong current password, or had ended some other way while its check was
- * made (decision 6). Kept in `$lib/step-up-words`, which the pages read too:
- * a confirm dialog knows a refusal of the password by its words.
+ * wrong answer, or had ended some other way while its check was made
+ * (decision 6). Kept in `$lib/step-up-words`, which the pages read too: a
+ * confirm dialog knows a refusal of the password by its words.
  */
 export { STEP_UP_IN_FLIGHT, STEP_UP_SIGNED_OUT };
 
-/** What a check answers: whether the password matched, and whether the session is signed out. */
-type Checked = { matches: boolean; signedOut: boolean };
-/** The answer for a session that is signed out (its row gone, or just ended), whatever the password. */
-const signedOut = (): Checked => ({ matches: false, signedOut: true });
+/**
+ * The code sent beside the password (card 2771, D2), in a form already
+ * checked by the step-up: the authenticator app's six digits, spaces dropped,
+ * or a recovery code as typed, trimmed.
+ */
+export type ProofCode = { kind: 'authenticator'; digits: string } | { kind: 'recovery'; typed: string };
+
+/**
+ * What a check answers (card 2771, D5): whether the password and the code
+ * both passed, whether the session is signed out, which code passed and, for a
+ * recovery code, how many the account has left.
+ */
+export type Proven = {
+	matches: boolean;
+	signedOut: boolean;
+	by: 'authenticator' | 'recovery code' | null;
+	codesLeft: number | null;
+	/** A right password with a wrong code raised the account's signal: the step-up sends the notice (D6). */
+	signalled: boolean;
+};
+/** The answer for a session that is signed out (its row gone, or just ended), whatever the password and code. */
+const signedOut = (signalled = false): Proven => ({ matches: false, signedOut: true, by: null, codesLeft: null, signalled });
+/** The answer for a wrong password or code, the session still open. */
+const notProven = (signalled = false): Proven => ({ matches: false, signedOut: false, by: null, codesLeft: null, signalled });
 
 /**
  * The sessions with a current password being checked now. Kept in memory, as
@@ -156,23 +187,25 @@ export function forgetChecksInFlight(): void {
 
 /**
  * Whether `password` is the account's current password, whose hash is `hash`,
- * with the attempt counted against `sessionHash`: the session the request was
- * made with, as the gate found it (`locals.credential`, card 2775).
+ * and `code` a right code of the account's second factor, with the attempt
+ * counted against `sessionHash`: the session the request was made with, as
+ * the gate found it (`locals.credential`, card 2775).
  *
- * The email form, the password form and Generate Key each ask a caller who is
- * already signed in for their current password, and so does every
- * destructive, privilege-changing or exfiltrating admin action (card 2701,
- * `confirmStepUp` in step-up.ts). It is what whoever holds a session and not
- * the password (an unlocked machine, a copied cookie, a script running in a
- * page) would need, and a password found here passes every one of them.
+ * Every destructive, privilege-changing or exfiltrating action, and the
+ * Account page's email, password and API key forms, ask a caller who is
+ * already signed in for their current password and a code (cards 2701 and
+ * 2771, `confirmStepUp` in step-up.ts, its only caller). It is what whoever
+ * holds a session and not the password and the authenticator (an unlocked
+ * machine, a copied cookie, a script running in a page) would need.
  *
- * So the compares are counted on the session's own row
+ * So the attempts are counted on the session's own row
  * (`sessions.wrong_password_count`, migration 0062), for the session's whole
- * life: no window, and a restart does not clear it. Only a right password
- * sets it back to 0. The third wrong one ends the session (decisions 5 and 6,
- * as ruled again by the code review's S1 on 2026-11-04: only a check that
- * compares a password is counted). Steps 1 to 4 run in one turn, with
- * nothing awaited between them, so that no other check can come between:
+ * life: no window, and a restart does not clear it. One attempt counts once,
+ * whichever part is wrong, and only a right password with a right code sets it
+ * back to 0. The third wrong one ends the session (decisions 5 and 6, as
+ * ruled again by the code review's S1 on 2026-11-04: only a check that
+ * compares a password is counted). Steps 1 to 4 run in one turn, with nothing
+ * awaited between them, so that no other check can come between:
  *
  *   1. The session's row is read. Gone, the answer is signed out. A count
  *      already at 3 or more ends the session, answered signed out, with no
@@ -180,6 +213,15 @@ export function forgetChecksInFlight(): void {
  *   2. One check under way per session: a second is answered 429
  *      (`STEP_UP_IN_FLIGHT`), not counted, with no password compared. The
  *      pages send one request per press.
+ *   2b. The account's second factor (card 2771, D3), not counted, with no
+ *      password compared: none is 403 `no-factor` with a WARN line; for an
+ *      authenticator code, a factor that does not open is 503
+ *      `factor-unusable` (the ERROR line is `factorSecret`'s), and a code that
+ *      matches a step at or below the last one spent is 400 `code-spent`,
+ *      whatever the password (S1: decided before the compare, it says nothing
+ *      of the password). A code that matches no step goes on: it is never
+ *      refused here. The secret is opened only to check, and zeroed here (S3).
+ *      A recovery code skips the opening.
  *   3. One of the account's five places in the first lane of password checks
  *      (passwords.ts), its sessions' current passwords and its remembered
  *      browsers' sign-ins together (the review's L1). None free is answered
@@ -189,37 +231,55 @@ export function forgetChecksInFlight(): void {
  *   4. Counted, in one statement (`UPDATE … RETURNING`), and then compared on
  *      a worker thread. A compare that fails on the worker stays counted: it
  *      was made.
- *   5. The row is read again. Gone (ended by a sign-out, a password change or
- *      a reset meanwhile), the answer is signed out whatever the check found,
- *      and a right password clears nothing: an answer given after the end
- *      never tells a right guess from a wrong one. Otherwise a right password
- *      sets the count to 0, and a wrong one that leaves it at 3 ends the
- *      session. With one check at a time, nothing else can count meanwhile.
+ *   5. A wrong password: the row read again, a WARN line, and a count of 3
+ *      ends the session; the code is never examined again, nor spent. A right
+ *      one: one synchronous transaction, nothing awaited (card 2771, D4, S3).
+ *      The session's row is read again: gone (ended by a sign-out, a password
+ *      change or a reset meanwhile), the answer is signed out and nothing is
+ *      spent, so that an answer given after the end never tells a right guess
+ *      from a wrong one. The factor is read and opened again, the secret
+ *      zeroed after; the code verified at the moment it arrived, taken at
+ *      2b (the step then or the one before, so a step boundary passing
+ *      during the compare does not make it wrong: the code review's CS2) and
+ *      its step spent (`spendStep`), or the recovery code
+ *      spent (`spendRecoveryCode`); and then the count set to 0. A wrong code,
+ *      or a recovery code used or unknown, leaves the count at +1 and, the
+ *      password being shown known, raises the account's signal (at most once
+ *      an hour) and `failed_codes_since_sign_in` (D6): the WARN line says so,
+ *      and the third ends the session. A step spent by another request since
+ *      2b, or a factor gone or not opening, fails closed: nothing spent, the
+ *      count left at +1, answered as a wrong one. A fault in the transaction
+ *      rolls the spend and the clear back together and leaves the attempt
+ *      counted.
  *
  * The count is the session's and not the account's. Kept on the account,
  * whoever held one session of it could keep every session of it refused, the
  * owner's included, and so keep the owner from changing the password, which
  * is how the owner ends the other sessions. Sign-in's own counts, by address
- * and by account, are not touched: a stolen session could otherwise slow or
- * lock the owner's sign-in from a browser that was never stolen.
+ * and by account, and its code lanes, pauses and lock, are not touched: a
+ * stolen session could otherwise slow or lock the owner's sign-in from a
+ * browser that was never stolen (card 2771, D6).
  *
- * Each wrong password is a WARN line naming `where` and the user, as each
+ * Each wrong answer is a WARN line naming `where` and the user, as each
  * failed sign-in is, and each session ended for it another. The session is
- * never logged: it is what signs its holder in. Nor is the password.
+ * never logged: it is what signs its holder in. Nor is the password, the code
+ * or the secret.
  *
  * Asked once for a request, before its transaction, and awaited. It resolves
- * to `{ matches, signedOut }` rather than a boolean, so that a missed `await`
- * does not compile; `refuseWrongPassword` turns it into the route's answer. A
- * route whose stored hash moved in between is refused by
- * `whilePasswordHolds`, which compares nothing again (the code review's S2).
+ * to a `Proven` rather than a boolean, so that a missed `await` does not
+ * compile; `refuseWrongPassword` turns it into the route's answer. A route
+ * whose stored hash moved in between is refused by `whilePasswordHolds`,
+ * which compares nothing again (the code review's S2); the code is spent by
+ * then (S4).
  */
-export async function checkCurrentPassword(
+export async function checkCurrentProof(
 	sessionHash: Buffer,
 	userId: number,
 	password: string,
+	code: ProofCode,
 	hash: string,
 	where: string
-): Promise<Checked> {
+): Promise<Proven> {
 	const thisSession = and(eq(sessions.tokenHash, sessionHash), eq(sessions.userId, userId));
 	const session = sessionHash.toString('hex');
 
@@ -233,6 +293,30 @@ export async function checkCurrentPassword(
 
 	// 2. One check at a time for the session: not counted.
 	if (checksInFlight.has(session)) error(429, { message: STEP_UP_IN_FLIGHT, stepUp: 'in-flight' });
+
+	// 2b. The account's second factor: not counted, no password compared. The
+	// code is judged at the moment it arrived, here and after the compare
+	// alike: a step boundary passing during the compare does not make a code
+	// that was good when it came a wrong one (card 2771's code review, CS2).
+	const at = Date.now();
+	const factor = db.select().from(mfaFactors).where(eq(mfaFactors.userId, userId)).get();
+	if (!factor) {
+		log.warn(`Password not confirmed for user ${userId} on ${where}: the account has no second factor`, { where }, { userId });
+		error(403, { message: STEP_UP_NO_FACTOR, stepUp: 'no-factor' });
+	}
+	if (code.kind === 'authenticator') {
+		const opened = factorSecret(factor);
+		if (!opened.usable) error(503, { message: STEP_UP_FACTOR_UNUSABLE, stepUp: 'factor-unusable' });
+		let step: number | null;
+		try {
+			step = matchingStep(opened.secret, code.digits, at);
+		} finally {
+			opened.secret.fill(0);
+		}
+		if (step !== null && factor.lastStep !== null && step <= factor.lastStep) {
+			error(400, { message: STEP_UP_CODE_SPENT, stepUp: 'code-spent' });
+		}
+	}
 
 	// 3. A place in the account's first lane: not counted.
 	const place = firstLaneChecksAt(userId);
@@ -255,19 +339,100 @@ export async function checkCurrentPassword(
 		leaveSignIn(place);
 	}
 
-	// 5.
-	if (matches) {
-		const cleared = db.update(sessions).set({ wrongPasswordCount: 0 }).where(thisSession).returning({ hash: sessions.tokenHash }).get();
-		return cleared ? { matches: true, signedOut: false } : signedOut();
+	// 5. A wrong password: the code is never looked at again.
+	if (!matches) return afterWrongAnswer(sessionHash, userId, where, `Wrong current password for user ${userId} on ${where}`, false);
+
+	// A right one: the code verified and spent, and the count cleared, in one
+	// transaction with nothing awaited.
+	const proved = inTransaction((): Proof => {
+		const now = Date.now();
+		if (!db.select({ count: sessions.wrongPasswordCount }).from(sessions).where(thisSession).get()) return { kind: 'gone' };
+		const held = db.select().from(mfaFactors).where(eq(mfaFactors.userId, userId)).get();
+		if (!held) return { kind: 'not spent' };
+		let codesLeft: number | null = null;
+		if (code.kind === 'authenticator') {
+			const opened = factorSecret(held);
+			if (!opened.usable) return { kind: 'not spent' };
+			let step: number | null;
+			try {
+				// At the arrival's moment (CS2); the spend below stays the authority.
+				step = matchingStep(opened.secret, code.digits, at);
+			} finally {
+				opened.secret.fill(0);
+			}
+			if (step === null) return wrongCode(userId, now);
+			if (spendStep(held.id, step) === 'not spent') return { kind: 'not spent' };
+		} else {
+			if (spendRecoveryCode(userId, code.typed) !== 'spent') return wrongCode(userId, now);
+			codesLeft = db
+				.select({ id: mfaRecoveryCodes.id })
+				.from(mfaRecoveryCodes)
+				.where(and(eq(mfaRecoveryCodes.userId, userId), isNull(mfaRecoveryCodes.usedAt)))
+				.all().length;
+		}
+		db.update(sessions).set({ wrongPasswordCount: 0 }).where(thisSession).run();
+		return { kind: 'proven', codesLeft };
+	});
+
+	if (proved.kind === 'gone') return signedOut();
+	if (proved.kind === 'proven') {
+		return {
+			matches: true,
+			signedOut: false,
+			by: code.kind === 'authenticator' ? 'authenticator' : 'recovery code',
+			codesLeft: proved.codesLeft,
+			signalled: false
+		};
 	}
+	if (proved.kind === 'wrong code') {
+		return afterWrongAnswer(sessionHash, userId, where, `Wrong code for user ${userId} on ${where}: the password was right`, proved.signalled);
+	}
+	return afterWrongAnswer(
+		sessionHash,
+		userId,
+		where,
+		`Code not spent for user ${userId} on ${where}: the password was right, and the code's step was used meanwhile or the factor could not be opened`,
+		false
+	);
+}
+
+/** What the transaction of a right password found (card 2771, D4). */
+type Proof =
+	| { kind: 'gone' }
+	| { kind: 'proven'; codesLeft: number | null }
+	| { kind: 'wrong code'; signalled: boolean }
+	| { kind: 'not spent' };
+
+/**
+ * A wrong code after a right password, inside the check's transaction (card
+ * 2771, D6, S2): the clearest sign the password is known. The account's
+ * signal raised (its banner, at most once an hour) and its failed codes since
+ * sign-in counted; sign-in's lanes are not touched.
+ */
+function wrongCode(userId: number, now: number): Proof {
+	const signalled = raiseSignal(userId, 'wrong-code', now);
+	db.update(users)
+		.set({ failedCodesSinceSignIn: sql`${users.failedCodesSinceSignIn} + 1` })
+		.where(eq(users.id, userId))
+		.run();
+	return { kind: 'wrong code', signalled };
+}
+
+/**
+ * The tail of a counted attempt that did not pass: the session's row read
+ * again (gone, signed out), the WARN line `line`, and a count of 3 or more
+ * ends the session.
+ */
+function afterWrongAnswer(sessionHash: Buffer, userId: number, where: string, line: string, signalled: boolean): Proven {
+	const thisSession = and(eq(sessions.tokenHash, sessionHash), eq(sessions.userId, userId));
 	const now = db.select({ count: sessions.wrongPasswordCount }).from(sessions).where(thisSession).get();
-	if (!now) return signedOut();
-	log.warn(`Wrong current password for user ${userId} on ${where}`, { where }, { userId });
+	if (!now) return signedOut(signalled);
+	log.warn(line, { where }, { userId });
 	if (now.count >= WRONG_CURRENT_PASSWORDS_SIGN_OUT) {
 		endAfterWrongPasswords(sessionHash, userId, where);
-		return signedOut();
+		return signedOut(signalled);
 	}
-	return { matches: false, signedOut: false };
+	return notProven(signalled);
 }
 
 /** End a session for its wrong current passwords, with a WARN line that names the user and the route, never the session. */
@@ -277,14 +442,14 @@ function endAfterWrongPasswords(sessionHash: Buffer, userId: number, where: stri
 }
 
 /**
- * The route's answer to a current password that did not pass: nothing when it
- * matched; for a session signed out, 403 `{ message: STEP_UP_SIGNED_OUT,
- * signedOut: true, stepUp: 'signed-out' }` with the session cookie cleared;
- * otherwise 403 in the route's own words, `says`, with `stepUp: 'wrong'`. The
- * answer never says whether a signed-out session's password was right, and
- * never echoes the password.
+ * The route's answer to a current password and code that did not pass:
+ * nothing when both did; for a session signed out, 403 `{ message:
+ * STEP_UP_SIGNED_OUT, signedOut: true, stepUp: 'signed-out' }` with the
+ * session cookie cleared; otherwise 403 in `says`, with `stepUp: 'wrong'`. The
+ * answer never says whether a signed-out session's password was right, nor
+ * which of the password and the code was wrong, and never echoes either.
  */
-export function refuseWrongPassword(cookies: Cookies, checked: Checked, says: string): void {
+export function refuseWrongPassword(cookies: Cookies, checked: Pick<Proven, 'matches' | 'signedOut'>, says: string): void {
 	if (checked.signedOut) {
 		clearSessionCookie(cookies);
 		error(403, { message: STEP_UP_SIGNED_OUT, signedOut: true, stepUp: 'signed-out' });

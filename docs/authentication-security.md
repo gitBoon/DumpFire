@@ -1,9 +1,9 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.116
+version: 1.117
 status: As-Built
-date: 2026-11-16
+date: 2026-11-17
 tags:
   - decision-reminders
   - authentication
@@ -69,7 +69,9 @@ tags:
   - iso-27001
   - token-hashing
   - migration-0068
-description: "Deep-dive into DumpFire's authentication system, what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the twenty-nine destructive actions that ask for the current password again (step-up), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, session codes kept only as SHA-256 hashes with the idle and total limits by role, the __Host- cookie and a role change ending the account's sessions (card 2775), the accepted risks and the ISO 27001 rows)"
+  - current-code
+  - card-2771
+description: "Deep-dive into DumpFire's authentication system, what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the thirty-two actions that ask for the current password and a code from the authenticator app again (step-up; the code checked since card 2771: its form, the factor checked before the password is compared, one count for either part, the code spent with the count cleared in one transaction, the stolen-password signal on a right password with a wrong code, and the Account page's email, password and key forms on the same check), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, session codes kept only as SHA-256 hashes with the idle and total limits by role, the __Host- cookie and a role change ending the account's sessions (card 2775), the accepted risks and the ISO 27001 rows)"
 ---
 
 # Authentication & Security
@@ -721,7 +723,10 @@ back: whoever holds a signed-in browser (an unlocked machine, a copied cookie) o
 a DumpFire page could otherwise do each of them with the session alone. The rule: an action asks
 for the caller's **current password**, every time, when it destroys data in bulk or for good,
 makes, removes or changes an account's credentials, role or address, or sends the database, or
-the mail invites and resets go through, somewhere the caller chooses. The list is
+the mail invites and resets go through, somewhere the caller chooses. Since card 2771
+(2026-11-17) it asks for a **code** beside the password too, from the caller's authenticator app
+or one of their recovery codes, and the action runs only when both are right (see
+[The Code Beside the Password](#the-code-beside-the-password-card-2771)). The list is
 `STEP_UP_ACTIONS` in `src/lib/server/step-up.ts`, keyed `METHOD /route/id`, each with its
 reason, and pinned both ways against the handlers (`tests/step-up.test.ts`, cases 1 and 2).
 
@@ -753,15 +758,20 @@ reason, and pinned both ways against the handlers (`tests/step-up.test.ts`, case
 | `POST /api/decisions/[id]/withdraw`, **once the decision was opened** (card 2697) | its author, its decider, or admin | Ends it for good and mails every participant the caller's words |
 | `POST /api/decisions/[id]/rule` (card 2679) | its decider | Rules on a decision for good, and mails every participant the ruling and its reason |
 | `POST /api/decisions/[id]/release` (card 2679) | its decider | Shows a ruled decision's totals and comments, for good, to everyone who can see it |
+| `PUT /api/account/password` (card 2771) | anyone signed in, for their own account | Changes the account's own password, which ends its other sessions and invites |
+| `PUT /api/account/email` (card 2771) | anyone signed in, for their own account | Moves the address the account's invites, resets and security notices go to |
+| `POST /api/account/api-keys` (card 2771) | anyone signed in, for their own account | Makes an API key: a credential that outlives a password change unless it is ended |
 
-The list is twenty-nine: card 2701's eighteen (the import among them, standing as its
+The list is thirty-two: card 2701's eighteen (the import among them, standing as its
 confirmation), card 2697's eight: the five its plan listed, and the three People writes its
 code review's part B added on 2026-11-04, S1, so that every People write that sets or ends an
 address or an account asks ([Decision Access and Personal Links](#decision-access-and-personal-links)),
 card 2679's two, the ruling and the release, which ask every time
 ([Results, the Ruling and the Release](#results-the-ruling-and-the-release-card-2679)), and card
 2773's one, the reset of another account's two-step sign-in, which asks every time
-([The Administrator's Reset](#the-administrators-reset)). The
+([The Administrator's Reset](#the-administrators-reset)), and card 2771's three, the Account
+page's email, password and key forms, which asked for the password with checks of their own
+and now ask through the step-up like every other. The
 conditional ones test their field with `Object.hasOwn`, as the body readers do
 (`request-body.ts`), or the row: a user change of `username` or `emoji` alone, a backup save of
 the schedule, retention or failure mail alone, an empty column's delete, a People save of name,
@@ -817,23 +827,31 @@ guard)`:
    and **every refusal the write would make that needs no password** (ownership, the
    managed-account rules, the fields read against the row, uniqueness, the mail checks), so
    that none of them costs a check or a guess;
-2. `currentPassword`, text of 1 to 1,024 characters, or `400` "Enter your password to confirm
-   this. Nothing was changed." (`STEP_UP_MISSING`), nothing counted. Not `password`, which two
-   listed routes use for the new password;
+2. `currentPassword`, text of 1 to 1,024 characters, or `400` "Enter your password and a code
+   from your authenticator app to confirm this. Nothing was changed." (`STEP_UP_MISSING`),
+   nothing counted. Not `password`, which two listed routes use for the new password. Then
+   `currentCode` (card 2771): missing, empty or not text, the same `400` `missing`; in neither
+   form (`readStepUpCode`), `400` `code-malformed`; nothing counted either way;
 3. the account's hash, a bcrypt hash, or `403` "This account has no password to confirm with,
    so this cannot be done from it. Nothing was changed." with a `WARN` line, nothing counted
    (none exists today: every account has one);
-4. `checkCurrentPassword`, one at a time for the session, each compare counted on the session's
-   row, the third wrong one ending the session ([Guessing a Current
-   Password](#guessing-a-current-password)): `403` "Password is incorrect. Nothing was
-   changed.", `403` signed out, or `429` (in flight or busy, not counted);
-5. an `INFO` line, "Password confirmed by *name* (ID: *n*) for *action*".
+4. `checkCurrentProof`, one at a time for the session: the account's second factor first (step
+   2b: `403` `no-factor`, `503` `factor-unusable`, `400` `code-spent`, nothing counted, no
+   password compared), then each compare counted on the session's row, the code verified and
+   spent with the count cleared only when the password is right, the third wrong answer ending
+   the session ([Guessing a Current Password](#guessing-a-current-password)): `403` "Your
+   password or code was not right. Nothing was changed.", `403` signed out, or `429` (in
+   flight or busy, not counted);
+5. an `INFO` line, "Password and code confirmed by *name* (ID: *n*) for *action*", or
+   "Password and a recovery code confirmed by …" with a `WARN` line "A recovery code confirmed
+   *action* for *name* (ID: *n*): *k* left" and the `recovery-code-used` notice.
 
 **Every refusal carries its code** (card 2701's code review, F3). Each refusal of the password
-by `confirmStepUp`, `checkCurrentPassword`, `refuseWrongPassword`, `whilePasswordHolds`,
+or the code by `confirmStepUp`, `checkCurrentProof`, `refuseWrongPassword`, `whilePasswordHolds`,
 `requirePasswordUnchanged` and the import's confirmation has `stepUp` in its body beside
 `message` (`App.Error.stepUp` in `src/app.d.ts`): `missing`, `wrong`, `no-password`,
-`in-flight`, `busy`, `signed-out`, `confirmation` or `changed`. A page knows a refusal of the
+`in-flight`, `busy`, `signed-out`, `confirmation` or `changed`, and since card 2771
+`code-malformed`, `code-spent`, `no-factor` and `factor-unusable`. A page knows a refusal of the
 password by that code alone (`stepUpRefusal` in `src/lib/step-up-words.ts`); the message is for
 display. `signed-out` is taken by the sign-out watch as a `401` (`src/lib/signed-out.ts`, F5):
 the page goes to sign in, and the dialog leaves no password field to type in.
@@ -841,7 +859,9 @@ the page goes to sign in, and the dialog leaves no password field to type in.
 The write then runs in `whilePasswordHolds(userId, hash, write)`, so it commits only while the
 stored hash is the one checked, with the caller decided again inside; a hash that moved is `409`
 `{ message: PASSWORD_CHANGED_MEANWHILE, stepUp: 'changed' }`, and the password is never compared
-a second time (S2). The three that cannot run in one transaction (the import's restore, the
+a second time (S2). The code was spent in the check's own transaction, which commits before the
+write's, so a refusal here, or any later one, leaves it spent: the holder waits for the next code
+(card 2771, S4). The three that cannot run in one transaction (the import's restore, the
 export's `VACUUM INTO`, Run Now's awaited upload) ask `stillCallerNow` and then
 `requirePasswordUnchanged(userId, hash, 'changed' | 'confirmation')`, synchronous, with nothing
 awaited before the effect starts: `403` `PASSWORD_CHANGED_MEANWHILE`, or for the import
@@ -872,8 +892,9 @@ row. That the password was checked first is held by source scans, at test time.
 `tests/check-at-the-write.test.ts` lets `whilePasswordHolds` be used nowhere in `src` but in a
 handler on its `CURRENT_PASSWORD` list, and `requirePasswordUnchanged` only there or on
 `PASSWORD_UNCHANGED_ONLY` (the import, the export and a backup run, which cannot be held in a
-transaction); each of those handlers asks for the password (`confirmStepUp`,
-`takeImportConfirmation` or `checkCurrentPassword`) before it. A page action, a `$lib` helper,
+transaction); each of those handlers asks for the password (`confirmStepUp` or
+`takeImportConfirmation`; the Account page's three routes called `checkCurrentPassword` until
+card 2771 moved them onto `confirmStepUp`) before it. A page action, a `$lib` helper,
 an unlisted handler, an import under another name, a re-export or a component naming either is
 a finding. The step-up pin in `tests/step-up.test.ts` (cases 1 and 2) holds each action that
 asks to ask before what it guards. Together: the write ran inside `whilePasswordHolds` in an
@@ -887,41 +908,60 @@ sequenceDiagram
     participant G as Gate (hooks.server.ts)
     participant R as Listed route
     participant S as confirmStepUp (step-up.ts)
-    participant P as checkCurrentPassword (auth.ts)
+    participant P as checkCurrentProof (auth.ts)
     participant W as Worker thread (bcrypt)
     participant D as SQLite
 
-    A->>G: POST / PUT / DELETE, JSON { …fields, currentPassword }
+    A->>G: POST / PUT / DELETE, JSON { …fields, currentPassword, currentCode }
     G->>G: session, same-origin JSON (card 2700), 512 KB
     G->>R: handed on, locals.user
     R->>R: quick role refusal, path id, readBody, fields with no row (400s)
     R->>S: locals, cookies, body, action, full guard
     S->>D: writeAs(guard), read only: role now, ownership, row fields (403 / 404 / 409 / 400)
-    S->>S: currentPassword is text, else 400, nothing counted
+    S->>S: currentPassword is text, else 400 missing, nothing counted
+    S->>S: currentCode is text, else 400 missing. 64 characters at most, then 6 digits (spaces dropped) or a recovery code, else 400 code-malformed
     S->>D: the account's hash: a bcrypt hash, else 403, nothing counted
-    S->>P: session, user, password, hash, action
-    P->>D: the session's row (gone: signed out)
+    S->>P: session, user, password, code, hash, action
+    P->>D: 1. the session's row (gone: signed out)
     alt count already 3
         P->>D: deleteSession (WARN)
         P-->>A: 403 signedOut, cookie cleared, no compare
-    else another check of this session in flight
+    else 2. another check of this session in flight
         P-->>A: 429 in-flight, not counted, no compare
-    else the account's five first-lane places taken
+    end
+    P->>D: 2b. the account's factor
+    alt none
+        P-->>A: 403 no-factor (WARN), not counted, no compare
+    else an authenticator code and a factor that does not open
+        P-->>A: 503 factor-unusable (ERROR), not counted, no compare
+    else an authenticator code matching a step at or below last_step
+        P-->>A: 400 code-spent, whatever the password, not counted, no compare
+    end
+    Note over P: the secret zeroed. A code matching no step goes on, and a recovery code skips the opening
+    alt 3. the account's five first-lane places taken
         P-->>A: 429 busy, not counted, no compare
     end
-    P->>D: wrong_password_count + 1 (same turn, nothing awaited)
+    P->>D: 4. wrong_password_count + 1 (same turn, nothing awaited)
     P->>W: compare, in the first lane
     W-->>P: matches?
-    P->>D: the session's row still there?
-    alt gone, right or wrong, or wrong with the count at 3
-        P-->>A: 403 signedOut, cookie cleared
-    else wrong
-        P-->>A: 403 Password is incorrect. Nothing was changed. (WARN)
-    else right
-        P->>D: wrong_password_count = 0
-        S->>D: INFO Password confirmed by … for …
-        R->>D: whilePasswordHolds: hash unchanged (else 409 changed, no compare)? then writeAs(guard again, the write)
-        R-->>A: the route's own success
+    alt wrong password
+        P->>D: the session's row still there? WARN, and the third ends the session
+        P-->>A: 403 Your password or code was not right. (or signed out), the code never examined again
+    else right password: one transaction, nothing awaited
+        P->>D: the session's row still there? (else signed out, nothing spent)
+        P->>D: the factor read and opened again (secret zeroed), matchingStep then spendStep, or spendRecoveryCode
+        alt right code, spent
+            P->>D: wrong_password_count = 0, COMMIT
+            S->>D: INFO Password and code confirmed by … for … (a recovery code: WARN, and the notice)
+            R->>D: whilePasswordHolds: hash unchanged (else 409 changed, the code left spent)? then writeAs(guard again, the write)
+            R-->>A: the route's own success
+        else wrong code, or a recovery code used or unknown
+            P->>D: raiseSignal (banner), failed_codes_since_sign_in + 1, COMMIT, count left +1
+            P-->>A: 403 Your password or code was not right. (WARN, the third signs out), the wrong-code notice
+        else the step spent meanwhile, or the factor gone or not opening
+            P->>D: nothing spent, COMMIT, count left +1
+            P-->>A: 403 Your password or code was not right. (WARN, the third signs out)
+        end
     end
 ```
 
@@ -931,7 +971,7 @@ be read); only then does its dialog open, naming the file and asking for the pas
 soon as the confirm answers, the upload is sent. Nothing is uploaded before the password is
 accepted, and the 60 seconds never have to cover the picker. The import's body is the upload, so the password
 cannot be in it, and it is proved before a byte of the file is read.
-`POST /api/admin/import/confirm` takes `{ currentPassword }`, runs `confirmStepUp`, asks again
+`POST /api/admin/import/confirm` takes `{ currentPassword, currentCode }` (the code since card 2771), runs `confirmStepUp`, asks again
 that the caller is the superadmin whose password was checked, and answers `200`
 `{ confirmation, expiresInSeconds: 60 }` with `Cache-Control: no-store`. The confirmation is 32
 random bytes, base64url; the server keeps only its SHA-256, beside the SHA-256 of the session's
@@ -957,7 +997,7 @@ sequenceDiagram
     participant I as POST /api/admin/import
     participant D as SQLite
 
-    S->>C: { currentPassword }
+    S->>C: { currentPassword, currentCode }
     C->>C: confirmStepUp, then the caller asked again
     C->>M: sha256(confirmation): session's digest, user, hash, ends in 60 s
     C-->>S: 200 { confirmation, expiresInSeconds: 60 }, no-store
@@ -975,7 +1015,7 @@ sequenceDiagram
 ```
 
 **The export is a `POST`** (decision 17). The page has always fetched the file and saved the
-blob, never navigated to it, so its request can carry `{ currentPassword }`, and one request
+blob, never navigated to it, so its request can carry `{ currentPassword, currentCode }`, and one request
 needs no confirmation. `GET` is gone (`405`); the answer is `Cache-Control: no-store`; the copy
 is held by `requirePasswordUnchanged(…, PASSWORD_CHANGED_MEANWHILE)`, `403`, since `VACUUM INTO`
 cannot run in a transaction.
@@ -1010,8 +1050,8 @@ is `sent` with `{ giveBackPasswordRefusal: true }` (F8): one implementation. A s
 listed one with no `currentPassword` in a literal body, an import with no confirmation header, or
 a `GET` of the export.
 
-**The code on the pages** (card 2770; the server's check is card 2771's, released together, so
-until then the server reads no `currentCode`). Every dialog that asks for the password asks for
+**The code on the pages** (card 2770; the server's check is card 2771's, released together: see
+[The Code Beside the Password](#the-code-beside-the-password-card-2771)). Every dialog that asks for the password asks for
 a second proof under it: a code from the authenticator app, or a recovery code by a switch
 ("Use a recovery code instead"), in the one field, as the sign-in's second step does
 (`/login/verify`): `inputmode="numeric"`, `autocomplete="one-time-code"` and `maxlength="7"` in
@@ -1026,11 +1066,19 @@ spread. **A blank code sends nothing, by any route:** the button is off until th
 typed and the code is not blank, and every send function carries the same guard, so Enter
 cannot get round the button; Enter in the password field moves to the code field while it is
 empty. Both fields are emptied on every send, on Cancel and on any refusal (the focus to the
-password: the server never says which was wrong), held in component state only, never in a
+password: the server never says which was wrong), except that since card 2771 the password is
+put back on the three refusals decided before it was compared (`code-spent`,
+`code-malformed`, `factor-unusable`: `passwordKeptAfter`) and the focus goes to the code; held in component state only, never in a
 store, a toast, storage or a log. The scan (case 28) now also fails a listed write that has no
 `currentCode` in its body, or whose `currentCode` does not come from the proof (`undefined`,
 `''`, or Google's OAuth `code`); it checks that the value is named `currentCode` and does not trace the source further, since every send site takes it from the dialog's proof. One shared rule, `proofTyped()` in `src/lib/step-up-words.ts`, decides "both filled" for every button and send guard. The recovery switch updates the field's keyboard attributes before it focuses the field. The Account page's forms and the three `/api/account` routes
-are not part of this card: they move to card 2771.
+were card 2771's: each form draws `CurrentPasswordField` ("Confirm password", "Current
+password", "Your current password"), sends only once `proofTyped`, copies both fields into
+constants named `currentPassword` and `currentCode` and clears them before the `fetch`, and
+says a step-up refusal in the field's alert and any other in the form's line; the scan (case
+28) holds the three account sends too, and its `RETIRED_FIELDS` rule reports `password` in a
+body sent to `PUT /api/account/email` or `POST /api/account/api-keys`. The password form's
+"Show passwords" no longer reveals the current password, which is always masked.
 
 **The password in transit and at rest.** It is never logged (no body reader logs a body, and the
 lines name the user and the action), never echoed (every refusal is fixed text), held to the
@@ -1039,6 +1087,126 @@ request's local variables alone: the confirmation map holds digests, and the in-
 session ids. Strings cannot be wiped in JavaScript. On the page it is in the dialog's state
 while it is open, and cleared on Cancel, as it is sent and on a refusal; it is never put in a
 toast or in storage. Case 17 searches every log row and answer of a run for it.
+
+### The Code Beside the Password (Card 2771)
+
+Card 2770 put a code field under every password a step-up asks for; card 2771 (2026-11-17,
+released with it) has the server check it. The plan is
+`docs/planning/card-2771-step-up-requires-code.md`. The code is `currentCode`
+(`STEP_UP_CODE_FIELD`), read by `confirmStepUp` straight after `currentPassword`:
+
+- **Its form, before anything is counted** (`readStepUpCode` in `step-up.ts`, pure). Over 64
+  characters is refused before any pattern is tried. Otherwise, trimmed with every space
+  dropped and then exactly six ASCII digits is an authenticator code (`123 456` among them);
+  failing that, a text `canonicalRecoveryCode` reads (case-insensitive, spaces and hyphens
+  dropped, O read as 0, I and L as 1, sixteen characters) is a recovery code. Anything else is
+  `400` `{ message: STEP_UP_CODE_MALFORMED, stepUp: 'code-malformed' }`, "That code is not in
+  the right form. Enter the 6 digits from your authenticator app, or choose 'Use a recovery
+  code instead'. Nothing was changed.", with nothing counted and no factor read. A
+  recovery code pasted into the seven-character authenticator field arrives cut short and is
+  refused here without a strike. (Sign-in's `/login/verify` counts a malformed authenticator
+  code as a wrong one: card 2889.)
+- **The factor, before the password (step 2b of `checkCurrentProof`)**, after the
+  one-check-in-flight rule and before the account's first-lane place, synchronous, nothing
+  counted and no password compared. No factor row: `403` `no-factor` ("This account has no
+  two-step sign-in to confirm with, so this cannot be done from it. Nothing was changed.") and
+  a `WARN` line, "Password not confirmed for user *n* on *action*: the account has no second
+  factor" (defence in depth: since card 2769 no session exists without one; a recovery code
+  needs the factor row too). For an authenticator code, a factor that does not open (no MFA
+  key, another key, a secret that does not decrypt) is `503` `factor-unusable` ("Your
+  authenticator cannot be checked on this server right now. Use one of your recovery codes, or
+  ask an administrator. Nothing was changed."), with `factorSecret`'s own `ERROR` line; a
+  recovery code skips the opening and still works. A code whose matched step is at or below
+  the factor's `last_step` is `400` `code-spent` ("That code has just been used. Wait for the
+  next code from your authenticator app and enter it. Nothing was changed."), **whatever the
+  password**: it is decided before any compare, so it tells nothing of the password (the
+  plan review's S1). A code that matches no step goes on and is never refused here. The secret
+  is opened only to check, and zeroed in a `finally`.
+- **One attempt counts once, whichever part is wrong**, on the session's
+  `wrong_password_count` (step 4, as before), and the count is cleared **only** when both
+  pass. A wrong password: the code is never examined again, nor spent. A right password: one
+  synchronous transaction, nothing awaited, re-reads the session's row (gone: signed out,
+  nothing spent), reads and opens the factor again (the secret zeroed in a `finally`),
+  verifies the code at the moment it arrived, the clock read once at step 2b (that 30-second
+  step or the one before, `matchingStep`), so a step boundary passing during the compare does
+  not make a code that was good when it came a wrong one (the code review's CS2), spends it
+  (`spendStep`, the authority, or `spendRecoveryCode` for a recovery code)
+  and sets the count to 0. A fault inside rolls the spend and the clear back together and
+  leaves the attempt counted.
+
+| When | Password | Code | Count | Code spent | Answer |
+|------|----------|------|-------|------------|--------|
+| 2b | not compared | authenticator, its step already spent | untouched | no | `400` `code-spent` |
+| 5 | wrong | not examined | stays +1; the third ends the session | no | `403` `wrong` (or signed out) |
+| 5, transaction | right | right, spent now | set to 0 | yes | the action |
+| 5, transaction | right | wrong, or a used or unknown recovery code | stays +1; the third ends the session; the signal | no | `403` `wrong` (or signed out) |
+| 5, transaction | right | right, but the step spent by another request since 2b, or the factor gone or not opening | stays +1; the third ends the session | no | `403` `wrong` (or signed out) |
+| 5, transaction | either | the session's row went while the password was compared | n/a | no | `403` signed out |
+
+- **One answer for either wrong part.** `403` `{ message: STEP_UP_WRONG, stepUp: 'wrong' }`,
+  "Your password or code was not right. Nothing was changed.", never says which. A spend lost
+  in the transaction (two requests in one step that both passed 2b) is counted as `wrong`,
+  never answered `code-spent`, so no answer after a compare differs by the password.
+- **A right password with a wrong code is the clearest sign the password is known** (the plan
+  review's S2). In the transaction's wrong-code path: `raiseSignal(userId, 'wrong-code', now)`
+  (the account's security banner, at most once an hour) and `failed_codes_since_sign_in + 1`;
+  when the signal was raised, `confirmStepUp` sends the `wrong-code` security notice, worded for
+  a confirmation (`confirming: true`): "Someone entered your DumpFire password correctly on
+  *time* from *address* while confirming a change, and then a wrong code." Not for a lost spend
+  or a factor gone in the transaction: the code was not shown wrong. The `WARN` line is "Wrong
+  code for user *n* on *action*: the password was right"; a lost spend's is "Code not spent for
+  user *n* on *action*: the password was right, and the code's step was used meanwhile or the
+  factor could not be opened". Saying which part was wrong in the log adds no oracle: `/login`
+  already shows a right password by moving on to `/login/verify`.
+- **A recovery code used at a step-up** writes the `WARN` line "A recovery code confirmed
+  *action* for *name* (ID: *n*): *k* left" and sends the `recovery-code-used` notice worded for
+  a confirmation: subject "A recovery code was used to confirm a change on DumpFire", body "A
+  recovery code was used to confirm a change on your DumpFire account on *time* from
+  *address*. You have *k* recovery codes left." A used or unknown recovery code is counted as a
+  wrong code, as at sign-in. The notices name the address of the request (`getRequestEvent`),
+  or none outside one.
+- **Sign-in's code lanes are untouched**: `mfa_known_wrong`, `mfa_other_wrong`, their
+  `*_resumes_at`, the 30-code lock, `mfa_recovery_resumes_at` and `mfa_recovery_wrong` are
+  neither written nor read. They bound guessing before a session exists; at a step-up the
+  guesser holds a session and is bounded by its three, after which a new session needs a code
+  at `/login/verify`, where the lanes apply. Writing them here would let a stolen session pause
+  or lock the owner's sign-in; reading the lock would let whoever locked codes at sign-in block
+  the owner's step-ups. The first factor only is read, as `/login/verify` reads it (card 2772
+  makes both try each).
+- **A refusal after the check leaves the code spent** (S4): the check's transaction commits
+  before the route's write. A `409` `changed` from `whilePasswordHolds`, a write-time `409` or a
+  `500` leaves the code or recovery code spent. The email route's `409` "Email is already in
+  use" is one of these: whether another account holds the address is asked only in the write,
+  after the password and the code, so that no session can learn which addresses are taken
+  without a counted attempt (the code review's CS1).
+- **The Account page's three routes** (`PUT /api/account/password`, `PUT /api/account/email`,
+  `POST /api/account/api-keys`) are on `STEP_UP_ACTIONS` and call `confirmStepUp`. The email
+  and key routes read `currentPassword`, no longer `password` (a body with only `password` is
+  `400` `missing`). Each route's own fields are read in the guard, before the password: the
+  password route's `endApiKeys` and `newPassword` (`400` "New password must be at least 8
+  characters"), the email route's `newEmail` ("Email is required", "Invalid email address";
+  not whether the address is taken, which only the write asks), and the key route's
+  `name`, `expiresAt` and the ten-key limit (`400` "Maximum of 10 API keys per user"). Their own
+  words ("Password is incorrect", "Current password is incorrect", "Password is required") are
+  gone: they answer the step-up's refusals with their codes. A current password over 1,024
+  characters is now `400` there too (card 2888).
+- **One importer.** `checkCurrentProof` and `refuseWrongPassword` are named in `src` only in
+  `auth.ts` (their declarations) and `step-up.ts` (the import and the call);
+  `checkCurrentPassword` is named nowhere; `checkPassword` is called only in
+  `src/routes/login/+page.server.ts` and `auth.ts` (`tests/check-at-the-write.test.ts`, T12).
+- **On the pages.** `WORDS_OF` in `src/lib/step-up-words.ts` knows the four new codes, and
+  `stepUpRefusal` answers `code-spent`, `code-malformed` and `factor-unusable` with the module's
+  own constants (beside `missing` and `signed-out`), so a dialog tells them by identity.
+  `passwordKeptAfter(refusal, sent)` gives the password sent back for those three, decided
+  before the password was compared, and `''` for any other: `ConfirmModal`, the six dialogs
+  with a field of their own (the import, Drive Connect, Add User, 🔑, Add from accounts, the
+  Person dialog) and the Account page's three forms set the password from it on a refusal, and
+  always clear the code. `CurrentPasswordField` then puts the focus in the code field; on any
+  other refusal it puts it in the password, as before.
+
+Covered by `tests/step-up.test.ts` (T1 to T11 of the plan, and the cases rewritten for the
+code), `tests/check-at-the-write.test.ts` (T12), `tests/page-failures.test.ts` (T13, T14),
+`tests/confirm-modal.svelte.test.ts` (T15) and `tests/admin-panels.test.ts` (T16).
 
 ## Session Management
 
@@ -1050,7 +1218,7 @@ toast or in storage. Case 17 searches every log row and answer of a run for it.
 | Duration | One deadline per session: the earlier of its expiry (idle limit) and its start plus the total limit. Administrators and the superadmin 12 hours idle, 24 hours in total; users 3 days idle, 7 days in total. Judged on the account's role at every check. A start or expiry more than 60 seconds beyond what the role allows counts as passed |
 | What moves the expiry | Only `slidesSession(request)`: a write (a request that is not `GET` or `HEAD`, which has passed the same-origin write check), or a `GET` or `HEAD` with `Sec-Fetch-Mode: navigate`. Every other request is checked, with every refusal, but never slides: background polls, live-event re-reads, a stream's checks, an `EventSource` open or reconnect. A client-side navigation inside the app (a link click, which is a data fetch) no longer counts as activity; a write or a full page load does. A tab left open on its own does not keep a session alive |
 | Storage | `sessions` table in SQLite: `id` holds the SHA-256 of the code, 32 bytes as a BLOB, never the code |
-| Wrong current passwords | `sessions.wrong_password_count` (migration 0062, card 2701): one added for each password compared (a check refused unchecked, in flight or busy, adds none), set to 0 by a right one, and the third wrong one ends the session. See [Guessing a Current Password](#guessing-a-current-password) |
+| Wrong current passwords | `sessions.wrong_password_count` (migration 0062, card 2701): one added for each password compared (a check refused unchecked, in flight, busy, or at step 2b, adds none), set to 0 only by a right password with a right code (card 2771), and the third wrong answer, either part, ends the session. See [Guessing a Current Password](#guessing-a-current-password) |
 | Made after a second factor | `sessions.two_step` (migration 0066, card 2769): `createSession()` writes 1; a session with any other value is refused and deleted. See [Older Images and Instances](#older-images-and-instances) |
 | Flags | `httpOnly`, `sameSite: lax`, `secure` where cookies are HTTPS-only or the request is HTTPS; `Path=/`, never a `Domain`; `Max-Age` runs to the session's total limit |
 
@@ -1601,7 +1769,7 @@ See the sequence in [Architecture](architecture.md#an-open-stream-and-its-sessio
   right, and TypeScript allows `!` of a promise, while `.matches` of one is an error
   (`npm run check`). `passwords.ts` is the only module that imports bcryptjs, and a test that
   reads `src/` holds that, and that every call of `checkPassword(` and
-  `checkCurrentPassword(` is awaited. `hashPassword()` and `verifyPassword()` are gone from
+  `checkCurrentProof(` is awaited (`checkCurrentPassword` until card 2771). `hashPassword()` and `verifyPassword()` are gone from
   `auth.ts`
 - **Never inside a transaction**: a hash or a check takes about a fifth of a second, is
   awaited, and a transaction cannot await. A password is hashed before the transaction that
@@ -1654,7 +1822,7 @@ flowchart LR
 
 | Lane | Who | Where |
 |------|-----|-------|
-| First (`known`) | A caller the server already knows | The current-password check of the email, password and key routes and of the step-up actions (`checkCurrentPassword`; `whilePasswordHolds` no longer checks again, card 2701's code review S2); the hash of your own change, an administrator's reset and a new user (`POST /api/users`, the placeholder of an invited one included); a sign-in from a browser remembered for the account |
+| First (`known`) | A caller the server already knows | The current-password check of the step-up actions, the Account page's email, password and key routes among them since card 2771 (`checkCurrentProof`; `whilePasswordHolds` no longer checks again, card 2701's code review S2); the hash of your own change, an administrator's reset and a new user (`POST /api/users`, the placeholder of an invited one included); a sign-in from a browser remembered for the account |
 | Second (`other`) | Everyone else | A sign-in from a browser not remembered, a name that is no account included; the hash of an invite's use and of set-up |
 
 - **The second lane is bounded: 150 checks waiting for each thread**, 300 with two: about
@@ -1672,12 +1840,12 @@ flowchart LR
 - **The first lane is bounded for each account: five checks in flight**, its sessions'
   current passwords (with their re-checks) and its remembered browsers' sign-ins together,
   each holding a place at `known:user:<id>` (`FIRST_LANE_CHECKS_PER_ACCOUNT`, `enterSignIn`
-  in `rate-limit.ts`) from before its check to its answer. A session's count of ten wrong
-  passwords does not bound it, since the right password clears the count, and nor do a
+  in `rate-limit.ts`) from before its check to its answer. A session's count of three wrong
+  answers does not bound it, since a right password with a right code clears the count, and nor do a
   remembered browser's own five in flight, since every right password makes a new cookie.
   The sixth is refused before anything is counted or checked: a sign-in `429` in the words
   a browser not remembered is told, "A sign-in with this name is already under way from
-  another browser…"; the email, password and key routes `429` "The server is very busy
+  another browser…"; the step-up actions, the Account page's three among them, `429` "The server is very busy
   checking passwords right now. Wait a minute and try again." An administrator's reset and
   a new user are not bounded this way: they are an administrator's own actions. So one
   signed-in user, or whoever holds an account's password, keeps at most five checks in the
@@ -1733,8 +1901,8 @@ flowchart LR
   every call and a check is still never answered in the turn that asked for it.
   `tests/password-checks.test.ts` starts real threads.
 
-**The re-check of a current password, outside the transaction.** The email, password and key
-routes check the current password before their transaction, and a password changed in
+**The re-check of a current password, outside the transaction.** The step-up actions, the
+Account page's email, password and key routes among them, check the current password before their transaction, and a password changed in
 between used to be checked again inside it: a bcrypt check with the write lock held, which a
 transaction cannot make now that a check is awaited. `whilePasswordHolds(userId, checkedHash,
 write)` in `auth.ts` runs the route's write in one transaction only while the stored hash is
@@ -1758,21 +1926,24 @@ Covered by `tests/password-checks.test.ts` and `tests/atomic-accounts.test.ts`.
 
 ### Guessing a Current Password
 
-Three routes ask a caller who is already signed in for their current password: changing
-your email (`PUT /api/account/email`), changing your password (`PUT /api/account/password`,
-which the admin page's dialog on your own row uses too) and Generate Key
-(`POST /api/account/api-keys`). Since cards 2701, 2697 and 2679 (2026-11-04), and card 2773 (2026-11-13), so do the twenty-nine actions of
-[Step-up Before Destructive Actions](#step-up-before-destructive-actions-card-2701). The
-password is what whoever holds a session and not the password (an unlocked machine, a copied
-cookie) would need, and a password found at any of them passes every one of them.
+Thirty-two actions ask a caller who is already signed in for their current password and, since
+card 2771 (2026-11-17), a code from their authenticator app or a recovery code: the actions of
+[Step-up Before Destructive Actions](#step-up-before-destructive-actions-card-2701), among
+them the Account page's three, changing your email (`PUT /api/account/email`), changing your
+password (`PUT /api/account/password`, which the admin page's dialog on your own row uses too)
+and Generate Key (`POST /api/account/api-keys`). Those three asked with checks of their own
+until card 2771 moved them onto `confirmStepUp`. The password and the code are what whoever
+holds a session and not them (an unlocked machine, a copied cookie) would need, and a password
+found at any of them passes every one of them.
 
 **The count is on the session's row, for the session's whole life** (card 2701, decisions 5
 and 6, as its code review's S1 ruled them again on 2026-11-04: only a compare counts). Every
 check that compares a password adds one to `sessions.wrong_password_count` (migration 0062)
-just before it compares, all of these routes counted together; a check refused before any
-compare (one of the session's own in flight, or the account busy) adds none. A right password
+just before it compares, all of these routes counted together, once for the attempt whichever
+part of it is wrong; a check refused before any compare (one of the session's own in flight,
+the account busy, or step 2b's factor refusals) adds none. A right password with a right code
 sets it back to 0, and nothing else does: no window, and a restart does not clear it. **The
-third wrong one ends the session.** Steps 1 to 4 below run in one turn, with nothing awaited
+third wrong answer ends the session**, a wrong password and a wrong code counted alike. Steps 1 to 4 below run in one turn, with nothing awaited
 between them, so no other check can come between the read, the refusals and the count. Until card 2701 the count was ten in 15 minutes, in memory: the window
 started again every 15 minutes and at every restart, about 960 guesses a day from one stolen
 cookie, answered `429` "Too many wrong passwords. Try again in N minute(s)." That answer, its
@@ -1780,37 +1951,46 @@ window and its `current-password:<session>` key are gone.
 
 ```mermaid
 flowchart TD
-    Ask["An Account route, or a step-up action"] --> Text{"Its fields, and a password that is text?<br/>(and, for a step-up, every refusal<br/>that needs no password)"}
-    Text -->|"no"| Bad["400, 403, 404 or 409 in the route's own words:<br/>nothing checked, nothing counted"]
+    Ask["A step-up action<br/>(the Account page's three among them)"] --> Text{"The route's own refusals that need no password,<br/>then a password and a code that are text,<br/>the code in one of its two forms?"}
+    Text -->|"no"| Bad["400, 403, 404 or 409 in the route's own words,<br/>or 400 missing or code-malformed:<br/>nothing checked, nothing counted"]
     Text -->|"yes"| Row{"1. The session's row:<br/>there, and its count under 3?"}
     Row -->|"gone"| Out["Session ended, cookie cleared:<br/>403 signedOut, no compare"]
     Row -->|"3 or more"| Out
     Row -->|"yes"| Flight{"2. Another check of this session in flight?"}
     Flight -->|"yes"| R429["429 STEP_UP_IN_FLIGHT, in-flight:<br/>not counted, no compare"]
-    Flight -->|"no"| Place{"3. Fewer than 5 of the account's<br/>first-lane checks in flight?"}
+    Flight -->|"no"| Factor{"2b. The account's factor<br/>(card 2771)"}
+    Factor -->|"none"| NoFactor["403 no-factor, WARN:<br/>not counted, no compare"]
+    Factor -->|"authenticator code,<br/>factor does not open"| Unusable["503 factor-unusable, ERROR:<br/>not counted, no compare"]
+    Factor -->|"authenticator code,<br/>its step already spent"| Spent["400 code-spent, whatever the password:<br/>not counted, no compare"]
+    Factor -->|"otherwise"| Place{"3. Fewer than 5 of the account's<br/>first-lane checks in flight?"}
     Place -->|"no"| Busy["429 The server is very busy<br/>checking passwords right now, busy:<br/>not counted, no compare"]
     Place -->|"yes"| Count["4. sessions.wrong_password_count + 1<br/>(same turn, nothing awaited)"]
     Count --> Check{"The right password?"}
-    Check --> Again{"The session's row still there?"}
+    Check -->|"no"| Again{"The session's row still there?"}
+    Check -->|"yes"| Tx{"One transaction: the session's row there,<br/>the factor opens again, the code right,<br/>and spent now?"}
+    Tx -->|"row gone"| Out
+    Tx -->|"yes"| Clear["Count set to 0,<br/>and the request goes on"]
+    Tx -->|"wrong code: signal raised,<br/>failed_codes_since_sign_in + 1"| Again
+    Tx -->|"spent meanwhile, or the factor<br/>gone or not opening"| Again
     Again -->|"no"| Out
-    Again -->|"yes, right"| Clear["Count set to 0,<br/>and the request goes on"]
-    Again -->|"yes, wrong, count 3"| Out
-    Again -->|"yes, wrong, count 1 or 2"| Wrong["403 in the route's own words,<br/>and one WARN line naming the route and the user"]
+    Again -->|"yes, count 3"| Out
+    Again -->|"yes, count 1 or 2"| Wrong["403 Your password or code was not right, wrong,<br/>and one WARN line naming the route and the user"]
 ```
 
-- **Its answers.** A wrong one is `403` in the route's words: "Password is incorrect" (email
-  and Generate Key), "Current password is incorrect" (password), and "Password is incorrect.
-  Nothing was changed." on a step-up action. Once the session has been ended, by the third
+- **Its answers.** A wrong password or a wrong code is `403` "Your password or code was not
+  right. Nothing was changed." (`stepUp: "wrong"`) on every route, never saying which (card
+  2771; the Account page's own words, "Password is incorrect" and "Current password is
+  incorrect", are gone). Once the session has been ended, by the third
   wrong one or by anything else while the check was made (a sign-out, a password change or a
   reset), every route answers the same `403` `{ message: "Nothing was changed. This session
-  has been signed out, after three wrong passwords or because it had ended: sign in again.",
+  has been signed out, after three wrong passwords or codes, or because it had ended: sign in again.",
   signedOut: true, stepUp: "signed-out" }` with the session cookie cleared, **whether the
   password was right or wrong**: the row is read again after the compare, so an answer given
   after the end never tells a right guess from a wrong one. The page's sign-out watch takes it
   as a `401` and goes to sign-in at once, and the dialog leaves no password field (card 2701's
   code review, F5); the session's next request would be `401` at the gate anyway.
   `refuseWrongPassword(cookies, checked, says)` in `auth.ts` gives either answer, the wrong one
-  with `stepUp: "wrong"`, so each route keeps its own words for the first two.
+  with `stepUp: "wrong"` in `says` (`STEP_UP_WRONG` from `confirmStepUp`, its only caller).
 - **One check in flight per session.** Five checks may be in flight for an account, so without
   this one session could race several guesses past a count of three. A second check from a
   session that has one under way is answered `429` "Your password is already being checked
@@ -1837,33 +2017,44 @@ flowchart TD
   and **nothing counted**, so busy answers, however many, never end a session (S1). Nobody
   using the pages one at a time meets it. See
   [Off the Server's Thread](#off-the-servers-thread-card-2191).
-- **One function.** `checkCurrentPassword(session, userId, password, hash, where)` in
-  `src/lib/server/auth.ts` (named `currentPasswordMatches` until card 2191) reads the row and
-  ends the session at three, refuses a second check in flight and a sixth for the account,
-  then counts the attempt and checks the password on a worker thread in the first lane, all
-  but the check in one turn; then it reads the row again and clears the count when it matches.
-  A check that fails on its worker stays counted. It is async and resolves to `{ matches,
-  signedOut }`, so a missed `await` does not compile. The session comes from the session
+- **One function.** `checkCurrentProof(sessionHash, userId, password, code, hash, where)` in
+  `src/lib/server/auth.ts` (`checkCurrentPassword` until card 2771, which replaced it rather
+  than wrapping it, and `currentPasswordMatches` until card 2191) reads the row and ends the
+  session at three, refuses a second check in flight, checks the account's factor (step 2b),
+  refuses a sixth check for the account, then counts the attempt and checks the password on a
+  worker thread in the first lane, all but the check in one turn; then, for a right password,
+  verifies and spends the code and clears the count in one transaction (see
+  [The Code Beside the Password](#the-code-beside-the-password-card-2771)). A check that fails
+  on its worker stays counted. It is async and resolves to `{ matches, signedOut, by,
+  codesLeft, signalled }` (`Proven`), so a missed `await` does not compile; `code` is a
+  `ProofCode`, `{ kind: 'authenticator', digits }` or `{ kind: 'recovery', typed }`, already
+  in form. `confirmStepUp` is its only caller. The session comes from the session
   cookie the gate checked; a request that reaches one of these routes without one is answered
   `401`. A route whose stored hash moved in between is refused `409` by `whilePasswordHolds`
   (see [Password Hashing](#password-hashing)), which compares nothing again (S2).
 - **The system log.** Each wrong password is a `WARN` line under `AUTH`, "Wrong current
-  password for user N on {route}", and each session ended for them one more, "Session ended
+  password for user N on {route}"; a right password with a wrong code, "Wrong code for user N
+  on {route}: the password was right"; a right password whose code's step was spent meanwhile
+  or whose factor could not be opened in the transaction, "Code not spent for user N on
+  {route}: the password was right, and the code's step was used meanwhile or the factor could
+  not be opened"; and each session ended for them one more, "Session ended
   after three wrong current passwords for user N on {route}", beside `deleteSession`'s own
   `INFO` line, "Session deleted (three wrong current passwords)". The session is never
-  logged, nor the password.
-- **A password that is not text** (a number, `true`, a list) is answered `400` before
-  anything is counted: "Password is required" on the email and key routes, "Current password
-  is required" on the password route. It used to reach bcrypt and be answered `500`. So did
-  a new password that is not text, which is now `400` too: `newPassword must be text` on
-  the password route, and `password must be text` on an administrator's reset
+  logged, nor the password, the code or the secret.
+- **A password or a code that is not text** (a number, `true`, a list), missing or empty, is
+  answered `400` `{ message: STEP_UP_MISSING, stepUp: "missing" }` before anything is counted,
+  on every route (the Account page's own "Password is required" and "Current password is
+  required" went with card 2771). It used to reach bcrypt and be answered `500`. So did
+  a new password that is not text, which is now `400` too: the password route's "New password
+  must be at least 8 characters", and `password must be text` on an administrator's reset
   (`PUT /api/users/:id/password`), which looks for the account and checks the caller before
   it reads the password (card 2117).
 - **On the row, not in memory.** The count survives a restart; only the one-in-flight set is
   in memory, and a restart ends the requests it guards. A backup holds no session rows and a
   restore copies none, so neither carries a count.
 
-Covered by `tests/atomic-accounts.test.ts` and `tests/step-up.test.ts` (cases 9 to 16).
+Covered by `tests/atomic-accounts.test.ts` and `tests/step-up.test.ts` (cases 9 to 16, and
+card 2771's T1 to T11).
 
 ### Guessing a Password at Sign-in
 
@@ -2580,9 +2771,9 @@ sequenceDiagram
     participant R as /api/users/[id]/mfa/reset
     participant DB as Database
     participant M as Mail server
-    A->>R: POST { currentPassword }
+    A->>R: POST { currentPassword, currentCode }
     R->>R: own account, role, readBody
-    R->>R: confirmStepUp: the refusals read only, then the password
+    R->>R: confirmStepUp: the refusals read only, then the password and the code (card 2771)
     R->>DB: whilePasswordHolds + writeAs: the refusals again, resetTwoStep
     DB-->>R: the counts and the token (committed)
     R->>R: CRITICAL AUTH line: both accounts and the counts, no token
@@ -3202,11 +3393,11 @@ the owner. None holds a code, secret, token or link.
 | Notice | When | At most once an hour |
 |---|---|---|
 | `enrolled` | Every enrolment; lists the account's live API keys and webhooks, to revoke any not recognised | No |
-| `recovery-code-used` | A recovery code signs in; how many are left, and to make new ones at 3 or fewer | No |
+| `recovery-code-used` | A recovery code signs in, or confirms a step-up action (card 2771: worded "to confirm a change"); how many are left, and to make new ones at 3 or fewer | No |
 | `codes-paused` | A lane pauses; until when | No |
 | `codes-locked` | A lane reaches 30 | No |
 | `recovery-codes-guessed` | Every tenth wrong recovery code in a row | No |
-| `wrong-code` | The first wrong code on a verify challenge; raises the security banner | Yes |
+| `wrong-code` | The first wrong code on a verify challenge, or a wrong code after a right password at a step-up (card 2771: worded "while confirming a change, and then a wrong code"); raises the security banner | Yes |
 | `unfinished-sign-in` | An unused verify challenge swept as expired; raises the banner | Yes |
 
 **The signals.** Someone who reaches a verify challenge had the password. So the first wrong
@@ -3215,6 +3406,21 @@ code on one, and a verify challenge left unused until the sweep finds it expired
 an hour of the last (`raiseSignal()`), and mail only when it wrote. Expired challenges are
 swept when a challenge is issued and, on their own, at start-up and every five minutes. An
 expired enrol challenge sends nothing. The third signal is the release mail.
+
+**At a step-up** (card 2771, D6 and D12). A right password with a wrong code at any step-up
+action raises the same signal in the check's own transaction (`raiseSignal(userId,
+'wrong-code', now)`) and adds one to `failed_codes_since_sign_in`, so the banner and the page
+after the next right code report it; the `wrong-code` notice goes when the signal was written.
+A recovery code that confirms a step-up sends `recovery-code-used`. Both pass
+`confirming: true` to `sendSecurityNotice` (`SecurityNoticeDetail.confirming`), which words
+them for a confirmation: subject "A recovery code was used to confirm a change on DumpFire",
+"A recovery code was used to confirm a change on your DumpFire account on *time* from
+*address*", and "Someone entered your DumpFire password correctly on *time* from *address*
+while confirming a change, and then a wrong code." The `after` lines are unchanged. A step-up
+writes nothing to sign-in's code lanes (`mfa_known_wrong`, `mfa_other_wrong`, their
+`*_resumes_at`, `mfa_recovery_wrong`, `mfa_recovery_resumes_at`) and reads none of them: an
+account whose codes are locked at sign-in still steps up with an authenticator code (see
+[The Code Beside the Password](#the-code-beside-the-password-card-2771)).
 
 **Ended by a restore or the host's command.** A restore and `scripts/mfa-reset.mjs` end the
 verify challenges they find with the rest. Neither mails: each writes one `WARN` line under
@@ -3284,7 +3490,7 @@ code, a secret or a link.
 
 | Control | How two-step sign-in meets it |
 |---|---|
-| A.8.5 Secure authentication | Two factors for every interactive sign-in: a password, then an authenticator code or a recovery code, before any session. No switch turns it off. Wrong codes are counted in the database, per challenge and per lane, with pauses and a lock that survive restarts. API keys are non-interactive credentials (R2). Asking for the code again before destructive and credential-issuing actions is cards 2770 and 2771 |
+| A.8.5 Secure authentication | Two factors for every interactive sign-in: a password, then an authenticator code or a recovery code, before any session. No switch turns it off. Wrong codes are counted in the database, per challenge and per lane, with pauses and a lock that survive restarts. API keys are non-interactive credentials (R2). The code is asked for again, and checked, before every step-up action (cards 2770 and 2771, released together): the thirty-two destructive, privilege-changing, exfiltrating and credential-issuing actions, the Account page's email, password and key forms among them |
 | A.5.17 Authentication information | Secrets sealed under a key kept out of the database; challenge tokens, link tokens and recovery codes kept only as hashes; nothing secret logged or answered. The owner is mailed at every enrolment, recovery-code use, pause, lock and likely stolen password, and shown the last sign-in and their keys |
 
 Covered by `tests/two-step-sign-in.test.ts`, `tests/two-step-enrol.test.ts`, and the pins in
@@ -3689,11 +3895,12 @@ flowchart TD
     Target -->|"the superadmin's"| No1["403"]
     Target -->|"an administrator's, and the<br/>caller is not the superadmin"| No2["403"]
     Target -->|"otherwise"| Set["The password is set, and every session,<br/>unused invite and API key of that user ends"]
-    Account -.-> Own["PUT /api/account/password asks for the current<br/>password, ends the other sessions and the unused<br/>invites, keeps the API keys unless asked,<br/>and starts a new session for this browser"]
+    Account -.-> Own["PUT /api/account/password asks for the current<br/>password and a code, ends the other sessions and the unused<br/>invites, keeps the API keys unless asked,<br/>and starts a new session for this browser"]
 ```
 
 The admin page follows the same rule: on an administrator's own row the reset dialog asks
-for the current password and sends it to `PUT /api/account/password`, with no
+for the current password and a code and sends them to `PUT /api/account/password` as
+`currentPassword` and `currentCode` (a step-up action since card 2771), with no
 `endApiKeys`, so the keys, and the webhooks you set, are kept. The dialog says so: "Your API
 keys and the webhooks you set up keep working. To end the keys and switch off those webhooks
 too, change your password on the Account page."
@@ -4753,7 +4960,8 @@ flowchart LR
 ### Key Lifecycle
 
 1. The account's holder generates a key on the Account page, entering their current
-   password (`POST /api/account/api-keys` with `{ name, password }`). The admin page makes
+   password and a code (`POST /api/account/api-keys` with `{ name, currentPassword,
+   currentCode }`, a step-up action since card 2771, which retired `password`). The admin page makes
    none. Nothing else makes a key: the v1 API has no key route, and the gate accepts a key
    only under `/api/v1/`, so a key cannot make another
 2. Plaintext shown **once** — user must copy it
@@ -4773,21 +4981,24 @@ flowchart LR
 **Why a key asks for the password.** A key works until it is revoked, and the holder's own
 password change keeps it unless they ask. A key made on a session alone let whoever held
 that session for a moment (an unlocked machine, a copied cookie) keep the account after the
-password was changed. The password is checked before the transaction, and the transaction
-refuses `409` if the stored hash has changed meanwhile; the ten-key limit is counted in the
-same transaction as the insert.
+password was changed. The password and the code are checked before the transaction (the
+step-up's `confirmStepUp`), and the transaction refuses `409` if the stored hash has changed
+meanwhile, the code then left spent; the ten-key limit is looked at in the step-up's guard,
+before the password, and counted again in the same transaction as the insert.
 
 | `POST /api/account/api-keys` sent | Answer, in this order |
 |-----------------------------------|-----------------------|
 | No session | `401` `Not authenticated` |
 | No name, one that is not text, or one longer than 100 characters | `400` `Key name is required`, `name must be text`, `name must be at most 100 characters` (card 2218; it was `Key name too long (max 100 chars)`) |
-| No `password`, or one that is not text | `400` `Password is required` |
 | An `expiresAt` that is not `null` and not a timestamp in the future | `400` `expiresAt must be a timestamp, such as 2027-01-01T09:00:00Z`, `expiresAt must be in the future`. Until card 2117 any text was stored, and `"banana"` never expired |
 | The account already has ten keys | `400` `Maximum of 10 API keys per user` |
+| No `currentPassword` or no `currentCode`, either empty or not text (a `password` is no longer read, card 2771) | `400` `{ message: "Enter your password and a code from your authenticator app to confirm this. Nothing was changed.", stepUp: "missing" }` |
+| A `currentCode` in neither form | `400` `{ message: STEP_UP_CODE_MALFORMED, stepUp: "code-malformed" }` |
 | The account has gone | `404` `User not found` |
-| The third wrong current password from this browser, at any of the three routes that ask for it or a step-up action (card 2701; it was the eleventh attempt in 15 minutes, answered `429`) | `403` `{ message: "Nothing was changed. This session has been signed out, after three wrong passwords or because it had ended: sign in again.", signedOut: true, stepUp: "signed-out" }`, the session ended. See [Guessing a Current Password](#guessing-a-current-password) |
+| The third wrong answer from this browser, password or code, at any step-up action (card 2701; it was the eleventh attempt in 15 minutes, answered `429`) | `403` `{ message: "Nothing was changed. This session has been signed out, after three wrong passwords or codes, or because it had ended: sign in again.", signedOut: true, stepUp: "signed-out" }`, the session ended. See [Guessing a Current Password](#guessing-a-current-password) |
 | A second current-password check from a browser whose first is still being checked | `429` `Your password is already being checked for this session. Wait for that answer and try again. Nothing was changed.` |
-| A wrong password | `403` `Password is incorrect` |
+| No second factor; an authenticator that cannot be opened here; an authenticator code whose step is spent (card 2771, before the password is compared) | `403` `no-factor`; `503` `factor-unusable`; `400` `code-spent` |
+| A wrong password or a wrong code | `403` `{ message: "Your password or code was not right. Nothing was changed.", stepUp: "wrong" }` |
 | All of it right | `201` with the key, shown once |
 
 Keys made before the password was asked for are kept.
@@ -7558,11 +7769,11 @@ unfinished is recovered on the host with `node scripts/mfa-reset.mjs <name>`.
 
 | File | Purpose |
 |------|---------|
-| `src/lib/server/auth.ts` | Session CRUD, API key generation and validation; `createSession()`, which writes `two_step = 1`, and `findSession()`, which refuses any other value as `one-step` (card 2769); `endAccountAccess()`, what setting a password ends; `stillAuthenticated()`, the key or session asked again inside a write's transaction, which answers the account as it is now and sets `locals.user` to it (`null` for a public route with nobody signed in; `401` and an ERROR line for a handler reached with no credential recorded, outside vitest); `checkCurrentPassword()`, the count of current-password guesses on the session's row, one check in flight per session and the sign-out at the third (card 2701), `refuseWrongPassword()`, the route's answer to one, and `whilePasswordHolds()`, its write only while the hash checked is still stored; `secureCookies()`, the `Secure` rule of the remembered browser's cookie (`COOKIE_SECURE` when set, otherwise production), which the session cookie's `httpsOnlyCookie()` takes with an `https:` request; `openSessionUser()`, which each open live stream asks at each heartbeat, and `sessionStillOpen()`, the same question without the account; and, since card 2775, `sessionTokenHash()`, `SESSION_LIMITS`, the one deadline, `slidesSession()` (which requests move the expiry), `openSession()` (the session's user and deadline, for the streams) and `sessionEndTimer()` (a stream's timer to that deadline), `readSessionCookie()`, `httpsOnlyCookie()` and the cookie helpers, `endSessionsSent()` (sign-out), `endSessionsOf()` (a role change) and `replacementStart()` (a password change) |
+| `src/lib/server/auth.ts` | Session CRUD, API key generation and validation; `createSession()`, which writes `two_step = 1`, and `findSession()`, which refuses any other value as `one-step` (card 2769); `endAccountAccess()`, what setting a password ends; `stillAuthenticated()`, the key or session asked again inside a write's transaction, which answers the account as it is now and sets `locals.user` to it (`null` for a public route with nobody signed in; `401` and an ERROR line for a handler reached with no credential recorded, outside vitest); `checkCurrentProof()` (`checkCurrentPassword()` until card 2771), the count of current-password and code guesses on the session's row, one check in flight per session, the account's factor checked before the password (step 2b), the code verified and spent with the count cleared in one transaction, and the sign-out at the third (cards 2701 and 2771), `refuseWrongPassword()`, the route's answer to one, and `whilePasswordHolds()`, its write only while the hash checked is still stored; `secureCookies()`, the `Secure` rule of the remembered browser's cookie (`COOKIE_SECURE` when set, otherwise production), which the session cookie's `httpsOnlyCookie()` takes with an `https:` request; `openSessionUser()`, which each open live stream asks at each heartbeat, and `sessionStillOpen()`, the same question without the account; and, since card 2775, `sessionTokenHash()`, `SESSION_LIMITS`, the one deadline, `slidesSession()` (which requests move the expiry), `openSession()` (the session's user and deadline, for the streams) and `sessionEndTimer()` (a stream's timer to that deadline), `readSessionCookie()`, `httpsOnlyCookie()` and the cookie helpers, `endSessionsSent()` (sign-out), `endSessionsOf()` (a role change) and `replacementStart()` (a password change) |
 | `src/lib/server/cookie-header.ts` | `cookieValues()`, every value of a cookie name in the raw header; `onlyCookieValue()`, exactly one value in the shape given, and `sendsCookie()`, whether the name is sent at all, both built on it; used by the session cookie and the sign-in challenge cookie (card 2775) |
-| `src/lib/server/step-up.ts` | The current password asked again before a destructive action (card 2701): `STEP_UP_ACTIONS`, `confirmStepUp()`, `requirePasswordUnchanged()`, and the import's confirmation, `issueImportConfirmation()` and `takeImportConfirmation()`. See [Step-up Before Destructive Actions](#step-up-before-destructive-actions-card-2701) |
-| `src/lib/step-up-words.ts` | The step-up's words and codes, which the server answers with and the pages read: `STEP_UP_FIELD`, the refusals, `PASSWORD_CHANGED_MEANWHILE`, `CONFIRMATION_HEADER`, `StepUpCode`, `STEP_UP_CODE_FIELD` (`currentCode`), the `StepUpProof` type and `NO_PROOF` (card 2770), and `stepUpRefusal()`, `refusalWatch()` and `isStepUpSignOut()`, which tell a refusal of the password from any other by its `stepUp` code |
-| `src/lib/components/CurrentPasswordField.svelte` | The one field for the caller's own password, asked again (card 2701's code review, F7): label, `autocomplete="current-password"`, the refusal in an alert, `aria-invalid` and `aria-describedby`, the focus on a refusal, and no field to type in once the session is signed out; since card 2770 also the code field under it, with its recovery-code switch and a required bindable `code` |
+| `src/lib/server/step-up.ts` | The current password and a code asked again before a destructive action (cards 2701 and 2771): `STEP_UP_ACTIONS` (thirty-two), `confirmStepUp()`, `readStepUpCode()` (the code's form), the INFO, recovery WARN and the two notices after the check, `requirePasswordUnchanged()`, and the import's confirmation, `issueImportConfirmation()` and `takeImportConfirmation()`. See [Step-up Before Destructive Actions](#step-up-before-destructive-actions-card-2701) and [The Code Beside the Password](#the-code-beside-the-password-card-2771) |
+| `src/lib/step-up-words.ts` | The step-up's words and codes, which the server answers with and the pages read: `STEP_UP_FIELD`, the refusals, `PASSWORD_CHANGED_MEANWHILE`, `CONFIRMATION_HEADER`, `StepUpCode`, `STEP_UP_CODE_FIELD` (`currentCode`), the `StepUpProof` type and `NO_PROOF` (card 2770), `STEP_UP_CODE_MALFORMED`, `STEP_UP_CODE_SPENT`, `STEP_UP_NO_FACTOR`, `STEP_UP_FACTOR_UNUSABLE` and `passwordKeptAfter()` (card 2771), and `stepUpRefusal()`, `refusalWatch()` and `isStepUpSignOut()`, which tell a refusal of the password from any other by its `stepUp` code |
+| `src/lib/components/CurrentPasswordField.svelte` | The one field for the caller's own password, asked again (card 2701's code review, F7): label, `autocomplete="current-password"`, the refusal in an alert, `aria-invalid` and `aria-describedby`, the focus on a refusal, and no field to type in once the session is signed out; since card 2770 also the code field under it, with its recovery-code switch and a required bindable `code`; since card 2771 the focus goes to the code field on the refusals that keep the password (`code-spent`, `code-malformed`, `factor-unusable`) |
 | `src/lib/server/write-as.ts` | Who the caller is, asked again at the write (card 2253): `writeAs(locals, (caller) => …)`, the one transaction every write handler writes in, beginning with `stillAuthenticated()`; `stillCallerNow(locals)`, the same question in a transaction of its own, for the nine handlers whose work cannot run in one (the export the ninth, card 2701); `inWrite()`, the first statement of every service write, refused unless a `writeAs` callback is running, and `ServiceOptions`, what every service write is handed beside the caller (card 2012). See [Asked Again at the Write](#asked-again-at-the-write-card-2253) |
 | `src/lib/server/passwords.ts` | Every bcrypt hash and check, on worker threads in two lanes (card 2191): `checkPassword()`, `makePasswordHash()`, `CheckNotMade`, `callerHasGone()`, `passwordChecks()`, `BCRYPT_ROUNDS` and `DUMMY_HASH`. The only importer of bcryptjs |
 | `src/lib/server/known-browsers.ts` | Browsers that have signed in before (card 2194): `rememberBrowser()`, `rememberedNonce()`, the key in `settings` and `resetKnownBrowserSecretCache()`, and `signInsOneAtATime()`, which reads `SIGN_IN_ONE_AT_A_TIME`; the MAC's domain, `known-browser:2:` since card 2769 |

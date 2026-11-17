@@ -21,10 +21,15 @@
  * A change of an account's email address or role ends its invites not yet
  * used as well, in the transaction that writes it (`endUnusedInvites`).
  *
- * Wrong current passwords are counted on the session's own row as each
- * arrives, for the session's whole life, and the third ends the session
- * (`checkCurrentPassword`, card 2701). The count is written apart from the
- * request's transaction, on purpose, and is compared on its own.
+ * Wrong current passwords, and wrong codes, are counted on the session's own
+ * row as each arrives, for the session's whole life, and the third ends the
+ * session (`checkCurrentProof`, cards 2701 and 2771). Every route here that
+ * asks for the current password asks for a code beside it, through the
+ * step-up, the Account page's three among them since card 2771. The count, and
+ * the code's step spent by a right password and code, are written apart from
+ * the request's transaction, on purpose, and are compared on their own
+ * (`STEP_UP_APART`, `STEP_UP_WRITES`). A refusal after the check leaves the
+ * code spent (card 2771, S4).
  *
  * Tests of a success use `eachWriteInTurn`, which makes the request once to
  * count its writes and then once more for each of them, with that write
@@ -84,6 +89,8 @@ import { MASTER_PREF, NOTIFICATION_PREFS } from '$lib/notification-prefs';
 import { shouldNotifyUser } from '$lib/server/notifications';
 import { PASSWORD_CHANGED_MEANWHILE, sessionStillOpen, SESSION_COOKIE_NAME, STEP_UP_SIGNED_OUT, type SessionUser } from '$lib/server/auth';
 import { PASSWORDS_BUSY, checkPassword, makePasswordHash } from '$lib/server/passwords';
+import { holdsFactor } from '$lib/server/mfa-store';
+import { STEP_UP_MISSING, STEP_UP_WRONG } from '$lib/step-up-words';
 import { endUnusedInvites, issueInvite } from '$lib/server/invites';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { knownBrowserCookie, rememberBrowser, rememberedNonce } from '$lib/server/known-browsers';
@@ -99,7 +106,10 @@ import { effects, type Effects, type RecordedEffect } from './helpers/effects';
 import {
 	FIXTURE_PASSWORD,
 	FIXTURE_PASSWORD_HASH,
+	STEP_UP_APART,
+	STEP_UP_WRITES,
 	addBoardMember,
+	codeFor,
 	makeApiKey,
 	makeBoard,
 	makeCard,
@@ -108,7 +118,9 @@ import {
 	makeWebhook,
 	resetDb,
 	sessionHashOf,
-	sessionCredential
+	sessionCredential,
+	stepUpCode,
+	stepUpFactor
 } from './helpers/fixtures';
 import { FROM_THE_PAGE, gate } from './helpers/gate';
 import { sendAround } from './helpers/held-body';
@@ -205,6 +217,37 @@ function makeSession(user: SessionUser, id: string): void {
 	db.insert(sessions)
 		.values({ tokenHash: sessionHashOf(id), userId: user.id, expiresAt: stamp(new Date(Date.now() + 60 * 60 * 1000)), twoStep: 1 })
 		.run();
+}
+
+/**
+ * The code `user` confirms a step-up with now (card 2771): the one their
+ * factor shows, given where the scene is built (`stepUpFactor`), or none for
+ * nobody and for an account that holds no factor, which no step-up of theirs
+ * reaches (E5). Made with nothing written, so that it can be made inside
+ * `eachWriteInTurn`'s request and after a snapshot. Its step is not cleared:
+ * a second success in the same step clears it first (`stepUpCode`).
+ */
+function codeOf(user: SessionUser | null): { currentCode?: string } {
+	if (user === null || !holdsFactor(user.id)) return {};
+	return { currentCode: codeFor(stepUpFactor(user).secret) };
+}
+
+/** A body sent with `user`'s code beside the current password it carries (card 2771); one with no current password, as it was. */
+const withCode = (user: SessionUser | null, body: unknown): unknown =>
+	body !== null && typeof body === 'object' && 'currentPassword' in body && !('currentCode' in body) ? { ...body, ...codeOf(user) } : body;
+
+/**
+ * `before`, with the factors as they are now, once they are checked to differ
+ * by the code's step spent and nothing else: a request refused after the
+ * password and code were checked leaves the code spent (card 2771, S4). The
+ * factor's step must have been unspent in `before`.
+ */
+function withCodeSpent(before: ReturnType<typeof snapshotDb>): ReturnType<typeof snapshotDb> {
+	const factors = snapshotDb().mfa_factors;
+	expect(diffSnapshots({ mfa_factors: before.mfa_factors }, { mfa_factors: factors })).toEqual([
+		expect.stringMatching(/^mfa_factors: row \d+ changed \(last_step: null became \d+; last_used_at: null became /)
+	]);
+	return { ...before, mfa_factors: factors };
 }
 
 /** Give a user a password that can be checked: `OLD`. */
@@ -315,9 +358,6 @@ async function expectRefused(request: () => Promise<ApiResult>, status: number):
 const countOf = (session: string) =>
 	db.select({ count: sessions.wrongPasswordCount }).from(sessions).where(eq(sessions.tokenHash, sessionHashOf(session))).get()?.count;
 
-/** What the column a request counts a current password on is called in a snapshot, and in `eachWriteInTurn`'s `apart`. */
-const COUNTED = 'sessions.wrong_password_count';
-
 /**
  * Make `request`, a wrong current password from `session`, and check that it
  * was answered `status` with nothing written and nothing sent but the
@@ -370,7 +410,7 @@ async function changeOwn(user: SessionUser | null, body: unknown, session = 'my-
 		request: new Request('http://localhost/api/account/password', {
 			method: 'PUT',
 			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify(body)
+			body: JSON.stringify(withCode(user, body))
 		}),
 		// The session as the gate records it, by its hash (card 2775), which the route reads.
 		locals: user ? { user, credential: sessionCredential(session) } : { user },
@@ -415,6 +455,8 @@ describe('PUT /api/account/password', () => {
 		makeApiKey(other, 'their script');
 		makeInvite(me, 'my-invite');
 		makeInvite(other, 'their-invite');
+		// The factor the code is made from (card 2771).
+		stepUpFactor(me);
 		return { me, other };
 	};
 
@@ -422,7 +464,7 @@ describe('PUT /api/account/password', () => {
 		const run = await eachWriteInTurn({
 			build: signedInTwice,
 			request: ({ me }) => changeOwn(me, { currentPassword: OLD, newPassword: NEW }),
-			apart: [COUNTED],
+			apart: [...STEP_UP_APART],
 			afterSuccess: async ({ me, other }, res: OwnResult) => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 0 });
@@ -450,11 +492,11 @@ describe('PUT /api/account/password', () => {
 
 		// A failure at the second of these used to leave the new password with
 		// both old sessions still good; at the fourth, with nobody signed in.
-		// The first two count the password as it arrives and clear the count for
-		// the right one, apart from the transaction (card 2701).
+		// The first three count the password as it arrives, spend the code and
+		// clear the count for the right one, apart from the transaction (cards
+		// 2701 and 2771).
 		expect(shape(run.writes)).toEqual([
-			'update sessions set',
-			'update sessions set',
+			...STEP_UP_WRITES,
 			'update users set',
 			'delete from sessions',
 			'delete from invite_tokens',
@@ -471,7 +513,7 @@ describe('PUT /api/account/password', () => {
 		const run = await eachWriteInTurn({
 			build: signedInTwice,
 			request: ({ me }) => changeOwn(me, { currentPassword: OLD, newPassword: NEW, endApiKeys: true }),
-			apart: [COUNTED],
+			apart: [...STEP_UP_APART],
 			afterSuccess: async ({ me, other }, res: OwnResult) => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({ success: true, apiKeysEnded: 2, webhooksSwitchedOff: 0 });
@@ -488,8 +530,7 @@ describe('PUT /api/account/password', () => {
 		});
 
 		expect(shape(run.writes)).toEqual([
-			'update sessions set',
-			'update sessions set',
+			...STEP_UP_WRITES,
 			'update users set',
 			'delete from sessions',
 			'delete from invite_tokens',
@@ -512,6 +553,7 @@ describe('PUT /api/account/password', () => {
 		const chief = withPassword(makeUser({ username: 'chief', role: 'superadmin' }));
 		const key = makeApiKey(chief, 'the automation');
 		makeSession(chief, 'my-laptop');
+		stepUpFactor(chief);
 
 		const kept = await changeOwn(chief, { currentPassword: OLD, newPassword: NEW, endApiKeys: false });
 		expect(kept.status).toBe(200);
@@ -519,6 +561,8 @@ describe('PUT /api/account/password', () => {
 		expect((await meWithKey(key)).status).toBe(200);
 
 		// From the session the change started: it ended the one it was asked from.
+		// The code made again: the first spent its step (card 2771).
+		stepUpCode(chief);
 		const ended = await changeOwn(chief, { currentPassword: NEW, newPassword: 'a third password', endApiKeys: true }, kept.cookie!.value);
 		expect(ended.body).toEqual({ success: true, apiKeysEnded: 1, webhooksSwitchedOff: 0 });
 		expect(keysOf(chief.id)).toEqual([]);
@@ -551,7 +595,8 @@ describe('PUT /api/account/password', () => {
 		};
 
 		await refused(null, { currentPassword: OLD, newPassword: NEW }, 401);
-		expect(await refused(me, { newPassword: NEW }, 400)).toBe('Current password is required');
+		// Asked through the step-up since card 2771, in its words.
+		expect(await refused(me, { newPassword: NEW }, 400)).toBe(STEP_UP_MISSING);
 		expect(await refused(me, { currentPassword: OLD, newPassword: 'short' }, 400)).toBe(
 			'New password must be at least 8 characters'
 		);
@@ -561,7 +606,7 @@ describe('PUT /api/account/password', () => {
 		);
 		// Nothing written but the session's count, which a wrong one adds to (card 2701).
 		const wrong = await expectRefusedAndCounted(() => changeOwn(me, { currentPassword: 'not it', newPassword: NEW }), 403, 'my-laptop');
-		expect(wrong.body.message).toBe('Current password is incorrect');
+		expect(wrong.body).toEqual({ message: STEP_UP_WRONG, stepUp: 'wrong' });
 		expect((wrong as OwnResult).cookie).toBeUndefined();
 		expect(sessionsOf(me.id)).toEqual([sessionHashOf('my-laptop'), sessionHashOf('my-phone')]);
 	});
@@ -590,7 +635,8 @@ describe('PUT /api/account/password', () => {
 		expect(reads.inTransaction).toEqual([true, false, true]);
 		expect(hashOf(me.id)).toBe(elsewhere);
 		expect(sessionsOf(me.id)).toEqual([sessionHashOf('my-laptop'), sessionHashOf('my-phone')]);
-		expectUnchanged({ ...before, users: snapshotDb().users });
+		// And the code, spent by the check (card 2771, S4).
+		expectUnchanged({ ...withCodeSpent(before), users: snapshotDb().users });
 	});
 
 	it('refuses 409 when the stored hash changed, even to a hash of the same password, and leaves the change alone', async () => {
@@ -637,14 +683,17 @@ describe('PUT /api/account/password', () => {
 		// and no second compare.
 		expect(bcrypt.inTransaction).toEqual([false, false]);
 		expect(bcrypt.compared).toBe(1);
-		// The change stands, and nothing else changed.
+		// The change stands, and nothing else changed but the code, spent by
+		// the check (card 2771, S4).
 		expect(hashOf(me.id)).toBe(first);
 		expect(sessionsOf(me.id)).toEqual([sessionHashOf('my-laptop'), sessionHashOf('my-phone')]);
-		expectUnchanged({ ...before, users: snapshotDb().users });
+		expectUnchanged({ ...withCodeSpent(before), users: snapshotDb().users });
 
 		// The session's count is what one right password leaves, none: two
-		// wrong ones are answered 403, and the third ends the session (card 2701).
+		// wrong ones are answered 403, and the third ends the session (card
+		// 2701). Each with a code of a step not yet spent (card 2771).
 		expect(countOf('my-laptop')).toBe(0);
+		stepUpCode(me);
 		for (let n = 1; n <= 2; n++) {
 			expect((await changeOwn(me, { currentPassword: 'not it', newPassword: NEW })).status).toBe(403);
 		}
@@ -673,6 +722,9 @@ describe('PUT /api/users/:id/password', () => {
 		const bystander = makeUser({ username: 'bystander' });
 		makeSession(admin, 'the-admin');
 		makeSession(chief, 'the-chief');
+		// The factors the callers' codes are made from (card 2771).
+		stepUpFactor(admin);
+		stepUpFactor(chief);
 		makeSession(target, 'target-laptop');
 		makeSession(target, 'target-phone');
 		makeInvite(target, 'target-invite');
@@ -689,13 +741,13 @@ describe('PUT /api/users/:id/password', () => {
 	 * 2701), sent from `session`, the administrator's unless told otherwise.
 	 */
 	const reset = (by: SessionUser | null, id: number, password: unknown = NEW, session = 'the-admin') =>
-		api('PUT', `/api/users/${id}/password`, { user: by, body: { password, currentPassword: FIXTURE_PASSWORD }, headers: from(session) });
+		api('PUT', `/api/users/${id}/password`, { user: by, body: { password, currentPassword: FIXTURE_PASSWORD, ...codeOf(by) }, headers: from(session) });
 
 	it('by an administrator, sets the password and ends that user\'s sessions, invites and API keys, or does none of it', async () => {
 		const run = await eachWriteInTurn({
 			build: scene,
 			request: ({ admin, target }) => reset(admin, target.id),
-			apart: [COUNTED],
+			apart: [...STEP_UP_APART],
 			afterSuccess: async ({ admin, target, bystander }, res: ApiResult) => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({
@@ -720,11 +772,11 @@ describe('PUT /api/users/:id/password', () => {
 		// A failure at the second used to leave the password reset and whoever
 		// held the old one still signed in, which a reset is meant to end. The
 		// invite and the keys used to outlive the reset whatever happened. The
-		// first two count the administrator's own password as it arrives and
-		// clear the count for the right one, apart from the transaction (card 2701).
+		// first three count the administrator's own password as it arrives,
+		// spend their code and clear the count for the right one, apart from the
+		// transaction (cards 2701 and 2771).
 		expect(shape(run.writes)).toEqual([
-			'update sessions set',
-			'update sessions set',
+			...STEP_UP_WRITES,
 			'update users set',
 			'delete from sessions',
 			'delete from invite_tokens',
@@ -846,6 +898,9 @@ describe('POST /api/users', () => {
 		const plain = makeUser({ username: 'plain' });
 		makeSession(admin, 'the-admin');
 		makeSession(chief, 'the-chief');
+		// The factors the callers' codes are made from (card 2771).
+		stepUpFactor(admin);
+		stepUpFactor(chief);
 		makeSmtp();
 		return { admin, chief, plain };
 	};
@@ -854,7 +909,7 @@ describe('POST /api/users', () => {
 	const create = (by: SessionUser | null, body: Record<string, unknown>) =>
 		api('POST', '/api/users', {
 			user: by,
-			body: { ...body, currentPassword: FIXTURE_PASSWORD },
+			body: { ...body, currentPassword: FIXTURE_PASSWORD, ...codeOf(by) },
 			headers: from(by?.role === 'superadmin' ? 'the-chief' : 'the-admin')
 		});
 
@@ -862,7 +917,7 @@ describe('POST /api/users', () => {
 		const run = await eachWriteInTurn({
 			build: scene,
 			request: ({ admin }) => create(admin, { username: '  newbie ', email: ' Newbie@Example.test ' }),
-			apart: [COUNTED],
+			apart: [...STEP_UP_APART],
 			afterSuccess: (_s, res: ApiResult, sent) => {
 				expect(res.status).toBe(201);
 				expect(res.body).toMatchObject({
@@ -897,11 +952,10 @@ describe('POST /api/users', () => {
 		// A failure at the invite used to leave a user whose password nobody
 		// knew and no invite with which to set one. The delete finds nothing:
 		// an invite is issued one way, which ends any earlier one first. Before
-		// them, the administrator's own password counted and the count cleared,
-		// apart from the transaction (card 2701).
+		// them, the administrator's own password counted, their code spent and
+		// the count cleared, apart from the transaction (cards 2701 and 2771).
 		expect(shape(run.writes)).toEqual([
-			'update sessions set',
-			'update sessions set',
+			...STEP_UP_WRITES,
 			'insert into users',
 			'delete from invite_tokens',
 			'insert into invite_tokens'
@@ -915,7 +969,7 @@ describe('POST /api/users', () => {
 			build: scene,
 			request: ({ chief }) =>
 				create(chief, { username: 'deputy', email: 'deputy@example.test', password: NEW, role: 'admin' }),
-			apart: [COUNTED],
+			apart: [...STEP_UP_APART],
 			afterSuccess: async (_s, res: ApiResult) => {
 				expect(res.status).toBe(201);
 				expect(res.body).toMatchObject({ username: 'deputy', role: 'admin', invited: false });
@@ -924,8 +978,8 @@ describe('POST /api/users', () => {
 			}
 		});
 
-		// The superadmin's own password counted and the count cleared (card 2701), then the user.
-		expect(shape(run.writes)).toEqual(['update sessions set', 'update sessions set', 'insert into users']);
+		// The superadmin's own password counted, their code spent and the count cleared (cards 2701 and 2771), then the user.
+		expect(shape(run.writes)).toEqual([...STEP_UP_WRITES, 'insert into users']);
 		expect(run.effects).toEqual([]);
 	});
 
@@ -1008,13 +1062,15 @@ describe('POST /api/users/:id/invite', () => {
 		makeInvite(invitee, 'spent', { used: true });
 		makeInvite(bystander, 'theirs');
 		makeSession(admin, 'the-admin');
+		// The factor the administrator's code is made from (card 2771).
+		stepUpFactor(admin);
 		makeSmtp();
 		return { admin, invitee, bystander };
 	};
 
 	/** The invite sent again by `by`, with their own current password (card 2701), from the administrator's session. */
 	const resend = (by: SessionUser, id: number) =>
-		api('POST', `/api/users/${id}/invite`, { user: by, body: { currentPassword: FIXTURE_PASSWORD }, headers: from('the-admin') });
+		api('POST', `/api/users/${id}/invite`, { user: by, body: { currentPassword: FIXTURE_PASSWORD, ...codeOf(by) }, headers: from('the-admin') });
 
 	/** The token in an invite mail's link. */
 	const tokenIn = (html: string) => html.match(/\/invite\/([\w-]+)/)![1];
@@ -1023,7 +1079,7 @@ describe('POST /api/users/:id/invite', () => {
 		const run = await eachWriteInTurn({
 			build: scene,
 			request: ({ admin, invitee }) => resend(admin, invitee.id),
-			apart: [COUNTED],
+			apart: [...STEP_UP_APART],
 			afterSuccess: ({ invitee, bystander }, res: ApiResult, sent) => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({
@@ -1049,9 +1105,10 @@ describe('POST /api/users/:id/invite', () => {
 			}
 		});
 
-		// The administrator's own password counted and the count cleared, apart
-		// from the transaction (card 2701); then the invites.
-		expect(shape(run.writes)).toEqual(['update sessions set', 'update sessions set', 'delete from invite_tokens', 'insert into invite_tokens']);
+		// The administrator's own password counted, their code spent and the
+		// count cleared, apart from the transaction (cards 2701 and 2771); then
+		// the invites.
+		expect(shape(run.writes)).toEqual([...STEP_UP_WRITES, 'delete from invite_tokens', 'insert into invite_tokens']);
 		expect(run.effects.map(name)).toEqual(["email to invitee@example.test: You're invited to DumpFire!"]);
 	});
 
@@ -1062,6 +1119,8 @@ describe('POST /api/users/:id/invite', () => {
 		let second = '';
 		try {
 			expect((await resend(admin, invitee.id)).status).toBe(200);
+			// The code made again: the first spent its step (card 2771).
+			stepUpCode(admin);
 			expect((await resend(admin, invitee.id)).status).toBe(200);
 			await sent.settle();
 			[first, second] = sent.emails.map((mail) => tokenIn(mail.html));
@@ -1360,13 +1419,15 @@ describe('what taking an account back switches off (card 2168)', () => {
 			editors: makeSchedule(editor)
 		};
 		makeSession(admin, 'the-admin');
+		// The factor the administrator's code is made from (card 2771).
+		stepUpFactor(admin);
 		return { admin, target, editor, board, hooks, schedules };
 	};
 	type Scene = ReturnType<typeof scene>;
 
 	/** The password set by `by`, with their own current password (card 2701), from `session`. */
 	const reset = (by: SessionUser, id: number, session = 'the-admin') =>
-		api('PUT', `/api/users/${id}/password`, { user: by, body: { password: NEW, currentPassword: FIXTURE_PASSWORD }, headers: from(session) });
+		api('PUT', `/api/users/${id}/password`, { user: by, body: { password: NEW, currentPassword: FIXTURE_PASSWORD, ...codeOf(by) }, headers: from(session) });
 
 	/** Only the target's webhook that was on, and their schedule that was on, changed. */
 	function expectTakenBack(s: Scene, opts: { schedules: boolean }) {
@@ -1412,7 +1473,7 @@ describe('what taking an account back switches off (card 2168)', () => {
 		const run = await eachWriteInTurn({
 			build: scene,
 			request: ({ admin, target }) => reset(admin, target.id),
-			apart: [COUNTED],
+			apart: [...STEP_UP_APART],
 			afterSuccess: (s, res: ApiResult) => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({
@@ -1428,11 +1489,10 @@ describe('what taking an account back switches off (card 2168)', () => {
 
 		// Each failure in turn left the webhook on and the schedule enabled,
 		// with nothing sent: `eachWriteInTurn` checks every row each time. The
-		// first two count the administrator's own password and clear the count,
-		// apart from the transaction (card 2701).
+		// first three count the administrator's own password, spend their code
+		// and clear the count, apart from the transaction (cards 2701 and 2771).
 		expect(shape(run.writes)).toEqual([
-			'update sessions set',
-			'update sessions set',
+			...STEP_UP_WRITES,
 			'update users set',
 			'delete from sessions',
 			'delete from invite_tokens',
@@ -1555,8 +1615,10 @@ describe('what taking an account back switches off (card 2168)', () => {
 		await atInfo(async () => {
 			const s = scene();
 			// The session the change is asked from, which counts its current
-			// password (card 2701), and which the change ends.
+			// password (card 2701), and which the change ends; and the factor of
+			// their code (card 2771).
 			makeSession(s.target, 'my-laptop');
+			stepUpFactor(s.target);
 
 			// A change that keeps the keys keeps their webhooks.
 			const kept = await changeOwn(s.target, { currentPassword: OLD, newPassword: NEW });
@@ -1565,7 +1627,9 @@ describe('what taking an account back switches off (card 2168)', () => {
 			expect(scheduleRow(s.schedules.theirs)).toEqual({ enabled: 1, updatedAt: LONG_AGO });
 
 			// Asked to end the keys, with none to end: the webhook they set is
-			// switched off all the same (R-S5), and the schedule stays on.
+			// switched off all the same (R-S5), and the schedule stays on. The code
+			// made again: the first spent its step (card 2771).
+			stepUpCode(s.target);
 			const ended = await changeOwn(s.target, { currentPassword: NEW, newPassword: 'a third password', endApiKeys: true }, kept.cookie!.value);
 			expect(ended.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 1 });
 			expectTakenBack(s, { schedules: false });
@@ -1589,6 +1653,7 @@ describe('what taking an account back switches off (card 2168)', () => {
 		const s = scene();
 		const chief = makeUser({ username: 'chief', role: 'superadmin' });
 		makeSession(chief, 'the-chief');
+		stepUpFactor(chief);
 
 		const repointed = await api('PUT', `/api/v1/webhooks/${s.hooks.editors}`, {
 			user: s.admin,
@@ -1644,7 +1709,11 @@ describe('what taking an account back switches off (card 2168)', () => {
 		it('refuses 401 a webhook made or re-pointed with a key the reset ended, and writes nothing', async () => {
 			const s = scene();
 			const key = makeApiKey(s.target);
-			const resetTarget = () => reset(s.admin, s.target.id);
+			// Twice in the test: the code made again for each, as each spends its step (card 2771).
+			const resetTarget = () => {
+				stepUpCode(s.admin);
+				return reset(s.admin, s.target.id);
+			};
 
 			const made = await sendAround('POST', `/api/v1/boards/${s.board.id}/webhooks`, { key }, { url: 'https://intruder.example.test/new' }, resetTarget);
 			expect(made).toEqual({ status: 401, body: { message: 'Invalid or expired API key' } });
@@ -1670,7 +1739,11 @@ describe('what taking an account back switches off (card 2168)', () => {
 			const LAPTOP = '00000000-0000-4000-8000-000000000001';
 			const PHONE = '00000000-0000-4000-8000-000000000002';
 			const s = scene();
-			const resetTarget = () => reset(s.admin, s.target.id);
+			// Twice in the test: the code made again for each, as each spends its step (card 2771).
+			const resetTarget = () => {
+				stepUpCode(s.admin);
+				return reset(s.admin, s.target.id);
+			};
 
 			makeSession(s.target, LAPTOP);
 			const made = await sendAround('POST', '/api/report-schedules', { session: LAPTOP }, SCHEDULE(s.board.id), resetTarget);
@@ -1719,17 +1792,20 @@ describe('POST /api/account/api-keys', () => {
 	const scene = () => {
 		const me = withPassword(makeUser({ username: 'me' }));
 		makeSession(me, 'my-laptop');
+		// The factor the code is made from (card 2771).
+		stepUpFactor(me);
 		return { me };
 	};
 
+	/** A key made by `by`, with the current password and, beside it, their code (card 2771). */
 	const create = (by: SessionUser | null, body: Record<string, unknown>) =>
-		api('POST', '/api/account/api-keys', { user: by, body, headers: from('my-laptop') });
+		api('POST', '/api/account/api-keys', { user: by, body: withCode(by, body), headers: from('my-laptop') });
 
 	it('makes a key for the right password, writing nothing but the key', async () => {
 		const run = await eachWriteInTurn({
 			build: scene,
-			request: ({ me }) => create(me, { name: 'my script', password: OLD }),
-			apart: [COUNTED],
+			request: ({ me }) => create(me, { name: 'my script', currentPassword: OLD }),
+			apart: [...STEP_UP_APART],
 			afterSuccess: ({ me }, res: ApiResult) => {
 				expect(res.status).toBe(201);
 				expect(res.body).toMatchObject({ name: 'my script', key: expect.stringMatching(/^df_[0-9a-f]{64}$/) });
@@ -1738,9 +1814,10 @@ describe('POST /api/account/api-keys', () => {
 			}
 		});
 
-		// The password counted as it arrives, and the count cleared for the right
-		// one, apart from the transaction (card 2701); then the key.
-		expect(shape(run.writes)).toEqual(['update sessions set', 'update sessions set', 'insert into api_keys']);
+		// The password counted as it arrives, the code spent and the count
+		// cleared for the right one, apart from the transaction (cards 2701 and
+		// 2771); then the key.
+		expect(shape(run.writes)).toEqual([...STEP_UP_WRITES, 'insert into api_keys']);
 		expect(run.effects).toEqual([]);
 		// Checked outside a transaction, where a quarter of a second holds nobody up.
 		expectHashedOutsideTransaction();
@@ -1754,7 +1831,7 @@ describe('POST /api/account/api-keys', () => {
 		const quiet = vi.spyOn(console, 'log').mockImplementation(() => {});
 		let res: ApiResult;
 		try {
-			res = await create(me, { name: 'a name for nobody else', password: OLD });
+			res = await create(me, { name: 'a name for nobody else', currentPassword: OLD });
 		} finally {
 			quiet.mockRestore();
 			if (level === undefined) delete process.env.LOG_LEVEL;
@@ -1780,18 +1857,20 @@ describe('POST /api/account/api-keys', () => {
 		const message = async (body: Record<string, unknown>, status: number) =>
 			(await expectRefused(() => create(me, body), status)).body.message;
 
-		await expectRefused(() => create(null, { name: 'my script', password: OLD }), 401);
-		expect(await message({ name: 'my script' }, 400)).toBe('Password is required');
-		expect(await message({ name: 'my script', password: '' }, 400)).toBe('Password is required');
-		expect(await message({ name: 'my script', password: 12345 }, 400)).toBe('Password is required');
+		await expectRefused(() => create(null, { name: 'my script', currentPassword: OLD }), 401);
+		// Asked through the step-up since card 2771, in its words.
+		expect(await message({ name: 'my script' }, 400)).toBe(STEP_UP_MISSING);
+		expect(await message({ name: 'my script', currentPassword: '' }, 400)).toBe(STEP_UP_MISSING);
+		expect(await message({ name: 'my script', currentPassword: 12345 }, 400)).toBe(STEP_UP_MISSING);
 		// The name is looked at first, as it always was.
-		expect(await message({ password: OLD }, 400)).toBe('Key name is required');
+		expect(await message({ currentPassword: OLD }, 400)).toBe('Key name is required');
 		expect(bcrypt.inTransaction).toEqual([]);
 
 		// Nothing written but the session's count (card 2701).
-		expect((await expectRefusedAndCounted(() => create(me, { name: 'my script', password: 'not it' }), 403, 'my-laptop')).body.message).toBe(
-			'Password is incorrect'
-		);
+		expect((await expectRefusedAndCounted(() => create(me, { name: 'my script', currentPassword: 'not it' }), 403, 'my-laptop')).body).toEqual({
+			message: STEP_UP_WRONG,
+			stepUp: 'wrong'
+		});
 		expect(keysOf(me.id)).toEqual([]);
 	});
 
@@ -1805,7 +1884,7 @@ describe('POST /api/account/api-keys', () => {
 
 		let res: ApiResult;
 		try {
-			res = await create(me, { name: 'my script', password: OLD });
+			res = await create(me, { name: 'my script', currentPassword: OLD });
 		} finally {
 			reads.restore();
 		}
@@ -1822,24 +1901,30 @@ describe('POST /api/account/api-keys', () => {
 		const { me } = scene();
 		for (let n = 1; n <= 9; n++) makeApiKey(me, `key ${n}`);
 
-		// The tenth lands between the first count and the transaction.
-		const reads = watchReads('api_keys', (nth) => {
-			if (nth === 1) makeApiKey(me, 'key 10');
-		});
+		// The tenth lands between the first count and the transaction: after
+		// the password is compared, as the first count is now the step-up's
+		// guard's, in a transaction of its own (card 2771, D7).
+		bcrypt.afterCompare = () => {
+			bcrypt.afterCompare = undefined;
+			makeApiKey(me, 'key 10');
+		};
+		const reads = watchReads('api_keys');
 		let res: ApiResult;
 		try {
-			res = await create(me, { name: 'one too many', password: OLD });
+			res = await create(me, { name: 'one too many', currentPassword: OLD });
 		} finally {
 			reads.restore();
 		}
 		expect(res.status).toBe(400);
 		expect(res.body.message).toBe('Maximum of 10 API keys per user');
-		expect(reads.inTransaction).toEqual([false, true]);
+		// The first look is the step-up's guard's, read only in a transaction of
+		// its own (card 2771, D7); the second the transaction's that adds the key.
+		expect(reads.inTransaction).toEqual([true, true]);
 		expect(keysOf(me.id)).toHaveLength(10);
 
 		// And with ten there already, refused before the password is checked.
 		bcrypt.inTransaction.length = 0;
-		expect(await expectRefused(() => create(me, { name: 'one too many', password: OLD }), 400)).toMatchObject({
+		expect(await expectRefused(() => create(me, { name: 'one too many', currentPassword: OLD }), 400)).toMatchObject({
 			body: { message: 'Maximum of 10 API keys per user' }
 		});
 		expect(bcrypt.inTransaction).toEqual([]);
@@ -1868,6 +1953,9 @@ const withInvites = () => {
 	// Theirs, which an account change confirms its caller's password from (card 2701).
 	makeSession(chief, 'the-chief');
 	makeSession(admin, 'the-admin');
+	// The factors their codes are made from (card 2771).
+	stepUpFactor(chief);
+	stepUpFactor(admin);
 	return { chief, admin, otherAdmin, target, bystander };
 };
 
@@ -1882,7 +1970,7 @@ describe('PUT /api/users/:id', () => {
 	const change = (by: SessionUser, id: number, body: Record<string, unknown>) =>
 		api('PUT', `/api/users/${id}`, {
 			user: by,
-			body: { ...body, currentPassword: FIXTURE_PASSWORD },
+			body: { ...body, currentPassword: FIXTURE_PASSWORD, ...codeOf(by) },
 			headers: from(by.role === 'superadmin' ? 'the-chief' : 'the-admin')
 		});
 
@@ -1890,7 +1978,7 @@ describe('PUT /api/users/:id', () => {
 		const run = await eachWriteInTurn({
 			build: withInvites,
 			request: ({ chief, target }) => change(chief, target.id, { email: 'Moved@Example.test' }),
-			apart: [COUNTED],
+			apart: [...STEP_UP_APART],
 			afterSuccess: async ({ target, bystander }, res: ApiResult) => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({
@@ -1917,9 +2005,9 @@ describe('PUT /api/users/:id', () => {
 		});
 
 		// The invites end before the account is written, in its transaction.
-		// Before it, the superadmin's own password counted and the count
-		// cleared, apart from the transaction (card 2701).
-		expect(shape(run.writes)).toEqual(['update sessions set', 'update sessions set', 'delete from invite_tokens', 'delete from sign_in_challenges', 'delete from enrolment_links', 'update users set']);
+		// Before it, the superadmin's own password counted, their code spent and
+		// the count cleared, apart from the transaction (cards 2701 and 2771).
+		expect(shape(run.writes)).toEqual([...STEP_UP_WRITES, 'delete from invite_tokens', 'delete from sign_in_challenges', 'delete from enrolment_links', 'update users set']);
 		expect(run.effects).toEqual([]);
 	});
 
@@ -1934,6 +2022,8 @@ describe('PUT /api/users/:id', () => {
 
 		// One sent while the account is an administrator's ends when it is a user's again.
 		const sentToAnAdmin = inTransaction(() => issueInvite(target.id));
+		// The code made again: the first spent its step (card 2771).
+		stepUpCode(chief);
 		const demoted = await change(chief, target.id, { role: 'user' });
 		expect(demoted.status).toBe(200);
 		expect(demoted.body).toMatchObject({ role: 'user', invitesEnded: 1 });
@@ -1965,6 +2055,8 @@ describe('PUT /api/users/:id', () => {
 		];
 
 		for (const [by, body] of changes) {
+			// Each with a code of a step not yet spent (card 2771).
+			stepUpCode(by);
 			const res = await change(by, target.id, body);
 			expect(res.status, JSON.stringify(body)).toBe(200);
 			expect(res.body.invitesEnded, JSON.stringify(body)).toBe(0);
@@ -2000,14 +2092,21 @@ describe('PUT /api/users/:id', () => {
 });
 
 describe('PUT /api/account/email', () => {
+	/** `withInvites`, with the target's factor, which their code is made from (card 2771). */
+	const withFactor = () => {
+		const s = withInvites();
+		stepUpFactor(s.target);
+		return s;
+	};
+	/** The address changed by `me`, with their current password and code (`currentPassword`, `currentCode`: card 2771). */
 	const moveTo = (me: SessionUser, newEmail: string, password: string = OLD) =>
-		api('PUT', '/api/account/email', { user: me, body: { newEmail, password }, headers: from('my-laptop') });
+		api('PUT', '/api/account/email', { user: me, body: { newEmail, currentPassword: password, ...codeOf(me) }, headers: from('my-laptop') });
 
 	it('changes the address and ends every invite of the account not yet used, or does neither, and keeps the session that asked', async () => {
 		const run = await eachWriteInTurn({
-			build: withInvites,
+			build: withFactor,
 			request: ({ target }) => moveTo(target, ' Moved@Example.test '),
-			apart: [COUNTED],
+			apart: [...STEP_UP_APART],
 			afterSuccess: async ({ target, bystander }, res: ApiResult) => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({ success: true, email: 'moved@example.test' });
@@ -2023,44 +2122,66 @@ describe('PUT /api/account/email', () => {
 		});
 
 		// The address used to be written on its own, with no transaction and nothing else.
-		// Before it, the password counted as it arrives and the count cleared for
-		// the right one, apart from the transaction (card 2701).
-		expect(shape(run.writes)).toEqual(['update sessions set', 'update sessions set', 'delete from invite_tokens', 'delete from sign_in_challenges', 'delete from enrolment_links', 'update users set']);
+		// Before it, the password counted as it arrives, the code spent and the
+		// count cleared for the right one, apart from the transaction (cards
+		// 2701 and 2771).
+		expect(shape(run.writes)).toEqual([...STEP_UP_WRITES, 'delete from invite_tokens', 'delete from sign_in_challenges', 'delete from enrolment_links', 'update users set']);
 		expect(run.effects).toEqual([]);
 		// Checked before the transaction, where a quarter of a second holds nobody up.
 		expectHashedOutsideTransaction();
 	});
 
 	it('ends none for the address it has, in other case', async () => {
-		const { target } = withInvites();
+		const { target } = withFactor();
 
 		const res = await moveTo(target, 'TARGET@example.test');
 
 		expect(res.status).toBe(200);
 		expect(res.body).toEqual({ success: true, email: 'target@example.test' });
 		expect(invitesOf(target.id)).toHaveLength(3);
-		expect(await loadInvite('waiting')).toMatchObject({ valid: true, username: 'target' });
+		// The invite waiting is still there, unused. Its page no longer offers it
+		// to an account that holds a second factor (card 2773), as the target
+		// does to confirm with a code (card 2771), so its row is read.
+		expect(invitesOf(target.id)).toContainEqual([inviteHashOf('waiting'), false]);
 	});
 
 	it('ends nothing when it refuses: a wrong password, an address in use', async () => {
-		const { target } = withInvites();
+		const { target } = withFactor();
 
-		// The right password, refused for the address, leaves the session's count
-		// as it found it, none; a wrong one writes nothing but that count (card
-		// 2701), which the right one would then clear: so in this order.
-		expect((await expectRefused(() => moveTo(target, 'Bystander@example.test'), 409)).body.message).toBe(
-			'Email is already in use'
-		);
-		expect((await expectRefusedAndCounted(() => moveTo(target, 'moved@example.test', 'not it'), 403, 'my-laptop')).body.message).toBe(
-			'Password is incorrect'
-		);
+		// The right password and code, and an address another account holds:
+		// refused by the write's own look, the only one, after the check (card
+		// 2771's code review, CS1). The code is left spent (S4) and nothing else
+		// written: the count the check took, the right answer cleared. A wrong
+		// one writes nothing but that count (card 2701), which a right one would
+		// then clear: so in this order.
+		const before = snapshotDb();
+		const sent = effects();
+		try {
+			const taken = await moveTo(target, 'Bystander@example.test');
+			await sent.settle();
+			expect(taken.status).toBe(409);
+			expect(taken.body.message).toBe('Email is already in use');
+			expectUnchanged(withCodeSpent(before));
+			expect(sent.all).toEqual([]);
+		} finally {
+			sent.restore();
+		}
+		// A step not yet spent for the next, so that it reaches the password.
+		stepUpCode(target);
+		expect((await expectRefusedAndCounted(() => moveTo(target, 'moved@example.test', 'not it'), 403, 'my-laptop')).body).toEqual({
+			message: STEP_UP_WRONG,
+			stepUp: 'wrong'
+		});
 
-		expect(await loadInvite('waiting')).toMatchObject({ valid: true, username: 'target' });
+		// The invite waiting is still there, unused: read from its row, as the
+		// target holds a factor (cards 2771 and 2773).
+		expect(invitesOf(target.id)).toContainEqual([inviteHashOf('waiting'), false]);
 	});
 
 	it('refuses an address taken after the password was checked, inside the transaction that writes it', async () => {
-		const { target, bystander } = withInvites();
-		// The second read is the one the password is checked against: the first is the session's account, read as writeAs checks the session (card 2775).
+		const { target, bystander } = withFactor();
+		// The second read is the one the password is checked against: the first is the session's account, read as writeAs
+		// checks the session (card 2775). The guard does not look for the address (card 2771's code review, CS1).
 		const reads = watchReads('users', (nth) => {
 			if (nth === 2) db.update(users).set({ email: 'moved@example.test' }).where(eq(users.id, bystander.id)).run();
 		});
@@ -2074,7 +2195,7 @@ describe('PUT /api/account/email', () => {
 
 		expect(res.status).toBe(409);
 		expect(res.body.message).toBe('Email is already in use');
-		// Read again inside it, and the address looked for there.
+		// Read again inside it, and the address looked for there, the only look.
 		expect(reads.inTransaction).toEqual([true, false, true, true, true]);
 		expect(userRow(target.id).email).toBe('target@example.test');
 		expect(invitesOf(target.id)).toHaveLength(3);
@@ -2089,9 +2210,10 @@ describe('the system log, when an email or a role changes', () => {
 		const quiet = vi.spyOn(console, 'log').mockImplementation(() => {});
 		try {
 			// With the superadmin's own password, from their session (card 2701).
+			// With a code made for each, as each spends its step (card 2771).
 			const confirmed = (body: Record<string, unknown>) => ({
 				user: chief,
-				body: { ...body, currentPassword: FIXTURE_PASSWORD },
+				body: { ...body, currentPassword: FIXTURE_PASSWORD, currentCode: stepUpCode(chief) },
 				headers: from('the-chief')
 			});
 			expect((await api('PUT', `/api/users/${target.id}`, confirmed({ email: 'moved@example.test', role: 'admin' }))).status).toBe(200);
@@ -2100,9 +2222,10 @@ describe('the system log, when an email or a role changes', () => {
 			inTransaction(() => issueInvite(target.id));
 			// The role change ended the target's session (card 2775): they sign in again.
 			makeSession({ ...target, role: 'admin' }, 'signed-in-again');
+			// With their current password and code, through the step-up (card 2771).
 			const moved = await api('PUT', '/api/account/email', {
 				user: { ...target, role: 'admin' },
-				body: { newEmail: 'again@example.test', password: OLD },
+				body: { newEmail: 'again@example.test', currentPassword: OLD, currentCode: stepUpCode(target) },
 				headers: from('signed-in-again')
 			});
 			expect(moved.status).toBe(200);
@@ -2144,7 +2267,11 @@ describe('endUnusedInvites', () => {
 // ─── Wrong current passwords ────────────────────────────────────────────────
 
 describe('wrong current passwords', () => {
-	/** A route that asks for the current password, and what it says when it is wrong and when it is not text. */
+	/**
+	 * A route that asks for the current password, and what it says when it is
+	 * wrong and when it is not text: the step-up's words, since the three ask
+	 * through it (card 2771).
+	 */
 	type Asking = {
 		method: 'PUT' | 'POST';
 		path: string;
@@ -2157,23 +2284,23 @@ describe('wrong current passwords', () => {
 		{
 			method: 'PUT',
 			path: '/api/account/email',
-			body: (password) => ({ newEmail: 'moved@example.test', password }),
-			wrong: 'Password is incorrect',
-			notText: 'Password is required'
+			body: (currentPassword) => ({ newEmail: 'moved@example.test', currentPassword }),
+			wrong: STEP_UP_WRONG,
+			notText: STEP_UP_MISSING
 		},
 		{
 			method: 'PUT',
 			path: '/api/account/password',
 			body: (currentPassword) => ({ currentPassword, newPassword: NEW }),
-			wrong: 'Current password is incorrect',
-			notText: 'Current password is required'
+			wrong: STEP_UP_WRONG,
+			notText: STEP_UP_MISSING
 		},
 		{
 			method: 'POST',
 			path: '/api/account/api-keys',
-			body: (password) => ({ name: 'my script', password }),
-			wrong: 'Password is incorrect',
-			notText: 'Password is required'
+			body: (currentPassword) => ({ name: 'my script', currentPassword }),
+			wrong: STEP_UP_WRONG,
+			notText: STEP_UP_MISSING
 		}
 	];
 	const [EMAIL, PASSWORD, KEY] = ASKING;
@@ -2187,14 +2314,16 @@ describe('wrong current passwords', () => {
 		const me = withPassword(makeUser({ username: 'me' }));
 		makeSession(me, 'my-laptop');
 		makeSession(me, 'my-phone');
+		// The factor the code is made from (card 2771).
+		stepUpFactor(me);
 		return { me };
 	};
 
-	/** The route, with this password, from the session `session`, or with no session cookie for `null`. */
+	/** The route, with this password and the code beside it (card 2771), from the session `session`, or with no session cookie for `null`. */
 	const send = (route: Asking, me: SessionUser, password: unknown, session: string | null = 'my-laptop') =>
 		api(route.method, route.path, {
 			user: me,
-			body: route.body(password),
+			body: { ...route.body(password), ...codeOf(me) },
 			headers: session === null ? undefined : from(session)
 		});
 
@@ -2272,15 +2401,17 @@ describe('wrong current passwords', () => {
 		makeSession(me, FIRST);
 		makeSession(me, SECOND);
 		makeSession(other, THEIRS);
-		// Through the gate, which finds the account from the session cookie.
-		const change = (session: string, currentPassword: string) =>
+		stepUpFactor(me);
+		stepUpFactor(other);
+		// Through the gate, which finds the account from the session cookie; with the code of `who`, the session's account (card 2771).
+		const change = (session: string, currentPassword: string, who: SessionUser = me) =>
 			gate('PUT', '/api/account/password', {
 				headers: { ...from(session), ...FROM_THE_PAGE, accept: 'application/json' },
-				body: { currentPassword, newPassword: NEW }
+				body: { currentPassword, ...codeOf(who), newPassword: NEW }
 			});
 
 		// Another account's wrong guesses are counted for their session alone.
-		for (let n = 1; n <= 2; n++) expect((await change(THEIRS, 'not it')).status).toBe(403);
+		for (let n = 1; n <= 2; n++) expect((await change(THEIRS, 'not it', other)).status).toBe(403);
 
 		for (let n = 1; n <= 2; n++) expect((await change(FIRST, 'not it')).status).toBe(403);
 		const third = await change(FIRST, 'not it');
@@ -2306,6 +2437,8 @@ describe('wrong current passwords', () => {
 		await wrong(KEY, me, 2);
 		expect((await send(KEY, me, OLD)).status).toBe(201);
 		expect(countOf('my-laptop')).toBe(0);
+		// The code made again: the right one spent its step (card 2771).
+		stepUpCode(me);
 		await wrong(KEY, me, 2);
 		// Two since the right one, and so not yet three.
 		expect((await send(KEY, me, OLD)).status).toBe(201);
@@ -2316,7 +2449,8 @@ describe('wrong current passwords', () => {
 		const { me } = signedIn();
 		await wrong(EMAIL, me, 1);
 		const elsewhere = await makePasswordHash('changed elsewhere', 'known');
-		// The second read is the one the password is checked against: the first is the session's account, read as writeAs checks the session (card 2775).
+		// The second read is the one the password is checked against: the first is the session's account, read as writeAs
+		// checks the session (card 2775).
 		const reads = watchReads('users', (nth) => {
 			if (nth === 2) db.update(users).set({ passwordHash: elsewhere }).where(eq(users.id, me.id)).run();
 		});
@@ -2339,8 +2473,10 @@ describe('wrong current passwords', () => {
 		expect(userRow(me.id).email).toBe('me@example.test');
 
 		// The one check was right, and cleared the count. So two wrong ones are
-		// let through again before the third ends the session.
+		// let through again before the third ends the session, each with a code
+		// of a step not yet spent: the right one spent its own (card 2771, S4).
 		expect(countOf('my-laptop')).toBe(0);
+		stepUpCode(me);
 		await wrong(EMAIL, me, 2);
 		expect((await send(EMAIL, me, 'not it')).body).toEqual(SIGNED_OUT);
 	});
@@ -2612,6 +2748,7 @@ describe('remembered browsers, when a password is set', () => {
 	it('are forgotten by the holder’s own change, all but the browser that made it, which is remembered anew', async () => {
 		const me = withPassword(makeUser({ username: 'me' }));
 		makeSession(me, 'my-laptop');
+		stepUpFactor(me);
 		const laptop = rememberedFor(me);
 		const phone = rememberedFor(me);
 		expect(remembers(laptop, me.id) && remembers(phone, me.id)).toBe(true);
@@ -2629,6 +2766,7 @@ describe('remembered browsers, when a password is set', () => {
 	it('are forgotten by a refused change no more than by none', async () => {
 		const me = withPassword(makeUser({ username: 'me' }));
 		makeSession(me, 'my-laptop');
+		stepUpFactor(me);
 		const laptop = rememberedFor(me);
 
 		const res = await changeOwn(me, { currentPassword: 'not it', newPassword: NEW });
@@ -2664,12 +2802,13 @@ describe('remembered browsers, when a password is set', () => {
 		const admin = makeUser({ username: 'admin', role: 'admin' });
 		const target = withPassword(makeUser({ username: 'target' }));
 		const theirs = rememberedFor(target);
-		// The administrator's own password, from their session (card 2701).
+		// The administrator's own password and code, from their session (cards 2701 and 2771).
 		makeSession(admin, 'the-admin');
+		stepUpFactor(admin);
 
 		const res = await api('PUT', `/api/users/${target.id}/password`, {
 			user: admin,
-			body: { password: NEW, currentPassword: FIXTURE_PASSWORD },
+			body: { password: NEW, currentPassword: FIXTURE_PASSWORD, ...codeOf(admin) },
 			headers: from('the-admin')
 		});
 

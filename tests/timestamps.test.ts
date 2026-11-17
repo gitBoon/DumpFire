@@ -54,7 +54,9 @@ import {
 	makeSmtp,
 	makeUser,
 	makeWebhook,
-	resetDb
+	resetDb,
+	stepUp,
+	stepUpCode
 } from './helpers/fixtures';
 import { afterEachTimestampCheck, allowOtherTimestampForms, otherTimestampForms } from './helpers/timestamps';
 
@@ -1042,8 +1044,6 @@ describe('the audit log refuses a reversed range, and keeps entries of one secon
 });
 
 describe('a timestamp a caller sends that cannot be read is a 400 that names it (decision 10)', () => {
-	const SESSION = { cookie: `${SESSION_COOKIE_NAME}=a-session` };
-
 	it.each([
 		['GET', '/api/audit?from=yesterday', 'from is not a date'],
 		['GET', '/api/audit?to=2026-02-30', 'to is not a date'],
@@ -1072,11 +1072,8 @@ describe('a timestamp a caller sends that cannot be read is a 400 that names it 
 	});
 
 	it('POST /api/account/api-keys: expiresAt', async () => {
-		const res = await api('POST', '/api/account/api-keys', {
-			user: makeUser(),
-			body: { name: 'my script', password: 'the password', expiresAt: 'yesterday' },
-			headers: SESSION
-		});
+		// Read in the step-up's guard, before the password and code (card 2771), from a session of the caller's.
+		const res = await api('POST', '/api/account/api-keys', stepUp(makeUser(), { name: 'my script', expiresAt: 'yesterday' }));
 		expect([res.status, res.body]).toEqual([400, { message: 'expiresAt must be a timestamp, such as 2027-01-01T09:00:00Z' }]);
 	});
 
@@ -1117,8 +1114,13 @@ describe('null, text and anything else, for archivedAt and expiresAt (R7)', () =
 		db.update(users).set({ passwordHash: await makePasswordHash('the password', 'known') }).where(eq(users.id, owner.id)).run();
 		// A session of the owner's, which the password is counted on (card 2701).
 		const session = { cookie: `${SESSION_COOKIE_NAME}=${makeSession(owner)}` };
+		// The current password and a code, made as each is sent: one key after another in the same step (card 2771).
 		const make = (expiresAt: unknown) =>
-			api('POST', '/api/account/api-keys', { user: owner, body: { name: 'my script', password: 'the password', expiresAt }, headers: session });
+			api('POST', '/api/account/api-keys', {
+				user: owner,
+				body: { name: 'my script', currentPassword: 'the password', currentCode: stepUpCode(owner), expiresAt },
+				headers: session
+			});
 
 		const never = await make(null);
 		expect([never.status, never.body.expiresAt]).toEqual([201, null]);

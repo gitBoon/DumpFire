@@ -42,6 +42,8 @@ import {
 	makeUser,
 	makeWebhook,
 	resetDb,
+	STEP_UP_APART,
+	STEP_UP_WRITES,
 	stepUp,
 	type BoardFixture
 } from './helpers/fixtures';
@@ -815,7 +817,7 @@ describe('POST /api/admin/boards/:id/clear-categories', () => {
 				return { ...s, confirmed: stepUp(s.admin) };
 			},
 			request: (s) => api('POST', `/api/admin/boards/${s.A.board.id}/clear-categories`, s.confirmed),
-			apart: ['sessions.wrong_password_count'],
+			apart: [...STEP_UP_APART],
 			afterSuccess: (s, res: ApiResult) => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({ success: true });
@@ -827,8 +829,8 @@ describe('POST /api/admin/boards/:id/clear-categories', () => {
 			}
 		});
 
-		// The password counted as it arrives and the count cleared, apart from the transaction (card 2701).
-		expect(shape(run.writes)).toEqual(['update sessions set', 'update sessions set', 'delete from categories']);
+		// The password counted as it arrives, the code spent and the count cleared, apart from the transaction (cards 2701 and 2771).
+		expect(shape(run.writes)).toEqual([...STEP_UP_WRITES, 'delete from categories']);
 		expect(run.effects).toEqual([]);
 	});
 
@@ -877,7 +879,7 @@ describe('POST /api/admin/reset-xp', () => {
 				return { ...s, confirmed: stepUp(s.admin) };
 			},
 			request: (s) => api('POST', '/api/admin/reset-xp', s.confirmed),
-			apart: ['sessions.wrong_password_count'],
+			apart: [...STEP_UP_APART],
 			afterSuccess: (_s, res: ApiResult) => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({ success: true });
@@ -889,8 +891,8 @@ describe('POST /api/admin/reset-xp', () => {
 			}
 		});
 
-		// The password counted as it arrives and the count cleared, apart from the transaction (card 2701).
-		expect(shape(run.writes)).toEqual(['update sessions set', 'update sessions set', 'update user_xp set']);
+		// The password counted as it arrives, the code spent and the count cleared, apart from the transaction (cards 2701 and 2771).
+		expect(shape(run.writes)).toEqual([...STEP_UP_WRITES, 'update user_xp set']);
 		expect(run.effects).toEqual([]);
 	});
 

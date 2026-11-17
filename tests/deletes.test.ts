@@ -55,6 +55,7 @@ import {
 	makeWebhook,
 	resetDb,
 	shareBoardWithTeam,
+	STEP_UP_APART,
 	stepUp,
 	testUploadsDir,
 	type BoardFixture,
@@ -295,6 +296,40 @@ function withoutTree(before: DbSnapshot, tree: Tree): DbSnapshot {
 	return withoutActivity(expected);
 }
 
+/**
+ * `expected`, with the columns a right step-up writes apart from the delete
+ * (card 2771, `STEP_UP_APART`: the count, and the caller's code spent) taken
+ * as they are in `after`, row by row. The v1 tree asks no code, and leaves
+ * them as they were.
+ */
+/**
+ * What a right step-up leaves when the delete itself wrote nothing (card 2771,
+ * S4): the code's step spent, and nothing else; the session's count, taken as
+ * the password arrived, back at 0.
+ */
+function expectSpentAlone(before: DbSnapshot): void {
+	const after = snapshotDb();
+	expect(rowsOf(after, 'sessions').filter((row) => row.wrong_password_count !== 0)).toEqual([]);
+	expect(diffSnapshots(before, after)).toEqual([
+		expect.stringMatching(/^mfa_factors: row \d+ changed \(last_step: null became \d+; last_used_at: null became /)
+	]);
+}
+
+function withStepUp(expected: DbSnapshot, after: DbSnapshot): DbSnapshot {
+	const kept: DbSnapshot = { ...expected };
+	for (const name of STEP_UP_APART) {
+		const [table, column] = name.split('.');
+		if (!kept[table] || !after[table]) continue;
+		kept[table] = Object.fromEntries(
+			Object.entries(kept[table]).map(([rowid, row]) => [
+				rowid,
+				after[table][rowid] && column in row ? { ...row, [column]: after[table][rowid][column] } : row
+			])
+		);
+	}
+	return kept;
+}
+
 function withoutActivity(snapshot: DbSnapshot): DbSnapshot {
 	const { activity_log: _entries, sqlite_sequence: counters, ...rest } = snapshot;
 	const { activity_log: _counter, ...otherCounters } = counters ?? {};
@@ -341,7 +376,7 @@ function expectLeft(w: World, tree: Tree): void {
 	expect(links.length).toBeGreaterThan(0);
 	expect(links.length).toBeLessThan(rowsOf(w.before, 'work_dependencies').length);
 
-	expect(diffSnapshots(withoutTree(w.before, tree), withoutActivity(after))).toEqual([]);
+	expect(diffSnapshots(withStepUp(withoutTree(w.before, tree), after), withoutActivity(after))).toEqual([]);
 	expectFiles(w.before, tree);
 }
 
@@ -459,10 +494,11 @@ describe.each([
 		const confirmed = as(w.owner);
 		return { ...w, confirmed, before: snapshotDb() };
 	};
-	/** The password is counted on the session as it arrives, apart from the transaction. */
-	const APART = ['sessions.wrong_password_count'];
-	/** The writes, but the count on the session, which is written apart from the delete. */
-	const ofTheDelete = (writes: string[]) => shape(writes).filter((write) => write !== 'update sessions set');
+	/** The password is counted on the session as it arrives, and the code spent, apart from the transaction (card 2771). */
+	const APART = [...STEP_UP_APART];
+	/** The writes, but the count on the session and the code's spend, which are written apart from the delete. */
+	const ofTheDelete = (writes: string[]) =>
+		shape(writes).filter((write) => write !== 'update sessions set' && write !== 'update mfa_factors set');
 
 	it('a card: with its subtasks, its sub-boards at every depth, their links and their files', async () => {
 		const run = await eachWriteInTurn({
@@ -728,8 +764,8 @@ describe('deleting for good from the admin panel', () => {
 		const run = await eachWriteInTurn({
 			build: () => confirming(withArchived()),
 			request: filesStayOnFailure((w) => api('POST', '/api/admin/purge-archived', w.confirmed)),
-			// The password is counted on the session as it arrives, apart from the transaction.
-			apart: ['sessions.wrong_password_count'],
+			// The password is counted on the session as it arrives, and the code spent, apart from the transaction.
+			apart: [...STEP_UP_APART],
 			afterSuccess: (w, res: ApiResult, sent) => {
 				expect(res.status).toBe(200);
 				// How many were archived. What was on their sub-boards went too.
@@ -772,7 +808,8 @@ describe('deleting for good from the admin panel', () => {
 		} finally {
 			sent.restore();
 		}
-		expect(diffSnapshots(w.before, snapshotDb())).toEqual([]);
+		// Nothing but the code, spent by the right password and code (card 2771).
+		expectSpentAlone(w.before);
 		expectFiles(w.before, NOTHING);
 	});
 
@@ -782,8 +819,8 @@ describe('deleting for good from the admin panel', () => {
 			request: filesStayOnFailure((w) =>
 				api('POST', `/api/admin/boards/${w.A.board.id}/clear-cards`, w.confirmed)
 			),
-			// The password is counted on the session as it arrives, apart from the transaction.
-			apart: ['sessions.wrong_password_count'],
+			// The password is counted on the session as it arrives, and the code spent, apart from the transaction.
+			apart: [...STEP_UP_APART],
 			afterSuccess: (w, res: ApiResult, sent) => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({ success: true });
@@ -902,8 +939,8 @@ describe('deleting a board', () => {
 			const run = await eachWriteInTurn({
 				build: confirmedThrough(path),
 				request: filesStayOnFailure((w) => api('DELETE', `${path}/${w.A.board.id}`, w.confirmed)),
-				// The password is counted on the session as it arrives, apart from the transaction.
-				apart: ['sessions.wrong_password_count'],
+				// The password is counted on the session as it arrives, and the code spent, apart from the transaction.
+				apart: [...STEP_UP_APART],
 				afterSuccess: (w, res: ApiResult, sent) => {
 					expect(res.status).toBe(200);
 
@@ -980,8 +1017,8 @@ describe('deleting a board', () => {
 		try {
 			// The last write of all: the board itself, after the two to the
 			// session's count of wrong passwords as the password is checked
-			// (card 2701).
-			writes.failNth(9);
+			// (card 2701) and the code's spend between them (card 2771).
+			writes.failNth(10);
 			await expect(api('DELETE', `/api/boards/${w.A.board.id}`, w.confirmed)).rejects.toThrow(/made to fail/);
 			expect(writes.fired).toBe(true);
 		} finally {
@@ -989,7 +1026,8 @@ describe('deleting a board', () => {
 		}
 
 		expect(sqlite.prepare("SELECT message FROM system_logs WHERE context = 'DELETE'").all()).toEqual([]);
-		expect(diffSnapshots(w.before, snapshotDb())).toEqual([]);
+		// Nothing but the code, left spent (card 2771, S4).
+		expectSpentAlone(w.before);
 	});
 
 	it.each([

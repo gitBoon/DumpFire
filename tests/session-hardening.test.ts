@@ -46,7 +46,7 @@ import { endPlainSessions } from '$lib/server/startup-checks';
 import { stamp } from '$lib/timestamps';
 import { api } from './helpers/api';
 import { FROM_THE_PAGE, gate } from './helpers/gate';
-import { FIXTURE_PASSWORD, makeSession, makeUser, resetDb, sessionHashOf, sessionRow, stepUp } from './helpers/fixtures';
+import { FIXTURE_PASSWORD, makeSession, makeUser, resetDb, sessionHashOf, sessionRow, stepUp, stepUpCode } from './helpers/fixtures';
 import { allowOtherTimestampForms } from './helpers/timestamps';
 import { giveFactor, signInFully } from './helpers/two-step';
 
@@ -268,9 +268,10 @@ describe('what changes a session', () => {
 		}
 
 		vi.setSystemTime(T0 + 6 * DAY);
+		// The current password and the code the authenticator shows at the faked time (card 2771).
 		const res = await gate('PUT', '/api/account/password', {
 			headers: { cookie: `${SESSION_COOKIE_NAME}=${code}`, ...FROM_THE_PAGE, accept: 'application/json' },
-			body: { currentPassword: FIXTURE_PASSWORD, newPassword: 'another password for the account' }
+			body: { currentPassword: FIXTURE_PASSWORD, currentCode: stepUpCode(user), newPassword: 'another password for the account' }
 		});
 		expect(res.status).toBe(200);
 		const set = res.headers.getSetCookie().find((cookie) => cookie.startsWith(`${SESSION_COOKIE_NAME}=`))!;
@@ -298,7 +299,7 @@ describe('what changes a session', () => {
 		vi.setSystemTime(T0 + 24 * HOUR - 30 * 1000);
 		const res = await gate('PUT', '/api/account/password', {
 			headers: { cookie: `${SESSION_COOKIE_NAME}=${code}`, ...FROM_THE_PAGE, accept: 'application/json' },
-			body: { currentPassword: FIXTURE_PASSWORD, newPassword: 'another password for the account' }
+			body: { currentPassword: FIXTURE_PASSWORD, currentCode: stepUpCode(admin), newPassword: 'another password for the account' }
 		});
 
 		expect({ status: res.status, body: await res.json() }).toEqual({ status: 401, body: { message: 'Not authenticated' } });

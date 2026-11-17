@@ -132,6 +132,7 @@ import {
 	makeVersion,
 	resetDb,
 	stepUp,
+	stepUpCode,
 	sessionHashOf
 } from './helpers/fixtures';
 import { gate, gateRoutes } from './helpers/gate';
@@ -539,21 +540,21 @@ describe('the lifecycle routes, through the gate (36)', () => {
 			...(body === undefined ? {} : { body })
 		});
 
-	const rows: [route: string, make: (editor: SessionUser) => Decision, body: (id: number) => Record<string, unknown> | undefined][] = [
+	const rows: [route: string, make: (editor: SessionUser) => Decision, body: (id: number, editor: SessionUser) => Record<string, unknown> | undefined][] = [
 		['open', (editor) => readyOf(editor), (id) => ({ revision: revisionNow(id) })],
 		['republish', (editor) => openByHand(editor), (id) => ({ changeNote: 'The dates moved.', askAgain: true, revision: revisionNow(id) })],
 		['close', (editor) => openByHand(editor), () => undefined],
 		// Card 2682 (D30): later than `FUTURE`, 90 days ahead, as Extend never brings the closing time earlier.
 		['extend', (editor) => openByHand(editor), () => ({ closesAt: sentAs(fromNow(120 * DAY)) })],
-		// An opened decision's withdrawal asks for the password (B4, Q29): the page sends it.
-		['withdraw', (editor) => openByHand(editor), () => ({ reason: 'No longer needed.', currentPassword: FIXTURE_PASSWORD })]
+		// An opened decision's withdrawal asks for the password (B4, Q29) and a code (card 2771): the page sends them.
+		['withdraw', (editor) => openByHand(editor), (_id, editor) => ({ reason: 'No longer needed.', currentPassword: FIXTURE_PASSWORD, currentCode: stepUpCode(editor) })]
 	];
 
 	it.each(rows)('POST …/%s answers { decision, revision } through the one projection', async (route, make, body) => {
 		const editor = editorNamed('editor');
 		const decision = make(editor);
 
-		const res = await send(editor, `/api/decisions/${decision.id}/${route}`, body(decision.id));
+		const res = await send(editor, `/api/decisions/${decision.id}/${route}`, body(decision.id, editor));
 		const answer = await res.json();
 
 		expect(res.status, JSON.stringify(answer)).toBe(200);

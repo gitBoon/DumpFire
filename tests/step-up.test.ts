@@ -70,7 +70,24 @@ import ts from 'typescript';
 import { DRIVE_FILE_SCOPE } from '$lib/drive-scope';
 import { db, sqlite } from '$lib/server/db';
 import { afterCommit } from '$lib/server/db/transaction';
-import { boards, cards, categories, columns, decisionParticipants, enrolmentLinks, inviteTokens, people, sessions, settings, userXp, users, webhooks } from '$lib/server/db/schema';
+import {
+	apiKeys,
+	boards,
+	cards,
+	categories,
+	columns,
+	decisionParticipants,
+	enrolmentLinks,
+	inviteTokens,
+	mfaFactors,
+	mfaRecoveryCodes,
+	people,
+	sessions,
+	settings,
+	userXp,
+	users,
+	webhooks
+} from '$lib/server/db/schema';
 import { PASSWORD_CHANGED_MEANWHILE, SESSION_COOKIE_NAME, deleteSession, forgetChecksInFlight, passwordHeld, whilePasswordHolds } from '$lib/server/auth';
 import { addressKey } from '$lib/server/client-address';
 import { PASSWORDS_BUSY } from '$lib/server/passwords';
@@ -88,8 +105,12 @@ import {
 	CONFIRMATION_HEADER,
 	CONFIRMATION_REFUSED,
 	STEP_UP_ACTIONS,
+	STEP_UP_CODE_MALFORMED,
+	STEP_UP_CODE_SPENT,
+	STEP_UP_FACTOR_UNUSABLE,
 	STEP_UP_IN_FLIGHT,
 	STEP_UP_MISSING,
+	STEP_UP_NO_FACTOR,
 	STEP_UP_NO_PASSWORD,
 	STEP_UP_SIGNED_OUT,
 	STEP_UP_WRONG,
@@ -117,12 +138,17 @@ import {
 	makeWebhook,
 	resetDb,
 	stepUp,
+	stepUpCode,
+	stepUpFactor,
 	sessionHashOf,
 	sessionCredential
 } from './helpers/fixtures';
+import { failingWrite } from './helpers/failing-write';
 import { FROM_THE_PAGE, gate } from './helpers/gate';
-import { expectUnchanged, snapshotDb } from './helpers/snapshot';
+import { expectUnchanged, snapshotDb, type DbSnapshot } from './helpers/snapshot';
 import { handlersOf } from './helpers/source-scan';
+import { giveFactor, wrongCodeFor } from './helpers/two-step';
+import { stepAt } from '$lib/server/totp';
 
 beforeEach(() => {
 	resetDb();
@@ -150,6 +176,26 @@ const REFUSED = { message: CONFIRMATION_REFUSED, stepUp: 'confirmation' };
 /** Not the fixture's password. */
 const WRONG = 'not the password';
 
+/** The account's second factor as stored (card 2771). */
+const factorRow = (user: { id: number }) => db.select().from(mfaFactors).where(eq(mfaFactors.userId, user.id)).get()!;
+/** The last step its codes spent, or null for none. */
+const lastStepOf = (user: { id: number }) => factorRow(user).lastStep;
+/** A six-digit code that is wrong for the account's authenticator now. */
+const wrongCodeOf = (user: { id: number }) => wrongCodeFor(stepUpFactor(user).secret);
+/** The account's recovery codes used so far. */
+const recoveryUsed = (user: { id: number }) =>
+	db.select({ usedAt: mfaRecoveryCodes.usedAt }).from(mfaRecoveryCodes).where(eq(mfaRecoveryCodes.userId, user.id)).all().filter((code) => code.usedAt !== null).length;
+
+/** The columns a right password with a wrong code writes on the account (card 2771, D6): its banner and its failed codes. */
+const SIGNAL = ['security_banner', 'security_banner_at', 'failed_codes_since_sign_in'];
+/** A snapshot with `SIGNAL` taken out of `users`. */
+const withoutSignal = (snapshot: DbSnapshot): DbSnapshot => ({
+	...snapshot,
+	users: Object.fromEntries(
+		Object.entries(snapshot.users).map(([id, row]) => [id, Object.fromEntries(Object.entries(row).filter(([column]) => !SIGNAL.includes(column)))])
+	)
+});
+
 /**
  * The superadmin, an administrator and an ordinary member; a board of the
  * administrator's with a card, an archived card and a category; and XP.
@@ -166,6 +212,8 @@ function scene() {
 	return { chief, admin, member, board, cols };
 }
 type Scene = ReturnType<typeof scene>;
+/** The `api()` options `stepUp` makes. */
+type Confirmed = ReturnType<typeof stepUp>;
 
 /** The session a request's cookie names. */
 const tokenOf = (sent: { headers: Record<string, string> }) => sent.headers.cookie.slice(`${SESSION_COOKIE_NAME}=`.length);
@@ -276,7 +324,7 @@ const linkRevokedReasons = (participantId: number) =>
 // ─── 1 and 2. The list, and the routes that ask ──────────────────────────────
 
 describe('the list of what asks, pinned against the routes (cases 1 and 2)', () => {
-	it("is the twenty-nine actions: decision 2's eighteen (the import among them, as its confirmation), card 2697's eight, card 2679's two and card 2773's one, each with why it asks", () => {
+	it("is the thirty-two actions: decision 2's eighteen (the import among them, as its confirmation), card 2697's eight, card 2679's two, card 2773's one and card 2771's three, each with why it asks", () => {
 		expect(Object.keys(STEP_UP_ACTIONS).sort()).toEqual(
 			[
 				'POST /api/admin/reset',
@@ -312,7 +360,11 @@ describe('the list of what asks, pinned against the routes (cases 1 and 2)', () 
 				'POST /api/decisions/[id]/rule',
 				'POST /api/decisions/[id]/release',
 				// Card 2773: another account's two-step sign-in reset, which hands the caller its enrolment link.
-				'POST /api/users/[id]/mfa/reset'
+				'POST /api/users/[id]/mfa/reset',
+				// Card 2771 (D7): the Account page's three forms.
+				'PUT /api/account/password',
+				'PUT /api/account/email',
+				'POST /api/account/api-keys'
 			].sort()
 		);
 		for (const [action, why] of Object.entries(STEP_UP_ACTIONS)) expect(why.trim().length, action).toBeGreaterThan(20);
@@ -638,27 +690,76 @@ describe('each admin action asks for the current password (case 3)', () => {
 				expect(res.body).toEqual({ created: 1, skipped: [] });
 				expect(db.select({ userId: people.userId }).from(people).all()).toEqual([{ userId: s.member.id }]);
 			}
+		},
+		// Card 2771 (D7): the Account page's three forms, through the step-up since.
+		{
+			action: 'PUT /api/account/email',
+			who: 'admin',
+			method: 'PUT',
+			path: () => '/api/account/email',
+			body: () => ({ newEmail: 'moved@example.test' }),
+			done: (res, s) => {
+				expect(res.body).toEqual({ success: true, email: 'moved@example.test' });
+				expect(db.select({ email: users.email }).from(users).where(eq(users.id, s.admin.id)).get()).toEqual({ email: 'moved@example.test' });
+			}
+		},
+		{
+			action: 'PUT /api/account/password',
+			who: 'admin',
+			method: 'PUT',
+			path: () => '/api/account/password',
+			body: () => ({ newPassword: 'a long new password' }),
+			done: (res, s) => {
+				expect(res.body).toEqual({ success: true, apiKeysEnded: 0, webhooksSwitchedOff: 0 });
+				expect(db.select({ hash: users.passwordHash }).from(users).where(eq(users.id, s.admin.id)).get()!.hash).not.toBe(FIXTURE_PASSWORD_HASH);
+				// A new session, in place of the one the change ended.
+				expect(db.select().from(sessions).where(eq(sessions.userId, s.admin.id)).all()).toHaveLength(1);
+			}
+		},
+		{
+			action: 'POST /api/account/api-keys',
+			who: 'admin',
+			path: () => '/api/account/api-keys',
+			body: () => ({ name: 'my script' }),
+			status: 201,
+			done: (res, s) => {
+				expect(res.body).toMatchObject({ name: 'my script', key: expect.any(String) });
+				expect(db.select({ name: apiKeys.name }).from(apiKeys).where(eq(apiKeys.userId, s.admin.id)).all()).toEqual([{ name: 'my script' }]);
+			}
 		}
 	];
 
 	it.each(ACTIONS)(
-		'$action: none is 400 and nothing is counted, a wrong one 403 changing nothing but the count, the right one its success',
+		'$action: none is 400 and nothing is counted, nor a password with no code; a wrong password or a wrong code 403 in the same words, changing nothing but the count and the code unspent; the right ones its success',
 		async ({ who, path, body = () => ({}), method = 'POST' as const, status = 200, setup, done }) => {
 			const s = scene();
 			setup?.();
 			const confirmed = stepUp(s[who], body(s));
 			const token = tokenOf(confirmed);
+			const wrongCode = wrongCodeOf(s[who]);
 			const before = snapshotDb();
 
 			const missing = await api(method, path(s), { ...confirmed, body: body(s) });
 			expect(answer(missing)).toEqual({ status: 400, body: MISSING });
+			// Card 2771 (D1): the right password and no code is missing too, and counted no more.
+			const noCode = await api(method, path(s), { ...confirmed, body: { ...body(s), currentPassword: FIXTURE_PASSWORD } });
+			expect(answer(noCode)).toEqual({ status: 400, body: MISSING });
 			expectUnchanged(before);
 			expect(stub.compared).toBe(0);
 
-			const wrong = await api(method, path(s), { ...confirmed, body: { ...body(s), currentPassword: WRONG } });
+			const wrong = await api(method, path(s), { ...confirmed, body: { ...body(s), currentPassword: WRONG, currentCode: confirmed.body.currentCode } });
 			expect(answer(wrong)).toEqual({ status: 403, body: WRONG_ONE });
 			expect(countOf(token)).toBe(1);
 			expectUnchanged({ ...before, sessions: snapshotDb().sessions });
+
+			// Card 2771 (D4): the right password and a wrong code, answered as a wrong password is, counted, and the
+			// code not spent; nothing else changed but the account's signal (D6).
+			const wrongOne = await api(method, path(s), { ...confirmed, body: { ...body(s), currentPassword: FIXTURE_PASSWORD, currentCode: wrongCode } });
+			expect(answer(wrongOne)).toEqual({ status: 403, body: WRONG_ONE });
+			expect(countOf(token)).toBe(2);
+			expect(lastStepOf(s[who])).toBeNull();
+			const now = snapshotDb();
+			expectUnchanged(withoutSignal({ ...before, sessions: now.sessions }), '', withoutSignal(now));
 
 			const right = await api(method, path(s), confirmed);
 			expect(right.status, JSON.stringify(right.body)).toBe(status);
@@ -688,12 +789,12 @@ describe('each admin action asks for the current password (case 3)', () => {
 		expect(answer(await upload())).toEqual({ status: 403, body: REFUSED });
 		expect(answer(await confirm({}))).toEqual({ status: 400, body: MISSING });
 		expectUnchanged(before);
-		expect(answer(await confirm({ currentPassword: WRONG }))).toEqual({ status: 403, body: WRONG_ONE });
+		expect(answer(await confirm({ currentPassword: WRONG, currentCode: confirmed.body.currentCode }))).toEqual({ status: 403, body: WRONG_ONE });
 		expect(countOf(token)).toBe(1);
 		expectUnchanged({ ...before, sessions: snapshotDb().sessions });
 		expect(readdirSync(dir)).toEqual([]);
 
-		const issued = await confirm({ currentPassword: FIXTURE_PASSWORD });
+		const issued = await confirm({ currentPassword: FIXTURE_PASSWORD, currentCode: confirmed.body.currentCode });
 		expect(issued.status).toBe(200);
 		const imported = await upload(issued.body.confirmation);
 		expect(imported.status, JSON.stringify(imported.body)).toBe(200);
@@ -714,11 +815,11 @@ describe('each admin action asks for the current password (case 3)', () => {
 		expectUnchanged(before);
 		expect(stub.compared).toBe(0);
 
-		expect(answer(await connect({ currentPassword: WRONG }))).toEqual({ status: 403, body: WRONG_ONE });
+		expect(answer(await connect({ currentPassword: WRONG, currentCode: confirmed.body.currentCode }))).toEqual({ status: 403, body: WRONG_ONE });
 		expect(countOf(token)).toBe(1);
 		expectUnchanged({ ...before, sessions: snapshotDb().sessions });
 
-		const right = await connect({ currentPassword: FIXTURE_PASSWORD });
+		const right = await connect({ currentPassword: FIXTURE_PASSWORD, currentCode: confirmed.body.currentCode });
 		expect(right.status, JSON.stringify(right.body)).toBe(200);
 		expect(right.body.success).toBe(true);
 		expect(backupConfig().destinations[1]).toMatchObject({ name: 'G', refreshToken: 'rt-2701', folderId: 'made-folder-2701' });
@@ -752,39 +853,46 @@ describe('everything refusable without the password is refused first (case 4)', 
 	it.each([
 		{
 			what: 'an administrator deleting the superadmin',
-			send: (s: Scene) => api('DELETE', `/api/users/${s.chief.id}`, stepUp(s.admin)),
+			confirm: (s: Scene) => stepUp(s.admin),
+			send: (s: Scene, confirmed: Confirmed) => api('DELETE', `/api/users/${s.chief.id}`, confirmed),
 			refused: { status: 403, body: { message: 'Cannot delete superadmin account' } }
 		},
 		{
 			what: 'a role change with a username another account has',
-			send: (s: Scene) => api('PUT', `/api/users/${s.member.id}`, stepUp(s.chief, { role: 'admin', username: 'admin' })),
+			confirm: (s: Scene) => stepUp(s.chief, { role: 'admin', username: 'admin' }),
+			send: (s: Scene, confirmed: Confirmed) => api('PUT', `/api/users/${s.member.id}`, confirmed),
 			refused: { status: 409, body: { message: 'Username already taken' } }
 		},
 		{
 			what: 'an invite with no mail host',
-			send: (s: Scene) => api('POST', `/api/users/${s.member.id}/invite`, stepUp(s.admin)),
+			confirm: (s: Scene) => stepUp(s.admin),
+			send: (s: Scene, confirmed: Confirmed) => api('POST', `/api/users/${s.member.id}/invite`, confirmed),
 			refused: { status: 400, body: { message: 'SMTP is not configured' } }
 		},
 		// Slice 2b: the board and column deletes (D5: the owner check is the service's).
 		{
 			what: 'an editor deleting a board they do not own',
 			setup: (s: Scene) => addBoardMember(s.board, s.member, 'editor'),
-			send: (s: Scene) => api('DELETE', `/api/boards/${s.board.id}`, stepUp(s.member)),
+			confirm: (s: Scene) => stepUp(s.member),
+			send: (s: Scene, confirmed: Confirmed) => api('DELETE', `/api/boards/${s.board.id}`, confirmed),
 			refused: { status: 403, body: { message: 'Only board owners and admins can delete boards' } }
 		},
 		{
 			what: "a delivery board's Options column deleted",
 			setup: (s: Scene) => makeBoard({ owner: s.admin, name: 'Kept', options: true }),
-			send: (s: Scene) =>
-				api('DELETE', `/api/columns/${db.select().from(columns).where(eq(columns.role, 'options')).get()!.id}`, stepUp(s.admin)),
+			confirm: (s: Scene) => stepUp(s.admin),
+			send: (_s: Scene, confirmed: Confirmed) =>
+				api('DELETE', `/api/columns/${db.select().from(columns).where(eq(columns.role, 'options')).get()!.id}`, confirmed),
 			refused: { status: 409, body: { message: 'Every delivery board keeps its Options column. Fold it away with the arrow on its strip instead.' } }
 		}
-	])('$what is refused by the guard, in its own words: nothing counted, no password compared', async ({ setup, send, refused }) => {
+	])('$what is refused by the guard, in its own words: nothing counted, no password compared', async ({ setup, confirm, send, refused }) => {
 		const s = scene();
 		setup?.(s);
+		// Built before the snapshot: it gives the caller the factor its code is made from (card 2771).
+		const confirmed = confirm(s);
 		const before = snapshotDb();
 
-		const res = await send(s);
+		const res = await send(s, confirmed);
 
 		expect(answer(res)).toEqual(refused);
 		expect(stub.compared).toBe(0);
@@ -946,25 +1054,30 @@ describe('what asks only when it carries what it guards (case 6)', () => {
 	it.each([
 		{
 			what: "POST /api/people with another person's address",
-			send: (s: Scene) => api('POST', '/api/people', stepUp(s.admin, { fullName: 'Another Pat', email: 'pat.doe@example.test' }, WRONG)),
+			confirm: (s: Scene) => stepUp(s.admin, { fullName: 'Another Pat', email: 'pat.doe@example.test' }, WRONG),
+			send: (confirmed: Confirmed) => api('POST', '/api/people', confirmed),
 			refused: { status: 409, body: { message: 'Email already in the directory: Pat Doe' } }
 		},
 		{
 			what: 'DELETE /api/people/[id] of nobody',
-			send: (s: Scene) => api('DELETE', '/api/people/9999', stepUp(s.admin, {}, WRONG)),
+			confirm: (s: Scene) => stepUp(s.admin, {}, WRONG),
+			send: (confirmed: Confirmed) => api('DELETE', '/api/people/9999', confirmed),
 			refused: { status: 404, body: { message: 'Person not found' } }
 		},
 		{
 			what: 'POST /api/people/from-accounts with an id that is no account',
-			send: (s: Scene) => api('POST', '/api/people/from-accounts', stepUp(s.admin, { userIds: [s.member.id, 9999] }, WRONG)),
+			confirm: (s: Scene) => stepUp(s.admin, { userIds: [s.member.id, 9999] }, WRONG),
+			send: (confirmed: Confirmed) => api('POST', '/api/people/from-accounts', confirmed),
 			refused: { status: 400, body: { message: 'userId 9999 is not an account' } }
 		}
-	])('$what and a wrong password is refused by the guard, before any password: nothing counted or changed', async ({ send, refused }) => {
+	])('$what and a wrong password is refused by the guard, before any password: nothing counted or changed', async ({ confirm, send, refused }) => {
 		const s = scene();
 		aLinkHolder();
+		// Built before the snapshot: it gives the caller the factor its code is made from (card 2771).
+		const confirmed = confirm(s);
 		const before = snapshotDb();
 
-		const res = await send(s);
+		const res = await send(confirmed);
 
 		expect(answer(res)).toEqual(refused);
 		expect(stub.compared).toBe(0);
@@ -997,9 +1110,10 @@ describe('what is refused before anything is counted (cases 7 and 8)', () => {
 	it('refuses a request with no session cookie 401, nothing counted and no password compared', async () => {
 		const s = scene();
 		const token = makeSession(s.admin);
+		const currentCode = stepUpCode(s.admin);
 		const before = snapshotDb();
 
-		const res = await api('POST', '/api/admin/purge-archived', { user: s.admin, body: { currentPassword: FIXTURE_PASSWORD } });
+		const res = await api('POST', '/api/admin/purge-archived', { user: s.admin, body: { currentPassword: FIXTURE_PASSWORD, currentCode } });
 
 		expect(answer(res)).toEqual({ status: 401, body: { message: 'Not authenticated' } });
 		expect(stub.compared).toBe(0);
@@ -1036,7 +1150,8 @@ describe("the count of wrong passwords on the session's row (cases 9 to 16)", ()
 		const s = scene();
 		const token = makeSession(s.admin);
 		const headers = { cookie: `${SESSION_COOKIE_NAME}=${token}`, ...FROM_THE_PAGE, accept: 'application/json' };
-		const send = (currentPassword: string) => gate('POST', '/api/admin/purge-archived', { headers, body: { currentPassword } });
+		const currentCode = stepUpCode(s.admin);
+		const send = (currentPassword: string) => gate('POST', '/api/admin/purge-archived', { headers, body: { currentPassword, currentCode } });
 		logAt('WARN');
 
 		for (let n = 1; n <= 2; n++) {
@@ -1085,15 +1200,22 @@ describe("the count of wrong passwords on the session's row (cases 9 to 16)", ()
 		expect(countOf(token)).toBeUndefined();
 	});
 
-	it('keeps one count for the Account forms and the admin actions, which only a right password clears', async () => {
+	it('keeps one count for the Account forms and the admin actions, which only a right password and code clear', async () => {
 		const s = scene();
 		const token = makeSession(s.admin);
 		const cookie = { cookie: `${SESSION_COOKIE_NAME}=${token}` };
-		const purge = (currentPassword: string) => api('POST', '/api/admin/purge-archived', { user: s.admin, body: { currentPassword }, headers: cookie });
+		// A code made for each send: the right one before the last spends its step.
+		const purge = (currentPassword: string) =>
+			api('POST', '/api/admin/purge-archived', { user: s.admin, body: { currentPassword, currentCode: stepUpCode(s.admin) }, headers: cookie });
 
+		// Through the step-up since card 2771, in its words.
 		for (let n = 1; n <= 2; n++) {
-			const res = await api('PUT', '/api/account/email', { user: s.admin, body: { newEmail: 'moved@example.test', password: WRONG }, headers: cookie });
-			expect(answer(res)).toEqual({ status: 403, body: { message: 'Password is incorrect', stepUp: 'wrong' } });
+			const res = await api('PUT', '/api/account/email', {
+				user: s.admin,
+				body: { newEmail: 'moved@example.test', currentPassword: WRONG, currentCode: stepUpCode(s.admin) },
+				headers: cookie
+			});
+			expect(answer(res)).toEqual({ status: 403, body: WRONG_ONE });
 		}
 		expect(countOf(token)).toBe(2);
 
@@ -1106,15 +1228,16 @@ describe("the count of wrong passwords on the session's row (cases 9 to 16)", ()
 	});
 
 	it.each([
-		{ path: '/api/account/email', method: 'PUT' as const, body: (password: string) => ({ newEmail: 'moved@example.test', password }), wrong: 'Password is incorrect' },
-		{ path: '/api/account/password', method: 'PUT' as const, body: (currentPassword: string) => ({ currentPassword, newPassword: 'a new long password' }), wrong: 'Current password is incorrect' },
-		{ path: '/api/account/api-keys', method: 'POST' as const, body: (password: string) => ({ name: 'my script', password }), wrong: 'Password is incorrect' }
-	])('$method $path: the first two wrong passwords in its own words, and the third signs the session out', async ({ path, method, body, wrong }) => {
+		{ path: '/api/account/email', method: 'PUT' as const, body: (currentPassword: string) => ({ newEmail: 'moved@example.test', currentPassword }) },
+		{ path: '/api/account/password', method: 'PUT' as const, body: (currentPassword: string) => ({ currentPassword, newPassword: 'a new long password' }) },
+		{ path: '/api/account/api-keys', method: 'POST' as const, body: (currentPassword: string) => ({ name: 'my script', currentPassword }) }
+	])("$method $path: the first two wrong passwords in the step-up's words (card 2771), and the third signs the session out", async ({ path, method, body }) => {
 		const s = scene();
 		const token = makeSession(s.member);
-		const send = () => api(method, path, { user: s.member, body: body(WRONG), headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` } });
+		const currentCode = stepUpCode(s.member);
+		const send = () => api(method, path, { user: s.member, body: { ...body(WRONG), currentCode }, headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` } });
 
-		for (let n = 1; n <= 2; n++) expect(answer(await send())).toEqual({ status: 403, body: { message: wrong, stepUp: 'wrong' } });
+		for (let n = 1; n <= 2; n++) expect(answer(await send())).toEqual({ status: 403, body: WRONG_ONE });
 		expect(answer(await send())).toEqual({ status: 403, body: SIGNED_OUT });
 
 		expect(countOf(token)).toBeUndefined();
@@ -1138,11 +1261,13 @@ describe("the count of wrong passwords on the session's row (cases 9 to 16)", ()
 		expect(archivedLeft()).toBe(1);
 	});
 
-	it('checks one password at a time for a session: a second is 429 with no compare, and not counted; another session of the account goes ahead', async () => {
+	it('checks one password at a time for a session: a second is 429 with no compare, and not counted; another session of the account goes ahead, and with the same code loses its spend (card 2771, E3)', async () => {
 		const s = scene();
 		const first = stepUp(s.admin);
 		const token = tokenOf(first);
-		const other = stepUp(s.admin);
+		// The same code, from another session: both pass step 2b before either spends it.
+		const other = stepUp(s.admin, {}, FIXTURE_PASSWORD, first.body.currentCode as string);
+		const otherToken = tokenOf(other);
 		const release = holdChecks();
 
 		const held = api('POST', '/api/admin/purge-archived', first);
@@ -1158,11 +1283,15 @@ describe("the count of wrong passwords on the session's row (cases 9 to 16)", ()
 		await vi.waitFor(() => expect(stub.compared).toBe(2));
 		release();
 
-		// Both right, and both through: one purged the archived card, whichever was first.
-		const both = [await held, await elsewhere];
-		expect(both.map((res) => res.status)).toEqual([200, 200]);
-		expect(both.map((res) => res.body.purged).sort()).toEqual([0, 1]);
-		expect(countOf(token)).toBe(0);
+		// Both passwords right; the step is spent once. Whichever spends it goes through and clears its count; the
+		// other is 403 wrong, counted on its own session: a spend lost after the compare is never code-spent (S1).
+		const both = [await held, await elsewhere].map(answer).sort((a, b) => a.status - b.status);
+		expect(both).toEqual([
+			{ status: 200, body: { success: true, purged: 1 } },
+			{ status: 403, body: WRONG_ONE }
+		]);
+		expect([countOf(token), countOf(otherToken)].sort()).toEqual([0, 1]);
+		expect(archivedLeft()).toBe(0);
 	});
 
 	/** Take every one of the account's places in the first lane of password checks, as five checks in flight would. */
@@ -1209,11 +1338,13 @@ describe("the count of wrong passwords on the session's row (cases 9 to 16)", ()
 	});
 
 	it.each([
-		['the right password', FIXTURE_PASSWORD],
-		['a wrong one', WRONG]
-	])('answers %s signed out when the session ended while it was being checked, in the same words', async (_which, password) => {
+		['the right password', FIXTURE_PASSWORD, false],
+		['a wrong one', WRONG, false],
+		['the right password with a recovery code', FIXTURE_PASSWORD, true]
+	])('answers %s signed out when the session ended while it was being checked, in the same words, spending no code (card 2771)', async (_which, password, recovery) => {
 		const s = scene();
-		const confirmed = stepUp(s.admin, {}, password);
+		const given = giveFactor(s.admin);
+		const confirmed = stepUp(s.admin, {}, password, recovery ? given.recoveryCodes[0] : stepUpCode(s.admin));
 		const token = tokenOf(confirmed);
 		const release = holdChecks();
 
@@ -1224,19 +1355,49 @@ describe("the count of wrong passwords on the session's row (cases 9 to 16)", ()
 
 		expect(answer(await pending)).toEqual({ status: 403, body: SIGNED_OUT });
 		expect(archivedLeft()).toBe(1);
+		// Neither the step nor a recovery code is spent by a session that ended meanwhile.
+		expect(lastStepOf(s.admin)).toBeNull();
+		expect(recoveryUsed(s.admin)).toBe(0);
 	});
 
-	it("leaves sign-in's counts alone: the address's attempts and the account's wrong sign-ins, and no wait", async () => {
+	it("leaves sign-in's counts alone: the address's attempts, the account's wrong sign-ins, no wait, and the code lanes, their pauses and the lock, which do not stop a step-up (card 2771, D6)", async () => {
 		const s = scene();
 		const address = '203.0.113.9';
 		const wrong = stepUp(s.admin, {}, WRONG);
+		/** Sign-in's code lanes, their pauses and the recovery count (master plan D4). */
+		const lanes = () =>
+			db
+				.select({
+					known: users.mfaKnownWrong,
+					other: users.mfaOtherWrong,
+					knownResumes: users.mfaKnownResumesAt,
+					otherResumes: users.mfaOtherResumesAt,
+					recovery: users.mfaRecoveryWrong,
+					recoveryResumes: users.mfaRecoveryResumesAt
+				})
+				.from(users)
+				.where(eq(users.id, s.admin.id))
+				.get();
+		const was = lanes();
 
 		for (let n = 1; n <= 2; n++) expect((await api('POST', '/api/admin/purge-archived', { ...wrong, ip: address })).status).toBe(403);
+
+		// Card 2771: from another session, the right password with a wrong authenticator code and with a recovery code the account does not hold.
+		const codes = stepUp(s.admin);
+		for (const currentCode of [wrongCodeOf(s.admin), 'ABCD-EFGH-JKMN-PQRS']) {
+			const res = await api('POST', '/api/admin/purge-archived', { ...codes, ip: address, body: { currentPassword: FIXTURE_PASSWORD, currentCode } });
+			expect(answer(res)).toEqual({ status: 403, body: WRONG_ONE });
+		}
 
 		expect(wrongSignInsAt(`user:${s.admin.id}`)).toBe(0);
 		expect(signInWait(`user:${s.admin.id}`)).toBe(0);
 		// The address's next sign-in attempt is the first of its window.
 		expect(checkRateLimit(`login:${addressKey(address)}`).attempts).toBe(1);
+		expect(lanes()).toEqual(was);
+
+		// Authenticator codes locked at sign-in: a step-up still takes one.
+		db.update(users).set({ mfaKnownWrong: 30 }).where(eq(users.id, s.admin.id)).run();
+		expect(answer(await api('POST', '/api/admin/purge-archived', { ...codes, ip: address }))).toEqual({ status: 200, body: { success: true, purged: 1 } });
 	});
 });
 
@@ -1259,9 +1420,10 @@ describe('the password in the log and the answers (case 17)', () => {
 
 		expect(answers.map((res) => res.status)).toEqual([200, 403, 403]);
 		expect(confirmed.status).toBe(200);
-		expect(linesStarting('INFO', 'Password confirmed')).toEqual([
-			{ message: `Password confirmed by admin (ID: ${s.admin.id}) for POST /api/admin/purge-archived`, userId: s.admin.id },
-			{ message: `Password confirmed by chief (ID: ${s.chief.id}) for POST /api/admin/import/confirm`, userId: s.chief.id }
+		// Card 2771 (D13): the password and the code.
+		expect(linesStarting('INFO', 'Password')).toEqual([
+			{ message: `Password and code confirmed by admin (ID: ${s.admin.id}) for POST /api/admin/purge-archived`, userId: s.admin.id },
+			{ message: `Password and code confirmed by chief (ID: ${s.chief.id}) for POST /api/admin/import/confirm`, userId: s.chief.id }
 		]);
 		const logged = JSON.stringify(sqlite.prepare('SELECT message, context, meta FROM system_logs').all());
 		for (const secret of [FIXTURE_PASSWORD, guess, confirmed.body.confirmation]) expect(logged).not.toContain(secret);
@@ -1269,6 +1431,360 @@ describe('the password in the log and the answers (case 17)', () => {
 			for (const secret of [FIXTURE_PASSWORD, guess, confirmed.body.confirmation]) expect(JSON.stringify(res.body)).not.toContain(secret);
 		}
 		expect(JSON.stringify(confirmed.body)).not.toContain(FIXTURE_PASSWORD);
+	});
+});
+
+// ─── Card 2771: the code beside the password (T1 to T11) ────────────────────
+
+describe('the code from the authenticator app, or a recovery code, beside the password (card 2771, T1 to T11)', () => {
+	const PURGE = '/api/admin/purge-archived';
+	/** What a code in neither form is answered (D2). */
+	const MALFORMED = { message: STEP_UP_CODE_MALFORMED, stepUp: 'code-malformed' };
+	/** What a code whose step is already spent is answered (D3). */
+	const SPENT = { message: STEP_UP_CODE_SPENT, stepUp: 'code-spent' };
+	/** The account's row, as the signal reads it. */
+	const userRow = (user: { id: number }) => db.select().from(users).where(eq(users.id, user.id)).get()!;
+	/** Mail sent through a mail host, recorded and not sent, until the test ends. */
+	const mailed = () => {
+		makeSmtp();
+		const sent = effects();
+		onTestFinished(() => sent.restore());
+		return sent;
+	};
+
+	it.each([
+		['absent', undefined],
+		['empty', ''],
+		['a number', 5],
+		['null', null]
+	])('T1. answers the right password with the code %s 400 missing: no compare, nothing counted, nothing spent', async (_what, code) => {
+		const s = scene();
+		const confirmed = stepUp(s.admin);
+		const token = tokenOf(confirmed);
+		const body = code === undefined ? { currentPassword: FIXTURE_PASSWORD } : { currentPassword: FIXTURE_PASSWORD, currentCode: code };
+		const before = snapshotDb();
+
+		const res = await api('POST', PURGE, { ...confirmed, body });
+
+		expect(answer(res)).toEqual({ status: 400, body: MISSING });
+		expect(stub.compared).toBe(0);
+		expect(countOf(token)).toBe(0);
+		expect(lastStepOf(s.admin)).toBeNull();
+		expectUnchanged(before);
+	});
+
+	it('T2. answers a code in neither form 400 code-malformed with a right or a wrong password, uncounted and with no compare, and lets through six digits with spaces and a recovery code in lower case with spaces', async () => {
+		const s = scene();
+		const given = giveFactor(s.admin);
+		const confirmed = stepUp(s.admin);
+		const token = tokenOf(confirmed);
+		const recovery = given.recoveryCodes[0];
+		const before = snapshotDb();
+
+		for (const code of [
+			'12345',
+			'1234567',
+			'12a456',
+			// A recovery code cut at the authenticator field's seven characters (SR1).
+			recovery.slice(0, 7),
+			// Sixty-five characters, a recovery code the account holds among them: refused for its length before any pattern (S7).
+			`${' '.repeat(65 - recovery.length)}${recovery}`
+		]) {
+			for (const password of [FIXTURE_PASSWORD, WRONG]) {
+				const res = await api('POST', PURGE, { ...confirmed, body: { currentPassword: password, currentCode: code } });
+				expect(answer(res), JSON.stringify(code)).toEqual({ status: 400, body: MALFORMED });
+			}
+		}
+		expect(stub.compared).toBe(0);
+		expect(countOf(token)).toBe(0);
+		expectUnchanged(before);
+
+		// Passed through, and good: the authenticator's code with spaces round and in it, and then a recovery code as typed.
+		const code = confirmed.body.currentCode as string;
+		const spaced = await api('POST', PURGE, { ...confirmed, body: { currentPassword: FIXTURE_PASSWORD, currentCode: ` ${code.slice(0, 3)} ${code.slice(3)} ` } });
+		expect(answer(spaced)).toEqual({ status: 200, body: { success: true, purged: 1 } });
+		const typed = ` ${recovery.toLowerCase().replace(/-/g, ' ')} `;
+		const byRecovery = await api('POST', PURGE, { ...confirmed, body: { currentPassword: FIXTURE_PASSWORD, currentCode: typed } });
+		expect(answer(byRecovery)).toEqual({ status: 200, body: { success: true, purged: 0 } });
+		expect(stub.compared).toBe(2);
+		expect(recoveryUsed(s.admin)).toBe(1);
+	});
+
+	it('T3. counts a right password with a wrong code once, answers it as a wrong password, spends nothing, raises the signal and mails it once an hour, and the third wrong answer signs the session out', async () => {
+		const s = scene();
+		const sent = mailed();
+		logAt('WARN');
+		const token = makeSession(s.admin);
+		const headers = { cookie: `${SESSION_COOKIE_NAME}=${token}`, ...FROM_THE_PAGE, accept: 'application/json' };
+		const code = stepUpCode(s.admin);
+		const wrongCode = wrongCodeOf(s.admin);
+		const send = async (currentPassword: string, currentCode: string) => {
+			const res = await gate('POST', PURGE, { headers, body: { currentPassword, currentCode } });
+			return { status: res.status, body: await res.json(), cookie: res.headers.get('set-cookie') };
+		};
+
+		const wrongCodeAnswer = await send(FIXTURE_PASSWORD, wrongCode);
+		expect(wrongCodeAnswer).toMatchObject({ status: 403, body: WRONG_ONE });
+		expect(countOf(token)).toBe(1);
+		expect(lastStepOf(s.admin)).toBeNull();
+		expect(linesStarting('WARN', 'Wrong code')).toEqual([
+			{ message: `Wrong code for user ${s.admin.id} on POST /api/admin/purge-archived: the password was right`, userId: s.admin.id }
+		]);
+		expect(userRow(s.admin)).toMatchObject({ securityBanner: 'wrong-code', failedCodesSinceSignIn: 1 });
+		await sent.settle();
+		expect(sent.emails.map((mail) => mail.subject)).toEqual(['Your DumpFire password was used with a wrong code']);
+		expect(sent.emails[0].html).toContain('while confirming a change, and then a wrong code.');
+
+		// A second wrong code within the hour, from another session: counted there, and no second notice.
+		const elsewhere = stepUp(s.admin, {}, FIXTURE_PASSWORD, wrongCode);
+		expect(answer(await api('POST', PURGE, elsewhere))).toEqual({ status: 403, body: WRONG_ONE });
+		expect(userRow(s.admin).failedCodesSinceSignIn).toBe(2);
+		await sent.settle();
+		expect(sent.emails).toHaveLength(1);
+
+		// A wrong password with the right code: the same body, counted, the code unspent, no signal.
+		const wrongPassword = await send(WRONG, code);
+		expect(wrongPassword.body).toEqual(wrongCodeAnswer.body);
+		expect(countOf(token)).toBe(2);
+		expect(lastStepOf(s.admin)).toBeNull();
+		expect(userRow(s.admin).failedCodesSinceSignIn).toBe(2);
+
+		// The third: a right password and a wrong code signs the session out.
+		const third = await send(FIXTURE_PASSWORD, wrongCode);
+		expect({ status: third.status, body: third.body }).toEqual({ status: 403, body: SIGNED_OUT });
+		expect(third.cookie).toMatch(new RegExp(`^${SESSION_COOKIE_NAME}=;.*Max-Age=0`, 'i'));
+		expect(countOf(token)).toBeUndefined();
+		expect(archivedLeft()).toBe(1);
+		await sent.settle();
+		expect(sent.emails).toHaveLength(1);
+	});
+
+	it('T4. lets the right password and the right code through on a new session, the code a wrong password was sent with before, unspent: the count cleared, the step spent, and the INFO line', async () => {
+		const s = scene();
+		logAt('INFO');
+		const at = Date.now();
+		const code = stepUpCode(s.admin, at);
+		expect((await api('POST', PURGE, stepUp(s.admin, {}, WRONG, code))).status).toBe(403);
+		expect(lastStepOf(s.admin)).toBeNull();
+
+		const right = stepUp(s.admin, {}, FIXTURE_PASSWORD, code);
+		const res = await api('POST', PURGE, right);
+
+		expect(answer(res)).toEqual({ status: 200, body: { success: true, purged: 1 } });
+		expect(countOf(tokenOf(right))).toBe(0);
+		expect(factorRow(s.admin)).toMatchObject({ lastStep: stepAt(at), lastUsedAt: expect.stringMatching(/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/) });
+		expect(linesStarting('INFO', 'Password and code confirmed')).toEqual([
+			{ message: `Password and code confirmed by admin (ID: ${s.admin.id}) for POST /api/admin/purge-archived`, userId: s.admin.id }
+		]);
+	});
+
+	it('T5. answers a code whose step is spent 400 code-spent before the password is compared, with the right password or a wrong one: nothing counted, nothing spent, the secret zeroed', async () => {
+		const s = scene();
+		const confirmed = stepUp(s.admin);
+		const token = tokenOf(confirmed);
+		expect((await api('POST', PURGE, confirmed)).status).toBe(200);
+		const spent = lastStepOf(s.admin);
+		expect(spent).not.toBeNull();
+		db.update(sessions).set({ wrongPasswordCount: 2 }).where(eq(sessions.tokenHash, sessionHashOf(token))).run();
+		const fill = vi.spyOn(Buffer.prototype, 'fill');
+
+		for (const password of [FIXTURE_PASSWORD, WRONG]) {
+			const res = await api('POST', PURGE, { ...confirmed, body: { currentPassword: password, currentCode: confirmed.body.currentCode } });
+			expect(answer(res)).toEqual({ status: 400, body: SPENT });
+		}
+
+		// Only the success compared a password: neither of these did.
+		expect(stub.compared).toBe(1);
+		expect(countOf(token)).toBe(2);
+		expect(lastStepOf(s.admin)).toBe(spent);
+		// The secret, opened at step 2b to read the step, was zeroed each time.
+		const zeroed = fill.mock.contexts.filter((buffer, n) => fill.mock.calls[n][0] === 0 && (buffer as Buffer).length === 20);
+		expect(zeroed.length).toBeGreaterThanOrEqual(2);
+		for (const buffer of zeroed) expect([...(buffer as Buffer)].every((byte) => byte === 0)).toBe(true);
+	});
+
+	it('T6. takes a recovery code once: its use spent, the count cleared, a WARN line and a notice in the words for a confirmation; the same again, or one the account does not hold, is a wrong one', async () => {
+		const s = scene();
+		const sent = mailed();
+		logAt('WARN');
+		const { recoveryCodes } = giveFactor(s.admin);
+		const confirmed = stepUp(s.admin, {}, FIXTURE_PASSWORD, recoveryCodes[0]);
+		const token = tokenOf(confirmed);
+
+		expect(answer(await api('POST', PURGE, confirmed))).toEqual({ status: 200, body: { success: true, purged: 1 } });
+		expect(recoveryUsed(s.admin)).toBe(1);
+		expect(countOf(token)).toBe(0);
+		expect(lastStepOf(s.admin)).toBeNull();
+		expect(linesStarting('WARN', 'A recovery code')).toEqual([
+			{ message: `A recovery code confirmed POST /api/admin/purge-archived for admin (ID: ${s.admin.id}): 9 left`, userId: s.admin.id }
+		]);
+		await sent.settle();
+		expect(sent.emails.map((mail) => mail.subject)).toEqual(['A recovery code was used to confirm a change on DumpFire']);
+		expect(sent.emails[0].html).toContain('A recovery code was used to confirm a change on your DumpFire account');
+
+		// The same code again: wrong, counted, and the signal raised.
+		expect(answer(await api('POST', PURGE, confirmed))).toEqual({ status: 403, body: WRONG_ONE });
+		expect(countOf(token)).toBe(1);
+		expect(userRow(s.admin).securityBanner).toBe('wrong-code');
+
+		// One in the form that the account does not hold: wrong, counted, no recovery row changed.
+		const codesBefore = snapshotDb().mfa_recovery_codes;
+		const unknown = await api('POST', PURGE, { ...confirmed, body: { currentPassword: FIXTURE_PASSWORD, currentCode: 'ABCD-EFGH-JKMN-PQRS' } });
+		expect(answer(unknown)).toEqual({ status: 403, body: WRONG_ONE });
+		expect(countOf(token)).toBe(2);
+		expect(snapshotDb().mfa_recovery_codes).toEqual(codesBefore);
+	});
+
+	it('T7. refuses an account with no second factor 403 no-factor, with no compare, nothing counted and one WARN line', async () => {
+		const s = scene();
+		const confirmed = stepUp(s.admin);
+		db.delete(mfaFactors).where(eq(mfaFactors.userId, s.admin.id)).run();
+		const before = snapshotDb();
+		logAt('WARN');
+
+		const res = await api('POST', PURGE, confirmed);
+
+		expect(answer(res)).toEqual({ status: 403, body: { message: STEP_UP_NO_FACTOR, stepUp: 'no-factor' } });
+		expect(stub.compared).toBe(0);
+		expect(countOf(tokenOf(confirmed))).toBe(0);
+		expectUnchanged(before);
+		expect(linesStarting('WARN', '')).toEqual([
+			{ message: `Password not confirmed for user ${s.admin.id} on POST /api/admin/purge-archived: the account has no second factor`, userId: s.admin.id }
+		]);
+	});
+
+	it('T8. answers an authenticator code 503 factor-unusable, uncounted, when the factor does not open, and takes a recovery code; a factor that stops opening during the compare fails closed', async () => {
+		const s = scene();
+		const { recoveryCodes } = giveFactor(s.admin);
+		const confirmed = stepUp(s.admin);
+		const token = tokenOf(confirmed);
+		const keyId = factorRow(s.admin).keyId;
+		const otherKey = () => db.update(mfaFactors).set({ keyId: 'another-key' }).where(eq(mfaFactors.userId, s.admin.id)).run();
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		otherKey();
+		const before = snapshotDb();
+
+		const unusable = await api('POST', PURGE, confirmed);
+
+		expect(answer(unusable)).toEqual({ status: 503, body: { message: STEP_UP_FACTOR_UNUSABLE, stepUp: 'factor-unusable' } });
+		expect(stub.compared).toBe(0);
+		expect(countOf(token)).toBe(0);
+		expectUnchanged(before);
+		expect(linesStarting('ERROR', 'A second factor could not be opened')).toHaveLength(1);
+
+		// A recovery code does not need the factor opened.
+		const byRecovery = await api('POST', PURGE, { ...confirmed, body: { currentPassword: FIXTURE_PASSWORD, currentCode: recoveryCodes[0] } });
+		expect(answer(byRecovery)).toEqual({ status: 200, body: { success: true, purged: 1 } });
+
+		// It opens at step 2b and not in the transaction: nothing spent, counted, and wrong.
+		db.update(mfaFactors).set({ keyId }).where(eq(mfaFactors.userId, s.admin.id)).run();
+		const again = stepUp(s.admin);
+		const release = holdChecks();
+		const pending = api('POST', PURGE, again);
+		await vi.waitFor(() => expect(stub.compared).toBe(2));
+		otherKey();
+		release();
+
+		expect(answer(await pending)).toEqual({ status: 403, body: WRONG_ONE });
+		expect(countOf(tokenOf(again))).toBe(1);
+		expect(lastStepOf(s.admin)).toBeNull();
+	});
+
+	it('T9. leaves the code unspent and the attempt counted when the clear of the count fails (E7)', async () => {
+		const s = scene();
+		const confirmed = stepUp(s.admin);
+		const token = tokenOf(confirmed);
+		const writes = failingWrite();
+
+		try {
+			// The count, the spend, and then the clear (STEP_UP_WRITES): the third is failed.
+			writes.failNth(3);
+			await expect(api('POST', PURGE, confirmed)).rejects.toThrow(/made to fail/);
+			expect(writes.fired).toBe(true);
+		} finally {
+			writes.restore();
+		}
+
+		expect(lastStepOf(s.admin)).toBeNull();
+		expect(countOf(token)).toBe(1);
+		expect(archivedLeft()).toBe(1);
+	});
+
+	it('T9b. judges the code at the moment it arrived: one of the step before then is taken though a step boundary passes during the compare (code review CS2): 200, spent, the count cleared, no signal', async () => {
+		const s = scene();
+		vi.useFakeTimers({ toFake: ['Date'] });
+		// Twenty-five seconds into a step: the code of the step before is good as it arrives.
+		const arrived = stepAt(Date.now()) * 30_000 + 25_000;
+		vi.setSystemTime(arrived);
+		const confirmed = stepUp(s.admin, {}, FIXTURE_PASSWORD, stepUpCode(s.admin, arrived - 30_000));
+		const token = tokenOf(confirmed);
+		const release = holdChecks();
+		const pending = api('POST', PURGE, confirmed);
+		await vi.waitFor(() => expect(stub.compared).toBe(1));
+
+		// Ten seconds on, the next step has begun: the code is now two steps back.
+		vi.setSystemTime(arrived + 10_000);
+		release();
+
+		expect(answer(await pending)).toEqual({ status: 200, body: { success: true, purged: 1 } });
+		expect(lastStepOf(s.admin)).toBe(stepAt(arrived) - 1);
+		expect(countOf(token)).toBe(0);
+		expect(userRow(s.admin)).toMatchObject({ securityBanner: null, failedCodesSinceSignIn: 0 });
+	});
+
+	it.each([
+		{ path: '/api/account/email', method: 'PUT' as const, body: { newEmail: 'moved@example.test' } },
+		{ path: '/api/account/api-keys', method: 'POST' as const, body: { name: 'my script' } }
+	])('T10. $method $path no longer reads `password`: the right one sent there, with a right code, is 400 missing, with nothing compared or changed', async ({ path, method, body }) => {
+		const s = scene();
+		const confirmed = stepUp(s.admin);
+		const before = snapshotDb();
+
+		const res = await api(method, path, { ...confirmed, body: { ...body, password: FIXTURE_PASSWORD, currentCode: confirmed.body.currentCode } });
+
+		expect(answer(res)).toEqual({ status: 400, body: MISSING });
+		expect(stub.compared).toBe(0);
+		expectUnchanged(before);
+	});
+
+	it.each([
+		{
+			what: "an email address the readers refuse, on PUT /api/account/email",
+			send: (s: Scene) => api('PUT', '/api/account/email', stepUp(s.admin, { newEmail: 'me@localhost' }, WRONG)),
+			refused: { status: 400, body: { message: 'Invalid email address' } }
+		},
+		{
+			// Not 409: whether an address is taken is asked only after the password
+			// and the code, so a session cannot learn it uncounted (code review CS1).
+			what: 'an email address another account holds, sent with no password, on PUT /api/account/email: missing, never 409 (CS1)',
+			send: (s: Scene) => {
+				const { user, headers } = stepUp(s.admin);
+				return api('PUT', '/api/account/email', { user, headers, body: { newEmail: 'member@example.test' } });
+			},
+			refused: { status: 400, body: MISSING }
+		},
+		{
+			what: 'an eleventh API key, on POST /api/account/api-keys',
+			setup: (s: Scene) => {
+				for (let n = 1; n <= 10; n++) makeApiKey(s.admin, `key ${n}`);
+			},
+			send: (s: Scene) => api('POST', '/api/account/api-keys', stepUp(s.admin, { name: 'one too many' }, WRONG)),
+			refused: { status: 400, body: { message: 'Maximum of 10 API keys per user' } }
+		},
+		{
+			what: 'a new password too short, on PUT /api/account/password',
+			send: (s: Scene) => api('PUT', '/api/account/password', stepUp(s.admin, { newPassword: 'short' }, WRONG)),
+			refused: { status: 400, body: { message: 'New password must be at least 8 characters' } }
+		}
+	])('T11. refuses $what before the password: no compare, nothing counted', async ({ setup, send, refused }) => {
+		const s = scene();
+		setup?.(s);
+
+		const res = await send(s);
+
+		expect(answer(res)).toEqual(refused);
+		expect(stub.compared).toBe(0);
+		expect(db.select({ count: sessions.wrongPasswordCount }).from(sessions).all()).toEqual([{ count: 0 }]);
 	});
 });
 
@@ -1370,7 +1886,8 @@ describe("the import's confirmation (cases 18 to 20)", () => {
 		expect(first.status).toBe(200);
 		expect(first.headers.get('cache-control')).toBe('no-store');
 		expect(first.body).toEqual({ confirmation: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/), expiresInSeconds: 60 });
-		const second = await api('POST', '/api/admin/import/confirm', confirmed);
+		// From the same session, with the code made again: the first spent its step (card 2771).
+		const second = await api('POST', '/api/admin/import/confirm', { ...confirmed, body: { ...confirmed.body, currentCode: stepUpCode(s.chief) } });
 		expect(second.body.confirmation).not.toBe(first.body.confirmation);
 
 		const read = vi.spyOn(Request.prototype, 'arrayBuffer');
@@ -1392,7 +1909,7 @@ describe('what sends the database elsewhere (cases 21 to 23)', () => {
 		const token = makeSession(s.chief);
 		const headers = { cookie: `${SESSION_COOKIE_NAME}=${token}`, ...FROM_THE_PAGE, accept: '*/*' };
 
-		const res = await gate('POST', '/api/admin/export', { headers, body: { currentPassword: FIXTURE_PASSWORD } });
+		const res = await gate('POST', '/api/admin/export', { headers, body: { currentPassword: FIXTURE_PASSWORD, currentCode: stepUpCode(s.chief) } });
 
 		expect(res.status).toBe(200);
 		expect(res.headers.get('content-type')).toBe('application/x-sqlite3');
@@ -1452,6 +1969,8 @@ describe('what sends the database elsewhere (cases 21 to 23)', () => {
 		expect(archivedLeft()).toBe(1);
 		// The one compare made was right, and cleared the count.
 		expect(countOf(token)).toBe(0);
+		// And the code was spent with it, before the write was refused (card 2771, S4).
+		expect(lastStepOf(s.admin)).not.toBeNull();
 	});
 
 	it('checks the Connect’s password before Google: a wrong one is 403, no code is exchanged, and the Connect is still there to finish', async () => {
@@ -1461,11 +1980,11 @@ describe('what sends the database elsewhere (cases 21 to 23)', () => {
 		const confirmed = stepUp(s.admin);
 		const connect = await connecting(s.admin, confirmed);
 
-		expect(answer(await connect({ currentPassword: WRONG }))).toEqual({ status: 403, body: WRONG_ONE });
+		expect(answer(await connect({ currentPassword: WRONG, currentCode: confirmed.body.currentCode }))).toEqual({ status: 403, body: WRONG_ONE });
 		expect(getToken).not.toHaveBeenCalled();
 		expect(backupConfig().destinations[1]).toEqual(DRIVE);
 
-		const right = await connect({ currentPassword: FIXTURE_PASSWORD });
+		const right = await connect({ currentPassword: FIXTURE_PASSWORD, currentCode: confirmed.body.currentCode });
 		expect(right.status, JSON.stringify(right.body)).toBe(200);
 		expect(right.body.success).toBe(true);
 		expect(getToken).toHaveBeenCalledTimes(1);

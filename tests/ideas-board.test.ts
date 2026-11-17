@@ -55,7 +55,7 @@ import { activityLabel } from '$lib/utils/activity-labels';
 import { api, type ApiResult } from './helpers/api';
 import { pageLoad } from './helpers/actions';
 import { effects, type Effects } from './helpers/effects';
-import { FIXTURE_PASSWORD, addBoardMember, makeBoard, makeCard, makeLabel, makeMilestone, makeSession, makeSmtp, makeTeam, makeUser, makeWebhook, resetDb, shareBoardWithTeam, type BoardFixture } from './helpers/fixtures';
+import { FIXTURE_PASSWORD, addBoardMember, makeBoard, makeCard, makeLabel, makeMilestone, makeSession, makeSmtp, makeTeam, makeUser, makeWebhook, resetDb, shareBoardWithTeam, stepUpCode, type BoardFixture } from './helpers/fixtures';
 import { readBudget } from './helpers/reads';
 import { sendTargetsFor } from '$lib/server/cards';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
@@ -572,7 +572,7 @@ describe.each([
 		// compared (card 2701).
 		const session = makeSession(owner);
 		const as = pageCreate
-			? { user: owner, body: { currentPassword: FIXTURE_PASSWORD }, headers: { cookie: `${SESSION_COOKIE_NAME}=${session}` } }
+			? { user: owner, body: { currentPassword: FIXTURE_PASSWORD, currentCode: stepUpCode(owner) }, headers: { cookie: `${SESSION_COOKIE_NAME}=${session}` } }
 			: { user: owner };
 		cardIn(I.cols['Shaping'], 'One');
 		await expectRefused(() => api('DELETE', path, as), 409, 'This column of an ideas board still holds 1 idea: move it out, or archive it to discard it, first.');
@@ -584,7 +584,9 @@ describe.each([
 		expect((await api('DELETE', path, as)).status).toBe(200);
 		// A delivery board's ordinary column goes with its cards, as before (decision M22-9).
 		cardIn(D.cols['In Progress'], 'Work');
-		expect((await api('DELETE', columnPath(D.cols['In Progress'].id), as)).status).toBe(200);
+		// A second success in the same step: the code made again, as the first spent it (card 2771).
+		const again = pageCreate ? { ...as, body: { ...as.body, currentCode: stepUpCode(owner) } } : as;
+		expect((await api('DELETE', columnPath(D.cols['In Progress'].id), again)).status).toBe(200);
 	});
 });
 

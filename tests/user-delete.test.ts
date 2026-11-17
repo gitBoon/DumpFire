@@ -56,6 +56,7 @@ import {
 	makeUser,
 	makeWebhook,
 	resetDb,
+	STEP_UP_APART,
 	stepUp,
 	testUploadsDir,
 	type BoardFixture,
@@ -103,14 +104,21 @@ const remove = (s: Scene, by: SessionUser = s.admin, sent: ApiOptions = stepUp(b
  */
 const refusedFirst = (by: SessionUser) => ({ user: by, body: { currentPassword: FIXTURE_PASSWORD } });
 
-/** The column a current password is counted on, apart from the request's transaction (card 2701). */
-const COUNTED = 'sessions.wrong_password_count';
+/**
+ * The columns a current password is counted on, and its code spent in,
+ * apart from the request's transaction (cards 2701 and 2771).
+ */
+const COUNTED = STEP_UP_APART;
 
-/** The two writes of that count for a right password: counted as it arrives, and cleared. */
+/**
+ * The three writes of a right password and code: the count as it arrives,
+ * the code's step spent, and the count cleared (card 2771).
+ */
 const COUNTS = [
 	// As the run records it, to 160 characters.
 	'update "sessions" set "wrong_password_count" = "sessions"."wrong_password_count" + 1 where ("sessions"."id" = ? and "sessions"."user_id" = ?) returning "wrong_p',
-	'update "sessions" set "wrong_password_count" = ? where ("sessions"."id" = ? and "sessions"."user_id" = ?) returning "id"'
+	'update "mfa_factors" set "last_step" = ?, "last_used_at" = ? where ("mfa_factors"."id" = ? and ("mfa_factors"."last_step" is null or "mfa_factors"."last_step" <',
+	'update "sessions" set "wrong_password_count" = ? where ("sessions"."id" = ? and "sessions"."user_id" = ?)'
 ];
 
 const userRow = (id: number) => db.select().from(users).where(eq(users.id, id)).get();
@@ -309,7 +317,7 @@ describe('DELETE /api/users/:id, for a user with everything', () => {
 				return { ...s, confirmed: stepUp(s.admin) };
 			},
 			request: (s) => remove(s, s.admin, s.confirmed),
-			apart: [COUNTED],
+			apart: [...COUNTED],
 			afterSuccess: (s, res: ApiResult) => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({ success: true });
@@ -379,9 +387,9 @@ describe('DELETE /api/users/:id, for a user with everything', () => {
 			}
 		});
 
-		// The current password, counted on the session as it arrives and the
-		// count cleared for the right one, apart from the transaction (card
-		// 2701). Then the five, in the order of the list, the requests' address,
+		// The current password, counted on the session as it arrives, the code
+		// spent and the count cleared for the right one, apart from the
+		// transaction (cards 2701 and 2771). Then the five, in the order of the list, the requests' address,
 		// the webhooks they set switched off (card 2168), and then the user.
 		// Nothing else is written: the rest is the keys' doing.
 		expect(run.writes).toEqual([
@@ -426,9 +434,10 @@ describe('DELETE /api/users/:id, for a user with everything', () => {
 		const writes = failingWrite();
 
 		try {
-			// The last write of all: the user, after the two of the session's
-			// count (card 2701), which is back where it was once the right
-			// password has cleared it.
+			// The last write of all: the user, after the three of the session's
+			// count and the code (cards 2701 and 2771): the count back where it
+			// was once the right password and code have cleared it, the code
+			// left spent (S4).
 			writes.failNth(COUNTS.length + 8);
 			await expect(remove(s, s.admin, confirmed)).rejects.toThrow(/made to fail/);
 			expect(writes.fired).toBe(true);
@@ -437,7 +446,9 @@ describe('DELETE /api/users/:id, for a user with everything', () => {
 		}
 
 		expect(sqlite.prepare("SELECT message FROM system_logs WHERE context = 'DELETE'").all()).toEqual([]);
-		expect(diffSnapshots(before, snapshotDb())).toEqual([]);
+		expect(diffSnapshots(before, snapshotDb())).toEqual([
+			expect.stringMatching(/^mfa_factors: row \d+ changed \(last_step: null became \d+; last_used_at: null became /)
+		]);
 	});
 });
 

@@ -16,12 +16,24 @@ declare global {
 			 */
 			signedOut?: true;
 			/**
-			 * On every refusal of a current password by the step-up and
-			 * auth.ts's check (card 2701, the code review's F3): what the
+			 * On every refusal of a current password or its code by the step-up
+			 * and auth.ts's check (cards 2701 and 2771, the code review's F3): what the
 			 * refusal was, for a page to act on. The message is for display
 			 * alone. See `StepUpCode` in $lib/step-up-words.ts.
 			 */
-			stepUp?: 'missing' | 'wrong' | 'no-password' | 'in-flight' | 'busy' | 'signed-out' | 'confirmation' | 'changed';
+			stepUp?:
+				| 'missing'
+				| 'wrong'
+				| 'no-password'
+				| 'in-flight'
+				| 'busy'
+				| 'signed-out'
+				| 'confirmation'
+				| 'changed'
+				| 'code-malformed'
+				| 'code-spent'
+				| 'no-factor'
+				| 'factor-unusable';
 		}
 		interface Locals {
 			user: {

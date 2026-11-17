@@ -31,7 +31,17 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vite
 import type * as Svelte from 'svelte';
 import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
-import { NO_ANSWER_TRY_AGAIN, NO_PROOF, STEP_UP_MISSING, STEP_UP_SIGNED_OUT, STEP_UP_WRONG, type StepUpProof } from '$lib/step-up-words';
+import {
+	NO_ANSWER_TRY_AGAIN,
+	NO_PROOF,
+	STEP_UP_CODE_MALFORMED,
+	STEP_UP_CODE_SPENT,
+	STEP_UP_FACTOR_UNUSABLE,
+	STEP_UP_MISSING,
+	STEP_UP_SIGNED_OUT,
+	STEP_UP_WRONG,
+	type StepUpProof
+} from '$lib/step-up-words';
 import { CODE, codeFieldIn, proofOf } from './helpers/step-up-code';
 
 // A bare 'svelte' gives the server's runtime, whose flushSync does nothing: the client's, by its path, for the
@@ -569,5 +579,53 @@ describe('the confirm dialog waits for its answer and keeps a refusal in it (car
 		expect(asked.handed).toEqual([NO_PROOF, proofOf('my-own-password')]);
 		asked.answer();
 		await macrotask();
+	});
+});
+
+// Card 2771 (plan section 5.1, T15; D9, E9): a refusal decided before the password was compared keeps it typed.
+describe('the confirm dialog keeps the password before the compare’s refusals (card 2771)', () => {
+	it('T15. keeps the password typed on code-spent, code-malformed and factor-unusable, the code emptied and focused, and Confirm hands the kept password with the new code; on wrong both are emptied and the password focused', async () => {
+		for (const kept of [STEP_UP_CODE_SPENT, STEP_UP_CODE_MALFORMED, STEP_UP_FACTOR_UNUSABLE]) {
+			const asked = heldConfirm();
+			const target = open({ askPassword: true, onConfirm: asked.fn });
+			const field = passwordField(target)!;
+			type(field, 'my-own-password');
+			typeCode(target);
+			confirmButton(target).click();
+			flushSync();
+			asked.answer(kept);
+			await macrotask();
+			flushSync();
+
+			expect(target.querySelector('[role="alert"]')?.textContent, kept).toBe(kept);
+			expect(field.value, kept).toBe('my-own-password');
+			expect(codeFieldIn(target)!.value, kept).toBe('');
+			expect(document.activeElement, kept).toBe(codeFieldIn(target));
+			// Confirm off until the new code is typed; then the kept password goes with it.
+			expect(confirmButton(target).disabled, kept).toBe(true);
+			type(codeFieldIn(target)!, '654321');
+			confirmButton(target).click();
+			flushSync();
+			expect(asked.handed, kept).toEqual([proofOf('my-own-password'), { currentPassword: 'my-own-password', currentCode: '654321' }]);
+			asked.answer();
+			await macrotask();
+			close();
+		}
+
+		const asked = heldConfirm();
+		const target = open({ askPassword: true, onConfirm: asked.fn });
+		const field = passwordField(target)!;
+		type(field, 'my-own-password');
+		typeCode(target);
+		confirmButton(target).click();
+		flushSync();
+		asked.answer(STEP_UP_WRONG);
+		await macrotask();
+		flushSync();
+
+		expect(target.querySelector('[role="alert"]')?.textContent).toBe(STEP_UP_WRONG);
+		expect(field.value).toBe('');
+		expect(codeFieldIn(target)!.value).toBe('');
+		expect(document.activeElement).toBe(field);
 	});
 });

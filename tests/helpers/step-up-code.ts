@@ -9,7 +9,12 @@
  */
 import type { StepUpProof } from '$lib/step-up-words';
 
-/** The code every mounted test types: the server reads none of it until card 2771. */
+/**
+ * The code every mounted test types. These tests mount the dialogs alone and
+ * answer their requests themselves, so no server checks it; the server's
+ * check of a code (card 2771) is tested against real codes (`stepUpCode` in
+ * fixtures.ts).
+ */
 export const CODE = '123456';
 
 /** The code field of the one `CurrentPasswordField` within `within`, or null where none is drawn. */

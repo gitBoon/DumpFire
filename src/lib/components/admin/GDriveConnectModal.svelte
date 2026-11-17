@@ -21,7 +21,7 @@
 	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
 	import { toasts } from '$lib/stores/toast';
 	import { holdFocus } from '$lib/dialog-focus';
-	import { ASKS_FOR_PASSWORD, proofTyped } from '$lib/step-up-words';
+	import { ASKS_FOR_PASSWORD, passwordKeptAfter, proofTyped } from '$lib/step-up-words';
 
 	/** The Scheduled Backups panel's: its settings read again, once a destination is connected. */
 	let { loadBackupConfig }: { loadBackupConfig: () => Promise<boolean> } = $props();
@@ -179,6 +179,8 @@
 				refused = true;
 				if (attempt !== gdriveAttempt) return;
 				gdriveRefusal = res;
+				// Kept for a refusal decided before it was compared (card 2771, D9): only the code is typed again.
+				gdrivePassword = passwordKeptAfter(res, currentPassword);
 				gdriveExchanging = false;
 				return;
 			}

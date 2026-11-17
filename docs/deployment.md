@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Deployment Guide"
 category: Deployment
-version: 1.115
+version: 1.116
 status: As-Built
 date: 2026-11-17
 tags:
@@ -48,7 +48,7 @@ tags:
   - release-mail
   - migration-0068
   - invites
-description: "Docker deployment, the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, the shorter sessions and hashed session codes that ride in that release (card 2775, checks W19, W20 and W22), and production configuration for DumpFire"
+description: "Docker deployment, the release that asks for the code at every step-up (cards 2770 and 2771, shipped together: no migration, reload every open tab, scripts calling the internal account routes send currentPassword and currentCode, without the MFA key only recovery codes confirm, and its hands-on checks), the release that turns on two-step sign-in (card 2769: migrations 0066 and 0067, everybody signed out and every remembered browser forgotten, the release rules with cards 2773 and 2849, card 2849's migration 0068 ending every waiting invite with the list taken before the deploy, invite tokens kept as BLOB digests that an older image never matches, the optional step before going back, the cold copy that brings waiting invites back and the start-up sweep coming forward, stopping every instance, checking the App URL or ORIGIN, reviewing API keys and resetting administrators first, the 14 days of setting up on a password where no mail host is configured, the hands-on checks, and why going back past it is a security event), MFA_KEY_FILE and the key that protects authenticator secrets (card 2768: how to make, mount and back it up, what the start-up check refuses and why, and what to do if the key is lost), changing that key at start with MFA_KEY_FILE_PREVIOUS and restoring a database file made before a change (card 2773), the host's reset of an account's two-step sign-in with scripts/mfa-reset.mjs (card 2773), the update that brings migration 0065 and the key file with its hands-on checks, IMAGE_RETENTION_DAYS and the read-only count of what image retention will first move (API 1.7.0, card 2754), the update that brings migration 0060 (the Options column, the board kind and the commitment and discard marks, milestone 22) with its start-up repairs and hands-on checks, and its later parts (the commitment on a move, discards, and options left out of the measures, deployed with the commitment), the update that brings migration 0059 (settings go with a demoted setter; lowering Keep Last, removing a destination or switching the schedule off is the superadmin's) with its production-safe checks, the update in which the board page and its card window apply each change and read only their board again, with its hands-on checks, WEBHOOK_ALLOW_INSIDE and where a webhook may send, the update that brings migration 0056 and the webhook rules with the checks to run before it, running the test suite before an image is built, environment variables, volume mounts, attachment files and their backup, start-up and migrations, the superadmin and the way back to it from the host, upload size limits at the proxy and in the server, the caller's address behind a proxy, the security headers the proxy is to add and the policy it must not, updating and going back, the update that brings the Content-Security-Policy and its report-only first deploy, the update that brings migration 0053, one timestamp form and the attachment file sweep, with the checks to run before it, the read-only queries for notices on cards moved before card 2256, the shorter sessions and hashed session codes that ride in that release (card 2775, checks W19, W20 and W22), and production configuration for DumpFire"
 ---
 
 # DumpFire Deployment Guide
@@ -6183,6 +6183,80 @@ image signed is under the old MAC domain and not remembered. So everybody it sig
 again with the second step. The 14 days still count from the first release. Treat everything
 done while the older image ran as done by whoever held a password: review the Audit page and the
 API keys (W3) again.
+
+### The Release That Asks for the Code at Every Step-Up (Cards 2770 and 2771)
+
+**Cards 2770 and 2771 (build cards B3a and B3b of card 2669).** From this release every action
+that asks for the current password again (the thirty-two step-up actions, the Account page's
+email, password and Generate Key forms among them) asks for a code from the authenticator app,
+or a recovery code, beside it, and the server checks both: the action runs only when both are
+right. How it works is in
+[The Code Beside the Password](authentication-security.md#the-code-beside-the-password-card-2771);
+the plan is `docs/planning/card-2771-step-up-requires-code.md`.
+
+**Release rules.**
+
+- **2770 and 2771 ship in the same release.** 2770 alone asks for a code nobody checks; 2771
+  alone would refuse every dialog of the old pages.
+- **2769 ships with 2773, 2849 and 2775** (above); card 2772 (a second authenticator) goes with
+  2770 and 2771 or soon after.
+- **No migration and no setting.** Every column the check uses exists already
+  (`sessions.wrong_password_count`, `mfa_factors.last_step` and `last_used_at`,
+  `mfa_recovery_codes.used_at`, `users.failed_codes_since_sign_in` and the security banner).
+- **`MFA_KEY_FILE` must be set**, as since card 2768. Without it, an authenticator code at a
+  step-up is answered `503` "Your authenticator cannot be checked on this server right now. Use
+  one of your recovery codes, or ask an administrator. Nothing was changed.", and only recovery
+  codes confirm.
+- **`/api/v1` and API keys are unchanged.** No v1 route asks for a password, and a key needs no
+  code.
+
+**What people notice.**
+
+- **Reload every open DumpFire tab** after the deploy. A page loaded before the release sends no
+  `currentCode` (and the old Account page sends `password` to the email and key routes): it is
+  answered `400` "Enter your password and a code from your authenticator app to confirm this.
+  Nothing was changed.", with nothing changed and nothing counted. Say so in the release notice.
+- **A wrong password or a wrong code** is answered "Your password or code was not right. Nothing
+  was changed.", never saying which, and either counts toward the three that sign a browser out.
+- **A code is spent once it confirms an action**, so two actions in one 30-second step need two
+  codes: wait for the next code. A recovery code used at a step-up is spent for good, and its
+  owner is mailed with the number left.
+- **A right password with a wrong code** raises the account's security banner and mails the
+  owner (with mail set up), as a wrong code at sign-in does.
+
+**Scripts.** A script that calls DumpFire's internal routes as a signed-in session (not through
+an API key) sends `currentCode` beside `currentPassword`; `PUT /api/account/email` and
+`POST /api/account/api-keys` take `currentPassword` in place of `password`. See
+[Changes on 2026-11-17](api-reference.md#changes-on-2026-11-17).
+
+```mermaid
+flowchart TD
+    Deploy["Deploy the image (no migration)"] --> Tab{"A tab opened<br/>before the deploy?"}
+    Tab -->|"yes"| Old["Its confirm sends no currentCode:<br/>400 'Enter your password and a code…',<br/>nothing changed, nothing counted"]
+    Old --> Reload["Reload the tab"]
+    Reload --> New
+    Tab -->|"no"| New["The dialog asks for the password and a code"]
+    New --> Key{"MFA_KEY_FILE loaded?"}
+    Key -->|"no"| Recovery["An authenticator code: 503 factor-unusable;<br/>a recovery code confirms"]
+    Key -->|"yes"| Both["Both checked: the action runs<br/>only when both are right"]
+```
+
+**Hands-on checks** (on the dev server or a staging copy, signed in as an administrator with an
+authenticator set up; the plan's section 6 has the full list, H1 to H16):
+
+| # | Do | Expect | Fault if |
+|---|---|---|---|
+| R1 | Danger Zone, **Reset All XP**: right password, right code | Done; system log `INFO` "Password and code confirmed by…" | Refused; the old `INFO` line |
+| R2 | The same at once, with the same code and a wrong password | "That code has just been used…"; the password kept, the code empty and focused; no strike | 403 "not right", or a strike |
+| R3 | Right password, a wrong code | "Your password or code was not right…"; both fields empty; `WARN` "Wrong code… the password was right"; the security banner; a mail with SMTP set | The words say which was wrong |
+| R4 | **Use a recovery code instead** with a real recovery code | Done; `WARN` "A recovery code confirmed…: 9 left"; a mail "A recovery code was used to confirm a change…" | The mail says "to sign in"; the code works twice |
+| R5 | Account page: change email, then password, then **Generate Key**, each with a new code | Each succeeds; both fields cleared after each send | A form sends `password` |
+| R6 | A tab opened before the deploy: send a confirm | `400` "Enter your password and a code from your authenticator app…" in the dialog | `500`, or the action done |
+
+**Going back.** An older image ignores `currentCode` and checks the password alone, which is the
+state before this release: no data to put right, as nothing was migrated. Codes spent on this
+image stay spent in `mfa_factors.last_step` and `mfa_recovery_codes.used_at`, which the older
+image honours at sign-in.
 
 ## Changing the Schema
 

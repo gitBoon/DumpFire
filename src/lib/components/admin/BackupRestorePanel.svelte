@@ -32,7 +32,7 @@
 	import { holdFocus } from '$lib/dialog-focus';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
-	import { ASKS_FOR_PASSWORD, CONFIRMATION_HEADER, proofTyped, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
+	import { ASKS_FOR_PASSWORD, CONFIRMATION_HEADER, passwordKeptAfter, proofTyped, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
 
 	/** This instance's default way to restore, from the page's load. */
 	let { importOutsideDefault }: { importOutsideDefault: 'keep' | 'off' } = $props();
@@ -334,7 +334,8 @@
 	 * password, alone, to the confirm, which answers a confirmation good for
 	 * one import; and, as soon as it has, the upload of the file already
 	 * chosen. A refusal sends nothing more: it is said in the dialog, the field
-	 * cleared and focused to type again.
+	 * cleared and focused to type again, the password kept where the refusal
+	 * was decided before it was compared (card 2771, `passwordKeptAfter`).
 	 */
 	async function confirmImport() {
 		const chosen = importFile;
@@ -359,7 +360,10 @@
 			}
 			if (!res.ok) {
 				// The password refused, or the session signed out, by its code; any other refusal in the server's words.
-				importRefusal = (await stepUpRefusal(res)) ?? (await failureMessage(res, 'The import was not confirmed. Nothing was sent.'));
+				const refusal = await stepUpRefusal(res);
+				importRefusal = refusal ?? (await failureMessage(res, 'The import was not confirmed. Nothing was sent.'));
+				// Kept for a refusal decided before it was compared (card 2771, D9): only the code is typed again.
+				importPassword = passwordKeptAfter(refusal, currentPassword);
 				return;
 			}
 			const confirmation = (await answerBody(res))?.confirmation;

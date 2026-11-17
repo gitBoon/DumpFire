@@ -101,9 +101,11 @@ import {
 	makeUser,
 	makeWebhook,
 	resetDb,
-	stepUp
+	stepUp,
+	stepUpCode
 } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
+import { STEP_UP_MISSING } from '$lib/step-up-words';
 import {
 	pathId,
 	readBody,
@@ -2766,9 +2768,13 @@ describe('the accounts, administration, teams, reports and requests that card 21
 
 	type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 	type Who = 'owner' | 'admin' | 'chief';
-	type Case = [route: string, who: Who, path: (w: World) => string, body: (w: World) => unknown, message: string];
+	/** What a case is answered: its words alone, or a refusal of the step-up with its code (card 2771). */
+	type Answer = string | { message: string; stepUp: string };
+	type Case = [route: string, who: Who, path: (w: World) => string, body: (w: World) => unknown, message: Answer];
 	const long = (n: number) => 'x'.repeat(n);
 	const at = (path: string) => () => path;
+	/** No current password, or none that is text: the step-up's refusal (card 2771: the account routes ask through it). */
+	const MISSING = { message: STEP_UP_MISSING, stepUp: 'missing' };
 	/**
 	 * The cookie of a session made for `user`: the routes that ask for the
 	 * current password count it on the session, which the gate's credential
@@ -2778,7 +2784,7 @@ describe('the accounts, administration, teams, reports and requests that card 21
 	const sessionOf = (user: SessionUser) => ({ cookie: `${SESSION_COOKIE_NAME}=${makeSession(user)}` });
 	const PRIORITY = 'priority must be one of: low, medium, high, critical';
 	const TIME = (name: string) => `${name} must be a time written HH:MM, from 00:00 to 23:59`;
-	const key = (more: object = {}) => ({ name: 'my script', password: 'the password', ...more });
+	const key = (more: object = {}) => ({ name: 'my script', currentPassword: 'the password', ...more });
 	const schedule = (w: World, more: object = {}) => ({ name: 'Weekly', scope: 'board', scopeId: w.boardId, frequency: 'weekly', ...more });
 	const report = (w: World, more: object = {}) => ({ scope: 'board', scopeId: w.boardId, periodStart: '2026-10-01', periodEnd: '2026-10-08', ...more });
 	const mailed = (w: World, more: object = {}) => report(w, { recipients: ['a@example.test'], ...more });
@@ -2791,19 +2797,20 @@ describe('the accounts, administration, teams, reports and requests that card 21
 	const hostKeyed = (hostKey: unknown) => ({ destinations: [{ name: 'Box', type: 'sftp', host: 'box.example.test', username: 'backup', hostKey }] });
 
 	const CASES: Case[] = [
-		// POST /api/account/api-keys: every field before a password is checked or counted.
-		['POST /api/account/api-keys', 'owner', at('/api/account/api-keys'), () => ({ password: 'x' }), 'Key name is required'],
+		// POST /api/account/api-keys: every field before a password is checked or counted, then the step-up's
+		// (card 2771). Built after the snapshot and refused before the password: no code (E5).
+		['POST /api/account/api-keys', 'owner', at('/api/account/api-keys'), () => ({ currentPassword: 'x' }), 'Key name is required'],
 		['POST /api/account/api-keys', 'owner', at('/api/account/api-keys'), () => key({ name: 5 }), 'name must be text'],
 		['POST /api/account/api-keys', 'owner', at('/api/account/api-keys'), () => key({ name: long(101) }), 'name must be at most 100 characters'],
-		['POST /api/account/api-keys', 'owner', at('/api/account/api-keys'), () => key({ password: 5 }), 'Password is required'],
+		['POST /api/account/api-keys', 'owner', at('/api/account/api-keys'), () => key({ currentPassword: 5 }), MISSING],
 		['POST /api/account/api-keys', 'owner', at('/api/account/api-keys'), () => key({ expiresAt: 'banana' }), 'expiresAt must be a timestamp, such as 2027-01-01T09:00:00Z'],
 		['POST /api/account/api-keys', 'owner', at('/api/account/api-keys'), () => key({ expiresAt: '2020-01-01T00:00:00Z' }), 'expiresAt must be in the future'],
-		// PUT /api/account/email
-		['PUT /api/account/email', 'owner', at('/api/account/email'), () => ({ newEmail: 'moved@example.test' }), 'Password is required'],
-		['PUT /api/account/email', 'owner', at('/api/account/email'), () => ({ password: 'x', newEmail: 5 }), 'newEmail must be text'],
-		['PUT /api/account/email', 'owner', at('/api/account/email'), () => ({ password: 'x', newEmail: '  ' }), 'Email is required'],
-		['PUT /api/account/email', 'owner', at('/api/account/email'), () => ({ password: 'x', newEmail: 'me@example.test,them@example.test' }), 'Invalid email address'],
-		['PUT /api/account/email', 'owner', at('/api/account/email'), () => ({ password: 'x', newEmail: 'me@localhost' }), 'Invalid email address'],
+		// PUT /api/account/email: the address first, then the step-up's (card 2771).
+		['PUT /api/account/email', 'owner', at('/api/account/email'), () => ({ newEmail: 'moved@example.test' }), MISSING],
+		['PUT /api/account/email', 'owner', at('/api/account/email'), () => ({ currentPassword: 'x', newEmail: 5 }), 'newEmail must be text'],
+		['PUT /api/account/email', 'owner', at('/api/account/email'), () => ({ currentPassword: 'x', newEmail: '  ' }), 'Email is required'],
+		['PUT /api/account/email', 'owner', at('/api/account/email'), () => ({ currentPassword: 'x', newEmail: 'me@example.test,them@example.test' }), 'Invalid email address'],
+		['PUT /api/account/email', 'owner', at('/api/account/email'), () => ({ currentPassword: 'x', newEmail: 'me@localhost' }), 'Invalid email address'],
 		// PUT /api/account/emoji
 		['PUT /api/account/emoji', 'owner', at('/api/account/emoji'), () => ({}), 'Missing emoji'],
 		['PUT /api/account/emoji', 'owner', at('/api/account/emoji'), () => ({ emoji: 5 }), 'Missing emoji'],
@@ -2811,8 +2818,8 @@ describe('the accounts, administration, teams, reports and requests that card 21
 		// PUT /api/account/notifications: a known key that is not true or false was dropped without a word.
 		['PUT /api/account/notifications', 'owner', at('/api/account/notifications'), () => ({ email_moved: 'no' }), 'email_moved must be true or false'],
 		['PUT /api/account/notifications', 'owner', at('/api/account/notifications'), () => ({ email_all: null }), 'email_all must be true or false'],
-		// PUT /api/account/password
-		['PUT /api/account/password', 'owner', at('/api/account/password'), () => ({ newPassword: 'a long password' }), 'Current password is required'],
+		// PUT /api/account/password: its own fields first, then the step-up's (card 2771).
+		['PUT /api/account/password', 'owner', at('/api/account/password'), () => ({ newPassword: 'a long password' }), MISSING],
 		['PUT /api/account/password', 'owner', at('/api/account/password'), () => ({ currentPassword: 'x', newPassword: 12345678 }), 'newPassword must be text'],
 		['PUT /api/account/password', 'owner', at('/api/account/password'), () => ({ currentPassword: 'x', newPassword: 'a long password', endApiKeys: 'yes' }), 'endApiKeys must be true or false'],
 		// PUT /api/admin/backup: `{}` wrote the defaults over every setting and deleted every destination.
@@ -2968,7 +2975,7 @@ describe('the accounts, administration, teams, reports and requests that card 21
 		const res = await api(method, path(w), { user: w[who], body: body(w), headers });
 
 		expect(res.status, JSON.stringify(res.body)).toBe(400);
-		expect(res.body).toEqual({ message });
+		expect(res.body).toEqual(typeof message === 'string' ? { message } : message);
 		expectUnchanged(before);
 	});
 
@@ -3100,9 +3107,17 @@ describe('the accounts, administration, teams, reports and requests that card 21
 			{ key: 'smtp_host', value: 'smtp.example.test' },
 			{ key: 'smtp_from_address', value: 'board' }
 		]).run();
-		// Not the form signing key, which every database a test starts on holds, as a started server's does (card 2750).
+		// Not the form signing key, which every database a test starts on holds, as a started server's does (card 2750),
+		// nor the MFA key's check, which the factor `stepUp` gives the caller writes (card 2771).
 		const stored = () =>
-			Object.fromEntries(db.select().from(settings).all().filter((row) => row.key !== 'request_form_secret').map((row) => [row.key, row.value]));
+			Object.fromEntries(
+				db
+					.select()
+					.from(settings)
+					.all()
+					.filter((row) => row.key !== 'request_form_secret' && row.key !== 'mfa_key_check')
+					.map((row) => [row.key, row.value])
+			);
 
 		const res = await api(
 			'PUT',
@@ -3127,10 +3142,10 @@ describe('the accounts, administration, teams, reports and requests that card 21
 		const w = world();
 		db.update(users).set({ passwordHash: await makePasswordHash('the password', 'known') }).where(eq(users.id, w.owner.id)).run();
 
-		// From a session of the owner's, which the password is counted on (card 2701).
+		// From a session of the owner's, which the password is counted on (card 2701), with the code (card 2771).
 		const res = await api('POST', '/api/account/api-keys', {
 			user: w.owner,
-			body: key({ expiresAt: '2099-01-01T09:30:00+02:00' }),
+			body: key({ expiresAt: '2099-01-01T09:30:00+02:00', currentCode: stepUpCode(w.owner) }),
 			headers: { cookie: `${SESSION_COOKIE_NAME}=${makeSession(w.owner)}` }
 		});
 

@@ -51,7 +51,10 @@ import {
 	makeWebhook,
 	resetDb,
 	shareBoardWithTeam,
+	STEP_UP_APART,
+	STEP_UP_WRITES,
 	stepUp,
+	stepUpCode,
 	type BoardFixture
 } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
@@ -675,6 +678,8 @@ describe('PUT /api/admin/smtp', () => {
 		const chief = makeUser({ username: 'chief', role: 'superadmin' });
 		// A session of theirs, which a save asks the current password from (card 2701).
 		const chiefSession = makeSession(chief);
+		// And the code a save asks beside it, made here so that its factor is the fixture's (card 2771).
+		const chiefCode = stepUpCode(chief);
 		db.update(settings).set({ value: ' SMTP.New.Example.TEST ' }).where(eq(settings.key, 'smtp_host')).run();
 		db.insert(settings)
 			.values([
@@ -685,13 +690,13 @@ describe('PUT /api/admin/smtp', () => {
 				{ key: 'app_url', value: 'https://old.example.test' }
 			])
 			.run();
-		return { ...s, chief, chiefSession };
+		return { ...s, chief, chiefSession, chiefCode };
 	};
 
-	/** `api()`'s options for a save by the superadmin, from their session, with their current password (card 2701). */
-	const asChief = ({ chief, chiefSession }: ReturnType<typeof withMail>, body: Record<string, unknown>) => ({
+	/** `api()`'s options for a save by the superadmin, from their session, with their current password (card 2701) and a code (card 2771). */
+	const asChief = ({ chief, chiefSession, chiefCode }: ReturnType<typeof withMail>, body: Record<string, unknown>) => ({
 		user: chief,
-		body: { ...body, currentPassword: FIXTURE_PASSWORD },
+		body: { ...body, currentPassword: FIXTURE_PASSWORD, currentCode: chiefCode },
 		headers: { cookie: `${SESSION_COOKIE_NAME}=${chiefSession}` }
 	});
 
@@ -702,7 +707,8 @@ describe('PUT /api/admin/smtp', () => {
 				.select()
 				.from(settings)
 				.all()
-				.filter((row) => row.key !== 'request_form_secret')
+				// Nor the MFA key's check, which the superadmin's factor wrote (card 2771).
+				.filter((row) => row.key !== 'request_form_secret' && row.key !== 'mfa_key_check')
 				.map((row) => [row.key, row.value])
 		);
 
@@ -722,8 +728,9 @@ describe('PUT /api/admin/smtp', () => {
 			build: withMail,
 			request: (s) => api('PUT', '/api/admin/smtp', asChief(s, NEW)),
 			// The current password is counted on the session as it arrives, apart
-			// from the transaction, and the count cleared for the right one (card 2701).
-			apart: ['sessions.wrong_password_count'],
+			// from the transaction, and the count cleared for the right one (card
+			// 2701), with the code spent (card 2771).
+			apart: [...STEP_UP_APART],
 			afterSuccess: (_s, res: ApiResult) => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({ success: true });
@@ -753,10 +760,10 @@ describe('PUT /api/admin/smtp', () => {
 		// sender's name and address move nothing (its review). The App URL's: the
 		// address it leaves, saved before anyone was recorded, as nobody's; the
 		// saver's other App URL rows dropped; the saver's row (the third review).
-		// Before them, the current password counted and the count cleared (card 2701).
+		// Before them, the current password counted, the code spent and the
+		// count cleared (cards 2701 and 2771).
 		expect(shape(run.writes)).toEqual([
-			'update sessions set',
-			'update sessions set',
+			...STEP_UP_WRITES,
 			'update settings set',
 			'update settings set',
 			'update settings set',

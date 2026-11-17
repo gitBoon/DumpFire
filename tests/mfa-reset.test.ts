@@ -371,9 +371,13 @@ describe('POST /api/users/[id]/mfa/reset', () => {
 		expect(res.status).toBe(403);
 		expect(res.body.message).toBe("Only superadmin can reset an admin's two-step sign-in");
 		expect(before).toBeDefined();
-		// Nothing changed but the caller's session clearing the check it counted
-		// while the password was compared (card 2701).
-		expect(diffSnapshots(before!, snapshotDb())).toEqual(['sessions: row 1 changed (wrong_password_count: 1 became 0)']);
+		// Nothing changed but the caller's code spent and the session clearing the
+		// check it counted while the password was compared (cards 2701 and 2771):
+		// a refusal after the check leaves the code spent (S4).
+		expect(diffSnapshots(before!, snapshotDb())).toEqual([
+			expect.stringMatching(/^mfa_factors: row \d+ changed \(last_step: null became \d+; last_used_at: null became /),
+			'sessions: row 1 changed (wrong_password_count: 1 became 0)'
+		]);
 		expect(factorsOf(holder.id)).toHaveLength(1);
 		expect(linksOf(holder.id)).toEqual([]);
 	});

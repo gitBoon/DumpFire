@@ -301,11 +301,11 @@
 								<li>Navigate to <strong>My Account</strong> (⚙️)</li>
 								<li>Scroll to the <strong>🔑 API Keys</strong> section</li>
 								<li>Enter a descriptive name (e.g. "CI Pipeline", "n8n Automation")</li>
-								<li>Enter your current password. A wrong one is refused with "Password is incorrect". After ten wrong ones in 15 minutes from one signed-in browser, counted with the Account page's email and password forms, that browser is refused for up to 15 minutes, the right password included</li>
+								<li>Enter your current password and the code from your authenticator app (or one of your recovery codes). A wrong one is refused with "Your password or code was not right. Nothing was changed." The third wrong answer from one signed-in browser, counted with every other action that asks for your password, signs that browser out: sign in again.</li>
 								<li>Click <strong>Generate Key</strong></li>
 								<li><strong>Copy the key immediately</strong> — it is only displayed once</li>
 							</ol>
-							<p>A key is made only there, by the account's holder, with the password: the API itself has no route that makes a key. An account has at most ten.</p>
+							<p>A key is made only there, by the account's holder, with the password and a code: the API itself has no route that makes a key. An account has at most ten.</p>
 							<div class="info-callout">
 								<span class="callout-icon">💡</span>
 								<p>API keys inherit the permissions of the user who created them. A regular user can only access boards they have edit/view access to. Admin users have global access.</p>

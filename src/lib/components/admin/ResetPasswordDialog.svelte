@@ -18,7 +18,7 @@
 	import { NO_ANSWER, showToast } from '$lib/admin/send';
 	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
 	import { toasts } from '$lib/stores/toast';
-	import { proofTyped, stepUpRefusal } from '$lib/step-up-words';
+	import { passwordKeptAfter, proofTyped, stepUpRefusal } from '$lib/step-up-words';
 
 	/** What the admin page's load gave it, passed on as it is: the accounts and who is signed in. */
 	let { data }: { data: PageData } = $props();
@@ -33,12 +33,14 @@
 	let resetPasswordCurrent = $state('');
 	/**
 	 * The sign-in code typed beside it (card 2770), on both rows, held and
-	 * cleared as the password is. Your own row's route reads it from card 2771.
+	 * cleared as the password is. Both rows' routes check it beside the
+	 * password (card 2771): your own row's, `PUT /api/account/password`, through
+	 * the step-up as every other.
 	 */
 	let resetCodeCurrent = $state('');
 	/**
-	 * The server's refusal of that password, said in the dialog until the next
-	 * try (card 2701), its field focused again (`CurrentPasswordField`).
+	 * The server's refusal of that password or code, said in the dialog until
+	 * the next try (card 2701), its field focused again (`CurrentPasswordField`).
 	 */
 	let resetRefusal = $state<string | null>(null);
 	/**
@@ -126,10 +128,13 @@
 			return;
 		}
 		// The administrator's own password refused (card 2701): said in the
-		// dialog, which stays open with the field focused to type it again.
+		// dialog, which stays open with the field focused to type it again; the
+		// password kept for a refusal decided before it was compared, and only
+		// the code typed again (card 2771, D9).
 		const refusal = await stepUpRefusal(res);
 		if (refusal !== null) {
 			resetRefusal = refusal;
+			resetPasswordCurrent = passwordKeptAfter(refusal, currentPassword);
 			return;
 		}
 		if (res.ok) {
@@ -176,7 +181,7 @@
 			<h2>🔑 {resettingOwnPassword ? 'Change Your Password' : 'Reset Password'}</h2>
 			{#if resettingOwnPassword}
 				<!-- Their own account: the password they have is asked for, as on the Account page. -->
-				<p>This is your own account. Enter your current password and a new one. Your other sessions will be signed out.</p>
+				<p>This is your own account. Enter your current password, a code from your authenticator app, and a new one. Your other sessions will be signed out.</p>
 				<!-- Sent with no endApiKeys, so the keys are kept. The Account page offers the choice. -->
 				<p>Your API keys and the webhooks you set up keep working. To end the keys and switch off those webhooks too, change your password on the <a href="/account">Account page</a>.</p>
 				<CurrentPasswordField label="Current password" bind:value={resetPasswordCurrent} bind:code={resetCodeCurrent} refusal={resetRefusal} />

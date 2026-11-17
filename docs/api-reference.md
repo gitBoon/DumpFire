@@ -1,9 +1,9 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.126
+version: 1.127
 status: As-Built
-date: 2026-11-13
+date: 2026-11-17
 tags:
   - api
   - rest
@@ -28,7 +28,7 @@ tags:
   - retention
   - mfa
   - two-step-sign-in
-description: "REST API reference for DumpFire's external v1 API: authentication, how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it, and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
+description: "REST API reference for DumpFire's external v1 API: authentication, how every failure is answered, what a failed write means, what each delete removes, the main endpoints (webhooks among them: where one may send, who may change one, at most 10 a board; the people directory and its groups, an administrator's key's, with no addresses; decision records since 1.6.0, what a key may and may not do with one; a card's files and image uploads since 1.7.0), examples, and the changelog, the internal routes that ask for the current password among it (and, since card 2771, a code beside it: currentCode, its form, the four new stepUp codes, the Account routes on the same check with currentPassword), and card 2773's reset of an account's two-step sign-in and the invite's new 409, and card 2769's two-step sign-in, which leaves the v1 API and keys unchanged and sends the login, invite and set-up forms on to /login/verify or /login/enrol"
 ---
 
 # External API Reference
@@ -53,17 +53,19 @@ against the rate limit.
 ### Generating a Key
 
 1. Log in, with your password and then a code from your authenticator app (card 2769) → **My Account** (⚙️) → **API Keys** section
-2. Enter a name and your current password → **Generate Key**
+2. Enter a name, your current password and a code from your authenticator app (or one of
+   your recovery codes, by **Use a recovery code instead**) → **Generate Key**
 3. Copy the key immediately — it is shown **once only**
 
 Keys inherit the permissions of the user who created them. A key is made only there, by the
-account's holder, with the password; the API has no route that makes one, and an account
-has at most ten. A wrong password is refused with `Password is incorrect`, and no key is
-made. The third wrong password from one signed-in browser, counted with the Account page's
-email and password forms and the admin actions that ask for the password (card 2701), ends
-that browser's session: `403` `{ "message": "Nothing was changed. This session has been
-signed out, after three wrong passwords or because it had ended: sign in again.",
-"signedOut": true, "stepUp": "signed-out" }`. Only a right password sets the count back.
+account's holder, with the password and a code; the API has no route that makes one, and an
+account has at most ten. A wrong password or a wrong code is refused with `Your password or
+code was not right. Nothing was changed.`, never saying which, and no key is made. The third
+wrong answer from one signed-in browser, counted with every other action that asks for the
+password (cards 2701 and 2771), ends that browser's session: `403` `{ "message": "Nothing was
+changed. This session has been signed out, after three wrong passwords or codes, or because it
+had ended: sign in again.", "signedOut": true, "stepUp": "signed-out" }`. Only a right password
+with a right code sets the count back.
 
 ### When a Key Ends
 
@@ -351,6 +353,67 @@ exports answer that form; the API turns it into ISO 8601 as it answers. Until 20
 some fields were answered in that form, which names no zone, and the same field could be in
 either.
 
+### Changes on 2026-11-17
+
+**Every action that asks for the current password asks for a code beside it (cards 2770 and
+2771, one release). The v1 API does not change**: still version `1.7.1`, and no `/api/v1`
+operation, answer or schema is different; no v1 route asks for a password, and a key needs
+no code. These are DumpFire's own internal routes, which its pages call; a script that calls
+them as a signed-in session must send the code too.
+
+- **`currentCode` is required on every listed internal route**: the thirty-two actions of
+  [Step-up Before Destructive Actions](authentication-security.md#step-up-before-destructive-actions-card-2701),
+  the import's confirmation (`POST /api/admin/import/confirm`) and the export
+  (`POST /api/admin/export`) among them. It is a code from the account's authenticator app, or
+  one of its recovery codes, sent beside `currentPassword` as typed. No `currentCode`, an empty
+  one or one that is not text is `400` `{ "message": "Enter your password and a code from your
+  authenticator app to confirm this. Nothing was changed.", "stepUp": "missing" }`, nothing
+  counted; a request without a `currentPassword` gets the same answer.
+- **Its form.** At most 64 characters; then, trimmed with every space dropped, exactly six
+  digits (`123 456` is read as `123456`), or a recovery code (case does not matter, spaces and
+  hyphens are dropped, O is read as 0, I and L as 1, sixteen characters). Anything else is
+  `400` `{ "message": "That code is not in the right form. Enter the 6 digits from your
+  authenticator app, or choose 'Use a recovery code instead'. Nothing was changed.",
+  "stepUp": "code-malformed" }`, not counted.
+- **Four new `stepUp` codes** beside the eight of 2026-11-04: `code-malformed` (above);
+  `code-spent`, `400` "That code has just been used. Wait for the next code from your
+  authenticator app and enter it. Nothing was changed.", for an authenticator code whose
+  30-second step was already used, **decided before the password is compared, whatever the
+  password**, and not counted; `no-factor`, `403` "This account has no two-step sign-in to
+  confirm with, so this cannot be done from it. Nothing was changed.", for an account with no
+  second factor (none exists since card 2769); and `factor-unusable`, `503` "Your authenticator
+  cannot be checked on this server right now. Use one of your recovery codes, or ask an
+  administrator. Nothing was changed.", for an authenticator code when the server cannot open
+  the account's factor (its MFA key missing or another), not counted: a recovery code still
+  works.
+- **One answer for a wrong password or a wrong code**: `403` `{ "message": "Your password or
+  code was not right. Nothing was changed.", "stepUp": "wrong" }`, never saying which (it was
+  "Password is incorrect. Nothing was changed."). Each counts once toward the session's three,
+  whichever part was wrong; only a right password with a right code sets the count back. The
+  signed-out answer now reads "Nothing was changed. This session has been signed out, after
+  three wrong passwords or codes, or because it had ended: sign in again.".
+- **A code is spent once it has confirmed an action**, a recovery code for good; a refusal
+  after the check (the `409` "Your password was changed while this was being saved…", a write's
+  own `409`) leaves it spent. Two requests sent with the same authenticator code in one step:
+  the second is `code-spent`, or `wrong` when both arrive together.
+- **The Account routes are listed actions now.** `PUT /api/account/password`,
+  `PUT /api/account/email` and `POST /api/account/api-keys` call the same check as every
+  other: their bodies are `{ currentPassword, currentCode, newPassword, endApiKeys }`,
+  `{ newEmail, currentPassword, currentCode }` and `{ name, expiresAt, currentPassword,
+  currentCode }`. **The email and key routes no longer read `password`**: a body with only
+  `password` is `400` `missing`. Their own fields are refused first, before the password:
+  "New password must be at least 8 characters"; "Email is required" and "Invalid email
+  address"; "Key name is required", the `expiresAt` refusals and "Maximum of 10 API keys per
+  user". An address another account holds is `409` "Email is already in use" only after the
+  password and code are checked, so that refusal leaves the code spent. Their own words for the password ("Password is
+  incorrect", "Current password is incorrect", "Password is required", "Current password is
+  required") are gone: they answer with the step-up's words and codes above.
+- **A right password with a wrong code** raises the account's security banner and, with mail
+  set up, mails its owner (at most once an hour); a recovery code used here mails the owner
+  with the number left. Neither touches the account's sign-in code pauses or lock.
+- No migration, and nothing to set. Reload every DumpFire tab opened before the release: an old
+  page sends no `currentCode` and is answered `400` `missing`, with nothing changed.
+
 ### Changes on 2026-11-13
 
 **Two-step sign-in (card 2769). The v1 API does not change**: still version `1.7.1`, and no
@@ -589,7 +652,8 @@ See [Step-up Before Destructive Actions](authentication-security.md#step-up-befo
   `PUT /api/account/password` and `POST /api/account/api-keys` share the session's count with
   the routes above: the first two wrong ones keep their own words, the third is the signed-out
   `403`. The `429` "Too many wrong passwords. Try again in N minute(s)." and its 15-minute window
-  are gone.
+  are gone. (Since 2026-11-17 the three are listed actions answering in the step-up's words:
+  see [Changes on 2026-11-17](#changes-on-2026-11-17).)
 - **Card 2697's eight**, each with every refusal that needs no password made first:
   `PUT /api/decisions/{id}/participants/{participantId}/account` (`{ account, currentPassword }`)
   and `PUT …/address`, always; `PUT /api/people/{id}` when the body carries `email` or `userId`

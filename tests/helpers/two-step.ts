@@ -24,7 +24,7 @@ import { newRecoveryCodes } from '$lib/server/recovery-codes';
 import { CHALLENGE_COOKIE } from '$lib/server/sign-in-challenges';
 import { hotp, newTotpSecret, stepAt } from '$lib/server/totp';
 import { action, type ActionResult } from './actions';
-import { FIXTURE_PASSWORD } from './fixtures';
+import { FIXTURE_PASSWORD, codeFor } from './fixtures';
 
 /** What `giveFactor` wrote: the factor's row id, its secret, and the recovery codes as the owner holds them. */
 export type GivenFactor = { factorId: number; secret: Buffer; recoveryCodes: string[] };
@@ -46,10 +46,12 @@ export function openReleaseWindow(at: Date = new Date()): void {
 		.run();
 }
 
-/** The code the authenticator with this secret shows at `at` (now by default). */
-export function codeFor(secret: Buffer, at: number = Date.now()): string {
-	return hotp(secret, stepAt(at));
-}
+/**
+ * The code the authenticator with this secret shows at `at` (now by default).
+ * Defined in ./fixtures.ts, whose `stepUpCode` makes a step-up's code with it
+ * (card 2771), so that neither file imports the other back.
+ */
+export { codeFor };
 
 /** A six-digit code that is neither the current step's nor the one before: wrong whenever it is sent within the step. */
 export function wrongCodeFor(secret: Buffer, at: number = Date.now()): string {

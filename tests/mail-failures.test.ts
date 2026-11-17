@@ -40,7 +40,7 @@ import { notifyRequesterConfirm, notifyUserAssigned } from '$lib/server/notifica
 import { load as loadInvitePage } from '../src/routes/invite/[token]/+page.server';
 import { api, type ApiResult } from './helpers/api';
 import { effects, type Effects, type OfferedMail } from './helpers/effects';
-import { FIXTURE_PASSWORD, makeBoard, makeCard, makeSession, makeSmtp, makeUser, resetDb } from './helpers/fixtures';
+import { FIXTURE_PASSWORD, makeBoard, makeCard, makeSession, makeSmtp, makeUser, resetDb, stepUpCode } from './helpers/fixtures';
 import { watchReads } from './helpers/reads';
 
 const APP = 'https://kanban.example.test';
@@ -132,10 +132,10 @@ afterEach(() => {
 
 // Each with the caller's current password (card 2701).
 const resend = (by: SessionUser, id: number, headers: Record<string, string> = signedIn(by)) =>
-	api('POST', `/api/users/${id}/invite`, { user: by, body: { currentPassword: FIXTURE_PASSWORD }, headers });
+	api('POST', `/api/users/${id}/invite`, { user: by, body: { currentPassword: FIXTURE_PASSWORD, currentCode: stepUpCode(by) }, headers });
 
 const create = (by: SessionUser, body: Record<string, unknown>) =>
-	api('POST', '/api/users', { user: by, body: { ...body, currentPassword: FIXTURE_PASSWORD }, headers: signedIn(by) });
+	api('POST', '/api/users', { user: by, body: { ...body, currentPassword: FIXTURE_PASSWORD, currentCode: stepUpCode(by) }, headers: signedIn(by) });
 
 /** A mail server that refuses the sign-in, with what Gmail says. */
 const signInRefused = () =>

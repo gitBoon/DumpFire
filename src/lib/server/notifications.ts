@@ -446,6 +446,12 @@ export type SecurityNoticeDetail = {
 	codesLeft?: number;
 	apiKeys?: { name: string; createdAt: string; lastUsedAt: string | null }[];
 	webhooks?: { board: string; host: string; createdAt: string }[];
+	/**
+	 * The notice is of a step-up, a change confirmed with the password and a
+	 * code (card 2771, D12), not of a sign-in: `recovery-code-used` and
+	 * `wrong-code` say so.
+	 */
+	confirming?: true;
 };
 
 /**
@@ -455,7 +461,9 @@ export type SecurityNoticeDetail = {
  * paused or locked, recovery codes guessed at, a wrong code after the right
  * password, or a sign-in begun with the right password and never finished.
  * Each says when and from where, and what to do if it was not them. Never a
- * code, a secret, a token or a link.
+ * code, a secret, a token or a link. A recovery code used, or a wrong code
+ * after the right password, at a step-up (card 2771) is the same notice,
+ * worded for confirming a change (`confirming`).
  *
  * Nothing is sent unless a mail host is set up and its password is not
  * missing. Called once the write it follows from is committed, and never
@@ -498,10 +506,12 @@ export function sendSecurityNotice(userId: number, notice: SecurityNotice, detai
 				'administrator straight away, and ask them to reset your two-step sign-in.'
 		},
 		'recovery-code-used': {
-			subject: 'A recovery code was used to sign in to DumpFire',
+			subject: detail.confirming ? 'A recovery code was used to confirm a change on DumpFire' : 'A recovery code was used to sign in to DumpFire',
 			title: 'A recovery code was used',
 			body:
-				`A recovery code was used to sign in to your DumpFire account on ${escapeHtml(when)}${from}. ` +
+				(detail.confirming
+					? `A recovery code was used to confirm a change on your DumpFire account on ${escapeHtml(when)}${from}. `
+					: `A recovery code was used to sign in to your DumpFire account on ${escapeHtml(when)}${from}. `) +
 				`You have ${detail.codesLeft ?? 0} recovery code${detail.codesLeft === 1 ? '' : 's'} left.` +
 				((detail.codesLeft ?? 0) <= 3 ? ' That is few: make a new set as soon as you can.' : ''),
 			after: 'If this was not you, someone holds your password and a recovery code: change your password straight away, and tell an administrator.'
@@ -531,7 +541,9 @@ export function sendSecurityNotice(userId: number, notice: SecurityNotice, detai
 		'wrong-code': {
 			subject: 'Your DumpFire password was used with a wrong code',
 			title: 'A wrong code after your password',
-			body: `Someone entered your DumpFire password correctly on ${escapeHtml(when)}${from}, and then a wrong two-step sign-in code.`,
+			body: detail.confirming
+				? `Someone entered your DumpFire password correctly on ${escapeHtml(when)}${from} while confirming a change, and then a wrong code.`
+				: `Someone entered your DumpFire password correctly on ${escapeHtml(when)}${from}, and then a wrong two-step sign-in code.`,
 			after: notYou
 		},
 		'unfinished-sign-in': {

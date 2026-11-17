@@ -15,8 +15,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sqlite } from '$lib/server/db';
 import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { STEP_UP_FIELD } from '$lib/server/step-up';
+import { STEP_UP_CODE_FIELD } from '$lib/step-up-words';
 import { api, type ApiResult } from './helpers/api';
-import { FIXTURE_PASSWORD, addBoardMember, makeBoard, makeSession, makeTeam, makeUser, resetDb, shareBoardWithTeam, sessionHashOf } from './helpers/fixtures';
+import {
+	FIXTURE_PASSWORD,
+	addBoardMember,
+	makeBoard,
+	makeSession,
+	makeTeam,
+	makeUser,
+	resetDb,
+	shareBoardWithTeam,
+	sessionHashOf,
+	stepUpCode,
+	stepUpFactor
+} from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 
 type Row = Record<string, unknown>;
@@ -29,6 +42,8 @@ let quiet: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
 	resetDb();
 	admin = makeUser({ username: 'admin', role: 'admin' });
+	// The factor the administrator's codes are made from, given before any snapshot (card 2771).
+	stepUpFactor(admin);
 	// The suite logs errors only; the directory's lines are INFO ones.
 	level = process.env.LOG_LEVEL;
 	process.env.LOG_LEVEL = 'INFO';
@@ -46,18 +61,26 @@ afterEach(() => {
  * address or an account, which asks for the caller's own password (card 2697,
  * Q21; its code review's part B, S1, for the add, the delete and Add from
  * accounts): it is sent from a real session of theirs, made for it and ended
- * after it, so that the rows it leaves are the handler's alone, with their
- * password added, as the access table's `call` sends one. The groups' routes
- * ask for none. The claims are unchanged.
+ * after it, with their factor's spent step put back after it too, so that the
+ * rows it leaves are the handler's alone, with their password and a code
+ * added (card 2771), as the access table's `call` sends them. The groups'
+ * routes ask for none. The claims are unchanged.
  */
 async function send(method: 'POST' | 'PUT' | 'DELETE', path: string, body?: unknown): Promise<ApiResult> {
 	const ofPerson = path === '/api/people' || path.startsWith('/api/people/');
 	if (!ofPerson || (body !== undefined && (body === null || typeof body !== 'object'))) return api(method, path, { user: admin, body });
 	const token = makeSession(admin);
+	const code = stepUpCode(admin);
+	const spent = sqlite.prepare('SELECT last_step, last_used_at FROM mfa_factors WHERE user_id = ?').get(admin.id) as { last_step: number | null; last_used_at: string | null };
 	try {
-		return await api(method, path, { user: admin, body: { [STEP_UP_FIELD]: FIXTURE_PASSWORD, ...(body ?? {}) }, headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` } });
+		return await api(method, path, {
+			user: admin,
+			body: { [STEP_UP_FIELD]: FIXTURE_PASSWORD, [STEP_UP_CODE_FIELD]: code, ...(body ?? {}) },
+			headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` }
+		});
 	} finally {
 		sqlite.prepare('DELETE FROM sessions WHERE id = ?').run(sessionHashOf(token));
+		sqlite.prepare('UPDATE mfa_factors SET last_step = ?, last_used_at = ? WHERE user_id = ?').run(spent.last_step, spent.last_used_at, admin.id);
 	}
 }
 

@@ -3934,8 +3934,83 @@ const PROOF_ALLOWED: Record<string, { keys: readonly string[]; lists: string }> 
 	requirePasswordUnchanged: { keys: [...CURRENT_PASSWORD, ...PASSWORD_UNCHANGED_ONLY], lists: 'CURRENT_PASSWORD or PASSWORD_UNCHANGED_ONLY' }
 };
 
-/** What asks for the current password, one of which a handler allowed a proof calls before it. */
-const ASKS_PASSWORD = ['confirmStepUp', 'takeImportConfirmation', 'checkCurrentPassword'];
+/**
+ * What asks for the current password, one of which a handler allowed a proof
+ * calls before it. The Account page's three routes asked through
+ * `checkCurrentPassword` until card 2771, and through `confirmStepUp` since:
+ * the check itself, `checkCurrentProof`, is the step-up's alone (T12, below).
+ */
+const ASKS_PASSWORD = ['confirmStepUp', 'takeImportConfirmation'];
+
+/**
+ * Card 2771 (D5, S6): where the current password's check may be named, by
+ * name: `checkCurrentProof` and `refuseWrongPassword` in auth.ts, which
+ * declares them, and step-up.ts, which imports and calls them; the check they
+ * replaced, nowhere.
+ */
+const PROOF_CHECK_NAMED_IN: Readonly<Record<string, readonly string[]>> = {
+	checkCurrentProof: ['src/lib/server/auth.ts', 'src/lib/server/step-up.ts'],
+	refuseWrongPassword: ['src/lib/server/auth.ts', 'src/lib/server/step-up.ts'],
+	checkCurrentPassword: []
+};
+
+/** Card 2771 (S6): the files that may call `checkPassword` (passwords.ts): sign-in, and the current password's check. */
+const CHECK_PASSWORD_CALLED_IN = ['src/routes/login/+page.server.ts', 'src/lib/server/auth.ts'];
+
+/** Every identifier of a source, with its line: a TypeScript file's, or those of each `<script>` of a Svelte file. Comments name nothing. */
+function identifiersOf(file: string, source: string): { id: ts.Identifier; line: number; tree: ts.SourceFile }[] {
+	const scripts = file.endsWith('.svelte')
+		? [...source.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)].map((match) => ({ text: match[1], offset: source.slice(0, match.index).split('\n').length - 1 }))
+		: [{ text: source, offset: 0 }];
+	const found: { id: ts.Identifier; line: number; tree: ts.SourceFile }[] = [];
+	for (const { text, offset } of scripts) {
+		const tree = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+		const visit = (node: ts.Node) => {
+			if (ts.isIdentifier(node)) found.push({ id: node, line: offset + tree.getLineAndCharacterOfPosition(node.getStart(tree)).line + 1, tree });
+			ts.forEachChild(node, visit);
+		};
+		visit(tree);
+	}
+	return found;
+}
+
+/**
+ * Card 2771 (D5, S6; T12) for one file under src: the current password's
+ * check is named only where `PROOF_CHECK_NAMED_IN` lets it be, no file
+ * re-exports every name of auth.ts, and `checkPassword` is called only in
+ * `CHECK_PASSWORD_CALLED_IN`. A right password found any other way would be
+ * a password check without its code.
+ */
+function judgeProofCheck(file: string, source: string): string[] {
+	const findings: string[] = [];
+	const ids = identifiersOf(file, source);
+	for (const [name, allowed] of Object.entries(PROOF_CHECK_NAMED_IN)) {
+		if (allowed.includes(file)) continue;
+		for (const { line } of ids.filter(({ id }) => id.text === name)) findings.push(`${file}:${line} names ${name} (card 2771)`);
+	}
+	if (file !== 'src/lib/server/auth.ts' && !file.endsWith('.svelte')) {
+		const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+		for (const statement of tree.statements) {
+			if (
+				ts.isExportDeclaration(statement) &&
+				!statement.exportClause &&
+				statement.moduleSpecifier &&
+				ts.isStringLiteral(statement.moduleSpecifier) &&
+				/(^|\/)auth$/.test(statement.moduleSpecifier.text)
+			) {
+				findings.push(`${file}:${tree.getLineAndCharacterOfPosition(statement.getStart(tree)).line + 1} re-exports every name of auth.ts, checkCurrentProof among them (card 2771)`);
+			}
+		}
+	}
+	if (!CHECK_PASSWORD_CALLED_IN.includes(file)) {
+		for (const { id, line } of ids.filter(({ id }) => id.text === 'checkPassword')) {
+			const call = ts.isPropertyAccessExpression(id.parent) && id.parent.name === id ? id.parent.parent : id.parent;
+			const callee = ts.isPropertyAccessExpression(id.parent) && id.parent.name === id ? id.parent : id;
+			if (ts.isCallExpression(call) && call.expression === callee) findings.push(`${file}:${line} calls checkPassword (card 2771, S6)`);
+		}
+	}
+	return findings;
+}
 
 /**
  * Card 2726's code review for one file under src: each use of a proof of
@@ -5686,6 +5761,48 @@ describe('one service per action, written only inside writeAs (card 2012)', () =
 		expect(judgePasswordProofs('src/lib/server/auth.ts', defining, ALLOWED)).toEqual([
 			'src/lib/server/auth.ts:2 uses whilePasswordHolds outside its own declaration (card 2726)'
 		]);
+	});
+
+	it("T12. lets the current password's check be the step-up's alone: checkCurrentProof and refuseWrongPassword named only in auth.ts and step-up.ts, checkCurrentPassword nowhere, checkPassword called only by sign-in and auth.ts, and the rule finds each other (card 2771, S6)", () => {
+		const everywhere = filesUnder('src', (path) => /\.(ts|js|svelte)$/.test(path));
+		expect(everywhere.length).toBeGreaterThan(300);
+		expect(everywhere.flatMap((file) => judgeProofCheck(file, readFileSync(join(ROOT, file), 'utf8')))).toEqual([]);
+
+		// step-up.ts imports each once and calls each once; auth.ts declares each and calls checkPassword once.
+		const named = (file: string, name: string) =>
+			identifiersOf(file, readFileSync(join(ROOT, file), 'utf8'))
+				.filter(({ id }) => id.text === name)
+				.map(({ id }) => (ts.isImportSpecifier(id.parent) ? 'import' : ts.isCallExpression(id.parent) && id.parent.expression === id ? 'call' : ts.SyntaxKind[id.parent.kind]));
+		expect(named('src/lib/server/step-up.ts', 'checkCurrentProof')).toEqual(['import', 'call']);
+		expect(named('src/lib/server/step-up.ts', 'refuseWrongPassword')).toEqual(['import', 'call']);
+		expect(named('src/lib/server/auth.ts', 'checkCurrentProof')).toEqual(['FunctionDeclaration']);
+		expect(named('src/lib/server/auth.ts', 'refuseWrongPassword')).toEqual(['FunctionDeclaration']);
+		expect(named('src/lib/server/auth.ts', 'checkPassword')).toEqual(['import', 'call']);
+		expect(named('src/routes/login/+page.server.ts', 'checkPassword')).toEqual(['import', 'call']);
+
+		// Against made-up source: a route importing the check, a page naming it, a re-export, the old check, and a
+		// route that compares a password itself, each a finding.
+		expect(
+			judgeProofCheck(
+				'src/routes/api/example/+server.ts',
+				["import { checkCurrentProof } from '$lib/server/auth';", 'export const PUT = async () => checkCurrentProof(session, 1, password, code, hash, where);'].join('\n')
+			)
+		).toEqual(['src/routes/api/example/+server.ts:1 names checkCurrentProof (card 2771)', 'src/routes/api/example/+server.ts:2 names checkCurrentProof (card 2771)']);
+		expect(judgeProofCheck('src/lib/components/Example.svelte', '<p>Hi</p>\n<script lang="ts">\n\tconst check = checkCurrentProof;\n</script>')).toEqual([
+			'src/lib/components/Example.svelte:3 names checkCurrentProof (card 2771)'
+		]);
+		expect(judgeProofCheck('src/lib/server/index.ts', "export * from './auth';")).toEqual([
+			'src/lib/server/index.ts:1 re-exports every name of auth.ts, checkCurrentProof among them (card 2771)'
+		]);
+		expect(judgeProofCheck('src/lib/server/old.ts', 'export const old = () => checkCurrentPassword();')).toEqual(['src/lib/server/old.ts:1 names checkCurrentPassword (card 2771)']);
+		expect(
+			judgeProofCheck(
+				'src/routes/api/example/+server.ts',
+				["import { checkPassword } from '$lib/server/passwords';", 'export const PUT = async () => (await checkPassword(password, hash, "known")).matches;'].join('\n')
+			)
+		).toEqual(['src/routes/api/example/+server.ts:2 calls checkPassword (card 2771, S6)']);
+		// A comment names nothing: the schema's and the types' comments say where the check is.
+		expect(judgeProofCheck('src/lib/server/db/schema.ts', '// checkCurrentProof in auth.ts\nexport const x = 1;')).toEqual([]);
 	});
 
 	describe('the rule itself (5)', () => {

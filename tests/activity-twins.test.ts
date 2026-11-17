@@ -76,7 +76,9 @@ import {
 	makeUser,
 	makeWebhook,
 	resetDb,
+	STEP_UP_APART,
 	stepUp,
+	stepUpCode,
 	type BoardFixture
 } from './helpers/fixtures';
 import { png } from './helpers/image-bytes';
@@ -304,10 +306,19 @@ const masked = (row: Record<string, unknown> | undefined) =>
 	row && Object.fromEntries(Object.entries(row).map(([column, value]) => [column, typeof value === 'string' && STAMP.test(value) ? '<stamp>' : value]));
 
 /**
+ * A row without the columns a right step-up writes apart from the route's
+ * own write (card 2771, `STEP_UP_APART`): the caller's code spent, which the
+ * v1 twin, asking for no password, does not write.
+ */
+const withoutStepUp = (table: string, row: Record<string, unknown> | undefined) =>
+	row && Object.fromEntries(Object.entries(row).filter(([column]) => !STEP_UP_APART.includes(`${table}.${column}`)));
+
+/**
  * Every row a request added, removed or changed, by table and row, whole and
  * with its timestamps masked. The activity log is left out, and its id
  * counter: its entries are compared on their own, where each tree's spelling
- * of the action is known.
+ * of the action is known. So is a change to the step-up's own columns alone
+ * (`withoutStepUp`).
  */
 function changes(before: DbSnapshot, after: DbSnapshot) {
 	const found: { table: string; row: string; was?: Record<string, unknown>; is?: Record<string, unknown> }[] = [];
@@ -317,7 +328,7 @@ function changes(before: DbSnapshot, after: DbSnapshot) {
 		const is = after[table] ?? {};
 		for (const row of [...new Set([...Object.keys(was), ...Object.keys(is)])]) {
 			if (table === 'sqlite_sequence' && row === 'activity_log') continue;
-			if (JSON.stringify(was[row]) === JSON.stringify(is[row])) continue;
+			if (JSON.stringify(withoutStepUp(table, was[row])) === JSON.stringify(withoutStepUp(table, is[row]))) continue;
 			found.push({ table, row, was: masked(was[row]), is: masked(is[row]) });
 		}
 	}
@@ -2341,7 +2352,7 @@ describe('the pairs that share one service, side by side (card 2012)', () => {
 		await ask('v1 board change, under a card', api('PUT', `/api/v1/boards/${A}`, { ...as, body: { name: 'No', parentCardId: s.first.id } }));
 		await ask('v1 board change, a parent card that is no id', api('PUT', `/api/v1/boards/${A}`, { ...as, body: { name: 'No', parentCardId: 'abc' } }));
 		// The page's deletes take a body (card 2701): the right password, refused before it is looked at.
-		const confirming = { ...as, body: { currentPassword: FIXTURE_PASSWORD } };
+		const confirming = { ...as, body: { currentPassword: FIXTURE_PASSWORD, currentCode: stepUpCode(s.owner) } };
 		await ask('internal board delete, no board', api('DELETE', '/api/boards/999', confirming));
 		await ask('v1 board delete, no board', api('DELETE', '/api/v1/boards/999', as));
 		await ask('internal grouping, no name', api('POST', '/api/board-categories', { ...as, body: { color: '#123456' } }));

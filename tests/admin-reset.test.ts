@@ -65,9 +65,18 @@ import {
 	makeWebhook,
 	resetDb,
 	shareBoardWithTeam,
+	STEP_UP_APART,
+	STEP_UP_WRITES,
+	stepUpCode,
 	testUploadsDir
 } from './helpers/fixtures';
 import { diffSnapshots, snapshotDb, type DbSnapshot } from './helpers/snapshot';
+
+/**
+ * What a reset refused after the password and code were checked leaves: the
+ * code's step spent, apart from the reset (card 2771, S4), and nothing else.
+ */
+const SPENT_ALONE = [expect.stringMatching(/^mfa_factors: row \d+ changed \(last_step: null became \d+; last_used_at: null became /)];
 
 beforeEach(resetDb);
 afterEach(() => {
@@ -104,6 +113,8 @@ const fileIn = (...parts: (string | number)[]) => existsSync(join(testUploadsDir
 type Everything = {
 	admin: SessionUser;
 	owner: SessionUser;
+	/** The superadmin's code, which a reset asks beside the password (card 2771). */
+	code: string;
 	/** The cards that have an attachment with a real file. */
 	withFiles: Card[];
 	/** Every row of every table but `system_logs`, once all of this was built. */
@@ -226,8 +237,11 @@ function everything(): Everything {
 		.prepare('INSERT INTO system_logs (timestamp, level, context, message) VALUES (?, ?, ?, ?)')
 		.run('2026-10-01 09:00:00', 'INFO', 'TEST', 'A line from before the reset');
 
+	// The superadmin's factor, and the code a reset sends from it (card 2771), made before the rows are counted.
+	const code = stepUpCode(admin);
+
 	const rows = Object.fromEntries(appTables().map((table) => [table, count(table)]));
-	return { admin, owner, withFiles, before: snapshotDb(), rows };
+	return { admin, owner, code, withFiles, before: snapshotDb(), rows };
 }
 
 const cleared = () => appTables().filter((table) => !KEPT.includes(table));
@@ -240,11 +254,11 @@ function expectFilesInPlace(e: Everything): void {
 	expect(fileIn('.trash')).toBe(false);
 }
 
-/** The reset, as the superadmin asks it: with their current password, from their session (card 2701). */
+/** The reset, as the superadmin asks it: with their current password (card 2701) and a code (card 2771), from their session. */
 const reset = (e: Everything) =>
 	api('POST', '/api/admin/reset', {
 		user: e.admin,
-		body: { currentPassword: FIXTURE_PASSWORD },
+		body: { currentPassword: FIXTURE_PASSWORD, currentCode: e.code },
 		headers: { cookie: `${SESSION_COOKIE_NAME}=session-of-admin` }
 	});
 
@@ -276,8 +290,9 @@ describe('POST /api/admin/reset', () => {
 				return res;
 			},
 			// The current password is counted on the session as it arrives, apart
-			// from the transaction, and the count cleared for the right one (card 2701).
-			apart: ['sessions.wrong_password_count'],
+			// from the transaction, and the count cleared for the right one (card
+			// 2701), with the code spent (card 2771).
+			apart: [...STEP_UP_APART],
 			afterSuccess: (e, res: ApiResult) => {
 				expect(res.status).toBe(200);
 				expect(res.body).toEqual({
@@ -345,17 +360,14 @@ describe('POST /api/admin/reset', () => {
 			}
 		});
 
-		// First the current password, counted on the session as it arrives and
-		// the count cleared for the right one (card 2701). Then one statement for
-		// each table, and nothing else: no id counter is deleted, and neither
-		// kept table is written to.
-		expect(run.writes.slice(0, 2).map((sql) => sql.split(' ').slice(0, 3).join(' '))).toEqual([
-			'update "sessions" set',
-			'update "sessions" set'
-		]);
+		// First the current password, counted on the session as it arrives, the
+		// code spent and the count cleared for the right one (cards 2701 and
+		// 2771). Then one statement for each table, and nothing else: no id
+		// counter is deleted, and neither kept table is written to.
+		expect(run.writes.slice(0, STEP_UP_WRITES.length).map((sql) => sql.split(' ').slice(0, 3).join(' ').replace(/"/g, ''))).toEqual([...STEP_UP_WRITES]);
 		// And the new form signing key, last, in the same transaction (card 2750).
 		expect(run.writes.at(-1)).toMatch(/^INSERT INTO settings \(key, value\) VALUES/);
-		expect(run.writes.slice(2, -1).sort()).toEqual(
+		expect(run.writes.slice(STEP_UP_WRITES.length, -1).sort()).toEqual(
 			cleared()
 				.map((table) => `DELETE FROM "${table}"`)
 				.sort()
@@ -373,8 +385,9 @@ describe('POST /api/admin/reset', () => {
 
 		let res: ApiResult;
 		try {
-			// The last table of all: everything before it had been cleared.
-			writes.failNth(cleared().length);
+			// The last table of all: everything before it had been cleared. One
+			// further on for the code's step, spent before the reset (card 2771).
+			writes.failNth(cleared().length + 1);
 			res = await reset(e);
 			expect(writes.fired).toBe(true);
 		} finally {
@@ -383,7 +396,7 @@ describe('POST /api/admin/reset', () => {
 
 		expect(res.status).toBe(500);
 		expect(res.body.message).toMatch(/^The reset failed and nothing was cleared: .*made to fail/);
-		expect(diffSnapshots(e.before, snapshotDb())).toEqual([]);
+		expect(diffSnapshots(e.before, snapshotDb())).toEqual(SPENT_ALONE);
 		expectFilesInPlace(e);
 		expect(sqlite.inTransaction).toBe(false);
 
@@ -418,7 +431,7 @@ describe('POST /api/admin/reset', () => {
 			expect(res.status).toBe(500);
 			expect(res.body.message).toMatch(/nothing was cleared: FOREIGN KEY constraint failed/);
 			expect(sqlite.inTransaction).toBe(false);
-			expect(diffSnapshots(before, snapshotDb())).toEqual([]);
+			expect(diffSnapshots(before, snapshotDb())).toEqual(SPENT_ALONE);
 			expectFilesInPlace(e);
 			// The checks are held for that one transaction only.
 			expect(sqlite.pragma('defer_foreign_keys', { simple: true })).toBe(0);

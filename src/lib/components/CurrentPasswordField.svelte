@@ -25,7 +25,11 @@
   One refusal, in an alert after both, which both fields name with
   `aria-describedby` and mark with `aria-invalid`; and the focus put back in
   the password as a refusal comes, to type both again (the server never says
-  which was wrong).
+  which was wrong). For the three refusals decided before the password was
+  compared (the code in neither form, its step already used, the
+  authenticator not to be checked here: card 2771, D9, E9), the dialog keeps
+  the password (`passwordKeptAfter`) and the focus goes to the code, the one
+  thing to type again.
 
   A refusal that says the session is signed out (`STEP_UP_SIGNED_OUT`, its
   third wrong password, or a session that had ended) leaves nothing to type
@@ -39,7 +43,7 @@
 -->
 <script lang="ts">
 	import { flushSync } from 'svelte';
-	import { STEP_UP_SIGNED_OUT } from '$lib/step-up-words';
+	import { passwordKeptAfter, STEP_UP_SIGNED_OUT } from '$lib/step-up-words';
 
 	let {
 		value = $bindable(''),
@@ -94,9 +98,21 @@
 		return codeInput;
 	}
 
-	// A refusal puts the focus back in the password, to type both again.
+	/**
+	 * The refusal keeps the password typed (card 2771, D9): decided before the
+	 * password was compared, so only the code is to be typed again. Asked of
+	 * `passwordKeptAfter` itself, the one list of those refusals, with a
+	 * stand-in for the password sent: it gives that back exactly when the
+	 * refusal keeps it.
+	 */
+	let keepsPassword = $derived(passwordKeptAfter(refusal, 'kept') !== '');
+
+	// A refusal puts the focus back in the password, to type both again; or in
+	// the code, where the password is kept.
 	$effect(() => {
-		if (refusal !== null && !ended) input?.focus();
+		if (refusal === null || ended) return;
+		if (keepsPassword) codeInput?.focus();
+		else input?.focus();
 	});
 
 	function passwordKeydown(e: KeyboardEvent) {

@@ -1,13 +1,25 @@
 <script lang="ts">
 	/**
 	 * My Account — View profile info and change password.
+	 *
+	 * Changing the email, changing the password and making an API key each ask
+	 * for the current password and a code from the authenticator app, or a
+	 * recovery code (card 2771, D9), in `CurrentPasswordField`, as every
+	 * listed action asks: the server checks both through the step-up. Each
+	 * form copies the two into `currentPassword` and `currentCode` and clears
+	 * its fields before it sends; a refusal of the password or the code is
+	 * said in the field's alert, and puts the password back only for the
+	 * refusals decided before it was compared (`passwordKeptAfter`). Any other
+	 * refusal is said in the form's line, as before.
 	 */
 	import type { PageData } from './$types';
 	import { theme, themeIcon } from '$lib/stores/theme';
 	import HeaderMenu from '$lib/components/HeaderMenu.svelte';
 	import ThemeMenuItems from '$lib/components/ThemeMenuItems.svelte';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
+	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
 	import { answerBody, failureMessage } from '$lib/api';
+	import { passwordKeptAfter, proofTyped, stepUpRefusal } from '$lib/step-up-words';
 	import { MASTER_PREF, NOTIFICATION_PREFS, type NotificationPrefKey } from '$lib/notification-prefs';
 	import { onMount } from 'svelte';
 	import { invalidateAll } from '$app/navigation';
@@ -20,7 +32,11 @@
 
 	// Email change
 	let newEmail = $state(data.user.email);
+	/** The current password and the code the email form asks for (card 2771), cleared as it sends. */
 	let emailPassword = $state('');
+	let emailCode = $state('');
+	/** A refusal of the password or the code, in the field's alert. */
+	let emailRefusal = $state<string | null>(null);
 	let changingEmail = $state(false);
 	let emailMessage = $state('');
 	let emailError = $state(false);
@@ -67,7 +83,11 @@
 	}
 
 	// Password change
-	let currentPassword = $state('');
+	/** The current password and the code the password form asks for (card 2771), cleared as it sends. */
+	let passwordCurrent = $state('');
+	let passwordCode = $state('');
+	/** A refusal of the password or the code, in the field's alert. */
+	let passwordRefusal = $state<string | null>(null);
 	let newPassword = $state('');
 	let confirmPassword = $state('');
 	let showPasswords = $state(false);
@@ -116,7 +136,7 @@
 	}
 
 	async function changeEmail() {
-		if (!newEmail?.trim() || !emailPassword) return;
+		if (!newEmail?.trim() || !proofTyped(emailPassword, emailCode) || changingEmail) return;
 		if (newEmail.trim() === displayedEmail) {
 			emailMessage = 'This is already your current email';
 			emailError = true;
@@ -126,12 +146,18 @@
 		changingEmail = true;
 		emailMessage = '';
 		emailError = false;
+		emailRefusal = null;
 
+		// Copied and cleared before the send: the fields hold neither once it has gone.
+		const currentPassword = emailPassword;
+		const currentCode = emailCode;
+		emailPassword = '';
+		emailCode = '';
 		try {
 			const res = await fetch('/api/account/email', {
 				method: 'PUT',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ newEmail: newEmail.trim(), password: emailPassword })
+				body: JSON.stringify({ newEmail: newEmail.trim(), currentPassword, currentCode })
 			});
 
 			if (res.ok) {
@@ -140,10 +166,16 @@
 				emailError = false;
 				displayedEmail = result.email;
 				newEmail = result.email;
-				emailPassword = '';
 			} else {
-				emailMessage = await failureMessage(res, 'Failed to update email');
-				emailError = true;
+				// A refusal of the password or the code, in the field; any other in the form's line.
+				const refusal = await stepUpRefusal(res);
+				if (refusal !== null) {
+					emailRefusal = refusal;
+					emailPassword = passwordKeptAfter(refusal, currentPassword);
+				} else {
+					emailMessage = await failureMessage(res, 'Failed to update email');
+					emailError = true;
+				}
 			}
 		} catch {
 			emailMessage = 'No answer from the server. Reload the page to see whether your email was changed.';
@@ -154,7 +186,7 @@
 	}
 
 	async function changePassword() {
-		if (!currentPassword || !newPassword || !confirmPassword) return;
+		if (!proofTyped(passwordCurrent, passwordCode) || !newPassword || !confirmPassword || changingPassword) return;
 		if (newPassword.length < 8) {
 			passwordMessage = 'New password must be at least 8 characters';
 			passwordError = true;
@@ -169,15 +201,21 @@
 		changingPassword = true;
 		passwordMessage = '';
 		passwordError = false;
+		passwordRefusal = null;
 
 		// Only when the box was there to tick: it is not, with no keys and no
 		// webhook of the account's on.
 		const endApiKeys = endApiKeysToo && offerToEnd;
+		// Copied and cleared before the send: the fields hold neither once it has gone.
+		const currentPassword = passwordCurrent;
+		const currentCode = passwordCode;
+		passwordCurrent = '';
+		passwordCode = '';
 		try {
 			const res = await fetch('/api/account/password', {
 				method: 'PUT',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ currentPassword, newPassword, endApiKeys })
+				body: JSON.stringify({ currentPassword, currentCode, newPassword, endApiKeys })
 			});
 
 			if (res.ok) {
@@ -192,7 +230,6 @@
 				passwordMessage =
 					'Password changed. Your other sessions were signed out' + (ended.length > 0 ? `; ${ended.join(' and ')}.` : '.');
 				passwordError = false;
-				currentPassword = '';
 				newPassword = '';
 				confirmPassword = '';
 				endApiKeysToo = false;
@@ -205,8 +242,15 @@
 					await invalidateAll();
 				}
 			} else {
-				passwordMessage = await failureMessage(res, 'Failed to change password');
-				passwordError = true;
+				// A refusal of the password or the code, in the field; any other in the form's line.
+				const refusal = await stepUpRefusal(res);
+				if (refusal !== null) {
+					passwordRefusal = refusal;
+					passwordCurrent = passwordKeptAfter(refusal, currentPassword);
+				} else {
+					passwordMessage = await failureMessage(res, 'Failed to change password');
+					passwordError = true;
+				}
 			}
 		} catch {
 			passwordMessage = 'No answer from the server. Reload the page: if it asks you to sign in, the password was changed.';
@@ -255,8 +299,11 @@
 	/** The key list has been read: until then, `apiKeys` being empty says nothing. */
 	let apiKeysRead = $state(false);
 	let newKeyName = $state('');
-	/** The current password, which making a key asks for. Cleared after each attempt. */
+	/** The current password and the code, which making a key asks for (card 2771). Cleared as each attempt is sent. */
 	let newKeyPassword = $state('');
+	let newKeyCode = $state('');
+	/** A refusal of the password or the code, in the field's alert. */
+	let keyRefusal = $state<string | null>(null);
 	/** Why the last Generate Key was refused, in the server's words. */
 	let apiKeyError = $state('');
 	let generatingKey = $state(false);
@@ -292,21 +339,25 @@
 	}
 
 	async function generateApiKey() {
-		if (!newKeyName.trim() || !newKeyPassword || generatingKey) return;
+		if (!newKeyName.trim() || !proofTyped(newKeyPassword, newKeyCode) || generatingKey) return;
 		generatingKey = true;
 		newlyCreatedKey = '';
 		keyCopied = false;
 		apiKeyError = '';
+		keyRefusal = null;
 
-		// Making a key asks for the current password: a key outlives a password
-		// change the holder makes, so a session alone is not enough to make one.
-		const password = newKeyPassword;
+		// Making a key asks for the current password and a code: a key outlives
+		// a password change the holder makes, so a session alone is not enough
+		// to make one. Copied and cleared before the send.
+		const currentPassword = newKeyPassword;
+		const currentCode = newKeyCode;
 		newKeyPassword = '';
+		newKeyCode = '';
 		try {
 			const res = await fetch('/api/account/api-keys', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ name: newKeyName.trim(), password })
+				body: JSON.stringify({ name: newKeyName.trim(), currentPassword, currentCode })
 			});
 
 			if (res.ok) {
@@ -315,8 +366,15 @@
 				newKeyName = '';
 				await loadApiKeys();
 			} else {
-				// A wrong password, the ten-key limit, a name that is too long.
-				apiKeyError = await failureMessage(res, 'Failed to generate the key');
+				// A refusal of the password or the code, in the field; any other
+				// (the ten-key limit, a name that is too long) in the panel's line.
+				const refusal = await stepUpRefusal(res);
+				if (refusal !== null) {
+					keyRefusal = refusal;
+					newKeyPassword = passwordKeptAfter(refusal, currentPassword);
+				} else {
+					apiKeyError = await failureMessage(res, 'Failed to generate the key');
+				}
 			}
 		} catch {
 			apiKeyError = 'No answer from the server. Reload the page to see whether the key was made.';
@@ -496,26 +554,21 @@
 					/>
 				</div>
 
-				<div class="form-group">
-					<label for="email-pass">Confirm Password</label>
-					<div class="password-wrapper">
-						<input
-							id="email-pass"
-							type="password"
-							bind:value={emailPassword}
-							placeholder="Enter your password to confirm"
-							autocomplete="current-password"
-							onkeydown={(e) => e.key === 'Enter' && changeEmail()}
-						/>
-					</div>
-				</div>
+				<CurrentPasswordField
+					label="Confirm password"
+					bind:value={emailPassword}
+					bind:code={emailCode}
+					refusal={emailRefusal}
+					readonly={changingEmail}
+					onEnter={changeEmail}
+				/>
 
 				<div class="password-actions">
 					<span></span>
 					<button
 						class="btn-primary"
 						onclick={changeEmail}
-						disabled={!newEmail?.trim() || !emailPassword || newEmail.trim() === displayedEmail || changingEmail}
+						disabled={!newEmail?.trim() || !proofTyped(emailPassword, emailCode) || newEmail.trim() === displayedEmail || changingEmail}
 					>
 						{changingEmail ? 'Updating...' : 'Update Email'}
 					</button>
@@ -534,18 +587,14 @@
 			{/if}
 
 			<div class="password-form">
-				<div class="form-group">
-					<label for="current-pass">Current Password</label>
-					<div class="password-wrapper">
-						<input
-							id="current-pass"
-							type={showPasswords ? 'text' : 'password'}
-							bind:value={currentPassword}
-							placeholder="Enter current password"
-							autocomplete="current-password"
-						/>
-					</div>
-				</div>
+				<!-- Always masked: Show passwords reveals the two new ones only (card 2771, D17). -->
+				<CurrentPasswordField
+					label="Current password"
+					bind:value={passwordCurrent}
+					bind:code={passwordCode}
+					refusal={passwordRefusal}
+					readonly={changingPassword}
+				/>
 
 				<div class="form-group">
 					<label for="new-pass">New Password</label>
@@ -600,7 +649,7 @@
 					<button
 						class="btn-primary"
 						onclick={changePassword}
-						disabled={!currentPassword || !newPassword || !confirmPassword || changingPassword}
+						disabled={!proofTyped(passwordCurrent, passwordCode) || !newPassword || !confirmPassword || changingPassword}
 					>
 						{changingPassword ? 'Changing...' : 'Change Password'}
 					</button>
@@ -656,7 +705,7 @@
 		<!-- API Keys section -->
 		<section class="account-card glass fade-in-up" style="animation-delay: 0.4s">
 			<h2>🔑 API Keys</h2>
-			<p class="notif-desc">Generate API keys for automation and external integrations. Generating a key asks for your password. See <a href="/docs" target="_blank">API documentation</a> for usage.</p>
+			<p class="notif-desc">Generate API keys for automation and external integrations. Generating a key asks for your password and a code from your authenticator app. See <a href="/docs" target="_blank">API documentation</a> for usage.</p>
 
 			<!-- New key creation -->
 			<div class="apikey-create">
@@ -669,23 +718,26 @@
 						type="text"
 						bind:value={newKeyName}
 						placeholder="Key name (e.g. CI Pipeline, n8n)"
+						aria-label="Key name"
 						maxlength="100"
 						onkeydown={(e) => e.key === 'Enter' && generateApiKey()}
 					/>
-					<input
-						id="apikey-password"
-						type="password"
-						bind:value={newKeyPassword}
-						placeholder="Your current password"
-						aria-label="Your current password"
-						autocomplete="current-password"
-						onkeydown={(e) => e.key === 'Enter' && generateApiKey()}
-					/>
+				</div>
+				<CurrentPasswordField
+					label="Your current password"
+					bind:value={newKeyPassword}
+					bind:code={newKeyCode}
+					refusal={keyRefusal}
+					readonly={generatingKey}
+					onEnter={generateApiKey}
+				/>
+				<div class="password-actions">
+					<span></span>
 					<button
 						id="apikey-generate-btn"
 						class="btn-primary"
 						onclick={generateApiKey}
-						disabled={!newKeyName.trim() || !newKeyPassword || generatingKey}
+						disabled={!newKeyName.trim() || !proofTyped(newKeyPassword, newKeyCode) || generatingKey}
 					>
 						{generatingKey ? 'Generating...' : 'Generate Key'}
 					</button>
@@ -908,9 +960,9 @@
 	.apikey-create { margin-bottom: var(--space-xl); }
 	.apikey-create-row {
 		display: flex; flex-wrap: wrap; gap: var(--space-sm); align-items: stretch;
+		margin-bottom: var(--space-sm);
 	}
 	.apikey-create-row input { flex: 1 1 160px; }
-	.apikey-create-row button { white-space: nowrap; }
 
 	.apikey-reveal {
 		margin-top: var(--space-md);

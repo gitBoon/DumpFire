@@ -26,7 +26,7 @@
 	import { sentAsking, showToast } from '$lib/admin/send';
 	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
 	import { holdFocus } from '$lib/dialog-focus';
-	import { ASKS_FOR_PASSWORD, proofTyped } from '$lib/step-up-words';
+	import { ASKS_FOR_PASSWORD, passwordKeptAfter, proofTyped } from '$lib/step-up-words';
 
 	let {
 		data,
@@ -92,8 +92,10 @@
 				'No one was added'
 			);
 			if (typeof res === 'string') {
-				// A refusal of the password itself: the dialog stays, the field cleared to type again.
+				// A refusal of the password itself: the dialog stays, the field cleared to type again,
+				// or kept for a refusal decided before it was compared (card 2771, D9).
 				refusal = res;
+				currentPassword = passwordKeptAfter(res, password);
 				return;
 			}
 			if (!res) return;

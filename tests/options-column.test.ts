@@ -26,7 +26,7 @@ import { readBoardContents } from '$lib/server/board-contents';
 import { OPTION_AGING_DAYS, defaultListColumn, optionsAging, optionsOpenKey, readOptionsOpen, resolveListColumn, writeOptionsOpen } from '$lib/board/board-view';
 import { api, type ApiResult } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
-import { FIXTURE_PASSWORD, makeBoard, makeCard, makeSession, makeUser, resetDb, type BoardFixture } from './helpers/fixtures';
+import { FIXTURE_PASSWORD, makeBoard, makeCard, makeSession, makeUser, resetDb, stepUpCode, stepUpFactor, type BoardFixture } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 
 let owner: SessionUser;
@@ -43,6 +43,8 @@ beforeEach(() => {
 	owner = makeUser();
 	board = makeBoard({ owner, options: true, columns: COLUMNS });
 	session = makeSession(owner);
+	// The factor the owner's codes are made from, given before any snapshot (card 2771).
+	stepUpFactor(owner);
 	sent = effects();
 });
 afterEach(() => sent.restore());
@@ -65,7 +67,7 @@ const TREES: Tree[] = [
 		remove: (columnId, user = owner) =>
 			api('DELETE', `/api/columns/${columnId}`, {
 				user,
-				body: { currentPassword: FIXTURE_PASSWORD },
+				body: { currentPassword: FIXTURE_PASSWORD, currentCode: stepUpCode(user) },
 				headers: { cookie: `${SESSION_COOKIE_NAME}=${session}` }
 			}),
 		// Straight after the Options column, between it and the next (ruling s).

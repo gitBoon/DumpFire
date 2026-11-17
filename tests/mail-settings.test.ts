@@ -38,7 +38,7 @@ import { settings } from '$lib/server/db/schema';
 import { TLS_FAULT_HINT, appUrlAsRead, sendEmail, sendEmailWithAttachment, sendTestEmail } from '$lib/server/email';
 import { eq } from 'drizzle-orm';
 import { api } from './helpers/api';
-import { FIXTURE_PASSWORD, makeSession, makeUser, resetDb, stepUp } from './helpers/fixtures';
+import { FIXTURE_PASSWORD, makeSession, makeUser, resetDb, stepUp, stepUpCode, stepUpFactor } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 
 const MASK = '••••••••';
@@ -80,13 +80,21 @@ let chief: SessionUser;
 /** The superadmin's session, which a save asks their current password from (card 2701). */
 let chiefSession: string;
 
-// Not the form signing key, which every database a test starts on holds, as a started server's does (card 2750).
+// Not the form signing key, which every database a test starts on holds, as a started server's does (card 2750),
+// nor the MFA key's check, which the superadmin's factor wrote (card 2771).
 const stored = () =>
-	Object.fromEntries(db.select().from(settings).all().filter((row) => row.key !== 'request_form_secret').map((row) => [row.key, row.value]));
+	Object.fromEntries(
+		db
+			.select()
+			.from(settings)
+			.all()
+			.filter((row) => row.key !== 'request_form_secret' && row.key !== 'mfa_key_check')
+			.map((row) => [row.key, row.value])
+	);
 const save = (body: Record<string, unknown>) =>
 	api('PUT', '/api/admin/smtp', {
 		user: chief,
-		body: { ...body, currentPassword: FIXTURE_PASSWORD },
+		body: { ...body, currentPassword: FIXTURE_PASSWORD, currentCode: stepUpCode(chief) },
 		headers: { cookie: `${SESSION_COOKIE_NAME}=${chiefSession}` }
 	});
 
@@ -94,6 +102,8 @@ beforeEach(() => {
 	resetDb();
 	chief = makeUser({ username: 'chief', role: 'superadmin' });
 	chiefSession = makeSession(chief);
+	// The factor a save's code is made from, given before any snapshot (card 2771).
+	stepUpFactor(chief);
 	db.insert(settings).values(Object.entries(STORED).map(([key, value]) => ({ key, value }))).run();
 });
 

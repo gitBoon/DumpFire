@@ -34,7 +34,7 @@ import { load as loadInvitePage } from '../src/routes/invite/[token]/+page.serve
 import { action } from './helpers/actions';
 import { api } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
-import { FIXTURE_PASSWORD, makeSession, makeSmtp, makeUser, resetDb } from './helpers/fixtures';
+import { FIXTURE_PASSWORD, makeSession, makeSmtp, makeUser, resetDb, stepUpCode } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 
 const APP = 'https://kanban.example.test';
@@ -171,7 +171,7 @@ describe('an invite issued and used, in the log', () => {
 		const issued = await logging(() =>
 			api('POST', `/api/users/${invitee.id}/invite`, {
 				user: admin,
-				body: { currentPassword: FIXTURE_PASSWORD },
+				body: { currentPassword: FIXTURE_PASSWORD, currentCode: stepUpCode(admin) },
 				headers: { cookie: `${SESSION_COOKIE_NAME}=${makeSession(admin)}` }
 			})
 		);

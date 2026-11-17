@@ -494,7 +494,7 @@ describe('the source', () => {
 	// compile; this holds what the type cannot: a promise kept in a variable,
 	// or a hash not awaited where its value is not used.
 	it('awaits every check and every hash where it is asked for', () => {
-		const NAMES = new Set(['checkPassword', 'checkCurrentPassword', 'makePasswordHash']);
+		const NAMES = new Set(['checkPassword', 'checkCurrentProof', 'makePasswordHash']);
 		const calls: string[] = [];
 		const unawaited: string[] = [];
 		for (const file of sources.filter((f) => f.endsWith('.ts'))) {
@@ -519,8 +519,9 @@ describe('the source', () => {
 		}
 
 		expect(unawaited).toEqual([]);
-		// Sign-in; the current password and its re-check; the three routes
-		// that ask for it; and the six hashes (two in the new-user route).
-		expect(calls.length).toBeGreaterThanOrEqual(12);
+		// Sign-in; the current password's check (auth.ts) and the step-up's one
+		// call of it, which the Account page's three routes ask through since
+		// card 2771; and the six hashes (two in the new-user route).
+		expect(calls.length).toBeGreaterThanOrEqual(9);
 	});
 });

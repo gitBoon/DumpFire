@@ -108,11 +108,13 @@ import {
 	makeUser,
 	resetDb,
 	stepUp,
+	stepUpCode,
+	stepUpFactor,
 	sessionHashOf,
 	sessionCredential
 } from './helpers/fixtures';
 import { FROM_THE_PAGE, gate, gateApiRoutes } from './helpers/gate';
-import { expectUnchanged, snapshotDb } from './helpers/snapshot';
+import { diffSnapshots, expectUnchanged, snapshotDb } from './helpers/snapshot';
 import { afterEachTimestampCheck } from './helpers/timestamps';
 
 /** What the stand-in destination was handed: the bytes, under the name and for the destination they were for. */
@@ -222,13 +224,13 @@ const confirmedImport = (contentType = 'application/octet-stream') => ({
 
 /**
  * `api()`'s options for the superadmin from their own session, with their
- * current password (card 2701): what a request that asks for it again sends.
- * The session is the one each test begins with, so a refused request leaves
- * every row as it was.
+ * current password (card 2701) and a code (card 2771): what a request that
+ * asks for them again sends. The session and the factor are the ones each
+ * test begins with, so a refused request leaves every row as it was.
  */
 const confirmedByChief = (body: Record<string, unknown> = {}) => ({
 	user: chief,
-	body: { ...body, currentPassword: FIXTURE_PASSWORD },
+	body: { ...body, currentPassword: FIXTURE_PASSWORD, currentCode: stepUpCode(chief) },
 	headers: { cookie: `${SESSION_COOKIE_NAME}=${chiefSession}` }
 });
 
@@ -239,7 +241,7 @@ const confirmedByChief = (body: Record<string, unknown> = {}) => ({
 const exported = () =>
 	gate('POST', '/api/admin/export', {
 		headers: { cookie: `${SESSION_COOKIE_NAME}=${chiefSession}`, ...FROM_THE_PAGE, accept: '*/*' },
-		body: { currentPassword: FIXTURE_PASSWORD }
+		body: { currentPassword: FIXTURE_PASSWORD, currentCode: stepUpCode(chief) }
 	});
 
 beforeEach(() => {
@@ -251,6 +253,8 @@ beforeEach(() => {
 	member = makeUser({ username: 'member' });
 	chiefSession = makeSession(chief);
 	memberSession = makeSession(member);
+	// The factor the superadmin's codes are made from, given before any snapshot (card 2771).
+	stepUpFactor(chief);
 	db.insert(inviteTokens)
 		.values([
 			// As this image keeps them: the hash of the token mailed (card 2849).
@@ -492,8 +496,9 @@ describe('a backup', () => {
 		for (const bytes of [Buffer.from(await res.arrayBuffer()), generateBackupData()]) {
 			expect(bytes.includes(Buffer.from(key))).toBe(false);
 			expect(bytes.includes(Buffer.from(KNOWN_BROWSER_SECRET_KEY))).toBe(false);
-			// The other settings are there, and the backup's seal (card 2169's S1), which is no secret.
-			expect(column(opening(bytes), 'SELECT key FROM settings ORDER BY key')).toEqual(['app_url', BACKUP_SEAL]);
+			// The other settings are there, and the backup's seal (card 2169's S1), which is no secret, and the
+			// MFA key's check the superadmin's factor wrote (card 2771), which is none either.
+			expect(column(opening(bytes), 'SELECT key FROM settings ORDER BY key')).toEqual(['app_url', BACKUP_SEAL, 'mfa_key_check']);
 		}
 		// And the running database still has it.
 		expect(column(sqlite, `SELECT value FROM settings WHERE key = '${KNOWN_BROWSER_SECRET_KEY}'`)).toEqual([key]);
@@ -3960,6 +3965,18 @@ describe('Google Drive asks only for the files DumpFire makes (card 2188)', () =
 	};
 	/** Both halves, as one superadmin in one session. */
 	const connect = async () => finish((await begin()).state);
+	/**
+	 * `before`, with the factors as they are now, once they are checked to
+	 * differ by the code's step spent and nothing else: a Connect refused after
+	 * the password and code were checked leaves the code spent (card 2771, S4).
+	 */
+	const withCodeSpent = (before: ReturnType<typeof snapshotDb>) => {
+		const factors = snapshotDb().mfa_factors;
+		expect(diffSnapshots({ mfa_factors: before.mfa_factors }, { mfa_factors: factors })).toEqual([
+			expect.stringMatching(/^mfa_factors: row \d+ changed \(last_step: null became \d+; last_used_at: null became /)
+		]);
+		return { ...before, mfa_factors: factors };
+	};
 
 	/** A folder `files.get` finds, and one it does not. */
 	const found = (id: string, more: Record<string, unknown> = {}) => ({ data: { id, name: 'Backups', mimeType: FOLDER_TYPE, trashed: false, ...more } });
@@ -4036,7 +4053,7 @@ describe('Google Drive asks only for the files DumpFire makes (card 2188)', () =
 		expect(res.body.message).toMatch(/^No refresh token received/);
 		expect(files.create).not.toHaveBeenCalled();
 		expect(files.get).not.toHaveBeenCalled();
-		expectUnchanged(before);
+		expectUnchanged(withCodeSpent(before));
 	});
 
 	it('checks a Folder ID it is given, and saves the token and its scope, or no scope when Google names none (test 11, R6)', async () => {
@@ -4071,7 +4088,7 @@ describe('Google Drive asks only for the files DumpFire makes (card 2188)', () =
 
 		expect(res.body).toEqual({ success: false, message: cannotReach(false) });
 		expect(files.create).not.toHaveBeenCalled();
-		expectUnchanged(before);
+		expectUnchanged(withCodeSpent(before));
 	});
 
 	it('tells a destination connected before card 2188 to remove DumpFire’s access in the Google account first (test 12, R2)', async () => {
@@ -4083,7 +4100,7 @@ describe('Google Drive asks only for the files DumpFire makes (card 2188)', () =
 		const res = await connect();
 
 		expect(res.body).toEqual({ success: false, message: cannotReach(true) });
-		expectUnchanged(before);
+		expectUnchanged(withCodeSpent(before));
 	});
 
 	it('saves nothing when the destination is changed while Google answers, and removes the folder it made (test 13, R5)', async () => {
@@ -4216,7 +4233,7 @@ describe('Google Drive asks only for the files DumpFire makes (card 2188)', () =
 			expect(res.body).toEqual({ message: NOT_STARTED_HERE });
 			expect(exchanged).not.toHaveBeenCalled();
 			expect(files.create).not.toHaveBeenCalled();
-			expectUnchanged(before);
+			expectUnchanged(withCodeSpent(before));
 			expect(lines).toEqual([WARNED]);
 			// Filed under the superadmin who pasted, telling no state from a failed one (review O3).
 			expect(filed).toEqual([{ userId: chief.id, meta: { stateSent } }]);

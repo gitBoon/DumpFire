@@ -10,6 +10,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, relative, sep } from 'node:path';
 import { eq } from 'drizzle-orm';
+import { expect } from 'vitest';
 import { db, sqlite } from '$lib/server/db';
 import { attachmentPath, cardDir, uploadsDir } from '$lib/server/uploads';
 import { isUpstreamColumnId } from '$lib/server/upstream';
@@ -32,6 +33,7 @@ import {
 	decisionVersions,
 	decisions,
 	labels,
+	mfaFactors,
 	milestones,
 	people,
 	sessions,
@@ -75,6 +77,9 @@ import {
 import { forgetUnreadablePrefsWarnings } from '$lib/server/notifications';
 import { ensureFormSecret } from '$lib/server/request-tokens';
 import { CONFIRMATION_HEADER, STEP_UP_FIELD, forgetImportConfirmations, issueImportConfirmation } from '$lib/server/step-up';
+import { STEP_UP_CODE_FIELD } from '$lib/step-up-words';
+import { addTotpFactor, factorSecret } from '$lib/server/mfa-store';
+import { hotp, newTotpSecret, stepAt } from '$lib/server/totp';
 import { appendEvent, SYSTEM_ACTOR } from '$lib/server/decision-record';
 import { resetMailStatus } from '$lib/server/email';
 import { forgetConnects } from '$lib/server/gdrive-connect';
@@ -223,23 +228,92 @@ export function makeSession(user: SessionUser): string {
 }
 
 /**
- * The `api()` options of a request that asks for the current password again
- * (card 2701, `STEP_UP_ACTIONS`): `user` calling, `body` with
- * `currentPassword` added, and the cookie of a session of that user, made for
- * it, which the wrong passwords are counted on. `password` is the fixture's
- * unless a test sends another, a wrong one through the same helper.
+ * The code the authenticator with this secret shows at `at` (now by default).
+ * Kept here and re-exported by ./two-step.ts, which imports
+ * `FIXTURE_PASSWORD` from this file: one definition, and no import each way.
+ */
+export function codeFor(secret: Buffer, at: number = Date.now()): string {
+	return hotp(secret, stepAt(at));
+}
+
+/**
+ * The account's authenticator a step-up's code is made from (card 2771, plan
+ * D10): its row id and secret. The first factor the account holds, as the
+ * check reads it, is reused: one a test gave (`giveFactor`) has its secret
+ * read through `factorSecret`, and a factor that does not open is a throw
+ * naming the test. With none, one is written with `addTotpFactor` under the
+ * test process's key: no AUTH line, no mail and no recovery codes, but the
+ * factor row and, for the first factor of the database, the
+ * `settings.mfa_key_check` row.
+ */
+export function stepUpFactor(user: Pick<SessionUser, 'id'>): { factorId: number; secret: Buffer } {
+	const factor = db.select().from(mfaFactors).where(eq(mfaFactors.userId, user.id)).get();
+	if (factor === undefined) {
+		const secret = newTotpSecret();
+		const { id } = addTotpFactor(user.id, 'Authenticator', secret);
+		return { factorId: id, secret };
+	}
+	const opened = factorSecret(factor);
+	if (!opened.usable) {
+		throw new Error(
+			`stepUpFactor: user ${user.id}'s factor ${factor.id} does not open (${opened.why}) in "${expect.getState().currentTestName}": pass the code to stepUp`
+		);
+	}
+	return { factorId: factor.id, secret: opened.secret };
+}
+
+/**
+ * A code that confirms a step-up for `user` at `at` (now by default): the
+ * account's factor (`stepUpFactor`), its last spent step cleared, so that a
+ * code of the same step as an earlier success is not refused as spent, and
+ * the code it shows then.
+ */
+export function stepUpCode(user: Pick<SessionUser, 'id'>, at: number = Date.now()): string {
+	const { factorId, secret } = stepUpFactor(user);
+	db.update(mfaFactors).set({ lastStep: null }).where(eq(mfaFactors.id, factorId)).run();
+	return codeFor(secret, at);
+}
+
+/**
+ * The `api()` options of a request that asks for the current password and a
+ * code again (cards 2701 and 2771, `STEP_UP_ACTIONS`): `user` calling, `body`
+ * with `currentPassword` and `currentCode` added, and the cookie of a session
+ * of that user, made for it, which the wrong passwords are counted on.
+ * `password` is the fixture's, and `code` the account's own for now
+ * (`stepUpCode`, which gives the account a factor if it has none), unless a
+ * test sends others, a wrong one through the same helper. Build it before any
+ * snapshot: it writes the factor, the session and the cleared step.
  */
 export function stepUp(
 	user: SessionUser,
 	body: Record<string, unknown> = {},
-	password: string = FIXTURE_PASSWORD
+	password: string = FIXTURE_PASSWORD,
+	code: string = stepUpCode(user)
 ): { user: SessionUser; body: Record<string, unknown>; headers: Record<string, string> } {
 	return {
 		user,
-		body: { ...body, [STEP_UP_FIELD]: password },
+		body: { ...body, [STEP_UP_FIELD]: password, [STEP_UP_CODE_FIELD]: code },
 		headers: { cookie: `${SESSION_COOKIE_NAME}=${makeSession(user)}` }
 	};
 }
+
+/**
+ * The columns a right step-up writes apart from the route's transaction (card
+ * 2771, plan D10, E1): the count on the session as the password arrives, and
+ * the code's step spent with it. For `eachWriteInTurn`'s `apart`.
+ */
+export const STEP_UP_APART: readonly string[] = [
+	'sessions.wrong_password_count',
+	'mfa_factors.last_step',
+	'mfa_factors.last_used_at'
+];
+
+/**
+ * The shapes of a right step-up's own writes, in order, before the route's
+ * (card 2771, plan D10, E1): the count, the code's step spent, and the count
+ * cleared.
+ */
+export const STEP_UP_WRITES: readonly string[] = ['update sessions set', 'update mfa_factors set', 'update sessions set'];
 
 /**
  * Run `write` inside `whilePasswordHolds` for `user`, against their stored

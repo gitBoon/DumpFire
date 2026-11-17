@@ -1,12 +1,13 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { afterCommit } from '$lib/server/db/transaction';
-import { apiKeys, users } from '$lib/server/db/schema';
+import { apiKeys } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
-import { checkCurrentPassword, generateApiKey, refuseWrongPassword, sessionHashIn, whilePasswordHolds } from '$lib/server/auth';
+import { generateApiKey, whilePasswordHolds } from '$lib/server/auth';
 import { createLogger } from '$lib/server/logger';
 import { readBody, readText, readTimestamp } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
+import { confirmStepUp } from '$lib/server/step-up';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
@@ -34,35 +35,17 @@ export const GET: RequestHandler = async ({ locals }) => {
 /**
  * POST — Generate a new API key. The plaintext key is returned ONCE.
  *
- * Asks for the current password. A key works until it is revoked, and the
- * holder's own password change keeps it unless they ask otherwise, so a key
- * made on a session alone let whoever held that session for a moment (an
- * unlocked machine, a copied cookie) keep the account after the password was
- * changed.
+ * Asks for the current password and a code (`currentPassword`,
+ * `currentCode`: card 2771, D7), through the step-up that every listed action
+ * asks with (step-up.ts). A key works until it is revoked, and the holder's
+ * own password change keeps it unless they ask otherwise, so a key made on a
+ * session alone let whoever held that session for a moment (an unlocked
+ * machine, a copied cookie) keep the account after the password was changed.
  */
 export const POST: RequestHandler = async ({ request, locals, cookies }) => {
-	// The wrong passwords are counted against the session that sent them,
-	// which only a session reaches this route with: by its hash, as the gate
-	// found it (card 2775).
-	const session = sessionHashIn(locals.credential);
 	requireUser(locals.user);
-	if (!session) throw error(401, 'Not authenticated');
 
-	// Every field is read before a password is checked or counted (card 2117).
 	const body = await readBody(request);
-	const name = readText(body, 'name', {
-		required: true,
-		trim: true,
-		min: 1,
-		max: 100,
-		says: { missing: 'Key name is required', empty: 'Key name is required' }
-	});
-	const password = readText(body, 'password', { required: true, min: 1, says: 'Password is required' });
-	// A moment yet to come, kept in the stored form, `YYYY-MM-DD HH:MM:SS` in
-	// UTC (R13; card 2095): the expiry is compared with the time as text, and
-	// any text was stored, so "banana" never expired and a time written with an
-	// offset compared wrongly. `null`, or no field, is no expiry.
-	const expiresAt = readTimestamp(body, 'expiresAt', { future: true, nullable: true }) ?? null;
 
 	/** Limit to 10 keys per user. */
 	const requireRoom = (userId: number) => {
@@ -75,28 +58,33 @@ export const POST: RequestHandler = async ({ request, locals, cookies }) => {
 		}
 	};
 
-	// Who is asking, as their account is now, once the body has come: a session
-	// that ended while it arrived is refused here, before a password is checked
-	// or counted (card 2253). It decides nothing: the transaction that adds the
-	// key asks again.
-	const me = writeAs(locals, (caller) => requireUser(caller));
-
-	// Looked at first so that a request that will be refused for the limit is
-	// not made to wait for a password check, and counted again in the
-	// transaction that adds the key.
-	requireRoom(me.id);
-
-	// Checking a password takes about a quarter of a second, on a worker
-	// thread, and is awaited, which a transaction cannot do, so it is checked
-	// out here first. Counted on this session's row: the third wrong one ends
-	// the session (card 2701).
-	const user = db.select().from(users).where(eq(users.id, me.id)).get();
-	if (!user) throw error(404, 'User not found');
-	refuseWrongPassword(
-		cookies,
-		await checkCurrentPassword(session, user.id, password, user.passwordHash, 'POST /api/account/api-keys'),
-		'Password is incorrect'
-	);
+	// Every field is read in the guard, before a password is checked or
+	// counted (card 2117): the name; the expiry, a moment yet to come, kept in
+	// the stored form, `YYYY-MM-DD HH:MM:SS` in UTC (R13; card 2095: the
+	// expiry is compared with the time as text, and any text was stored, so
+	// "banana" never expired and a time written with an offset compared
+	// wrongly; `null`, or no field, is no expiry); and the limit, looked at
+	// first so that a request that will be refused for it is not made to wait
+	// for a password check, and counted again in the transaction that adds
+	// the key. The guard asks who is asking as their account is now (card
+	// 2253); it decides nothing: the transaction asks again.
+	const {
+		actor: { name, expiresAt },
+		userId: accountId,
+		hash
+	} = await confirmStepUp(locals, cookies, body, 'POST /api/account/api-keys', (caller) => {
+		const me = requireUser(caller);
+		const name = readText(body, 'name', {
+			required: true,
+			trim: true,
+			min: 1,
+			max: 100,
+			says: { missing: 'Key name is required', empty: 'Key name is required' }
+		});
+		const expiresAt = readTimestamp(body, 'expiresAt', { future: true, nullable: true }) ?? null;
+		requireRoom(me.id);
+		return { name, expiresAt };
+	});
 
 	const { plaintextKey, keyHash, keyPrefix } = generateApiKey();
 
@@ -108,7 +96,7 @@ export const POST: RequestHandler = async ({ request, locals, cookies }) => {
 	// answer is 409, with no second compare (card 2701's code review, S2). In
 	// it, the session is asked again, and the account as it is now adds the
 	// key: the password check was awaited, and a session can end meanwhile.
-	const record = await whilePasswordHolds(user.id, user.passwordHash, () =>
+	const record = await whilePasswordHolds(accountId, hash, () =>
 		writeAs(locals, (caller) => {
 			const userId = requireUser(caller).id;
 			requireRoom(userId);

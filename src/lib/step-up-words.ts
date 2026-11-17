@@ -6,10 +6,12 @@
  * server's `step-up.ts` and `auth.ts` answer with them, and the pages know a
  * refusal of the password itself by them.
  *
- * A refusal of the password itself keeps the page's confirm dialog open, with
- * its words in it and the field cleared to type again (decision 13). Any
- * other refusal (the caller may not, the board is gone) is said as the page
- * said it before, and the dialog closes.
+ * A refusal of the password or the code keeps the page's confirm dialog open,
+ * with its words in it and the fields cleared to type again (decision 13),
+ * the password kept for the refusals decided before it was compared
+ * (`passwordKeptAfter`, card 2771). Any other refusal (the caller may not,
+ * the board is gone) is said as the page said it before, and the dialog
+ * closes.
  *
  * A page knows a refusal of the password by its code, `App.Error.stepUp`,
  * which every refusal the step-up and auth.ts's check make carries (the code
@@ -18,14 +20,18 @@
  */
 
 /**
- * What a refusal of the password was, as `App.Error.stepUp` carries it:
- * `missing` (no current password, or not text), `wrong`, `no-password` (an
- * account whose hash is no bcrypt hash), `in-flight` (a check of this
- * session's already under way), `busy` (the account's checks already in
- * flight are the most allowed), `signed-out` (the session ended at its third
- * wrong password, or had ended), `confirmation` (the import's confirmation
- * refused) and `changed` (the stored hash moved between the check and the
- * write).
+ * What a refusal of the password and code was, as `App.Error.stepUp` carries
+ * it: `missing` (no current password or no code, or one not text), `wrong`
+ * (the password or the code, never said which), `no-password` (an account
+ * whose hash is no bcrypt hash), `in-flight` (a check of this session's
+ * already under way), `busy` (the account's checks already in flight are the
+ * most allowed), `signed-out` (the session ended at its third wrong answer,
+ * or had ended), `confirmation` (the import's confirmation refused),
+ * `changed` (the stored hash moved between the check and the write), and,
+ * from card 2771, `code-malformed` (a code in neither form), `code-spent` (an
+ * authenticator code whose step was already used), `no-factor` (an account
+ * with no second factor) and `factor-unusable` (an authenticator that cannot
+ * be opened on this server).
  */
 export type StepUpCode = NonNullable<App.Error['stepUp']>;
 
@@ -59,11 +65,42 @@ export function proofTyped(currentPassword: string, currentCode: string): boolea
 	return currentPassword !== '' && currentCode.trim() !== '';
 }
 
-/** The answer to a listed request with no current password, an empty one, or one that is not text. */
-export const STEP_UP_MISSING = 'Enter your password to confirm this. Nothing was changed.';
+/** The answer to a listed request with no current password or no code, an empty one, or one that is not text. */
+export const STEP_UP_MISSING = 'Enter your password and a code from your authenticator app to confirm this. Nothing was changed.';
 
-/** The answer to a wrong current password, on every listed route. */
-export const STEP_UP_WRONG = 'Password is incorrect. Nothing was changed.';
+/**
+ * The answer to a wrong current password or a wrong code, on every listed
+ * route: the same words whichever was wrong (card 2771, D4).
+ */
+export const STEP_UP_WRONG = 'Your password or code was not right. Nothing was changed.';
+
+/**
+ * The answer to a code in neither form: six digits from the authenticator
+ * app, spaces aside, or a recovery code (card 2771, D2). Decided before
+ * anything is counted.
+ */
+export const STEP_UP_CODE_MALFORMED =
+	"That code is not in the right form. Enter the 6 digits from your authenticator app, or choose 'Use a recovery code instead'. Nothing was changed.";
+
+/**
+ * The answer to an authenticator code whose step was already used (card 2771,
+ * D3): decided before the password is compared, whatever it is, so that it
+ * says nothing of the password.
+ */
+export const STEP_UP_CODE_SPENT =
+	'That code has just been used. Wait for the next code from your authenticator app and enter it. Nothing was changed.';
+
+/** The answer to an account that holds no second factor (card 2771, D3): none exists since card 2769. */
+export const STEP_UP_NO_FACTOR =
+	'This account has no two-step sign-in to confirm with, so this cannot be done from it. Nothing was changed.';
+
+/**
+ * The answer to an authenticator code when the account's factor cannot be
+ * opened on this server (no MFA key, another key): a recovery code still works
+ * (card 2771, D3).
+ */
+export const STEP_UP_FACTOR_UNUSABLE =
+	'Your authenticator cannot be checked on this server right now. Use one of your recovery codes, or ask an administrator. Nothing was changed.';
 
 /** The answer to an account whose stored hash is no bcrypt hash (decision 9): none exists today. */
 export const STEP_UP_NO_PASSWORD =
@@ -81,7 +118,7 @@ export const STEP_UP_IN_FLIGHT =
  * page goes to sign in on it (`$lib/signed-out.ts`).
  */
 export const STEP_UP_SIGNED_OUT =
-	'Nothing was changed. This session has been signed out, after three wrong passwords or because it had ended: sign in again.';
+	'Nothing was changed. This session has been signed out, after three wrong passwords or codes, or because it had ended: sign in again.';
 
 /** The answer to an import whose confirmation is missing, unknown, used, expired, another session's or no longer good. */
 export const CONFIRMATION_REFUSED =
@@ -113,8 +150,35 @@ const WORDS_OF: Readonly<Record<StepUpCode, string>> = {
 	busy: 'The server is busy checking passwords. Wait a minute and try again. Nothing was changed.',
 	'signed-out': STEP_UP_SIGNED_OUT,
 	confirmation: CONFIRMATION_REFUSED,
-	changed: PASSWORD_CHANGED_MEANWHILE
+	changed: PASSWORD_CHANGED_MEANWHILE,
+	'code-malformed': STEP_UP_CODE_MALFORMED,
+	'code-spent': STEP_UP_CODE_SPENT,
+	'no-factor': STEP_UP_NO_FACTOR,
+	'factor-unusable': STEP_UP_FACTOR_UNUSABLE
 };
+
+/**
+ * The refusals decided before the password is compared that keep it typed
+ * (card 2771, D9, E9): the code was in neither form, its step already used,
+ * or the authenticator could not be checked. Only the code is to be typed
+ * again.
+ */
+const KEEPS_THE_PASSWORD: readonly string[] = [STEP_UP_CODE_SPENT, STEP_UP_CODE_MALFORMED, STEP_UP_FACTOR_UNUSABLE];
+
+/**
+ * What a dialog's password field holds after a refusal (card 2771, D9):
+ * `sent`, the password it had sent, for the three refusals decided before
+ * the password was compared, and `''` for any other, so that a password
+ * shown wrong, or perhaps wrong, is typed again. `refusal` is what
+ * `stepUpRefusal` gave, or null; known by identity, as those three are given
+ * as this module's own words. The code is always cleared.
+ */
+export function passwordKeptAfter(refusal: string | null, sent: string): string {
+	return refusal !== null && KEEPS_THE_PASSWORD.includes(refusal) ? sent : '';
+}
+
+/** The codes `stepUpRefusal` answers with this module's own words, for a dialog to tell by identity. */
+const BY_IDENTITY: readonly StepUpCode[] = ['missing', 'signed-out', 'code-spent', 'code-malformed', 'factor-unusable'];
 
 /** Whether `code` is one of the step-up's codes. */
 const isStepUpCode = (code: unknown): code is StepUpCode => typeof code === 'string' && Object.hasOwn(WORDS_OF, code);
@@ -126,11 +190,11 @@ const isStepUpCode = (code: unknown): code is StepUpCode => typeof code === 'str
  *
  * Decided by the answer's code (`stepUp`), never by its words: an answer with
  * no code is no refusal of the password, whatever it says. The words given
- * back are the server's, for display; for the two codes that change what a
- * dialog does, `missing` (it shows the field) and `signed-out` (it takes the
- * field away, the page going to sign in), they are this module's own
- * `STEP_UP_MISSING` and `STEP_UP_SIGNED_OUT`, so that a dialog can tell them
- * by identity.
+ * back are the server's, for display; for the codes that change what a
+ * dialog does, `missing` (it shows the field), `signed-out` (it takes the
+ * field away, the page going to sign in), and `code-spent`, `code-malformed`
+ * and `factor-unusable` (it keeps the password, card 2771), they are this
+ * module's own words, so that a dialog can tell them by identity.
  */
 export async function stepUpRefusal(res: Response): Promise<string | null> {
 	if (res.ok) return null;
@@ -139,7 +203,7 @@ export async function stepUpRefusal(res: Response): Promise<string | null> {
 		if (body === null || typeof body !== 'object') return null;
 		const { message, stepUp } = body as { message?: unknown; stepUp?: unknown };
 		if (!isStepUpCode(stepUp)) return null;
-		if (stepUp === 'missing' || stepUp === 'signed-out') return WORDS_OF[stepUp];
+		if (BY_IDENTITY.includes(stepUp)) return WORDS_OF[stepUp];
 		return typeof message === 'string' && message ? message : WORDS_OF[stepUp];
 	} catch {
 		// Not JSON: not DumpFire's refusal of a password.

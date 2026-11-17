@@ -48,8 +48,8 @@ import { load as loadAdminPage } from '../src/routes/admin/+page.server';
 import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { api } from './helpers/api';
 import { sendAround } from './helpers/held-body';
-import { FIXTURE_PASSWORD, importConfirmation, makeSession, makeUser, resetDb, sessionCredential } from './helpers/fixtures';
-import { expectUnchanged, snapshotDb, type DbSnapshot } from './helpers/snapshot';
+import { FIXTURE_PASSWORD, importConfirmation, makeSession, makeUser, resetDb, sessionCredential, stepUpCode, stepUpFactor } from './helpers/fixtures';
+import { diffSnapshots, expectUnchanged, snapshotDb, type DbSnapshot } from './helpers/snapshot';
 
 /** The three destinations of the scene: chief's, ann's and one saved before 0059. */
 const s3 = (name: string, bucket: string) => ({
@@ -91,7 +91,7 @@ const confirmedAs = (user: SessionUser, body: Record<string, unknown> = {}) => c
 /** `who`, made already, asking a route that asks for the current password again (card 2701), as `confirmedAs`. */
 const confirmed = ({ code, ...who }: Who, body: Record<string, unknown> = {}) => ({
 	...who,
-	body: { ...body, currentPassword: FIXTURE_PASSWORD },
+	body: { ...body, currentPassword: FIXTURE_PASSWORD, currentCode: stepUpCode(who.user) },
 	headers: { cookie: `${SESSION_COOKIE_NAME}=${code}` }
 });
 
@@ -137,6 +137,8 @@ beforeEach(() => {
 	chief = makeUser({ username: 'chief', role: 'superadmin' });
 	ann = makeUser({ username: 'ann', role: 'admin' });
 	bob = makeUser({ username: 'bob', role: 'admin' });
+	// The factors their codes are made from, given before any snapshot (card 2771).
+	for (const user of [chief, ann, bob]) stepUpFactor(user);
 	db.insert(settings)
 		.values({ key: 'backup_config', value: JSON.stringify({ ...CONFIG, destinations: [OLD] }) })
 		.run();
@@ -1286,6 +1288,8 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 
 	describe('all together or not at all', () => {
 		afterEach(() => sqlite.exec('DROP TRIGGER IF EXISTS refuse_2397'));
+		/** A write refused after the password and code were checked leaves the code's step spent, and nothing else (card 2771, S4). */
+		const SPENT_ALONE = [expect.stringMatching(/^mfa_factors: row \d+ changed \(last_step: null became \d+; last_used_at: null became /)];
 
 		it('rolls the role change and every removal back together when the last removal fails, and logs nothing', async () => {
 			await annsSettings();
@@ -1300,7 +1304,8 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 			// Thrown out of the handler: the gate would answer it 500.
 			await expect(api('PUT', `/api/users/${ann.id}`, who)).rejects.toThrow('refused for the test');
 
-			expectUnchanged(before);
+			// The code is left spent, apart from the write (card 2771, S4).
+			expect(diffSnapshots(before, snapshotDb())).toEqual(SPENT_ALONE);
 			expect(roleOf(ann)).toBe('admin');
 			expect(lines().slice(linesBefore).filter((l) => l.level === 'WARN')).toEqual([]);
 		});
@@ -1314,7 +1319,8 @@ describe('demoting or deleting the setter removes what they set (card 2397)', ()
 
 			await expect(api('DELETE', `/api/users/${ann.id}`, who)).rejects.toThrow('refused for the test');
 
-			expectUnchanged(before);
+			// The code is left spent, apart from the write (card 2771, S4).
+			expect(diffSnapshots(before, snapshotDb())).toEqual(SPENT_ALONE);
 			expect(lines().slice(linesBefore).filter((l) => l.level === 'WARN')).toEqual([]);
 		});
 	});

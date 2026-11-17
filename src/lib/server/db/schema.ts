@@ -102,9 +102,10 @@ export const sessions = sqliteTable('sessions', {
 	createdAt: text('created_at')
 		.notNull()
 		.default(sql`(datetime('now'))`),
-	// The wrong current passwords this session has sent, counted as each
-	// arrives and set back to 0 only by a right one; at three the session is
-	// ended (migration 0062, card 2701; checkCurrentPassword in auth.ts).
+	// The wrong current passwords and codes this session has sent, counted as
+	// each arrives and set back to 0 only by a right password with a right
+	// code; at three the session is ended (migration 0062, cards 2701 and
+	// 2771; checkCurrentProof in auth.ts).
 	wrongPasswordCount: integer('wrong_password_count').notNull().default(0),
 	// 1 when the session was made after a second factor (migration 0066, card
 	// 2769). createSession writes 1; findSession refuses and deletes a hashed

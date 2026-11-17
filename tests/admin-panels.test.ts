@@ -57,7 +57,7 @@ import ArchivePanel from '$lib/components/board/ArchivePanel.svelte';
 import TeamsPage from '../src/routes/teams/+page.svelte';
 import { toasts } from '$lib/stores/toast';
 import Toast from '$lib/components/Toast.svelte';
-import { ASKS_FOR_PASSWORD, CONFIRMATION_HEADER, STEP_UP_SIGNED_OUT, type StepUpProof } from '$lib/step-up-words';
+import { ASKS_FOR_PASSWORD, CONFIRMATION_HEADER, STEP_UP_CODE_SPENT, STEP_UP_MISSING, STEP_UP_SIGNED_OUT, type StepUpProof } from '$lib/step-up-words';
 import { CODE, codeFieldIn, proofOf } from './helpers/step-up-code';
 
 // The page's data is read again after a write; here it is only counted. The
@@ -509,7 +509,7 @@ describe('the Scheduled Backups panel for an administrator and for the superadmi
 	it('says in a toast a schedule-only save refused for the password, which it never sent: never silent (card 2701, F6)', async () => {
 		answer = (what) =>
 			what === 'PUT /api/admin/backup'
-				? Response.json({ message: 'Enter your password to confirm this. Nothing was changed.', stepUp: 'missing' }, { status: 400 })
+				? Response.json({ message: STEP_UP_MISSING, stepUp: 'missing' }, { status: 400 })
 				: undefined;
 		const target = draw(ScheduledBackupsPanel, { confirm: confirmedAtOnce(), isSuperadmin: false });
 		await settle();
@@ -518,7 +518,7 @@ describe('the Scheduled Backups panel for an administrator and for the superadmi
 		await settle();
 
 		expect(asked('PUT /api/admin/backup').map((request) => request.body)).toEqual([expect.not.objectContaining({ currentPassword: expect.anything() })]);
-		expect(toastsShown()).toEqual([expect.stringContaining('Enter your password to confirm this. Nothing was changed.')]);
+		expect(toastsShown()).toEqual([expect.stringContaining(STEP_UP_MISSING)]);
 	});
 
 	it('leaves the superadmin’s panel as it was: 🗑️ asks the confirm, Keep Last lowered and Disabled are sent, and no rule is shown', async () => {
@@ -2095,6 +2095,38 @@ describe('every dialog with a password field of its own waits for the sign-in co
 			undraw();
 		}
 		expect(sent.filter((request) => request.what !== 'GET /api/admin/backup' && !request.what.startsWith('GET /api/admin/backup/gdrive/auth'))).toEqual([]);
+	});
+
+	// Card 2771 (plan section 5.1, T16; D9, E9): a refusal decided before the password was compared keeps it typed.
+	it('T16. keeps the password typed and empties the code in each, 🔑 on both rows among them, when the send is answered code-spent', async () => {
+		const ownRow: [string, () => Promise<{ within: ParentNode; button: () => HTMLButtonElement }>] = [
+			'🔑 on your own row',
+			async () => {
+				const target = draw(UsersPanel, { data: pageData, isSuperadmin: true, confirm: vi.fn(), loadMailStatus: vi.fn(), inviteLink: null });
+				target.querySelectorAll<HTMLButtonElement>('button[title="Reset password"]')[0].click();
+				await settle();
+				type(target.querySelector<HTMLInputElement>('input[placeholder="New password (min 8 chars)"]')!, 'a-new-password');
+				return { within: target, button: () => buttonNamed(target, 'Change Password') };
+			}
+		];
+		// Every send of a proof answered as the step-up answers a step already used; reads as before.
+		answer = (what) => (what.startsWith('GET ') ? undefined : Response.json({ message: STEP_UP_CODE_SPENT, stepUp: 'code-spent' }, { status: 400 }));
+		for (const [name, open] of [...dialogs, ownRow]) {
+			const { within, button } = await open();
+			const password = within.querySelector<HTMLInputElement>('input[autocomplete="current-password"]')!;
+			type(password, MINE);
+			typeCode(within);
+			const before = sent.length;
+			button().click();
+			await settle();
+
+			const proofs = sent.slice(before).filter((request) => !request.what.startsWith('GET '));
+			expect(proofs.map((request) => (request.body as { currentPassword?: unknown }).currentPassword), name).toEqual([MINE]);
+			expect(within.querySelector('[role="alert"]')?.textContent, name).toBe(STEP_UP_CODE_SPENT);
+			expect(password.value, name).toBe(MINE);
+			expect(codeFieldIn(within)!.value, name).toBe('');
+			undraw();
+		}
 	});
 });
 

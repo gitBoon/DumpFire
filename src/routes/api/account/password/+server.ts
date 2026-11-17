@@ -4,11 +4,9 @@ import { afterCommit } from '$lib/server/db/transaction';
 import { users } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import {
-	checkCurrentPassword,
 	createSession,
 	endAccountAccess,
 	namingIds,
-	refuseWrongPassword,
 	replacementStart,
 	sessionHashIn,
 	setSessionCookie,
@@ -19,56 +17,52 @@ import { rememberBrowser } from '$lib/server/known-browsers';
 import { createLogger } from '$lib/server/logger';
 import { readBody, readBoolean, readText } from '$lib/server/request-body';
 import { requireUser } from '$lib/server/route-guards';
+import { confirmStepUp } from '$lib/server/step-up';
 import { writeAs } from '$lib/server/write-as';
 import type { RequestHandler } from './$types';
 
 const log = createLogger('AUTH');
 
-/** PUT — Change own password. Requires current password verification. */
+/**
+ * PUT — Change own password. Asks for the current password and a code again
+ * (`currentPassword`, `currentCode`: card 2771, D7), through the step-up that
+ * every listed action asks with (step-up.ts): the wrong ones counted on the
+ * session that sent them, the third ending it.
+ */
 export const PUT: RequestHandler = async ({ request, locals, cookies, url }) => {
-	// The wrong passwords are counted against the session that sent them,
-	// which only a session reaches this route with: by its hash, as the gate
-	// found it (card 2775).
-	const session = sessionHashIn(locals.credential);
 	requireUser(locals.user);
-	if (!session) throw error(401, 'Not authenticated');
 
 	const body = await readBody(request);
 
-	// Whether the account's API keys end with the change, and the webhooks it
-	// set are switched off. They are kept unless asked: the holder has just
-	// proved they hold the password, and ending keys stops every script that
-	// uses them. Anything but true or false is refused
-	// before a password is checked or hashed, rather than read as one or the other.
-	const endApiKeys = readBoolean(body, 'endApiKeys', {}) ?? false;
-
-	// Text, or refused before it is checked or counted. A number used to reach
-	// bcrypt, which threw: a 500, and so did a new password that was not text.
-	const currentPassword = readText(body, 'currentPassword', { required: true, min: 1, says: 'Current password is required' });
+	// The route's own fields, read in the guard, before a password is checked
+	// or counted (card 2117): whether the account's API keys end with the
+	// change, and the webhooks it set are switched off (kept unless asked: the
+	// holder has just proved they hold the password, and ending keys stops
+	// every script that uses them; anything but true or false is refused
+	// rather than read as one or the other), and the new password, text of 8
+	// characters or more. The guard asks who is asking as their account is now
+	// (card 2253); it decides nothing: the transaction that writes asks again,
+	// before the session this request came by ends there.
 	const SHORT = 'New password must be at least 8 characters';
-	const newPassword = readText(body, 'newPassword', { required: true, min: 8, says: { missing: SHORT, empty: SHORT, invalid: SHORT } });
+	const {
+		actor: { endApiKeys, newPassword },
+		userId,
+		hash
+	} = await confirmStepUp(locals, cookies, body, 'PUT /api/account/password', (caller) => {
+		requireUser(caller);
+		const endApiKeys = readBoolean(body, 'endApiKeys', {}) ?? false;
+		const newPassword = readText(body, 'newPassword', { required: true, min: 8, says: { missing: SHORT, empty: SHORT, invalid: SHORT } });
+		return { endApiKeys, newPassword };
+	});
 
-	// Who is asking, as their account is now, once the body has come: a session
-	// that ended while it arrived is refused here, before a password is checked
-	// or counted (card 2253). It decides nothing: the transaction that writes
-	// asks again, before the session this request came by ends there.
-	const me = writeAs(locals, (caller) => requireUser(caller));
+	// The session the replacement takes the start of: the one the step-up
+	// counted on, which it has already asked is there.
+	const session = sessionHashIn(locals.credential);
+	if (!session) throw error(401, 'Not authenticated');
 
-	// Get full user with password hash
-	const user = db.select().from(users).where(eq(users.id, me.id)).get();
-	if (!user) throw error(404, 'User not found');
-
-	// Verify current password. Counted on this session's row: the third wrong
-	// one ends the session (card 2701).
-	refuseWrongPassword(
-		cookies,
-		await checkCurrentPassword(session, user.id, currentPassword, user.passwordHash, 'PUT /api/account/password'),
-		'Current password is incorrect'
-	);
-
-	// Checking a password and hashing one each take about a quarter of a
-	// second, on a worker thread, and are awaited, which a transaction cannot
-	// do. Both are done out here, before it.
+	// Hashing a password takes about a quarter of a second, on a worker
+	// thread, and is awaited, which a transaction cannot do. It is done out
+	// here, before it.
 	const newHash = await makePasswordHash(newPassword, 'known');
 
 	// One transaction: the password, the sessions that end and the session that
@@ -82,7 +76,7 @@ export const PUT: RequestHandler = async ({ request, locals, cookies, url }) => 
 	// awaited, and a session can end meanwhile. Asked before the sessions end
 	// below, the session this request came by among them; nothing in this
 	// request asks it after that, when it has gone.
-	const { accountId, newSession, apiKeysEnded, webhooksSwitchedOff } = await whilePasswordHolds(user.id, user.passwordHash, () =>
+	const { accountId, newSession, apiKeysEnded, webhooksSwitchedOff } = await whilePasswordHolds(userId, hash, () =>
 		writeAs(locals, (caller) => {
 			const me = requireUser(caller);
 			const userId = me.id;

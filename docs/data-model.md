@@ -1,7 +1,7 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.77
+version: 1.78
 status: As-Built
 date: 2026-11-17
 tags:
@@ -1314,7 +1314,7 @@ erDiagram
 | `sign_in_challenges` | A sign-in that has passed the password and waits for its second factor (card 2769) | The token only as its SHA-256 hash; a secret being set up only sealed, as a factor's is, bound to the account and the token's hash |
 | `enrolment_links` | A link that lets one account set up its authenticator (card 2769) | The token only as its SHA-256 hash |
 | `settings.mfa_key_check` | A row, no schema change: HMAC-SHA256 of the key file's bytes with a fixed label, as hex | Says which key the factors were sealed with, so a server started with another key refuses to start while any factor exists (with none there is nothing to compare, and it starts). Not the key, and no key can be worked out from it. Written with the first factor |
-| The eleven `users` columns | Each lane's consecutive wrong codes and when its pause ends (the remembered browser's, every other browser's, and recovery codes'), the last sign-in and where it came from, the wrong codes since, and the banner that tells the owner someone else holds the password, with when it was last raised | Nothing secret. Every moment is a `*_at` column, so the start-up conversion and the after-each timestamp check find it (13 new moments in all: eight in the four tables, five on `users`) |
+| The eleven `users` columns | Each lane's consecutive wrong codes and when its pause ends (the remembered browser's, every other browser's, and recovery codes'), the last sign-in and where it came from, the wrong codes since, and the banner that tells the owner someone else holds the password, with when it was last raised. Since card 2771 a right password with a wrong code at a step-up also adds one to `failed_codes_since_sign_in` and raises the banner (`'wrong-code'`); a step-up writes none of the lane columns | Nothing secret. Every moment is a `*_at` column, so the start-up conversion and the after-each timestamp check find it (13 new moments in all: eight in the four tables, five on `users`) |
 
 - **Indexes.** Two unique indexes, `mfa_factors_factor_uid_unique` and
   `mfa_recovery_codes_code_hash_unique`, and one on each table's `user_id`:
@@ -2843,20 +2843,31 @@ stateDiagram-v2
   updates (card 2678, [above](#clarification-questions-settled-once-card-2678)). 0061 changes no row and declares nothing to the rehearsal;
   a backup from before it restores with the twelve tables empty and every Product Owner NULL.
   Backup, restore, reset and the timestamp upkeep find the tables for themselves.
-- **`sessions.wrong_password_count` is how many current passwords a session has had compared
-  since its last right one** (card 2701, migration `0062_add_session_wrong_password_count.sql`,
-  2026-11-04). `INTEGER NOT NULL DEFAULT 0`, one `ALTER TABLE … ADD`. `checkCurrentPassword`
-  (`src/lib/server/auth.ts`) reads the row first: gone is a session signed out, and 3 or more
-  ends the session with nothing compared. A check refused before any compare (one of the
-  session's own already under way, `429 STEP_UP_IN_FLIGHT`, or the account's five first-lane
-  places all taken, `429 PASSWORDS_BUSY`) is not counted. Only then, with nothing awaited since
-  the read, it adds one in one statement (`UPDATE sessions SET wrong_password_count =
-  wrong_password_count + 1 WHERE id = ? AND user_id = ? RETURNING wrong_password_count`) and
-  compares; a compare that fails on its worker stays counted. A right one sets it to 0 while
-  the row is still there, and a wrong one that leaves it at 3 deletes the session (the code
-  review's S1, ruled 2026-11-04: only a compare counts). The Account page's three forms and the
-  twenty-nine step-up actions share it (card 2701's eighteen, card 2697's eight, card
-  2679's two and card 2773's one). It replaced a count in memory with a 15-minute window, so a
+- **`sessions.wrong_password_count` is how many current-password attempts a session has had
+  compared since its last right password with a right code** (card 2701, migration
+  `0062_add_session_wrong_password_count.sql`, 2026-11-04; the code since card 2771,
+  2026-11-17). `INTEGER NOT NULL DEFAULT 0`, one `ALTER TABLE … ADD`. `checkCurrentProof`
+  (`src/lib/server/auth.ts`; `checkCurrentPassword` until card 2771) reads the row first: gone
+  is a session signed out, and 3 or more ends the session with nothing compared. A check
+  refused before any compare (one of the session's own already under way, `429
+  STEP_UP_IN_FLIGHT`; the account's second factor at step 2b, `403 no-factor`, `503
+  factor-unusable` or `400 code-spent`; or the account's five first-lane places all taken,
+  `429 PASSWORDS_BUSY`) is not counted. Only then, with nothing awaited since the read, it
+  adds one in one statement (`UPDATE sessions SET wrong_password_count = wrong_password_count
+  + 1 WHERE id = ? AND user_id = ? RETURNING wrong_password_count`) and compares; a compare
+  that fails on its worker stays counted. One attempt counts once, whichever part is wrong. It
+  is set to 0 **only when both pass**: a right password opens one synchronous transaction that
+  reads the row again, verifies the code, spends it (`mfa_factors.last_step` and
+  `last_used_at` through `spendStep`, or `mfa_recovery_codes.used_at` through
+  `spendRecoveryCode`) and sets the count to 0 together, so a fault rolls the spend and the
+  clear back and leaves the attempt counted. A right password with a wrong code leaves it at
+  +1, adds one to `users.failed_codes_since_sign_in` and raises `users.security_banner`
+  (`'wrong-code'`, at most once an hour) in the same transaction; a code whose step was spent
+  meanwhile, or a factor gone or not opening there, leaves it at +1 and spends nothing. A
+  wrong answer that leaves it at 3 deletes the session (the code review's S1, ruled
+  2026-11-04: only a compare counts). The thirty-two step-up actions share it, the Account
+  page's three forms among them since card 2771 (card 2701's eighteen, card 2697's eight, card
+  2679's two, card 2773's one and card 2771's three). It replaced a count in memory with a 15-minute window, so a
   restart no longer clears it. `sessions` is not a reconciled table, so the file alone adds the
   column; every existing session reads 0 and no row is changed, so nothing is declared to the
   rehearsal. No backup holds a session row and no restore brings one in, so neither carries a
@@ -2866,16 +2877,18 @@ stateDiagram-v2
 ```mermaid
 stateDiagram-v2
     [*] --> None: session made (sign-in, set-up, invite, own password change), 0
-    None --> One: a wrong one, 1
-    One --> Two: a wrong one, 2
-    Two --> Ended: a third wrong one, 3
-    One --> None: a right one, 0
-    Two --> None: a right one, 0
+    None --> One: a wrong password or a wrong code, 1
+    One --> Two: a wrong password or a wrong code, 2
+    Two --> Ended: a third wrong answer, 3
+    One --> None: a right password with a right code, spent, 0
+    Two --> None: a right password with a right code, spent, 0
     Ended --> [*]: the row deleted, "three wrong current passwords"
     note right of One
         Each compare adds one just before it is made;
-        a check refused unchecked (in flight, busy)
-        adds none, and a right one sets it to 0
+        a check refused unchecked (in flight, busy,
+        no-factor, factor-unusable, code-spent, or a
+        code missing or malformed) adds none, and only
+        a right password with a right code sets it to 0
     end note
 ```
 

@@ -107,10 +107,14 @@ import {
 	CONFIRMATION_HEADER,
 	CONFIRMATION_REFUSED,
 	STEP_UP_CODE_FIELD,
+	STEP_UP_CODE_MALFORMED,
+	STEP_UP_CODE_SPENT,
+	STEP_UP_FACTOR_UNUSABLE,
 	STEP_UP_FIELD,
 	STEP_UP_MISSING,
 	STEP_UP_SIGNED_OUT,
 	STEP_UP_WRONG,
+	passwordKeptAfter,
 	proofTyped,
 	refusalWatch,
 	stepUpRefusal
@@ -1343,8 +1347,7 @@ describe('the account page, src/routes/account/+page.svelte', () => {
 	it('makes a key with the password, and shows a refusal of it in the server’s words', () => {
 		const generating = functionNamed(page, 'generateApiKey');
 
-		// The password goes with the name.
-		expect(bodiesSent(generating)).toEqual([['name', 'password']]);
+		// The password and the code go with the name: T14, below (card 2771).
 		// Read as JSON only where the answer is a success, and a refusal asked
 		// for its message, once, in the branch for a failure.
 		expect(branches(page, 'generateApiKey', 'res.json')).toEqual(['ok']);
@@ -1359,16 +1362,79 @@ describe('the account page, src/routes/account/+page.svelte', () => {
 		expect(around('{apiKeyError}')).toEqual([{ condition: 'apiKeyError', inElse: false }]);
 	});
 
-	it('clears the password after every attempt, and keeps Generate Key off until there is a name and a password', () => {
-		const cleared = assignmentsTo(functionNamed(page, 'generateApiKey'), 'newKeyPassword');
+	// Card 2771 (D9, E13): the three forms ask for the password and a code as every listed action does.
+	it.each([
+		{
+			fn: 'changeEmail',
+			label: 'Confirm password',
+			password: 'emailPassword',
+			code: 'emailCode',
+			refusal: 'emailRefusal',
+			inFlight: 'changingEmail',
+			body: ['newEmail', 'currentPassword', 'currentCode'],
+			button: 'disabled={!newEmail?.trim() || !proofTyped(emailPassword, emailCode) || newEmail.trim() === displayedEmail || changingEmail}'
+		},
+		{
+			fn: 'changePassword',
+			label: 'Current password',
+			password: 'passwordCurrent',
+			code: 'passwordCode',
+			refusal: 'passwordRefusal',
+			inFlight: 'changingPassword',
+			body: ['currentPassword', 'currentCode', 'newPassword', 'endApiKeys'],
+			button: 'disabled={!proofTyped(passwordCurrent, passwordCode) || !newPassword || !confirmPassword || changingPassword}'
+		},
+		{
+			fn: 'generateApiKey',
+			label: 'Your current password',
+			password: 'newKeyPassword',
+			code: 'newKeyCode',
+			refusal: 'keyRefusal',
+			inFlight: 'generatingKey',
+			body: ['name', 'currentPassword', 'currentCode'],
+			button: 'disabled={!newKeyName.trim() || !proofTyped(newKeyPassword, newKeyCode) || generatingKey}'
+		}
+	])(
+		'T14. $fn asks in CurrentPasswordField, sends only once proofTyped, copies both into currentPassword and currentCode and clears them before the fetch, and puts the password back only as passwordKeptAfter says',
+		({ fn, label, password, code, refusal, inFlight, body, button }) => {
+			const sending = functionNamed(page, fn);
 
-		expect(cleared.map((assignment) => assignment.right.getText())).toEqual(["''"]);
-		// Whatever the answer was: in neither branch.
-		expect(cleared.map(branchOf)).toEqual([null]);
-		// A password field of its own, which a browser fills with the one it has saved.
-		expect(markup).toMatch(/<input\s+id="apikey-password"\s+type="password"\s+bind:value=\{newKeyPassword\}[^>]*autocomplete="current-password"/);
-		expect(markup).toContain('disabled={!newKeyName.trim() || !newKeyPassword || generatingKey}');
-	});
+			// The field, bound to the form's own password and code, and given its refusal.
+			expect(markup).toMatch(
+				new RegExp(`<CurrentPasswordField\\s+label="${label}"\\s+bind:value=\\{${password}\\}\\s+bind:code=\\{${code}\\}\\s+refusal=\\{${refusal}\\}`)
+			);
+			// Its button and its send guard: the one rule, so that Enter cannot get round it.
+			expect(markup).toContain(button);
+			const guard = sending.body!.statements[0];
+			expect(ts.isIfStatement(guard) && guard.thenStatement.getText()).toBe('return;');
+			expect(ts.isIfStatement(guard) && guard.expression.getText()).toContain(`!proofTyped(${password}, ${code})`);
+			// And while its own send is out, so that one press sends one request (card 2771's code review, CR2).
+			expect(ts.isIfStatement(guard) && guard.expression.getText()).toMatch(new RegExp(`\\|\\| ${inFlight}$`));
+
+			// Copied into constants named as the body sends them (E13), and both fields cleared, before the fetch, in neither branch.
+			const text = sending.getText();
+			expect(text).toContain(`const currentPassword = ${password};`);
+			expect(text).toContain(`const currentCode = ${code};`);
+			const fetchAt = callsOf(sending, 'fetch')[0].getStart();
+			for (const field of [password, code]) {
+				const cleared = assignmentsTo(sending, field).filter((assignment) => assignment.right.getText() === "''");
+				expect(cleared, field).toHaveLength(1);
+				expect(cleared[0].getStart(), field).toBeLessThan(fetchAt);
+				expect(branchOf(cleared[0]), field).toBeNull();
+			}
+			expect(bodiesSent(sending)).toEqual([body]);
+
+			// A refusal of the password or the code: read first, said in the field, the password from passwordKeptAfter,
+			// the code never put back; any other refusal in the form's line (failureMessage).
+			const read = callsOf(sending, 'stepUpRefusal');
+			expect(read.map(branchOf)).toEqual(['failed']);
+			expect(read[0].getStart()).toBeLessThan(callsOf(sending, 'failureMessage')[0].getStart());
+			expect(assignmentsTo(sending, password).map((assignment) => assignment.right.getText())).toEqual(["''", 'passwordKeptAfter(refusal, currentPassword)']);
+			expect(assignmentsTo(sending, code).map((assignment) => assignment.right.getText())).toEqual(["''"]);
+			expect(assignmentsTo(sending, refusal).map((assignment) => assignment.right.getText())).toEqual(['null', 'refusal']);
+			expect(page.getText()).toMatch(/import \{ passwordKeptAfter, proofTyped, stepUpRefusal \} from '\$lib\/step-up-words';/);
+		}
+	);
 
 	it('offers to end the API keys with a password change, not ticked, and only when there are keys to end or webhooks to switch off', () => {
 		// Not ticked unless the holder ticks it.
@@ -1423,7 +1489,7 @@ describe('the account page, src/routes/account/+page.svelte', () => {
 	it('sends the choice as endApiKeys, says what the change ended, and reads the key list again after keys were ended', () => {
 		const changing = functionNamed(page, 'changePassword');
 
-		expect(bodiesSent(changing)).toEqual([['currentPassword', 'newPassword', 'endApiKeys']]);
+		// The body, with the password and the code: T14 (card 2771).
 		expect(changing.getText()).toContain('const endApiKeys = endApiKeysToo && offerToEnd;');
 		// The counts are the answer's, read where the answer is a success.
 		expect(branches(page, 'changePassword', 'answerBody')).toEqual(['ok']);
@@ -2899,9 +2965,10 @@ const WRITES: Record<string, Write[]> = {
 	],
 	'src/routes/account/+page.svelte': [
 		{ name: 'changeEmoji', reads: 'failureMessage', putsBack: ['currentEmoji = was'], done: ['await invalidateAll()'] },
-		{ name: 'changeEmail', reads: 'failureMessage', done: ["emailMessage = 'Email updated successfully!'", 'displayedEmail = result.email'] },
-		{ name: 'changePassword', reads: 'failureMessage', done: ['await loadApiKeys()'] },
-		{ name: 'generateApiKey', reads: 'failureMessage', done: ['newlyCreatedKey = result.key', 'await loadApiKeys()'] },
+		// Card 2771: a refusal of the password or the code is read first, by `stepUpRefusal`, and said in the field.
+		{ name: 'changeEmail', reads: 'failureMessage', via: 'stepUpRefusal', done: ["emailMessage = 'Email updated successfully!'", 'displayedEmail = result.email'] },
+		{ name: 'changePassword', reads: 'failureMessage', via: 'stepUpRefusal', done: ['await loadApiKeys()'] },
+		{ name: 'generateApiKey', reads: 'failureMessage', via: 'stepUpRefusal', done: ['newlyCreatedKey = result.key', 'await loadApiKeys()'] },
 		{ name: 'revokeKey', reads: 'failureMessage', done: ['apiKeys = apiKeys.filter(k => k.id !== id)'] },
 		{ name: 'toggleNotif', reads: 'failureMessage', putsBack: ['notifPrefs = was'], done: ['notifPrefs = await res.json()'] }
 	]
@@ -3969,6 +4036,16 @@ const ASKS_ONLY_WITH: Readonly<Record<string, readonly string[]>> = {
 };
 
 /**
+ * Fields a listed route read the password from before it asked through the
+ * step-up, and reads no longer (card 2771, D7): a send that still carries one
+ * is sending the password where nothing reads it.
+ */
+const RETIRED_FIELDS: Readonly<Record<string, readonly string[]>> = {
+	'PUT /api/account/email': ['password'],
+	'POST /api/account/api-keys': ['password']
+};
+
+/**
  * The sends of a source that would be refused for want of the password, the
  * code beside it (or one not from the proof, card 2770) or the confirmation,
  * and those that cannot be read.
@@ -3989,6 +4066,7 @@ function unaskedIn(sends: ListedSend[]): string[] {
 		if (!send.bodyKeys?.includes(STEP_UP_FIELD)) faults.push(`no ${STEP_UP_FIELD} for ${key}`);
 		if (!send.bodyKeys?.includes(STEP_UP_CODE_FIELD)) faults.push(`no ${STEP_UP_CODE_FIELD} for ${key}`);
 		else if (!send.codeFromProof) faults.push(`${STEP_UP_CODE_FIELD} not from the proof for ${key}`);
+		for (const field of RETIRED_FIELDS[key] ?? []) if (send.bodyKeys?.includes(field)) faults.push(`${field} is no longer read by ${key}`);
 		return faults.map((fault) => `${send.at}: ${fault}`);
 	});
 }
@@ -4104,6 +4182,36 @@ describe('every page write of an action that asks for the password sends it, rea
 		// And the real source, every listed send of every page.
 		expect(unaskedIn(sends)).toEqual([]);
 	});
+
+	// Card 2771 (D7, T13): the Account page's three forms are listed actions now.
+	it('(f) holds the Account page: its three sends are reached, each with currentPassword and a currentCode from the proof; a retired `password` is reported', () => {
+		const ACCOUNT = ['PUT /api/account/email', 'PUT /api/account/password', 'POST /api/account/api-keys'];
+		const account = sends.filter((send) => send.at.startsWith('src/routes/account/+page.svelte') && ACCOUNT.includes(send.action ?? ''));
+		expect(
+			account.map((send) => ({ action: send.action, password: send.bodyKeys?.includes(STEP_UP_FIELD), codeFromProof: send.codeFromProof })).sort((a, b) =>
+				a.action!.localeCompare(b.action!)
+			)
+		).toEqual(
+			[...ACCOUNT].sort().map((action) => ({ action, password: true, codeFromProof: true }))
+		);
+		expect(unaskedIn(account)).toEqual([]);
+
+		const json = "headers: { 'Content-Type': 'application/json' }";
+		const source = [
+			`fetch('/api/account/email', { method: 'PUT', ${json}, body: JSON.stringify({ newEmail, password }) });`,
+			`fetch('/api/account/api-keys', { method: 'POST', ${json}, body: JSON.stringify({ name, password }) });`,
+			// Another listed route whose own field is called password: the new account's, and no fault.
+			`fetch('/api/users', { method: 'POST', ${json}, body: JSON.stringify({ username, password, currentPassword, currentCode }) });`
+		].join('\n');
+		expect(unaskedIn(listedSendsIn('src/lib/x.ts', source))).toEqual([
+			"src/lib/x.ts › (top) › fetch('/api/account/email'): no currentPassword for PUT /api/account/email",
+			"src/lib/x.ts › (top) › fetch('/api/account/email'): no currentCode for PUT /api/account/email",
+			"src/lib/x.ts › (top) › fetch('/api/account/email'): password is no longer read by PUT /api/account/email",
+			"src/lib/x.ts › (top) › fetch('/api/account/api-keys'): no currentPassword for POST /api/account/api-keys",
+			"src/lib/x.ts › (top) › fetch('/api/account/api-keys'): no currentCode for POST /api/account/api-keys",
+			"src/lib/x.ts › (top) › fetch('/api/account/api-keys'): password is no longer read by POST /api/account/api-keys"
+		]);
+	});
 });
 
 describe('a refusal of the password, as the pages know it (card 2701)', () => {
@@ -4124,6 +4232,13 @@ describe('a refusal of the password, as the pages know it (card 2701)', () => {
 		expect(await stepUpRefusal(Response.json({ message: 'reworded', stepUp: 'missing' }, { status: 400 }))).toBe(STEP_UP_MISSING);
 		expect(await stepUpRefusal(Response.json({ message: 'reworded', stepUp: 'signed-out' }, { status: 403 }))).toBe(STEP_UP_SIGNED_OUT);
 		expect(await stepUpRefusal(Response.json({ stepUp: 'busy' }, { status: 429 }))).toMatch(/busy/);
+		// Card 2771 (D9): the four codes of the code. Three are this module's own words, by the code, as a dialog keeps
+		// the password on them; `no-factor` is said in the server's words.
+		expect(await stepUpRefusal(Response.json({ message: 'reworded', stepUp: 'code-spent' }, { status: 400 }))).toBe(STEP_UP_CODE_SPENT);
+		expect(await stepUpRefusal(Response.json({ message: 'reworded', stepUp: 'code-malformed' }, { status: 400 }))).toBe(STEP_UP_CODE_MALFORMED);
+		expect(await stepUpRefusal(Response.json({ message: 'reworded', stepUp: 'factor-unusable' }, { status: 503 }))).toBe(STEP_UP_FACTOR_UNUSABLE);
+		expect(await stepUpRefusal(Response.json({ message: 'reworded', stepUp: 'no-factor' }, { status: 403 }))).toBe('reworded');
+		expect(await stepUpRefusal(Response.json({ stepUp: 'no-factor' }, { status: 403 }))).toMatch(/no two-step sign-in/);
 		// No code, or one that is not the step-up's: not a refusal of the password, whatever the words.
 		expect(await stepUpRefusal(Response.json({ message: STEP_UP_WRONG }, { status: 403 }))).toBeNull();
 		expect(await stepUpRefusal(Response.json({ message: STEP_UP_SIGNED_OUT, signedOut: true }, { status: 403 }))).toBeNull();
@@ -6514,6 +6629,7 @@ describe('the Google Drive Connect’s paste box, src/lib/components/admin/GDriv
 			'tick',
 			'focused',
 			'proofTyped',
+			'passwordKeptAfter',
 			"let gdriveConnecting = '', gdriveAuthCode = 'old paste', gdriveAuthUrl = '', gdriveBlocked = false, gdriveAttempt = 0, gdriveExchanging = false;\n" +
 				"let gdrivePassword = '', gdriveStepUpCode = '', gdriveRefusal = null;\n" +
 				'const gdrivePasswordField = { focus: focused };\n' +
@@ -6530,7 +6646,7 @@ describe('the Google Drive Connect’s paste box, src/lib/components/admin/GDriv
 				'\texchange: () => exchangeGDriveCode(),\n' +
 				'\texchanging: () => gdriveExchanging\n' +
 				'};'
-		)(fetch, window, showToast, { navigation: () => 7 }, failureMessage, answerBody, sentAsking, loadBackupConfig, async () => {}, focused, proofTyped) as {
+		)(fetch, window, showToast, { navigation: () => 7 }, failureMessage, answerBody, sentAsking, loadBackupConfig, async () => {}, focused, proofTyped, passwordKeptAfter) as {
 			connect: (name: string) => Promise<void>;
 			cancel: () => void;
 			state: () => { connecting: string; code: string; authUrl: string; blocked: boolean };

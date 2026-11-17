@@ -35,7 +35,7 @@
 	import CurrentPasswordField from '$lib/components/CurrentPasswordField.svelte';
 	import EmojiPicker from '$lib/components/EmojiPicker.svelte';
 	import { toasts } from '$lib/stores/toast';
-	import { ASKS_FOR_PASSWORD, proofTyped, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
+	import { ASKS_FOR_PASSWORD, passwordKeptAfter, proofTyped, stepUpRefusal, type StepUpProof } from '$lib/step-up-words';
 	import ResetPasswordDialog from './ResetPasswordDialog.svelte';
 
 	/** The settings an account had set that a role change or a delete removes, or would (card 2397): `SettingsRemoved` on the server. */
@@ -174,6 +174,8 @@
 			);
 			if (typeof res === 'string') {
 				newUserRefusal = res;
+				// Kept for a refusal decided before it was compared (card 2771, D9): only the code is typed again.
+				newUserCurrentPassword = passwordKeptAfter(res, currentPassword);
 				return;
 			}
 			if (!res) return;

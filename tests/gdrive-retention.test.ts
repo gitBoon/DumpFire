@@ -58,7 +58,7 @@ import type { DestinationConfig } from '$lib/server/backup-destinations';
 import { sqlite } from '$lib/server/db';
 import { api } from './helpers/api';
 import { effects, type Effects } from './helpers/effects';
-import { FIXTURE_PASSWORD, makeSession, makeSmtp, makeUser, resetDb, sessionCredential } from './helpers/fixtures';
+import { FIXTURE_PASSWORD, makeSession, makeSmtp, makeUser, resetDb, sessionCredential, stepUpCode } from './helpers/fixtures';
 import { expectUnchanged, snapshotDb } from './helpers/snapshot';
 import { SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 
@@ -71,7 +71,7 @@ function confirmedFrom(user: SessionUser) {
 	return {
 		user,
 		credential: sessionCredential(token),
-		body: { currentPassword: FIXTURE_PASSWORD },
+		body: { currentPassword: FIXTURE_PASSWORD, currentCode: stepUpCode(user) },
 		headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` }
 	};
 }

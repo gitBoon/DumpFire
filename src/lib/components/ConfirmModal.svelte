@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { keepTab, takeFocus } from '$lib/dialog-focus';
-	import { NO_ANSWER_TRY_AGAIN, NO_PROOF, proofTyped, STEP_UP_MISSING, STEP_UP_SIGNED_OUT, type StepUpProof } from '$lib/step-up-words';
+	import { NO_ANSWER_TRY_AGAIN, NO_PROOF, passwordKeptAfter, proofTyped, STEP_UP_MISSING, STEP_UP_SIGNED_OUT, type StepUpProof } from '$lib/step-up-words';
 	import CurrentPasswordField from './CurrentPasswordField.svelte';
 
 	let {
@@ -28,8 +28,11 @@
 		 * be awaited (card 2701, D6): while it runs both buttons are off and
 		 * Confirm says it is working, so one press sends one request. Text given
 		 * back is the server's refusal, and the dialog stays open and shows it,
-		 * both fields cleared, the password focused; anything else, and the caller closes the
-		 * dialog. One that throws, or is rejected, is said as no answer.
+		 * both fields cleared, the password focused; for the refusals decided
+		 * before the password was compared (`passwordKeptAfter`, card 2771) the
+		 * password is put back and the code focused. Anything else, and the
+		 * caller closes the dialog. One that throws, or is rejected, is said as
+		 * no answer.
 		 */
 		onConfirm: (proof: StepUpProof) => void | Promise<string | null | void>;
 		onCancel: () => void;
@@ -105,7 +108,9 @@
 	 * Confirm: the caller's `onConfirm`, handed the proof, both fields cleared
 	 * here as it goes. Nothing is sent while either is blank, whatever key or
 	 * button asked (card 2770, S1). A refusal it gives back is shown, and the focus put in
-	 * the field to type again (`CurrentPasswordField`); a 400 asking for a
+	 * the field to type again (`CurrentPasswordField`), the password sent put
+	 * back where the refusal was decided before it was compared (card 2771,
+	 * D9: `passwordKeptAfter`; the code is always typed again); a 400 asking for a
 	 * password the dialog did not ask for shows the field. An `onConfirm` that
 	 * throws, or whose promise is rejected, is said as no answer (the code
 	 * review's F9), the field focused to try again.
@@ -127,6 +132,7 @@
 		}
 		if (typeof answer !== 'string') return;
 		refusal = answer;
+		password = passwordKeptAfter(answer, proof.currentPassword);
 		if (answer === STEP_UP_MISSING) toldToAsk = true;
 	}
 </script>
