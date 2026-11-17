@@ -4,8 +4,16 @@ import { writeAs } from '$lib/server/write-as';
 import { taskRequests, users, teams, teamMembers, cards, columns, boards } from '$lib/server/db/schema';
 import { eq, and, inArray, or, desc, ne, lt } from 'drizzle-orm';
 import { notifyTaskRequest, notifyRequesterConfirm } from '$lib/server/notifications';
-import { NO_LINK_ADDRESS, linkBaseUrl, isSmtpConfigured } from '$lib/server/email';
-import { newRequestToken, publicRequest, requestConfirmUrl, verifyFormToken } from '$lib/server/request-tokens';
+import { NO_LINK_ADDRESS, linkBaseUrl, isSmtpConfigured, smtpPasswordMissing } from '$lib/server/email';
+import {
+	CANNOT_SEND_LINK,
+	NO_MAIL_PASSWORD,
+	issueRequestLink,
+	publicRequest,
+	requestConfirmUrl,
+	verifyFormToken
+} from '$lib/server/request-tokens';
+import { createLogger } from '$lib/server/logger';
 import { checkRateLimit } from '$lib/server/rate-limit';
 import { addressToCount } from '$lib/server/client-address';
 import { readBody, readChoice, readEmail, readId, readText } from '$lib/server/request-body';
@@ -15,6 +23,8 @@ import { requesterAddress, unconfirmedCutoff } from '$lib/server/request-access'
 import type { RequestHandler } from './$types';
 
 const PRIORITIES = ['low', 'medium', 'high', 'critical'] as const;
+
+const log = createLogger('REQUESTS');
 
 /** GET — Returns requests targeted at the current user or their teams. */
 export const GET: RequestHandler = async ({ locals }) => {
@@ -209,6 +219,14 @@ export const POST: RequestHandler = async ({ request, locals, url, getClientAddr
 		if (mustVerify && confirmFrom === null) {
 			throw error(503, NO_LINK_ADDRESS);
 		}
+		// Nor, alike, when the mail settings name a user and hold no password,
+		// as a restore leaves them (card 2870, S5): the confirmation mail could
+		// never arrive, and no link is issued for a mail that cannot go. The
+		// requester is told in plain words, and why is a WARN line.
+		if (mustVerify && smtpPasswordMissing()) {
+			log.warn(`A request that must be confirmed was refused, and no confirmation can be sent: ${NO_MAIL_PASSWORD}.`);
+			throw error(503, CANNOT_SEND_LINK);
+		}
 
 		// Read once who it is for and where it goes have been looked up. A
 		// signed-in caller's own address is the one used, and theirs is not read.
@@ -241,18 +259,19 @@ export const POST: RequestHandler = async ({ request, locals, url, getClientAddr
 			requesterName: name,
 			requesterEmail: email,
 			requesterUserId: caller?.id || null,
-			status: mustVerify ? 'unverified' : 'pending',
-			accessToken: newRequestToken()
+			status: mustVerify ? 'unverified' : 'pending'
 		}).returning().get();
 
 		if (confirmFrom !== null) {
-			notifyRequesterConfirm(email!, created.title, requestConfirmUrl(confirmFrom, created));
+			// Its first link, issued here with the request (card 2870): only its
+			// hash is kept, and the token travels only in the mail.
+			notifyRequesterConfirm(email!, created.title, requestConfirmUrl(confirmFrom, created.id, issueRequestLink(created.id, 'mail')));
 		} else {
 			notifyTaskRequest(targetType, targetId, created.title, name, safePriority, baseUrl);
 		}
 
-		// Never the row itself: it carries the token, which only ever travels in
-		// the email link.
+		// Never the row itself: `publicRequest` leaves out the retired token
+		// column, which held the link's key in plain before card 2870.
 		return { ...publicRequest(created), verificationRequired: mustVerify };
 	});
 

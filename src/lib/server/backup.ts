@@ -113,12 +113,14 @@ export function saveBackupConfig(config: BackupConfig): void {
  * long as that session went on being used. Password hashes stay: a backup that
  * cannot restore its users is not a backup.
  *
- * Nor does it hold a task request's link (card 2158). A request's
- * `access_token` is the whole of the key to its thread: whoever has it reads
- * every message, the ones written after the copy was made included, replies
- * as the requester and confirms a request not yet confirmed, and it never
- * expires. So every token is NULL in the copy; the request rows themselves
- * stay. A restore gives every request a new token whatever the backup holds
+ * Nor does it hold a task request's link (cards 2158 and 2870). A link's
+ * token is the whole of the key to its thread: whoever has it reads every
+ * message, the ones written after the copy was made included, replies as the
+ * requester and confirms a request not yet confirmed, and it never expires.
+ * The links are kept as hashes in `request_links` since card 2870, and the
+ * copy holds none of them; the retired `access_token` is NULL in it, as it is
+ * in the live file, and the backfill no longer fills it. The request rows
+ * themselves stay. A restore brings in no link whatever the backup holds
  * (`restoreFromBackup`), and a backup with no tokens restored by an older
  * build has them filled in by its backfill. The key the public request form
  * signs its tokens with (`request_form_secret`, request-tokens.ts) is left out
@@ -205,6 +207,7 @@ export function withoutSecrets(from: string, to: string, key: Buffer = backupSea
 		// Every request's link, and the key the request form signs with (card
 		// 2158): see above. The unique index on the token takes any number of NULLs.
 		if (has('task_requests')) copy.prepare('UPDATE task_requests SET access_token = NULL').run();
+		if (has('request_links')) copy.prepare('DELETE FROM request_links').run();
 		if (has('settings')) copy.prepare('DELETE FROM settings WHERE key = ?').run(REQUEST_FORM_SECRET_KEY);
 		// The mail password, the destinations' credentials and the webhooks'
 		// secrets (card 2169): see above.

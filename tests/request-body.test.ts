@@ -62,6 +62,8 @@ import { isHexColour } from '$lib/colours';
 import { duplicateCard } from '$lib/board/card-actions';
 import { SftpDestination } from '$lib/server/backup-destinations';
 import { getAppUrl } from '$lib/server/email';
+import { issueRequestLink } from '$lib/server/request-tokens';
+import { inTransaction } from '$lib/server/db/transaction';
 import type { CardType, ColumnType } from '$lib/types';
 import { categoryToCopy, colourToCopy, dueDateToCopy, priorityToCopy } from '$lib/utils/card-utils';
 import { db } from '$lib/server/db';
@@ -2741,7 +2743,8 @@ describe('the accounts, administration, teams, reports and requests that card 21
 		factorId: number;
 	};
 
-	const TOKEN = 'the-token-of-the-requesters-link';
+	/** The token of the requester's link, issued as a mail issues one when the world is built (card 2870). */
+	let TOKEN = '';
 
 	function world(): World {
 		const owner = makeUser({ username: 'owner' });
@@ -2752,9 +2755,10 @@ describe('the accounts, administration, teams, reports and requests that card 21
 		const team = makeTeam([owner]);
 		const request = db
 			.insert(taskRequests)
-			.values({ targetType: 'user', targetId: owner.id, title: 'A dark theme', desiredBoardId: A.board.id, accessToken: TOKEN })
+			.values({ targetType: 'user', targetId: owner.id, title: 'A dark theme', desiredBoardId: A.board.id })
 			.returning()
 			.get();
+		TOKEN = inTransaction(() => issueRequestLink(request.id, 'mail'));
 		const schedule = db.insert(reportSchedules).values({ userId: owner.id, name: 'Weekly', scopeId: A.board.id }).returning().get();
 		const key = db
 			.insert(apiKeys)

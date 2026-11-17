@@ -326,8 +326,7 @@ describe('every mail in notifications.ts', () => {
 				requesterEmail: REQUESTER,
 				title: MARKER,
 				status: 'accepted',
-				resolvedCardId: card.id,
-				accessToken: TOKEN
+				resolvedCardId: card.id
 			})
 			.run();
 	});

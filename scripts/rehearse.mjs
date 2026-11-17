@@ -111,7 +111,6 @@ function print(found) {
 		}
 		console.log(
 			`Filled in: first_completed_at on ${first.backfilled.firstCompletedAt} card(s), ` +
-				`access_token on ${first.backfilled.accessTokens} request(s), ` +
 				`${first.backfilled.releasedFromMilestones} card(s) taken out of a milestone of another board, ` +
 				`${first.backfilled.unfiledBoards} board(s) taken out of a grouping that no longer exists`
 		);

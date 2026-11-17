@@ -95,7 +95,7 @@ import { hashSync } from 'bcryptjs';
 import { PASSWORD_CHANGED_MEANWHILE, stillAuthenticated, SESSION_COOKIE_NAME, type SessionUser } from '$lib/server/auth';
 import { inTransaction } from '$lib/server/db/transaction';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
-import { issueFormToken, newRequestToken } from '$lib/server/request-tokens';
+import { issueFormToken, issueRequestLink } from '$lib/server/request-tokens';
 import { cardDir } from '$lib/server/uploads';
 import { inWrite, stillCallerNow, writeAs, writingWithKey } from '$lib/server/write-as';
 import { stamp } from '$lib/timestamps';
@@ -1035,8 +1035,9 @@ describe('the accounts, users, requests and reports ask at the write (slice 2253
 		const member = makeUser({ username: 'member' });
 		const colleague = makeUser({ username: 'colleague', role: 'admin' });
 		const { board } = makeBoard({ owner, name: 'Reported' });
-		const asked = (status: string) =>
-			db
+		// Each with a link issued as a mail issues one (card 2870), its token kept.
+		const asked = (status: string) => {
+			const row = db
 				.insert(taskRequests)
 				.values({
 					targetType: 'user',
@@ -1044,11 +1045,12 @@ describe('the accounts, users, requests and reports ask at the write (slice 2253
 					requesterName: 'Rita',
 					requesterEmail: 'rita@example.test',
 					title: 'Asked',
-					status,
-					accessToken: newRequestToken()
+					status
 				})
 				.returning()
 				.get();
+			return { ...row, token: inTransaction(() => issueRequestLink(row.id, 'mail')) };
+		};
 		const request = asked('pending');
 		const unconfirmed = asked('unverified');
 		const key = makeApiKey(owner);
@@ -1177,7 +1179,7 @@ describe('the accounts, users, requests and reports ask at the write (slice 2253
 			shape: 'a confirmation link followed by someone signed in, which had no transaction (POST /api/requests/:id/confirm)',
 			method: 'POST',
 			path: (s) => `/api/requests/${s.unconfirmed.id}/confirm`,
-			body: (s) => ({ token: s.unconfirmed.accessToken }),
+			body: (s) => ({ token: s.unconfirmed.token }),
 			who: 'owner',
 			allowed: 200,
 			mails: 1
@@ -1367,9 +1369,9 @@ describe('the accounts, users, requests and reports ask at the write (slice 2253
 	/** The public request routes, by a caller with no session, each answering as for one. */
 	const PUBLIC = (s: Scene): [string, Record<string, unknown>, number, Record<string, string>?][] => [
 		['/api/requests', { title: 'From outside', targetType: 'user', targetId: s.owner.id, requesterEmail: 'out@example.test' }, 201, { 'x-form-token': issueFormToken() }],
-		[`/api/requests/${s.unconfirmed.id}/confirm`, { token: s.unconfirmed.accessToken }, 200],
+		[`/api/requests/${s.unconfirmed.id}/confirm`, { token: s.unconfirmed.token }, 200],
 		[`/api/requests/${s.request.id}/link`, { email: 'rita@example.test' }, 202],
-		[`/api/requests/${s.request.id}/messages`, { senderType: 'requester', token: s.request.accessToken, message: 'From outside' }, 200]
+		[`/api/requests/${s.request.id}/messages`, { senderType: 'requester', token: s.request.token, message: 'From outside' }, 200]
 	];
 
 	it('lets a caller with no session through the public request routes, handed null (decision 3)', async () => {

@@ -1,11 +1,13 @@
 ---
 title: "Notifications & Email System"
 category: Integration
-version: 1.72
+version: 1.73
 status: As-Built
 date: 2026-11-17
 tags:
   - card-2751
+  - card-2870
+  - request-links
   - report-schedules
   - card-2772
   - notifications
@@ -23,7 +25,7 @@ tags:
   - two-step-sign-in
   - security-notices
   - release-mail
-description: "Complete guide to DumpFire's notification pipeline: SMTP email, SSE real-time events, webhooks (where one may send, who may change one, at most 10 a board), user preferences, the decision closing-date reminder, and two-step sign-in's mail (card 2769: the security notices, ten since card 2772 added factor-added, factor-removed and codes-regenerated, twelve since card 2751 added report-schedule-set and report-schedules-running, the hourly limit on the stolen-password signals, the enrolled notice's keys and webhooks, and the release's set-up link, awaited and at most one a day), and report mail behind the password and a code (card 2751: the limits refused before it, every send asked again, the INFO lines naming the addresses, the two report schedule notices)"
+description: "Complete guide to DumpFire's notification pipeline: SMTP email, SSE real-time events, webhooks (where one may send, who may change one, at most 10 a board), user preferences, the decision closing-date reminder, and two-step sign-in's mail (card 2769: the security notices, ten since card 2772 added factor-added, factor-removed and codes-regenerated, twelve since card 2751 added report-schedule-set and report-schedules-running, the hourly limit on the stolen-password signals, the enrolled notice's keys and webhooks, and the release's set-up link, awaited and at most one a day), and report mail behind the password and a code (card 2751: the limits refused before it, every send asked again, the INFO lines naming the addresses, the two report schedule notices), and a link of its own in each mail to a requester, kept only as a hash, the newest 20 mail and 3 asked-for links kept (card 2870)"
 ---
 
 # Notifications & Email System
@@ -144,9 +146,11 @@ server keeps) and its `smtp_host` (trimmed of ASCII spaces and tabs, ASCII lette
 **Admin → 📧 Email / SMTP**: with the port and the way out compared too, a backup cannot have this server's
 password sent over a connection whose certificate is not checked. Until it is entered, mail
 is tried with the user name and an empty password, which a mail server that asks for one
-refuses, the backup failure mail included; a requester who asks for a new link is told
-"New links cannot be sent just now. Please contact the team that sent you the link." rather
-than that one was sent, with the reason in a `[WARN] [REQUESTS]` line; and every start writes
+refuses, the backup failure mail included; a requester who asks for a new link, or (card
+2870) sends the public form a request that must be confirmed, is told "New links cannot be
+sent just now. Please contact the team that sent you the link." rather than that one was
+sent, with the reason in a `[WARN] [REQUESTS]` line; no requester link is issued for a team
+reply or a progress mail, and neither is mailed; and every start writes
 one `[WARN] [STARTUP]` line saying so. See [The Secrets a Backup Does Not Hold](authentication-security.md#the-secrets-a-backup-does-not-hold-card-2169).
 
 **The saved password stays with the connection it was saved for** (card 2190). `GET
@@ -606,7 +610,7 @@ down. The failure shows on the panel and in the log.
 | User Mentioned | A user named as `@username` in a comment who can open the card's board (card 2198), never the author | `email_mentions` | `{author} mentioned you: {title}` |
 | Board Shared | Target user | `email_board_shared` | `Board shared: {boardName}` |
 | Request Confirmation | Requester (no account) | — | `Confirm your request: {title}` |
-| A New Link (card 2158) | Requester, at the request's address (for a request made signed in, the account's email as it is now: card 2171), when they ask for it from a link that no longer works: at most three an hour to one address, and for a request not yet confirmed within the form's three confirmation mails an hour to it; at most 30 an hour in all; worked out and sent after the answer. See [The Public Request Form](authentication-security.md#the-public-request-form) | — | `A new link to your request: {title}` |
+| A New Link (card 2158) | Requester, at the request's address (for a request made signed in, the account's email as it is now: card 2171), when they ask for it from a link that no longer works: at most three an hour to one address, and for a request not yet confirmed within the form's three confirmation mails an hour to it; at most 30 an hour in all; worked out and sent after the answer, and only when the request, read again as its link is written, is still there with the same address and has not lapsed (the card 2870 code review, CS1). It carries a new link of its own, one of at most three asked-for links the request keeps, and ends no link another mail carried (card 2870); it says "A new link to this request was asked for with your email address. Use the button below to open it.", with "Confirm my request" or "View the conversation". See [The Public Request Form](authentication-security.md#the-public-request-form) | — | `A new link to your request: {title}` |
 | Task Request | Target user/team | `email_requests` | `New request: {title}` |
 | Request Accepted | Requester | — | `Request accepted: {title}` |
 | Request Rejected | Requester | — | `Request declined: {title}` |
@@ -1695,8 +1699,35 @@ do, not when the form is submitted — otherwise the form is a way for anyone to
 team. Requests from signed-in users skip this and notify the team at once.
 
 Every link emailed to a requester (`requestReplyUrl()` and `requestConfirmUrl()` in
-`request-tokens.ts`) carries that request's own token. Links used to carry the
+`request-tokens.ts`) carries a token of that request's. Links used to carry the
 requester's email address, which is not a secret.
+
+**Each mail to a requester carries a link of its own** (card 2870). The server keeps only the
+SHA-256 of each token, in `request_links`, so it cannot put an earlier link into a later
+mail: the confirmation, each team reply and each progress or completion mail issue a new link
+(`issueRequestLink()`, source `mail`), and a new link asked for issues one too (source `ask`).
+Earlier links keep working, so a requester with the conversation open is not cut off when the
+team answers. A request keeps its newest 20 mail links, so the 21st mail ends the oldest, and
+its newest 3 asked-for links; each kind is trimmed only among its own, so asking for a new link
+never ends a link a mail carried. A link is issued only when the mail is about to be handed on:
+an address to send to, mail set up, the mail password there (`!smtpPasswordMissing()`) and an
+address to make the link from. With the mail password missing, the form refuses a request
+that must be confirmed `503` "New links cannot be sent just now. Please contact the team that
+sent you the link." (why in a `[WARN] [REQUESTS]` line), and a team reply is saved and mails
+nothing. See
+[Requester Links Stored as Hashes](authentication-security.md#requester-links-stored-as-hashes-card-2870).
+
+```mermaid
+flowchart TD
+    Send["A mail to a requester that carries a link"] --> Ready{"An address, mail set up,<br/>its password, a link address?"}
+    Ready -->|"no"| None["No link issued, no mail"]
+    Ready -->|"yes"| Issue["issueRequestLink: a new token,<br/>only its SHA-256 written"]
+    Issue --> Trim{"Source"}
+    Trim -->|"mail: confirmation, reply, progress"| Twenty["Keep the newest 20 mail links"]
+    Trim -->|"ask: a new link asked for"| Three["Keep the newest 3 ask links"]
+    Twenty --> Out["The mail carries the token,<br/>earlier links still work"]
+    Three --> Out
+```
 
 Each reply the requester sends through that link mails every member the request is
 addressed to, so the requester may send 20 replies to one request in an hour, and the 21st
@@ -1743,8 +1774,19 @@ is then; for one made without an account, the address given on the form
 or there is no address at all. The address stored when a request is made is still written,
 but a requester who changes their account's email is mailed at the new one from then on.
 "When it is sent" is when the action is taken, inside its transaction, for a reply, an
-acceptance or a decline, and after the commit, when the row is read, for the progress and
-completion mails. When an account is deleted, its email is written onto each of its
+acceptance or a decline. For the progress and completion mails since card 2870,
+`notifyRequesterProgress()` reads the request and the address, makes every skip and issues
+the mail's link synchronously, and where depends on what it reports. A comment and a subtask
+tick call it inside their write's transaction, so the link is a savepoint of it and a
+rolled-back write mails nothing and leaves no link. A move and a card created complete report
+from an effect after their commit (`announceCardMoves()`, `announceCardCreated()`), so the link
+has a transaction of its own, and the move or the card is saved whatever happens to the mail;
+each of those two catches a failure of the progress mail and logs it at `ERROR`, so its other
+announcements still go (the card 2870 code review, CS4). The mail itself is built and sent
+after the commit. A new link asked for reads the request again, in the transaction that
+writes its link, before it issues one: see
+[Requester Links Stored as Hashes](authentication-security.md#requester-links-stored-as-hashes-card-2870).
+When an account is deleted, its email is written onto each of its
 requests first, so they go on being mailed at its last address. The inbox shows the same
 address.
 

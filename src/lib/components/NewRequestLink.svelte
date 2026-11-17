@@ -4,10 +4,12 @@
 	 * the reply page in place of the thread, and the confirm page under its
 	 * refusal.
 	 *
-	 * A link stops working when its request's token is replaced: every request's
-	 * once, on the deploy that carried migration 0055, and every request's again
-	 * at each restore. The requester gives the address they made the request
-	 * with, and the server mails the current link to the request's address
+	 * A link stops working when it is ended: every request's once, on the deploys
+	 * that carried migrations 0055 and 0070, every request's again at each
+	 * restore and at a start after an older image has run (card 2870), and a
+	 * single link once 20 newer mails, or 3 newer asks, have gone out for its
+	 * request. The requester gives the address they made the request
+	 * with, and the server mails a new link to the request's address
 	 * (`POST /api/requests/[id]/link`): the one given, or for a request made
 	 * signed in the account's email as it is now (card 2171), which is why the
 	 * page says so. Its answer is one sentence, the same whether or not anything

@@ -668,6 +668,18 @@ export const EXPECTED_SCHEMA: readonly string[] = Object.freeze([
 	].join('\n'),
 	"CREATE INDEX `idx_report_schedules_user_id` ON `report_schedules` (`user_id`);",
 	[
+		"CREATE TABLE `request_links` (",
+		"\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,",
+		"\t`token_hash` text NOT NULL,",
+		"\t`request_id` integer NOT NULL,",
+		"\t`source` text NOT NULL,",
+		"\t`created_at` text DEFAULT (datetime('now')) NOT NULL,",
+		"\tFOREIGN KEY (`request_id`) REFERENCES `task_requests`(`id`) ON UPDATE no action ON DELETE cascade",
+		");"
+	].join('\n'),
+	"CREATE UNIQUE INDEX `request_links_token_hash_unique` ON `request_links` (`token_hash`);",
+	"CREATE INDEX `idx_request_links_request_id` ON `request_links` (`request_id`);",
+	[
 		"CREATE TABLE `request_messages` (",
 		"\t`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,",
 		"\t`request_id` integer NOT NULL,",

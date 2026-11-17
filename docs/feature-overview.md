@@ -1,11 +1,12 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.84
+version: 1.85
 status: As-Built
 date: 2026-11-17
 tags:
   - card-2751
+  - card-2870
   - decision-reminders
   - features
   - overview
@@ -515,7 +516,7 @@ flowchart LR
 
 - **Public request form** — anyone with the link can submit. A request from someone without an account is passed to the team once they confirm it from an email sent to the address they gave
 - **Choosing a board is optional** — someone without an account sends a request to a person or a team and is not shown any board; whoever accepts the request chooses the board and column. A signed-in requester may pick one of the boards they can open, or leave it to the team
-- **Private conversation link** — each request has its own secret link, emailed to the requester; it is the only way in without an account
+- **Private conversation link** — every email to the requester carries a secret link of its own to their request, and earlier links keep working, so an open conversation is not cut off when the team answers; it is the only way in without an account. The server keeps only a one-way fingerprint of each link, never the link itself. A link stops working after 20 newer emails (one asked for, after three newer asks), after a restore, or once on the update that brought this in; the page it opens mails a new one to the address the request was made with
 - **Conversation thread** — back-and-forth messaging between requester and team. A message is at most 5,000 characters, and the box stops there. A message that is not sent says why, under the box in the inbox and above it on the requester's reply page, and keeps what was typed to send again; a conversation that could not be read says so where its messages would be, on either page
 - **Saying what went wrong in the inbox** — an Accept or a Reject that is refused (a column not on the board, a request someone else has already answered) says why in its own window, which stays open with what was chosen and typed, and a request someone else has already answered leaves the Pending list; an inbox or a conversation that could not be read says so where it would be, in place of "No requests" or "No messages yet"
 - **Progress emails** — requesters get email updates as work progresses. A requester with an account can switch them off under **Request Progress** on My Account

@@ -6,7 +6,7 @@ import type { SessionUser } from '$lib/server/auth';
 import { canViewBoard } from '$lib/server/board-access';
 import { requireAdmin, requireColumn, requireUser } from '$lib/server/route-guards';
 import { writeAs } from '$lib/server/write-as';
-import { awaitsConfirmation, canHandleRequest, canReadRequest, linkOpens, requesterAddress, requireRequest } from '$lib/server/request-access';
+import { awaitsConfirmation, canHandleRequest, canReadRequest, linkCheck, requesterAddress, requireRequest } from '$lib/server/request-access';
 import { publicRequest } from '$lib/server/request-tokens';
 import { notifyUserAssigned, notifyRequesterAccepted, notifyRequesterRejected } from '$lib/server/notifications';
 import { announceCardCreated, recordCardCreated } from '$lib/server/card-create';
@@ -20,8 +20,8 @@ import type { RequestHandler } from './$types';
  * GET — Fetch a single request.
  *
  * For a signed-in user the request is addressed to (or who raised it), or for
- * whoever holds the request's own token — the one in the link emailed to the
- * requester. The requester's email address used to be accepted in its place,
+ * whoever holds a live token of the request's — one in a link emailed to the
+ * requester (card 2870). The requester's email address used to be accepted in its place,
  * and an address is not a secret.
  *
  * A caller with no session and without the link is answered 404, whether the
@@ -41,7 +41,9 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
 	// Being signed in is not enough on its own — it used to be, so any account
 	// could read any request.
 	const isAuthed = (row: TaskRequest) => !!locals.user && canReadRequest(locals.user, row);
-	const request = requireRequest(locals.user, id, (row) => isAuthed(row) || linkOpens(row, token), 'Access denied');
+	// The link's token resolved before the request is read (card 2870, S2).
+	const opens = linkCheck(token);
+	const request = requireRequest(locals.user, id, (row) => isAuthed(row) || opens(row), 'Access denied');
 
 	return json({
 		id: request.id,

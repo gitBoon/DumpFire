@@ -230,8 +230,6 @@ export type Reconciliation = {
 export type Backfill = {
 	/** Cards given a `first_completed_at`. */
 	firstCompletedAt: number;
-	/** Task requests given an `access_token`. */
-	accessTokens: number;
 	/** Cards taken out of a milestone that belongs to another board. */
 	releasedFromMilestones: number;
 	/**
@@ -2535,15 +2533,16 @@ export const OPTIONS_ADDED = [
 ].join('\n');
 
 /**
- * Fill in the two values that 0050 and 0051 filled in once, and take out of
- * their milestones the cards 0057 took out once.
+ * Fill in the value that 0050 filled in once, and take out of their
+ * milestones the cards 0057 took out once.
  *
- * Those files run once per database, but rows without the values can arrive
+ * Those files run once per database, but rows without the value can arrive
  * afterwards: a restore copies an older backup's rows into the current tables,
- * and its cards have no `first_completed_at` and its requests no
- * `access_token`. So the same two statements run on every start and after
- * every restore. Each touches only rows that lack the value, so a second run
- * changes nothing.
+ * and its cards have no `first_completed_at`. So the same statement runs on
+ * every start and after every restore. It touches only rows that lack the
+ * value, so a second run changes nothing. The request token 0051 filled in is
+ * no longer filled (card 2870): a request's links are kept only as hashes, in
+ * `request_links`, and `access_token` stays NULL.
  *
  * The same holds for 0057 (card 2179). Once a move to another board takes a
  * card out of its board's milestone (card 2155), and a milestone is given to
@@ -2589,7 +2588,6 @@ export function runBackfills(database: Database.Database = sqlite): Backfill {
 	const fill = database.transaction(() => {
 		const result: Backfill = {
 			firstCompletedAt: 0,
-			accessTokens: 0,
 			releasedFromMilestones: 0,
 			released: [],
 			unfiledBoards: 0,
@@ -2622,13 +2620,6 @@ export function runBackfills(database: Database.Database = sqlite): Backfill {
 				.prepare(
 					'UPDATE cards SET first_completed_at = completed_at WHERE first_completed_at IS NULL AND completed_at IS NOT NULL'
 				)
-				.run().changes;
-		}
-
-		if (hasColumn(database, 'task_requests', 'access_token')) {
-			// Same form as newRequestToken() in request-tokens.ts: 32 random bytes, hex.
-			result.accessTokens = database
-				.prepare('UPDATE task_requests SET access_token = lower(hex(randomblob(32))) WHERE access_token IS NULL')
 				.run().changes;
 		}
 
@@ -2990,7 +2981,6 @@ export function runMigrations(options: MigrationOptions = {}): MigrationReport {
 
 	let backfilled: Backfill = {
 		firstCompletedAt: 0,
-		accessTokens: 0,
 		releasedFromMilestones: 0,
 		released: [],
 		unfiledBoards: 0,
@@ -3009,15 +2999,13 @@ export function runMigrations(options: MigrationOptions = {}): MigrationReport {
 		halt({
 			stage:
 				"backfilling each delivery board's Options column (columns.role), cards.first_completed_at, " +
-				'task_requests.access_token, cards.milestone_id, boards.category_id, cards.committed_at and cards.discarded_at',
+				'cards.milestone_id, boards.category_id, cards.committed_at and cards.discarded_at',
 			reason: messageOf(err),
 			cause: err
 		});
 	}
-	if (backfilled.firstCompletedAt > 0 || backfilled.accessTokens > 0) {
-		log.warn(
-			`Backfilled first_completed_at on ${backfilled.firstCompletedAt} card(s) and access_token on ${backfilled.accessTokens} request(s)`
-		);
+	if (backfilled.firstCompletedAt > 0) {
+		log.warn(`Backfilled first_completed_at on ${backfilled.firstCompletedAt} card(s)`);
 	}
 	// After a restore of an older backup, or a return from an older image, this
 	// can find cards. At any other start it finds none, and a count means some

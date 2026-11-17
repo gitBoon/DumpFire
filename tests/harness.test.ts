@@ -207,6 +207,8 @@ const TEST_FILES = [
 	'report-recipients.test.ts',
 	'report-schedules.test.ts',
 	'request-body.test.ts',
+	// Card 2870: requester links kept as hashes, one per mail or ask, and the sweep after an older image.
+	'request-links.test.ts',
 	'schedulers.test.ts',
 	// Card 2850: one Secure rule for every cookie, and the start-up warning for an http ORIGIN behind https.
 	'secure-cookies.test.ts',

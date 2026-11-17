@@ -67,9 +67,12 @@ import { emit } from './events';
 import { ACTIONS, logActivity, type ActivitySource } from './logActivity';
 import { logCardLeftGoal } from './milestones';
 import { notifyCardMoved, notifyRequesterProgress } from './notifications';
+import { createLogger } from './logger';
 import { announceUnblocked, recordUnblocked, withholdNoticesNaming, withholdUnblockNotices, type UnblockedWork } from './planning';
 import { moveTooDeep, tooDeepToMove, wouldLoopAny } from './sub-boards';
 import type { SessionUser } from './auth';
+
+const notifyLog = createLogger('NOTIFY');
 
 /**
  * What one drag and drop (`PUT /api/cards/reorder`) may ask for (card 2209).
@@ -689,16 +692,22 @@ function sendAnnouncements(
 				baseUrl
 			);
 		}
-		notifyRequesterProgress({
-			cardId: move.card.id,
-			action: move.completed ? 'completed' : 'moved',
-			summary: route,
-			actorName: userName,
-			baseUrl,
-			fromColumn: move.fromColumn.title,
-			toColumn: move.toColumn.title,
-			actorUserId: actor.id
-		});
+		// After the commit, the link in a transaction of its own: a failure there
+		// is logged, and the rest of the announcements still go (card 2870, CS4).
+		try {
+			notifyRequesterProgress({
+				cardId: move.card.id,
+				action: move.completed ? 'completed' : 'moved',
+				summary: route,
+				actorName: userName,
+				baseUrl,
+				fromColumn: move.fromColumn.title,
+				toColumn: move.toColumn.title,
+				actorUserId: actor.id
+			});
+		} catch (err) {
+			notifyLog.error(`The progress mail to the requester of card ${move.card.id} could not be made`, err);
+		}
 
 		// Anything that was waiting on this card may now be startable.
 		if (move.completed) announceUnblocked(unblockedBy(move.card.id), actor, baseUrl);

@@ -189,6 +189,10 @@ function everything(): Everything {
 		.returning()
 		.get();
 	db.insert(requestMessages).values({ requestId: request.id, senderName: 'member', message: 'Hello' }).run();
+	// A requester's link, kept as its token's hash (card 2870, migration 0070).
+	sqlite
+		.prepare("INSERT INTO request_links (token_hash, request_id, source) VALUES (?, ?, 'mail')")
+		.run('d'.repeat(64), request.id);
 
 	// A decision record, a row in each of its twelve tables (card 2673, migration 0061), and a Product Owner.
 	const at = '2026-11-03 09:00:00';

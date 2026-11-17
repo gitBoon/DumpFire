@@ -855,11 +855,14 @@ export const taskRequests = sqliteTable('task_requests', {
 	 */
 	status: text('status').notNull().default('pending'),
 	/**
-	 * The secret in the requester's link. Whoever holds it can read the thread
-	 * and reply as the requester, so it never leaves the server except inside
-	 * that link — see `publicRequest` in request-tokens.ts.
+	 * Retired by card 2870: always NULL from this image. It held the secret in
+	 * the requester's link in plain; the links are now in `request_links`,
+	 * each kept only as the SHA-256 of its token. The column is kept so that
+	 * an older image still reads the table, and whatever such an image writes
+	 * into it is set back to NULL at the next start (`endPlainRequestLinks` in
+	 * startup-checks.ts). Named so that no use of the old property type-checks.
 	 */
-	accessToken: text('access_token'),
+	retiredAccessToken: text('access_token'),
 	businessValue: text('business_value').default(''),
 	resolvedBy: integer('resolved_by').references(() => users.id, { onDelete: 'set null' }),
 	resolvedCardId: integer('resolved_card_id').references(() => cards.id, { onDelete: 'set null' }),
@@ -870,8 +873,8 @@ export const taskRequests = sqliteTable('task_requests', {
 		.default(sql`(datetime('now'))`),
 	resolvedAt: text('resolved_at')
 }, (table) => [
-	// No two requests share a link. Requests with no token yet are not compared.
-	uniqueIndex('task_requests_access_token_idx').on(table.accessToken),
+	// Kept with the retired column (card 2870): it takes any number of NULLs.
+	uniqueIndex('task_requests_access_token_idx').on(table.retiredAccessToken),
 	index('idx_task_requests_requester_user_id').on(table.requesterUserId),
 	index('idx_task_requests_resolved_by').on(table.resolvedBy),
 	index('idx_task_requests_resolved_card_id').on(table.resolvedCardId),
@@ -880,6 +883,28 @@ export const taskRequests = sqliteTable('task_requests', {
 
 export type TaskRequest = typeof taskRequests.$inferSelect;
 export type NewTaskRequest = typeof taskRequests.$inferInsert;
+
+// ─── Request Links ───────────────────────────────────────────────────────────
+
+/**
+ * A requester's links (card 2870): one per mail that carried one, and one per
+ * new link asked for, each kept only as the SHA-256 of its token, in hex. The
+ * token is only in the mail. The newest REQUEST_MAIL_LINKS_KEPT of `mail` and
+ * REQUEST_ASK_LINKS_KEPT of `ask` are kept per request (request-tokens.ts).
+ */
+export const requestLinks = sqliteTable('request_links', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	tokenHash: text('token_hash').notNull().unique(),
+	requestId: integer('request_id')
+		.notNull()
+		.references(() => taskRequests.id, { onDelete: 'cascade' }),
+	source: text('source').notNull(), // 'mail' | 'ask'
+	createdAt: text('created_at')
+		.notNull()
+		.default(sql`(datetime('now'))`)
+}, (table) => [
+	index('idx_request_links_request_id').on(table.requestId)
+]);
 
 // ─── Request Messages (conversation thread) ─────────────────────────────────
 

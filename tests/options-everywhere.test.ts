@@ -61,7 +61,6 @@ const DEFAULTS = [
 /** Every count of the start-up step at 0: what a second run returns. */
 const NOTHING_FILLED: Backfill = {
 	firstCompletedAt: 0,
-	accessTokens: 0,
 	releasedFromMilestones: 0,
 	released: [],
 	unfiledBoards: 0,
@@ -628,7 +627,7 @@ describe('the start-up step gives every delivery board its one Options column (r
 
 			expect(() => runMigrations({ database, migrationsDir: join(process.cwd(), 'drizzle') })).toThrow(
 				"Migrations halted (backfilling each delivery board's Options column (columns.role), cards.first_completed_at, " +
-					'task_requests.access_token, cards.milestone_id, boards.category_id, cards.committed_at and cards.discarded_at): titles are frozen.'
+					'cards.milestone_id, boards.category_id, cards.committed_at and cards.discarded_at): titles are frozen.'
 			);
 			// The whole step was rolled back: the column is as it was.
 			expect(database.prepare('SELECT title, role FROM columns WHERE id = 1').get()).toEqual({ title: 'Ideas', role: 'options' });

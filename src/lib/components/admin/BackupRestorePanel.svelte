@@ -132,7 +132,7 @@
 		// Rows the import brought back can name files that a delete since the
 		// backup had moved to the uploads trash. The import puts those back.
 		const putBack = typeof result.attachmentsPutBack === 'number' ? result.attachmentsPutBack : 0;
-		// Every request is given a new link by an import (card 2158), so a link
+		// An import ends every request's links (cards 2158 and 2870), so a link
 		// mailed before it no longer works: said beside the files put back.
 		const links = typeof result.requestLinksReplaced === 'number' ? result.requestLinksReplaced : 0;
 		// The API keys of a backup made before migration 0069 given this

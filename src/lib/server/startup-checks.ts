@@ -53,14 +53,17 @@
  * `MFA_KEY_FILE_PREVIOUS` set it changes the key (card 2773): every factor of
  * the old key is sealed again under the new one before the server listens.
  *
- * And four things that are changed at start, beside them: `maskLiveLog`,
+ * And five things that are changed at start, beside them: `maskLiveLog`,
  * which masks the secrets an older gate wrote into the system log;
  * `removeSettingsOfNonAdministrators`, which removes the mail settings, App
  * URL and backup destinations set by someone who is no longer an
  * administrator (card 2406); `endPlainInvites`, which ends the unused
  * invites an older image kept in plain and replaces the token of the used ones
- * (card 2849); and `endPlainSessions`, which ends the sessions an older image
- * kept in plain (card 2775). And one thing said once, at the first start
+ * (card 2849); `endPlainSessions`, which ends the sessions an older image
+ * kept in plain (card 2775); and `endPlainRequestLinks`, which, when an older
+ * image has written requester links in plain, empties them and ends every
+ * link (card 2870), and which stops the server, alone of the five, when it
+ * can neither look nor end every link. And one thing said once, at the first start
  * after card 2751: `announceReportSchedules`, which tells each owner of a
  * report schedule that is on which of theirs are running.
  */
@@ -81,6 +84,7 @@ import { createLogger, isLogged, printable } from './logger';
 import { maskSecretsInLog } from './secret-paths';
 import { NOT_IN_HASH_FORM, REPLACE_PLAIN_USED_INVITES } from './invites';
 import { SESSION_NOT_IN_HASH_FORM, httpsOnlyCookie } from './auth';
+import { END_PLAIN_REQUEST_LINKS } from './request-tokens';
 import { signInsOneAtATime } from './known-browsers';
 import { cspMode } from './gate-answers';
 import { boardsInLoops } from './sub-boards';
@@ -103,6 +107,7 @@ import { readMfaKeyCheck } from './mfa-store';
 const log = createLogger('STARTUP');
 const authLog = createLogger('AUTH');
 const reportsLog = createLogger('REPORTS');
+const requestsLog = createLogger('REQUESTS');
 
 /**
  * One CRITICAL line when there are user accounts and none of them is the
@@ -879,6 +884,75 @@ export function endPlainSessions(): number | null {
 			authLog.warn(
 				`Sessions held in plain by an older image could not be ended: ${(err as Error)?.message ?? err}. ` +
 					'They do not sign anyone in on this image, and would on the older one.'
+			);
+		} catch {
+			// Nothing more to be done about it.
+		}
+		return null;
+	}
+}
+
+/**
+ * End every requester link when an older image has run (card 2870, decision
+ * 11), and return how many rows that changed, or null when it could not be
+ * done. Called once, from hooks.server.ts, after the migrations.
+ *
+ * From card 2870 a request's links are kept only as hashes, in
+ * `request_links`, and the retired `task_requests.access_token` is always
+ * NULL. An image from before it, started on this database after going back,
+ * gives every request a new plain token there at its start: no link opens
+ * with it here, but it is readable, and it would work again if that older
+ * image were started again. So any plain value is set back to NULL. And while
+ * the older image ran, `request_links` was outside its rules: its restore or
+ * its reset may have replaced the requests and left the table as it was, so
+ * a kept link could open somebody else's thread. Finding any plain value, it
+ * therefore deletes every link too (fail closed); each requester asks for a
+ * new one from the page their link opens. At the release this finds nothing:
+ * 0070 has run. A start after no older image changes nothing.
+ *
+ * Both in one transaction. One WARN line under REQUESTS when it changed any
+ * row; nothing when it did not, so a second start says nothing.
+ *
+ * When that fails, for any reason, every link is ended on its own (`DELETE
+ * FROM request_links`, fail closed; the code review's CS3), since whether an
+ * older image ran is then not known: it returns null, and one WARN line says
+ * both, and the server starts. When that fails too, it throws, before the
+ * server listens, as `ensureFormSecret` does: the server refuses to start
+ * rather than run with links that may open other people's threads.
+ */
+export function endPlainRequestLinks(): number | null {
+	try {
+		const [plain, ended] = sqlite.transaction(() => {
+			const plain = sqlite.prepare(END_PLAIN_REQUEST_LINKS).run().changes;
+			// An older image has run: end every link, kept or not (decision 11).
+			const ended = plain > 0 ? sqlite.prepare('DELETE FROM request_links').run().changes : 0;
+			return [plain, ended];
+		})();
+		if (plain > 0) {
+			requestsLog.warn(
+				`Ended the links of ${plain} request(s) held in plain by an older image, and ${ended} link(s) kept as hashes: ` +
+					'no request link mailed before this start works. Each requester can have a new one sent from the page a link opens.'
+			);
+		}
+		return plain + ended;
+	} catch (err) {
+		const why = (err as Error)?.message ?? err;
+		let ended: number;
+		try {
+			ended = sqlite.prepare('DELETE FROM request_links').run().changes;
+		} catch (again) {
+			throw new Error(
+				`Request links held in plain by an older image could not be looked for (${why}), and the links kept as ` +
+					`hashes could not be ended either (${(again as Error)?.message ?? again}). The server does not start ` +
+					"while a kept link may open somebody else's request."
+			);
+		}
+		try {
+			requestsLog.warn(
+				`Request links held in plain by an older image could not be looked for: ${why}. Every link kept as a ` +
+					`hash was ended instead (${ended}): no request link mailed before this start works, and each ` +
+					'requester can have a new one sent from the page a link opens. Any plain value is still in ' +
+					'task_requests.access_token, where it opens nothing on this image, and would on the older one.'
 			);
 		} catch {
 			// Nothing more to be done about it.

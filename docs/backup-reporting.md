@@ -1,11 +1,13 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.42
+version: 1.43
 status: As-Built
 date: 2026-11-17
 tags:
   - card-2751
+  - card-2870
+  - request-links
   - step-up
   - api-key-deadline
   - migration-0069
@@ -21,7 +23,7 @@ tags:
   - attachments
   - image-retention
   - invites
-description: "Scheduled backup system with multi-destination support, what a backup holds (no attachment files; invites only used ones, as hashes, and an older backup's plain tokens replaced on restore), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery, report schedules and report mail behind the password and a code (card 2751)"
+description: "Scheduled backup system with multi-destination support, what a backup holds (no attachment files; invites only used ones, as hashes, and an older backup's plain tokens replaced on restore; no requester link, and none brought in by a restore, card 2870), image retention for cards closed long ago (IMAGE_RETENTION_DAYS), and PDF report generation engine with email delivery, report schedules and report mail behind the password and a code (card 2751)"
 ---
 
 # Backup & Reporting System
@@ -73,9 +75,10 @@ so screenshots do not grow a backup.
 
 Nor does the file hold what opens something for whoever reads it: no session, no invite
 that has not been used (and the used ones only as hashes, card 2849), no task request's link and not the key the public request form
-signs with (card 2158). Every request is in it, with its link empty, and a restore gives
-every request a new link, so a link mailed before a restore stops working and its
-requester asks for the current one from the page it opens. See
+signs with (cards 2158 and 2870). Every request is in it with no link: the links are kept
+only as hashes, in `request_links`, and the file holds none of them. A restore brings in no
+link, so a link mailed before a restore stops working and its requester asks for a new one
+from the page it opens, or gets one in the next mail. See
 [What a Backup Holds](authentication-security.md#what-a-backup-holds-and-what-a-restore-brings-in).
 
 Nor does it hold a secret (card 2169): not the mail password, not a destination's
@@ -511,6 +514,7 @@ sequenceDiagram
     Copy->>Copy: DELETE FROM invite_tokens WHERE used = 0
     Copy->>Copy: DELETE FROM settings WHERE key = 'known_browser_secret'
     Copy->>Copy: UPDATE task_requests SET access_token = NULL
+    Copy->>Copy: DELETE FROM request_links (card 2870)
     Copy->>Copy: DELETE FROM settings WHERE key = 'request_form_secret'
     Copy->>Copy: clearSecrets - the mail password deleted, destination secrets emptied
     Copy->>Copy: signed webhooks emptied, switched off and listed in webhook_secrets_left_out
@@ -572,10 +576,15 @@ flowchart TD
   and an account's password hash, which a backup does hold, could make a cookie that lets a
   browser past sign-in's throttling for that account. So a restore forgets every remembered
   browser, and the restored server makes a new key.
-- **No request's link and not the form's key** (card 2158): every `task_requests.access_token`
-  is `NULL` in the file, and the `request_form_secret` row of `settings` is gone. A restore
-  gives every request a new link inside its transaction, whatever the backup's age, and
-  never brings the form's key in; the import's answer says how many links were replaced.
+- **No request's link and not the form's key** (cards 2158 and 2870): every `request_links`
+  row is deleted from the copy, the retired `task_requests.access_token` stays `NULL` (as it is
+  in the live file), and the `request_form_secret` row of `settings` is gone. A restore brings
+  in no `request_links` row from a backup of any age and reads every `access_token` as `NULL`
+  (`rowsToRestore()`), so a backup made before card 2158, which holds each token as it was
+  mailed, puts none in the live file; the clear empties the live `request_links`, so every link
+  is ended. It never brings the form's key in. The import's answer says how many requests'
+  links were ended (`requestLinksReplaced`, the number of requests restored), in its usual
+  words, "N request link(s) replaced: …".
   The running database is not touched by a backup. Deleting the rows alone is not enough, because the pages they
   were on stay in the file until it is written again; hence the second `VACUUM INTO`.
 - **No secret** (card 2169): `clearSecrets()` in `src/lib/server/backup-secrets.ts` deletes the

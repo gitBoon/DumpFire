@@ -3,9 +3,9 @@ import { db } from '$lib/server/db';
 import { requestMessages, type TaskRequest } from '$lib/server/db/schema';
 import { eq, asc } from 'drizzle-orm';
 import { notifyRequesterMessage, notifyAdminMessage } from '$lib/server/notifications';
-import { linkBaseUrl } from '$lib/server/email';
-import { canHandleRequest, canReadRequest, linkOpens, requesterAddress, requireRequest } from '$lib/server/request-access';
-import { requestReplyUrl } from '$lib/server/request-tokens';
+import { isSmtpConfigured, linkBaseUrl, smtpPasswordMissing } from '$lib/server/email';
+import { canHandleRequest, canReadRequest, linkCheck, requesterAddress, requireRequest } from '$lib/server/request-access';
+import { issueRequestLink, requestReplyUrl } from '$lib/server/request-tokens';
 import { checkRateLimit, resetRateLimit } from '$lib/server/rate-limit';
 import { createLogger } from '$lib/server/logger';
 import { pathId, readBody, readChoice, readText } from '$lib/server/request-body';
@@ -42,11 +42,13 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
 	const token = url.searchParams.get('token');
 
 	// Access control: a signed-in user the request is addressed to (or who
-	// raised it), OR the request's own token. Being signed in is not enough.
+	// raised it), OR a live token of the request's. Being signed in is not
+	// enough. The token is resolved before the request is read (card 2870, S2).
+	const opens = linkCheck(token);
 	requireRequest(
 		locals.user,
 		requestId,
-		(row) => (!!locals.user && canReadRequest(locals.user, row)) || linkOpens(row, token),
+		(row) => (!!locals.user && canReadRequest(locals.user, row)) || opens(row),
 		'Access denied'
 	);
 
@@ -89,15 +91,17 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 	// (card 2253): null for a requester with no session, and a 401 for a
 	// caller whose session ended while the body arrived, who is never taken
 	// for anonymous. The check and the save had no transaction around them.
-	const { taskReq, sType, sName, message, newMsg } = writeAs(locals, (caller) => {
+	const { taskReq, sType, sName, message, newMsg, requester, replyUrl } = writeAs(locals, (caller) => {
 		let taskReq: TaskRequest;
 		let sender: SessionUser | null = null;
 		if (senderType === 'requester') {
 			// Their email address used to be enough, so anyone who knew it could
 			// post as them. A token that is not text is no token: it was a 500. The
 			// link of a lapsed request opens nothing (card 2243).
+			// The token is resolved before the request is read (card 2870, S2).
 			const token = typeof body.token === 'string' ? body.token : null;
-			taskReq = requireRequest(caller, requestId, (row) => linkOpens(row, token), 'Invalid or missing link token');
+			const opens = linkCheck(token);
+			taskReq = requireRequest(caller, requestId, opens, 'Invalid or missing link token');
 		} else {
 			// Admin/user reply — must be signed in, and the request must be theirs
 			// to answer.
@@ -159,7 +163,23 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 			senderName: sName,
 			message
 		}).returning().get();
-		return { taskReq, sType, sName, message, newMsg };
+
+		// The team's reply carries a link of its own to the requester (card
+		// 2870, decision 1), issued here, with the reply, and only when the mail
+		// is about to be handed on: an address to send to, mail set up with its
+		// password (S5), and an address to make the link from. Earlier links go
+		// on working. The requester's address as it is now: the account's, for a
+		// request made signed in (card 2171).
+		let requester: string | null = null;
+		let replyUrl: string | null = null;
+		if (sType === 'admin') {
+			requester = requesterAddress(taskReq);
+			const baseUrl = linkBaseUrl(url);
+			if (requester !== null && baseUrl !== null && isSmtpConfigured() && !smtpPasswordMissing()) {
+				replyUrl = requestReplyUrl(baseUrl, requestId, issueRequestLink(requestId, 'mail'));
+			}
+		}
+		return { taskReq, sType, sName, message, newMsg, requester, replyUrl };
 	});
 
 	// The team has answered: the requester's count starts again, so a
@@ -168,19 +188,15 @@ export const POST: RequestHandler = async ({ params, request, locals, url }) => 
 
 	const baseUrl = linkBaseUrl(url);
 
-	// Send email notifications. The requester's address as it is now: the
-	// account's, for a request made signed in (card 2171).
-	const requester = sType === 'admin' ? requesterAddress(taskReq) : null;
+	// Send email notifications.
 	if (sType === 'admin' && requester !== null) {
-		// Admin replied → email the requester with a reply link
-		notifyRequesterMessage(
-			requester,
-			taskReq.title,
-			sName,
-			message,
-			// No address to make the link from, no mail: the message is saved.
-			baseUrl === null ? null : requestReplyUrl(baseUrl, taskReq)
-		);
+		// Admin replied → email the requester with a reply link. No address to
+		// make the link from, no mail, with the WARN that says so: the message
+		// is saved. With the mail password missing every mail would fail, and
+		// no link was issued for one (S5).
+		if (replyUrl !== null || baseUrl === null) {
+			notifyRequesterMessage(requester, taskReq.title, sName, message, replyUrl);
+		}
 	} else if (sType === 'requester') {
 		// Requester replied → notify inbox targets
 		notifyAdminMessage(

@@ -1,11 +1,14 @@
 ---
 title: "DumpFire Data Model"
 category: Architecture
-version: 1.81
+version: 1.82
 status: As-Built
 date: 2026-11-17
 tags:
   - card-2751
+  - card-2870
+  - migration-0070
+  - request-links
   - database
   - schema
   - drizzle
@@ -44,7 +47,7 @@ tags:
   - api-key-deadline
   - invites
   - token-hashing
-description: "Complete database schema documentation with ER diagram, table descriptions, relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), invite tokens kept only as SHA-256 hashes (migration 0068, card 2849: every invite held in plain ended once), session codes kept only as SHA-256 hashes in the existing sessions.id column with no migration (card 2775), the settings row that says the report schedules running at card 2751's release were announced (no migration), and how migrations and schema reconciliation bring every database to the model"
+description: "Complete database schema documentation with ER diagram, table descriptions, relationship details, what each delete removes, leaves and tells, how a card is completed however it arrives in a Complete column, the Options column and the commitment point (migration 0060), the decision records model and a board's Product Owner (migration 0061), a session's count of wrong current passwords (migration 0062), one closing-date reminder per participant per round (migration 0063), the append-only record of every change to the people directory (migration 0064), the storage of two-step sign-in (migration 0065: second factors sealed under a key outside the database, recovery codes as account-bound hashes, pending sign-ins and enrolment links, and eleven users columns), two-step sign-in turned on (migrations 0066 and 0067: users.mfa_password_enrol, sessions.two_step, the challenge's enrol_grant and enrolment_link_hash, the two_step_released_at setting, and every session and the remembered-browser secret ended), invite tokens kept only as SHA-256 hashes (migration 0068, card 2849: every invite held in plain ended once), session codes kept only as SHA-256 hashes in the existing sessions.id column with no migration (card 2775), the settings row that says the report schedules running at card 2751's release were announced (no migration), a requester's links kept only as SHA-256 hashes in request_links (migration 0070, card 2870: task_requests.access_token retired and every plain link ended once), and how migrations and schema reconciliation bring every database to the model"
 ---
 
 # DumpFire Data Model
@@ -325,7 +328,7 @@ erDiagram
         text description
         text priority
         text status
-        text access_token
+        text access_token "retired (0070): always NULL"
         text business_value
         int resolved_by FK
         int resolved_card_id FK
@@ -340,6 +343,14 @@ erDiagram
         text sender_type
         text sender_name
         text message
+        text created_at
+    }
+
+    request_links {
+        int id PK
+        text token_hash UK
+        int request_id FK
+        text source
         text created_at
     }
 
@@ -449,6 +460,7 @@ erDiagram
     labels ||--o{ card_labels : "applied to"
 
     task_requests ||--o{ request_messages : "thread"
+    task_requests ||--o{ request_links : "links (0070)"
 ```
 
 ### Decision records (migration 0061)
@@ -1535,6 +1547,79 @@ erDiagram
         text value "ISO 8601 moment, presence alone read"
     }
 ```
+
+### Requester links (`request_links`, migration 0070)
+
+A requester without an account reaches their request through a link mailed to them. **Since
+card 2870 (2026-11-17) every such link has a row of its own in `request_links`, holding only the
+SHA-256 of its token as lower-case hex.** The token itself is only in the mail. Each mail that
+carries a link (the confirmation, a team reply, a progress mail) issues a new one, and so does a
+new link the requester asks for; earlier links go on working within the caps below. The code is
+`src/lib/server/request-tokens.ts`; why, and what happens at the release and on going back, is
+in [Requester Links Stored as Hashes](authentication-security.md#requester-links-stored-as-hashes-card-2870).
+
+```mermaid
+erDiagram
+    task_requests ||--o{ request_links : "newest 20 mail, newest 3 ask"
+    task_requests {
+        int id PK
+        text status "unverified, pending, accepted or rejected"
+        text access_token "retired by 0070: always NULL, unique index kept"
+    }
+    request_links {
+        int id PK "AUTOINCREMENT: the trim keeps the highest ids"
+        text token_hash UK "SHA-256 hex of the token mailed"
+        int request_id FK "NOT NULL, CASCADE, indexed"
+        text source "mail or ask"
+        text created_at "NOT NULL DEFAULT datetime('now')"
+    }
+```
+
+| Column | What is stored | How it is protected, and who writes it |
+|---|---|---|
+| `id` | `integer PRIMARY KEY AUTOINCREMENT` | Orders the links of a request: the trim keeps the highest ids |
+| `token_hash` | `sha256Hex(token)`: 64 lower-case hex characters, of the token exactly as given (32 random bytes as 64 hex characters), nothing trimmed or folded | `NOT NULL`, unique (`request_links_token_hash_unique`). Never the token. Written only by `issueRequestLink()` |
+| `request_id` | The request the link opens | `NOT NULL`, `ON DELETE CASCADE` to `task_requests`, `idx_request_links_request_id` (card 2106's rule): deleting a request, or the form's clean-up of an unconfirmed one, takes its links |
+| `source` | `mail` (the confirmation, a team reply, a progress mail) or `ask` (a new link asked for from the page a dead link opens) | `NOT NULL`. Each kind is trimmed only among its own |
+| `created_at` | When the link was issued | `datetime('now')`; one of the 79 `*_at` columns the timestamp normalisation knows (`tests/timestamps.test.ts`) |
+
+- **Issue** (`issueRequestLink(requestId, source)`): only inside an open transaction (it throws,
+  and writes nothing, outside one). One `INSERT` of the hash, then the trim, `DELETE FROM
+  request_links WHERE request_id = ? AND source = ? AND id NOT IN (SELECT id … ORDER BY id DESC
+  LIMIT ?)`, with `REQUEST_MAIL_LINKS_KEPT` (20) for `mail` and `REQUEST_ASK_LINKS_KEPT` (3) for
+  `ask`. So the 21st mail ends the oldest mail link, and no number of asks ends a mail link.
+  `issueRequestLinkNow()` is the same in `inTransaction`: a savepoint inside a transaction
+  `inTransaction` already opened (a comment's or a subtask tick's), a transaction of its own
+  otherwise (a move's or a card created complete's progress mail, sent from an effect after
+  the commit). The new-link ask uses `issueRequestLinkFor()` in `request-access.ts`, which, in
+  one transaction, reads the request again by its id and writes the link only if it is still
+  there, has not lapsed and still has the address the ask matched (card 2870's code review,
+  CS1); otherwise it writes nothing and nothing is mailed.
+- **Lookup** (`requestIdOfLink(token)`): one statement, prepared once, `SELECT request_id FROM
+  request_links WHERE token_hash = ?`, run before the request row is read and whatever the id
+  in the path. A token that is not a non-empty string is hashed as `''` and looked up all the
+  same, and opens nothing. The caller is let in only when the `request_id` found is the path's
+  id and the request has not lapsed (`linkCheck()` in `request-access.ts`).
+- **`task_requests.access_token` is retired.** The column and its unique index
+  (`task_requests_access_token_idx`, which takes any number of NULLs) stay so that an older image
+  still reads the table; the Drizzle property is `retiredAccessToken`, so no use of the old
+  `accessToken` type-checks. This image never writes it, and the backfill no longer fills it.
+- **The start-up sweep** (`endPlainRequestLinks()` in `src/lib/server/startup-checks.ts`, called
+  from `hooks.server.ts` after `endPlainInvites()` and before `announceReportSchedules()`). In one
+  transaction it sets every non-NULL `access_token` to NULL (`END_PLAIN_REQUEST_LINKS`) and, only
+  when that changed a row, deletes every `request_links` row: a plain value means an older image
+  has run, and while it ran `request_links` was outside its rules (fail closed). One `WARN` under
+  `REQUESTS` when it changed anything. When the transaction fails it runs `DELETE FROM
+  request_links` on its own, returns null and says so at `WARN`; when that fails too it throws,
+  and the server does not start (card 2870's code review, CS3).
+- **Backups and restores.** A backup's copy deletes every `request_links` row and keeps every
+  `access_token` NULL. A restore brings in no `request_links` row from any backup and reads every
+  `task_requests.access_token` as NULL (`rowsToRestore()`); the clear empties the live table, and
+  after the copy it is emptied again, not caught, so a restore that cannot empty it is rolled
+  back rather than committed with old links live (CS2). Every link is ended. **Reset
+  Everything** deletes the table with every other.
+- **Not a reconciled table**, and no published route reads it. `expected-schema.ts` holds the
+  table and its two indexes.
 
 ## Cascade Behaviour
 
@@ -2691,13 +2776,15 @@ of about zero.
   from someone without an account starts `unverified` and is hidden from the inbox until
   the requester confirms it; see
   [Authentication & Security](authentication-security.md#the-public-request-form).
-  `task_requests.access_token` is the secret in the requester's link (migration `0051`,
-  unique index) and is never returned by an API response. It is written when a request is
-  made and changes only in two ways (card 2158): migration `0055` replaced every request's
-  once, and every restore gives every request a new one inside its transaction, whatever
-  the backup holds. A backup holds it as `NULL` (the unique index takes any number of
-  NULLs); the start's backfill gives a token to any row without one, so a backup put in
-  place by hand, or restored by an older image, has them filled in. The key the request
+  The requester's links are in `request_links` (card 2870, migration `0070`): one row per
+  mail that carried a link and one per new link asked for, each only as the SHA-256 of its
+  token in hex, and the newest 20 `mail` and newest 3 `ask` links of each request kept (see
+  [Requester links](#requester-links-request_links-migration-0070)). The token is only in
+  the mail, and no API response returns a hash. `task_requests.access_token`, which held the
+  one token of each request in plain from migration `0051` (unique index), is retired and
+  always `NULL`: 0070 emptied it, the start's backfill no longer fills it, a backup holds it
+  as `NULL`, a restore reads it as `NULL`, and `endPlainRequestLinks()` empties whatever an
+  older image writes into it at the next start, ending every link with it. The key the request
   form signs its tokens with, the `request_form_secret` row of `settings`, is in no backup
   and never restored: a new one is made at first use.
 - **`task_requests.requester_email` is where a request made without an account is mailed.**
@@ -3164,7 +3251,7 @@ is in [Deployment](deployment.md#start-up-sequence). This section is how it work
 | 2. Convert a `card_dependencies` table still in its original shape | Yes, if the conversion fails |
 | 3. Apply each file not yet recorded, one transaction per file | Yes, on the first failure |
 | 4. Rebuild any of the six reconciled tables that is not in the model's shape | Only if foreign keys cannot be switched back on |
-| 5. Repeat the backfills (`runBackfills`, one transaction): first every delivery board's one Options column (card 2527: the duplicates demoted, the title Options, the far-left place, one added where there is none; see [The Options column](#the-options-column-milestone-22)), then `first_completed_at` of migration `0050` and `access_token` of `0051` for rows that lack them, `0057`'s statement, which takes a card out of a milestone that belongs to another board (card 2179), the statement that takes a board out of a grouping that no longer exists (card 2293), and the commitment point's three (milestone 22): `0060`'s commit of every card not upstream that has none (`COMMITTED_BEFORE_UPSTREAM`), the clear of the commitment of every upstream card (`UPSTREAM_NOT_COMMITTED`), and the clear of the discard mark of every card that is not archived (`LIVE_NOT_DISCARDED`) | Yes, if they fail: the halt's stage reads `backfilling each delivery board's Options column (columns.role), cards.first_completed_at, task_requests.access_token, cards.milestone_id, boards.category_id, cards.committed_at and cards.discarded_at` |
+| 5. Repeat the backfills (`runBackfills`, one transaction): first every delivery board's one Options column (card 2527: the duplicates demoted, the title Options, the far-left place, one added where there is none; see [The Options column](#the-options-column-milestone-22)), then `first_completed_at` of migration `0050` for rows that lack it (the `access_token` fill of `0051` was removed by card 2870: a request's links are kept only as hashes, and the column stays `NULL`), `0057`'s statement, which takes a card out of a milestone that belongs to another board (card 2179), the statement that takes a board out of a grouping that no longer exists (card 2293), and the commitment point's three (milestone 22): `0060`'s commit of every card not upstream that has none (`COMMITTED_BEFORE_UPSTREAM`), the clear of the commitment of every upstream card (`UPSTREAM_NOT_COMMITTED`), and the clear of the discard mark of every card that is not archived (`LIVE_NOT_DISCARDED`) | Yes, if they fail: the halt's stage reads `backfilling each delivery board's Options column (columns.role), cards.first_completed_at, cards.milestone_id, boards.category_id, cards.committed_at and cards.discarded_at` |
 | 6. Bring every timestamp to the stored form (`normaliseTimestamps`, card 2095), unless the database records a migration this build has no file for | No: a failure is rolled back, logged at `ERROR`, and tried again at the next start |
 | 7. Compare the whole database with the model and report differences | No |
 
@@ -3173,12 +3260,12 @@ tables rebuilt or left alone, sub-boards detached, rows backfilled, timestamps c
 left unread, differences found), which is what the tests assert on. A restore runs steps 5
 and 6 again on what it brought in.
 
-Step 5 logs at `WARN` when it fills anything: `Backfilled first_completed_at on <n> card(s)
-and access_token on <n> request(s)` for the first two, and, on a line of its own, `Took <n>
+Step 5 logs at `WARN` when it fills anything: `Backfilled first_completed_at on <n> card(s)`
+for `first_completed_at` (card 2870 took `and access_token on <n> request(s)` out of it), and, on a line of its own, `Took <n>
 card(s) out of a milestone that belongs to another board: card <id> left milestone <id>, …`
-for the third, naming the first 50 cards by id (`; and <n> more` after them): the backfill
+for 0057's statement, naming the first 50 cards by id (`; and <n> more` after them): the backfill
 reads them, by the statement's own `WHERE`, just before it runs, because once a card is out
-nothing records which goal held it. A restore names the same in its "Filled in". The third repeats
+nothing records which goal held it. A restore names the same in its "Filled in". That statement repeats
 0057 because a backup taken before that migration, restored, brings such cards back, and a
 restore runs no migration. It is safe at every start because no write can make such a card
 any more: putting a card in a milestone of another board is refused, a move to another
@@ -3188,7 +3275,7 @@ backup or a return from an older image, and a count at any other start means som
 still makes such a card. `migrate.ts` exports the statement as
 `CARDS_LEAVE_OTHER_BOARDS_MILESTONES`, and a test holds it to 0057's text.
 
-The fourth (card 2293) has no migration file of its own: it is the one-off as well as the
+The grouping statement (card 2293) has no migration file of its own: it is the one-off as well as the
 repair, since it runs at the first start of the image that brings it. It sets
 `boards.category_id` to NULL on every board whose grouping is not there
 (`BOARDS_LEAVE_DELETED_GROUPINGS`, which has no foreign key to lean on; see
@@ -3224,11 +3311,12 @@ count at any other start means some write does not.
 A migration file may hold a one-off change to stored data as well as structure, as 0053
 ends every session once, 0054 every invite not yet used, 0055 gives every task request
 a new link, 0068 ends every invite not yet used again and replaces every used invite's
-token, and 0069 gives every API key made before it a deadline. Such a statement comes after the structural ones, under a header
+token, 0069 gives every API key made before it a deadline, and 0070 ends every task request's
+link held in plain. Such a statement comes after the structural ones, under a header
 comment that says what it changes, why, that it runs once on each database and what people
 will see; it does nothing harmful on an empty table; and it is declared, by file and table,
 in `tests/rehearsal/one-offs.ts`, so that the rehearsal reports the loss as expected. One
-that rewrites values and keeps every row, as 0055 does, is declared with `keepsRows`: the
+that rewrites values and keeps every row, as 0055 and 0070 do, is declared with `keepsRows`: the
 rehearsal then excuses no loss from its table, and notes the change. A
 unit test fails on any file from 0053 on that loses rows undeclared: a `DELETE`, a
 `DROP TABLE`, a `REPLACE`, a statement that opens with `WITH`, an `INSERT OR REPLACE` or
@@ -3376,6 +3464,45 @@ erDiagram
     users {
         text security_banner_at "moved at most once an hour"
         text security_signal_last_at "0069 (CS1): every signal, compared and cleared by That was me"
+    }
+```
+
+**Migration 0070 keeps a requester's links only as hashes, and ends every link held in plain**
+(card 2870, built 2026-11-17). Until this release each task request had one token, kept in
+plain in `task_requests.access_token`; whoever could read the database file could read every
+request thread and post into it as the requester, and the links never expired.
+
+- **`0070_add_request_links.sql`**, four statements: `CREATE TABLE request_links` (`id`
+  autoincrement, `token_hash` text, `request_id` integer with its foreign key to `task_requests`
+  `ON DELETE cascade`, `source` text, `created_at` text default `datetime('now')`, every column
+  `NOT NULL`); `CREATE UNIQUE INDEX request_links_token_hash_unique`; `CREATE INDEX
+  idx_request_links_request_id`; and, last, `UPDATE task_requests SET access_token = NULL`. No
+  `IF NOT EXISTS`, as 0063. The table and indexes are exactly as `expected-schema.ts` prints them.
+- **Every link mailed before the deploy is ended, once**: the column is emptied and the new table
+  starts empty. Hashing in place would leave each token in the file's free pages and WAL, still
+  working, and SQLite has no SHA-256. Requests and their messages are untouched.
+- Declared in `tests/rehearsal/one-offs.ts` for `task_requests`, with `keepsRows` ("every
+  access_token ended"), so the rehearsal notes `task_requests: every access_token ended in its N
+  row(s) by 0070_add_request_links.sql, a one-off declared in tests/rehearsal/one-offs.ts` and
+  excuses no loss. A run that applies
+  0055 as well names 0055 in the note, the first declared file it applied.
+- It runs once. Plain tokens an older image writes after going back are emptied at the next start
+  by `endPlainRequestLinks()`, which then ends every link (see
+  [Requester links](#requester-links-request_links-migration-0070)). Going back needs no step,
+  but `request_links` must not be dropped: the older image's schema check reports it as a table
+  it does not know, and leaves it (see
+  [The Release That Keeps Requester Links as Hashes](deployment.md#the-release-that-keeps-requester-links-as-hashes-card-2870)).
+
+```mermaid
+erDiagram
+    task_requests ||--o{ request_links : "0070: starts empty"
+    task_requests {
+        text access_token "0070: every value set to NULL, column and unique index kept"
+    }
+    request_links {
+        text token_hash UK "SHA-256 hex"
+        int request_id FK "CASCADE"
+        text source "mail or ask"
     }
 ```
 

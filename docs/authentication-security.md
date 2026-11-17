@@ -1,11 +1,14 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.122
+version: 1.123
 status: As-Built
 date: 2026-11-17
 tags:
   - card-2751
+  - card-2870
+  - request-links
+  - migration-0070
   - report-schedules
   - card-2772
   - several-authenticators
@@ -78,7 +81,7 @@ tags:
   - migration-0068
   - current-code
   - card-2771
-description: "Deep-dive into DumpFire's authentication system, what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the forty actions that ask for the current password and a code from the authenticator app again (step-up; the code checked since card 2771: its form, the factor checked before the password is compared, one count for either part, the code spent with the count cleared in one transaction, the stolen-password signal on a right password with a wrong code, and the Account page's email, password and key forms on the same check), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, session codes kept only as SHA-256 hashes with the idle and total limits by role, the __Host- cookie and a role change ending the account's sessions (card 2775), the accepted risks and the ISO 27001 rows), and the Account page's two-step section (card 2772: up to three authenticators, every one tried at sign-in and at a step-up with the guessing bounds held by weighting, adding one through a step-up and the new phone's code with the pending add held in memory, removing one but never the last, new recovery codes, the warning at the top of the page cleared only as shown, and migration 0069's deadline for API keys made before two-step sign-in with Keep this key, closing risk R2), and report schedules and report mail behind the step-up (card 2751: a schedule made, given an address, turned on or widened and every report emailed by hand ask for the password and a code, every refusal that needs neither made first with the day's allowance read and nothing taken, every send of a report asked again, an INFO line naming the addresses and a notice to the owner, the one-off notice at the first start of the schedules already running, and the residual and risks it leaves)"
+description: "Deep-dive into DumpFire's authentication system, what an API key may and may never do with a decision record and how the credential refuses it (card 2682), the forty actions that ask for the current password and a code from the authenticator app again (step-up; the code checked since card 2771: its form, the factor checked before the password is compared, one count for either part, the code spent with the count cleared in one transaction, the stolen-password signal on a right password with a wrong code, and the Account page's email, password and key forms on the same check), the password's proof the decision delete and withdrawal ask for themselves (card 2726), card 2697's decision lifecycle access, limits and preview headers, the import's single-use confirmation and the export as a POST, the wrong-password count on the session row and the sign-out at the third, where a webhook may send and who may change one, the Content-Security-Policy every page carries and its report-only mode, what a colour from a request may be and how a stored one is drawn, what a description or comment may hold once it is Markdown on a page, session management, API key handling and what an API caller is told when refused, what an administrator's key may and may never change in the people directory and how the credential refuses it, board-level access control and what a list gives a caller of boards they cannot open, how passwords, sessions and invites change together and what setting a password ends, invite tokens kept only as SHA-256 BLOB digests with migration 0068 and the start-up sweep of invites an older image held in plain (card 2849), what an open live stream does when its session ends, how passwords are hashed and checked on worker threads, how many current passwords a signed-in browser may guess, how sign-in slows wrong passwords at one account, holds browsers it does not know to one at a time and remembers the ones that have signed in, what a failed sign-in writes to the log, how an address is counted, what is the superadmin's alone, what a backup holds, where a mailed link's address comes from, how large a request may be, how a write outside the v1 API is taken from DumpFire's own pages alone, how every write asks again at the write whether its key or session is still open and who its account is now, and how attachments are served, and what bounds a key's image upload (card 2754: access asked before the body and at the write, bytes checked by allow-list, metadata stripped, allowances per user, downloads always inert), and how second-factor secrets are stored (card 2768: AES-256-GCM under a key in a file outside the database, the key id and key check, recovery codes as account-bound hashes, the replay guard, and what backups, the export and a restore do with them), and a lost authenticator (card 2773: an administrator's reset of another account's two-step sign-in with its enrolment link given once and never mailed, invites refused for an account with a second factor, the host's reset command, changing the key at start with MFA_KEY_FILE_PREVIOUS, and the enrolment link's path masked in the log), and two-step sign-in (card 2769: a right password opens a ten-minute challenge, the code page and its counts, pauses and lock, recovery codes with no account-wide pause, setting up an authenticator from a password, a set-up link, an invite or the first-run set-up, the release-day rules with the 14-day password window and the release mail, the notices and stolen-password signals, sessions.two_step and the known-browser:2: MAC against older images, migrations 0066 and 0067, session codes kept only as SHA-256 hashes with the idle and total limits by role, the __Host- cookie and a role change ending the account's sessions (card 2775), the accepted risks and the ISO 27001 rows), and the Account page's two-step section (card 2772: up to three authenticators, every one tried at sign-in and at a step-up with the guessing bounds held by weighting, adding one through a step-up and the new phone's code with the pending add held in memory, removing one but never the last, new recovery codes, the warning at the top of the page cleared only as shown, and migration 0069's deadline for API keys made before two-step sign-in with Keep this key, closing risk R2), and report schedules and report mail behind the step-up (card 2751: a schedule made, given an address, turned on or widened and every report emailed by hand ask for the password and a code, every refusal that needs neither made first with the day's allowance read and nothing taken, every send of a report asked again, an INFO line naming the addresses and a notice to the owner, the one-off notice at the first start of the schedules already running, and the residual and risks it leaves), and a requester's links kept only as SHA-256 hashes, one per mail or ask, looked up before the request is read, with every plain link ended by migration 0070 and by a start after an older image (card 2870)"
 ---
 
 # Authentication & Security
@@ -1742,7 +1745,7 @@ gives every request a new one, so nothing repeats the one-off.
 
 | What | After the start that applies 0055 |
 |---|---|
-| Every request link mailed before the deploy (confirm, reply, progress) | Stops working. Its page says "This link no longer works" and asks for the address the request was made with, and the current link is mailed there (see [The Public Request Form](#the-public-request-form)) |
+| Every request link mailed before the deploy (confirm, reply, progress) | Stops working. Its page says "This link no longer works" and asks for the address the request was made with, and the current link is mailed there (a new link of its own since card 2870; see [The Public Request Form](#the-public-request-form)) |
 | Requests, their messages, the inbox | Untouched |
 | The key the form signs with | Untouched: it lets nobody do more than opening the form does |
 
@@ -3942,6 +3945,12 @@ flowchart TD
   there. An invite the older image issues is stored in plain, and `endPlainInvites()` ends it at
   this image's next start. See
   [Invite Tokens Stored as Hashes](#invite-tokens-stored-as-hashes-card-2849).
+- **Requester links** (card 2870). A link this image mailed is kept only as a hash in
+  `request_links`, a table the older image does not know (its schema check reports it, and
+  leaves it): the older image looks for the token in `task_requests.access_token`, so the link
+  is dead there. The older image's backfill writes a plain token into every request, and
+  `endPlainRequestLinks()` empties them at this image's next start and ends every link. See
+  [Requester Links Stored as Hashes](#requester-links-stored-as-hashes-card-2870).
 - **So a rollback past this card is a security event**: the older image accepts password-only
   sign-in while it runs. Rolling forward again refuses whatever it made. Stop every instance
   before the release, and never run two images side by side across it.
@@ -5191,11 +5200,12 @@ session's expiry moves on every time it is used.
 | The file an export downloads | none | none | none: every request is there, with no link | none | all |
 | The copy a scheduled backup, or "Run Now", uploads | none | none | none | none | all |
 | The running database, after a backup | as they were | as they were | as they were | as it was | as they were |
-| The running database, after a restore of any backup | none: everybody is signed out | none: of the backup's invites, only those already used come in, and one a backup made before card 2849 held in plain is given 32 random bytes | every request given a new one: every link mailed before stops working | none: a new one is made at first use | the backup's |
+| The running database, after a restore of any backup | none: everybody is signed out | none: of the backup's invites, only those already used come in, and one a backup made before card 2849 held in plain is given 32 random bytes | none: every link is ended, and none comes in from the backup, so every link mailed before stops working | none: a new one is made at first use | the backup's |
 
 - **One function makes both copies**, `generateBackupData()` in `src/lib/server/backup.ts`:
   the copy is made with `VACUUM INTO`, opened with no journal, cleared of every session and
-  every invite with `used = 0`, every request's link set to `NULL` and the form's key
+  every invite with `used = 0`, every request's link deleted (`request_links`) and the retired
+  `access_token` set to `NULL`, the form's key
   deleted, its system log masked, every secret taken out (below), **written out again** with a second `VACUUM INTO`, and
   only that second file is read.
 - **The system log is masked too.** An invite's token is the last part of its address, and
@@ -5232,27 +5242,33 @@ session's expiry moves on every time it is used.
   restore back, and nothing is changed.
 - **Password hashes stay.** A backup that cannot restore its users is not a backup. It is
   still a file to keep where few can read it.
-- **No request's link, and not the form's key** (card 2158). A request's link
-  (`task_requests.access_token`) lets whoever holds it read every message of that request's
-  thread, the ones written after the copy was made included, reply as the requester and
-  confirm it, and it never expires. `withoutSecrets()` sets every one to `NULL` in the copy
-  (the unique index on the column takes any number of NULLs) and deletes the key the public
+- **No request's link, and not the form's key** (cards 2158 and 2870). A request's link lets
+  whoever holds it read every message of that request's thread, the ones written after the
+  copy was made included, reply as the requester and confirm it, and it never expires. Since
+  card 2870 the links are kept only as hashes, in `request_links`, and the copy holds none:
+  `withoutSecrets()` deletes every `request_links` row, sets the retired
+  `task_requests.access_token` to `NULL` (as it is in the live file; the unique index takes
+  any number of NULLs) and deletes the key the public
   request form signs its tokens with (`request_form_secret` in `settings`), which lets
   nobody do more than opening the form does but is a secret all the same.
-- **A restore gives every request a new link, whatever the backup's age**, inside its
-  transaction, once the rows are copied: a backup made before card 2158 holds every link as
-  it was mailed, and one made since holds none. A request's link is not kept even where the
-  database being replaced has the same request id: a backup of another installation, whose
-  request 5 is somebody else's, would give one requester's link to another person's thread.
-  So after any restore every request link mailed before it stops working, and its requester
-  asks for the current one from the page it opens. The import's answer and log line say
+- **A restore ends every request's links, whatever the backup's age** (cards 2158 and 2870).
+  The clear empties `request_links`, `rowsToRestore()` brings in no `request_links` row from
+  any backup, and it reads every `task_requests.access_token` as `NULL`, so a backup made
+  before card 2158, which holds every link as it was mailed, puts none in the live file, not
+  even to be written over. A request's link is not kept even where the database being
+  replaced has the same request id: a backup of another installation, whose request 5 is
+  somebody else's, would give one requester's link to another person's thread. So after any
+  restore every request link mailed before it stops working, and its requester asks for a new
+  one from the page it opens, or gets one in the next team reply or progress mail. The count,
+  `requestLinksReplaced`, is the number of requests restored. The import's answer and log line say
   "N request link(s) replaced: a link mailed before this restore no longer works, and its
   requester can have a new one sent from the page it opens." (`requestLinksReplaced` in its
   figures), when there were any. A restore that rolls back leaves every link as it was.
   `rowsToRestore()` never brings the form's key in; the restore writes a new one in its own
-  transaction (card 2750), and a form open during the restore fails once and is reloaded. A backup with no
-  links restored by an image from before this change, or put in place by hand as the
-  database file, has them filled in by the start's backfill.
+  transaction (card 2750), and a form open during the restore fails once and is reloaded. The start's backfill
+  no longer gives a request a plain token (card 2870); a backup restored by an image from
+  before card 2870 has them filled in by that image's backfill, and this image's next start
+  empties them and ends every link (`endPlainRequestLinks()`).
 - **A restore ends every personal decision link** (card 2675), inside its transaction, once
   the rows are copied: `link_revoked { reason: 'restore' }` is recorded by DumpFire for each
   participant holding one on a decision that is not a draft, and every `link_token_hash` and
@@ -5285,7 +5301,10 @@ session's expiry moves on every time it is used.
   once, on the update that brings it: see
   [Every Unused Invite Ended Once](#every-unused-invite-ended-once-by-migration-0054). And they
   hold every request's link as it was mailed, which migration 0055 replaces, once: see
-  [Every Request Link Replaced Once](#every-request-link-replaced-once-by-migration-0055). And
+  [Every Request Link Replaced Once](#every-request-link-replaced-once-by-migration-0055); a
+  copy made before migration 0070 holds no request link either (card 2158), and 0070 ends
+  every link the live file held in plain (see
+  [Requester Links Stored as Hashes](#requester-links-stored-as-hashes-card-2870)). And
   they hold the mail password, every destination's credentials and every webhook's signing
   secret (card 2169). Nothing can reach a copy at a destination or a downloaded export, so
   nothing is done to them: they go as each destination's retention removes them, the oldest
@@ -5584,7 +5603,7 @@ flowchart TD
   backup made before seals, or a server that has made no backup yet), "None was kept from this
   server, because this backup carries no seal this server can check." (the second review's N7).
   A restore committed with foreign keys left off says the same, and the request links it
-  replaced, in its `500` answer and log line (the review's O8). Each place is named as the
+  ended, in its `500` answer and log line (the review's O8). Each place is named as the
   admin page names it: the mail password in "📧 Email / SMTP". At every start, `reportSecretsToEnter()` in
   `src/lib/server/startup-checks.ts` writes one `[WARN] [STARTUP]` line while the mail settings
   name a host and a user and hold no password, a destination lacks its credentials, or a webhook
@@ -7773,7 +7792,7 @@ sign-in they do not have, both in `src/lib/server/request-tokens.ts`.
 | Secret | Issued | Lifetime | Opens |
 |--------|--------|----------|-------|
 | **Form token** | with the form page, by `issueFormToken()`; HMAC-SHA256 over an expiry and a nonce, signed with a key kept in `settings.request_form_secret`. The key is written in one place, `writeFormSecret()`: at every start (`ensureFormSecret()`, after the migrations) and inside the transaction of a reset and of a restore, each of which clears it (card 2750). Every function that signs or verifies only reads it, the decision read guards that key a revision with `purposeKey()` among them, and where it is missing they throw and the request fails, so a check meant to be read-only never writes it. It was made at first use, which could be inside such a check | 2 hours | `GET /api/requests/targets` and `POST /api/requests`, sent as `X-Form-Token` |
-| **Request token** | when a request is created; 32 random bytes in `task_requests.access_token` | the life of the request, or until it is replaced: once by migration 0055, and for every request at every restore | that one request's thread: read, reply, confirm |
+| **Request token** | one for each mail that carries a link (the confirmation, a team reply, a progress mail: `mail`) and each new link asked for (`ask`), by `issueRequestLink()`; 32 random bytes as 64 hex characters, kept only as its SHA-256 in hex in `request_links.token_hash` (card 2870). The token is only in the mail | the life of the request, while it is among the newest 20 `mail` or newest 3 `ask` links of its request; ended for every request by migration 0070, by every restore and by a start after an older image has run | that one request's thread: read, reply, confirm |
 
 A signed-in user needs neither: their session is checked, and `request-access.ts`
 decides which requests are theirs.
@@ -7791,7 +7810,7 @@ sequenceDiagram
     S-->>P: who a request can go to (no boards)
     P->>S: POST /api/requests  [X-Form-Token]
     S->>S: rate limits: per address, per email, overall
-    S->>S: store as 'unverified' with a random request token
+    S->>S: store as 'unverified', and issue a link (only its hash kept)
     S->>M: "Confirm your request" (link carries the token)
     Note over T: The team has been told nothing
     M->>P: requester opens the link, presses Confirm
@@ -7799,9 +7818,9 @@ sequenceDiagram
     S->>S: 'unverified' → 'pending'
     S->>T: "New task request" email, request appears in inbox
     T->>S: reply in the inbox
-    S->>M: reply email (link carries the same token)
+    S->>M: reply email (a new link of its own, the earlier ones kept)
     P->>S: GET /api/requests/:id/messages?token=…
-    Note over S: a restore, or migration 0055, replaces every token
+    Note over S: a restore, migration 0055 or 0070, or a start after an older image, ends every link
     P->>S: GET /api/requests/:id?token=old
     S-->>P: 404, and the page offers the address field
     P->>S: POST /api/requests/:id/link with the address
@@ -7846,8 +7865,11 @@ What each control is for:
   somebody else's address confirm itself.
 - **A thread is opened by its own token.** The link used to carry the requester's
   email address, and the address was the only thing checked, so anyone who knew it
-  could read that person's requests and reply as them. Tokens are compared in constant
-  time, and never returned by any API response (`publicRequest()` strips them). To a
+  could read that person's requests and reply as them. Since card 2870 a token is looked
+  up by its SHA-256 before the request is read, whatever the id, and opens only the request
+  it was issued for (see
+  [Requester Links Stored as Hashes](#requester-links-stored-as-hashes-card-2870)); no API
+  response returns a token or a hash (`publicRequest()` strips the retired column). To a
   caller with no session a wrong token and a missing request answer alike, `404`: on the
   confirmation, and since card 2132 on the request, its thread and a reply as the
   requester too, whatever the request's state, where a wrong token was `403` and a reply
@@ -7871,14 +7893,15 @@ What each control is for:
   tab was open. A confirmation's body that is missing, is not JSON or is not an object is
   `400`, where it was read as no token.
 - **A link that no longer works can be replaced by its requester** (card 2158). A link stops
-  working when its token is replaced: every request's once by migration 0055, and every
-  request's again at each restore. The reply page, in place of the thread, and the confirm
+  working when it is ended: every request's once by migrations 0055 and 0070, every request's
+  again at each restore and at a start after an older image has run (card 2870), and a single
+  link once 20 newer mails, or 3 newer asks, have gone out for its request. The reply page, in place of the thread, and the confirm
   page, under its refusal, say "This link no longer works. Enter the email address you made
   the request with (if you made it while signed in to DumpFire, your account's email address
   as it is now), and a new link will be sent to it.", with an address field and "Send me
   a new link" (`src/lib/components/NewRequestLink.svelte`). `POST /api/requests/[id]/link`
   takes `{ email }`. When the request is there and the address is the request's address
-  (case and surrounding spaces ignored), the current link is mailed to that address: the
+  (case and surrounding spaces ignored), a new link is mailed to that address: the
   request's address is `requesterAddress()`'s (card 2171, the next point), so for a request
   made signed in it is the account's email as it is now, and whoever gives the address the
   account had before is answered the same sentence and sent nothing. The link mailed is
@@ -7908,9 +7931,18 @@ What each control is for:
   confirmed is a confirmation mail too, and also counts against the form's three an hour to
   that address (`request-email:`), so that the form and the new link together send no more
   than either; and at most 30 new-link mails an hour go out in all, the form's own figure
-  for anonymous requests (S2). Nothing is written; one `INFO` line under `REQUESTS` when a
-  link is mailed ("mailed to its requester's address"), naming the request and not the
-  address. The
+  for anonymous requests (S2). Nothing is written before the answer; once the limits allow
+  the mail, one `ask` link is written in a transaction of its own (`issueRequestLinkFor()` in
+  `request-access.ts`, card 2870), which ends none of the links mails carried. That
+  transaction reads the request again by its id and writes the link only if it is still
+  there, has not lapsed and `requesterAddress()` of it is still the address matched (case and
+  surrounding spaces ignored); the mail's address, title and kind are the ones read there. A
+  restore or an account's new email committed between the answer and the mail would otherwise
+  send a link to a thread that is no longer that address's (the card 2870 code review, CS1).
+  When the request has changed, no link is written and nothing is mailed. One `INFO` line
+  under `REQUESTS` when a link is mailed ("mailed to its requester's address"), and one when
+  it is not for that reason ("was not mailed: the request changed after the link was asked
+  for"), naming the request and not the address. The
   route answers no `403` and no `404`, so card 2132's rule holds: a caller without a link
   cannot tell a request from no request.
 - **A requester's mail goes to the address the request has now, not the one stored when it
@@ -7992,6 +8024,202 @@ requests were given a token by migration `0051`, so the next email about them ha
 working link.
 
 Covered by `tests/public-requests.test.ts`.
+
+### Requester Links Stored as Hashes (Card 2870)
+
+Until card 2870 each task request had one token, kept exactly as it was mailed in
+`task_requests.access_token`, and the server rebuilt the link from it for every later mail.
+Whoever could read the database file, its WAL, its free pages, a cold copy or a restore's safety
+copy could read every request thread, the requester's address included, reply as the requester
+and confirm an unconfirmed request; and a settled request's link never expires (card 2902). A
+backup has held no request token since card 2158.
+
+**The server now keeps only the SHA-256 of each link's token, in hex, in a table of its own,
+`request_links`** (migration 0070; see
+[Requester links](data-model.md#requester-links-request_links-migration-0070)). With no token
+kept, no earlier link can be put into a new mail, so **every mail that carries a link gets a
+new link of its own**, and earlier links go on working within two caps. All of it is in
+`src/lib/server/request-tokens.ts` and `linkCheck()` in `src/lib/server/request-access.ts`; no
+route hashes anything itself.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant R as Requester's browser
+    participant H as Route or service<br/>(in its transaction)
+    participant L as request-tokens.ts
+    participant DB as request_links
+    participant M as Requester's mailbox
+    R->>H: the form (no account, mail set up)
+    H->>L: issueRequestLink(id, 'mail'), after every skip
+    L->>L: token = 32 random bytes, as hex
+    L->>DB: INSERT token_hash = sha256Hex(token), source<br/>DELETE all but the newest 20 mail (or 3 ask) links of the request
+    L-->>H: the token (never stored)
+    H->>M: after the commit, /request/:id/confirm?token=…
+    Note over H,M: the same for a team reply and a progress mail (mail, issueRequestLinkNow)<br/>and for a new-link ask (ask, issueRequestLinkFor: the request read again first)
+    R->>H: GET /api/requests/:id?token=… (any live one)
+    H->>DB: SELECT request_id WHERE token_hash = sha256Hex(token)<br/>(always, before the request is read)
+    H->>H: let in only if request_id is the path's id and the request has not lapsed
+    H-->>R: the thread, or 404 for every refusal alike
+```
+
+```mermaid
+erDiagram
+    task_requests ||--o{ request_links : "newest 20 mail, newest 3 ask"
+    task_requests {
+        integer id PK
+        text status "unverified, pending, accepted or rejected"
+        text access_token "retired by card 2870: always NULL, kept for an older image"
+    }
+    request_links {
+        integer id PK
+        text token_hash UK "SHA-256 hex of the token mailed"
+        integer request_id FK "ON DELETE CASCADE"
+        text source "mail or ask"
+        text created_at
+    }
+```
+
+| Where | Holds after card 2870 |
+|---|---|
+| `request_links.token_hash` | `sha256Hex(token)`: the newest 20 `mail` links and newest 3 `ask` links of each request |
+| `task_requests.access_token` | NULL. A value an older image wrote is emptied at the next start of this image, which also ends every link |
+| The mails | Each its own token, in its link |
+| `system_logs`, `activity_log` | No token: paths without the query, and `?token=[token]` in a line written some other way |
+| A backup | No `request_links` row, and every `access_token` NULL |
+| Free pages and WAL of the live file | Old plain tokens, every one dead once 0070 has run |
+| A cold copy taken before 0070 | That day's plain tokens, which open their threads only on an older image started on that copy |
+
+- **One link per mail** (decision 1). The confirmation, each team reply and each progress mail
+  issue a new token; only its hash is written. A new link that replaced the last, as decision
+  links do (card 2675), was not chosen: the reply page polls every five seconds and drops to
+  the dead-link form on a `404`, so each team reply would cut off the conversation the
+  requester has open, and a reply being typed with it.
+- **The links mailed before the release are ended, not hashed in place** (decision 2).
+  Migration 0070 sets every `access_token` to NULL and `request_links` starts empty. Hashing in
+  place would leave every live token in the file's free pages, its WAL and every file-level
+  copy, each still working, because its hash is exactly what is looked up; and SQLite has no
+  SHA-256. The page a dead link opens mails a new one (card 2158), and the next reply or
+  progress mail brings one by itself.
+- **Two caps, each kind trimmed only among its own** (decision 3, the review's S1 and E11). A
+  request keeps its newest **20** `mail` links, so the 21st mail ends the oldest, and its
+  newest **3** `ask` links (`REQUEST_MAIL_LINKS_KEPT`, `REQUEST_ASK_LINKS_KEPT`). Anyone who
+  knows a request's number and its requester's address can ask for a new link; asks are capped
+  apart and low, so they can neither end a link a mail carried nor fill the table. The new
+  link still goes only to the requester's own mailbox.
+- **The hash** (decisions 4 and 7) is SHA-256 of the token exactly as given (the query's or the
+  body's string, as UTF-8), nothing trimmed or folded, as lower-case hex in a unique column.
+  The token keeps its form, 32 random bytes as 64 hex characters, so 256 bits make an unsalted
+  hash unguessable and `maskMailText` still masks a token in a mail server's refusal. A new
+  table that no older image reads needs no BLOB (card 2849's reason does not apply).
+- **`access_token` is retired, not dropped** (decision 5). Dropping it would stop an older image
+  starting and make its request routes answer `500`. The model's property is
+  `retiredAccessToken`, so no use of the old name type-checks; the backfill no longer fills it;
+  the unique index stays and takes any number of NULLs.
+- **The token is resolved before the request is read** (decision 6, the review's S2).
+  `linkCheck(token)` calls `requestIdOfLink(token)` at once, one statement prepared once,
+  `SELECT request_id FROM request_links WHERE token_hash = ?`, whatever the id and whether or
+  not that request exists, and only then does the route read the row. It lets in only when the
+  `request_id` found is the path's id and the request has not lapsed (`hasLapsed`, card 2243),
+  so one request's link opens no other and the time an answer takes says nothing of which
+  requests exist. A token that is not a non-empty string is hashed as `''` and looked up all the
+  same, and opens nothing. The request read (`GET /api/requests/[id]`), its thread
+  (`GET …/messages`), a reply as the requester (`POST …/messages`) and the confirmation
+  (`POST …/confirm`) all ask it. `timingSafeEqual` is no longer used for request tokens; it
+  stays for form tokens.
+- **A link is issued only inside a transaction, and only when a mail is about to be handed on**
+  (decision 8, the review's S5, E1 and E2). `issueRequestLink()` throws, and writes nothing,
+  outside a transaction. Every issue asks first for an address to send to, `isSmtpConfigured()`,
+  `!smtpPasswordMissing()` and an address to make the link from:
+  - **The form** issues the confirmation's link inside its `writeAs` transaction, with the
+    request. A request that must be confirmed while the mail settings name a user and hold no
+    password (as a restore leaves them) is refused `503` "New links cannot be sent just now.
+    Please contact the team that sent you the link." (`CANNOT_SEND_LINK`) before anything is
+    cleared or saved, with why in a `WARN` line under `REQUESTS` (`NO_MAIL_PASSWORD`), as the
+    route already refuses a request with no address to make a link from. Before, such a
+    request was saved unconfirmed with a mail that always failed.
+  - **The team's reply** issues its link inside its `writeAs` transaction, after the message is
+    saved. With no address to make the link from, the reply is saved, nothing is mailed, and the
+    `WARN` line that says so is written as before; with the mail password missing, no link is
+    issued and the reply mail is skipped, so that WARN stays true.
+  - **The progress mail** (a card created complete, moved, commented on or its subtask
+    completed, for an accepted request's card) does every read and skip in
+    `notifyRequesterProgress()`, synchronously, then issues with `issueRequestLinkNow()`. Only
+    a comment and a subtask tick call it inside their write's transaction: there the link is a
+    savepoint of it, so a rolled-back write leaves no link and mails nothing. A move
+    (`announceCardMoves`) and a card created complete (`announceCardCreated`) call it from an
+    effect after their commit, and the link has a transaction of its own; each catches a
+    failure there and logs it at `ERROR`, so that the rest of its announcements still go
+    (the card 2870 code review, CR1 and CS4). The mail is built and sent after the commit.
+  - **The new-link ask** issues an `ask` link with `issueRequestLinkFor()` from `mailNewLink`,
+    after the answer and once the limits allow the mail, in a transaction that first reads
+    the request again and issues nothing if it is gone, has lapsed or no longer has the
+    address matched (CS1).
+  - **The confirmation's answer** issues nothing: its `replyUrl` carries the token it was
+    posted, already the requester's and already proven.
+- **Backup and restore** (decision 10). A backup's copy deletes every `request_links` row and
+  keeps every `access_token` NULL. A restore brings in no `request_links` row from any backup
+  and reads every `task_requests.access_token` as NULL (`rowsToRestore()`), so a backup made
+  before card 2158, which holds each token as it was mailed, puts none in the live file; the
+  clear empties the live table and nothing refills it. After the copy the table is emptied
+  again, not caught: the clear catches a failure and only leaves a table out, which would
+  commit the restore with every old link live, so a restore that cannot empty
+  `request_links` is rolled back (the card 2870 code review, CS2). A hash is not a credential, but a backup
+  of another installation would bring hashes whose tokens that installation's requesters hold,
+  for request ids that are somebody else's here. `requestLinksReplaced` is the number of
+  requests restored, and the import's sentence keeps its words.
+- **Going back to an older image, and coming forward** (decision 11, the review's S3, S4, S7
+  and E12). Going back needs no step, but **`request_links` must not be dropped**. The older
+  image's schema check reports it as a table it does not know, which is expected, and leaves it.
+  Its backfill gives every request a new plain token nobody holds, so links this image mailed
+  do not work there, and requesters ask for new ones. Plain tokens it writes stay in the file
+  until the next start of this image and open nothing here. Coming forward,
+  **`endPlainRequestLinks()`** (in `src/lib/server/startup-checks.ts`, called from
+  `hooks.server.ts` after `endPlainInvites()` and before `announceReportSchedules()`) sets every
+  non-NULL `access_token` to NULL and, only when that changed a row, deletes every
+  `request_links` row, in one transaction (fail closed): while the older image ran,
+  `request_links` was outside its rules, and its restore or reset may have replaced the requests
+  and left the table as it was, so a kept link could open somebody else's thread. It writes one
+  line, `[WARN] [REQUESTS] Ended the links of N request(s) held in plain by an older image, and
+  M link(s) kept as hashes: no request link mailed before this start works. Each requester can
+  have a new one sent from the page a link opens.`, and nothing when nothing changed, so a second
+  start says nothing. When that fails, for any reason, it deletes every `request_links` row on
+  its own (fail closed), returns null and writes one `WARN` line, "Request links held in plain
+  by an older image could not be looked for: … Every link kept as a hash was ended instead
+  (N): …", and the server starts. When that delete fails too, it throws before the server
+  listens, as `ensureFormSecret()` does: the server refuses to start rather than run with
+  links that may open other people's threads (the card 2870 code review, CS3). At the release
+  it finds nothing: 0070 has run.
+- **The log.** Unchanged: the gate writes the path without the query, an old line's `?token=` is
+  masked (`maskSecretsInLog()`), and `maskMailText` masks a 64-hex run in a mail server's
+  refusal. No issuing path writes a token.
+
+```mermaid
+flowchart TD
+    Rel["Release: 0070 empties access_token,<br/>request_links starts empty"] --> This["This image: one link per mail or ask,<br/>hashes only"]
+    This -->|"going back, no step"| Old["Older image: reports request_links<br/>as unknown and leaves it"]
+    Old --> Plain["It writes plain tokens into access_token<br/>(they open nothing on this image)"]
+    Plain -->|"coming forward"| Sweep{"endPlainRequestLinks at start:<br/>any access_token not NULL?"}
+    Sweep -->|"yes"| End["Set them to NULL and delete every<br/>request_links row, one WARN"]
+    Sweep -->|"no"| Keep["Nothing changes"]
+    Sweep -->|"the sweep fails"| Fallback{"DELETE FROM request_links<br/>on its own"}
+    Fallback -->|"done"| Ended["Every link ended, one WARN,<br/>the server starts"]
+    Fallback -->|"fails too"| Stop["Throws: the server does not start"]
+    End --> This
+    Keep --> This
+    Ended --> This
+```
+
+Covered by `tests/request-links.test.ts` (T1 the hash only, used, the stored hash no key, one
+request's link opening no other; T2 a link of its own for the team's reply, none with the mail
+password missing, and the form's `503`; T3 the progress link issued in a comment's
+transaction; T4 the 20 mail links kept and no issue outside a transaction; T5 three asks kept
+and a mail link never pushed out; T10 no link and no mail for an ask whose request's address
+changed after the answer; T6 no token in `system_logs` or `activity_log`; T7 the sweep, fail
+closed and idempotent; T8 every link ended when the sweep fails, and a throw when that fails
+too), by `tests/migrations.test.ts` (0070), by
+`tests/backups.test.ts` (the copy and the restore) and by `tests/public-requests.test.ts`. See
+[Testing](testing.md).
 
 ## Webhook Destinations
 
@@ -8171,7 +8399,7 @@ redirects, to a caller who is signed in or not.
   form's answers alike), and a request link's `?token=` in the query of the request form's
   confirm and reply pages and of the two reads those pages make with it, whose answers hold the
   request and its messages, and in the answer to the confirm page's `POST`, whose `replyUrl`
-  holds the access token. Before, each carried the global set alone: no
+  holds the link's token. Before, each carried the global set alone: no
   `Cache-Control`, nothing against indexing, and `strict-origin-when-cross-origin`, which sends
   another site the origin alone but sends DumpFire itself, and the reverse proxy's access log,
   the full address in the `Referer` of every `/_app/` script, style and font the page loads. The
@@ -8667,9 +8895,9 @@ unfinished is recovered on the host with `node scripts/mfa-reset.mjs <name>`.
 | `src/lib/server/planning.ts` | Besides the plan: the viewer every reader of a dependency or a plan must pass, and `withhold()`, which shows work on a board the viewer cannot open as "A card on a board you cannot open" |
 | `src/lib/server/webhooks.ts` | `presentWebhook(hook, reveal)`, which leaves a webhook's `url` and `secret` out of every answer but the owner's, an administrator's and the one to the request that made it, and `setBy` out of every answer; `deliver()` on the webhooks' own agents; the cap of 10 a board |
 | `src/lib/server/webhook-address.ts` | Where a webhook may send (card 2161): `insideReason()`, `addressRefusal()`, `guardedLookup()`, `allowInside()` for `WEBHOOK_ALLOW_INSIDE`, and `readWebhookUrl()`, the registration's `400` |
-| `src/lib/server/request-access.ts` | Who may read, answer and resolve a task request; `requesterAddress()`, the one address a requester is mailed at and the team is shown (card 2171) |
-| `src/lib/server/request-tokens.ts` | Form tokens and per-request tokens for callers without an account |
-| `src/routes/api/requests/[id]/link/+server.ts` | The new link a requester asks for when theirs no longer works (card 2158): one answer for every ask, the link mailed only to the request's address (`requesterAddress()`, card 2171), after the answer and within three limits (`mayMail()`); a `503` in plain words, its reason in the log |
+| `src/lib/server/request-access.ts` | Who may read, answer and resolve a task request; `requesterAddress()`, the one address a requester is mailed at and the team is shown (card 2171); `linkCheck()`, which resolves a link's token by its hash before the request is read and opens only the request it was issued for (card 2870); `issueRequestLinkFor()`, the new-link ask's link, written only once the request, read again in the same transaction, is still there, has not lapsed and still has the address matched (card 2870's code review, CS1) |
+| `src/lib/server/request-tokens.ts` | Form tokens, and a requester's links for callers without an account (card 2870): `issueRequestLink()`, which writes only the token's SHA-256 in hex to `request_links`, keeps the newest 20 `mail` and 3 `ask` links of the request and throws outside a transaction; `issueRequestLinkNow()`, the same in a transaction of its own or a savepoint, for the progress mail; `requestIdOfLink()`, the one prepared lookup by hash, run before the request is read; `END_PLAIN_REQUEST_LINKS`; `CANNOT_SEND_LINK` and `NO_MAIL_PASSWORD`, shared by the form and the new-link route. See [Requester Links Stored as Hashes](#requester-links-stored-as-hashes-card-2870) |
+| `src/routes/api/requests/[id]/link/+server.ts` | The new link a requester asks for when theirs no longer works (card 2158): one answer for every ask, a new `ask` link (card 2870) issued after the answer and mailed only to the request's address (`requesterAddress()`, card 2171), within three limits (`mayMail()`); a `503` in plain words, its reason in the log |
 | `src/hooks.server.ts` | Request-level auth guard and the list of public routes; `locals.credential`, set to `null` as the first statement of `handle` and then to the key or session found, which `stillAuthenticated()` reads at the write; the v1 rate limit, the JSON answer to every failure under `/api/v1/`, and `handleError` |
 | `src/lib/server/gate-answers.ts` | The gate's own answers: whether a request is a navigation, the `401` for an internal route with no session, its redirects in the form SvelteKit gives them, and the security headers with `secured()`, which moves a page's Content-Security-Policy to report only while `cspMode()` says `CSP_MODE=report-only` (card 2162) |
 | `svelte.config.js` | `kit.csp`: the pages' Content-Security-Policy, each directive with why it is there. See [The Content-Security-Policy](#the-content-security-policy) |
@@ -8701,9 +8929,9 @@ unfinished is recovered on the host with `node scripts/mfa-reset.mjs <name>`.
 | `src/lib/server/mfa-backup.ts` | What a restore does with second factors (card 2768): `readMfaHere()`, `restoreMfaRows()`, `readBackupMfaKeyCheck()` (the backup's key check from its table storage), `MFA_ROWS_NOT_RESTORED` and `mfaWithoutFactorSentence()` |
 | `src/lib/server/backup.ts` | `generateBackupData()`, the one copy an export and a scheduled backup both send, cleared of sessions, unused invites (the used ones it keeps hold only hashes since card 2849), pending sign-ins and enrolment links (card 2768), the key remembered browsers are signed with, every request's link and the request form's key, and every secret, then sealed (`withoutSecrets()`); `runBackup()` does not try a destination whose credentials are not entered |
 | `src/lib/server/backup-secrets.ts` | What a backup leaves out because it is a secret, and what is done about the gaps (card 2169): `clearSecrets()`, `readSecretsHere()`, `fillSecretGaps()`, `credentialsMissing()`, `secretsToEnter()` and the two sentences; the seal: `backupSealKey()`, `sealOf()`, `sealCopy()`, `sealVerifies()`, `keepSealKey()`, and the checks made before it, `unsealedBecause()`, `backupFailsCheck()`, `strayInternalObjects()`; `fromTableStorage()`, how a table is read for the seal and the restore |
-| `src/lib/server/db/restore.ts` | What a restore brings in and what it never does, the new link it gives every request, every decision link it ends and records (`RestoreResult.decisionLinksCleared`) and its refusal of a decision record copied in part (card 2675), and the secrets it keeps from this server (`RestoreResult.secrets`), only for a backup whose seal verifies (`RestoreResult.sealVerified`, and why not, `RestoreResult.unsealed`); `rowsToRestore()`, each table read `NOT INDEXED`, which since card 2849 gives a used invite an older backup held in plain 32 random bytes as it reads it, with 0068's `UPDATE` repeated after the copy as a backstop; since card 2772 0069's `UPDATE` repeated for a backup made before it, with this server's API key deadline (`RestoreResult.apiKeyDeadlines`); `backupLacksSuperadmin()` |
+| `src/lib/server/db/restore.ts` | What a restore brings in and what it never does, every request's links it ends (no `request_links` row brought in and every `access_token` read as NULL, card 2870), every decision link it ends and records (`RestoreResult.decisionLinksCleared`) and its refusal of a decision record copied in part (card 2675), and the secrets it keeps from this server (`RestoreResult.secrets`), only for a backup whose seal verifies (`RestoreResult.sealVerified`, and why not, `RestoreResult.unsealed`); `rowsToRestore()`, each table read `NOT INDEXED`, which since card 2849 gives a used invite an older backup held in plain 32 random bytes as it reads it, with 0068's `UPDATE` repeated after the copy as a backstop; since card 2772 0069's `UPDATE` repeated for a backup made before it, with this server's API key deadline (`RestoreResult.apiKeyDeadlines`); `backupLacksSuperadmin()` |
 | `src/lib/server/email.ts` | `linkBaseUrl()`: the address a mailed link begins with, from configuration alone |
-| `src/lib/server/startup-checks.ts` | `reportInstallation()`, the fourteen checks the server makes at start, each a line when it finds something (the secrets a backup lacks, `WEBHOOK_ALLOW_INSIDE` entries ignored, boards over the webhook cap, webhooks refused and SFTP destinations without a confirmed host key are described under their own cards); among them: no superadmin, `ORIGIN` still the image's placeholder, and a board beneath one of its own cards (card 2142), which a restore of a backup that brings one writes at once too, with each control character in a board's name or a card's title printed as a space, so that a name holding a line break cannot split the line and forge one after it (with the logger's `printable()`, card 2214); and three about the database (card 2083): the new-database line (a new, empty database was made at this start, the alarm on an installation that had data, since set-up is then open to whoever comes first), the off-volume line (the database is in the container's own file system), and the other-database line (a database at `/app/dumpfire.db` beside the one in use); and the line that `SIGN_IN_ONE_AT_A_TIME` is off (card 2194), and `reportCspMode()`'s line that `CSP_MODE` is `report-only` or neither mode (card 2162), each to the console whatever `LOG_LEVEL` is; `reportPlainOriginBehindHttps()` (card 2850), one `WARN` in a built server whose App URL is `https:` while `ORIGIN` is set and `http:` and plain-HTTP cookies would not be `Secure` (see [Every Cookie DumpFire Sets](#every-cookie-dumpfire-sets-card-2850)); `refuseUserlessBesideAnother()`, which stops the server before it listens when the database in use has no users while another is beside it; `checkMfaKeyAtStart()` and `MfaKeyError` (card 2768), straight after it, which stop the server when the MFA key does not load or is not the key the stored second factors were made with; and `maskLiveLog()`, which masks the running log's tokens and old failed sign-in names at start; and `endPlainInvites()` (card 2849), which at every start ends each unused invite an older image stored in plain and gives each used one 32 random bytes, in one transaction, with one `WARN` line built from what changed; and `endPlainSessions()` (card 2775), which at every start, before the clean-up of ended sessions, deletes each session an older image stored in plain, with one `WARN` line; and `announceReportSchedules()` (card 2751), once, at the first start after that card, after `endPlainInvites()` and before the schedulers: one `INFO` line for each report schedule that is on, naming its addresses, one `report-schedules-running` notice to each owner, then `settings.report_schedules_announced` (see [Report Schedules and Report Mail](#report-schedules-and-report-mail-card-2751)) |
+| `src/lib/server/startup-checks.ts` | `reportInstallation()`, the fourteen checks the server makes at start, each a line when it finds something (the secrets a backup lacks, `WEBHOOK_ALLOW_INSIDE` entries ignored, boards over the webhook cap, webhooks refused and SFTP destinations without a confirmed host key are described under their own cards); among them: no superadmin, `ORIGIN` still the image's placeholder, and a board beneath one of its own cards (card 2142), which a restore of a backup that brings one writes at once too, with each control character in a board's name or a card's title printed as a space, so that a name holding a line break cannot split the line and forge one after it (with the logger's `printable()`, card 2214); and three about the database (card 2083): the new-database line (a new, empty database was made at this start, the alarm on an installation that had data, since set-up is then open to whoever comes first), the off-volume line (the database is in the container's own file system), and the other-database line (a database at `/app/dumpfire.db` beside the one in use); and the line that `SIGN_IN_ONE_AT_A_TIME` is off (card 2194), and `reportCspMode()`'s line that `CSP_MODE` is `report-only` or neither mode (card 2162), each to the console whatever `LOG_LEVEL` is; `reportPlainOriginBehindHttps()` (card 2850), one `WARN` in a built server whose App URL is `https:` while `ORIGIN` is set and `http:` and plain-HTTP cookies would not be `Secure` (see [Every Cookie DumpFire Sets](#every-cookie-dumpfire-sets-card-2850)); `refuseUserlessBesideAnother()`, which stops the server before it listens when the database in use has no users while another is beside it; `checkMfaKeyAtStart()` and `MfaKeyError` (card 2768), straight after it, which stop the server when the MFA key does not load or is not the key the stored second factors were made with; and `maskLiveLog()`, which masks the running log's tokens and old failed sign-in names at start; and `endPlainInvites()` (card 2849), which at every start ends each unused invite an older image stored in plain and gives each used one 32 random bytes, in one transaction, with one `WARN` line built from what changed; and `endPlainSessions()` (card 2775), which at every start, before the clean-up of ended sessions, deletes each session an older image stored in plain, with one `WARN` line; `endPlainRequestLinks()` (card 2870), which at every start, after `endPlainInvites()`, empties any `task_requests.access_token` an older image wrote and, when it found one, deletes every `request_links` row, in one transaction, with one `WARN` line under `REQUESTS`; when that fails it deletes every `request_links` row on its own, and when that fails too it throws and the server does not start (card 2870's code review, CS3); and `announceReportSchedules()` (card 2751), once, at the first start after that card, after `endPlainRequestLinks()` and before the schedulers: one `INFO` line for each report schedule that is on, naming its addresses, one `report-schedules-running` notice to each owner, then `settings.report_schedules_announced` (see [Report Schedules and Report Mail](#report-schedules-and-report-mail-card-2751)) |
 | `src/lib/server/rate-limit.ts` | In-memory rate limiter, counting in a fixed window from each key's first attempt (`checkRateLimit`), an amount in the same way (`takeAllowance`, the day's report mail of card 2182; `allowanceState` reads it with nothing taken and no window opened, and `noteAllowanceRefused` counts a refusal made by such a read, for the step-up's guard, card 2751), and wrong passwords at one account in an idle window (`signInWait`, `countWrongSignIn`, `forgetWrongSignIns`, card 2177); sign-in's count by address with the account each attempt was at (`countSignInAttempt`, `refundSignInAttempts`, `keepSignInAttemptCounted`, card 2226); and the sign-ins in flight at one key (`enterSignIn`, `leaveSignIn`, card 2194); `accountKey()`, the `user:<id>` key the password step and the second step both count under (card 2769) |
 | `src/lib/server/uploads.ts` | Where attachment files are, which stored file names are refused, `writeUploadFile()` and `removeUploadFile()` for both trees' uploads, and the headers an attachment is served with: `attachmentHeaders()` (the web tree, inline only when an image's bytes match) and `downloadHeaders()` (`/api/v1`, always a download, `no-store`) |
 | `src/lib/server/image-check.ts` | Whether bytes are a PNG, JPEG, GIF or WebP image (card 2754): `imageTypeOf()`, `sniffImage()`, and `checkImage()`, the walk by allow-list that strips metadata and refuses animation, trailing data and more than 8000 px or 40 MP. No imports |

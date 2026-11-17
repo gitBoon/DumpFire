@@ -42,15 +42,16 @@ vi.mock('$lib/server/email', async (importOriginal) => {
 });
 
 import { db, sqlite } from '$lib/server/db';
-import { requestMessages, taskRequests, users } from '$lib/server/db/schema';
+import { requestLinks, requestMessages, taskRequests, users } from '$lib/server/db/schema';
 import type { SessionUser } from '$lib/server/auth';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
-import { issueFormToken, verifyFormToken } from '$lib/server/request-tokens';
+import { issueFormToken, issueRequestLink, requestLinkHash, verifyFormToken } from '$lib/server/request-tokens';
+import { inTransaction } from '$lib/server/db/transaction';
 import { canHandleRequest, canReadRequest, hasLapsed, unconfirmedCutoff, UNVERIFIED_LIFETIME_DAYS } from '$lib/server/request-access';
 import { stamp } from '$lib/timestamps';
 import { api } from './helpers/api';
 import { makeBoard, makeUser, resetDb, type BoardFixture } from './helpers/fixtures';
-import { expectUnchanged, snapshotDb } from './helpers/snapshot';
+import { diffSnapshots, expectUnchanged, snapshotDb } from './helpers/snapshot';
 
 let staff: SessionUser;
 let other: SessionUser;
@@ -94,6 +95,18 @@ const submitAnonymously = (
 
 const requestRow = (id: number) => db.select().from(taskRequests).where(eq(taskRequests.id, id)).get()!;
 const mailTo = (address: string) => mail.sent.filter((m) => m.to === address);
+
+/**
+ * The token in the newest mail that links to request `id`. Only its hash is
+ * kept (card 2870), so it is read from the mail, never from a row.
+ */
+const mailedToken = (id: number): string => {
+	for (const m of [...mail.sent].reverse()) {
+		const found = m.html.match(new RegExp(`/request/${id}/(?:confirm|reply)\\?token=([0-9a-f]{64})`));
+		if (found) return found[1];
+	}
+	throw new Error(`No mail links to request ${id}`);
+};
 
 describe('form tokens', () => {
 	it('accepts a token it issued and refuses anything else', () => {
@@ -180,14 +193,15 @@ describe('submitting without an account', () => {
 		expect(res.body.status).toBe('unverified');
 		// The token is the key to the thread. It travels in the email and nowhere else.
 		expect(res.body).not.toHaveProperty('accessToken');
+		expect(res.body).not.toHaveProperty('retiredAccessToken');
 
 		const row = requestRow(res.body.id);
 		expect(row.status).toBe('unverified');
-		expect(row.accessToken).toMatch(/^[0-9a-f]{64}$/);
+		expect(row.retiredAccessToken).toBeNull();
 
 		expect(mail.sent).toHaveLength(1);
 		expect(mail.sent[0].to).toBe(REQUESTER);
-		expect(mail.sent[0].html).toContain(`/request/${row.id}/confirm?token=${row.accessToken}`);
+		expect(mail.sent[0].html).toMatch(new RegExp(`/request/${row.id}/confirm\\?token=[0-9a-f]{64}`));
 		expect(mailTo(staff.email)).toHaveLength(0);
 	});
 
@@ -284,7 +298,7 @@ describe('confirming a request', () => {
 
 	it('passes the request to the team, once', async () => {
 		const { body } = await submitAnonymously();
-		const token = requestRow(body.id).accessToken;
+		const token = mailedToken(body.id);
 		mail.sent.length = 0;
 
 		const first = await api('POST', `/api/requests/${body.id}/confirm`, { body: { token } });
@@ -300,6 +314,7 @@ describe('confirming a request', () => {
 		const inbox = await api('GET', '/api/requests', { user: staff });
 		expect(inbox.body).toHaveLength(1);
 		expect(inbox.body[0]).not.toHaveProperty('accessToken');
+		expect(inbox.body[0]).not.toHaveProperty('retiredAccessToken');
 	});
 
 	// ─── A request nobody confirmed for seven days has lapsed (card 2243) ────
@@ -316,8 +331,9 @@ describe('confirming a request', () => {
 	async function submittedAgo(ageMs: number) {
 		const { body } = await submitAnonymously();
 		db.update(taskRequests).set({ createdAt: stamp(new Date(Date.now() - ageMs)) }).where(eq(taskRequests.id, body.id)).run();
+		const token = mailedToken(body.id);
 		mail.sent.length = 0;
-		return { id: body.id as number, token: requestRow(body.id).accessToken! };
+		return { id: body.id as number, token };
 	}
 
 	it('is refused for a request made more than seven days ago, as a link that is not valid, and tells the team nothing', async () => {
@@ -413,9 +429,10 @@ describe("a request nobody has confirmed is not the team's to read (card 2260)",
 		if (ageMs > 0) {
 			db.update(taskRequests).set({ createdAt: stamp(new Date(Date.now() - ageMs)) }).where(eq(taskRequests.id, body.id)).run();
 		}
+		const token = mailedToken(body.id);
 		mail.sent.length = 0;
 		expect(requestRow(body.id).status).toBe('unverified');
-		return { id: body.id as number, token: requestRow(body.id).accessToken! };
+		return { id: body.id as number, token };
 	}
 
 	/** What `user` is answered for the request and its thread. */
@@ -529,6 +546,7 @@ describe('submitting while signed in', () => {
 		expect(res.status).toBe(201);
 		expect(res.body.verificationRequired).toBe(false);
 		expect(res.body).not.toHaveProperty('accessToken');
+		expect(res.body).not.toHaveProperty('retiredAccessToken');
 		expect(requestRow(res.body.id).status).toBe('pending');
 		expect(mailTo(staff.email)).toHaveLength(1);
 		expect(mailTo(other.email)).toHaveLength(0);
@@ -578,7 +596,7 @@ describe("a requester's thread", () => {
 	/** A confirmed request from someone without an account, and its token. */
 	async function confirmedRequest() {
 		const { body } = await submitAnonymously();
-		const token = requestRow(body.id).accessToken!;
+		const token = mailedToken(body.id);
 		await api('POST', `/api/requests/${body.id}/confirm`, { body: { token } });
 		mail.sent.length = 0;
 		return { id: body.id as number, token };
@@ -619,6 +637,7 @@ describe("a requester's thread", () => {
 		expect(request.status).toBe(200);
 		expect(request.body.title).toBe('Please add an export');
 		expect(request.body).not.toHaveProperty('accessToken');
+		expect(request.body).not.toHaveProperty('retiredAccessToken');
 		expect(reply.status).toBe(200);
 		expect(thread.body.map((m: { message: string }) => m.message)).toEqual(['Any news?']);
 	});
@@ -662,7 +681,9 @@ describe("a requester's thread", () => {
 
 		expect(res.status).toBe(200);
 		const [email] = mailTo(REQUESTER);
-		expect(email.html).toContain(`/request/${id}/reply?token=${token}`);
+		// A token of the mail's own (card 2870): the earlier one is not in it.
+		expect(email.html).toMatch(new RegExp(`/request/${id}/reply\\?token=[0-9a-f]{64}`));
+		expect(email.html).not.toContain(token);
 		expect(email.html).not.toContain('email=');
 	});
 
@@ -815,12 +836,14 @@ describe("a requester's thread", () => {
 describe('a request that cannot be opened', () => {
 	const NOT_FOUND = { status: 404, body: { message: 'Request not found' } };
 	const NO_SUCH_REQUEST = 99999;
-	const linkOf = (n: number) => String(n).repeat(64).slice(0, 64);
+	/** The token of the nth request `requests` made, issued as a mail issues one (card 2870). */
+	const issued = new Map<number, string>();
+	const linkOf = (n: number) => issued.get(n)!;
 
 	/** One request in each state, each with a link of its own. */
 	function requests() {
-		const asked = (status: string, n: number) =>
-			db
+		const asked = (status: string, n: number) => {
+			const row = db
 				.insert(taskRequests)
 				.values({
 					targetType: 'user',
@@ -828,11 +851,13 @@ describe('a request that cannot be opened', () => {
 					requesterName: 'Pat',
 					requesterEmail: REQUESTER,
 					title: `A ${status} request`,
-					status,
-					accessToken: linkOf(n)
+					status
 				})
 				.returning()
 				.get();
+			issued.set(n, inTransaction(() => issueRequestLink(row.id, 'mail')));
+			return row;
+		};
 		return [asked('pending', 1), asked('accepted', 2), asked('rejected', 3), asked('unverified', 4)];
 	}
 
@@ -916,10 +941,12 @@ describe('asking for a new link', () => {
 		status: 202,
 		body: { message: 'If that is the address the request was made with, a new link has been sent to it.' }
 	};
-	const linkOf = (n: number) => String(n).repeat(64).slice(0, 64);
-
-	/** A request made with `email` (Pat's address unless given), in `status`, with a link of its own. */
-	const made = (status: string, n: number, email: string | null = REQUESTER) =>
+	/**
+	 * A request made with `email` (Pat's address unless given), in `status`.
+	 * `n` is only a name for it: an ask issues a link of its own (card 2870),
+	 * so none is made here.
+	 */
+	const made = (status: string, _n: number, email: string | null = REQUESTER) =>
 		db
 			.insert(taskRequests)
 			.values({
@@ -928,11 +955,13 @@ describe('asking for a new link', () => {
 				requesterName: 'Pat',
 				requesterEmail: email,
 				title: `A ${status} request`,
-				status,
-				accessToken: linkOf(n)
+				status
 			})
 			.returning()
 			.get();
+	/** The asked-for links of request `id`, each as its hash. */
+	const askLinks = (id: number) =>
+		db.select({ tokenHash: requestLinks.tokenHash, source: requestLinks.source }).from(requestLinks).where(eq(requestLinks.requestId, id)).all();
 
 	/** The work a match leads to is done after the answer (S3): one turn of the event loop. */
 	const afterTheAnswer = () => new Promise((done) => setImmediate(done));
@@ -951,7 +980,7 @@ describe('asking for a new link', () => {
 	/** Every address in a mail's links. */
 	const linksIn = (html: string) => [...html.matchAll(/href="([^"]+)"/g)].map((m) => m[1].replaceAll('&amp;', '&'));
 
-	it('mails the current link to the address on the request, for the right address in another case with spaces', async () => {
+	it('mails a new link to the address on the request, for the right address in another case with spaces', async () => {
 		const requests = [made('pending', 1), made('accepted', 2), made('rejected', 3), made('unverified', 4)];
 		const before = snapshotDb();
 
@@ -964,14 +993,19 @@ describe('asking for a new link', () => {
 			expect(answerOf(res)).toEqual(ANSWERED);
 			expect(mail.sent.map((m) => m.to)).toEqual([REQUESTER]);
 			const [link] = linksIn(mail.sent[0].html);
-			// The confirmation link for one not yet confirmed, the thread's otherwise, with the token it holds now.
+			// The confirmation link for one not yet confirmed, the thread's otherwise, with a token of its own.
 			const page = request.status === 'unverified' ? 'confirm' : 'reply';
-			expect(link).toMatch(new RegExp(`/request/${request.id}/${page}\\?token=${linkOf(i + 1)}$`));
+			const token = link.match(new RegExp(`/request/${request.id}/${page}\\?token=([0-9a-f]{64})$`))?.[1];
+			expect(token).toBeDefined();
+			// Kept only as its hash, as an asked-for link (card 2870).
+			expect(askLinks(request.id)).toEqual([{ tokenHash: requestLinkHash(token!), source: 'ask' }]);
 			expect(mail.sent[0].subject).toBe(`A new link to your request: ${request.title}`);
 			expect(mail.sent[0].html).toContain(request.status === 'unverified' ? 'Confirm my request' : 'View the conversation');
 		}
-		// Nothing is written.
-		expectUnchanged(before);
+		// One asked-for link written for each, after the answer, and nothing else.
+		const written = diffSnapshots(before, snapshotDb());
+		expect(written.filter((line) => !line.startsWith('request_links: row ') && !line.startsWith('sqlite_sequence: '))).toEqual([]);
+		expect(written.filter((line) => line.startsWith('request_links: row '))).toHaveLength(4);
 	});
 
 	it('answers a wrong address, a request that is not there and an id that is not a number word for word alike, and mails nothing', async () => {
@@ -1074,12 +1108,8 @@ describe('asking for a new link', () => {
 	});
 
 	it('sends at most 30 new-link mails an hour in all, whatever the addresses, and answers the rest the same (S2)', async () => {
-		// Each with an address and a link of its own.
-		const requests = Array.from({ length: 31 }, (_, i) => {
-			const request = made('pending', 1, `requester${i}@example.test`);
-			db.update(taskRequests).set({ accessToken: `${i}`.padStart(64, 'e') }).where(eq(taskRequests.id, request.id)).run();
-			return request;
-		});
+		// Each with an address of its own.
+		const requests = Array.from({ length: 31 }, (_, i) => made('pending', 1, `requester${i}@example.test`));
 
 		const answers = [];
 		for (const [i, request] of requests.entries()) {
@@ -1176,8 +1206,14 @@ describe('asking for a new link', () => {
 			const now = await ask(request.id, { email: '  OTHER.Now@Example.TEST ' }, '10.0.10.2');
 			expect(answerOf(now)).toEqual(ANSWERED);
 			expect(mail.sent.map((m) => m.to)).toEqual([NOW]);
-			expect(linksIn(mail.sent[0].html)[0]).toMatch(new RegExp(`/request/${request.id}/reply\\?token=${linkOf(1)}$`));
-			expectUnchanged(before);
+			const token = linksIn(mail.sent[0].html)[0].match(new RegExp(`/request/${request.id}/reply\\?token=([0-9a-f]{64})$`))?.[1];
+			expect(token).toBeDefined();
+			// The one asked-for link, written after the answer to the right address alone (card 2870).
+			expect(askLinks(request.id)).toEqual([{ tokenHash: requestLinkHash(token!), source: 'ask' }]);
+			const written = diffSnapshots(before, snapshotDb());
+			// Exactly one row of request_links written, that link's, and nothing else but the sequence it took.
+			expect(written.filter((line) => line.startsWith('request_links: row '))).toHaveLength(1);
+			expect(written.filter((line) => !line.startsWith('request_links: row ') && !line.startsWith('sqlite_sequence: '))).toEqual([]);
 		});
 
 		it("counts its three mails an hour against the account's email now: asks with the old address use none of them", async () => {

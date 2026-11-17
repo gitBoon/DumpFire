@@ -337,7 +337,6 @@ describe('POST /api/cards/:id/comments', () => {
 				requesterEmail: 'rita@example.test',
 				title: 'Please build this',
 				status: 'accepted',
-				accessToken: 'a'.repeat(64),
 				resolvedBy: s.owner.id,
 				resolvedCardId: s.first.id
 			})
@@ -381,7 +380,13 @@ describe('POST /api/cards/:id/comments', () => {
 			}
 		});
 
-		expect(shape(run.writes)).toEqual(['insert into card_comments', 'insert into activity_log']);
+		// And the progress mail's link to the requester, issued with the comment, and the trim (card 2870, E1).
+		expect(shape(run.writes)).toEqual([
+			'insert into card_comments',
+			'insert into activity_log',
+			'insert into request_links',
+			'delete from request_links'
+		]);
 		// The webhook; the board's other members, the viewer among them; the user
 		// mentioned; and the requester. Each used to be sent as soon as the
 		// comment was written, before its entry was.

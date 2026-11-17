@@ -881,7 +881,7 @@ describe('through the route', () => {
 		expect(logged[0]).toMatch(
 			new RegExp(
 				`^\\[INFO\\] \\[IMPORT\\] Database restored from an uploaded backup \\(${size}\\)\\. Rows: .*\\. ` +
-					'Filled in: first_completed_at on 0 card\\(s\\), access_token on 0 request\\(s\\)\\. Restored as'
+					'Filled in: first_completed_at on 0 card\\(s\\)\\. Restored as'
 			)
 		);
 		expect(logged[0].endsWith(`. ${SENTENCE}`)).toBe(true);
@@ -914,7 +914,7 @@ describe('through the route', () => {
 		expect(response.body.message).toMatch(new RegExp(`^Database restored \\(${size}\\)\\. .*\\bwebhooks: 3\\. Everybody`));
 		expect(response.body.message.endsWith(`webhooks: 3. ${SIGNED_OUT} The superadmin is now ann.`)).toBe(true);
 		expect(logged).toHaveLength(1);
-		expect(logged[0]).toMatch(/Filled in: first_completed_at on 0 card\(s\), access_token on 0 request\(s\)\.$/);
+		expect(logged[0]).toMatch(/Filled in: first_completed_at on 0 card\(s\)\.$/);
 		expect(`${response.body.message} ${logged[0]}`).not.toMatch(/working copy|switched off|removed/i);
 		expect(reachingOutside(sqlite)).toEqual(AS_THE_BACKUP_HAS_IT);
 		// The settings as the backup has them, beside the form signing key the restore makes (card 2750).

@@ -92,7 +92,14 @@ import { inviteTokens, taskRequests } from '$lib/server/db/schema';
 import { inTransaction } from '$lib/server/db/transaction';
 import { issueInvite } from '$lib/server/invites';
 import { KNOWN_BROWSER_SECRET_KEY } from '$lib/server/known-browsers';
-import { REQUEST_FORM_SECRET_KEY, issueFormToken, resetFormSecretCache, verifyFormToken } from '$lib/server/request-tokens';
+import {
+	REQUEST_FORM_SECRET_KEY,
+	issueFormToken,
+	issueRequestLink,
+	requestLinkHash,
+	resetFormSecretCache,
+	verifyFormToken
+} from '$lib/server/request-tokens';
 import { maskLiveLog, reportInstallation, reportNoSuperadmin } from '$lib/server/startup-checks';
 import { api, routeMethods } from './helpers/api';
 import {
@@ -153,8 +160,12 @@ const tempDirs: string[] = [];
 const UNUSED_INVITE = 'invite-not-yet-used-3f6c1d0a9b7e';
 /** One that has been used, and sets nothing any more. */
 const USED_INVITE = 'invite-already-used-8a2e5c4f1d6b';
-/** A request's link: whoever holds it reads the thread and replies as the requester (card 2158). */
-const REQUEST_LINK = 'c0ffee'.repeat(10) + 'beef';
+/**
+ * A request's link: whoever holds it reads the thread and replies as the
+ * requester (card 2158). Issued as a mail issues one, before each test, and
+ * kept only as its hash in `request_links` (card 2870).
+ */
+let REQUEST_LINK = '';
 /** The key the public request form signs its tokens with. */
 const FORM_KEY = 'form-key-of-the-running-database-5d1e7a';
 /** An SFTP host key confirmed on this server, without which a backup run does not try an SFTP destination (card 2250). */
@@ -263,17 +274,19 @@ beforeEach(() => {
 		])
 		.run();
 	makeCard(makeBoard({ owner: member, name: 'A board' }).cols['To Do'], { title: 'A card' });
-	db.insert(taskRequests)
+	const request = db
+		.insert(taskRequests)
 		.values({
 			targetType: 'user',
 			targetId: member.id,
 			title: 'A request',
 			requesterName: 'Rita',
 			requesterEmail: 'rita@example.test',
-			status: 'pending',
-			accessToken: REQUEST_LINK
+			status: 'pending'
 		})
-		.run();
+		.returning()
+		.get();
+	REQUEST_LINK = inTransaction(() => issueRequestLink(request.id, 'mail'));
 	// In place of the one resetDb made, as a start makes one (card 2750).
 	sqlite.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(REQUEST_FORM_SECRET_KEY, FORM_KEY);
 	// The form's key as a process that has just started knows it: read from the settings.
@@ -319,9 +332,14 @@ const signInsHere = () => ({
 	invites: column<string>(sqlite, 'SELECT token FROM invite_tokens ORDER BY token')
 });
 
-/** What opens a request's thread, and what the form signs with, as the running database holds them. */
+/**
+ * What opens a request's thread, and what the form signs with, as the running
+ * database holds them: a link as its token's hash (card 2870), and the retired
+ * column, NULL.
+ */
 const requestKeysHere = () => ({
-	links: column<string>(sqlite, 'SELECT access_token FROM task_requests ORDER BY id'),
+	links: column<string>(sqlite, 'SELECT token_hash FROM request_links ORDER BY id'),
+	retired: column<string | null>(sqlite, 'SELECT access_token FROM task_requests ORDER BY id'),
 	formKey: column<string>(sqlite, `SELECT value FROM settings WHERE key = '${REQUEST_FORM_SECRET_KEY}'`)
 });
 
@@ -343,6 +361,8 @@ function expectNoSignIns(bytes: Buffer): void {
 	expect(has(USED_INVITE), 'the token of an invite that was used').toBe(false);
 	// Card 2158: no request's link, and not the key the form signs with, nor its name.
 	expect(has(REQUEST_LINK), 'a request’s link').toBe(false);
+	// Nor its hash (card 2870): the copy holds no request_links row, rewritten.
+	expect(has(requestLinkHash(REQUEST_LINK)), 'the row of a request’s link').toBe(false);
 	expect(has(FORM_KEY), 'the key the request form signs with').toBe(false);
 	expect(has(REQUEST_FORM_SECRET_KEY), 'the name of the form key’s setting').toBe(false);
 
@@ -360,6 +380,7 @@ function expectNoSignIns(bytes: Buffer): void {
 	expect(column(backup, 'SELECT username FROM users ORDER BY id')).toEqual(['chief', 'administrator', 'member']);
 	// The request is there, with no link to it.
 	expect(backup.prepare('SELECT title, access_token FROM task_requests').all()).toEqual([{ title: 'A request', access_token: null }]);
+	expect(column(backup, 'SELECT COUNT(*) FROM request_links')).toEqual([0]);
 	// One file, to be read as it is, with nothing of it left in a `-wal`
 	// beside it: bytes 18 and 19 of a database file are 2 for one that keeps a
 	// write-ahead log and 1 for one that does not.
@@ -373,7 +394,7 @@ describe('a backup', () => {
 		const before = signInsHere();
 		const keys = requestKeysHere();
 		expect(before.sessions).toHaveLength(2);
-		expect(keys).toEqual({ links: [REQUEST_LINK], formKey: [FORM_KEY] });
+		expect(keys).toEqual({ links: [requestLinkHash(REQUEST_LINK)], retired: [null], formKey: [FORM_KEY] });
 
 		const res = await exported();
 
@@ -431,32 +452,37 @@ describe('a backup', () => {
 		const deletedOnly = join(dir, 'deleted-only.db');
 		const copied = join(dir, 'copied.db');
 		const cleared = join(dir, 'cleared.db');
-		// A second request: set to NULL, the first row of a page was written
-		// over in place, and the ones after it were not.
-		sqlite
-			.prepare(
-				"INSERT INTO task_requests (target_type, target_id, title, requester_name, status, access_token) VALUES ('user', ?, 'Another', 'Sam', 'pending', ?)"
-			)
-			.run(member.id, 'd'.repeat(64));
+		// A second request, with a link of its own, kept as its hash (card 2870).
+		const another = sqlite
+			.prepare("INSERT INTO task_requests (target_type, target_id, title, requester_name, status) VALUES ('user', ?, 'Another', 'Sam', 'pending')")
+			.run(member.id).lastInsertRowid;
+		const anotherLink = requestLinkHash(inTransaction(() => issueRequestLink(Number(another), 'mail')));
+		// And a link in plain in the retired column, as an older image writes it
+		// (card 2870): 64 hex characters, written by raw SQL.
+		const plainLink = 'ab'.repeat(32);
+		sqlite.prepare('UPDATE task_requests SET access_token = ? WHERE id = ?').run(plainLink, Number(another));
 		for (const path of [deletedOnly, copied]) sqlite.exec(`VACUUM INTO '${path.replace(/'/g, "''")}'`);
 
 		const copy = new Database(deletedOnly);
-		copy.exec('DELETE FROM sessions; DELETE FROM invite_tokens WHERE used = 0; UPDATE task_requests SET access_token = NULL');
+		copy.exec('DELETE FROM sessions; DELETE FROM invite_tokens WHERE used = 0; DELETE FROM request_links');
 		expect(copy.prepare('SELECT COUNT(*) AS n FROM sessions').get()).toEqual({ n: 0 });
-		expect(copy.prepare('SELECT COUNT(*) AS n FROM task_requests WHERE access_token IS NOT NULL').get()).toEqual({ n: 0 });
+		expect(copy.prepare('SELECT COUNT(*) AS n FROM request_links').get()).toEqual({ n: 0 });
 		const pages = copy.serialize();
 		copy.close();
 		// A session's row holds its code's hash (card 2775): deleted, still on its page.
 		expect(pages.includes(sessionHashOf(memberSession))).toBe(true);
-		// A request's link too (card 2158): set to NULL, and still on its page.
-		expect(pages.includes(Buffer.from('d'.repeat(64)))).toBe(true);
+		// A request's link too (card 2870): deleted, and its hash still on its page.
+		expect(pages.includes(Buffer.from(anotherLink))).toBe(true);
+		// And the plain one is on a page of the copy withoutSecrets is given.
+		expect(readFileSync(copied).includes(Buffer.from(plainLink))).toBe(true);
 
 		withoutSecrets(copied, cleared);
 		const written = readFileSync(cleared);
 		expect(written.includes(Buffer.from(memberSession))).toBe(false);
 		expect(written.includes(Buffer.from(inviteHashOf(UNUSED_INVITE)))).toBe(false);
-		expect(written.includes(Buffer.from(REQUEST_LINK))).toBe(false);
-		expect(written.includes(Buffer.from('d'.repeat(64)))).toBe(false);
+		expect(written.includes(Buffer.from(requestLinkHash(REQUEST_LINK)))).toBe(false);
+		expect(written.includes(Buffer.from(anotherLink))).toBe(false);
+		expect(written.includes(Buffer.from(plainLink))).toBe(false);
 		expect(written.includes(Buffer.from(FORM_KEY))).toBe(false);
 		expect(written.includes(Buffer.from(inviteHashOf(USED_INVITE)))).toBe(true);
 		// The copy it was given is not what is read: its pages are as they were.
@@ -654,7 +680,9 @@ describe('a restore', () => {
 
 	// Card 2158. A backup made before it holds every request's link as it was
 	// mailed, and the form's key; one made since holds neither. Either way
-	// every request restored is given a new link, and no key comes in.
+	// every request restored has its links ended, and no key comes in. Since
+	// card 2870 the links are hashes in request_links, which no backup brings
+	// in, and the retired access_token is read as NULL.
 	describe('of task requests (card 2158)', () => {
 		/** Two requests, as a backup holds them: with the links mailed, or, made since, with none. */
 		const withRequests = (backup: Database.Database, links: [string | null, string | null]) => {
@@ -665,34 +693,34 @@ describe('a restore', () => {
 			insert.run('Settled one', 'rejected', links[1]);
 			return backup;
 		};
+		// In plain, on purpose: a backup made before card 2158, or a database an older image wrote.
 		const OLD_LINKS: [string, string] = ['1'.repeat(64), '2'.repeat(64)];
 		const linksIn = (database: Database.Database) => column<string | null>(database, 'SELECT access_token FROM task_requests ORDER BY id');
-
-		const expectNewLinks = (database: Database.Database, count: number) => {
-			const links = linksIn(database);
-			expect(links).toHaveLength(count);
-			for (const link of links) expect(link).toMatch(/^[0-9a-f]{64}$/);
-			expect(new Set(links).size).toBe(count);
-			for (const old of OLD_LINKS) expect(links).not.toContain(old);
+		/** Two link rows, as hashes, for the two requests: what a backup of another installation could hold (card 2870). */
+		const withLinkRows = (backup: Database.Database) => {
+			const insert = backup.prepare("INSERT INTO request_links (token_hash, request_id, source) VALUES (?, ?, 'mail')");
+			for (const id of column<number>(backup, 'SELECT id FROM task_requests ORDER BY id')) insert.run(requestLinkHash(`token-of-${id}`), id);
+			return backup;
 		};
 
 		it.each([
 			['made before card 2158, holding the links mailed and the form’s key', true],
 			['made since, holding neither', false]
-		])('gives every request a new link, from a backup %s', (_made, old) => {
+		])('ends every request’s links, from a backup %s', (_made, old) => {
 			const live = migratedDb();
 			live.exec(`INSERT INTO settings (key, value) VALUES ('${REQUEST_FORM_SECRET_KEY}', 'the-key-that-was-here')`);
-			const backup = withRequests(backupWithSignIns(), old ? OLD_LINKS : [null, null]);
+			const backup = withLinkRows(withRequests(backupWithSignIns(), old ? OLD_LINKS : [null, null]));
 			if (old) backup.exec(`INSERT INTO settings (key, value) VALUES ('${REQUEST_FORM_SECRET_KEY}', 'the-key-in-the-backup')`);
+			expect(column(backup, 'SELECT COUNT(*) FROM request_links')).toEqual([2]);
 
 			const result = restoreFromBackup(live, backup);
 
 			expect(result.errors).toEqual([]);
 			expect(result.restored.task_requests).toBe(2);
-			expect(result.requestLinksReplaced).toBe(2);
-			expectNewLinks(live, 2);
-			// Given inside the restore, so the backfill after it had none to give.
-			expect(result.backfilled.accessTokens).toBe(0);
+			// Every request's links ended: none brought in, and the old column read as NULL (card 2870).
+			expect(result.requestLinksReplaced).toBe(result.restored.task_requests);
+			expect(linksIn(live)).toEqual([null, null]);
+			expect(column(live, 'SELECT COUNT(*) FROM request_links')).toEqual([0]);
 			// No form key came in, and the one that was here went with the settings:
 			// the one there is the restore made, in its transaction (card 2750).
 			const formKey = column<string>(live, `SELECT value FROM settings WHERE key = '${REQUEST_FORM_SECRET_KEY}'`);
@@ -706,14 +734,31 @@ describe('a restore', () => {
 			expect(result.requestLinksReplaced).toBe(0);
 		});
 
-		it('leaves every link as it was when the restore rolls back', () => {
+		it('leaves every link as it was when the restore rolls back, the ones kept as hashes included', () => {
 			const live = migratedDb();
 			live.exec("INSERT INTO users (id, username, email, password_hash, role) VALUES (9, 'here', 'here@example.test', 'x', 'superadmin')");
-			withRequests(live, OLD_LINKS);
+			withLinkRows(withRequests(live, OLD_LINKS));
+			const kept = column<string>(live, 'SELECT token_hash FROM request_links ORDER BY id');
+			expect(kept).toHaveLength(2);
 
 			expect(() => restoreFromBackup(live, backupWhoseSuperadminCannotBeCopied())).toThrow(RestoreError);
 
 			expect(linksIn(live)).toEqual(OLD_LINKS);
+			expect(column(live, 'SELECT token_hash FROM request_links ORDER BY id')).toEqual(kept);
+		});
+
+		it('is rolled back, every link left as it was, when request_links cannot be emptied (CS2)', () => {
+			const live = migratedDb();
+			live.exec("INSERT INTO users (id, username, email, password_hash, role) VALUES (9, 'here', 'here@example.test', 'x', 'superadmin')");
+			withLinkRows(withRequests(live, [null, null]));
+			const kept = column<string>(live, 'SELECT token_hash FROM request_links ORDER BY id');
+			// Every delete from the table fails: the clear's, which is caught, and any other.
+			live.exec("CREATE TRIGGER keep_request_links BEFORE DELETE ON request_links BEGIN SELECT RAISE(ABORT, 'request_links is not to be emptied'); END");
+
+			expect(() => restoreFromBackup(live, withRequests(backupWithSignIns(), [null, null]))).toThrow(/request_links is not to be emptied/);
+
+			expect(column(live, 'SELECT token_hash FROM request_links ORDER BY id')).toEqual(kept);
+			expect(column(live, 'SELECT username FROM users ORDER BY id')).toEqual(['here']);
 		});
 
 		it('says so through the route, and a link from before the import opens nothing after it', async () => {
@@ -738,12 +783,10 @@ describe('a restore', () => {
 				'1 request link(s) replaced: a link mailed before this restore no longer works, and its requester can have a ' +
 					'new one sent from the page it opens.'
 			);
-			const now = column<string>(sqlite, 'SELECT access_token FROM task_requests');
-			expect(now).toHaveLength(1);
-			expect(now[0]).toMatch(/^[0-9a-f]{64}$/);
-			expect(now[0]).not.toBe(before);
+			// No link is left, and none was brought in (card 2870): the requester asks for one.
+			expect(requestKeysHere().links).toEqual([]);
+			expect(requestKeysHere().retired).toEqual([null]);
 			expect((await api('GET', `/api/requests/${id}?token=${before}`)).status).toBe(404);
-			expect((await api('GET', `/api/requests/${id}?token=${now[0]}`)).status).toBe(200);
 			// The form's key is not the one the backup held: the restore made a new one (card 2750).
 			expect(requestKeysHere().formKey).toHaveLength(1);
 			expect(requestKeysHere().formKey).not.toContain(FORM_KEY);
@@ -1502,6 +1545,10 @@ describe('the running database’s system log, at start', () => {
 		expect(hooks.indexOf('\nmaskLiveLog();')).toBeGreaterThan(hooks.indexOf('\nrunMigrations();'));
 		// And the invites an older image kept in plain ended (card 2849).
 		expect(hooks.indexOf('\nendPlainInvites();')).toBeGreaterThan(hooks.indexOf('\nrunMigrations();'));
+		// And the requester links an older image wrote in plain ended next (card 2870, E3), before the
+		// report schedules are announced (card 2751).
+		expect(hooks.indexOf('\nendPlainRequestLinks();')).toBeGreaterThan(hooks.indexOf('\nendPlainInvites();'));
+		expect(hooks.indexOf('\nvoid announceReportSchedules();')).toBeGreaterThan(hooks.indexOf('\nendPlainRequestLinks();'));
 	});
 
 	it('cannot keep the server from starting: a failure is said at WARN, and nothing is thrown', () => {

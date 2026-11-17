@@ -24,6 +24,7 @@ import {
 	cardAssignees,
 	cardComments,
 	cards,
+	requestLinks,
 	requestMessages,
 	taskRequests,
 	users,
@@ -33,7 +34,7 @@ import {
 import type { SessionUser } from '$lib/server/auth';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { requesterAddress } from '$lib/server/request-access';
-import { ensureFormSecret, issueFormToken, newRequestToken, resetFormSecretCache, verifyFormToken } from '$lib/server/request-tokens';
+import { ensureFormSecret, issueFormToken, resetFormSecretCache, verifyFormToken } from '$lib/server/request-tokens';
 import { pageLoad } from './helpers/actions';
 import { api, type ApiResult } from './helpers/api';
 import { eachWriteInTurn } from './helpers/each-write';
@@ -142,8 +143,7 @@ function scene(): Scene {
 			title: 'Please add an export',
 			description: 'CSV would do',
 			businessValue: 'Saves an hour a week',
-			priority: 'high',
-			accessToken: 'a'.repeat(64)
+			priority: 'high'
 		})
 		.returning()
 		.get();
@@ -180,6 +180,7 @@ describe('PATCH /api/requests/:id, accept', () => {
 				expect(res.body).toMatchObject({ id: s.request.id, status: 'accepted', title: 'Please add an export' });
 				// The requester's key to the thread is never sent to whoever handles it.
 				expect(res.body).not.toHaveProperty('accessToken');
+				expect(res.body).not.toHaveProperty('retiredAccessToken');
 
 				const made = db.select().from(cards).where(eq(cards.id, res.body.resolvedCardId)).get()!;
 				expect(made).toMatchObject({
@@ -449,6 +450,7 @@ describe('PATCH /api/requests/:id, reject', () => {
 				expect(res.status).toBe(200);
 				expect(res.body).toMatchObject({ id: s.request.id, status: 'rejected' });
 				expect(res.body).not.toHaveProperty('accessToken');
+				expect(res.body).not.toHaveProperty('retiredAccessToken');
 				expect(requestRow(s.request.id)).toMatchObject({
 					status: 'rejected',
 					resolvedBy: s.owner.id,
@@ -515,7 +517,7 @@ describe('POST /api/requests', () => {
 		resetAllRateLimits();
 		resetFormSecretCache();
 		const s = scene();
-		const unconfirmed = (title: string, createdAt: string, accessToken: string) =>
+		const unconfirmed = (title: string, createdAt: string) =>
 			db
 				.insert(taskRequests)
 				.values({
@@ -525,13 +527,12 @@ describe('POST /api/requests', () => {
 					requesterEmail: 'nobody@example.test',
 					title,
 					status: 'unverified',
-					accessToken,
 					createdAt
 				})
 				.returning()
 				.get();
-		const stale = unconfirmed('Never confirmed', daysAgo(8), 'b'.repeat(64));
-		const recent = unconfirmed('Not confirmed yet', daysAgo(1), 'c'.repeat(64));
+		const stale = unconfirmed('Never confirmed', daysAgo(8));
+		const recent = unconfirmed('Not confirmed yet', daysAgo(1));
 		// Issuing the first token stores the key it is signed with.
 		const token = issueFormToken();
 		return { ...s, token, stale, recent };
@@ -567,6 +568,7 @@ describe('POST /api/requests', () => {
 				expect(res.status).toBe(201);
 				expect(res.body).toMatchObject({ title: 'A dark theme', status: 'unverified', verificationRequired: true });
 				expect(res.body).not.toHaveProperty('accessToken');
+				expect(res.body).not.toHaveProperty('retiredAccessToken');
 				expect(titles()).toEqual([
 					{ title: 'Please add an export', status: 'pending' },
 					{ title: 'Not confirmed yet', status: 'unverified' },
@@ -578,11 +580,21 @@ describe('POST /api/requests', () => {
 					requesterUserId: null,
 					priority: 'low'
 				});
-				expect(requestRow(res.body.id).accessToken).toMatch(/^[0-9a-f]{64}$/);
+				// Its link is kept only as a hash, with the request (card 2870).
+				expect(requestRow(res.body.id).retiredAccessToken).toBeNull();
+				expect(
+					db.select({ source: requestLinks.source }).from(requestLinks).where(eq(requestLinks.requestId, res.body.id)).all()
+				).toEqual([{ source: 'mail' }]);
 			}
 		});
 
-		expect(shape(run.writes)).toEqual(['delete from task_requests', 'insert into task_requests']);
+		// With its first link, kept as a hash, and the trim to the newest 20 (card 2870).
+		expect(shape(run.writes)).toEqual([
+			'delete from task_requests',
+			'insert into task_requests',
+			'insert into request_links',
+			'delete from request_links'
+		]);
 		// The requester is asked to confirm. The team hears nothing yet.
 		expect(run.effects.map(name)).toEqual(['email to pat@example.test: Confirm your request: A dark theme']);
 	});
@@ -733,8 +745,7 @@ describe('mail to a requester who made the request signed in', () => {
 				targetId: s.owner.id,
 				requesterName: 'Pat',
 				requesterEmail: 'pat@example.test',
-				title,
-				accessToken: newRequestToken()
+				title
 			})
 			.returning()
 			.get().id;

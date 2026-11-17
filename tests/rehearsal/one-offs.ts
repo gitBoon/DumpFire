@@ -6,7 +6,8 @@
  * takes cards out of a milestone of another board; 0060, milestone 22, which
  * commits every card that is not upstream; 0066, card 2769, which lets the
  * accounts there at the release set up two-step sign-in on their password;
- * 0069, card 2772, which gives every API key made before that card a deadline).
+ * 0069, card 2772, which gives every API key made before that card a deadline;
+ * 0070, card 2870, which ends every task request's link held in plain).
  * A file that does both is declared as one that loses rows: 0068, card 2849,
  * deletes every unused invite and replaces the token of every used one.
  *
@@ -87,7 +88,9 @@ export const ONE_OFFS: readonly OneOff[] = Object.freeze([
 		table: 'api_keys',
 		change: 'deadline_at set for every key with no expiry or one later than the deadline',
 		keepsRows: true
-	}
+	},
+	// Card 2870: requester links stored as hashes, every plain one ended.
+	{ file: '0070_add_request_links.sql', table: 'task_requests', change: 'every access_token ended', keepsRows: true }
 ]);
 
 /** The first file the rule covers. Files before it were written before the rule. */

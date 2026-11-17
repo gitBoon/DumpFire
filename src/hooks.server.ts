@@ -26,6 +26,7 @@ import {
 	announceReportSchedules,
 	checkMfaKeyAtStart,
 	endPlainInvites,
+	endPlainRequestLinks,
 	endPlainSessions,
 	maskLiveLog,
 	refuseUserlessBesideAnother,
@@ -119,6 +120,19 @@ removeSettingsOfNonAdministrators();
 // cannot throw. See $lib/server/startup-checks.ts.
 endPlainInvites();
 
+// When an older image has written requester links in plain into the retired
+// task_requests.access_token, set them back to NULL and end every link kept
+// as a hash too (card 2870): while that image ran, request_links was outside
+// its rules, and a link kept through its restore or reset could open
+// somebody else's thread. Each requester has a new link mailed from the page
+// their old one opens. A start after no older image changes nothing, and a
+// second start changes nothing. Where it cannot look, it ends every link
+// instead; where it cannot do that either, it throws, and a bare call's throw
+// is what stops the server before it listens (the code review's CS3): no
+// server runs with links that may open other people's threads. See
+// $lib/server/startup-checks.ts.
+endPlainRequestLinks();
+
 // Tell each owner of a report schedule that is on, once, at the first start
 // after card 2751, which of theirs are running, with every address each is
 // sent to: one made before the release asked for no password, and may have
@@ -187,8 +201,8 @@ const PUBLIC_ROUTES = new Set([
 	'/api/requests',
 	'/api/requests/[id]',
 	'/api/requests/[id]/confirm',
-	// Asked from the page a dead request link opens (card 2158): it mails the
-	// current link only to the address the request was made with.
+	// Asked from the page a dead request link opens (card 2158): it mails a
+	// new link only to the address the request was made with (card 2870).
 	'/api/requests/[id]/link',
 	'/api/requests/[id]/messages',
 	'/api/requests/targets',

@@ -6,6 +6,10 @@
  * person's own, but the routes that read, answer, accept and reject a request
  * took any id from any signed-in user, so the address meant nothing once you
  * guessed a number.
+ *
+ * A link's token is resolved before the request is read (card 2870, S2):
+ * `linkCheck` looks it up by its hash, whatever the id, and only then is the
+ * row read, so the time an answer takes says nothing of which requests exist.
  */
 import { error } from '@sveltejs/kit';
 import { and, eq } from 'drizzle-orm';
@@ -13,7 +17,8 @@ import { db } from './db';
 import { taskRequests, teamMembers, users, type TaskRequest } from './db/schema';
 import { isAdmin } from './board-access';
 import type { SessionUser } from './auth';
-import { requestTokenMatches } from './request-tokens';
+import { inTransaction } from './db/transaction';
+import { issueRequestLink, requestIdOfLink, type RequestLinkSource } from './request-tokens';
 import { stamp } from '$lib/timestamps';
 
 /**
@@ -45,12 +50,16 @@ export function hasLapsed(request: Pick<TaskRequest, 'status' | 'createdAt'>, no
 }
 
 /**
- * True if `token` is the request's own link and the link still opens it: the
- * link of a lapsed request opens nothing, and is answered as one that is not
- * there (card 2243).
+ * The check a request link's token passes, resolved at once (card 2870,
+ * decision 6): the token is looked up by its hash now, before the caller
+ * reads the request, whether or not that request exists. The check it gives
+ * back is true if the token is a live link to that request and the link still
+ * opens it: the link of a lapsed request opens nothing, and is answered as
+ * one that is not there (card 2243). One request's link opens no other.
  */
-export function linkOpens(request: TaskRequest, token: string | null | undefined): boolean {
-	return requestTokenMatches(request, token) && !hasLapsed(request);
+export function linkCheck(token: unknown): (request: TaskRequest) => boolean {
+	const linked = requestIdOfLink(token);
+	return (request) => linked === request.id && !hasLapsed(request);
 }
 
 /**
@@ -102,6 +111,46 @@ export function requesterAddress(request: Pick<TaskRequest, 'requesterUserId' | 
 	if (request.requesterUserId === null) return request.requesterEmail || null;
 	const account = db.select({ email: users.email }).from(users).where(eq(users.id, request.requesterUserId)).get();
 	return account?.email ?? null;
+}
+
+/** A link issued by `issueRequestLinkFor`, with what its mail needs, as read in the transaction that wrote it. */
+export interface IssuedRequestLink {
+	token: string;
+	/** `requesterAddress` as it was read then: where the mail goes. */
+	address: string;
+	title: string;
+	/** True for a request not yet confirmed: the mail carries the confirmation link. */
+	unconfirmed: boolean;
+}
+
+/**
+ * A new link to request `requestId`, for a mail to `expectedAddress` that
+ * goes some time after the address was matched (card 2870, the code review's
+ * CS1): the new-link ask matches the address before its answer and mails
+ * after it, and a restore or an account's new email committed in between
+ * could otherwise hand the asker a link to a thread that is no longer theirs.
+ *
+ * In one transaction of its own (`inTransaction`), the request is read again
+ * by its id, and the link is written (`issueRequestLink`) only if it is still
+ * there, has not lapsed (`hasLapsed`), and `requesterAddress` of it is still
+ * `expectedAddress`, case and surrounding spaces ignored, as the ask compares
+ * them. Otherwise nothing is written and it returns null: no link, so no mail.
+ * What the mail says, its address, title and kind, is taken from that read.
+ */
+export function issueRequestLinkFor(requestId: number, expectedAddress: string, source: RequestLinkSource): IssuedRequestLink | null {
+	const comparable = (address: string) => address.trim().toLowerCase();
+	return inTransaction(() => {
+		const request = db.select().from(taskRequests).where(eq(taskRequests.id, requestId)).get();
+		if (!request || hasLapsed(request)) return null;
+		const address = requesterAddress(request);
+		if (address === null || comparable(address) !== comparable(expectedAddress)) return null;
+		return {
+			token: issueRequestLink(request.id, source),
+			address,
+			title: request.title,
+			unconfirmed: awaitsConfirmation(request)
+		};
+	});
 }
 
 /** True if this signed-in user is the one who raised the request. */

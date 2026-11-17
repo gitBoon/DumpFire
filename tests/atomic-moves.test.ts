@@ -77,7 +77,6 @@ function makeRequestFor(card: Card, owner: SessionUser): void {
 			requesterEmail: 'rita@example.test',
 			title: 'Please build this',
 			status: 'accepted',
-			accessToken: 'a'.repeat(64),
 			resolvedBy: owner.id,
 			resolvedCardId: card.id
 		})
@@ -1629,7 +1628,10 @@ describe('PUT /api/subtasks/:id', () => {
 		expect(run.writes.map((sql) => sql.split(/[ (]/).slice(0, 3).join(' '))).toEqual([
 			'update "subtasks" set',
 			'insert into "activity_log"',
-			'insert into "card_comments"'
+			'insert into "card_comments"',
+			// The progress mail's link to the requester, issued with the tick, and the trim (card 2870, E1).
+			'INSERT INTO request_links',
+			'DELETE FROM request_links'
 		]);
 		expect(run.effects.map(name)).toEqual([
 			'event update',

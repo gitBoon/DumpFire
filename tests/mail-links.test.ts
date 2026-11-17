@@ -104,8 +104,7 @@ const acceptedRequest = () =>
 			title: 'Please add an export',
 			desiredBoardId: board.id,
 			status: 'accepted',
-			resolvedCardId: card.id,
-			accessToken: 'a'.repeat(64)
+			resolvedCardId: card.id
 		})
 		.returning()
 		.get();
@@ -121,8 +120,7 @@ const pendingRequest = () =>
 			requesterEmail: 'rita@example.test',
 			title: 'Please add an export',
 			desiredBoardId: board.id,
-			status: 'pending',
-			accessToken: 'b'.repeat(64)
+			status: 'pending'
 		})
 		.returning()
 		.get();
@@ -179,7 +177,8 @@ const MAILS: {
 				body: { message: 'Which export do you mean?', senderType: 'admin' }
 			}),
 		to: 'rita@example.test',
-		link: /^\/request\/\d+\/reply\?token=b{64}$/
+		// A link of the mail's own (card 2870): only its hash is kept.
+		link: /^\/request\/\d+\/reply\?token=[0-9a-f]{64}$/
 	},
 	{
 		// Card 2158: asked for from the page a dead link opens, by someone with
@@ -191,7 +190,7 @@ const MAILS: {
 				body: { email: 'rita@example.test' }
 			}),
 		to: 'rita@example.test',
-		link: /^\/request\/\d+\/reply\?token=b{64}$/
+		link: /^\/request\/\d+\/reply\?token=[0-9a-f]{64}$/
 	},
 	{
 		name: "the requester's progress mail, when their card is moved",
@@ -204,7 +203,7 @@ const MAILS: {
 			});
 		},
 		to: 'rita@example.test',
-		link: /^\/request\/\d+\/reply\?token=a{64}$/
+		link: /^\/request\/\d+\/reply\?token=[0-9a-f]{64}$/
 	},
 	{
 		name: 'an ordinary notification, of a card that was assigned',

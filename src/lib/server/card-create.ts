@@ -39,8 +39,11 @@ import { awardXp, celebrateCompletions, completionOf } from './card-moves';
 import { emit } from './events';
 import { ACTIONS, actorOf, logActivity, type ActivitySource } from './logActivity';
 import { notifyRequesterProgress } from './notifications';
+import { createLogger } from './logger';
 import { commitmentOnCreation } from './upstream';
 import type { SessionUser } from './auth';
+
+const log = createLogger('NOTIFY');
 
 /** What a creation recorded. */
 export interface CardCreation {
@@ -148,13 +151,19 @@ function sendAnnouncements(creation: CardCreation, actor: SessionUser, baseUrl: 
 	if (!creation.completed) return;
 
 	celebrateCompletions(boardId, [creation], actor);
-	notifyRequesterProgress({
-		cardId: card.id,
-		action: 'completed',
-		summary: `created in ${column.title}`,
-		actorName: actor.username,
-		baseUrl,
-		toColumn: column.title,
-		actorUserId: actor.id
-	});
+	// After the commit, the link in a transaction of its own: a failure there is
+	// logged here (card 2870, CS4).
+	try {
+		notifyRequesterProgress({
+			cardId: card.id,
+			action: 'completed',
+			summary: `created in ${column.title}`,
+			actorName: actor.username,
+			baseUrl,
+			toColumn: column.title,
+			actorUserId: actor.id
+		});
+	} catch (err) {
+		log.error(`The progress mail to the requester of card ${card.id} could not be made`, err);
+	}
 }

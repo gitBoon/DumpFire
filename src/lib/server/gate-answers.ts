@@ -317,7 +317,7 @@ const UNPUBLISHED_HEADERS: readonly [name: string, value: string][] = [
  * Referer the page sent named the full address, the reads' answers hold the
  * request and its messages, and the pages post only by `fetch`, as
  * `/decision-link/[token]`'s does. So does the confirm page's `POST`, whose
- * answer's `replyUrl` holds the request's access token.
+ * answer's `replyUrl` holds the link's token.
  *
  * `/login/verify`, the second step of signing in (card 2769, decision 5),
  * names the account being signed in to and, once the code is right, its keys

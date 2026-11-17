@@ -2970,7 +2970,6 @@ describe('/api/account/notifications', () => {
 				requesterUserId: rita.id,
 				title: 'Please build this',
 				status: 'accepted',
-				accessToken: 'a'.repeat(64),
 				resolvedBy: owner.id,
 				resolvedCardId: card.id
 			})

@@ -111,9 +111,9 @@ export type RestoreResult = {
 	 */
 	outside: OutsideSwitchedOff | null;
 	/**
-	 * Task requests given a new link inside the restore's transaction: every
-	 * request there is now (card 2158). A link mailed before the restore no
-	 * longer works.
+	 * Task requests whose links the restore ended: every request it restored
+	 * (cards 2158 and 2870). A link mailed before the restore no longer works,
+	 * and none is kept or brought in.
 	 */
 	requestLinksReplaced: number;
 	/**
@@ -188,8 +188,8 @@ export type CommittedRestore = Pick<
  * inside `restoreFromBackup`, which is throwing rather than returning.
  *
  * `done`, for the one that committed, is what it did that the import's answer
- * says of every restore that commits (the review's O8): the request links it
- * replaced, and the secrets it kept and those to enter again.
+ * says of every restore that commits (the review's O8): the requests whose
+ * links it ended, and the secrets it kept and those to enter again.
  */
 export class RestoreError extends Error {
 	readonly errors: string[];
@@ -232,12 +232,6 @@ const CARRY_CARD_DEPENDENCIES = `
 	SELECT 'card', card_id, 'card', depends_on_card_id, created_by_user_id, created_at
 	FROM card_dependencies
 `;
-
-/**
- * Every task request given a new link (card 2158), in the form the runner's
- * backfill and migration 0055 give one: 32 random bytes as 64 hex characters.
- */
-const REPLACE_REQUEST_LINKS = 'UPDATE task_requests SET access_token = lower(hex(randomblob(32)))';
 
 /**
  * The record of every personal decision link a restore ends (card 2675,
@@ -557,7 +551,16 @@ export function rowsToRestore(backup: Database.Database, table: string): Record<
 			'token' in row && !inHashForm(row.token) ? { ...row, token: randomBytes(32) } : row
 		);
 	}
-	return backup.prepare(fromTableStorage(backup, table)).all() as Record<string, unknown>[];
+	// A requester's links are never brought in (card 2870, decision 10): a
+	// backup of another installation would bring hashes whose tokens that
+	// installation's requesters hold, for request ids that are somebody
+	// else's here. And the retired `access_token` is read as NULL, so that a
+	// backup made before card 2158, which holds each token as it was mailed,
+	// puts none in the live file, not even to be written over.
+	if (name === 'request_links') return [];
+	const rows = backup.prepare(fromTableStorage(backup, table)).all() as Record<string, unknown>[];
+	if (name === 'task_requests') return rows.map((row) => ('access_token' in row ? { ...row, access_token: null } : row));
+	return rows;
 }
 
 /**
@@ -745,9 +748,6 @@ export function defaultOutside(
  *   for it. The runner's backfills are repeated once the restore has
  *   committed. If they fail, the restore has still succeeded: the failure is
  *   reported in `errors`, and the backfills run again at the next start. One
- *   taken before `task_requests.access_token` existed has none either, and
- *   every request is given one inside the transaction, as every request is
- *   at every restore (below), so that backfill finds nothing to do. One
  *   taken before cards 2155 and 2179 can hold a card in a milestone of
  *   another board: the backfills take it out, as 0057 did once (card 2179).
  *   One taken before 0060 has no commitment on any card: the backfills
@@ -795,18 +795,21 @@ export function defaultOutside(
  * it included, and ends every invite that was waiting here. A used invite is
  * copied, and one a backup held in plain is given 0068's token (above).
  *
- * Every task request is given a new link (card 2158). Once the rows are
- * copied, inside the transaction, every `task_requests.access_token` is
- * replaced with a new random one, whatever the backup's age: a backup made
- * before card 2158 holds every request's token as it was mailed, and one made
- * since holds none. A link mailed before the restore stops working, and its
- * requester can have the new one sent from the page it opens
- * (`POST /api/requests/[id]/link`). The count is `requestLinksReplaced`. This
- * is the restore's own rule, made at every restore, and not migration 0055's
- * one-off repeated. A request's token is not kept even where the same id is
- * in the database being replaced: a backup of another installation, whose
- * request 5 is somebody else's, would give one requester's link to another
- * person's thread.
+ * Every task request's links are ended (cards 2158 and 2870). The clear
+ * empties `request_links`, and no backup refills it (`rowsToRestore` brings
+ * in none, whatever the backup's age); it is emptied again after the copy, not
+ * caught, so a restore that cannot empty it is rolled back rather than
+ * committed with the old links live (the code review's CS2); every `task_requests.access_token`,
+ * retired and always NULL, is read as NULL, so a backup made before card 2158,
+ * which holds every request's token as it was mailed, puts none in the live
+ * file. A link mailed before the restore stops working, and its requester
+ * asks for a new one from the page it opens (`POST /api/requests/[id]/link`),
+ * or gets one in the next mail the team's reply or a progress update sends.
+ * The count is `requestLinksReplaced`, the requests restored. This is the
+ * restore's own rule, made at every restore. A request's links are not kept
+ * even where the same id is in the database being replaced: a backup of
+ * another installation, whose request 5 is somebody else's, would give one
+ * requester's link to another person's thread.
  *
  * Every personal decision link is ended too (card 2675, decision 13). Inside
  * the transaction, `link_revoked { reason: 'restore' }` is recorded by
@@ -1120,17 +1123,16 @@ function restoreInOneSnapshot(
 				if (rows > 0) restored[table] = rows;
 			}
 
-			// Every request a new link: see above. Not caught, so that a restore
-			// that could not replace them is rolled back, and brings in no link
-			// a backup held.
-			if (
-				tables.includes('task_requests') &&
-				(live.prepare('PRAGMA table_info("task_requests")').all() as { name: string }[]).some(
-					(column) => column.name === 'access_token'
-				)
-			) {
-				requestLinksReplaced = live.prepare(REPLACE_REQUEST_LINKS).run().changes;
-			}
+			// Every request's link ended: see above. No backup refills
+			// `request_links`, and every `access_token` was read as NULL
+			// (`rowsToRestore`), so the count is the requests restored (card
+			// 2870, E7). Emptied again here, and not caught (the code review's
+			// CS2): the clear above catches its failure and only leaves the table
+			// out, which would commit the restore with every old link live, each
+			// for a request id that may now be somebody else's thread. A restore
+			// that cannot empty it is rolled back.
+			if (tables.includes('request_links')) live.prepare('DELETE FROM request_links').run();
+			requestLinksReplaced = restored['task_requests'] ?? 0;
 
 			// Every used invite held in plain given 0068's form: see above. Not
 			// caught, so that a restore that could not do it is rolled back, and
@@ -1309,7 +1311,6 @@ function restoreInOneSnapshot(
 	}
 	let backfilled: Backfill = {
 		firstCompletedAt: 0,
-		accessTokens: 0,
 		releasedFromMilestones: 0,
 		released: [],
 		unfiledBoards: 0,

@@ -301,9 +301,18 @@ describe('the internal routes and their v1 twins, side by side', () => {
 /** A stored timestamp or an ISO one: two runs never write the same moment. */
 const STAMP = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/;
 
-/** A row with its timestamps masked. */
+/**
+ * A row with its timestamps masked, and a requester link's hash (card 2870),
+ * which is of a random token: two runs never issue the same one.
+ */
 const masked = (row: Record<string, unknown> | undefined) =>
-	row && Object.fromEntries(Object.entries(row).map(([column, value]) => [column, typeof value === 'string' && STAMP.test(value) ? '<stamp>' : value]));
+	row &&
+	Object.fromEntries(
+		Object.entries(row).map(([column, value]) => [
+			column,
+			typeof value === 'string' && STAMP.test(value) ? '<stamp>' : column === 'token_hash' && 'request_id' in row ? '<hash>' : value
+		])
+	);
 
 /**
  * A row without the columns a right step-up writes apart from the route's
@@ -430,8 +439,7 @@ function subtaskScene(): Scene {
 			requesterEmail: 'rita@example.test',
 			title: 'First',
 			status: 'accepted',
-			resolvedCardId: s.first.id,
-			accessToken: 'b'.repeat(64)
+			resolvedCardId: s.first.id
 		})
 		.run();
 	return s;
@@ -4491,8 +4499,7 @@ describe('accepting a request with an assignee', () => {
 				targetId: s.owner.id,
 				requesterName: 'Rita',
 				requesterEmail: 'rita@example.test',
-				title: 'Please add an export',
-				accessToken: 'a'.repeat(64)
+				title: 'Please add an export'
 			})
 			.returning()
 			.get();
@@ -4575,8 +4582,7 @@ describe('nobody is mailed about assigning themselves (card 2286)', () => {
 				targetId: s.owner.id,
 				requesterName: 'Rita',
 				requesterEmail: 'rita@example.test',
-				title: 'Please add an export',
-				accessToken: 'a'.repeat(64)
+				title: 'Please add an export'
 			})
 			.returning()
 			.get();

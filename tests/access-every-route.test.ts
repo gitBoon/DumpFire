@@ -126,7 +126,8 @@ import { WHO_SEES_STATEMENT_VERSION } from '$lib/decision-words';
 import { emit } from '$lib/server/events';
 import { resetAllRateLimits } from '$lib/server/rate-limit';
 import { generateCategoryReport } from '$lib/server/reports';
-import { issueFormToken } from '$lib/server/request-tokens';
+import { issueFormToken, issueRequestLink } from '$lib/server/request-tokens';
+import { inTransaction } from '$lib/server/db/transaction';
 import { linkableBoards, tooDeepToLink } from '$lib/server/sub-boards';
 import { recentActivityFor } from '$lib/server/list-access';
 import { WITHHELD_BOARD_NAME, WITHHELD_CARD_TITLE, WITHHELD_SUBTASK_TITLE } from '$lib/server/planning';
@@ -200,11 +201,12 @@ const PASSWORD_HASH = hashSync(PASSWORD, 4);
 
 /**
  * The secret in the link of the request that is waiting for an answer, of the
- * one not yet confirmed and of the one addressed to a team.
+ * one not yet confirmed and of the one addressed to a team: each issued as a
+ * mail would issue it (card 2870), when the world is built.
  */
-const LINK = 'a'.repeat(64);
-const UNCONFIRMED_LINK = 'b'.repeat(64);
-const TEAM_LINK = 'c'.repeat(64);
+let LINK = '';
+let UNCONFIRMED_LINK = '';
+let TEAM_LINK = '';
 
 type Who =
 	| 'nobody'
@@ -470,7 +472,7 @@ function world(): World {
 		.returning()
 		.get().id;
 
-	const asked = (status: string, accessToken: string, to: { targetType: 'user' | 'team'; targetId: number }) =>
+	const asked = (status: string, to: { targetType: 'user' | 'team'; targetId: number }) =>
 		db
 			.insert(taskRequests)
 			.values({
@@ -479,14 +481,16 @@ function world(): World {
 				requesterEmail: 'rita@example.test',
 				title: `${MARK} request`,
 				desiredBoardId: A.board.id,
-				status,
-				accessToken
+				status
 			})
 			.returning()
 			.get();
-	const request = asked('pending', LINK, { targetType: 'user', targetId: owner.id });
-	const unconfirmed = asked('unverified', UNCONFIRMED_LINK, { targetType: 'user', targetId: owner.id });
-	const teamRequest = asked('pending', TEAM_LINK, { targetType: 'team', targetId: team.id });
+	const request = asked('pending', { targetType: 'user', targetId: owner.id });
+	const unconfirmed = asked('unverified', { targetType: 'user', targetId: owner.id });
+	const teamRequest = asked('pending', { targetType: 'team', targetId: team.id });
+	LINK = inTransaction(() => issueRequestLink(request.id, 'mail'));
+	UNCONFIRMED_LINK = inTransaction(() => issueRequestLink(unconfirmed.id, 'mail'));
+	TEAM_LINK = inTransaction(() => issueRequestLink(teamRequest.id, 'mail'));
 
 	return {
 		owner,

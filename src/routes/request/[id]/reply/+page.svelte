@@ -34,10 +34,11 @@
 
 	let request = $state<RequestInfo | null>(null);
 	/**
-	 * The link does not open the thread: wrong, replaced (card 2158), for a
-	 * request nobody confirmed within seven days (card 2243), or for a request
-	 * that is not there, which the server answers alike (card 2132).
-	 * The page then offers to mail the current link instead.
+	 * The link does not open the thread: wrong, ended (card 2870: by a
+	 * restore, by newer links of its kind, or at a start after an older
+	 * image), for a request nobody confirmed within seven days (card 2243), or
+	 * for a request that is not there, which the server answers alike (card
+	 * 2132). The page then offers to mail a new link instead.
 	 */
 	let linkGone = $state(false);
 	let messages = $state<Message[]>([]);
@@ -61,7 +62,7 @@
 
 	/**
 	 * The link has stopped opening the thread: the poll stops, and the page
-	 * shows the form that asks for the current link. A poll that went on would
+	 * shows the form that asks for a new link. A poll that went on would
 	 * be refused every five seconds for as long as the tab is open, each a
 	 * WARN line in the server's log.
 	 */

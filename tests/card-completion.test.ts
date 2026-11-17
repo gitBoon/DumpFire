@@ -398,9 +398,7 @@ const creatingRoutes: {
 					requesterName: 'Rita',
 					requesterEmail: 'rita@example.test',
 					title: card.title,
-					priority: card.priority,
-					// One of its own, so that a test can accept several.
-					accessToken: crypto.randomUUID().replace(/-/g, '').padEnd(64, 'b')
+					priority: card.priority
 				})
 				.returning()
 				.get();
@@ -864,7 +862,6 @@ describe.each(subtaskRoutes)('ticking a subtask by $name', ({ path, source }) =>
 				requesterEmail: 'rita@example.test',
 				title: 'Please build this',
 				status: 'accepted',
-				accessToken: 'a'.repeat(64),
 				resolvedBy: owner.id,
 				resolvedCardId: card.id
 			})

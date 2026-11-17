@@ -6,7 +6,7 @@ import { notifyTaskRequest } from '$lib/server/notifications';
 import { linkBaseUrl } from '$lib/server/email';
 import { checkRateLimit } from '$lib/server/rate-limit';
 import { requestReplyUrl } from '$lib/server/request-tokens';
-import { linkOpens } from '$lib/server/request-access';
+import { linkCheck } from '$lib/server/request-access';
 import { addressToCount } from '$lib/server/client-address';
 import { pathId, readBody } from '$lib/server/request-body';
 import { writeAs } from '$lib/server/write-as';
@@ -46,6 +46,8 @@ export const POST: RequestHandler = async ({ params, request, locals, url, getCl
 	// threw for a request that exists and not for one that does not: a 500
 	// told the ids of real requests from the rest.
 	const token = typeof body.token === 'string' ? body.token : null;
+	// The token resolved before the request is read, whatever the id (card 2870, S2).
+	const opens = linkCheck(token);
 
 	// The request read and confirmed in one transaction that asks first
 	// whether the caller's session, if they came with one, is still open (card
@@ -60,7 +62,7 @@ export const POST: RequestHandler = async ({ params, request, locals, url, getCl
 		// requests cannot be picked out by trying numbers. And for a request nobody
 		// confirmed within seven days (card 2243): it confirmed however old its link
 		// was, mailing the team. The row is left for the form's clean-up.
-		if (!existing || !linkOpens(existing, token)) {
+		if (!existing || !opens(existing)) {
 			throw error(404, 'This confirmation link is not valid.');
 		}
 
@@ -78,8 +80,10 @@ export const POST: RequestHandler = async ({ params, request, locals, url, getCl
 		return { existing, alreadyConfirmed: !updated };
 	});
 
-	// The page is sent the path of the thread, and adds it to wherever it is.
-	const replyUrl = requestReplyUrl('', existing);
+	// The page is sent the path of the thread, and adds it to wherever it is,
+	// with the token it was posted: already the requester's, and already
+	// proven. No link is issued here (card 2870, decision 8).
+	const replyUrl = requestReplyUrl('', existing.id, token!);
 	// For the link in the mail to the team: see linkBaseUrl.
 	const baseUrl = linkBaseUrl(url);
 

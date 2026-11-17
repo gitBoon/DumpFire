@@ -25,8 +25,8 @@
  * also logged at WARN, beside the start-up line that says it at every start.
  * Only a backup this server made, and nobody changed since, has anything kept
  * (its seal, the review's S1); for any other the same WARN line says why none
- * was. A restore committed with foreign keys left off says the same, and the
- * request links it replaced, as one that succeeded does (O8).
+ * was. A restore committed with foreign keys left off says the same, and how
+ * many requests' links it ended, as one that succeeded does (O8).
  *
  * With a confirmation of the superadmin's current password (card 2701): the
  * page sends `{ currentPassword }` to `/api/admin/import/confirm` first, and
@@ -44,9 +44,11 @@
  * everybody out, whoever sent it included, and the answer says so, and names
  * the superadmin there is now (`superadmins`).
  *
- * Every task request is given a new link (card 2158), whatever the backup
- * holds, and the key the request form signs with is not brought in. The
- * answer and the log line say how many links were replaced.
+ * Every task request's links are ended (cards 2158 and 2870), whatever the
+ * backup holds: none is brought in, and each requester has a new one mailed
+ * from the page an old link opens, or with the next mail that carries one.
+ * The key the request form signs with is not brought in. The answer and the
+ * log line say for how many requests, in the words "request link(s) replaced".
  *
  * A backup made before migration 0069 has its API keys given this server's
  * deadline (card 2772, D5): the answer, its `apiKeyDeadlines` (and
@@ -143,9 +145,10 @@ function workingCopySentence(done: OutsideSwitchedOff): string {
 }
 
 /**
- * How many request links the restore replaced (card 2158): every request is
- * given a new one, whatever the backup holds, so a link mailed before the
- * import goes nowhere now. Said only when there were any.
+ * For how many requests the restore ended every link (cards 2158 and 2870):
+ * none is brought in, whatever the backup holds, so a link mailed before the
+ * import goes nowhere now, and its requester asks for a new one. Said only
+ * when there were any. The sentence's words are the ones it has always had.
  */
 function requestLinksSentence(count: number): string {
 	return (
@@ -432,7 +435,6 @@ export const POST: RequestHandler = async ({ request, locals, url, cookies }) =>
 			// a problem to report as well: the restore is committed either way.
 			const filled = [
 				`first_completed_at on ${result.backfilled.firstCompletedAt} card(s)`,
-				`access_token on ${result.backfilled.accessTokens} request(s)`,
 				// Only when there were any, so that a restore of a backup with
 				// none reads as it did (card 2179), naming the first 50: once a
 				// card is out, nothing records which goal held it (its review).

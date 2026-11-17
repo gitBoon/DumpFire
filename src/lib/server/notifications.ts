@@ -39,7 +39,7 @@ import { afterCommit } from './db/transaction';
 import { users, cards, cardAssignees, boards, teamMembers, boardMembers, boardTeams, taskRequests } from './db/schema';
 import { eq, and, inArray } from 'drizzle-orm';
 import { createLogger } from './logger';
-import { requestReplyUrl } from './request-tokens';
+import { issueRequestLinkNow, requestReplyUrl } from './request-tokens';
 import { requesterAddress } from './request-access';
 import { canViewBoard, type Actor } from './board-access';
 import { WITHHELD_CARD_TITLE, WITHHELD_SUBTASK_TITLE } from './withheld';
@@ -940,7 +940,8 @@ export function notifyRequesterConfirm(email: string, requestTitle: string, conf
 
 /**
  * @param replyUrl The requester's own link to the thread — build it with
- * `requestReplyUrl`. It carries the request's token; it used to carry their
+ * `requestReplyUrl`. Each mail carries a link of its own, issued for it
+ * (card 2870), and earlier links go on working; it used to carry their
  * email address, which anyone who knew the address could reproduce. Null
  * where the server has no address to build it from, and then nothing is sent.
  */
@@ -967,7 +968,7 @@ export function notifyRequesterMessage(email: string, requestTitle: string, send
 }
 
 /**
- * Mail a requester the current link to their request, which they asked for
+ * Mail a requester a new link to their request, which they asked for
  * from the page a link that no longer works opens (card 2158). Sent only to
  * the request's address, `requesterAddress(request)` (card 2171: the account's
  * email as it is now for a request made signed in), and only by
@@ -986,7 +987,7 @@ export function notifyRequesterNewLink(email: string, requestTitle: string, link
 			<p style="margin: 0 0 8px; font-weight: 600; color: #0f172a;">${escapeHtml(requestTitle)}</p>
 			<p style="margin: 0 0 16px; font-size: 13px; color: #475569;">
 				A new link to this request was asked for with your email address. Use the button below
-				from now on. If you did not ask for it, you can ignore this message: the link was sent to you alone.
+				to open it. If you did not ask for it, you can ignore this message: the link was sent to you alone.
 			</p>
 			<a href="${escapeHtml(link)}" style="display: inline-block; padding: 8px 16px; background: #6366f1; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px;">${unconfirmed ? 'Confirm my request' : 'View the conversation'}</a>
 		</div>
@@ -1069,24 +1070,37 @@ interface RequesterProgressEvent {
  *
  * Looks up the task_requests table for a request with resolvedCardId = cardId.
  * Sends a styled email with event-specific content, to `requesterAddress` as
- * it is when the row is read, after the commit: for a request made signed in,
- * the account's email as it is then (card 2171).
+ * it is when the row is read: for a request made signed in, the account's
+ * email as it is then (card 2171).
  * Automatically stops if the card already has completedAt set (unless this IS the completion event).
  * Skips if the actor is the requester themselves.
  *
- * Fire-and-forget, and nothing of it runs until the write it reports is
- * committed. The work is async (a completion builds a PDF first), so started
- * inside a transaction its later part would run whether or not that
- * transaction was rolled back. A failure is logged and reaches no caller.
+ * Every read and skip, and the mail's link, happen here, synchronously (card
+ * 2870, E1): the request, the address, the self-notification, completion,
+ * preferences, mail set up with its password, and an address to make the link
+ * from. Then a link of the mail's own is issued (`issueRequestLinkNow`).
+ *
+ * Where that happens depends on the caller (the code review's CR1 and CS4). A
+ * comment and a subtask tick call this inside their write's transaction: the
+ * link is a savepoint of it, so a rolled-back write mails nothing and leaves
+ * no link. A move (`announceCardMoves`) and a card created complete
+ * (`announceCardCreated`) call it from an effect after their commit, and the
+ * link then has a transaction of its own: the write it reports is saved
+ * whatever happens here. A throw from this synchronous part reaches the
+ * caller: inside a transaction it rolls the write back; after a commit each of
+ * those two callers catches it and logs it at ERROR, so that its other
+ * announcements still go.
+ *
+ * The mail itself is built and sent only once any open transaction is
+ * committed (`afterCommit`; at once where none is), because the work is async
+ * (a completion builds a PDF first), and started inside a transaction its
+ * later part would run whether or not that transaction was rolled back. A
+ * failure there is logged and reaches no caller.
  */
 export function notifyRequesterProgress(event: RequesterProgressEvent): void {
-	afterCommit(() => sendRequesterProgress(event));
-}
-
-async function sendRequesterProgress(event: RequesterProgressEvent): Promise<void> {
 	if (!isSmtpConfigured()) return;
 
-	const { cardId, action, summary, actorName, baseUrl, toColumn, fromColumn, actorUserId } = event;
+	const { cardId, action, baseUrl, actorUserId } = event;
 
 	// Find the originating task request for this card
 	const request = db.select({
@@ -1094,8 +1108,7 @@ async function sendRequesterProgress(event: RequesterProgressEvent): Promise<voi
 		requesterEmail: taskRequests.requesterEmail,
 		requesterUserId: taskRequests.requesterUserId,
 		title: taskRequests.title,
-		status: taskRequests.status,
-		accessToken: taskRequests.accessToken
+		status: taskRequests.status
 	})
 	.from(taskRequests)
 	.where(and(eq(taskRequests.resolvedCardId, cardId), eq(taskRequests.status, 'accepted')))
@@ -1121,13 +1134,35 @@ async function sendRequesterProgress(event: RequesterProgressEvent): Promise<voi
 		if (!shouldNotifyUser(request.requesterUserId, 'email_request_progress')) return;
 	}
 
+	// Every mail would fail, so none is made, and no link is issued for one (S5).
+	if (smtpPasswordMissing()) return;
+
 	// Its link is the requester's own way in to their request, so with no
 	// address to make it from there is no mail. The move it reports is done.
 	if (noLinkAddress(baseUrl, `The progress mail to the requester of request ${request.id}`)) return;
 
-	// Build event-specific email content
-	const requestTitle = request.title;
-	const replyUrl = requestReplyUrl(baseUrl, request);
+	// For a comment or a subtask tick, in the caller's transaction, as a
+	// savepoint of it, so a rollback takes the link with it. A move
+	// (`announceCardMoves`) and a card created complete (`announceCardCreated`)
+	// report from an effect after their commit, and the link then has a
+	// transaction of its own.
+	const token = issueRequestLinkNow(request.id, 'mail');
+	const replyUrl = requestReplyUrl(baseUrl, request.id, token);
+	afterCommit(() => sendRequesterProgress(event, request.title, address, replyUrl));
+}
+
+/**
+ * Build and send the progress mail, once the write it reports is committed,
+ * from what `notifyRequesterProgress` read and issued: it reads nothing about
+ * the request.
+ */
+async function sendRequesterProgress(
+	event: RequesterProgressEvent,
+	requestTitle: string,
+	address: string,
+	replyUrl: string
+): Promise<void> {
+	const { cardId, action, summary, actorName, toColumn, fromColumn } = event;
 
 	const actionConfigs: Record<RequesterProgressAction, { subject: string; borderColor: string; heading: string; icon: string }> = {
 		comment: {
