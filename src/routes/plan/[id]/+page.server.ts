@@ -1,5 +1,5 @@
 import { error, redirect } from '@sveltejs/kit';
-import { canEditMilestone, requireMilestone, MilestoneError } from '$lib/server/milestones';
+import { canEditMilestone, milestoneScope, requireMilestone, MilestoneError } from '$lib/server/milestones';
 import { getMilestoneSummary, planSubtasks } from '$lib/server/planning';
 import type { PageServerLoad } from './$types';
 
@@ -29,6 +29,13 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 	// is also what the API answers, and this is only drawn here.
 	// Whether the header offers the rename (card 2472): the rule the PATCH
 	// itself asks (`requireMilestone(user, id, true)`), so a button is shown
-	// only to someone whose rename would be taken.
-	return { user: locals.user, summary, subtasks: planSubtasks(summary), canRename: canEditMilestone(locals.user, row) };
+	// only to someone whose rename would be taken. The goal's board, and the
+	// boards it may be given to, for the header's scope control (card 2860).
+	return {
+		user: locals.user,
+		summary,
+		subtasks: planSubtasks(summary),
+		canRename: canEditMilestone(locals.user, row),
+		scope: milestoneScope(locals.user, row)
+	};
 };

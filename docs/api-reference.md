@@ -1,7 +1,7 @@
 ---
 title: "External API Reference"
 category: Integration
-version: 1.127
+version: 1.128
 status: As-Built
 date: 2026-11-17
 tags:
@@ -413,6 +413,13 @@ them as a signed-in session must send the code too.
   with the number left. Neither touches the account's sign-in code pauses or lock.
 - No migration, and nothing to set. Reload every DumpFire tab opened before the release: an old
   page sends no `currentCode` and is answered `400` `missing`, with nothing changed.
+- **The bulk attach's refusal of a card on another board names its remedy** (card 2860,
+  additive; the OpenAPI document is unchanged at `1.7.1`). On
+  `POST /api/v1/milestones/:milestoneId/cards/bulk` to a single-board milestone, the
+  `problems[]` reason reads `… Make the milestone cross-board (boardId null on PATCH
+  /api/v1/milestones/<id>, or Spans every board on its plan page), or move the card.`, where it
+  read `… Make the milestone cross-board, or move the card.` The status (`409`), the shape and
+  the top-level `message` are unchanged; the single attach keeps its words.
 
 ### Changes on 2026-11-13
 
@@ -4101,6 +4108,13 @@ milestone's archived cards in `archivedCards` (card 2346): take each out with
 a goal across boards, is always accepted, and the milestone's own board sent back is no
 change.
 
+Who may change the goal follows its board (card 2860). Before, a goal of one board is
+changed by anyone who can edit that board, so any of its editors may make it cross-board
+with `boardId: null`. After, only its creator or an administrator can change it, and only
+someone who can open every board its cards are on can see it (with no cards, only its
+creator). The plan page does the same with its Board select, asked first in a dialog that
+says so; the wrapper with `update-milestone -MilestoneId N -BoardId none`.
+
 ```mermaid
 flowchart TD
     P["PATCH with boardId"] --> M{"milestone there,<br/>caller may change it?"}
@@ -4157,7 +4171,11 @@ Both are all or nothing:
   is on a board the caller cannot edit or (for an attach) is on another board than a
   single-board milestone, the answer is `409` with every problem listed, and no card is
   changed. The attach says `Card does not exist or is archived`; the detach says
-  `Card not found` for a card that does not exist (card 2290).
+  `Card not found` for a card that does not exist (card 2290). A card on another board than
+  a single-board milestone's names the remedy (card 2860): `This milestone belongs to a
+  single board; card #2856 is on another. Make the milestone cross-board (boardId null on
+  PATCH /api/v1/milestones/39, or Spans every board on its plan page), or move the card.`
+  Make it cross-board, then send the same list again.
 - **The detach takes an archived card out** (card 2290), as the single-card `DELETE` and
   `milestoneId: null` on `PUT /cards/:cardId` do, with its entry and a live update to its
   board, and skips and counts one that is not in the milestone. An archived card on a board

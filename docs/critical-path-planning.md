@@ -1,9 +1,9 @@
 ---
 title: "Critical-Path Planning"
 category: Architecture
-version: 1.24
+version: 1.25
 status: As-Built
-date: 2026-10-26
+date: 2026-11-17
 tags:
   - planning
   - dependencies
@@ -189,7 +189,7 @@ card-only lists written before subtasks existed are untouched.
 | `UNIQUE (card_id, depends_on_card_id)` | The duplicate check used to be handler-only. Migration `0042` de-duplicates to `MIN(id)` per pair before creating the index, or it fails on live data. |
 | `cards.milestone_id` has no `REFERENCES` clause | SQLite cannot add a column with `ON DELETE` to an existing table. The delete handler nulls it instead — which is the wanted behaviour anyway: **deleting a goal must never delete the work.** |
 | `milestones.board_id` nullable | A goal can span several projects. A migration touches more than one board. |
-| A board's milestone holds only that board's cards | `setCardMilestone` and the bulk attach refuse a card of another board for it, and since card 2155 a move to another board takes the card out of a milestone of a board other than the one it arrives on, in the same update of the card (`moveCard`, beside the category rule). The source board's `card_moved_away` entry ends `and out of milestone "M"`, or `and out of a milestone of another board` for a third board's. The mover is told: `PUT /api/cards/{id}` and the v1 move answer `leftMilestone` `{ id, name }` for a milestone of the board the card left (null otherwise, and for a third board's), and All Tasks says `Moved. It left milestone "M"; moving it back does not put it back in.` A goal across boards keeps its cards wherever they move. Migration `0057` took out the cards already in a milestone of another board, once (a card whose column row is gone is left alone, its board being unknown), and since card 2179 the same statement runs as a backfill at every start and after every restore or import, so an older backup comes back repaired too (`CARDS_LEAVE_OTHER_BOARDS_MILESTONES` in `migrate.ts`; the restore's report counts the cards it took out). Membership is not historised, so a goal that loses a card, to 0057, the backfill or any later move, shows a burndown, a milestone PDF and, closed, final figures without it across its whole window, not only from the move. The last way in is closed by card 2179: `PATCH` of a milestone gives it a new `boardId` only when every card in it, archived ones included, is on that board (otherwise `400` `Some cards in this milestone are not on that board (archived cards count too). …`), checked in `updateMilestone`'s transaction after the board is found (`404`) and the caller can edit it (`403`). `boardId: null` is always accepted. The refusal names no card; since card 2346 `GET /api/v1/milestones/{id}` lists the goal's archived cards in `archivedCards`, by card id with `archivedAt`, withheld as its `cards` are (`readMilestone`), so the ones in the way can be found and taken out. |
+| A board's milestone holds only that board's cards | `setCardMilestone` and the bulk attach refuse a card of another board for it, and since card 2155 a move to another board takes the card out of a milestone of a board other than the one it arrives on, in the same update of the card (`moveCard`, beside the category rule). The source board's `card_moved_away` entry ends `and out of milestone "M"`, or `and out of a milestone of another board` for a third board's. The mover is told: `PUT /api/cards/{id}` and the v1 move answer `leftMilestone` `{ id, name }` for a milestone of the board the card left (null otherwise, and for a third board's), and All Tasks says `Moved. It left milestone "M"; moving it back does not put it back in.` A goal across boards keeps its cards wherever they move. Migration `0057` took out the cards already in a milestone of another board, once (a card whose column row is gone is left alone, its board being unknown), and since card 2179 the same statement runs as a backfill at every start and after every restore or import, so an older backup comes back repaired too (`CARDS_LEAVE_OTHER_BOARDS_MILESTONES` in `migrate.ts`; the restore's report counts the cards it took out). Membership is not historised, so a goal that loses a card, to 0057, the backfill or any later move, shows a burndown, a milestone PDF and, closed, final figures without it across its whole window, not only from the move. The last way in is closed by card 2179: `PATCH` of a milestone gives it a new `boardId` only when every card in it, archived ones included, is on that board (otherwise `400` `Some cards in this milestone are not on that board (archived cards count too). …`), checked in `updateMilestone`'s transaction after the board is found (`404`) and the caller can edit it (`403`). `boardId: null` is always accepted, so a goal of one board that needs a card of another is made cross-board on its plan page (Spans every board) or with `boardId: null`, and the bulk attach's refusal says so (card 2860). The refusal names no card; since card 2346 `GET /api/v1/milestones/{id}` lists the goal's archived cards in `archivedCards`, by card id with `archivedAt`, withheld as its `cards` are (`readMilestone`), so the ones in the way can be found and taken out. |
 | Archived cards are excluded everywhere | An archived blocker is not a live dependency. |
 
 ### What counts as "done"
@@ -631,6 +631,43 @@ notes "and N options" under its cards complete, and `/plan` writes a goal's prog
 
 Nothing is computed in the browser. The server hands over a `MilestoneSummary` and the page
 draws it, so the page and the API can never disagree about what the critical path is.
+
+### The goal's board
+
+Beside the goal's status in the header is its board (card 2860). Someone who cannot change the
+goal sees a chip: the board's name, or **Spans every board**. Someone who can sees a select,
+labelled Board: **Spans every board**, the goal's own board, then the boards the load offers
+(`milestoneScope` in `milestones.ts`, as `scope.boardChoices`). Those are only boards the
+`PATCH` would accept, worked out from the boards its cards are on, archived ones included:
+with no cards, every top-level board the caller can edit; with all of them on one board, that
+board if the caller can edit it; with cards on several, none, and the select's hint says it
+can only span every board. A choice opens the app's confirm dialog, which says the cost:
+**Span Every Board** ("Afterwards only its creator or an administrator can change it, and only
+people who can open every board its cards are on can see it") or **Give Goal to Board**
+("Everyone who can open it will see it, its editors can change it, and only cards on it can be
+added to it"). Only Confirm sends `PATCH /api/milestones/{id}` with `boardId`, through the
+page's one change path; Cancel or Escape puts the select back. No password is asked, as for
+the goal's other edits.
+
+```mermaid
+sequenceDiagram
+    participant U as Editor
+    participant H as PlanHeader
+    participant D as ConfirmModal
+    participant S as PATCH /api/milestones/:id
+    U->>H: Board select: Spans every board
+    H->>D: Span Every Board (the cost in words)
+    alt Confirm
+        D->>S: { boardId: null }
+        S-->>H: 200, the plan read again
+    else Cancel or Escape
+        D-->>H: nothing sent, the select back on the goal's board
+    end
+```
+
+The Progress block lists the boards the goal's cards come from in a row of their own,
+labelled **Cards from**, each with its count (cards on boards the viewer cannot open are one
+entry, with no link). A goal with no cards has no such row.
 
 ### Opening a card to its subtasks
 

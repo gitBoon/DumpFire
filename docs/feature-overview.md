@@ -1,9 +1,9 @@
 ---
 title: "DumpFire Feature Overview"
 category: How-To
-version: 1.81
+version: 1.82
 status: As-Built
-date: 2026-11-16
+date: 2026-11-17
 tags:
   - decision-reminders
   - features
@@ -61,6 +61,7 @@ The dashboard's, each board's and All Tasks' header keep what you use every minu
 - **From the keyboard** — every menu opens with Enter, Space or the down arrow, the arrow keys move between its items, Escape closes it and puts you back on its button, and Tab moves on. A click anywhere else closes it.
 - **Renaming a board from the keyboard** — Tab to the board's name and press Enter or Space to rename it. Enter saves the new name and Escape cancels it, sending nothing; either way you are put back on the name (from 27 October 2026; before, the name answered only a click, and Escape did nothing).
 - **Renaming a goal** — on a goal's plan page, the name is a button for someone who may change the goal (an editor of its board, or for a goal across boards its maker, and administrators): click it, double-click it, or Tab to it and press Enter or Space. Enter saves the new name and Escape cancels it, sending nothing; either way you are put back on the name, and a rename the server refuses keeps the box open with what you typed. Anyone else sees the name only (from 27 October 2026; before, the name answered only a double-click, so it could not be renamed from the keyboard, and a viewer could open the box and be refused).
+- **Changing a goal's board** — on a goal's plan page, beside its status, the **Board** select lets someone who may change the goal make it **Spans every board**, so cards from any board can be added to it, or give it to a board. A dialog says what the change costs before anything is sent: once a goal spans every board, only its creator or an administrator can change it, and only people who can open every board its cards are on can see it. Only boards the goal can be given to are offered: with its cards on several boards, it can only span every board. Anyone else sees the board's name, or Spans every board, as a chip. The Progress block lists the boards the goal's cards come from under **Cards from** (from 17 November 2026; before, a goal's board was chosen only when it was made, and changing it meant deleting the goal and making it again).
 - **Manage Categories and Share Board** — each window takes the focus as it opens (the name box in Manage Categories; Close in Share Board, then the list of people once the window has loaded it), keeps Tab inside itself, closes on Escape and puts you back on the menu button you opened it from. While Share Board is asking you to confirm a removal or making the board private, Escape cancels only that question (from 27 October 2026).
 
 ```mermaid

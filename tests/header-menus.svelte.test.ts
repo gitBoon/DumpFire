@@ -1107,7 +1107,7 @@ describe('renaming a goal from the keyboard (card 2472, as card 2470 did the boa
 		const load = read('src/routes/plan/[id]/+page.server.ts');
 		expect(load).toContain('row = requireMilestone(locals.user, id);');
 		expect(load).toContain('canRename: canEditMilestone(locals.user, row)');
-		expect(read('src/routes/plan/[id]/+page.svelte')).toContain('<PlanHeader {summary} {milestone} {busy} {mutate} canRename={data.canRename} bind:picking />');
+		expect(read('src/routes/plan/[id]/+page.svelte')).toContain('<PlanHeader {summary} {milestone} {busy} {mutate} canRename={data.canRename} scope={data.scope} bind:picking />');
 	});
 });
 

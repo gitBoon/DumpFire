@@ -198,7 +198,10 @@ export const POST: RequestHandler = async ({ params, request, url, locals }) => 
 			if (milestone.boardId !== null && milestone.boardId !== card.boardId) {
 				problems.push({
 					cardId: id,
-					reason: `This milestone belongs to a single board; card #${id} is on another. Make the milestone cross-board, or move the card.`
+					// The remedy named is one that exists (card 2860): the API's own, for
+					// any client, and the plan page's control. The batch's own message
+					// already says nothing was written, so each reason does not.
+					reason: `This milestone belongs to a single board; card #${id} is on another. Make the milestone cross-board (boardId null on PATCH /api/v1/milestones/${milestoneId}, or Spans every board on its plan page), or move the card.`
 				});
 				continue;
 			}

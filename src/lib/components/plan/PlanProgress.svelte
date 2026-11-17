@@ -1,7 +1,8 @@
 <!--
   PlanProgress.svelte — The plan page's first block: how far along the goal
   is, its cards complete, startable and blocked, its open subtasks, and its
-  cards by column and by board (card 2281, slice C3a-3: moved from
+  cards by column and, in a row of their own labelled Cards from, by board
+  (card 2860) (card 2281, slice C3a-3: moved from
   src/routes/plan/[id]/+page.svelte). Drawn from the plan the page's load
   gave it.
 -->
@@ -67,15 +68,22 @@
 		{#each summary.progress.byColumn as c}
 			<span class="chip">{c.columnTitle} · {c.count}</span>
 		{/each}
-		{#each summary.progress.boards as b}
-			<!-- The cards on boards the viewer cannot open are one entry with no id, and no link (card 2129). -->
-			{#if b.id === null}
-				<span class="chip">{b.name} · {b.cardCount}</span>
-			{:else}
-				<a class="chip board-chip" href="/board/{b.id}">{b.name} · {b.cardCount}</a>
-			{/if}
-		{/each}
 	</div>
+
+	<!-- The boards its cards come from, in a row of their own (card 2860); none for a goal with no cards. -->
+	{#if summary.progress.boards.length > 0}
+		<div class="chip-row boards-row">
+			<span class="chip-row-label">Cards from</span>
+			{#each summary.progress.boards as b}
+				<!-- The cards on boards the viewer cannot open are one entry with no id, and no link (card 2129). -->
+				{#if b.id === null}
+					<span class="chip">{b.name} · {b.cardCount}</span>
+				{:else}
+					<a class="chip board-chip" href="/board/{b.id}">{b.name} · {b.cardCount}</a>
+				{/if}
+			{/each}
+		</div>
+	{/if}
 </section>
 
 <style>
@@ -120,6 +128,12 @@
 	.stat-note { font-size: 0.68rem; color: var(--text-tertiary); font-style: italic; }
 
 	.chip-row { display: flex; flex-wrap: wrap; gap: 5px; }
+	/* The boards its cards come from, under the columns, with a label (card 2860). */
+	.boards-row { align-items: center; margin-top: 6px; }
+	.chip-row-label {
+		font-size: 0.68rem; color: var(--text-tertiary);
+		text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; margin-right: 2px;
+	}
 	.chip {
 		padding: 2px 9px; border-radius: var(--radius-full);
 		font-size: 0.68rem; font-weight: 600; text-decoration: none;

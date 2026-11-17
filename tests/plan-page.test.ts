@@ -1315,6 +1315,81 @@ describe('the plan page’s changes to the goal go through its one PATCH path (c
 	});
 });
 
+// Card 2860: the goal's board changed from the header, asked first, through the page's one PATCH path.
+describe('the plan page’s header changes the goal’s board, asking first (card 2860)', () => {
+	const website = { id: 3, name: 'Website', emoji: '📋' };
+	/** The page's load for the goal Launch of board Website, or across boards, with what the scope control is given. */
+	const scoped = (boardId: number | null, scope: { boardName: string | null; boardChoices: (typeof website)[] }, canRename = true) => {
+		const data = planData();
+		data.summary.milestone.boardId = boardId as never;
+		return { ...data, canRename, scope };
+	};
+	const scopeSelect = () => $<HTMLSelectElement>('.scope-select')!;
+	function choose(value: string) {
+		const select = scopeSelect();
+		select.value = value;
+		select.dispatchEvent(new Event('change', { bubbles: true }));
+		flushSync();
+	}
+	const dialogButton = (words: string) => $$('.confirm-actions button').find((b) => textOf(b) === words)!;
+
+	it('makes a goal of one board span every board once the dialog’s words are confirmed', async () => {
+		await draw(scoped(3, { boardName: 'Website', boardChoices: [website] }));
+		expect(scopeSelect().value).toBe('3');
+		choose('all');
+		expect(patches()).toEqual([]);
+		expect(textOf($('.confirm-modal h3'))).toBe('Span Every Board');
+		expect(textOf($('.confirm-message'))).toBe(
+			'“Launch” will span every board, so cards from any board can be added to it. Afterwards only its creator or an administrator can change it, and only people who can open every board its cards are on can see it.'
+		);
+		click(dialogButton('Make it span every board'));
+		await settle();
+		expect(patches()).toEqual([{ boardId: null }]);
+		expect($('.confirm-modal')).toBeNull();
+	});
+
+	it('sends nothing when the dialog is cancelled, and the select shows the goal’s board again', async () => {
+		await draw(scoped(3, { boardName: 'Website', boardChoices: [website] }));
+		choose('all');
+		click(dialogButton('Cancel'));
+		await settle();
+		expect($('.confirm-modal')).toBeNull();
+		expect(patches()).toEqual([]);
+		expect(scopeSelect().value).toBe('3');
+	});
+
+	it('gives a goal across boards to the board offered, naming it in the dialog', async () => {
+		await draw(scoped(null, { boardName: null, boardChoices: [website] }));
+		expect(scopeSelect().value).toBe('all');
+		expect([...scopeSelect().options].map((o) => o.textContent?.trim())).toEqual(['Spans every board', '📋 Website']);
+		choose('3');
+		expect(textOf($('.confirm-modal h3'))).toBe('Give Goal to Board');
+		expect(textOf($('.confirm-message'))).toBe(
+			'“Launch” will belong to Website. Everyone who can open Website will see it, its editors can change it, and only cards on Website can be added to it.'
+		);
+		click(dialogButton('Give it to Website'));
+		await settle();
+		expect(patches()).toEqual([{ boardId: 3 }]);
+	});
+
+	it('shows the board as a chip to someone who cannot change the goal, and the boards its cards come from in a row of their own', async () => {
+		const shop = { id: 5, name: 'Shop', cardCount: 2 };
+		const props = await draw({
+			...scoped(3, { boardName: 'Website', boardChoices: [] }, false),
+			summary: { ...planData().summary, progress: { ...planData().summary.progress, boards: [{ id: 3, name: 'Website', cardCount: 3 }, shop] } }
+		});
+		expect($('.scope-select')).toBeNull();
+		expect(textOf($('.scope-chip'))).toBe('Website');
+		expect(textOf($('.boards-row .chip-row-label'))).toBe('Cards from');
+		expect($$('.boards-row .chip').map(textOf)).toEqual(['Website · 3', 'Shop · 2']);
+
+		props.data = { ...scoped(3, { boardName: 'Website', boardChoices: [] }, false), summary: planData({ total: 0, done: 0, percent: 0, byColumn: [], boards: [] }).summary };
+		await settle();
+		expect($('.boards-row')).toBeNull();
+		expect(textOf($('.scope-chip'))).toBe('Website');
+	});
+});
+
 describe('the plan page’s progress and burndown draw from its load (card 2281, slice C3a-3)', () => {
 	it('draws the progress from the plan, and again from a re-read', async () => {
 		const props = await draw();

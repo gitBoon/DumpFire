@@ -178,6 +178,8 @@ const TEST_FILES = [
 	'mfa-secrets.test.ts',
 	'mfa-storage.test.ts',
 	'migrations.test.ts',
+	// Card 2860: a single-board goal's bulk attach refusal naming its remedy, and the remedy taken.
+	'milestone-cross-board.test.ts',
 	// Card 2537: the New badge on the board's card and on the list's row, on one clock.
 	'new-badge.svelte.test.ts',
 	'openapi-document.test.ts',

@@ -16,8 +16,8 @@
 import { db } from './db';
 import { inTransaction } from './db/transaction';
 import { milestones, cards, columns, boards } from './db/schema';
-import { eq, and, or, isNull, inArray, notInArray, exists, notExists, ne, type SQL } from 'drizzle-orm';
-import { canViewBoard, canEditBoard, type Actor } from './board-access';
+import { eq, and, or, asc, isNull, inArray, notInArray, exists, notExists, ne, type SQL } from 'drizzle-orm';
+import { canViewBoard, canEditBoard, editableBoardIds, type Actor } from './board-access';
 import { resolveAccessible } from './list-access';
 import { isCompleteColumnTitle } from './card-completion';
 import { isUpstreamColumn } from '$lib/column-role';
@@ -148,6 +148,51 @@ export function canEditMilestone(user: SessionUser, milestone: MilestoneRow): bo
 	if (isAdmin(user)) return true;
 	if (milestone.boardId !== null) return canEditBoard(user, milestone.boardId);
 	return milestone.createdBy === user.id;
+}
+
+/** A board the plan page offers to give a goal to (card 2860). */
+export type ScopeChoice = { id: number; name: string; emoji: string };
+
+/**
+ * The plan page's scope control (card 2860): the goal's own board's name, or
+ * null for a goal across boards, and the boards it may be given to. None for
+ * someone who cannot change the goal (`canEditMilestone`, the PATCH's own
+ * rule). Otherwise by the boards its cards are on, archived ones included, as
+ * the PATCH counts them, so a board offered is never one it refuses with its
+ * 400: with no cards, every top-level board the caller can edit, in id order
+ * as the New milestone form lists them (every one for an administrator); with
+ * all of them on one board, that board if the caller can edit it; with cards
+ * on more than one, none, as the goal can then only span every board.
+ */
+export function milestoneScope(
+	user: SessionUser,
+	milestone: MilestoneRow
+): { boardName: string | null; boardChoices: ScopeChoice[] } {
+	const boardName =
+		milestone.boardId === null
+			? null
+			: (db.select({ name: boards.name }).from(boards).where(eq(boards.id, milestone.boardId)).get()?.name ?? null);
+	if (!canEditMilestone(user, milestone)) return { boardName, boardChoices: [] };
+
+	const choice = (b: { id: number; name: string; emoji: string | null }): ScopeChoice => ({ id: b.id, name: b.name, emoji: b.emoji ?? '📋' });
+	const held = getMilestoneBoardIds(milestone.id);
+	if (held.length > 1) return { boardName, boardChoices: [] };
+	if (held.length === 1) {
+		if (!canEditBoard(user, held[0])) return { boardName, boardChoices: [] };
+		const board = db.select({ id: boards.id, name: boards.name, emoji: boards.emoji }).from(boards).where(eq(boards.id, held[0])).get();
+		return { boardName, boardChoices: board ? [choice(board)] : [] };
+	}
+
+	const editable = editableBoardIds(user);
+	if (editable !== null && editable.size === 0) return { boardName, boardChoices: [] };
+	const boardChoices = db
+		.select({ id: boards.id, name: boards.name, emoji: boards.emoji })
+		.from(boards)
+		.where(and(isNull(boards.parentCardId), editable === null ? undefined : inArray(boards.id, [...editable])))
+		.orderBy(asc(boards.id))
+		.all()
+		.map(choice);
+	return { boardName, boardChoices };
 }
 
 /**

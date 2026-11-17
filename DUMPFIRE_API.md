@@ -260,6 +260,7 @@ A `502`, `503` or `504` is not DumpFire's either: see [Writes, Failures and Retr
 - **A wrong password or a wrong code** is `403` `{ "message": "Your password or code was not right. Nothing was changed.", "stepUp": "wrong" }`, never saying which (it was "Password is incorrect. Nothing was changed."). Either counts once toward the session's three, and only both right set the count back. The signed-out answer reads "…after three wrong passwords or codes, or because it had ended: sign in again.". A code that has confirmed an action is spent, even if the action is then refused.
 - **The Account routes ask the same way**: `PUT /api/account/password` (`{ currentPassword, currentCode, newPassword, endApiKeys }`), `PUT /api/account/email` (`{ newEmail, currentPassword, currentCode }`) and `POST /api/account/api-keys` (`{ name, expiresAt, currentPassword, currentCode }`) join the step-up list, now thirty-two. **The email and key routes no longer read `password`**: a body with only `password` is `400` `missing`. Their own fields are refused before the password, and their own words for the password are gone.
 - No migration and nothing to set. Reload every DumpFire tab opened before the release: an old page sends no code and is answered `400` `missing`, with nothing changed. See [docs/authentication-security.md](docs/authentication-security.md#the-code-beside-the-password-card-2771).
+- **The bulk attach's refusal of a card on another board names its remedy** (card 2860, additive; still `1.7.1`). On `POST /milestones/{milestoneId}/cards/bulk` to a goal of one board, a card on another board's `problems[]` reason reads `This milestone belongs to a single board; card #<n> is on another. Make the milestone cross-board (boardId null on PATCH /api/v1/milestones/<id>, or Spans every board on its plan page), or move the card.`, where it read `… Make the milestone cross-board, or move the card.` The status (`409`), the shape and the top-level `message` are unchanged, and the single attach's words are too. See [Bulk Planning](#bulk-planning).
 
 ### Changes on 2026-11-13
 
@@ -2083,6 +2084,13 @@ reader of the new board would read the titles of the other boards' cards in the 
 `boardId: null` (a goal across boards) is always accepted, and the milestone's own board
 sent back is no change. An empty goal goes to any board the caller may edit.
 
+Who may change the goal follows its board (card 2860). A goal of one board is changed by
+anyone who can edit that board, so any of its editors may make it cross-board with
+`boardId: null`. Afterwards only its creator or an administrator can change it, and only
+someone who can open every board its cards are on can see it (with no cards, only its
+creator). The web application does the same from the goal's plan page, with its Board
+select, and asks first.
+
 `DELETE` removes the goal but **never the work** — its cards are released back to having no
 milestone:
 
@@ -2455,8 +2463,13 @@ and have an end on a board the key's user cannot edit, each with the `link` and 
 
 The two milestone endpoints answer a `409` of their own shape, with `problems` in place of
 `rejected`. Each problem carries a `cardId` and a `reason` in words — including the
-board-scope rule, whose reason names the two ways out (make the milestone cross-board, or
-move the card).
+board-scope rule, whose reason names the two ways out (card 2860): make the milestone
+cross-board, with `boardId: null` on `PATCH /milestones/{milestoneId}` or Spans every board in
+the Board select on its plan page, or move the card. Then send the same batch again:
+
+```
+This milestone belongs to a single board; card #2856 is on another. Make the milestone cross-board (boardId null on PATCH /api/v1/milestones/39, or Spans every board on its plan page), or move the card.
+```
 
 ```json
 {

@@ -11,6 +11,9 @@
   out. Whether the card picker is open is the page's (`picking`, bound
   here), which Add cards opens and closes. The late tag moves on at
   midnight on the header's own 15-second tick, as it did on the page.
+  The goal's board beside its status (card 2860): a chip, or for someone who
+  may change the goal a select that makes it span every board or gives it to
+  a board the load offers, each asked first in the app's confirm dialog.
 -->
 <script lang="ts">
 	import type { PageData } from '../../../routes/plan/[id]/$types';
@@ -18,6 +21,10 @@
 	// The Ready chip's tooltip, which names the goal's options (the S4b review's J7).
 	import { readyToCloseTitle } from '$lib/progress';
 	import { onDestroy, onMount, tick as nextTick } from 'svelte';
+	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
+
+	/** A board the goal may be given to, as the load offers it. */
+	type ScopeChoice = { id: number; name: string; emoji: string };
 
 	let {
 		summary,
@@ -25,6 +32,7 @@
 		busy,
 		mutate,
 		canRename = false,
+		scope = { boardName: null, boardChoices: [] },
 		picking = $bindable()
 	}: {
 		/** The page's: the plan, as its load gave it. */
@@ -37,6 +45,13 @@
 		mutate: (body: Record<string, unknown>) => Promise<boolean>;
 		/** The page's load: whether the caller may change the goal (`canEditMilestone`, the PATCH's own rule): the name is a button only then (card 2472). */
 		canRename?: boolean;
+		/**
+		 * The page's load (`milestoneScope`, card 2860): the goal's own board's
+		 * name, null across boards, and the boards it may be given to, none for
+		 * someone who cannot change it. With none given, the board's name is not
+		 * known and no board is offered.
+		 */
+		scope?: { boardName: string | null; boardChoices: ScopeChoice[] };
 		/** The page's: whether the card picker is open. */
 		picking: boolean;
 	} = $props();
@@ -156,6 +171,56 @@
 	async function setTargetDate(value: string) {
 		await mutate({ targetDate: value || null });
 	}
+
+	// ─── The goal's board (card 2860) ────────────────────────────────────
+
+	/** The select's value for the goal as it is: `all` across boards, or its board's id. */
+	const currentScope = $derived(milestone.boardId === null ? 'all' : String(milestone.boardId));
+	/** The goal's own board, then each board offered, as the select lists them after Spans every board. */
+	const scopeOptions = $derived.by(() => {
+		const out: ScopeChoice[] = [];
+		if (milestone.boardId !== null) {
+			const own = scope.boardChoices.find((b) => b.id === milestone.boardId);
+			out.push(own ?? { id: milestone.boardId, name: scope.boardName ?? `Board #${milestone.boardId}`, emoji: '' });
+		}
+		for (const b of scope.boardChoices) if (b.id !== milestone.boardId) out.push(b);
+		return out;
+	});
+	/** Why only Spans every board is offered, where its cards are on several boards. */
+	const scopeHint = $derived(
+		milestone.boardId === null && scope.boardChoices.length === 0 && summary.progress.boards.length > 1
+			? 'Its cards are on several boards, so it can only span every board.'
+			: ''
+	);
+
+	let scopeSelect = $state<HTMLSelectElement>();
+	/** The change chosen in the select, asked in the dialog before it is sent: null for every board. */
+	let scopeAsked = $state<{ boardId: number | null; name: string } | null>(null);
+
+	function chooseScope(e: Event) {
+		const value = (e.currentTarget as HTMLSelectElement).value;
+		if (value === currentScope) return;
+		if (value === 'all') {
+			scopeAsked = { boardId: null, name: '' };
+			return;
+		}
+		const board = scopeOptions.find((b) => String(b.id) === value);
+		if (board) scopeAsked = { boardId: board.id, name: board.name };
+	}
+
+	/** Cancel or Escape: nothing sent, and the select shows the goal as it is again. */
+	function cancelScope() {
+		scopeAsked = null;
+		if (scopeSelect) scopeSelect.value = currentScope;
+	}
+
+	/** Confirm: the change goes through the page's one PATCH path; a refusal puts the select back. */
+	async function confirmScope() {
+		const asked = scopeAsked;
+		scopeAsked = null;
+		if (!asked) return;
+		if (!(await mutate({ boardId: asked.boardId })) && scopeSelect) scopeSelect.value = currentScope;
+	}
 </script>
 
 <header class="plan-header">
@@ -198,6 +263,28 @@
 		>
 			{#if readyToClose}Ready to close{:else if milestone.status === 'open'}Open{:else}Closed{/if}
 		</span>
+		<!-- The goal's board (card 2860): a select for someone who may change the
+		     goal, each choice asked first; a chip for anyone else. -->
+		{#if canRename}
+			<select
+				class="scope-select"
+				aria-label="Board"
+				title={scopeHint || 'The board this goal belongs to, or every board'}
+				value={currentScope}
+				onchange={chooseScope}
+				disabled={busy}
+				bind:this={scopeSelect}
+			>
+				<option value="all">Spans every board</option>
+				{#each scopeOptions as b (b.id)}
+					<option value={String(b.id)}>{b.emoji ? `${b.emoji} ` : ''}{b.name}</option>
+				{/each}
+			</select>
+		{:else}
+			<span class="scope-chip" title="The board this goal belongs to">
+				{milestone.boardId === null ? 'Spans every board' : (scope.boardName ?? `Board #${milestone.boardId}`)}
+			</span>
+		{/if}
 	</div>
 
 	<div class="plan-header-right">
@@ -262,6 +349,30 @@
 		</button>
 	</div>
 </header>
+
+<!-- What a change of the goal's board costs, said before it is sent (card 2860, decision 6). No password: as the goal's other edits. -->
+{#if scopeAsked}
+	{@const asked = scopeAsked}
+	{#if asked.boardId === null}
+		<ConfirmModal
+			title="Span Every Board"
+			message="“{milestone.name}” will span every board, so cards from any board can be added to it. Afterwards only its creator or an administrator can change it, and only people who can open every board its cards are on can see it."
+			confirmText="Make it span every board"
+			confirmDanger={false}
+			onConfirm={confirmScope}
+			onCancel={cancelScope}
+		/>
+	{:else}
+		<ConfirmModal
+			title="Give Goal to Board"
+			message="“{milestone.name}” will belong to {asked.name}. Everyone who can open {asked.name} will see it, its editors can change it, and only cards on {asked.name} can be added to it."
+			confirmText="Give it to {asked.name}"
+			confirmDanger={false}
+			onConfirm={confirmScope}
+			onCancel={cancelScope}
+		/>
+	{/if}
+{/if}
 
 <style>
 	/* ─── Header ───────────────────────────────────────────────────────── */
@@ -331,6 +442,26 @@
 		background: rgba(16, 185, 129, 0.12); color: var(--accent-emerald);
 		border: 1px solid rgba(16, 185, 129, 0.25);
 	}
+
+	/* The goal's board (card 2860): a chip in the status chip's form for
+	   someone who cannot change it, a select in the buttons' size for someone
+	   who can. */
+	.scope-chip {
+		flex-shrink: 0; padding: 1px 8px; border-radius: var(--radius-full);
+		font-size: 0.68rem; font-weight: 600; white-space: nowrap;
+		background: rgba(99, 102, 241, 0.1); color: #818cf8;
+		border: 1px solid rgba(99, 102, 241, 0.22);
+	}
+	.scope-select {
+		flex-shrink: 0; max-width: 200px; height: 26px; padding: 0 6px;
+		background: var(--bg-elevated); border: 1px solid var(--glass-border);
+		border-radius: var(--radius-sm); color: var(--text-secondary);
+		font-family: var(--font-family); font-size: 0.72rem; font-weight: 600;
+		cursor: pointer; text-overflow: ellipsis;
+	}
+	.scope-select:hover { color: var(--text-primary); border-color: var(--text-tertiary); }
+	.scope-select:focus-visible { outline: 2px solid var(--accent-indigo); outline-offset: 1px; }
+	.scope-select:disabled { opacity: 0.5; cursor: wait; }
 
 	/* Header controls share one size and never wrap — the title truncates when
 	   space runs out, because the controls are the part you still need. */

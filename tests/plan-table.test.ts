@@ -630,3 +630,43 @@ describe('who the plan page offers the rename to (card 2472)', () => {
 		expect((await api('PATCH', `/api/milestones/${across}`, { user: other, body: { name: 'Not taken' } })).status).toBe(403);
 	});
 });
+
+// Card 2860: the boards the header's scope control offers, only those the PATCH would take.
+describe('the boards the plan page offers to give the goal to (card 2860)', () => {
+	async function scopeOf(id: number, user: SessionUser) {
+		const res = await pageLoad(`/plan/${id}`, { user });
+		if (res.type !== 'data') throw new Error(`the plan page answered ${JSON.stringify(res)}`);
+		const scope: { boardName: string | null; boardChoices: { id: number; name: string }[] } = res.data.scope;
+		return { boardName: scope.boardName, boardIds: scope.boardChoices.map((b) => b.id), names: scope.boardChoices.map((b) => b.name) };
+	}
+
+	it('offers a goal with no cards every top-level board its editor can edit, in id order, and no board they only view or sub-board', async () => {
+		const editor = makeUser({ username: 'editor' });
+		addBoardMember(A.board, editor, 'editor');
+		const C = makeBoard({ owner, name: 'Board C' });
+		addBoardMember(C.board, editor, 'viewer');
+		makeBoard({ owner: editor, name: 'Sub-board of A', parentCardId: a1.id });
+		const empty = makeMilestone({ board: A.board, name: 'Empty', createdBy: owner }).id;
+
+		expect(await scopeOf(empty, editor)).toEqual({ boardName: 'Board A', boardIds: [A.board.id], names: ['Board A'] });
+	});
+
+	it('offers a goal across boards whose cards are all on one board that board alone', async () => {
+		const onA = makeCard(A.cols['To Do'], { title: 'Only on A' });
+		const across = makeMilestone({ name: 'Across, on A', createdBy: owner, cards: [onA] }).id;
+
+		expect(await scopeOf(across, owner)).toEqual({ boardName: null, boardIds: [A.board.id], names: ['Board A'] });
+	});
+
+	it('offers no board to a goal across boards with a live card on one board and an archived card on another', async () => {
+		const live = makeCard(A.cols['To Do'], { title: 'Live on A' });
+		const archived = makeCard(B.cols['To Do'], { title: 'Archived on B', archivedAt: '2026-11-01 09:00:00' });
+		const across = makeMilestone({ name: 'Across two', createdBy: owner, cards: [live, archived] }).id;
+
+		expect(await scopeOf(across, owner)).toEqual({ boardName: null, boardIds: [], names: [] });
+	});
+
+	it('offers no board to someone who cannot change the goal, and still names its board', async () => {
+		expect(await scopeOf(milestoneId, viewer)).toEqual({ boardName: 'Board A', boardIds: [], names: [] });
+	});
+});
