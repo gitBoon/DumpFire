@@ -4,6 +4,11 @@
  * PUT    /api/report-schedules/:id  — Update schedule (enable/disable, change frequency); an address added,
  *                                     turning it on or a wider filter with the password and a code (card 2751)
  * DELETE /api/report-schedules/:id  — Delete a schedule
+ *
+ * Every change to a schedule, and every delete, writes one INFO line naming
+ * the schedule and the addresses it is sent to: a change that asks for the
+ * password by `reportScheduleSet` (card 2751), one that asks nothing by
+ * `reportScheduleChanged`, and a delete by `reportScheduleDeleted` (card 2895).
  */
 
 import { json, error } from '@sveltejs/kit';
@@ -19,10 +24,13 @@ import {
 	parseStatusFilter,
 	REPORT_STATUS_FILTER_LABELS,
 	REPORT_STATUS_FILTERS,
+	reportScheduleChanged,
+	reportScheduleDeleted,
 	reportScheduleSet,
 	takeReportMail,
 	type ReportMailSpend,
-	type ScheduleChange
+	type ScheduleChange,
+	type UnaskedScheduleChange
 } from '$lib/server/reports';
 import { requireUser } from '$lib/server/route-guards';
 import { confirmStepUp } from '$lib/server/step-up';
@@ -80,7 +88,11 @@ const FREQUENCIES = ['weekly', 'monthly'] as const;
  * made first in its guard with the day's report mail read and nothing taken,
  * then is read and written again while the password holds. Once it is
  * written, an INFO line names every address and the owner is told
- * (`reportScheduleSet`, D13).
+ * (`reportScheduleSet`, D13). A change that asks nothing and changes
+ * something (renamed, re-timed, turned off, narrowed, addresses removed)
+ * writes one INFO line once committed, naming what changed, every address
+ * it is now sent to and those removed, with no notice
+ * (`reportScheduleChanged`, card 2895); a row sent back as it is writes none.
  */
 export const PUT: RequestHandler = async ({ locals, params, request, cookies, getClientAddress }) => {
 	// A quick refusal, binding no name: who the caller is is decided below.
@@ -101,7 +113,16 @@ export const PUT: RequestHandler = async ({ locals, params, request, cookies, ge
 		if (asks(change)) return { asks: true as const };
 		// Last, with nothing awaited before the write.
 		if (change.take) takeReportMail(user, change.take.n, change.take.spend);
-		return { asks: false as const, row: writeChange(scheduleId, change.updates) };
+		const row = writeChange(scheduleId, change.updates);
+		// Said once committed, when something changed (card 2895, D3).
+		const said: UnaskedScheduleChange = {};
+		if (change.renamed) said.renamedFrom = change.schedule.name;
+		if (change.retimed) said.retimed = true;
+		if (change.turnedOff) said.turnedOff = true;
+		if (change.narrowed) said.narrowedTo = REPORT_STATUS_FILTER_LABELS[parseStatusFilter(row.statusFilter)];
+		if (change.removed.length > 0) said.removed = change.removed;
+		if (Object.keys(said).length > 0) afterCommit(() => reportScheduleChanged(row, said));
+		return { asks: false as const, row };
 	});
 	if (!asked.asks) return json(asked.row);
 
@@ -249,6 +270,16 @@ function readScheduleChange(user: SessionUser, scheduleId: number, body: Request
 	// owner did not confirm; a move from `all` mails fewer.
 	const widened = statusFilter !== undefined && statusFilter !== schedule.statusFilter && parseStatusFilter(schedule.statusFilter) !== 'all';
 
+	// What a change that asks nothing did, for its line (card 2895, D3): a new
+	// name; turned off; a new filter that is not wider; and the addresses the
+	// list takes off, those stored and not in the new list, read as the
+	// scheduler reads both.
+	const renamed = name !== undefined && name !== schedule.name;
+	const turnedOff = enabled === false && schedule.enabled;
+	const narrowed = statusFilter !== undefined && statusFilter !== schedule.statusFilter && !widened;
+	const kept = listChanged ? new Set(reportRecipients(recipients).addresses) : had;
+	const removed = [...had].filter((address) => !kept.has(address));
+
 	// Turned on, or re-timed while it stays on: either can bring a send
 	// forward, and takes every address. A schedule that is off after the
 	// change sends nothing, and turning it on later pays then (the review's
@@ -262,13 +293,15 @@ function readScheduleChange(user: SessionUser, scheduleId: number, body: Request
 				? { n: added.length, spend: 'new recipients' }
 				: null;
 
-	return { schedule, updates, added, turnedOn, widened, take };
+	return { schedule, updates, added, turnedOn, widened, take, renamed, retimed, turnedOff, narrowed, removed };
 }
 
 /**
  * DELETE — remove a schedule of the caller's own: looked for, and deleted, in
  * one transaction that asks first whether the session is still open (card
  * 2253). It asked nothing: a session ended by a reset could still delete.
+ * Once committed, one INFO line names it and the addresses it was sent to
+ * (`reportScheduleDeleted`, card 2895).
  */
 export const DELETE: RequestHandler = async ({ locals, params }) => {
 	requireUser(locals.user);
@@ -283,6 +316,7 @@ export const DELETE: RequestHandler = async ({ locals, params }) => {
 		if (!schedule) throw error(404, 'Schedule not found');
 
 		db.delete(reportSchedules).where(eq(reportSchedules.id, scheduleId)).run();
+		afterCommit(() => reportScheduleDeleted(schedule));
 	});
 	return json({ success: true });
 };

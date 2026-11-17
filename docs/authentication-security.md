@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.132
+version: 1.133
 status: As-Built
 date: 2026-11-17
 tags:
@@ -1367,9 +1367,14 @@ sequenceDiagram
   mail and completion PDF; and board and team membership are not on `STEP_UP_ACTIONS`, so a
   session can give an attacker's account read access, which then mails from its own account.
   Both left as they are.
-- **What the log still does not name**: the scheduled run's addresses (its line gives a count),
-  and the changes that ask nothing (an address removed, a rename, a re-timing, turning it off, a
-  delete): **card 2895**.
+- **What the log names since card 2895**: the scheduled run's line names every address it
+  reached and every one it did not, with the schedule's id and its owner as the line's user; and
+  each change that asks nothing (an address removed, a rename, a re-timing, turning it off, a
+  narrower filter) and each delete writes one `INFO` line under `REPORTS`, the owner as its user,
+  naming the schedule, what changed, what it covers and every address it is sent to (and those
+  removed), with no notice (`reportScheduleChanged`, `reportScheduleDeleted` in `reports.ts`). A
+  change sent back as it is stored writes none. See
+  [What a scheduled run logs](backup-reporting.md) in the reporting document.
 
 **The Reports page.** The **Email** dialog and the **New Schedule** form each draw
 `CurrentPasswordField` with "You will be asked for your password and a code from your

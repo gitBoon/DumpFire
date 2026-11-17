@@ -1,7 +1,7 @@
 ---
 title: "Backup & Reporting System"
 category: Admin & Tools
-version: 1.43
+version: 1.44
 status: As-Built
 date: 2026-11-17
 tags:
@@ -1568,9 +1568,9 @@ sequenceDiagram
                     SMTP-->>Run: true (sent) or false (not sent)
                 end
                 alt every recipient sent it
-                    Run->>Log: WARN emailed to N of N recipient(s)
+                    Run->>Log: WARN emailed, naming every address (card 2895)
                 else any not sent
-                    Run->>Log: ERROR not emailed to the addresses named,<br/>S of N reached, and why
+                    Run->>Log: ERROR not emailed to the addresses named,<br/>the ones reached named, S of N, and why
                 end
             end
         end
@@ -1585,9 +1585,9 @@ nothing at all for a schedule that produced no report.
 
 | What happened | Level | Line |
 |---------------|-------|------|
-| Every recipient was sent it | `WARN` | `Scheduled report emailed: "<name>" to 3 of 3 recipient(s)` |
-| One or more were not | `ERROR` | `Scheduled report "<name>" was not emailed to b@example.com (2 of 3 recipient(s) reached). The mail server did not accept it: its reason is in the EMAIL line logged for each address. It is not sent again before its next run.` |
-| None could be, mail not being set up | `ERROR` | The same line, with `Mail is not set up on this server` as the reason. `email.ts` logs nothing of its own then |
+| Every recipient was sent it | `WARN` | `Scheduled report emailed: "<name>" (schedule 12) to: a@example.com, b@example.com, c@example.com`, with `{ scheduleId }` and the owner as the line's user (card 2895) |
+| One or more were not | `ERROR` | `Scheduled report "<name>" (schedule 12) was not emailed to b@example.com; it reached: a@example.com, c@example.com (2 of 3). The mail server did not accept it: its reason is in the EMAIL line logged for each address. It is not sent again before its next run.` |
+| None could be, mail not being set up | `ERROR` | The same line, `it reached: no address (0 of 3)`, with `Mail is not set up on this server` as the reason. `email.ts` logs nothing of its own then |
 | No report: its board is gone, or its owner can no longer read it | `WARN` | `Scheduled report "<name>" produced no report, so nothing was sent: the board it covers (id 7) is gone, or the schedule's owner can no longer read it` |
 | No report: its grouping is gone, holds no board, or holds none its owner can read | `WARN` | `... produced no report, so nothing was sent: the grouping it covers (id 7) is gone, holds no board, or holds none the schedule's owner can read` |
 | No report: a board or grouping schedule that names none (`scopeId` empty) | `WARN` | `... produced no report, so nothing was sent: the schedule has no board` (`the schedule has no grouping` for a grouping) |
@@ -1596,6 +1596,13 @@ nothing at all for a schedule that produced no report.
 | Its next run cannot be worked out (card 2144) | `ERROR` | `Report schedule 12 "Weekly sales", owner "pat" (user 7), was switched off: its time of day "9" is not a time from 00:00 to 23:59, so its next run cannot be worked out. Nothing was sent. Its owner can turn it on again with a time, day and zone that can be read, or delete it and make it again.`, with the owner as the line's user. The other faults: `its frequency "daily" is not weekly or monthly`, `its day of the week -2 is not a whole number from 0 (Sunday) to 6 (Saturday)`, `its day of the month 0 is not a whole number of 1 or more`, `its time zone "Mars/Base" is not one this server knows`. A stored value is named to its first 80 characters, then `…`. Once, as the line below: written only by the run, or the start, that changed the row |
 | More than 10 addresses, kept from before the cap (card 2182) | `ERROR` | `Report schedule 12 "Weekly sales", owner "pat" (user 7), was switched off: it is sent to 15 addresses, and the most is 10. Nothing was sent. Its owner can delete it and make it again with at most 10.`, with the owner as the line's user. Once: the switch-off is written only where the schedule is still on, and only the run that changed the row writes the line |
 | A list that also holds parts that are not addresses, kept from before (card 2182) | As the line | The emailed, not-emailed or no-recipients line above ends `Left out, as not email addresses: "alice", "smith".` Those parts are never sent to; the addresses are, and the schedule is not switched off for them |
+| A change that asks no password (card 2895): renamed, re-timed, turned off, a narrower filter, addresses removed | `INFO` | `Report schedule 12 "New" was renamed from "Weekly", re-timed, turned off, narrowed to Completed only, had addresses removed, a report of the board "Sales", sent to: a@example.com; removed: b@example.com` (each part only where it happened), with `{ scheduleId }` and the owner as the line's user, once committed. No notice. A change sent back as it is stored writes none. A change that asks for the password writes card 2751's line instead (`was made`, `given addresses`, `turned on`, `widened to …`) |
+| A schedule deleted (card 2895) | `INFO` | `Report schedule 12 "Weekly", a report of the board "Sales", was deleted; it was sent to: a@example.com, b@example.com`, with `{ scheduleId }` and the owner as the line's user, once committed |
+
+**Every change to a schedule is logged with its addresses** (card 2895): one asked for by the
+password by `reportScheduleSet` (card 2751), one that asks nothing by `reportScheduleChanged`,
+a delete by `reportScheduleDeleted` (`reports.ts`), and every run names the addresses it reached
+and missed, so the log says where a schedule sent at every point of its life.
 
 - **A schedule moves on to its next run whatever was sent.** `lastRunAt` and `nextRunAt` are
   written by the claim, before each of the cases above, and nothing is sent again before the

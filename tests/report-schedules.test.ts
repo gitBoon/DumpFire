@@ -807,6 +807,73 @@ describe('PUT /api/report-schedules/[id], when the next run moves', () => {
 
 // ─── The Reports page ────────────────────────────────────────────────────────
 
+describe('a change that asks nothing, and a delete, logged with the addresses (card 2895)', () => {
+	let level: string | undefined;
+	beforeEach(() => {
+		// The suite logs errors only; these lines are INFO ones.
+		level = process.env.LOG_LEVEL;
+		process.env.LOG_LEVEL = 'INFO';
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+	});
+	afterEach(() => {
+		if (level === undefined) delete process.env.LOG_LEVEL;
+		else process.env.LOG_LEVEL = level;
+	});
+
+	const reportLines = () =>
+		sqlite.prepare("SELECT level, message, meta, user_id AS userId FROM system_logs WHERE context = 'REPORTS' ORDER BY id").all();
+
+	const onToTwo = () =>
+		stored({
+			enabled: true,
+			frequency: 'weekly',
+			dayOfWeek: 1,
+			timeOfDay: '09:00',
+			timeZone: 'Europe/London',
+			statusFilter: 'all',
+			recipients: 'a@x.test, b@x.test'
+		});
+
+	it('says what a change that asks nothing did and where the schedule now sends; one that changes nothing says nothing', async () => {
+		const id = onToTwo();
+
+		const changed = await change(id, { name: 'New', timeOfDay: '17:30', enabled: false, statusFilter: 'completed', recipients: 'a@x.test' });
+
+		expect(changed.status, JSON.stringify(changed.body)).toBe(200);
+		const said = [
+			{
+				level: 'INFO',
+				message:
+					`Report schedule ${id} "New" was renamed from "Weekly", re-timed, turned off, narrowed to Completed only, had addresses removed, ` +
+					'a report of the board "Sales", sent to: a@x.test; removed: b@x.test',
+				meta: JSON.stringify({ scheduleId: id }),
+				userId: owner.id
+			}
+		];
+		expect(reportLines()).toEqual(said);
+
+		// The row sent back as it is, as the page's switch sends it: no line.
+		expect((await change(id, { enabled: false })).status).toBe(200);
+		expect(reportLines()).toEqual(said);
+	});
+
+	it('says a delete, with the addresses the schedule was sent to', async () => {
+		const id = onToTwo();
+
+		const deleted = await api('DELETE', `/api/report-schedules/${id}`, { user: owner });
+
+		expect(deleted.status).toBe(200);
+		expect(reportLines()).toEqual([
+			{
+				level: 'INFO',
+				message: `Report schedule ${id} "Weekly", a report of the board "Sales", was deleted; it was sent to: a@x.test, b@x.test`,
+				meta: JSON.stringify({ scheduleId: id }),
+				userId: owner.id
+			}
+		]);
+	});
+});
+
 describe('the Reports page’s schedules', () => {
 	const page = readFileSync(join(process.cwd(), 'src', 'routes', 'reports', '+page.svelte'), 'utf-8');
 

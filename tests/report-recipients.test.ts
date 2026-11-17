@@ -427,7 +427,7 @@ describe('the scheduled run', () => {
 	});
 
 	it('sends to the address in "Name <address>", and names the parts it left out', { timeout: 30_000 }, async () => {
-		stored('Alice Smith <alice@x.test>', due);
+		const id = stored('Alice Smith <alice@x.test>', due);
 
 		await loggingWarnings(() => runDueReportSchedules(new Date()));
 
@@ -435,8 +435,9 @@ describe('the scheduled run', () => {
 		expect(reportLines()).toEqual([
 			{
 				level: 'WARN',
-				message: 'Scheduled report emailed: "Weekly" to 1 of 1 recipient(s). Left out, as not email addresses: "alice", "smith".',
-				userId: null
+				message: `Scheduled report emailed: "Weekly" (schedule ${id}) to: alice@x.test. Left out, as not email addresses: "alice", "smith".`,
+				// The owner is the line's user (card 2895).
+				userId: owner.id
 			}
 		]);
 	});

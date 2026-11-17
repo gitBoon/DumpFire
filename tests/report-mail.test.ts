@@ -174,9 +174,11 @@ describe('the scheduled report, runDueReportSchedules', () => {
 			level: string;
 			message: string;
 		}[];
+	/** The REPORTS lines' users and meta (card 2895): the owner, and the schedule's id. */
+	const filedAs = () => sqlite.prepare("SELECT user_id AS userId, meta FROM system_logs WHERE context = 'REPORTS' ORDER BY id").all();
 	const scheduleRow = (id: number) => db.select().from(reportSchedules).where(eq(reportSchedules.id, id)).get()!;
 
-	it('logs one WARN line when every recipient was sent it', { timeout: 30_000 }, async () => {
+	it('logs one WARN line naming every address it reached, filed under the owner (card 2895)', { timeout: 30_000 }, async () => {
 		makeSmtp();
 		const mail = mailServer();
 		const id = dueSchedule(A.board.id, 'a@example.test, b@example.test');
@@ -185,11 +187,12 @@ describe('the scheduled report, runDueReportSchedules', () => {
 		await runDueReportSchedules(now);
 
 		expect(mail.emails.map((m) => m.to)).toEqual(['a@example.test', 'b@example.test']);
-		expect(linesOf()).toEqual([{ level: 'WARN', message: 'Scheduled report emailed: "Weekly" to 2 of 2 recipient(s)' }]);
+		expect(linesOf()).toEqual([{ level: 'WARN', message: `Scheduled report emailed: "Weekly" (schedule ${id}) to: a@example.test, b@example.test` }]);
+		expect(filedAs()).toEqual([{ userId: owner.id, meta: JSON.stringify({ scheduleId: id }) }]);
 		expect(scheduleRow(id).lastRunAt).toBe(stamp(now));
 	});
 
-	it('logs an ERROR line naming the address it did not reach, and moves on to its next run', { timeout: 30_000 }, async () => {
+	it('logs an ERROR line naming the address it did not reach and the ones it did, and moves on to its next run (card 2895)', { timeout: 30_000 }, async () => {
 		makeSmtp();
 		const mail = mailServer(['b@example.test']);
 		const id = dueSchedule(A.board.id, 'a@example.test, b@example.test');
@@ -203,10 +206,11 @@ describe('the scheduled report, runDueReportSchedules', () => {
 			{
 				level: 'ERROR',
 				message:
-					'Scheduled report "Weekly" was not emailed to b@example.test (1 of 2 recipient(s) reached). ' +
+					`Scheduled report "Weekly" (schedule ${id}) was not emailed to b@example.test; it reached: a@example.test (1 of 2). ` +
 					"The mail server did not accept it: its reason is in the EMAIL line logged for each address. It is not sent again before its next run."
 			}
 		]);
+		expect(filedAs()).toEqual([{ userId: owner.id, meta: JSON.stringify({ scheduleId: id }) }]);
 		// No retry before the next run: a@example.test has it already.
 		const row = scheduleRow(id);
 		expect(row.lastRunAt).toBe(stamp(now));
@@ -217,7 +221,7 @@ describe('the scheduled report, runDueReportSchedules', () => {
 
 	it('says so when mail is not set up, rather than that it was emailed', { timeout: 30_000 }, async () => {
 		const mail = mailServer();
-		dueSchedule(A.board.id, 'a@example.test');
+		const id = dueSchedule(A.board.id, 'a@example.test');
 
 		await runDueReportSchedules(new Date());
 
@@ -226,7 +230,7 @@ describe('the scheduled report, runDueReportSchedules', () => {
 			{
 				level: 'ERROR',
 				message:
-					'Scheduled report "Weekly" was not emailed to a@example.test (0 of 1 recipient(s) reached). ' +
+					`Scheduled report "Weekly" (schedule ${id}) was not emailed to a@example.test; it reached: no address (0 of 1). ` +
 					'Mail is not set up on this server. It is not sent again before its next run.'
 			}
 		]);

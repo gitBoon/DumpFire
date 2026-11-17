@@ -1734,7 +1734,9 @@ export type ScheduleChange = NonNullable<SecurityNoticeDetail['change']>;
  * committed (card 2751, S3, D13): one INFO line under REPORTS, the owner as
  * its user, naming the schedule, what it covers and every address it is sent
  * to (and the addresses added), and the owner's `report-schedule-set` notice,
- * from `address`. Called in `afterCommit`, never awaited.
+ * from `address`. Called in `afterCommit`, never awaited. A change that asks
+ * nothing is said by `reportScheduleChanged`, and a delete by
+ * `reportScheduleDeleted` (card 2895).
  */
 export function reportScheduleSet(schedule: ReportScheduleRow, change: ScheduleChange, address: string | null): void {
 	const addresses = reportRecipients(schedule.recipients).addresses;
@@ -1752,6 +1754,60 @@ export function reportScheduleSet(schedule: ReportScheduleRow, change: ScheduleC
 		{ userId: schedule.userId }
 	);
 	sendSecurityNotice(schedule.userId, 'report-schedule-set', { at: new Date(), address, schedules: [{ name: schedule.name, covers, addresses }], change });
+}
+
+/** What a write that asked for no password did to a schedule (card 2895, D3): each part only where it happened. */
+export type UnaskedScheduleChange = {
+	renamedFrom?: string;
+	retimed?: boolean;
+	turnedOff?: boolean;
+	/** The filter's label as it is now, where it is narrower. */
+	narrowedTo?: string;
+	/** The addresses taken off the list. */
+	removed?: string[];
+};
+
+/** A schedule's addresses as a log line names them. */
+function addressWords(schedule: ReportScheduleRow): string {
+	const addresses = reportRecipients(schedule.recipients).addresses;
+	return addresses.length === 0 ? 'no address' : addresses.join(', ');
+}
+
+/**
+ * Say what a write that asked for no password did to a schedule, once it is
+ * committed (card 2895, D3): one INFO line under REPORTS, the owner as its
+ * user, naming the schedule, what changed, what it covers, every address it
+ * is now sent to and the addresses removed. No notice: none of these widens
+ * what leaves the server. Called in `afterCommit`, only when something
+ * changed: a row sent back as it is says nothing.
+ */
+export function reportScheduleChanged(schedule: ReportScheduleRow, change: UnaskedScheduleChange): void {
+	const did = [
+		change.renamedFrom !== undefined ? `renamed from "${change.renamedFrom}"` : '',
+		change.retimed ? 're-timed' : '',
+		change.turnedOff ? 'turned off' : '',
+		change.narrowedTo ? `narrowed to ${change.narrowedTo}` : '',
+		change.removed && change.removed.length > 0 ? 'had addresses removed' : ''
+	].filter(Boolean);
+	log.info(
+		`Report schedule ${schedule.id} "${schedule.name}" was ${did.join(', ')}, a report of ${reportCovers(schedule.scope, schedule.scopeId)}, ` +
+			`sent to: ${addressWords(schedule)}${change.removed && change.removed.length > 0 ? `; removed: ${change.removed.join(', ')}` : ''}`,
+		{ scheduleId: schedule.id },
+		{ userId: schedule.userId }
+	);
+}
+
+/**
+ * Say that a schedule was deleted, once it is committed (card 2895, D4): one
+ * INFO line under REPORTS, the owner as its user, with the last record of
+ * where it was sent. Called in `afterCommit`.
+ */
+export function reportScheduleDeleted(schedule: ReportScheduleRow): void {
+	log.info(
+		`Report schedule ${schedule.id} "${schedule.name}", a report of ${reportCovers(schedule.scope, schedule.scopeId)}, was deleted; it was sent to: ${addressWords(schedule)}`,
+		{ scheduleId: schedule.id },
+		{ userId: schedule.userId }
+	);
 }
 
 /** Why a schedule whose list is over the cap cannot be turned on, or was switched off (decision 6). */
@@ -2047,16 +2103,27 @@ export async function runDueReportSchedules(now: Date): Promise<void> {
 						}
 						if (!sent) notReached.push(email);
 					}
-					const reached = recipients.length - notReached.length;
+					// Every address it reached, and every one it did not, by name,
+					// with the schedule's id and its owner as the line's user (card
+					// 2895, D2), so the log says where each run went.
+					const reached = recipients.filter((email) => !notReached.includes(email));
 					if (notReached.length === 0) {
-						log.warn(`Scheduled report emailed: "${schedule.name}" to ${reached} of ${recipients.length} recipient(s)${leftOut ? `.${leftOut}` : ''}`);
+						log.warn(
+							`Scheduled report emailed: "${schedule.name}" (schedule ${schedule.id}) to: ${reached.join(', ')}${leftOut ? `.${leftOut}` : ''}`,
+							{ scheduleId: schedule.id },
+							{ userId: schedule.userId }
+						);
 					} else {
 						// With no mail set up, `email.ts` returns false and logs nothing.
 						const why = isSmtpConfigured()
 							? 'The mail server did not accept it: its reason is in the EMAIL line logged for each address'
 							: 'Mail is not set up on this server';
 						log.error(
-							`Scheduled report "${schedule.name}" was not emailed to ${notReached.join(', ')} (${reached} of ${recipients.length} recipient(s) reached). ${why}. It is not sent again before its next run.${leftOut}`
+							`Scheduled report "${schedule.name}" (schedule ${schedule.id}) was not emailed to ${notReached.join(', ')}; ` +
+								`it reached: ${reached.length === 0 ? 'no address' : reached.join(', ')} (${reached.length} of ${recipients.length}). ` +
+								`${why}. It is not sent again before its next run.${leftOut}`,
+							{ scheduleId: schedule.id },
+							{ userId: schedule.userId }
 						);
 					}
 				} else {

@@ -632,17 +632,19 @@ export const CHECKLIST: readonly IsoItem[] = [
 		how:
 			'Every entry goes to stdout, the system log table and the live audit feed. Reset Everything keeps the log. ' +
 			'Report schedules and report mail log the addresses an asked action adds (card 2751). ' +
-			'Still open: an import replaces the log with the backup\'s, an edited one included, and no line names the addresses a scheduled report reached.',
+			'The scheduled run\'s line names every address it reached and missed, and every change to a schedule, and its delete, is logged with its addresses (card 2895). ' +
+			'Still open: an import replaces the log with the backup\'s, an edited one included.',
 		evidence: [
 			{ path: 'src/lib/server/logger.ts' },
 			{ path: 'src/lib/server/audit-log.ts' },
 			{ path: 'tests/audit-log.test.ts' },
 			{ path: 'tests/logger.test.ts' },
 			{ path: 'src/routes/api/admin/reset/+server.ts', symbol: 'KEPT' },
-			{ path: 'src/lib/server/db/restore.ts', symbol: 'rowsToRestore' }
+			{ path: 'src/lib/server/db/restore.ts', symbol: 'rowsToRestore' },
+			{ path: 'src/lib/server/reports.ts', symbol: 'reportScheduleChanged' }
 		],
 		owner: 'DumpFire',
-		gapCards: [2899, 2895],
+		gapCards: [2899],
 		organisationalPart: 'Send stdout to a store the application cannot write, and set its retention.'
 	},
 	{
