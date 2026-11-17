@@ -1,7 +1,7 @@
 ---
 title: "Authentication & Security"
 category: Identity & Security
-version: 1.124
+version: 1.125
 status: As-Built
 date: 2026-11-17
 tags:
@@ -1409,8 +1409,8 @@ released with it) has the server check it. The plan is
   the right form. Enter the 6 digits from your authenticator app, or choose 'Use a recovery
   code instead'. Nothing was changed.", with nothing counted and no factor read. A
   recovery code pasted into the seven-character authenticator field arrives cut short and is
-  refused here without a strike. (Sign-in's `/login/verify` counts a malformed authenticator
-  code as a wrong one: card 2889.)
+  refused here without a strike. Sign-in's `/login/verify` refuses one the same way (card
+  2889): the authenticator form is `readAuthenticatorCode` in `totp.ts`, which both call.
 - **The factor, before the password (step 2b of `checkCurrentProof`)**, after the
   one-check-in-flight rule and before the account's first-lane place, synchronous, nothing
   counted and no password compared. No factor row: `403` `no-factor` ("This account has no
@@ -3485,6 +3485,8 @@ sequenceDiagram
     else right, but its step already spent
         V->>DB: counts taken back
         V-->>B: 400 wait for the next code
+    else an authenticator code not in its form (card 2889)
+        V-->>B: 400 not in the right form, nothing counted or said
     else wrong
         V->>DB: counts stand, a pause or the lock at 5, 10, 15, 20, 25, 30
         V-->>B: 400, or restart after the fifth on this challenge
@@ -3498,18 +3500,24 @@ sequenceDiagram
    or was already used…", cookie deleted.
 2. **The account's hash is the one the challenge was issued against**, else `409`, the challenge
    deleted and one `WARN` line.
-3. Neither field sent: `400`, nothing counted. A recovery code goes to step 6.
-4. **The lane neither locked nor paused**: locked is `403`, paused is `429` with the minutes
+3. Neither field sent: `400`, nothing counted. A recovery code goes to step 7.
+4. **The authenticator code in its form** (card 2889): at most 64 characters and, trimmed with
+   every space dropped, exactly six digits (`readAuthenticatorCode()` in `totp.ts`, the rule the
+   step-up shares), else `400` `MALFORMED_CODE`, "That code is not in the right form. Enter the
+   6 digits from your authenticator app, or choose 'Use a recovery code instead'.", the cookie
+   kept. Nothing is counted, no line is written and no notice is sent, before the lane is read,
+   as for a malformed recovery code. A six-digit code that is wrong is counted as below.
+5. **The lane neither locked nor paused**: locked is `403`, paused is `429` with the minutes
    left. Neither is counted. A pause whose time cannot be read is read as the lock.
-5. **Every authenticator of the account tried** (`matchFactors()`, since card 2772: see
+6. **Every authenticator of the account tried** (`matchFactors()`, since card 2772: see
    [Several Authenticators, Every One Tried](#several-authenticators-every-one-tried-card-2772)):
    none that opens is `503`, nothing counted, one `ERROR` line for each that did not open
    (`factorSecret()`), or one naming the challenge when the account holds none. That is also
    the answer with no MFA key loaded, and for an account whose factors went while it was
    signing in.
-6. **Counted**, one statement each: the challenge's `wrong_count` by one, the lane's count by
+7. **Counted**, one statement each: the challenge's `wrong_count` by one, the lane's count by
    the number of authenticators tried (N), and `failed_codes_since_sign_in` by one.
-7. **What the compare found** (`matchingStep()` on every opened secret, both steps in constant
+8. **What the compare found** (`matchingStep()` on every opened secret, both steps in constant
    time, no early exit). A match on a step not yet spent: the counts taken back exactly (the
    challenge 1, the lane to 0, `failed_codes_since_sign_in` 1, each clamped at 0), then
    `spendStep()` of the matched factor alone; a code whose every match is spent is `400` "wait
@@ -3535,7 +3543,7 @@ on the recovery-code field, and so does a `403` "locked" answer.
 
 ### Wrong Codes: the Lanes, Pauses and the Lock
 
-Every wrong authenticator code is counted three ways: on the challenge (five end it), on its
+Every wrong six-digit code is counted three ways: on the challenge (five end it), on its
 **lane**, and in `failed_codes_since_sign_in`. A lane is `mfa_known_wrong` for a browser
 remembered for the account and `mfa_other_wrong` for any other, so wrong codes from strangers do
 not pause the owner's own browser. A lane's count is of wrong codes in a row, each counted once

@@ -433,9 +433,10 @@ export const CHECKLIST: readonly IsoItem[] = [
 		status: 'partly-met',
 		how:
 			'A password and then an authenticator or recovery code before any session, with no switch to turn the second step off. Every authenticator an account holds is tried (card 2772). ' +
-			'Wrong codes are counted in the database, with pauses and a lock that survive a restart. The step-up asks for a code again. Sessions have idle and total limits. ' +
+			'Wrong codes are counted in the database, with pauses and a lock that survive a restart; a code not in the right form is refused before anything is counted, at sign-in as at the step-up (card 2889). ' +
+			'The step-up asks for a code again. Sessions have idle and total limits. ' +
 			'API keys made before two-step sign-in stop at their deadline unless kept with the password and a code (card 2772). ' +
-			'Still open: a malformed authenticator code is not counted at sign-in.',
+			'Still open, as accepted risks: R1, R3 and R4 below.',
 		evidence: [
 			{ path: 'src/lib/server/second-step.ts', symbol: 'verifyStep' },
 			{ path: 'src/lib/server/totp.ts' },
@@ -448,7 +449,7 @@ export const CHECKLIST: readonly IsoItem[] = [
 			{ path: AUTH_DOC, anchor: 'isoiec-270012022' }
 		],
 		owner: 'DumpFire',
-		gapCards: [2889],
+		gapCards: [],
 		accepted: [
 			{ risk: 'R1: on a server with no mail host, an account with no factor can be set up first by a holder of its password, for 14 days from the release', ...ACCEPTED_RISKS },
 			{ risk: 'R3: a holder of the password can evict the owner\'s live sign-in challenge', ...ACCEPTED_RISKS },

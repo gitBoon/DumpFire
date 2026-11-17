@@ -62,7 +62,7 @@ import {
 import { sha256Hex } from './mfa-crypto';
 import { MAIL_PROBLEM_WORDS, PLACEHOLDER_ORIGIN, isSmtpConfigured, linkBaseUrl, smtpPasswordMissing } from './email';
 import { endUnusedInvites } from './invites';
-import { matchingStep } from './totp';
+import { matchingStep, readAuthenticatorCode } from './totp';
 import { canonicalRecoveryCode, newRecoveryCodes } from './recovery-codes';
 import { OTPAUTH_ISSUER, otpauthUri, qrDataUri, secretInGroups } from './otpauth';
 import {
@@ -106,6 +106,8 @@ export const FACTOR_UNUSABLE =
 	'Your authenticator cannot be checked on this server right now. Use a recovery code, or ask an administrator.';
 export const WRONG_RECOVERY_CODE = 'That recovery code is not right, or it has already been used.';
 export const MALFORMED_RECOVERY_CODE = 'A recovery code is 16 letters and digits, written as XXXX-XXXX-XXXX-XXXX.';
+export const MALFORMED_CODE =
+	"That code is not in the right form. Enter the 6 digits from your authenticator app, or choose 'Use a recovery code instead'.";
 export const ENROL_WRONG_CODE =
 	'That code is not right. Check that your phone sets its clock automatically, then enter the current code.';
 export const ENROL_NOT_READY = 'This step is not ready yet. Follow the set-up page from the top.';
@@ -688,7 +690,7 @@ export type VerifyFailure = StepFailure;
 export type VerifyReport = { signedIn: true; report: SignInReport };
 
 type Outcome =
-	| { kind: 'expired' | 'password changed' | 'no code' | 'locked' | 'no factor' | 'malformed' | 'step spent' | 'too many' }
+	| { kind: 'expired' | 'password changed' | 'no code' | 'locked' | 'no factor' | 'malformed' | 'malformed code' | 'step spent' | 'too many' }
 	| { kind: 'paused'; minutes: number }
 	| { kind: 'wrong'; recovery: boolean }
 	| { kind: 'signed in'; session: NewSession; user: User; report: SignInReport | null; lane: Lane; by: 'authenticator' | 'recovery code' };
@@ -697,7 +699,9 @@ type Outcome =
  * Check a code against the challenge this browser holds (4.5), in one
  * synchronous transaction, in this order: a live verify challenge; the
  * account's password hash unchanged since it was issued; for an
- * authenticator code, its lane neither locked nor paused (refused uncounted)
+ * authenticator code, its form (`readAuthenticatorCode`, the step-up's rule;
+ * a malformed one refused before its lane is read or anything counted, card 2889),
+ * its lane neither locked nor paused (refused uncounted)
  * and at least one authenticator that opens (503 uncounted otherwise), every
  * one tried (`matchFactors`); then counted, in one statement each, the lane
  * by the authenticators tried (card 2772, D4). A right code takes the counts
@@ -793,14 +797,19 @@ export function verifyStep(input: VerifyInput, cookies: Cookies, url: URL): Veri
 			return { kind: 'wrong', recovery: true };
 		}
 
-		// 3. An authenticator code: its lane neither locked nor paused, and neither counted.
+		// 3. An authenticator code: first its form (card 2889), by the step-up's
+		// rule, so that one that cannot be a code is answered before the lane is
+		// read or anything counted, as a malformed recovery code is; then its
+		// lane neither locked nor paused, and neither counted.
+		const digits = readAuthenticatorCode(input.code);
+		if (digits === null) return { kind: 'malformed code' };
 		const state = laneState(user, lane, now);
 		if (state !== null) return 'locked' in state ? { kind: 'locked' } : { kind: 'paused', minutes: state.paused };
 
 		// 4. Every authenticator of the account tried (card 2772, D4), with no
 		// early exit: none that opens is 503, uncounted, each said at ERROR (by
 		// factorSecret), and none at all said at ERROR here.
-		const found = matchFactors(user.id, code, now);
+		const found = matchFactors(user.id, digits, now);
 		if (found.tried === 0) {
 			if (found.unusable === 0) {
 				log.error(`${named(user)} has a pending sign-in and no second factor (challenge ${challenge.short_id})`, undefined, {
@@ -899,6 +908,8 @@ export function verifyStep(input: VerifyInput, cookies: Cookies, url: URL): Veri
 			return refuse(cookies, url, 503, FACTOR_UNUSABLE);
 		case 'malformed':
 			return refuse(cookies, url, 400, MALFORMED_RECOVERY_CODE);
+		case 'malformed code':
+			return refuse(cookies, url, 400, MALFORMED_CODE);
 		case 'step spent':
 			return refuse(cookies, url, 400, STEP_SPENT);
 		case 'too many':

@@ -70,6 +70,7 @@ import { sendSecurityNotice } from './notifications';
 import { canonicalRecoveryCode } from './recovery-codes';
 import { readText, type RequestBody } from './request-body';
 import { requireUser } from './route-guards';
+import { LONGEST_CODE, readAuthenticatorCode } from './totp';
 import { writeAs } from './write-as';
 import {
 	CONFIRMATION_HEADER,
@@ -128,22 +129,20 @@ export {
 /** The most characters a current password is read to: bcrypt reads the first 72 bytes anyway. */
 const LONGEST_PASSWORD = 1024;
 
-/** The most characters a code is read to (card 2771, S7): longer is malformed before any pattern is tried. */
-const LONGEST_CODE = 64;
-
 /**
  * The code sent beside the password, by its form (card 2771, D2), or null for
  * one in neither: at most `LONGEST_CODE` characters, then, trimmed with every
  * space dropped, exactly six ASCII digits (the authenticator's, `123 456`
- * among them), or a recovery code as `canonicalRecoveryCode` reads one. A
- * six-digit text is never a recovery code (sixteen characters), so the two
- * cannot both match. Pure: nothing read or counted.
+ * among them, by `readAuthenticatorCode`, the rule sign-in shares: card 2889),
+ * or a recovery code as `canonicalRecoveryCode` reads one. A six-digit text
+ * is never a recovery code (sixteen characters), so the two cannot both
+ * match. Pure: nothing read or counted.
  */
 export function readStepUpCode(sent: string): ProofCode | null {
 	if (sent.length > LONGEST_CODE) return null;
+	const digits = readAuthenticatorCode(sent);
+	if (digits !== null) return { kind: 'authenticator', digits };
 	const trimmed = sent.trim();
-	const digits = trimmed.replace(/ /g, '');
-	if (/^[0-9]{6}$/.test(digits)) return { kind: 'authenticator', digits };
 	if (canonicalRecoveryCode(trimmed) !== null) return { kind: 'recovery', typed: trimmed };
 	return null;
 }

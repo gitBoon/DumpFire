@@ -29,6 +29,23 @@ export function hotp(secret: Buffer, counter: number, digits = TOTP_DIGITS): str
 	return String(binary % 10 ** digits).padStart(digits, '0');
 }
 
+/** The most characters a code is read to (card 2771, S7): longer is malformed before any pattern is tried. */
+export const LONGEST_CODE = 64;
+
+/**
+ * An authenticator code by its form, or null for one not in it: text of at
+ * most `LONGEST_CODE` characters which, trimmed with every space dropped, is
+ * exactly six ASCII digits (`123 456` among them); answers the six digits.
+ * One rule for the step-up (card 2771, D2) and the sign-in code page (card
+ * 2889), so that a code that cannot be a code is refused before anything is
+ * counted on either. Pure: nothing read or counted.
+ */
+export function readAuthenticatorCode(sent: unknown): string | null {
+	if (typeof sent !== 'string' || sent.length > LONGEST_CODE) return null;
+	const digits = sent.trim().replace(/ /g, '');
+	return /^[0-9]{6}$/.test(digits) ? digits : null;
+}
+
 /** The time step a moment is in. */
 export function stepAt(ms: number): number {
 	return Math.floor(ms / 1000 / TOTP_PERIOD_SECONDS);

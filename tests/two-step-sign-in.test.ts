@@ -66,6 +66,7 @@ import {
 	CODES_LOCKED,
 	ENROL_CANNOT_FINISH,
 	FACTOR_UNUSABLE,
+	MALFORMED_CODE,
 	MALFORMED_RECOVERY_CODE,
 	NO_CODE,
 	PASSWORD_CHANGED_DURING_SIGN_IN,
@@ -519,7 +520,45 @@ describe('the second step (slice 2)', () => {
 		expect(userRow()).toMatchObject({ mfaRecoveryWrong: 0, failedCodesSinceSignIn: 0 });
 	});
 
-	it('T23: a code whose step is already spent asks for the next code, and the counts are as they were', async () => {
+	it('T87: an authenticator code not of six digits is answered with the form, nothing counted or said; the right code then signs in (card 2889)', async () => {
+		const { challenge } = await passwordStep(user);
+
+		const { result: answers, lines } = await logged(async () => [
+			await verify(challenge, { code: '12345' }),
+			await verify(challenge, { code: 'abcdef' })
+		]);
+
+		for (const res of answers) {
+			expect(res).toMatchObject({ type: 'failure', status: 400, data: { error: MALFORMED_CODE, restart: false } });
+			expect(res.deletedCookies).toEqual([]);
+			expect(res.cookies).toEqual({});
+		}
+		expect(challenges()[0].wrong_count).toBe(0);
+		expect(userRow()).toMatchObject({ mfaOtherWrong: 0, failedCodesSinceSignIn: 0 });
+		expect(lines.filter((line) => line.level === 'WARN')).toEqual([]);
+		expectSignedIn(await verify(challenge, { code: codeFor(factor.secret) }));
+	});
+
+	it('T88: a code over 64 characters is answered with the form before any pattern is tried, even the right code spaced out (card 2889)', async () => {
+		const { challenge } = await passwordStep(user);
+		const spacedOut = codeFor(factor.secret).split('').join(' '.repeat(12));
+		expect(spacedOut.length).toBeGreaterThan(64);
+
+		for (const code of ['1'.repeat(65), spacedOut]) {
+			expect(errorOf(await verify(challenge, { code }))).toBe(MALFORMED_CODE);
+		}
+		expect(challenges()[0].wrong_count).toBe(0);
+		expect(userRow()).toMatchObject({ mfaOtherWrong: 0, failedCodesSinceSignIn: 0 });
+	});
+
+	it('T89: the right code typed as three digits, a space and three digits signs in (card 2889)', async () => {
+		const { challenge } = await passwordStep(user);
+		const code = codeFor(factor.secret);
+
+		expectSignedIn(await verify(challenge, { code: `${code.slice(0, 3)} ${code.slice(3)}` }));
+	});
+
+	it('T23:a code whose step is already spent asks for the next code, and the counts are as they were', async () => {
 		await signInFully(user, factor);
 		const { challenge } = await passwordStep(user);
 
